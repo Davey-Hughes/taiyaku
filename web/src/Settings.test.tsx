@@ -72,6 +72,25 @@ function fireSelect(el: HTMLSelectElement, value: string) {
   el.dispatchEvent(new Event('change', { bubbles: true }))
 }
 
+/**
+ * jsdom defines no `elementFromPoint` at all — confirmed by hand: calling it
+ * throws `document.elementFromPoint is not a function`, and `vi.spyOn` on it
+ * throws `"The property 'elementFromPoint' is not defined on the object"`.
+ * `Settings`'s release guard (I1 of the second whole-branch review) reads it
+ * on every `pointerup`, so every test below that fires one needs an answer —
+ * and a single answer for the whole file cannot be right, since "released
+ * over the scrim" and "released over the panel" are the two things most of
+ * these tests exist to tell apart. Stubbed per test, to whatever a real hit
+ * test would answer for that test's own press, and restored after.
+ */
+function stubHitTest(at: (x: number, y: number) => Element | null): () => void {
+  const before = document.elementFromPoint
+  document.elementFromPoint = at as typeof document.elementFromPoint
+  return () => {
+    document.elementFromPoint = before
+  }
+}
+
 describe('Settings', () => {
   it('renders nothing while not visible', () => {
     const host = mount(
@@ -358,6 +377,153 @@ describe('Settings', () => {
     expect(note?.textContent).toBe(
       'This module does nothing on this particular work.',
     )
+  })
+
+  it('closes when the press goes down and comes up on the scrim', () => {
+    const onClose = vi.fn()
+    const host = mount(
+      <Settings
+        visible
+        modules={modules}
+        prefs={{}}
+        onChange={vi.fn()}
+        onReset={vi.fn()}
+        onClose={onClose}
+      />,
+    )
+    const scrim = host.querySelector('.reader-dialog') as HTMLElement
+    // Released over the scrim, same as it went down — a real hit test at
+    // release would answer the scrim.
+    const restore = stubHitTest(() => scrim)
+    try {
+      act(() => {
+        scrim.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))
+        scrim.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }))
+        scrim.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      })
+      expect(onClose).toHaveBeenCalledTimes(1)
+    } finally {
+      restore()
+    }
+  })
+
+  it('does not close when the press began inside the panel', () => {
+    const onClose = vi.fn()
+    const host = mount(
+      <Settings
+        visible
+        modules={modules}
+        prefs={{}}
+        onChange={vi.fn()}
+        onReset={vi.fn()}
+        onClose={onClose}
+      />,
+    )
+    const scrim = host.querySelector('.reader-dialog') as HTMLElement
+    const panel = host.querySelector('.reader-dialog-panel') as HTMLElement
+    // A drag that starts on a control and releases over the scrim: `click`'s
+    // target is the scrim, and this must not be read as looking away. A real
+    // hit test at release would answer the scrim too — a mouse does not
+    // retarget.
+    const restore = stubHitTest(() => scrim)
+    try {
+      act(() => {
+        panel.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))
+        scrim.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }))
+        scrim.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      })
+      expect(onClose).not.toHaveBeenCalled()
+    } finally {
+      restore()
+    }
+  })
+
+  it('does not close when the press began on the scrim and released inside the panel', () => {
+    // I4 of the whole-branch review: `click`'s own target is this element
+    // either way a mixed press goes, since a DOM `click` fires on the
+    // nearest common ancestor of the down and up targets — so this is the
+    // one direction the two tests above cannot tell apart from the correctly
+    // refused one, and the one that closed the dialog under a reader who
+    // pressed the dim background and swept onto the panel.
+    const onClose = vi.fn()
+    const host = mount(
+      <Settings
+        visible
+        modules={modules}
+        prefs={{}}
+        onChange={vi.fn()}
+        onReset={vi.fn()}
+        onClose={onClose}
+      />,
+    )
+    const scrim = host.querySelector('.reader-dialog') as HTMLElement
+    const panel = host.querySelector('.reader-dialog-panel') as HTMLElement
+    // Released over the panel: a real hit test at release would answer the
+    // panel here too, the same as `pointerup`'s own `target` — a mouse does
+    // not retarget the way the touch case below does.
+    const restore = stubHitTest(() => panel)
+    try {
+      act(() => {
+        scrim.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))
+        panel.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }))
+        scrim.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      })
+      expect(onClose).not.toHaveBeenCalled()
+    } finally {
+      restore()
+    }
+  })
+
+  it('does not close when a touch release retargets to the scrim over the panel', () => {
+    // I1 of the second whole-branch review. This is not the mixed-direction
+    // case above — that one is a mouse's stream, where a drag that starts on
+    // a control really does release with `pointerup`'s own `target` on the
+    // scrim. A *touch* pointer never produces that stream at all: it gets
+    // implicit pointer capture on `pointerdown`, so the browser dispatches
+    // every later event for that pointer — `pointerup` and `click` alike —
+    // at the capture element regardless of where the finger actually lifts.
+    // For a press down on the scrim and up over the panel, `pointerup`'s
+    // *target* is still the scrim; only its `clientX`/`clientY` say the
+    // finger moved. Measured in Chromium at 390×844 with `hasTouch: true,
+    // isMobile: true`: an 8 px sweep, x=16 to x=24 — less than half the
+    // scrim's own ~20px margin at that size (`docs/notes.md`, "Style pass
+    // ④"), so a realistic slip, which crossed onto the panel — delivered
+    // `pointerdown`, `pointerup` and `click` all targeted at the scrim,
+    // with the release's client coordinates over the panel.
+    const onClose = vi.fn()
+    const host = mount(
+      <Settings
+        visible
+        modules={modules}
+        prefs={{}}
+        onChange={vi.fn()}
+        onReset={vi.fn()}
+        onClose={onClose}
+      />,
+    )
+    const scrim = host.querySelector('.reader-dialog') as HTMLElement
+    const panel = host.querySelector('.reader-dialog-panel') as HTMLElement
+    // A real hit test, at the coordinates Chromium's own run answered in the
+    // reviewer's measurement: short of the scrim's ~20px margin is the
+    // scrim, at or past it is the panel.
+    const restore = stubHitTest((x) => (x < 20 ? scrim : panel))
+    try {
+      act(() => {
+        scrim.dispatchEvent(
+          new PointerEvent('pointerdown', { bubbles: true, clientX: 16 }),
+        )
+        // Capture retargets this to the scrim even though the finger is now
+        // over the panel — the stream a touch browser actually produces, not
+        // a mouse's.
+        scrim.dispatchEvent(
+          new PointerEvent('pointerup', { bubbles: true, clientX: 24 }),
+        )
+        scrim.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      })
+      expect(onClose).not.toHaveBeenCalled()
+    } finally {
+      restore()
+    }
   })
 
   it('renders no note for a module notes has no entry for — unchanged from before notes existed', () => {

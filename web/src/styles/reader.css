@@ -22,6 +22,20 @@
 :root:has(.reader-route, .reader),
 :root:has(.reader-route, .reader) body {
   background: var(--reader-ground);
+  /* No rubber band, and no pull-to-refresh, while a page is being read.
+   * Reported by the user on their iPhone during style pass ④'s device pass:
+   * a horizontal swipe that drifts vertically drags the whole document up
+   * and down, which reads as the reader coming loose. Measured in Chromium
+   * at 390×844 first, to be sure there was nothing real to scroll: the
+   * document's scroll height equals its client height, the page area is
+   * `overflow: hidden`, and it carries `touch-action: manipulation` — so the
+   * only vertical movement left is the overscroll this turns off.
+   *
+   * Scoped to the reader's own root, so the library and the labeller keep
+   * the platform's scrolling, and it lapses the moment the reader unmounts.
+   * Scroll mode is unaffected: `none` stops the *chain* to the viewport, not
+   * the page area's own scrolling. */
+  overscroll-behavior: none;
 }
 
 .reader {

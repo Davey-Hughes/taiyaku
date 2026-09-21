@@ -1,4 +1,4 @@
-import type { CSSProperties } from 'react'
+import { useRef, type CSSProperties } from 'react'
 import type { ReaderModule } from './module'
 import { fieldsOf } from './settingsPanel'
 import { FieldControl } from './settingsFields'
@@ -81,9 +81,76 @@ export function Settings({
   onReset,
   onClose,
 }: SettingsProps) {
+  // Declared before the `if (!visible) return null` guard below — a hook
+  // after an early return does not run on every render.
+  const fromScrim = useRef(false)
+  const upOnScrim = useRef(false)
   if (!visible) return null
   return (
-    <div className="reader-dialog" role="dialog" aria-label="Settings">
+    // The scrim dismisses on a press that goes down *and* comes up on its
+    // own scrim (spec §9.2). Measured on 2026-09-20: this element's box is
+    // the whole viewport, so the tap ④ gives every other panel — a press on
+    // the page area, which `gestures.ts` answers with `close-panels` —
+    // cannot reach the page at all while this is open. Without this,
+    // Settings is the one panel that tap cannot reach. Its Close button below
+    // is already a pointer exit and has been since style pass ③; what it
+    // lacked was the tap-outside ④ gives every other panel, on the panel
+    // O135 records as closing on neither `Escape` nor `s` once ⚙ has
+    // opened it.
+    //
+    // **Both ends are recorded from `pointerdown`/`pointerup` rather than
+    // read off `click`.** *Fixed 2026-09-20, I4 of the whole-branch review.*
+    // A DOM `click` fires on the nearest common ancestor of the down and up
+    // targets, which for *either* mixed direction — down on a control and up
+    // on the scrim, or down on the scrim and up on a control — is this
+    // element either way, so `click`'s own target cannot tell the two
+    // apart. A press that begins on a control and releases on the scrim is
+    // correctly refused by `fromScrim` alone, but nothing was guarding the
+    // reverse: a press down on the scrim and up on a control closed the
+    // dialog and lost the panel under it. `fromScrim` and `upOnScrim` are
+    // each set from the real `pointerdown`/`pointerup` target — which does
+    // not go through `click`'s ancestor collapse — and `onClick` requires
+    // both before it dismisses.
+    //
+    // **`upOnScrim` cannot be read off `pointerup`'s target, and the obvious
+    // form above — `event.target === event.currentTarget`, exactly like
+    // `fromScrim` — is wrong on a touch screen.** *Fixed 2026-09-20, I1 of
+    // the second whole-branch review.* A touch pointer gets implicit pointer
+    // capture on `pointerdown`, so the browser dispatches every later event
+    // for that pointer — `pointerup` included — at the *capture* element
+    // rather than at whatever is really under the finger. For a press down
+    // on the scrim and up over the panel, `pointerup`'s target is still the
+    // scrim on a touch screen, so the obvious form reads `upOnScrim` as true
+    // and I4's press — down on the dim background, sweep onto the panel,
+    // lift — still closes the dialog and loses the panel under it. A mouse
+    // does not retarget, which is why a mouse-shaped test for this passed and
+    // could not see it. `upOnScrim` is instead read by a hit test against
+    // where the pointer actually is on release, which capture does not
+    // move — measured in Chromium with touch emulation to return the panel
+    // even while `pointerup`'s own `target` is the scrim.
+    //
+    // biome-ignore lint/a11y/useKeyWithClickEvents: the keyboard equivalent is the panel's own Close button, a few lines down — Escape and s dismissing it too is O135's, the accessibility pass's, not this task's.
+    <div
+      className="reader-dialog"
+      role="dialog"
+      aria-label="Settings"
+      onPointerDown={(event) => {
+        fromScrim.current = event.target === event.currentTarget
+      }}
+      onPointerUp={(event) => {
+        upOnScrim.current =
+          document.elementFromPoint(event.clientX, event.clientY) ===
+          event.currentTarget
+      }}
+      onClick={(event) => {
+        if (
+          fromScrim.current &&
+          upOnScrim.current &&
+          event.target === event.currentTarget
+        )
+          onClose()
+      }}
+    >
       <div className="reader-dialog-panel">
         <div className="reader-panel-head">
           <h2 className="reader-panel-title">Settings</h2>

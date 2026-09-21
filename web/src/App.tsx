@@ -43,6 +43,7 @@ import {
   type History,
 } from './history'
 import { Gap } from './Gap'
+import { gestureOfPress, type Press } from './gestures'
 import { GroupView } from './GroupView'
 import {
   useConstant,
@@ -190,7 +191,7 @@ import {
 } from './session'
 import { cryptoRandom, ulid } from './ulid'
 import { Viewport } from './Viewport'
-import { WHOLE, clampRect, mapView, type Rect } from './viewport'
+import { WHOLE, clampRect, isWhole, mapView, type Rect } from './viewport'
 
 /**
  * How long a burst of `navigate` calls (arrow-stepping, a filmstrip click, a
@@ -661,12 +662,31 @@ function App({ work, onLeave }: AppProps) {
   const stepBackRef = useRef<() => void>(() => undefined)
   const stepForwardRef = useRef<() => void>(() => undefined)
   const closeEditorRef = useRef<() => void>(() => undefined)
+  /**
+   * The reader's own intents — a turn, a swap — reachable from a pointer
+   * handler. `readerIntent` is declared inside the keydown effect, where its
+   * closure over `resolver` and the grouped slots is built; the same problem
+   * `closeEditorRef` above solves, solved the same way rather than by lifting
+   * the function out of the effect and giving it a dependency list of its own.
+   */
+  const readerIntentRef = useRef<(intent: ReadingIntent) => void>(
+    () => undefined,
+  )
   // The notes writer, reachable from `closeEditor` above the point it is built:
   // the debounce is built four hundred lines below, so naming it directly there
   // would be a use before its declaration.
   const saveNotesRef = useRef<Debounced<[Note[]]> | null>(null)
 
   const dragRef = useRef<DragStart | null>(null)
+  /**
+   * The press in progress, as `gestures.ts` reads it on release. Beside
+   * `dragRef` and `panRef` because it is the third thing one press can be
+   * carrying, and above `if (!session) return null` because it is a hook.
+   */
+  const pressRef = useRef<
+    | (Press & { onControl: boolean; consumed: boolean; pointerId: number })
+    | null
+  >(null)
   // Where the pointer was on the previous pan frame, in client pixels. A ref
   // rather than state and a *previous* position rather than the drag's origin:
   // `panBy` takes a delta and clamps, so each frame only needs the step since
@@ -1018,6 +1038,7 @@ function App({ work, onLeave }: AppProps) {
         return { ...prev, state, previous }
       })
     }
+    readerIntentRef.current = readerIntent
     /**
      * Measure the outgoing page and leave the rest of the swap to the effect
      * below, which runs once the incoming one has decoded.
@@ -2087,6 +2108,10 @@ function App({ work, onLeave }: AppProps) {
     )
   }
 
+  /** Whether a point in page fractions is on the painted page at all. */
+  const inside = (at: { x: number; y: number }) =>
+    at.x >= 0 && at.x <= 1 && at.y >= 0 && at.y <= 1
+
   /**
    * The two pixel points a drag is made of, in page fractions.
    *
@@ -2111,6 +2136,27 @@ function App({ work, onLeave }: AppProps) {
    * whichever answer comes back.
    */
   function beginRegion(event: React.PointerEvent) {
+    // The press, for `gestures.ts` to read when it comes up. Recorded here
+    // rather than measured again on release: where a press went *down* is
+    // what a reader aimed, and the page area's box can change under a
+    // gesture (the chrome does not resize it, but an orientation change
+    // does).
+    const box = event.currentTarget.getBoundingClientRect()
+    pressRef.current = {
+      x: event.clientX - box.left,
+      y: event.clientY - box.top,
+      t: event.timeStamp,
+      // Read from the *down* target: a press that began on a control was
+      // never a page gesture, whatever it is over when it ends.
+      onControl: isInteractivePress(event.target),
+      consumed: false,
+      // Which pointer this is, so `endPress` can refuse a release that
+      // belongs to a different one — a second finger's in a multi-touch
+      // press, or an unrelated `pointerup` that reaches the page area after
+      // this one's own release already went missing (`onPointerLeave`'s
+      // doc, below).
+      pointerId: event.pointerId,
+    }
     // Whether this press pans is `notes.ts`'s `pressTakesPan`, whose doc
     // carries the whole argument — why `zoomable` is one flag and not two, why
     // a control is excluded rather than the page required, and what the
@@ -2135,9 +2181,44 @@ function App({ work, onLeave }: AppProps) {
       return
     }
     const el = draftImage(event.target)
+    // On an image, and on the *painted* page rather than in the letterbox
+    // `object-fit: contain` leaves inside the same element. Measured on
+    // 2026-09-20: the `<img>` fills the page area at every size tested, so
+    // "on an image" alone is true of every press in the reader and
+    // `gestureFor`'s rule 1 — looking away finishes the note — could never
+    // fire. `pointInSlot` is unclamped for exactly this reason.
+    //
+    // `pointOn` only makes sense against the image it was given: `el`'s own
+    // hug (`hugFor(current, draft.slot)`), painted inside `el`'s own rect. In
+    // `two` mode `event.target` is often the *facing* cell — a sibling image
+    // with the opposite hug and, in general, a different rect — so judging
+    // it against the draft's painted box is a wrong frame of reference, not
+    // an approximation: it can place genuine artwork outside `0..1` and
+    // genuine letterbox inside it. A press on any image that is not the
+    // draft's own is on the page regardless of where it falls, because rule
+    // 2 (`onTheDraftsPage: false`) answers `ignore` for the whole of it —
+    // `onAnImage` only has to be right about images `pointOn` was not given.
+    // *Fixed 2026-09-20, C1 of the whole-branch review*: this used to read
+    // `event.target` here, which is exactly the wrong-frame-of-reference call
+    // this paragraph now warns against — an artwork press on the facing cell
+    // computed as outside `0..1` and closed the note, the failure
+    // `gestureFor`'s own doc exists to prevent.
+    //
+    // Before the image has decoded, `naturalWidth` is 0 and `paintedBox`
+    // hands back the whole element box, so the fraction `pointInSlot`
+    // computes lands in `0..1` for any press the element could have received
+    // — `inside` reads it as on the page. That is the behaviour that exists
+    // today and is left unchanged: there is no letterbox to be in yet. (In
+    // jsdom, where an unmeasured element's box is zero-area as well, the
+    // fraction is `{x: 0, y: 0}` by `pointInSlot`'s own zero-box arm; the
+    // answer is the same by a different route, which is why no test can tell
+    // the two apart.)
+    const onPage =
+      event.target instanceof HTMLImageElement &&
+      (el === undefined || inside(pointOn(el, event.clientX, event.clientY)))
     const gesture = gestureFor({
       editing: panelMode === 'edit',
-      onAnImage: event.target instanceof HTMLImageElement,
+      onAnImage: onPage,
       onTheDraftsPage: el !== undefined,
       at: el ? pointOn(el, event.clientX, event.clientY) : { x: -1, y: -1 },
       here,
@@ -2146,6 +2227,9 @@ function App({ work, onLeave }: AppProps) {
 
     if (gesture.kind === 'close') {
       closeEditor()
+      // Spent: this press has done its work, and its release must not also
+      // turn a page (`gestures.ts`'s `consumed`).
+      if (pressRef.current) pressRef.current.consumed = true
       return
     }
     if (gesture.kind === 'ignore' || !el) return
@@ -2225,6 +2309,155 @@ function App({ work, onLeave }: AppProps) {
       scheduleSave(next.edits)
       return next
     })
+  }
+
+  /**
+   * A pointer that left the page area: finish whatever it was doing, the
+   * same as `endRegion` alone always has, and — unlike before I2's fix —
+   * drop the press record with it, when it is this pointer's own record to
+   * drop.
+   *
+   * A pointer that left the area finished no *gesture*, which is why this
+   * stays off `gestureOfPress` and `endPress`'s classification entirely. But
+   * leaving `pressRef.current` set behind it left a stale record for a later
+   * `pointerup` to be paired with — see `endPress`'s own doc for what that
+   * caused. **Gated on `pointerId`, the same as `endPress` and
+   * `onPointerCancel`.** *Fixed 2026-09-20, the second whole-branch review*:
+   * this used to clear `pressRef.current` unconditionally, which could drop
+   * a record that was not this pointer's own to drop.
+   *
+   * **Corrected here, fix round 3, 2026-09-20: the paragraph above had the
+   * direction backwards.** It is not reachable for a *second* finger's leave
+   * to drop a *first* finger's record — `beginRegion` assigns
+   * `pressRef.current` unconditionally on every `pointerdown`, so a second
+   * finger's own press has already overwritten the first finger's record
+   * before either one's leave or cancel can run; there is no earlier record
+   * left by then for a later leave to drop. What *is* reachable, and what
+   * this guard actually repairs, in a multi-touch press: finger A down
+   * (record = A); finger B down (record = B, overwriting A); A lifts —
+   * `endPress` refuses it, the ids do not match, B's record is left alone;
+   * **A's own `pointerout`/`pointerleave`, arriving right after A's own
+   * release, is what used to wipe the slot unconditionally** — dropping B's
+   * still-open record, though it was never A's own to drop — so B's later
+   * release found nothing to pair itself with. The guard below stops
+   * exactly that: A's leave carries A's `pointerId`, which by then no
+   * longer matches the record it would be clearing.
+   */
+  function leaveRegion(event: React.PointerEvent) {
+    endRegion(event)
+    if (pressRef.current?.pointerId === event.pointerId) {
+      pressRef.current = null
+    }
+  }
+
+  /**
+   * A press released on the page area: finish whatever it was doing, then ask
+   * `gestures.ts` what it meant.
+   *
+   * Bound to `onPointerUp` only, and only for the pointer that began the
+   * press it is about to classify. **The bars are siblings of the page
+   * area, drawn over it, not children of it** — so a press that goes down on
+   * the page and is released over a bar reaches no `onPointerUp` here at all
+   * *with a mouse*, where the release lands wherever the pointer really is;
+   * `onPointerLeave` sees it instead. **A touch pointer does not take that
+   * path.** Implicit pointer capture — the same mechanism `Settings.tsx`'s
+   * own scrim guard has to work around, fix round 2's I1 — delivers
+   * `pointerup` to the page area regardless of where the finger actually
+   * lifts, bar or no bar, so this function does run for that release on a
+   * touch screen. **Corrected here, fix round 3, 2026-09-20: the comment
+   * this replaced called that "benign", which is false.** A release this
+   * close to its own down is not travel for `swipe` to judge at all — it is
+   * a *tap* (rule 3 of spec §9.2, `Math.abs(dx) <= TAP_SLOP &&
+   * Math.abs(dy) <= TAP_SLOP && …TAP_HOLD`), classified against where the
+   * press went *down*, not where it came up. A finger that lands on the
+   * page a few pixels above the bar and lifts onto it is exactly such a
+   * tap, so it **turns or toggles**, the same as if it had lifted where it
+   * landed. Only a longer travel reaches `swipe` at all, and a slip onto a
+   * bar is refused there by `SWIPE_MIN`: it moves ~0 px *across* the page,
+   * so `swipe` returns `none` on `Math.abs(dx) < SWIPE_MIN` before the axis
+   * test is ever evaluated — that test only decides a drag already at least
+   * `SWIPE_MIN` across. Zoomed in it never reaches that line at all, because
+   * `!press.atWhole` refuses it on the guard above. Measured in Chromium at
+   * 390×844 with `hasTouch`: a 6, 8 and 10 px vertical slip from the page
+   * onto the bar all still classify against the down position and turn or
+   * toggle. The browser's own touch-scroll slop is what ends the window, and
+   * `TAP_SLOP` is 10, so every slip this rule calls a tap is well short of
+   * it and is never cancelled first. **The figure, its emulation and how an
+   * earlier wrong one arose are in O142** (`docs/status.md`), dated, rather
+   * than here: it is a browser constant under a browser version nobody pins,
+   * and a source comment is not where anyone would re-measure it.
+   * **The mouse does not share this**: its
+   * `pointerup` lands wherever the cursor really is — over the bar — so
+   * `onPointerLeave` sees it instead of this function, and the same slip
+   * does nothing. This follows from "where the press went down decides",
+   * §9.2's own rule, rather than being a bug in it — filed as O142
+   * (`docs/status.md`) rather than changed, since a reader who aimed at the
+   * outer third and slipped onto the bar asked for a turn and gets one.
+   *
+   * `leaveRegion` (above) is what a release over a bar means for the record
+   * on a mouse, where that path is actually taken: it clears
+   * `pressRef.current`, so a *later*, unrelated `pointerup` on the page area
+   * — one with no `pointerdown` of its own — finds nothing to pair itself
+   * with rather than being classified against wherever the abandoned press
+   * began. Verified with a control: without that clear, injecting exactly
+   * such an unpaired `pointerup` after a `pointerleave` turned a page.
+   * `onPointerCancel` clears it too, for the same reason, when the browser
+   * takes the pointer away instead of a release ever arriving.
+   *
+   * **All three — this function, `leaveRegion` and `onPointerCancel` — gate
+   * that clear on `event.pointerId`.** Two presses can be live at once (a
+   * second finger, mid-drag, in a multi-touch press), and only one
+   * `pressRef` slot exists to hold either. A release, a leave or a cancel
+   * that is not the one this record belongs to must leave the record alone
+   * — it may yet be finished by its own pointer's `pointerup` — rather than
+   * being spent on an id it was never a press of.
+   */
+  function endPress(event: React.PointerEvent) {
+    endRegion(event)
+    const started = pressRef.current
+    if (!started || started.pointerId !== event.pointerId) return
+    pressRef.current = null
+    const box = event.currentTarget.getBoundingClientRect()
+    const gesture = gestureOfPress({
+      down: started,
+      up: {
+        x: event.clientX - box.left,
+        y: event.clientY - box.top,
+        t: event.timeStamp,
+      },
+      width: box.width,
+      onControl: started.onControl,
+      consumed: started.consumed,
+      editing: panelMode === 'edit',
+      panelOpen:
+        helpVisible ||
+        settingsVisible ||
+        creditsVisible ||
+        panelMode === 'review',
+      scrolling: mode === 'scroll',
+      // By value: `clampRect` allocates on every turn, so identity with
+      // `WHOLE` would be lost after the first one (`viewport.ts`'s `isWhole`).
+      atWhole: isWhole(view),
+    })
+    switch (gesture.kind) {
+      case 'none':
+        return
+      case 'toggle-chrome':
+        return setChromeVisible((visible) => !visible)
+      case 'close-panels':
+        // Every one that is open, so no precedence between them has to be
+        // invented. `toggleReview` only has a `'review'` arm to close here,
+        // because `'edit'` was answered by `gestures.ts` before this.
+        setHelpVisible(false)
+        setSettingsVisible(false)
+        setCreditsVisible(false)
+        if (panelMode === 'review') setEditing(toggleReview)
+        return
+      case 'turn':
+        // Physical, as the keys are. `readerIntent` is the one caller that
+        // puts a step through `stepFor`, so the mirroring is inherited.
+        return readerIntentRef.current({ kind: 'step', by: gesture.by })
+    }
   }
 
   /**
@@ -2401,6 +2634,12 @@ function App({ work, onLeave }: AppProps) {
           flex: '1 1 auto',
           minHeight: 0,
           overflow: mode === 'scroll' ? 'auto' : 'hidden',
+          // The browser's double-tap zoom, and nothing else. Without this a
+          // double tap on a phone turns two pages *and* zooms the document;
+          // with it, two taps turn two pages, which is what they say. Pinch
+          // and scrolling are untouched — `touch-action: none` would take
+          // both, and §9.2 keeps the pinch the browser's.
+          touchAction: 'manipulation',
           // What `Annotations`' `inset: 0` is measured against — the page
           // area, not the whole reader. The two share a top edge now that the
           // layout row is gone; they differ at the bottom, where the root
@@ -2435,14 +2674,28 @@ function App({ work, onLeave }: AppProps) {
         ref={pageAreaRef}
         onPointerDown={beginRegion}
         onPointerMove={trackRegion}
-        onPointerUp={endRegion}
-        // A pointer released outside the page area (or taken away by the
-        // browser) must not leave a rectangle stranded on screen with no drag
-        // behind it.
-        onPointerLeave={endRegion}
-        onPointerCancel={() => {
+        onPointerUp={endPress}
+        // A pointer released outside the page area must not leave a
+        // rectangle stranded on screen with no drag behind it, or a press
+        // record behind it for a later, unrelated release to be paired with
+        // — `leaveRegion`'s own doc has the second half.
+        onPointerLeave={leaveRegion}
+        onPointerCancel={(event) => {
           panRef.current = null
           dragRef.current = null
+          // Gated on `pointerId`, the same as `leaveRegion` and `endPress`
+          // — see `leaveRegion`'s own doc for the reachable multi-touch
+          // sequence this guards. Not a second finger's cancel dropping a
+          // first finger's record: `beginRegion` overwrites the one shared
+          // slot unconditionally on every `pointerdown`, so an earlier
+          // finger's record is already gone before a later finger could
+          // cancel anything. What is reachable is the mirror of
+          // `leaveRegion`'s case — a finger whose own record has since been
+          // superseded by another's press clearing, on its own cancel, the
+          // record that by then belongs to that other, still-open press.
+          if (pressRef.current?.pointerId === event.pointerId) {
+            pressRef.current = null
+          }
           setDragging(undefined)
         }}
       >

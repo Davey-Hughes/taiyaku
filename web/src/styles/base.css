@@ -68,6 +68,21 @@ body {
   color: inherit;
 }
 
+/* iOS Safari zooms the whole document when a text field smaller than 16px
+   takes focus, and the zoom stays after the field is gone. Measured on the
+   user's iPhone on 2026-09-20 during style pass ④'s device pass: signing in
+   left the library and the reader zoomed, and a pinch was the only way back.
+   The fields inherit `--text-ui` (0.875rem, 14px) from their label through
+   the `font: inherit` above, which is two pixels under the threshold.
+
+   A floor, not a size: only fields that would compute below 16px change, and
+   only where a finger is the pointer, so the desk's typography is untouched. */
+@media (pointer: coarse) {
+  :where(.library, .login) :where(input, select, textarea) {
+    font-size: max(16px, var(--text-ui));
+  }
+}
+
 :where(.library, .login)
   :where(
     button,

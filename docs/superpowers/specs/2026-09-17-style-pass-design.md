@@ -877,3 +877,301 @@ On top of §5's list for every PR:
   on `main` too; **O137**, the note editor having no exit a finger can
   reach, which ④'s touch design owns; and **O138**, the rail's scrollbar
   spending 15 px of every tile.
+
+## 9. PR ④ in detail
+
+Settled with the user on 2026-09-20, before planning. What §5 ④ already says
+is not repeated here.
+
+**What exists**, read from `main` at `333b3ab` for this section:
+
+- **The chrome has exactly two ways to appear**, and `setChromeVisible` has
+  exactly two call sites: `keyPlan`'s `Tab`, which `App.tsx` answers with
+  `toggle-chrome`, and the correction path, which shows it because the
+  filmstrip is where a counterpart is picked. A finger can reach neither.
+  That is why ③'s device pass saw the reader's ground and nothing the reader
+  draws on it.
+- **Every press on the page area already means something.** `beginRegion`
+  asks `notes.ts`'s `pressTakesPan` first — true when `zoomable` (the module
+  is on, which `zoom.ts` defaults to, *and* something is drawn), the press is
+  not on a control, and either the editor is closed or Shift is held — and
+  pans. What is left goes to `gestureFor`, which answers `ignore` for every
+  press made with the editor closed. So today a press with the editor closed
+  pans, and a tap is a pan that went nowhere: `panStep` hands the *same* rect
+  back at fit-whole, where `panBy`'s own doc calls a drag "a no-op instead of
+  a jitter".
+- **`Chrome` is a sibling of the page area, not a child.** A press on either
+  bar never reaches `beginRegion`, so nothing below has to exclude the bars.
+- **The wheel is subscribed by hand**, `{ passive: false }`, on the page area,
+  and serves the trackpad pinch too because a pinch arrives as a `wheel` with
+  `ctrlKey` set. This PR does not touch it.
+- **`index.html`'s viewport meta** is `width=device-width, initial-scale=1.0,
+  viewport-fit=cover`. Nothing sets `user-scalable=no` and nothing sets
+  `touch-action`, so on a phone the browser's own pinch zoom and its
+  double-tap zoom are live over the whole document.
+- **`stepFor`** (`modules/direction.ts`) is the one place that maps a physical
+  arrow to a slot step, with three consumers: `App.tsx`'s `step` intent,
+  `Filmstrip`'s rail, and `modules/help.ts`.
+- **`NotePanel`'s own doc offers two exits** — `Escape`, or a click on the
+  background around the page — and `gestureFor`'s rule 1 is what carries the
+  second.
+
+**What this does not reopen.** `2026-07-30-reader-design.md` settled on
+2026-08-01 that the reader is desktop-first, and that a sheet, a picker and
+touch ergonomics belong to a native iOS reader "instead of being retrofitted
+onto a keyboard-first layout". ④ is three gestures on that layout and one
+button on a panel. It adds no sheet, no picker, and no way to reach anything
+that a key could not already reach.
+
+### 9.1 Decisions
+
+| Question | Chosen | Beat, and why |
+| --- | --- | --- |
+| Which pointers answer the gestures? | **Every pointer, a mouse included** | *Touch and pen only*, gated on `pointerType`: nothing on a desk would change, and the browser project would need touch emulation to see any of it — but it costs one-handed reading at a desk, and makes one rule behave two ways on the two devices one reader uses. *Touch and pen, plus a mouse below 900 px* loses for making the same click mean two things on one machine depending on window width |
+| With a panel open, what does a tap do? | **Closes the panel, and turns nothing** | *Turns as usual, the panel stays*: keeps panel state out of the gesture rule, but leaves every docked panel with no pointer exit on a phone, and turns a page the reader cannot see. *Closes it and turns*: nothing is spent, but one tap doing two things is the rule nobody can predict — a mis-tap while reading the credits would dismiss them and lose the place |
+| Zoomed in, what does a horizontal drag do? | **Pans. The swipe lives only at fit-whole** | *A swipe always turns and a pan starts at the edge* (the photo-album rule): familiar, but it makes the first frames of every pan ambiguous and needs the drag to accumulate before committing to either. *A swipe always turns and a pan takes two fingers*: unambiguous per finger, but two fingers are the browser's pinch, it would need `touch-action: none` over the page, and it leaves a mouse — now in scope — with no pan at all |
+| In scroll mode, what does a tap do? | **Toggles the chrome, anywhere on the page** | *The thirds turn here too*: one map for both modes, but it lands straight on O136, where a position move does not move the view — and fixing that is a behaviour change §6 puts outside this pass. *Nothing at all*: the smallest change, and it leaves a phone in scroll mode with no way to the chrome, which is the hole ④ exists to close |
+| O137: the note editor's exit for a finger | **Both**: a Close button on the editor, and the letterbox tap kept and measured | *The button alone*: certain, but leaves the exit a reader finds by accident unreliable and unmeasured. *The letterbox alone*: no new control, but where a page fills the width there is nothing left to aim at |
+
+The first answer is what makes the rest testable without touch emulation: a
+mouse click is a press with the same shape, so the browser project can drive
+the thirds, the panel dismissal and the swipe in Chromium, and only what is
+touch-only — the double tap, the pinch, a thumb's idea of 10 px — waits for
+the device pass. It also puts a new way to turn a page under every desk
+reader's mouse, which is the cost: a click on the page that used to do
+nothing now turns. The fourth answer means the same tap means different
+things in the two modes, accepted because scrolling is already the turn in
+scroll mode.
+
+### 9.2 The rule
+
+**`web/src/gestures.ts`**, a pure module with a test beside it, in the shape
+`gestureFor` established: the rule lives where it can be tested, and
+`App.tsx` reads the DOM for it and carries out the answer. Named for
+gestures rather than for touch, because a mouse is in scope.
+
+A press on the page area is classified **on `pointerup`**, against where and
+when it went down:
+
+1. **It began on a control** — `isInteractivePress`, ancestor-aware, the
+   same predicate `pressTakesPan` uses. Not a gesture. Unchanged.
+2. **It moved more than `TAP_SLOP` or lasted longer than `TAP_HOLD`.** Not a
+   tap: it was a pan, a draw, a move or a swipe, and each of those is decided
+   exactly as it is today.
+3. **Otherwise it is a tap**, resolved in this order:
+   - a. **The editor is open** (`panelMode === 'edit'`): region drawing keeps
+     the press, and no tap gesture fires. §5 ④ forbids taking a gesture from
+     region drawing, and this is where that is honoured.
+   - b. **A panel is open** — Help, Settings, credits, or the note review
+     panel: close **every** one that is open, and consume the tap. Nothing
+     turns, nothing toggles. One tap returns to the page whatever is over it,
+     so no order of precedence between panels has to be invented.
+
+     **Settings needs a second route, and ④'s browser pass is what found
+     it.** The three `docked-panel` panels sit in a corner, so a tap beside
+     one reaches the page area and this rule answers it — measured at both
+     sizes. Settings is a `reader-dialog`, whose scrim is the **whole
+     viewport**: `[0, 0, 1440, 900]` and `[0, 0, 390, 844]`, so every press
+     lands inside the dialog and the page area never hears it. Settings
+     therefore dismisses on a press that goes down *and* comes up on its own
+     scrim — the conventional modal behaviour, in `Settings.tsx` where a
+     reader looks for it, spending the press on dismissal exactly as this
+     rule does. A press that begins on a control inside the panel and
+     releases over the scrim is not a dismissal.
+   - c. **Scroll mode**: toggle the chrome, wherever the tap landed.
+   - d. **Paged mode**: the page area's width in thirds. The left third
+     turns `by: -1` and the right third `by: 1` — physical, before
+     `stepFor` — and the middle third toggles the chrome.
+
+**The swipe.** At fit-whole (`isWhole(view)`), in paged mode, with no editor
+and no panel open: a drag whose horizontal travel is at least `SWIPE_MIN` and
+at least twice its vertical travel turns one page. A drag that fails either
+test is what it is today — a pan, which at fit-whole moves nothing.
+
+**The constants**, all four in `gestures.ts` so they change in one place:
+`TAP_SLOP` 10 CSS px, `TAP_HOLD` 500 ms, `SWIPE_MIN` 40 px, and the axis
+ratio 2. **These are chosen, not measured.** The device pass is where a thumb
+says whether 10 px is too tight to hold still for and whether 40 px is far
+enough to be deliberate; the figures it lands on are written back here.
+
+**Mirroring is not new code, and it gains no new consumer.** A tap on the
+right third and a leftward swipe are the same physical intent as pressing `→`
+— `by: 1` — and `gestures.ts` answers in exactly those physical terms. The
+turn is then handed to `App.tsx`'s `readerIntent`, which already puts every
+`step` through `stepFor` before applying it. So `stepFor` keeps its three
+consumers, the tap inherits the mapping rather than repeating it, and a
+right-to-left work needs nothing written twice.
+
+**The chrome does not hide itself.** A turn made with the bars up leaves
+them up, as a keyed turn does; only a tap on the middle third, or `Tab`,
+takes them down. Nothing in ④ is on a timer.
+
+**The thirds are of the page area, not of a cell.** In two-page mode the
+middle third spans the seam, so a tap at the seam toggles the chrome rather
+than turning either half — one geometry, whatever is drawn under it.
+
+**The thirds do not require a drawn page**, unlike the pan. On a gap or a
+borrowed page nothing is drawn and `zoomable` is false, and a reader who
+wants away from one still taps the outer third to leave. `Gap`'s own buttons
+are excluded by rule 1, like any other control.
+
+**While correcting, the page area's tap is unchanged.** The correction is
+picked in the chrome — the banner in the top bar's place, the candidates in
+the strip — so a tap on the page below it turns or toggles as it otherwise
+would, and `Gap`'s and `Borrowed`'s own buttons stay excluded by rule 1.
+
+**A press that already did something is consumed.** `gestureFor`'s `close`
+fires on `pointerdown`, so without this the `pointerup` of the tap that shut
+the note editor would fall through to 3c or 3d and turn a page as well —
+exactly the one-tap-two-things the panel answer rules out. `beginRegion`
+marks the press; the `pointerup` classification skips a marked one.
+
+**What ④ does not take**, each for its own reason:
+
+- **Pinch** stays the browser's. No `touch-action: none` anywhere.
+- **The wheel**, including the trackpad pinch it carries, is untouched.
+- **A vertical drag in scroll mode** is the browser's scrolling: `swipe`
+  refuses it on its first guard, before any arithmetic — scroll mode has no
+  swipe at all — and rule 2 keeps it from being a tap. (The axis test is not
+  what refuses it; that test only decides a drag already `SWIPE_MIN` or more
+  across the page.)
+- **Panning** keeps every press it has today. The swipe is carved out of a
+  press the pan already discards: at fit-whole it moves nothing, and above
+  fit-whole the swipe does not fire — every drag stays the pan's. **The tap
+  is not carved out of the pan at all**: it does not read `atWhole`, so a tap
+  still turns above fit-whole — settled with the user on 2026-09-20: "Zoomed
+  in, the thirds still turn on a tap, so no page is unreachable." *(An
+  earlier version of this said "above fit-whole neither of them fires",
+  which was wrong about the tap — I5 of ④'s whole-branch review, 2026-09-20.)*
+- **Region drawing, moving and finishing** keep theirs by rule 3a.
+- **A long press** is not a tap by rule 2, so the selection callout iOS puts
+  up over an image turns no page.
+
+The one thing added to the page area's styling is **`touch-action:
+manipulation`**, which removes the browser's double-tap zoom and nothing
+else. Without it a double tap on a phone would turn two pages *and* zoom the
+document; with it, two taps turn two pages, which is what they say.
+
+### 9.3 O137
+
+Both exits, because they cover different failures.
+
+- **A Close button on the editor**, at least 44 px, matching the Close ③ gave
+  the Settings dialog and the one the review panel has always had. This is
+  the exit that is always there, and the one a reader can see.
+
+  **It reverses a decision recorded in `NotePanel.tsx` itself**, which today
+  carries a comment arguing against exactly this button: "No Save, and no
+  Done either… `Escape`, or a click on the background around the page, is
+  what closes this. Buttons for both would be asking the reader to tell the
+  reader something it can see." That reasoning holds for a keyboard and a
+  mouse and fails on a phone, where both of the exits it names are missing —
+  which is O137. The comment is rewritten rather than left contradicting the
+  code, and the panel's status line, which reads `saved · esc or click away
+  when done`, stops naming two exits a finger does not have.
+- **The letterbox tap had to be built, not measured.** This section first
+  said it "stays `gestureFor`'s rule 1, unchanged in code", and put a
+  *computed* band of roughly 143 px against it. ④'s browser pass measured
+  instead, and found the exit had never existed: the page `<img>`'s box
+  **equals** the page area at every size tested, and `object-fit: contain`
+  letterboxes the picture *inside that element*. So a press in the margin is
+  still a press on an `HTMLImageElement`, `onAnImage` is true of every press
+  in the reader, and rule 1 — looking away finishes the note — could not
+  fire. `NotePanel`'s own doc had promised that exit since the editor
+  shipped.
+  **What ④ changes** is the predicate at the call site: a press is on the
+  page when it is on an image, and, *when that image is the draft's own*,
+  its point also lies inside the draft's painted box; an image that is not
+  the draft's own is left to rule 2, unaffected by where the press falls
+  within it. `pointInSlot` is already unclamped for exactly this — its doc
+  says "a point in the letterbox reads as outside `0..1`" — so the rule list
+  in `gestureFor` is untouched, and **the only press whose meaning changes is
+  one in the draft's own letterbox, which rule 1 now reaches**. **Measured**
+  in Chromium against a copy of the real library: at 1440×900 a 900×1350 page
+  paints at `[420, 0, 600, 900]`, leaving 420 px of margin either side; at
+  390×844 a 683×1024 page paints at `[0, 130, 390, 585]`, leaving 130 px
+  above and below. The Close button still covers the case where a fit leaves
+  no margin at all.
+
+  **In two-page mode this exit is one-sided.** `App.tsx`'s `beginRegion`
+  judges a press against the draft's own painted box only; a press in the
+  *facing* cell's letterbox is on an image that is not the draft's own, so
+  rule 2 answers `ignore` for the whole of it regardless of where it falls.
+  A press in the margin around the draft's own half of a spread finishes the
+  note; the same press in the margin around the facing half does not, though
+  the two margins look identical on screen. Deliberate, and matches `main`
+  — judging a facing-cell press against the draft's own painted box would be
+  the wrong frame of reference, not a finer-grained answer (C1 of the whole-
+  branch review) — and `App.tsx`'s own comment on `beginRegion` records the
+  reasoning where the code reads it.
+
+`Escape` and the keyboard route are untouched. The note *list* is not a panel
+for rule 3b's purposes — it is placed with the page, and O112 already decided
+what happens to it when the chrome comes up.
+
+### 9.4 The device pass, and what only it can see
+
+The iPhone over the tailnet, with the user-agent read from the request log
+before any answer is believed, in both orientations, in Paper and in Ink:
+
+- **Every gesture above**, including one that must *not* happen: a pan that
+  ends where it started must not turn, and a swipe must not fire while the
+  reader is zoomed in.
+- **Pinch still zooms the document**, and a double tap turns two pages
+  without zooming it.
+- **The bars, on a phone, with the chrome shown** — the first time either is
+  on a phone at all. Their 44 px targets under `(pointer: coarse)`, and their
+  safe areas against the notch and the home indicator.
+- **Safari's own resolution of the reader's `light-dark()` tokens** inside
+  `.reader`. ③ measured this in Chromium 151 and Firefox 153 only; WebKit is
+  not installed here.
+- **The note editor's two exits**, and the letterbox band's real size.
+
+**Correcting, a gap and a borrowed page on a screen.** ③ left these pinned in
+jsdom because the scratch library holds no multi-edition work and the screen
+that accepts a proposal is ⑤'s. ④ **hand-seeds a second edition into the
+scratch copy's database** rather than wait: it is our copy, and it is the
+only way these three are seen before ⑤. If the seed does not hold up, they
+pass to ⑤ and ④ files a row saying so.
+
+**Two rows go to the user rather than being decided here**, because both are
+questions about what a screen should look like and this is the PR that puts
+the strip in front of a thumb:
+
+- **O134** — the strip's tiles are the 160 px thumbnail, drawn 96 px tall
+  below 900 px, so they are stretched on a 3× screen. Does the softness
+  bother the user on the phone? A sharper tile is the server's to send, as
+  O133's was for covers.
+- **O138** — the rail's scrollbar takes 15 px off every tile where scrollbars
+  take space, which is not iOS. Hide it and lose the affordance, grow the
+  strip on every platform to pay for one, or leave the 1:1 claim wrong on a
+  desktop.
+
+**O135 stays the accessibility pass's**, narrowed rather than closed: rule 3b
+gives Settings the pointer exit it lacks, and the keyboard half of that row
+is untouched. **O136 stays open**, and is the reason scroll mode gets no
+turning tap.
+
+### 9.5 Tests and checks
+
+- **`gestures.test.ts`** over the pure rule: the slop and hold boundaries
+  either side, each of 3a–3d, both thirds and the middle, the swipe's
+  distance and axis tests, and the consumed press. Every mirrored case runs
+  **both** `ltr` and `rtl` — O65 was an `rtl` fixture passing a mutation that
+  `ltr` caught, and one direction is not a test of a mapping.
+- **jsdom component tests** drive `pointerdown`/`pointerup` on the page area
+  and assert the turn, the toggle and the dismissal. The thirds arithmetic
+  takes a box as an argument so jsdom can feed one directly; where a
+  component test needs the page area's own width it stubs
+  `getBoundingClientRect`, because jsdom lays nothing out.
+- **The browser project** drives real presses in Chromium — the thirds, the
+  panel dismissal, the swipe, and the pan that must not turn. It can do this
+  with a mouse because of §9.1's first answer. Whether it can also emulate
+  touch, through `browser.instances[].context`, is a **probe for the plan**,
+  not an assumption: if it can, the double tap goes here; if it cannot, the
+  double tap is the device pass's alone.
+- **Every new test is watched failing** with its defect put back by hand —
+  the mirrored ones with `stepFor` bypassed, the consumed press with the mark
+  removed, the slop with the comparison flipped. A test that passes against
+  its own defect is this repository's most-recorded failure.
+- The five checks §5 requires of every PR in this pass, in full.

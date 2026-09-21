@@ -211,21 +211,26 @@ export function NotePanel({
             })}
           </div>
           {notice && <p style={{ margin: 0 }}>{notice}</p>}
-          {/* Every exit disabled while the write is on the wire, the same rule
-              the correction banner follows: Delete especially, since it is the
-              control that most looks like it undoes the save it is racing. */}
           {/*
-            No Save, and no Done either. Changes reach the server on their own,
-            and being finished is not an act a reader performs — it is what
-            they have already done by looking somewhere else. `Escape`, or a
-            click on the background around the page, is what closes this.
-            Buttons for both would be asking the reader to tell the reader
-            something it can see.
+            No Save and no Done: changes reach the server on their own, and
+            being finished is not an act a reader performs.
 
-            What is left is the one act that is not "keep typing": throwing
-            this note away. It stays a button because it is destructive and
-            wants aiming at, and `busy` still disables it, since a delete
-            racing a write in flight is the one ordering that can lose a note.
+            **There is a Close, since O137.** This comment used to argue
+            against one — "`Escape`, or a click on the background around the
+            page, is what closes this. Buttons for both would be asking the
+            reader to tell the reader something it can see." That holds for a
+            keyboard and a mouse and fails on a phone, where both of the exits
+            it named are missing: a tap on the page while the editor is open
+            is region drawing's gesture, so the user's iPhone found Delete as
+            the only way out of a note (spec 2026-09-17 §9.3). The two old
+            exits still work and are unchanged; this is the third, and the
+            only one a finger can always reach.
+
+            Every exit is disabled while the write is on the wire, the same
+            rule the correction banner follows — Delete especially, since it
+            is the control that most looks like it undoes the save it is
+            racing, and now Close, since a close racing a write is the same
+            ordering.
           */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <button
@@ -237,8 +242,16 @@ export function NotePanel({
               Delete
             </button>
             <span className="reader-meta" style={{ marginLeft: 'auto' }}>
-              {busy ? 'saving…' : 'saved · esc or click away when done'}
+              {busy ? 'saving…' : 'saved'}
             </span>
+            <button
+              type="button"
+              className="reader-button"
+              disabled={busy}
+              onClick={onClose}
+            >
+              Close
+            </button>
           </div>
         </>
       )}

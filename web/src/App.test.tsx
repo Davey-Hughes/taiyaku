@@ -383,6 +383,30 @@ function click(el: Element) {
   })
 }
 
+/**
+ * One pointer event, at a client point. File-level rather than local to `the
+ * pointer on the page` — the gap section below reaches the page area with it
+ * too, and `swapOntoUnpaired` is the only route there.
+ */
+function pointer(
+  el: Element,
+  type: string,
+  at: { x: number; y: number },
+  shiftKey = false,
+) {
+  act(() => {
+    el.dispatchEvent(
+      new PointerEvent(type, {
+        bubbles: true,
+        cancelable: true,
+        clientX: at.x,
+        clientY: at.y,
+        shiftKey,
+      }),
+    )
+  })
+}
+
 /** React's change-tracking swallows a directly assigned `.value` — `Settings.test.tsx`'s note. */
 function type(el: HTMLTextAreaElement, value: string) {
   const setter = Object.getOwnPropertyDescriptor(
@@ -1052,6 +1076,15 @@ describe('the note editor', () => {
     expect(dialog(host, 'Note')).toBeNull()
   })
 
+  it('the editors Close button finishes the note, like Escape does', async () => {
+    const host = await open()
+    press('n')
+    expect(dialog(host, 'Note')).not.toBeNull()
+    const panel = dialog(host, 'Note') as HTMLElement
+    click(button(panel, 'Close'))
+    expect(dialog(host, 'Note')).toBeNull()
+  })
+
   it('a is inert while a note write is on the wire', async () => {
     let release: (value: { doc: NotesDoc; etag: string }) => void = () => {}
     ports.putNotes.mockImplementation(
@@ -1569,6 +1602,24 @@ describe('a swap onto a slot with no counterpart', () => {
     expect(dialog(host, 'All notes')).not.toBeNull()
   })
 
+  it('leaves a gap on a tap in the outer third', async () => {
+    const host = await swapOntoUnpaired()
+    expect(pages(host)).toEqual([])
+    const area = pageArea(host)
+    measure(area, { w: 900, h: 600 })
+    // Nothing is drawn over a gap and `zoomable` is false, so the pan is
+    // inert here — but a reader who wants away from one taps to leave, and
+    // the thirds do not ask whether anything is drawn. The right third: this
+    // gap is `corpus()`'s last slot, so only the offer *before* it exists —
+    // reached, under this `rtl` work, by the physical `by: 1` the right third
+    // reports (the same offer `'an arrow key takes the offered move too'`
+    // reaches with `ArrowRight`).
+    pointer(area, 'pointerdown', { x: 880, y: 300 })
+    pointer(area, 'pointerup', { x: 880, y: 300 })
+    expect(pages(host)).not.toEqual([])
+    await settle()
+  })
+
   /**
    * `docs/status.md`'s O40, and the reason it is here rather than only in
    * `nearest.test.ts` and `session.test.ts`: the defect was never in either
@@ -1983,25 +2034,6 @@ describe('correcting a pairing', () => {
 // ---- the pointer ------------------------------------------------------------
 
 describe('the pointer on the page', () => {
-  function pointer(
-    el: Element,
-    type: string,
-    at: { x: number; y: number },
-    shiftKey = false,
-  ) {
-    act(() => {
-      el.dispatchEvent(
-        new PointerEvent(type, {
-          bubbles: true,
-          cancelable: true,
-          clientX: at.x,
-          clientY: at.y,
-          shiftKey,
-        }),
-      )
-    })
-  }
-
   it('a click on the page closes the editor', async () => {
     const host = await open()
     press('n')
@@ -2067,6 +2099,76 @@ describe('the pointer on the page', () => {
     expect(dialog(host, 'Note')?.textContent).toContain('region')
   })
 
+  it('a press in the page margin finishes the note, and one on the page draws', async () => {
+    const host = await open()
+    press('n')
+    const img = host.querySelector('img') as HTMLImageElement
+    // A tall page in a wide box: `object-fit: contain` paints it in the
+    // middle and leaves a margin either side, inside the same element.
+    measure(img, { w: 1000, h: 500 })
+    decoded(img, { w: 500, h: 1000 })
+    // In the left margin — on the image element, off the painted page.
+    pointer(img, 'pointerdown', { x: 10, y: 250 })
+    expect(dialog(host, 'Note')).toBeNull()
+  })
+
+  it('a press at the centre of the same page still draws a region', async () => {
+    const host = await open()
+    press('n')
+    const img = host.querySelector('img') as HTMLImageElement
+    measure(img, { w: 1000, h: 500 })
+    decoded(img, { w: 500, h: 1000 })
+    // Dead centre of the painted page (x in [375, 625], y in [0, 500]).
+    pointer(img, 'pointerdown', { x: 500, y: 250 })
+    pointer(img, 'pointermove', { x: 550, y: 300 })
+    pointer(img, 'pointerup', { x: 550, y: 300 })
+    // The fix cannot be "close everywhere" — a press that lands on the
+    // painted page still draws a region, the same as before this task.
+    expect(dialog(host, 'Note')?.textContent).toContain('region')
+  })
+
+  it('C1: in two mode, a press on the facing page artwork leaves the editor open', async () => {
+    localStorage.setItem(
+      'taiyaku.prefs.layout',
+      JSON.stringify({ mode: 'two' }),
+    )
+    const host = await open()
+    // Opened at `raw` slot 2, the default — the pair on screen is slots 2
+    // and 3 ('b breaks the pairing' pins that grouping). `n` anchors the
+    // draft to the slot on screen, slot 2.
+    press('n')
+    expect(dialog(host, 'Note')).not.toBeNull()
+    const imgs = [...host.querySelectorAll('img')].filter(
+      (img) => !(img.getAttribute('src') ?? '').includes('/thumb'),
+    )
+    const draftImg = imgs.find((img) =>
+      (img.getAttribute('src') ?? '').includes('/raw/pages/2'),
+    ) as HTMLImageElement
+    const facingImg = imgs.find((img) =>
+      (img.getAttribute('src') ?? '').includes('/raw/pages/3'),
+    ) as HTMLImageElement
+    expect(draftImg).not.toBeUndefined()
+    expect(facingImg).not.toBeUndefined()
+    // Both cells the same box, both pages the same (portrait) decode — the
+    // fixture C1's finding measured against: a 700x1350 page in a 600x900
+    // cell paints 466.67px wide, hugged to one edge or the other, leaving a
+    // 133.33px letterbox on the seam side.
+    for (const img of [draftImg, facingImg]) {
+      measure(img, { w: 600, h: 900 })
+      decoded(img, { w: 700, h: 1350 })
+    }
+    // The draft's own hug pulls its painted page to one edge; the facing
+    // cell's real hug is the opposite one, so its real painted page spans
+    // local x from 133.33 to 600 — x: 560 is inside that, on real artwork.
+    // The regressed code judged this press against the *draft's* hug
+    // instead of the facing image's own, which puts the painted box at
+    // [0, 466.67] here — outside it, `onAnImage` false, `gestureFor` rule 1,
+    // `close`.
+    pointer(facingImg, 'pointerdown', { x: 560, y: 450 })
+    pointer(facingImg, 'pointerup', { x: 560, y: 450 })
+    expect(dialog(host, 'Note')).not.toBeNull()
+  })
+
   it('a shift-press pans, and a zero box moves nothing', async () => {
     const host = await open()
     const area = pageArea(host)
@@ -2090,6 +2192,623 @@ describe('the pointer on the page', () => {
     pointer(area, 'pointermove', { x: 200, y: 200 })
     expect(drawnRect(host)).toBe(panned)
     await settle()
+  })
+
+  /** The slot the progress line is reporting, as its percentage string. */
+  function progress(host: HTMLElement): string {
+    return (host.querySelector('.reader-progress-fill') as HTMLElement).style
+      .width
+  }
+
+  /** A press that goes down and comes up in the same place: a tap. */
+  function tap(el: Element, at: { x: number; y: number }) {
+    pointer(el, 'pointerdown', at)
+    pointer(el, 'pointerup', at)
+  }
+
+  it('a tap on the right third turns back and on the left third forward', async () => {
+    const host = await open()
+    const area = pageArea(host)
+    measure(area, { w: 900, h: 600 })
+    press('Tab')
+    // Stored progress is `raw` slot 2 of six: (2 + 1) / 6.
+    expect(progress(host)).toBe('50%')
+    // `WORK`'s sidecar reads `rtl` with no override, so the physical right
+    // third — `gestures.ts`'s `by: 1` — goes through `stepFor` the same way
+    // `ArrowRight` does (`'the reader keys'`'s own test): back to slot 1.
+    tap(area, { x: 880, y: 300 })
+    expect(progress(host)).toBe('33.33333333333333%')
+    // And the left third undoes it, forward to slot 2 again.
+    tap(area, { x: 20, y: 300 })
+    expect(progress(host)).toBe('50%')
+    await settle()
+  })
+
+  it('mirrors the thirds for a work flipped to left-to-right', async () => {
+    const host = await open()
+    const area = pageArea(host)
+    measure(area, { w: 900, h: 600 })
+    press('Tab')
+    expect(progress(host)).toBe('50%')
+    // `d` flips the viewed edition's direction — `WORK`'s own sidecar reads
+    // `rtl` with no override (the case above), so this exercises `ltr`. The
+    // tap is physical either way — `readerIntent` is what puts it through
+    // `stepFor`, so the same right third now goes forward rather than back.
+    press('d')
+    tap(area, { x: 880, y: 300 })
+    expect(progress(host)).toBe('66.66666666666666%')
+    await settle()
+  })
+
+  it('a tap in the middle third shows the chrome and hides it again', async () => {
+    const host = await open()
+    const area = pageArea(host)
+    measure(area, { w: 900, h: 600 })
+    expect(host.querySelector('.reader-progress-fill')).toBeNull()
+    tap(area, { x: 450, y: 300 })
+    expect(host.querySelector('.reader-progress-fill')).not.toBeNull()
+    tap(area, { x: 450, y: 300 })
+    expect(host.querySelector('.reader-progress-fill')).toBeNull()
+  })
+
+  it('a tap closes an open panel and turns nothing', async () => {
+    const host = await open()
+    const area = pageArea(host)
+    measure(area, { w: 900, h: 600 })
+    press('Tab')
+    expect(progress(host)).toBe('50%')
+    press('s')
+    expect(dialog(host, 'Settings')).not.toBeNull()
+    // The right third, which would otherwise turn: the tap is spent on the
+    // panel instead, which is also the pointer exit Settings had none of.
+    tap(area, { x: 880, y: 300 })
+    expect(dialog(host, 'Settings')).toBeNull()
+    expect(progress(host)).toBe('50%')
+  })
+
+  it('the tap that closes the note editor does not also turn the page', async () => {
+    const host = await open()
+    const area = pageArea(host)
+    measure(area, { w: 900, h: 600 })
+    press('Tab')
+    press('n')
+    expect(dialog(host, 'Note')).not.toBeNull()
+    // The right third, where `gestureFor` answers `close` because the press
+    // is not on the draft's page. The close happens on `pointerdown`; the
+    // `pointerup` must find the press already spent.
+    tap(area, { x: 880, y: 300 })
+    expect(dialog(host, 'Note')).toBeNull()
+    expect(progress(host)).toBe('50%')
+  })
+
+  it('a swipe turns at fit-whole, and pans once zoomed in', async () => {
+    const host = await open()
+    const area = pageArea(host)
+    measure(area, { w: 900, h: 600 })
+    press('Tab')
+    expect(progress(host)).toBe('50%')
+    // A turn before the swipe, deliberately: `readerIntent`'s `setView`
+    // reassigns `view` through `clampRect`, so by the time the swipe below
+    // reads it, `view` is a fresh rect *equal* to `WHOLE` rather than the
+    // same object — the distinction `viewport.ts`'s `isWhole` exists for.
+    // Without it, the first swipe in a freshly opened reader would pass
+    // against `atWhole: view === WHOLE` too, since the initial `useState`
+    // still holds the real `WHOLE` singleton.
+    tap(area, { x: 20, y: 300 })
+    expect(progress(host)).toBe('66.66666666666666%')
+    pointer(area, 'pointerdown', { x: 600, y: 300 })
+    pointer(area, 'pointermove', { x: 400, y: 300 })
+    pointer(area, 'pointerup', { x: 400, y: 300 })
+    // Dragged leftwards: the physical `→`, which `stepFor` sends back under
+    // this `rtl` work — the same slot the right-third tap above reaches.
+    expect(progress(host)).toBe('50%')
+    // Zoomed in, the same drag is the pan and turns nothing.
+    press('=')
+    pointer(area, 'pointerdown', { x: 600, y: 300 })
+    pointer(area, 'pointermove', { x: 400, y: 300 })
+    pointer(area, 'pointerup', { x: 400, y: 300 })
+    expect(progress(host)).toBe('50%')
+    await settle()
+  })
+
+  it('mirrors the swipe for a work flipped to left-to-right', async () => {
+    const host = await open()
+    const area = pageArea(host)
+    measure(area, { w: 900, h: 600 })
+    press('Tab')
+    expect(progress(host)).toBe('50%')
+    // Spec §9.5: every mirrored case runs both `ltr` and `rtl` — the case
+    // above is `rtl`, `WORK`'s own default; `d` flips to `ltr`. The swipe is
+    // physical either way — `readerIntent` is what puts it through
+    // `stepFor`, so the same leftward drag that stepped *back* under `rtl`
+    // above now steps forward.
+    press('d')
+    pointer(area, 'pointerdown', { x: 600, y: 300 })
+    pointer(area, 'pointermove', { x: 400, y: 300 })
+    pointer(area, 'pointerup', { x: 400, y: 300 })
+    expect(progress(host)).toBe('66.66666666666666%')
+    await settle()
+  })
+
+  it("a tap still turns above fit-whole; the swipe stays the pan's (I5)", async () => {
+    const host = await open()
+    const area = pageArea(host)
+    measure(area, { w: 900, h: 600 })
+    press('Tab')
+    expect(progress(host)).toBe('50%')
+    // Spec §9.2, corrected against I5: "above fit-whole neither of them
+    // fires" was wrong about the tap. Only the swipe reads `atWhole` — the
+    // option the user chose on 2026-09-20 says, in its own words, "Zoomed
+    // in, the thirds still turn on a tap, so no page is unreachable."
+    tap(area, { x: 20, y: 300 })
+    expect(progress(host)).toBe('66.66666666666666%')
+    press('=')
+    // Half of this already existed: a drag stays the pan's once zoomed in,
+    // because `atWhole` is now false.
+    pointer(area, 'pointerdown', { x: 600, y: 300 })
+    pointer(area, 'pointermove', { x: 400, y: 300 })
+    pointer(area, 'pointerup', { x: 400, y: 300 })
+    expect(progress(host)).toBe('66.66666666666666%')
+    // The tap half, added by this round: zoomed in exactly the same, a tap
+    // on the outer third still turns.
+    tap(area, { x: 880, y: 300 })
+    expect(progress(host)).toBe('50%')
+    await settle()
+  })
+
+  it('a press that began on a control turns nothing', async () => {
+    // I3: `host.querySelector('button')` used to find the top bar's Back
+    // button — a sibling of the page area, which no page-area gesture ever
+    // reaches — so the events below never reached `beginRegion` or
+    // `endPress` at all and the assertion held because nothing ran. The
+    // control has to be a real one *inside* the page area: the note list
+    // is placed with the page (spec §9.2), and `reveal: true` with
+    // `notesList: 'side'` is what puts one there without also needing the
+    // area wide enough for `listPlacement`'s own 1100px default.
+    localStorage.setItem(
+      'taiyaku.prefs.annotations',
+      JSON.stringify({
+        markers: true,
+        travel: true,
+        reveal: true,
+        notesList: 'side',
+      }),
+    )
+    ports.getNotes.mockResolvedValue({
+      doc: {
+        work: WORK,
+        notes: [
+          {
+            id: 'note-1',
+            edition: 'raw',
+            slot: 2,
+            body: 'a note already here',
+            created: '2026-01-01T00:00:00.000Z',
+            updated: '2026-01-01T00:00:00.000Z',
+          },
+        ],
+      },
+      etag: 'n1',
+    })
+    const host = await open()
+    const area = pageArea(host)
+    measure(area, { w: 900, h: 600 })
+    press('Tab')
+    expect(progress(host)).toBe('50%')
+    // The note list draws inside the page area and takes pointer events
+    // deliberately; so does anything else added there later. A press on one
+    // is excluded by ancestor, not by tag.
+    const control = area.querySelector(
+      '[aria-label="Notes on this page"] button',
+    ) as HTMLElement
+    expect(control).not.toBeNull()
+    pointer(control, 'pointerdown', { x: 880, y: 300 })
+    pointer(control, 'pointerup', { x: 880, y: 300 })
+    expect(progress(host)).toBe('50%')
+  })
+
+  it('in scroll mode a tap anywhere only toggles the chrome', async () => {
+    const host = await open()
+    press('Tab')
+    click(button(host, 'scroll'))
+    const area = pageArea(host)
+    measure(area, { w: 900, h: 600 })
+    expect(progress(host)).toBe('50%')
+    // The right third, which turns in paged mode and must not here.
+    tap(area, { x: 880, y: 300 })
+    expect(host.querySelector('.reader-progress-fill')).toBeNull()
+    tap(area, { x: 880, y: 300 })
+    expect(progress(host)).toBe('50%')
+  })
+
+  it('leaves the chrome up when a tap turns the page', async () => {
+    const host = await open()
+    const area = pageArea(host)
+    measure(area, { w: 900, h: 600 })
+    press('Tab')
+    tap(area, { x: 880, y: 300 })
+    // Nothing in ④ is on a timer: a turn made with the bars up leaves them
+    // up, exactly as a keyed turn does.
+    expect(progress(host)).toBe('33.33333333333333%')
+    await settle()
+  })
+
+  it('a pointerleave after a press on the right third turns nothing', async () => {
+    const host = await open()
+    const area = pageArea(host)
+    measure(area, { w: 900, h: 600 })
+    press('Tab')
+    expect(progress(host)).toBe('50%')
+    // A pointer that left the area finished no gesture — `onPointerLeave`
+    // stays on `endRegion` alone, never `endPress`, and this is the only
+    // case that tells the two apart: `endRegion` never asks `gestures.ts`
+    // anything, so nothing here can turn a page.
+    //
+    // React synthesises `onPointerLeave` from the native, bubbling
+    // `pointerout`/`pointerover` pair rather than from the (non-bubbling)
+    // native `pointerleave` — dispatching `pointerleave` itself reaches no
+    // handler at all and would pass whichever handler is bound, proving
+    // nothing. `relatedTarget` outside the page area is what tells React's
+    // synthetic dispatcher this element was actually left.
+    act(() => {
+      area.dispatchEvent(
+        new PointerEvent('pointerdown', {
+          bubbles: true,
+          cancelable: true,
+          clientX: 880,
+          clientY: 300,
+        }),
+      )
+      area.dispatchEvent(
+        new PointerEvent('pointerout', {
+          bubbles: true,
+          cancelable: true,
+          clientX: 880,
+          clientY: 300,
+          relatedTarget: document.body,
+        }),
+      )
+    })
+    expect(progress(host)).toBe('50%')
+    // I2: the leave must also drop the press record, not only finish the
+    // drag. The bars are siblings drawn over the page area, so a press that
+    // went down on the page and came up over one of them never reaches
+    // `endPress` at all — only this `pointerout`. Without the record
+    // cleared here, a *later*, unrelated `pointerup` on the page area — one
+    // with no `pointerdown` of its own — is paired with the abandoned
+    // press's origin (880, 300) and classified against it. Verified with a
+    // control: this exact injection turns the page
+    // (`expected '33.33333333333333%' to be '50%'`) against the branch as
+    // it stood before this fix.
+    act(() => {
+      area.dispatchEvent(
+        new PointerEvent('pointerup', {
+          bubbles: true,
+          cancelable: true,
+          clientX: 100,
+          clientY: 300,
+        }),
+      )
+    })
+    expect(progress(host)).toBe('50%')
+  })
+
+  it("a second pointer releasing does not consume the first pointer's still-open press", async () => {
+    const host = await open()
+    const area = pageArea(host)
+    measure(area, { w: 900, h: 600 })
+    press('Tab')
+    expect(progress(host)).toBe('50%')
+    // Pointer 1 goes down on the left third and stays down: nothing has
+    // classified it yet, since `gestures.ts` only asks on release.
+    act(() => {
+      area.dispatchEvent(
+        new PointerEvent('pointerdown', {
+          bubbles: true,
+          cancelable: true,
+          pointerId: 1,
+          clientX: 20,
+          clientY: 300,
+        }),
+      )
+    })
+    // A second finger's release, on the right third, must not be paired
+    // with pointer 1's still-open record: `endPress`'s `pointerId` check is
+    // what keeps a multi-touch press from being read against an origin it
+    // never began at. Without it, this alone would turn a page.
+    act(() => {
+      area.dispatchEvent(
+        new PointerEvent('pointerup', {
+          bubbles: true,
+          cancelable: true,
+          pointerId: 2,
+          clientX: 880,
+          clientY: 300,
+        }),
+      )
+    })
+    expect(progress(host)).toBe('50%')
+    // Pointer 1's own release still finishes what it actually began — the
+    // record was left alone, not discarded, by the mismatched release above.
+    act(() => {
+      area.dispatchEvent(
+        new PointerEvent('pointerup', {
+          bubbles: true,
+          cancelable: true,
+          pointerId: 1,
+          clientX: 20,
+          clientY: 300,
+        }),
+      )
+    })
+    expect(progress(host)).toBe('66.66666666666666%')
+    await settle()
+  })
+
+  it("a second pointer's leave does not drop the first pointer's still-open press", async () => {
+    const host = await open()
+    const area = pageArea(host)
+    measure(area, { w: 900, h: 600 })
+    press('Tab')
+    expect(progress(host)).toBe('50%')
+    // Pointer 1 goes down on the left third and stays down: nothing has
+    // classified it yet, since `gestures.ts` only asks on release.
+    act(() => {
+      area.dispatchEvent(
+        new PointerEvent('pointerdown', {
+          bubbles: true,
+          cancelable: true,
+          pointerId: 1,
+          clientX: 20,
+          clientY: 300,
+        }),
+      )
+    })
+    // A second finger leaving the page area must not drop pointer 1's
+    // still-open record — the discipline `endPress`'s `pointerId` check
+    // already has (the test above), extended to `leaveRegion`. `pointerout`
+    // with a `relatedTarget` outside the page area is what tells React's
+    // synthetic dispatcher this element was actually left, the same
+    // technique the single-pointer `pointerleave` test above uses.
+    //
+    // Pointer 2 is not a second *finger*: a finger's own events go to its
+    // own capture element, so a finger that went down elsewhere cannot fire
+    // a leave here. This pairing is what a **hover-capable** pointer
+    // produces — a mouse or pen crossing off the page area while a finger's
+    // press is still live. Measured in Chromium with `hasTouch`, a finger
+    // held down on the page area and a mouse moved across and off it:
+    // `pointerdown` id 2 `touch`, then `pointerout` and `pointerleave` id 1
+    // `mouse` with the bar as `relatedTarget`, then `pointerup` id 2 —
+    // Chromium numbers the mouse 1 and the finger 2, and this test numbers
+    // them the other way round, because only the pairing matters: a leave
+    // carrying an id that never went down here, while another pointer's
+    // press is still live.
+    //
+    // So
+    // before `leaveRegion`'s guard, a mouse merely moving off the page area
+    // wiped a live finger's record and that finger's release turned
+    // nothing. The test below drives the all-fingers sequence instead: two
+    // real `pointerdown`s, and the finger that lifts first's own leave
+    // arriving right after its own release, threatening the other,
+    // still-open finger's record.
+    act(() => {
+      area.dispatchEvent(
+        new PointerEvent('pointerout', {
+          bubbles: true,
+          cancelable: true,
+          pointerId: 2,
+          clientX: 880,
+          clientY: 300,
+          relatedTarget: document.body,
+        }),
+      )
+    })
+    // Pointer 1's own release still finishes what it actually began — the
+    // record was left alone, not discarded, by the mismatched leave above.
+    act(() => {
+      area.dispatchEvent(
+        new PointerEvent('pointerup', {
+          bubbles: true,
+          cancelable: true,
+          pointerId: 1,
+          clientX: 20,
+          clientY: 300,
+        }),
+      )
+    })
+    expect(progress(host)).toBe('66.66666666666666%')
+    await settle()
+  })
+
+  it("finger A's own leave, after finger A's own release, does not drop finger B's still-open press", async () => {
+    // I2 of the review of fix round 2. `beginRegion` assigns
+    // `pressRef.current` unconditionally, so a second finger's own
+    // `pointerdown` has already overwritten a first finger's record before
+    // either one's leave or cancel can run — the two tests above dispatch a
+    // pairing no browser produces. This one drives the sequence that is
+    // actually reachable.
+    const host = await open()
+    const area = pageArea(host)
+    measure(area, { w: 900, h: 600 })
+    press('Tab')
+    expect(progress(host)).toBe('50%')
+    // Finger A down — its own record, for now.
+    act(() => {
+      area.dispatchEvent(
+        new PointerEvent('pointerdown', {
+          bubbles: true,
+          cancelable: true,
+          pointerId: 1,
+          clientX: 880,
+          clientY: 300,
+        }),
+      )
+    })
+    // Finger B down. The one shared slot now holds B's record; A's is gone
+    // — overwritten, not dropped by anything below.
+    act(() => {
+      area.dispatchEvent(
+        new PointerEvent('pointerdown', {
+          bubbles: true,
+          cancelable: true,
+          pointerId: 2,
+          clientX: 20,
+          clientY: 300,
+        }),
+      )
+    })
+    // A lifts first. `endPress` refuses it — the record is B's now — and
+    // leaves it alone.
+    act(() => {
+      area.dispatchEvent(
+        new PointerEvent('pointerup', {
+          bubbles: true,
+          cancelable: true,
+          pointerId: 1,
+          clientX: 880,
+          clientY: 300,
+        }),
+      )
+    })
+    expect(progress(host)).toBe('50%')
+    // A's own `pointerout`/`pointerleave` fires right after A's own
+    // release — this is the real sequence, gated on A's own `pointerId`
+    // (1), which by now does not match the record (B's). Before I2's fix,
+    // this cleared the slot unconditionally and dropped B's still-open
+    // record.
+    act(() => {
+      area.dispatchEvent(
+        new PointerEvent('pointerout', {
+          bubbles: true,
+          cancelable: true,
+          pointerId: 1,
+          clientX: 880,
+          clientY: 300,
+          relatedTarget: document.body,
+        }),
+      )
+    })
+    // B lifts, and is classified against where B itself went down.
+    act(() => {
+      area.dispatchEvent(
+        new PointerEvent('pointerup', {
+          bubbles: true,
+          cancelable: true,
+          pointerId: 2,
+          clientX: 20,
+          clientY: 300,
+        }),
+      )
+    })
+    expect(progress(host)).toBe('66.66666666666666%')
+    await settle()
+  })
+
+  it("a second pointer's cancel does not drop the first pointer's still-open press", async () => {
+    const host = await open()
+    const area = pageArea(host)
+    measure(area, { w: 900, h: 600 })
+    press('Tab')
+    expect(progress(host)).toBe('50%')
+    act(() => {
+      area.dispatchEvent(
+        new PointerEvent('pointerdown', {
+          bubbles: true,
+          cancelable: true,
+          pointerId: 1,
+          clientX: 20,
+          clientY: 300,
+        }),
+      )
+    })
+    // A second finger's cancel — the browser taking that pointer away
+    // instead of a release ever arriving — must not drop pointer 1's
+    // still-open record either. Unlike the leave above, *this* pairing is
+    // the guard driven mechanically: a hovering pointer is not cancelled,
+    // so a cancel carrying an id that never went down here is not a stream
+    // a browser produces. What it pins is the guard itself.
+    act(() => {
+      area.dispatchEvent(
+        new PointerEvent('pointercancel', {
+          bubbles: true,
+          cancelable: true,
+          pointerId: 2,
+          clientX: 880,
+          clientY: 300,
+        }),
+      )
+    })
+    act(() => {
+      area.dispatchEvent(
+        new PointerEvent('pointerup', {
+          bubbles: true,
+          cancelable: true,
+          pointerId: 1,
+          clientX: 20,
+          clientY: 300,
+        }),
+      )
+    })
+    expect(progress(host)).toBe('66.66666666666666%')
+    await settle()
+  })
+
+  it('a cancel matching the current record clears it, so a later unpaired release turns nothing', async () => {
+    // Minor 4 of the review of fix round 2: deleting the whole
+    // `pressRef.current = null` block in `onPointerCancel` left every other
+    // test in this file green, because none of them cancels the *same*
+    // pointer whose record is live. This one does.
+    const host = await open()
+    const area = pageArea(host)
+    measure(area, { w: 900, h: 600 })
+    press('Tab')
+    expect(progress(host)).toBe('50%')
+    act(() => {
+      area.dispatchEvent(
+        new PointerEvent('pointerdown', {
+          bubbles: true,
+          cancelable: true,
+          pointerId: 1,
+          clientX: 20,
+          clientY: 300,
+        }),
+      )
+    })
+    // The browser takes this exact pointer away — its own id, the one the
+    // live record actually belongs to.
+    act(() => {
+      area.dispatchEvent(
+        new PointerEvent('pointercancel', {
+          bubbles: true,
+          cancelable: true,
+          pointerId: 1,
+          clientX: 20,
+          clientY: 300,
+        }),
+      )
+    })
+    // A later release with no `pointerdown` of its own must find nothing to
+    // pair itself with.
+    act(() => {
+      area.dispatchEvent(
+        new PointerEvent('pointerup', {
+          bubbles: true,
+          cancelable: true,
+          pointerId: 1,
+          clientX: 20,
+          clientY: 300,
+        }),
+      )
+    })
+    expect(progress(host)).toBe('50%')
+    await settle()
+  })
+
+  it('gives the page area touch-action manipulation', async () => {
+    const host = await open()
+    // Without it a double tap on a phone turns two pages *and* zooms the
+    // document. With it, two taps turn two pages.
+    expect(pageArea(host).style.touchAction).toBe('manipulation')
   })
 })
 

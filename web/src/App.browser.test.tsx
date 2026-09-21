@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { page } from 'vitest/browser'
 import { fakeResolver, whole } from './fixtures'
 import './index.css'
+import { paintedBox } from './notes'
 import { mount } from './testing/mount'
 
 /**
@@ -432,4 +433,213 @@ describe('the reader in Ink whatever the theme, in a browser', () => {
       document.documentElement.removeAttribute('data-theme')
     }
   })
+})
+
+// ---- the gestures, laid out -------------------------------------------------
+
+/**
+ * What jsdom cannot answer about ④'s gestures: the thirds are thirds of the
+ * page area's *laid-out* width, and a swipe is measured against a real box.
+ * `App.test.tsx` pins the routing against a stubbed rect; this asks Chromium
+ * where the boundaries actually fall, and whether a bar is sitting on one.
+ *
+ * **Driven with a mouse, deliberately.** Spec 2026-09-17 §9.1 put every
+ * pointer in scope, so a mouse press exercises every rule here.
+ * `@vitest/browser-playwright` would allow a touch context through
+ * `contextOptions.hasTouch`, but `vite.config.ts` gives this project a single
+ * instance — enabling it would put all fifty-eight existing cases into a touch
+ * context to reach the two things only a finger has, the double tap and the
+ * pinch. Both are ④'s device pass's.
+ */
+function pointerAt(type: string, at: { x: number; y: number }) {
+  // Dispatched on whatever is actually under the point, so a bar drawn over
+  // the page area intercepts the press here exactly as it would for a reader.
+  const target = document.elementFromPoint(at.x, at.y) ?? document.body
+  act(() => {
+    target.dispatchEvent(
+      new PointerEvent(type, {
+        bubbles: true,
+        cancelable: true,
+        clientX: at.x,
+        clientY: at.y,
+      }),
+    )
+  })
+}
+
+const tapAt = (at: { x: number; y: number }) => {
+  pointerAt('pointerdown', at)
+  pointerAt('pointerup', at)
+}
+
+/** Where the reader stands, as the progress line draws it. */
+const fill = () =>
+  (document.querySelector('.reader-progress-fill') as HTMLElement | null)?.style
+    .width ?? null
+
+describe('the gestures on the page, laid out', () => {
+  it.each(SIZES)(
+    'at %i×%i, the outer thirds of the real page area turn and the middle toggles',
+    async (width, height) => {
+      await readerWithChrome(width, height)
+      const area = box('.page-area')
+      const y = area.top + area.height / 2
+      const third = area.width / 3
+      const start = fill()
+      // Just inside the right third, against the measured boundary rather
+      // than an assumed one.
+      tapAt({ x: area.right - third + 1, y })
+      await until(() => fill() !== start)
+      const forward = fill()
+      tapAt({ x: area.left + third - 1, y })
+      await until(() => fill() === start)
+      expect(forward).not.toBe(start)
+      // The middle third takes the bars down, so the fill leaves the DOM.
+      tapAt({ x: area.left + area.width / 2, y })
+      await until(() => fill() === null)
+    },
+  )
+
+  it('reads a drag across the real page area as a swipe', async () => {
+    await readerWithChrome(1440, 900)
+    const area = box('.page-area')
+    const y = area.top + area.height / 2
+    const from = area.left + area.width / 2
+    const start = fill()
+    pointerAt('pointerdown', { x: from, y })
+    pointerAt('pointermove', { x: from - 120, y })
+    pointerAt('pointerup', { x: from - 120, y })
+    // Dragged leftwards: the physical `→`.
+    await until(() => fill() !== start)
+  })
+
+  it('does not turn on a drag too short to be a swipe', async () => {
+    await readerWithChrome(1440, 900)
+    const area = box('.page-area')
+    const y = area.top + area.height / 2
+    const from = area.left + area.width / 2
+    const start = fill()
+    // 30 px: past the tap's slop, short of the swipe's minimum. It is
+    // neither, and it is the pan it always was.
+    pointerAt('pointerdown', { x: from, y })
+    pointerAt('pointermove', { x: from - 30, y })
+    pointerAt('pointerup', { x: from - 30, y })
+    expect(fill()).toBe(start)
+  })
+
+  it('does not turn once the reader has zoomed in', async () => {
+    await readerWithChrome(1440, 900)
+    const area = box('.page-area')
+    const y = area.top + area.height / 2
+    const from = area.left + area.width / 2
+    press('=')
+    const start = fill()
+    pointerAt('pointerdown', { x: from, y })
+    pointerAt('pointermove', { x: from - 120, y })
+    pointerAt('pointerup', { x: from - 120, y })
+    // Above fit-whole every drag is the pan's, and `isWhole` is what says so
+    // — by value, because `clampRect` has already replaced `WHOLE` by now.
+    expect(fill()).toBe(start)
+  })
+
+  /**
+   * `Settings.tsx`'s own `onClick` handler, dispatched the way `click` fires
+   * for a real down-then-up — `pointerAt`'s pair does not synthesise one; a
+   * script-dispatched `PointerEvent` pair never does, in a real browser any
+   * more than in jsdom (`Settings.test.tsx`'s own note).
+   */
+  function clickAt(at: { x: number; y: number }) {
+    const target = document.elementFromPoint(at.x, at.y) ?? document.body
+    act(() => {
+      target.dispatchEvent(
+        new MouseEvent('click', {
+          bubbles: true,
+          clientX: at.x,
+          clientY: at.y,
+        }),
+      )
+    })
+  }
+
+  it.each(SIZES)(
+    'at %i×%i, a press on Settings’ scrim closes it and turns nothing',
+    async (width, height) => {
+      await readerWithChrome(width, height)
+      press('s')
+      await until(
+        () => document.querySelector('[aria-label="Settings"]') !== null,
+      )
+      const start = fill()
+      const area = box('.page-area')
+      const panel = box('.reader-dialog-panel')
+      // `.reader-dialog` is the whole viewport (measured 2026-09-20): the
+      // outer-third point the cases above tap can land inside the panel
+      // rather than beside it once the panel is wide relative to a narrower
+      // viewport. The strip between the panel's own edge and the viewport's
+      // is where the scrim is guaranteed to be, at every size tested.
+      const at = {
+        x: panel.right + (area.right - panel.right) / 2,
+        y: area.top + area.height / 2,
+      }
+      pointerAt('pointerdown', at)
+      pointerAt('pointerup', at)
+      clickAt(at)
+      await until(
+        () => document.querySelector('[aria-label="Settings"]') === null,
+      )
+      expect(fill()).toBe(start)
+    },
+  )
+
+  it.each(SIZES)(
+    'at %i×%i, a press in the painted margin finishes the note',
+    async (width, height) => {
+      await reader(width, height)
+      press('n')
+      await until(() => document.querySelector('[aria-label="Note"]') !== null)
+      const img = document.querySelector('.page-area img') as HTMLImageElement
+      // C1's fix reads `draftImage`'s own match — `src.endsWith(pageAt(...))`
+      // — to tell this image from a facing one, so the swap below has to
+      // survive it: the real page URL, captured before it is replaced, so a
+      // press on this element is still read as a press on the draft's own
+      // page rather than on a stranger `draftImage` cannot place.
+      const realSrc = img.src
+      // A tall page, decoded for real rather than served — no backend runs
+      // behind this project's dev proxy (this describe block's own doc).
+      // `object-fit: contain` still letterboxes it against the element's own
+      // laid-out box, exactly as a served page would.
+      img.src =
+        "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='500' height='1000'/%3E"
+      await img.decode()
+      // The real load already happened above — this only shadows what a
+      // later JS read of `.src` reports, which is all `draftImage` does.
+      Object.defineProperty(img, 'src', {
+        configurable: true,
+        get: () => realSrc,
+      })
+      const rect = img.getBoundingClientRect()
+      // The margin, computed from this fixture's own decode against the
+      // element's laid-out box — not the 420/130 the real library measured,
+      // which are that fixture's numbers at those two sizes only.
+      const painted = paintedBox(
+        { w: img.naturalWidth, h: img.naturalHeight },
+        { w: rect.width, h: rect.height },
+      )
+      // Off the painted page, on whichever axis this size actually
+      // letterboxes: beside it when the box is wider than the page's aspect,
+      // above it when the box is taller.
+      const at =
+        painted.x > 0
+          ? {
+              x: rect.left + painted.x / 2,
+              y: rect.top + painted.y + painted.h / 2,
+            }
+          : {
+              x: rect.left + painted.x + painted.w / 2,
+              y: rect.top + painted.y / 2,
+            }
+      pointerAt('pointerdown', at)
+      await until(() => document.querySelector('[aria-label="Note"]') === null)
+    },
+  )
 })

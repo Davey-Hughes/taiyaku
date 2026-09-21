@@ -21842,3 +21842,190 @@ editor open, a tap on the page draws a region rather than closing the editor,
 so on a touch screen the only way out of the panel is Delete: `Escape` and a
 click on the background are what `NotePanel`'s own doc offers, and neither is
 available to a finger. Filed as O137.
+
+## Style pass ④: touch — 2026-09-20
+
+What §9 of `docs/superpowers/specs/2026-09-17-style-pass-design.md` promised,
+measured. The app is this branch served by vite against `taiyaku serve` on the
+scratch copy of the NAS library (`target/style-pass/lib/library.db`), driven in
+Chromium through Playwright at 1440×900 and 390×844, and opened on the user's
+iPhone over the tailnet. Every figure below was read off the running app unless
+it says otherwise.
+
+**The planning probes.** `setChromeVisible` had exactly two call sites on
+`main` at `333b3ab` — `keyPlan`'s `Tab` and the correction path — so a finger
+could not reach the chrome at all, which is why ③'s device pass saw the
+reader's ground and nothing the reader draws on it. `readerIntent` is declared
+inside the keydown effect, so the pointer reaches it through a ref, as
+`closeEditorRef` already does. `clampRect` allocates a fresh rect on every
+call and `readerIntent` runs `setView(clampRect)` on every step, so
+`view === WHOLE` is dead after the reader's first page turn: the swipe is
+gated on `isWhole`, by value. `@vitest/browser-playwright` does expose
+`contextOptions`, so `hasTouch` was reachable — and declining it was the
+choice, because the project has one instance and enabling it would put all
+fifty-eight existing browser cases into a touch context to reach two things
+the device pass owns anyway.
+
+**The gestures, in the app.** The page area is the whole viewport at both
+sizes — `[0, 0, 1440, 900]` and `[0, 0, 390, 844]` — and computes
+`touch-action: manipulation`. Its thirds fall at 480 and 960 on the desktop,
+130 and 260 on the phone. A tap in the right third of a right-to-left work
+steps the slot **down** and the left third steps it up, which is `stepFor`
+applied to a physical `by` and is the mirroring working rather than failing.
+The middle third brought the bars up and took them down again at both sizes.
+**The swipe, measured in isolation** because a first pass through a whole
+battery read 40 px as no turn and 39 px as a turn — an artefact of the slot
+sitting at the start of the volume, not of the rule: at both sizes a drag of
+39 px turns nothing, 40 px turns, 41 px turns, and 60 px the other way turns
+back. Zoomed in, a 120 px drag turns nothing and pans.
+
+**The letterbox, and why O137's second exit had to be built.** The page
+`<img>`'s box **equals** the page area at both sizes, and `object-fit:
+contain` letterboxes the picture inside that element. At 1440×900 a 900×1350
+page paints at `[420, 0, 600, 900]`, leaving 420 px of margin either side; at
+390×844 a 683×1024 page paints at `[0, 130, 390, 585]`, leaving 130 px above
+and below. So every press in the reader was "on an image", `gestureFor`'s rule
+1 could never fire, and the exit `NotePanel`'s doc had promised since the
+editor shipped did not exist. Measured before the fix, three points at each
+size — and the pair differs, because the margin does: at 1440×900 the page
+paints full height, so the points were left of it, right of it and on it; at
+390×844 it paints full width, so they were above, below and on. All six left
+the editor open. Measured after: the margin closes it, the painted page still
+draws, all six correct. The editor's Close button measures **44 px tall by
+61 wide** under `(pointer: coarse)` and 31 px on a fine pointer; the five colour
+swatches, in the row above the editor's Delete and Close buttons, are 22 px
+on both.
+
+**The panels.** The three `docked-panel` panels sit in a corner — the keyboard
+help `[1040, 68, 384, 605]` at 1440 and `[16, 68, 358, 613]` at 390, credits
+and the note list 88 and 107 px tall — and a tap beside one closes it and
+turns nothing, measured at both sizes (the slot read 4 before and after). At
+390 the help panel is 358 px of a 390 px screen, so the right-third point
+lands inside it and the tap is the panel's, not the page's. **Settings is a
+`reader-dialog` whose scrim is the whole viewport**, measured `[0, 0, 1440,
+900]` and `[0, 0, 390, 844]`, so before ④'s fix no tap could reach the page
+area while the one panel O135 records as closing on neither `Escape` nor `s`
+was open. Its Close button, which style pass ③ gave it, was already a pointer
+exit — what it lacked was the tap-outside ④ gives every other panel. It now dismisses from its own scrim: measured at
+1440×900, 768×1024 and 390×844, each time closing and turning nothing. The
+bare scrim either side of the panel is 480 px at 1440 and 144 at 768, but only
+**20 px at 390** — where the band to aim at is the 84 px above or below it.
+
+**What it costs to open the chrome.** With the bars hidden the reader is
+**30 elements and 1 image**; with them shown, **774 elements, 238 images and
+246 buttons** — the filmstrip builds one tile per page, unwindowed, every
+time, because `Chrome` returns `null` when hidden. From the tap to the bars
+fully on screen at 390×844 on a 237-page volume: **44–76 ms to appear and
+157–177 ms to settle** unthrottled, **182–387 ms and 290–500 ms** at 4× CPU
+throttling. About 115 ms of that is the opacity fade, whose default is 120 ms
+(`modules/motion.ts`). The user reported it as slow on the phone; it is its
+own PR after ④, by their decision.
+
+**O138, both ways.** In headless Chromium at 1440×900 the strip's rail reads
+`clientHeight` 176 against `offsetHeight` 176 — the scrollbar takes **0 px** —
+and a tile button is 164 px with its image at 160, which is what spec §8.4
+claims. The user then looked on their own desktop: a scrollbar track is
+visible and the thumbnails are the height the strip is. Both readings are the
+overlay case; the 15 px O138 recorded belongs to a classic scrollbar, which is
+a platform setting rather than anything this code chooses.
+
+**The iPhone**, iOS 18.7 Safari over the tailnet. The user reports: the thirds
+and the middle tap and the swipe all work; nothing turns by accident,
+including a finger that lands, drifts and lifts; pinch still zooms the
+document and a double tap turns two pages without zooming it. Three things
+they found that no test could:
+
+1. **Signing in left the whole document zoomed**, and a pinch was the only way
+   back. The login fields compute to **14px** — they inherit `--text-ui`
+   (0.875rem) from their label through `base.css`'s `font: inherit` — and iOS
+   Safari zooms the document whenever a text field under 16px takes focus, a
+   zoom that outlives the field. Floored to 16px under `(pointer: coarse)`;
+   measured after, a touch context reads 16px and the desk still reads 14px.
+   The user confirms it is fixed. *The login screen is ①'s, not ④'s.*
+2. **The reader rubber-banded** under a swipe that drifted vertically.
+   Measured first, to be sure there was nothing real to scroll: the document's
+   scroll height equals its client height, the page area is `overflow: hidden`
+   and carries `touch-action: manipulation`. `overscroll-behavior: none` on
+   the reader's own root; measured after, the library's root reads `auto` and
+   the reader's `none`. The user confirms it is fixed.
+3. **A new note can only be started by `n`**, and on a phone held upright an
+   existing one cannot be opened by pointer either: the painted page fills
+   the width at 390×844, so `Annotations.tsx`'s margin tab is laid out at
+   **x = 394 in a 390 px viewport** — just off screen. Held sideways the tab
+   is on screen and a click on it does open the editor (measured at
+   1440×900 and at 844×390). `NoteList`'s rows open one by pointer too, and
+   the list needs `annotations.reveal` — which `r` toggles, and which the
+   Settings panel writes by the other door, `reveal` being a key of
+   `annotationsModule.defaults` that `Settings.tsx` generates a checkbox
+   for. So a portrait route does exist, through ⚙, and it was driven end to
+   end at 390×844: middle tap, ⚙, scroll the panel to Annotations —
+   *reveal* is the sixth section's third row, laid out at y ≈ 1134 in an
+   844 px viewport — tap it, dismiss the panel, drop the bars, tap a row.
+   The bars must come down first: with them up the list is
+   `visibility: hidden`, and a tap where a row sits hits a filmstrip tile
+   and turns the page instead. The user: *"I'm not sure how to make a
+   note on mobile, but it's ok. this is a small feature and we can worry
+   about it later"*. Filed as O139.
+
+**What the user answered, the same day.** The rows ④ put to them, and the
+things they raised unprompted, quoted rather than paraphrased so the rows that
+cite them have a source:
+
+- **O134**, the strip's softness on a 3× screen — asked with the strip in
+  front of them. They chose **a sharper tile from the server**, the way O133's
+  covers were fixed, over leaving it or leaving it open. So the row stays
+  open as server work.
+- **O138**, the rail's scrollbar — they looked on their own desktop and
+  reported: *"there is a scrollbark track and the thumbnails are
+  appropriately sized for the strip"*. A visible track that costs no tile
+  height is the overlay case.
+- **The chrome's key**, unprompted, reading on a desktop: *"one thing about
+  pressing tab to open the menu, I can't keep pressing tab. I can press it to
+  close the menu, but then after that tab highlights stuff in my browser and
+  starts moving around there outside of the in-page content"*. Offered a
+  dedicated key now or the accessibility pass, they chose **the accessibility
+  pass**, which is where O135 already sits.
+- **The chrome's cost**, unprompted: *"is it possible to speed up the menu
+  opening at all?"*, after *"the middle tap seems a bit slow to actually pull
+  up the menu"*. Shown the measurements, they chose **its own PR straight
+  after ④** over widening this one or only cutting the fade.
+- **The zoom after signing in**, unprompted: *"the page seems to start zoomed
+  in on my phone a bit after login which is annoying. I have to pinch to zoom
+  out"* — and afterwards, *"the sign in thing seems to work"*.
+- **The rubber band**, unprompted: *"is it possible when fully zoomed out to
+  prevent scrolling so that if someone is swiping they don't accidentally
+  scroll up and down? … it may just be safari's refresh animation - is it
+  possible to remove that in the reader part?"* — and afterwards, *"ok that
+  pull down is fixed"*.
+
+**The scrim, on the phone.** The one thing ④ shipped that no test here could
+reach: `Settings.tsx`'s dismissal depends on `pointerup` carrying the lift's
+coordinates while implicit pointer capture holds the event's target, and that
+was measured in Chromium only — no WebKit is installed on this machine. Put to
+the user on their iPhone on 2026-09-20, after the PR was opened: press the
+bare scrim beside or above the panel and lift. They report it closes and turns
+no page — *"the ios test seems good"*. So the fix works on the device it was
+written for. **What that does not cover**: the failing direction I4 was filed
+for, a press that goes down on the scrim and is released over the *panel*,
+which is the case the hit test exists to refuse. It was not asked for, and
+iOS's own touch-scroll slop is still its own figure.
+
+**Correcting, a gap and a borrowed page.** ③ left all three pinned in jsdom
+because the scratch library held no multi-edition work and the screen that
+accepts a proposal is ⑤'s. The **CLI accepts one**, which ③'s note did not
+consider: `library proposals --accept` run three times, for 25, 3 and 15 — it takes
+one id — wrote rules 5, 6 and 7, and a rescan derived 149 series, 1,927 works and **1,955 editions**.
+`chainsaw-man---v06--2021--cbz` now holds `raw` and `digital-colored-comics`,
+and pressing `2` on it draws **the gap screen, at both sizes** — "No
+digital-colored-comics page for raw page 1", in ink on black with the display
+face on the headline. The chrome was hidden for that run, so neither bar was
+drawn; when they are, they are `zIndex: 3` and draw **over** the gap, which
+fills the page area's full height beneath them. A borrowed page and a correction still
+could not be reached: both need *aligned* editions, and these are unaligned,
+so they stay jsdom-only and pass to a later pass.
+
+**One thing that work found.** With the second edition viewed, the readout
+carries the edition's name and a verdict, and at 390×844 the row overflows:
+`scrollWidth` **402** against `clientWidth` **390**, with the text flush to
+both edges instead of inside its 12 px padding. There is no overflow at 1440.
+The bar is ③'s; ④ found it only because a two-edition work now exists.

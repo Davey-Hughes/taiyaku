@@ -9,6 +9,7 @@ import {
   groupToImage,
   imageToGroup,
   into,
+  isWhole,
   mapRect,
   mapView,
   outOf,
@@ -1033,5 +1034,20 @@ describe('mapView across a two-page seam', () => {
     )
     expect(there.x).toBeCloseTo(rect.x, 6)
     expect(there.y).toBeCloseTo(rect.y, 6)
+  })
+})
+
+describe('isWhole', () => {
+  it('is true of WHOLE and of an equal rect that is not it', () => {
+    expect(isWhole(WHOLE)).toBe(true)
+    // The case the identity test would fail: `clampRect` allocates, and
+    // `readerIntent` runs it on every turn.
+    expect(isWhole(clampRect(WHOLE))).toBe(true)
+    expect(clampRect(WHOLE)).not.toBe(WHOLE)
+  })
+
+  it('is false of anything zoomed or panned', () => {
+    expect(isWhole({ x: 0, y: 0, w: 0.5, h: 0.5 })).toBe(false)
+    expect(isWhole({ x: 0.1, y: 0, w: 1, h: 1 })).toBe(false)
   })
 })

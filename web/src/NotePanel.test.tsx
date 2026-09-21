@@ -243,7 +243,7 @@ describe('NotePanel, editing', () => {
       '[role="group"] button',
     ) as HTMLButtonElement
     expect(swatch.disabled).toBe(false)
-    expect(host.textContent).toContain('saved · esc or click away when done')
+    expect(host.textContent).toContain('saved')
   })
 
   it('shows a notice banner when there is one', () => {
@@ -258,6 +258,36 @@ describe('NotePanel, editing', () => {
     // Only the slot label's `<p>` renders for a draft; a notice would add a
     // second.
     expect(host.querySelectorAll('p')).toHaveLength(1)
+  })
+
+  it('offers a Close button in the editor, which is O137s exit for a finger', () => {
+    const seen: string[] = []
+    const host = mount(
+      <NotePanel {...baseProps({ onClose: () => seen.push('closed') })} />,
+    )
+    const close = [...host.querySelectorAll('button')].find(
+      (b) => b.textContent === 'Close',
+    ) as HTMLButtonElement
+    act(() => close.click())
+    expect(seen).toEqual(['closed'])
+  })
+
+  it('disables Close while a write is on the wire, like every other exit', () => {
+    // The same rule Delete follows: every exit is disabled while `busy`,
+    // because a close racing a write is the ordering that loses a note.
+    const host = mount(<NotePanel {...baseProps({ busy: true })} />)
+    const close = [...host.querySelectorAll('button')].find(
+      (b) => b.textContent === 'Close',
+    ) as HTMLButtonElement
+    expect(close.disabled).toBe(true)
+  })
+
+  it('no longer tells a reader to press a key they may not have', () => {
+    const host = mount(<NotePanel {...baseProps()} />)
+    // O137: `esc` and `click away` are both absent on a phone, and the
+    // status line named them as the way out.
+    expect(host.textContent).not.toContain('esc')
+    expect(host.textContent).toContain('saved')
   })
 
   it('docks as a panel between the bars, its look in the stylesheet', () => {

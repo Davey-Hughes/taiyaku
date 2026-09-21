@@ -80,6 +80,20 @@ export interface Rect {
 export const WHOLE: Rect = Object.freeze({ x: 0, y: 0, w: 1, h: 1 })
 
 /**
+ * Whether a rect is the whole group — **by value, not by identity**.
+ *
+ * `WHOLE` is frozen and `zoomStep('whole')` hands the object itself back, so
+ * `rect === WHOLE` looks like it would do. It does not survive a page turn:
+ * `App.tsx`'s `step` intent runs `setView(clampRect)`, and `clampRect`
+ * allocates a fresh rect every time — equal to `WHOLE`, and not it. The swipe
+ * (`gestures.ts`) is gated on being at fit-whole, so on identity it would have
+ * worked until the reader's first turn and never again.
+ */
+export function isWhole(rect: Rect): boolean {
+  return rect.x === 0 && rect.y === 0 && rect.w === 1 && rect.h === 1
+}
+
+/**
  * A rect brought inside the group it addresses.
  *
  * **Sliding before shrinking is the rule**, and the order matters. A rect that
