@@ -22151,6 +22151,32 @@ found by measurement and none by reading:
    one-unit. Content drift over a flick fell from **31 frames, worst 217 px**
    to **4 frames, worst 64 px**.
 
+**The worst thing this branch produced, and what caught it.** A whole-branch
+review found that turning a page with the chrome open, *after* the reader had
+flicked the strip, left the strip **blank**. The centring effect did
+`setScrolledTo(undefined)` and then called `recenter()` synchronously in the
+same body, reading refs that point into the window rendered from the *old*
+`scrolledTo`; flick far enough and the new current tile is not in that window,
+so all three refs are null and `scrollIntoView` is a silent no-op — and the
+effect's dependencies have not changed, so it never runs again. Driven at
+390×844: after a flick the window held **pages 115–147 at `scrollLeft`
+−8165**; after the turn it rebuilt correctly to **62–94** while `scrollLeft`
+stayed **−8165**, with **0 tiles visible**. Fixed with a `pendingRecentre` ref
+and a retry effect that runs until it succeeds — deliberately *not* by adding
+`scrolledTo` or the window bounds to the centring effect's dependencies, which
+would re-centre the rail mid-flick and restore the defect the `load` listener
+had just been removed for. Re-verified in the browser: after the turn
+`scrollLeft` moves to −4890, seven tiles are visible and the current tile is
+on screen.
+
+**No per-task review caught it, and no single commit introduced it.** Before
+windowing, a tile that existed was always rendered, so the centring chain was
+null only in states with no tile to centre on — never because the tile lay
+outside a window. The test that *names* this behaviour
+(`Filmstrip.test.tsx`'s "recentres when the same instance's `currentIndex`
+changes") uses the file's four-group fixture, which sits wholly inside the
+window and cannot reach the case.
+
 **The residual is data, not layout.** Those four remaining jumps are six pages
 on this volume whose thumbnails are 160×120 — genuine double-page scans the
 sidecar never marked `spread: true`, so `tileUnits` correctly calls them one
