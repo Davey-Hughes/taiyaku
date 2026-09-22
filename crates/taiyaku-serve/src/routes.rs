@@ -567,6 +567,22 @@ pub(crate) fn refuse_if_cannot_download(extensions: &axum::http::Extensions) -> 
     })
 }
 
+/// Whether this request may be shown a page's own pixels.
+///
+/// The rule [`refuse_if_cannot_stream`] refuses on, as a question, so the two
+/// callers that need it — that refusal and `get_thumb`'s sized tile (O134) —
+/// read one statement of it rather than two that can drift apart.
+///
+/// **No `Principal` means yes**, which is [`refuse_if_cannot_stream`]'s own
+/// behaviour preserved exactly: a server configured without auth puts none in
+/// the extensions and every route here is open in that configuration. The
+/// same shape as `opds.rs`'s `can_download` check.
+pub(crate) fn can_stream(extensions: &axum::http::Extensions) -> bool {
+    extensions
+        .get::<crate::auth::Principal>()
+        .is_none_or(|principal| principal.can_stream)
+}
+
 /// The same for reading pages in place.
 ///
 /// **Gates `/pages` and the OPDS PSE stream, and deliberately not `/thumb`, the
@@ -581,8 +597,7 @@ pub(crate) fn refuse_if_cannot_download(extensions: &axum::http::Extensions) -> 
 /// any existing account the day this shipped, and nothing can set either to 0
 /// outside a fixture until spec C4's user administration. Spec C2 §2.2.
 pub(crate) fn refuse_if_cannot_stream(extensions: &axum::http::Extensions) -> Option<Response> {
-    let principal = extensions.get::<crate::auth::Principal>()?;
-    (!principal.can_stream).then(|| {
+    (!can_stream(extensions)).then(|| {
         (
             StatusCode::FORBIDDEN,
             "this account may browse and download but not read pages here",
@@ -993,6 +1008,21 @@ fn cover_edge(index: u32, w: Option<&str>) -> Option<u32> {
     (index == 0 && crate::cover::COVER_LONG_EDGES.contains(&edge)).then_some(edge)
 }
 
+/// The long edge to serve a tile at, if the request asked for one this server
+/// makes: **any** page, at exactly one of `cover::TILE_LONG_EDGES` — O134.
+///
+/// Unlike [`cover_edge`] this is not restricted to page 0, which is why its
+/// caller pairs it with [`can_stream`]: sizing any page for an account that
+/// may not read pages is exactly what `cover_edge`'s own doc refuses to do.
+/// Anything else — an unknown size, a `w` that is not a number, no `w` at all
+/// — is `None` and so the 160 px tile.
+fn tile_edge(w: Option<&str>) -> Option<u32> {
+    let edge = w?.parse::<u32>().ok()?;
+    crate::cover::TILE_LONG_EDGES
+        .contains(&edge)
+        .then_some(edge)
+}
+
 /// A filmstrip tile for one page.
 ///
 /// Separate from `get_page` rather than a query parameter on it, because the
@@ -1018,7 +1048,9 @@ fn cover_edge(index: u32, w: Option<&str>) -> Option<u32> {
 /// on the page route because covers must reach an account without
 /// `can_stream`, which the page route refuses (`refuse_if_cannot_stream` says
 /// why), and `cover_edge` keeps it to covers: any other page or size is the
-/// tile.
+/// tile. Since O134, a `w` at one of `cover::TILE_LONG_EDGES` on any page is
+/// that tile at that size, for a caller that may stream (`tile_edge`); every
+/// other `w` is still the 160 px tile.
 async fn get_thumb(
     State(state): State<Arc<ServeState>>,
     AxPath((id, edition, raw)): AxPath<(String, String, String)>,
@@ -1036,6 +1068,15 @@ async fn get_thumb(
     if let Some(edge) = cover_edge(index, first_query_value(&query, "w")) {
         return serve_page(state, id, edition, index, Some(edge), &headers).await;
     }
+    // O134. Below `cover_edge` deliberately: page 0 at a *cover* size stays
+    // O133's cover — the page route's own answer, validator and all — and a
+    // tile rung is a tile. `can_stream` is what keeps this route's exemption
+    // from `refuse_if_cannot_stream` (see `get_thumb`'s doc) from becoming a
+    // way to read pages: an account without it is served the 160 px tile, the
+    // same fallback an unrecognised `w` gets.
+    let edge = tile_edge(first_query_value(&query, "w"))
+        .filter(|_| can_stream(&request_extensions))
+        .unwrap_or(crate::cover::THUMB_LONG_EDGE);
     // Decoding blocks and can allocate up to `MAX_DECODE_ALLOC`; `get_page`'s
     // reasoning applies unchanged.
     let fetched = tokio::task::spawn_blocking(move || {
@@ -1050,7 +1091,7 @@ async fn get_thumb(
             .ok_or_else(|| format!("`{edition}` has no page {index} in work `{id}`"))?;
         let sha = ed.members[member].sha256.clone();
         let dir = state.thumb_cache_dir();
-        crate::cover::cached_or_generated_thumb(&dir, &sha, offset, || {
+        crate::cover::cached_or_generated_thumb(&dir, &sha, offset, edge, || {
             state.page(found, &edition, index).map(|p| p.bytes)
         })
     })

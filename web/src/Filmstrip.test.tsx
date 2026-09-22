@@ -69,11 +69,21 @@ describe('tiles', () => {
     const btns = buttons(host)
     expect(btns).toHaveLength(4)
     const img0 = btns[0].querySelector('img')
-    expect(img0?.getAttribute('src')).toBe(
-      '/api/works/gotoubun-v01/en-mono/pages/10/thumb',
-    )
     expect(img0?.getAttribute('alt')).toBe('page 11')
     expect(img0?.getAttribute('loading')).toBe('lazy')
+
+    // jsdom has no `matchMedia`, so `stripTileEdge` takes its wide branch at
+    // `devicePixelRatio` 1 and every tile asks for 160 — today's image at an
+    // explicit size. The rung that varies is the browser project's to assert
+    // (`Filmstrip.browser.test.tsx`); what this pins is that the URL carries
+    // one at all, on every tile, and that it is the same one.
+    const images = [...host.querySelectorAll('img')]
+    expect(images).toHaveLength(groups.length)
+    for (const [i, img] of images.entries()) {
+      expect(img.getAttribute('src')).toBe(
+        `/api/works/gotoubun-v01/en-mono/pages/${slots[i].page}/thumb?w=160`,
+      )
+    }
   })
 
   // The half badge and the half-aware alt text both exist so a joined

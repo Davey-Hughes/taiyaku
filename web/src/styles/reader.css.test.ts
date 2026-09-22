@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import indexHtml from '../../index.html?raw'
+import { STRIP_BREAKPOINT_PX, STRIP_TILE_PX } from '../tileSize'
 import { rules, selectors, withoutComments } from '../testing/css'
 import readerSource from './reader.css?raw'
 import shellSource from './shell.css?raw'
@@ -50,9 +51,13 @@ describe('the reader root', () => {
   })
 
   it('stands the strip’s tiles at 160 px and 96 below the breakpoint, with a matching starting --strip-unit', () => {
+    // Built from `tileSize.ts`'s constants rather than written out again:
+    // the filmstrip asks the server for a rung derived from those two numbers
+    // during its first render, before there is an element to measure, so this
+    // assertion is what keeps the restatement honest — O134.
     expect(declared(readerSource, '.reader', '--strip-tile')).toEqual([
-      '160px',
-      '96px',
+      `${STRIP_TILE_PX.wide}px`,
+      `${STRIP_TILE_PX.narrow}px`,
     ])
     expect(declared(readerSource, '.reader', '--strip-unit')).toEqual([
       '97px',
@@ -62,7 +67,9 @@ describe('the reader root', () => {
     // the whole file — but not exclusive: `--strip-unit` lives in the same
     // block (O140), and this must not regress the moment it does.
     expect(withoutComments(readerSource)).toMatch(
-      /@media \(width < 900px\)\s*\{\s*\.reader\s*\{[^}]*--strip-tile:\s*96px;/,
+      new RegExp(
+        `@media \\(width < ${STRIP_BREAKPOINT_PX}px\\)\\s*\\{\\s*\\.reader\\s*\\{[^}]*--strip-tile:\\s*${STRIP_TILE_PX.narrow}px;`,
+      ),
     )
   })
 

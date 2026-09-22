@@ -2,6 +2,7 @@ import { act } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import * as curation from './curation'
 import { ProposalRow } from './ProposalRow'
+import { requestedTileEdge } from './tileSize'
 import { mount, rerender } from './testing/mount'
 
 // `Proposals.test.tsx`'s `vi.mock` shape, for the reason its own comment
@@ -317,13 +318,20 @@ describe('ProposalRow', () => {
     // rather than merely equal.
     const host = await open()
 
+    // The box is fixed by `styles/admin.css`'s `.proposal-detail .pages img`
+    // — 4.5rem wide at `aspect-ratio: 2 / 3`, so 108 px tall — which is why
+    // the rung below is derived from that constant rather than written out as
+    // `?w=160`: jsdom reports `devicePixelRatio` 1, so this is the smallest
+    // rung, and the arithmetic that matters on a 3× screen is
+    // `tileSize.test.ts`'s.
+    const rung = requestedTileEdge(108, window.devicePixelRatio)
     expect(attrs(host, '.pages img', 'src')).toEqual([
-      '/api/works/monster-colored-v01/en-color/pages/0/thumb',
-      '/api/works/monster-colored-v01/en-color/pages/41/thumb',
-      '/api/works/monster-colored-v01/en-color/pages/205/thumb',
-      '/api/works/monster-v01/raw/pages/0/thumb',
-      '/api/works/monster-v01/raw/pages/38/thumb',
-      '/api/works/monster-v01/raw/pages/190/thumb',
+      `/api/works/monster-colored-v01/en-color/pages/0/thumb?w=${rung}`,
+      `/api/works/monster-colored-v01/en-color/pages/41/thumb?w=${rung}`,
+      `/api/works/monster-colored-v01/en-color/pages/205/thumb?w=${rung}`,
+      `/api/works/monster-v01/raw/pages/0/thumb?w=${rung}`,
+      `/api/works/monster-v01/raw/pages/38/thumb?w=${rung}`,
+      `/api/works/monster-v01/raw/pages/190/thumb?w=${rung}`,
     ])
 
     // The tile is a thumbnail linking to the page itself: judging panel

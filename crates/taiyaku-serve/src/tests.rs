@@ -582,7 +582,12 @@ async fn serve_caches_covers_and_tiles_under_the_resolved_root() {
     // this function returns *or* unwinds, which is what makes a failing
     // assertion stop leaking it.
     let expected_cover = crate::cover::cache_path(&cache.join("covers"), &sha);
-    let expected_tile = crate::cover::thumb_cache_path(&cache.join("thumbs"), &sha, 0);
+    let expected_tile = crate::cover::thumb_cache_path(
+        &cache.join("thumbs"),
+        &sha,
+        0,
+        crate::cover::THUMB_LONG_EDGE,
+    );
     let cover_cached = expected_cover.is_file();
     let tile_cached = expected_tile.is_file();
 

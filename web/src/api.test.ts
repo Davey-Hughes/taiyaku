@@ -42,6 +42,17 @@ describe('url building', () => {
   it('appends /thumb for a tile', () => {
     expect(thumbUrl('w', 'raw', 3)).toBe('/api/works/w/raw/pages/3/thumb')
   })
+
+  it('asks for a tile at a long edge when one is given, and the plain tile otherwise', () => {
+    expect(thumbUrl('w', 'raw', 3)).toBe('/api/works/w/raw/pages/3/thumb')
+    expect(thumbUrl('w', 'raw', 3, 320)).toBe(
+      '/api/works/w/raw/pages/3/thumb?w=320',
+    )
+    // The query goes after `/thumb`, not on the page path underneath it:
+    // `pageUrl`'s own `?w=` would land in the middle of the route and the
+    // server would see no `w` at all.
+    expect(thumbUrl('w', 'raw', 3, 320)).not.toContain('?w=320/thumb')
+  })
 })
 
 // Mocks fetch directly rather than pulling in jsdom or MSW: these are plain

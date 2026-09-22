@@ -264,7 +264,10 @@ fn tempdir_for_test() -> crate::test_support::Fixture {
 #[test]
 fn a_thumb_is_smaller_than_a_cover_and_keyed_apart() {
     let dir = std::path::Path::new("/tmp/does-not-matter");
-    assert_ne!(cache_path(dir, "abc"), thumb_cache_path(dir, "abc", 0));
+    assert_ne!(
+        cache_path(dir, "abc"),
+        thumb_cache_path(dir, "abc", 0, THUMB_LONG_EDGE)
+    );
 
     let page = real_page_bytes();
     let cover = thumbnail(&page).unwrap();
@@ -284,8 +287,8 @@ fn a_thumb_is_smaller_than_a_cover_and_keyed_apart() {
 fn each_page_of_a_member_gets_its_own_tile() {
     let dir = std::path::Path::new("/tmp/does-not-matter");
     assert_ne!(
-        thumb_cache_path(dir, "abc", 0),
-        thumb_cache_path(dir, "abc", 1)
+        thumb_cache_path(dir, "abc", 0, THUMB_LONG_EDGE),
+        thumb_cache_path(dir, "abc", 1, THUMB_LONG_EDGE)
     );
 }
 
@@ -308,7 +311,7 @@ fn changing_any_tile_parameter_changes_the_tile_path() {
 
     assert_eq!(
         current,
-        thumb_cache_path(dir, "abc", 7),
+        thumb_cache_path(dir, "abc", 7, THUMB_LONG_EDGE),
         "thumb_cache_path must use the real constants, not copies of them"
     );
     assert_eq!(
@@ -351,8 +354,8 @@ fn a_cached_tile_is_not_regenerated() {
         calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Ok(real_page_bytes())
     };
-    let first = cached_or_generated_thumb(dir.path(), "abc", 7, page).unwrap();
-    let second = cached_or_generated_thumb(dir.path(), "abc", 7, || {
+    let first = cached_or_generated_thumb(dir.path(), "abc", 7, THUMB_LONG_EDGE, page).unwrap();
+    let second = cached_or_generated_thumb(dir.path(), "abc", 7, THUMB_LONG_EDGE, || {
         calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Ok(real_page_bytes())
     })
@@ -449,11 +452,11 @@ fn a_broken_cached_tile_is_regenerated_and_replaced() {
     let expected = thumbnail_at(&real_page_bytes(), THUMB_LONG_EDGE).unwrap();
     for (kind, broken) in broken_cache_files() {
         let dir = tempdir_for_test();
-        let path = thumb_cache_path(dir.path(), "abc", 7);
+        let path = thumb_cache_path(dir.path(), "abc", 7, THUMB_LONG_EDGE);
         std::fs::write(&path, &broken).unwrap();
         let calls = std::sync::atomic::AtomicUsize::new(0);
 
-        let served = cached_or_generated_thumb(dir.path(), "abc", 7, || {
+        let served = cached_or_generated_thumb(dir.path(), "abc", 7, THUMB_LONG_EDGE, || {
             calls.fetch_add(1, Ordering::SeqCst);
             Ok(real_page_bytes())
         })
@@ -466,7 +469,7 @@ fn a_broken_cached_tile_is_regenerated_and_replaced() {
             expected,
             "{kind}: must replace the broken file"
         );
-        let again = cached_or_generated_thumb(dir.path(), "abc", 7, || {
+        let again = cached_or_generated_thumb(dir.path(), "abc", 7, THUMB_LONG_EDGE, || {
             panic!("{kind}: the replacement must be a hit")
         })
         .unwrap();
@@ -966,7 +969,7 @@ fn a_reading_page_and_a_tile_never_share_a_cache_path() {
     // At the tile's own long edge, so the two differ by the `r` in the
     // name rather than by the size — which is the case the doc calls out.
     let page = page_cache_path(dir, "abc", 3, THUMB_LONG_EDGE);
-    let tile = thumb_cache_path(dir, "abc", 3);
+    let tile = thumb_cache_path(dir, "abc", 3, THUMB_LONG_EDGE);
 
     assert_ne!(page, tile, "same inputs, two different outputs");
     assert!(page.starts_with(dir), "under the cache directory");
@@ -983,5 +986,70 @@ fn a_reading_page_and_a_tile_never_share_a_cache_path() {
         page,
         page_cache_path(dir, "abc", 3, 800),
         "and a different size is a different rendering"
+    );
+}
+
+/// O134: the long edge a tile is generated at and the path it is cached under
+/// come from one argument. A second size is a second file, and the first is
+/// left exactly as it was — which is what lets a library that has been read
+/// keep every tile it has already made.
+#[test]
+fn a_tile_is_cached_and_generated_at_the_long_edge_it_was_asked_for() {
+    let dir = tempdir_for_test();
+    let page = || Ok(real_page_bytes());
+
+    let small = cached_or_generated_thumb(dir.path(), "abc", 7, THUMB_LONG_EDGE, page).unwrap();
+    let large = cached_or_generated_thumb(dir.path(), "abc", 7, 480, page).unwrap();
+
+    assert_eq!(long_edge_of(&small), THUMB_LONG_EDGE, "the 160 px tile");
+    assert_eq!(long_edge_of(&large), 480, "the 480 px tile");
+    assert!(
+        thumb_cache_path(dir.path(), "abc", 7, THUMB_LONG_EDGE).exists(),
+        "the 160 px file is still there"
+    );
+    assert!(
+        thumb_cache_path(dir.path(), "abc", 7, 480).exists(),
+        "and the 480 px file is beside it"
+    );
+    assert_ne!(
+        std::fs::read(thumb_cache_path(dir.path(), "abc", 7, THUMB_LONG_EDGE)).unwrap(),
+        std::fs::read(thumb_cache_path(dir.path(), "abc", 7, 480)).unwrap(),
+        "two sizes are two images, not one file written twice"
+    );
+}
+
+/// The long edge of an encoded image, for the test above.
+fn long_edge_of(bytes: &[u8]) -> u32 {
+    let image = image::load_from_memory(bytes).expect("a decodable image");
+    image.width().max(image.height())
+}
+
+/// Whole-branch review of O134, finding 7: `TILE_LONG_EDGES` is pinned to a
+/// literal here, deliberately, rather than being read through the constant.
+///
+/// Every other test that touches `TILE_LONG_EDGES` — `routes/tests.rs`'s
+/// `the_tile_route_sizes_any_page_to_a_tile_rung` and
+/// `a_download_only_account_gets_the_unsized_tile_whatever_rung_it_asks_for` —
+/// gets its edges by `for edge in crate::cover::TILE_LONG_EDGES`, so each one
+/// tests whatever the constant currently says rather than what it must say.
+/// None of them can see its *values* change.
+///
+/// `web/src/tileSize.ts`'s `TILE_LADDER` is documented to hold the same three
+/// numbers, and `web/src/tileSize.test.ts` pins its half the same way this
+/// test pins this side. Nothing before this test pinned this side, so the two
+/// could drift and every test on both sides would stay green: a rung present
+/// on one side only is not rejected — `routes.rs::get_thumb`'s `tile_edge`
+/// falls back to the 160 px tile for a `w` it does not recognise, the same
+/// fallback `cover_edge` already makes — so a screen asking for a rung this
+/// server dropped, or offering one the server never made, is served a soft
+/// image instead of the sharp one it asked for, and nothing goes red.
+#[test]
+fn tile_long_edges_is_pinned_to_its_literal() {
+    assert_eq!(
+        TILE_LONG_EDGES,
+        [160, 320, 480],
+        "web/src/tileSize.ts's TILE_LADDER must hold the same three; a rung \
+         missing from either side is answered with the 160 px tile instead of \
+         failing loudly"
     );
 }

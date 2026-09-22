@@ -315,8 +315,34 @@ export const pageUrl = (
   return longEdge === undefined ? path : `${path}?w=${longEdge}`
 }
 
-export const thumbUrl = (work: string, edition: string, index: number) =>
-  `${pageUrl(work, edition, index)}/thumb`
+/**
+ * A filmstrip tile for one page, at `longEdge` if one is given — O134.
+ *
+ * **The query goes after `/thumb`, and cannot come from `pageUrl`.** That
+ * helper appends its own `?w=` to the page path, which this route hangs
+ * `/thumb` off: reusing it would build `…/pages/3?w=320/thumb`, a path no
+ * route matches. The two sizes are deliberately different parameters of
+ * different routes — a page's `w` is what the reader draws, a tile's is one
+ * of `tileSize.ts`'s three rungs.
+ *
+ * Without one it is the 160 px tile — what `CreditsPanel.tsx` still asks for
+ * (its thumbnails are 56 px tall, so even a 3× screen wants only 168 and a
+ * rung there would fetch 320 to fix nothing), and what an account that may not
+ * stream is given whatever it asks for.
+ *
+ * `library.ts`'s `workCover` does **not** come through here at all: it builds
+ * its own URL against the same tile route and `coverSources` adds a cover-size
+ * `?w=` to it. Two callers of one route, sized by two different ladders.
+ */
+export const thumbUrl = (
+  work: string,
+  edition: string,
+  index: number,
+  longEdge?: number,
+) => {
+  const path = `${pageUrl(work, edition, index)}/thumb`
+  return longEdge === undefined ? path : `${path}?w=${longEdge}`
+}
 
 /**
  * One entry of `GET /api/works` — enough to identify a work, group it under

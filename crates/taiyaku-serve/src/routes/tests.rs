@@ -1712,7 +1712,7 @@ async fn a_tile_is_cached_under_its_offset_in_its_member_not_its_index() {
         ("sha-b", 2, "blue"),
         ("sha-a", 0, "grey"),
     ] {
-        let path = crate::cover::thumb_cache_path(&dir, sha, offset);
+        let path = crate::cover::thumb_cache_path(&dir, sha, offset, crate::cover::THUMB_LONG_EDGE);
         let cached = std::fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
         assert_eq!(colour_of(&cached), colour, "{}", path.display());
     }
@@ -4016,6 +4016,45 @@ async fn a_restricted_account_cannot_patch_alignments_on_a_work_in_a_withheld_ro
     );
 }
 
+/// O134: the rule `refuse_if_cannot_stream` refuses on, read as a question.
+///
+/// **No `Principal` means yes**, and that is the branch this pins: a server
+/// configured without auth puts none in the extensions and every route is open
+/// there. `get_thumb` asks this before honouring a `?w=`, so a `false` here
+/// would drop every tile in that configuration to 160 px silently — no test
+/// that signs in can reach it, and a soft tile looks like a tile.
+#[test]
+fn can_stream_is_true_when_no_principal_is_present_and_follows_the_flag_when_one_is() {
+    let empty = axum::http::Extensions::new();
+    assert!(can_stream(&empty), "no principal at all may stream");
+
+    let mut may = axum::http::Extensions::new();
+    may.insert(crate::auth::Principal {
+        user_id: 1,
+        role: crate::auth::Role::User,
+        can_download: true,
+        can_stream: true,
+        can_stamp: false,
+        roots: Vec::new(),
+    });
+    assert!(can_stream(&may));
+
+    let mut may_not = axum::http::Extensions::new();
+    may_not.insert(crate::auth::Principal {
+        user_id: 1,
+        role: crate::auth::Role::User,
+        can_download: true,
+        can_stream: false,
+        can_stamp: false,
+        roots: Vec::new(),
+    });
+    assert!(!can_stream(&may_not));
+    assert!(
+        refuse_if_cannot_stream(&may_not).is_some(),
+        "and the refusal still refuses on exactly that"
+    );
+}
+
 /// The account `refuse_if_cannot_stream` refuses: may browse and download, not
 /// read pages here. User 1 is made an ordinary user first, because a capability
 /// is withheld from a user, never from an admin.
@@ -4065,12 +4104,13 @@ async fn a_download_only_account_sees_covers_at_every_size_and_still_no_pages() 
     );
 }
 
-/// The tile route's `w` is for covers and nothing else: page 0, at one of
-/// `cover::COVER_LONG_EDGES`. Any other page, any other size, or a `w` that is
-/// not a number gets the filmstrip tile, so an account without `can_stream`
-/// cannot read the pages it may not stream at a size worth reading.
+/// Since O134 a `w` may also be a tile rung, on any page, for a caller that
+/// may stream. This test's account may not — `without_can_stream` — and none
+/// of these sizes is a rung anyway, so every one of them still falls through
+/// to the plain tile: page 0, at one of `cover::COVER_LONG_EDGES`, remains the
+/// only sized answer this account gets.
 #[tokio::test]
-async fn the_tile_route_sizes_page_zero_only_and_only_to_a_cover_size() {
+async fn the_tile_route_sizes_page_zero_to_a_cover_size_and_refuses_the_rest_a_size() {
     let (state, _fixture) = crate::test_support::state_with_tall_pages();
     without_can_stream(&state);
     let app = crate::test_support::authenticating(build_router(state.clone()), &state.library);
@@ -4085,6 +4125,143 @@ async fn the_tile_route_sizes_page_zero_only_and_only_to_a_cover_size() {
         let (status, _, body) = fetch(&app, uri, None).await;
         assert_eq!(status, StatusCode::OK, "{uri}");
         assert_eq!(long_edge_of(&body), 160, "{uri} is the filmstrip tile");
+    }
+}
+
+/// O134: any page, at any rung of `cover::TILE_LONG_EDGES`, for a caller that
+/// may stream — this fixture's router has no `Principal`, which `can_stream`
+/// answers `true` for.
+///
+/// **Both loops, and page 1 first**, because the two are different claims.
+/// Page 1 is the plain one: a page O133's `cover_edge` never touched, sized by
+/// `tile_edge` alone. Page 0 is the composition — it is the one page that is
+/// both a cover and a tile, and a rung there must still reach `tile_edge`
+/// rather than the cover branch that runs ahead of it.
+///
+/// The pages are 600×900 (`test_support::state_with_tall_pages`), so every
+/// rung is a real downward resize and the served image says which. **On page 0
+/// the size and the content type cannot tell the two branches apart**: the
+/// fixture is one flat colour, where the tile's fast filter and `serve_page`'s
+/// quality filter encode byte-identically at the same target. The `ETag` is
+/// what separates them — `serve_page` always sends one and a tile never does
+/// (`get_thumb`'s own doc says why) — so that assertion is the one carrying
+/// page 0's half of this test, and the other two are its symmetry with page 1.
+#[tokio::test]
+async fn the_tile_route_sizes_any_page_to_a_tile_rung() {
+    let (state, _fixture) = crate::test_support::state_with_tall_pages();
+    let app = build_router(state);
+
+    for edge in crate::cover::TILE_LONG_EDGES {
+        let uri = format!("/api/works/w/a/pages/1/thumb?w={edge}");
+        let (status, headers, body) = fetch(&app, &uri, None).await;
+        assert_eq!(status, StatusCode::OK, "{uri}");
+        assert_eq!(long_edge_of(&body), edge, "{uri}: page 1 at {edge} px");
+        assert_eq!(
+            headers.get(header::CONTENT_TYPE).expect("a content type"),
+            "image/jpeg",
+            "{uri}: a tile is always JPEG"
+        );
+    }
+
+    // Page 0 too, at a tile rung: this test's name says "any page", and page 0
+    // is the one page `cover_edge` also looks at. `cover_edge` matches page 0
+    // only at a `cover::COVER_LONG_EDGES` size, and those are disjoint from
+    // `cover::TILE_LONG_EDGES` (asserted at compile time beside the latter),
+    // so a tile rung here still falls through to `tile_edge` — a rung on page
+    // 0 is a tile, not a cover.
+    //
+    // The `ETag` check is load-bearing, not decorative: on this fixture a
+    // page 0 wrongly routed through `cover_edge` comes back at the same long
+    // edge and the same `image/jpeg` content type as the tile does — both
+    // resize a same-color page to the same box and encode it the same way,
+    // so those two checks alone pass whichever branch served it. `get_thumb`'s
+    // doc says the tile sends no `ETag`; `serve_page`, which is what
+    // `cover_edge` reaches, always sends one. That header is what actually
+    // tells the two branches apart here.
+    for edge in crate::cover::TILE_LONG_EDGES {
+        let uri = format!("/api/works/w/a/pages/0/thumb?w={edge}");
+        let (status, headers, body) = fetch(&app, &uri, None).await;
+        assert_eq!(status, StatusCode::OK, "{uri}");
+        assert_eq!(long_edge_of(&body), edge, "{uri}: page 0 at {edge} px");
+        assert_eq!(
+            headers.get(header::CONTENT_TYPE).expect("a content type"),
+            "image/jpeg",
+            "{uri}: a tile is always JPEG, page 0 included"
+        );
+        assert!(
+            headers.get(header::ETAG).is_none(),
+            "{uri}: a tile carries no ETag; an ETag here means page 0 was served as a cover"
+        );
+    }
+}
+
+/// O134's line: a sharper tile is for a reader, and an account that may browse
+/// and download but not read pages is not one.
+///
+/// It is answered with the 160 px tile rather than a `403` — the same fallback
+/// `cover_edge` already makes for a `w` this server does not recognise — so
+/// such an account's strip is soft rather than broken. It costs that account
+/// nothing real: the page route refuses it every page, asserted below, so
+/// there is nothing behind the strip to be sharp about.
+///
+/// **This is the test O133 did not have.** `download/tests.rs` asks only for
+/// the unsized tile, which is how O133's first version reached review serving
+/// every cover through the page route that refuses this account.
+#[tokio::test]
+async fn a_download_only_account_gets_the_unsized_tile_whatever_rung_it_asks_for() {
+    let (state, _fixture) = crate::test_support::state_with_tall_pages();
+    without_can_stream(&state);
+    let app = crate::test_support::authenticating(build_router(state.clone()), &state.library);
+
+    for edge in crate::cover::TILE_LONG_EDGES {
+        let uri = format!("/api/works/w/a/pages/1/thumb?w={edge}");
+        let (status, _, body) = fetch(&app, &uri, None).await;
+        assert_eq!(status, StatusCode::OK, "{uri}");
+        assert_eq!(
+            long_edge_of(&body),
+            crate::cover::THUMB_LONG_EDGE,
+            "{uri}: the tile, not the rung"
+        );
+    }
+
+    let (status, _, _) = fetch(&app, "/api/works/w/a/pages/1?w=480", None).await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "the page route still refuses this account a page"
+    );
+}
+
+/// O134's fallback, for a caller that *may* stream: a `w` this server makes no
+/// tile at is the 160 px tile — not a `400`, and not a resize to whatever was
+/// asked for.
+///
+/// **The neighbouring download-only test cannot stand in for this one.** There
+/// `can_stream` short-circuits the whole branch before `tile_edge`'s answer
+/// matters, so it would pass against a `tile_edge` that accepted every number.
+/// Here nothing short-circuits, so it is `tile_edge` itself being pinned —
+/// including that a *cover* size is not a tile size on a page that is not
+/// page 0.
+#[tokio::test]
+async fn a_w_that_is_not_a_tile_rung_is_the_tile() {
+    let (state, _fixture) = crate::test_support::state_with_tall_pages();
+    let app = build_router(state);
+
+    for uri in [
+        "/api/works/w/a/pages/1/thumb?w=768",
+        "/api/works/w/a/pages/1/thumb?w=512",
+        "/api/works/w/a/pages/1/thumb?w=321",
+        "/api/works/w/a/pages/1/thumb?w=abc",
+        "/api/works/w/a/pages/1/thumb?w=",
+        "/api/works/w/a/pages/1/thumb",
+    ] {
+        let (status, _, body) = fetch(&app, uri, None).await;
+        assert_eq!(status, StatusCode::OK, "{uri}");
+        assert_eq!(
+            long_edge_of(&body),
+            crate::cover::THUMB_LONG_EDGE,
+            "{uri}: not a rung, so the tile"
+        );
     }
 }
 

@@ -16,6 +16,11 @@ import { Filmstrip, type FilmstripProps } from './Filmstrip'
 import type { Group } from './pairing'
 import type { Position } from './resolver'
 import { mount } from './testing/mount'
+import {
+  requestedTileEdge,
+  STRIP_BREAKPOINT_PX,
+  STRIP_TILE_PX,
+} from './tileSize'
 
 /**
  * What jsdom cannot answer: whether a windowed rail is the same *shape* as an
@@ -170,6 +175,56 @@ describe('a windowed rail has the shape of an unwindowed one', () => {
           ? paddingLeft + (groups.length - 1 - 60) * (g.nominal + g.gap)
           : paddingLeft + 60 * (g.nominal + g.gap)
       expect(offset).toBeCloseTo(expected, 0)
+    })
+  }
+})
+
+/**
+ * O134: what the strip asks the server for follows the stylesheet, at both
+ * of its breakpoints, on the real `matchMedia` and the real
+ * `devicePixelRatio`.
+ *
+ * **One `it()` per viewport, not one `it()` looping over both.**
+ * `testing/mount.ts` keeps a single module-level `root`/`host` pair and tears
+ * it down in `afterEach`; a second `mount()` call inside one test would
+ * overwrite those before the first is ever unmounted, leaking the first
+ * host into `document.body`. `describe('a windowed rail has the shape of an
+ * unwindowed one')` above already follows this shape for `ltr`/`rtl` — a
+ * `for` loop outside `it()`, generating one test per case — and this follows
+ * it too.
+ *
+ * **Mounted fresh at each viewport**, because the rung is read once at mount
+ * by design (`Filmstrip.tsx`'s `tileEdge`) — resizing a mounted strip is
+ * deliberately not expected to move it.
+ *
+ * **What this cannot see at `devicePixelRatio` 1**: both branches round up
+ * to the same 160, so the two viewports agreeing proves the wiring, not the
+ * ladder. The ladder's own discrimination is `tileSize.test.ts`'s table,
+ * where the density is an argument. What is checked here and nowhere else is
+ * that the height fed to it is the one the stylesheet actually drew.
+ */
+describe("the strip's rung follows the stylesheet's drawn tile height", () => {
+  for (const [width, height] of [
+    [1440, 900],
+    [390, 844],
+  ] as const) {
+    it(`asks for the rung its own drawn tile height calls for, ${width}x${height}`, async () => {
+      await page.viewport(width, height)
+      const host = inReader(<Filmstrip {...props()} />)
+      const rail = railOf(host)
+      const drawn = Number.parseFloat(
+        getComputedStyle(rail).getPropertyValue('--strip-tile'),
+      )
+      expect(drawn).toBe(
+        width < STRIP_BREAKPOINT_PX ? STRIP_TILE_PX.narrow : STRIP_TILE_PX.wide,
+      )
+
+      const expected = requestedTileEdge(drawn, window.devicePixelRatio)
+      const images = [...rail.querySelectorAll('img')]
+      expect(images.length).toBeGreaterThan(0)
+      for (const img of images) {
+        expect(img.getAttribute('src')).toContain(`/thumb?w=${expected}`)
+      }
     })
   }
 })

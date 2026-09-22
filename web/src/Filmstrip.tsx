@@ -3,6 +3,7 @@ import { thumbUrl } from './api'
 import type { Group } from './pairing'
 import type { Position } from './resolver'
 import { stepFor, type Direction } from './modules/direction'
+import { stripTileEdge } from './tileSize'
 import {
   focusAtFraction,
   medianTileWidth,
@@ -306,6 +307,33 @@ export function Filmstrip({
   // state they are in.
   const anchorRef = useRef<HTMLButtonElement>(null)
   const railRef = useRef<HTMLDivElement>(null)
+
+  // O134. The rung every tile in this strip asks the server for, read once at
+  // mount.
+  //
+  // **Lazy state rather than an effect**, so the very first render already
+  // carries it: setting it afterwards would mean every visible tile fetched at
+  // 160 px and then again at its real rung, which is the whole cost this row
+  // is trying to remove doubled.
+  //
+  // **Once per mount, and not on resize.** `devicePixelRatio` changes when a
+  // window moves between monitors and the breakpoint changes when one is
+  // dragged across 900 px; re-reading either would refetch every tile in the
+  // window to sharpen a strip nobody is looking at mid-drag.
+  //
+  // A mount is not a reading session: `Chrome` returns `null` while hidden, so
+  // this strip unmounts on every chrome hide and reads the rung again on the
+  // next show. (O140 windowed the rail rather than keeping it mounted — the
+  // mount-once candidate is O143, which the user declined.) That costs
+  // nothing: the rung is a pure function of the viewport and the density, so a
+  // re-read on an unchanged screen yields the same URLs and the browser cache
+  // answers them. What it does mean is that a reader who hides the chrome,
+  // drags the window across 900 px and shows it again *does* get the right
+  // rung — the stale case this comment guards against is narrower than it
+  // looks, and is only ever within one showing of the bars.
+  const [tileEdge] = useState(() =>
+    stripTileEdge(typeof window === 'undefined' ? undefined : window),
+  )
 
   // Which tile the window is centred on: the same `current ?? paired ??
   // anchor` order the centring effect below scrolls to, resolved to an index
@@ -850,7 +878,7 @@ export function Filmstrip({
                 }}
               >
                 <img
-                  src={thumbUrl(work, edition, page)}
+                  src={thumbUrl(work, edition, page, tileEdge)}
                   // 1-based — this is read by a person, and `page` itself
                   // (used for `thumbUrl` above) stays the zero-based value the
                   // server expects, the same boundary convention `App.tsx`'s

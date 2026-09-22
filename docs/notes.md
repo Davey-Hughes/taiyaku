@@ -22191,3 +22191,266 @@ fired in between. And a probe reported every tile as double-width, because it
 detected the unit count with `minWidth.includes('* 2')`, which matches the
 *border* term `--strip-tile-border) * 2` on every tile — caught only because
 it produced an impossible aggregate.
+
+## O134: what a sharper tile costs, measured — 2026-09-22
+
+Steps 1, 2 and 6 of Task 8's brief. Machine: this workstation (AMD Ryzen 9
+9950X3D, 16 cores/32 threads, 60 GiB RAM), not the NAS the product deploys to.
+Steps 3–5 — the phone pass and `docs/status.md`'s five-part edit, which
+cannot be written until that pass has happened — are a separate pass. The
+measurements below were taken without touching `docs/status.md`; the test
+counts in it were corrected afterwards, on their own, for the reason the gate
+gives below.
+
+**The gate.**
+
+```
+env -u TAIYAKU_CORPUS NEXTEST_TEST_THREADS=8 RUST_TEST_THREADS=8 scripts/check-all.sh
+```
+
+Red, but only at its last step. `cargo fmt --all -- --check`, `cargo clippy
+--workspace --all-targets --all-features -- -D warnings`, the rustdoc build,
+the advisory pedantic clippy pass, and `cargo llvm-cov nextest` all passed —
+2236 tests run, 2236 passed, 4 skipped, 93.46% aggregate line coverage, every
+file at or above its per-file floor. `scripts/status-test-count.mjs` then
+refused: `docs/status.md` states 2231 tests at both of the lines it checks,
+against the 2236 this run just recorded. The five are this branch's own
+Task 1–7 commits, each of which added tests without the count being updated.
+Nothing else in the gate found anything.
+
+**Corrected separately, and the gate re-run green.** The count is not the row's
+prose and does not wait on the phone, so it was fixed on its own rather than
+held for the five-part edit: 2231 → 2236 at both checked sites. Fixing it
+surfaced a staleness **nothing gates** — `status-test-count.mjs` checks the
+Rust figure alone, and the web clause beside it was already wrong before this
+branch began, claiming 1,245 `node` / 1,070 `jsdom` / "seventy" `browser`
+against a true 1,282 / 1,096 / 75 at `main`. Re-measured rather than
+incremented, per that clause's own history of drifting:
+
+```
+npx vitest run --project node --reporter=default     →  66 files, 1,291 tests
+npx vitest run --project jsdom --reporter=default     →  49 files, 1,096 tests
+npx vitest run --project browser --reporter=default   →   7 files,    77 tests
+```
+
+A later commit on this branch added one more Rust test, and both Rust sites
+moved again, to **2237**, which is what `docs/status.md` reads now. The web
+figures did not move with it: that commit changed an assertion inside an
+existing `it()` rather than adding one.
+
+1,291 + 1,096 = 2,387 is the figure the clause states, with the browser
+project's 77 counted separately as it always has been. The re-run of the whole
+gate after that edit ends `all green, except NOT MEASURED: standing corpus
+checks (TAIYAKU_CORPUS unset)`, exit 0; the corpus job run on its own
+afterwards is 24 passed, 0 failed.
+
+**The cache measurement.** `akame-ga-kill----v01--2015--cbz`, 237 pages, the
+same edition O140 profiled, served by this branch's own release build:
+
+```
+cargo build --release
+./target/release/taiyaku serve --db target/style-pass/lib/library.db \
+  --cache <a directory created empty for this measurement, outside the repo> \
+  --addr 127.0.0.1:8489
+```
+
+`cache_root.rs`'s `--cache` flag pins the root (`Resolution::Flag`), so the
+figures below are this run's and nothing else's: the directory held nothing
+before the first request (`find <dir> -mindepth 1` printed nothing), and
+nothing outside it moved during the run — neither the repository's own
+`.taiyaku-cache/` nor `$XDG_CACHE_HOME/taiyaku` gained a file dated today,
+checked afterward with `find <dir> -newermt '2026-09-22 00:00:00'` against
+both. The scratch library ships one account (`local`, `admin`), and every
+route — including the plain 160 px tile — answers `401` without a session, so
+a password was set (`taiyaku library user password local --db
+target/style-pass/lib/library.db`) and a cookie taken from `POST
+/api/session` (with a matching `Origin` header, which the session route
+requires) before driving any request.
+
+For each of `cover.rs`'s `TILE_LONG_EDGES` — 160, 320, 480 — every one of the
+edition's 237 pages was fetched once, cold, one request at a time, in page
+order:
+
+```
+GET /api/works/akame-ga-kill----v01--2015--cbz/raw/pages/{0..236}/thumb?w={edge}
+```
+
+| rung | files | total bytes | total | mean/tile | cold pass | ratio to 160 px |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 160 px | 237 | 1,647,213 | 1.57 MiB | 6,950 B | 4.26 s | 1.00× |
+| 320 px | 237 | 5,426,877 | 5.18 MiB | 22,898 B | 5.14 s | **3.29×** |
+| 480 px | 237 | 11,025,981 | 10.52 MiB | 46,523 B | 6.50 s | **6.69×** |
+
+All three rungs held at once — every size a dense screen might ask for,
+cached together for this one edition: 711 files, 18,100,071 bytes, 17.26 MiB.
+
+**This replaces §8's extrapolation; it does not confirm it.** The design doc
+(`docs/superpowers/specs/2026-09-21-o134-sharper-strip-tile-design.md`, §8 item 1)
+guessed 320 px near 3.6 MiB and 480 near 7.2 MiB per 195-page edition against
+O11's 1.12 MiB at 160 — ratios of 3.21× and 6.43×, extrapolated from two of
+O133's points on a different edition's cover. The ratios measured here, on
+this edition's own 237 tiles at all three rungs, are higher at both: 3.29×
+and 6.69×, about 2% and 4% over the guess. The guess's assumed shape — bytes
+growing as area to the 0.85 — holds up: solved from these measured ratios,
+bytes here grow as edge^1.72–1.74, i.e. area^0.86–0.87, close to what was
+assumed. It is the absolute prediction that undershot, not the shape of the
+curve. **O11's row needs the ratios measured above, not §8's guess.**
+
+The cold-pass wall-clock is a sequential loop of separate `curl` invocations
+(one TCP connection per request) against this workstation, not the NAS; it is
+a cold-generation figure — every request a cache miss, so each pays a resize —
+not a warm-serving or network benchmark.
+
+**The mutation sweep.**
+
+```
+scripts/mutants.sh --since main
+```
+
+23 mutants tested in 5 minutes: 13 caught, 4 missed, 6 unviable. The diff this
+sweep covers is exactly `cover.rs` and `routes.rs` (`git diff main...HEAD
+--stat -- '*.rs'`: those two files, 84 and 49 lines, plus their `tests.rs`
+files, which cargo-mutants does not mutate). All 23 mutants come from those
+two files; nothing in the diff went untested.
+
+The 13 caught are the branch's functional core: `can_stream`,
+`refuse_if_cannot_stream`, `tile_edge`, `get_thumb`, `cached_or_generated_thumb`
+and `thumb_cache_path` each have a mutant a test catches — the sizing gate and
+the fallback both have an assertion behind them, not just a line that runs.
+
+**All 4 missed and all 6 unviable are the same ten lines**: the `const _: ()
+= { ... }` block below `TILE_LONG_EDGES` that asserts, at compile time, that
+`TILE_LONG_EDGES` and `COVER_LONG_EDGES` share no value (its own doc comment
+says why: `get_thumb` tries the cover branch first, so an overlapping value
+would take page 0 down the cover route instead of `tile_edge` and silently
+break "a tile is always JPEG" for that one page). This is a compile-time
+double loop, not runtime logic, and every mutant in it is a mutation of the
+two loop guards or their increments:
+
+```
+crates/taiyaku-serve/src/cover.rs:86:13: replace < with ==   MISSED
+crates/taiyaku-serve/src/cover.rs:86:13: replace < with >    MISSED
+crates/taiyaku-serve/src/cover.rs:88:17: replace < with ==   MISSED
+crates/taiyaku-serve/src/cover.rs:88:17: replace < with >    MISSED
+crates/taiyaku-serve/src/cover.rs:86:13: replace < with <=   unviable
+crates/taiyaku-serve/src/cover.rs:88:17: replace < with <=   unviable
+crates/taiyaku-serve/src/cover.rs:95:15: replace += with -=  unviable
+crates/taiyaku-serve/src/cover.rs:95:15: replace += with *=  unviable
+crates/taiyaku-serve/src/cover.rs:97:11: replace += with *=  unviable
+crates/taiyaku-serve/src/cover.rs:97:11: replace += with -=  unviable
+```
+
+None of the 4 missed are in `docs/mutants-baseline.md` yet (the script:
+"4 survivor(s) this run"). **They are equivalent mutants, not an untested
+branch.** `==` and `>` both turn `while i < LEN` into a guard that is false
+at `i = 0`, so the loop body — and every `assert!` inside it — never runs.
+Since the real arrays already satisfy the invariant (the assertions never
+fire in the unmutated code either), a build that skips them compiles
+identically and every other test passes identically: nothing observable
+distinguishes the mutant from the original, so no test — present or
+plausible — could catch it without deliberately reintroducing an overlap and
+checking that the *build* then fails, which is a compile-fail test this
+project does not otherwise write.
+
+**The 6 unviable are the same block's `<=` and its two increments failing to
+build**, and reading one confirms why rather than assuming it: the `<=`
+mutant at `cover.rs:86:13`, logged verbatim,
+
+```
+error[E0080]: index out of bounds: the length is 3 but the index is 3
+  --> crates/taiyaku-serve/src/cover.rs:90:17
+   |
+90 |                 TILE_LONG_EDGES[i] != COVER_LONG_EDGES[j],
+```
+
+— `i <= TILE_LONG_EDGES.len()` lets `i` reach `3`, and `TILE_LONG_EDGES[3]` is
+out of bounds for a 3-element array, so `const` evaluation panics and the
+crate fails to compile. **The four increment mutants do not fail that way**,
+and saying they did was wrong — compiled standalone to find out, since the
+sweep reports only the verdict:
+
+- `+=` → `-=` underflows rather than going negative, because these are
+  `usize`: `error[E0080]: attempt to compute ⁠0_usize - 1_usize⁠, which would
+  overflow`.
+- `+=` → `*=` does not move the index at all — `j *= 1` is `j` — so the loop
+  never ends: `error: constant evaluation is taking a long time`, under
+  `#[deny(long_running_const_eval)]`.
+
+Three different compiler errors, one per shape. **For this particular check
+the compiler is the test**, and it rejected six of the ten mutations.
+
+**What the six unviable results do and do not evidence.** They show the block
+is genuinely const-evaluated — a block the compiler never ran could not fail
+to build. They do **not** show the assertion inside it is the right one; an
+unviable mutant is a mutant that never ran. That the guard fires on a real
+overlap is a separate check, made the same way: the same block with an
+overlapping value in both arrays gives `error[E0080]: evaluation panicked`.
+
+**What this sweep cannot see.** `git diff main...HEAD --stat -- '*.ts'
+'*.tsx'` shows **360 changed lines across ten files** — `tileSize.ts` (new),
+`Filmstrip.tsx`, `ProposalRow.tsx`, `api.ts`, their tests, and
+`styles/reader.css.test.ts` — the other half
+of this branch's logic, entirely outside cargo-mutants' reach, which mutates
+Rust only. Those files' own coverage is whatever `npx vitest` gives them; this
+sweep says nothing about it either way.
+
+### O134: the device pass — 2026-09-22
+
+The reader on the user's own iPhone 17 Pro Max, iOS Safari over the tailnet,
+against **the production build** (`pnpm -C web run build`, served by
+`vite preview` behind `tailscale serve`, which supplies the TLS iOS wants) and
+a release `taiyaku serve` on the scratch copy of the NAS library
+(`target/style-pass/lib/library.db`). Volume: `akame-ga-kill----v01--2015--cbz`.
+
+**What the phone asked for, read off the cache rather than a request log.** The
+tile cache names every file for the long edge it holds
+(`cover.rs`'s `thumb_keyed_path`: `{sha}-p{offset}-{edge}v{version}.jpg`), so
+the sizes served are a directory listing. For this volume's member, during the
+pass:
+
+| written | tiles | long edge |
+| --- | ---: | ---: |
+| 02:16, the first burst | **26** | 320 px |
+| 02:26, reading on | 14 | 320 px |
+
+The 02:16 burst is the first chrome open rather than an inference from order: this member had no
+320 px tile cached before this pass, so the first show is the first miss, and all 26 share one
+minute's timestamp.
+
+**Zero tiles at 160 px were written.** The one 160 px tile this member has is
+dated 2026-09-09, from a session months before this branch. So the phone took
+the 320 px rung and nothing else, which is what `requestedTileEdge(96, 3)`
+answers: the strip's tile is 96 CSS px tall below the 900 px breakpoint, a 3×
+screen wants 288 device pixels, and 320 is the first rung at or above it.
+
+**26 on a first open is O140's own number.** That row measured a windowed rail
+requesting 26 thumbnails on a first open against 101 unwindowed (its table,
+"thumbnail requests on a first open | 101 | **26**"). The same 26 arriving here,
+on real hardware rather than under emulation, matches that count exactly.
+
+**It is not a check on the window itself.** The window is 33 tiles, fixed by
+`tiles.ts`'s `windowMargin`; 26 is the smaller number that `loading="lazy"`
+did not defer at that viewport, and the iPhone's Safari viewport is not the
+390 CSS px O140 emulated. Two viewports agreeing on 26 is worth recording and
+is not evidence about the window's size.
+
+**What the user actually reported, which is not "sharp".** Asked whether the
+strip looked sharp, they answered: *"by 'pretty sharp' it's hard to tell on a
+phone because the thumbnails are so tiny. I can't really differentiate so I
+would say they are sharp enough as is."*
+
+Record that as it stands rather than rounding it up. **The improvement is real
+and measured; it is not one the user could see.** Before this branch a 96 CSS
+px tile on a 3× screen was given 160 px of image for the 288 device pixels it
+draws into — 1.8× upscaled. It is now given 320, so nothing is upscaled. Both
+states pass this reader's eye at this size.
+
+**What that is evidence for, and what it is not.** It closes O134's own
+question — the row asked whether the user minds the softness, they chose the
+sharper tile on 2026-09-20, and the softness is gone by measurement. It does
+**not** establish that a sharper strip tile is worth its price generally: the
+cache cost this buys is 3.29× per edition at 320 px (measured above), paid for
+a difference this device's own owner could not pick out. Any future proposal of
+the same shape — a 480 px rung for a 3× desktop, or the same treatment
+elsewhere — should be asked to show the difference is visible before it is
+asked to show it is cheap.

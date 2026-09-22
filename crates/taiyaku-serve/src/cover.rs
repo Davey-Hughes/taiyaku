@@ -12,7 +12,8 @@
 //!
 //! Cached by the member's `sha256` **and** by the parameters the image was
 //! generated with — the long edge (`LONG_EDGE` for a cover, `THUMB_LONG_EDGE`
-//! for a tile) and a format version, both folded into the cache path. A tile
+//! for a tile that did not ask for another — `TILE_LONG_EDGES` are the ones
+//! it may ask for) and a format version, both folded into the cache path. A tile
 //! is additionally keyed by the page's offset within its member, because a
 //! member has one cover but many tiles. Every axis is content-addressed: the
 //! same archive under two sidecars generates one cover, an archive that is
@@ -41,13 +42,61 @@ use taiyaku_read::MAX_DECODE_ALLOC;
 /// not the slow part of opening a feed.
 const LONG_EDGE: u32 = 512;
 
-/// The long edge of a filmstrip tile, in pixels.
+/// The long edge of a filmstrip tile, in pixels — the size every tile was
+/// served at until O134, and still the one a request that does not ask for
+/// another gets.
 ///
 /// A cover is 512 because it fills a grid cell; a tile sits in a strip along
 /// the bottom edge and there are ~195 of them per volume, so it is sized for
 /// the strip rather than for a grid. Folded into the cache path exactly as
 /// `LONG_EDGE` is, so changing it invalidates by construction.
-const THUMB_LONG_EDGE: u32 = 160;
+pub const THUMB_LONG_EDGE: u32 = 160;
+
+/// The long edges a filmstrip tile is offered at, one per screen density —
+/// O134.
+///
+/// A tile is drawn 160 px tall in the strip, and 96 below the 900 px
+/// breakpoint (`web/src/styles/reader.css`'s `--strip-tile`), so one, two and
+/// three device pixels per CSS pixel want at most 480 — and a phone, whose
+/// tile is the shorter one, wants 320 rather than the 480 an `srcSet`'s `3x`
+/// descriptor would have fetched.
+///
+/// **The web holds the same three** (`web/src/tileSize.ts`'s `TILE_LADDER`),
+/// the way `COVER_LONG_EDGES` is held on both sides. A rung added there alone
+/// is a `w` this server does not recognise, answered with the 160 px tile —
+/// soft rather than broken, and so invisible to any test that does not decode
+/// what came back.
+pub const TILE_LONG_EDGES: [u32; 3] = [THUMB_LONG_EDGE, 320, 480];
+
+/// `TILE_LONG_EDGES` and `COVER_LONG_EDGES` must never share a value.
+///
+/// `routes.rs::get_thumb` tries `cover_edge` before `tile_edge`, and
+/// `cover_edge` matches on page 0 alone but on *any* size in
+/// `COVER_LONG_EDGES` — so a `w` that landed in both arrays would take the
+/// cover branch on page 0 and never reach `tile_edge` at all. Page 0 would be
+/// served the archive's own bytes and content type, with an `ETag`, at
+/// exactly the size someone added expecting a sharper tile — silently
+/// breaking "a tile is always JPEG" for that one page while the rest of the
+/// filmstrip kept working, and every other page's `w` still found `tile_edge`
+/// unaffected. Today the two are disjoint by construction, not by anything
+/// that stops them from drifting apart; this makes drifting apart a build
+/// failure instead of a bug report.
+const _: () = {
+    let mut i = 0;
+    while i < TILE_LONG_EDGES.len() {
+        let mut j = 0;
+        while j < COVER_LONG_EDGES.len() {
+            assert!(
+                TILE_LONG_EDGES[i] != COVER_LONG_EDGES[j],
+                "TILE_LONG_EDGES and COVER_LONG_EDGES share a value: get_thumb's cover_edge \
+                 branch runs first and would take it on page 0, silently serving a cover instead \
+                 of a tile"
+            );
+            j += 1;
+        }
+        i += 1;
+    }
+};
 
 /// Bumped whenever a change to the output format or the resize algorithm
 /// would make an already-cached file the wrong output for the same input.
@@ -66,14 +115,16 @@ pub fn cache_path(dir: &Path, sha256: &str) -> PathBuf {
     keyed_path(dir, sha256, LONG_EDGE, FORMAT_VERSION)
 }
 
-/// Where a filmstrip tile for one page of one member is cached.
+/// Where a filmstrip tile for one page of one member is cached, at
+/// `long_edge`.
 ///
 /// Keyed on the member's `sha256` *and the page's offset within it*, because
 /// a member has one cover and 195 tiles. The offset rather than the
 /// edition-flat index, so a tile survives the edition gaining a member ahead
-/// of this one.
-pub fn thumb_cache_path(dir: &Path, sha256: &str, offset: u32) -> PathBuf {
-    thumb_keyed_path(dir, sha256, offset, THUMB_LONG_EDGE, FORMAT_VERSION)
+/// of this one. The long edge is an argument rather than the constant since
+/// O134: one page now has a file per size a screen has asked for.
+pub fn thumb_cache_path(dir: &Path, sha256: &str, offset: u32, long_edge: u32) -> PathBuf {
+    thumb_keyed_path(dir, sha256, offset, long_edge, FORMAT_VERSION)
 }
 
 /// `thumb_cache_path`, with the generation parameters as arguments, for
@@ -493,23 +544,32 @@ pub fn cached_or_generated(
     })
 }
 
-/// Read a cached filmstrip tile, or make one and cache it.
+/// Read a cached filmstrip tile at `long_edge`, or make one and cache it.
+///
+/// **One `long_edge` feeds both the path and the generator**, deliberately as
+/// a single argument: a file named for one size holding the pixels of another
+/// is a cache poisoning no later request can detect, since the bytes decode
+/// perfectly at the wrong size.
 pub fn cached_or_generated_thumb(
     dir: &Path,
     sha256: &str,
     offset: u32,
+    long_edge: u32,
     page: impl FnOnce() -> Result<Vec<u8>, String>,
 ) -> Result<Vec<u8>, String> {
-    at_path(&thumb_cache_path(dir, sha256, offset), dir, page, |bytes| {
-        thumbnail_at(&bytes, THUMB_LONG_EDGE)
-    })
+    at_path(
+        &thumb_cache_path(dir, sha256, offset, long_edge),
+        dir,
+        page,
+        |bytes| thumbnail_at(&bytes, long_edge),
+    )
 }
 
 /// The shared body: cache hit outside the permit, generation inside it,
 /// atomic publish via a per-attempt temp name.
 ///
 /// Takes the decode-and-resize step as a closure — `thumbnail` for a cover,
-/// `thumbnail_at(_, THUMB_LONG_EDGE)` for a tile — rather than a bare
+/// `thumbnail_at(_, long_edge)` for a tile — rather than a bare
 /// `long_edge`, so each caller keeps calling the entry point named in its own
 /// doc comment instead of `at_path` re-deriving which one to use from a
 /// number.
