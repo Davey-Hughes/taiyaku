@@ -198,6 +198,16 @@ export default defineConfig({
       },
     },
   },
+  // **Device passes only.** `vite preview` serves the production build, and
+  // `allowedHosts` is what lets it answer a request whose `Host` is this
+  // machine's tailnet name rather than localhost — which is how an iPhone
+  // reaches it, and iOS wants TLS, which `tailscale serve` terminates in
+  // front of this. Named exactly rather than `true`: the check exists to stop
+  // DNS rebinding, and one hostname keeps that protection everywhere else.
+  // Nothing in production uses `vite preview`.
+  preview: {
+    allowedHosts: ['davey-endeavor.walrus-census.ts.net'],
+  },
   server: {
     fs: {
       allow: ['.', wasmPkgDir],

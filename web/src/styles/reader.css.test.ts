@@ -49,13 +49,20 @@ describe('the reader root', () => {
     ])
   })
 
-  it('stands the strip’s tiles at 160 px, and 96 below the breakpoint', () => {
+  it('stands the strip’s tiles at 160 px and 96 below the breakpoint, with a matching starting --strip-unit', () => {
     expect(declared(readerSource, '.reader', '--strip-tile')).toEqual([
       '160px',
       '96px',
     ])
+    expect(declared(readerSource, '.reader', '--strip-unit')).toEqual([
+      '97px',
+      '54px',
+    ])
+    // Anchored to the phone breakpoint's own `.reader` block, not a search of
+    // the whole file — but not exclusive: `--strip-unit` lives in the same
+    // block (O140), and this must not regress the moment it does.
     expect(withoutComments(readerSource)).toMatch(
-      /@media \(width < 900px\)\s*\{\s*\.reader\s*\{\s*--strip-tile:\s*96px;\s*\}\s*\}/,
+      /@media \(width < 900px\)\s*\{\s*\.reader\s*\{[^}]*--strip-tile:\s*96px;/,
     )
   })
 

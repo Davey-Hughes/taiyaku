@@ -50,6 +50,47 @@
    * O11 records. The hover preview (`Chrome.tsx`'s `previewMaxHeight`) is
    * the cheaper answer for the one case that needs more. */
   --strip-tile: 160px;
+  /* One nominal page-width in the strip, and the two figures the rail's own
+   * geometry is made of. `--strip-unit` is **a starting value, not the last
+   * word**: it is the width a one-page tile's image drew at this breakpoint
+   * when measured on a desktop (O140, 2026-09-21), which is not `--strip-tile`
+   * times an aspect — `--strip-tile` is a height and the image draws shorter
+   * than it. **How much shorter is not the same everywhere**: measured at
+   * 390×844 on one machine in one browser, the rail subtracts 15 px of its
+   * own height under desktop emulation and nothing at all under mobile,
+   * so the same tile draws 58.16 px wide in the first and 68.19 in the
+   * second. What performs that subtraction is not established — a classic
+   * scrollbar is the obvious candidate, but O138 measured this rail at
+   * 1440×900 at **0 px** — in headless Chromium, not the driven, emulated
+   * one used here — and found no classic scrollbar
+   * on either this machine or the user's desktop, and left the note that if
+   * the 15 px returned, the unexplained difference was where to start. It
+   * returned; nobody has been there yet. A hardcoded number cannot be right
+   * in both conditions whatever the cause, so `Filmstrip.tsx`'s mount effect
+   * measures the tiles that have actually drawn and overwrites this value on
+   * the rail element itself. **The median of them, not one of them**
+   * (`tiles.ts`'s `medianTileWidth` and `refinedStripUnit`): a double-page
+   * scan the sidecar never marked `spread: true` is a one-unit tile drawing
+   * at two, so taking whichever tile loaded first could set this to double.
+   * Every loaded tile contributes, normalised to one unit, which is what
+   * keeps a sample available in `two` mode — where every group is a pair and
+   * a one-unit-only rule found nothing to measure. This figure is what the
+   * very first paint and any tile that has not drawn yet still use.
+   * A tile's `minWidth` floor is this value **plus its two borders**
+   * (`--strip-tile-border` on each side, added explicitly in
+   * `Filmstrip.tsx`'s tile style), not this value alone: the button is
+   * `box-sizing: border-box`, so a floor of `--strip-unit` by itself left
+   * the image's content box 4 px narrower than this figure says (Task 2a,
+   * 2026-09-21, fixed after driving the app found it). With the borders
+   * added on top of the floor, the image's own content box is
+   * `--strip-unit` again, which is what makes the sentence above true. A
+   * tile is given this floor explicitly so the rail can be windowed:
+   * `tiles.ts`'s `spacerWidth` sums it over the tiles a spacer stands in
+   * for, and nothing has to measure a tile to know where the next one
+   * starts. */
+  --strip-unit: 97px;
+  --strip-gap: 6px;
+  --strip-tile-border: 2px;
   /* The rail's 6 px padding and a tile's 2 px border, top and bottom
    * (`Filmstrip.tsx`'s `railStyle` and `tileStyle`). */
   --strip-height: calc(var(--strip-tile) + 16px);
@@ -87,6 +128,7 @@
 @media (width < 900px) {
   .reader {
     --strip-tile: 96px;
+    --strip-unit: 54px;
   }
 }
 

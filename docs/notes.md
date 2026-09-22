@@ -22029,3 +22029,139 @@ carries the edition's name and a verdict, and at 390×844 the row overflows:
 `scrollWidth` **402** against `clientWidth` **390**, with the text flush to
 both edges instead of inside its 12 px padding. There is no overflow at 1440.
 The bar is ③'s; ④ found it only because a two-edition work now exists.
+
+## O140: the chrome's build cost — 2026-09-21
+
+What §6 of `docs/superpowers/specs/2026-09-20-o140-chrome-build-cost-design.md`
+asked for, measured. The app is this branch served by vite against
+`taiyaku serve` on the scratch copy of the NAS library
+(`target/style-pass/lib/library.db`), driven in Chromium at 390×844 with 4× CPU
+throttling — the design's §0 conditions — and opened on the user's iPhone over
+the tailnet, where the production build was served by `vite preview` behind
+`tailscale serve`. The volume is `akame-ga-kill----v01--2015--cbz`, 237 pages,
+`rtl`, in `single` mode, under **desktop emulation at `devicePixelRatio` 1**.
+Thumbnails warm for every timing below. The emulation mode is stated because
+this same work found the rail drawing a tile 58.16 px wide under desktop
+emulation and 68.19 under mobile — "390×844 at 4×" alone does not reproduce
+these figures.
+
+**The five numbers, before and after.**
+
+| | before | after |
+| --- | --- | --- |
+| first open of the chrome | 274 ms | **87 ms** |
+| a later open | 274 ms | **62 ms** (61–70) |
+| a page turn, chrome open | 178 ms | **78 ms**, 10 of 10 turns moved |
+| a page turn, chrome closed | 37 ms | **33 ms** |
+| thumbnail requests on a first open | 101 | **26** |
+
+And what the chrome is made of, shown: **774 elements, 238 images, 237 tiles**
+became **155, 34 and 33**.
+
+**The two that are not numbers.** A reader who never shows the chrome — by
+`Tab`, by ④'s middle tap, or by starting a correction — still requests **zero**
+thumbnails: six page turns with the chrome never mounted, no `/thumb` request.
+That is the protection the unmount existed for and the only reason `Chrome`
+still renders nothing before its first show. And the fade still plays: opacity
+sampled per frame runs 0, 0.163, 0.467, 0.65, 0.836, 0.929, 0.985, 1, against
+`modules/motion.ts`'s `transition: opacity ${ms}ms ease` at its default 120.
+
+**The open-chrome page turn is a defect nobody had filed.** At 178 ms against
+37 ms closed, a reader who keeps the strip up paid nearly five times the cost
+on every turn, on `main`, with no row recording it. Windowing more than halved
+it. It was found by profiling rather than by reading, and only because the
+profile asked what the chrome costs when it is *not* being opened.
+
+**Two things in the record the profile contradicted**, both now corrected
+where they were written: `loading="lazy"` does defer here (101 of 237
+thumbnails requested at 390×844 on a 237-tile rail, not all 237), and the
+DevTools forced-reflow insight blaming `recenter` is not additive — replacing
+`scrollIntoView` with a no-op prevented 103 calls and moved the open cost from
+225 ms to 225 ms.
+
+**What the device pass found, and what the gate was not doing.** Seven reviews
+across four tasks had passed, and every agent report said "all green" — but
+**the gate was not green and had never been run whole**. `reader.css.test.ts`
+broke at `ba160157`, the first commit to touch `reader.css` (it added
+`--strip-unit` beside `--strip-tile` in a media block whose test required that
+block to hold one declaration), and was not fixed until `3b784e93`: 1 failed /
+1274 passed in the node project for most of this branch's life, the whole
+device pass included. Every dispatch named specific test files rather than a
+whole project, so the reports were true of what they had been asked to run;
+and when an agent did notice the failure, it checked whether it pre-existed
+against another commit *on this branch* — a comparison that cannot tell
+"already broken on `main`" from "broken earlier by us" — and concluded,
+reasonably and wrongly, that it did. Against that, the user reported on their
+own phone that the strip could not be flicked: it scrolled and slid back. Three separate causes came out of that, in order, each
+found by measurement and none by reading:
+
+1. **The rail's `load` listener.** `recenter()` on every thumbnail `load`
+   pulled the rail back to the current tile. Windowing turned that from a
+   settle-once behaviour into a continuous one: before, every tile mounted at
+   open so every load happened then; after, scrolling *renders* new tiles whose
+   loads fire it mid-flick. Removed — and the reason it existed had already
+   gone, because a tile now has a `minWidth` floor and no longer lays out at
+   near-zero width until its image decodes. Reproducing it needed a *small*
+   scroll (so the current tile stays in the window) on a volume with *cold*
+   thumbnails (so loads fire); neither synthetic `TouchEvent`s nor setting
+   `scrollLeft` directly could do it, and both reported the code healthy.
+2. **The window re-anchoring per frame.** 65 window changes across 181 frames
+   in one 1.2 s flick, each rebuilding the tiles. Fixed by re-anchoring only
+   when a **spacer** comes within a quarter of the rail's width of the visible
+   strip, with that distance floored at 200 px. Two earlier rules failed and
+   are recorded because each failed instructively: a drift rule counted in
+   tiles and opened a **321 px** blank gap at 1440, because the viewport
+   extends forward from the focus tile rather than straddling it; and a rule
+   testing the first and last *rendered tiles* fired on nearly every frame,
+   because the rail is `row-reverse` for a right-to-left work and the last tile
+   in the DOM is the leftmost on screen. Checking both ends does not make a
+   test direction-agnostic — it makes one half of it always true.
+3. **`--strip-unit` was a constant that cannot be right everywhere.** It said
+   54 px. Measured at 390×844 on this machine in this browser: under desktop
+   emulation the rail subtracts 15 px of its own height (`offsetHeight` 112,
+   `clientHeight` 97), the image draws 81 tall and a loaded tile 58.16 wide;
+   under mobile emulation it subtracts nothing, the image draws 96 tall and
+   the tile **68.19** — 10.19 px over the nominal the spacers use.
+   **What subtracts those 15 px is still not established.** A classic
+   scrollbar is the obvious candidate, but O138 measured this same rail at
+   1440×900 at **0 px** — in headless Chromium, where this branch measured in a
+   driven, emulated one — recorded that neither this
+   machine's Chromium nor the user's desktop shows a classic scrollbar, and
+   left an explicit hook: *"If the 15 px returns, that unexplained difference
+   is where to start."* It returned during this work and nobody went there —
+   a story was written around it instead, in every place the code was
+   explained — one of them citing O138 as its authority for the claim O138
+   disproves — and it took four passes to clear. The whole-branch review
+   caught the contradiction; the first correction missed some places *and*
+   invented a new claim (that O138's 1440×900 reading implies a width, when
+   it measured only heights); a grep for the phrase missed a site where it
+   wrapped across a line break; and two pre-merge claim checks found the
+   rest. **The lesson is not the count**, which moved on every pass: a claim
+   that nothing tests can be wrong in as many places as it is written, and
+   the only thing that found them was reading each one against the file it
+   described. The fix never depended on
+   the cause: whatever takes the height, a constant cannot be right in both
+   conditions, so `Filmstrip` measures the tiles that have drawn and writes
+   **their median** into the property, and the floor, the spacers and the
+   tiles then agree by construction. The median rather than the first tile
+   because an unmarked double-page scan is a one-unit tile drawing at two and
+   would otherwise double the value for the session; every tile contributes,
+   normalised to one unit, because a one-unit-only sample is **empty** in
+   `two` mode — measured in the running app, 0 of 13 loaded tiles there are
+   one-unit. Content drift over a flick fell from **31 frames, worst 217 px**
+   to **4 frames, worst 64 px**.
+
+**The residual is data, not layout.** Those four remaining jumps are six pages
+on this volume whose thumbnails are 160×120 — genuine double-page scans the
+sidecar never marked `spread: true`, so `tileUnits` correctly calls them one
+unit while they draw at two. Filed as O144.
+
+**Three times on this branch the measurement was the thing that was wrong.**
+A settled sweep reported the 321 px gap as "1 px, only at the clamped ends",
+because it sampled after the motion rather than during it. A probe reported a
+full-width blank that did not exist, because it set its stop flag and then
+teleported `scrollLeft` in the next statement, and a frame scheduled earlier
+fired in between. And a probe reported every tile as double-width, because it
+detected the unit count with `minWidth.includes('* 2')`, which matches the
+*border* term `--strip-tile-border) * 2` on every tile — caught only because
+it produced an impossible aggregate.
