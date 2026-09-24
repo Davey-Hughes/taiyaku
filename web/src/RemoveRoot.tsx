@@ -142,7 +142,12 @@ export function RemoveRoot({ root, onCancel, onRemoved }: RemoveRootProps) {
             untouched; what goes is everything this library derived from them,
             and everything anybody recorded against it.
           </p>
-          <button type="button" onClick={confirm} disabled={removing}>
+          <button
+            type="button"
+            className="confirm"
+            onClick={confirm}
+            disabled={removing}
+          >
             {removing ? 'Removing…' : `Remove ${root.path}`}
           </button>
           <details className="removal-derive">

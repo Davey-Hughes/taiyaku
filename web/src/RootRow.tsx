@@ -67,7 +67,7 @@ import {
 import {
   patchRoot,
   type Probe,
-  regimeLine,
+  regimeFacts,
   type Root,
   type RootPatch,
   type Derived,
@@ -436,7 +436,14 @@ export function RootRow({ root, probe, onChanged }: RootRowProps) {
       <h3>
         <code>{root.path}</code>
       </h3>
-      <p className="regime">{regimeLine(root, probe)}</p>
+      <dl className="regime">
+        {regimeFacts(root, probe).map(({ label, value }) => (
+          <div key={label}>
+            <dt>{label}</dt>
+            <dd>{value}</dd>
+          </div>
+        ))}
+      </dl>
       {failure !== undefined && <p role="alert">{failure}</p>}
       {scanNotice !== undefined && (
         <p role="alert" className="scan-notice">
@@ -470,20 +477,20 @@ export function RootRow({ root, probe, onChanged }: RootRowProps) {
             },
           }
           return field.multiline ? (
-            <label key={field.name}>
+            <label key={field.name} className="field">
               <span>{field.label}</span>
               <textarea rows={3} {...boxProps} />
               {field.hint !== undefined && <small>{field.hint}</small>}
             </label>
           ) : (
-            <label key={field.name}>
+            <label key={field.name} className="field">
               <span>{field.label}</span>
               <input type="text" {...boxProps} />
               {field.hint !== undefined && <small>{field.hint}</small>}
             </label>
           )
         })}
-        <label>
+        <label className="field">
           <span>Scan interval (seconds)</span>
           <input
             type="number"
@@ -514,8 +521,10 @@ export function RootRow({ root, probe, onChanged }: RootRowProps) {
             }}
           />
         </label>
+      </div>
+
+      <div className="checks">
         <label>
-          <span>Keeps documents under .taiyaku/</span>
           <input
             type="checkbox"
             name="keeps_documents"
@@ -537,6 +546,7 @@ export function RootRow({ root, probe, onChanged }: RootRowProps) {
                 })
             }}
           />
+          <span>Keeps documents under .taiyaku/</span>
         </label>
       </div>
 

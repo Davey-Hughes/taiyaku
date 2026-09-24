@@ -22504,3 +22504,46 @@ on its own branch and re-verified on the device.
 That third finding is the argument for running these on hardware rather than
 under emulation. It was not what the pass was for, and it was the worst
 thing the pass found.
+
+### ⑤b: the device pass — 2026-09-24
+
+The user's iPhone, iOS Safari over the tailnet, against the **production
+build** — `npm run build`, then `vite preview` behind `tailscale serve`,
+proxying `/api` to a `taiyaku serve` on a **copy** of the real library. The
+original `library.db` was checksummed before and after: `d5ebc0c2…`,
+unchanged. Five questions, and all five came back clean.
+
+**1 and 2 — the 16 px floor, on the two screens ⑤b created controls for.**
+Tapping *Edition key* and *Scan interval (seconds)* on Configuration → Roots,
+and *Name*, *Password* and the *Role* select under "Add an account" on
+Configuration → Users: **no zoom** in either place. This is the check nothing
+on the development machine can perform. `base.css`'s floor lives inside
+`@media (pointer: coarse)` and driven Chromium is `pointer: fine`, so the
+media query never engages and a 390×844 browser pass comes back clean whether
+the floor holds or not — which is exactly how ⑤a shipped C2 and how O151 hid
+from a gate built to catch it. ⑤b put every one of these controls behind
+`.field`, whose three coupled selector lists include the coarse companion;
+this is the evidence that the companion is doing its job on real hardware
+rather than only satisfying `base.css.test.ts`.
+
+**3 — the whole-branch review's Critical, at a real 390 px.** After a real
+scan on the phone, *"no scroll sideways — nothing exceeds the width of the
+page"*. The defect was a rendered scan report putting 2 px of horizontal
+scroll on the document: `.scan-report dl` was a descendant selector and so
+also caught the nested `<dl>` of unreadable causes inside a `<dd>`, where
+`minmax(16rem, 1fr)` gave it a hard 256 px floor — 344 px of content in a
+309 px row. Fixed by scoping the grid to `.scan-report > section > dl`. The
+fix had been measured only in desktop Chromium at a simulated 390 until now.
+
+**4 — the zeros recede and nothing is hidden.** Confirmed on screen. The
+report still draws all 47 facts; 38 read `0` or `no` on the scan measured
+here, and they sit at `--muted` while the rest take `--text`. O90 closed by
+making this report *name* what it skipped, and that is intact.
+
+**5 — `--danger` is on the verb and not on Cancel.** Confirmed. The
+distinction matters because the obvious rule, `button:first-of-type`, would
+have painted Cancel: both removal blocks render their confirm button only
+once the cost has loaded, so until then Cancel is the only button there.
+
+Nothing else looked wrong to the user.
+

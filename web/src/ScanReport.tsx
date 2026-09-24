@@ -47,7 +47,11 @@ function Count({
   n: number
 }) {
   return (
-    <div className="count" data-field={field}>
+    <div
+      className="count"
+      data-field={field}
+      data-zero={n === 0 ? '' : undefined}
+    >
       <dt>{label}</dt>
       <dd>{n}</dd>
     </div>
@@ -70,7 +74,11 @@ function Paths({
   paths: string[]
 }) {
   return (
-    <div className="paths" data-field={field}>
+    <div
+      className="paths"
+      data-field={field}
+      data-zero={paths.length === 0 ? '' : undefined}
+    >
       <dt>{label}</dt>
       <dd>
         {paths.length}
@@ -97,7 +105,11 @@ function Paths({
 /** The orphaned documents, each naming the work that absorbed its own. */
 function Orphans({ orphans }: { orphans: Orphan[] }) {
   return (
-    <div className="paths" data-field="orphan_documents">
+    <div
+      className="paths"
+      data-field="orphan_documents"
+      data-zero={orphans.length === 0 ? '' : undefined}
+    >
       <dt>Orphaned documents</dt>
       <dd>
         {orphans.length}
@@ -122,7 +134,11 @@ function Orphans({ orphans }: { orphans: Orphan[] }) {
 /** The documents a root no longer keeps — declined, not orphaned. */
 function Declines({ declined }: { declined: Declined[] }) {
   return (
-    <div className="paths" data-field="declined_documents">
+    <div
+      className="paths"
+      data-field="declined_documents"
+      data-zero={declined.length === 0 ? '' : undefined}
+    >
       <dt>Documents this root no longer keeps</dt>
       <dd>
         {declined.length}
@@ -157,12 +173,20 @@ function Declines({ declined }: { declined: Declined[] }) {
 function UnreadableCauses({ unreadable }: { unreadable: Unreadable }) {
   const formats = Object.entries(unreadable.by_format)
   return (
-    <div className="unreadable-causes" data-field="unreadable">
+    <div
+      className="unreadable-causes"
+      data-field="unreadable"
+      data-zero={unreadable.total === 0 ? '' : undefined}
+    >
       <dt>Unreadable</dt>
       <dd>
         {unreadable.total}
         <dl>
-          <div className="paths" data-field="unreadable.by_format">
+          <div
+            className="paths"
+            data-field="unreadable.by_format"
+            data-zero={unreadable.refused_format === 0 ? '' : undefined}
+          >
             <dt>In a format taiyaku does not read</dt>
             <dd>
               {unreadable.refused_format}
@@ -233,7 +257,11 @@ function WalkSection({ walk }: { walk: Walk }) {
           label="Forgotten because excluded"
           n={walk.forgotten_by_exclusion}
         />
-        <div className="count" data-field="refused">
+        <div
+          className="count"
+          data-field="refused"
+          data-zero={walk.refused === null ? '' : undefined}
+        >
           <dt>Refused</dt>
           <dd>{walk.refused === null ? 'no' : 'yes'}</dd>
         </div>

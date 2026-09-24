@@ -152,7 +152,7 @@ export function Users() {
       {addFailure !== undefined && <p role="alert">{addFailure}</p>}
       <form onSubmit={submit} className="add-user">
         <h3>Add an account</h3>
-        <label>
+        <label className="field">
           <span>Name</span>
           {/*
             The same reason `Login.tsx`'s name field carries these: account
@@ -170,7 +170,7 @@ export function Users() {
             onChange={(e) => setName(e.target.value)}
           />
         </label>
-        <label>
+        <label className="field">
           <span>Password</span>
           <input
             type="password"
@@ -179,7 +179,7 @@ export function Users() {
             onChange={(e) => setPassword(e.target.value)}
           />
         </label>
-        <label>
+        <label className="field">
           <span>Role</span>
           <select
             name="new-role"

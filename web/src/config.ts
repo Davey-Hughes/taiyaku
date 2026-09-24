@@ -12,9 +12,9 @@
  * Two lists is a tab with no route behind it, or a redirect into nothing —
  * and neither shows up until somebody clicks.
  *
- * **The regime line is a pure function over a `Root`**, for the reason
+ * **`regimeFacts` is a pure function over a `Root`**, for the reason
  * `library.ts` keeps its chip and sort helpers rather than inlining them: the
- * part worth testing is the sentence, not the element it lands in.
+ * part worth testing is the three facts, not the `<dl>` they land in.
  */
 import { getJson, sendJson } from './api'
 
@@ -354,7 +354,8 @@ export function humanInterval(secs: number): string {
 }
 
 /**
- * C4 §3's regime line, assembled from what this client actually knows.
+ * C4 §3's regime facts, assembled from what this client actually knows —
+ * watch, interval, last scan — each paired with what it is a fact *about*.
  *
  * The spec's own example reads
  * `watching 156 directories · scanning every 24h · last scan 2h ago, 0 changes`.
@@ -362,32 +363,54 @@ export function humanInterval(secs: number): string {
  * change count both belong to a scan report, not to a `root` row, so this
  * draws the three facts the row does carry and `ScanReport` draws the rest.
  *
+ * **A sentence was the wrong shape for them.** Joining the three with `·`
+ * put four `·`-separated pieces on one line — the third fact appending its
+ * own outcome — and a bare value does not say what it is:
+ * `unknown — probed when a root is added` is only legible beside the word
+ * `watch`, and `never` beside `last scan`. Nothing here is ever absent; each
+ * arm has a fallback, which is why labels rather than omission are what make
+ * a missing fact readable (spec §11.6).
+ *
  * **`probe` is optional and its absence is stated, not defaulted.** Only
  * `POST /api/library/roots` runs the probe, so a root loaded from the list has
  * no watch state at all — and "watching" would be a claim, while "not
  * watching" would be a different one.
+ *
+ * **Replaces the former `regimeLine`, not beside it.** That function's only
+ * production caller was the `<p className="regime">` this function's caller
+ * now draws as a `<dl>`, and nothing else in this codebase read its return
+ * value — `RootRow.tsx` has no `aria-label`. A function kept alive only by
+ * tests that exercise it directly would be alive on the strength of its own
+ * tests.
  */
-export function regimeLine(root: Root, probe?: Probe): string {
+export function regimeFacts(
+  root: Root,
+  probe?: Probe,
+): Array<{ label: string; value: string }> {
   const watch =
     probe === undefined
-      ? 'watch state unknown — probed when a root is added'
+      ? 'unknown — probed when a root is added'
       : probe.watching
         ? 'watching'
         : probe.watch_reason === null
-          ? 'watch probe failed'
-          : `watch probe failed: ${probe.watch_reason}`
+          ? 'probe failed'
+          : `probe failed: ${probe.watch_reason}`
 
   const interval =
     root.scan_interval_secs === null
-      ? 'no scan interval set'
-      : `scanning every ${humanInterval(root.scan_interval_secs)}`
+      ? 'not set'
+      : humanInterval(root.scan_interval_secs)
 
   const last =
     root.last_scan_at === null
-      ? 'never scanned'
-      : `last scan ${root.last_scan_at} · ${root.last_scan_status ?? 'outcome unrecorded'}`
+      ? 'never'
+      : `${root.last_scan_at} · ${root.last_scan_status ?? 'outcome unrecorded'}`
 
-  return `${watch} · ${interval} · ${last}`
+  return [
+    { label: 'watch', value: watch },
+    { label: 'scan every', value: interval },
+    { label: 'last scan', value: last },
+  ]
 }
 
 /**

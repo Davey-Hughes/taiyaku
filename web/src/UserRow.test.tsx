@@ -483,6 +483,44 @@ describe('the fields', () => {
     const { host } = await show(locked, [user(), locked], { actingAs: 1 })
     expect(host.textContent).toContain('Nobody can sign in as this account')
   })
+
+  it('keeps the role explanation out of the field grid', async () => {
+    // The same last-administrator scenario the invariant tests above use,
+    // which is known to render `roleWhy` — the sentence this test checks the
+    // placement of.
+    const sole = user()
+    const { host } = await show(sole, [
+      sole,
+      user({ id: 2, name: 'reader', role: 'user' }),
+    ])
+    const fields = host.querySelector('.user-row .fields')
+    expect(fields).not.toBeNull()
+    // `p.why` is a sentence, not a field: it must not be a child of the grid.
+    expect(fields?.querySelector('p.why')).toBeNull()
+    // It still renders — it moved, it did not go.
+    expect(host.querySelector('.user-row p.why')).not.toBeNull()
+  })
+
+  it('groups the three permission checkboxes in a row of their own', async () => {
+    const me = user()
+    const other = user({ id: 2, name: 'sam', role: 'user' })
+    const { host } = await show(other, [me, other], { actingAs: 1 })
+    const checks = host.querySelector('.user-row .checks')
+    expect(checks).not.toBeNull()
+    expect(checks?.querySelectorAll('input[type="checkbox"]')).toHaveLength(3)
+    // And none of them is left behind in the grid.
+    expect(
+      host.querySelectorAll('.user-row .fields input[type="checkbox"]'),
+    ).toHaveLength(0)
+  })
+
+  it('gives the role label the field pattern rather than inline flow', async () => {
+    const me = user()
+    const other = user({ id: 2, name: 'sam', role: 'user' })
+    const { host } = await show(other, [me, other], { actingAs: 1 })
+    const role = host.querySelector('select[name="role"]')?.closest('label')
+    expect(role?.className).toContain('field')
+  })
 })
 
 describe('sessions and keys', () => {
@@ -1050,6 +1088,54 @@ describe('removal', () => {
       await Promise.resolve()
     })
     expect(usersApi.removeUser).toHaveBeenCalledTimes(1)
+  })
+
+  it('marks the confirm button and not Cancel, before the cost has loaded', async () => {
+    // The whole reason this is a class and not `:first-of-type`: until the
+    // cost resolves, Cancel is the only button in the block. Both removal
+    // blocks render their confirm button only after the cost resolves, so
+    // `:first-of-type` would paint Cancel in danger red on the loading state.
+    let land: ((answer: usersApi.RemovalAnswer) => void) | undefined
+    vi.mocked(usersApi.removalCost).mockReturnValue(
+      new Promise<usersApi.RemovalAnswer>((resolve) => {
+        land = resolve
+      }),
+    )
+    const me = user()
+    const other = user({ id: 2, name: 'sam', role: 'user' })
+    const { host } = await show(other, [me, other], { actingAs: 1 })
+
+    await click(control(host, 'button[name="remove"]'))
+
+    const block = control(host, '.remove-user')
+    expect(block.querySelectorAll('button')).toHaveLength(1)
+    expect(block.querySelector('.confirm')).toBeNull()
+
+    await act(async () => {
+      land?.({
+        removed: {
+          name: 'sam',
+          positions: 0,
+          notes: 0,
+          sessions: 0,
+          keys: 0,
+          grants: 0,
+        },
+        dry_run: true,
+      })
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(block.querySelector('.confirm')?.getAttribute('name')).toBe(
+      'confirm-remove',
+    )
+    expect(
+      control<HTMLButtonElement>(
+        host,
+        'button[name="cancel-remove"]',
+      ).classList.contains('confirm'),
+    ).toBe(false)
   })
 
   it('closes its own dialog rather than trusting the card to be unmounted', async () => {

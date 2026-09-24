@@ -1,7 +1,11 @@
 /**
  * Shared parsing for the tests that read a stylesheet's own text rather than
- * render it — `../index.css.test.ts`, `../styles/base.css.test.ts` and
- * `../theme.test.ts`. Comments are stripped and each rule is split into its
+ * render it. Six call it: `../index.css.test.ts`, `../theme.test.ts`, and
+ * `../styles/`'s `base.css.test.ts`, `admin-rules.css.test.ts`,
+ * `admin-config.css.test.ts` and `reader.css.test.ts`. **The count is stated
+ * because it is what decides whether this module's shape can change**: an
+ * open item quoted "three" from an earlier version of this sentence and was
+ * wrong by half. Comments are stripped and each rule is split into its
  * prelude and its body; a caller that needs individual selectors or what one
  * of them styles builds on `selectors()` and `subject()` below.
  */

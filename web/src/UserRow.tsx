@@ -370,7 +370,7 @@ export function UserRow({
       )}
 
       <div className="fields">
-        <label>
+        <label className="field">
           <span>Role</span>
           <select
             name="role"
@@ -385,8 +385,10 @@ export function UserRow({
             ))}
           </select>
         </label>
-        {roleWhy !== undefined && <p className="why">{roleWhy}</p>}
+      </div>
+      {roleWhy !== undefined && <p className="why">{roleWhy}</p>}
 
+      <div className="checks">
         <label>
           <input
             type="checkbox"
@@ -463,7 +465,7 @@ export function UserRow({
       </fieldset>
 
       <form className="reset" onSubmit={submitPassword}>
-        <label>
+        <label className="field">
           <span>Set a new password</span>
           <input
             type="password"
@@ -625,6 +627,7 @@ export function UserRow({
                 </p>
                 <button
                   type="button"
+                  className="confirm"
                   name="confirm-remove"
                   onClick={confirmRemoval}
                   disabled={removing || saving}

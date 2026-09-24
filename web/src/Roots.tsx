@@ -207,7 +207,7 @@ export function Roots() {
 
       {addFailure !== undefined && <p role="alert">{addFailure}</p>}
       <form onSubmit={submit} className="add-root">
-        <label>
+        <label className="field">
           <span>Add a root</span>
           <input
             type="text"

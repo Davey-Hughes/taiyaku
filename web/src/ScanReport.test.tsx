@@ -110,6 +110,11 @@ describe('ScanReport', () => {
       />,
     )
     const row = host.querySelector('[data-field="unreadable"]')
+    // The non-zero side of the wrapper's own `data-zero`: `finished()`'s
+    // default (used by the broad sweep below) covers `total: 0` only, so
+    // this fixture is what proves the wrapper stays unmarked when its total
+    // is not zero, not merely that it can be marked.
+    expect(row?.hasAttribute('data-zero')).toBe(false)
     expect(row?.querySelector(':scope > dt')?.textContent).toBe('Unreadable')
     expect(row?.querySelector(':scope > dd')?.firstChild?.textContent).toBe(
       '29',
@@ -401,6 +406,94 @@ describe('ScanReport', () => {
       expect(row?.querySelector('dt')?.textContent).toBe(label)
       expect(row?.querySelector('dd')?.textContent).toContain('0')
     }
+  })
+
+  it('marks a zero count and leaves a non-zero count unmarked', () => {
+    // `finished()`'s default walk carries both: `added: 3` and `updated: 0`.
+    // A fixture where every count is zero would prove only that the
+    // attribute can be written; O92 is the record of a fixture whose rows
+    // cancelled out and let a flipped comparison through.
+    const host = mount(<ScanReport outcome={finished()} />)
+    const zero = host.querySelector('[data-field="updated"]')
+    const value = host.querySelector('[data-field="added"]')
+    expect(zero?.getAttribute('data-zero')).toBe('')
+    expect(value?.hasAttribute('data-zero')).toBe(false)
+  })
+
+  it('marks an empty path list and leaves a populated one unmarked', () => {
+    // `unfoldable` is overridden to one entry; `unreadable_hand` stays at
+    // its default `[]`. Both are drawn through the shared `Paths`
+    // component, so this exercises the same code the zero rows do.
+    const host = mount(
+      <ScanReport
+        outcome={finished({ derive: derived({ unfoldable: ['a-fold'] }) })}
+      />,
+    )
+    const zero = host.querySelector('[data-field="unreadable_hand"]')
+    const value = host.querySelector('[data-field="unfoldable"]')
+    expect(zero?.getAttribute('data-zero')).toBe('')
+    expect(value?.hasAttribute('data-zero')).toBe(false)
+  })
+
+  it('marks the refused row as zero when nothing was refused, and unmarked when it was', () => {
+    const notRefused = mount(<ScanReport outcome={finished()} />)
+    expect(
+      notRefused
+        .querySelector('[data-field="refused"]')
+        ?.getAttribute('data-zero'),
+    ).toBe('')
+
+    const refused = mount(
+      <ScanReport
+        outcome={finished({
+          scan: walk({
+            refused: 'the root held 1858 entries last scan and 0 now',
+          }),
+        })}
+      />,
+    )
+    expect(
+      refused
+        .querySelector('[data-field="refused"]')
+        ?.hasAttribute('data-zero'),
+    ).toBe(false)
+  })
+
+  it('marks every row whose value is zero, whatever component drew it', () => {
+    // Three rows were hand-rolled rather than routed through `Count`/`Paths`
+    // and so kept full strength while their 34 neighbours receded — the same
+    // fact drawn two ways. Asserted over every `[data-field]` rather than per
+    // component, because the defect was precisely a row that no per-component
+    // test was looking at.
+    //
+    // The `<dd>`'s *first child node* is read, not its `textContent`. For a
+    // wrapper like `unreadable` the `<dd>` also holds a nested `<dl>` of
+    // causes, so `textContent` is the count concatenated with that whole
+    // subtree — "0In a format taiyaku does not read0…" — and no regex
+    // anchored on a word boundary can find the count inside it: `\b` needs a
+    // word/non-word transition, and digit-to-letter is word-to-word. That
+    // used to make the match fail at every possible value and silently skip
+    // the row via `continue`, which is how the wrapper's own unmarked zero
+    // passed here. The first child node is the count alone in every
+    // component that draws one, so reading it directly needs no regex.
+    const host = mount(<ScanReport outcome={finished()} />)
+    const wrong: string[] = []
+    for (const row of host.querySelectorAll('[data-field]')) {
+      const leading =
+        row.querySelector('dd')?.firstChild?.textContent?.trim() ?? ''
+      // Not a value row at all (e.g. `root`, whose `<dd>` holds a path) if
+      // it is neither a bare number nor `no`/`yes`.
+      const isNumber = /^\d+$/.test(leading)
+      if (!isNumber && leading !== 'no' && leading !== 'yes') continue
+      const isZero = leading === '0' || leading === 'no'
+      const marked = row.hasAttribute('data-zero')
+      if (isZero !== marked) {
+        wrong.push(
+          `${row.getAttribute('data-field')}: value ${leading}, marked ${marked}`,
+        )
+      }
+    }
+    expect(wrong).toEqual([])
   })
 
   it('names each excluded directory and each unusable pattern', () => {

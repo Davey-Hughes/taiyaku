@@ -1437,3 +1437,228 @@ On top of §5's list for every PR:
   label chain: a `note`-first chain and a `pattern`-first chain render
   identically for any rule that has both, so the fixture has to include a
   rule with a note and **no** pattern — which is what a builtin is.
+
+## 11. PR ⑤b in detail
+
+Settled with the user on 2026-09-23, against a Playwright-driven Chromium
+over `vite dev` and a `taiyaku serve` on a **copy** of the real library —
+138 series, 1,896 works, 1 root. The original `library.db` was checksummed
+before and after and is unchanged. A real scan was run against that copy, so
+the scan report below was read off the screen rather than off its markup.
+
+### 11.1 What is there now, measured
+
+**⑤b's risk looked smaller than ⑤a's, and this paragraph was wrong about how
+much.** Three of the four screens measure zero overflow at a 390 px viewport
+on the document *and* on `main` — the element ⑤a's own assertions were blind
+to — and `.fields`' `auto-fit` collapses to one column while the paths wrap.
+
+**The fourth does not, and this spec said it did.** A *rendered scan report*
+put 2 px of horizontal scroll on the document at 390 px: `.scan-report dl`
+was a descendant selector, so it also caught the nested `<dl>` of unreadable
+causes inside a `<dd>`, and `minmax(16rem, 1fr)` gave that nested grid a hard
+256 px floor — 344 px of content in a 309 px row. Found by ⑤b's own
+whole-branch review, not by its browser pass, because the browser pass mocked
+the scan report away and so never laid one out at 390. Fixed by scoping the
+grid to `.scan-report > section > dl`, with the missing 390 px case added.
+
+So: one layout defect, on the screen whose assertion was missing. The rest of
+the work is presentation.
+
+What is wrong is what the presentation says:
+
+- **`.fields` treats three unlike things as one kind of cell.** It is
+  `repeat(auto-fit, minmax(14rem, 1fr))` with `gap: 0.5rem`, written twice —
+  `.root-row .fields` and `.user-row .fields` differ only in a `margin-top`,
+  so every fix below lands in both. (An earlier draft called them
+  byte-identical; they never were.) On `/config/users` its children
+  measure `label, p.why, label, label, label` in four 273.75 px tracks — **a
+  `<p>` occupying a field slot**, between the Role select and two checkboxes.
+  The sentence it holds is *"An administrator cannot take their own admin
+  role away; another administrator has to do it."* "May write ComicInfo.xml
+  into archives" then wraps to a second row alone and breaks mid-phrase. On
+  `/config/roots` the same rule pairs a textarea with three short inputs, so
+  the tall cell leaves dead space beneath the short ones — **and a checkbox
+  there too**, `Keeps documents under .taiyaku/`, which this spec first
+  missed and a browser check found: the root row has the user row's defect
+  as well as its own.
+- **Nothing has a measure.** The three "Add an account" controls render
+  **1,153 px** wide at a 1216 px `<main>`, and prose runs to roughly 180
+  characters a line. Two contradictory precedents already exist in this file:
+  `.account` caps at 40 rem, `.backup .what-a-backup-is` at 60 ch.
+- **`Set a new password[input]Set password`** butts its label against its
+  input — the inline-flow defect ⑤a fixed on the rule form, one screen over.
+- **A root says itself as a run-on sentence**: `watch state unknown — probed
+  when a root is added · no scan interval set · last scan … · ok`. `config.ts`'s
+  `regimeLine` joins **three** independent facts with `·` — watch, interval,
+  last scan — and the fourth separator is *inside* the third, which appends
+  `· ok`. None of them is ever absent: each arm has a fallback string, so the
+  sentence always renders all three. That is the problem rather than the
+  defence — `unknown — probed when a root is added` does not say what is
+  unknown without its label, and three independent facts do not make a
+  sentence.
+- **The scan report is 47 facts and most of them read `0` or `no`** — 38 of
+  47 on one scan of this library, 37 on another, **and the split moves with
+  every scan**, which is why it is stated as one measured figure rather than
+  decomposed. (An earlier draft gave a decomposition that did not add up to
+  47.) Four of the rows that carry a value are headline counts (Directories 129, Files 1,915, Series 135, Works
+  1,896 — the *scan's* figures: `derive.rs` counts the distinct series names
+  this walk produced, which is not the 138 rows the `series` table holds, and
+  nothing in ⑤b turns on the difference). The three that say something *happened* were `Updated 1`,
+  `Unattached chapter directories 1` and `Series holding no work 4`.
+- **`admin.css`'s last pre-token holdouts are all here.** Every one of its
+  remaining **5** `color-mix(in srgb, currentColor …)` borders and **9**
+  `opacity` dims falls in the roots, scan-report, users and backup ranges.
+  ⑤b is what empties both.
+
+### 11.2 The five decisions
+
+1. **Three kinds, three treatments** (§11.3).
+2. **The card carries the measure, not the controls** (§11.4).
+3. **`--danger` on the edge and the verb** (§11.5).
+4. **A root states itself as a labelled fact list** (§11.6).
+5. **A zero is quieter than a number** (§11.7).
+
+### 11.3 Three kinds, three treatments
+
+A labelled input, a checkbox with a sentence, and a paragraph are three
+different things and stop sharing a grid track.
+
+**Inputs take `.field`** — ⑤a's single-field pattern, not to be read as the
+`.fields` grid above; ⑤a hoisted `.field` out of `.proposal-detail` and scoped
+it to the screens that opt in, so ⑤b adds its own hosts to that list rather
+than writing a fourth field pattern. **Checkboxes become full-width rows**,
+the sentence beside the box rather than under a micro-label, because a
+checkbox's label *is* a sentence and an uppercase micro-label is for a field
+name. That applies to **both** rows — the user row's three permissions and
+the root row's one — and the two carry their children in opposite orders in
+the markup, so the root row's is reordered to match rather than the rule
+being written twice.
+
+**A hint under a box is a sentence too.** `.field`'s typography is for the
+label's own word, and `exclude_globs` is the one field that sets
+`TextField.hint`; inheriting the pattern put it at 9.33 px in capitals, so
+the hint resets what the label sets. **Prose leaves the grid** and sits under the group it explains.
+
+### 11.4 The measure
+
+One `max-width` on each card and each standalone form. `.account`'s 40 rem is
+the precedent and the value; prose keeps the narrower measure
+`.what-a-backup-is` sets. No control carries a width of its own, so the rule
+survives a field being added or removed — the alternative, a width per
+control, is a figure per control, and this pass has already spent four review
+rounds on that kind of drift.
+
+### 11.5 The destructive blocks
+
+`--danger` is defined in `tokens.css`, verified by `index.css.test.ts`'s
+floors in both themes, and **referenced by no rule in any stylesheet**.
+Meanwhile C4 §2 opens *"Removing a root is the most destructive action in the
+product, and it does not look like it"* — and **its own answer was the
+counts**, not the styling: *"removal states counts before it acts"*, which is
+the live figure the block still renders. The 2 px `color-mix(in srgb,
+currentColor 50%, transparent)` border came afterwards from the style layer,
+as a separate attempt at the same problem. That colour-mix is one of the five
+⑤b removes, so the rule is rewritten regardless — and what it is rewritten to
+is the second half of an answer C4 already began.
+
+`.remove-root` and `.remove-user` take an inset `--danger` strip and give the
+button the token on its border and its text. **Not a filled button**: this
+block only appears after "Remove…", states the real cost from a live count,
+and says "This cannot be undone" — the step is already guarded, and the
+loudest control in the area would be shouting at someone who has committed to
+it. **The strip gains a third meaning** — it already says "strong proposal"
+and "selected rule" — and that is accepted rather than hidden: in all three
+places it marks *this row is not like the others*, which is the same claim.
+
+### 11.6 A root's state
+
+The three facts become a labelled list, read straight down, each naming what
+it is a fact *about* — which the value alone does not, since `watch` renders
+`unknown — probed when a root is added` and `last scan` renders `never`. The
+nested `·` goes with them: the date and the outcome stop sharing a separator
+with the facts above.
+
+This is the same call §10.4 made for the rule row, and the argument against it
+is recorded because it is a real one: a rule's second line is *derived* and
+always the same shape, while a root's facts are independent. That is why they
+get labels and the rule's line does not.
+
+### 11.7 The scan report
+
+Every fact stays, and stays readable. **A zero simply sits at `--muted` while
+anything non-zero takes `--text`**, so the eye finds what happened without
+anything being hidden. The zeros are not noise — "nothing was refused" is an
+answer somebody came for, and O90 closed by making this report *name* what it
+skipped. Folding them away was considered and refused for that reason.
+
+Labels take `--muted` and values `tabular-nums`, so the column reads straight
+down. **Not the figures face**, although a column of counts is the obvious
+candidate for it: §5 ② settled that the figures face is for page counts only,
+after a broader application drew the digits inside a volume's file name
+heavier than the title around them, and `index.css.test.ts` pins the two
+rules allowed to name it. `tabular-nums` is a numeric feature of whatever
+face is in use rather than a face of its own, so it buys the aligned column
+without reopening that decision — which this spec had not noticed it was
+asking for. **And the `Root` cell stops breaking mid-path**:
+`docs/notes.md` recorded during O90 that it "wraps inside its cell, which
+works and is left to the style pass". It does work — it breaks after
+`/home/davey/temp/manga-`. It takes `overflow-wrap: anywhere` and the
+monospace face the other paths on these screens already use.
+
+### 11.8 Three markup changes, stated rather than slipped in
+
+§6 reserves changes to what a screen *does*, "fixed only if it blocks that
+PR's own browser pass". Three of ⑤b's decisions need markup, and each is
+recorded here as a decision rather than arriving as styling:
+
+- the root's facts become a `<dl>` (§11.6);
+- `ScanReport` marks a zero row with one attribute, because **CSS cannot
+  select on text content** (§11.7);
+- the checkbox rows and the `p.why` prose move out of `.fields` (§11.3).
+
+The first and third are what make a browser pass of these screens judgeable
+at all: a `<p>` in a field track and a checkbox under a micro-label are the
+defects being looked at. The second is the minimum a CSS-only answer cannot
+reach.
+
+### 11.9 Also in this PR
+
+**The floor gate learns the two shapes it is blind to.** ⑤a's
+`base.css.test.ts` guards `base.css`'s 16 px iOS floor, and ⑤a's own
+re-review found it cannot see a `font` shorthand (it matches `font-size:`) or
+a subject wrapped in `:where()` (it reads the selector's subject). O151 hits
+both at once and is filed because of it. The gate is widened here because
+⑤a's version is now in `main` and this is the next PR to touch it.
+
+### 11.10 Not in this PR
+
+**O148** — the inbox's restated `TILE_HEIGHT_PX` — and **O150** — the inbox's
+filter row, held off ⑤a's tab look. Both rows name ⑤c, the split that rebuilds
+the proposals screens. **O149** — the Provenance table's four always-empty
+columns — is neither ⑤b's nor ⑤c's: its row asks a question no measurement
+settles, *whether a reader would rather see seven columns of mostly nothing or
+three columns of something*, and it waits for that to be asked with both
+drawn.
+
+### 11.11 Tests and checks
+
+On top of §5's list for every PR:
+
+- **The pre-token sweep is asserted, not assumed.** `admin.css` holds zero
+  `color-mix(… currentColor …)` and zero `opacity` on quiet text when this
+  lands; a test reads the stylesheet and says so, which is the only way the
+  claim stays true.
+- **The measure**, pinned against the cards it applies to — a control is
+  never wider than the card that holds it, asserted in the browser project
+  where a box can be measured. ⑤a learned that a declaration test cannot see
+  an override lower in the same file.
+- **The zero marking**, in jsdom: a row whose value is `0` carries the
+  attribute and a row whose value is not does not. The fixture needs both, or
+  it proves only that the attribute can be written.
+- **`--danger` reaches the two blocks**, and `index.css.test.ts`'s floors
+  already compute its contrast in both themes.
+- **No sideways scroll at 390 on all four screens**, asserted on the document
+  *and* on `main`. These screens pass today and the assertion exists to keep
+  them passing — ⑤a shipped two defects into exactly that gap.
+- **Every new test watched failing with its defect put back by hand.**

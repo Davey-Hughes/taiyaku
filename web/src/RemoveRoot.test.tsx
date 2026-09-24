@@ -321,4 +321,39 @@ describe('RemoveRoot', () => {
       'This removes 0 works, 0 in-progress positions and 0 notes.',
     )
   })
+
+  it('marks the confirm button and not Cancel, before the cost has loaded', async () => {
+    // The whole reason this is a class and not `:first-of-type`: until the
+    // cost resolves, Cancel is the only button in the block. Follows the
+    // same `land` idiom as "does not write back a dry run that arrived
+    // after it closed" above, to hold the fetch pending on purpose.
+    let land: (answer: config.RemovalAnswer) => void = () => {}
+    vi.mocked(config.removalCost).mockReturnValue(
+      new Promise<config.RemovalAnswer>((resolve) => {
+        land = resolve
+      }),
+    )
+    let host: HTMLElement | undefined
+    await act(async () => {
+      host = mount(
+        <RemoveRoot root={root} onCancel={vi.fn()} onRemoved={vi.fn()} />,
+      )
+      await Promise.resolve()
+    })
+    if (!host) throw new Error('nothing mounted')
+
+    expect(host.querySelectorAll('.remove-root button')).toHaveLength(1)
+    expect(host.querySelector('.remove-root .confirm')).toBeNull()
+
+    await act(async () => {
+      land(answer())
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(host.querySelector('.remove-root .confirm')?.textContent).toBe(
+      'Remove /srv/manga',
+    )
+    expect(press(host, 'Cancel').classList.contains('confirm')).toBe(false)
+  })
 })

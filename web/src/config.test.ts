@@ -5,7 +5,7 @@ import {
   humanInterval,
   listRoots,
   patchRoot,
-  regimeLine,
+  regimeFacts,
   removalCost,
   removeRoot,
   type Root,
@@ -65,45 +65,77 @@ describe('humanInterval', () => {
   })
 })
 
-describe('regimeLine', () => {
-  it('says the watch state is unknown when no probe has run', () => {
-    // `GET /api/library/roots` does not carry the probe — only `POST` does.
-    // Spec §3.1: the honest gap beats a number nobody measured.
-    expect(regimeLine(root())).toContain('watch state unknown')
+describe('regimeFacts', () => {
+  // Ten candidate cases (six migrated from the old `regimeLine` sentence
+  // test, four written fresh for the labelled-list shape) collapsed to five
+  // here, and Task 4's review added a sixth for the one arm none of the ten
+  // had ever reached — a failed probe with no reason. Six: a case survives only if it exercises a behaviour none of the
+  // others do. "carries the last scan status when there is one" and "keeps
+  // the outcome with the date" both just assert the status gets appended
+  // after the date — one case, not two — and the full-array case below
+  // subsumes "no probe", "never scanned" and "no interval set" on its own,
+  // since each is one arm of the same three-entry result.
+
+  it('names each fact under its own label, in order watch / scan every / last scan', () => {
+    // `GET /api/library/roots` carries no probe (only `POST` does) and this
+    // root has never been scanned and has no interval set — every arm at
+    // its fallback, and the order the caller's `<dl>` renders in. Spec
+    // §3.1: the honest gap beats a number nobody measured.
+    const bare = root({
+      scan_interval_secs: null,
+      last_scan_at: null,
+      last_scan_status: null,
+    })
+    expect(regimeFacts(bare)).toEqual([
+      { label: 'watch', value: 'unknown — probed when a root is added' },
+      { label: 'scan every', value: 'not set' },
+      { label: 'last scan', value: 'never' },
+    ])
+  })
+
+  it('says a probe failed even when the server gave no reason', () => {
+    // The one arm neither `regimeLine`'s six cases nor this block's first
+    // five ever reached: `watching: false` with a null reason. Found by
+    // Task 4's review, and older than Task 4 — the sentence version had the
+    // same hole, so a typo here would have shipped either way.
+    expect(
+      regimeFacts(root(), { watching: false, watch_reason: null })[0],
+    ).toEqual({ label: 'watch', value: 'probe failed' })
   })
 
   it('reports a probe that succeeded', () => {
     expect(
-      regimeLine(root(), { watching: true, watch_reason: null }),
-    ).toContain('watching')
+      regimeFacts(root(), { watching: true, watch_reason: null })[0],
+    ).toEqual({ label: 'watch', value: 'watching' })
   })
 
-  it('names why a probe failed', () => {
+  it('reports a failed watch probe with its reason', () => {
     expect(
-      regimeLine(root(), {
+      regimeFacts(root(), {
         watching: false,
-        watch_reason: 'inotify limit reached',
-      }),
-    ).toContain('inotify limit reached')
+        watch_reason: 'inotify limit',
+      })[0],
+    ).toEqual({ label: 'watch', value: 'probe failed: inotify limit' })
   })
 
-  it('says a root has never been scanned rather than drawing a null', () => {
-    const line = regimeLine(
-      root({ last_scan_at: null, last_scan_status: null }),
-    )
-    expect(line).toContain('never scanned')
-    expect(line).not.toContain('null')
+  it('keeps the outcome with the date rather than beside the other facts', () => {
+    const scanned = root({
+      last_scan_at: '2026-09-17 08:33:49',
+      last_scan_status: 'ok',
+    })
+    expect(regimeFacts(scanned)[2]).toEqual({
+      label: 'last scan',
+      value: '2026-09-17 08:33:49 · ok',
+    })
   })
 
-  it('carries the last scan status when there is one', () => {
-    expect(regimeLine(root({ last_scan_status: 'refused' }))).toContain(
-      'refused',
-    )
-  })
-
-  it('says so when no interval is set', () => {
-    expect(regimeLine(root({ scan_interval_secs: null }))).toContain(
-      'no scan interval',
+  it('states an unrecorded outcome rather than omitting it', () => {
+    const scanned = root({
+      last_scan_at: '2026-09-17 08:33:49',
+      last_scan_status: null,
+    })
+    expect(regimeFacts(scanned)[2].value).toBe(
+      '2026-09-17 08:33:49 · outcome unrecorded',
     )
   })
 })

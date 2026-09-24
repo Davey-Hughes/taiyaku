@@ -485,13 +485,17 @@
   gap: 0.5rem 0.75rem;
 }
 
-/* Scoped to the two screens that opted in, not bare — a bare `.field` also
+/* Scoped to the screens that opted in, not bare — a bare `.field` also
  * matched `MetadataEditor.tsx`'s Series-page label, a screen this pass never
  * touched, and restyled it: uppercase at 11.2px in place of its own normal
  * text, and `--bg` under the input in place of `--field`, the very reversal
  * `library.css`'s `.search-box` comment records fixing. */
 .proposal-detail .field,
-.rule-form .field {
+.rule-form .field,
+.root-row .field,
+.user-row .field,
+.add-user .field,
+.add-root .field {
   min-width: 0;
   display: grid;
   gap: 0.15rem;
@@ -526,10 +530,21 @@
  * moment the same task put the class on nine more. `--space-1`/`--space-2`
  * rather than `--space-2`/`--space-3`: the nearer pair to the `0.25rem` this
  * held, so the controls stay as compact as they were rather than growing. */
+/* `textarea` is new to this list: the root row's `exclude_globs` box is one,
+ * and the four existing hosts have none, which is why it was never needed
+ * before. */
 .proposal-detail .field input,
 .rule-form .field input,
 .proposal-detail .field select,
-.rule-form .field select {
+.rule-form .field select,
+.root-row .field input,
+.root-row .field select,
+.root-row .field textarea,
+.user-row .field input,
+.user-row .field select,
+.add-user .field input,
+.add-user .field select,
+.add-root .field input {
   /* **A `<select>`'s intrinsic width is its widest option, and a grid item
    * will not go below that without this.** `scope`'s options are absolute
    * root paths. Measured at 390 before this line, against the library these
@@ -549,7 +564,15 @@
   padding: var(--space-1) var(--space-2);
   border: 1px solid var(--line-strong);
   border-radius: var(--radius-control);
-  background: var(--bg);
+  /* I5 of the whole-branch review over ⑤b: `--field`, not `--bg`. At (0,2,1)
+   * this reset beats `base.css:101`'s `:where(.library, .login) :where(input,
+   * textarea) { background: var(--field) }`, which is `:where()` and carries
+   * zero specificity — so every text control on these five screens (this
+   * selector list plus the Rules screen's `.rule-form .field`, which shares
+   * it) computed the same colour as `body` instead of the raised surface
+   * every other input in the app sits on. The exact reversal
+   * `library.css`'s `.search-box` comment already records fixing once. */
+  background: var(--field);
   color: var(--text);
   font: inherit;
   font-size: var(--text-ui);
@@ -567,7 +590,15 @@
   .proposal-detail .field input,
   .rule-form .field input,
   .proposal-detail .field select,
-  .rule-form .field select {
+  .rule-form .field select,
+  .root-row .field input,
+  .root-row .field select,
+  .root-row .field textarea,
+  .user-row .field input,
+  .user-row .field select,
+  .add-user .field input,
+  .add-user .field select,
+  .add-root .field input {
     font-size: max(16px, var(--text-ui));
   }
 }
@@ -1137,6 +1168,45 @@
   box-shadow: 1px 0 0 var(--line);
 }
 
+/* One measure for the settings area, set once. A width per control is a
+   figure per control, and this pass has already spent four review rounds on
+   that kind of drift (spec §11.4). `.account`'s 40rem is the precedent and
+   the value. */
+.roots,
+.users,
+.backup {
+  --config-measure: 40rem;
+}
+
+.root-row,
+.user-row,
+.add-root,
+.add-user {
+  max-width: var(--config-measure);
+}
+
+/* Prose keeps a narrower measure than the card: 60ch, `.what-a-backup-is`'s
+   own precedent, set once here rather than on each selector below.
+
+   **Every `.why` on these screens, not only the one at `.user-row`'s top
+   level.** Measured in Chromium: the role hint capped while the two inside
+   `.user-row .reset` and the one inside `.add-user` ran to the card's full
+   640px with `max-width: none`. They are the same kind of sentence, so they
+   take the same measure — `ch`, so each is sixty characters of its own size
+   rather than one shared pixel width. An earlier version of this comment
+   said the three render at three different widths; they do not. The rule
+   above this one is a descendant selector, so the two in `.reset` take
+   `--text-meta` exactly like the role hint and match it; only the one in
+   `.add-user`, which no rule here reaches, is larger. O153 has that.
+
+   `.roots` is deliberately not in this list: `RootRow.tsx` has no `.why` at
+   all, and a selector that matches nothing is the inert rule this task
+   dropped `.scan-report` to avoid. */
+.users .why,
+.backup .what-a-backup-is {
+  max-width: 60ch;
+}
+
 .roots .root-list {
   list-style: none;
   margin: 0;
@@ -1144,18 +1214,38 @@
 }
 
 .root-row {
-  border: 1px solid color-mix(in srgb, currentColor 25%, transparent);
-  border-radius: 4px;
-  margin-bottom: 1rem;
-  padding: 1rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  margin-bottom: var(--space-4);
+  padding: var(--space-4);
 }
 
 .root-row h3 {
   margin: 0;
 }
 
+/* Three independent facts, each naming what it is a fact about. A sentence
+   was the wrong shape for them: `unknown — probed when a root is added` does
+   not say what is unknown (spec §11.6). */
 .root-row .regime {
-  opacity: 0.8;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--space-1) var(--space-3);
+  margin: var(--space-2) 0 0;
+  font-size: var(--text-meta);
+}
+
+.root-row .regime > div {
+  display: contents;
+}
+
+.root-row .regime dt {
+  color: var(--muted);
+}
+
+.root-row .regime dd {
+  margin: 0;
+  color: var(--text);
 }
 
 .root-row .fields {
@@ -1164,17 +1254,18 @@
   gap: 0.5rem;
 }
 
-.root-row .fields label {
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
+.root-row .fields small {
+  color: var(--muted);
+  font-size: var(--text-meta);
 }
 
-/* Same convention as `.root-row .regime`: opacity, not a second colour, for
-   copy that is secondary rather than disabled — only `exclude_globs` sets
-   `TextField.hint`, so this never touches the other three boxes. */
-.root-row .fields small {
-  opacity: 0.8;
+/* `.field`'s micro-label typography is for the label's own word; the hint
+   under the box is a sentence and must not inherit it. Measured in Chromium
+   without this: 9.33px, in capitals. */
+.root-row .field small {
+  font-size: var(--text-meta);
+  letter-spacing: normal;
+  text-transform: none;
 }
 
 .root-row .actions {
@@ -1183,16 +1274,85 @@
   margin-top: 1rem;
 }
 
-/* A heavier border than a card's, because this is the most destructive
-   action in the product and C4 §2 records that it does not look like one. */
-.remove-root {
-  border: 2px solid color-mix(in srgb, currentColor 50%, transparent);
-  border-radius: 4px;
-  margin-top: 1rem;
-  padding: 1rem;
+/* A checkbox's label *is* a sentence, so it takes the row rather than a
+   field track, and the box sits beside the sentence rather than under an
+   uppercase micro-label. Spec §11.3.
+
+   Relocated beside the other `.root-row` rules — a minor of the whole-branch
+   review over ⑤b found this pair (which also styles `.user-row .checks`)
+   sitting ~200 lines below every other `.root-row` rule, under the header for
+   the users and backup screens. Pure relocation: nothing else in either
+   stylesheet shares `.checks` or `.checks label`'s selector text, so moving
+   it earlier changes no cascade outcome. */
+.root-row .checks,
+.user-row .checks {
+  display: grid;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
 }
 
-.remove-root .counts {
+.root-row .checks label,
+.user-row .checks label {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  font-size: var(--text-ui);
+}
+
+/* The most destructive action in the product. C4 §2 opened by saying it did
+   not look like one, and C4's own answer was the counts this block still
+   renders — the live figure, stated before it acts. This is the other half:
+   the `--danger` token on the edge and on the verb.
+
+   Not a filled button. The block only appears after "Remove…", it states the
+   real cost, and it says what cannot be undone — the step is already
+   guarded, and the loudest control on the screen would be shouting at
+   somebody who has committed to it (spec §11.5).
+
+   The inset strip gains a third meaning here; it already marks a strong
+   proposal and a selected rule. In all three it says *this row is not like
+   the others*, which is the same claim — and, like both of those, **the box
+   itself stays neutral**. An earlier version of this rule put `--danger` on
+   the full border too, which §11.5 never asked for: it specifies the strip
+   and the verb. Three danger-coloured elements around one already-guarded
+   step is the shouting this comment starts by refusing. */
+.remove-root,
+.remove-user {
+  border: 1px solid var(--line);
+  box-shadow: inset 3px 0 0 var(--danger);
+  border-radius: var(--radius-control);
+  padding: var(--space-4);
+}
+
+/* Kept apart from the shared rule above: `.remove-user` sits inside
+   `.actions`, a flex container that already carries its own margin-top, and
+   a flex item's margin never collapses with its parent's — sharing this
+   declaration put a second `--space-4` inside `.actions` that the layout
+   never had. `.remove-root` sits directly in the root row's own flow, after
+   `.actions` and whatever scan report precedes it, and still needs one.
+   Measured in the browser, not reasoned about. */
+.remove-root {
+  margin-top: var(--space-4);
+}
+
+.remove-root .counts,
+.remove-user .counts {
+  font-weight: 600;
+}
+
+.remove-root .irreversible,
+.remove-user .irreversible {
+  color: var(--muted);
+  font-size: var(--text-meta);
+  max-width: 60ch;
+}
+
+/* The button that does the thing takes the token on its border and its
+   text; everything else in the block keeps the ordinary control look. */
+.remove-root .confirm,
+.remove-user .confirm {
+  border-color: var(--danger);
+  color: var(--danger);
   font-weight: 600;
 }
 
@@ -1203,13 +1363,16 @@
   margin-top: 1rem;
 }
 
-.roots .add-root label {
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
-}
-
-.scan-report dl {
+/* Scoped to the two top-level lists — one per direct `<section>` — rather
+   than to every `<dl>` under `.scan-report`. As a descendant selector this
+   also matched `UnreadableCauses`'s own nested `<dl>` of causes, five levels
+   deep inside a `<dd>`, and gave it the same `minmax(16rem, 1fr)` floor: at
+   390px that nested grid computed a hard 256px column, which became the
+   `<dd>`'s automatic minimum width and put the whole document 2px into
+   sideways scroll — `dt` 79.8 + gap + `dd` 256 = 344 inside the 309px row
+   `.unreadable-causes` actually has. `Config.browser.test.tsx` now renders a
+   populated report at 390px to hold this. */
+.scan-report > section > dl {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
   gap: 0.25rem 1rem;
@@ -1224,12 +1387,57 @@
 
 .scan-report .count dt,
 .scan-report .paths dt {
-  opacity: 0.8;
+  color: var(--muted);
 }
 
+/* 36 of this report's 47 facts read `0` or `no` on a clean scan. They are
+   not noise — "nothing was refused" is an answer somebody came for, and O90
+   closed by making this report *name* what it skipped — so none is hidden.
+   A zero simply recedes to the weight of its own label.
+
+   `--font-figures` is deliberately not set here: index.css.test.ts's "the
+   figures face reaches the series table's page counts only" pins that face
+   to `.editions td.pages` and base.css's blanket table rule alone, and a
+   third rule naming it would fail that test. */
 .scan-report .count dd,
-.scan-report .paths dd {
+.scan-report .paths dd,
+.scan-report .unreadable-causes > dd {
   margin: 0;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Same specificity as the rule above — `[data-zero]` weighs the same as a
+   class — so this wins only because it comes later in the file. Nothing
+   pins that order; if this rule is ever moved above the one it overrides,
+   the muted colour stops winning and every zero row renders at full
+   strength again.
+
+   **`.derived`, not only `.scan-report`, reaches all three of
+   `DeriveSection`'s mount points.** A whole-branch minor over ⑤b found
+   `data-zero` inert in two of them: `RemoveRoot.tsx`'s `.removal-derive`
+   `<details>` and `RootRow.tsx`'s `.removal-report` render `<DeriveSection>`
+   outside any `.scan-report` ancestor, so their zeros stayed at full
+   `--text` beside a scan report where zeros recede. `.derived` is the class
+   `DeriveSection` itself always renders on its wrapping `<section>` — the
+   same component, unlike `.scan-report`, which only `ScanReport` renders —
+   so this reaches all three without touching any component's markup.
+   `.scan-report [data-zero] dd` stays: it is what still reaches
+   `WalkSection`'s own zero rows, which exist only inside a `.scan-report`
+   and are not `.derived`'s to cover. */
+.scan-report [data-zero] dd,
+.derived [data-zero] dd {
+  color: var(--muted);
+}
+
+/* Spec §11.7: the `Root` cell stops breaking mid-path. Measured before this
+   rule existed: `overflow-wrap: normal` and `font-family: monospace` — the
+   UA default for `<code>` — rather than the `ui-monospace, monospace` the
+   other paths on these screens already use (`.proposal-detail .directories`,
+   `.field.pattern input`, both in this file). */
+[data-field="root"] dd code {
+  overflow-wrap: anywhere;
+  font-family: ui-monospace, monospace;
 }
 
 /* O90: the unreadable row holds its causes as a list of its own, so it takes
@@ -1241,7 +1449,7 @@
 }
 
 .scan-report .unreadable-causes > dt {
-  opacity: 0.8;
+  color: var(--muted);
 }
 
 .scan-report .unreadable-causes > dd {
@@ -1250,8 +1458,8 @@
 }
 
 .scan-report .note {
-  font-size: 0.9em;
-  opacity: 0.7;
+  color: var(--muted);
+  font-size: var(--text-meta);
 }
 
 /* Spec C4 §4's users screen and §5's backup screen. Tokens, as the
@@ -1263,20 +1471,33 @@
 }
 
 .user-row {
-  border: 1px solid color-mix(in srgb, currentColor 25%, transparent);
-  border-radius: 4px;
-  margin-bottom: 1rem;
-  padding: 1rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  margin-bottom: var(--space-4);
+  padding: var(--space-4);
 }
 
 .user-row h3 {
   margin: 0;
 }
 
+/* Descendant, not child: this also reaches the two `.why` paragraphs inside
+   `.reset`, which `.user-row > .why` below does not. Splitting `.locked` out
+   and leaving this selector without a colour — which an earlier draft of the
+   plan called for — would have left those two at full `--text`.
+
+   **A link inside keeps `--accent` and that is deliberate.** `color` reaches
+   text and `currentColor`, not an anchor that has its own; the `opacity: 0.8`
+   this replaced dimmed the whole subtree, so the "your account screen" link
+   in the `isSelf` paragraph used to render as a *dimmed* accent matching
+   nothing else in the app. It is now the same accent as every other link —
+   measured `rgb(176, 54, 29)` against the paragraph's `rgb(107, 97, 81)` —
+   and `index.css.test.ts` puts that at 6.13:1 on `--bg`, which the 80 % blend
+   was under. */
 .user-row .why,
 .user-row .locked {
-  font-size: 0.9em;
-  opacity: 0.8;
+  color: var(--muted);
+  font-size: var(--text-meta);
 }
 
 .user-row .fields {
@@ -1284,6 +1505,15 @@
   grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
   gap: 0.5rem;
   margin-top: 0.5rem;
+}
+
+/* Prose leaves the grid and sits under the group it explains. Placement only:
+   the measure lives with the settings area's `.why` rule and the colour and
+   size with `.user-row .why` above, which already reaches this paragraph as
+   a descendant. Only what is true of *this* `.why` and not the others —
+   that it sits under a group rather than beside a control — belongs here. */
+.user-row > .why {
+  margin: var(--space-2) 0 0;
 }
 
 .user-row .grant-list,
@@ -1305,8 +1535,8 @@
 
 .user-row .session-list .when,
 .user-row .key-list .when {
-  opacity: 0.8;
-  font-size: 0.9em;
+  color: var(--muted);
+  font-size: var(--text-meta);
 }
 
 .user-row .session-list .current {
@@ -1316,7 +1546,7 @@
 /* What is left of an account whose removal worked and whose list read did
    not: no controls, and a line saying so. */
 .user-row.removed .gone {
-  opacity: 0.8;
+  color: var(--muted);
 }
 
 .user-row .actions {
@@ -1325,29 +1555,23 @@
   margin-top: 1rem;
 }
 
-/* The heavier border `.remove-root` carries, for the same reason: this is the
-   second-most destructive route in the product. */
-.remove-user {
-  border: 2px solid color-mix(in srgb, currentColor 50%, transparent);
-  border-radius: 4px;
-  padding: 1rem;
+/* `.remove-user`'s own rules live with `.remove-root`'s above: one shared
+   treatment for the product's two removal blocks, stated once. */
+
+.add-user .field {
+  margin-bottom: var(--space-2);
 }
 
-.remove-user .counts {
-  font-weight: 600;
-}
-
-.users .add-user label {
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
-  margin-bottom: 0.5rem;
-}
-
+/* The list is this screen's card, and without a measure the backup screen is
+   the one screen `--config-measure` never reaches: its prose stops at 60ch
+   while its rows ran to `main`'s full 1168px. The rows are flex and pack
+   left, so this moves no visible edge today — what it decides is where a
+   long filename wraps. */
 .backup .backup-list {
   list-style: none;
   margin: 1rem 0;
   padding: 0;
+  max-width: var(--config-measure);
 }
 
 .backup .backup-list li {
@@ -1389,6 +1613,24 @@
   font: inherit;
 }
 
+/* `font: inherit` cannot be proven to clear 16px from the text alone: it
+   resolves against whatever `.account` inherits, and this rule outranks
+   `base.css`'s zero-specificity floor at (0,1,1). It computes 16px today —
+   `.account` sets no size — so this changes nothing on any device. It is
+   here because the same shape, one screen over, is what made the reader's
+   Settings panel zoom iOS on focus (O151), and the gate that now sees it
+   should not have an exception written into it. */
+@media (pointer: coarse) {
+  /* biome-ignore lint/style/noDescendingSpecificity: same reasoning as the
+   * rule this corrects, above: `.account` and `.proposal-detail`/`.rule-form`
+   * are three different screens, so an input never holds more than one of
+   * these classes and the two selectors never compete for the same element
+   * regardless of which comes first. */
+  .account input {
+    font-size: max(16px, var(--text-ui));
+  }
+}
+
 .account button {
   margin-top: 0.5rem;
 }
@@ -1404,12 +1646,13 @@
 
 .backup .backup-list .when,
 .backup .backup-list .size {
-  opacity: 0.8;
+  color: var(--muted);
 }
 
+/* The measure itself lives with the settings area's other `.why` rule,
+   above, so this one property is not set twice. */
 .backup .what-a-backup-is {
-  margin-top: 1.5rem;
-  border-top: 1px solid color-mix(in srgb, currentColor 25%, transparent);
-  padding-top: 1rem;
-  max-width: 60ch;
+  margin-top: var(--space-5);
+  border-top: 1px solid var(--line);
+  padding-top: var(--space-4);
 }

@@ -227,15 +227,22 @@ afterEach(() => {
 })
 
 describe('RootRow', () => {
-  it('says a root has never been scanned rather than drawing a null', async () => {
+  it('states each fact under its own name', async () => {
     const host = await settle()
-    expect(host.textContent).toContain('never scanned')
-    expect(host.textContent).not.toContain('null')
-  })
-
-  it('says the watch state is unknown for a root it did not just add', async () => {
-    const host = await settle()
-    expect(host.textContent).toContain('watch state unknown')
+    const pairs = [...host.querySelectorAll('.regime > div')].map((row) => [
+      row.querySelector('dt')?.textContent,
+      row.querySelector('dd')?.textContent,
+    ])
+    // Asserted per pair, not with a whole-element `toContain`: a page-wide
+    // string cannot see a label attached to the wrong value. Covers both a
+    // root that has never been scanned (drawn as `never`, not a null) and
+    // one this card was not handed a probe for (drawn as `unknown`, not
+    // defaulted to a claim either way).
+    expect(pairs).toEqual([
+      ['watch', 'unknown — probed when a root is added'],
+      ['scan every', '24h'],
+      ['last scan', 'never'],
+    ])
   })
 
   it('patches only the field that changed', async () => {
@@ -636,7 +643,12 @@ describe('RootRow', () => {
       )
       await Promise.resolve()
     })
-    expect(host?.textContent).toContain('inotify limit reached')
+    const watchRow = [...(host?.querySelectorAll('.regime > div') ?? [])].find(
+      (row) => row.querySelector('dt')?.textContent === 'watch',
+    )
+    expect(watchRow?.querySelector('dd')?.textContent).toBe(
+      'probe failed: inotify limit reached',
+    )
   })
 
   it('shows the exclude_globs pattern the row holds', async () => {
@@ -1125,5 +1137,30 @@ describe('RootRow', () => {
         ?.querySelector('small')
       expect(hint, `${name} should carry no hint`).toBeNull()
     }
+  })
+
+  it('groups the keeps-documents checkbox outside the field grid', async () => {
+    // A checkbox's label is a sentence, not a field name: it takes a row of
+    // its own rather than a track in the `.fields` grid. The user row's
+    // equivalent is pinned in UserRow.test.tsx; this is the root row's.
+    const host = await settle()
+    expect(
+      host.querySelector('.root-row .fields input[type="checkbox"]'),
+    ).toBeNull()
+    const checks = host.querySelector('.root-row .checks')
+    expect(checks).not.toBeNull()
+    expect(
+      checks?.querySelector('input[name="keeps_documents"]'),
+    ).not.toBeNull()
+  })
+
+  it('gives every labelled control in the field grid the field pattern', async () => {
+    const host = await settle()
+    const labels = [...host.querySelectorAll('.root-row .fields label')]
+    // Five: edition key, default kind, default language, exclude globs, scan
+    // interval. Asserted as a count as well as a predicate, because
+    // `.every()` on an empty list is vacuously true.
+    expect(labels).toHaveLength(5)
+    expect(labels.every((l) => l.classList.contains('field'))).toBe(true)
   })
 })
