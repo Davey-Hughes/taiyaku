@@ -97,6 +97,23 @@ function press(key: string) {
   })
 }
 
+/** The same press with a modifier held, as a window or tab switch arrives. */
+function pressWith(
+  key: string,
+  modifier: 'ctrlKey' | 'metaKey' | 'altKey',
+): KeyboardEvent {
+  const event = new KeyboardEvent('keydown', {
+    key,
+    bubbles: true,
+    cancelable: true,
+    [modifier]: true,
+  })
+  act(() => {
+    window.dispatchEvent(event)
+  })
+  return event
+}
+
 // The labeller remembers its edition, page and box defaults through
 // `prefs.ts`, and this environment has no `localStorage` of its own — the
 // `jsdom` project leaves it `undefined`, which `prefs.ts` swallows by design.
@@ -170,6 +187,47 @@ describe('the on-screen legend', () => {
 })
 
 describe('Labeller keys', () => {
+  /**
+   * **A modifier means the keystroke is not this page's**, which the reader
+   * has enforced since spec A2 (`keys.ts`'s `intentOf` bails on
+   * ctrl/meta/alt) and the labeller never did. Reported by its own user as
+   * hotkeys being eaten.
+   *
+   * Two costs, and the second is the worse one. `Tab` was
+   * `preventDefault`ed unconditionally, so a window switch was swallowed.
+   * And every other binding matched a bare `event.key`, so a browser
+   * shortcut that happens to share a letter — Cmd+1 through Cmd+6 for tabs,
+   * Cmd+V, Cmd+H, Cmd+N, Cmd+I — *also* retagged the selected box, silently,
+   * in the tool that produces this project's ground truth.
+   */
+  it('ignores a key held with ctrl, meta or alt', () => {
+    for (const modifier of ['ctrlKey', 'metaKey', 'altKey'] as const) {
+      const host = mount(<Labeller initialBoxes={one} initialSelected="a" />)
+      const before = region(host, 'a').getAttribute('data-kind')
+      pressWith('3', modifier)
+      expect(region(host, 'a').getAttribute('data-kind'), modifier).toBe(before)
+    }
+  })
+
+  it('lets a modified Tab through to the window manager', () => {
+    mount(<Labeller initialBoxes={one} initialSelected="a" />)
+    // The bare `Tab` is the labeller's, and it cancels — that is the cycle.
+    const plain = new KeyboardEvent('keydown', {
+      key: 'Tab',
+      bubbles: true,
+      cancelable: true,
+    })
+    act(() => {
+      window.dispatchEvent(plain)
+    })
+    expect(plain.defaultPrevented).toBe(true)
+    // Alt+Tab and Cmd+Tab are the window manager's, and swallowing them is
+    // what the reporter noticed.
+    for (const modifier of ['altKey', 'metaKey'] as const) {
+      expect(pressWith('Tab', modifier).defaultPrevented, modifier).toBe(false)
+    }
+  })
+
   it('tags a kind by number', () => {
     const host = mount(<Labeller initialBoxes={one} initialSelected="a" />)
     press('3')

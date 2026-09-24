@@ -530,6 +530,23 @@ export function Labeller({
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
+      // **A modifier means the keystroke is not ours** — the same guard
+      // `keys.ts`'s `intentOf` has carried for the reader since spec A2, and
+      // which this handler never got.
+      //
+      // Two distinct costs, reported by the labeller's own user. `Tab` is
+      // `preventDefault`ed unconditionally below, so **Alt+Tab and Cmd+Tab
+      // were swallowed** and the window did not switch. And every other
+      // binding matches on a bare `event.key`, so **Cmd+1 through Cmd+6,
+      // Cmd+V, Cmd+H, Cmd+N and Cmd+I silently retagged the selected box**
+      // while the browser shortcut also fired — a label changed by a
+      // keystroke nobody aimed at this page, in the instrument that produces
+      // this project's ground truth.
+      //
+      // Shift is deliberately not here, for the reason `keyPlan`'s own
+      // comment gives: it is a character modifier, and a shifted key is
+      // still a key this page means to answer.
+      if (event.ctrlKey || event.metaKey || event.altKey) return
       if (event.key === 'Tab') {
         event.preventDefault()
         setSelected(cycleAt(boxes, cursor.current, selected))

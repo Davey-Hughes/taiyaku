@@ -348,6 +348,30 @@
   accent-color: var(--accent);
 }
 
+/* **The same 16 px floor `base.css` gives the library, which never reached
+ * here** — O151.
+ *
+ * That floor is `@media (pointer: coarse) { :where(.library, .login)
+ * :where(input, select, textarea) { … } }`, written because a text field
+ * under 16 px makes iOS Safari zoom the whole document on focus and the zoom
+ * outlives the field: the user reported signing in left the page zoomed with
+ * a pinch the only way back (④'s device pass). **The reader is neither
+ * `.library` nor `.login`**, so the panel above — `font-size: var(--text-ui)`,
+ * 14 px, handed to every control by the `font: inherit` beside it — kept
+ * doing exactly what that floor exists to stop. `settingsFields.tsx` fills it
+ * with `type="number"` boxes for prefetch and motion. **Confirmed on the
+ * reporter's iPhone on 2026-09-23**: tapping one zooms the document.
+ *
+ * Same (0,1,0) as the rule it corrects and written after it, so it wins the
+ * tie. `textarea` is included although the panel draws none today, because
+ * the floor it mirrors covers all three and a panel that gains one should
+ * not have to remember this. */
+@media (pointer: coarse) {
+  .reader-dialog-panel :where(input, select, textarea) {
+    font-size: max(16px, var(--text-ui));
+  }
+}
+
 .reader-panel-head {
   display: flex;
   align-items: baseline;

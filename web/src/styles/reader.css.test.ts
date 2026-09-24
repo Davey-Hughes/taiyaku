@@ -88,6 +88,44 @@ describe('the reader root', () => {
   })
 })
 
+describe('the dialog panel’s controls clear the iOS zoom floor', () => {
+  it('gives them a coarse-pointer font-size of at least 16px', () => {
+    // O151, confirmed on the reporter's iPhone 2026-09-23. `base.css` carries
+    // this floor for `:where(.library, .login)` because a control under 16px
+    // makes iOS Safari zoom the document on focus and the zoom outlives the
+    // field. **The reader is neither**, so the panel — `--text-ui`, 14px,
+    // passed to every control by its own `font: inherit` — kept doing exactly
+    // what that floor exists to stop, to the `type="number"` boxes
+    // `settingsFields.tsx` puts in Settings.
+    const floor = declared(
+      readerSource,
+      '.reader-dialog-panel :where(input, select, textarea)',
+      'font-size',
+    )
+    expect(floor).toEqual(['max(16px,var(--text-ui))'])
+  })
+
+  it('writes that floor after the rule it corrects, so the tie goes to it', () => {
+    // Both are `.reader-dialog-panel :where(…)` — (0,1,0) each — so nothing
+    // but source order decides which wins, and a companion pasted above the
+    // `font: inherit` it overrides would lose on every pointer.
+    //
+    // **Located by the rule, not by the first `@media (pointer: coarse)`.**
+    // This file has three of those blocks and the first is 200 lines above
+    // the one that matters; an `indexOf` on the at-rule passed against a
+    // correct stylesheet and failed against this one, which is how the first
+    // version of this assertion was written and why it is not.
+    const inherits = readerSource.indexOf(
+      '.reader-dialog-panel :where(input, select) {',
+    )
+    const floored = readerSource.indexOf(
+      '.reader-dialog-panel :where(input, select, textarea) {',
+    )
+    expect(inherits).toBeGreaterThan(-1)
+    expect(floored).toBeGreaterThan(inherits)
+  })
+})
+
 describe('the safe areas', () => {
   it('are there to pad: index.html lets the page run under the notch', () => {
     expect(indexHtml).toMatch(
