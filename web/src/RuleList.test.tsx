@@ -129,8 +129,33 @@ describe('RuleList', () => {
         }),
       ],
     })
-    const button = host.querySelector<HTMLElement>('.rule-row button.select')
-    expect(button?.textContent).toBe('new rule')
+    // `.rule-name`, not the whole button: `.select` now also holds a
+    // `.mechanism` span, so its own textContent is the two concatenated.
+    const name = host.querySelector<HTMLElement>('.rule-row .rule-name')
+    expect(name?.textContent).toBe('new rule')
+  })
+
+  it('names a builtin by its note rather than calling it a new rule', () => {
+    const { host } = render({
+      rules: [
+        rule({
+          kind: 'builtin-volume',
+          match_on: 'name',
+          pattern: '',
+          set_series: null,
+          note: 'volume from the name',
+        }),
+      ],
+    })
+    const row = host.querySelector('.rule-row')
+    // `.rule-name`, not `.select`: the button now holds two spans, and
+    // `.select`'s own textContent is their concatenation.
+    expect(row?.querySelector('.rule-name')?.textContent).toBe(
+      'volume from the name',
+    )
+    expect(row?.querySelector('.mechanism')?.textContent).toBe(
+      'builtin on name → volume',
+    )
   })
 
   it('says which rules are off', () => {
@@ -464,5 +489,50 @@ describe('RuleList', () => {
     expect(host.querySelector('.override-badge')?.textContent).toContain(
       '2 overrides',
     )
+  })
+
+  it('separates the rule count from the override badge', () => {
+    const { host } = render({ overrideCount: 1 })
+    const count = host.querySelector('.rule-count')
+    // Exact text, not `toContain`: the defect this pins is a *missing*
+    // separator, and `toContain('1 override')` passes against `4 rules1
+    // override` just as happily as against the correct string.
+    expect(count?.textContent).toBe('2 rules · 1 override')
+  })
+
+  it('pluralises the override badge and keeps the separator', () => {
+    const { host } = render({ overrideCount: 3 })
+    expect(host.querySelector('.rule-count')?.textContent).toBe(
+      '2 rules · 3 overrides',
+    )
+  })
+
+  it('says nothing about overrides when there are none', () => {
+    const { host } = render({ overrideCount: 0 })
+    expect(host.querySelector('.rule-count')?.textContent).toBe('2 rules')
+  })
+
+  it('gives the row button an accessible name that is not two strings run together', () => {
+    const { host } = render({
+      rules: [
+        rule({
+          kind: 'builtin-volume',
+          match_on: 'name',
+          pattern: '',
+          set_series: null,
+          note: 'volume from the name',
+        }),
+      ],
+    })
+    const button = host.querySelector('.select')
+    expect(button?.getAttribute('aria-label')).toBe(
+      'volume from the name — builtin on name → volume',
+    )
+    // WCAG 2.5.3, Label in Name: whatever a person sees on the control has to
+    // be inside what a screen reader announces for it, or a voice-control user
+    // cannot ask for it by the name they can read.
+    const visible = button?.querySelector('.rule-name')?.textContent ?? ''
+    expect(visible).not.toBe('')
+    expect(button?.getAttribute('aria-label')).toContain(visible)
   })
 })

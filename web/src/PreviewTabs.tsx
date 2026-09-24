@@ -140,7 +140,10 @@ export function PreviewTabs({
           >
             {name}
             {name === 'Overrides' && overrides.length > 0 && (
-              <span className="badge">{overrides.length}</span>
+              <>
+                {' '}
+                <span className="badge">{overrides.length}</span>
+              </>
             )}
           </button>
         ))}
@@ -214,26 +217,28 @@ export function PreviewTabs({
               </p>
             ) : (
               <>
-                <table className="matched">
-                  <thead>
-                    <tr>
-                      <th>file</th>
-                      <th>before</th>
-                      <th>after</th>
-                      <th>match</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {preview.rows.map((row) => (
-                      <tr key={`${row.root_id}:${row.rel_path}`}>
-                        <td>{row.rel_path}</td>
-                        <td>{row.before?.series ?? '—'}</td>
-                        <td>{row.after?.series ?? '—'}</td>
-                        <td>{row.matched ? 'matched' : 'near miss'}</td>
+                <div className="table-scroll">
+                  <table className="matched">
+                    <thead>
+                      <tr>
+                        <th>file</th>
+                        <th>before</th>
+                        <th>after</th>
+                        <th>match</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
+                    </thead>
+                    <tbody>
+                      {preview.rows.map((row) => (
+                        <tr key={`${row.root_id}:${row.rel_path}`}>
+                          <td>{row.rel_path}</td>
+                          <td>{row.before?.series ?? '—'}</td>
+                          <td>{row.after?.series ?? '—'}</td>
+                          <td>{row.matched ? 'matched' : 'near miss'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
                 {preview.rows_truncated && (
                   <p className="truncated">
                     The first 500 files only — more matched than fit here.
@@ -246,35 +251,37 @@ export function PreviewTabs({
             (preview.rows.length === 0 ? (
               <p className="empty">No files to show provenance for.</p>
             ) : (
-              <table className="provenance">
-                <thead>
-                  <tr>
-                    <th>file</th>
-                    {FIELDS.map((field) => (
-                      <th key={field}>{field}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {preview.rows.map((row) => (
-                    <tr key={`${row.root_id}:${row.rel_path}`}>
-                      <td>{row.rel_path}</td>
-                      {FIELDS.map((field) => {
-                        const decided = row.decided_by[field]
-                        return (
-                          <td key={field}>
-                            {decided === undefined
-                              ? '—'
-                              : decided.kind === 'root_default'
-                                ? 'root default'
-                                : `rule ${decided.index + 1}`}
-                          </td>
-                        )
-                      })}
+              <div className="table-scroll">
+                <table className="provenance">
+                  <thead>
+                    <tr>
+                      <th>file</th>
+                      {FIELDS.map((field) => (
+                        <th key={field}>{field}</th>
+                      ))}
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {preview.rows.map((row) => (
+                      <tr key={`${row.root_id}:${row.rel_path}`}>
+                        <td>{row.rel_path}</td>
+                        {FIELDS.map((field) => {
+                          const decided = row.decided_by[field]
+                          return (
+                            <td key={field}>
+                              {decided === undefined
+                                ? '—'
+                                : decided.kind === 'root_default'
+                                  ? 'root default'
+                                  : `rule ${decided.index + 1}`}
+                            </td>
+                          )
+                        })}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             ))}
 
           {tab === 'Overrides' &&

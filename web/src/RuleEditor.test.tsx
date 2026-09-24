@@ -170,6 +170,17 @@ describe('RuleEditor', () => {
     expect(host.querySelectorAll('.rule-row')).toHaveLength(2)
   })
 
+  it('puts the preview outside the right pane, so it spans the width', async () => {
+    const host = await render()
+    const preview = host.querySelector('.preview')
+    expect(preview).not.toBeNull()
+    // The point of the move: Provenance is file + one column per metadata
+    // field, and inside `.editor-right` it is capped at whatever the list
+    // column leaves at every width.
+    expect(host.querySelector('.editor-right .preview')).toBeNull()
+    expect(preview?.parentElement?.className).toContain('rule-editor')
+  })
+
   it('previews on selecting a different rule', async () => {
     // `rows` is scoped to `selected`, so changing which rule is open is the
     // only way to populate Matched files and Provenance for it — and it is one

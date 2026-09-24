@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import adminSource from './styles/admin.css?raw'
+import baseSource from './styles/base.css?raw'
 import librarySource from './styles/library.css?raw'
 import shellSource from './styles/shell.css?raw'
 import tokensSource from './styles/tokens.css?raw'
@@ -548,11 +549,37 @@ describe('the figures face reaches the series table’s page counts only', () =>
     )
   })
 
-  it('is named by no other rule in the screens’ stylesheets', () => {
-    const naming = rules(cssSource)
+  it('is named by no other rule in any stylesheet the screens load', () => {
+    // `base.css` is read here too since ⑤a. It carries the blanket rule
+    // that puts the figures face on every table under `.library`, which is
+    // exactly what this case exists to notice — and could not, while it
+    // read only the three screen stylesheets.
+    const naming = rules([cssSource, baseSource].join('\n'))
       .filter((rule) => rule.body.includes('--font-figures'))
       .map((rule) => rule.prelude)
-    expect(naming).toEqual(['.editions td.pages'])
+    expect(naming).toEqual([
+      '.editions td.pages',
+      ':where(.library, .login) :where(table)',
+    ])
+  })
+
+  it('does not reach the rule preview’s tables', () => {
+    // §7.2 deferred this to ⑤. Neither table has a numeric column: every
+    // digit in Matched files is inside a file name, and Provenance's only
+    // digits are rule ordinals reading `rule 1`. So both opt out the way
+    // `.editions` does — and unlike `.editions` they add no cell exception
+    // back, because there is no page-count column to make one for.
+    expect(declared(ruleBody('.preview table'), 'font-family')).toBe(
+      'var(--font-ui)',
+    )
+    const exceptions = rules(adminSource)
+      .filter(
+        (rule) =>
+          rule.prelude.startsWith('.preview') &&
+          rule.body.includes('--font-figures'),
+      )
+      .map((rule) => rule.prelude)
+    expect(exceptions).toEqual([])
   })
 })
 

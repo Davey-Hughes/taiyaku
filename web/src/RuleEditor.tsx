@@ -745,27 +745,27 @@ export function RuleEditor() {
               Pick a rule to edit it. The impact below is for the whole list.
             </p>
           )}
-
-          <PreviewTabs
-            preview={preview}
-            rules={rules}
-            selected={selected}
-            busy={busy}
-            frozen={frozen}
-            onReorder={(from, to) => {
-              const next = renumber(moved(rules, from, to))
-              commit(next, selected === from ? to : selected)
-            }}
-            // The same call `RuleList`'s own `onSelect` makes, guard included:
-            // "Edit rule 4" from an override row is selecting rule 4, so it
-            // costs one derivation, and selecting the rule already open costs
-            // none.
-            onSelectRule={(index) => {
-              if (index !== selected) commit(rules, index)
-            }}
-          />
         </div>
       </div>
+
+      <PreviewTabs
+        preview={preview}
+        rules={rules}
+        selected={selected}
+        busy={busy}
+        frozen={frozen}
+        onReorder={(from, to) => {
+          const next = renumber(moved(rules, from, to))
+          commit(next, selected === from ? to : selected)
+        }}
+        // The same call `RuleList`'s own `onSelect` makes, guard included:
+        // "Edit rule 4" from an override row is selecting rule 4, so it
+        // costs one derivation, and selecting the rule already open costs
+        // none.
+        onSelectRule={(index) => {
+          if (index !== selected) commit(rules, index)
+        }}
+      />
 
       {saved !== undefined && (
         <p className="saved">

@@ -342,3 +342,69 @@ export function blankRule(ordinal: number): Rule {
     note: null,
   }
 }
+
+/** The first of `values` that is neither `null` nor empty. */
+function firstNamed(...values: Array<string | null>): string | undefined {
+  return values.find((value): value is string => value !== null && value !== '')
+}
+
+/**
+ * What a rule is called in the list.
+ *
+ * **`note` leads**, which it did not until ⑤a: the chain ran
+ * `set_series ?? … ?? pattern || 'new rule'` and never consulted it, so a
+ * `builtin-volume` or `builtin-chapter` rule — empty pattern, setting
+ * nothing — read `new rule` permanently while carrying a perfectly good
+ * note. Two of the four seeded rules did.
+ *
+ * **Empty strings fall through, not just `null`.** A `??` chain cannot see
+ * `''`, and the old one's trailing `|| 'new rule'` caught it for the last
+ * item only — so an empty note would have skipped the pattern and landed on
+ * `new rule`. `firstNamed` treats the two the same the whole way down.
+ */
+export function ruleName(rule: Rule): string {
+  return (
+    firstNamed(
+      rule.note,
+      rule.set_series,
+      rule.set_edition_key,
+      rule.set_kind,
+      rule.set_language,
+      rule.pattern,
+    ) ?? 'new rule'
+  )
+}
+
+/**
+ * The quiet line under a rule's name: how it matches, and what it sets.
+ *
+ * **Only what the rule states outright.** A `builtin-volume` kind sets
+ * volume and a non-null `set_series` sets series; both are facts about the
+ * row. A regex that sets a field through a named capture group is *not* —
+ * saying so would mean parsing the pattern and reimplementing the server's
+ * derive here, which is the second-opinion-in-the-client shape O93 closed.
+ * `Row.decided_by` is the server's own answer and exists only once a
+ * preview has landed, so a line built from it would appear and disappear.
+ * This one never does.
+ */
+export function ruleMechanism(rule: Rule): string {
+  const how = rule.kind.startsWith('builtin-') ? 'builtin' : rule.kind
+  const sets =
+    rule.kind === 'builtin-volume'
+      ? ['volume']
+      : rule.kind === 'builtin-chapter'
+        ? ['chapter']
+        : (
+            [
+              [rule.set_series, 'series'],
+              [rule.set_edition_key, 'edition'],
+              [rule.set_kind, 'kind'],
+              [rule.set_language, 'language'],
+            ] as const
+          )
+            .filter(([value]) => value !== null && value !== '')
+            .map(([, name]) => name)
+  return sets.length > 0
+    ? `${how} on ${rule.match_on} → ${sets.join(', ')}`
+    : `${how} on ${rule.match_on}`
+}

@@ -12,6 +12,8 @@ import {
   type Rule,
   type RuleDoc,
   RULE_KINDS,
+  ruleMechanism,
+  ruleName,
   saveRules,
   toDocument,
 } from './rules'
@@ -332,5 +334,101 @@ describe('the client', () => {
     expect(path).toBe('/api/library/rules/import')
     expect(init.method).toBe('POST')
     expect(JSON.parse(init.body as string)).toEqual([{ ordinal: 1 }])
+  })
+})
+
+// `aRule` spreads `blankRule(1)`, whose every optional field is `null` — not
+// this file's own `rule()` above, which sets `set_edition_key: 'raw'` and so
+// would make the chain return `'raw'` for cases below that need every set_*
+// field empty to reach the pattern or the 'new rule' fallback.
+const aRule = (over: Partial<Rule> = {}): Rule => ({
+  ...blankRule(1),
+  ...over,
+})
+
+describe('ruleName', () => {
+  it('prefers the note, which is the only thing a builtin has', () => {
+    expect(
+      ruleName(
+        aRule({
+          kind: 'builtin-volume',
+          match_on: 'name',
+          pattern: '',
+          note: 'volume from the name',
+        }),
+      ),
+    ).toBe('volume from the name')
+  })
+
+  it('prefers the note over a non-empty pattern, not only over an empty one', () => {
+    // The case above pins note-over-nothing (a builtin's empty pattern), which
+    // cannot tell `firstNamed(note, …, pattern)` apart from
+    // `firstNamed(…, pattern, note)` — with an empty pattern, note is the only
+    // non-empty candidate either way. This fixture gives `pattern` something
+    // to win with if `note` were not checked first, which is what actually
+    // pins the argument order `firstNamed` is called with.
+    expect(
+      ruleName(aRule({ note: 'why this rule exists', pattern: 'Manga/.*' })),
+    ).toBe('why this rule exists')
+  })
+
+  it('falls past an empty note rather than stopping on it', () => {
+    // `??` cannot see `''`, and the old chain's trailing `|| 'new rule'`
+    // only caught the *last* item — so an empty note would have skipped
+    // the pattern entirely and landed on 'new rule'.
+    expect(ruleName(aRule({ note: '', pattern: 'Manga/.*' }))).toBe('Manga/.*')
+  })
+
+  it('falls past an empty note to a set field before the pattern', () => {
+    expect(
+      ruleName(aRule({ note: null, set_series: 'Akira', pattern: 'x' })),
+    ).toBe('Akira')
+  })
+
+  it('says "new rule" only when a rule genuinely says nothing', () => {
+    expect(ruleName(blankRule(1))).toBe('new rule')
+  })
+})
+
+describe('ruleMechanism', () => {
+  it('names a builtin by what it sets, which its kind states outright', () => {
+    expect(
+      ruleMechanism(aRule({ kind: 'builtin-volume', match_on: 'name' })),
+    ).toBe('builtin on name → volume')
+    expect(
+      ruleMechanism(aRule({ kind: 'builtin-chapter', match_on: 'name' })),
+    ).toBe('builtin on name → chapter')
+  })
+
+  it('names the fields a rule sets outright, in field order', () => {
+    expect(
+      ruleMechanism(
+        aRule({
+          kind: 'regex',
+          match_on: 'path',
+          set_series: 'A',
+          set_language: 'en',
+        }),
+      ),
+    ).toBe('regex on path → series, language')
+  })
+
+  it('claims nothing for a regex whose effect is in its capture groups', () => {
+    // Saying "→ series" here would mean parsing the pattern and
+    // reimplementing the server's derive in the client — the shape O93
+    // closed. The line stops at what the rule states.
+    expect(
+      ruleMechanism(
+        aRule({
+          kind: 'regex',
+          match_on: 'path',
+          pattern: '^(?<series>[^/]+)/',
+        }),
+      ),
+    ).toBe('regex on path')
+  })
+
+  it('is never empty, whatever the rule holds', () => {
+    expect(ruleMechanism(blankRule(1))).toBe('regex on path')
   })
 })

@@ -77,7 +77,7 @@ export function RuleForm({
       | 'note',
     label: string,
   ) => (
-    <label>
+    <label className={name === 'pattern' ? 'field pattern' : 'field'}>
       <span>{label}</span>
       <input
         type="text"
@@ -98,7 +98,7 @@ export function RuleForm({
 
   return (
     <div className="rule-form">
-      <label>
+      <label className="field">
         <span>kind</span>
         <select
           name="kind"
@@ -117,7 +117,7 @@ export function RuleForm({
         </select>
       </label>
 
-      <label>
+      <label className="field">
         <span>match on</span>
         <select
           name="match_on"
@@ -148,7 +148,7 @@ export function RuleForm({
 
       {text('note', 'note')}
 
-      <label>
+      <label className="field">
         <span>scope</span>
         <select
           name="root_id"

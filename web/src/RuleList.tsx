@@ -32,7 +32,12 @@
  */
 import { useEffect, useState } from 'react'
 import type { Proposal } from './curation'
-import { PREVIEW_EXPENSIVE_ABOVE, type Rule } from './rules'
+import {
+  PREVIEW_EXPENSIVE_ABOVE,
+  type Rule,
+  ruleMechanism,
+  ruleName,
+} from './rules'
 
 export function RuleList({
   rules,
@@ -168,19 +173,11 @@ export function RuleList({
               type="button"
               className="select"
               disabled={frozen}
+              aria-label={`${ruleName(rule)} — ${ruleMechanism(rule)}`}
               onClick={() => onSelect(index)}
             >
-              {(rule.set_series ??
-                rule.set_edition_key ??
-                rule.set_kind ??
-                rule.set_language ??
-                // `pattern` is the one field of this set that is never
-                // `null` — `blankRule()` leaves it `''` rather than `null`,
-                // so a `??` chain alone would render a blank button for
-                // every freshly added rule. The trailing `||` catches the
-                // empty string too, which `??` cannot see.
-                rule.pattern) ||
-                'new rule'}
+              <span className="rule-name">{ruleName(rule)}</span>
+              <span className="mechanism">{ruleMechanism(rule)}</span>
             </button>
             {!rule.enabled && <span className="off">off</span>}
             {rule.id !== 0 && wroteRule.has(rule.id) && (
@@ -231,9 +228,14 @@ export function RuleList({
       <p className="rule-count">
         {rules.length} rules
         {overrideCount > 0 && (
-          <span className="override-badge">
-            {overrideCount === 1 ? '1 override' : `${overrideCount} overrides`}
-          </span>
+          <>
+            {' · '}
+            <span className="override-badge">
+              {overrideCount === 1
+                ? '1 override'
+                : `${overrideCount} overrides`}
+            </span>
+          </>
         )}
       </p>
       {rules.length > PREVIEW_EXPENSIVE_ABOVE && (

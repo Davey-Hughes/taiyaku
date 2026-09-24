@@ -22454,3 +22454,53 @@ a difference this device's own owner could not pick out. Any future proposal of
 the same shape — a 480 px rung for a 3× desktop, or the same treatment
 elsewhere — should be asked to show the difference is visible before it is
 asked to show it is cheap.
+
+### ⑤a: the device pass — 2026-09-23
+
+The user's iPhone, iOS Safari over the tailnet, against the **production
+build** — `npm run build`, then `vite preview` behind `tailscale serve`,
+proxying `/api` to a `taiyaku serve` on a **copy** of the real library. The
+original `library.db` was checksummed before and after and is unchanged. Two
+questions, because two things on this branch are invisible to every other
+check available here.
+
+**Why neither could be settled on the development machine.** `base.css`'s
+16 px floor lives inside `@media (pointer: coarse)`, and driven Chromium is
+`pointer: fine` — the media query never engages, so a 390×844 browser pass
+comes back clean whether the floor holds or not. `scripts/check-all.sh` does
+not render at all. A real phone is the only instrument for this.
+
+**1. ⑤a's own Critical, C2 — fixed.** The whole-branch review found
+`.field input` at `0.8rem` beating that floor, because the floor is written
+at `:where()` and so carries **zero** specificity while `.field input`
+carries (0,1,1). That put all nine rule-form controls under 16 px, which is
+what makes iOS Safari zoom the document on focus — the defect ④'s device
+pass already recorded once, where signing in left the page zoomed and a
+pinch was the only way back. **Tapping any field on the Rules screen no
+longer zooms.** The fix is `var(--text-ui)` plus an equal-specificity
+`(pointer: coarse)` companion at `max(16px, var(--text-ui))`, written after
+the rule it corrects so it wins the tie.
+
+**2. O151 — reproduced.** Building the gate for C2 surfaced the same defeat
+one stylesheet over. `base.css`'s floor is scoped to `:where(.library,
+.login)` and **the reader is neither**, so it never reached
+`.reader-dialog-panel` — 14 px, handed to every control inside it by that
+panel's own `font: inherit`, which is what `settingsFields.tsx` fills with
+`type="number"` boxes for prefetch and motion. **Tapping one zooms the
+document**, and it stays zoomed. Fixed on its own branch rather than here,
+because the reader is not ⑤a's screen.
+
+**And a third thing, which was on no checklist.** Typing the account name on
+the login screen, the keyboard capitalised it: `local` became `Local`.
+`user.name` is `TEXT NOT NULL UNIQUE` with no `COLLATE NOCASE`, so
+`account::by_name`'s `WHERE name = ?1` compares under SQLite's BINARY
+default — against this library, `local` returns 1 row and `Local` returns 0.
+So **every iPhone was typing a name that could not match, on the one screen
+there is no way past**, and nothing in the suite could see it because no
+test types with a phone keyboard. `autocapitalize="none"` with `autocorrect`
+and `spellcheck` off, on the login field and on the add-account field; fixed
+on its own branch and re-verified on the device.
+
+That third finding is the argument for running these on hardware rather than
+under emulation. It was not what the pass was for, and it was the worst
+thing the pass found.

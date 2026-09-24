@@ -144,6 +144,15 @@ describe('PreviewTabs', () => {
     )
   })
 
+  it('separates the Overrides tab label from its badge', () => {
+    const { host } = render({ preview: preview({ overrides: [anOverride()] }) })
+    const tab = [...host.querySelectorAll('.preview-tabs button')].find((b) =>
+      b.textContent?.startsWith('Overrides'),
+    )
+    // Exact text again: `Overrides1` contains 'Overrides'.
+    expect(tab?.textContent).toBe('Overrides 1')
+  })
+
   it('draws the impact in C4’s own words', () => {
     const { host } = render()
     expect(host.textContent).toContain('6 series merged')

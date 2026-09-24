@@ -485,7 +485,13 @@
   gap: 0.5rem 0.75rem;
 }
 
-.proposal-detail .field {
+/* Scoped to the two screens that opted in, not bare — a bare `.field` also
+ * matched `MetadataEditor.tsx`'s Series-page label, a screen this pass never
+ * touched, and restyled it: uppercase at 11.2px in place of its own normal
+ * text, and `--bg` under the input in place of `--field`, the very reversal
+ * `library.css`'s `.search-box` comment records fixing. */
+.proposal-detail .field,
+.rule-form .field {
   min-width: 0;
   display: grid;
   gap: 0.15rem;
@@ -502,26 +508,74 @@
  * form's whole width, which at the wide one is the entire prefix readable
  * end to end. It is the field a person has to read before pressing the
  * button under it; the other four are short and share the line below. */
-.proposal-detail .field.pattern {
+/* `.rule-form .field` (below) ties this at (0,2,0) and comes later in the
+ * file, so it won on source order alone until this line named the form here
+ * too — raising the specificity where the conflict actually is survives the
+ * next edit to this file; reordering the two rules would not have. */
+.proposal-detail .field.pattern,
+.rule-form .field.pattern {
   flex: 1 0 100%;
 }
 
+/* Tokenised for I2 of the whole-branch review: nine `RuleForm` controls
+ * shipped on this block at `border-radius: 4px` and `font-size: 0.8rem`
+ * beside `.rule-row`, `.rule-form .rule-sets` and every `base.css` control on
+ * the same screen at `var(--radius-control)` (2px) and `--text-ui`. Hoisting
+ * "leaving every declaration exactly as it is" was right when this only had
+ * AcceptForm's five controls to answer for; it stopped being right the
+ * moment the same task put the class on nine more. `--space-1`/`--space-2`
+ * rather than `--space-2`/`--space-3`: the nearer pair to the `0.25rem` this
+ * held, so the controls stay as compact as they were rather than growing. */
 .proposal-detail .field input,
-.proposal-detail .field select {
-  padding: 0.25rem 0.4rem;
+.rule-form .field input,
+.proposal-detail .field select,
+.rule-form .field select {
+  /* **A `<select>`'s intrinsic width is its widest option, and a grid item
+   * will not go below that without this.** `scope`'s options are absolute
+   * root paths. Measured at 390 before this line, against the library these
+   * rules were built on, whose root is 35 characters: the select rendered
+   * **299px inside its 166px label**, and the 133px it spilled ran up
+   * through `.rule-form`, `.editor-right`, `.editor-panes` and `.config` —
+   * every one `overflow-x: visible` — to put **118px of sideways scroll on
+   * the document**, on the screen whose whole purpose is not doing that.
+   *
+   * Found by the browser pass, and `RuleForm.browser.test.tsx` could not
+   * have found it: its fixture root was `/srv/manga`, ten characters, which
+   * fits. That fixture now carries a real one.
+   *
+   * `.editor-right` carries the same declaration for the same element one
+   * layer out, and its comment names this select. This is where it bites. */
+  min-width: 0;
+  padding: var(--space-1) var(--space-2);
   border: 1px solid var(--line-strong);
-  border-radius: 4px;
+  border-radius: var(--radius-control);
   background: var(--bg);
   color: var(--text);
   font: inherit;
-  font-size: 0.8rem;
+  font-size: var(--text-ui);
   letter-spacing: normal;
   text-transform: none;
 }
 
+/* `base.css`'s own floor above is `:where()`, zero specificity, so it loses
+ * to this rule's (0,2,1) regardless of whether a finger or a mouse is doing
+ * the pointing — confirmed in Chromium: the rule above alone still computed
+ * 12.8px on a coarse pointer. Naming the same selectors here, at the same
+ * specificity, is what lets a coarse pointer win the tie; `base.css.test.ts`
+ * pins that this rule and its companion never drift apart. */
+@media (pointer: coarse) {
+  .proposal-detail .field input,
+  .rule-form .field input,
+  .proposal-detail .field select,
+  .rule-form .field select {
+    font-size: max(16px, var(--text-ui));
+  }
+}
+
 /* The same face `.directories` above uses, and for the same reason: this is a
  * path, and a proportional face hides which of two similar ones it is. */
-.proposal-detail .field.pattern input {
+.proposal-detail .field.pattern input,
+.rule-form .field.pattern input {
   font-family: ui-monospace, monospace;
 }
 
@@ -646,18 +700,441 @@
 /* Spec C4's settings area. Tokens throughout, per `tokens.css`'s own
    rule and `index.css.test.ts`'s WCAG check: `Login.tsx` shipped a hardcoded
    #111 on this app's front door, and that test exists because of it. */
+/* The settings sub-nav and the preview strip wear one look — §10.6.
+ *
+ * The line is **one-of-N against independent toggle**, not navigation
+ * against panel: a row of links and a row of buttons are different markup
+ * for the same act, and a reader choosing among four does not care which
+ * changed the URL. The inbox's filters keep their pills because one of them
+ * is not a tab — ②'s whole-branch review found "All" and "Hide weak
+ * proposals" drawing the same accent underline side by side, which is what
+ * pulled the look back off that row.
+ *
+ * `inset 0 -2px 0` rather than a border-bottom, copying
+ * `.chips.library-chips`: a border appearing under the current item moves
+ * the row's baseline every time the selection changes. */
 .config-nav ul {
   display: flex;
-  gap: 1rem;
+  flex-wrap: wrap;
+  gap: var(--space-5);
   list-style: none;
-  margin: 0 0 1rem;
-  padding: 0 0 0.5rem;
-  border-bottom: 1px solid color-mix(in srgb, currentColor 25%, transparent);
+  margin: 0 0 var(--space-5);
+  padding: 0 0 var(--space-1);
+  border-bottom: 1px solid var(--line);
+}
+
+.config-nav a {
+  color: var(--muted);
+  font-size: var(--text-ui);
+  text-decoration: none;
 }
 
 .config-nav a[aria-current="page"] {
-  font-weight: 600;
-  text-decoration: underline;
+  color: var(--text);
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+.preview-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-5);
+  margin-bottom: var(--space-4);
+  padding-bottom: var(--space-1);
+  border-bottom: 1px solid var(--line);
+}
+
+.preview-tabs button {
+  padding: var(--space-1) 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: var(--text-ui);
+  cursor: pointer;
+}
+
+.preview-tabs button[aria-current="true"] {
+  color: var(--text);
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+.preview-tabs .badge {
+  padding: 0 var(--space-2);
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--on-accent);
+  font-size: var(--text-meta);
+}
+
+/* The rule editor — spec 2026-09-17 §10.3.
+ *
+ * **The preview is a sibling of the panes, not inside the right one.** The
+ * class names promised two panes and drew none: `.editor-panes`,
+ * `.rule-list` and `.editor-right` were block `<div>`s that each measured
+ * 1168px of `<main>`'s 1216 and stacked, while a rule row's own children
+ * ended at x=584 — 856px of every row empty. So what was missing was a grid
+ * over full-width blocks, not width for narrow ones.
+ *
+ * The list goes beside the form because they are what you edit together.
+ * The preview goes underneath both because it is the only part that needs
+ * width: Provenance is *file plus one column per metadata field*, 8 columns
+ * on a library with 4 rules, and it is the one thing here that cannot be
+ * given width later. */
+.rule-editor {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+.rule-editor > h2 {
+  margin: 0;
+  font-size: var(--text-h2);
+}
+
+.editor-panes {
+  display: grid;
+  gap: var(--space-5);
+  align-items: start;
+}
+
+/* One column below the breakpoint, and the source order — list, form — is
+ * already the order a phone wants, so nothing is reordered.
+ *
+ * Range syntax, and 900 rather than a number of this file's own: `shell.css`,
+ * `library.css` and `reader.css` all turn at `(width < 900px)`, which is where
+ * the sidebar becomes the drawer. This is the same turn seen from the other
+ * side, so it is written the same way. */
+@media (width >= 900px) {
+  .editor-panes {
+    grid-template-columns: minmax(14rem, 22rem) minmax(0, 1fr);
+  }
+}
+
+/* `minmax(0, 1fr)` above, and `min-width: 0` here: a grid item defaults to
+ * `min-width: auto` and refuses to shrink below its content. The same reason
+ * `.proposal-list li` carries it.
+ *
+ * **What makes that concrete here is the `scope` select, not the `pattern`
+ * box.** A native text input does not grow to fit its value — its width is
+ * the `size` attribute's, whatever is typed into it — so a long pattern
+ * cannot widen this pane. A `<select>` does: its intrinsic width is its
+ * widest option, and `RuleForm`'s scope options are absolute root paths.
+ * The one in the library this was measured against is 35 characters, and a
+ * deployment is free to mount something far longer. */
+.editor-right {
+  min-width: 0;
+}
+
+.editor-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+/* The rule list — §10.4. An `<ol>` whose markers are off because the row
+ * prints its own ordinal: together they drew `1. 1`, `2. 2` down the list. */
+.rule-list ol {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: var(--space-1);
+}
+
+/* §10.4's "the drag handle gets an affordance it currently lacks", which the
+ * plan quietly dropped and the whole-branch review found missing.
+ *
+ * **On the row, because the row is what drags.** `RuleList` puts
+ * `draggable` on the whole `<li>` rather than on a grip element, so a grip
+ * would be a picture of a control that is not there — every part of the row
+ * drags, including the parts a grip would imply do not. `grab` says that,
+ * and it is the only affordance CSS can give a `draggable` element: it has
+ * no state a rule can hook while a drag is in flight. */
+.rule-row {
+  display: flex;
+  align-items: start;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  border: 1px solid transparent;
+  border-radius: var(--radius-control);
+  cursor: grab;
+}
+
+/* Not draggable while a write is in flight, so the cursor must not keep
+ * promising it is. **Hooked on `draggable` because that is the attribute
+ * `RuleList` actually sets** — `draggable={!frozen}`, which React renders as
+ * the string `"false"`. The row carries no `aria-disabled`, and a rule
+ * written against one would have styled a state that never occurs. */
+.rule-row[draggable="false"] {
+  cursor: default;
+}
+
+/* Marked with an inset shadow rather than a border, for the reason
+ * `.proposal-list li.strong` gives: a border that changes between rows
+ * shifts the content beside it. The transparent border above holds the
+ * space so the row does not move when it gains a visible one. */
+.rule-row[aria-current="true"] {
+  background: var(--surface);
+  border-color: var(--line-strong);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.rule-row .ordinal {
+  color: var(--muted);
+  font-size: var(--text-meta);
+  font-variant-numeric: tabular-nums;
+  min-width: 1.25em;
+  text-align: right;
+}
+
+/* The disclosure is the whole line, so it stops looking like a button — the
+ * same move `.proposals .row .disclosure` makes, and for the same reason. */
+.rule-row .select {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  gap: 1px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.rule-row .rule-name {
+  overflow-wrap: anywhere;
+}
+
+/* Quiet by size and colour, never by `opacity` — the rule this stylesheet's
+ * `.proposal-detail` comment sets out, and the reason `index.css.test.ts`
+ * exists. */
+.rule-row .mechanism {
+  color: var(--muted);
+  font-size: var(--text-meta);
+}
+
+.rule-row .off,
+.rule-row .from-proposal {
+  align-self: center;
+  padding: 0 var(--space-2);
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: var(--text-meta);
+  white-space: nowrap;
+}
+
+.rule-list .rule-count {
+  margin: var(--space-3) 0 0;
+  color: var(--muted);
+  font-size: var(--text-ui);
+}
+
+.rule-list .cost {
+  margin: var(--space-2) 0 0;
+  font-size: var(--text-meta);
+}
+
+/* The rule form — §10.5. Nine controls on the `.field` pattern above, which
+ * C3 built for the accept form: the same content, edited from the other
+ * side. Four across where there is room, two on a phone; `pattern` takes a
+ * row of its own through `.field.pattern`.
+ *
+ * Its predecessor was an inline flow with no rules at all, which at 390px
+ * put each label beside the *previous* field's input — the group read
+ * `series [ ] edition / [ ] kind / [ ] language / [ ]`. The markup was
+ * right and the rendering was not, which is the worse way round. */
+.rule-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+
+.rule-form .field {
+  flex: 1 1 8rem;
+}
+
+/* **`box-sizing: border-box`, because `flex-basis` sizes the content box and
+ * this project sets no global reset.** `1 0 100%` asks for the form's full
+ * width as *content*; the fieldset's own `var(--space-3)` padding and 1px
+ * border then add 26px on top of it. Measured at 1440 before this line: the
+ * fieldset rendered **803px inside a 777px form** — exactly 12+12 of padding
+ * and 1+1 of border — and the 26px it spilled propagated up through
+ * `.editor-right`, `.editor-panes` and `.config`, all `overflow-x: visible`
+ * so each only passed it on, until it reached `main`, which is
+ * `overflow-x: auto` and grew a sideways scrollbar for it.
+ *
+ * `min-width: 0` was the first guess and is not the cause: a `<fieldset>`
+ * does carry `min-width: min-content` from the UA stylesheet, but overriding
+ * it changed the rendered width by nothing. The 26px is the box model, not
+ * the minimum.
+ *
+ * **Found by the browser pass, and nothing on this branch could have caught
+ * it at the time**: the *document's* `scrollWidth` reads no overflow at any
+ * width, because the element that scrolls is `main`. Every assertion written
+ * to guard against unwanted sideways scroll measured the document — and the
+ * ones that do measure a box, in `PreviewTabs.browser.test.tsx`, watch a
+ * `.table-scroll` that is *meant* to scroll, in a different component.
+ * `RuleForm.browser.test.tsx` now measures this fieldset against the form
+ * that contains it, which is the shape that can see this. */
+.rule-form .rule-sets {
+  flex: 1 0 100%;
+  box-sizing: border-box;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  margin: 0;
+  padding: var(--space-3);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-control);
+}
+
+.rule-form .rule-sets legend {
+  padding: 0 var(--space-1);
+  color: var(--muted);
+  font-size: var(--text-meta);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+/* A wide table scrolls inside its own box, and the page never does — §10.6,
+ * the pattern ② built for the series table (`library.css`'s
+ * `.table-scroll`, spec §7.2).
+ *
+ * **The rule below repeats `library.css`'s `.table-scroll` byte for byte
+ * rather than relying on it.** `library.css` happens to import before this
+ * file today, but load order is not a contract this screen's layout should
+ * depend on to hold.
+ *
+ * Measured before this existed, at a 390px viewport where driven Chromium
+ * leaves 375px of client width: `.provenance` rendered 524px and `.matched`
+ * 393px, for 165px and 34px of document overflow. Only one is ever in the
+ * DOM, so each was found on its own tab.
+ *
+ * **`file` is pinned**, because scrolling the fields past it otherwise
+ * costs the reader the row they are on — and Provenance's rows are file
+ * paths that differ in their last component. A sticky cell needs a
+ * background of its own or the cells it slides over show through; that is
+ * the half of this that looks correct while being unreadable, and
+ * `admin-rules.css.test.ts` pins it for that reason. */
+.preview .table-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+/* The UI face, with no cell exception — §10.6, answering the question §7.2
+ * reserved for ⑤. `base.css` puts `--font-figures` and `tabular-nums` on
+ * every table under `.library`; `.editions` opted back out in ② because the
+ * digits inside a volume's file name drew heavier than its title. These two
+ * tables are *almost entirely* file names, and neither has a numeric column
+ * — Provenance's only digits are rule ordinals reading `rule 1` — so they
+ * opt out the same way and add nothing back. */
+.preview table {
+  border-collapse: collapse;
+  width: 100%;
+  font-family: var(--font-ui);
+}
+
+.preview th {
+  text-align: left;
+  font-weight: 500;
+  font-size: var(--text-meta);
+  color: var(--muted);
+  border-bottom: 1px solid var(--line-strong);
+}
+
+.preview th,
+.preview td {
+  padding: var(--space-1) var(--space-3);
+  white-space: nowrap;
+}
+
+.preview td {
+  border-bottom: 1px solid var(--line);
+  font-size: var(--text-ui);
+}
+
+/* **A pinned cell has to stay narrower than the box that scrolls it**, or it
+ * stops being pinned partway along. A sticky box's offset is clamped so the
+ * box stays inside its containing block, which for a `<td>` is its row; a
+ * cell wider than the scrollport spends that clamp before the scroll ends
+ * and travels with the content from there. Measured on the way in: an
+ * unbounded `rel_path` long enough to force the table past its container
+ * computes as `sticky` with `left: 0px` and still drifts, by 710px in the
+ * run that caught it.
+ *
+ * **What holds it under that bound is the wrapping below, not a cap.** This
+ * rule carried `max-width: 16rem` for exactly that job until the cell was
+ * measured: it renders **35px wide in a 390px box, with the cap and without
+ * it alike**, because `overflow-wrap: anywhere` collapses its min-content to
+ * a single character and the auto-layout table hands it what the other
+ * columns leave. A 256px cap over a 35px cell constrains nothing, so it is
+ * gone — and the drift above belongs to the ellipsis version of this rule,
+ * where the cell was one unbroken line and genuinely did outgrow the box.
+ * If this cell is ever given `nowrap` again, the bound has to come back with
+ * it.
+ *
+ * **It wraps rather than ellipsising, and that was measured too.** An
+ * ellipsis cuts from the end, and the end is what tells these rows apart:
+ * against the library this was built on, all **1,915** file paths are
+ * distinct in full, but only **762** remain distinct once cut to 36
+ * characters — **1,153 rows, 60%, would have read identically** in the one
+ * column pinned so a reader could tell which row they are on. Cutting later
+ * does not rescue it: at 50 characters 44% still collide.
+ *
+ * (**36 characters is where the 762 was counted**, and it is a sharp edge:
+ * 757 at 35, 824 at 37. It stands for the 16rem this cell used to be capped
+ * at — 256px over roughly 7.1px a glyph at `--text-ui`. Earlier commits
+ * wrote the figure as "cut to 16rem", which is the same measurement told in
+ * the units the cap was written in rather than the ones it was counted in.) So the cell
+ * overrides the `nowrap` above and wraps, taking a taller row where
+ * a path is long and hiding nothing. **`anywhere` and not `break-word`,
+ * which look interchangeable and are not**: only `anywhere` reduces the
+ * cell's *min-content* width, and that reduction is what lets the
+ * four-column Matched files table fit a phone at all rather than merely
+ * wrapping inside a column it has already widened. `break-word` would pass
+ * a reading of this rule and fail
+ * `PreviewTabs.browser.test.tsx`'s four-column case. It is also what a
+ * release filename needs to break at all, having no spaces in it — without
+ * it a single long token paints straight past the cell into the columns
+ * sliding
+ * underneath — which is the failure `admin-rules.css.test.ts`'s background
+ * assertion exists to catch, reached by a different route. */
+.preview .table-scroll th:first-child,
+.preview .table-scroll td:first-child {
+  position: sticky;
+  left: 0;
+  /* **A floor, because wrapping without one is not readable either.** The
+   * auto-layout table hands this column what the other seven leave, and at
+   * 390 that was **38px — about three characters**. A 67-character path
+   * wrapped into that ribbon is 44 lines: measured, a Provenance row stood
+   * **933px tall**, taller than the 844px viewport, so a single row did not
+   * fit on screen, and the table came to **161,451px** over 224 rows.
+   *
+   * 10rem is where that stops improving, measured at 390 across 8/10/12/14:
+   * the median row falls 933 -> 93 -> **72px** and then stays at 72, while
+   * the box's own scroll keeps growing (239 -> 271 -> 303 -> 335). So 10rem
+   * buys the whole of the improvement and the least of the cost. The table
+   * comes to 15,630px, a tenth of what it was.
+   *
+   * This is what the choice to wrap rather than ellipsise needed to be
+   * usable: the ellipsis hid the end of the path, and an unfloored wrap hid
+   * it just as well behind 44 lines of three-character fragments. */
+  min-width: 10rem;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  background: var(--bg);
+}
+
+/* The hairline the pinned column would otherwise lose: `border-bottom` sits
+ * under the cell, and nothing draws its right edge once it is floating over
+ * the columns it has covered. */
+.preview .table-scroll td:first-child {
+  box-shadow: 1px 0 0 var(--line);
 }
 
 .roots .root-list {
@@ -899,11 +1376,10 @@
   border-top: 1px solid var(--line-strong);
 }
 
-/* biome-ignore lint/style/noDescendingSpecificity: the rule Biome weighs this
-   against is `.proposal-detail .field input`, above. `.account` is only
-   `Account.tsx`'s section and `.proposal-detail` only a proposal row's panel,
-   and neither is drawn inside the other, so the two never compete for one
-   input and their order decides nothing. */
+/* biome-ignore lint/style/noDescendingSpecificity: `.account` and
+ * `.proposal-detail`/`.rule-form` (above) are three different screens; an
+ * input cannot hold more than one of these classes, so the two never
+ * compete for the same element regardless of which comes first. */
 .account input {
   display: block;
   box-sizing: border-box;

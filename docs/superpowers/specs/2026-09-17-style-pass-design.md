@@ -364,6 +364,57 @@ scan report, including the long path that wraps inside its cell, which
 `docs/notes.md` recorded during O90 as working and "left to the style pass";
 the account screen. The colour-literal allowlist reaches empty.
 
+**Split into three PRs on 2026-09-22**, by screen area, before any of it was
+built. The survey that prompted it: ⑤ as one branch is **5,777 lines** of
+non-test component surface across sixteen files, and `admin.css`'s 939 lines
+use **none** of the pass's own tokens — 0 `var(--space-*)`, 0
+`var(--text-*)`, 0 `var(--radius-*)` against 23/14/3 in `library.css`,
+17/8/1 in `shell.css` and 19/13/3 in `reader.css` — so every branch carries
+a mechanical sweep as well as its design. It carries more of every pre-token
+habit than any other stylesheet: 137 raw `rem` values against `library.css`'s
+27, 6 `currentColor` uses against `annotations.css`'s 3, and 9 `opacity`
+dims against that file's 7. Against a
+review history where branches this size do not converge (#108: four passes,
+twenty-nine findings, no convergence; #167: fifteen then eleven, four of the
+eleven inside the first round's own fixes), three smaller branches were
+chosen over one. Each tokenises its own slice of `admin.css` as it redraws
+it, so nothing rebases onto a stylesheet another branch has just rewritten:
+
+- **⑤a Rules** — `RuleEditor`, `PreviewTabs`, `RuleList`, `RuleForm`. 1,711
+  lines and **46 of 48 class names with no CSS rule anywhere**: this screen
+  has never been styled, and has no inline styles either, so it is browser
+  defaults over `base.css`. §10 has the detail.
+- **⑤b Configuration** — roots, users, backup, the scan report. **Not the
+  config sub-nav**, which ⑤a restyles along with the preview strip (§10.6),
+  decided 2026-09-22: the tab look is one decision, and splitting it would
+  leave the Rules screen showing an underlined preview strip two inches
+  under a nav still wearing ①'s bold-and-underline for as long as ⑤b took.
+  Drawn already, but on the pre-token conventions: `color-mix(in
+  srgb, currentColor …)` borders and `opacity` dimming — the second of which
+  `admin.css`'s own `.proposal-detail` comment bans four hundred lines
+  earlier in the same stylesheet, having been written because two dimmed
+  things there failed WCAG AA in dark.
+- **⑤c Proposals and the account screen** — both well drawn, needing the
+  space and type tokens, the inbox's own tab-row rules, and `Account` off its
+  25 inline `style=` props. **It ends the pass's bookkeeping**: the
+  colour-literal allowlist reaches empty there, and O148 closes in passing.
+
+The allowlist's last twelve sit in two files. `Account.tsx` holds ten, every
+one of them inside a `CSSProperties` object drawing the **reader's overlay
+placement** — the `'page'` placement at `/account` already takes no colour
+at all, which is why `admin.css` has a `.account` block. Five of the ten map
+onto tokens that already exist: the scrim onto `--scrim`, the panel ground onto
+`--reader-panel`, its hairline onto `--reader-hair`, and the `#ffb4a8` /
+`#a8ffb4` notices onto `--danger` / `--success`. The rest are the panel's
+own field and secret surfaces, which ③ answered for every other reader
+panel and ⑤c answers here. `styles/annotations.css` holds the other two, and
+**they are a scope question rather than a chore**: §6 puts the labeller
+outside this pass, and both literals are deliberately theme-independent for
+the reason `palette.ts` is exempt — that file's own comment says
+`currentColor` "would follow the theme and go pale on white paper, which is
+the failure the palette above exists to avoid". ⑤c either exempts the file
+on that reasoning or tokenises the two; it is not settled here.
+
 **Then an accessibility pass**, after ⑤ — decided by the user on
 2026-09-18, when ②'s device pass reached VoiceOver: "keep the accessibility
 stuff as a pass at the end". It checks every screen the pass restyled with
@@ -1175,3 +1226,214 @@ turning tap.
   removed, the slop with the comparison flipped. A test that passes against
   its own defect is this repository's most-recorded failure.
 - The five checks §5 requires of every PR in this pass, in full.
+
+## 10. PR ⑤a in detail
+
+Settled with the user on 2026-09-22, against a Playwright-driven Chromium
+over `vite dev` and a `taiyaku serve` on a **copy** of the real library —
+138 series, 1,896 works, 4 rules, 35 open proposals. The original
+`library.db` was checksummed before and after and is unchanged.
+
+### 10.1 What is there now, measured
+
+**The screen has never been styled.** `RuleEditor`, `PreviewTabs`,
+`RuleList` and `RuleForm` are 1,711 lines carrying **48 distinct class
+names, 46 of which have no rule in any stylesheet**, and all four contain **zero**
+inline `style=` props. What renders is browser defaults over `base.css`.
+Three consequences were measured rather than read:
+
+- **The page scrolls sideways at 390 px, and both preview tables do it.** At
+  a 390 px viewport — where driven Chromium's classic scrollbar leaves 375 px
+  of client width — `table.provenance` renders **524 px** and
+  `table.matched` **393 px**, for **165 px** and **34 px** of document
+  overflow respectively. Only one is in the DOM at a time, so each was
+  measured on its own tab. `/config/roots`, `/config/users`,
+  `/config/backup`, `/proposals` and `/account` all measure **0** at the same
+  width: this is the one screen in the area that does it.
+- **The `sets` fieldset mislabels itself at 390 px.** Its four
+  `<label><span>…</span><input></label>` pairs flow inline, so each span
+  lands beside the *previous* field's input and the group reads `series [ ]
+  edition / [ ] kind / [ ] language / [ ]`. The markup is correct and the
+  rendering is not, which makes a screen reader right and the eye wrong —
+  the worse way round.
+- **`editor-panes` is a bare `<div>`, so there are no panes.** At 1440 it,
+  the rule list and `editor-right` each measure **1168 px** of `<main>`'s
+  1216 and simply stack. The boxes are not narrow — the *content* is: a rule
+  row's own children end at x=584 inside a row running to x=1392, leaving
+  **856 px of every row empty**. What has to be built is therefore a grid
+  over full-width blocks, not a widening of narrow ones.
+
+Three smaller defects, all visible in the same pass: every ordinal prints
+twice (the `<ol>` marker *and* `.ordinal`, giving `1. 1`, `2. 2`); the rule
+count renders `4 rules1 override`; the fourth tab renders `Overrides1`. The
+last two are missing separators in the markup, not missing styling.
+
+**The tables' content is the argument for what they become.** Both render
+**224 rows** on this library. Of Provenance's 8 columns, **4 are empty in
+every one of those rows** — `edition_key`, `kind`, `language` and `title`
+carry 0 values; `file` carries 223, `series` 95, `volume` 61, `chapter` 20.
+In Matched files, **all 224 rows have `before` identical to `after`** — the
+saved rules are already applied, which is what the Impact panel's "0 works
+re-homed" says — and **129 of 224 are `near miss` rather than `matched`**.
+So the table's resting state shows no difference at all; it earns its keep
+only mid-edit, and over half of what it shows is what did *not* match.
+
+### 10.2 The six decisions
+
+1. **The preview leaves the right pane and spans the width** (§10.3).
+2. **A wide table scrolls inside its own box, with `file` pinned** (§10.6).
+3. **A rule is named by its note, with its mechanism beneath** (§10.4).
+4. **The form adopts `.field`, hoisted out of `.proposal-detail`** (§10.5).
+5. **Every one-of-N row takes one tab look** (§10.6).
+6. **The preview tables take the UI face, with no cell exception** (§10.6).
+
+### 10.3 The frame
+
+`editor-panes` becomes a two-column grid — the rule list beside the form —
+and **the preview moves out of `editor-right` to span the full width
+beneath both**. That is the one JSX change the layout needs, and it is a
+node move with no behaviour attached.
+
+The reason is the tables. Keeping the preview inside the right pane — which
+is what the existing class names promise, and the cheaper option because it
+needs no JSX at all — costs it whatever the list column takes, at every
+width. Provenance is *file plus one column per metadata field*, the widest
+thing this pass has had to place: 524 px of content against a 375 px client
+width at 390, and 8 columns on a library that happens to have 4 rules. It
+is the one part of this screen that cannot be given width later. Below the
+breakpoint the grid collapses to one column and the order is list, form,
+preview, which is the order the markup already has.
+
+### 10.4 The rule list
+
+**Two lines per row.** The note names the rule; a quiet second line says how
+it matches and what it sets, composed from `kind`, `match_on` and the
+`set_*` fields so it is never blank whatever the note holds. The selected
+row takes `--surface` with an inset `--accent` strip, which is the mark
+`.proposal-list li.strong` already uses and for the same reason — a border
+that changes width between rows would shift the column beside it. The `off`
+and `from a proposal` tags become pills; the ordinal prints once; the drag
+handle gets an affordance it currently lacks.
+
+**This needs `note` at the head of the label chain, and that is a change to
+what the row says.** The chain is today `set_series ?? set_edition_key ??
+set_kind ?? set_language ?? pattern || 'new rule'` and never consults
+`note`, so a `builtin-volume` or `builtin-chapter` rule — empty pattern,
+setting nothing — reads **`new rule` permanently**. Two of this library's
+four rules do, while each carries a usable note — "volume from the name, via
+`taiyaku_read::volume_number`" and "chapter from the name, via
+`taiyaku_read::chapter_number`". §6 reserves changes to what a screen does,
+"fixed only if it blocks that PR's own browser pass"; a list design whose
+names are wrong on half its rows cannot be judged in a browser pass, so it
+is taken here rather than filed. **The composed second line is new text**
+and is the same decision — it is recorded as such rather than slipped in as
+styling.
+
+### 10.5 The rule form
+
+**`.proposal-detail .field` is hoisted to a plain `.field` and both screens
+use it.** C3 built that pattern for `AcceptForm`, which creates a rule from
+a proposal — the same content this form edits. It is a grid with a small
+uppercase label above its control, and `.field.pattern` takes a row to
+itself; its comment records why, measured: sharing a row gave the pattern
+416 px of the form's 807 at a 1100 px window and cut a 52-character
+`rel_path` prefix.
+
+The rule form lays its nine controls out on that pattern — `kind`,
+`match on` and `scope` sharing a row, `pattern` on its own, the four `sets`
+fields inside their fieldset, `note` below — folding to two columns at
+narrow widths and never to the inline flow that breaks today.
+
+**The hoist has to settle a comment rather than leave it.** `admin.css`
+carries a `biome-ignore lint/style/noDescendingSpecificity` above
+`.account input` whose justification is that `.account` and
+`.proposal-detail` are never drawn inside one another, so their order
+decides nothing. A shared `.field` reaching a third screen changes the
+premise of that sentence, and the ignore is either re-justified or removed
+in this PR.
+
+### 10.6 The preview
+
+**A wide table scrolls inside its own box, and the page never does.** ②
+already built this for the series table — `.table-scroll { max-width: 100%;
+overflow-x: auto }` in `library.css`, from §7.2's "sits in its own box that
+scrolls sideways, so the page never does" — and both preview tables take
+it. **The `file` cell is additionally `position: sticky; left: 0`**, so
+scrolling the fields past it does not cost the reader the row they are on.
+A sticky cell needs its own opaque background or the cells beneath show
+through it; that is the one thing here that can silently regress, and
+§10.8 gives it a test.
+
+**One tab look for every one-of-N row.** `preview-tabs` and `config-nav`
+take the underlined tab ② built for the library's filter row: `--muted`
+text at `--text-ui`, the current one `--text` under a 2 px `--accent`
+underline — drawn as `box-shadow: inset 0 -2px 0`, not a border, so
+selecting a tab does not move the row's baseline. The line
+this draws is **one-of-N against independent toggle**, not navigation
+against panel — which is the distinction ②'s whole-branch review found the
+hard way, when the tab look reached the inbox and "All" and "Hide weak
+proposals" drew the accent underline side by side. The inbox's filters
+therefore keep their pills; whether its one independent toggle should leave
+that row at all is ⑤c's question, with the screen in front of it.
+
+**The tables take `--font-ui`, with no cell exception.** §7.2 left
+`base.css`'s blanket `:where(.library, .login) :where(table)` rule — which
+sets `--font-figures` and `tabular-nums` — in place "because the rule
+preview's tables are ⑤'s question". The answer is that **neither table has a
+column of figures**: Matched files draws a path, two series names and a word;
+Provenance a path and cells reading `rule 1`, `root default` or `—`. Digits do
+occur inside those strings — 14 of this library's 138 series titles carry one —
+which is the point, since digits inside prose are what the figures face drew
+heavier than the words around them. So both opt out
+exactly as `.editions` does, and unlike `.editions` they add no
+`td.pages`-style exception back, because there is no page-count column to
+make one for. Leaving the blanket rule would reproduce on these two screens
+the thing ② called wrong on the series table: digits inside a file name
+drawn heavier than the words around them.
+
+### 10.7 What ⑤a does not do
+
+- **Hide Provenance columns that are empty in every row.** It would take 8
+  columns to 4 on this library and might fit 390 px outright, but it changes
+  what the screen shows rather than how it looks, the table's shape would
+  shift as the data does, and "nothing here sets `language`" is arguably
+  information. **Filed as an open item on the branch**, with the counts in
+  §10.1 as its evidence.
+- **Move the inbox's independent toggle out of its tab row** (§10.6). ⑤c's,
+  with the inbox open.
+- **Re-measure the 15 px.** Driven Chromium at a 390 px viewport reported
+  375 px of client width here — a classic scrollbar taking layout width, in
+  the same "driven desktop" condition O145 is about. Recorded as one more
+  reading for that row; **not** chased here, and O145's own hook still
+  points at ③-against-④ rather than at this.
+
+### 10.8 Tests and checks
+
+On top of §5's list for every PR:
+
+- **The two run-together strings, asserted as rendered text.** `4 rules1
+  override` and `Overrides1` are missing separators in the markup, and a
+  whole-element `toContain` cannot see a missing space — the assertion has to
+  be on the element's exact text content. **⑤a writes no
+  `styles/admin.css.test.ts`**: it restates no CSS value in TypeScript, so
+  there is nothing for one to pin. That file belongs to ⑤c, where O148's
+  `TILE_HEIGHT_PX` is the restatement that needs it.
+- **The sticky column, in the browser project.** `Filmstrip.browser.test.tsx`
+  is the precedent: real layout, not jsdom. Scroll the table box right, and
+  assert the `file` cell's left edge is still at the box's left edge *and*
+  that it is opaque — a sticky cell with a transparent background passes the
+  position assertion alone, which is the regression this is for.
+- **No sideways scroll at 390 px**, asserted as `scrollWidth ===
+  clientWidth` on `/config/rules` with each of the four preview tabs open in
+  turn. Both tables overflow today and only one is in the DOM at a time, so a
+  single-tab assertion would have passed over the 34 px one.
+- **The figures face**, extending `index.css.test.ts`'s existing
+  `--font-figures` check. That check reads `shell + library + admin` and so
+  cannot see `base.css`, where the blanket rule lives; **it is widened to
+  read `base.css` too**, and pins that `.matched` and `.provenance` set
+  `--font-ui` and that no rule gives either the figures face.
+- **Every new test watched failing with its defect put back by hand**, per
+  §5. The ones that most need it are the sticky background, above, and the
+  label chain: a `note`-first chain and a `pattern`-first chain render
+  identically for any rule that has both, so the fixture has to include a
+  rule with a note and **no** pattern — which is what a builtin is.
