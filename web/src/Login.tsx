@@ -118,10 +118,26 @@ export function Login({ onSignedIn }: LoginProps) {
         </h2>
         <label style={labelStyle}>
           Name
+          {/*
+            **`autoCapitalize` and `autoCorrect`, because an account name is
+            compared byte for byte.** `user.name` is `TEXT NOT NULL UNIQUE`
+            with no `COLLATE NOCASE`, so SQLite matches it under the default
+            BINARY collation and `account::by_name`'s `WHERE name = ?1` finds
+            nothing for `Local` when the account is `local` — verified
+            against a real library, 1 row against 0.
+
+            iOS defaults a text input to `autocapitalize="sentences"`, which
+            capitalises the first letter of an empty field. So every iPhone
+            typed a name that could not match, on the one screen a reader
+            cannot get past. Reported from a device pass, 2026-09-23.
+          */}
           <input
             style={fieldStyle}
             value={name}
             autoComplete="username"
+            autoCapitalize="none"
+            autoCorrect="off"
+            spellCheck={false}
             onChange={(e) => {
               setName(e.target.value)
             }}

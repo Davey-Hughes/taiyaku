@@ -154,10 +154,19 @@ export function Users() {
         <h3>Add an account</h3>
         <label>
           <span>Name</span>
+          {/*
+            The same reason `Login.tsx`'s name field carries these: account
+            names are compared byte for byte, and iOS capitalises the first
+            letter of an empty text field. Here it mints an account whose
+            name the person then cannot type on the login screen.
+          */}
           <input
             type="text"
             name="new-name"
             value={name}
+            autoCapitalize="none"
+            autoCorrect="off"
+            spellCheck={false}
             onChange={(e) => setName(e.target.value)}
           />
         </label>

@@ -136,6 +136,28 @@ describe('Login', () => {
     expect(password.autocomplete).toBe('current-password')
   })
 
+  /**
+   * **An account name is compared byte for byte**, so a keyboard that helps
+   * is a keyboard that locks the reader out. `user.name` is `TEXT NOT NULL
+   * UNIQUE` with no `COLLATE NOCASE`, and `account::by_name`'s
+   * `WHERE name = ?1` matches under SQLite's BINARY default — verified
+   * against a real library, where `local` returns 1 row and `Local` returns
+   * 0. iOS capitalises the first letter of an empty text field by default,
+   * so every iPhone typed a name that could not match, on the one screen
+   * there is no way past. Reported from a device pass, 2026-09-23.
+   */
+  it('stops a phone keyboard rewriting the account name', () => {
+    const host = mount(<Login onSignedIn={noop} />)
+    const { name, password } = fields(host)
+    expect(name.getAttribute('autocapitalize')).toBe('none')
+    expect(name.getAttribute('autocorrect')).toBe('off')
+    // The attribute, not the property: jsdom does not reflect `spellcheck`.
+    expect(name.getAttribute('spellcheck')).toBe('false')
+    // Not on the password: it is never shown, a manager fills it, and iOS
+    // does not autocapitalise a `type="password"` field in the first place.
+    expect(password.getAttribute('autocapitalize')).toBeNull()
+  })
+
   /** The previous failure clears on submit, not on the next keystroke. */
   it('keeps a failure on screen while the reader retypes', async () => {
     vi.stubGlobal(
