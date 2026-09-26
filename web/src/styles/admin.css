@@ -109,11 +109,14 @@
   container-name: inbox;
 }
 
-/* The strength strip, on the edge of the row. `strength()` puts `strong` or
- * `weak` on the `<li>`, and the threshold defaults to 1 — so a weak row on
- * screen is one somebody asked to see. A strong one is marked; a weak one is
- * left plain rather than dimmed, because dimming would take contrast off the
- * sentence that says why the proposal exists.
+/* The strength strip, on the edge of the row. `strength()` puts `strong`,
+ * `maybe` or `weak` on the `<li>`, and the threshold defaults to 1 — so a
+ * weak row on screen is one somebody asked to see. (That was not true until
+ * O155 gave a score of 1 its own word on 2026-09-25: score-1 rows were on
+ * screen by default and said `weak`.) A strong one is marked; the other two
+ * are left plain rather than dimmed, because dimming would take contrast off
+ * the sentence that says why the proposal exists, and no rule matches
+ * `li.maybe` or `li.weak`.
  *
  * **An inset shadow rather than a thick `border-left`.** The strip has to
  * mark only the strong rows, and a border that changes width between rows
@@ -248,8 +251,9 @@
  *
  * Filled stays the mark of pressable. `--accent` as text clears AA on the
  * row's ground in both themes — 5.35:1 on Paper, 6.13:1 on Ink, which
- * `index.css.test.ts`'s floor already computes — and the weak badge beside
- * it was outlined all along, so the two verdicts now read as a pair. */
+ * `index.css.test.ts`'s floor already computes — and the chip beside it,
+ * which says `maybe` or `weak` since O155, was outlined all along, so all
+ * three verdicts now read as one set. */
 .proposals li.strong .score {
   border-color: var(--accent);
   background: none;
@@ -922,8 +926,9 @@
  *
  * The list goes beside the form because they are what you edit together.
  * The preview goes underneath both because it is the only part that needs
- * width: Provenance is *file plus one column per metadata field*, 8 columns
- * on a library with 4 rules, and it is the one thing here that cannot be
+ * width: Provenance is *file plus one column per metadata field some row
+ * decided* — up to 8, and 4 on the real library at rule 1 once O149 dropped
+ * the fields nothing decides — and it is the one thing here that cannot be
  * given width later. */
 .rule-editor {
   display: flex;
@@ -1031,6 +1036,15 @@
   font-variant-numeric: tabular-nums;
   min-width: 1.25em;
   text-align: right;
+}
+
+/* O157's wordless label around the enable box. A flex box so that, outside
+ * the coarse block that grows it to 44×44, it draws the box exactly where it
+ * sat before it had a label. Without a display of its own the label held the
+ * box in a line box, and that put the box 3px lower — measured at 1440px,
+ * `docs/notes.md` "Admin follow-ups". */
+.rule-row .enable {
+  display: flex;
 }
 
 /* The disclosure is the whole line, so it stops looking like a button — the
@@ -1191,6 +1205,17 @@
   border-bottom: 1px solid var(--line-strong);
 }
 
+/* O149's line above the Provenance table, naming the fields no row decided
+ * and so the columns it dropped. Quiet like the `.why` explanations on
+ * these screens (`.users .why`): it says why the table is the width it is, and is
+ * not part of the table. */
+.preview .unset {
+  max-width: 60ch;
+  margin: 0 0 var(--space-2);
+  color: var(--muted);
+  font-size: var(--text-meta);
+}
+
 .preview th,
 .preview td {
   padding: var(--space-1) var(--space-3);
@@ -1307,10 +1332,11 @@
    640px with `max-width: none`. They are the same kind of sentence, so they
    take the same measure — `ch`, so each is sixty characters of its own size
    rather than one shared pixel width. An earlier version of this comment
-   said the three render at three different widths; they do not. The rule
-   above this one is a descendant selector, so the two in `.reset` take
-   `--text-meta` exactly like the role hint and match it; only the one in
-   `.add-user`, which no rule here reaches, is larger. O153 has that.
+   said the three render at three different widths; they do not. The quiet
+   rule further down (`.users .why, .user-row .locked`) is a descendant
+   selector, so the two in `.reset` take `--text-meta` exactly like the
+   role hint and match it. The one in `.add-user` was larger until O153
+   widened that rule to `.users .why`.
 
    `.roots` is deliberately not in this list: `RootRow.tsx` has no `.why` at
    all, and a selector that matches nothing is the inert rule this task
@@ -1612,8 +1638,14 @@
    nothing else in the app. It is now the same accent as every other link —
    measured `rgb(176, 54, 29)` against the paragraph's `rgb(107, 97, 81)` —
    and `index.css.test.ts` puts that at 6.13:1 on `--bg`, which the 80 % blend
-   was under. */
-.user-row .why,
+   was under.
+
+   **`.users`, not `.user-row`, since O153 (2026-09-25).** The add-account
+   form's `.why` sits outside every card, so `.user-row .why` never reached
+   it, and it was the one `.why` on this screen drawn at 16px in
+   `--text`. `.locked` stays scoped to the card because nothing outside one
+   carries it. */
+.users .why,
 .user-row .locked {
   color: var(--muted);
   font-size: var(--text-meta);
@@ -1634,7 +1666,7 @@
 
 /* Prose leaves the grid and sits under the group it explains. Placement only:
    the measure lives with the settings area's `.why` rule and the colour and
-   size with `.user-row .why` above, which already reaches this paragraph as
+   size with `.users .why` above, which already reaches this paragraph as
    a descendant. Only what is true of *this* `.why` and not the others —
    that it sits under a group rather than beside a control — belongs here. */
 .user-row > .why {
@@ -1931,18 +1963,22 @@
    is what `min-height` alone gives, a 44 px row with the word at its top
    and the marker still at 16.94.
 
-   **The links these screens draw that are deliberately left alone** are
-   named here so the next reader sees they were seen rather than missed.
-   `.config-nav`'s four `NavLink`s are a row with its own geometry: the
+   **The links these screens draw that this floor deliberately leaves
+   alone** are named here so the next reader sees they were seen rather
+   than missed. `.config-nav`'s four `NavLink`s are kept off the floor, and
+   take their 44 px to the touch from O157's `::after` in the coarse block
+   instead, which grows the target and leaves the link drawn as it was.
+   They are kept off it because they are a row with its own geometry: the
    chosen one is marked with `box-shadow: inset 0 -2px 0`, an underline drawn
    on the link's own bottom edge, and at the 20 px those links measure that
    edge is the word's. Giving them 44 puts the underline 12.5 px below the
    word it underlines and grows the strip from 29 px to 49 — both measured.
    Moving the mark off the box and onto the text is a look decision, and the
    exclusion is filed as such: spec §12.8 gives it and two label-less
-   controls a row of their own — *"Give the config sub-nav and two
-   label-less controls the 44 px row"* — carrying these figures, and an open
-   item of its own against §7.1 is what will settle it.
+   controls a row of their own — *"Give the three underlined one-of-N
+   rows and two label-less controls the 44 px row"* — carrying these figures, and an open
+   item of its own against §7.1 is what will settle it. *Settled by O157 on
+   2026-09-26 — see the coarse block.*
    **Which pass owns it is what two earlier drafts of this comment got
    wrong.** One deferred it to "the accessibility pass, which already owns
    tap targets (O135, O154)", and that pass does not: O135 is the keyboard
@@ -1980,11 +2016,11 @@
    `.checks input[type="checkbox"]`. `.checks` is where five of these boxes
    are — the inbox's weak filter, the root row's one, the user row's three —
    and it was never where all of them are: the user row's per-root grants sit
-   in a `.grant-list`, and `.rule-list`'s enable box sits bare in its row.
-   Both drew 13×13. The grant list at least said so — the paragraph this one
-   replaces named it as left out — while the enable box went unmentioned;
-   either way the heading above said a checkbox takes a box, and two kinds of
-   checkbox did not get one.
+   in a `.grant-list`, and `.rule-list`'s enable box sits in a wordless
+   label of its own (O157). Both drew 13×13. The grant list at least said
+   so — the paragraph this one replaces named it as left out — while the
+   enable box went unmentioned; either way the heading above said a checkbox
+   takes a box, and two kinds of checkbox did not get one.
    §12.4's `0.7rem` exemption is the same mistake one section over — an
    earlier draft keyed it on the value instead of on the uppercase-label
    typography the value was for, and so swept in two sites that had nothing
@@ -2034,16 +2070,13 @@
    (0, 2, 1), because a `:where()`-scoped copy would be (0, 1, 1) and lose
    the `align-items` tie it exists to win.
 
-   **`.rule-list`'s enable box gets the 24 and nothing else, and that is a
-   gap rather than an answer.** `RuleList` draws it with an `aria-label` and
-   no `<label>` at all, so there is no row to enlarge and the box *is* the
-   whole tap target — 24 px, under the 44 this block asks of everything that
-   has a row. Giving it a row is a screen question, and whether a checkbox
-   that is its own target should be larger is filed with the sub-nav above,
-   in spec §12.8's row for this floor's three exclusions — not owned by any
-   pass yet, for the reason that row states. Enlarging it to 44 would draw
-   the button-shaped checkbox the paragraph above refuses. Recorded here so
-   the next reader sees it was left open rather than missed.
+   **`.rule-list`'s enable box gets the 24, and its label gets the 44 —
+   O157, 2026-09-25.** `RuleList` draws the box with an `aria-label` and no
+   visible label, so there was no row to enlarge and the box was the whole
+   tap target. It now sits in a wordless `<label className="enable">`, and
+   `.rule-row .enable` below makes that label 44×44 with the box centred in
+   it. Enlarging the box itself would draw the button-shaped checkbox the
+   paragraph above refuses.
 
    Nothing here could be settled on a phone and did not need to be: the rule
    was *absent*, so a fine-pointer measurement is the coarse one. That is the
@@ -2073,7 +2106,9 @@
      them. It reached them anyway until ⑤c's whole-branch review measured
      all three together: at 390px coarse the two button rows boxed 44 with a
      49px strip while `.config-nav` stayed 20 and 24, which is two thirds of
-     one design taking a treatment the spec calls a redesign.
+     one design taking a treatment the spec calls a redesign. They reach 44px
+     to the touch through the `::after` further down this block instead
+     (O157), which grows the target and not the box.
 
      Written as `:not()` on the child rather than as a later `min-height: 0`,
      because a later rule re-setting the property is the one hole this
@@ -2185,6 +2220,41 @@
     align-items: center;
     gap: var(--space-2);
     min-height: 44px;
+  }
+
+  /* **O157: the three underlined one-of-N rows reach 44px to the touch
+     without being drawn at 44.** The floor's first rule excludes them on a
+     measurement: a 44px box puts the underline 12.5px below the word and
+     takes the strip from 29px to 49. So the target grows here instead, as
+     a box with no paint centred on each item. A press on a pseudo-element
+     is a press on its element, so nothing else needs to know. Nothing it
+     covers is drawn differently. What it must not cover is a neighbour's
+     own target, and that was measured in a touch context at 390px
+     (`docs/notes.md`, O157) because no test here can match
+     `(pointer: coarse)`. */
+  .config-nav a,
+  .proposal-tabs > button,
+  .preview-tabs > button {
+    position: relative;
+  }
+
+  .config-nav a::after,
+  .proposal-tabs > button::after,
+  .preview-tabs > button::after {
+    content: "";
+    position: absolute;
+    inset-block-start: 50%;
+    inset-inline-start: 50%;
+    inline-size: max(100%, 44px);
+    block-size: max(100%, 44px);
+    translate: -50% -50%;
+  }
+
+  .rule-row .enable {
+    display: inline-grid;
+    place-items: center;
+    min-inline-size: 44px;
+    min-block-size: 44px;
   }
 
   :where(.proposals, .account, .config) input[type="checkbox"] {

@@ -244,13 +244,13 @@ describe('ProposalRow', () => {
     expect(host.querySelector('.arrow')?.textContent).toBe(
       '↳ the same series as Girlfriend, Girlfriend',
     )
-    expect(host.querySelector('.score')?.textContent).toBe('weak')
+    expect(host.querySelector('.score')?.textContent).toBe('maybe')
 
     // The `reason` sentence is the panel's, not the line's — it opens with
     // the subject's own title in quotes, so beside `.subject` it would be
     // the same words twice.
     expect(host.textContent).not.toContain('both hold 9 volumes')
-    expect(host.querySelector('li')?.className).toBe('weak')
+    expect(host.querySelector('li')?.className).toBe('maybe')
     expect(
       host.querySelector('button.disclosure')?.getAttribute('aria-expanded'),
     ).toBe('false')

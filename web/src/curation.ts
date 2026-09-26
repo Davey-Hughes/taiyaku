@@ -310,8 +310,21 @@ export type ProposalState = (typeof PROPOSAL_STATES)[number]['state']
 
 // --- pure helpers ------------------------------------------------------------
 
-export const strength = (score: number): 'strong' | 'weak' =>
-  score >= 2 ? 'strong' : 'weak'
+/**
+ * The word a proposal's score is shown as, on its chip and its row — O155.
+ *
+ * **Three words for the scale's three meanings.** `edition-of` adds one per
+ * signal — the suffix in the edition vocabulary, an equal volume count — and
+ * the two certain kinds sit at 3. So 0 is no signal, which is C3 §4's named
+ * false positive and what `INBOX_MIN_SCORE` hides; 1 is one signal, which
+ * `proposals.rs` calls "exactly the coin flip"; 2 and up is strong, as the
+ * curation build spec set it. Until 2026-09-25 this answered `weak` for 1 as
+ * well, so the inbox's default view chipped 13 of its 17 rows `weak`
+ * directly beneath an unticked "Show weak proposals". With the third word,
+ * "weak" means exactly what that box reveals.
+ */
+export const strength = (score: number): 'strong' | 'maybe' | 'weak' =>
+  score >= 2 ? 'strong' : score >= 1 ? 'maybe' : 'weak'
 
 const KIND_LABELS: Record<string, string> = {
   'edition-of': 'Edition Of',

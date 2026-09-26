@@ -2257,7 +2257,9 @@ of taking the citation.
   from 271 px to 22.5 px. The sharper way to put the question, found while
   drawing it: the box shows about two and a half columns, so the decision is
   which column is third — today `edition_key`, which carries a value in **0
-  of 224 rows**, against `volume`, which carries one in **61**.
+  of 224 rows**, against `volume`, which carries one in **61**. *Built on
+  2026-09-25 with the line above the table rather than beneath it —
+  docs/superpowers/specs/2026-09-25-admin-follow-ups-design.md §1.*
 - **Give the three underlined one-of-N rows and two label-less controls the
   44 px row.** Five deliberate exclusions from §12.4a's floor, each measured
   and each needing a row of its own rather than a comment. `.config-nav`'s
@@ -2286,7 +2288,11 @@ of taking the citation.
   markup*, and §5 defines that pass as VoiceOver on the phone and a screen
   reader on the desktop. The only place this spec assigns 44 px tap targets
   is a **device pass** (§9.4). So these three are an open item of their own,
-  against §7.1, and nothing holds them until one exists.
+  against §7.1, and nothing holds them until one exists. *Closed on 2026-09-26
+  by a 44 px target with no paint on the three underlined rows and a
+  wordless 44 px label around the enable box, with the file input left out
+  as `hidden` — docs/superpowers/specs/2026-09-25-admin-follow-ups-design.md
+  §2.4.*
 - **Stop `/config/users` greying a whole user card when one checkbox is
   toggled.** O159, from the device pass: `UserRow` holds one `saving` flag per
   card and gates eleven `disabled` props on it, three of them per-item, and a
@@ -2298,7 +2304,9 @@ of taking the citation.
   row is deliberate, because the grant checkbox sends a whole list and a
   second tick inside the reload window would silently revoke the first grant.
   A stylesheet cannot absorb it either: the greying is the UA's own rendering
-  of a disabled checkbox.
+  of a disabled checkbox. *Closed on 2026-09-26 by `aria-disabled` on the
+  card's checkboxes —
+  docs/superpowers/specs/2026-09-25-admin-follow-ups-design.md §2.5.*
 - **Merge the two copies of the tab look** (§12.3).
 - **Change anything the evidence panel says.** Its content is spec C3 §2's —
   the two sides, the reason list, the "nothing compared the artwork" box and

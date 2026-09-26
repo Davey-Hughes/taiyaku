@@ -17,10 +17,10 @@ import { mount } from './testing/mount'
  */
 
 /**
- * Real paths, because the widths under test are their widths. `FIELDS` in
- * `PreviewTabs.tsx` is a seven-element constant, so Provenance is 8 columns
- * whatever the data holds; what the rows have to supply is `rel_path`
- * strings as long as a real library's.
+ * Real paths, because the widths under test are their widths. Provenance
+ * draws `file` plus a column per field some row decided (O149), so these
+ * rows decide all seven to keep it the eight-column case; what else they
+ * have to supply is `rel_path` strings as long as a real library's.
  *
  * **This fixture's own before-state**, measured against the real 390 x 844
  * viewport the `beforeEach` below sets (`page.viewport()`, not
@@ -29,7 +29,10 @@ import { mount } from './testing/mount'
  * deducted from it in this run — and with both `.table-scroll` wrappers
  * temporarily removed from `PreviewTabs.tsx`, `document.documentElement.
  * scrollWidth` reached 1409px on Matched files and 1581px on Provenance:
- * 1019px and 1191px of real document overflow, restored afterwards.
+ * 1019px and 1191px of real document overflow, restored afterwards. The
+ * Provenance figure was measured with the fixture as it stood before O149,
+ * when its rows decided two fields and the table drew eight columns
+ * because `FIELDS` said so.
  *
  * **The app's own numbers, against a real library, are different — and are
  * the app's, not this fixture's.** `admin.css`'s own comment on
@@ -58,9 +61,16 @@ const rows: Row[] = PATHS.map((rel_path, i) => ({
   before: { series: 'Death Note', work: `w${i}`, edition: 'en' },
   after: { series: 'Death Note', work: `w${i}`, edition: 'en' },
   matched: i !== 2,
+  // All seven, because Provenance draws a column only for a field some row
+  // decided (O149), and this file's case is the widest table there is.
   decided_by: {
     series: { kind: 'rule', index: 0 },
+    edition_key: { kind: 'root_default' },
+    kind: { kind: 'root_default' },
+    language: { kind: 'root_default' },
     volume: { kind: 'rule', index: 1 },
+    chapter: { kind: 'rule', index: 1 },
+    title: { kind: 'rule', index: 0 },
   },
 }))
 
@@ -134,7 +144,8 @@ describe('the preview at phone width', () => {
 
   it('scrolls the eight-column table inside its own box instead', async () => {
     const host = mount(<PreviewTabs {...fixture} />)
-    // Provenance is file plus one column per metadata field, eight in all.
+    // Provenance is file plus one column per metadata field some row
+    // decided — eight here only because this fixture decides all seven.
     // Matched files scrolls too — see the case below; an earlier version of
     // this comment claimed it fitted a phone, which was true of this
     // fixture's ten-character series names and never of the real library's.
@@ -142,6 +153,12 @@ describe('the preview at phone width', () => {
       const tab = 'Provenance'
       await open(host, tab)
       await settle()
+      // The premise, pinned: an edit to the fixture that stops deciding a
+      // field makes this a narrower table under the same name.
+      expect(
+        host.querySelectorAll('table.provenance thead th'),
+        tab,
+      ).toHaveLength(8)
       const box = host.querySelector('.table-scroll') as HTMLElement
       expect(box, tab).not.toBeNull()
       expect(box.scrollWidth, tab).toBeGreaterThan(box.clientWidth)

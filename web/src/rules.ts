@@ -154,6 +154,62 @@ export interface Preview {
   overrides: Override[]
 }
 
+/** The seven fields, in the order `rules::Field` declares them. */
+export const FIELDS = [
+  'series',
+  'edition_key',
+  'kind',
+  'language',
+  'volume',
+  'chapter',
+  'title',
+] as const
+
+export type Field = (typeof FIELDS)[number]
+
+/**
+ * The fields no row has a decision for, in `FIELDS` order — the columns
+ * O149 drops from the Provenance table.
+ *
+ * **A field the root default decided counts as set.** "root default" is an
+ * answer the table draws; only a field *nothing* decided is the column of
+ * dashes this exists to drop. Measured on the real library: on 2026-09-22,
+ * with rule 1 selected, `edition_key`, `kind`, `language` and `title` were
+ * decided in 0 of 224 rows; on 2026-09-23, at 390px, those four columns
+ * were 248px of a 614px table in a 343px box.
+ */
+export function unsetFields(rows: Row[]): Field[] {
+  return FIELDS.filter((field) =>
+    rows.every((row) => row.decided_by[field] === undefined),
+  )
+}
+
+/**
+ * The line above the Provenance table naming what `unsetFields` dropped, so
+ * "nothing here sets `language`" survives as one sentence rather than as a
+ * column of dashes — which is why the user chose this over dropping the
+ * columns silently. Called only with at least one field.
+ *
+ * **"The first N" when the route capped the rows**, because the sentence is
+ * true only of the rows it was handed, and "these 500 files" reads as the
+ * whole library.
+ */
+export function unsetSentence(
+  unset: readonly Field[],
+  shown: number,
+  truncated: boolean,
+): string {
+  const names =
+    unset.length === 1
+      ? unset[0]
+      : `${unset.slice(0, -1).join(', ')} and ${unset[unset.length - 1]}`
+  const verb = unset.length === 1 ? 'is' : 'are'
+  if (shown === 1 && !truncated)
+    return `${names} ${verb} not set for this file.`
+  const scope = truncated ? `the first ${shown} files` : `these ${shown} files`
+  return `${names} ${verb} not set for any of ${scope}.`
+}
+
 /**
  * `PUT /api/library/rules`'s answer.
  *

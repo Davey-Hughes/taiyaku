@@ -22794,3 +22794,315 @@ sitting 15.0 above and 18.0 below. `2.5px 5.5px` keeps the total padding at
 **Why the original after-measurement missed it**: it was taken on "Open" and
 "Accepted", both descender words, and reported as bbox skew. Two measurements
 of the same wrong quantity agree with each other.
+
+## O157: the underlined rows and the rule-enable box, to the touch (2026-09-26)
+
+Measured on branch `admin-follow-ups` in a Chromium context with `hasTouch`
+and `isMobile` at 390×844, which matches `(pointer: coarse)` (checked in the
+run: `matchMedia('(pointer: coarse)').matches` was `true` on every screen),
+against a copy of the real library. The vitest `browser` project does not
+match it, which is why this is a note and not a test.
+
+| Screen | Item | Drawn (w×h) | Left | Right | Top | Bottom |
+|---|---|---|---|---|---|---|
+| `.config-nav a` on /config/rules | Rules | 33.0×20.0 | true | true | true | true |
+| `.config-nav a` on /config/rules | Roots | 37.0×20.0 | true | true | true | true |
+| `.config-nav a` on /config/rules | Users | 34.0×20.0 | true | true | true | true |
+| `.config-nav a` on /config/rules | Backup | 46.0×20.0 | true | true | true | true |
+| `.preview-tabs > button` on /config/rules | Impact | 43.0×29.0 | true | true | true | true |
+| `.preview-tabs > button` on /config/rules | Matched files | 84.0×29.0 | true | true | true | true |
+| `.preview-tabs > button` on /config/rules | Provenance | 73.0×29.0 | true | true | true | true |
+| `.preview-tabs > button` on /config/rules | Overrides | 61.0×29.0 | true | true | true | true |
+| `.proposal-tabs > button` on /proposals | All 17 | 31.0×29.0 | true | true | true | true |
+| `.proposal-tabs > button` on /proposals | Attach Chapters 1 | 114.0×29.0 | true | true | true | true |
+| `.proposal-tabs > button` on /proposals | Edition Of 16 | 81.0×29.0 | true | true | true | true |
+| `.config-nav a` on /config/users | Rules | 33.0×20.0 | true | true | true | true |
+| `.config-nav a` on /config/users | Roots | 37.0×20.0 | true | true | true | true |
+| `.config-nav a` on /config/users | Users | 34.0×20.0 | true | true | true | true |
+| `.config-nav a` on /config/users | Backup | 46.0×20.0 | true | true | true | true |
+
+Every item is drawn under 44 on at least one axis and every one of its four
+edges — 1px inside the grown 44px target on each side — landed back on the
+item. None of these is drawn at 44: the box stays its own size, and only
+the target grows.
+
+**Two overlap checks were run, and this section's is the narrower.** Here,
+"stolen neighbours" is a centre-point check, run for the three tab rows and
+not for the enable labels: for every control inside `main` (`a`, `button`,
+`input`, `select`, `textarea`, `label`, `summary`) with a box, other than
+that row's own items and anything inside one, `document.elementFromPoint` at
+the control's centre, listing any control whose centre landed on one of the
+row's items instead. It tested no control outside `main`, no row's items
+against one another, and no point but a centre. The rectangle check the
+admin follow-ups design's §2.4 specifies was run afterwards, over the
+enable labels too, and is in "Admin follow-ups" below.
+
+Stolen neighbours: `[]` on every screen. Sideways scroll, the document's
+`scrollWidth − clientWidth`, read after each row's probe and once more on
+/config/rules: `0` every time. Rule-enable labels
+(`.rule-row label.enable`, four rules): `[44, 44]`, `[44, 44]`, `[44, 44]`,
+`[44, 44]`.
+
+What this does not show: that a finger lands where `elementFromPoint` says.
+The hit test is the browser's own, so it is the same test a tap uses, but
+the device pass is where a finger confirms it.
+
+## Admin follow-ups: the figures the closes cite (2026-09-26)
+
+Measured on branch `admin-follow-ups` at `27eeb92a`, in Playwright-driven
+headless Chromium 151.0.7922.34, in the Paper theme (`data-theme="paper"`
+read back on every page), against a scratch copy of the real library, signed
+in as `local`. Every launch but one used Playwright's defaults, which hide
+scrollbars; the O149 subsection says which one did not, and why it matters.
+Nothing here saves but the sign-in's session. The only requests other than
+GETs were the sign-in and
+`POST /api/library/rules/preview`, which the rule editor sends to draw its
+preview and whose doc comment says it writes nothing. O159's four states were
+set in the page by script. The real library's checksum `d5ebc0c2…e59e67` was
+the same after.
+
+**The last three subsections were measured later, in the branch's final fix
+round on 2026-09-26, and the paragraph above is not about them.** Each names
+the commit and the launches it used. They ran in the same Chromium, signed
+in the same way, with the theme left at its `system` default, so no
+`data-theme` on `<html>`; the O159 subsection says what that read back where
+colour matters. Their only requests other than GETs were the sign-in and the
+same preview POST. Each sign-in adds a session to `local`.
+
+### O149: the Provenance table at 390px
+
+Three contexts at 390×844. In each, the rule "series from the first directory
+under the root" was selected on /config/rules and the Provenance tab opened.
+
+**The first two could not draw a classic scrollbar.** They were launched
+with Playwright's defaults, and Playwright 1.62.1 adds `--hide-scrollbars` to
+every headless Chromium launch (`playwright-core/lib/coreBundle.js`,
+l.43070). For the desktop context that 0 is the flag's doing, as the third
+context shows. The touch context was not run without the flag, so what its 0
+owes to the flag and what to mobile emulation is not separated here. The
+third was launched with `ignoreDefaultArgs: ['--hide-scrollbars']` and
+differs from the second in nothing else. It was measured at `90ea42fd`, whose
+only change to the app is a comment. The second was taken twice, once beside
+the first and again beside the third as a control, and gave the same figures
+both times.
+
+| | touch (`hasTouch`, `isMobile`), flag on | desktop, flag on | desktop, flag off |
+|---|---|---|---|
+| `matchMedia('(pointer: coarse)').matches` | `true` | `false` | `false` |
+| `table.provenance tbody tr` | 224 | 224 | 224 |
+| `<th>` | file, series, volume, chapter | file, series, volume, chapter | file, series, volume, chapter |
+| `table.provenance` width | 368 | 368 | 368 |
+| its `.table-scroll`'s `clientWidth` | 358 | 358 | 343 |
+| its `.table-scroll`'s `scrollWidth` | 368 | 368 | 368 |
+| `innerWidth − clientWidth` (the scrollbar) | 0 | 0 | 15 |
+
+`p.unset` read, in all three: "edition_key, kind, language and title are not
+set for any of these 224 files."
+
+The four fields empty in every row are gone from the table and named in one
+line above it. The table is 368px wide in all three. Its box is 358px where
+no scrollbar is drawn and 343px where a classic 15px scrollbar takes its
+share, so the table overflows its box by 10px in the one and 25px in the
+other.
+
+**The design's figures, not this run's.** The admin follow-ups design
+(`docs/superpowers/specs/2026-09-25-admin-follow-ups-design.md` §0) records,
+from the drawings the user chose between on 2026-09-25, a table of 614px in a
+343px box before the change and 366px with the empty columns dropped. The
+drawing's 366 and the built branch's 368, in the same 343px box, differ by
+2px, and that difference is not explained here. The design's 343 is the box
+with a classic scrollbar drawn. The drawing the user chose,
+`target/o-bundle/drawn/o149-C-390.png` (390×844), read with ImageMagick at
+y=500 from x=370 to 389, is the page background `#F3EEE3` from x=370 to 374
+and a 15px track of `#FCFCFC` from x=375 to 389. So 358 − 15 = 343, the box
+the third context measured. This run's own screenshots read the same way at
+y=500: the third context's matches the drawing pixel for pixel over that
+span, and the second context's is `#F3EEE3` all the way to x=389.
+
+### O153: the three `.why` paragraphs on /config/users
+
+Desktop context, 1440×900. For every `.users .why`, the nearest of
+`.add-user`, `.reset` and `.user-row` around it, and its computed style:
+
+| Paragraph begins | Inside | `font-size` | `color` |
+|---|---|---|---|
+| "An administrator cannot take their own admin role away; …" | `li.user-row` | 12px | `rgb(107, 97, 81)` |
+| "You cannot reset your own password here: …" | `form.reset` | 12px | `rgb(107, 97, 81)` |
+| "C4 §4: there is no self-service registration — …" | `form.add-user` | 12px | `rgb(107, 97, 81)` |
+
+All three render alike. The design's §0 records the add-account one, before
+the change, at 16px `rgb(35, 30, 23)`.
+
+### O155: the inbox
+
+`GET /api/library/proposals?state=open&min_score=0` answered 200 with 35
+proposals, every one `open`: **18** at score 0, **13** at 1, **3** at 2 and
+**1** at 3. Its `counts` were `attach-chapters` 1 and `edition-of` 34.
+
+At /proposals, desktop context, 1440×900, counting `.proposal-list li` and
+the `.score` chips by word:
+
+| "Show weak proposals" | Rows | `strong` | `maybe` | `weak` | Tabs |
+|---|---|---|---|---|---|
+| unticked | 17 | 4 | 13 | 0 | All 17, Attach Chapters 1, Edition Of 16 |
+| ticked | 35 | 4 | 13 | 18 | All 35, Attach Chapters 1, Edition Of 34 |
+
+Each word is one score band: 4 `strong` is the 3 at score 2 and the 1 at
+score 3, 13 `maybe` is score 1, and 18 `weak` is score 0. The default view
+shows no row that says `weak`, and ticking the box adds exactly the 18 that
+do.
+
+### O159: the `can_download` checkbox's fill
+
+Desktop context, 1440×900, /config/users, on `local`'s `can_download`
+box: checked, drawn 13×13 at (269, 280.703), computed `accent-color`
+`rgb(176, 54, 29)`. Each state was read from a 1×1 `page.screenshot` clip
+at the box's centre, (275, 287), decoded with ImageMagick 7.1.2-31.
+
+| State | Centre pixel |
+|---|---|
+| 1. as rendered | 249, 238, 236 |
+| 2. `disabled = true` | 233, 232, 231 |
+| 3. that, plus `input[type=checkbox]:disabled { accent-color: var(--accent); opacity: 1; filter: none; }` | 233, 232, 231 |
+| 4. `disabled = false`, `aria-disabled="true"` | 249, 238, 236 |
+
+**The centre pixel is on the tick, not the fill.** A 13×13 clip of the whole
+box, taken with each reading, puts the centre on the tick's anti-aliased
+edge, which is why it is near white. The fill beside it, at clip pixel
+(2, 4), reads 176, 54, 29 in states 1 and 4, which is the accent exactly, and
+206, 205, 203 in states 2 and 3. ImageMagick's `compare -metric AE` counts 0
+differing pixels between the whole-box clips of 1 and 4, and 0 between 2
+and 3.
+
+So `disabled` changes the tick and the fill both, the three properties on
+`:disabled` change no pixel of either, and `aria-disabled` without
+`disabled` changes no pixel of the enabled box.
+
+What this does not show: any browser but Chromium. O159 was reported from
+an iPhone, and this does not measure its WebKit.
+
+### O157: what the enable label costs in layout
+
+/config/rules, the library's four rules, at `9c194cb0`, except the "before"
+row of the desktop table, taken at `0e4ceb75` before `.rule-row .enable {
+display: flex }` existed. Four contexts: desktop 1440×900, and touch 390×844
+with `hasTouch` and `isMobile` (`(pointer: coarse)` matched `true` there and
+`false` on desktop), each in a default launch, which adds
+`--hide-scrollbars`, and again in one launched with `ignoreDefaultArgs:
+['--hide-scrollbars']`. The two launches gave the same figure in every cell
+below. In both, `innerWidth − clientWidth` was 0 at both sizes: this page
+drew no scrollbar either way, so the flag decides nothing here.
+
+"Without" is the same page with each `label.enable` replaced by its own
+input by script (`label.replaceWith(input)`). That is `main`'s markup for
+these rows: the label is the branch's only change to `RuleList`'s row, and
+`.rule-row .enable` its only rules.
+
+**Touch, 390×844.** The label is 44×44, computed `display: grid` (the
+coarse rule's `inline-grid`, blockified as an item of the flex row), and
+the box inside it 24×24 either way. `.rule-name`'s `line-height` is 24px.
+
+| Rule | `.rule-name` height, with / without | `.select` width | Row height | Box's offset in its row (left, top) |
+|---|---|---|---|---|
+| series from the first directory under the root | 48 / 48 | 184 / 197 | 85 / 85 | (42.5, 19) / (36, 12) |
+| volume from the name, via taiyaku_read::volume_number | 96 / 72 | 184 / 197 | 133 / 109 | (42.5, 19) / (36, 12) |
+| chapter from the name, via taiyaku_read::chapter_number | 96 / 72 | 184 / 197 | 133 / 109 | (42.5, 19) / (36, 12) |
+| series from the filename where it repeats it | 48 / 48 | 184 / 197 | 85 / 85 | (42.5, 19) / (36, 12) |
+
+The label takes 13px of width from every rule's name, and the two longer
+names wrap one line more, 24px taller, which is the whole of their rows'
+growth: `.mechanism` was 18px tall in every row, with and without. The box
+is drawn at 24×24 either way, 6.5px further right and 7px lower.
+
+**Desktop, 1440×900.** The same in all four rows:
+
+| | Box's offset in its row (left, top), with the label | Without | The label |
+|---|---|---|---|
+| before, `0e4ceb75` | (36, 15) | (36, 12) | computed `display: block`, 20×24 |
+| after, `9c194cb0` | (36, 12) | (36, 12) | computed `display: flex`, 20×19 |
+
+Before, the label had no rule outside the coarse block and measured 20×24
+around the 13×13 box, which sat 3px lower than without it. With
+`display: flex` the box sits where it does with no label.
+Nothing else in the row moved on desktop: `.select` was 202px wide, and the
+rows 85, 109, 109 and 85px tall, with and without the label, before and
+after.
+
+### O157: the overlap check, as the design's §2.4 specifies
+
+At `9c194cb0`, touch 390×844 (`hasTouch`, `isMobile`; `(pointer: coarse)`
+`true` on all three screens), in a default launch and again with
+`ignoreDefaultArgs: ['--hide-scrollbars']`. For every grown target on the
+screen, from `.config-nav a`, `.preview-tabs > button`,
+`.proposal-tabs > button` and `label.enable`: its 44px rectangle, centred on
+the item's `getBoundingClientRect()` and `max(width, 44)` by
+`max(height, 44)`. Each rectangle was tested for intersection, an overlap of
+more than 0px on both axes, against the `getBoundingClientRect()` of every
+visible control in the document: every `a`, `button`, `input`, `select`,
+`textarea`, `label` and `summary` with a non-zero box and not
+`visibility: hidden`, excluding the item itself, its descendants and its
+ancestors. So a row's items were tested against one another, and controls
+outside `main` were tested too. Every rectangle on a screen was read in one
+pass, with no scroll between (`scrollY` 0).
+
+The rectangle is the `::after`'s own size. For every tab item,
+`getComputedStyle(item, '::after')` gave the width and height the rectangle
+used: `44px` by `44px` for the items narrower than 44, and the item's own
+width by `44px` for the rest. The enable label has no `::after`; its
+rectangle is its own 44×44 box.
+
+| Screen | Grown targets | Controls tested | Intersections |
+|---|---|---|---|
+| /config/rules | 4 `.config-nav a`, 4 `.preview-tabs > button`, 4 `label.enable` | 31 | 0 |
+| /proposals | 3 `.proposal-tabs > button` | 45 | 0 |
+| /config/users | 4 `.config-nav a` | 81, then 82 | 0 |
+
+Both launches gave these figures, except that /config/users had one more
+control in the second. Each sign-in adds a session to `local` and a Revoke
+button with it: two consecutive sign-ins, checked for this, drew 39 and then
+40 `revoke-session` buttons.
+
+What this does not show: overlap between two grown rectangles. Each was
+tested against other controls' drawn boxes, as §2.4 asks, not against their
+grown ones.
+
+### O159: what a hold draws, and where focus goes
+
+At `9c194cb0`, desktop 1440×900, default launch, /config/users, on
+`local`'s card. The theme was `system`: no `data-theme`,
+`prefers-color-scheme: light` matched, and the page background was
+`rgb(243, 238, 227)`. Chromium 151.0.7922.34, `HeadlessChrome/151.0.7922.34`
+in the user agent.
+
+**Focus.** The `can_download` box was focused, either by `focus()` or by
+pressing Tab from the top of a fresh load until it held focus (19 presses),
+and then held by script. `document.activeElement` was read at once, after
+two animation frames, and after 250ms. Each row is a fresh load.
+
+| Held with | Focused by | Before | At once | Two frames | 250ms |
+|---|---|---|---|---|---|
+| `disabled = true` | `focus()` | `INPUT` `can_download` | `BODY` | `BODY` | `BODY` |
+| `disabled = true` | Tab | `INPUT` `can_download` | `BODY` | `BODY` | `BODY` |
+| `aria-disabled="true"` | `focus()` | `INPUT` `can_download` | `INPUT` `can_download` | `INPUT` `can_download` | `INPUT` `can_download` |
+| `aria-disabled="true"` | Tab | `INPUT` `can_download` | `INPUT` `can_download` | `INPUT` `can_download` | `INPUT` `can_download` |
+
+**What else a hold draws.** O159 left `disabled` on the role select, the
+password field and the buttons. Four of them were each set live, clipped
+whole with `page.screenshot`, set `disabled`, and clipped again, all by
+script; ImageMagick 7.1.2-31's `compare -metric AE` counted the pixels that
+differ. Three of the four are disabled on `local`'s card anyway, since it is
+the signed-in account's own, which is why each was set live first.
+
+| Control | Clip | Computed `opacity`, live → `disabled` | Differing pixels |
+|---|---|---|---|
+| role `<select>` | 640×32 | 1 → 0.7 | 470.592 (0.0230 of the clip) |
+| password `<input>` | 640×31 | 1 → 1 | 0 |
+| Set password | 123×34 | 1 → 1 | 0 |
+| a Revoke button | 77×34 | 1 → 1 | 0 |
+
+No stylesheet under `web/src` declares an opacity of 0.7. So of these four,
+a hold changes the drawing of the select alone, and a tick refused on a
+checkbox mid-save shows nothing: the box keeps its value, and nothing on it
+says why.
+
+What this does not show: Ink, a touch context, or any browser but Chromium.

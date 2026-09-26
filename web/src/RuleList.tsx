@@ -162,13 +162,26 @@ export function RuleList({
             }}
           >
             <span className="ordinal">{index + 1}</span>
-            <input
-              type="checkbox"
-              checked={rule.enabled}
-              disabled={frozen}
-              aria-label={`rule ${index + 1} enabled`}
-              onChange={() => onToggle(index)}
-            />
+            {/* **A label of its own, with no words — O157.** The box has no
+                visible label, only its `aria-label`, so under a coarse
+                pointer the 24px box was the whole tap target. `admin.css`
+                grows this label to 44×44 and leaves the box drawn at its
+                own size; the `aria-label` stays the box's name. The size
+                is all it leaves alone: the label takes its 44px of the
+                row's layout, so the rule's name has less width beside it
+                and a long one can wrap one line more — measured at 390px,
+                and accepted by the user on 2026-09-26. At a fine pointer
+                the label is a flex box that draws the box where it sat
+                before it had one. */}
+            <label className="enable">
+              <input
+                type="checkbox"
+                checked={rule.enabled}
+                disabled={frozen}
+                aria-label={`rule ${index + 1} enabled`}
+                onChange={() => onToggle(index)}
+              />
+            </label>
             <button
               type="button"
               className="select"

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Root } from './config'
 import {
   blankRule,
+  FIELDS,
   fromDocument,
   importRules,
   listRules,
@@ -9,6 +10,7 @@ import {
   moved,
   previewRules,
   renumber,
+  type Row,
   type Rule,
   type RuleDoc,
   RULE_KINDS,
@@ -16,6 +18,8 @@ import {
   ruleName,
   saveRules,
   toDocument,
+  unsetFields,
+  unsetSentence,
 } from './rules'
 
 const rule = (over: Partial<Rule> = {}): Rule => ({
@@ -430,5 +434,82 @@ describe('ruleMechanism', () => {
 
   it('is never empty, whatever the rule holds', () => {
     expect(ruleMechanism(blankRule(1))).toBe('regex on path')
+  })
+})
+
+/** A row deciding exactly `decided_by`, and nothing else about it varying. */
+const deciding = (rel_path: string, decided_by: Row['decided_by']): Row => ({
+  rel_path,
+  root_id: 1,
+  before: null,
+  after: null,
+  matched: true,
+  decided_by,
+})
+
+describe('unsetFields — O149', () => {
+  it('returns the fields no row decided, in FIELDS order', () => {
+    // Two rows deciding *different* fields, so "the fields the first row
+    // left unset" and "the fields some row left unset" both give a wrong
+    // answer here. Expected in `FIELDS` order, which is not alphabetical
+    // (`chapter` would come first), so a sort is caught too.
+    expect(
+      unsetFields([
+        deciding('a.cbz', { title: { kind: 'rule', index: 0 } }),
+        deciding('b.cbz', { series: { kind: 'rule', index: 1 } }),
+      ]),
+    ).toEqual(['edition_key', 'kind', 'language', 'volume', 'chapter'])
+  })
+
+  it('counts a root default as decided', () => {
+    // "root default" is an answer the table draws. Only a field *nothing*
+    // decided is the column of dashes O149 drops.
+    expect(
+      unsetFields([
+        deciding('a.cbz', { edition_key: { kind: 'root_default' } }),
+      ]),
+    ).not.toContain('edition_key')
+  })
+
+  it('keeps FIELDS as the seven rules::Field declares, in its order', () => {
+    expect(FIELDS).toEqual([
+      'series',
+      'edition_key',
+      'kind',
+      'language',
+      'volume',
+      'chapter',
+      'title',
+    ])
+  })
+})
+
+describe('unsetSentence — O149', () => {
+  it('lists several with "and" before the last', () => {
+    expect(
+      unsetSentence(['edition_key', 'kind', 'language', 'title'], 224, false),
+    ).toBe(
+      'edition_key, kind, language and title are not set for any of these 224 files.',
+    )
+  })
+
+  it('says "is" for one field', () => {
+    expect(unsetSentence(['title'], 2, false)).toBe(
+      'title is not set for any of these 2 files.',
+    )
+  })
+
+  it('says "this file" for one row', () => {
+    expect(unsetSentence(['kind', 'title'], 1, false)).toBe(
+      'kind and title are not set for this file.',
+    )
+  })
+
+  it('says "the first N" when the route capped the rows', () => {
+    // The sentence is only true of the rows it was handed, and 500 read as
+    // "these 500 files" is easy to take for the whole library.
+    expect(unsetSentence(['title'], 500, true)).toBe(
+      'title is not set for any of the first 500 files.',
+    )
   })
 })

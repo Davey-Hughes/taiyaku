@@ -378,6 +378,65 @@ describe('admin.css carries a coarse-pointer floor', () => {
   })
 
   /**
+   * O157: `RuleList`'s enable box has no row to take the 44, because it has
+   * no visible label, so it gets a wordless `<label>` of its own and this
+   * rule sizes the label. The box inside keeps the 24px the checkbox rule
+   * gives it. 44px on the box itself would draw the button-shaped checkbox
+   * this block refuses. `display: inline-grid` is asserted with the rest
+   * because it is what centres the box across: in the flex row the label
+   * is blockified and takes its 44×44 either way, and without the grid the
+   * box sits at the label's left edge.
+   */
+  it('gives the rule-enable box a 44px label of its own', () => {
+    for (const declaration of [
+      'display:\\s*inline-grid',
+      'min-inline-size:\\s*44px',
+      'min-block-size:\\s*44px',
+      'place-items:\\s*center',
+    ]) {
+      expect(coarse).toMatch(inRule('.rule-row .enable', declaration))
+    }
+  })
+
+  /**
+   * O157: the three underlined one-of-N rows take their 44px from a box
+   * with no paint centred on each item, not from their own height, which
+   * the floor's `:not()` keeps off them on §12.8's measurement. Both halves
+   * are asserted. The `::after` grows the target, and `position: relative`
+   * anchors it to its own item. Without that, every tab's target would be
+   * placed against the nearest positioned ancestor, one box for the whole
+   * row.
+   */
+  for (const item of [
+    '.config-nav a',
+    '.proposal-tabs > button',
+    '.preview-tabs > button',
+  ]) {
+    it(`grows ${item} to 44px to the touch without drawing it taller`, () => {
+      expect(coarse).toMatch(inRule(item, 'position:\\s*relative'))
+      // Every declaration the box needs to land centred on its item: the
+      // two insets and the translate together are the centring, and a box
+      // missing either inset sits at its static position shifted up and
+      // left by half its own size.
+      for (const declaration of [
+        'content:\\s*""',
+        'position:\\s*absolute',
+        'inset-block-start:\\s*50%',
+        'inset-inline-start:\\s*50%',
+        'inline-size:\\s*max\\(100%,\\s*44px\\)',
+        'block-size:\\s*max\\(100%,\\s*44px\\)',
+        'translate:\\s*-50%\\s+-50%',
+      ]) {
+        expect(coarse).toMatch(inRule(`${item}::after`, declaration))
+      }
+      // The item's own box is left alone. A height here is the redesign
+      // §12.8 measured and refused.
+      expect(coarse).not.toMatch(inRule(item, 'min-height'))
+      expect(coarse).not.toMatch(inRule(item, 'min-block-size'))
+    })
+  }
+
+  /**
    * **The 44 has to be a floor on the rendered box, and `min-height` alone
    * is not.** In standards mode the UA stylesheet gives `<select>` and
    * `<button>` `border-box` and leaves `<input>` and `<textarea>` at
@@ -603,6 +662,74 @@ describe('admin.css carries a coarse-pointer floor', () => {
     // Watched both ways — green here, and the old expression matched.
     expect(coarse).not.toMatch(
       /input\[type="checkbox"\][^{}]*\{[^}]*min-height:\s*44px/,
+    )
+  })
+})
+
+/**
+ * **O157's label, outside the coarse block.** `RuleList` wraps the enable box
+ * in a wordless `<label className="enable">`, and the coarse block's rule is
+ * the only one that styled it — so at a fine pointer the label drew the box
+ * in a line box, 3px lower than it sat with no label (measured at 1440px,
+ * `docs/notes.md` "Admin follow-ups"). A flex box outside every at-rule puts
+ * it back, and the coarse rule, coming later at the same specificity, still
+ * makes it the 44px grid there.
+ *
+ * **Outside every at-rule, asserted, and not only first.** `rules()` reads
+ * the rules nested in an `@media` block as readily as the top-level ones, so
+ * "the first of two declares `flex`" alone passes against a `flex` rule moved
+ * into a block that a desk never matches, which is the defect back.
+ */
+describe('the rule-enable label leaves the desktop box where it was', () => {
+  /** `css` with every at-rule block taken out, braces counted. */
+  const unconditional = (css: string) => {
+    let out = ''
+    let i = 0
+    while (i < css.length) {
+      const at = css.indexOf('@', i)
+      if (at === -1) return out + css.slice(i)
+      const open = css.indexOf('{', at)
+      const semi = css.indexOf(';', at)
+      if (open === -1 || (semi !== -1 && semi < open)) {
+        out += css.slice(i, semi === -1 ? css.length : semi + 1)
+        i = semi === -1 ? css.length : semi + 1
+        continue
+      }
+      out += css.slice(i, at)
+      let depth = 0
+      let j = open
+      for (; j < css.length; j++) {
+        if (css[j] === '{') depth += 1
+        else if (css[j] === '}') {
+          depth -= 1
+          if (depth === 0) break
+        }
+      }
+      i = j + 1
+    }
+    return out
+  }
+
+  const enable = rules(adminSource).filter(
+    ({ prelude }) => prelude === '.rule-row .enable',
+  )
+
+  it('is styled by exactly two rules', () => {
+    expect(enable).toHaveLength(2)
+  })
+
+  it('is a flex box in the first, and that one applies at every pointer', () => {
+    expect(declared(enable[0].body, 'display')).toBe('flex')
+    const everywhere = rules(
+      unconditional(withoutComments(adminSource)),
+    ).filter(({ prelude }) => prelude === '.rule-row .enable')
+    expect(everywhere).toHaveLength(1)
+    expect(declared(everywhere[0].body, 'display')).toBe('flex')
+  })
+
+  it('is the coarse block’s inline grid in the last', () => {
+    expect(declared(enable[enable.length - 1].body, 'display')).toBe(
+      'inline-grid',
     )
   })
 })

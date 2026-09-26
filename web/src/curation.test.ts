@@ -51,13 +51,24 @@ const clearResolution = (over: Partial<Resolution> = {}): Resolution => ({
 })
 
 describe('strength', () => {
-  it('calls two signals strong and one weak', () => {
+  it('calls two signals strong, one maybe, and none weak — O155', () => {
     // The scale is {0,1,2,3}: `edition-of` adds one per signal and the two
-    // certain kinds sit at 3. Strong is 2 and above.
-    expect(strength(2)).toBe('strong')
+    // certain kinds sit at 3. Strong is 2 and above; 1 is one signal, which
+    // `proposals.rs` calls "exactly the coin flip" and which has its own
+    // word, so that "weak" means exactly what "Show weak proposals" reveals.
     expect(strength(3)).toBe('strong')
-    expect(strength(1)).toBe('weak')
+    expect(strength(2)).toBe('strong')
+    expect(strength(1)).toBe('maybe')
     expect(strength(0)).toBe('weak')
+  })
+
+  it('draws the weak line exactly where the inbox threshold does', () => {
+    // O155 itself: the two lines lived in two places and disagreed, so 13
+    // of the 17 rows the inbox shows by default said "weak" beneath an
+    // unticked "Show weak proposals". Pinned to the constant rather than to
+    // 1, so moving either line alone is a red test.
+    expect(strength(INBOX_MIN_SCORE)).not.toBe('weak')
+    expect(strength(INBOX_MIN_SCORE - 1)).toBe('weak')
   })
 })
 

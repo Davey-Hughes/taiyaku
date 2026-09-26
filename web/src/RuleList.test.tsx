@@ -112,6 +112,32 @@ describe('RuleList', () => {
     expect(onToggle).toHaveBeenCalledWith(1)
   })
 
+  it('wraps the enable box in a wordless label of its own — O157', () => {
+    // The label is what `admin.css`'s coarse block grows to 44×44. It adds a
+    // target, not a name: the box is still named by its own `aria-label`.
+    const { host, onToggle } = render()
+    const boxes = [
+      ...host.querySelectorAll<HTMLInputElement>(
+        '.rule-row input[type="checkbox"]',
+      ),
+    ]
+    expect(boxes.length).toBeGreaterThan(1)
+    for (const [i, box] of boxes.entries()) {
+      const label = box.parentElement
+      expect(label?.tagName, `row ${i + 1}`).toBe('LABEL')
+      expect(label?.className, `row ${i + 1}`).toBe('enable')
+      expect(label?.textContent, `row ${i + 1}`).toBe('')
+      expect(box.getAttribute('aria-label')).toBe(`rule ${i + 1} enabled`)
+    }
+    // And a press on the label, outside the box, is a press on the box.
+    act(() => {
+      host
+        .querySelectorAll<HTMLLabelElement>('.rule-row label.enable')[1]
+        .click()
+    })
+    expect(onToggle).toHaveBeenCalledWith(1)
+  })
+
   it('labels a freshly added rule "new rule", not a blank button', () => {
     // blankRule() sets all four set_* fields to null but pattern to '' —
     // the one non-nullable field of that set. A `??` chain alone stops at

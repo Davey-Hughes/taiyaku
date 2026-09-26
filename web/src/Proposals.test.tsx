@@ -196,8 +196,8 @@ describe('Proposals', () => {
       '↳ the same series as Kobayashi-san Chi no Meidoragon',
       undefined,
     ])
-    expect(column('.score')).toEqual(['strong', 'weak', 'weak'])
-    expect(rows.map((li) => li.className)).toEqual(['strong', 'weak', 'weak'])
+    expect(column('.score')).toEqual(['strong', 'maybe', 'weak'])
+    expect(rows.map((li) => li.className)).toEqual(['strong', 'maybe', 'weak'])
   })
 
   it('asks for the open state at the default score threshold on the very first request', async () => {

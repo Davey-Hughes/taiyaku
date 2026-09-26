@@ -29,7 +29,8 @@
  *
  * **Matched files and Provenance read one array.** `rows` is scoped to the
  * selected rule and arrives in one request; the two tabs are two readings of
- * it — one down the file list, one across the seven fields.
+ * it — one down the file list, one across the fields some row decided
+ * (O149).
  *
  * **Every rule named here is named by position.** `Decided`, `Override.first`
  * and `Override.wins` are indices into the list the request carried, and the
@@ -47,21 +48,17 @@
  * whole list.
  */
 import { useState } from 'react'
-import type { Preview, Rule } from './rules'
+import {
+  type Field,
+  FIELDS,
+  type Preview,
+  type Rule,
+  unsetFields,
+  unsetSentence,
+} from './rules'
 
 const TABS = ['Impact', 'Matched files', 'Provenance', 'Overrides'] as const
 type TabName = (typeof TABS)[number]
-
-/** The seven fields, in the order `rules::Field` declares them. */
-const FIELDS = [
-  'series',
-  'edition_key',
-  'kind',
-  'language',
-  'volume',
-  'chapter',
-  'title',
-] as const
 
 const plural = (n: number, one: string, many: string) =>
   `${n} ${n === 1 ? one : many}`
@@ -127,6 +124,26 @@ export function PreviewTabs({
 }) {
   const [tab, setTab] = useState<TabName>('Impact')
   const overrides = preview?.overrides ?? []
+  /**
+   * O149: the Provenance table draws a column only for a field some row
+   * decided, and names the rest in one line above it. With rule 1 selected
+   * on the real library, four of the seven were decided in none of 224 rows.
+   */
+  // Annotated: without it the empty branch types as `never[]`, and
+  // `includes` on the union then takes `never`.
+  const unset: Field[] = preview === undefined ? [] : unsetFields(preview.rows)
+  const drawn = FIELDS.filter((field) => !unset.includes(field))
+  /**
+   * Drawn on both tabs that list files, so neither stops silently at 500 —
+   * and above the table on both, where it is read before the rows it
+   * qualifies rather than after them. The user's decision of 2026-09-26,
+   * for the same reason O149's line sits above.
+   */
+  const capped = (
+    <p className="truncated">
+      The first 500 files only — more matched than fit here.
+    </p>
+  )
 
   return (
     <div className="preview">
@@ -217,6 +234,7 @@ export function PreviewTabs({
               </p>
             ) : (
               <>
+                {preview.rows_truncated && capped}
                 <div className="table-scroll">
                   <table className="matched">
                     <thead>
@@ -239,11 +257,6 @@ export function PreviewTabs({
                     </tbody>
                   </table>
                 </div>
-                {preview.rows_truncated && (
-                  <p className="truncated">
-                    The first 500 files only — more matched than fit here.
-                  </p>
-                )}
               </>
             ))}
 
@@ -251,37 +264,49 @@ export function PreviewTabs({
             (preview.rows.length === 0 ? (
               <p className="empty">No files to show provenance for.</p>
             ) : (
-              <div className="table-scroll">
-                <table className="provenance">
-                  <thead>
-                    <tr>
-                      <th>file</th>
-                      {FIELDS.map((field) => (
-                        <th key={field}>{field}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {preview.rows.map((row) => (
-                      <tr key={`${row.root_id}:${row.rel_path}`}>
-                        <td>{row.rel_path}</td>
-                        {FIELDS.map((field) => {
-                          const decided = row.decided_by[field]
-                          return (
-                            <td key={field}>
-                              {decided === undefined
-                                ? '—'
-                                : decided.kind === 'root_default'
-                                  ? 'root default'
-                                  : `rule ${decided.index + 1}`}
-                            </td>
-                          )
-                        })}
+              <>
+                {preview.rows_truncated && capped}
+                {unset.length > 0 && (
+                  <p className="unset">
+                    {unsetSentence(
+                      unset,
+                      preview.rows.length,
+                      preview.rows_truncated,
+                    )}
+                  </p>
+                )}
+                <div className="table-scroll">
+                  <table className="provenance">
+                    <thead>
+                      <tr>
+                        <th>file</th>
+                        {drawn.map((field) => (
+                          <th key={field}>{field}</th>
+                        ))}
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+                    </thead>
+                    <tbody>
+                      {preview.rows.map((row) => (
+                        <tr key={`${row.root_id}:${row.rel_path}`}>
+                          <td>{row.rel_path}</td>
+                          {drawn.map((field) => {
+                            const decided = row.decided_by[field]
+                            return (
+                              <td key={field}>
+                                {decided === undefined
+                                  ? '—'
+                                  : decided.kind === 'root_default'
+                                    ? 'root default'
+                                    : `rule ${decided.index + 1}`}
+                              </td>
+                            )
+                          })}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </>
             ))}
 
           {tab === 'Overrides' &&

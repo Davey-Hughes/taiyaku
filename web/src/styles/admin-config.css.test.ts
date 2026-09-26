@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import adminSource from './admin.css?raw'
-import { rules, withoutComments } from '../testing/css'
+import { rules, selectors, withoutComments } from '../testing/css'
 
 /**
  * ⑤b empties `admin.css` of the two pre-token idioms the style pass replaced
@@ -87,5 +87,36 @@ describe('admin.css sets the settings-area measure once', () => {
     // A `width` on a control inside these cards is the drift §11.4 refuses:
     // a figure per control is a figure to re-measure per review round.
     expect(widths).toEqual([])
+  })
+})
+
+/**
+ * O153: every `.why` on `/config/users` is one kind of sentence, an
+ * explanation beneath the control it is about, so one rule quiets them all.
+ * It read `.user-row .why` until 2026-09-25, which reached the role hint and
+ * the two inside `.reset` and missed the add-account form's, the one `.why`
+ * outside a card. Measured in Chromium on 2026-09-24: that one computed
+ * 16px in `--text` beside two at 12px in `--muted`, louder than the form's
+ * own labels.
+ */
+describe('admin.css quiets every .why on the users screen', () => {
+  it('reaches .users .why rather than only the ones inside a card', () => {
+    // Found by its body rather than its prelude, because the prelude is
+    // what this case is about.
+    const quiet = rules(adminSource).filter(
+      ({ body }) =>
+        /(?:^|;)\s*color:\s*var\(--muted\)/.test(body) &&
+        /(?:^|;)\s*font-size:\s*var\(--text-meta\)/.test(body),
+    )
+    expect(
+      quiet.filter(({ prelude }) => selectors(prelude).includes('.users .why')),
+    ).toHaveLength(1)
+    // And the narrow one is gone rather than left beside it, where it would
+    // be a second rule for the same three paragraphs to drift apart in.
+    expect(
+      quiet.some(({ prelude }) =>
+        selectors(prelude).includes('.user-row .why'),
+      ),
+    ).toBe(false)
   })
 })

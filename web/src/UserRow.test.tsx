@@ -299,15 +299,45 @@ describe('the fields', () => {
     await click(control(host, 'input[name="root-3"]'))
     expect(usersApi.patchUser).toHaveBeenCalledWith(2, { roots: [3] })
 
+    // **Held, but not greyed — O159.** Every checkbox on the card says it is
+    // held to a screen reader and keeps its fill. `disabled` took the fill
+    // away, so one tick flashed every box on the card.
+    const boxes = [
+      ...host.querySelectorAll<HTMLInputElement>('input[type="checkbox"]'),
+    ]
+    expect(boxes.map((box) => box.name)).toEqual([
+      'can_download',
+      'can_stream',
+      'can_stamp',
+      'root-3',
+      'root-4',
+    ])
+    for (const box of boxes) {
+      expect(box.disabled, box.name).toBe(false)
+      expect(box.getAttribute('aria-disabled'), box.name).toBe('true')
+    }
+    // The rest of the card keeps `disabled`. Its greying is not what O159
+    // was about.
+    expect(
+      control<HTMLSelectElement>(host, 'select[name="role"]').disabled,
+    ).toBe(true)
+
+    // **The lock is `begin`'s guard, and nothing stands in front of it
+    // now.** A tick lands on a live box, reaches `save`, and `begin`
+    // refuses it. This case alone cannot say the guard is the ref: by now
+    // the card has rendered `saving`, so a guard reading that would pass
+    // here too. The double-press DELETE cases below are what prove the ref.
     const second = control<HTMLInputElement>(host, 'input[name="root-4"]')
-    expect(second.disabled).toBe(true)
-    // Dispatched anyway, in the same act, because `disabled` alone is not the
-    // guard — the ref is.
+    const stream = control<HTMLInputElement>(host, 'input[name="can_stream"]')
     await act(async () => {
       second.click()
+      stream.click()
       await Promise.resolve()
     })
     expect(usersApi.patchUser).toHaveBeenCalledTimes(1)
+    // And each box shows what the card holds, not the refused tick.
+    expect(second.checked).toBe(false)
+    expect(stream.checked).toBe(true)
 
     await act(async () => {
       release?.()
@@ -315,8 +345,10 @@ describe('the fields', () => {
       await Promise.resolve()
     })
     expect(
-      control<HTMLInputElement>(host, 'input[name="root-4"]').disabled,
-    ).toBe(false)
+      control<HTMLInputElement>(host, 'input[name="root-4"]').getAttribute(
+        'aria-disabled',
+      ),
+    ).toBe('false')
   })
 
   it('computes the next grant list from the answer when the reload brings nothing', async () => {
@@ -888,10 +920,10 @@ describe('removal', () => {
   })
 
   it('deadens the confirm while another write is in flight', async () => {
-    // Every other control on the card carries `disabled={saving}`; this one
-    // did not, so a press during a live patch was swallowed by the ref guard
-    // with nothing on screen saying why — an enabled destructive button that
-    // does nothing. Third review pass.
+    // Every other control on the card is held while a write is in flight;
+    // this one did not, so a press during a live patch was swallowed by the
+    // ref guard with nothing on screen saying why — an enabled destructive
+    // button that does nothing. Third review pass.
     const me = user()
     const other = user({ id: 2, name: 'sam', role: 'user' })
     vi.mocked(usersApi.removalCost).mockResolvedValue({

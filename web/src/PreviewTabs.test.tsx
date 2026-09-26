@@ -191,6 +191,16 @@ describe('PreviewTabs', () => {
     })
     click('Matched')
     expect(host.textContent).toContain('500')
+    // Above the table, by the user's decision of 2026-09-26: beneath it the
+    // notice is read after the 500 rows it qualifies.
+    const notice = host.querySelector('.preview p.truncated')
+    const scroll = host.querySelector('.preview .table-scroll')
+    expect(notice).not.toBeNull()
+    expect(scroll).not.toBeNull()
+    expect(
+      notice!.compareDocumentPosition(scroll!) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy()
   })
 
   it('names the deciding rule by its position, not its id', () => {
@@ -415,5 +425,115 @@ describe('PreviewTabs', () => {
   it('says there is nothing yet before the first preview', () => {
     const { host } = render({ preview: undefined })
     expect(host.textContent).toContain('No preview yet')
+  })
+
+  /**
+   * O149. The default `row()` decides `series` (rule) and `edition_key`
+   * (root default), so it leaves five fields unset. Each case passes
+   * distinct `rel_path`s because the rows are keyed on them.
+   */
+  it('draws only the columns some row decided, a cell for each — O149', () => {
+    const { host, click } = render({
+      preview: preview({
+        rows: [
+          row({
+            rel_path: 'a.cbz',
+            decided_by: { volume: { kind: 'rule', index: 1 } },
+          }),
+          row({ rel_path: 'b.cbz' }),
+        ],
+      }),
+    })
+    click('Provenance')
+    const heads = [...host.querySelectorAll('table.provenance thead th')].map(
+      (th) => th.textContent,
+    )
+    expect(heads).toEqual(['file', 'series', 'edition_key', 'volume'])
+    // Per row and per cell, so a body still drawing seven cells under four
+    // headings — every column shifted — is red.
+    const cells = [...host.querySelectorAll('table.provenance tbody tr')].map(
+      (tr) => [...tr.querySelectorAll('td')].map((td) => td.textContent),
+    )
+    expect(cells).toEqual([
+      ['a.cbz', '—', '—', 'rule 2'],
+      ['b.cbz', 'rule 1', 'root default', '—'],
+    ])
+  })
+
+  it('names the dropped columns above the table, not beneath it — O149', () => {
+    const { host, click } = render({
+      preview: preview({
+        rows: [row({ rel_path: 'a.cbz' }), row({ rel_path: 'b.cbz' })],
+      }),
+    })
+    click('Provenance')
+    const line = host.querySelector<HTMLElement>('.preview p.unset')
+    expect(line?.textContent).toBe(
+      'kind, language, volume, chapter and title are not set for any of these 2 files.',
+    )
+    // Above: beneath 224 rows, which is the real library's case, is a
+    // sentence nobody reaches.
+    const scroll = host.querySelector('.preview .table-scroll')
+    expect(scroll).not.toBeNull()
+    expect(
+      line!.compareDocumentPosition(scroll!) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy()
+  })
+
+  it('says nothing, and draws all eight columns, when every field is decided — O149', () => {
+    const rule0 = { kind: 'rule', index: 0 } as const
+    const { host, click } = render({
+      preview: preview({
+        rows: [
+          row({
+            rel_path: 'a.cbz',
+            decided_by: {
+              series: rule0,
+              edition_key: rule0,
+              kind: rule0,
+              language: rule0,
+              volume: rule0,
+              chapter: rule0,
+              title: rule0,
+            },
+          }),
+        ],
+      }),
+    })
+    click('Provenance')
+    expect(host.querySelector('.preview p.unset')).toBeNull()
+    expect(host.querySelectorAll('table.provenance thead th')).toHaveLength(8)
+  })
+
+  it('says it was capped on the Provenance tab too — O149', () => {
+    // `PreviewTabs`' own rule is that the row cap is drawn, and until
+    // 2026-09-25 only Matched files drew it.
+    const { host, click } = render({
+      preview: preview({
+        rows: [row({ rel_path: 'a.cbz' }), row({ rel_path: 'b.cbz' })],
+        rows_truncated: true,
+      }),
+    })
+    click('Provenance')
+    expect(host.querySelector('.preview p.unset')?.textContent).toBe(
+      'kind, language, volume, chapter and title are not set for any of the first 2 files.',
+    )
+    const notice = host.querySelector('.preview p.truncated')
+    expect(notice?.textContent).toBe(
+      'The first 500 files only — more matched than fit here.',
+    )
+    // In reading order: the cap, then the line naming what is unset, then
+    // the table — the user's decision of 2026-09-26.
+    const unset = host.querySelector('.preview p.unset')
+    const scroll = host.querySelector('.preview .table-scroll')
+    expect(scroll).not.toBeNull()
+    expect(
+      notice!.compareDocumentPosition(scroll!) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy()
+    expect(
+      notice!.compareDocumentPosition(unset!) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy()
   })
 })

@@ -388,13 +388,34 @@ export function UserRow({
       </div>
       {roleWhy !== undefined && <p className="why">{roleWhy}</p>}
 
+      {/* **`aria-disabled`, not `disabled`, on every checkbox on this card —
+          here and in the grant list below. O159.** `disabled` draws a
+          checked box in the UA's grey and takes its `accent-color` fill
+          with it, so one tick flashed every box on the card. `accent-color`,
+          `opacity` and `filter` on `:disabled` did not bring the fill back
+          in Chromium on 2026-09-25; only redrawing the box with
+          `appearance: none` could, which is a redesign of every checkbox.
+          The lock never lived in the attribute: `begin` refuses a second
+          write through `inFlight`, and each box is controlled, so React
+          puts a refused tick back. The role select, the password field
+          and the buttons keep `disabled`.
+          With `aria-disabled`, a tick refused mid-save does nothing and
+          shows no cue: the box keeps its real value. The controls beside
+          it say little more.
+          Measured in Chromium 151.0.7922.34 on 2026-09-26, in the light
+          scheme: of the role select, the password field, Set password and
+          a Revoke button, only the select drew differently held than
+          live, at an opacity of 0.7 that no stylesheet here sets. In that
+          Chromium, `aria-disabled` also kept keyboard focus on the box,
+          where `disabled` sent it to BODY the moment it was set
+          (`docs/notes.md`, "Admin follow-ups"). */}
       <div className="checks">
         <label>
           <input
             type="checkbox"
             name="can_download"
             checked={shown.can_download}
-            disabled={saving}
+            aria-disabled={saving}
             onChange={(e) => save({ can_download: e.target.checked })}
           />
           <span>May download whole editions</span>
@@ -404,7 +425,7 @@ export function UserRow({
             type="checkbox"
             name="can_stream"
             checked={shown.can_stream}
-            disabled={saving}
+            aria-disabled={saving}
             onChange={(e) => save({ can_stream: e.target.checked })}
           />
           <span>May stream pages</span>
@@ -414,7 +435,7 @@ export function UserRow({
             type="checkbox"
             name="can_stamp"
             checked={shown.can_stamp}
-            disabled={saving}
+            aria-disabled={saving}
             onChange={(e) => save({ can_stamp: e.target.checked })}
           />
           <span>May write ComicInfo.xml into archives</span>
@@ -446,7 +467,7 @@ export function UserRow({
                     type="checkbox"
                     name={`root-${root.id}`}
                     checked={granted.includes(root.id)}
-                    disabled={saving}
+                    aria-disabled={saving}
                     onChange={(e) => toggleGrant(root.id, e.target.checked)}
                   />
                   <span>{root.path}</span>
