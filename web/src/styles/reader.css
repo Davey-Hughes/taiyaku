@@ -348,30 +348,6 @@
   accent-color: var(--accent);
 }
 
-/* **The same 16 px floor `base.css` gives the library, which never reached
- * here** — O151.
- *
- * That floor is `@media (pointer: coarse) { :where(.library, .login)
- * :where(input, select, textarea) { … } }`, written because a text field
- * under 16 px makes iOS Safari zoom the whole document on focus and the zoom
- * outlives the field: the user reported signing in left the page zoomed with
- * a pinch the only way back (④'s device pass). **The reader is neither
- * `.library` nor `.login`**, so the panel above — `font-size: var(--text-ui)`,
- * 14 px, handed to every control by the `font: inherit` beside it — kept
- * doing exactly what that floor exists to stop. `settingsFields.tsx` fills it
- * with `type="number"` boxes for prefetch and motion. **Confirmed on the
- * reporter's iPhone on 2026-09-23**: tapping one zooms the document.
- *
- * Same (0,1,0) as the rule it corrects and written after it, so it wins the
- * tie. `textarea` is included although the panel draws none today, because
- * the floor it mirrors covers all three and a panel that gains one should
- * not have to remember this. */
-@media (pointer: coarse) {
-  .reader-dialog-panel :where(input, select, textarea) {
-    font-size: max(16px, var(--text-ui));
-  }
-}
-
 .reader-panel-head {
   display: flex;
   align-items: baseline;
@@ -405,6 +381,30 @@
   align-items: center;
   justify-content: space-between;
   gap: var(--space-3);
+}
+
+/* A row in a *stack* of them, which the class above on its own is not.
+ *
+ * ③'s panels draw one head per section — a title and a button, under the
+ * section's own `margin-top` and rule — so no head there has ever sat
+ * beneath another one and `.reader-section-head` carries no margin. ⑤c's
+ * account panel is the first that stacks them: the create form, then a row
+ * per API key; a row per session. Each of those rows carried
+ * `marginTop: 8` as an inline style until ⑤c, and dropping it closed every
+ * boundary between one row and the row above it — four of them measured at
+ * 1280 x 900, all four at 0 px, each row's top exactly on the previous
+ * row's bottom.
+ *
+ * **Applied at each site rather than written as `+ .reader-section-head`.**
+ * A stacked row is not always preceded by another row: the create form
+ * follows the OPDS paragraph and the first session row follows its `<h3>`,
+ * and `+` reaches neither. That `<h3>`'s bottom margin is 0, so its session
+ * row would stay welded to it; the paragraph's is 12 px, which this 8
+ * collapses into rather than adds to — so the create form measures the same
+ * either way and carries the class because the separation is the row's to
+ * declare, not the paragraph's to supply. */
+.reader-section-head-stacked {
+  margin-top: var(--space-2);
 }
 
 .reader-section-title {
@@ -455,6 +455,130 @@
   font: inherit;
 }
 
+/* Placed after `.reader-field` as well as above it in specificity. The
+ * specificity is what makes it correct — the note inside says why — and
+ * the position is what keeps Biome's `noDescendingSpecificity` quiet
+ * without a suppression. Either alone would hold today; both together
+ * make moving this rule a lint error rather than a silent regression. */
+/* **The same 16 px floor `base.css` gives the library, which never reached
+ * here** — O151.
+ *
+ * That floor is `@media (pointer: coarse) { :where(.library, .login)
+ * :where(input, select, textarea) { … } }`, written because a text field
+ * under 16 px makes iOS Safari zoom the whole document on focus and the zoom
+ * outlives the field: the user reported signing in left the page zoomed with
+ * a pinch the only way back (④'s device pass). **The reader is neither
+ * `.library` nor `.login`**, so the panel above — `font-size: var(--text-ui)`,
+ * 14 px, handed to every control by the `font: inherit` beside it — kept
+ * doing exactly what that floor exists to stop. `settingsFields.tsx` fills it
+ * with `type="number"` boxes for prefetch and motion. **Confirmed on the
+ * reporter's iPhone on 2026-09-23**: tapping one zooms the document.
+ *
+ * **It wins on specificity now, not on source order, and that change is
+ * this floor's second defect rather than a tidy-up.** The first version was
+ * (0,1,0) — the same as the rule it corrects — and won the tie only by
+ * sitting after it. ⑤c then put the Account panel's controls on
+ * `.reader-field`, whose `font: inherit` is *also* (0,1,0) and sits ~100
+ * lines *later* in this file, so it took the tie and the panel's three text
+ * boxes rendered at **14 px measured in Chromium at 390x844 with
+ * `hasTouch`**, under the floor O151 exists to hold. A floor that depends on
+ * being last is a floor that the next rule silently removes.
+ *
+ * So the second prelude names `.reader-field` explicitly at (0,2,0), which
+ * beats it wherever either sits. `:where()` keeps the first prelude at
+ * (0,1,0) deliberately — it is the catch-all for a control that carries no
+ * field class, and a control that *does* carry one is what the second
+ * prelude is for.
+ *
+ * `textarea` is included although the panel draws none today, because the
+ * floor it mirrors covers all three and a panel that gains one should not
+ * have to remember this. */
+@media (pointer: coarse) {
+  .reader-dialog-panel :where(input, select, textarea),
+  .reader-dialog-panel .reader-field {
+    font-size: max(16px, var(--text-ui));
+  }
+}
+
+/* A field that spans the panel, and the label above it. ③'s own panels put
+ * their controls at the right-hand end of a `.reader-section-head` row —
+ * none of them asks anybody to type, so this is the first panel that needs
+ * a form shape. ⑤c's account panel is the first (spec §12.5). */
+.reader-field-block {
+  display: block;
+  width: 100%;
+  margin-top: var(--space-1);
+}
+
+/* An action that applies to the whole section rather than to a row in it:
+ * Change password, Sign out. Full width for the same reason it is full
+ * width in a native sheet — it is the section's verb, not one of its rows. */
+.reader-button-wide {
+  display: block;
+  width: 100%;
+  margin-top: var(--space-3);
+}
+
+/* The one-time API key secret. `admin.css`'s `.account .secret` is the
+ * page's copy — the same idea drawn as the settings area draws things, not
+ * the same box. Three differences, not one: it rounds its corners 4px where
+ * this one takes no radius at all, like the dialog it sits in; it spaces
+ * itself in rems (`0.6rem`, `0.6rem 0.75rem`) where this one takes the space
+ * tokens; and its border is `--line-strong` against this one's
+ * `--reader-hair`. Only the last is a matter of ground. */
+.reader-secret {
+  margin-top: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--reader-hair);
+  font-family: ui-monospace, monospace;
+  word-break: break-all;
+}
+
+/* The caption under the secret — the box's only paragraph — at the margin
+ * the inline `margin: '8px 0 0'` gave it before ⑤c. Without this it takes a
+ * `<p>`'s own 1em top *and bottom*, and the bottom one lands inside this
+ * box's border: the secret grew a blank line under its last line of text.
+ * The page's copy has no such rule and keeps the browser's margins, which is
+ * what it drew before ⑤c too — Task 6 is where that box joins a vocabulary. */
+.reader-secret p {
+  margin: var(--space-2) 0 0;
+}
+
+/* A failure and a confirmation inside a panel. `--danger` and `--success`
+ * resolve to their dark values here because `.reader` sets
+ * `color-scheme: dark`.
+ *
+ * **The floor on this ground is already asserted**, by
+ * `index.css.test.ts`'s *"keep every Ink text colour above 4.5:1 on a panel
+ * over black"* and its white-artwork twin: both composite `--reader-panel`
+ * over `--reader-ground` and run every one of `TEXT_TOKENS`, which includes
+ * these two. So nothing here needs a hand-checked number to be safe — the
+ * measured 7.99:1 and 9.23:1 (2026-09-24) are a record of what it draws,
+ * not the guarantee that it clears AA.
+ *
+ * (An earlier version of this comment said that floor computes against
+ * `--bg`, `--surface` and `--field` only and so did not reach this ground.
+ * That is true of one `describe` in that file and false of the file. Saying
+ * a gate is absent where one exists is worse than saying nothing: the next
+ * person adds a second.) */
+.reader-failure {
+  color: var(--danger);
+}
+
+/* **Named for `.reader-failure` beside it, not for `.reader-note` above it.**
+ * This was `.reader-note-ok`, which read as `.reader-note` plus a modifier
+ * and was never applied with it — so it looked like a composition that had
+ * lost half of itself. It is not one. The two messages an account panel
+ * draws sit in the same place at the top of the dialog, one above the other
+ * when both are on screen, and composing only the confirmation with
+ * `.reader-note` would give it a 4 px top margin and no bottom one while the
+ * failure next to it kept the browser's. `.reader-note` stays ③'s
+ * per-section note, where `Settings.tsx` composes it for real —
+ * `className="reader-meta reader-note"`. */
+.reader-success {
+  color: var(--success);
+}
+
 /* A note colour's swatch, the chosen one ringed: the panel, then the text. */
 .reader-swatch[aria-pressed="true"] {
   box-shadow:
@@ -467,8 +591,16 @@
   background: var(--reader-ground);
 }
 
+/* `.reader-field` joins the floor `.reader-button` has carried since ③.
+ * **It was left out rather than not needed**: the note body has worn this
+ * class since ③ (`NotePanel.tsx`, 333b3ab4) and ④'s touch pass did not pick
+ * it up, so it has been a control under a finger at its desktop height for
+ * two style passes. ⑤c's account panel adds three more — Current, New and
+ * the key name. Every wearer is an `<input>` or a `<textarea>`, never a
+ * label, so a `min-height` is the control's own. */
 @media (pointer: coarse) {
-  .reader-button {
+  .reader-button,
+  .reader-field {
     min-height: 44px;
   }
 }

@@ -74,7 +74,7 @@ describe('the rule list', () => {
 
 describe('the tab look', () => {
   it('underlines the current tab without moving the row', () => {
-    // `inset 0 -2px 0`, not a border: ②'s `.chips.library-chips` draws it
+    // `inset 0 -2px 0`, not a border: ②'s `.library-chips` draws it
     // this way so selecting a tab does not shift the row's baseline.
     for (const prelude of [
       '.preview-tabs button[aria-current="true"]',

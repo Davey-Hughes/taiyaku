@@ -40,6 +40,36 @@ export const STRIP_BREAKPOINT_PX = 900
 export const STRIP_TILE_PX = { wide: 160, narrow: 96 } as const
 
 /**
+ * The height an *inbox* page tile is drawn at — the proposals evidence
+ * panel's, not the reader's strip, whose two sizes are `STRIP_TILE_PX` above.
+ * Both are restatements of a stylesheet in TypeScript and both live here so
+ * that each can be pinned against the file that draws it; `STRIP_TILE_PX` has
+ * been since ③ and this one was not, which is O148.
+ *
+ * From `styles/admin.css`'s
+ * `.proposal-detail .pages img`: `width: 4.5rem` at `aspect-ratio: 2 / 3`, so
+ * a 72×108 content box. A constant rather than a measurement because the box
+ * is fixed on purpose — three tiles of different widths would make the two
+ * sides of a proposal impossible to read across, which is the one thing the
+ * row exists for.
+ *
+ * **The content box, not the drawn one.** That rule also carries a 1px
+ * border with no `box-sizing`, so what a browser reports for the element is
+ * 74×110. 108 is right: it is the box the artwork is scaled into, and the
+ * number `requestedTileEdge` picks a rung for.
+ *
+ * At 3× this box wants 324 px and was being sent 160 (O134, closing O133's
+ * "the proposals inbox's page tiles keep the 160 px tile").
+ *
+ * **Pinned against the stylesheet by `styles/admin-proposals.css.test.ts`**
+ * (O148). It was not, and setting this to `1` passed the entire suite:
+ * `devicePixelRatio` is 1 in jsdom and every height from 1 to 160 rounds to
+ * the same bottom rung there. The reader's filmstrip has carried the same
+ * guard since ③; this is the asymmetry that row was about.
+ */
+export const TILE_HEIGHT_PX = 108
+
+/**
  * The rung to ask for, for a tile drawn `tileHeightCss` CSS pixels tall on a
  * display of `dpr`.
  *

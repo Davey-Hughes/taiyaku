@@ -68,13 +68,23 @@ describe('Account', () => {
   /**
    * **The same screen at `/account`, drawn as a page** — O94. Inside `Shell`'s
    * `<main>` there is no reader under it to cover and nothing to close: the
-   * sidebar beside it is how a person leaves. And the panel's fixed dark
-   * palette does not come with it. `.library` follows the viewer's colour
-   * scheme, and on its light canvas that palette draws the "Password changed"
-   * notice in `#a8ffb4` on white — so the check runs after a change, with the
-   * notice on screen, and finds no element carrying a colour of its own.
+   * sidebar beside it is how a person leaves. And the panel's look does not
+   * come with it. `.library` follows the viewer's colour scheme, while the
+   * panel's classes are the reader's and resolve dark whatever the theme
+   * says — so on a paper `--bg` the "Password changed" confirmation would be
+   * `--success`'s dark green on white. The check runs after a change, with
+   * the notice on screen.
+   *
+   * **The sweep is for any `style` attribute, not only one naming a colour.**
+   * Until ⑤c `LOOKS.page` was `{}` beside a panel half made of
+   * `CSSProperties`, and the layout-only objects the two placements shared —
+   * `rowStyle`, the headings, the small print — reached this page too, so a
+   * colour filter was the only thing that could be asserted. The panel half
+   * is class names now and those objects are gone, which leaves the page
+   * carrying no inline style at all; Task 6 fills `LOOKS.page`, and this is
+   * what says it did so with classes.
    */
-  it('draws as a page with no overlay, no Close and no palette of its own', async () => {
+  it('draws as a page with no overlay, no Close and no inline style of its own', async () => {
     vi.stubGlobal(
       'fetch',
       server({
@@ -118,12 +128,306 @@ describe('Account', () => {
     expect(notice).toBeDefined()
 
     // Read off the `style` attribute React wrote, element by element.
-    const painted = [...screen.querySelectorAll('*')]
-      .filter((el) =>
-        /\b(color|background|border)/.test(el.getAttribute('style') ?? ''),
-      )
-      .map((el) => `${el.tagName}: ${el.getAttribute('style')}`)
+    const painted = [...screen.querySelectorAll('[style]')].map(
+      (el) => `${el.tagName}: ${el.getAttribute('style')}`,
+    )
     expect(painted).toEqual([])
+  })
+
+  /**
+   * **`class="secret secret"`, which is what the page rendered.** The call
+   * site writes the literal `secret` for both placements and appends
+   * `look.secret` after it; `LOOKS.page` set that to `'secret'` as well, so
+   * the one box on this screen drawn from a template literal carried the
+   * same class twice. Collapsing the literal instead is the fix that looks
+   * right and is not: `.secret` is what `admin.css` paints the page's copy
+   * with *and* half of what the panel's box carries, so the panel would lose
+   * it — which is what the panel's own class assertion below states.
+   *
+   * A key has to be minted for the box to exist at all, so this cannot ride
+   * along on the page case above: one `mount` per `it()`.
+   */
+  it('draws the page’s secret box with one class, not the same one twice', async () => {
+    vi.stubGlobal(
+      'fetch',
+      server({
+        '/api/keys': () => json([]),
+        '/api/sessions': () => json([]),
+        'POST /api/keys': () => json({ secret: 'tyk_the-only-copy' }),
+      }),
+    )
+    const host = mount(<Account placement="page" onSignedOut={noop} />)
+    await settle()
+
+    const create = host.querySelector('form:has(input[placeholder])')
+    await act(async () => {
+      create?.dispatchEvent(
+        new Event('submit', { bubbles: true, cancelable: true }),
+      )
+      await Promise.resolve()
+    })
+    await settle()
+
+    const secret = host.querySelector('.secret')
+    expect(secret?.textContent).toContain('tyk_the-only-copy')
+    expect(secret?.className).toBe('secret')
+  })
+
+  /**
+   * **Every key in `LOOKS.page`, pinned the way `LOOKS.panel` is below.**
+   * Deleting `section: 'account-card'` from `LOOKS.page` leaves `/account`
+   * with no cards at all, and every other gate stays green: the stylesheet
+   * test in `admin-account.css.test.ts` reads `admin.css`, not the component,
+   * so the rule still exists whether or not anything wears it;
+   * `Account.browser.test.tsx`'s page case measures the key-name box, not the
+   * card; and neither the no-inline-style case above nor the secret case
+   * looks at it. `heading`, `wide`, `signOut`, `failure` and `note` sit in the
+   * same position — nothing else in this file names them for the page. This
+   * pins all six, following the panel's shape below rather than a different
+   * one.
+   */
+  it('paints every part of the page with admin.css’s classes', async () => {
+    vi.stubGlobal(
+      'fetch',
+      server({
+        '/api/keys': () =>
+          json([{ id: 7, name: 'phone', created: 'then', last_used: null }]),
+        '/api/sessions': () =>
+          json([
+            {
+              id: 'aa',
+              created: 'then',
+              last_seen: 'today',
+              user_agent: 'Firefox',
+              ip: null,
+              current: true,
+            },
+          ]),
+        'PUT /api/password': () => new Response(null, { status: 204 }),
+        'DELETE /api/keys/7': () => new Response(null, { status: 500 }),
+      }),
+    )
+    const host = mount(<Account placement="page" onSignedOut={noop} />)
+    await settle()
+
+    // `look.section`, `look.heading`: one of each per section. `.account >`,
+    // not a bare `section`: the page wrapper itself is a `<section
+    // className="account">`, and a bare query counts it as a fourth.
+    expect(
+      [...host.querySelectorAll('.account > section')].map(
+        (el) => el.className,
+      ),
+    ).toEqual(['account-card', 'account-card', 'account-card'])
+    expect([...host.querySelectorAll('h3')].map((el) => el.className)).toEqual([
+      'account-heading',
+      'account-heading',
+      'account-heading',
+    ])
+
+    // `look.wide` and `look.signOut`, on the two section verbs — pinned
+    // separately, as the panel does below, because they are two keys even
+    // though both hold `'account-wide'` today.
+    expect(buttonSaying(host, 'Change password')?.className).toBe(
+      'account-wide',
+    )
+    expect(buttonSaying(host, 'Sign out')?.className).toBe('account-wide')
+
+    // `look.note`, on the confirmation a password change leaves behind.
+    await act(async () => {
+      host
+        .querySelector('form')
+        ?.dispatchEvent(
+          new Event('submit', { bubbles: true, cancelable: true }),
+        )
+      await Promise.resolve()
+    })
+    await settle()
+    const notice = [...host.querySelectorAll('p')].find((el) =>
+      (el.textContent ?? '').startsWith('Password changed'),
+    )
+    expect(notice?.className).toBe('account-note')
+
+    // `look.failure`. A revocation the server refuses, so the alert appears
+    // beside the confirmation rather than in place of it.
+    const revoke = [...host.querySelectorAll('button')].find(
+      (b) => b.textContent === 'Revoke' && !b.disabled,
+    )
+    await act(async () => {
+      revoke?.click()
+      await Promise.resolve()
+    })
+    await settle()
+    expect(host.querySelector('[role="alert"]')?.className).toBe(
+      'account-failure',
+    )
+
+    // **`look.meta` and `look.row`, the two keys the first pass left out.**
+    // `meta` is not cosmetic: `.why` is what buys `--muted` at
+    // `--text-meta`, and without it these four paragraphs render `--text` at
+    // 16 px — which is the 4.18:1 on Paper that ⑤c exists to fix. Deleting
+    // the key restores the defect with every other gate green, because
+    // `admin-account.css.test.ts` reads the stylesheet and the rule is
+    // still there; only the class stops being applied.
+    expect([...host.querySelectorAll('.why')].map((el) => el.tagName)).toEqual([
+      'P',
+      'SPAN',
+      'SPAN',
+    ])
+
+    // `look.row` on the create form and on each key and session row. Asserted
+    // by count rather than per element: the three are one key in the map and
+    // a mutation takes all of them at once.
+    expect(host.querySelectorAll('.account-row')).toHaveLength(3)
+  })
+
+  /**
+   * **Every key in `LOOKS.panel`, pinned where the browser file cannot reach
+   * it.** `Account.browser.test.tsx` measures the panel's own box — corners,
+   * shadow, width, body size, the scrim — and sweeps the rendered tree for
+   * inline style. What it does not distinguish is *which* class carries a
+   * part: an `<input>` reads 14px from `.reader-dialog-panel :where(input,
+   * select) { font: inherit }` whether or not `look.field` is on it, so
+   * dropping `field` from the map entirely leaves that file green. And the
+   * secret, the failure and the confirmation are drawn only after an action,
+   * so no fixture that merely mounts the panel ever sees them.
+   *
+   * A class name is worth asserting here because that file proves the same
+   * classes resolve, inside `.reader`, to the box ③ draws. Neither half
+   * stands alone.
+   */
+  it('paints every part of the panel with the reader’s classes', async () => {
+    vi.stubGlobal(
+      'fetch',
+      server({
+        '/api/keys': () =>
+          json([{ id: 7, name: 'phone', created: 'then', last_used: null }]),
+        '/api/sessions': () =>
+          json([
+            {
+              id: 'aa',
+              created: 'then',
+              last_seen: 'today',
+              user_agent: 'Firefox',
+              ip: null,
+              current: true,
+            },
+          ]),
+        'POST /api/keys': () => json({ secret: 'tyk_the-only-copy' }),
+        'PUT /api/password': () => new Response(null, { status: 204 }),
+        'DELETE /api/keys/7': () => new Response(null, { status: 500 }),
+      }),
+    )
+    const host = mount(
+      <Account visible={true} onClose={noop} onSignedOut={noop} />,
+    )
+    await settle()
+
+    // The frame, which the panel branch names literally rather than through
+    // `look`, because that branch *is* the panel.
+    expect(host.firstElementChild?.className).toBe('reader-dialog')
+    expect(host.querySelector('[role="dialog"]')?.className).toBe(
+      'reader-dialog-panel',
+    )
+    expect(host.querySelector('[role="dialog"] > div')?.className).toBe(
+      'reader-panel-head',
+    )
+    expect(host.querySelector('h2')?.className).toBe('reader-panel-title')
+    expect(buttonSaying(host, 'Close')?.className).toBe('reader-button')
+
+    // `look.section`, `look.heading`, one of each per section.
+    expect([...host.querySelectorAll('section')].map((el) => el.className)) //
+      .toEqual(['reader-section', 'reader-section', 'reader-section'])
+    expect([...host.querySelectorAll('h3')].map((el) => el.className)).toEqual([
+      'reader-panel-heading',
+      'reader-panel-heading',
+      'reader-panel-heading',
+    ])
+
+    // `look.field` on all three boxes, `look.wide`/`look.signOut` on the two
+    // section verbs, `look.button` on the row-level ones.
+    expect([...host.querySelectorAll('input')].map((el) => el.className)) //
+      .toEqual([
+        'reader-field reader-field-block',
+        'reader-field reader-field-block',
+        'reader-field reader-field-block',
+      ])
+    expect(buttonSaying(host, 'Change password')?.className).toBe(
+      'reader-button reader-button-wide',
+    )
+    expect(buttonSaying(host, 'Sign out')?.className).toBe(
+      'reader-button reader-button-wide',
+    )
+    expect(buttonSaying(host, 'Create')?.className).toBe('reader-button')
+    expect(
+      [...host.querySelectorAll('button')]
+        .filter((b) => b.textContent === 'Revoke')
+        .map((b) => b.className),
+    ).toEqual(['reader-button', 'reader-button'])
+
+    // `look.row`: the create form, the key row, the session row — the three
+    // that carried `rowStyle`. Both class names, per row: the modifier is
+    // what carries the 8 px that inline style had, and `.reader-section-head`
+    // alone — ③'s row, which no panel of ③'s ever stacked — has no margin.
+    expect(
+      [...host.querySelectorAll('.reader-section-head')].map(
+        (el) => el.className,
+      ),
+    ).toEqual([
+      'reader-section-head reader-section-head-stacked',
+      'reader-section-head reader-section-head-stacked',
+      'reader-section-head reader-section-head-stacked',
+    ])
+    // `look.meta`: the OPDS blurb, and the small print beside each row.
+    expect(host.querySelectorAll('span.reader-meta')).toHaveLength(2)
+    expect(host.querySelectorAll('p.reader-meta')).toHaveLength(1)
+
+    // The secret, drawn only after a key is minted. Both classes: `.secret`
+    // is what `admin.css` paints the page's copy with, and dropping either
+    // half of the template literal is a different panel.
+    const create = host.querySelector('form:has(input[placeholder])')
+    await act(async () => {
+      create?.dispatchEvent(
+        new Event('submit', { bubbles: true, cancelable: true }),
+      )
+      await Promise.resolve()
+    })
+    await settle()
+    const secret = host.querySelector('.secret')
+    expect(secret?.textContent).toContain('tyk_the-only-copy')
+    expect(secret?.className).toBe('secret reader-secret')
+    // The fourth `look.meta` site, and the one the count above cannot see:
+    // that count runs before this submit, when no secret is on screen, so
+    // dropping `look.meta` from the caption turned nothing red.
+    expect(secret?.querySelector('p')?.className).toBe('reader-meta')
+
+    // `look.note`, on the confirmation a password change leaves behind.
+    await act(async () => {
+      host
+        .querySelector('form')
+        ?.dispatchEvent(
+          new Event('submit', { bubbles: true, cancelable: true }),
+        )
+      await Promise.resolve()
+    })
+    await settle()
+    const notice = [...host.querySelectorAll('p')].find((el) =>
+      (el.textContent ?? '').startsWith('Password changed'),
+    )
+    expect(notice?.className).toBe('reader-success')
+
+    // `look.failure`. A revocation the server refuses, so the alert appears
+    // beside the confirmation rather than in place of it.
+    const revoke = [...host.querySelectorAll('button')].find(
+      (b) => b.textContent === 'Revoke' && !b.disabled,
+    )
+    await act(async () => {
+      revoke?.click()
+      await Promise.resolve()
+    })
+    await settle()
+    expect(host.querySelector('[role="alert"]')?.className).toBe(
+      'reader-failure',
+    )
   })
 
   it('lists the account’s keys and sessions', async () => {
@@ -838,5 +1142,45 @@ describe('Account', () => {
         'the network went away',
       )
     }
+  })
+})
+
+/**
+ * **The page placement holds no colour and no `opacity`, and that is the half
+ * of this screen a stylesheet cannot be asked about.** `/account`'s quiet text
+ * was four inline `opacity` dims — 0.8, 0.85 and two at 0.6 — and the pair at
+ * 0.6 computed **4.18:1 on Paper** at 16 px, under AA's 4.5 for normal text;
+ * the other two clear it at 7.88 and 9.27. Computed on 2026-09-24 from
+ * `tokens.css`'s `--text` blended over `--bg`, which is what a composited
+ * `opacity` resolves to. `admin.css`'s own `.proposal-detail` comment has
+ * banned opacity dimming on these screens since C3, and ⑤b spent a PR
+ * emptying the last nine from the stylesheet — nine is the count, and
+ * `admin.css` holds none today — but a `style=` prop is somewhere no rule in
+ * that stylesheet can reach, which is why this assertion is over the
+ * component's source rather than over the CSS.
+ */
+describe('Account.tsx carries no inline style', () => {
+  /**
+   * **Not vacuous, stated first.** The two assertions in the case below are
+   * text searches over this same `?raw` read, and an empty string satisfies
+   * each of them — a stubbed import would leave both measuring nothing
+   * rather than the component's source. `admin-account.css.test.ts`'s
+   * `reads admin.css at all` is the same guard for its own `?raw` import,
+   * for the same reason; this is `Account.tsx`'s. Probed on 2026-09-24 under
+   * `jsdom`, with a control line, before writing this: unlike `admin.css?raw`
+   * (stubbed to `''` by vitest's default `css: false`), a `.tsx?raw` import
+   * is not a CSS import and arrives whole — this case is a robustness guard
+   * against that ever changing, not a fix for something failing today.
+   */
+  it('reads Account.tsx at all', async () => {
+    const source = await import('./Account.tsx?raw').then((m) => m.default)
+    expect(source).toContain('export function Account(')
+  })
+
+  it('has no `style=` prop and no `opacity`', async () => {
+    const source = await import('./Account.tsx?raw').then((m) => m.default)
+    const code = source.replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, ' ')
+    expect(code.match(/style=\{/g) ?? []).toEqual([])
+    expect(code.match(/\bopacity\b/g) ?? []).toEqual([])
   })
 })

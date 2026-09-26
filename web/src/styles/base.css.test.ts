@@ -140,11 +140,13 @@ function expandControlSubjects(selector: string): string[] {
  *   so once *any* rule with selector X has a companion, *every* rule with
  *   selector X counts as covered — including one written after that
  *   companion, which beats it on source order at equal specificity.
- *   Demonstrated: appending a second `.account input { font: inherit }` to
- *   the end of `admin.css` leaves this file green. The narrow guard below
- *   (`places admin.css's companion after the rule it corrects`) checks that
- *   ordering for one selector by hand; the general case needs each rule's
- *   position, which `rules()` does not return.
+ *   Demonstrated: appending a second `.account .field input { font: inherit }`
+ *   to the end of `admin.css` leaves this file green — re-run against that
+ *   selector when ⑤c deleted the `.account input` pair the demonstration was
+ *   first made with, as that screen joined the shared `.field` block. The
+ *   narrow guard below (`places admin.css's companion after the rule it
+ *   corrects`) checks that ordering for one selector by hand; the general
+ *   case needs each rule's position, which `rules()` does not return.
  *
  * `reader.css`'s `.reader-dialog-panel :where(input, select) { font:
  * inherit }` — under a panel at `--text-ui`, drawing the reader's Settings

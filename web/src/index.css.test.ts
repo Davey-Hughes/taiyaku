@@ -4,7 +4,7 @@ import baseSource from './styles/base.css?raw'
 import librarySource from './styles/library.css?raw'
 import shellSource from './styles/shell.css?raw'
 import tokensSource from './styles/tokens.css?raw'
-import { rules, selectors, subject } from './testing/css'
+import { rules, selectors, subject, withoutComments } from './testing/css'
 
 /**
  * WCAG AA contrast, computed from the stylesheets' own text.
@@ -584,17 +584,35 @@ describe('the figures face reaches the series table’s page counts only', () =>
 })
 
 /**
- * The tab look belongs to the library's own filter row. `Proposals.tsx` draws
- * its state and kind filters with the same `chips` class, and they keep their
- * pills until the style pass's ⑤ (spec 2026-09-17 §7.2, decided 2026-09-18).
+ * **Two rows of one-of-N buttons, drawn two ways, and a third control that is
+ * neither.** The library's filter row and the inbox's kind row take the
+ * underlined tab look; the inbox's state row keeps pills, because it is the
+ * coarser filter and two identical strips stacked give no hierarchy (spec
+ * §12.3). What this pins is that no single selector reaches both kinds — the
+ * regression ② shipped, when `.chips` drew "All" and "Hide weak proposals"
+ * with the same accent underline side by side.
  */
-describe('the chips keep their pills everywhere but the library’s own row', () => {
-  it('draws a plain chip row as pills and the library’s as tabs', () => {
-    const pill = ruleBody('.chips button')
-    expect(declared(pill, 'border-radius')).toBe('999px')
-    expect(declared(pill, 'background')).toBe('var(--surface)')
-    expect(
-      declared(ruleBody('.chips.library-chips button'), 'background'),
-    ).toBe('none')
+describe('a tab row and a pill row stay two different rows', () => {
+  it('draws the library’s row and the inbox’s kind row as tabs', () => {
+    for (const sel of ['.library-chips button', '.proposal-tabs button']) {
+      const body = ruleBody(sel)
+      expect(declared(body, 'background')).toBe('none')
+      expect(declared(body, 'border-radius')).toBe('0')
+    }
+  })
+
+  it('draws the inbox’s state row as pills', () => {
+    const body = ruleBody('.proposal-states .state')
+    expect(declared(body, 'border-radius')).toBe('999px')
+    expect(declared(body, 'background')).toBe('var(--surface)')
+  })
+
+  it('has no `.chips` left anywhere', () => {
+    // `.chips` was the selector that reached both kinds. Its absence is the
+    // fact, not its replacement: a `.chips` written again would draw the
+    // inbox's three controls alike whatever the rules below say. Comments
+    // are stripped first: `admin.css` and `library.css` both explain in
+    // prose what `.chips` was, and should keep being able to.
+    expect(withoutComments(cssSource)).not.toContain('.chips')
   })
 })

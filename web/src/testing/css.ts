@@ -1,13 +1,29 @@
 /**
  * Shared parsing for the tests that read a stylesheet's own text rather than
- * render it. Six call it: `../index.css.test.ts`, `../theme.test.ts`, and
+ * render it. Eight call it: `../index.css.test.ts`, `../theme.test.ts`, and
  * `../styles/`'s `base.css.test.ts`, `admin-rules.css.test.ts`,
- * `admin-config.css.test.ts` and `reader.css.test.ts`. **The count is stated
- * because it is what decides whether this module's shape can change**: an
- * open item quoted "three" from an earlier version of this sentence and was
- * wrong by half. Comments are stripped and each rule is split into its
- * prelude and its body; a caller that needs individual selectors or what one
- * of them styles builds on `selectors()` and `subject()` below.
+ * `admin-config.css.test.ts`, `admin-proposals.css.test.ts`,
+ * `admin-account.css.test.ts` and `reader.css.test.ts`. **The count is
+ * stated because it is what decides whether this module's shape can
+ * change**: an open item quoted "three" from an earlier version of this
+ * sentence and was wrong by half.
+ *
+ * **Every one of them is a `.ts` in the `node` project, and that is a
+ * constraint rather than a coincidence.** Vitest's default `css: false`
+ * stubs a `?raw` CSS import to the empty string, and only that project
+ * carries the `css.include` line turning it off — so the same import that
+ * hands a caller here the whole stylesheet hands a `.test.tsx` beside it
+ * `''`, and every `rules()` count over it silently becomes zero. ⑤c wrote
+ * one such caller in `../Account.test.tsx` and moved it rather than widening
+ * the jsdom project's config to suit it. The rule is about the **jsdom**
+ * project, not about the extension: `../AcceptForm.browser.test.tsx` reads
+ * `tokens.css?raw` from a `.tsx` one directory away and is fine, because the
+ * `browser` project does not stub CSS either. What must not happen is a
+ * stylesheet assertion in the project that does.
+ *
+ * Comments are stripped and each rule is split into its prelude and its
+ * body; a caller that needs individual selectors or what one of them styles
+ * builds on `selectors()` and `subject()` below.
  */
 
 /** Strips `/* ... *\/` comments, so one cannot hide a rule from `rules()`. */

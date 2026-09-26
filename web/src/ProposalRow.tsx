@@ -100,7 +100,7 @@ import {
   strength,
 } from './curation'
 import { messageOf } from './message'
-import { requestedTileEdge } from './tileSize'
+import { requestedTileEdge, TILE_HEIGHT_PX } from './tileSize'
 
 /** Which end of the proposal a panel is drawing, as a word and as a label. */
 const SIDES = {
@@ -109,19 +109,6 @@ const SIDES = {
 } as const
 
 type Which = keyof typeof SIDES
-
-/**
- * The height an inbox page tile is drawn at, from `styles/admin.css`'s
- * `.proposal-detail .pages img`: `width: 4.5rem` at `aspect-ratio: 2 / 3`, so
- * 72×108 CSS px. A constant rather than a measurement because the box is
- * fixed on purpose — three tiles of different widths would make the two sides
- * of a proposal impossible to read across, which is the one thing the row
- * exists for.
- *
- * At 3× this box wants 324 px and was being sent 160 (O134, closing O133's
- * "the proposals inbox's page tiles keep the 160 px tile").
- */
-const TILE_HEIGHT_PX = 108
 
 /**
  * One page of volume 1, thumbnail-sized, linking to the page itself.

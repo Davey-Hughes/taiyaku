@@ -92,10 +92,12 @@ const click = async (el: Element) => {
 }
 
 /** The one control that reveals weak proposals, by class rather than by label. */
-function weakToggle(host: HTMLElement): HTMLElement {
-  const button = host.querySelector<HTMLElement>('button.weak-toggle')
-  if (!button) throw new Error('no weak-proposals control rendered')
-  return button
+function weakBox(host: HTMLElement): HTMLInputElement {
+  const box = host.querySelector<HTMLInputElement>(
+    '.weak-check input[type="checkbox"]',
+  )
+  if (!box) throw new Error('no weak-proposals control rendered')
+  return box
 }
 
 /**
@@ -241,14 +243,21 @@ describe('Proposals', () => {
     // tab selected they differ at runtime on every screen.
     expect(host.querySelector('h1')?.textContent).toBe('35 open')
 
-    // The row is drawn by `library.css`'s plain `.chips` pill rules — the
-    // ones the library's own row overrides with `library-chips` — and no
-    // stylesheet carries `.proposal-tabs` rules, so dropping `chips` leaves
-    // them as `base.css`'s plain buttons, with nothing marking the pressed
-    // one. jsdom computes no styles, so the class is the only part of that a
-    // test here can hold on to.
-    const tabRow = host.querySelector('.proposal-tabs')
-    expect(tabRow?.classList.contains('chips')).toBe(true)
+    // The kind row is one-of-N and wears the tab look; the state row is the
+    // coarser filter and keeps pills; the threshold is neither and sits
+    // outside both (O150, spec §12.3). jsdom computes no styles, so what a
+    // test here can hold is that the three are three different elements —
+    // `admin-proposals.css.test.ts` holds that they are drawn differently.
+    expect(host.querySelector('.proposal-tabs')).not.toBeNull()
+    // `.weak-toggle` is gone from the app, so this line cannot go red today.
+    // It is kept as a name guard: it is the only thing here that would catch
+    // the old pill being reintroduced under its old name, which the `input`
+    // line below cannot, a `<button>` not being an `<input>`.
+    expect(host.querySelector('.proposal-tabs .weak-toggle')).toBeNull()
+    expect(host.querySelector('.proposal-tabs input')).toBeNull()
+    expect(
+      host.querySelector('.weak-check input[type="checkbox"]'),
+    ).not.toBeNull()
 
     const tabs = [...host.querySelectorAll('.proposal-tabs button.tab')]
     const editionTab = tabs.find((b) =>
@@ -325,34 +334,32 @@ describe('Proposals', () => {
     if (!editionTab) throw new Error('no "Edition Of 29" tab rendered')
     await click(editionTab)
 
-    const weakButton = weakToggle(host)
-    expect(weakButton.getAttribute('aria-pressed')).toBe('false')
-    expect(weakButton.textContent).toBe('Show weak proposals')
+    const weak = weakBox(host)
+    expect(weak.checked).toBe(false)
+    // The label is stable now — asserted once, because a label that changed
+    // under a state also drawn was the defect O150's answer removed.
+    expect(weak.closest('label')?.textContent?.trim()).toBe(
+      'Show weak proposals',
+    )
 
-    await click(weakButton)
+    await click(weak)
     expect(lastCall()).toEqual({
       state: 'open',
       kind: 'edition-of',
       min_score: 0,
     })
-    // Both halves of the control's own state, re-read from the live element:
-    // freezing either the pressed state or the label leaves a control that
-    // works and cannot be read, and a test that captured the label once
-    // could not see the second one.
-    expect(weakButton.getAttribute('aria-pressed')).toBe('true')
-    expect(weakButton.textContent).toBe('Hide weak proposals')
+    expect(weak.checked).toBe(true)
 
     // A real toggle, not a one-way switch a fixture that clicked only once
     // could not tell apart from this: pressing it again must go back to the
     // default threshold — and must still not touch the kind.
-    await click(weakButton)
+    await click(weak)
     expect(lastCall()).toEqual({
       state: 'open',
       kind: 'edition-of',
       min_score: 1,
     })
-    expect(weakButton.getAttribute('aria-pressed')).toBe('false')
-    expect(weakButton.textContent).toBe('Show weak proposals')
+    expect(weak.checked).toBe(false)
   })
 
   it('expands one row at a time, and shows that row its own evidence', async () => {
@@ -560,7 +567,7 @@ describe('Proposals', () => {
 
     // Any filter change re-asks; the threshold toggle is the one control
     // that is always on screen.
-    await click(weakToggle(host))
+    await click(weakBox(host))
     expect(labels()).toEqual(['All 2', 'Edition Of 2'])
   })
 
@@ -599,7 +606,7 @@ describe('Proposals', () => {
     expect(host.querySelectorAll('li')).toHaveLength(0)
     expect(host.querySelector('h1')?.textContent).toBe('0 open')
 
-    const weakButton = weakToggle(host)
+    const weakButton = weakBox(host)
     // Triggers the second, current request — the effect's dependency
     // (`showWeak`) changed, which cancels the first and starts this one.
     await act(async () => {
@@ -657,7 +664,7 @@ describe('Proposals', () => {
 
     const host = await settle()
 
-    const weakButton = weakToggle(host)
+    const weakButton = weakBox(host)
     await act(async () => {
       weakButton.click()
       await Promise.resolve()
@@ -776,7 +783,7 @@ describe('Proposals', () => {
 
     // With the threshold already dropped there is nothing left for that
     // control to reveal, so the message stops naming it.
-    await click(weakToggle(host))
+    await click(weakBox(host))
     expect(empty()?.textContent).not.toContain('above the score threshold')
     expect(empty()?.textContent).toContain('taiyaku library scan')
   })
@@ -905,7 +912,7 @@ describe('Proposals', () => {
     ].find((b) => b.textContent?.startsWith('Edition Of'))
     if (!editionTab) throw new Error('no Edition Of tab')
     await click(editionTab)
-    await click(weakToggle(host))
+    await click(weakBox(host))
 
     await click(stateButton(host, 'Dismissed'))
     expect(lastCall()).toEqual({
@@ -966,7 +973,7 @@ describe('Proposals', () => {
     )
     expect(empty?.textContent).not.toContain('Nothing to answer')
 
-    await click(weakToggle(host))
+    await click(weakBox(host))
     expect(host.querySelector('section.empty')?.textContent).toContain(
       'No proposal in this library has been accepted.',
     )

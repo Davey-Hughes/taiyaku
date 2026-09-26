@@ -89,6 +89,18 @@ describe('the reader root', () => {
 })
 
 describe('the dialog panel’s controls clear the iOS zoom floor', () => {
+  /** `declared`, but tolerant of how Biome wraps a two-prelude selector list. */
+  const flat = (css: string, prelude: string, property: string) =>
+    rules(css)
+      .filter((rule) => rule.prelude.replace(/\s+/g, ' ').trim() === prelude)
+      .flatMap((rule) =>
+        [
+          ...rule.body.matchAll(
+            new RegExp(`(?:^|;)\\s*${property}:\\s*([^;]+)`, 'g'),
+          ),
+        ].map((m) => m[1].replace(/\s+/g, '')),
+      )
+
   it('gives them a coarse-pointer font-size of at least 16px', () => {
     // O151, confirmed on the reporter's iPhone 2026-09-23. `base.css` carries
     // this floor for `:where(.library, .login)` because a control under 16px
@@ -97,32 +109,77 @@ describe('the dialog panel’s controls clear the iOS zoom floor', () => {
     // passed to every control by its own `font: inherit` — kept doing exactly
     // what that floor exists to stop, to the `type="number"` boxes
     // `settingsFields.tsx` puts in Settings.
-    const floor = declared(
-      readerSource,
-      '.reader-dialog-panel :where(input, select, textarea)',
-      'font-size',
-    )
-    expect(floor).toEqual(['max(16px,var(--text-ui))'])
+    // Both preludes, because the floor has two and they do different jobs:
+    // the `:where()` one is the catch-all at (0,1,0), and the
+    // `.reader-field` one is (0,2,0) so it beats that class's own
+    // `font: inherit`.
+    expect(
+      flat(
+        readerSource,
+        '.reader-dialog-panel :where(input, select, textarea), .reader-dialog-panel .reader-field',
+        'font-size',
+      ),
+    ).toEqual(['max(16px,var(--text-ui))'])
   })
 
-  it('writes that floor after the rule it corrects, so the tie goes to it', () => {
-    // Both are `.reader-dialog-panel :where(…)` — (0,1,0) each — so nothing
-    // but source order decides which wins, and a companion pasted above the
-    // `font: inherit` it overrides would lose on every pointer.
+  it('names .reader-field in that floor, so it wins on specificity not order', () => {
+    // **This assertion replaces one that asserted the opposite mechanism**,
+    // and the replacement is the whole finding. The floor used to be a
+    // single (0,1,0) prelude that won its tie by sitting after the
+    // `font: inherit` it corrects — and the old case here pinned exactly
+    // that source order. ⑤c then put the Account panel's controls on
+    // `.reader-field`, whose own `font: inherit` is also (0,1,0) and sits
+    // ~100 lines *later*, so it took the tie and the panel's three text
+    // boxes rendered at 14px under a coarse pointer — measured in Chromium
+    // at 390x844 with `hasTouch`, against the built stylesheet.
     //
-    // **Located by the rule, not by the first `@media (pointer: coarse)`.**
-    // This file has three of those blocks and the first is 200 lines above
-    // the one that matters; an `indexOf` on the at-rule passed against a
-    // correct stylesheet and failed against this one, which is how the first
-    // version of this assertion was written and why it is not.
-    const inherits = readerSource.indexOf(
-      '.reader-dialog-panel :where(input, select) {',
+    // A floor that depends on being last is a floor the next rule removes
+    // silently, so what is pinned now is that the floor *names* the class
+    // at a specificity that does not care where either rule sits.
+    const floored = rules(readerSource).find((rule) =>
+      rule.prelude
+        .replace(/\s+/g, ' ')
+        .includes('.reader-dialog-panel .reader-field'),
     )
-    const floored = readerSource.indexOf(
-      '.reader-dialog-panel :where(input, select, textarea) {',
+    expect(floored?.body).toMatch(/font-size:\s*max\(16px/)
+
+    // And the rule it has to beat is still there and still (0,1,0), so the
+    // specificity above is doing real work rather than describing a pair
+    // that could not collide. Anchored to the line start: `.reader-field {`
+    // is also the tail of the floor's own second prelude, which an
+    // unanchored `indexOf` finds first.
+    const inherit = readerSource.search(/^\.reader-field \{/m)
+    expect(inherit).toBeGreaterThan(-1)
+    expect(readerSource.slice(inherit, inherit + 400)).toMatch(
+      /font:\s*inherit/,
     )
-    expect(inherits).toBeGreaterThan(-1)
-    expect(floored).toBeGreaterThan(inherits)
+
+    // The floor also sits *after* it now, which is belt and braces rather
+    // than the mechanism: Biome's `noDescendingSpecificity` wants the
+    // higher-specificity rule later, and taking the suppression instead
+    // would have left the file one edit away from the original defect.
+    expect(
+      readerSource.indexOf('.reader-dialog-panel .reader-field'),
+    ).toBeGreaterThan(inherit)
+  })
+})
+
+describe('the panel’s fields clear the 44px floor too', () => {
+  it('puts .reader-field in the rule .reader-button has had since ③', () => {
+    // §7.1's 44px row. Not a new need: the note body has worn
+    // `.reader-field` since ③ and ④'s touch pass did not pick it up, so it
+    // sat at its desktop height under a finger for two style passes; ⑤c's
+    // account panel adds three more boxes to it. One rule rather than two,
+    // so the next edit to the floor cannot reach one and miss the other.
+    //
+    // **What this cannot see**, stated rather than left to be discovered:
+    // `rules()` discards which `@media` a rule came from, so a floor lifted
+    // out of the coarse block — giving a mouse the same 44px — passes here.
+    // The three-block shape of this file is why an `indexOf` on the at-rule
+    // is not the fix; the describe above records what that cost once.
+    expect(
+      declared(readerSource, '.reader-button, .reader-field', 'min-height'),
+    ).toEqual(['44px'])
   })
 })
 
@@ -211,5 +268,22 @@ describe('the bars’ and the borrowed mark’s colours', () => {
     expect(declared(readerSource, '.borrowed-mark', 'color')).toEqual([
       'var(--bg)',
     ])
+  })
+
+  /**
+   * **The one declaration on this stylesheet that CI cannot otherwise see.**
+   * `.reader-section-head` carries no margin — its only ③ user draws one row
+   * per section — and ⑤c's account panel stacks it, so the separation lives
+   * on a second class beside it. The browser project measures the rendered
+   * 8 px, but `scripts/check-all.sh` runs that project only when a local
+   * Chromium is present and says in its own comment that it is not a CI job.
+   * What CI does run asserts the class is *applied*, not that it *declares*
+   * anything — which is exactly the shape of the defect this rule fixes: a
+   * declaration silently absent while every class name was right.
+   */
+  it('gives a stacked panel row its separation', () => {
+    expect(
+      declared(readerSource, '.reader-section-head-stacked', 'margin-top'),
+    ).toEqual(['var(--space-2)'])
   })
 })

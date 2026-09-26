@@ -112,6 +112,21 @@
   --box-edge: rgba(255, 236, 210, 0.85);
   --box-fill: rgba(255, 145, 0, 0.2);
   --box-fill-strong: rgba(255, 145, 0, 0.42);
+
+  /* The selected box's inner line, and the ignore hatch — ⑤c, which found
+     both still written as literals in `annotations.css` while four of that
+     file's six colours already came from here.
+
+     `--box-hatch` is `--box-line` at half alpha: 74, 36, 0 is `#4a2400`. It
+     was a hand-copied duplicate two lines above a `var(--box-fill)` in the
+     same declaration, so changing `--box-line` would have moved the outline
+     and left the hatch behind, with nothing to catch it.
+
+     `--box-edge-bright` is white rather than `--box-edge`'s warm pale: it
+     marks the selected box, and the point of it is to read against the
+     unselected one. */
+  --box-edge-bright: #fff;
+  --box-hatch: rgba(74, 36, 0, 0.5);
 }
 
 /* The reader's own three (spec 2026-09-17 §2 and §8.2). Fixed, like the box

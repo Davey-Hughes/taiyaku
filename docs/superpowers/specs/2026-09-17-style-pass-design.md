@@ -407,13 +407,15 @@ onto tokens that already exist: the scrim onto `--scrim`, the panel ground onto
 `--reader-panel`, its hairline onto `--reader-hair`, and the `#ffb4a8` /
 `#a8ffb4` notices onto `--danger` / `--success`. The rest are the panel's
 own field and secret surfaces, which ③ answered for every other reader
-panel and ⑤c answers here. `styles/annotations.css` holds the other two, and
-**they are a scope question rather than a chore**: §6 puts the labeller
-outside this pass, and both literals are deliberately theme-independent for
-the reason `palette.ts` is exempt — that file's own comment says
-`currentColor` "would follow the theme and go pale on white paper, which is
-the failure the palette above exists to avoid". ⑤c either exempts the file
-on that reasoning or tokenises the two; it is not settled here.
+panel and ⑤c answers here. `styles/annotations.css` holds the other two, and **⑤c tokenised them** —
+`--box-edge-bright` and `--box-hatch`, in the **Fixed** block `tokens.css` has
+carried since the box palette was written, for values drawn on artwork that
+must not follow the theme. This paragraph first said they were a scope
+question and left it unsettled, and justified the doubt with a sentence
+attributed to `palette.ts` about `currentColor` going "pale on white paper".
+That file contains no such sentence: it is `annotations.css`'s own comment,
+about itself. §12.7 records the correction and what tokenising turned out to
+fix.
 
 **Then an accessibility pass**, after ⑤ — decided by the user on
 2026-09-18, when ②'s device pass reached VoiceOver: "keep the accessibility
@@ -1662,3 +1664,713 @@ On top of §5's list for every PR:
   *and* on `main`. These screens pass today and the assertion exists to keep
   them passing — ⑤a shipped two defects into exactly that gap.
 - **Every new test watched failing with its defect put back by hand.**
+
+## 12. PR ⑤c in detail
+
+Settled with the user on 2026-09-24, against a Playwright-driven Chromium
+over `vite dev` and a `taiyaku serve` on a **copy** of the real library —
+138 series, 1,896 works, 1 root, 4 rules, 35 open proposals. The original
+`library.db` was checksummed before and after —
+`d5ebc0c2378650356115a8cce637e50dc5b4ab7f7cc8f388553cadd575a59e67` — and is
+unchanged. Every option below was drawn on that screen with that data rather
+than mocked up; the images are in `target/style-pass-5c/drawn/`.
+
+### 12.1 What is there now, measured
+
+**Neither screen has a layout defect, and that is the finding rather than the
+absence of one.** ⑤a's screen put 165 px of document overflow at 390 px and
+⑤b's scan report 2 px; these two measure **zero** at 390 px on the document
+*and* on `main` — the inbox collapsed, the inbox with a row expanded, and
+`/account`. The inbox's `container-type: inline-size` on `.proposal-list`
+already folds the row to two lines under 32 rem, the title truncates rather
+than pushing, and the evidence panel's `auto-fit` grid stacks its two sides.
+So §5's "both well drawn" holds, and ⑤c's work is the sweep, the panel, two
+open items and one floor (§12.4a) rather than a rescue.
+
+**The sweep is the bulk of the work, and `admin.css` shows it by area.**
+Bucketing the file's rules by the screen they draw — the two finished slices
+beside the two that are not:
+
+| area | rules | raw `rem` | `--space-*` | `--text-*` | `--radius-*` |
+|---|---|---|---|---|---|
+| proposals (own rules) | 59 | **80** | **0** | **0** | **0** |
+| `.account` | 7 | **11** | **0** | 1 | 0 |
+| rules — ⑤a's | 35 | 4 | 23 | 12 | 2 |
+| configuration — ⑤b's | 49 | 22 | 16 | 8 | 3 |
+
+The proposals range does hold 2 space tokens, 2 type tokens and 1 radius
+token — **every one of them inside the `.field` block ⑤a hoisted through it**,
+which is why the table counts that block separately. The screen's own 59
+rules hold none.
+
+**What those 91 raw values are.** 24 of them are `font-size`, over **seven
+distinct sizes** — 11.2, 12, 12.8, 13.6, 14.4, 15.2 and 20 px — where the
+scale offers six, four of them in this range (`--text-meta` 12, `--text-ui` 14,
+`--text-body` 16, `--text-h3` 20, with `--text-h2` 24 and `--text-h1` 32 above
+it). Only 12 px and 20 px land on it — **five of the seven are
+off the scale**, and the most-used of the seven is **13.6 px, eight
+declarations, a size the scale does not have**. 62 are
+spacing, over **fifteen distinct values** from 0.8 px to 16 px against a
+seven-step scale whose first five are 4, 8, 12, 16 and 24; only 4, 8, 12 and
+16 land on it. The remaining five are
+structural and deliberate, and each is a box rather than a gap — the kind
+column's 9 rem, the sides' 15 rem `minmax` floor, the page tile's 4.5 rem
+(O148's), the reason list's 1 rem sign column, `.account`'s 40 rem measure.
+
+**And the corner is the defect ⑤a already fixed once.** The same slice holds
+**31 raw `px` values**, 11 of them `border-radius` over three values — `4px`
+seven times, `3px` three, `999px` once — against `--radius-control`'s 2 px.
+That is I2 of ⑤a's whole-branch review reappearing on ten more controls —
+quoted here from where that finding is actually written down, which is
+`admin.css`'s own comment above the shared `.field` block rather than the
+review that prompted it: *"nine `RuleForm` controls shipped on this block at
+`border-radius: 4px` and `font-size: 0.8rem` beside `.rule-row`, `.rule-form
+.rule-sets` and every `base.css` control on the same screen at
+`var(--radius-control)` (2px)"*. The `999px` is the pill on `.score` and stays one; the other ten
+become the token. The other 20 raw `px` values all stay: **15** are `1px`
+borders, which is what a hairline is; **3** are the `3px` strip drawn with
+`border-left` on `.no-rule`, `.refusals li` and `.the-fold`; **1** is the
+same 3 px strip on `.proposal-list li.strong`, drawn `inset` as a
+`box-shadow` for the reason its own comment records — only the strong rows
+carry it, and a border that changed width between rows would shift the
+`.kind` column, the one column this screen asks a person to read straight
+down; and **1** is the literal `16px` inside `.account`'s
+`max(16px, var(--text-ui))`, which is O151's floor and must stay a literal.
+
+**The inbox's filter apparatus carries no rules of its own.** Of
+`Proposals.tsx`'s 10 class names, **5 have no rule in any stylesheet** —
+`proposal-states`, `proposal-tabs`, `state`, `tab`, `weak-toggle`. Both rows
+are drawn by `library.css`'s bare `.chips`, whose own comment says so: *"the
+proposals inbox's state and kind rows (`Proposals.tsx`), which keep them
+until the style pass's ⑤ restyles that screen"*. **Bare `.chips` has exactly
+two consumers and both are that file**; `Library.tsx` writes `chips
+library-chips` and overrides almost all of it. So the pills are not the
+library's rules that the inbox borrows — they are the inbox's rules, living
+in the library's file, waiting for this PR. (`ProposalRow.tsx` is the other
+way round: 36 class names, one unstyled — `.page`, the link around each page
+tile. `AcceptForm.tsx` has 18, of which four are unstyled — `match-kind`,
+`edition-key`, `edition-kind` and `language`, every one a `.field` modifier
+that exists only so a test can find its control, and the only modifier of the
+five that carries a rule is `.field.pattern`.)
+
+**`Account.tsx` is 25 inline `style=` props and 10 colour literals**, and the
+panel they draw is a different dialog from every other reader panel. Measured
+against ③'s `.reader-dialog-panel`, which **Settings** wears — Help, the note
+list and Credits are `.docked-panel`, a different shape that docks at 384 px,
+so the panel this one should match is one panel and not four:
+
+| | Account panel | ③'s panel |
+|---|---|---|
+| scrim | `rgba(0, 0, 0, 0.6)` | `var(--scrim)`, `rgba(0, 0, 0, 0.55)` |
+| ground | `rgba(24, 24, 24, 0.96)` | `var(--reader-panel)`, `rgba(21, 19, 15, 0.92)` |
+| edge | none | 1 px `var(--reader-hair)` |
+| corner | 12 px | 0 |
+| shadow | `0 10px 30px rgba(0, 0, 0, 0.45)` | none |
+| width | `min(560px, 92vw)` | `min(480px, 90vw)` |
+| body | 16 px | `var(--text-ui)`, 14 px |
+| title | sans, `1.1em` | serif, `var(--text-h3)` |
+
+**And a live WCAG AA failure on `/account`, measured in both themes.** The
+page carries **four** `opacity` dims, not the two an earlier draft of this
+paragraph named — `0.8` on the API-keys hint, `0.85` on the one-time
+secret's caption, and `0.6` **twice**, on a key's "— last used …" and a
+session's "— last seen …". Both `0.6` sites compute **4.18:1 on Paper** at
+16 px, under AA's 4.5:1 for normal text (5.88:1 on Ink, which passes); the
+`0.8` hint is fine at 7.88 and 9.64. (The undercount was found by ⑤c's Task
+6, which had to touch all four.) `--muted`
+measures 5.25 on Paper and 6.77 on Ink, so the sweep fixes this by doing
+what it was going to do anyway — which is why it is fixed here rather than
+filed. The same shape is already twice recorded in this file: `admin.css`'s
+`.proposal-detail` comment bans `opacity` dimming four hundred lines above
+`.account`, having been written — before this pass — because two dimmed
+things failed AA in dark, and ⑤b spent a PR emptying the last nine. What is
+new here is that the ban was stated in the stylesheet and the failure was
+sitting in a `style=` prop, where no rule in that stylesheet could reach it.
+
+**Two things this survey found that are words rather than styling**, both
+filed rather than fixed — see §12.8.
+
+### 12.2 The seven decisions
+
+1. **The inbox's two filter rows stop being one kind of row** (§12.3). O150.
+2. **The pills come home to `admin.css`** (§12.3).
+3. **The Account panel becomes a reader dialog** (§12.5).
+4. **The account page becomes a settings screen** (§12.5).
+5. **The restated tile height is pinned against the CSS that draws it**
+   (§12.6). O148.
+6. **The allowlist reaches empty by exempting the labeller, not by
+   tokenising it** (§12.7).
+7. **`admin.css` gets the coarse-pointer floor it never had, on all six of
+   its screens** (§12.4a).
+
+### 12.3 The filter rows
+
+**The state row keeps pills; the kind row takes the tab look; the threshold
+leaves the row.** That is O150's answer, chosen by the user on 2026-09-24
+with all four candidates drawn on the real screen
+(`drawn/o150-A-1440.png` … `-D-`).
+
+`Proposals.tsx`'s three controls are three different things and ②'s
+whole-branch review found out the hard way what drawing two of them alike
+costs: the underlined tab look reached the inbox and drew "All" and "Hide
+weak proposals" with the same accent underline side by side. ⑤a then settled
+the rule as **one-of-N against independent toggle** (§10.6). The inbox has
+both in one row, so the row cannot take the look until the toggle leaves it.
+
+- **"Show weak proposals" becomes a checkbox on its own line**, below the
+  kind row. A checkbox's label is a sentence rather than a field name, which
+  is ⑤b's §11.3 finding and its `.checks` treatment; this is the same kind of
+  control on a different screen. The label stops flipping between "Show" and
+  "Hide" — a checkbox says its state with its box, and a label that changes
+  under a state that is also drawn is the same fact twice, disagreeing while
+  a click is in flight.
+- **The kind row takes the underlined look**: `--muted` at `--text-ui`, the
+  pressed one `--text` under `inset 0 -2px 0 var(--accent)`, no border, so
+  selecting does not move the row's baseline.
+- **The state row keeps its pills.** Drawing both rows as tabs was drawn
+  (`-D-`) and rejected: two identical strips stacked give no hierarchy, and
+  nothing on screen then says which filter is the coarser. Pills over tabs
+  reads as "which inbox, then which kind", which is what the two rows are.
+- **The fourth-state candidate was rejected on a closed decision, not on
+  taste.** Putting "Weak" beside Open / Accepted / Dismissed makes the kind
+  row one-of-N, but `Proposals.tsx`'s own doc comment records the state, the
+  kind and the threshold as three independent filters — *"selecting a kind
+  cannot silently change what the threshold is"* — and `Proposals.test.tsx`
+  asserts the whole filter object on every click rather than the field the
+  click was about, precisely so that independence is testable. A fourth state
+  would also put weak *dismissed* proposals out of reach, which is O72's own
+  ground.
+
+**Measured at 390 px**: the three kind tabs fit one line where the four pills
+wrapped to two, so the change returns a row of vertical space on the width
+that has least of it (`drawn/o150-B-390.png`).
+
+**The pills move to `admin.css` with the row they draw**, which is §4's rule
+1 and what `library.css`'s own comment has been waiting for. `.library-chips`
+becomes self-sufficient there — it needs `display: flex`, `flex-wrap`, `font:
+inherit` and `cursor` back, the four declarations it was inheriting from
+`.chips` rather than overriding — and `Library.tsx` drops the now-empty
+`chips` co-class. `Proposals.tsx` drops `chips` from both rows and keeps
+`proposal-states` and `proposal-tabs`, which are the names it already has.
+
+**The tab look is now written twice and stays written twice.** ⑤a's copy in
+`admin.css` covers `.config-nav` and `.preview-tabs`; ②'s in `library.css`
+covers `.chips.library-chips`. The inbox's kind row joins ⑤a's selector
+lists, so this PR adds a subject rather than a third copy. Merging the two
+files' copies is **not** done here: ②'s carries the library row's own
+`.sort` placement and its pill fallback, and moving it is that screen's
+question. The rule's current-item prelude therefore carries three forms —
+`a[aria-current="page"]`, `button[aria-current="true"]` and
+`button[aria-pressed="true"]` — because the app marks a chosen one-of-N two
+different ways. That inconsistency is real and is filed, not fixed (§12.8).
+
+### 12.4 The row, the panel and the sweep
+
+Nothing here changes what is on screen. The sweep is §12.1's 91 `rem` values
+and 10 corners onto the scale, and four of its mappings are decisions rather
+than arithmetic:
+
+- **The seven type sizes become four tokens and one retained raw value, by
+  nearest step with ties to the smaller.** 20 px is `--text-h3` exactly and
+  12 px is `--text-meta` exactly; 12.8 px becomes `--text-meta`, 13.6 and
+  14.4 px become `--text-ui`, and **15.2 px becomes `--text-body`** — the
+  nearest step to it is 16, not 14, and it is `.side-title`, an `<h2>`, where
+  body size is the right answer anyway. (An earlier draft of this section put
+  15.2 with the other two; that was arithmetic, not judgement, and it was
+  wrong.) **11.2 px stays raw only where it is a micro-label**, which is
+  `.side-role` and `.lab` here and the same `0.7rem` the shared `.field`
+  block carries — all three uppercase at `0.06em` tracking, a label treatment
+  rather than a step on the type scale. It stays a raw value with a comment
+  saying that; the alternative, a `--text-micro` token, adds a seventh size to
+  a scale of six.
+
+  **Two further sites carry `0.7rem` and are not labels**, and they do
+  convert: `.vol`, the chip holding a volume number, and
+  `.accept-form .scope`, the sentence under the pattern box. Neither is
+  uppercase and neither is tracked, so the reason above does not reach them
+  and they were simply off the scale — they become `--text-meta`, the nearest
+  step at 0.8 px. (An earlier draft of this section wrote the exemption as
+  "`0.7rem` stays raw" without the qualifier, which would have kept two plain
+  11.2 px sizes on a screen the sweep exists to take off them. Found by ⑤c's
+  Task 2 review.)
+- **Quiet is bought with colour and size, never `opacity`.** The panel's
+  comment already says this; `/account` is where it was not true, and
+  §12.1 has the 4.18:1.
+- **The page tile's 4.5 rem stays**, because O148 pins it rather than
+  replacing it (§12.6). It is a box, not a space.
+- **The ten corners become `--radius-control`, and the pill stays a pill.**
+  `.score` is `999px` for the same reason the state row's chips are.
+
+**`.page` gets no rule, and that is checked rather than assumed.**
+`ProposalRow.tsx`'s one unstyled class name looked like a gap, and is not:
+the tile's box is on the `<img>`, the `<a>` is a flex item that blockifies
+and shrink-wraps it exactly (measured 74×110 against the image's 74×110),
+and the focus ring comes from `base.css`'s `:where(.library, .login)
+:where(:focus-visible)`, which reaches it because the inbox is inside
+`.library`. Adding a rule to make the name look attended to would be a rule
+that does nothing.
+
+### 12.4a The 44 px floor `admin.css` never had
+
+**Found while planning, on 2026-09-24, and it is the largest thing in this
+PR that no open item had.** Spec §7.1 settled *"links and controls get 44 px
+rows under `(pointer: coarse)`"*, and `shell.css`, `library.css` and
+`reader.css` each implement it. **`admin.css` contains no `(pointer:
+coarse)` block at all** — a `grep` for `44px` across the five stylesheets
+returns `shell.css` seven times, `reader.css` three and `library.css` three,
+and `admin.css` **no 44 px floor**. (No count of its `@media (pointer: coarse)`
+blocks belongs here: it had two before this branch, both about `font-size`,
+and two separate attempts to state a `grep` figure alongside this sentence were
+both wrong — the second one twice in the same sentence. The claim that carries
+weight is the one anyone can check by opening the file: nothing in it sets a
+minimum height.) So on a phone every control on all six admin screens
+is exactly its desktop height. Measured at a 390 px viewport, against the
+copy of the real library:
+
+| screen | control | height |
+|---|---|---|
+| inbox | the filter pills | 37.2 |
+| inbox | **Dismiss**, one per row, 17 of them | **27.6** |
+| `/account` | inputs · buttons | 35.6 · 34 |
+| `/config/users` | inputs · selects · buttons | 31 · 32 · 34 |
+| `/config/users` | **the permission checkboxes** | **13 × 13** |
+
+Nothing here is a `(pointer: coarse)` miss of the kind ⑤a and O151 had to
+find on hardware — the rule is simply absent, so a fine-pointer measurement
+*is* the coarse one, and this was settled on the development machine.
+
+**⑤c fixes all six, chosen by the user on 2026-09-24** over the narrower
+option of fixing its own two and filing ⑤a's and ⑤b's three. The argument
+for the wider scope is that a floor is one rule and three of the five
+screens would otherwise ship knowingly short behind a row nobody is holding;
+the cost is that ⑤c's browser pass covers six screens rather than two, and
+that is taken.
+
+**Six, not five**, which an earlier draft of this section said throughout.
+`Config.tsx` draws four tabs — rules, roots, users, backup — and the inbox
+and `/account` make six. The dropped one was Backup, and that is not a
+harmless slip: Backup's only per-row control is a download link, and the
+first version of this floor reached no link at all. The miscount and the
+coverage gap were the same mistake, found together by ⑤c's Task 7 review.
+(`admin.css` uses "five screens" elsewhere, correctly, for a narrower set —
+the five with text controls, which excludes Backup because it has none.)
+
+**The floor is scoped to the three roots that hold those screens** —
+`.proposals`, `.account` and `.config`, the last of which wraps the sub-nav
+and all four configuration screens. **Not `.library`**, although every one of
+them sits inside it: that would also reach the library home, search, the
+series page and the sidebar, which `library.css` and `shell.css` already
+answer for, and a second floor over the same controls is the drift this pass
+keeps recording.
+
+**Links and disclosure toggles are controls too**, which §7.1's own wording
+says and the first version of this floor missed: the rules screen's Export
+`<a download>`, Backup's per-row download link, and the three `<summary>`
+elements that are the only `<details>` in the app. All five now take the
+row. A `<summary>` keeps `display: list-item` and centres with
+`align-content` — measured, `display: flex` centres it correctly *and
+deletes the disclosure triangle*, content offset 16.94 px to 0.
+
+The floor also reserved `a.button`, a class no stylesheet defines and no
+component writes. It was dropped: it reached neither of the two real
+link-shaped actions, which were on these screens the whole time, and it sat
+in a `min-height`-only rule that does nothing to an inline link anyway.
+
+**A checkbox is not a row, so it does not take `min-height`.** The three
+permission boxes and the root's one measure 13 × 13 because that is the UA
+default at this font size; they take an explicit 24 px box instead, which is
+24 px rather than 13. (`library.css` has two `min-height: 24px` controls of
+its own, but those are tile controls rather than checkboxes, so they are a
+precedent for the number and not for the shape.)
+24 rather than 44 because the tappable target is the `<label>`, which is a
+row of text beside the box and is what the finger actually lands on — and
+because a 44 px box beside a 14 px sentence draws a checkbox that looks like
+a button. The label rows take the 44 px.
+
+**And `.reader-field` gains the same floor in `reader.css`.**
+`.reader-button` has had one since ③ and `.reader-field` was left out of the
+same block then — not because no ③ panel had a field, which an earlier draft
+of this sentence claimed, but simply because the omission had no visible
+consequence while nothing used it. §12.5's panel uses it, so the gap becomes
+visible here and is closed here.
+
+**What the floor turned out to be a floor on, found on a phone on
+2026-09-25.** `min-height: 44px` alone floors the *content* box, and in
+standards mode `<input>` and `<textarea>` are `content-box` while `<select>`
+and `<button>` are not. So the one rule above rendered every text box on
+these screens at **54 px** and every select beside it at 44 — a 10 px
+disagreement between two controls in the same row, on all five screens with
+text controls. `box-sizing: border-box` joins the floor, inside the media
+query that needs it, and the split closes at 44.
+
+**This was reachable from the desk and was not reached**, which is the part
+worth keeping. Task 7 measured the floor by reading `min-height` back off the
+rule rather than the rendered height off the element, and a declaration that
+is present and correct is exactly what that measurement confirms. The
+assertions added with the fix pin `box-sizing` per selector *and* as an
+invariant over any rule in the block that floors a text box, so the next
+control added to the floor cannot rejoin the 54 px half silently.
+
+**And the pills the floor sizes were not optically centred in it**, which no
+measurement of the box could have said: the box was right and the ink inside
+it was not, by 5.6 px on one pill and 2.6 on another, off the user's own
+screenshot. 6 px of bottom padding, scoped to the pills because the skew is
+proportional to font size and only shows where a box is drawn around the
+word. `line-height` is not the lever — 24 px to 16 px moves the ink zero
+pixels, because the floor sets the height and the line box has slack either
+way.
+
+### 12.5 The account screen, both placements
+
+**The panel adopts ③'s vocabulary whole**, chosen by the user on 2026-09-24
+against `drawn/o-acct-A-today.png` and `-B-reader-dialog.png`. Measured while
+drawing it: **③ already owns every colour and every surface it needs**, so
+this adds no colour to `reader.css` —
+
+`.reader-dialog` · `.reader-dialog-panel` · `.reader-panel-head` ·
+`.reader-panel-title` · `.reader-panel-heading` · `.reader-section` ·
+`.reader-section-head` · `.reader-button` · `.reader-field` · `.reader-meta`
+
+**What it does add is layout, and only because ③ never had a form to lay
+out.** Drawing the panel out of those ten classes alone left three things
+needing a rule: a field that spans the panel, an action button that spans it
+(*Change password*, *Sign out*), and the one-time secret's block —
+`admin.css` has `.account .secret` for the page and the panel had
+`secretStyle`. Every panel ③ drew is a list of settings with its controls at
+the right-hand end, which is what `.reader-section-head` is; none of them
+asks anybody to type. So `reader.css` gains **seven** rules — five box (the
+spanning field, the spanning action, the secret's block, the stacked row's
+separation, and the secret's caption) and two colour, `.reader-failure` and
+`.reader-success`. That is the honest size of this change rather than "no new
+CSS", and rather than the "three, all box" an earlier draft of this sentence
+claimed: two of those five arrived with a fix round and were never counted
+back into it.
+
+`LOOKS` then stops being a map of `CSSProperties` and becomes a map of class
+names, which is the same switch it already makes, spelled in the vocabulary
+the rest of the reader uses. 25 inline props and 10 colour literals go to
+zero. The `#ffb4a8` and `#a8ffb4` notices become `--danger` and `--success`.
+
+**Those two tokens are already gated on this ground, which this section
+first got wrong.** The draft written before ⑤c's Task 5 review said
+`index.css.test.ts`'s floor computes text tokens against `--bg`, `--surface`
+and `--field` only and so does not reach `--reader-panel`. That is true of
+one `describe` in that file and false of the file: *"keep every Ink text
+colour above 4.5:1 on a panel over black"* and its white-artwork twin
+composite `--reader-panel` over `--reader-ground` and run every entry of
+`TEXT_TOKENS`, which lists `danger` and `success`. So the AA floor on this
+exact ground is machine-checked in both the black and the white-artwork
+cases, and has been since ③. What is *not* asserted is the specific ratios,
+measured in Chromium on 2026-09-24 with **Paper** chosen: `--danger`
+**7.99:1**, `--success` **9.23:1**, `--text` 14.86, `--muted` 6.85. Both notices resolve to their *dark* values although the document is
+light, because `App` renders `<Account>` as a sibling of `<Settings>` inside
+`<div className="reader">` and `reader.css` puts `color-scheme: dark` there —
+confirmed in the live DOM rather than read off the JSX. That containment is
+what makes the whole decision work: a panel adopting reader tokens from
+*outside* `.reader` would draw `--text` pale-on-paper over a fixed dark
+ground, which is the exact failure `LOOKS` was written to avoid, inverted.
+
+**The panel narrows from 560 px to 480 px**, and that is the cost, taken
+deliberately: a user-agent string wraps one line more. Measured rather than
+assumed, after a claim check wrongly talked this sentence out of itself — the
+string sits in a flex row beside its Revoke button, so it gets **413.95 px** at
+the old width and **333.95 px** at the new, and the 113-character
+`HeadlessChrome` string that 24 of this library's 27 sessions carry goes from
+two lines to three. ⑤b's §11.4 decision
+was *the card carries the measure, set once* — a figure per panel is the
+drift that cost this pass four review rounds — and a fifth reader panel with
+its own width is exactly that figure.
+
+**It also moves the panel's inputs inside O151's floor rather than beside
+it.** That floor is written on `.reader-dialog-panel :where(input, select,
+textarea)` inside `@media (pointer: coarse)`. The Account panel's three text
+inputs are 16 px today only because `panelStyle` sets no `font-size` and
+they inherit the document's — an accident, not a guard. After this they
+inherit 14 px from the panel *and* the 16 px coarse floor above it, which is
+the shape ④ and O151 each had to find on hardware.
+
+**The page becomes a settings screen.** Each `<section>` becomes a card on
+`--config-measure` — bordered, not filled, which is what `.root-row` and
+`.user-row` do and therefore what the four screens beside it look like. (The
+option drawing `drawn/acctpage-B-fields.png` shows them filled; that was the
+mockup's own injection, and consistency with the app won.) Current and New
+take the `.field` micro-label the other four settings screens use —
+`className` only, since that markup is already `<label>text<input></label>`.
+Four quiet paragraphs take `--muted` at `--text-meta` with `.users .why`'s
+60 ch measure: the API-keys hint, the secret's caption, and a key's "last
+used" and a session's "last seen".
+
+**The device-name box is the exception, and it cost a fix round to notice.**
+It is the one input on this screen with **no `<label>` at all** — only a
+placeholder — so `.account .field input` cannot reach it, and deleting the
+broad `.account input` rule left it behind: 166 px wide at 16 px beside two
+14 px password boxes, with a 399 px gap to its own button. It is given the
+control treatment through `.account .account-row input` and `flex: 1`
+instead, which restores the drawing without putting new visible text on the
+screen. Whether a placeholder should be doing a label's work there is the
+accessibility pass's question, not this one's.
+
+**So three subjects join the shared block, and which list each joins depends
+on what it is.** `.account .field` is a *label* and joins the base rule
+alone — putting it in the control lists would set an 11.2 px micro-label
+size on an input, measured before it was declined. `.account .field input`
+and `.account .account-row input` are *controls* and join both the control
+reset and the `(pointer: coarse)` floor.
+
+**What the floor gate does and does not catch here, established by hand
+rather than reasoned about.** `base.css.test.ts` pairs a rule with its
+companion by exact selector text. Removing `.account .account-row input`
+from the coarse list alone turns it **red** — `expected [ '.account
+.account-row input' ] to deeply equal []` — so a control subject given a
+size and denied a floor is caught. What it cannot see is the reverse: a
+subject missing from the *reset*, where there is no exposed `font-size` for
+it to demand a companion for. An earlier draft of this section asserted the
+opposite, and was contradicted by the code comment written in the same
+branch; neither half of O152 is involved. `.account input`'s own (0,1,1)
+rule and coarse companion are deleted in the same commit, not left beneath
+the new pair — two rules setting a size on one element is how O151 happened.
+
+**The focus ring had nowhere to land, found on a phone on 2026-09-25.** The
+ring is 4 px outside a control's border box — `outline: 2px` at
+`outline-offset: 2px` — and the shared `.field` block gave its micro-label
+2.4 px of clearance, so a focused control painted its ring through the label
+above it. Measured at 390 px with a coarse pointer: **2.00 px** of clearance
+against the 4 the ring needs. That half predates this branch and reaches all
+five screens using the block; `main` carries the same 2.4 px and
+`.proposal-detail .field` has had it since ①.
+
+**The other half is this screen's and is this branch's own.** The password
+form stacks two `.field`s straight inside a `<form>` with no gap, so
+consecutive fields sat **0 px** apart and the ring ended 1.00 px above the
+*next* label's ink — clipped above and below at once. **The separation goes
+on the fields, not on the form**, and that is a specificity result rather
+than a preference: `.account form` is (0, 1, 1) against `.account-row`'s
+(0, 1, 0), so a rule there takes the API-key row's `display` with it.
+Injected to see the cost — a 54 px row with a 237 px box beside a 75 px
+button became 110 px with the button stacked under a 178 px box. The
+API-key form carries no `.field` at all, so a rule on the field cannot
+reach it either way.
+
+After: `/account` reads 4.80 px of clearance and 9.00 px below, from 1.00;
+the other four screens read 4.00. A browser case measures both clearances
+against a reach read off the focused control rather than against the
+literal — and its vacuity guard had to become `:focus-visible` plus
+`outline-style`, because an *unfocused* control computes `outline-width:
+3px` and sailed under a real ring of 4.
+
+### 12.6 O148: the restated tile height, pinned
+
+`ProposalRow.tsx`'s `TILE_HEIGHT_PX = 108` is the box `admin.css`'s
+`.proposal-detail .pages img` draws — `width: 4.5rem` at `aspect-ratio: 2 /
+3` — and it feeds `requestedTileEdge`. Change the CSS and the constant
+silently disagrees: **setting it to `1` passes the entire suite**, because
+`devicePixelRatio` is 1 in jsdom and every height from 1 to 160 rounds to the
+same bottom rung there.
+
+`styles/admin-proposals.css.test.ts` is written here — §10.8 called it
+`styles/admin.css.test.ts`, and §12.9 says why the name is deliberately not
+that — and parses `.proposal-detail .pages img`'s `width` and `aspect-ratio`
+out of the stylesheet, asserting `TILE_HEIGHT_PX` follows from them.
+`styles/reader.css.test.ts` is the pattern and `testing/css.ts`'s `rules` is
+the reader — `declared` is **not** exported from there, but a local helper each
+of three test files defines its own way, and this one follows suit, and the asymmetry is the point: the strip's
+restatement has had this guard since ③, and the inbox got the restatement
+without it.
+
+**The box has two heights and the test has to pick the right one.** The same
+rule carries `border: 1px solid var(--line-strong)` with no `box-sizing`, so
+the tile's *content* box is 72×108 and its *border* box is 74×110 — measured
+in Chromium, `a.page` and its `<img>` both 74×110. `TILE_HEIGHT_PX = 108` is
+the content height, which is the correct one, because that is the box the
+artwork is scaled into and the number `requestedTileEdge` is choosing a rung
+for. A test that derived the height from the drawn box would therefore assert
+110 and fail against correct code, and a test that ignored the border
+entirely would pass either way — so the derivation is written as *content
+width × 3 ÷ 2*, and the border's presence is named in the assertion's comment
+rather than left for the next person to rediscover at 2 px.
+
+### 12.7 The bookkeeping
+
+**The colour-literal allowance reaches `{}`**, which is §5's promise for this
+PR. `Account.tsx`'s ten go to zero in §12.5's own commit, which deletes its
+allowance entry there rather than here: `ALLOWED` is compared with `toEqual`,
+so a file *under* its entry fails as loudly as one over it, and leaving the
+entry would redden every commit in between.
+
+`styles/annotations.css`'s two are **tokenised**, as `--box-edge-bright` and
+`--box-hatch`, in the **Fixed** block `tokens.css` has carried since the box
+palette was written.
+
+**This section first said the opposite, on a reason that was false**, and the
+correction is recorded because the decision was put to the user on it. The
+argument was that both values are deliberately theme-independent and that
+moving them into `tokens.css` would put values that must *not* follow the
+theme into the file whose whole job is following it. `tokens.css` has a Fixed
+block for exactly that case — *"Fixed rather than following `color-scheme`,
+unlike everything else here: a box is drawn on artwork, and the artwork does
+not change with the reader's OS theme"* — and `annotations.css` already drew
+four of its six colours from it. The supporting quotation was attributed to
+`palette.ts`, which does not contain it; it is `annotations.css`'s own
+comment, about itself.
+
+**Tokenising also closed a drift the exemption would have hidden.** The
+hatch's `rgba(74, 36, 0, 0.5)` is `--box-line` (`#4a2400`) at half alpha,
+hand-copied two lines above a `var(--box-fill)` in the same declaration.
+Changing `--box-line` would have moved the outline and left the hatch behind,
+and an exempt file is unseen entirely — not just for the values the exemption
+was for. §6 still puts the labeller outside this pass, and two `var()` swaps
+in a file it excludes is the whole of what that costs.
+
+Found by ⑤c's Task 8 review, which read `palette.ts` for the sentence instead
+of taking the citation.
+
+### 12.8 What ⑤c does not do
+
+- **Settle what "weak" means.** `strength()` calls any score under 2 weak
+  while `INBOX_MIN_SCORE` hides only score 0, so on this library **13 of the
+  17 rows the default view shows carry a chip reading "weak"**, directly
+  under a control offering to *show* weak proposals. (35 open: 18 at score 0,
+  13 at 1, 3 at 2, 1 at 3.) §6 reserves anything that changes what a screen
+  says, and which of the two lines is wrong is a curation judgement rather
+  than a styling one. **Filed on the branch**, with those counts as its
+  evidence. ⑤c tokenises the chip and leaves the word.
+- **Settle `aria-pressed` against `aria-current`.** **Four** one-of-N *button*
+  rows mark the chosen one two different ways, and the split is three–one
+  rather than the even one an earlier draft claimed: the library's filter row
+  and the inbox's state and kind rows write `aria-pressed`, while
+  `PreviewTabs` alone writes `aria-current="true"`. The config sub-nav is a
+  fifth one-of-N row and is **not** part of the disagreement — it is a `<nav>`
+  of links in `Config.tsx`, where `aria-current="page"` is simply right. ⑤c's CSS carries all three
+  preludes so the look is one look (§12.3), and the markup is left alone:
+  which attribute a filter that is not navigation should carry is the
+  accessibility pass's question, not a side effect of a stylesheet, and
+  changing it would move what four rows announce. **Filed on the branch**,
+  for the same reason O154 was.
+- **O149**, the Provenance table's four always-empty columns. It now has an
+  answer — drop a column empty in every row and print one quiet line beneath
+  the table naming what was dropped, chosen by the user on 2026-09-24 against
+  `drawn/o149-A-top.png`, `-B-` and `-C-` — and it lands on **its own branch
+  after ⑤c**. It is `PreviewTabs.tsx`, ⑤a's screen, which ⑤c otherwise never
+  opens, and it changes what a screen shows, which §6 reserves. Measured at
+  HEAD on the real library at 390 px: 614 px of table in a 343 px box, the
+  four empty columns 248.55 px of it, so the scrolling inside the box goes
+  from 271 px to 22.5 px. The sharper way to put the question, found while
+  drawing it: the box shows about two and a half columns, so the decision is
+  which column is third — today `edition_key`, which carries a value in **0
+  of 224 rows**, against `volume`, which carries one in **61**.
+- **Give the three underlined one-of-N rows and two label-less controls the
+  44 px row.** Five deliberate exclusions from §12.4a's floor, each measured
+  and each needing a row of its own rather than a comment. `.config-nav`'s
+  four `NavLink`s ship at **20 px** under `(pointer: coarse)`: the floor
+  would put the underline 12.5 px below the word and take the strip from
+  29 px to 49, which is a redesign of that row rather than a floor applied
+  to it. **`.proposal-tabs` and `.preview-tabs` are excluded on that same
+  measurement, and were not until ⑤c's whole-branch review.** They wear the
+  same underlined look and are `<button>`s, so the floor's `button` prelude
+  reached them where `.config-nav`'s `<a>`s escaped it: measured together at
+  390 px coarse, the two button rows boxed 44 with a 49 px strip while
+  `.config-nav` stayed 20 and 24 — two thirds of one design taking the
+  treatment this spec calls a redesign, on the strength of nothing but the
+  element name. The exclusion is written as `:not()` on the prelude rather
+  than as a later `min-height: 0`, because a later rule re-setting the
+  property is the one hole the floor's gate is documented as unable to see.
+  `RuleList`'s rule-enable checkbox has no `<label>` at all, so at 24 px the
+  box is the whole target — enlarging it to 44 draws the button-shaped
+  checkbox §12.4a's own reasoning refuses. `RuleEditor`'s file input is
+  `hidden` and is reached by its own button.
+
+  **Filed rather than left to a comment, because the comment was wrong about
+  who owns it.** An earlier version deferred these to "the accessibility
+  pass, which already owns tap targets". It does not: O135 is the keyboard
+  reaching no control in the *reader's* top bar, O154 is checkbox *grouping
+  markup*, and §5 defines that pass as VoiceOver on the phone and a screen
+  reader on the desktop. The only place this spec assigns 44 px tap targets
+  is a **device pass** (§9.4). So these three are an open item of their own,
+  against §7.1, and nothing holds them until one exists.
+- **Stop `/config/users` greying a whole user card when one checkbox is
+  toggled.** O159, from the device pass: `UserRow` holds one `saving` flag per
+  card and gates eleven `disabled` props on it, three of them per-item, and a
+  checked checkbox that goes `disabled` loses its `accent-color` fill. (The
+  device library holds one account, so the user saw this as the whole screen
+  and the first draft of the row wrote it down that way.) What the screen *does* while
+  saving is behaviour, which §6 reserves. **And the obvious fix is refused in
+  writing already** — `settled`'s doc comment records that holding the whole
+  row is deliberate, because the grant checkbox sends a whole list and a
+  second tick inside the reload window would silently revoke the first grant.
+  A stylesheet cannot absorb it either: the greying is the UA's own rendering
+  of a disabled checkbox.
+- **Merge the two copies of the tab look** (§12.3).
+- **Change anything the evidence panel says.** Its content is spec C3 §2's —
+  the two sides, the reason list, the "nothing compared the artwork" box and
+  the disabled `Compare v01` — and this PR changes how those are drawn, not
+  what they are. The one exception is `--muted` on a disabled control, which
+  `.proposal-detail`'s own comment already names as the panel's exemption.
+
+### 12.9 Tests and checks
+
+On top of §5's list for every PR:
+
+- **Three new test files, in two projects.** In `node`:
+  `styles/admin-account.css.test.ts`, which checks that the account screen
+  joins the shared `.field` block's coupled lists correctly, and
+  `styles/admin-proposals.css.test.ts`, for O148 (§12.6). Watched
+  failing by hand with `TILE_HEIGHT_PX` set to a value the CSS does not
+  imply — the mutation the whole suite currently survives. **The name is
+  deliberately not §10.8's `admin.css.test.ts`**: ⑤a and ⑤b have since
+  established one file per slice over the one stylesheet —
+  `admin-rules.css.test.ts` (*"the Rules screen read from its stylesheet"*)
+  and `admin-config.css.test.ts` — and a third named for the whole file
+  would be the one nobody knows where to add to.
+- **The pill/tab test is rewritten, not extended.**
+  `index.css.test.ts`'s *"the chips keep their pills everywhere but the
+  library's own row"* is false after §12.3, and `Proposals.test.tsx` asserts
+  the kind row carries `chips`. Both change with the markup, and the
+  replacement pins the new shape: the state row draws pills, the kind row
+  draws the underlined tab, and **no rule gives the two the same treatment**
+  — which is the regression ② found the hard way and the only thing this
+  test is for.
+- **The floor's two control lists agree**, for §12.5's two control subjects.
+  `base.css.test.ts` pairs by selector text, so the check that matters is
+  that `.account .field input` and `.account .account-row input` each appear
+  in the control reset *and* the coarse companion, that the label subject
+  `.account .field` appears in the base rule only, and that the old
+  `.account input` pair is gone rather than shadowed. Watched failing by
+  dropping a subject from the coarse list alone.
+- **The account panel is the reader's dialog** — the third new file,
+  `Account.browser.test.tsx`, in the `browser` project where a box can be measured: the panel opened over the reader
+  carries `.reader-dialog-panel` and is measured on the four things the old
+  panel differed on — corner radius, shadow, width and body size — plus a case
+  proving the `.reader` wrapper is load-bearing rather than scenery, by
+  asserting the panel resolves `--text` to its *dark* value while the document
+  theme is light. The field's size is asserted as the literal `14px` rather
+  than against Settings' boxes, which is weaker than comparing the two and is
+  what shipped. A class-name assertion alone would pass against a
+  panel whose rules never loaded.
+- **No sideways scroll at 390 px on both screens**, on the document *and* on
+  `main`, with a row expanded as well as collapsed — the expanded case is the
+  one carrying absolute paths, and §11.11's version of this assertion did not
+  have a disclosure to open.
+- **The coarse floor is asserted as a floor, not as a rule that exists**
+  (§12.4a). A test that only checked `admin.css` now contains a `(pointer:
+  coarse)` block would pass against a block covering one selector. The
+  assertion is over the floor's own **selector lines**, each anchored to the
+  rule it opens so a selector narrowed until it matches nothing cannot satisfy
+  it. That is deliberately narrower than "every control type": the test's own
+  head comment says so, because a line can carry more kinds of control than a
+  list of kinds can enumerate, and the checkbox is named with an explicit box rather than
+  a `min-height`. The heights themselves are the browser pass's, because
+  jsdom computes none and the `@media` never engages in driven Chromium —
+  the same blind spot O151 hid in, and the reason §12.4a's figures were
+  taken with a fine pointer, where the absent rule makes them identical.
+- **The `opacity` claim moves to where the failure was.** ⑤b already wrote
+  the stylesheet half: `admin-config.css.test.ts`'s *"uses opacity for no
+  quiet text"* reads the whole of `admin.css` and passes today, and §12.1's
+  4.18:1 was **inside a `style=` prop**, which that gate cannot see and never
+  could. So the new assertion is over `Account.tsx`'s source text — zero
+  inline `style=` props and zero `opacity:` — read as text the way
+  `colourLiterals.test.ts` reads files. ⑤b's gate is not duplicated.
+- **Every new test watched failing with its defect put back by hand.** The
+  ones that most need it are the tile-height parse, above, and the pill/tab
+  pair: a test asserting the kind row is *not* a pill passes against a row
+  that is not drawn at all, so the fixture has to assert what each row **is**
+  as well as what it is not.

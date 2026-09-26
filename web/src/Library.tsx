@@ -140,7 +140,7 @@ export function Library() {
           </ul>
         </section>
       )}
-      <div className="chips library-chips">
+      <div className="library-chips">
         {CHIPS.map((c) => (
           <button
             key={c.id}

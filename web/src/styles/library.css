@@ -1,55 +1,39 @@
-/* The filter rows' pills — the proposals inbox's state and kind rows
- * (`Proposals.tsx`), which keep them until the style pass's ⑤ restyles that
- * screen (spec 2026-09-17 §7.2). */
-.chips {
+/* The library's own filter row, as underlined tabs — the mockup the user
+ * chose (spec 2026-09-17 §7.2): the pressed one in the text colour over the
+ * accent, the rest muted. "Added" (`.sort`) sits at the row's far end,
+ * because it sorts where the others filter.
+ *
+ * **This was `.chips.library-chips` until ⑤c.** The bare `.chips` it
+ * qualified held the proposals inbox's pills — two consumers, both in
+ * `Proposals.tsx` — and lived here for as long as that screen was unstyled.
+ * ⑤c gave the inbox its own rules in `admin.css`, so the co-class had nothing
+ * left to qualify and the four declarations this rule used to inherit from it
+ * are written out below. */
+.library-chips {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.5rem;
-  margin: 1rem 0;
-}
-
-.chips button {
-  border: 1px solid var(--line-strong);
-  background: var(--surface);
-  color: var(--text);
-  border-radius: 999px;
-  padding: 0.35rem 0.9rem;
-  font: inherit;
-  cursor: pointer;
-}
-
-.chips button[aria-pressed="true"] {
-  background: var(--accent);
-  color: var(--on-accent);
-  border-color: var(--accent);
-}
-
-/* The library's own row as underlined tabs, as the mockup the user chose
- * drew them (spec 2026-09-17 §7.2): the pressed one in the text colour over
- * the accent, the rest muted. "Added" (`.sort`) sits at the row's far end,
- * because it sorts where the others filter. */
-.chips.library-chips {
   align-items: baseline;
   gap: var(--space-1) var(--space-5);
   margin: var(--space-5) 0 var(--space-4);
 }
 
-.chips.library-chips button {
+.library-chips button {
   padding: var(--space-1) 0;
   border: 0;
   border-radius: 0;
   background: none;
   color: var(--muted);
+  font: inherit;
   font-size: var(--text-ui);
+  cursor: pointer;
 }
 
-.chips.library-chips button[aria-pressed="true"] {
-  background: none;
+.library-chips button[aria-pressed="true"] {
   color: var(--text);
   box-shadow: inset 0 -2px 0 var(--accent);
 }
 
-.chips.library-chips .sort {
+.library-chips .sort {
   margin-left: auto;
 }
 
@@ -488,7 +472,7 @@
 
 /* 44 px targets for a finger (spec 2026-09-17 §7.1). */
 @media (pointer: coarse) {
-  .chips.library-chips button {
+  .library-chips button {
     min-height: 44px;
   }
 

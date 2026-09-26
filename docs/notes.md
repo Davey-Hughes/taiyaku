@@ -22547,3 +22547,250 @@ once the cost has loaded, so until then Cancel is the only button there.
 
 Nothing else looked wrong to the user.
 
+
+### ⑤c: the browser pass — 2026-09-25
+
+The branch served by `vite` against a `taiyaku serve` on a **copy** of the real
+library. The original `library.db` was checksummed before and after —
+`d5ebc0c2378650356115a8cce637e50dc5b4ab7f7cc8f388553cadd575a59e67` — and is
+unchanged. 68 captures in `target/style-pass-5c/pass/`: 36 whole screens, nine
+rows at 390×844 and 1440×900 in Paper and in Ink, plus 32 crops.
+
+**No sideways scroll anywhere.** `scrollWidth === clientWidth` on the document
+*and* on `<main>`, all 36 combinations, with the inbox checked **expanded as
+well as collapsed** — the expanded panel is the one carrying absolute paths.
+Worth one line for anyone comparing against passes ①–④: headed Chrome's
+scrollbar makes the 390 px layout viewport **375 px**, so these read 375/375
+where the earlier passes read 390/390. Stricter, not weaker, but a different
+number.
+
+**The four places the token sweep moved pixels, all measured and all kept.**
+The evidence panel's fact rows went from 0.8 px of vertical padding to 4 —
+27 px rows, four a side, a 108 px list. The collapsed row's subject-to-`↳`
+gap is exactly 4.00 px, up from 1.6. The state pills are exactly 34.0 px,
+down from 37.2, with the three kind tabs on one line at both widths. Corners
+are 2 px on cards, buttons and account cards, with pills and badges still
+999 px.
+
+**What it found, and it is on this branch's own screen.** In Ink the pressed
+`Open` pill and the `strong` badge are the same object. Checked in the
+stylesheet rather than off the pixels: the two rules carry the same three
+declarations — `--accent` border, `--accent` fill, `--on-accent` text — in a
+different order and in different files, each taking its 999 px corner from its
+own base rule rather than from the rule that fills it. Not byte-identical, as
+a first draft of this note said; identical in every way that reaches a
+screen. A thing you
+press and a thing you read, drawn alike. Both rules predate this branch;
+what made it visible is this branch, because giving the filter row three
+distinct treatments is what put a control and a verdict within a screenful
+of each other. Drawn three ways and settled with the user: the verdict is
+outlined now, `--accent` as text on the row's ground, which is 5.35:1 on
+Paper and 6.13:1 on Ink. Filled stays the mark of pressable, and the weak
+badge was outlined all along, so the two verdicts read as a pair.
+
+**Two figures the PR body must not take from elsewhere.** `/config/backup`'s
+rows measure **68 px at 390 px**; the 88 px recorded during Task 7 is the
+*coarse-pointer* figure, and stating it as a width claim would be wrong. And
+the reader's **Settings** panel is byte-identical in Paper and Ink by design —
+`.reader` sets `color-scheme: dark` — so its four capture files are two
+images, which is correct rather than a capture error. The **Account** panel's
+four are four distinct images, and the difference is a clock: 428 and 412
+pixels differ in one region, which cropped reads `last seen …22:27:13` against
+`…22:26:11`. Same design, different minute. A claim that all eight were two
+images would have been wrong, and only cropping the differing region showed
+which.
+
+**Two things confirmed rather than found.** The inbox's three filter controls
+read as three different kinds of control at both widths in both themes; and
+the Account panel is indistinguishable in weight from Settings opened beside
+it (`pass/crops/panels-side-by-side-*.png`).
+
+**Not attempted here, deliberately.** The 44 px touch floor: driven Chromium
+is `pointer: fine`, so that media query never engages and a pass like this
+one says nothing about it either way. Its figures were taken separately in a
+Chromium context with `hasTouch` and `isMobile` set, which reports
+`(pointer: coarse)` true and `(pointer: fine)` absent.
+
+### ⑤c: the device pass — 2026-09-25
+
+**Why a phone and not another Chromium run.** The browser pass above ends by
+saying what it could not reach: driven Chromium is `pointer: fine`, so the
+44 px floor §12.4a builds never engages and 68 captures say nothing about it
+either way. A separate Chromium context with `hasTouch` and `isMobile` set
+does report `(pointer: coarse)`, and that is what Task 7's figures were taken
+in — but a synthesised coarse pointer is a media query answered, not a thumb
+on glass.
+
+**And the split is not the one that flatters the device pass.** Only two of
+what follows strictly *required* a phone: the flash, which needs real network
+latency, and the confirmation that iOS Safari declines to zoom. Every other
+finding was available to the synthesised context and was not found there — the
+pill skew was measured in Chromium and argued away, and the 54-versus-44 split
+was under a measurement Task 7 took and read past. So the case for a device
+pass here is not that it reaches what a driven browser cannot. It is that a
+person looking at a screen asks questions no assertion was written to ask.
+
+**The rig.** A production build behind `vite preview --port 4173`, with the
+tailnet supplying the TLS iOS requires: `tailscale serve --set-path /` onto
+the preview and `--set-path /api` onto a `taiyaku serve` on `:8497`, reachable
+at `https://davey-endeavor.walrus-census.ts.net/` on the account `local`.
+Against a copy of the real library, not the original — same
+`d5ebc0c2…a59e67` checksum as the browser pass, verified unchanged after.
+
+**One question withdrawn before it was sent.** The plan had the user open the
+reader's Account *panel* on the phone and compare it with Settings. They
+cannot: the panel is reached by pressing `A` through `keyPlan` and has no
+pointer control at all. So §12.5's panel half is browser-tested only, and
+that is a limit of this pass rather than a gap in the panel — worth writing
+down because the obvious reading of "the account screen was device-tested" is
+that both placements were, and only one was.
+
+**1. The state pills were not optically centred.** *"the text inside the
+pills isn't centered but otherwise the sizing is good"* — so the floor is
+right and the ink inside it is not. Fixed in `bf5d6748`, 6 px of bottom
+padding, scoped to the pills.
+
+The methodology half is worth more than the fix. I measured the skew at +6 px
+in Chromium, then talked myself out of it in the write-up — argued it was
+"within 1 px by cap-to-baseline" and therefore not real. The user's own
+screenshot settled it: "Accepted" 17.5 px above the ink and 11.9 below,
+"Dismissed" 17.5 and 14.9, in a 44 px pill. That is +5.6 and +2.6, and the
+first measurement was right. **The lesson is not "measure twice"** — I had
+the right number and reasoned it away, which no amount of remeasuring
+catches. A measurement that disagrees with a model of how type sits in a box
+is evidence against the model.
+
+One thing checked back in Chromium afterwards, because it would have changed
+the fix: `line-height` is not the lever. 24 px to 16 px moved the ink zero pixels — the floor sets
+the box height, so the line box has slack at either value.
+
+**2. Every control in a user's card on `/config/users` greys when one
+checkbox is toggled.** Filed as O159, not fixed: it is behaviour, which spec
+§6 reserves. The user reported the scope as the whole screen — *"it's all the
+checkboxes on that page"* — and that is right for the library it was seen in,
+which holds **one** account. `saving` lives in `UserRow` and `Users.tsx`
+renders one card per account, so with a second account only the touched card
+greys. Worth the correction because the first draft of O159 wrote the
+observation down as the mechanism.
+
+The reason it is invisible on a desk is the reason it is visible on a phone:
+`settled()` holds the lock until the list *reload* comes back, not until the
+write answers, and over the tailnet that is long enough to watch. **And the
+obvious fix is refused in writing already.** `settled`'s own doc comment
+records why the lock covers the whole row — the grant checkbox sends a whole
+list, so a second tick inside that window computes the new grants from the
+pre-patch `user.roots` and silently revokes the first. The first draft of
+O159 proposed scoping `saving` per control, which would have put that data
+loss back on exactly the control the row is about. Three of that draft's
+figures were also wrong; the commit message on `ac2add0f` has them.
+
+**3. Three field defects, from one sentence.** *"it doesn't zoom but the text
+looks a bit weird next to the input boxes. it overlaps also when you tap a box
+and it gets highlighted."* Two separate facts:
+
+- *It doesn't zoom* is ⑤a's 16 px floor confirmed on the device it was built
+  for. That gate has only ever been checked by reading computed styles; this
+  is the first time a real iOS Safari declined to zoom into a focused field.
+- *Weird, and overlaps when highlighted* is three defects, fixed in
+  `593eb94b`: a focus ring 4 px outside the border box against 2.4 px of
+  label clearance on all five screens using the shared `.field` block; the
+  same ring clipping the label *below* it on `/account`, where two fields
+  stack with no gap; and a 44 px floor that was a floor on *content*, so
+  every `<input>` rendered at 54 px beside a `<select>` at 44.
+
+The third is the one a coarse-pointer Chromium context could have caught and
+did not, because Task 7 measured `min-height` rather than rendered height.
+The first two need a focus ring actually painted.
+
+**4. The inbox as a whole.** *"proposals as a whole is alright"* — the
+confirmation §12.3 was after: three filter controls that read as three kinds
+of control, on the screen where they matter, at the width they matter on.
+
+### ⑤c: the whole-branch review — 2026-09-25
+
+**It had not run.** Ten task reviews, three claim-check rounds on the prose,
+a browser pass and a device pass had all passed, and the gate this project
+keeps for last was still outstanding when the PR went up. It found **two
+Criticals**, and neither was reachable from a single task's diff.
+
+**C1 — the Account panel's text boxes rendered at 14 px under a coarse
+pointer, under O151's own floor.** `reader.css`'s floor was `(0,1,0)` and won
+its tie by *sitting after* the `font: inherit` it corrects — the comment said
+so in as many words. ⑤c then put the panel's controls on `.reader-field`,
+whose own `font: inherit` is also `(0,1,0)` and sits about a hundred lines
+*later*, so it took the tie back. Measured in Chromium at 390×844 with
+`hasTouch`: the panel's three boxes computed **14 px** while every admin-screen
+box in the same run computed 16. On `main` those inputs inherited the
+document's 16, so the branch took them *below* a floor built on hardware two
+PRs earlier.
+
+The fix names `.reader-field` in the floor's prelude at `(0,2,0)`, so it wins
+wherever either rule sits. **A floor that depends on being last is a floor the
+next rule removes silently** — and the test that guarded it asserted the
+source order, so it passed the whole time. That test now pins the specificity
+instead, and its old name is in the diff as the record of what was being
+guarded.
+
+**C2 — the floor's gate could not see a selector narrowed by a prefix.** The
+`inRule` helper anchored a selector to its `{`, which stops a suffix
+(`button.nope`) and not a prefix: `.account-wide` still matched inside
+`.config .account-wide`. The head comment claimed the class of defect was
+closed and watched. Four narrowings passed that way, one of them the exact
+defect the comment named. Both ends are anchored now, and three hand
+mutations that previously passed were watched red against a control run
+first: `.account-wide` → 3 failed, `.proposals .checks label` → 2, and
+`.editor-actions .export` → 2, from a control of 31 passed.
+
+**And the first attempt to watch those mutations was itself wrong**, which is
+worth more than the fix. Two of three "survived" — until the diff showed the
+mutation had landed on the *base* `.account-wide` rule at line 1793, because
+the harness located the coarse block with an `indexOf` that found an earlier
+one. `admin.css` has two `(pointer: coarse)` blocks and only the second is
+the floor. Against the right block all three reddened. A survivor list read
+before the mutation site is checked is fiction.
+
+**I1 — two of the three underlined one-of-N rows took the 44 px floor.**
+§12.8 excludes `.config-nav` on a measurement: 44 px puts the underline
+12.5 px below the word and takes the strip from 29 to 49. `.proposal-tabs`
+and `.preview-tabs` wear the same look and are `<button>`s, so the floor's
+`button` prelude reached them where `.config-nav`'s `<a>`s escaped it.
+Measured together at 390 coarse: 44/49 against 20/24. Settled with the user —
+both are excluded now, so the same measurement governs all three, and they
+join `.config-nav` in O157.
+
+**I2 — the pill fix from the device pass was overcorrecting**, found
+independently by the review and by the second claim check. It has its own
+note below.
+
+### ⑤c: the pill fix was measuring the wrong noun — 2026-09-25
+
+The device pass's first finding was that the state pills' text was not
+centred. The fix shipped as `padding-block: 0 6px` and was wrong, and the way
+it was wrong is the one this project keeps writing down: **the measurement
+was right and the noun was wrong.**
+
+"Open" and "Accepted" carry a `p`. "Dismissed" does not. The recorded
+before-figures — 17.5 px above the ink and 11.9 below on one pill, 17.5 and
+14.9 on another — were read as two different skews. They are one skew and a
+3 px descender. All three words share a single cap-top, which is what a
+reader sees as the word's position.
+
+Tuned against the ink bounding box of the two descender words, the correction
+came out at 3 px when the real error was 1.5. Measured in Chromium at 390×844
+with `hasTouch` against the built stylesheet, cap-top offset from the pill's
+optical centre:
+
+| `padding-block` | Open | Accepted | Dismissed |
+|---|---|---|---|
+| `4px 4px` (base) | +1.5 | +1.5 | +1.5 |
+| `0 6px` (shipped) | −1.5 | −1.5 | −1.5 |
+| `2.5px 5.5px` | 0.0 | 0.0 | 0.0 |
+
+So the shipped rule turned a 1.5 px error into a 1.5 px error of the opposite
+sign, and left "Dismissed" — the one word with nothing below the baseline —
+sitting 15.0 above and 18.0 below. `2.5px 5.5px` keeps the total padding at
+8 px, so only the content box's *position* moves, by the whole 1.5.
+
+**Why the original after-measurement missed it**: it was taken on "Open" and
+"Accepted", both descender words, and reported as bbox skew. Two measurements
+of the same wrong quantity agree with each other.

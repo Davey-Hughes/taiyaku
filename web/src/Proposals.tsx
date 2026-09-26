@@ -190,10 +190,11 @@ export function Proposals() {
           </button>
         </div>
       )}
-      {/* The three states, as C3 §4's "their own filters" — the same `chips`
-          idiom as the kind row below, and a row of its own because a state
-          and a kind are two filters, not two values of one. */}
-      <div className="proposal-states chips">
+      {/* The three states, as C3 §4's "their own filters". A row of its own
+          because a state and a kind are two filters, not two values of one —
+          and pills rather than tabs because it is the coarser of the two
+          (spec §12.3). */}
+      <div className="proposal-states">
         {PROPOSAL_STATES.map(({ state: s, label }) => (
           <button
             key={s}
@@ -206,11 +207,12 @@ export function Proposals() {
           </button>
         ))}
       </div>
-      {/* `chips` draws the filter rows as pills, styled in `styles/library.css`
-          down to the pressed state (the library's own row adds
-          `library-chips` for its tabs); `proposal-tabs` names this
-          particular row and carries no rules of its own. */}
-      <div className="proposal-tabs chips">
+      {/* One-of-N, so it wears the underlined tab look `config-nav` and the
+          rule preview wear (§12.3). It could not until O150: the score
+          threshold used to sit in this row wearing the same pill as a kind,
+          and ②'s review found the two drawing the same accent underline side
+          by side. */}
+      <div className="proposal-tabs">
         <button
           type="button"
           className="tab"
@@ -230,14 +232,31 @@ export function Proposals() {
             {kindLabel(k)} {n}
           </button>
         ))}
-        <button
-          type="button"
-          className="weak-toggle"
-          aria-pressed={showWeak}
-          onClick={() => setShowWeak((w) => !w)}
-        >
-          {showWeak ? 'Hide weak proposals' : 'Show weak proposals'}
-        </button>
+      </div>
+      {/* **The label does not flip.** It read "Show weak proposals" or "Hide
+          weak proposals" while `aria-pressed` said the same thing beside it —
+          the same fact twice, disagreeing for as long as a click was in
+          flight. A checkbox says its state with its box.
+
+          It also takes a coupling out of `EmptyState`. That component names
+          "Show weak proposals" in its copy, and the two agreed only because
+          the branches happened to line up: `inbox-weak-hidden` and
+          `decided-weak-hidden` are chosen on `!showWeak` below, which was
+          exactly when the button read "Show". An unconditional label stays
+          true however those branches move later. (An earlier version of this
+          comment claimed the copy had *disagreed* with the control; it never
+          could — ⑤c's Task 3 review traced the branches.) */}
+      <div className="checks weak-check">
+        <label>
+          <input
+            type="checkbox"
+            checked={showWeak}
+            onChange={(e) => {
+              setShowWeak(e.target.checked)
+            }}
+          />
+          Show weak proposals
+        </label>
       </div>
       {inbox !== undefined && proposals.length === 0 ? (
         <EmptyState

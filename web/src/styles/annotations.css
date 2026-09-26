@@ -24,7 +24,7 @@
 .region-box[data-selected="true"] {
   background: var(--box-fill-strong);
   box-shadow:
-    inset 0 0 0 1px #fff,
+    inset 0 0 0 1px var(--box-edge-bright),
     0 0 0 2px var(--box-line);
 }
 
@@ -167,7 +167,7 @@
     repeating-linear-gradient(
       45deg,
       transparent 0 9px,
-      rgba(74, 36, 0, 0.5) 9px 10px
+      var(--box-hatch) 9px 10px
     ),
     var(--box-fill);
 }

@@ -1,10 +1,4 @@
-import {
-  useCallback,
-  useEffect,
-  useState,
-  type CSSProperties,
-  type FormEvent,
-} from 'react'
+import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import {
   changePassword,
   createKey,
@@ -34,93 +28,80 @@ import { messageOf } from './message'
  * had to tell an administrator to "open any work and press A".
  */
 
-const overlayStyle: CSSProperties = {
-  position: 'fixed',
-  inset: 0,
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-  background: 'rgba(0, 0, 0, 0.6)',
-  zIndex: 20,
-}
-
-const panelStyle: CSSProperties = {
-  background: 'rgba(24, 24, 24, 0.96)',
-  color: 'rgba(255, 255, 255, 0.92)',
-  borderRadius: 12,
-  boxShadow: '0 10px 30px rgba(0, 0, 0, 0.45)',
-  padding: '20px 24px',
-  width: 'min(560px, 92vw)',
-  maxHeight: '80vh',
-  overflowY: 'auto',
-}
-
-const sectionStyle: CSSProperties = {
-  marginTop: 16,
-  paddingTop: 16,
-  borderTop: '1px solid rgba(255, 255, 255, 0.15)',
-}
-
-const fieldStyle: CSSProperties = {
-  display: 'block',
-  width: '100%',
-  marginTop: 6,
-  padding: '6px 8px',
-  borderRadius: 6,
-  border: '1px solid rgba(255, 255, 255, 0.2)',
-  background: 'rgba(0, 0, 0, 0.3)',
-  color: 'inherit',
-  font: 'inherit',
-}
-
-const secretStyle: CSSProperties = {
-  marginTop: 10,
-  padding: '10px 12px',
-  borderRadius: 6,
-  background: 'rgba(255, 255, 255, 0.08)',
-  fontFamily: 'ui-monospace, monospace',
-  wordBreak: 'break-all',
-}
-
-const rowStyle: CSSProperties = {
-  display: 'flex',
-  alignItems: 'baseline',
-  justifyContent: 'space-between',
-  gap: 12,
-  marginTop: 8,
-}
-
-/** What each placement paints. Only styles carrying a colour are here. */
+/** The class each placement paints a part with. */
 interface Look {
-  section?: CSSProperties
-  field?: CSSProperties
-  wide?: CSSProperties
-  signOut?: CSSProperties
-  secret?: CSSProperties
-  failure?: CSSProperties
-  note?: CSSProperties
+  section?: string
+  /** On the `<label>`. The page uses `.field`; the panel wants none. */
+  label?: string
+  field?: string
+  wide?: string
+  signOut?: string
+  /**
+   * Beside the `secret` the call site writes for both placements, not in
+   * place of it — `admin.css`'s `.account .secret` and `reader.css`'s
+   * `.reader-secret` are two boxes of the same idea, and the page's is
+   * reached by the literal alone. The page therefore sets none: `secret:
+   * 'secret'` here concatenated to `class="secret secret"`, and collapsing
+   * the literal instead would take `.secret` off the panel, which
+   * `admin.css` paints the page's copy with.
+   */
+  secret?: string
+  failure?: string
+  note?: string
+  row?: string
+  meta?: string
+  button?: string
+  heading?: string
 }
 
 /**
- * **The panel's colours are fixed dark**, like the reader chrome it opens
- * over. **The page's are none**: at `/account` this sits inside `.library`,
- * which follows the viewer's colour scheme, and on a paper `--bg` the
- * panel's `#a8ffb4` notice is pale green on paper. `styles/admin.css`'s
- * `.account` block draws the page in the theme's tokens instead. The
- * layout-only inline
- * styles below — `rowStyle`, the headings, the small print — serve both.
+ * **Two placements, two vocabularies, one component.**
+ *
+ * The panel is one of the reader's dialogs and takes ③'s classes; the page
+ * is a settings screen inside `.library` and takes `admin.css`'s. This map
+ * was a map of `CSSProperties` until ⑤c, and the panel's half of it was 25
+ * inline `style=` props and 10 colour literals drawing a dialog that matched
+ * none of the four beside it.
+ *
+ * **The panel's colours are the reader's and resolve dark in both themes**,
+ * because `App` renders `<Account>` as a sibling of `<Settings>` inside
+ * `<div className="reader">`, where `reader.css` sets `color-scheme: dark`.
+ * That containment is load-bearing: the same classes *outside* `.reader`
+ * would draw `--text` pale-on-paper over a fixed dark ground.
  */
 const LOOKS: Record<'panel' | 'page', Look> = {
   panel: {
-    section: sectionStyle,
-    field: fieldStyle,
-    wide: { ...fieldStyle, cursor: 'pointer' },
-    signOut: { ...fieldStyle, marginTop: 14, cursor: 'pointer' },
-    secret: secretStyle,
-    failure: { color: '#ffb4a8' },
-    note: { color: '#a8ffb4' },
+    section: 'reader-section',
+    heading: 'reader-panel-heading',
+    // No label class: a reader panel puts the word above the box as plain
+    // text. `.field`'s uppercase micro-label is the settings area's idiom,
+    // and the page takes it in Task 6.
+    field: 'reader-field reader-field-block',
+    wide: 'reader-button reader-button-wide',
+    signOut: 'reader-button reader-button-wide',
+    secret: 'reader-secret',
+    failure: 'reader-failure',
+    note: 'reader-success',
+    // Both halves at every site. `.reader-section-head` is ③'s row, which
+    // has no margin because no panel of ③'s ever stacked two of them; the
+    // modifier is the 8 px each of this panel's rows carried as an inline
+    // style. See `reader.css` for why an adjacent-sibling rule cannot stand
+    // in for it here.
+    row: 'reader-section-head reader-section-head-stacked',
+    meta: 'reader-meta',
+    button: 'reader-button',
   },
-  page: {},
+  page: {
+    section: 'account-card',
+    heading: 'account-heading',
+    label: 'field',
+    wide: 'account-wide',
+    signOut: 'account-wide',
+    failure: 'account-failure',
+    note: 'account-note',
+    row: 'account-row',
+    meta: 'why',
+  },
 }
 
 export type AccountProps = {
@@ -257,19 +238,19 @@ export function Account(props: AccountProps) {
   const sections = (
     <>
       {failure === null ? null : (
-        <p role="alert" style={look.failure}>
+        <p role="alert" className={look.failure}>
           {failure}
         </p>
       )}
-      {note === null ? null : <p style={look.note}>{note}</p>}
+      {note === null ? null : <p className={look.note}>{note}</p>}
 
-      <section style={look.section}>
-        <h3 style={{ margin: 0, fontSize: '1em' }}>Password</h3>
+      <section className={look.section}>
+        <h3 className={look.heading}>Password</h3>
         <form onSubmit={change}>
-          <label>
+          <label className={look.label}>
             Current
             <input
-              style={look.field}
+              className={look.field}
               type="password"
               autoComplete="current-password"
               value={current}
@@ -278,10 +259,10 @@ export function Account(props: AccountProps) {
               }}
             />
           </label>
-          <label>
+          <label className={look.label}>
             New
             <input
-              style={look.field}
+              className={look.field}
               type="password"
               autoComplete="new-password"
               value={next}
@@ -290,44 +271,44 @@ export function Account(props: AccountProps) {
               }}
             />
           </label>
-          <button type="submit" style={look.wide} disabled={busy}>
+          <button type="submit" className={look.wide} disabled={busy}>
             Change password
           </button>
         </form>
       </section>
 
-      <section style={look.section}>
-        <h3 style={{ margin: 0, fontSize: '1em' }}>API keys</h3>
-        <p style={{ fontSize: '0.9em', opacity: 0.8 }}>
+      <section className={look.section}>
+        <h3 className={look.heading}>API keys</h3>
+        <p className={look.meta}>
           For OPDS readers like Panels or Chunky: give the key as the password,
           with your account name as the username.
         </p>
-        <form onSubmit={create} style={rowStyle}>
+        <form onSubmit={create} className={look.row}>
           <input
-            style={look.field}
+            className={look.field}
             placeholder="Which device is this for?"
             value={keyName}
             onChange={(e) => {
               setKeyName(e.target.value)
             }}
           />
-          <button type="submit" disabled={busy}>
+          <button type="submit" className={look.button} disabled={busy}>
             Create
           </button>
         </form>
         {freshSecret === null ? null : (
-          <div className="secret" style={look.secret}>
+          <div className={`secret ${look.secret ?? ''}`.trim()}>
             <div>{freshSecret}</div>
-            <p style={{ margin: '8px 0 0', fontSize: '0.85em', opacity: 0.85 }}>
+            <p className={look.meta}>
               Copy this now — it is not stored and cannot be shown again.
             </p>
           </div>
         )}
         {keys.map((key) => (
-          <div key={key.id} style={rowStyle}>
+          <div key={key.id} className={look.row}>
             <span>
               {key.name}
-              <span style={{ opacity: 0.6 }}>
+              <span className={look.meta}>
                 {' '}
                 —{' '}
                 {key.last_used === null
@@ -337,6 +318,7 @@ export function Account(props: AccountProps) {
             </span>
             <button
               type="button"
+              className={look.button}
               onClick={() => {
                 // Said rather than swallowed, and `refresh` only on success:
                 // a revocation that did not happen looked exactly like one
@@ -356,13 +338,13 @@ export function Account(props: AccountProps) {
         ))}
       </section>
 
-      <section style={look.section}>
-        <h3 style={{ margin: 0, fontSize: '1em' }}>Signed in</h3>
+      <section className={look.section}>
+        <h3 className={look.heading}>Signed in</h3>
         {sessions.map((session) => (
-          <div key={session.id} style={rowStyle}>
+          <div key={session.id} className={look.row}>
             <span>
               {session.user_agent ?? 'unknown browser'}
-              <span style={{ opacity: 0.6 }}>
+              <span className={look.meta}>
                 {' '}
                 — last seen {session.last_seen}
               </span>
@@ -370,6 +352,7 @@ export function Account(props: AccountProps) {
             </span>
             <button
               type="button"
+              className={look.button}
               disabled={session.current}
               onClick={() => {
                 void revokeSession(session.id)
@@ -385,7 +368,7 @@ export function Account(props: AccountProps) {
         ))}
         <button
           type="button"
-          style={look.signOut}
+          className={look.signOut}
           onClick={() => {
             void logout()
               .then(onSignedOut)
@@ -413,11 +396,15 @@ export function Account(props: AccountProps) {
   }
 
   return (
-    <div style={overlayStyle}>
-      <div style={panelStyle} role="dialog" aria-label="Account">
-        <div style={rowStyle}>
-          <h2 style={{ margin: 0, fontSize: '1.1em' }}>Account</h2>
-          <button type="button" onClick={props.onClose}>
+    <div className="reader-dialog">
+      <div className="reader-dialog-panel" role="dialog" aria-label="Account">
+        <div className="reader-panel-head">
+          <h2 className="reader-panel-title">Account</h2>
+          <button
+            type="button"
+            className="reader-button"
+            onClick={props.onClose}
+          >
             Close
           </button>
         </div>

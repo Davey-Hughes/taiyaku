@@ -19,32 +19,84 @@
  * media query would have to hardcode that 14rem a second time and go wrong
  * the day the sidebar changed. The list asks its own width instead.
  *
- * **The tab row has no rules here.** It reuses `library.css`'s plain `.chips`
- * pill rules, which since the style pass's ② are the inbox's own — the
- * library's row adds `library-chips` for its tabs — until ⑤ restyles this
- * screen; `.proposal-tabs` is still a name for tests and for this comment,
- * carrying no rules of its own.
+ * **The three filter controls are three kinds of control**, and the rules for
+ * them are below. Style pass ② found the failure by shipping it: the
+ * underlined tab look reached this screen and drew "All" and "Hide weak
+ * proposals" with the same accent underline side by side, so it was pulled
+ * back to the library's own row. ⑤c earns it back by moving the independent
+ * toggle out of the row (O150) — the state row keeps pills, the kind row
+ * takes the tab look, and the threshold is a checkbox on a line of its own.
  *
- * Tokens, like everything else below `.library`. */
+ * Tokens, like everything else below `.library` — which this range did not
+ * hold a single one of until ⑤c. Its 59 rules carried 80 raw `rem` values
+ * and zero space, type or radius tokens; every token that appeared in it
+ * belonged to the `.field` block ⑤a hoisted through it. */
 .proposals h1 {
   margin: 0;
-  font-size: 1.25rem;
+  font-size: var(--text-h3);
 }
 
 .proposals .failure {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: var(--space-2);
 }
 
 .proposals .retry {
-  padding: 0.25rem 0.6rem;
+  padding: var(--space-1) var(--space-2);
   border: 1px solid var(--line-strong);
-  border-radius: 4px;
+  border-radius: var(--radius-control);
   background: var(--surface);
   color: var(--text);
   font: inherit;
   cursor: pointer;
+}
+
+/* One of three states — the coarser of the screen's two one-of-N filters, so
+ * it reads as "which inbox" above the kind row's "which kind". Pills rather
+ * than tabs for that reason, and because two identical underlined strips
+ * stacked give no hierarchy at all; drawn both ways before it was chosen
+ * (spec §12.3, `drawn/o150-B-1440.png` against `-D-`).
+ *
+ * These three rules were `library.css`'s bare `.chips` until ⑤c, whose own
+ * comment said they were this screen's and were waiting for ⑤. */
+.proposal-states {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin: var(--space-4) 0;
+}
+
+.proposal-states .state {
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.proposal-states .state[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+/* The kind row sits under the state row rather than beside it, so it needs a
+ * top margin the preview strip does not; everything else it takes from the
+ * shared tab rules further down this file. */
+.proposal-tabs {
+  margin-top: var(--space-4);
+}
+
+/* The threshold is an independent toggle and so is a checkbox — the same
+ * treatment ⑤b gave the permission and grant boxes, whose labels are
+ * sentences rather than field names (spec §11.3). `.proposals .checks` joins
+ * their two rules below; only the bottom margin is this row's own, because
+ * the list follows it directly. */
+.proposals .checks {
+  margin-bottom: var(--space-4);
 }
 
 .proposal-list {
@@ -52,7 +104,7 @@
   margin: 0;
   padding: 0;
   display: grid;
-  gap: 0.35rem;
+  gap: var(--space-1);
   container-type: inline-size;
   container-name: inbox;
 }
@@ -80,7 +132,7 @@
 .proposal-list li {
   min-width: 0;
   border: 1px solid var(--line-strong);
-  border-radius: 4px;
+  border-radius: var(--radius-control);
 }
 
 .proposal-list li.strong {
@@ -90,8 +142,8 @@
 .proposals .row {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
-  padding-right: 0.5rem;
+  gap: var(--space-2);
+  padding-right: var(--space-2);
 }
 
 /* The disclosure control is the whole line, so it has to stop looking like a
@@ -110,9 +162,9 @@
   display: grid;
   grid-template-columns: 9rem minmax(0, 1fr) auto;
   align-items: baseline;
-  column-gap: 0.75rem;
-  row-gap: 0.15rem;
-  padding: 0.5rem 0.6rem;
+  column-gap: var(--space-3);
+  row-gap: var(--space-1);
+  padding: var(--space-2);
   border: 0;
   background: none;
   color: inherit;
@@ -153,7 +205,7 @@
  * an overflow value three rules away, and that is the whole of its job. */
 .proposals .what {
   display: grid;
-  gap: 0.1rem;
+  gap: var(--space-1);
 }
 
 .proposals .subject,
@@ -171,22 +223,37 @@
  * panel's own comment records: `index.css.test.ts` exists because two dimmed
  * things here failed WCAG AA in dark. */
 .proposals .arrow {
-  font-size: 0.8rem;
+  font-size: var(--text-meta);
 }
 
 .proposals .score {
   justify-self: start;
   border: 1px solid var(--line-strong);
   border-radius: 999px;
-  padding: 0 0.5rem;
-  font-size: 0.75rem;
+  padding: 0 var(--space-2);
+  font-size: var(--text-meta);
   line-height: 1.5;
 }
 
+/* **Outlined, not filled — a verdict is not a control.** `.proposal-states`'s
+ * pressed pill is `--accent` border, `--accent` fill, `--on-accent` text at
+ * 999px, and this rule carried the same three declarations: a thing you
+ * press and a thing you read, drawn as the same object. **Not byte-identical**
+ * — a first draft of this comment said so and `notes.md` records the
+ * correction: different file, different selector, different declaration
+ * order, and each taking its 999px corner from its own base rule. Identical
+ * in every way that reaches a screen, which is the claim that matters. ⑤c's browser pass is what made
+ * that visible, because ⑤c is what gave the filter row three distinct
+ * treatments and so put the two within a screenful of each other.
+ *
+ * Filled stays the mark of pressable. `--accent` as text clears AA on the
+ * row's ground in both themes — 5.35:1 on Paper, 6.13:1 on Ink, which
+ * `index.css.test.ts`'s floor already computes — and the weak badge beside
+ * it was outlined all along, so the two verdicts now read as a pair. */
 .proposals li.strong .score {
   border-color: var(--accent);
-  background: var(--accent);
-  color: var(--on-accent);
+  background: none;
+  color: var(--accent);
 }
 
 /* Narrow: the titles take the row to themselves, under the kind and the
@@ -211,7 +278,7 @@
 }
 
 .proposal-detail {
-  padding: 0.5rem 0.6rem;
+  padding: var(--space-2);
   border-top: 1px solid var(--line-strong);
 }
 
@@ -247,22 +314,22 @@
  * exemption is for a control nobody is waiting on, and that one is the
  * resting state of a form being edited. See its own rule for the measurement. */
 .proposal-detail .full-reason {
-  margin-bottom: 0.7rem;
-  font-size: 0.9rem;
+  margin-bottom: var(--space-3);
+  font-size: var(--text-ui);
 }
 
 .proposal-detail .sides {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
-  gap: 1rem;
-  margin-bottom: 0.8rem;
+  gap: var(--space-4);
+  margin-bottom: var(--space-3);
 }
 
 .proposal-detail .side {
   min-width: 0;
   display: grid;
   align-content: start;
-  gap: 0.4rem;
+  gap: var(--space-2);
 }
 
 /* Which end of the proposal this column is. The mockup labelled the columns
@@ -280,14 +347,14 @@
 
 .proposal-detail .side-title {
   margin: 0;
-  font-size: 0.95rem;
+  font-size: var(--text-body);
   overflow-wrap: anywhere;
 }
 
 .proposal-detail .pages {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.4rem;
+  gap: var(--space-2);
 }
 
 /* A fixed box per page, whatever the artwork's own proportions: three tiles
@@ -302,7 +369,7 @@
   object-fit: cover;
   background: var(--surface);
   border: 1px solid var(--line-strong);
-  border-radius: 3px;
+  border-radius: var(--radius-control);
 }
 
 /* C3 §2's "the full path on disk, verbatim" — so it breaks rather than
@@ -310,7 +377,7 @@
  * one: a path that cannot be copied is not the evidence that was asked for. */
 .proposal-detail .directories {
   font-family: ui-monospace, monospace;
-  font-size: 0.75rem;
+  font-size: var(--text-meta);
   overflow-wrap: anywhere;
 }
 
@@ -323,29 +390,29 @@
  * is a path. `--surface` (`ButtonFace` until 2026-09-17) stays where it means
  * "control": the buttons. */
 .proposal-detail .directories code {
-  border-radius: 3px;
+  border-radius: var(--radius-control);
 }
 
 .proposal-detail .more {
-  margin-left: 0.35rem;
+  margin-left: var(--space-1);
   font-family: inherit;
 }
 
 .proposal-detail .no-volume,
 .proposal-detail .no-directory {
-  font-size: 0.8rem;
+  font-size: var(--text-meta);
 }
 
 .proposal-detail .facts {
   margin: 0;
-  font-size: 0.8rem;
+  font-size: var(--text-meta);
 }
 
 .proposal-detail .fact {
   display: flex;
   justify-content: space-between;
-  gap: 0.75rem;
-  padding: 0.05rem 0;
+  gap: var(--space-3);
+  padding: var(--space-1) 0;
   border-bottom: 1px solid var(--line-strong);
 }
 
@@ -368,18 +435,18 @@
 .proposal-detail .volume-list {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.2rem;
+  gap: var(--space-1);
 }
 
 .proposal-detail .vol {
   border: 1px solid var(--line-strong);
-  border-radius: 3px;
-  padding: 0 0.3rem;
-  font-size: 0.7rem;
+  border-radius: var(--radius-control);
+  padding: 0 var(--space-1);
+  font-size: var(--text-meta);
 }
 
 .proposal-detail .lab {
-  margin: 0 0 0.25rem;
+  margin: 0 0 var(--space-1);
   font-size: 0.7rem;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -387,18 +454,18 @@
 
 .proposal-detail .reasons {
   list-style: none;
-  margin: 0 0 0.8rem;
+  margin: 0 0 var(--space-3);
   padding: 0;
   display: grid;
-  gap: 0.15rem;
-  font-size: 0.85rem;
+  gap: var(--space-1);
+  font-size: var(--text-ui);
 }
 
 /* `.proposal-list li` above gives every `<li>` under this screen a box, which
  * is right for a proposal and wrong for a line of one. */
 .proposal-detail .reasons li {
   display: flex;
-  gap: 0.5rem;
+  gap: var(--space-2);
   border: 0;
 }
 
@@ -418,11 +485,11 @@
   display: grid;
   grid-template-columns: 1fr auto;
   align-items: start;
-  gap: 0.5rem 0.75rem;
+  gap: var(--space-2) var(--space-3);
   border: 1px dashed var(--line-strong);
-  border-radius: 4px;
-  padding: 0.5rem 0.6rem;
-  font-size: 0.85rem;
+  border-radius: var(--radius-control);
+  padding: var(--space-2);
+  font-size: var(--text-ui);
 }
 
 /* The name of a command does not wrap. Chromium broke `duplicates --against`
@@ -435,29 +502,29 @@
 
 .proposal-detail .compare {
   border: 1px solid var(--line-strong);
-  border-radius: 4px;
-  padding: 0.25rem 0.7rem;
+  border-radius: var(--radius-control);
+  padding: var(--space-1) var(--space-3);
   background: var(--surface);
   color: var(--muted);
   font: inherit;
-  font-size: 0.8rem;
+  font-size: var(--text-meta);
 }
 
 .proposal-detail .not-yet {
   grid-column: 1 / -1;
-  font-size: 0.75rem;
+  font-size: var(--text-meta);
 }
 
 .proposal-detail .no-rule {
-  margin-top: 0.7rem;
+  margin-top: var(--space-3);
   border-left: 3px solid var(--line-strong);
-  padding: 0.4rem 0.6rem;
-  font-size: 0.85rem;
+  padding: var(--space-2);
+  font-size: var(--text-ui);
 }
 
 .proposal-detail .loading,
 .proposal-detail .evidence-failure {
-  font-size: 0.85rem;
+  font-size: var(--text-ui);
 }
 
 /* Accepting is a form — C3 §3 — and it sits at the foot of the panel rather
@@ -472,17 +539,17 @@
  * at the widths this screen is used at, while the other four are a slug, two
  * short vocabularies and a language tag. */
 .proposal-detail .accept-form {
-  margin-top: 0.7rem;
+  margin-top: var(--space-3);
   border-top: 1px solid var(--line-strong);
-  padding-top: 0.6rem;
+  padding-top: var(--space-2);
   display: grid;
-  gap: 0.5rem;
+  gap: var(--space-2);
 }
 
 .proposal-detail .rule-fields {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.5rem 0.75rem;
+  gap: var(--space-2) var(--space-3);
 }
 
 /* Scoped to the screens that opted in, not bare — a bare `.field` also
@@ -495,10 +562,29 @@
 .root-row .field,
 .user-row .field,
 .add-user .field,
-.add-root .field {
+.add-root .field,
+.account .field {
   min-width: 0;
   display: grid;
-  gap: 0.15rem;
+  /* **`var(--space-1)` is 4px, and 4px is what the focus ring occupies.**
+   * `base.css` draws a focused control at `outline: 2px solid var(--accent)`
+   * with `outline-offset: 2px`, so the ring paints 2–4px *outside* the
+   * border box on every side — including the side the micro-label is on.
+   * The `0.15rem` this shipped with is 2.4px, so the ring landed inside the
+   * label's own line: measured in a 390px Chromium context with `hasTouch`
+   * and `isMobile` set, the label's ink stopped **2.00px** above the ring on
+   * `/account`, `/config/users`, `/config/roots`, `/config/rules` and the
+   * proposals accept form — five screens, one figure, because one rule.
+   *
+   * **This is older than the branch that fixed it.** `main` carries the
+   * same 2.4px on the same block, and `.proposal-detail .field` — the one
+   * rule the block grew out of — has carried it since style pass ①
+   * (`c70413e1`). ⑤c's device pass is only where a finger and a real phone
+   * made it visible. This declaration on its own costs 1.6px of height per
+   * field on the four screens that already shipped; the coarse floor's
+   * `box-sizing` below, added in the same change, takes 10px off each text
+   * box, so every field ends up shorter than it was. */
+  gap: var(--space-1);
   font-size: 0.7rem;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -533,6 +619,21 @@
 /* `textarea` is new to this list: the root row's `exclude_globs` box is one,
  * and the four existing hosts have none, which is why it was never needed
  * before. */
+/* `.account .account-row input` is the one entry here whose second class is
+ * not `.field`: it is the account page's key-name box, the only control on
+ * any of these screens that no `.field` wraps, so its row is what reaches
+ * it. Two classes and not the one `.account-row` would need, because every
+ * other selector in this list is (0,2,1) and a (0,1,1) beside them is a
+ * descending specificity — biome says so, and the rule it names is about a
+ * cascade that reads the wrong way round to anyone editing this block later.
+ *
+ * It joins this list and the coarse-pointer companion below — the coupled
+ * pair — and not the block's base rule above, which styles a `<label>`: an
+ * `<input>` there would take a `display: grid` and an 11.2px size that this
+ * rule then has to undo. Measured both ways in Chromium on 2026-09-24; the
+ * box is identical but for a computed `display` of `grid` against `block`.
+ * The one other rule naming this selector is its `flex` beside
+ * `.account-row` itself. `admin-account.css.test.ts` counts all three. */
 .proposal-detail .field input,
 .rule-form .field input,
 .proposal-detail .field select,
@@ -544,7 +645,9 @@
 .user-row .field select,
 .add-user .field input,
 .add-user .field select,
-.add-root .field input {
+.add-root .field input,
+.account .field input,
+.account .account-row input {
   /* **A `<select>`'s intrinsic width is its widest option, and a grid item
    * will not go below that without this.** `scope`'s options are absolute
    * root paths. Measured at 390 before this line, against the library these
@@ -598,7 +701,9 @@
   .user-row .field select,
   .add-user .field input,
   .add-user .field select,
-  .add-root .field input {
+  .add-root .field input,
+  .account .field input,
+  .account .account-row input {
     font-size: max(16px, var(--text-ui));
   }
 }
@@ -619,7 +724,7 @@
  * because of. */
 .proposal-detail .accept-form .scope {
   flex: 1 0 100%;
-  font-size: 0.7rem;
+  font-size: var(--text-meta);
 }
 
 .proposal-detail .refusals {
@@ -627,8 +732,8 @@
   margin: 0;
   padding: 0;
   display: grid;
-  gap: 0.25rem;
-  font-size: 0.85rem;
+  gap: var(--space-1);
+  font-size: var(--text-ui);
 }
 
 /* `.proposal-list li` gives every `<li>` on this screen a box, which is right
@@ -640,14 +745,14 @@
 .proposal-detail .refusals li {
   border: 0;
   border-left: 3px solid var(--accent);
-  padding-left: 0.5rem;
+  padding-left: var(--space-2);
 }
 
 .proposal-detail .consequence,
 .proposal-detail .checking,
 .proposal-detail .accept-failure,
 .proposal-detail .preview-failure {
-  font-size: 0.85rem;
+  font-size: var(--text-ui);
 }
 
 /* The same `--accent` strip `.refusals li` carries, for the same reason its
@@ -655,21 +760,21 @@
  * under it is pressed. Not a refusal — the accept is offered and is correct —
  * so it takes the strip and not the list. */
 .proposal-detail .the-fold {
-  margin: 0.35rem 0 0;
+  margin: var(--space-1) 0 0;
   border-left: 3px solid var(--accent);
-  padding-left: 0.5rem;
-  font-size: 0.8rem;
+  padding-left: var(--space-2);
+  font-size: var(--text-meta);
 }
 
 .proposal-detail .accept {
   justify-self: start;
   border: 1px solid var(--line-strong);
-  border-radius: 4px;
-  padding: 0.25rem 0.9rem;
+  border-radius: var(--radius-control);
+  padding: var(--space-1) var(--space-4);
   background: var(--surface);
   color: var(--text);
   font: inherit;
-  font-size: 0.85rem;
+  font-size: var(--text-ui);
   cursor: pointer;
 }
 
@@ -706,12 +811,12 @@
 .proposals .row .reopen {
   flex: 0 0 auto;
   border: 1px solid var(--line-strong);
-  border-radius: 4px;
-  padding: 0.2rem 0.6rem;
+  border-radius: var(--radius-control);
+  padding: var(--space-1) var(--space-2);
   background: var(--surface);
   color: var(--text);
   font: inherit;
-  font-size: 0.8rem;
+  font-size: var(--text-meta);
   cursor: pointer;
 }
 
@@ -723,27 +828,30 @@
 
 .proposals .write-failure {
   margin: 0;
-  padding: 0.35rem 0.6rem;
+  padding: var(--space-1) var(--space-2);
   border-top: 1px solid var(--line-strong);
-  font-size: 0.85rem;
+  font-size: var(--text-ui);
 }
 
 /* Spec C4's settings area. Tokens throughout, per `tokens.css`'s own
    rule and `index.css.test.ts`'s WCAG check: `Login.tsx` shipped a hardcoded
    #111 on this app's front door, and that test exists because of it. */
-/* The settings sub-nav and the preview strip wear one look — §10.6.
+/* The settings sub-nav, the preview strip and the inbox's kind row wear one
+ * look — §10.6 settled it for the first two, §12.3 brought the third in.
  *
  * The line is **one-of-N against independent toggle**, not navigation
  * against panel: a row of links and a row of buttons are different markup
  * for the same act, and a reader choosing among four does not care which
- * changed the URL. The inbox's filters keep their pills because one of them
- * is not a tab — ②'s whole-branch review found "All" and "Hide weak
- * proposals" drawing the same accent underline side by side, which is what
- * pulled the look back off that row.
+ * changed the URL. The inbox's kind row was kept off this look until ⑤c for
+ * the other half of that line — ②'s whole-branch review found "All" and
+ * "Hide weak proposals" drawing the same accent underline side by side,
+ * because the independent toggle sat in the row. O150 moved the toggle out,
+ * so the row is one-of-N throughout and takes the look; the inbox's *state*
+ * row keeps its pills, as the coarser of its two filters.
  *
- * `inset 0 -2px 0` rather than a border-bottom, copying
- * `.chips.library-chips`: a border appearing under the current item moves
- * the row's baseline every time the selection changes. */
+ * `inset 0 -2px 0` rather than a border-bottom, copying `.library-chips`: a
+ * border appearing under the current item moves the row's baseline every
+ * time the selection changes. */
 .config-nav ul {
   display: flex;
   flex-wrap: wrap;
@@ -760,12 +868,8 @@
   text-decoration: none;
 }
 
-.config-nav a[aria-current="page"] {
-  color: var(--text);
-  box-shadow: inset 0 -2px 0 var(--accent);
-}
-
-.preview-tabs {
+.preview-tabs,
+.proposal-tabs {
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-5);
@@ -774,7 +878,8 @@
   border-bottom: 1px solid var(--line);
 }
 
-.preview-tabs button {
+.preview-tabs button,
+.proposal-tabs button {
   padding: var(--space-1) 0;
   border: 0;
   border-radius: 0;
@@ -785,7 +890,15 @@
   cursor: pointer;
 }
 
-.preview-tabs button[aria-current="true"] {
+/* The current one of a one-of-N row, wherever the row is. Three preludes
+ * because the app marks a chosen one two different ways — `aria-current` on
+ * the config nav's links and the preview strip's buttons, `aria-pressed` on
+ * the inbox's. That disagreement is real and is the accessibility pass's to
+ * settle (spec §12.8); what must not happen meanwhile is the three drifting
+ * apart visually, which one rule prevents and three copies would not. */
+.config-nav a[aria-current="page"],
+.preview-tabs button[aria-current="true"],
+.proposal-tabs button[aria-pressed="true"] {
   color: var(--text);
   box-shadow: inset 0 -2px 0 var(--accent);
 }
@@ -1203,6 +1316,7 @@
    all, and a selector that matches nothing is the inert rule this task
    dropped `.scan-report` to avoid. */
 .users .why,
+.account .why,
 .backup .what-a-backup-is {
   max-width: 60ch;
 }
@@ -1281,18 +1395,23 @@
    Relocated beside the other `.root-row` rules — a minor of the whole-branch
    review over ⑤b found this pair (which also styles `.user-row .checks`)
    sitting ~200 lines below every other `.root-row` rule, under the header for
-   the users and backup screens. Pure relocation: nothing else in either
-   stylesheet shares `.checks` or `.checks label`'s selector text, so moving
-   it earlier changes no cascade outcome. */
+   the users and backup screens. Pure relocation: the only other rule in
+   either stylesheet carrying `.checks` selector text is `.proposals .checks`'s
+   own bottom margin near the head of this file, added by ⑤c, and it shares no
+   property with this pair — that one sets `margin-bottom`, this one
+   `margin-top` — so moving this earlier changes no cascade outcome. (Until ⑤c
+   nothing else carried it at all, which is what this sentence used to say.) */
 .root-row .checks,
-.user-row .checks {
+.user-row .checks,
+.proposals .checks {
   display: grid;
   gap: var(--space-2);
   margin-top: var(--space-3);
 }
 
 .root-row .checks label,
-.user-row .checks label {
+.user-row .checks label,
+.proposals .checks label {
   display: flex;
   align-items: baseline;
   gap: var(--space-2);
@@ -1500,6 +1619,12 @@
   font-size: var(--text-meta);
 }
 
+.account .why {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--text-meta);
+}
+
 .user-row .fields {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
@@ -1582,64 +1707,122 @@
 }
 
 /* O94's account screen at `/account`: the `Account` the reader draws as an
-   overlay, drawn here inside `.library`'s `<main>`. Tokens, per
-   `tokens.css`. The panel's palette is fixed dark to sit over a page, and on
-   a paper `--bg` it would draw the "Password changed" notice in pale green on
-   paper, so `Account` hands this placement no colour at all. */
+   overlay, drawn here inside `.library`'s `<main>`. The panel's palette is
+   fixed dark to sit over a page, so `Account` hands *that* placement the
+   reader's own classes and this one `admin.css`'s (spec §12.5).
+
+   ⑤c made it a settings screen rather than a page of hairlines: a card per
+   section on the same measure the roots and users screens use, the `.field`
+   micro-label on the two boxes that have a label, and quiet text bought with
+   `--muted` and size. It was bought with `opacity` before, and the 0.6 dim on
+   a session's "last seen" measured 4.18:1 on Paper at 16px — under AA.
+
+   The key-name box has no label to carry the micro-label — only a
+   placeholder, and whether it should have a real label is the accessibility
+   pass's question, not this file's — so the shared `.field` block reaches it
+   by `.account .account-row input` instead. Left out of that block it drew
+   `base.css`'s bare-control defaults: **166px wide at 16px with `1px 2px` of
+   padding**, beside password boxes at 14px and `4px 8px`, and a 399px hole
+   between it and the Create button. Measured in Chromium at 1280px,
+   2026-09-24. */
 .account {
-  max-width: 40rem;
+  --config-measure: 40rem;
 }
 
 .account > h2 {
   margin: 0;
 }
 
-.account section {
-  margin-top: 1rem;
-  padding-top: 1rem;
-  border-top: 1px solid var(--line-strong);
+.account-card {
+  max-width: var(--config-measure);
+  margin-top: var(--space-4);
+  padding: var(--space-4);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
 }
 
-/* biome-ignore lint/style/noDescendingSpecificity: `.account` and
- * `.proposal-detail`/`.rule-form` (above) are three different screens; an
- * input cannot hold more than one of these classes, so the two never
- * compete for the same element regardless of which comes first. */
-.account input {
-  display: block;
-  box-sizing: border-box;
-  width: 100%;
-  margin: 0.25rem 0 0.5rem;
-  padding: 0.3rem 0.5rem;
-  font: inherit;
+.account-heading {
+  margin: 0 0 var(--space-3);
+  font-family: var(--font-title);
+  font-size: var(--text-body);
+  font-weight: 600;
 }
 
-/* `font: inherit` cannot be proven to clear 16px from the text alone: it
-   resolves against whatever `.account` inherits, and this rule outranks
-   `base.css`'s zero-specificity floor at (0,1,1). It computes 16px today —
-   `.account` sets no size — so this changes nothing on any device. It is
-   here because the same shape, one screen over, is what made the reader's
-   Settings panel zoom iOS on focus (O151), and the gate that now sees it
-   should not have an exception written into it. */
-@media (pointer: coarse) {
-  /* biome-ignore lint/style/noDescendingSpecificity: same reasoning as the
-   * rule this corrects, above: `.account` and `.proposal-detail`/`.rule-form`
-   * are three different screens, so an input never holds more than one of
-   * these classes and the two selectors never compete for the same element
-   * regardless of which comes first. */
-  .account input {
-    font-size: max(16px, var(--text-ui));
-  }
+/* **The separation no container on this page gives.** The password form
+   stacks its two `.field`s straight inside a `<form>`, which is `display:
+   block` with no `gap`, so consecutive fields sat 0px apart and a focused
+   control's ring — 4px outside the border box, see the shared `.field`
+   block's own comment — painted over the *next* field's micro-label.
+   Measured at 390px with a coarse pointer before this rule: **1.00px**
+   between the ring's bottom edge and the ink of the label under it, against
+   9.00px in the add-account form, where `.add-user .field` carries the
+   margin this rule copies. Unlike the 2.4px that block records, this one is
+   ⑤c's own: the account page's labels took `.field` here without their
+   container taking a gap.
+
+   **A margin on the fields and not a `gap` on the form, because `.account
+   form` would reach the wrong form.** `.account form` is (0, 1, 1) against
+   `.account-row`'s (0, 1, 0), so its `display` would win on the API-key row
+   too — a flex row the key box shares with the Create button. Injected at
+   390px to see what that costs: the row went from 54px with a 237px box
+   beside a 75px button to **110px with the button stacked under a 178px
+   box**. The API-key form carries no `.field` — its box takes the shared
+   reset through `.account .account-row input` instead — so a rule written
+   on the field cannot reach it at all.
+
+   `var(--space-2)`, which is the 8px the rest of the settings area stacks
+   fields at: `.add-user .field` carries this exact declaration, and
+   `.user-row .fields` and `.root-row .fields` carry the same 8px as a grid
+   `gap` (written `0.5rem` there). */
+.account form .field {
+  margin-bottom: var(--space-2);
 }
 
-.account button {
-  margin-top: 0.5rem;
+.account-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-top: var(--space-2);
+}
+
+/* The fill, which no list above can give it: `.account-row` is a flex row
+   the box shares with the Create button, and the shared reset's `min-width:
+   0` leaves it at its intrinsic width with the rest of the row empty. A rule
+   of its own rather than a declaration in that reset, because the reset
+   reaches five other screens and none of them puts a control in a flex row
+   beside a button. */
+.account .account-row input {
+  flex: 1;
+}
+
+.account-wide {
+  margin-top: var(--space-3);
+}
+
+/* The measure as well as the colour. These two are siblings of the cards
+   rather than children of one — `Account.tsx` puts them above the first
+   `<section>` — so `.account-card`'s `max-width` does not reach them, and
+   without this a failure ran the full width of `<main>` while every card
+   beside it stopped at 40rem. Found by ⑤c's whole-branch review. */
+.account-failure,
+.account-note {
+  max-width: var(--config-measure);
+}
+
+.account-failure {
+  color: var(--danger);
+}
+
+.account-note {
+  color: var(--success);
 }
 
 .account .secret {
-  margin-top: 0.6rem;
-  padding: 0.6rem 0.75rem;
+  margin-top: var(--space-2);
+  padding: var(--space-2) var(--space-3);
   border: 1px solid var(--line-strong);
-  border-radius: 4px;
+  border-radius: var(--radius-control);
   font-family: ui-monospace, monospace;
   word-break: break-all;
 }
@@ -1655,4 +1838,358 @@
   margin-top: var(--space-5);
   border-top: 1px solid var(--line);
   padding-top: var(--space-4);
+}
+
+/* **44 px targets for a finger, which this stylesheet has never had** — spec
+   §7.1, §12.4a. `shell.css`, `library.css` and `reader.css` each carry one;
+   `admin.css` carried none, so on a phone every control on all six of its
+   screens was its desktop height. **Six rather than five**: `Config.tsx`
+   draws four tabs — rules, roots, users, backup — and the inbox and
+   `/account` are the other two. An earlier draft of this comment counted
+   five, and the screen it dropped was backup, whose only per-row action is
+   the download link named below. The miscount and the gap were one mistake.
+
+   Measured at 390 px on 2026-09-24: the inbox's filter pills 37.2, its
+   Dismiss buttons 27.6, `/account`'s inputs 35.6, `/config/users`'s selects
+   32 and its permission checkboxes 13×13, `/config/rules`'s Export link
+   47×24 beside an Import button already at 72×44, `/config/backup`'s
+   download link 196×24, and two of the three `<summary>` toggles 24.
+
+   **Scoped to the three roots that hold those screens**, not to `.library`.
+   Every one of them sits inside `.library`, but so do the library home,
+   search, the series page and the sidebar, which `library.css` and
+   `shell.css` already answer for — and a second floor over the same controls
+   is the drift this pass keeps recording.
+
+   **The inbox's own controls are covered by the `button` line rather than
+   named beside it, and that is forced rather than chosen.** The pills, the
+   kind tabs and Dismiss/Reopen are all `<button>`s inside `.proposals`, so
+   the line reaches them; naming them as well would be a second floor over
+   the same controls, and for two of them it is not even available.
+   `admin-proposals.css.test.ts` pins `.proposal-tabs button` to exactly one
+   rule — the one the preview strip shares — so a second mention anywhere in
+   this file is a red test, and the same file pins that no one selector list
+   holds both a `.proposal-states` and a `.proposal-tabs` selector, which is
+   O150's guard. A floor naming both would break both pins.
+
+   **The two link-shaped actions are named, because §7.1 is about links *and*
+   controls and the first draft of this block covered only the controls.**
+   Both were on these screens the whole time and neither was reached:
+   `RuleEditor`'s `<a className="export" download>`, which sits in the same
+   `.editor-actions` group as an Import `<button>` that already cleared 44,
+   and `Backup`'s per-backup `<a href download>`, the *only* per-row action
+   on `/config/backup`. No stylesheet defined `.export` at all before this.
+
+   **Three declarations rather than one, and the first two are what make the
+   third do anything to a link.** An `<a>` is an inline box and `min-height`
+   does nothing to one — the same fact the grant rows below turn on. Both of
+   these happen to be flex items today (`.editor-actions` and a
+   `.backup-list` `<li>` are each `display: flex`), which blockifies them, so
+   `min-height` alone did reach 44 — measured — but left the word at the top
+   of the box, 0 px above it and 20 below. `inline-flex` with `align-items:
+   center` reaches the same 44 without depending on a parent staying flex,
+   and centres the word: 10 and 10, measured. `shell.css`'s `.sidebar-primary
+   a` floor is the same three properties, with `flex` where this one has
+   `inline-flex`: those are rows filling a column and want the whole width,
+   these are actions sitting in a row, so the target is the width of the word
+   and not of the screen.
+   The `.backup-list` row grows from 68 px to 88 as a result, its filename
+   and its date already being on two lines at 390 px.
+
+   **An earlier draft named `a.button` here in their place, and it is
+   dropped.** It matched nothing, and no stylesheet in this project defines
+   `.button`, so nothing could wear it until someone first invented a
+   convention this codebase does not have. `reader.css`'s 16 px floor naming
+   a `textarea` its panel does not draw is not the same case: `textarea` is
+   an element the platform supplies and that floor's sibling rule already
+   names all three, so it costs nothing and can actually fire. What decides
+   it is the paragraph above — the two real links were here all along and
+   `a.button` reached neither, so it read as coverage of §7.1's *links*
+   clause while both of them sat at 24.
+
+   **The `<summary>` toggles get the floor, and cannot get it the way
+   everything else here does.** `UserRow`'s credentials, `RuleEditor`'s
+   save-derive and `RemoveRoot`'s removal-derive are the only three
+   `<details>` in the app, and no stylesheet styled `summary` anywhere. A
+   `<summary>` is `display: list-item`, so unlike a link it takes
+   `min-height` as it stands — but the text then sits at the top of the box,
+   0 px above and 20 below. `display: flex` with `align-items: center` does
+   centre it and **deletes the disclosure triangle**: measured in Chromium at
+   390 px, the content's inline-start offset drops from 16.94 px to 0 and the
+   marker is gone. So this rule keeps `display: list-item` and centres with
+   `align-content`, which a block container honours — 44 px, 10 above and 10
+   below, marker still at 16.94. Two of the three were 24 px before, the
+   credentials and save-derive ones; `RemoveRoot`'s already measured 48,
+   because its sentence wraps to two lines at 390 px. That is a floor doing
+   nothing rather than a screen that did not need one.
+   **`align-content` in block layout is Safari 17.4 and later, and this
+   project's own baseline already clears it.** The web UI requires Safari
+   17.5 / iOS 17.5 for `light-dark()`, which every colour token needs — spec
+   §3, and `stripWoff.ts` drops the `.woff` fallback on the strength of the
+   same floor — so the browsers this UI supports are a release past it.
+   Below it nothing breaks: the declaration is simply dropped and the rule
+   is what `min-height` alone gives, a 44 px row with the word at its top
+   and the marker still at 16.94.
+
+   **The links these screens draw that are deliberately left alone** are
+   named here so the next reader sees they were seen rather than missed.
+   `.config-nav`'s four `NavLink`s are a row with its own geometry: the
+   chosen one is marked with `box-shadow: inset 0 -2px 0`, an underline drawn
+   on the link's own bottom edge, and at the 20 px those links measure that
+   edge is the word's. Giving them 44 puts the underline 12.5 px below the
+   word it underlines and grows the strip from 29 px to 49 — both measured.
+   Moving the mark off the box and onto the text is a look decision, and the
+   exclusion is filed as such: spec §12.8 gives it and two label-less
+   controls a row of their own — *"Give the config sub-nav and two
+   label-less controls the 44 px row"* — carrying these figures, and an open
+   item of its own against §7.1 is what will settle it.
+   **Which pass owns it is what two earlier drafts of this comment got
+   wrong.** One deferred it to "the accessibility pass, which already owns
+   tap targets (O135, O154)", and that pass does not: O135 is the keyboard
+   reaching no control in the *reader's* top bar, O154 is checkbox grouping
+   markup, and §5 defines the pass as VoiceOver on the phone and a screen
+   reader on the desktop. The only place the spec assigns 44 px tap targets
+   is the device pass, §9.4. The other pointed at §12.8's `aria-pressed`
+   row, a different question in that same section — which ARIA attribute
+   marks a chosen one-of-N, and it says in as many words that `ConfigNav` is
+   *not* part of that disagreement.
+   `UserRow`'s one sentence link to `/account` is left alone for its own
+   reason — it is prose rather than a control.
+
+   `.account .account-row input` is here for the reason it is in the shared
+   `.field` block and that block's own companion: the account page's key-name
+   box is the one control on these six screens that no `.field` wraps — only
+   a placeholder labels it — so the `.field` line above cannot reach it, and
+   without this it would be the single input on `/account` left at 35.6 while
+   every other control beside it cleared 44. `.account-wide` is named for the
+   neighbouring reason: it is the class `Account.tsx` guarantees for the
+   page's two wide buttons, where `button` is only what they happen to be.
+
+   **A checkbox is not a row.** Every checkbox on these three roots takes an
+   explicit 24 px box — 24 rather than the 13 the browser draws at this font
+   size, and rather than 44, because a 44 px box beside a 14 px sentence
+   draws a checkbox that looks like a button. (`library.css` has two
+   `min-height: 24px` controls of its own, `.volumes a.get` and
+   `.volumes .panel-open`; they are tile controls rather than checkboxes, so
+   they are a precedent for the number and not for the shape.) Where there is
+   a `<label>` beside the box, that row is the tappable target and takes the
+   44.
+
+   **The box rule is keyed on that treatment and not on a container**, which
+   is why it names `input[type="checkbox"]` under the three roots rather than
+   `.checks input[type="checkbox"]`. `.checks` is where five of these boxes
+   are — the inbox's weak filter, the root row's one, the user row's three —
+   and it was never where all of them are: the user row's per-root grants sit
+   in a `.grant-list`, and `.rule-list`'s enable box sits bare in its row.
+   Both drew 13×13. The grant list at least said so — the paragraph this one
+   replaces named it as left out — while the enable box went unmentioned;
+   either way the heading above said a checkbox takes a box, and two kinds of
+   checkbox did not get one.
+   §12.4's `0.7rem` exemption is the same mistake one section over — an
+   earlier draft keyed it on the value instead of on the uppercase-label
+   typography the value was for, and so swept in two sites that had nothing
+   to do with that treatment. That one was caught in review; this one was
+   not.
+
+   **The grant rows need two declarations the `.checks` rows do not.**
+   `.checks label` is already `display: flex` with a gap from its own rule
+   above, so its floor adds only the height and the centring. A
+   `.grant-list` label has no rule at all and so is an inline box, and
+   `min-height` does nothing to one: measured at 390 px before this rule, the
+   box was 13×13 and the row was 48 px only because the root path wrapped to
+   two lines, with the box 6 px under the row's top and 29 px above its
+   bottom. So that rule carries the `display: flex` and the gap as well, and
+   reaches the same centred row the `.checks` labels get: measured after,
+   24×24 in a 48 px row, 12 px above the box and 12 below. Forty-eight
+   rather than forty-four because the path still wraps, which is what a floor
+   is for — the row is at least 44 and is taller when its own content asks.
+   **The two rows are still not twins and this does not make them one**: a
+   `.checks` sentence is `--text-ui` at 14 px and a root path is 16, because
+   only `.checks label` carries a `font-size`. That is a typography
+   difference rather than a target one, it predates this floor, and a floor
+   is the wrong place to settle it.
+
+   **`flex-shrink: 0` is what makes the 24 px above a size rather than a
+   wish**, and the grant list is where that showed. A flex item's base size
+   is its max-content width, and a root path on one line measures 304 px
+   against a 292 px row — so the free space is negative, and the default
+   `flex-shrink: 1` takes it out of *both* items, the box included: measured
+   20.27×24 on this library's `/home/davey/temp/manga-test/Volumes`, against
+   a rule that says 24. With the declaration only the sentence gives way,
+   wrapping at its one hyphen (`/home/davey/temp/manga-`, then
+   `test/Volumes`) inside the 253 px left to it — its own min-content is
+   207 — so nothing overflows: the `<li>`'s `scrollWidth` and `clientWidth`
+   are both 292. Written on the box rule rather than on the grant rule
+   because it is true of every checkbox here: `.checks label` and
+   `.rule-row` are flex containers too, and both only happen to have slack
+   today.
+
+   `align-items: center` goes with every 44 here. `.checks label` is
+   `align-items: baseline` above, and baseline puts a checkbox's *bottom
+   edge* on the sentence's baseline — right at the 13 px box the browser
+   draws, wrong at 24. Measured in Chromium on 2026-09-24: the box sat 3 px
+   below the row's top and 17 px above its bottom, its centre 6.5 px above
+   the sentence's, against 10 and 10 once centred. The `.checks` rule is
+   written over the same three selectors as the rule it corrects, at the same
+   (0, 2, 1), because a `:where()`-scoped copy would be (0, 1, 1) and lose
+   the `align-items` tie it exists to win.
+
+   **`.rule-list`'s enable box gets the 24 and nothing else, and that is a
+   gap rather than an answer.** `RuleList` draws it with an `aria-label` and
+   no `<label>` at all, so there is no row to enlarge and the box *is* the
+   whole tap target — 24 px, under the 44 this block asks of everything that
+   has a row. Giving it a row is a screen question, and whether a checkbox
+   that is its own target should be larger is filed with the sub-nav above,
+   in spec §12.8's row for this floor's three exclusions — not owned by any
+   pass yet, for the reason that row states. Enlarging it to 44 would draw
+   the button-shaped checkbox the paragraph above refuses. Recorded here so
+   the next reader sees it was left open rather than missed.
+
+   Nothing here could be settled on a phone and did not need to be: the rule
+   was *absent*, so a fine-pointer measurement is the coarse one. That is the
+   opposite of O151, where a rule existed and lost. The figures for the grant
+   rows, the enable box, the two links and the three toggles were taken
+   differently and are worth more: a Chromium context with `hasTouch` and
+   `isMobile` set at 390 px matches `(pointer: coarse)` and `(any-pointer:
+   coarse)` and reports no `(pointer: fine)` at all, so this block was live
+   while they were read. The project's vitest browser project is not that
+   context, which is why none of this is assertable there. */
+@media (pointer: coarse) {
+  /* **This block carried the repo's only CSS `biome-ignore` until ⑤c's
+     whole-branch review, and the review removed the need for it.** The
+     suppression was for `noDescendingSpecificity`: the floor's `button`
+     prelude was (0, 0, 1) and sat below `.preview-tabs button,
+     .proposal-tabs button` at (0, 1, 1), sharing `button` as their last
+     compound selector. Excluding those two rows from the floor — the
+     comment below says why — makes this prelude's last compound
+     `button:not(…)` instead, so the two rules no longer group and the
+     warning is gone rather than silenced. Worth the note because a
+     suppression removed by accident is a suppression that comes back. */
+  /* Every button on the three roots **except the two underlined tab rows**.
+     Spec §12.8 excludes `.config-nav` from this floor on a measurement —
+     44px puts the underline 12.5px below the word and takes the strip from
+     29 to 49 — and `.proposal-tabs` and `.preview-tabs` wear the same
+     underlined look for the same reason, so the same measurement excludes
+     them. It reached them anyway until ⑤c's whole-branch review measured
+     all three together: at 390px coarse the two button rows boxed 44 with a
+     49px strip while `.config-nav` stayed 20 and 24, which is two thirds of
+     one design taking a treatment the spec calls a redesign.
+
+     Written as `:not()` on the child rather than as a later `min-height: 0`,
+     because a later rule re-setting the property is the one hole this
+     block's gate is documented as unable to see. The inner `:where()` keeps
+     the negation at (0,0,1), so this prelude is (0,0,2) and still loses to
+     anything that wants to floor a tab deliberately. */
+  :where(.proposals, .account, .config)
+  button:not(:where(.proposal-tabs, .preview-tabs) > button),
+  :where(.proposals, .account, .config) .field :where(input, select, textarea),
+  .account .account-row input,
+  .account-wide {
+    /* **A floor on the rendered box, not on its content.** In standards
+       mode the UA stylesheet gives `<select>` and `<button>` `border-box`
+       and leaves `<input>` and `<textarea>` at `content-box` (probed in
+       Chromium, `document.compatMode` `CSS1Compat`), and this project sets
+       no global reset — so `min-height: 44px` alone asked for 44px of
+       *content* on the text boxes, and the shared reset's `var(--space-1)`
+       padding and 1px border then added 10px on top of it. Measured at
+       390px with a coarse pointer on 2026-09-25, before this line: every
+       `<input>` this floor reaches rendered **54px** — `/account`, the
+       add-account and add-root forms, the expanded root and user rows, the
+       rule form and the proposals accept form alike — while every
+       `<select>` beside them, already `border-box`, rendered 44 or more.
+       One declaration, two heights, decided by an element's UA default
+       rather than by anything written here.
+
+       The root row's `exclude_globs` `<textarea>` is the one control this
+       does not move: its `rows` make it 82px, already over the floor, so
+       the box model has nothing to decide there.
+
+       Inside the media query with the floor it corrects rather than hoisted
+       out of it, because outside it there is nothing to correct: no rule
+       floors these controls at a fine pointer, so `box-sizing` would change
+       no rendered size there. Measured on a desk at 1280 with no
+       `hasTouch`: 31px either way. */
+    box-sizing: border-box;
+    min-height: 44px;
+  }
+
+  .editor-actions .export,
+  .backup .backup-list a {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+  }
+
+  :where(.proposals, .account, .config) summary {
+    min-height: 44px;
+    align-content: center;
+  }
+
+  /* **Optical centring for the one control whose box makes the font's own
+     asymmetry visible.** A `<button>` centres its content, so the ten-odd
+     pixels `min-height: 44px` adds are split evenly above and below — but
+     the text inside is not symmetric about its own centre. Zen Kaku Gothic
+     New carries more ascent above the cap than descent below the baseline,
+     so the gap above the word reads larger than the gap below, which is
+     what a person sees as "not centred".
+
+     **Measure the cap, not the ink box.** The first version of this rule
+     was tuned against the ink bounding box of `Open` and `Accepted`, both
+     of which carry a `p`, and it read the descender as skew: those words
+     measured 18.0px above the ink and 12.0 below, `Dismissed` 18.0 and
+     15.0, and the 3px difference between the two pairs is the descender
+     rather than two different skews. All three words share one cap-top,
+     which is the thing a reader sees as the word's position.
+
+     Measured in Chromium at 390x844 with `hasTouch`, against the built
+     stylesheet, cap-top offset from the pill's optical centre:
+
+       padding-block      Open    Accepted  Dismissed
+       4px 4px (base)     +1.5    +1.5      +1.5      all low
+       0 6px              -1.5    -1.5      -1.5      all high
+       2.5px 5.5px         0.0     0.0       0.0      centred
+
+     So `0 6px` corrected a 1.5px error into a 1.5px error of the opposite
+     sign, and left `Dismissed` — the one word with no descender — visibly
+     high at 15.0 above and 18.0 below. `2.5px 5.5px` keeps the total
+     padding at 8px, so the content box is unchanged and only its position
+     moves: up 1.5px, which is the whole error. `Dismissed` lands 16.5/16.5
+     and the descenders hang 3px below the baseline, where they belong.
+
+     **`line-height` is not the lever**, which is worth writing down because
+     it is the obvious first guess: taking it from 24px to 16px moved the
+     rendered ink *zero* pixels, verified against the computed style. The
+     button centres whatever box it is given; only the padding it centres
+     within moves the text.
+
+     Scoped to the pills alone. The asymmetry is proportional to font size
+     and these carry the largest text the floor reaches (16px against the
+     tabs' 14 and the row buttons' 12), and it is visible only where a box
+     is drawn around the word — the underlined tabs have none, and the
+     library's own filter row has carried the same asymmetry unboxed since
+     ②. A correction per control size is the per-control figure this pass
+     has spent review rounds avoiding. */
+  .proposal-states .state {
+    padding-block: 2.5px 5.5px;
+  }
+
+  .root-row .checks label,
+  .user-row .checks label,
+  .proposals .checks label {
+    min-height: 44px;
+    align-items: center;
+  }
+
+  .user-row .grant-list label {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    min-height: 44px;
+  }
+
+  :where(.proposals, .account, .config) input[type="checkbox"] {
+    inline-size: 24px;
+    block-size: 24px;
+    flex-shrink: 0;
+  }
 }
