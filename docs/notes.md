@@ -23106,3 +23106,207 @@ checkbox mid-save shows nothing: the box keeps its value, and nothing on it
 says why.
 
 What this does not show: Ink, a touch context, or any browser but Chromium.
+
+## The accessibility audit (2026-09-26 and 2026-09-30)
+
+The audit the accessibility pass's design puts first
+(`docs/superpowers/specs/2026-09-26-accessibility-pass-design.md` §1). It
+changes no code. Measured on branch `a11y-audit`, from `main` at `a173dd3c`.
+
+**The rig.** A copy of the real library (`/home/davey/temp/manga-test/library.db`)
+at `target/a11y/lib/library.db`, with a second account, `reader`, added to it,
+and `corpus/gotoubun-v01`'s sidecar copied with absolute member paths and
+imported into the copy as a three-edition work. A release `taiyaku serve --db`
+on the copy at `:8531`, a production build behind `vite preview` at `:4181`,
+and `tailscale serve` sending `/` to the preview and `/api` to the server.
+**With the sidecar passed on `serve`'s command line, library works did not
+resolve**: `/api/works/<slug>` answered 404 for both library slugs tried until the sidecar was
+imported and `serve` restarted on `--db` alone. The first run's
+`reader-library` walks were taken in that state and are discarded; every
+reader figure below is from the three-edition work. The
+original's SHA-256 was `d5ebc0c2…a59e67` before the copy and after the phone
+pass, and `find -newermt 2026-09-26T03:44:30-07:00` returned nothing under
+`/home/davey/temp/manga-test` or `corpus/gotoubun-v01`.
+
+### The desktop half, 2026-09-26
+
+Playwright-driven Chromium 151.0.7922.34 (`HeadlessChrome/151.0.7922.34` in
+the server's request log), signed in as
+`local`, theme left at its default, at 1440×900 and 390×844. **Not a screen
+reader**: an ARIA snapshot per screen, and a walk of real `Tab` presses from
+a blurred document, reading `document.activeElement` after each. A stop
+counts as drawn when its computed `outline` or `box-shadow` is not `none`.
+The walk stopped when focus reached `BODY`, returned to its first stop, or
+after 80 presses.
+
+| screen | stops at 1440 | stops at 390 |
+|---|---:|---:|
+| login | 3 | 3 |
+| home | 80 (capped) | 80 (capped) |
+| series `/series/91` | 80 (capped) | 80 (capped) |
+| search `?q=one` | 24 | 13 |
+| proposals | 55 | 44 |
+| rules | 38 | 27 |
+| roots | 27 | 16 |
+| users | 35 | 24 |
+| backup | 19 | 8 |
+| account | 38 | 28 |
+
+**On all ten, every stop drew a ring** (`outline: 2px solid`, offset 2px),
+and no stop was off the viewport or under another element by a centre-point
+`elementFromPoint`. At 390 the sidebar's links and settings are inside the
+closed drawer and none of them is a stop; ☰, the wordmark and the banner's
+Search link are.
+
+**The drawer**, at 390 on the home screen: ☰ (named "Menu") sets
+`aria-expanded="true"` and moves focus to the drawer's first link, Library.
+Sixteen `Tab`s walked the drawer's links and the library settings inside it,
+reached `BODY` once after the last field, then "Close menu" and Library
+again, so nothing behind the drawer took focus. `Escape` closed it,
+`aria-expanded` went back to `false`, and focus returned to ☰.
+
+**The reader**, on the three-edition work, identical at both widths:
+
+| from a fresh load | top bar | bottom bar | focus |
+|---|---|---|---|
+| load | no | no | `BODY` |
+| `Tab` | yes | yes | the strip tile "page 2" |
+| `Tab` | no | no | `BODY` |
+| `Tab` | yes | yes | the strip tile "page 2" |
+| `Tab` | no | no | `BODY` |
+| `Shift+Tab` | yes | yes | ⚙ "Settings" |
+| `Shift+Tab` | no | no | `BODY` |
+
+**What each panel does with focus and `Escape`.** Each was opened on a fresh
+load; "first `Tab`" is the first of three presses after opening; "closed" is
+by the panel's own Close button.
+
+| panel, opened by | focus after opening | first `Tab` | `Escape` | focus after closing |
+|---|---|---|---|---|
+| Settings, ⚙ | stays on ⚙ | Close, in the panel | **stays open** | `BODY` |
+| Settings, `s` | `BODY` | shows the chrome, strip tile "page 2" | **stays open** | `BODY` |
+| Help, `?` | `BODY` | shows the chrome, strip tile "page 2" | closes | `BODY` |
+| Credits, `C` | `BODY` | shows the chrome, strip tile "page 2" | **stays open** | `BODY` |
+| All notes, `a` | `BODY` | shows the chrome, strip tile "page 2" | closes | `BODY` |
+| the note editor, `n` | its textarea | a colour swatch | closes | `BODY` |
+| Account, `A` | `BODY` | Close, in the panel | closes | `BODY` |
+
+The correction banner (`c`) is `role="status"` and offers no button before a
+counterpart is picked — its text says "Escape cancels without writing
+anything" — so the check's click on a Cancel button timed out. `Escape`
+took the banner away.
+
+**The reader's tree with the chrome up** at 1440: the page `img "page 1"`,
+then `button "Library"`, the title as plain text, `group "Layout"` holding
+`single` `[pressed]`, `two` and `scroll`, `button "Settings"`, eighteen
+strip tiles named "page 1" to "page 18" by their `img`'s `alt`, and the
+readout as `status`. No landmark and no heading. With the chrome hidden the
+tree is the page `img` alone.
+
+**Names and structure elsewhere.**
+
+- **Headings.** An `h1` on two of the ten screens: series ("One Piece") and
+  proposals ("17 open"). Home and search have no heading inside `main`; the
+  four configuration screens and the account screen start at `h2`; login's
+  one heading is an `h2`. At 1440, on every screen with the sidebar, two
+  `h2`s come before `main`: "Roots", inside `navigation "Library"`, and
+  "Library", over the sidebar's settings. At 390 both are inside the closed
+  drawer, and `main` follows the banner with no heading between.
+- **The Proposals link is named "Proposals17"** in the sidebar and the
+  drawer: `Sidebar.tsx` draws the count as `<span className="count">` straight
+  after the word.
+- **The inbox's two rows** are ungrouped buttons: `Open` `[pressed]`,
+  `Accepted`, `Dismissed`, then `All 17` `[pressed]`, `Attach Chapters 1`,
+  `Edition Of 16`, with no group or name between them. **The preview tabs**
+  are four buttons inside `navigation "Preview"`.
+- **The permission checkboxes** on each user card are three bare
+  `checkbox`es between the role select and `group "Roots this account may
+  see"` (O154).
+- **The Exclude globs field's name** is its label and its hint together —
+  "Exclude globs (one gitignore pattern per line) A trailing slash or bare
+  name excludes the directory and everything under it; a '/**' suffix
+  excludes only what's inside it." — because `RootRow.tsx` puts the hint's
+  `<small>` inside the `<label>`.
+
+### The phone half, 2026-09-30
+
+VoiceOver on the user's iPhone, every request from which carried `Mozilla/5.0
+(iPhone; CPU iPhone OS 18_7 like Mac OS X) … Version/26.6.1 Mobile/15E148
+Safari/604.1` — 264 between 01:20:48 and 01:32:22 for the checklist, and 83
+between 01:46:00 and 01:47:17 for the follow-up questions below. **The reader
+items were answered on `oshi-no-ko----v01-cbz`**, a one-edition volume, and
+not on the three-edition work the checklist named, which the phone never
+requested; none of those items needed a second edition. Its writes, across
+both, were one sign-in, one progress `PUT` (at 01:24:54), four `PATCH`es to
+account 2 (`reader`), and nine rule previews, whose route writes nothing; no
+rule was saved. The user reported that scrolling with VoiceOver on was hard,
+having no experience of it.
+
+The user's answers, by the checklist's numbers, quoted:
+
+1. The Proposals link: *"proposals, visited, link"* — no count, where
+   Chromium names it "Proposals17".
+2. ☰: *"library, current page, visited, link, list start, library, list
+   start, navigation, landmark"* — VoiceOver landed on the drawer's first
+   link. Whether "Close menu" closes it was not answered.
+3. The escape gesture on the drawer: not tried — *"I don't know what a 2
+   finger z is"*.
+4. The rotor's headings: not tried.
+5. The reader with its bars hidden: *"it basically reads the metadata of the
+   page, and it's hard to change pages"*.
+6. A double-tap on the page: *"the menu comes up when I double tap. it says
+   'single, toggle button, pressed, double tap to toggle settings'"*.
+7. ⚙: *"it says 'settings, expanded'"* — ⚙'s own name and state, not
+   anything inside the panel. The escape gesture on Settings was not tried.
+8. Turning a page: *"I can't swipe. but if I do click on the page it reads
+   the page"*. Whether the readout was heard was not answered.
+9. The inbox: *"'open, toggle button, pressed, double tap to toggle
+   setting'. then 'all 17, toggle button, pressed, double tap to toggle
+   setting'"*.
+10. The preview tabs: *"'impact, current item, button preview, nagivation,
+    landmark'. same thing for matched files basically"*.
+11. The user card, from Role into the roots: *"it says similar for all but it
+    says what the text says, then 'checkbox, checked, double tap to toggle
+    setting'"* — no difference reported between the bare three and the
+    `fieldset`.
+12. O159, with VoiceOver off, ticking "May stream pages" on `reader`'s card:
+    the other boxes kept their colour — *"yes"*.
+13. O157's underlined rows: not answered — *"I'm not sure exactly where I
+    should be pressing"*.
+14. O157's rule-enable box: a tap beside it toggles it — *"yes it toggles.
+    nothing zooms or scrolls sideways"*.
+
+**Three follow-up questions, the same day.** Given how to make each gesture,
+the user answered:
+
+- The escape gesture, a two-finger Z, on the open drawer and on open
+  Settings: *"these dont' really seem to work. they worked to close a menu
+  and go to my home screen earlier"*.
+- A double-tap on a strip tile, with the bars up: *"yes the strip tiles
+  change pages"*.
+
+**Asked afterwards where the strip-tile and Settings-gesture answers came
+from, the user chose "From the first session"** (01:20–01:32). The log records
+one page turn in that session, a progress `PUT` at 01:24:54, and cannot say
+which gesture made it or whether VoiceOver was on. Items 3 and 7 above record
+the escape gesture as not tried in that session, and the gesture answer does
+not say which menu closed, so it settles nothing about the drawer or Settings.
+Between 01:46:00 and 01:47:17 the log shows the phone opening the reader once,
+for about 3.5 s, and writing no progress.
+
+And the third:
+
+- O157, a tap about 1 cm below "Rules" in the config nav, not on the word:
+  *"no it doesn't change if I don't click on the actual text"*. **This says
+  nothing about O157**, because the instruction was wrong: O157's target is
+  44 px round a 20 px word, so it reaches 12 px past it, and 1 cm is several
+  times that.
+
+**What this does not show**: what any desktop screen reader says (Orca is
+the user's choice for later); the escape gesture; the rotor; whether a strip
+tile turns a page under VoiceOver; whether "Close menu" closes the
+drawer under VoiceOver; whether the readout announces the page a turn lands
+on; and O157's three underlined rows on a device. **Nor four things the
+design promised** (§1.1, §1.2): the scan report, the table layout and a
+proposal's detail were not captured, and Credits and All notes were audited
+empty — *"No credit pages found in raw-mono."*, *"0 notes"*.
