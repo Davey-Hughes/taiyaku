@@ -17,11 +17,19 @@ pub struct WasmSidecar {
 }
 
 /// Where a slot landed. `half` is `"L"`, `"R"`, or absent for a whole page.
-#[wasm_bindgen(getter_with_clone)]
+///
+/// `getter_with_clone` sits on the fields that need it rather than on the
+/// struct, here and on the two structs below: on the struct it also gives the
+/// `u32` fields a getter that calls `.clone()` on a `Copy` value, which
+/// clippy's `clone_on_copy` rejects under `-D warnings` from Rust 1.99. A
+/// `Copy` field's plain getter is the same getter to JavaScript.
+#[wasm_bindgen]
 #[derive(Debug, Clone)]
 pub struct WasmSlot {
     pub page: u32,
+    #[wasm_bindgen(getter_with_clone)]
     pub half: Option<String>,
+    #[wasm_bindgen(getter_with_clone)]
     pub via: String,
 }
 
@@ -30,10 +38,11 @@ pub struct WasmSlot {
 /// Distinct from `WasmSlot`, which additionally carries the `via` of a
 /// resolution. A position is not the answer to a resolution and should not
 /// claim a path it never walked.
-#[wasm_bindgen(getter_with_clone)]
+#[wasm_bindgen]
 #[derive(Debug, Clone)]
 pub struct WasmPosition {
     pub page: u32,
+    #[wasm_bindgen(getter_with_clone)]
     pub half: Option<String>,
 }
 
@@ -47,11 +56,12 @@ pub struct WasmPosition {
 /// information in practice: it is bounded by how many files a release group
 /// actually splits a volume into, the same "202 slots is the longest edition
 /// measured" scale `index_of`'s doc comment cites — nowhere near `u32::MAX`.
-#[wasm_bindgen(getter_with_clone)]
+#[wasm_bindgen]
 #[derive(Debug, Clone)]
 pub struct WasmChapter {
     pub member: u32,
     pub of: u32,
+    #[wasm_bindgen(getter_with_clone)]
     pub path: String,
 }
 
