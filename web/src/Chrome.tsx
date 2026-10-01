@@ -161,12 +161,13 @@ export interface ChromeProps extends FilmstripProps {
 
 /**
  * The reader's two bars — the top bar (`TopBar.tsx`) and the bottom bar of
- * strip, progress line and readout row — brought in and taken away together
- * by `Tab` (`keys.ts`'s `{ kind: 'chrome' }`), never separately (spec
- * 2026-09-17 §8.1). Returns `null` while hidden, rather than e.g.
- * `visibility: hidden`, so the hidden state really is "no chrome at all" —
- * edge-to-edge reading with nothing on screen but the page — and not merely
- * invisible chrome still doing layout work.
+ * strip, progress line and readout row — shown and hidden together, never
+ * separately (spec 2026-09-17 §8.1). The ring's `Tab` (spec 2026-09-26 §3.1)
+ * and a tap in the middle third do both; `Escape` hides them; a correction
+ * shows them, and they stay up after it ends. Returns `null`
+ * while hidden, rather than e.g. `visibility: hidden`, so the hidden state
+ * really is "no chrome at all" — edge-to-edge reading with nothing on screen
+ * but the page — and not merely invisible chrome still doing layout work.
  *
  * That unmount is also why only *showing* the chrome fades and hiding it
  * does not: an element that has already unmounted has nothing left on
@@ -288,7 +289,11 @@ export function Chrome({
           style={fade}
         />
       )}
-      <div className="reader-bottom-bar" style={{ ...bottomBarStyle, ...fade }}>
+      <div
+        className="reader-bottom-bar"
+        data-ring="bottom"
+        style={{ ...bottomBarStyle, ...fade }}
+      >
         <div style={stripStyle}>
           {/* `visible` is always true here — `Chrome` returns `null` above
               otherwise — but passed through explicitly anyway, since
@@ -306,7 +311,10 @@ export function Chrome({
             style={{ height: '100%', width: `${progress * 100}%` }}
           />
         </div>
-        <div className="reader-readout" style={readoutStyle} role="status">
+        {/* Not a live region since spec 2026-09-26 §3.5: `App.tsx`'s own
+            region speaks the position once, and this row would also have
+            announced every change to the reading-time readout. */}
+        <div className="reader-readout" style={readoutStyle}>
           {row}
         </div>
       </div>

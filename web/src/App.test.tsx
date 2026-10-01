@@ -56,6 +56,7 @@ import { Unauthenticated } from './api'
 import type { WorkDetail } from './library'
 import type { NotesDoc } from './notes'
 import type { Resolver } from './resolver'
+import { focused } from './testing/focused'
 import { mount, rerender } from './testing/mount'
 
 // Every network call `App.tsx` makes, and the one resolver build. `vi.hoisted`
@@ -352,7 +353,7 @@ async function openGated(): Promise<HTMLElement> {
 
 /**
  * One `keydown`, dispatched at a real element so `event.target` is what a
- * browser would report — which is the whole of `keys.ts`'s `isInteractiveTarget`
+ * browser would report — which is the whole of `keys.ts`'s `controlKind`
  * guard, and unreachable if every event is dispatched at `window`.
  *
  * The event is handed back so a test can assert `defaultPrevented`: telling
@@ -688,17 +689,17 @@ describe('opening a work', () => {
 // ---- the keys ---------------------------------------------------------------
 
 describe('the reader keys', () => {
-  it('Tab shows the chrome and leaves focus traversal to the browser', async () => {
+  it('Tab brings the bars up and moves focus into them; Escape takes them away', async () => {
     const host = await open()
-    expect(host.querySelector('[role="status"]')).toBeNull()
+    expect(host.querySelector('.reader-top-bar')).toBeNull()
     const event = press('Tab')
-    // **`Tab` alone is `preventDefault: false`.** Preventing it is what made
-    // every focusable control in the reader mouse-only, and `keyplan.ts` names
-    // this as the one claimed key that does not swallow its default.
-    expect(event.defaultPrevented).toBe(false)
-    expect(host.querySelector('[role="status"]')).not.toBeNull()
-    press('Tab')
-    expect(host.querySelector('[role="status"]')).toBeNull()
+    // Claimed: the reader moves focus itself (spec 2026-09-26 §3.1).
+    expect(event.defaultPrevented).toBe(true)
+    expect(host.querySelector('.reader-top-bar')).not.toBeNull()
+    expect(document.activeElement).toBe(button(host, 'Library'))
+    press('Escape', { target: document.activeElement as Element })
+    expect(host.querySelector('.reader-top-bar')).toBeNull()
+    expect(document.activeElement).toBe(pageArea(host))
   })
 
   it('an arrow turns the page the way the work reads', async () => {
@@ -747,18 +748,24 @@ describe('the reader keys', () => {
     expect(pages(host)).toEqual([expect.stringContaining('/raw/pages/2')])
   })
 
-  it('a reader key stands down while focus is in a control', async () => {
+  it('Space on a focused button is the button’s, not the edition swap', async () => {
     const host = await open()
     // The reader draws no button until `Tab` shows the bars (style pass ③).
     press('Tab')
-    const button = host.querySelector('button')
-    expect(button).not.toBeNull()
-    // A window-level listener has no way to know a focused button is about to
-    // handle the same keypress itself — so `keyPlan` hands the key back.
-    const event = press('ArrowRight', { target: button as Element })
+    const event = press(' ', { target: button(host, 'Settings') })
     expect(event.defaultPrevented).toBe(false)
     await settle()
     expect(pages(host)).toEqual([expect.stringContaining('/raw/pages/2')])
+  })
+
+  it('an arrow on a focused button still turns the page (spec 2026-09-26 §3.2)', async () => {
+    const host = await open()
+    press('Tab')
+    const event = press('ArrowRight', { target: button(host, 'Settings') })
+    expect(event.defaultPrevented).toBe(true)
+    await settle()
+    // `rtl`: the physical `→` is a step back.
+    expect(pages(host)).toEqual([expect.stringContaining('/raw/pages/1')])
   })
 
   it('s opens and closes the settings panel', async () => {
@@ -835,6 +842,30 @@ describe('the reader keys', () => {
   it('Escape with nothing open is left to the browser', async () => {
     await open()
     expect(press('Escape').defaultPrevented).toBe(false)
+  })
+
+  it('Escape closes the settings panel (spec 2026-09-26 §3.3)', async () => {
+    const host = await open()
+    press('s')
+    expect(dialog(host, 'Settings')).not.toBeNull()
+    expect(press('Escape').defaultPrevented).toBe(true)
+    expect(dialog(host, 'Settings')).toBeNull()
+  })
+
+  it('Escape closes the credits panel (spec 2026-09-26 §3.3)', async () => {
+    const host = await open()
+    press('C')
+    expect(dialog(host, 'Credit pages in raw')).not.toBeNull()
+    expect(press('Escape').defaultPrevented).toBe(true)
+    expect(dialog(host, 'Credit pages in raw')).toBeNull()
+  })
+
+  it('Escape takes the bars away (spec 2026-09-26 §3.1)', async () => {
+    const host = await open()
+    press('Tab')
+    expect(host.querySelector('.reader-top-bar')).not.toBeNull()
+    expect(press('Escape').defaultPrevented).toBe(true)
+    expect(host.querySelector('.reader-top-bar')).toBeNull()
   })
 
   it('= and - and 0 move the drawn rect, and 0 puts it back', async () => {
@@ -1017,7 +1048,7 @@ describe('leaving the reader', () => {
     expect(pageArea(host).style.scrollPaddingTop).toBe(
       'calc(var(--safe-top) + var(--reader-top-bar))',
     )
-    press('Tab')
+    press('Escape')
     expect(pageArea(host).style.scrollPaddingTop).toBe('')
   })
 })
@@ -1254,7 +1285,7 @@ describe('the note editor', () => {
     expect(list().style.visibility).toBe('')
     press('Tab')
     expect(list().style.visibility).toBe('hidden')
-    press('Tab')
+    press('Escape')
     expect(list().style.visibility).toBe('')
   })
 
@@ -1848,15 +1879,15 @@ describe('a borrowed page where the viewed edition has none', () => {
 
 // ---- the correction ---------------------------------------------------------
 
-describe('correcting a pairing', () => {
-  /** Click the nth filmstrip tile — the strip is the only surface with thumbnails. */
-  function pick(host: HTMLElement, index: number) {
-    const tiles = [...host.querySelectorAll('button')].filter((b) =>
-      (b.querySelector('img')?.getAttribute('src') ?? '').includes('/thumb'),
-    )
-    click(tiles[index])
-  }
+/** Click the nth filmstrip tile — the strip is the only surface with thumbnails. */
+function pick(host: HTMLElement, index: number) {
+  const tiles = [...host.querySelectorAll('button')].filter((b) =>
+    (b.querySelector('img')?.getAttribute('src') ?? '').includes('/thumb'),
+  )
+  click(tiles[index])
+}
 
+describe('correcting a pairing', () => {
   async function confirmed(host: HTMLElement) {
     const confirm = button(host, 'Confirm')
     await act(async () => {
@@ -1908,10 +1939,10 @@ describe('correcting a pairing', () => {
     press('c')
     pick(host, 3)
     click(button(host, 'Confirm'))
-    // `disabled={submitting}` blurs the just-clicked Confirm the instant the
-    // write starts, so `onControl` no longer stands `c` down — this guard is
-    // what stops it silently replacing the correction the completion handler is
-    // about to resolve.
+    // Only the submitting guard stops `c` silently replacing the correction the
+    // completion handler is about to resolve: a focused button keeps only
+    // `Space` and `Enter` (spec 2026-09-26 §3.2), and `disabled={submitting}`
+    // blurs the just-clicked Confirm the instant the write starts anyway.
     expect(press('c').defaultPrevented).toBe(false)
     expect(press('Escape').defaultPrevented).toBe(false)
     expect(host.textContent).toContain('Writing…')
@@ -3251,5 +3282,337 @@ describe('what survives the tab going away', () => {
     expect(logged).toHaveBeenCalledWith(expect.any(Error))
     expect(pages(host)).toEqual([expect.stringContaining('/raw/pages/1')])
     logged.mockRestore()
+  })
+})
+
+// ---- the keyboard ring (spec 2026-09-26 §3.1) --------------------------------
+
+describe('the keyboard ring', () => {
+  /** A key pressed where focus is — the page's `press` dispatches at `<body>`. */
+  const pressHere = (key: string, shiftKey = false) =>
+    press(key, {
+      target: (document.activeElement as Element | null) ?? document.body,
+      shiftKey,
+    })
+
+  const barsUp = (host: HTMLElement) =>
+    host.querySelector('.reader-bottom-bar') !== null
+
+  it('walks the page, the top bar, the strip’s one stop and back to the page', async () => {
+    const host = await open()
+    const walk: string[] = []
+    for (let i = 0; i < 7; i++) {
+      expect(pressHere('Tab').defaultPrevented).toBe(true)
+      walk.push(`${focused()}${barsUp(host) ? ' +bars' : ''}`)
+    }
+    // Stored progress is `raw` slot 2, so the strip's stop is "page 3".
+    expect(walk).toEqual([
+      'Library +bars',
+      'single +bars',
+      'two +bars',
+      'scroll +bars',
+      'Settings +bars',
+      'page 3 +bars',
+      'page',
+    ])
+  })
+
+  it('walks it backwards with Shift+Tab', async () => {
+    const host = await open()
+    const walk: string[] = []
+    for (let i = 0; i < 7; i++) {
+      pressHere('Tab', true)
+      walk.push(`${focused()}${barsUp(host) ? ' +bars' : ''}`)
+    }
+    expect(walk).toEqual([
+      'page 3 +bars',
+      'Settings +bars',
+      'scroll +bars',
+      'two +bars',
+      'single +bars',
+      'Library +bars',
+      'page',
+    ])
+  })
+
+  it('Escape from any stop in the bars puts focus on the page', async () => {
+    const host = await open()
+    pressHere('Tab')
+    pressHere('Tab')
+    pressHere('Tab')
+    expect(focused()).toBe('two')
+    pressHere('Escape')
+    expect(barsUp(host)).toBe(false)
+    expect(focused()).toBe('page')
+  })
+
+  it('an arrow on the strip turns the page and focus follows the new current tile', async () => {
+    const host = await open()
+    for (let i = 0; i < 6; i++) pressHere('Tab')
+    expect(focused()).toBe('page 3')
+    // `rtl`: the physical `←` is a step forward.
+    pressHere('ArrowLeft')
+    await settle()
+    expect(pages(host)).toEqual([expect.stringContaining('/raw/pages/3')])
+    expect(focused()).toBe('page 4')
+    expect(barsUp(host)).toBe(true)
+  })
+
+  it('reaches the note list below the page after the strip, taking the bars down first', async () => {
+    localStorage.setItem(
+      'taiyaku.prefs.annotations',
+      JSON.stringify({
+        markers: true,
+        travel: true,
+        reveal: true,
+        notesList: 'below',
+      }),
+    )
+    ports.getNotes.mockResolvedValue({
+      doc: {
+        work: WORK,
+        notes: [
+          {
+            id: 'note-1',
+            edition: 'raw',
+            slot: 2,
+            body: 'a note already here',
+            created: '2026-01-01T00:00:00.000Z',
+            updated: '2026-01-01T00:00:00.000Z',
+          },
+        ],
+      },
+      etag: 'n1',
+    })
+    const host = await open()
+    for (let i = 0; i < 6; i++) pressHere('Tab')
+    expect(focused()).toBe('page 3')
+    pressHere('Tab')
+    expect(barsUp(host)).toBe(false)
+    expect(
+      host
+        .querySelector('[aria-label="Notes on this page"]')
+        ?.contains(document.activeElement),
+    ).toBe(true)
+    pressHere('Tab')
+    expect(focused()).toBe('page')
+  })
+
+  /**
+   * **The banner is in the ring before the strip though it is after it in the
+   * document** — Confirm is the keyboard's only way to finish a correction,
+   * and before a counterpart is picked the banner has no buttons, so this is
+   * the case that needs one picked.
+   */
+  it('while correcting with a counterpart picked, the banner’s buttons come before the strip', async () => {
+    const host = await open()
+    press('c')
+    pick(host, 3)
+    const walk: string[] = []
+    for (let i = 0; i < 20; i++) {
+      pressHere('Tab')
+      walk.push(focused())
+      expect(barsUp(host)).toBe(true)
+      if (focused() === 'page') break
+    }
+    const confirm = walk.indexOf('Confirm')
+    const cancel = walk.indexOf('Cancel')
+    const tile = walk.findIndex((name) => name.startsWith('page '))
+    expect(confirm).toBeGreaterThan(-1)
+    expect(cancel).toBeGreaterThan(confirm)
+    expect(tile).toBeGreaterThan(cancel)
+    expect(walk.at(-1)).toBe('page')
+  })
+
+  it('while correcting, the bars stay up round the whole ring', async () => {
+    const host = await open()
+    press('c')
+    expect(barsUp(host)).toBe(true)
+    pressHere('Tab', true)
+    // Every tile is a stop while correcting; Shift+Tab from the page lands on the last.
+    expect(
+      host
+        .querySelector('.reader-bottom-bar')
+        ?.contains(document.activeElement),
+    ).toBe(true)
+    pressHere('Tab')
+    expect(focused()).toBe('page')
+    expect(barsUp(host)).toBe(true)
+  })
+})
+
+// ---- VoiceOver's page turn (spec 2026-09-26 §3.4, §3.5) ----------------------
+
+describe('the turn buttons and the spoken position', () => {
+  const announcer = (host: HTMLElement) =>
+    host.querySelector('[aria-live="polite"]') as HTMLElement
+
+  it('Next page turns one page forward, and Previous page one back', async () => {
+    const host = await open()
+    click(button(host, 'Next page'))
+    await settle()
+    expect(pages(host)).toEqual([expect.stringContaining('/raw/pages/3')])
+    click(button(host, 'Previous page'))
+    await settle()
+    expect(pages(host)).toEqual([expect.stringContaining('/raw/pages/2')])
+  })
+
+  /**
+   * What VoiceOver may send on a double-tap: the whole press on the button,
+   * then its click. The press is a control press to `gestures.ts`, so only
+   * the click turns.
+   */
+  it('a full press on the button turns exactly one page', async () => {
+    const host = await open()
+    const area = pageArea(host)
+    measure(area, { w: 900, h: 600 })
+    const next = button(host, 'Next page')
+    pointer(next, 'pointerdown', { x: 100, y: 300 })
+    pointer(next, 'pointerup', { x: 100, y: 300 })
+    click(next)
+    await settle()
+    expect(pages(host)).toEqual([expect.stringContaining('/raw/pages/3')])
+  })
+
+  it('lists Next before Previous inside the page area', async () => {
+    const host = await open()
+    expect(
+      [...pageArea(host).querySelectorAll('button')]
+        .map((b) => b.textContent)
+        .filter((t) => t?.endsWith('page')),
+    ).toEqual(['Next page', 'Previous page'])
+  })
+
+  it('is not there with the note editor open, with Account open, or in scroll mode', async () => {
+    const host = await open()
+    press('n')
+    expect(button(host, 'Next page')).toBeUndefined()
+    press('Escape', { target: document.activeElement as Element })
+    press('A')
+    await settle()
+    expect(button(host, 'Next page')).toBeUndefined()
+    press('Escape')
+    press('Tab')
+    click(button(host, 'scroll'))
+    expect(button(host, 'Next page')).toBeUndefined()
+  })
+
+  it('says where a turn landed, in words', async () => {
+    const host = await open()
+    expect(announcer(host).textContent).toBe('page 3, 50 percent')
+    click(button(host, 'Next page'))
+    await settle()
+    expect(announcer(host).textContent).toBe('page 4, 67 percent')
+  })
+
+  it('is quiet on a gap, which speaks for itself', async () => {
+    const host = await swapOntoUnpaired()
+    expect(announcer(host).textContent).toBe('')
+  })
+
+  it('leaves the readout row as text, not a second live region', async () => {
+    const host = await open()
+    press('Tab')
+    expect(
+      host.querySelector('.reader-readout')?.getAttribute('role'),
+    ).toBeNull()
+  })
+})
+
+// ---- the panels and focus (spec 2026-09-26 §3.3) -----------------------------
+
+describe('the panels and focus', () => {
+  const pressHere = (key: string, shiftKey = false) =>
+    press(key, {
+      target: (document.activeElement as Element | null) ?? document.body,
+      shiftKey,
+    })
+
+  it.each([
+    ['s', 'Settings'],
+    ['?', 'Keyboard help'],
+    ['C', 'Credit pages in raw'],
+    ['a', 'All notes'],
+    ['A', 'Account'],
+  ])(
+    '%s moves focus into %s, and Escape hands it back to the page',
+    async (key, label) => {
+      const host = await open()
+      act(() => pageArea(host).focus())
+      pressHere(key)
+      await settle()
+      expect(dialog(host, label)?.contains(document.activeElement)).toBe(true)
+      pressHere('Escape')
+      expect(dialog(host, label)).toBeNull()
+      expect(document.activeElement).toBe(pageArea(host))
+    },
+  )
+
+  it('the note editor takes focus into its textarea and hands it back to the page', async () => {
+    const host = await open()
+    act(() => pageArea(host).focus())
+    pressHere('n')
+    expect(document.activeElement?.tagName).toBe('TEXTAREA')
+    pressHere('Escape')
+    expect(document.activeElement).toBe(pageArea(host))
+  })
+
+  /**
+   * Opening from the page cannot tell `usePanelFocus` apart from a hook that
+   * ran too late: the page is the fallback either way. Opening from ⚙ can —
+   * only the right order hands focus back to ⚙ rather than the page.
+   */
+  it('the note editor opened from ⚙ hands focus back to ⚙, not the page', async () => {
+    const host = await open()
+    press('Tab')
+    const gear = button(host, 'Settings')
+    act(() => gear.focus())
+    pressHere('n')
+    expect(document.activeElement?.tagName).toBe('TEXTAREA')
+    pressHere('Escape')
+    expect(document.activeElement).toBe(gear)
+  })
+
+  it('Settings opened by ⚙ hands focus back to ⚙ when Close closes it', async () => {
+    const host = await open()
+    press('Tab')
+    const gear = button(host, 'Settings')
+    act(() => gear.focus())
+    click(gear)
+    const panel = dialog(host, 'Settings') as HTMLElement
+    expect(panel.contains(document.activeElement)).toBe(true)
+    click(button(panel, 'Close'))
+    expect(document.activeElement).toBe(gear)
+  })
+
+  it('s closes Settings once ⚙ has opened it (O135)', async () => {
+    const host = await open()
+    press('Tab')
+    const gear = button(host, 'Settings')
+    act(() => gear.focus())
+    click(gear)
+    pressHere('s')
+    expect(dialog(host, 'Settings')).toBeNull()
+  })
+
+  /** O161: the first `Tab` in an open panel showed the bars behind it. */
+  it('Tab inside an open panel stays in it and does not bring the bars up', async () => {
+    const host = await open()
+    pressHere('?')
+    pressHere('Tab')
+    expect(host.querySelector('.reader-top-bar')).toBeNull()
+    expect(
+      dialog(host, 'Keyboard help')?.contains(document.activeElement),
+    ).toBe(true)
+  })
+
+  it('Settings and Account say they are modal', async () => {
+    const host = await open()
+    press('s')
+    expect(dialog(host, 'Settings')?.getAttribute('aria-modal')).toBe('true')
+    press('Escape')
+    press('A')
+    await settle()
+    expect(dialog(host, 'Account')?.getAttribute('aria-modal')).toBe('true')
   })
 })

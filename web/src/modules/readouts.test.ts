@@ -15,6 +15,7 @@ import {
   readoutRow,
   readoutsModule,
   reportPoint,
+  spokenPosition,
   timeLine,
   type ReadoutClock,
 } from './readouts'
@@ -53,6 +54,26 @@ describe('positionLine', () => {
     expect(
       positionLine({ slot: 87, total: 195, page: 84, edition: undefined }),
     ).toBe('slot 88 / 195 · p. 84 · 45%')
+  })
+})
+
+describe('spokenPosition (spec 2026-09-26 §3.5)', () => {
+  it('says the page and how far through, in words', () => {
+    expect(spokenPosition({ slot: 5, total: 18, page: 6 })).toBe(
+      'page 6, 33 percent',
+    )
+  })
+
+  it('says the edition first, with a pause, when there is one', () => {
+    expect(
+      spokenPosition({ slot: 5, total: 18, page: 6, edition: 'raw' }),
+    ).toBe('raw, page 6, 33 percent')
+  })
+
+  it('rounds the percentage as the position line does', () => {
+    expect(spokenPosition({ slot: 2, total: 6, page: 3 })).toBe(
+      'page 3, 50 percent',
+    )
   })
 })
 
@@ -550,15 +571,38 @@ describe('readoutLines', () => {
     expect(none.notes).toBeUndefined()
   })
 
-  /** All six, in one call — five strings and the progress fraction, so `Chrome` can lay out the row and fill the progress line from one answer. */
-  it('answers every line the row lays out', () => {
+  /** Every field, in one call — the row's strings, the progress fraction and the spoken line, so the row, the progress line and the live region all read one answer. */
+  it('answers every field in one call', () => {
     expect(Object.keys(lines(at('b', 0)))).toEqual([
       'position',
       'chapter',
       'health',
       'time',
       'notes',
+      'spoken',
       'progress',
     ])
+  })
+})
+
+describe('readoutLines, spoken', () => {
+  it('speaks the position on a page', () => {
+    expect(lines(at('a', 3)).spoken).toMatch(/^page \d+, \d+ percent$/)
+  })
+
+  /** A borrowed page's numbers are the authority's, so the line says whose. */
+  it('names the authority edition on a borrowed page', () => {
+    const borrowed: Display = {
+      kind: 'borrowed',
+      edition: 'b',
+      from: { edition: 'a', slot: 3 },
+      lender: { edition: 'c', slot: 1 },
+    }
+    expect(lines(borrowed).spoken).toMatch(/^a, page \d+, \d+ percent$/)
+  })
+
+  /** `Gap`'s own `role="status"` speaks for a gap. */
+  it('is quiet on a gap', () => {
+    expect(lines(gap('b', 'a', 5)).spoken).toBe('')
   })
 })

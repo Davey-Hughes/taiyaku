@@ -1,4 +1,5 @@
-import type { CSSProperties } from 'react'
+import { useRef, type CSSProperties } from 'react'
+import { usePanelFocus } from './focus'
 import type { Direction } from './modules/direction'
 import { helpGroups } from './modules/help'
 import type { ReaderModule } from './module'
@@ -81,15 +82,23 @@ export interface HelpProps {
  *   one module whose off switch it cannot see.
  *
  * No state of its own, `null` when not visible, and a close button:
- * `CreditsPanel`'s shape, for the same reason it has that shape. It parts
- * from `CreditsPanel` on `Escape`, which does close this and does not close
- * that — see the `Escape` branch in `App.tsx`'s keydown listener, which
- * carries the reason.
+ * `CreditsPanel`'s shape, for the same reason it has that shape. `Escape`
+ * closes both, and Settings, since the accessibility pass (spec 2026-09-26
+ * §3.3): until then only this one closed on it, and no reason for the other
+ * two was ever recorded.
  */
 export function Help({ visible, modules, reading, onClose }: HelpProps) {
+  const panelRef = useRef<HTMLDivElement>(null)
+  usePanelFocus(panelRef, visible)
   if (!visible) return null
   return (
-    <div className="docked-panel" role="dialog" aria-label="Keyboard help">
+    <div
+      className="docked-panel"
+      role="dialog"
+      aria-label="Keyboard help"
+      ref={panelRef}
+      tabIndex={-1}
+    >
       <div className="reader-panel-head">
         <strong className="reader-panel-title">Keys</strong>
         <button type="button" className="reader-button" onClick={onClose}>

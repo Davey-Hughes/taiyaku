@@ -47,7 +47,7 @@ describe('Help', () => {
     )
     expect(tabRow).toBeDefined()
     expect(tabRow?.querySelector('dd')?.textContent).toBe(
-      'show or hide the filmstrip and readouts',
+      'move into the bars, and on round to the page',
     )
   })
 

@@ -79,7 +79,7 @@ describe('Chrome', () => {
     // three layouts and Settings.
     expect(host.querySelectorAll('button').length).toBe(groups.length + 5)
     expect(host.querySelector('.reader-top-bar')).not.toBeNull()
-    expect(host.querySelector('[role="status"]')).not.toBeNull()
+    expect(host.querySelector('.reader-readout')).not.toBeNull()
   })
 
   it('gives the reader a way back to the library', () => {
@@ -159,7 +159,7 @@ describe('Chrome', () => {
     expect(progress.classList.contains('reader-progress')).toBe(true)
     expect(progress.getAttribute('aria-hidden')).toBe('true')
     expect(progress.style.height).toBe('var(--progress-height)')
-    expect(readout.getAttribute('role')).toBe('status')
+    expect(readout.getAttribute('role')).toBeNull()
     expect(readout.style.height).toBe('var(--readout-height)')
     expect(readout.classList.contains('reader-readout')).toBe(true)
   })
@@ -174,7 +174,7 @@ describe('Chrome', () => {
 
   it('joins the readout row in position/health/time/chapter/notes order', () => {
     const host = mount(<Chrome {...baseProps} />)
-    expect(host.querySelector('[role="status"]')?.textContent).toBe(
+    expect(host.querySelector('.reader-readout')?.textContent).toBe(
       'slot 1 / 3 · sound pair · 2m read · c001 · 3 notes',
     )
   })
@@ -192,7 +192,7 @@ describe('Chrome', () => {
         }}
       />,
     )
-    expect(host.querySelector('[role="status"]')?.textContent).toBe('')
+    expect(host.querySelector('.reader-readout')?.textContent).toBe('')
   })
 
   it('shows no hover preview before any tile is focused, even while correcting', () => {

@@ -1,6 +1,6 @@
 /**
- * Given a key, an intent and nine flags: what should happen, and should the
- * browser's own default be prevented.
+ * Given a key, an intent and the flags in `Guards`: what should happen, and
+ * should the browser's own default be prevented.
  *
  * The keydown handler was 413 lines in `App.tsx` and almost all of it was
  * guards — thirteen early returns, several of which exist because of a
@@ -18,7 +18,7 @@
  * subscription, the refs the flags are read through, and one `switch` of
  * one-line calls.
  */
-import type { Intent } from './keys'
+import type { ControlKind, Intent } from './keys'
 import { REVIEW_INTENT } from './modules/annotations'
 import { PANEL_INTENT } from './modules/credits'
 import { TOGGLE_INTENT as HELP_TOGGLE_INTENT } from './modules/help'
@@ -33,14 +33,12 @@ import type { ReadingIntent } from './session'
 /**
  * What the handler must know that the event does not carry.
  *
- * **Nine, not six.** Three of them — `zoomable`, `creditsPanel`,
- * `helpEnabled` — are gates a first reading of the file left inline in the
- * module switch, where they would have made the residual dispatch three
- * guarded cases rather than one-line calls. Each is a decision about whether a
- * key does anything, which is the one thing this module is for; a guard left
- * in `App.tsx` is a branch nothing can reach. What they cost is three lines
- * computed at the call site, all three reading refs that are read there
- * already.
+ * **Three of them are gates rather than state** — `zoomable`, `creditsPanel`,
+ * `helpEnabled` — which a first reading of the file left inline in the
+ * module switch, where they would have made the residual dispatch guarded cases
+ * rather than one-line calls. Each is a decision about whether a key does
+ * anything, which is the one thing this module is for; a guard left in
+ * `App.tsx` is a branch nothing can reach.
  */
 export interface Guards {
   /** The help overlay is up. It closes first, ahead of everything else. */
@@ -53,8 +51,8 @@ export interface Guards {
   submitting: boolean
   /** A note write is on the wire. */
   notesBusy: boolean
-  /** `isInteractiveTarget(event.target)` — focus is in a control. */
-  onControl: boolean
+  /** `keys.ts`'s `controlKind(event.target)` — which keys the focused element keeps. */
+  control: ControlKind
   /** Whether the account panel is open over the reader.
   ///
   /// **`Escape` belongs to whatever is on top.** Without this it fell through to
@@ -64,6 +62,14 @@ export interface Guards {
   /// note editor already had exactly this guard (`panel === 'edit'`). Found by
    * the second whole-branch review. */
   accountOpen: boolean
+  /** `Chrome`'s bars are up. `Escape` takes them away when nothing above them is open (spec 2026-09-26 §3.1). */
+  barsUp: boolean
+  /** The settings panel is open. */
+  settingsOpen: boolean
+  /** The credits panel is open. */
+  creditsOpen: boolean
+  /** `keys.ts`'s `inPanel(event.target)` — focus is inside an open panel, whose `Tab` it is (spec 2026-09-26 §3.3). */
+  inPanel: boolean
   /**
    * `modules/zoom.ts`'s `zoomable(zoomPrefs, drawn !== undefined)` — one flag
    * for the three zoom keys, and the same predicate `notes.ts`'s
@@ -82,9 +88,14 @@ export type KeyAction =
   /** Flush and close. `Escape` means "I am finished here", not "abandon" — undo is what abandons. */
   | { kind: 'close-editor' }
   | { kind: 'cancel-correction' }
-  | { kind: 'toggle-chrome' }
+  /** `Tab`: one stop round the reader's ring (spec 2026-09-26 §3.1); `App.tsx` reads `shiftKey` for the direction. */
+  | { kind: 'ring' }
   | { kind: 'open-account' }
   | { kind: 'close-account' }
+  | { kind: 'close-settings' }
+  | { kind: 'close-credits' }
+  /** Hide the bars and put focus on the page — spec 2026-09-26 §3.1. */
+  | { kind: 'leave-bars' }
   | { kind: 'begin-correction' }
   | { kind: 'module'; intent: string }
   /** Back to the library grid — spec C1 §6. */
@@ -111,15 +122,26 @@ export type KeyAction =
 export interface Planned {
   action: KeyAction
   /**
-   * **`Tab` alone is `false`.** Toggling the chrome is layered on top of the
-   * browser's own focus movement rather than replacing it, and preventing it
-   * is what made every focusable control in the reader — the mode buttons, all
-   * of the filmstrip's tiles, `Gap`'s offered moves — mouse-only.
+   * Every key this reader claims prevents the browser's default, `Tab`
+   * included since the accessibility pass: the reader moves focus round its
+   * ring itself (spec 2026-09-26 §3.1). Before it, `Tab` alone was `false` —
+   * toggling the bars layered on the browser's own focus move — which walked
+   * focus out of the page into the browser's frame (O135).
    */
   preventDefault: boolean
 }
 
 const CLAIMED: Planned = { action: { kind: 'inert' }, preventDefault: true }
+
+/**
+ * Whether the focused element keeps this key for itself — spec 2026-09-26
+ * §3.2. Text entry keeps every key; a button keeps the two that press it; the
+ * page and a panel keep none.
+ */
+function controlKeeps(control: ControlKind, key: string): boolean {
+  if (control === 'text') return true
+  return control === 'button' && (key === ' ' || key === 'Enter')
+}
 
 /**
  * Whether a module's key does anything right now.
@@ -159,9 +181,9 @@ function moduleKeyLive(intent: string, guards: Guards): boolean {
  *
  * `key` is checked before `intent`, because `Escape` is not one of `intentOf`'s
  * intents and deliberately does *not* stand down for a focused control — the
- * tile a reader just clicked is itself a button, and gating `Escape` on
- * `onControl` would make it fire everywhere except the one moment it matters
- * most.
+ * tile a reader just clicked is itself a button, and gating `Escape` on the
+ * focused control would make it fire everywhere except the one moment it
+ * matters most.
  *
  * `undefined` means the keypress belongs to something else and the browser
  * should have it: to a control that has focus, to the note editor (nothing
@@ -195,6 +217,17 @@ export function keyPlan(
     if (guards.accountOpen) {
       return { action: { kind: 'close-account' }, preventDefault: true }
     }
+    // **Settings and Credits close next, above the note panel and the
+    // correction**, for the reason Help closes first: closing either discards
+    // nothing. Until the accessibility pass neither closed on `Escape` at all,
+    // and the commit that gave Help its arm recorded only that (spec
+    // 2026-09-26 §3.3, O135, O161).
+    if (guards.settingsOpen) {
+      return { action: { kind: 'close-settings' }, preventDefault: true }
+    }
+    if (guards.creditsOpen) {
+      return { action: { kind: 'close-credits' }, preventDefault: true }
+    }
     // The note panel closes on `Escape` too, but only where there is no
     // correction to abandon: a reader mid-correction pressing `Escape` means
     // the correction, which is the irreversible one.
@@ -207,47 +240,59 @@ export function keyPlan(
       if (guards.notesBusy) return undefined
       return { action: { kind: 'close-editor' }, preventDefault: true }
     }
-    if (!guards.correcting) return undefined
-    // Not while the write is on the wire: taking the banner away would tell
-    // the reader the correction was abandoned when it is still going to land.
-    if (guards.submitting) return undefined
-    return { action: { kind: 'cancel-correction' }, preventDefault: true }
+    if (guards.correcting) {
+      // Not while the write is on the wire: taking the banner away would tell
+      // the reader the correction was abandoned when it is still going to
+      // land. The bars stay too — the correction holds them up.
+      if (guards.submitting) return undefined
+      return { action: { kind: 'cancel-correction' }, preventDefault: true }
+    }
+    // Last: the bars themselves, from anywhere in them or from the page while
+    // a tap has them up (spec 2026-09-26 §3.1).
+    if (guards.barsUp) {
+      return { action: { kind: 'leave-bars' }, preventDefault: true }
+    }
+    return undefined
   }
   // One dispatch path: every key, built-in or module-declared, has already
   // passed through `intentOf`, which applies the modifier guard once.
   if (!intent) return undefined
   // **Nothing reaches the page while the note editor is open.** It is a dialog
   // that takes text, so a keystroke means the note — whatever the browser
-  // currently thinks is focused. `onControl` below only stands down while
-  // focus is *in* a control, and a refused save or a stray click is enough to
-  // break that: measured, with a server rejecting a write, the editor stayed
-  // open holding the reader's text while focus sat on `<body>`, so typing
-  // opened the settings panel instead of writing the note. `Escape` is handled
-  // above and still closes the editor; everything else belongs to the note
-  // until it does.
+  // currently thinks is focused. The control guard below only stands a key
+  // down while focus is *in* a control, and a refused save or a stray click is
+  // enough to break that: measured, with a server rejecting a write, the
+  // editor stayed open holding the reader's text while focus sat on `<body>`,
+  // so typing opened the settings panel instead of writing the note. `Escape`
+  // is handled above and still closes the editor; everything else belongs to
+  // the note until it does.
   if (guards.panel === 'edit') return undefined
   // **The account panel stands every other key down too**, exactly as the note
   // editor above does. Consulting `accountOpen` only inside the `Escape` branch
   // left the reader keys live behind a `position: fixed; inset: 0` overlay with
   // no focus trap: clicking Create or Revoke drops focus to `<body>` — both
-  // `disabled={busy}` and the refresh re-render do it — so `onControl` stands
-  // nothing down, and `→ → →` turned the hidden reader three pages forward with
-  // the debounced `putProgress` writing that position 400 ms later, while `c`
-  // armed a correction nobody could see. Verbatim the failure the editor
-  // guard's own comment records. Found by the third whole-branch review.
+  // `disabled={busy}` and the refresh re-render do it — so the control guard
+  // stands nothing down, and `→ → →` turned the hidden reader three pages
+  // forward with the debounced `putProgress` writing that position 400 ms
+  // later, while `c` armed a correction nobody could see. Verbatim the
+  // failure the editor guard's own comment records. Found by the third
+  // whole-branch review.
   if (guards.accountOpen) return undefined
-  // Ahead of the `onControl` check, unlike everything below it: `Tab` moving
+  // Ahead of the control check, unlike everything below it: `Tab` moving
   // focus onto a control is not the same event as activating it, so there is
   // nothing for it to collide with.
   if (intent.kind === 'chrome') {
-    return { action: { kind: 'toggle-chrome' }, preventDefault: false }
+    // O161: the first `Tab` in an open panel used to show the bars behind it.
+    if (guards.inPanel) return undefined
+    return { action: { kind: 'ring' }, preventDefault: true }
   }
-  // A reader key belongs to the page, not to whatever a previous `Tab`
-  // happened to focus. Without this, tabbing onto a mode button and pressing
-  // Space to click it would also fire the edition toggle — not because two
-  // listeners raced, but because a window-level listener has no way to know a
-  // focused button is about to handle the very same keypress itself.
-  if (guards.onControl) return undefined
+  // A key the focused element uses is the element's. Without this, tabbing
+  // onto a mode button and pressing Space to click it would also fire the
+  // edition toggle — not because two listeners raced, but because a
+  // window-level listener has no way to know a focused button is about to
+  // handle the very same keypress itself. Every other key is the reader's,
+  // wherever focus is: `→` turns the page from ⚙ (spec 2026-09-26 §3.2).
+  if (controlKeeps(guards.control, key)) return undefined
   // **Below the guard, unlike `chrome` above it, and the difference is that
   // `Tab` is not a character and `A` is.** `intentOf` bails only on
   // ctrl/meta/alt, not Shift, so this fires for a shifted `a` typed anywhere —
@@ -263,11 +308,12 @@ export function keyPlan(
     return { action: { kind: 'leave-reader' }, preventDefault: true }
   }
   if (intent.kind === 'correct') {
-    // Not while a correction is already on the wire. Without this,
-    // `disabled={submitting}` blurs the just-clicked Confirm the instant the
-    // write starts, so `onControl` no longer stands this down, and a `c` press
+    // Not while a correction is already on the wire. Without this, a `c` press
     // mid-write would silently replace the pending correction the completion
-    // handler is about to resolve.
+    // handler is about to resolve. Nothing else stops it: a button keeps only
+    // the keys that press it (spec 2026-09-26 §3.2), and
+    // `disabled={submitting}` blurs the just-clicked Confirm the instant the
+    // write starts anyway.
     if (guards.submitting) return undefined
     return { action: { kind: 'begin-correction' }, preventDefault: true }
   }

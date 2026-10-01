@@ -34,26 +34,32 @@ export const readoutsModule: ReaderModule<ReadoutsPrefs> = {
   },
 }
 
-/** `positionLine`'s inputs. `slot` and `total` are zero/whole-count as everywhere else internal; `page` is already display-ready (1-based) — the same boundary convention `App.tsx`'s `altAt` already applies before handing a page number to something a person reads. */
+/** `positionLine`'s and `spokenPosition`'s inputs. `slot` and `total` are zero/whole-count as everywhere else internal; `page` is already display-ready (1-based) — the same boundary convention `App.tsx`'s `altAt` already applies before handing a page number to something a person reads. */
 export interface PositionInput {
   slot: number
   total: number
   page: number
   /**
-   * Whose position this is, prefixed to the line when set.
+   * Whose position this is, said first when set.
    *
-   * Set by exactly one caller: `App.tsx` while showing a gap, where the line
-   * reports the *authority's* slot and the authority's slot count while the
-   * reader is looking at a different edition. The percentage below is
+   * `readoutLines` sets it from `reportPoint`'s `name` — on a gap and on a
+   * borrowed page, where the line reports the *authority's* slot and the
+   * authority's slot count while the reader is looking at a different
+   * edition. The percentage below is
    * already allowed to change on a swap — see this function's own doc for
    * why hiding that would be the dishonest option — but changing the *scale*
    * it is measured against with nothing on screen to say so is a different
    * and worse claim, and this is what says so.
    *
-   * Absent while reading, which is every other case: the edition is the one
-   * on screen, and naming it in every frame would be noise.
+   * Absent on an edition's own page, which is every other case: the edition
+   * is the one on screen, and naming it in every frame would be noise.
    */
   edition?: string
+}
+
+/** How far through, as a whole percentage — the one rounding `positionLine` and `spokenPosition` share. */
+function percentOf(slot: number, total: number): number {
+  return Math.round(((slot + 1) / total) * 100)
 }
 
 /**
@@ -73,9 +79,29 @@ export function positionLine({
   page,
   edition,
 }: PositionInput): string {
-  const percent = Math.round(((slot + 1) / total) * 100)
+  const percent = percentOf(slot, total)
   const line = `slot ${slot + 1} / ${total} · p. ${page} · ${percent}%`
   return edition ? `${edition} ${line}` : line
+}
+
+/**
+ * Where a turn landed, for a screen reader — spec 2026-09-26 §3.5: the page
+ * and how far through, in words. The position line's own text, "slot 6 / 18 ·
+ * p. 6 · 33%", read aloud is noise.
+ *
+ * The edition, when there is one, is said first and is not an abbreviation to
+ * drop: on a borrowed page the page number and percentage are the authority
+ * edition's, and hearing them with nothing saying whose would be the silent
+ * change of scale `PositionInput.edition` describes. The comma is a pause.
+ */
+export function spokenPosition({
+  slot,
+  total,
+  page,
+  edition,
+}: PositionInput): string {
+  const line = `page ${page}, ${percentOf(slot, total)} percent`
+  return edition ? `${edition}, ${line}` : line
 }
 
 /**
@@ -489,14 +515,17 @@ export interface ReadoutClock {
   now: number
 }
 
-/** All six fields `Chrome` takes — five readout lines and, since style pass
- * ③, the progress fraction the bottom bar's line is filled to. */
+/** The readout lines `Chrome` lays out, the progress fraction the bottom
+ * bar's line is filled to (since style pass ③), and the line the reader's
+ * live region speaks (spec 2026-09-26 §3.5), which `App.tsx` renders itself. */
 export interface ReadoutLines {
   position: string
   chapter: string
   health: string | undefined
   time: string
   notes: string | undefined
+  /** The position for the reader's live region — `spokenPosition`, or the empty string on a gap, where `Gap`'s own `role="status"` already speaks for it (spec 2026-09-26 §3.5). */
+  spoken: string
   /**
    * How far through the edition, 0 to 1 — not a line of text, but the bottom
    * bar's progress line (spec 2026-09-17 §8.4), computed here from the same
@@ -510,12 +539,12 @@ export interface ReadoutLines {
 }
 
 /**
- * The six fields, from one `Display`.
+ * Every field, from one `Display`.
  *
  * `Chrome` takes strings (and one fraction) and lays them out; **every branch
  * behind them is here** rather than in a render body where nothing can reach
- * it. Seven of the calls are one-liners into the functions above, and the
- * value of the function is the four things that are not:
+ * it. Most of the calls are one-liners into the functions above, and the
+ * value of the function is the ones that are not:
  *
  * - `?? slot + 1` for an edition the resolver cannot count, so a line still
  *   renders rather than `NaN%`.
@@ -545,11 +574,12 @@ export function readoutLines(
 ): ReadoutLines {
   const from = reportPoint(shown)
   const total = resolver.slotCount(from.edition) ?? from.slot + 1
+  const page = resolver.slotAt(from.edition, from.slot)!.page + 1
   return {
     position: positionLine({
       slot: from.slot,
       total,
-      page: resolver.slotAt(from.edition, from.slot)!.page + 1,
+      page,
       edition: from.name,
     }),
     chapter: chapterReadout(
@@ -567,6 +597,15 @@ export function readoutLines(
       slotsLeft: Math.max(total - (from.slot + 1), 0),
     }),
     notes: noteCountLine(notes.here, notes.total),
+    spoken:
+      shown.kind === 'gap'
+        ? ''
+        : spokenPosition({
+            slot: from.slot,
+            total,
+            page,
+            edition: from.name,
+          }),
     progress: Math.min((from.slot + 1) / total, 1),
   }
 }

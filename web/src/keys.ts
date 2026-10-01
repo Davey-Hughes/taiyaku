@@ -90,7 +90,7 @@ export const READER_KEYS: ReaderBinding[] = [
   },
   {
     keys: ['Tab'],
-    label: 'show or hide the filmstrip and readouts',
+    label: 'move into the bars, and on round to the page',
     resolve: () => ({ kind: 'chrome' }),
   },
   {
@@ -169,72 +169,89 @@ export function intentOf(
 }
 
 /**
- * Whether a keydown's target is a control rather than the page at large — a
- * `button`, an `a`, an `input`, a `textarea`, anything `contenteditable`, or
- * anything else carrying `tabindex`.
+ * Which keys a keydown's target keeps for itself — spec 2026-09-26 §3.2.
  *
- * **`textarea` was missing until M5c, and the reader had no textarea to
- * notice it with.** The note editor is the first surface here that takes
- * typed text, and without this every module key fired mid-word: typing `s`
- * opened the settings panel, `n` started another note, Space swapped edition,
- * a digit jumped to one. Reported from a real browser. The tests that
- * "covered" the editor had set its value with Playwright's `fill()`, which
- * dispatches an input event rather than keystrokes, so not one of them ever
- * sent a key through this function — which is why a defect this loud survived
- * a browser pass.
+ * - `'text'` keeps every key: an `input` other than a checkbox or a button, a
+ *   `textarea`, a `select`, anything `contentEditable`.
+ * - `'button'` keeps `Space` and `Enter`, the keys that press it: a `button`,
+ *   a link, a checkbox, an `input` button.
+ * - `'none'` keeps nothing: the page area, a panel itself, `<body>`.
  *
- * `contenteditable` is here for the same reason ahead of a caller rather than
- * behind one: the rule is "is this target taking text", not "is it one of
- * four tag names", and the next surface that takes text should not have to
- * rediscover this.
+ * **This replaced `isInteractiveTarget`, which answered one yes-or-no for all
+ * of them.** It stood every reader key down on a focused button, so `→` on ⚙
+ * did nothing, and on anything carrying `tabindex`, which the page area and
+ * the panels carry since §3.1 and §3.3. It also knew nothing of a `select`, so
+ * a key pressed on one of Settings' selects reached the reader instead — `s`
+ * closed the panel under it and `→` turned the page (O166, `docs/notes.md`).
  *
- * `App.tsx` used to `preventDefault()` every recognised key, `Tab` included,
- * reasoning that a later `Space` would
- * otherwise double-fire on a button `Tab` had just focused — the mode
- * buttons, a filmstrip tile, one of `Gap`'s offered moves. That reasoning was
- * real but the fix was wrong: it removed `Tab`'s own focus traversal
- * entirely, forever, rather than resolving the one collision it was worried
- * about. `App.tsx` now leaves `Tab` alone and instead skips a reader
- * intent — Space, an arrow, a digit — whenever this returns true for
- * `event.target`, so a focused button's own keyboard activation is the only
- * thing that runs. `Tab` itself is never checked against this: moving focus
- * onto a control is not the same event as activating it, so there is nothing
- * for `Tab` to collide with.
+ * **`textarea` was missing from that rule until M5c**, when the note editor
+ * became the first surface here that takes typed text: every module key fired
+ * mid-word. The tests that "covered" the editor had set its value with
+ * `fill()`, which sends no keystroke. `contentEditable` is here for the same
+ * reason ahead of a caller: the rule is "is this target taking text", not "is
+ * it one of four tag names".
+ *
+ * Duck-typed rather than `instanceof`, because `keys.test.ts` runs in the
+ * `node` project with no DOM.
  */
-export function isInteractiveTarget(target: EventTarget | null): boolean {
+export type ControlKind = 'text' | 'button' | 'none'
+
+/** The `input` types that are pressed rather than typed into. */
+const PRESSED_INPUTS = new Set(['checkbox', 'button', 'submit', 'reset'])
+
+export function controlKind(target: EventTarget | null): ControlKind {
   const el = target as {
     tagName?: unknown
     isContentEditable?: unknown
-    hasAttribute?: (name: string) => boolean
+    type?: unknown
   } | null
-  if (!el || typeof el.tagName !== 'string') return false
-  if (
-    el.tagName === 'BUTTON' ||
-    el.tagName === 'A' ||
-    el.tagName === 'INPUT' ||
-    el.tagName === 'TEXTAREA'
-  ) {
-    return true
+  if (!el || typeof el.tagName !== 'string') return 'none'
+  if (el.isContentEditable === true) return 'text'
+  switch (el.tagName) {
+    case 'TEXTAREA':
+    case 'SELECT':
+      return 'text'
+    case 'INPUT':
+      return PRESSED_INPUTS.has(String(el.type)) ? 'button' : 'text'
+    case 'BUTTON':
+    case 'A':
+      return 'button'
+    default:
+      return 'none'
   }
-  if (el.isContentEditable === true) return true
-  return typeof el.hasAttribute === 'function' && el.hasAttribute('tabindex')
+}
+
+/**
+ * Whether a keydown's target is inside one of the reader's panels, every one
+ * of which is a `role="dialog"`. `Tab` there is the panel's, not the ring's
+ * (spec 2026-09-26 §3.3).
+ */
+export function inPanel(target: EventTarget | null): boolean {
+  const el = target as { closest?: (selector: string) => unknown } | null
+  return (
+    typeof el?.closest === 'function' && el.closest('[role="dialog"]') !== null
+  )
 }
 
 /**
  * Whether a *pointer* press landed on a control, counting ancestors.
  *
- * `isInteractiveTarget` above answers the same question for a keydown, where
- * the target is the focused element itself and asking about ancestors would
- * be asking about nothing. A pointer press is different in kind: its target is
- * whatever node is under the pixel, which for a button holding a run of text
- * is a `span` or a text node's parent — not the button. So the keydown rule
- * applied to a press would return `false` for a drag begun on the words inside
- * a note-list entry, and the caller would treat it as a press on the page.
+ * `controlKind` above answers a narrower question for a keydown — which
+ * keys the focused element keeps — where the target is the focused element
+ * itself and asking about ancestors would be asking about nothing. A pointer
+ * press is different in kind: its target is whatever node is under the pixel,
+ * which for a button holding a run of text is a `span` or a text node's
+ * parent — not the button. So the keydown rule applied to a press would
+ * answer `'none'` for a drag begun on the words inside a note-list entry, and
+ * the caller would treat it as a press on the page.
  *
- * `closest` rather than a hand-written walk, and the same set of controls
- * spelled once here rather than twice: a selector is what `closest` takes, and
- * keeping the two functions' notions of "a control" from drifting apart is
- * worth more than sharing an implementation between them.
+ * `closest` rather than a hand-written walk: a selector is what `closest`
+ * takes. `select` was on this list before the keydown rule knew it (O166).
+ *
+ * **The page area is left out of `[tabindex]`.** It carries `tabIndex={-1}`
+ * as the ring's page stop (spec 2026-09-26 §3.1), and counted it would make
+ * every press on the page a press on a control, refusing every tap and swipe
+ * `gestures.ts` reads.
  *
  * Deliberately **not** used for the keydown case. Ancestors matter to a press
  * and not to a keystroke, and collapsing the two would make a key pressed
@@ -246,7 +263,7 @@ export function isInteractivePress(target: EventTarget | null): boolean {
   if (!el || typeof el.closest !== 'function') return false
   return (
     el.closest(
-      'button, a, input, textarea, select, [tabindex], [contenteditable=""], [contenteditable="true"]',
+      'button, a, input, textarea, select, [tabindex]:not([data-reader-page]), [contenteditable=""], [contenteditable="true"]',
     ) !== null
   )
 }

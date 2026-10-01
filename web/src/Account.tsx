@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import {
   changePassword,
   createKey,
@@ -10,6 +10,7 @@ import {
   type ApiKey,
   type SessionRow,
 } from './api'
+import { usePanelFocus } from './focus'
 import { messageOf } from './message'
 
 /**
@@ -127,6 +128,8 @@ export function Account(props: AccountProps) {
   const { onSignedOut } = props
   const visible = props.placement === 'page' || props.visible
   const look = LOOKS[props.placement ?? 'panel']
+  const panelRef = useRef<HTMLDivElement>(null)
+  usePanelFocus(panelRef, props.placement !== 'page' && visible)
   const [keys, setKeys] = useState<ApiKey[]>([])
   const [sessions, setSessions] = useState<SessionRow[]>([])
   const [keyName, setKeyName] = useState('')
@@ -397,7 +400,14 @@ export function Account(props: AccountProps) {
 
   return (
     <div className="reader-dialog">
-      <div className="reader-dialog-panel" role="dialog" aria-label="Account">
+      <div
+        className="reader-dialog-panel"
+        role="dialog"
+        aria-label="Account"
+        ref={panelRef}
+        tabIndex={-1}
+        aria-modal="true"
+      >
         <div className="reader-panel-head">
           <h2 className="reader-panel-title">Account</h2>
           <button

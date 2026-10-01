@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import {
+  controlKind,
+  inPanel,
   intentOf,
   isInteractivePress,
-  isInteractiveTarget,
   READER_KEYS,
 } from './keys'
 import type { ReaderModule } from './module'
@@ -190,57 +191,49 @@ describe('READER_KEYS', () => {
 })
 
 // A fake `EventTarget` — this file runs under Vitest's `node` environment, no
-// `HTMLElement` global, so `isInteractiveTarget` is written to duck-type
-// rather than `instanceof`, and this constructs exactly the shape it reads.
-const target = (tagName: string, tabindex?: string) =>
-  ({
-    tagName,
-    hasAttribute: (name: string) =>
-      name === 'tabindex' && tabindex !== undefined,
-  }) as unknown as EventTarget
+// `HTMLElement` global, so `controlKind` is written to duck-type rather than
+// `instanceof`, and this constructs exactly the shape it reads.
+const target = (tagName: string, extra: Record<string, unknown> = {}) =>
+  ({ tagName, ...extra }) as unknown as EventTarget
 
-describe('isInteractiveTarget', () => {
-  it('is true for a button, a link, and an input', () => {
-    expect(isInteractiveTarget(target('BUTTON'))).toBe(true)
-    expect(isInteractiveTarget(target('A'))).toBe(true)
-    expect(isInteractiveTarget(target('INPUT'))).toBe(true)
+describe('controlKind', () => {
+  it('text entry keeps every key: a text input, a number, a textarea, a select', () => {
+    expect(controlKind(target('INPUT', { type: 'text' }))).toBe('text')
+    expect(controlKind(target('INPUT', { type: 'number' }))).toBe('text')
+    expect(controlKind(target('INPUT', { type: 'password' }))).toBe('text')
+    expect(controlKind(target('TEXTAREA'))).toBe('text')
   })
 
-  // A reader typing a note is the case this missed until M5c put the first
-  // textarea in the reader: every module key fired mid-word, so typing `s`
-  // opened the settings panel, `n` started another note, Space swapped
-  // editions and a digit jumped to one. Reported from a real browser, where
-  // the tests that "covered" the editor had set the value with `fill()` and
-  // so never sent a keystroke through this at all.
-  it('is true for a textarea — a reader typing a note is not pressing reader keys', () => {
-    expect(isInteractiveTarget(target('TEXTAREA'))).toBe(true)
+  // O166: several of Settings' fields are selects, and a key pressed on one
+  // reached the reader — `s` closed the panel under it, `→` turned the page.
+  it('is text for a select', () => {
+    expect(controlKind(target('SELECT'))).toBe('text')
   })
 
-  // The other way a page can be typed into. Nothing in this reader uses one
-  // today; it is here because the rule is "is the target taking text", not "is
-  // it one of three tag names", and the next surface that takes text should
-  // not have to rediscover this bug.
-  it('is true for a contenteditable element, whatever its tag', () => {
-    const editable = {
-      tagName: 'DIV',
-      isContentEditable: true,
-      hasAttribute: () => false,
-    }
-    expect(isInteractiveTarget(editable as unknown as EventTarget)).toBe(true)
+  // A reader typing a note is the case the old rule missed until M5c put the
+  // first textarea in the reader: every module key fired mid-word. The rule is
+  // "is the target taking text", so a contenteditable counts whatever its tag.
+  it('is text for a contenteditable element, whatever its tag', () => {
+    expect(controlKind(target('DIV', { isContentEditable: true }))).toBe('text')
   })
 
-  it('is true for anything carrying tabindex, whatever its tag', () => {
-    expect(isInteractiveTarget(target('DIV', '0'))).toBe(true)
-    expect(isInteractiveTarget(target('DIV', '-1'))).toBe(true)
+  it('a button, a link and a checkbox keep only the keys that press them', () => {
+    expect(controlKind(target('BUTTON'))).toBe('button')
+    expect(controlKind(target('A'))).toBe('button')
+    expect(controlKind(target('INPUT', { type: 'checkbox' }))).toBe('button')
+    expect(controlKind(target('INPUT', { type: 'button' }))).toBe('button')
   })
 
-  it('is false for an ordinary element with no tabindex', () => {
-    expect(isInteractiveTarget(target('DIV'))).toBe(false)
-    expect(isInteractiveTarget(target('IMG'))).toBe(false)
+  // The page area and every panel carry `tabindex` (spec §3.1, §3.3). The old
+  // rule stood every reader key down on anything that did.
+  it('keeps nothing for the page area or a panel, tabindex or not', () => {
+    expect(controlKind(target('DIV', { tabIndex: -1 }))).toBe('none')
+    expect(controlKind(target('DIV'))).toBe('none')
+    expect(controlKind(target('IMG'))).toBe('none')
   })
 
-  it('is false for no target at all', () => {
-    expect(isInteractiveTarget(null)).toBe(false)
+  it('keeps nothing for no target at all', () => {
+    expect(controlKind(null)).toBe('none')
   })
 })
 
@@ -262,7 +255,7 @@ describe('isInteractivePress', () => {
     ).toBe(true)
   })
 
-  it('asks about every control the keydown rule knows, plus select', () => {
+  it('asks about every kind of control', () => {
     let asked = ''
     const spy = {
       closest: (sel: string) => {
@@ -288,11 +281,23 @@ describe('isInteractivePress', () => {
   it('parts company with the keydown rule on a node inside a control', () => {
     const inner = { tagName: 'SPAN', closest: () => ({ tagName: 'BUTTON' }) }
     expect(isInteractivePress(inner as unknown as EventTarget)).toBe(true)
-    expect(isInteractiveTarget(inner as unknown as EventTarget)).toBe(false)
+    expect(controlKind(inner as unknown as EventTarget)).toBe('none')
   })
 
   it('is false for a null target and for one that cannot be asked', () => {
     expect(isInteractivePress(null)).toBe(false)
     expect(isInteractivePress({} as EventTarget)).toBe(false)
+  })
+})
+
+describe('inPanel', () => {
+  it('is true inside a dialog, false outside one and for no target', () => {
+    const inside = {
+      closest: (s: string) => (s === '[role="dialog"]' ? {} : null),
+    }
+    const outside = { closest: () => null }
+    expect(inPanel(inside as unknown as EventTarget)).toBe(true)
+    expect(inPanel(outside as unknown as EventTarget)).toBe(false)
+    expect(inPanel(null)).toBe(false)
   })
 })

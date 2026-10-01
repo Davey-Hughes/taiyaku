@@ -1166,3 +1166,86 @@ describe('windowing', () => {
     expect(scrolledTo.at(-1)).toBe(current)
   })
 })
+
+describe('the strip as one stop (spec 2026-09-26 §3.2)', () => {
+  const stops = (host: HTMLElement) => buttons(host).map((b) => b.tabIndex)
+
+  it('makes the current tile the only stop', () => {
+    const host = mount(<Filmstrip {...props({ currentIndex: 1 })} />)
+    expect(stops(host)).toEqual([-1, 0, -1, -1])
+  })
+
+  it('makes the anchor tile the stop where nothing is current', () => {
+    const host = mount(
+      <Filmstrip {...props({ currentIndex: -1, anchor: 2 })} />,
+    )
+    expect(stops(host)).toEqual([-1, -1, 0, -1])
+  })
+
+  /** Picking a tile is what a correction is for, and nothing is current then. */
+  it('keeps every tile a stop while correcting', () => {
+    const host = mount(
+      <Filmstrip
+        {...props({ currentIndex: -1, correcting: { to: 'raw-mono' } })}
+      />,
+    )
+    expect(stops(host)).toEqual([0, 0, 0, 0])
+  })
+
+  it('moves focus to the new current tile when a turn lands with focus on the strip', () => {
+    const host = mount(<Filmstrip {...props({ currentIndex: 1 })} />)
+    act(() => buttons(host)[1].focus())
+    rerender(<Filmstrip {...props({ currentIndex: 2 })} />)
+    expect(document.activeElement).toBe(buttons(host)[2])
+  })
+
+  it('leaves focus alone when it was not on the strip', () => {
+    const host = mount(<Filmstrip {...props({ currentIndex: 1 })} />)
+    const outside = document.createElement('button')
+    document.body.append(outside)
+    act(() => outside.focus())
+    rerender(<Filmstrip {...props({ currentIndex: 2 })} />)
+    expect(document.activeElement).toBe(outside)
+    expect(buttons(host)[2]).not.toBe(document.activeElement)
+    outside.remove()
+  })
+
+  // The follow is a ref plus a *second*, dependency-free effect rather than a
+  // `focus()` inside the centring effect precisely because the new current
+  // tile may not be rendered on the render a turn lands on: the window is
+  // still built around `scrolledTo ?? primaryFocus`, and `scrolledTo` still
+  // holds the *old* focused tile's index on that render — the rail's
+  // `focusin` listener is what put it there, and the centring effect only
+  // schedules clearing it, it does not rebuild the window inline. The window
+  // is rebuilt around the new current tile only on a later render, once that
+  // `setScrolledTo(undefined)` lands. 100 single-slot groups, not the shared
+  // 4-group fixture above (whose own comment says why it must not grow past
+  // one window): tile 80 has to sit outside the window `currentIndex: 10`
+  // renders, so a turn to it is exactly the case the retry exists for.
+  it('retries the follow once the rebuilt window renders the new current tile', () => {
+    const longSlots: Position[] = Array.from({ length: 100 }, (_, i) => ({
+      page: i,
+    }))
+    const longGroups: Group[] = longSlots.map((_, i) => ({ slots: [i] }))
+    const longProps = (overrides: Partial<FilmstripProps> = {}) =>
+      props({ slots: longSlots, groups: longGroups, ...overrides })
+    const tileByAlt = (host: HTMLElement, alt: string) =>
+      buttons(host).find(
+        (b) => b.querySelector('img')?.getAttribute('alt') === alt,
+      )
+
+    const host = mount(<Filmstrip {...longProps({ currentIndex: 10 })} />)
+    act(() => tileByAlt(host, 'page 11')?.focus())
+    // Sanity check on the fixture itself: the window `currentIndex: 10`
+    // builds does not reach tile 80 — otherwise this test would not be
+    // exercising the retry at all.
+    expect(tileByAlt(host, 'page 81')).toBeUndefined()
+
+    rerender(<Filmstrip {...longProps({ currentIndex: 80 })} />)
+
+    const target = tileByAlt(host, 'page 81')
+    expect(document.activeElement).toBe(target)
+    expect(target?.getAttribute('aria-current')).toBe('true')
+    expect(target?.tabIndex).toBe(0)
+  })
+})

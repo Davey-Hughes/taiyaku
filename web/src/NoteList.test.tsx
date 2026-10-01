@@ -206,6 +206,7 @@ describe('NoteList', () => {
     expect(list.style.visibility).toBe('hidden')
     expect(list.style.flex).toBe('0 0 auto')
     expect(host.querySelector('[role="listitem"]')).not.toBeNull()
+    expect(host.querySelector('button')?.tabIndex).toBe(-1)
   })
 
   it('shows under the page while the bars are away', () => {
@@ -213,6 +214,7 @@ describe('NoteList', () => {
       <NoteList here={[here()]} placement="below" onOpen={() => {}} />,
     )
     expect((host.firstElementChild as HTMLElement).style.visibility).toBe('')
+    expect(host.querySelector('button')?.tabIndex).toBe(0)
   })
 
   it('never steps aside beside the page, which docks clear of the bars', () => {

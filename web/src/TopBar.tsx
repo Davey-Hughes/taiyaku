@@ -82,7 +82,11 @@ export function TopBar({
   style,
 }: TopBarProps) {
   return (
-    <div className="reader-top-bar" style={{ ...barStyle, ...style }}>
+    <div
+      className="reader-top-bar"
+      data-ring="top"
+      style={{ ...barStyle, ...style }}
+    >
       <button type="button" className="reader-back" onClick={onLeave}>
         <svg viewBox="0 0 24 24" aria-hidden="true">
           <path d="M15 5l-7 7 7 7" />

@@ -1,4 +1,5 @@
 import { useEffect, useRef, type CSSProperties } from 'react'
+import { usePanelFocus } from './focus'
 import {
   exportName,
   notesJson,
@@ -100,6 +101,11 @@ export function NotePanel({
 }: NotePanelProps) {
   const bodyRef = useRef<HTMLTextAreaElement>(null)
 
+  // Before the textarea effect below, which moves focus: this records what had
+  // focus when the panel opened, so closing can hand it back (`focus.ts`).
+  const panelRef = useRef<HTMLDivElement>(null)
+  usePanelFocus(panelRef, mode !== undefined)
+
   // Focus the editor whenever it opens on a note, and put the caret at the
   // end.
   //
@@ -108,9 +114,9 @@ export function NotePanel({
   // measured directly: the first `n` of a session focused the textarea, and
   // every `n` after a save left focus on `<body>` — so a reader writing a
   // second note was typing into the page, where `s` opens the settings panel
-  // and a digit jumps edition. Exactly the defect `isInteractiveTarget` was
-  // fixed for, reached by a different door, and only visible if you write two
-  // notes in a row.
+  // and a digit jumps edition. Exactly the defect the keydown rule's
+  // `textarea` case was added for, reached by a different door, and only
+  // visible if you write two notes in a row.
   //
   // Keyed on the note's id rather than on `mode`, so reopening a *different*
   // note refocuses while an ordinary re-render (typing a character, picking a
@@ -153,6 +159,8 @@ export function NotePanel({
       className="docked-panel"
       role="dialog"
       aria-label={mode === 'edit' ? 'Note' : 'All notes'}
+      ref={panelRef}
+      tabIndex={-1}
     >
       {mode === 'edit' && draft && (
         <>

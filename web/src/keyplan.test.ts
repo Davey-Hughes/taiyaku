@@ -37,8 +37,12 @@ const CALM: Guards = {
   correcting: false,
   submitting: false,
   notesBusy: false,
-  onControl: false,
+  control: 'none',
   accountOpen: false,
+  barsUp: false,
+  settingsOpen: false,
+  creditsOpen: false,
+  inPanel: false,
   zoomable: true,
   creditsPanel: true,
   helpEnabled: true,
@@ -58,15 +62,15 @@ const act = (
 
 describe('keyPlan, Escape', () => {
   /**
-   * **Checked before `intent`, and deliberately not gated on `onControl`.**
-   * `Escape` is not one of `intentOf`'s intents, and the tile a reader just
-   * clicked to pick a counterpart is itself a button — gating this on a
-   * focused control would make it fire everywhere except the one moment it
-   * matters most.
+   * **Checked before `intent`, and deliberately not gated on the focused
+   * control.** `Escape` is not one of `intentOf`'s intents, and the tile a
+   * reader just clicked to pick a counterpart is itself a button — gating this
+   * on a focused control would make it fire everywhere except the one moment
+   * it matters most.
    */
   it('cancels a correction even with focus in a control', () => {
     expect(
-      act('Escape', undefined, { correcting: true, onControl: true }),
+      act('Escape', undefined, { correcting: true, control: 'text' }),
     ).toEqual({
       kind: 'cancel-correction',
     })
@@ -157,14 +161,83 @@ describe('keyPlan, Escape', () => {
   })
 })
 
+describe('keyPlan, Escape closes every panel (spec 2026-09-26 §3.3)', () => {
+  it('closes Settings', () => {
+    expect(act('Escape', undefined, { settingsOpen: true })).toEqual({
+      kind: 'close-settings',
+    })
+  })
+
+  it('closes Credits', () => {
+    expect(act('Escape', undefined, { creditsOpen: true })).toEqual({
+      kind: 'close-credits',
+    })
+  })
+
+  it('leaves Help and Account first, as before', () => {
+    expect(
+      act('Escape', undefined, { helpOpen: true, settingsOpen: true }),
+    ).toEqual({ kind: 'close-help' })
+    expect(
+      act('Escape', undefined, { accountOpen: true, settingsOpen: true }),
+    ).toEqual({ kind: 'close-account' })
+  })
+
+  /**
+   * Above the note panel and the correction, for the reason Help already
+   * closes first: closing them discards nothing, where the note panel flushes
+   * a note and the correction abandons one.
+   */
+  it('closes Settings and Credits before the note panel and the correction', () => {
+    expect(
+      act('Escape', undefined, { settingsOpen: true, panel: 'review' }),
+    ).toEqual({ kind: 'close-settings' })
+    expect(
+      act('Escape', undefined, { creditsOpen: true, correcting: true }),
+    ).toEqual({ kind: 'close-credits' })
+    expect(
+      act('Escape', undefined, { settingsOpen: true, creditsOpen: true }),
+    ).toEqual({ kind: 'close-settings' })
+  })
+})
+
+describe('keyPlan, Escape takes the bars away (spec 2026-09-26 §3.1)', () => {
+  it('hides the bars when nothing above them is open', () => {
+    expect(act('Escape', undefined, { barsUp: true })).toEqual({
+      kind: 'leave-bars',
+    })
+  })
+
+  it('spends itself on a correction first', () => {
+    expect(
+      act('Escape', undefined, { barsUp: true, correcting: true }),
+    ).toEqual({ kind: 'cancel-correction' })
+  })
+
+  /** A correction on the wire holds the key, and the bars with it. */
+  it('does nothing while a correction is on the wire', () => {
+    expect(
+      keyPlan(
+        'Escape',
+        undefined,
+        guards({ barsUp: true, correcting: true, submitting: true }),
+      ),
+    ).toBeUndefined()
+  })
+
+  it('is left to the browser with the bars down and nothing open', () => {
+    expect(keyPlan('Escape', undefined, guards())).toBeUndefined()
+  })
+})
+
 describe('keyPlan, the note editor', () => {
   /**
    * **Nothing reaches the page while the editor is open.** It is a dialog that
    * takes text, so a keystroke means the note — whatever the browser thinks is
-   * focused. `onControl` alone is not enough: measured, with a server refusing
-   * a write, the editor stayed open holding the reader's text while focus sat
-   * on `<body>`, so typing opened the settings panel instead of writing the
-   * note.
+   * focused. The control guard alone is not enough: measured, with a server
+   * refusing a write, the editor stayed open holding the reader's text while
+   * focus sat on `<body>`, so typing opened the settings panel instead of
+   * writing the note.
    */
   it('refuses every key but Escape while the editor is open, focus or no focus', () => {
     for (const intent of [
@@ -187,51 +260,95 @@ describe('keyPlan, the note editor', () => {
   })
 })
 
-describe('keyPlan, Tab', () => {
+describe('keyPlan, Tab (spec 2026-09-26 §3.1)', () => {
   /**
-   * **The one answer with `preventDefault: false`.** Toggling the chrome is
-   * layered on top of the browser's own focus movement rather than replacing
-   * it, and preventing it is what made every focusable control in the reader —
-   * the mode buttons, all of the filmstrip's tiles, `Gap`'s offered moves —
-   * mouse-only.
+   * Claimed now: the reader moves focus round its ring itself. Leaving the
+   * move to the browser is what walked focus out of the page into the
+   * browser's own frame (O135).
    */
-  it('toggles the chrome without preventing the browser’s own focus move', () => {
-    const plan = keyPlan('Tab', { kind: 'chrome' }, guards())
-    expect(plan).toEqual({
-      action: { kind: 'toggle-chrome' },
-      preventDefault: false,
+  it('steps round the ring and prevents the browser’s own focus move', () => {
+    expect(keyPlan('Tab', { kind: 'chrome' }, guards())).toEqual({
+      action: { kind: 'ring' },
+      preventDefault: true,
     })
   })
 
-  /**
-   * Ahead of the control check, unlike everything below it: moving focus onto
-   * a control is not the same event as activating it, so `Tab` has nothing to
-   * collide with.
-   */
-  it('toggles the chrome even with focus in a control', () => {
-    expect(act('Tab', { kind: 'chrome' }, { onControl: true })).toEqual({
-      kind: 'toggle-chrome',
+  it('steps round the ring from a focused button too', () => {
+    expect(act('Tab', { kind: 'chrome' }, { control: 'button' })).toEqual({
+      kind: 'ring',
     })
+  })
+
+  /** Focus in a text field outside any panel still steps round the ring. */
+  it('steps round the ring from a focused text field too', () => {
+    expect(act('Tab', { kind: 'chrome' }, { control: 'text' })).toEqual({
+      kind: 'ring',
+    })
+  })
+
+  /** O161: the first `Tab` in an open panel showed the bars behind it. */
+  it('leaves Tab inside an open panel to the panel', () => {
+    expect(
+      keyPlan('Tab', { kind: 'chrome' }, guards({ inPanel: true })),
+    ).toBeUndefined()
   })
 })
 
-describe('keyPlan, a focused control', () => {
+describe('keyPlan, a focused control (spec 2026-09-26 §3.2)', () => {
   /**
-   * A reader key belongs to the page, not to whatever a previous `Tab`
-   * happened to focus: tabbing onto a mode button and pressing Space to click
-   * it would otherwise also fire the edition toggle, because a window-level
-   * listener has no way to know the button is about to handle the same press.
+   * Text entry keeps every key. Typing in the note editor, a Settings field or
+   * a password box is not pressing reader keys.
    */
-  it('stands down for a reader key, a correction and a module key alike', () => {
-    for (const intent of [
-      step,
-      { kind: 'toggle' } as Intent,
-      { kind: 'correct' } as Intent,
-      mod(SETTINGS_INTENT),
-      mod(ZOOM_IN_INTENT),
-    ]) {
-      expect(keyPlan('x', intent, guards({ onControl: true }))).toBeUndefined()
+  it('text entry keeps a reader key, a correction and a module key alike', () => {
+    const cases: [string, Intent][] = [
+      ['ArrowRight', step],
+      [' ', { kind: 'toggle' }],
+      ['c', { kind: 'correct' }],
+      ['s', mod(SETTINGS_INTENT)],
+      ['=', mod(ZOOM_IN_INTENT)],
+    ]
+    for (const [key, intent] of cases) {
+      expect(
+        keyPlan(key, intent, guards({ control: 'text' })),
+        key,
+      ).toBeUndefined()
     }
+  })
+
+  /**
+   * A button keeps the two keys that press it. Tabbing onto a mode button and
+   * pressing Space would otherwise also swap the edition, because a
+   * window-level listener cannot know the button is about to take the press.
+   */
+  it('a button keeps Space and Enter', () => {
+    expect(
+      keyPlan(' ', { kind: 'toggle' }, guards({ control: 'button' })),
+    ).toBeUndefined()
+    expect(
+      keyPlan('Enter', mod(SETTINGS_INTENT), guards({ control: 'button' })),
+    ).toBeUndefined()
+  })
+
+  /** Every other key goes to the reader: `→` turns the page from ⚙. */
+  it('a button hands every other key to the reader', () => {
+    expect(act('ArrowRight', step, { control: 'button' })).toEqual({
+      kind: 'reading',
+      intent: step,
+    })
+    expect(act('s', mod(SETTINGS_INTENT), { control: 'button' })).toEqual({
+      kind: 'module',
+      intent: SETTINGS_INTENT,
+    })
+    expect(act('c', { kind: 'correct' }, { control: 'button' })).toEqual({
+      kind: 'begin-correction',
+    })
+  })
+
+  it('the page itself keeps nothing, Space included', () => {
+    expect(act(' ', { kind: 'toggle' }, { control: 'none' })).toEqual({
+      kind: 'reading',
+      intent: { kind: 'toggle' },
+    })
   })
 })
 
@@ -242,10 +359,10 @@ describe('keyPlan, correction', () => {
 
   /**
    * **Without this, `c` mid-write silently replaces the correction the
-   * completion handler is about to resolve.** `disabled={submitting}` blurs
-   * the just-clicked Confirm the instant the write starts, so `onControl` no
-   * longer stands the handler down — which is exactly why this guard is not
-   * redundant with the one above it.
+   * completion handler is about to resolve.** Nothing else stops it: a
+   * focused button keeps only `Space` and `Enter` (spec 2026-09-26 §3.2), and
+   * `disabled={submitting}` blurs the just-clicked Confirm the instant the
+   * write starts anyway.
    */
   it('refuses while a correction is on the wire', () => {
     expect(
@@ -421,7 +538,7 @@ describe('keyPlan, against intentOf', () => {
       kind: 'reading',
       intent: { kind: 'view', edition: 'a' },
     })
-    expect(press('Tab')?.action).toEqual({ kind: 'toggle-chrome' })
+    expect(press('Tab')?.action).toEqual({ kind: 'ring' })
     expect(press('c')?.action).toEqual({ kind: 'begin-correction' })
   })
 
@@ -470,7 +587,7 @@ describe('keyPlan, against intentOf', () => {
 
   /**
    * **`A` is a character, and `Tab` is not — which is why `chrome` sits above
-   * the `onControl` guard and `account` must not.**
+   * the control guard and `account` must not.**
    *
    * `intentOf` bails only on ctrl/meta/alt, not Shift, so `READER_KEYS`'s `A`
    * fires for a shifted `a` typed anywhere. With the account branch above the
@@ -481,7 +598,12 @@ describe('keyPlan, against intentOf', () => {
    * review, 2026-08-18.
    */
   it('leaves A alone when focus is in a control, unlike Tab', () => {
-    expect(act('A', { kind: 'account' }, { onControl: true })).toBeUndefined()
+    expect(act('A', { kind: 'account' }, { control: 'text' })).toBeUndefined()
+    // Unlike A: Tab moving focus onto a control is not activating it, so text
+    // entry does not keep it — the ring still claims the key.
+    expect(act('Tab', { kind: 'chrome' }, { control: 'text' })).toEqual({
+      kind: 'ring',
+    })
     // And still opens the panel when nothing is focused, which is the half that
     // would make this a regression rather than a fix if it broke.
     expect(act('A', { kind: 'account' })).toEqual({ kind: 'open-account' })

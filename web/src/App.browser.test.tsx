@@ -1,9 +1,10 @@
 import { act } from 'react'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { page } from 'vitest/browser'
+import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
+import { page, userEvent } from 'vitest/browser'
 import { fakeResolver, whole } from './fixtures'
 import './index.css'
 import { paintedBox } from './notes'
+import { focused } from './testing/focused'
 import { mount } from './testing/mount'
 
 /**
@@ -108,6 +109,15 @@ beforeEach(() => {
     etag: 'n1',
   })
   ports.putProgress.mockResolvedValue(undefined)
+  ports.logout.mockResolvedValue(undefined)
+  ports.listKeys.mockResolvedValue([])
+  ports.listSessions.mockResolvedValue([])
+  ports.me.mockResolvedValue({
+    user_id: 1,
+    admin: true,
+    can_download: true,
+    can_stream: true,
+  })
   ports.workDetail.mockResolvedValue({
     id: 1,
     slug: WORK,
@@ -226,6 +236,10 @@ describe('the reader’s two bars, in a browser', () => {
       const rect = leave.getBoundingClientRect()
       const covered = [...document.querySelectorAll('button')]
         .filter((b) => b !== leave)
+        // The turn buttons draw nothing and take no pointer (spec
+        // 2026-09-26 §3.4); what this guards is one drawn control covering
+        // another.
+        .filter((b) => !b.classList.contains('reader-turn'))
         .filter((b) => overlaps(rect, b.getBoundingClientRect()))
         .map(
           (b) =>
@@ -642,4 +656,429 @@ describe('the gestures on the page, laid out', () => {
       await until(() => document.querySelector('[aria-label="Note"]') === null)
     },
   )
+})
+
+/**
+ * O166 (spec 2026-09-26 §3.2): a key pressed on one of Settings' selects
+ * belongs to the select. Real key presses, because a select's own handling —
+ * typeahead, arrows — is the browser's and a dispatched event carries none of
+ * it.
+ */
+describe('O166: a key pressed on a Settings select', () => {
+  /** `layout`'s `mode` select — the one whose options include `scroll`. */
+  const layoutSelect = () =>
+    [...document.querySelectorAll('select')].find((s) =>
+      [...s.options].some((o) => o.value === 'scroll'),
+    ) as HTMLSelectElement
+  const settingsOpen = () =>
+    document.querySelector('[role="dialog"][aria-label="Settings"]') !== null
+
+  it('a letter goes to the select, not to the reader', async () => {
+    await reader(1440, 900)
+    press('s')
+    await until(settingsOpen)
+    layoutSelect().focus()
+    // `s` is Settings' own key: taken by the reader, it closes the panel
+    // under the select and the typeahead never runs.
+    await userEvent.keyboard('s')
+    expect(settingsOpen()).toBe(true)
+    // Chromium's typeahead moves from `single` to the next option starting
+    // with `s`. The point is that the select changed at all, which it cannot
+    // while the reader prevents the key's default.
+    expect(layoutSelect().value).toBe('scroll')
+  })
+
+  it('an arrow goes to the select, not to the reader', async () => {
+    await reader(1440, 900)
+    press('s')
+    await until(settingsOpen)
+    layoutSelect().focus()
+    await userEvent.keyboard('{ArrowRight}')
+    // A turn writes progress after `useProgressWrite`'s 400 ms debounce.
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 1000))
+    })
+    expect(ports.putProgress).not.toHaveBeenCalled()
+  })
+})
+
+/**
+ * The reader, with keyboard focus on its page area. Vitest runs these tests
+ * in an iframe, and until something inside it takes focus a real key press
+ * goes to the frame around it: run on its own, a walk's first `Tab` only
+ * moved focus into the frame, and the ring started one press late. A reader
+ * who has just opened the page has focus on `<body>` instead, which the ring
+ * treats as the page too; `App.test.tsx`'s walks start from there, and the
+ * real-library drive (`docs/notes.md`, §3) walked a fresh load in a real
+ * browser.
+ */
+async function readerFocused(width: number, height: number) {
+  await reader(width, height)
+  ;(document.querySelector('[data-reader-page]') as HTMLElement).focus()
+}
+
+const barsUp = () => document.querySelector('.reader-bottom-bar') !== null
+
+describe('the keyboard ring, with real keys (spec 2026-09-26 §3.1)', () => {
+  it.each(SIZES)(
+    'at %i×%i, Tab walks the bars and comes back to the page, and never leaves it',
+    async (width, height) => {
+      await readerFocused(width, height)
+      const walk: string[] = []
+      for (let i = 0; i < 14; i++) {
+        await userEvent.tab()
+        walk.push(`${focused()}${barsUp() ? ' +bars' : ''}`)
+      }
+      const lap = [
+        'Library +bars',
+        'single +bars',
+        'two +bars',
+        'scroll +bars',
+        'Settings +bars',
+        'page 3 +bars',
+        'page',
+      ]
+      expect(walk).toEqual([...lap, ...lap])
+    },
+  )
+
+  it.each(SIZES)(
+    'at %i×%i, Shift+Tab walks it backwards',
+    async (width, height) => {
+      await readerFocused(width, height)
+      const walk: string[] = []
+      for (let i = 0; i < 7; i++) {
+        await userEvent.tab({ shift: true })
+        walk.push(`${focused()}${barsUp() ? ' +bars' : ''}`)
+      }
+      expect(walk).toEqual([
+        'page 3 +bars',
+        'Settings +bars',
+        'scroll +bars',
+        'two +bars',
+        'single +bars',
+        'Library +bars',
+        'page',
+      ])
+    },
+  )
+
+  it('Escape from ⚙ takes the bars away and leaves focus on the page', async () => {
+    await readerFocused(1440, 900)
+    for (let i = 0; i < 5; i++) await userEvent.tab()
+    expect(focused()).toBe('Settings')
+    await userEvent.keyboard('{Escape}')
+    expect(barsUp()).toBe(false)
+    expect(focused()).toBe('page')
+  })
+
+  it('→ on the strip turns the page and focus follows it', async () => {
+    await readerFocused(1440, 900)
+    for (let i = 0; i < 6; i++) await userEvent.tab()
+    expect(focused()).toBe('page 3')
+    await userEvent.keyboard('{ArrowRight}')
+    await until(() => focused() === 'page 4')
+    expect(barsUp()).toBe(true)
+  })
+})
+
+/**
+ * The rest of §3.6's real-key cases. Each starts from `readerFocused` — a
+ * press before anything in the test iframe has focus goes to the frame, not
+ * the page — and each is at 1440×900 unless it says why not: nothing below
+ * depends on layout, only on which element takes the key.
+ */
+describe('the keyboard ring, with real keys: every stop and every region (spec 2026-09-26 §3.6)', () => {
+  /** The live region's page number — what a screen reader is told after a turn. */
+  const spokenPage = () =>
+    Number(
+      /page (\d+)/.exec(
+        document.querySelector('[aria-live="polite"]')?.textContent ?? '',
+      )?.[1],
+    )
+
+  const tabs = async (n: number, shift = false) => {
+    for (let i = 0; i < n; i++) await userEvent.tab({ shift })
+  }
+
+  it('Escape from every stop in the bars takes them down and leaves focus on the page', async () => {
+    await readerFocused(1440, 900)
+    const stops = ['Library', 'single', 'two', 'scroll', 'Settings', 'page 3']
+    for (const [i, name] of stops.entries()) {
+      // Each Escape lands on the page, so the walk to the next stop restarts.
+      await tabs(i + 1)
+      expect(focused(), `stop ${i}`).toBe(name)
+      await userEvent.keyboard('{Escape}')
+      expect(barsUp(), `${name}: bars`).toBe(false)
+      expect(focused(), `${name}: focus`).toBe('page')
+    }
+  })
+
+  it('→ on every stop in the bars turns one page, with the bars up and focus on the stop', async () => {
+    await readerFocused(1440, 900)
+    // The browser fixture reads `ltr`, so `→` is a step forward. Stored
+    // progress is slot 2, page 3.
+    const stops = ['Library', 'single', 'two', 'scroll', 'Settings']
+    await tabs(1)
+    await until(() => spokenPage() === 3)
+    for (const name of stops) {
+      expect(focused()).toBe(name)
+      await userEvent.keyboard('{ArrowRight}')
+      await until(() => spokenPage() === 4)
+      expect(focused(), `${name} keeps focus`).toBe(name)
+      expect(barsUp(), `${name}: bars`).toBe(true)
+      // Put the page back, from the same stop, and move to the next.
+      await userEvent.keyboard('{ArrowLeft}')
+      await until(() => spokenPage() === 3)
+      expect(focused(), `${name} keeps focus going back`).toBe(name)
+      await tabs(1)
+    }
+    // The strip's stop, where focus follows the new current tile.
+    expect(focused()).toBe('page 3')
+    await userEvent.keyboard('{ArrowRight}')
+    await until(() => spokenPage() === 4)
+    expect(focused()).toBe('page 4')
+    expect(barsUp()).toBe(true)
+  })
+
+  /**
+   * The page a gap is reached on: `raw` slot 5 has no `en` counterpart, and
+   * the borrow module is off so the gap is drawn as a gap (`App.test.tsx`'s
+   * `swapOntoUnpaired`, which the same keys reach).
+   */
+  async function readerInAGap() {
+    localStorage.setItem(
+      'taiyaku.prefs.borrow',
+      JSON.stringify({ enabled: false }),
+    )
+    ports.getProgress.mockResolvedValue({ edition: 'raw', slot: 5 })
+    const pairs: Record<string, number> = {}
+    for (let i = 0; i < 5; i++) {
+      pairs[`raw|en|${i}`] = i
+      pairs[`en|raw|${i}`] = i
+    }
+    pairs['en|raw|5'] = 5
+    ports.wasmResolver.mockImplementation(async () =>
+      fakeResolver({ raw: whole(PAGES), en: whole(PAGES) }, pairs),
+    )
+    await readerFocused(1440, 900)
+    press('2')
+    await until(() => document.querySelector('.reader-gap-title') !== null)
+    ;(document.querySelector('[data-reader-page]') as HTMLElement).focus()
+  }
+
+  /** What focus is on, and whether it is inside the page area. */
+  const where = () =>
+    `${focused()}${document.activeElement?.closest('[data-reader-page]') && !document.activeElement.matches('[data-reader-page]') ? ' (in page)' : ''}`
+
+  it('Tab reaches a gap’s buttons after the strip and before the page', async () => {
+    await readerInAGap()
+    const walk: string[] = []
+    for (let i = 0; i < 12; i++) {
+      await tabs(1)
+      walk.push(where())
+      if (focused() === 'page') break
+    }
+    const inPage = walk.flatMap((w, i) => (w.endsWith('(in page)') ? [i] : []))
+    const strip = walk.findIndex(
+      (w) => /^page \d/.test(w) && !w.includes('(in'),
+    )
+    expect(inPage.length).toBeGreaterThan(0)
+    expect(strip).toBeGreaterThan(-1)
+    expect(Math.min(...inPage)).toBeGreaterThan(strip)
+    expect(walk.at(-1)).toBe('page')
+    expect(inPage.at(-1)).toBe(walk.length - 2)
+  })
+
+  it('Tab reaches a note’s margin tab after the strip, before the note list, then the page', async () => {
+    localStorage.setItem(
+      'taiyaku.prefs.annotations',
+      JSON.stringify({
+        markers: true,
+        travel: true,
+        reveal: true,
+        notesList: 'below',
+      }),
+    )
+    ports.getNotes.mockResolvedValue({
+      doc: {
+        work: WORK,
+        notes: [
+          {
+            id: 'note-1',
+            edition: 'raw',
+            slot: 2,
+            body: 'a note already here',
+            created: '2026-01-01T00:00:00.000Z',
+            updated: '2026-01-01T00:00:00.000Z',
+          },
+        ],
+      },
+      etag: 'n1',
+    })
+    // The page images fail to load here (the file header says why), and
+    // `PageAnnotations` draws nothing over an image with no natural size. Give
+    // every image one, for this test only.
+    const natural = (name: 'naturalWidth' | 'naturalHeight', value: number) => {
+      const original = Object.getOwnPropertyDescriptor(
+        HTMLImageElement.prototype,
+        name,
+      )
+      Object.defineProperty(HTMLImageElement.prototype, name, {
+        configurable: true,
+        get: () => value,
+      })
+      return () => {
+        if (original)
+          Object.defineProperty(HTMLImageElement.prototype, name, original)
+      }
+    }
+    // Registered before either stub goes in, so a throw between them cannot
+    // leave the first one behind for the next test.
+    const restore: (() => void)[] = []
+    onTestFinished(() => {
+      for (const undo of restore) undo()
+    })
+    restore.push(natural('naturalWidth', 600))
+    restore.push(natural('naturalHeight', 900))
+    await readerFocused(1440, 900)
+    await until(() => document.querySelector('[aria-label^="Note: "]') !== null)
+    const walk: string[] = []
+    for (let i = 0; i < 12; i++) {
+      await tabs(1)
+      const el = document.activeElement as HTMLElement
+      const region = el.closest('[aria-label="Notes on this page"]')
+        ? 'list'
+        : el.closest('[data-reader-page]') && !el.matches('[data-reader-page]')
+          ? 'margin'
+          : 'other'
+      walk.push(`${region}:${el.getAttribute('aria-label') ?? focused()}`)
+      if (focused() === 'page') break
+    }
+    const strip = walk.findIndex((w) => /^other:page \d/.test(w))
+    const tab = walk.findIndex((w) => w.startsWith('margin:Note: '))
+    const row = walk.findIndex((w) => w.startsWith('list:'))
+    expect(strip).toBeGreaterThan(-1)
+    expect(tab).toBeGreaterThan(strip)
+    expect(row).toBeGreaterThan(tab)
+    expect(walk.at(-1)).toBe('other:page')
+    expect(walk).toHaveLength(row + 2)
+  })
+
+  it('while correcting with a counterpart picked, the banner’s buttons come before the strip and the bars stay up', async () => {
+    await readerFocused(1440, 900)
+    press('c')
+    await until(() => document.body.textContent?.includes('Pick the') ?? false)
+    const tile = [...document.querySelectorAll('button')].filter((b) =>
+      (b.querySelector('img')?.getAttribute('src') ?? '').includes('/thumb'),
+    )[3]
+    await userEvent.click(tile)
+    await until(() => button('Confirm') !== undefined)
+    ;(document.querySelector('[data-reader-page]') as HTMLElement).focus()
+    const walk: string[] = []
+    for (let i = 0; i < 20; i++) {
+      await tabs(1)
+      walk.push(focused())
+      expect(barsUp()).toBe(true)
+      if (focused() === 'page') break
+    }
+    const confirm = walk.indexOf('Confirm')
+    const cancel = walk.indexOf('Cancel')
+    const first = walk.findIndex((w) => /^page \d/.test(w))
+    expect(confirm).toBeGreaterThan(-1)
+    expect(cancel).toBeGreaterThan(confirm)
+    expect(first).toBeGreaterThan(cancel)
+    expect(walk.at(-1)).toBe('page')
+  })
+})
+
+describe('the turn buttons, laid out (spec 2026-09-26 §3.4)', () => {
+  it.each(SIZES)(
+    'at %i×%i, a pointer at a turn button’s centre reaches the page, not the button',
+    async (width, height) => {
+      await reader(width, height)
+      for (const name of ['Next page', 'Previous page']) {
+        const turn = button(name)
+        const at = turn.getBoundingClientRect()
+        const hit = document.elementFromPoint(
+          at.left + at.width / 2,
+          at.top + at.height / 2,
+        )
+        expect(hit?.closest('.reader-turn'), name).toBeNull()
+        expect(hit?.closest('.page-area'), name).not.toBeNull()
+      }
+    },
+  )
+
+  it('each covers its outer third of the page area', async () => {
+    await reader(1440, 900)
+    const area = box('.page-area')
+    const next = button('Next page').getBoundingClientRect()
+    const previous = button('Previous page').getBoundingClientRect()
+    // `ltr`: Next on the right.
+    expect(Math.round(next.right)).toBe(Math.round(area.right))
+    expect(Math.round(previous.left)).toBe(Math.round(area.left))
+    expect(Math.round(next.width)).toBe(Math.round(area.width / 3))
+    expect(Math.round(next.height)).toBe(Math.round(area.height))
+  })
+})
+
+describe('Settings keeps Tab inside it, with real keys (spec 2026-09-26 §3.3)', () => {
+  it('neither Tab nor Shift+Tab leaves the open panel', async () => {
+    await reader(1440, 900)
+    press('s')
+    const panel = () =>
+      document.querySelector('[role="dialog"][aria-label="Settings"]')
+    await until(() => panel() !== null)
+    const escaped: string[] = []
+    for (let i = 0; i < 40; i++) {
+      await userEvent.tab()
+      if (!panel()?.contains(document.activeElement)) {
+        escaped.push(document.activeElement?.outerHTML.slice(0, 80) ?? 'none')
+      }
+    }
+    for (let i = 0; i < 40; i++) {
+      await userEvent.tab({ shift: true })
+      if (!panel()?.contains(document.activeElement)) {
+        escaped.push(document.activeElement?.outerHTML.slice(0, 80) ?? 'none')
+      }
+    }
+    expect(escaped).toEqual([])
+  })
+})
+
+describe('every reader panel keeps Tab inside it, with real keys (spec 2026-09-26 §3.3, §3.6)', () => {
+  it.each([
+    ['Help', '?', 'Keyboard help'],
+    ['Credits', 'C', 'Credit pages in raw'],
+    ['All notes', 'a', 'All notes'],
+    ['the note editor', 'n', 'Note'],
+    ['Account', 'A', 'Account'],
+  ])('%s: neither Tab nor Shift+Tab leaves it', async (_name, key, label) => {
+    await readerFocused(1440, 900)
+    // Dispatched inside an async `act`, so that Account's panel, which fetches
+    // its keys and sessions on opening, lands those updates inside it.
+    await act(async () => {
+      document.body.dispatchEvent(
+        new KeyboardEvent('keydown', { key, bubbles: true }),
+      )
+    })
+    const panel = () =>
+      document.querySelector(`[role="dialog"][aria-label="${label}"]`)
+    await until(() => panel() !== null)
+    const escaped: string[] = []
+    for (let i = 0; i < 40; i++) {
+      await userEvent.tab()
+      if (!panel()?.contains(document.activeElement)) {
+        escaped.push(document.activeElement?.outerHTML.slice(0, 80) ?? 'none')
+      }
+    }
+    for (let i = 0; i < 40; i++) {
+      await userEvent.tab({ shift: true })
+      if (!panel()?.contains(document.activeElement)) {
+        escaped.push(document.activeElement?.outerHTML.slice(0, 80) ?? 'none')
+      }
+    }
+    expect(escaped).toEqual([])
+  })
 })

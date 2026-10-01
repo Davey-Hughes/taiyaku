@@ -308,6 +308,13 @@ export function Filmstrip({
   const anchorRef = useRef<HTMLButtonElement>(null)
   const railRef = useRef<HTMLDivElement>(null)
 
+  // Set by the centring effect when a position change lands with focus on
+  // the strip; the effect after it moves focus to the tile now standing for
+  // that position (spec 2026-09-26 §3.2). A ref and a second effect, rather
+  // than a `focus()` inside the first, because the new tile may not be
+  // rendered yet — the same reason `pendingRecentre` retries.
+  const followFocus = useRef(false)
+
   // O134. The rung every tile in this strip asks the server for, read once at
   // mount.
   //
@@ -389,8 +396,12 @@ export function Filmstrip({
     return true
   }
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: `currentIndex`, `visible`, `correcting?.pairedIndex` and `anchor` are triggers, not closure reads — the body reaches the tile through refs. Removing them, which is what this rule suggests, would centre the rail once and never re-centre it. `scrolledTo` is read below (finding D) but deliberately left out too: it changes on nearly every scroll frame and every `Tab` press, and this effect exists to run only on an actual position change, not on those — the same reasoning `loRef`/`unitsRef` further down already follow for `lo` and `units`.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `currentIndex`, `visible`, `correcting?.pairedIndex` and `anchor` are triggers, not closure reads — the body reaches the tile through refs. Removing them, which is what this rule suggests, would centre the rail once and never re-centre it. `scrolledTo` is read below (finding D) but deliberately left out too: it changes on nearly every scroll frame and every `Tab` press, and this effect exists to run only on an actual position change, not on those — the same reasoning `unitsRef` further down already follows for `units`.
   useEffect(() => {
+    // Read before anything below can move focus or rebuild the window: the
+    // tile that had focus is still in this render's DOM.
+    followFocus.current =
+      railRef.current?.contains(document.activeElement) ?? false
     // fix-round review, finding D: read before `setScrolledTo` below
     // schedules clearing it — reading `scrolledTo` again after that call
     // would only ever see `undefined`, which is exactly the render this
@@ -455,6 +466,17 @@ export function Filmstrip({
     // the listener trades away only the rare, cosmetic case of an unmarked
     // spread (58 px to 112 px) for a rail that can be scrolled at all.
   }, [currentIndex, visible, correcting?.pairedIndex, anchor])
+
+  // The follow the effect above asks for. No dependency list, so it retries on
+  // the render that rebuilds the window if the tile was not there yet. While
+  // correcting neither ref is attached, so a pick moves nothing.
+  useEffect(() => {
+    if (!followFocus.current) return
+    const target = currentRef.current ?? anchorRef.current
+    if (!target) return
+    followFocus.current = false
+    if (document.activeElement !== target) target.focus({ preventScroll: true })
+  })
 
   // The retry the comment above promises: no dependency array, so this runs
   // after *every* render — including the one that resets `scrolledTo` to
@@ -633,27 +655,33 @@ export function Filmstrip({
   }, [])
 
   // Kept current after every render rather than listed as a dependency of
-  // the effect below: `lo` moves with almost every window extension that
-  // effect itself causes (a scroll frame or a `Tab` press both call
-  // `setScrolledTo`, which shifts `lo` on the next render), so depending on
-  // it would tear the listeners down and reattach them on nearly every
-  // scroll frame and every keypress — the same per-event cost the rAF
-  // throttle below exists to avoid. `onFocusIn` only needs the value current
-  // as of the event it handles, and a ref updated after every render gives
-  // it that without resubscribing anything.
+  // the effect below: `units` (`groups.map(tileUnits)`) is a new array on
+  // every render regardless of whether the tiles it describes changed —
+  // `App.tsx` computes `grouped` straight in its render body with no
+  // `useMemo`, so `groups` itself is a new reference on every `App`
+  // re-render, including one triggered by nothing more than the
+  // reading-time readout ticking. Depending on it directly would tear the
+  // scroll listener down and reattach it on nearly every one of those
+  // re-renders — the same per-event cost the rAF throttle below exists to
+  // avoid. `onScroll` only needs whichever `units` was current as of the
+  // frame it handles, so a ref updated after every render gives it that
+  // without resubscribing.
   //
-  // `unitsRef` rides along in the same effect for the same reason: `units`
-  // (`groups.map(tileUnits)`) is a new array on every render regardless of
-  // whether the tiles it describes changed — `App.tsx` computes `grouped`
-  // straight in its render body with no `useMemo`, so `groups` itself is a
-  // new reference on every `App` re-render, including one triggered by
-  // nothing more than the reading-time readout ticking. `onScroll` only
-  // needs whichever `units` was current as of the frame it handles, so a
-  // ref updated after every render gives it that without resubscribing.
-  const loRef = useRef(lo)
+  // `onFocusIn` below used to read a `lo` ref kept the same way, added to
+  // whichever position the focused tile held among the rendered buttons. It
+  // no longer does: a ref synced by an effect with no dependency list is
+  // only as current as the *previous* commit's effects by the time an
+  // *earlier* effect in the *same* commit fires a synchronous DOM event —
+  // which is exactly what the focus-follow effect above can do, calling
+  // `.focus()` on a tile within the very commit that first renders it. Read
+  // there, the `lo` ref still held the prior window's value, so the rebuild
+  // it triggered landed on the wrong absolute tile and unmounted the one
+  // focus-follow had just focused. `onFocusIn` now reads the tile's own
+  // `data-group` (see the tile `<button>`'s own attribute) instead, which
+  // the same render that put the tile in the DOM already wrote — nothing
+  // for it to lag behind.
   const unitsRef = useRef(units)
   useEffect(() => {
-    loRef.current = lo
     unitsRef.current = units
   })
 
@@ -759,19 +787,22 @@ export function Filmstrip({
     }
     rail.addEventListener('scroll', onScroll, { passive: true })
     // A keyboard or screen-reader user reaches the rail by `Tab`, never by
-    // scrolling it, so the window has to extend on focus too — otherwise
-    // `Tab` past the last rendered tile finds nothing to focus and leaves
-    // the rail entirely. `focusin` bubbles (plain `focus` does not), so one
-    // listener on the rail catches every tile taking focus.
+    // scrolling it, so the window has to extend on focus too — otherwise,
+    // while correcting (when every tile is a stop), `Tab` past the last
+    // rendered tile finds nothing to focus and leaves the rail entirely.
+    // `focusin` bubbles (plain `focus` does not), so one listener on the rail
+    // catches every tile taking focus.
     const onFocusIn = (event: FocusEvent) => {
       const tile = (event.target as HTMLElement | null)?.closest('button')
       if (!tile || !rail.contains(tile)) return
-      // `rendered` is the windowed slice, so its indices are slice-relative;
-      // `lo` is what makes `at` absolute again — the same off-by-`lo` the
-      // tile map itself corrects with `lo + offset`.
-      const rendered = [...rail.querySelectorAll('button')]
-      const at = rendered.indexOf(tile as HTMLButtonElement)
-      if (at >= 0) setScrolledTo(loRef.current + at)
+      // The tile's own `data-group` (see the tile `<button>`'s own
+      // attribute), not a position among the rendered buttons plus a
+      // separately-synced `lo` — see the comment above `unitsRef` for why
+      // that ref could still be one commit behind when this fires. The
+      // attribute is written by the same render that put the tile in the
+      // DOM, so it can never disagree with what is actually on screen.
+      const group = tile.dataset.group
+      if (group !== undefined) setScrolledTo(Number(group))
     }
     rail.addEventListener('focusin', onFocusIn)
     return () => {
@@ -825,6 +856,12 @@ export function Filmstrip({
           currentIndex === -1 &&
           !correcting &&
           group.slots.includes(anchor)
+        // The strip is one stop in the reader's ring (spec 2026-09-26 §3.2):
+        // the tile the reader stands on, or the anchor where they stand on
+        // nothing this edition has. While correcting, every tile is a stop,
+        // as before — picking one is the correction's whole task, and nothing
+        // is current then. VoiceOver swipes to every tile either way.
+        const isStop = correcting !== undefined || isCurrent || isAnchor
         return (
           <button
             key={group.slots[0]}
@@ -838,6 +875,8 @@ export function Filmstrip({
                     : undefined
             }
             type="button"
+            data-group={index}
+            tabIndex={isStop ? 0 : -1}
             style={{
               ...(isCurrent
                 ? currentTileStyle

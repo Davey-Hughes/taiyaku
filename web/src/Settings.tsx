@@ -1,4 +1,5 @@
 import { useRef, type CSSProperties } from 'react'
+import { usePanelFocus } from './focus'
 import type { ReaderModule } from './module'
 import { fieldsOf } from './settingsPanel'
 import { FieldControl } from './settingsFields'
@@ -85,6 +86,8 @@ export function Settings({
   // after an early return does not run on every render.
   const fromScrim = useRef(false)
   const upOnScrim = useRef(false)
+  const panelRef = useRef<HTMLDivElement>(null)
+  usePanelFocus(panelRef, visible)
   if (!visible) return null
   return (
     // The scrim dismisses on a press that goes down *and* comes up on its
@@ -94,9 +97,7 @@ export function Settings({
     // cannot reach the page at all while this is open. Without this,
     // Settings is the one panel that tap cannot reach. Its Close button below
     // is already a pointer exit and has been since style pass ③; what it
-    // lacked was the tap-outside ④ gives every other panel, on the panel
-    // O135 records as closing on neither `Escape` nor `s` once ⚙ has
-    // opened it.
+    // lacked was the tap-outside ④ gives every other panel.
     //
     // **Both ends are recorded from `pointerdown`/`pointerup` rather than
     // read off `click`.** *Fixed 2026-09-20, I4 of the whole-branch review.*
@@ -129,11 +130,12 @@ export function Settings({
     // move — measured in Chromium with touch emulation to return the panel
     // even while `pointerup`'s own `target` is the scrim.
     //
-    // biome-ignore lint/a11y/useKeyWithClickEvents: the keyboard equivalent is the panel's own Close button, a few lines down — Escape and s dismissing it too is O135's, the accessibility pass's, not this task's.
+    // biome-ignore lint/a11y/useKeyWithClickEvents: the keyboard's ways out are the panel's own Close button, Escape and s (keyPlan, spec 2026-09-26 §3.3).
     <div
       className="reader-dialog"
       role="dialog"
       aria-label="Settings"
+      aria-modal="true"
       onPointerDown={(event) => {
         fromScrim.current = event.target === event.currentTarget
       }}
@@ -151,7 +153,7 @@ export function Settings({
           onClose()
       }}
     >
-      <div className="reader-dialog-panel">
+      <div className="reader-dialog-panel" ref={panelRef} tabIndex={-1}>
         <div className="reader-panel-head">
           <h2 className="reader-panel-title">Settings</h2>
           <button type="button" className="reader-button" onClick={onClose}>

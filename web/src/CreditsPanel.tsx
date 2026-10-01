@@ -1,5 +1,6 @@
-import type { CSSProperties } from 'react'
+import { useRef, type CSSProperties } from 'react'
 import { thumbUrl } from './api'
+import { usePanelFocus } from './focus'
 
 // The panel is `.docked-panel` in `styles/reader.css`, shared with `Help` and
 // the notes panel (spec 2026-09-17 §8.5). This comment used to record that the
@@ -88,12 +89,16 @@ export function CreditsPanel({
   onGo,
   onClose,
 }: CreditsPanelProps) {
+  const panelRef = useRef<HTMLDivElement>(null)
+  usePanelFocus(panelRef, visible)
   if (!visible) return null
   return (
     <div
       className="docked-panel"
       role="dialog"
       aria-label={`Credit pages in ${edition}`}
+      ref={panelRef}
+      tabIndex={-1}
     >
       <div className="reader-panel-head">
         <strong className="reader-panel-title">Credit pages — {edition}</strong>

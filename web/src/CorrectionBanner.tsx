@@ -47,6 +47,7 @@ export function CorrectionBanner({
     <div
       role="status"
       className="reader-banner"
+      data-ring="top"
       style={{
         position: 'absolute',
         top: 0,

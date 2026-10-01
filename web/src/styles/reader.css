@@ -242,6 +242,19 @@
   outline-offset: 2px;
 }
 
+/* The page area is the ring's page stop (spec 2026-09-26 §3.1). Focus there
+   means reading, so it draws nothing. */
+.reader [data-reader-page]:focus-visible {
+  outline: none;
+}
+
+/* A panel focused on opening (spec 2026-09-26 §3.3) is not a control, and
+   the panel itself is what a sighted reader sees open. */
+.reader [role="dialog"]:focus-visible,
+.reader .reader-dialog-panel:focus-visible {
+  outline: none;
+}
+
 /* 44 px for a finger (spec 2026-09-17 §8.3). The bar is 52 px, so they fit. */
 @media (pointer: coarse) {
   .reader-back,

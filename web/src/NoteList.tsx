@@ -97,6 +97,9 @@ export interface NoteListProps {
    * hidden`: still mounted and still taking its space, so the page area keeps
    * its size on `Tab`, which `Chrome` exists to guarantee. The list beside the
    * page docks clear of both bars and ignores this.
+   *
+   * Its rows leave the ring while covered too: a `visibility: hidden` element
+   * takes no focus, and the ring holds the bars up round a whole correction.
    */
   covered?: boolean
 }
@@ -106,6 +109,7 @@ export function NoteList({ here, placement, onOpen, covered }: NoteListProps) {
   return (
     <div
       className={`note-list note-list-${placement}`}
+      data-ring="controls"
       style={
         placement === 'side'
           ? sideStyle
@@ -120,6 +124,7 @@ export function NoteList({ here, placement, onOpen, covered }: NoteListProps) {
           type="button"
           role="listitem"
           style={rowStyle}
+          tabIndex={placement === 'below' && covered ? -1 : undefined}
           onClick={() => onOpen(h.note.id)}
         >
           <span style={numberStyle(noteColour(h.note.color).tab)}>

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { flushSync } from 'react-dom'
 import {
   Unauthenticated,
   getNotes,
@@ -32,6 +33,7 @@ import { CorrectionBanner } from './CorrectionBanner'
 import { createCohort, type Cohort } from './cohort'
 import { decodeTo } from './decode'
 import { debounce, type Debounced } from './debounce'
+import { barsMounted, focusStop, ringAt, ringSizes } from './focus'
 import {
   canRedo,
   canUndo,
@@ -61,7 +63,8 @@ import { Account } from './Account'
 import { useGate } from './gate'
 import { CreditsPanel } from './CreditsPanel'
 import { Help } from './Help'
-import { intentOf, isInteractivePress, isInteractiveTarget } from './keys'
+import { TurnButtons } from './TurnButtons'
+import { controlKind, inPanel, intentOf, isInteractivePress } from './keys'
 import { keyPlan } from './keyplan'
 import { changeSlice, fieldChanged, sliceFor, sliceReset } from './module'
 import {
@@ -166,6 +169,7 @@ import { cellOf, groups, type Group, type Mode } from './pairing'
 import { loadPrefs, resetPrefs, savePrefs } from './prefs'
 import { display, navigate } from './reading'
 import { titleLines } from './readerTitle'
+import { ringStep } from './ring'
 import { Settings } from './Settings'
 import { allSlots, openWork, type Session, type StartupPorts } from './startup'
 import {
@@ -549,6 +553,12 @@ function App({ work, onLeave }: AppProps) {
   // nothing to recompute it back from.
   const helpVisibleRef = useLatest(helpVisible)
 
+  // Settings, Credits and the bars, for `Escape` — the same route and the same
+  // reason as `helpVisibleRef` above (spec 2026-09-26 §3.1, §3.3).
+  const settingsVisibleRef = useLatest(settingsVisible)
+  const creditsVisibleRef = useLatest(creditsVisible)
+  const chromeVisibleRef = useLatest(chromeVisible)
+
   // The grouping the page area is drawing right now, for the keydown effect —
   // which subscribes once at load and so cannot see `grouped`, computed below
   // at render from `mode`, the direction override and the reader's own parity
@@ -635,6 +645,10 @@ function App({ work, onLeave }: AppProps) {
   // is the box zoom is expressed in fractions *of*, which is the page area and
   // could not be the page.
   const pageAreaRef = useRef<HTMLDivElement>(null)
+
+  // The reader's root, which the ring reads its stops from (spec 2026-09-26
+  // §3.1) — one reader on the page, but scoped anyway.
+  const rootRef = useRef<HTMLDivElement>(null)
 
   // A swap whose incoming page has not been measured yet. Set by the keydown
   // handler, which is the last moment the outgoing page is still on screen to
@@ -782,9 +796,9 @@ function App({ work, onLeave }: AppProps) {
     if (!session) return
     const { resolver, editions } = session
     function onKeyDown(event: KeyboardEvent) {
-      // Every guard is `keyplan.ts`'s, computed from the six mirror refs and
-      // the three derived ones assigned during render. `intentOf` and
-      // `isInteractiveTarget` are both pure, so calling them for every key
+      // Every guard is `keyplan.ts`'s, computed from the mirror refs and the
+      // derived ones assigned during render. `intentOf` and
+      // `controlKind` are both pure, so calling them for every key
       // rather than only inside the branch that used to need them costs a
       // property read and buys one place where the decision is made.
       const plan = keyPlan(
@@ -796,8 +810,12 @@ function App({ work, onLeave }: AppProps) {
           correcting: pendingRef.current !== undefined,
           submitting: submittingRef.current,
           notesBusy: notesBusyRef.current,
-          onControl: isInteractiveTarget(event.target),
+          control: controlKind(event.target),
           accountOpen: accountOpenRef.current,
+          barsUp: chromeVisibleRef.current,
+          settingsOpen: settingsVisibleRef.current,
+          creditsOpen: creditsVisibleRef.current,
+          inPanel: inPanel(event.target),
           zoomable: zoomable(
             zoomPrefsRef.current,
             drawnRef.current !== undefined,
@@ -815,12 +833,21 @@ function App({ work, onLeave }: AppProps) {
           return closeEditorRef.current()
         case 'cancel-correction':
           return cancelCorrection()
-        case 'toggle-chrome':
-          return setChromeVisible((visible) => !visible)
+        case 'ring':
+          return ringMove(event.target, event.shiftKey)
         case 'open-account':
           return setAccountOpen(true)
         case 'close-account':
           return setAccountOpen(false)
+        case 'close-settings':
+          return setSettingsVisible(false)
+        case 'close-credits':
+          return setCreditsVisible(false)
+        case 'leave-bars':
+          // Onto the page before the bars unmount, so focus is not dropped to
+          // `<body>` with the stop it was on (spec 2026-09-26 §3.1).
+          pageAreaRef.current?.focus({ preventScroll: true })
+          return setChromeVisible(false)
         case 'begin-correction':
           return beginCorrection()
         case 'leave-reader':
@@ -841,6 +868,32 @@ function App({ work, onLeave }: AppProps) {
     function cancelCorrection() {
       setPending(undefined)
       setCorrectionNotice(undefined)
+    }
+    /**
+     * `Tab` and `Shift+Tab`: one stop round the reader's ring — spec
+     * 2026-09-26 §3.1. `ring.ts` decides where from counts; `focus.ts` reads
+     * them off the page and moves focus.
+     *
+     * **Asked twice when the bars change**, because what the ring holds
+     * depends on them: the bars' stops exist only while they are mounted
+     * (`Chrome` returns `null` while hidden), and the note list below the page
+     * takes focus only while they are not (O112). The first answer says which
+     * way the bars must go; the second, asked of the page that change leaves,
+     * says which stop. `flushSync` is what makes the second read see it.
+     */
+    function ringMove(from: EventTarget | null, backwards: boolean) {
+      const root = rootRef.current
+      if (!root) return
+      const at = ringAt(root, from)
+      let to = ringStep(at, ringSizes(root), backwards)
+      // Up exactly while focus is on one of theirs — except while correcting,
+      // when the correction holds them up.
+      const wanted = to.region === 'bars' || pendingRef.current !== undefined
+      if (wanted !== barsMounted(root)) {
+        flushSync(() => setChromeVisible(wanted))
+        to = ringStep(at, ringSizes(root), backwards)
+      }
+      focusStop(root, to)
     }
     /**
      * Open correction mode on the slot being read.
@@ -928,8 +981,8 @@ function App({ work, onLeave }: AppProps) {
       setNotesNotice(undefined)
     }
     /**
-     * `a`: the review list. Toggles, like `s` and `Tab` do — open it, or close
-     * it if it is what is already open.
+     * `a`: the review list. Toggles, like `s` does — open it, or close it if
+     * it is what is already open.
      *
      * **It cannot reach a reader mid-edit, and this comment used to say it
      * did.** `toggleReview` has a second arm, where `panel: 'edit'` becomes
@@ -1913,7 +1966,7 @@ function App({ work, onLeave }: AppProps) {
     setNotesNotice(undefined)
   }
 
-  // The five readout lines, from `modules/readouts.ts`'s `readoutLines` — the
+  // The readout lines, from `modules/readouts.ts`'s `readoutLines` — the
   // `?? slot + 1` fallback for an edition the resolver cannot count, the
   // `Math.max(…, 0)` for a slot count that has gone backwards, the gap's
   // report-from-the-authority rule and the `gapHealth`-in-a-gap choice are all
@@ -2168,8 +2221,8 @@ function App({ work, onLeave }: AppProps) {
     // rectangle. A prevented `pointerdown` also stops focus moving, and this
     // runs on every press on the page rather than only while the editor is
     // open: a reader who clicked a mode button and then dragged the page would
-    // leave focus on that button, where `isInteractiveTarget` stands the
-    // keydown handler down and the arrow keys stop working.
+    // leave focus on that button, where a key the button keeps would go to it
+    // instead of the page.
     const panning = pressTakesPan({
       zoomable: zoomable(zoomPrefs, drawnRef.current !== undefined),
       onControl: isInteractivePress(event.target),
@@ -2621,6 +2674,7 @@ function App({ work, onLeave }: AppProps) {
     // size changing when the bars mount or unmount.
     <div
       className="reader"
+      ref={rootRef}
       style={{
         display: 'flex',
         flexDirection: 'column',
@@ -2672,6 +2726,8 @@ function App({ work, onLeave }: AppProps) {
               : undefined,
         }}
         ref={pageAreaRef}
+        tabIndex={-1}
+        data-reader-page=""
         onPointerDown={beginRegion}
         onPointerMove={trackRegion}
         onPointerUp={endPress}
@@ -2821,6 +2877,20 @@ function App({ work, onLeave }: AppProps) {
               {drawGroup(current)}
             </Viewport>
           )
+        )}
+        {/*
+          Meant as VoiceOver's way to turn a page (spec 2026-09-26 §3.4) —
+          not confirmed on a device (O162). Not while the
+          reader's keys are stood down — the note editor, where a press on
+          the page draws a region, and Account — and not in scroll mode,
+          where they would scroll away with the column and VoiceOver's swipe
+          already moves from page to page.
+        */}
+        {mode !== 'scroll' && panelMode !== 'edit' && !accountOpen && (
+          <TurnButtons
+            reading={effectiveReading}
+            onStep={(by) => readerIntentRef.current({ kind: 'step', by })}
+          />
         )}
       </div>
       {at && annotationsPrefs.reveal && notesPlacement === 'below' && (
@@ -3032,6 +3102,14 @@ function App({ work, onLeave }: AppProps) {
         reading={effectiveReading}
         onClose={() => setHelpVisible(false)}
       />
+      {/*
+        The one voice for where the reader stands (spec 2026-09-26 §3.5):
+        always mounted, so a change is spoken, and polite, so it waits for
+        whatever VoiceOver is saying.
+      */}
+      <div className="visually-hidden" aria-live="polite">
+        {readouts.spoken}
+      </div>
     </div>
   )
 }

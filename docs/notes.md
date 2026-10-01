@@ -23310,3 +23310,172 @@ on; and O157's three underlined rows on a device. **Nor four things the
 design promised** (§1.1, §1.2): the scan report, the table layout and a
 proposal's detail were not captured, and Credits and All notes were audited
 empty — *"No credit pages found in raw-mono."*, *"0 notes"*.
+
+## The reader's keyboard and screen-reader access (§3, 2026-09-30)
+
+Measurements for the accessibility pass's §3
+(`docs/superpowers/specs/2026-09-26-accessibility-pass-design.md`), on branch
+`a11y-reader`.
+
+**O166, reproduced before it was filed.** In the browser project (Chromium,
+real key presses through `userEvent`), with Settings open by `s` and focus on
+`layout`'s `mode` select: `s` closed Settings — `AssertionError: expected
+false to be true // Object.is equality` — and `→` turned the page, writing
+progress for slot 3 — `AssertionError: expected "vi.fn()" to not be called at
+all, but actually been called 1 times`. `isInteractiveTarget` answered
+`false` for a `SELECT`, so `keyPlan` took both keys for the reader and
+prevented their defaults.
+
+**The ring, walked with real keys.** In the browser project (Chromium,
+`userEvent.tab()`), from a reader loaded with focus put on its page area
+(the test iframe needs focus before a real key reaches it), at 1440×900,
+768×1024 and 390×844 alike, fourteen presses of `Tab` walked the same seven
+stops twice:
+Library, `single`, `two`, `scroll`, ⚙, the strip's one stop (`page 3`, the
+stored position) and the page — the bars up at the first six and down at the
+seventh. Seven presses of `Shift+Tab` walked them backwards at each size, the
+strip first and the page last. With `preventDefault: false` put back on the
+ring, the browser moved focus one stop further after the reader had: the
+1440×900 walk began `single`, `scroll`, `page 3`, and then left the reader
+for `<body>`. The page area's `tabIndex={-1}` is left out of
+`isInteractivePress`; put back in, fifteen `App.test.tsx` cases that tap,
+swipe or pan on the page area failed. One, "a tap on the right third
+turns back and on the left third forward", read `AssertionError: expected
+'50%' to be '33.33333333333333%' // Object.is equality`: the progress line
+had not moved.
+
+**Panels and focus.** `usePanelFocus` (`focus.ts`) closes O161's opening half
+of the audit's table above. In jsdom, opened by its key with focus on the
+page area, each of the five panels
+that used to land focus on `BODY` now lands it on the panel itself: `s` on
+Settings, `?` on "Keyboard help", `C` on "Credit pages in raw", `a` on "All
+notes", `A` on Account. `Escape` — which the audit found left Settings and
+Credits **open** — now closes every one of them (Task 2's arms), and focus
+that used to land on `BODY` afterwards lands back on the page area. Settings
+opened by ⚙ now hands focus back to ⚙ on Close, where the audit found it drop
+to `BODY`; Settings and Account now carry `aria-modal="true"`. The note
+editor still ends with focus in its textarea: `usePanelFocus` is called
+before the editor's own focus effect in `NotePanel.tsx`, so it records what
+held focus before the panel opened and puts focus on the panel, and the
+editor's effect then moves it into the textarea. `Tab` inside an open panel
+no longer shows the bars behind it (O161's first-`Tab` finding): it wraps
+inside the panel instead, first to last and back. In the browser project,
+with Settings open at 1440×900, 40 real `Tab` presses followed by 40 real
+`Shift+Tab` presses — 80 in all — left the panel with nothing having escaped
+it.
+
+**On the real library, 2026-09-30.** Task 7's rig, following "The rig" above:
+`/home/davey/temp/manga-test/library.db` (sha256 `d5ebc0c2…a59e67`, matching
+the audit's) copied to `target/a11y-reader/lib/library.db`, a throwaway
+account (`a11y7`, role `user`) added to the copy only, a release
+`taiyaku serve --db` on the copy at `127.0.0.1:8541`, and a production build
+behind `vite preview --host 127.0.0.1 --port 4191`. Signed in as `a11y7`,
+Playwright-driven Chromium at 1440×900, on `akame-ga-kill----v01--2015--cbz`
+(237 pages) — the volume O140 used.
+
+**Seven `Tab`s from a fresh load** walked the ring of Task 4 exactly: Library,
+`single`, `two`, `scroll`, ⚙, the strip's one stop (`page 1`, `aria-current`)
+and the page area (`[data-reader-page]`) — the bars up (`[data-ring="bottom"]`
+present) at the first six stops and down at the seventh.
+
+**`akame-ga-kill----v01--2015--cbz` reads `rtl`** (`/api/works/…` says so), so
+the physically-forward arrow for this volume is `←`, not `→`: pressed from a
+bar stop or the page, `→` moved the readout backward one slot at a time,
+clamped at slot 1, and `←` moved it forward — both through the same
+`readerIntentRef` call a click on the hidden "Next page" button also makes, so
+this is `stepFor` doing what spec §3.4 says it does, not a defect, and worth
+recording only because it decided which key the next check pressed.
+**Tab to the strip, then forty real `←` presses, one at a time**:
+`document.activeElement` was the current tile every time (`aria-current`,
+tag `BUTTON`), the rail was never blank (`button[data-group]` count 19 → 33
+as the window grew, never 0) and the focused tile's
+`getBoundingClientRect()` intersected the rail's on all forty, and the live
+region, read after every press, advanced one page each time, `page 2, 1
+percent` → `page 42, 18 percent`.
+
+**`s` opened Settings; the driver then put focus on the Layout section's
+`mode` select (value `single`), and `s` was pressed again**: the dialog
+(`role="dialog"`,
+heading "Settings") stayed open and the select's value became `scroll` — the
+browser's own typeahead landing on the next option starting with `s`
+(`single`, `scroll`) rather than the reader closing the panel or turning a
+page. O166 holds on the real build.
+
+**`?` opened Help with focus inside** (`div.docked-panel[aria-label="Keyboard
+help"]`) from the page area, and **`Escape` closed it with focus back on the
+page** (`[data-reader-page]`, bars down). Opened instead from a bar stop (the
+strip tile, mid-session), `Escape` closed it with focus back on that stop —
+spec §3.3's "a bar stop if a key pressed there did," not the page, so the
+opener is what is tracked rather than a fixed target.
+
+**Stopped both processes by PID** (`serve` 729498; `vite preview`'s chain
+730307 → 730320 → 730353, whose `pnpm` wrappers were already gone once the
+`vite.js` process under them was killed). The original library's sha256
+after — `d5ebc0c2378650356115a8cce637e50dc5b4ab7f7cc8f388553cadd575a59e67` —
+matches the one taken before the copy, and
+`find /home/davey/temp/manga-test -newermt
+'2026-09-30T05:03:44-07:00'` printed nothing.
+
+**The device pass, 2026-10-01 — VoiceOver tabled.** The user's iPhone
+(`iPhone OS 18_7 … Version/26.6.1 Mobile/15E148 Safari/604.1` in the request
+log) against a production build behind `vite preview` and a release
+`taiyaku serve --db` on a fresh copy of the real library, through
+`tailscale serve` on the tailnet. The copy's `local` account was given a
+temporary password. A whole-page note was written into the copy through a
+throwaway API key, and moved to another slot the same way with a second one
+before the note checks; each key was revoked straight after its write.
+
+**VoiceOver was tried and then set aside by the user**: *"I think it's quite
+hard for me to test the voice over because I'm not used to it. I would need
+someone better at it to help test. I keep getting stuck and I think it may
+invalidate the tests."* What was tried, recorded as an observation and not as
+a result: *"swiping on the reader just iterates through the next and previous
+page zones, and then double tapping opens the menu and doesn't change
+pages"* — the log has no progress write between the reader opening at
+04:07:57 and the next check at 04:20:31, and the strip's thumbnails were
+fetched twice, as the bars coming up would. It is not the failure §3.4 named
+as its assumption to check: the point under either turn button is an outer
+third, where a tap turns the page, and what was seen is the middle third's
+answer. Why it happened is not known. A build that reported every press,
+release and click — pointer, touch and mouse — to the request log (as
+`/api/__probe?…` requests,
+read back from `serve --log-requests`) was served for a repeat; the repeat
+was not made, so it holds nothing from VoiceOver. Nothing else on the
+VoiceOver checklist was tried.
+
+**With VoiceOver off**, three checks. The event-reporting build was live for
+the last two: the phone reloaded at 04:25:42 to pick up the moved note, and
+the desktop loaded it too.
+
+- **Taps on the page**: *"yes the pages turned as normal"* — four progress
+  writes from the iPhone between 04:20:31 and 04:20:51.
+- **The note editor's keyboard** (whether a tap that moves focus to the page
+  area takes it away): asked as a tap in the margin above or below the page,
+  in single-page layout — *"it's hard to tap above the page because it gets
+  into the ios clock and stuff. but the behavior seems fine to me"*. With the
+  editor open a tap on the page plants a point on the note — the editor's own
+  gesture, not the press the check was about. One note write, at 04:36:03,
+  carried the user's typing; the two after it, at 04:36:07 and 04:36:11, each
+  followed a tap on the page, and the note list then read the note as a
+  point. **Not established**, then. It was not tried in two-page layout
+  either, because there the note did not show at all: *"I see the note only
+  in 1 page view and not 2 page view"* — older than this branch (O167).
+- **The keyboard on the desktop**, Firefox 157 on Linux: the ring, `→` on ⚙
+  turning the page with the bars up, and `Escape` hiding them — *"yes
+  everything behaves like that"*; two progress writes from that browser at
+  05:26:39 and 05:26:40.
+
+**iOS zoomed the reader while the note editor's text box had focus**, which
+the user did not mention: the event log's viewport went from 440×736 to
+385×644 — exactly 14/16 — from 04:31:51, with the editor open, and back to
+440×736 after each of two two-finger gestures. 14/16 is the scale that
+brings 14 px text to 16 px, which is what puts it on the editor's textarea —
+the log records no focus events. The textarea inherits `.docked-panel`'s
+14 px, and the reader's 16 px floor for a coarse pointer covers only
+`.reader-dialog-panel`. Older than this branch (O171).
+
+Taken down afterwards: `tailscale serve reset` (status: no serve config), both
+processes stopped by PID, the event-reporting build removed and the bundle
+rebuilt without it. The original library's sha256 matched the one taken before
+the copy, and `find /home/davey/temp/manga-test -newermt` the rig's start time
+printed nothing.
