@@ -756,4 +756,60 @@ describe('Shell', () => {
       ).toBe('Search')
     })
   })
+
+  describe('the skip link — O174', () => {
+    it('is the shell’s first element, and points at main', async () => {
+      const host = await settle(
+        <Shell>
+          <p>x</p>
+        </Shell>,
+      )
+      const link = host.querySelector('.library')?.firstElementChild
+      expect(link?.tagName).toBe('A')
+      expect(link?.textContent).toBe('Skip to content')
+      expect(link?.getAttribute('href')).toBe('#content')
+      const main = host.querySelector('main')
+      expect(main?.id).toBe('content')
+      // Not focusable until the link is used: a standing `tabindex` would
+      // take focus on every click inside it.
+      expect(main?.hasAttribute('tabindex')).toBe(false)
+    })
+
+    it('moves focus to main and leaves the URL alone', async () => {
+      const host = await settle(
+        <Shell>
+          <p>x</p>
+        </Shell>,
+      )
+      const link = host.querySelector('.skip-link')
+      if (!link) throw new Error('no skip link')
+      const before = window.location.href
+      const click = new MouseEvent('click', { bubbles: true, cancelable: true })
+      act(() => {
+        link.dispatchEvent(click)
+      })
+      expect(click.defaultPrevented).toBe(true)
+      expect(document.activeElement).toBe(host.querySelector('main'))
+      const main = host.querySelector('main')
+      expect(main?.getAttribute('tabindex')).toBe('-1')
+      // …and only for as long as it holds that focus.
+      act(() => {
+        main?.blur()
+      })
+      expect(main?.hasAttribute('tabindex')).toBe(false)
+      expect(window.location.href).toBe(before)
+    })
+
+    it('is inert while the drawer is open, as the bar and main are', async () => {
+      const host = await settle(
+        <Shell>
+          <p>x</p>
+        </Shell>,
+      )
+      const link = host.querySelector('.skip-link')
+      expect(link?.hasAttribute('inert')).toBe(false)
+      openMenu(host)
+      expect(link?.hasAttribute('inert')).toBe(true)
+    })
+  })
 })

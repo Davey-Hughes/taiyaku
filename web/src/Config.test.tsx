@@ -75,6 +75,12 @@ beforeEach(() => {
 })
 
 describe('Config', () => {
+  it('names its tab after the tab a bare /config lands on — O173', async () => {
+    document.title = 'stale'
+    await at('/config')
+    expect(document.title).toBe(`${config.TABS[0].label} — taiyaku`)
+  })
+
   it('draws one sub-nav link per tab', async () => {
     const host = await at('/config/roots')
     expect(host.querySelectorAll('.config-nav a')).toHaveLength(
@@ -104,7 +110,10 @@ describe('Config', () => {
     // the two lists are what PR B and PR C each extend.
     for (const tab of config.TABS) {
       const host = await at(`/config/${tab.path}`)
-      expect(host.querySelector('.config > :not(.config-nav)')).not.toBeNull()
+      // `:not(h1)`: the hidden heading is not a screen (O163).
+      expect(
+        host.querySelector('.config > :not(.config-nav):not(h1)'),
+      ).not.toBeNull()
     }
   })
 
@@ -115,5 +124,27 @@ describe('Config', () => {
     // tab is exactly when somebody types it.
     const host = await at('/config/nonsense')
     expect(host.querySelector('.rule-editor')).not.toBeNull()
+  })
+
+  it('opens every tab with one h1, Configuration, above the nav — O163', async () => {
+    for (const tab of config.TABS) {
+      const host = await at(`/config/${tab.path}`)
+      const h1s = [...host.querySelectorAll('h1')]
+      expect(
+        h1s.map((h) => [h.textContent, h.className]),
+        tab.path,
+      ).toEqual([['Configuration', 'visually-hidden']])
+      expect(host.querySelector('.config')?.firstElementChild, tab.path).toBe(
+        h1s[0],
+      )
+    }
+  })
+
+  it('names its tab after the configuration tab it shows — O173', async () => {
+    for (const tab of config.TABS) {
+      document.title = 'stale'
+      await at(`/config/${tab.path}`)
+      expect(document.title, tab.path).toBe(`${tab.label} — taiyaku`)
+    }
   })
 })

@@ -87,8 +87,9 @@ describe('the inbox draws a filter and a tab differently', () => {
     // **One rule, three preludes** — §12.3. Asserted on the prelude rather
     // than on the body, because three separate rules with identical bodies
     // pass every assertion above and are exactly what this is against: they
-    // can drift apart one edit later, and the app marks a chosen one-of-N
-    // two different ways, so there is real pressure to split them.
+    // can drift apart one edit later, and each row marks its
+    // chosen one in its own role (§4.1), so there is real pressure to split
+    // them.
     // `filter` and a length check, not `find`: `find` returns the *first*
     // match, so a second copy written after the shared rule would leave it
     // pointing at the shared one and passing. The base-rule assertion above
@@ -99,7 +100,7 @@ describe('the inbox draws a filter and a tab differently', () => {
     expect(current).toHaveLength(1)
     expect(selectors(current[0].prelude).sort()).toEqual([
       '.config-nav a[aria-current="page"]',
-      '.preview-tabs button[aria-current="true"]',
+      '.preview-tabs button[aria-selected="true"]',
       '.proposal-tabs button[aria-pressed="true"]',
     ])
   })

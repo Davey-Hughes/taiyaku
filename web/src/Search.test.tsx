@@ -264,4 +264,21 @@ describe('Search', () => {
     await type(host, '花嫁')
     expect(host.querySelector('[role="alert"]')?.textContent).toContain('500')
   })
+
+  it('opens with one h1, Search, for a screen reader alone — O163', async () => {
+    const host = await settle()
+    const h1s = [...host.querySelectorAll('h1')]
+    expect(h1s.map((h) => [h.textContent, h.className])).toEqual([
+      ['Search', 'visually-hidden'],
+    ])
+    expect(host.firstElementChild).toBe(h1s[0])
+  })
+
+  it('names its tab Search, and typing does not rename it — O173', async () => {
+    document.title = 'stale'
+    const host = await settle()
+    expect(document.title).toBe('Search — taiyaku')
+    await type(host, 'one')
+    expect(document.title).toBe('Search — taiyaku')
+  })
 })

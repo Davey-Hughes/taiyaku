@@ -142,6 +142,8 @@ describe('Series, grid layout', () => {
   it('names the series and lists its volumes in order', async () => {
     const host = await settle()
     expect(host.querySelector('h1')?.textContent).toBe('Go-Toubun no Hanayome')
+    // One heading once loaded: the hidden stand-in is gone.
+    expect(host.querySelectorAll('h1')).toHaveLength(1)
     expect(titles(host)).toEqual([
       'Go-Toubun no Hanayome v01',
       'Go-Toubun no Hanayome v03',
@@ -195,6 +197,27 @@ describe('Series, grid layout', () => {
     expect(host.querySelector('.volumes')).toBeNull()
   })
 
+  it('has a heading for a screen reader when the series cannot be shown — O163', async () => {
+    vi.mocked(library.oneSeries).mockRejectedValue(
+      new Error('/api/library/series/7: 404'),
+    )
+    const host = await settle()
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain('404')
+    expect(
+      [...host.querySelectorAll('h1')].map((h) => [h.textContent, h.className]),
+    ).toEqual([['Series', 'visually-hidden']])
+  })
+
+  it('has that heading while the series is still loading — O163', async () => {
+    // Never answers: the state every visit passes through, held still.
+    vi.mocked(library.oneSeries).mockReturnValue(new Promise(() => {}))
+    const host = await settle()
+    expect(host.querySelector('[role="alert"]')).toBeNull()
+    expect(
+      [...host.querySelectorAll('h1')].map((h) => [h.textContent, h.className]),
+    ).toEqual([['Series', 'visually-hidden']])
+  })
+
   it('does not fetch when the URL carries something that is not a number', async () => {
     let host: HTMLElement | undefined
     await act(async () => {
@@ -212,6 +235,13 @@ describe('Series, grid layout', () => {
     expect(host?.querySelector('[role="alert"]')?.textContent).toContain(
       'not-a-number',
     )
+    // Not a series, and still a screen with a heading (O163).
+    expect(
+      [...(host?.querySelectorAll('h1') ?? [])].map((h) => [
+        h.textContent,
+        h.className,
+      ]),
+    ).toEqual([['Series', 'visually-hidden']])
   })
 
   it('does not fetch when the URL carries an id past Number.MAX_SAFE_INTEGER', async () => {
@@ -274,6 +304,12 @@ describe('Series, grid layout', () => {
     // that is "no account known" rather than a permissive one.
     const host = await settle()
     expect(host.querySelectorAll('.volumes a.get')).toHaveLength(0)
+  })
+
+  it('names its tab after the series, once it has loaded — O173', async () => {
+    document.title = 'stale'
+    await settle()
+    expect(document.title).toBe('Go-Toubun no Hanayome — taiyaku')
   })
 })
 

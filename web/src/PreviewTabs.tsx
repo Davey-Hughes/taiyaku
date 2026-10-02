@@ -47,7 +47,7 @@
  * **The row cap is drawn.** A table that quietly stopped at 500 reads as the
  * whole list.
  */
-import { useState } from 'react'
+import { type KeyboardEvent, useId, useRef, useState } from 'react'
 import {
   type Field,
   FIELDS,
@@ -123,6 +123,39 @@ export function PreviewTabs({
   onSelectRule: (index: number) => void
 }) {
   const [tab, setTab] = useState<TabName>('Impact')
+  /**
+   * O156: tabs, because they switch what the pane below shows — not
+   * navigation, which the `<nav>` they sat in claimed, since no URL moves.
+   * One panel, labelled by whichever tab is selected. The keys are the ARIA
+   * guide's for tabs: only the selected tab is a `Tab` stop, and ←, →, Home
+   * and End move the selection with the focus, since every panel draws from
+   * the preview already held.
+   */
+  const ids = useId()
+  const tabId = (name: TabName) => `${ids}-tab-${TABS.indexOf(name)}`
+  const panelId = `${ids}-panel`
+  const tabButtons = useRef<(HTMLButtonElement | null)[]>([])
+  const onTabKey = (event: KeyboardEvent<HTMLButtonElement>) => {
+    // A modifier means the keystroke is the browser's: Alt+← is Back.
+    if (event.altKey || event.ctrlKey || event.metaKey) return
+    // From the tab the key was pressed on, which is the selected one unless
+    // focus got to another without selecting it.
+    const at = tabButtons.current.indexOf(event.currentTarget)
+    const to =
+      event.key === 'ArrowRight'
+        ? (at + 1) % TABS.length
+        : event.key === 'ArrowLeft'
+          ? (at - 1 + TABS.length) % TABS.length
+          : event.key === 'Home'
+            ? 0
+            : event.key === 'End'
+              ? TABS.length - 1
+              : undefined
+    if (to === undefined) return
+    event.preventDefault()
+    setTab(TABS[to])
+    tabButtons.current[to]?.focus()
+  }
   const overrides = preview?.overrides ?? []
   /**
    * O149: the Provenance table draws a column only for a field some row
@@ -147,13 +180,21 @@ export function PreviewTabs({
 
   return (
     <div className="preview">
-      <nav className="preview-tabs" aria-label="Preview">
-        {TABS.map((name) => (
+      <div className="preview-tabs" role="tablist" aria-label="Preview">
+        {TABS.map((name, index) => (
           <button
             key={name}
+            ref={(button) => {
+              tabButtons.current[index] = button
+            }}
             type="button"
-            aria-current={tab === name ? 'true' : undefined}
+            role="tab"
+            id={tabId(name)}
+            aria-selected={tab === name}
+            aria-controls={panelId}
+            tabIndex={tab === name ? 0 : -1}
             onClick={() => setTab(name)}
+            onKeyDown={onTabKey}
           >
             {name}
             {name === 'Overrides' && overrides.length > 0 && (
@@ -164,11 +205,11 @@ export function PreviewTabs({
             )}
           </button>
         ))}
-      </nav>
+      </div>
+      <div role="tabpanel" id={panelId} aria-labelledby={tabId(tab)}>
+        {busy && <p className="busy">Previewing…</p>}
 
-      {busy && <p className="busy">Previewing…</p>}
-
-      {/*
+        {/*
         **The empty state is suppressed while a preview is in flight**, because
         the two are reachable together and contradict each other when they are.
         On the screen's very first load `busy` is true and `preview` is still
@@ -177,170 +218,170 @@ export function PreviewTabs({
         already started. Once a preview has landed the empty state is gone for
         good, so this only ever suppresses the first one.
       */}
-      {preview === undefined ? (
-        busy ? null : (
-          <p className="empty">
-            No preview yet. Pick a rule, or edit one — the preview runs when you
-            finish a change rather than while you type.
-          </p>
-        )
-      ) : (
-        <div className="preview-body">
-          {tab === 'Impact' && (
-            <ul className="impact">
-              <li>
-                {plural(
-                  preview.impact.series_merged,
-                  'series merged',
-                  'series merged',
-                )}
-              </li>
-              <li>
-                {plural(
-                  preview.impact.works_rehomed,
-                  'work re-homed',
-                  'works re-homed',
-                )}
-              </li>
-              <li>{preview.impact.works_orphaned} orphaned</li>
-              <li>
-                {plural(
-                  preview.impact.proposals_reopened,
-                  'proposal reopened',
-                  'proposals reopened',
-                )}
-              </li>
-              <li>
-                {plural(
-                  preview.impact.proposals_raised,
-                  'proposal raised',
-                  'proposals raised',
-                )}
-              </li>
-              <li className="series-count">
-                {preview.impact.series_before} series before ·{' '}
-                {preview.impact.series_after} after
-              </li>
-            </ul>
-          )}
+        {preview === undefined ? (
+          busy ? null : (
+            <p className="empty">
+              No preview yet. Pick a rule, or edit one — the preview runs when
+              you finish a change rather than while you type.
+            </p>
+          )
+        ) : (
+          <div className="preview-body">
+            {tab === 'Impact' && (
+              <ul className="impact">
+                <li>
+                  {plural(
+                    preview.impact.series_merged,
+                    'series merged',
+                    'series merged',
+                  )}
+                </li>
+                <li>
+                  {plural(
+                    preview.impact.works_rehomed,
+                    'work re-homed',
+                    'works re-homed',
+                  )}
+                </li>
+                <li>{preview.impact.works_orphaned} orphaned</li>
+                <li>
+                  {plural(
+                    preview.impact.proposals_reopened,
+                    'proposal reopened',
+                    'proposals reopened',
+                  )}
+                </li>
+                <li>
+                  {plural(
+                    preview.impact.proposals_raised,
+                    'proposal raised',
+                    'proposals raised',
+                  )}
+                </li>
+                <li className="series-count">
+                  {preview.impact.series_before} series before ·{' '}
+                  {preview.impact.series_after} after
+                </li>
+              </ul>
+            )}
 
-          {tab === 'Matched files' &&
-            (preview.rows.length === 0 ? (
-              <p className="empty">
-                No files.{' '}
-                {selected === undefined
-                  ? 'Select a rule to see what it reaches.'
-                  : 'This rule matched nothing and came near nothing.'}
-              </p>
-            ) : (
-              <>
-                {preview.rows_truncated && capped}
-                <div className="table-scroll">
-                  <table className="matched">
-                    <thead>
-                      <tr>
-                        <th>file</th>
-                        <th>before</th>
-                        <th>after</th>
-                        <th>match</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {preview.rows.map((row) => (
-                        <tr key={`${row.root_id}:${row.rel_path}`}>
-                          <td>{row.rel_path}</td>
-                          <td>{row.before?.series ?? '—'}</td>
-                          <td>{row.after?.series ?? '—'}</td>
-                          <td>{row.matched ? 'matched' : 'near miss'}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </>
-            ))}
-
-          {tab === 'Provenance' &&
-            (preview.rows.length === 0 ? (
-              <p className="empty">No files to show provenance for.</p>
-            ) : (
-              <>
-                {preview.rows_truncated && capped}
-                {unset.length > 0 && (
-                  <p className="unset">
-                    {unsetSentence(
-                      unset,
-                      preview.rows.length,
-                      preview.rows_truncated,
-                    )}
-                  </p>
-                )}
-                <div className="table-scroll">
-                  <table className="provenance">
-                    <thead>
-                      <tr>
-                        <th>file</th>
-                        {drawn.map((field) => (
-                          <th key={field}>{field}</th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {preview.rows.map((row) => (
-                        <tr key={`${row.root_id}:${row.rel_path}`}>
-                          <td>{row.rel_path}</td>
-                          {drawn.map((field) => {
-                            const decided = row.decided_by[field]
-                            return (
-                              <td key={field}>
-                                {decided === undefined
-                                  ? '—'
-                                  : decided.kind === 'root_default'
-                                    ? 'root default'
-                                    : `rule ${decided.index + 1}`}
-                              </td>
-                            )
-                          })}
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </>
-            ))}
-
-          {tab === 'Overrides' &&
-            (overrides.length === 0 ? (
-              <p className="empty">
-                No rule replaces another's value. Two rules setting one field to
-                the <em>same</em> value are not an override — the seeded
-                defaults do that on purpose.
-              </p>
-            ) : (
-              <>
-                <p className="overrides-lead">
-                  A later rule deciding a field differently is not always a
-                  mistake — layering a normalised value over a default is what
-                  the seeded rules do. These are the places one rule's value
-                  replaces another's.
+            {tab === 'Matched files' &&
+              (preview.rows.length === 0 ? (
+                <p className="empty">
+                  No files.{' '}
+                  {selected === undefined
+                    ? 'Select a rule to see what it reaches.'
+                    : 'This rule matched nothing and came near nothing.'}
                 </p>
-                <ul className="overrides">
-                  {overrides.map((over, index) => (
-                    <li key={`${over.field}:${over.rel_path}:${index}`}>
-                      <p className="what">
-                        <strong>{over.field}</strong> — rule {over.wins + 1}{' '}
-                        overrides rule {over.first + 1} on{' '}
-                        {plural(over.examples, 'file', 'files')}.
-                      </p>
-                      {/*
+              ) : (
+                <>
+                  {preview.rows_truncated && capped}
+                  <div className="table-scroll">
+                    <table className="matched">
+                      <thead>
+                        <tr>
+                          <th>file</th>
+                          <th>before</th>
+                          <th>after</th>
+                          <th>match</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {preview.rows.map((row) => (
+                          <tr key={`${row.root_id}:${row.rel_path}`}>
+                            <td>{row.rel_path}</td>
+                            <td>{row.before?.series ?? '—'}</td>
+                            <td>{row.after?.series ?? '—'}</td>
+                            <td>{row.matched ? 'matched' : 'near miss'}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </>
+              ))}
+
+            {tab === 'Provenance' &&
+              (preview.rows.length === 0 ? (
+                <p className="empty">No files to show provenance for.</p>
+              ) : (
+                <>
+                  {preview.rows_truncated && capped}
+                  {unset.length > 0 && (
+                    <p className="unset">
+                      {unsetSentence(
+                        unset,
+                        preview.rows.length,
+                        preview.rows_truncated,
+                      )}
+                    </p>
+                  )}
+                  <div className="table-scroll">
+                    <table className="provenance">
+                      <thead>
+                        <tr>
+                          <th>file</th>
+                          {drawn.map((field) => (
+                            <th key={field}>{field}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {preview.rows.map((row) => (
+                          <tr key={`${row.root_id}:${row.rel_path}`}>
+                            <td>{row.rel_path}</td>
+                            {drawn.map((field) => {
+                              const decided = row.decided_by[field]
+                              return (
+                                <td key={field}>
+                                  {decided === undefined
+                                    ? '—'
+                                    : decided.kind === 'root_default'
+                                      ? 'root default'
+                                      : `rule ${decided.index + 1}`}
+                                </td>
+                              )
+                            })}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </>
+              ))}
+
+            {tab === 'Overrides' &&
+              (overrides.length === 0 ? (
+                <p className="empty">
+                  No rule replaces another's value. Two rules setting one field
+                  to the <em>same</em> value are not an override — the seeded
+                  defaults do that on purpose.
+                </p>
+              ) : (
+                <>
+                  <p className="overrides-lead">
+                    A later rule deciding a field differently is not always a
+                    mistake — layering a normalised value over a default is what
+                    the seeded rules do. These are the places one rule's value
+                    replaces another's.
+                  </p>
+                  <ul className="overrides">
+                    {overrides.map((over, index) => (
+                      <li key={`${over.field}:${over.rel_path}:${index}`}>
+                        <p className="what">
+                          <strong>{over.field}</strong> — rule {over.wins + 1}{' '}
+                          overrides rule {over.first + 1} on{' '}
+                          {plural(over.examples, 'file', 'files')}.
+                        </p>
+                        {/*
                         The path and the two values are drawn together because
                         they describe one entry between them: `Override`'s own
                         doc comment in the store carries why the values are
                         this file's rather than all `examples`' of it.
                       */}
-                      <p className="where">{over.rel_path}</p>
-                      <ul className="values">
-                        {/*
+                        <p className="where">{over.rel_path}</p>
+                        <ul className="values">
+                          {/*
                           `||`, not `??` — the same distinction `RuleList`'s own
                           label chain turns on. `blankRule()` leaves `pattern`
                           as `''` rather than `null`, and an empty pattern
@@ -350,18 +391,18 @@ export function PreviewTabs({
                           the one place whose whole job is saying which rule is
                           which.
                         */}
-                        <li>
-                          rule {over.first + 1}{' '}
-                          <code>{names(rules[over.first])}</code> →{' '}
-                          {shown(over.first_value)}
-                        </li>
-                        <li>
-                          rule {over.wins + 1}{' '}
-                          <code>{names(rules[over.wins])}</code> →{' '}
-                          {shown(over.wins_value)} (wins)
-                        </li>
-                      </ul>
-                      {/*
+                          <li>
+                            rule {over.first + 1}{' '}
+                            <code>{names(rules[over.first])}</code> →{' '}
+                            {shown(over.first_value)}
+                          </li>
+                          <li>
+                            rule {over.wins + 1}{' '}
+                            <code>{names(rules[over.wins])}</code> →{' '}
+                            {shown(over.wins_value)} (wins)
+                          </li>
+                        </ul>
+                        {/*
                         **"in at least one of these files", not "here"** —
                         `others` is a *maximum* across every entry sharing this
                         row's `(field, first, wins)` triple
@@ -375,16 +416,16 @@ export function PreviewTabs({
                         longer chain. Found by the third whole-branch review of
                         this branch.
                       */}
-                      {over.others > 0 && (
-                        <p className="others">
-                          In at least one of these files,{' '}
-                          {over.others === 1
-                            ? 'one other rule disagrees'
-                            : `${over.others} other rules disagree`}{' '}
-                          too.
-                        </p>
-                      )}
-                      {/*
+                        {over.others > 0 && (
+                          <p className="others">
+                            In at least one of these files,{' '}
+                            {over.others === 1
+                              ? 'one other rule disagrees'
+                              : `${over.others} other rules disagree`}{' '}
+                            too.
+                          </p>
+                        )}
+                        {/*
                         **"Options:", and two of them** — O95. One button under
                         a sentence in the grammar of a warning is an
                         instruction whatever it says, and the instruction this
@@ -395,9 +436,9 @@ export function PreviewTabs({
                         `RuleList`'s own `onSelect` — so it costs exactly one
                         derivation, the same as clicking that rule in the list.
                       */}
-                      <p className="options">
-                        Options:{' '}
-                        {/*
+                        <p className="options">
+                          Options:{' '}
+                          {/*
                           **Both are disabled while a preview or a write is in
                           flight**, because this row is drawn from the
                           *previous* preview and its indices need not still
@@ -427,30 +468,32 @@ export function PreviewTabs({
                           second whole-branch review of this branch, in the
                           comment that claimed otherwise.
                         */}
-                        <button
-                          type="button"
-                          className="reorder"
-                          disabled={busy || frozen}
-                          onClick={() => onReorder(over.wins, over.first)}
-                        >
-                          Move rule {over.wins + 1} above rule {over.first + 1}
-                        </button>{' '}
-                        <button
-                          type="button"
-                          className="edit-winner"
-                          disabled={busy || frozen}
-                          onClick={() => onSelectRule(over.wins)}
-                        >
-                          Edit rule {over.wins + 1}
-                        </button>
-                      </p>
-                    </li>
-                  ))}
-                </ul>
-              </>
-            ))}
-        </div>
-      )}
+                          <button
+                            type="button"
+                            className="reorder"
+                            disabled={busy || frozen}
+                            onClick={() => onReorder(over.wins, over.first)}
+                          >
+                            Move rule {over.wins + 1} above rule{' '}
+                            {over.first + 1}
+                          </button>{' '}
+                          <button
+                            type="button"
+                            className="edit-winner"
+                            disabled={busy || frozen}
+                            onClick={() => onSelectRule(over.wins)}
+                          >
+                            Edit rule {over.wins + 1}
+                          </button>
+                        </p>
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              ))}
+          </div>
+        )}
+      </div>
     </div>
   )
 }

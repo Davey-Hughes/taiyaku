@@ -81,11 +81,18 @@ describe('RuleList', () => {
     expect(rows[1].textContent).toContain('2')
   })
 
-  it('marks the selected rule', () => {
+  it('marks the selected rule on its button, which is what takes focus — O156', () => {
+    // The mark belongs on the element that takes focus: the row's select
+    // button, not the `<li>` round it.
     const { host } = render({ selected: 1 })
-    const rows = host.querySelectorAll('.rule-row')
-    expect(rows[1].getAttribute('aria-current')).toBe('true')
-    expect(rows[0].getAttribute('aria-current')).not.toBe('true')
+    const marks = [...host.querySelectorAll('.rule-row')].map((row) => [
+      row.getAttribute('aria-current'),
+      row.querySelector('button.select')?.getAttribute('aria-current') ?? null,
+    ])
+    expect(marks).toEqual([
+      [null, null],
+      [null, 'true'],
+    ])
   })
 
   it('selects by index, never by rule id', () => {

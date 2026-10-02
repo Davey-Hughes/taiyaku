@@ -218,7 +218,7 @@ describe('Account', () => {
         (el) => el.className,
       ),
     ).toEqual(['account-card', 'account-card', 'account-card'])
-    expect([...host.querySelectorAll('h3')].map((el) => el.className)).toEqual([
+    expect([...host.querySelectorAll('h2')].map((el) => el.className)).toEqual([
       'account-heading',
       'account-heading',
       'account-heading',
@@ -1142,6 +1142,29 @@ describe('Account', () => {
         'the network went away',
       )
     }
+  })
+
+  it('heads the page with an h1 and its sections with h2s — O163', async () => {
+    vi.stubGlobal(
+      'fetch',
+      server({
+        '/api/keys': () => json([]),
+        '/api/sessions': () => json([]),
+      }),
+    )
+    const host = mount(<Account placement="page" onSignedOut={noop} />)
+    await settle()
+    expect(
+      [...host.querySelectorAll('h1, h2, h3')].map((h) => [
+        h.tagName,
+        h.textContent,
+      ]),
+    ).toEqual([
+      ['H1', 'Account'],
+      ['H2', 'Password'],
+      ['H2', 'API keys'],
+      ['H2', 'Signed in'],
+    ])
   })
 })
 

@@ -1,6 +1,6 @@
 import { act } from 'react'
 import { beforeEach, describe, expect, it } from 'vitest'
-import { page } from 'vitest/browser'
+import { page, userEvent } from 'vitest/browser'
 // **Required**, the same reason `Filmstrip.browser.test.tsx` gives: every
 // rule under test lives in `styles/admin.css`, which reaches the app
 // through `index.css`. Without this the boxes below are unstyled and the
@@ -244,5 +244,46 @@ describe('the preview at phone width', () => {
     expect(cells.some((cell) => cell.clientHeight > lineHeight * 1.5)).toBe(
       true,
     )
+  })
+})
+
+describe('the tabs, by keyboard and by name — O156', () => {
+  it('walks the tabs with real arrow keys, and Tab leaves the tablist', async () => {
+    const host = mount(<PreviewTabs {...fixture} />)
+    const tabs = () => [...host.querySelectorAll<HTMLElement>('[role="tab"]')]
+    // Inside the frame first: a key pressed before anything here has focus
+    // goes to the frame around the test.
+    await act(async () => {
+      tabs()[0].focus()
+    })
+    const press = async (key: string) => {
+      await act(async () => {
+        await userEvent.keyboard(key)
+      })
+      return document.activeElement?.textContent
+    }
+    expect(await press('{ArrowRight}')).toBe('Matched files')
+    expect(await press('{End}')).toBe('Overrides')
+    expect(await press('{ArrowRight}')).toBe('Impact')
+    expect(await press('{ArrowLeft}')).toBe('Overrides')
+    expect(await press('{Home}')).toBe('Impact')
+    // One stop for the whole list: Tab goes past the other tabs.
+    await act(async () => {
+      await userEvent.tab()
+    })
+    expect(tabs()).not.toContain(document.activeElement)
+  })
+
+  it('names the list, the selected tab and the panel it shows', async () => {
+    mount(<PreviewTabs {...fixture} />)
+    await expect
+      .element(page.getByRole('tablist', { name: 'Preview', exact: true }))
+      .toBeInTheDocument()
+    await expect
+      .element(page.getByRole('tab', { selected: true }))
+      .toHaveAccessibleName('Impact')
+    await expect
+      .element(page.getByRole('tabpanel', { name: 'Impact', exact: true }))
+      .toBeInTheDocument()
   })
 })

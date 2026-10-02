@@ -168,7 +168,8 @@ import { work as workDetail, type WorkDetail } from './library'
 import { cellOf, groups, type Group, type Mode } from './pairing'
 import { loadPrefs, resetPrefs, savePrefs } from './prefs'
 import { display, navigate } from './reading'
-import { titleLines } from './readerTitle'
+import { readerName, titleLines } from './readerTitle'
+import { ReaderHeading } from './ReaderHeading'
 import { ringStep } from './ring'
 import { Settings } from './Settings'
 import { allSlots, openWork, type Session, type StartupPorts } from './startup'
@@ -194,6 +195,7 @@ import {
   type ReadingIntent,
 } from './session'
 import { cryptoRandom, ulid } from './ulid'
+import { useDocumentTitle } from './title'
 import { Viewport } from './Viewport'
 import { WHOLE, clampRect, isWhole, mapView, type Rect } from './viewport'
 
@@ -321,6 +323,10 @@ function App({ work, onLeave }: AppProps) {
   // its key (`readerTitle.ts`). No stale-answer guard: `Routes.tsx` keys this
   // component by `work`, so one instance only ever asks about one work.
   const [detail, setDetail] = useState<WorkDetail>()
+  // O173: until the work has loaded — and for good if it never does — the tab
+  // says the app's name rather than the last screen's. `ReaderHeading` names
+  // the work once the reader draws.
+  useDocumentTitle(undefined)
   useEffect(() => {
     workDetail(work).then(setDetail, (err: unknown) => {
       if (!(err instanceof Unauthenticated)) console.error(err)
@@ -2671,8 +2677,9 @@ function App({ work, onLeave }: AppProps) {
     // `position: relative` is what `Chrome` positions itself against —
     // `position: absolute` removes it from this flex column's layout flow
     // entirely, so it can overlay the page area without the page area's own
-    // size changing when the bars mount or unmount.
-    <div
+    // size changing when the bars mount or unmount. A `<main>` since O163: the
+    // reader's one landmark.
+    <main
       className="reader"
       ref={rootRef}
       style={{
@@ -2682,6 +2689,9 @@ function App({ work, onLeave }: AppProps) {
         position: 'relative',
       }}
     >
+      {/* O163, O173: the reader's heading and its tab's title, here rather
+          than in the top bar, which is not drawn while the bars are down. */}
+      <ReaderHeading name={readerName(heading)} />
       <div
         className="page-area"
         style={{
@@ -3110,7 +3120,7 @@ function App({ work, onLeave }: AppProps) {
       <div className="visually-hidden" aria-live="polite">
         {readouts.spoken}
       </div>
-    </div>
+    </main>
   )
 }
 

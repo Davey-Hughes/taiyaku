@@ -431,4 +431,228 @@ closes O162 too.*
 
 ## 4. The markup (O154, O156, and the audit's rows)
 
-*Designed after §2.*
+**Designed 2026-10-01. Branch:** `a11y-markup`, from `main` at `16504d61`.
+**Owns:** O154, O156, O163, O164, O165, and two rows this design files,
+O173 (every screen has the same `document.title`) and O174 (no skip link).
+The user folded both into §4 on 2026-10-01 rather than filing them for later.
+
+Four choices the user made on 2026-10-01 shape it:
+
+- **Each one-of-N row takes the role that matches its job** (O156): tabs
+  where a row switches panels, toggle buttons in a named group where it
+  filters or sets something. Offered against `aria-pressed` everywhere, and
+  against radio groups, whose arrow keys would collide with §3's page turns
+  on the reader's layout buttons.
+- **No visual change for the headings** (O163): a screen that already shows
+  its title promotes it; one that shows none gets a visually hidden `h1`.
+  Offered against visible titles on three screens, and against each
+  configuration tab's `h2` becoming the `h1`.
+- **An invisible named group for the permission boxes** (O154). Offered
+  against a `<fieldset>` with a visible legend, and against closing the row
+  unchanged.
+- **Chromium only** for evidence: no device or screen-reader pass (§4.8).
+
+### 4.1 One-of-N rows (O156)
+
+- **`PreviewTabs` becomes tabs.** The `<nav aria-label="Preview">` becomes
+  `<div role="tablist" aria-label="Preview">` — it was never navigation,
+  since nothing changes the URL. Each button takes `role="tab"`,
+  `aria-selected` and `aria-controls`; only the selected tab is in the `Tab`
+  order. `←` and `→` move the selection and the focus together, wrapping at
+  the ends; `Home` and `End` go to the first and last. Selection follows
+  focus, because every panel draws from the preview already held. A key
+  pressed with Alt, Ctrl or ⌘ is left to the browser — Alt+← is Back — and a
+  key steps from the tab it was pressed on. *Both added 2026-10-01 after the
+  whole-branch review, which found the handler claiming modified arrows and
+  stepping from the selected tab.* What the
+  selected tab draws sits in one `role="tabpanel"`, labelled by that tab.
+  *Corrected 2026-10-01 while planning: this first gave the panel
+  `tabIndex={0}`, which biome's recommended `noNoninteractiveTabindex`
+  refuses on a `tabpanel`; nothing in a panel needs focus to be read.*
+- **The library's chips** (All, Multi-edition, Unread) move into a
+  `role="group"` named "Show". "Added" stays outside it: it is a sort that
+  turns on and off, and `aria-pressed` is right for it. The group is a box of
+  its own rather than `display: contents`, whose role some browsers have
+  dropped from the accessibility tree; it carries the row's gap, and the row
+  is measured on `main` and on the branch at 1440 and 390 (§4.7).
+- **The inbox's rows** are named: `.proposal-states` a `group` "State",
+  `.proposal-tabs` a `group` "Kind". Both keep `aria-pressed`.
+- **`RuleList`**: `aria-current="true"` moves from the `<li>` to its
+  `.select` button, which is what takes focus. `admin.css`'s
+  `.rule-row[aria-current="true"]` becomes
+  `.rule-row:has(> .select[aria-current="true"])`, so the look still follows
+  the attribute.
+- **`admin.css`'s three-prelude rule** keeps three preludes, with the
+  preview's now `.preview-tabs button[aria-selected="true"]`;
+  `admin-proposals.css.test.ts`'s selector list moves with it.
+- **Unchanged**: the reader's layout buttons and the note colour swatches,
+  already toggle buttons in named groups; `Filmstrip`'s current tile, a
+  position rather than a choice; `config-nav`, navigation with
+  `aria-current="page"`.
+
+### 4.2 Headings and landmarks (O163)
+
+One `h1` per screen, first inside its `main` — first of what the screen
+draws, that is: `Shell`'s own failure line, when there is one, comes before
+it:
+
+| screen | `h1` | how |
+|---|---|---|
+| login | the wordmark, *taiyaku* | the `h2` promoted; login's root becomes `<main>`, since it had no landmark |
+| home | "Library" | visually hidden |
+| search | "Search" | visually hidden |
+| series | the series' title; "Series", visually hidden, until it has loaded and when it cannot be shown | the title unchanged. *The hidden stand-in added 2026-10-01 after the whole-branch review: the screen had no `h1` while loading, or at all on a series that is not one* |
+| proposals | "Proposals, 17 open" | "Proposals, " visually hidden inside the existing `h1` |
+| configuration | "Configuration" | visually hidden, before `config-nav`; each tab's `h2` stays an `h2` beneath it |
+| account | "Account" | the page's `h2` promoted; its sections' `h3`s become `h2`s on the page and stay `h3`s in the reader's dialog, so the level follows `placement` |
+| the reader | `titleLines`' title and edition line joined by " · ", or the edition line alone before the work's detail arrives | visually hidden and mounted whenever the reader is drawn, so it is there with the bars down; the reader's root becomes `<main>` |
+
+**A promoted heading keeps its size.** `base.css` sizes `h1`, `h2` and `h3`
+by element inside `.library` and `.login`, so the login wordmark and the
+account page's title would grow a step. Each is held at `--text-h2` — login
+in its inline style, the account page by `.account > h1` — and the browser
+project compares each one's computed `font-size` with that of an `h2` placed
+beside it. The account sections' `h2`s keep theirs from
+`.account-heading`, which sets its own.
+
+`.visually-hidden` stays in `reader.css`, which every screen loads through
+`index.css`, and its comment says the library's screens use it too.
+*Corrected 2026-10-01 while planning: this first moved it to `base.css`,
+whose own test (`base.css.test.ts`) refuses a selector not scoped to
+`.library` or `.login`.*
+
+**The sidebar's `h2`s** ("Roots" and "Library") stay where they are, before
+`main` at 1440: `main`'s `h1` and the landmark both reach past them.
+
+### 4.3 Names (O164, O165)
+
+- **O164.** The link takes `aria-label="Proposals, 17 open"` while there is
+  a count — the same words as the inbox's `h1` — and the badge keeps its
+  look. With no count it takes no label and is named "Proposals" by its text.
+  *Corrected 2026-10-01 while planning: this first put the words in visually
+  hidden spans beside the number. A visually hidden span is absolutely
+  positioned, which makes it a block, and the browser project's
+  `toHaveAccessibleName` then named the link "Proposals , 17 open", a space
+  before the comma.*
+- **O165.** The field keeps its wrapping `<label>`; its box takes
+  `aria-labelledby` pointing at the label's `<span>`, and, where there is a
+  hint, `aria-describedby` pointing at the `<small>`. Exclude globs is then
+  named "Exclude globs (one gitignore pattern per line)" and described by its
+  hint. Ids come from `useId`, since a screen draws one `RootRow` per root.
+  Every `TEXT_FIELDS` box takes the `aria-labelledby`, not only the one with a
+  hint, so a hint added to another field later cannot bring O165 back. No CSS
+  changes.
+
+### 4.4 The permission boxes (O154)
+
+`UserRow`'s `.checks` takes `role="group"` and `aria-label="Permissions"`.
+Nothing on screen changes, and no `<fieldset>` is added, so the box model that
+once pushed the rule form 26px wide (`admin.css`, above `.rule-form
+.rule-sets`) does not come into it. `RootRow`'s `.checks` and the inbox's
+`.weak-check` each hold one box and need no group.
+
+### 4.5 Titles (O173)
+
+`useDocumentTitle(name)`, in a new `title.ts`, sets `document.title` to
+`"<name> — taiyaku"`, or to `"taiyaku"` while `name` is `undefined` or
+empty.
+`index.html`'s fallback changes from "taiyaku reader" to "taiyaku".
+
+| screen | title |
+|---|---|
+| login | Sign in — taiyaku |
+| home | Library — taiyaku |
+| series | *the series' title* — taiyaku, once loaded |
+| search | Search — taiyaku, not changed by typing |
+| proposals | Proposals — taiyaku |
+| configuration | Rules, Roots, Users or Backup — taiyaku, from the matched tab in `Config.tsx` |
+| account | Account — taiyaku |
+| the reader | *the reader's `h1`* — taiyaku; a page turn does not change it. "taiyaku" alone until the work has loaded, and for good if it never does. *Added 2026-10-01 after the whole-branch review: the reader draws nothing before its load answers, so its tab kept the last screen's title* |
+
+Every routed screen sets one, so none restores the old title when it
+unmounts.
+
+### 4.6 The skip link (O174)
+
+`Shell` draws `<a className="skip-link" href="#content">Skip to
+content</a>` as `.library`'s first child. It is visually hidden until it has
+focus, then drawn at the top left in the theme's tokens, over the phone bar
+and the sidebar.
+
+- **Activating it focuses `main`** (`id="content"`) after `preventDefault`,
+  with `preventScroll`: at phone width the bar is sticky and would cover
+  `main`'s top edge. **`main` is focusable only while it holds that focus** —
+  the handler sets `tabindex="-1"` and takes it off again when focus leaves.
+  *Corrected 2026-10-01 after the whole-branch review: this first gave `main`
+  a standing `tabIndex={-1}`. A focusable `main` takes focus on every click
+  on plain text inside it, and the next `Tab` then starts from its top rather
+  than from the click — reproduced in Chromium by the review.* What is left
+  of that: while `main` holds the skip link's focus, a click on plain text
+  inside it still lands on `main`, until focus moves elsewhere. The link
+  carries a `biome-ignore` for `useValidAnchor`, which refuses an anchor with
+  both `href` and `onClick`; it stays an anchor because it has a destination. A real `#content` navigation would put `#content` in the
+  URL and push a history entry that Back then walks through. The URL does
+  not change.
+- **`main` draws no ring** when it takes focus: it is where the reader lands,
+  not a control.
+- **`inert` while the drawer is open**, like the phone bar and `main`, so
+  the drawer's trap stays sealed.
+- **Not in the reader**, whose ring already starts at the page, **and not on
+  login**, which has three stops.
+
+### 4.7 Tests
+
+Every test here is watched failing against the defect it names, with the
+defect applied by hand, before it counts. Each asserts per element, by role
+and name, not over the whole page.
+
+1. **jsdom**, which here has no name computation (this repository mounts
+   without testing-library, by its own rule), so these assert the markup a
+   name is computed from: the Proposals link's `aria-label` with a count and
+   without; what Exclude globs' `aria-labelledby` and `aria-describedby`
+   point at; the "Permissions" group holding exactly the
+   three boxes; one `h1` per screen, with its name; the reader's `main` and
+   `h1` with the bars down; the preview's tablist, tabs, `aria-selected` and
+   the tabpanel's label; each named group's members, with "Added" outside
+   "Show"; `aria-current` on the rule's button and not on its `<li>`;
+   `document.title` on every route and on login.
+2. **The browser project, with real key presses**: `←`, `→`, `Home` and `End`
+   on the preview tabs, and `Tab` leaving the tablist from the selected tab
+   rather than stepping to the next one; the skip
+   link at 1440 and at 390 — the first `Tab` reaches it and it is inside the
+   viewport, `Enter` focuses `main` and leaves the URL alone, the next `Tab`
+   reaches `main`'s first stop, and with the drawer open it is not reached;
+   the chip row's buttons where they were; the promoted headings' computed
+   `font-size`; and the computed names and descriptions jsdom cannot give —
+   the Proposals link, Exclude globs, the "Permissions" group, the inbox's
+   `h1` and the preview's tabs — with `toHaveAccessibleName` and
+   `toHaveAccessibleDescription`.
+3. **The stylesheet tests**: the three-prelude selector list, the
+   `:has()` rule, and the account page's `h1` held at `--text-h2`.
+
+### 4.8 Evidence
+
+The audit's desktop half again (§1.3), on the same ten screens and the
+reader, at 1440 and 390: Chromium's accessibility tree, before and after,
+against a production build and a `serve --db` on a copy of the real library,
+with the original's hash checked afterwards. The measurements go in
+`docs/notes.md`.
+
+**No device or screen-reader pass**, by the user's choice. Each row closes on
+Chromium's tree and the tests, and says that VoiceOver was not re-measured —
+O164 most of all, whose VoiceOver reading dropped the count for a reason
+nobody established. What a VoiceOver tester should check for §4 joins the
+list waiting for O162's.
+
+### 4.9 What §4 leaves
+
+- **A screen reader on any of it**: VoiceOver, with O162's tester; Orca or
+  VoiceOver on the MacBook, later.
+- **The sidebar's `h2`s before `main`** (§4.2).
+- **The Overrides tab's badge**, named with its count after a space —
+  a separated count, unlike O164's.
+- **What the branch filed on the way**: O175, Chromium's own tree naming
+  `.field` labels in capitals; O176, the reader drawing nothing when its
+  work fails to load; and O177, a browser test that
+  failed on the fallback font and cannot see the defect it names — its case
+  now waits for the fonts. All three older than this branch.

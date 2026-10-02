@@ -418,3 +418,109 @@ describe('the series page and search at 390 px', () => {
     expect(sideways()).toBe(0)
   })
 })
+
+describe('the library chip row — O156', () => {
+  for (const width of [1440, 390]) {
+    it(`keeps its four buttons where they were at ${width} px`, async () => {
+      const host = await at('/', width)
+      const row = need(host, '.library-chips')
+      const gap = Number.parseFloat(getComputedStyle(row).columnGap)
+      const edges = row.getBoundingClientRect()
+      const boxes = [...row.querySelectorAll('button')].map((b) =>
+        b.getBoundingClientRect(),
+      )
+      expect(boxes).toHaveLength(4)
+      const [all, multi, unread, added] = boxes
+      // One line, the filters a column gap apart from the row's start, and
+      // "Added" at the row's far end.
+      expect(new Set(boxes.map((b) => Math.round(b.top))).size).toBe(1)
+      expect(all.left).toBeCloseTo(edges.left, 0)
+      expect(multi.left - all.right).toBeCloseTo(gap, 0)
+      expect(unread.left - multi.right).toBeCloseTo(gap, 0)
+      expect(added.right).toBeCloseTo(edges.right, 0)
+    })
+  }
+})
+
+describe('the skip link — O174', () => {
+  for (const width of [1440, 390]) {
+    it(`is the first Tab stop at ${width} px, drawn on screen, and Enter lands in main`, async () => {
+      const host = await at('/', width)
+      const link = need<HTMLAnchorElement>(host, '.skip-link')
+      const main = need(host, 'main')
+      // No fragment to start from, whichever case ran before: a link that
+      // was followed rather than handled leaves `#content` in the frame's
+      // URL, and following it again from there would change nothing.
+      history.replaceState(
+        null,
+        '',
+        window.location.pathname + window.location.search,
+      )
+      // A stop before the shell, so the first real Tab starts inside the
+      // test's frame — a key pressed before anything in it has focus goes to
+      // the frame around it.
+      const before = document.createElement('button')
+      before.textContent = 'before'
+      document.body.prepend(before)
+      try {
+        before.focus()
+        await userEvent.tab()
+        expect(document.activeElement).toBe(link)
+        // Out of the grid and the flow (`shell.css`), read here while it
+        // has focus.
+        expect(getComputedStyle(link).position).toBe('fixed')
+        const box = link.getBoundingClientRect()
+        expect(box.width).toBeGreaterThan(1)
+        expect(box.left).toBeGreaterThanOrEqual(0)
+        expect(box.top).toBeGreaterThanOrEqual(0)
+        expect(box.right).toBeLessThanOrEqual(window.innerWidth)
+        expect(box.bottom).toBeLessThanOrEqual(window.innerHeight)
+        // Nothing drawn over it.
+        expect(
+          document.elementFromPoint(
+            box.left + box.width / 2,
+            box.top + box.height / 2,
+          ),
+        ).toBe(link)
+        const url = window.location.href
+        await act(async () => {
+          await userEvent.keyboard('{Enter}')
+        })
+        expect(document.activeElement).toBe(main)
+        expect(getComputedStyle(main).outlineStyle).toBe('none')
+        expect(window.location.href).toBe(url)
+        await userEvent.tab()
+        // The next stop is `main`'s first, and `main` stops being focusable
+        // the moment focus leaves it.
+        expect(document.activeElement).toBe(
+          main.querySelector('a[href], button, input, select, textarea'),
+        )
+        expect(main.hasAttribute('tabindex')).toBe(false)
+      } finally {
+        before.remove()
+      }
+    })
+  }
+
+  it('leaves a click on plain text in main where it was, not on main', async () => {
+    // `/series/7` shows its title, a heading nobody can press.
+    vi.mocked(library.oneSeries).mockResolvedValue(SERIES_PAGE)
+    const host = await at('/series/7', 1440)
+    const main = need(host, 'main')
+    const title = need(host, 'main h1')
+    await act(async () => {
+      await userEvent.click(title)
+    })
+    // A focusable `main` would have taken this click's focus, and the next
+    // Tab would have started from its top.
+    expect(document.activeElement).not.toBe(main)
+    expect(main.hasAttribute('tabindex')).toBe(false)
+  })
+
+  it('is not drawn until it has focus', async () => {
+    const host = await at('/', 1440)
+    const box = need(host, '.skip-link').getBoundingClientRect()
+    expect(box.width).toBeLessThanOrEqual(1)
+    expect(box.height).toBeLessThanOrEqual(1)
+  })
+})

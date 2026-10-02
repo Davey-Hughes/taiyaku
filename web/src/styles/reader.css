@@ -132,8 +132,11 @@
   }
 }
 
-/* Visually hidden, still read out, and still the button's text: the words
- * behind the top bar's icons (`TopBar.tsx`). */
+/* Visually hidden, still read out, and still the element's text: the words
+ * behind the top bar's icons (`TopBar.tsx`), and the headings the library's
+ * screens and the reader give a screen reader alone (O163). Here rather than
+ * in `base.css`, whose scope test refuses a selector outside `.library` and
+ * `.login`; `index.css` loads it for every screen. */
 .visually-hidden {
   position: absolute;
   width: 1px;

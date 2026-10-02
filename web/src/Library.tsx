@@ -39,6 +39,7 @@ import {
 } from './library'
 import { SeriesGrid } from './SeriesGrid'
 import { useLibraryStatus } from './shell'
+import { useDocumentTitle } from './title'
 import { messageOf } from './message'
 
 const CHIPS: { id: Chip; label: string }[] = [
@@ -76,6 +77,7 @@ export function Library() {
   const [failure, setFailure] = useState<string | undefined>()
   const [chip, setChip] = useState<Chip>('all')
   const [sort, setSort] = useState<Sort>('title')
+  useDocumentTitle('Library')
 
   useEffect(() => {
     let cancelled = false
@@ -109,6 +111,9 @@ export function Library() {
 
   return (
     <>
+      {/* O163: one h1 per screen, for a screen reader's heading list; the
+          library shows no title of its own, so it is hidden. */}
+      <h1 className="visually-hidden">Library</h1>
       {failure !== undefined && <p role="alert">{failure}</p>}
       {prefs.continueStrip && home && home.continuing.length > 0 && (
         <section data-testid="continue" className="continue">
@@ -141,16 +146,21 @@ export function Library() {
         </section>
       )}
       <div className="library-chips">
-        {CHIPS.map((c) => (
-          <button
-            key={c.id}
-            type="button"
-            aria-pressed={chip === c.id}
-            onClick={() => setChip(c.id)}
-          >
-            {c.label}
-          </button>
-        ))}
+        {/* O156: the filters are one-of-N, so they are grouped under one
+            name. "Added" sorts rather than filters, and
+            stays outside. */}
+        <div className="library-chip-group" role="group" aria-label="Show">
+          {CHIPS.map((c) => (
+            <button
+              key={c.id}
+              type="button"
+              aria-pressed={chip === c.id}
+              onClick={() => setChip(c.id)}
+            >
+              {c.label}
+            </button>
+          ))}
+        </div>
         <button
           type="button"
           className="sort"

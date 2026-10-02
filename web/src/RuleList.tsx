@@ -128,7 +128,6 @@ export function RuleList({
           <li
             key={index}
             className="rule-row"
-            aria-current={selected === index ? 'true' : undefined}
             draggable={!frozen}
             onDragStart={(e) => {
               e.dataTransfer.setData('text/plain', String(index))
@@ -186,6 +185,9 @@ export function RuleList({
               type="button"
               className="select"
               disabled={frozen}
+              // O156: the selection is marked on the element that takes
+              // focus, this button, rather than on the `<li>` around it.
+              aria-current={selected === index ? 'true' : undefined}
               aria-label={`${ruleName(rule)} — ${ruleMechanism(rule)}`}
               onClick={() => onSelect(index)}
             >

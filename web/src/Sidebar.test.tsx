@@ -146,4 +146,31 @@ describe('the sidebar', () => {
     expect(current(on('/config/roots'))).toEqual(['/config'])
     expect(current(on('/series/3'))).toEqual([])
   })
+
+  it('names the link with what its count counts — O164', () => {
+    // The number alone ran into the word: Chromium named the link
+    // "Proposals17". The label uses the inbox heading's own words.
+    const host = at(
+      <Sidebar roots={[]} showRoots={false} admin={true} openProposals={17} />,
+    )
+    expect(
+      host.querySelector('a[href="/proposals"]')?.getAttribute('aria-label'),
+    ).toBe('Proposals, 17 open')
+  })
+
+  it('names an emptied inbox the same way — O164', () => {
+    const host = at(
+      <Sidebar roots={[]} showRoots={false} admin={true} openProposals={0} />,
+    )
+    expect(
+      host.querySelector('a[href="/proposals"]')?.getAttribute('aria-label'),
+    ).toBe('Proposals, 0 open')
+  })
+
+  it('leaves the link named by its text until a count is read — O164', () => {
+    const host = at(<Sidebar roots={[]} showRoots={false} admin={true} />)
+    expect(
+      host.querySelector('a[href="/proposals"]')?.hasAttribute('aria-label'),
+    ).toBe(false)
+  })
 })

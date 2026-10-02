@@ -241,7 +241,7 @@ describe('Proposals', () => {
     // fixture is the only one where the two differ — 35 against a list of
     // one — so it is the only one that can tell them apart, and with a kind
     // tab selected they differ at runtime on every screen.
-    expect(host.querySelector('h1')?.textContent).toBe('35 open')
+    expect(host.querySelector('h1')?.textContent).toBe('Proposals, 35 open')
 
     // The kind row is one-of-N and wears the tab look; the state row is the
     // coarser filter and keeps pills; the threshold is neither and sits
@@ -448,7 +448,7 @@ describe('Proposals', () => {
 
     const host = await settle()
     expect(host.querySelectorAll('li')).toHaveLength(2)
-    expect(host.querySelector('h1')?.textContent).toBe('2 open')
+    expect(host.querySelector('h1')?.textContent).toBe('Proposals, 2 open')
 
     const dismiss = host.querySelector('li button.dismiss')
     if (!dismiss) throw new Error('no dismiss control rendered')
@@ -458,7 +458,7 @@ describe('Proposals', () => {
     expect(curation.dismissProposal).toHaveBeenCalledWith(1)
     expect(curation.listProposals).toHaveBeenCalledTimes(2)
     expect(host.querySelectorAll('li')).toHaveLength(1)
-    expect(host.querySelector('h1')?.textContent).toBe('1 open')
+    expect(host.querySelector('h1')?.textContent).toBe('Proposals, 1 open')
   })
 
   it('tells the chrome to re-count when a write moves the inbox', async () => {
@@ -503,7 +503,7 @@ describe('Proposals', () => {
     await click(dismiss)
 
     expect(recounts).toHaveLength(1)
-    expect(host.querySelector('h1')?.textContent).toBe('1 open')
+    expect(host.querySelector('h1')?.textContent).toBe('Proposals, 1 open')
   })
 
   it('re-asks on demand, and clears the failure once an answer arrives', async () => {
@@ -604,7 +604,7 @@ describe('Proposals', () => {
     // anything but empty would draw a row nobody asked for, and every other
     // fixture here overwrites the seed before it is ever read.
     expect(host.querySelectorAll('li')).toHaveLength(0)
-    expect(host.querySelector('h1')?.textContent).toBe('0 open')
+    expect(host.querySelector('h1')?.textContent).toBe('Proposals, 0 open')
 
     const weakButton = weakBox(host)
     // Triggers the second, current request — the effect's dependency
@@ -775,7 +775,7 @@ describe('Proposals', () => {
     const host = await settle()
     const empty = () => host.querySelector('section.empty')
 
-    expect(host.querySelector('h1')?.textContent).toBe('0 open')
+    expect(host.querySelector('h1')?.textContent).toBe('Proposals, 0 open')
     expect(host.querySelectorAll('li')).toHaveLength(0)
     expect(empty()?.textContent).toContain('above the score threshold')
     expect(empty()?.textContent).toContain('Show weak proposals')
@@ -859,7 +859,7 @@ describe('Proposals', () => {
     // And the list says what happened — naming the kind, and naming the
     // control that undoes it — rather than leaving a header reading "2 open"
     // over nothing at all.
-    expect(host.querySelector('h1')?.textContent).toBe('2 open')
+    expect(host.querySelector('h1')?.textContent).toBe('Proposals, 2 open')
     expect(host.querySelector('section.empty')?.textContent).toContain(
       'No Attach Chapters proposal is waiting on a decision.',
     )
@@ -959,14 +959,14 @@ describe('Proposals', () => {
             : { proposals: [proposal({ id: 1 })], counts: { 'edition-of': 1 } },
     )
     const host = await settle()
-    expect(host.querySelector('h1')?.textContent).toBe('1 open')
+    expect(host.querySelector('h1')?.textContent).toBe('Proposals, 1 open')
 
     await click(stateButton(host, 'Dismissed'))
-    expect(host.querySelector('h1')?.textContent).toBe('2 dismissed')
+    expect(host.querySelector('h1')?.textContent).toBe('Proposals, 2 dismissed')
     expect(host.querySelectorAll('li')).toHaveLength(2)
 
     await click(stateButton(host, 'Accepted'))
-    expect(host.querySelector('h1')?.textContent).toBe('0 accepted')
+    expect(host.querySelector('h1')?.textContent).toBe('Proposals, 0 accepted')
     const empty = host.querySelector('section.empty')
     expect(empty?.textContent).toContain(
       'Nothing accepted is above the score threshold.',
@@ -1056,7 +1056,7 @@ describe('Proposals', () => {
     if (!host) throw new Error('nothing mounted')
 
     await click(stateButton(host, 'Dismissed'))
-    expect(host.querySelector('h1')?.textContent).toBe('2 dismissed')
+    expect(host.querySelector('h1')?.textContent).toBe('Proposals, 2 dismissed')
     const reopen = host.querySelector('li button.reopen')
     if (!reopen) throw new Error('no reopen control rendered')
     const calls = vi.mocked(curation.listProposals).mock.calls.length
@@ -1066,7 +1066,7 @@ describe('Proposals', () => {
     expect(curation.reopenProposal).toHaveBeenCalledWith(4)
     expect(vi.mocked(curation.listProposals).mock.calls.length).toBe(calls + 1)
     expect(lastCall().state).toBe('dismissed')
-    expect(host.querySelector('h1')?.textContent).toBe('1 dismissed')
+    expect(host.querySelector('h1')?.textContent).toBe('Proposals, 1 dismissed')
     expect(recounts).toHaveLength(1)
   })
   it('heads the list with the state it was fetched for, while the next list is on its way', async () => {
@@ -1098,12 +1098,12 @@ describe('Proposals', () => {
       stateButtons(host)
         .filter((b) => b.getAttribute('aria-pressed') === 'true')
         .map((b) => b.textContent)
-    expect(header()).toBe('2 open')
+    expect(header()).toBe('Proposals, 2 open')
 
     await click(stateButton(host, 'Dismissed'))
     expect(pressed()).toEqual(['Dismissed'])
     expect(lastCall().state).toBe('dismissed')
-    expect(header()).toBe('2 open')
+    expect(header()).toBe('Proposals, 2 open')
     expect(host.querySelectorAll('li')).toHaveLength(2)
 
     await act(async () => {
@@ -1111,12 +1111,12 @@ describe('Proposals', () => {
       await Promise.resolve()
       await Promise.resolve()
     })
-    expect(header()).toBe('0 dismissed')
+    expect(header()).toBe('Proposals, 0 dismissed')
     expect(empty()).toContain('Nothing dismissed')
 
     await click(stateButton(host, 'Open'))
     expect(pressed()).toEqual(['Open'])
-    expect(header()).toBe('0 dismissed')
+    expect(header()).toBe('Proposals, 0 dismissed')
     expect(empty()).toContain('Nothing dismissed')
     expect(empty()).not.toContain('Nothing to answer')
 
@@ -1128,7 +1128,51 @@ describe('Proposals', () => {
       await Promise.resolve()
       await Promise.resolve()
     })
-    expect(header()).toBe('2 open')
+    expect(header()).toBe('Proposals, 2 open')
     expect(host.querySelector('section.empty')).toBeNull()
+  })
+
+  it('names its two filter rows as two groups — O156', async () => {
+    vi.mocked(curation.listProposals).mockResolvedValue({
+      proposals: [proposal({ id: 1 })],
+      counts: { 'edition-of': 29, 'attach-chapters': 6 },
+    })
+    const host = await settle()
+    const buttons = (name: string) => [
+      ...(host
+        .querySelector(`[role="group"][aria-label="${name}"]`)
+        ?.querySelectorAll('button') ?? []),
+    ]
+    expect(buttons('State').map((b) => b.textContent)).toEqual([
+      'Open',
+      'Accepted',
+      'Dismissed',
+    ])
+    const kinds = buttons('Kind')
+    expect(kinds).toHaveLength(3)
+    expect(kinds[0].textContent).toBe('All 35')
+    // Neither group holds the other's buttons, or the weak box.
+    expect(host.querySelector('[role="group"] input')).toBeNull()
+  })
+
+  it('says which screen its h1 heads, for a screen reader alone — O163', async () => {
+    vi.mocked(curation.listProposals).mockResolvedValue({
+      proposals: [],
+      counts: { 'edition-of': 2 },
+    })
+    const host = await settle()
+    expect(host.querySelectorAll('h1')).toHaveLength(1)
+    const hidden = host.querySelector('h1 > .visually-hidden')
+    expect(hidden?.textContent).toBe('Proposals, ')
+  })
+
+  it('names its tab Proposals — O173', async () => {
+    vi.mocked(curation.listProposals).mockResolvedValue({
+      proposals: [],
+      counts: {},
+    })
+    document.title = 'stale'
+    await settle()
+    expect(document.title).toBe('Proposals — taiyaku')
   })
 })

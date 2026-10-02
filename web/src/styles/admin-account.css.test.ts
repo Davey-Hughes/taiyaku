@@ -116,3 +116,15 @@ describe('the account page joins the shared field block whole', () => {
     expect(selectors(fill[0].prelude)).toEqual(['.account .account-row input'])
   })
 })
+
+describe('the account page’s h1 — O163', () => {
+  it('stays at the h2 size it was drawn at before it was an h1', () => {
+    // `base.css` sizes an `h1` at `--text-h1` inside `.library`; this rule
+    // holds the page title where it was as an `h2`.
+    const bodies = rules(adminSource)
+      .filter(({ prelude }) => selectors(prelude).includes('.account > h1'))
+      .map(({ body }) => body)
+    expect(bodies).toHaveLength(1)
+    expect(bodies[0]).toMatch(/(?:^|;)\s*font-size:\s*var\(--text-h2\)/)
+  })
+})

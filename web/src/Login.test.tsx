@@ -72,7 +72,7 @@ describe('Login', () => {
    */
   it('names its heading taiyaku, not the seal beside it', () => {
     const host = mount(<Login onSignedIn={noop} />)
-    const heading = host.querySelector('h2')
+    const heading = host.querySelector('h1')
     if (!heading) throw new Error('no heading')
     expect(heading.textContent).toContain('対訳')
 
@@ -170,5 +170,21 @@ describe('Login', () => {
 
     type(fields(host).password, 'trying again')
     expect(host.querySelector('[role="alert"]')).not.toBeNull()
+  })
+
+  it('is a main landmark with one h1, kept at the h2 size it was drawn at — O163', () => {
+    const host = mount(<Login onSignedIn={noop} />)
+    expect(host.firstElementChild?.tagName).toBe('MAIN')
+    const h1s = [...host.querySelectorAll('h1')]
+    expect(h1s).toHaveLength(1)
+    expect(host.querySelector('h2')).toBeNull()
+    // `base.css` sizes an `h1` a step up; the heading keeps the `h2` step.
+    expect(h1s[0].style.fontSize).toBe('var(--text-h2)')
+  })
+
+  it('names its tab Sign in — O173', () => {
+    document.title = 'stale'
+    mount(<Login onSignedIn={noop} />)
+    expect(document.title).toBe('Sign in — taiyaku')
   })
 })

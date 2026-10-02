@@ -236,6 +236,10 @@ export function Account(props: AccountProps) {
       })
   }
 
+  // O163: the page's title is its h1, so its sections are h2s; in the
+  // reader's dialog the title is an h2 and they stay h3s.
+  const SectionHeading = props.placement === 'page' ? 'h2' : 'h3'
+
   // Everything under the heading is the same in both placements. What frames
   // it differs, and so do its colours — see `LOOKS`.
   const sections = (
@@ -248,7 +252,7 @@ export function Account(props: AccountProps) {
       {note === null ? null : <p className={look.note}>{note}</p>}
 
       <section className={look.section}>
-        <h3 className={look.heading}>Password</h3>
+        <SectionHeading className={look.heading}>Password</SectionHeading>
         <form onSubmit={change}>
           <label className={look.label}>
             Current
@@ -281,7 +285,7 @@ export function Account(props: AccountProps) {
       </section>
 
       <section className={look.section}>
-        <h3 className={look.heading}>API keys</h3>
+        <SectionHeading className={look.heading}>API keys</SectionHeading>
         <p className={look.meta}>
           For OPDS readers like Panels or Chunky: give the key as the password,
           with your account name as the username.
@@ -342,7 +346,7 @@ export function Account(props: AccountProps) {
       </section>
 
       <section className={look.section}>
-        <h3 className={look.heading}>Signed in</h3>
+        <SectionHeading className={look.heading}>Signed in</SectionHeading>
         {sessions.map((session) => (
           <div key={session.id} className={look.row}>
             <span>
@@ -392,7 +396,7 @@ export function Account(props: AccountProps) {
   if (props.placement === 'page') {
     return (
       <section className="account" aria-label="Account">
-        <h2>Account</h2>
+        <h1>Account</h1>
         {sections}
       </section>
     )

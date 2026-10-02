@@ -112,8 +112,10 @@ import { EmptyState } from './EmptyState'
 import { ProposalRow } from './ProposalRow'
 import { useInboxRefresh } from './shell'
 import { messageOf } from './message'
+import { useDocumentTitle } from './title'
 
 export function Proposals() {
+  useDocumentTitle('Proposals')
   const [loaded, setLoaded] = useState<
     { inbox: Inbox; state: ProposalState } | undefined
   >()
@@ -179,7 +181,10 @@ export function Proposals() {
 
   return (
     <div className="proposals">
+      {/* O163: the visible heading is a count; its name also says which
+          screen it heads. */}
       <h1>
+        <span className="visually-hidden">Proposals, </span>
         {total} {shown}
       </h1>
       {failure !== undefined && (
@@ -194,7 +199,7 @@ export function Proposals() {
           because a state and a kind are two filters, not two values of one —
           and pills rather than tabs because it is the coarser of the two
           (spec §12.3). */}
-      <div className="proposal-states">
+      <div className="proposal-states" role="group" aria-label="State">
         {PROPOSAL_STATES.map(({ state: s, label }) => (
           <button
             key={s}
@@ -211,8 +216,9 @@ export function Proposals() {
           rule preview wear (§12.3). It could not until O150: the score
           threshold used to sit in this row wearing the same pill as a kind,
           and ②'s review found the two drawing the same accent underline side
-          by side. */}
-      <div className="proposal-tabs">
+          by side. Named as a group, as the state row is, so a pressed button
+          sits inside a filter that has a name (O156). */}
+      <div className="proposal-tabs" role="group" aria-label="Kind">
         <button
           type="button"
           className="tab"

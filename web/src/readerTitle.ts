@@ -28,3 +28,12 @@ export function titleLines(
       detail.volume === null ? label : `Vol. ${detail.volume} · ${label}`,
   }
 }
+
+/**
+ * The reader's name in one line — its hidden `h1` and its tab title (O163,
+ * O173): the work, then the edition line, joined the way the edition line
+ * joins its own parts.
+ */
+export function readerName({ title, editionLine }: TitleLines): string {
+  return title === undefined ? editionLine : `${title} · ${editionLine}`
+}

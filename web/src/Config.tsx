@@ -23,12 +23,13 @@
  * asserts each one draws something, so a tab added to the list without a
  * screen is a red test rather than a dead link.
  */
-import { Navigate, NavLink, Route, Routes } from 'react-router'
+import { Navigate, NavLink, Route, Routes, useLocation } from 'react-router'
 import { Backup } from './Backup'
 import { TABS } from './config'
 import { RuleEditor } from './RuleEditor'
 import { Roots } from './Roots'
 import { Users } from './Users'
+import { useDocumentTitle } from './title'
 
 /** Which component draws each tab. Keyed by `Tab.path`. */
 const SCREENS: Record<string, React.ReactNode> = {
@@ -39,8 +40,21 @@ const SCREENS: Record<string, React.ReactNode> = {
 }
 
 export function Config() {
+  // O173: the tab names itself after the configuration tab it shows. A path
+  // naming no tab is redirected below, and the title says the app's name
+  // alone until then.
+  const { pathname } = useLocation()
+  const shown = TABS.find(
+    (tab) =>
+      pathname === `/config/${tab.path}` ||
+      pathname.startsWith(`/config/${tab.path}/`),
+  )
+  useDocumentTitle(shown?.label)
   return (
     <div className="config">
+      {/* O163: one h1 for the tabs, each of which heads itself with an h2
+          beneath it. Hidden: the nav already says where you are. */}
+      <h1 className="visually-hidden">Configuration</h1>
       <nav className="config-nav" aria-label="Configuration">
         <ul>
           {TABS.map((tab) => (

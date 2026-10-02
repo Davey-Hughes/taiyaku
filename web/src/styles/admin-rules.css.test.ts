@@ -62,13 +62,16 @@ describe('the rule list', () => {
     // An inset shadow, not a border: a border that exists on one row and
     // not the next shifts that row's content by its width. The same reason
     // `.proposal-list li.strong` uses one.
-    const selected = declared('.rule-row[aria-current="true"]', 'box-shadow')
+    const selected = declared(
+      '.rule-row:has(> .select[aria-current="true"])',
+      'box-shadow',
+    )
     expect(selected).toHaveLength(1)
     expect(selected[0]).toContain('inset')
     expect(selected[0]).toContain('var(--accent)')
-    expect(declared('.rule-row[aria-current="true"]', 'border-width')).toEqual(
-      [],
-    )
+    expect(
+      declared('.rule-row:has(> .select[aria-current="true"])', 'border-width'),
+    ).toEqual([])
   })
 })
 
@@ -77,7 +80,7 @@ describe('the tab look', () => {
     // `inset 0 -2px 0`, not a border: ②'s `.library-chips` draws it
     // this way so selecting a tab does not shift the row's baseline.
     for (const prelude of [
-      '.preview-tabs button[aria-current="true"]',
+      '.preview-tabs button[aria-selected="true"]',
       '.config-nav a[aria-current="page"]',
     ]) {
       const shadow = declared(prelude, 'box-shadow')

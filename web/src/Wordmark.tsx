@@ -4,7 +4,7 @@
  * One component for the three places it is drawn — the sign-in screen's
  * heading, the phone bar's way home and the top of the sidebar (spec
  * 2026-09-17 §7.1) — so the seal cannot drift between them. It sets no size
- * and no weight: each place's own rule does, and the sign-in screen's `<h2>`
+ * and no weight: each place's own rule does, and the sign-in screen's `<h1>`
  * gives it the heading's.
  *
  * The seal is `aria-hidden`, so what a screen reader names is *taiyaku*;

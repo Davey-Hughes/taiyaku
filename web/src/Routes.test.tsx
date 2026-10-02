@@ -249,6 +249,13 @@ describe('the routes', () => {
     expect(vi.mocked(api.listKeys)).toHaveBeenCalled()
   })
 
+  it('names the account screen’s tab Account — O173', async () => {
+    document.title = 'stale'
+    at('/account')
+    await flush()
+    expect(document.title).toBe('Account — taiyaku')
+  })
+
   it('signs out from /account through the gate above the routes', async () => {
     const signOut = vi.fn()
     const host = mount(

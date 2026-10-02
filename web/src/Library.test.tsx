@@ -371,6 +371,27 @@ describe('the library screen', () => {
     expect(host.querySelector('[role="alert"]')).toBeNull()
   })
 
+  it('names the three filters as one group, and leaves the sort outside it — O156', async () => {
+    const host = await show()
+    const group = host.querySelector('[role="group"][aria-label="Show"]')
+    if (!group) throw new Error('no Show group')
+    expect(
+      [...group.querySelectorAll('button')].map((b) => [
+        b.textContent,
+        b.getAttribute('aria-pressed'),
+      ]),
+    ).toEqual([
+      ['All', 'true'],
+      ['Multi-edition', 'false'],
+      ['Unread', 'false'],
+    ])
+    const added = [...host.querySelectorAll('button')].find(
+      (b) => b.textContent === 'Added',
+    )
+    expect(added?.closest('[role="group"]')).toBeNull()
+    expect(added?.getAttribute('aria-pressed')).toBe('false')
+  })
+
   /**
    * **The two `cancelled` guards, which no test had reached.**
    *
@@ -592,5 +613,20 @@ describe('the library screen', () => {
     expect(
       [...host.querySelectorAll('.grid .meta')].map((m) => m.textContent),
     ).toEqual(['42 volumes', '1 volume'])
+  })
+
+  it('opens with one h1, Library, for a screen reader alone — O163', async () => {
+    const host = await show()
+    const h1s = [...host.querySelectorAll('h1')]
+    expect(h1s.map((h) => [h.textContent, h.className])).toEqual([
+      ['Library', 'visually-hidden'],
+    ])
+    expect(host.firstElementChild).toBe(h1s[0])
+  })
+
+  it('names its tab Library — O173', async () => {
+    document.title = 'stale'
+    await show()
+    expect(document.title).toBe('Library — taiyaku')
   })
 })

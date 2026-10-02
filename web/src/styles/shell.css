@@ -143,6 +143,37 @@
   padding: 1rem 1.5rem;
 }
 
+/* The skip link (O174): the first stop on every library screen, drawn only
+ * while it has focus. Fixed in both states, so it is never a cell of
+ * `.library`'s grid; above the phone bar and the drawer. */
+.skip-link {
+  position: fixed;
+  top: calc(var(--space-2) + env(safe-area-inset-top, 0px));
+  left: calc(var(--space-2) + env(safe-area-inset-left, 0px));
+  z-index: 40;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-control);
+  background: var(--accent);
+  color: var(--on-accent);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.skip-link:not(:focus) {
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* Where the skip link lands, not a control: `base.css` rings every
+ * `:focus-visible`, and this one draws none. */
+.library > main:focus {
+  outline: none;
+}
+
 /* The safe areas (spec 2026-09-17 §8.2). `index.html`'s `viewport-fit=cover`
  * lets the page run under a phone's notch, rounded corners and home
  * indicator, so the frame pads itself by the insets the browser reports —
@@ -213,7 +244,7 @@
 
 /* The wordmark (`Wordmark.tsx`): 対訳 set vertically in the accent like a
  * seal, then the name. It sets no size or weight; where it is drawn does —
- * the sign-in screen's `<h2>`, the phone bar's way home, the sidebar's top.
+ * the sign-in screen's `<h1>`, the phone bar's way home, the sidebar's top.
  * `display: flex` is what the sign-in heading itself had before this
  * component took its markup, so that screen draws as it did. */
 .wordmark {

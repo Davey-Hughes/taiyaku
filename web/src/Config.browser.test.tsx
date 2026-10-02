@@ -297,6 +297,13 @@ describe('the Configuration screens at 390px', () => {
       await Promise.resolve()
       return mounted
     })
+    // Measured once the fonts are in. In the fallback font this report is
+    // wider than the screen, so a run that measured before they had loaded
+    // failed: whenever the case ran alone, and now and then inside a whole
+    // run. **With the fonts in, this case reads the same with the rule's
+    // defect put back as without** — read O177 before trusting it to hold
+    // that rule.
+    await document.fonts.ready
     assertNoSidewaysScroll(host)
   })
 

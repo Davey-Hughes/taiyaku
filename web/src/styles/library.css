@@ -17,6 +17,18 @@
   margin: var(--space-5) 0 var(--space-4);
 }
 
+/* The filters' group (O156): a flex row of its own carrying the row's
+ * gaps, so each button sits where it did before the group existed —
+ * `Shell.browser.test.tsx` measures that. Not `display: contents`, whose
+ * element browsers have at times left out of the accessibility tree, and
+ * the group's name with it. */
+.library-chip-group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: inherit;
+}
+
 .library-chips button {
   padding: var(--space-1) 0;
   border: 0;

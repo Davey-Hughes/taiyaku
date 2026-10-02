@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { WorkDetail } from './library'
-import { titleLines } from './readerTitle'
+import { readerName, titleLines } from './readerTitle'
 
 const detail = (over: Partial<WorkDetail> = {}): WorkDetail => ({
   id: 1,
@@ -56,5 +56,20 @@ describe('titleLines', () => {
 
   it('falls back to the key for an edition the library did not list', () => {
     expect(titleLines(detail(), 'en-fan').editionLine).toBe('Vol. 1 · en-fan')
+  })
+})
+
+describe('readerName — O163, O173', () => {
+  it('joins the work and its edition line, as the top bar draws them', () => {
+    expect(
+      readerName({
+        title: 'Dandadan',
+        editionLine: 'Vol. 1 · Raw, monochrome',
+      }),
+    ).toBe('Dandadan · Vol. 1 · Raw, monochrome')
+  })
+
+  it('says the edition line alone before the work’s detail arrives', () => {
+    expect(readerName({ editionLine: 'raw' })).toBe('raw')
   })
 })

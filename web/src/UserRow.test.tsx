@@ -1222,3 +1222,18 @@ describe('removal', () => {
     )
   })
 })
+
+describe('the permission boxes — O154', () => {
+  it('are one group named Permissions, holding exactly the three', async () => {
+    const { host } = await show(sam(), [user(), sam()])
+    const group = host.querySelector('[role="group"][aria-label="Permissions"]')
+    if (!group) throw new Error('no Permissions group')
+    // By name, so a grant box wandering in, or a permission wandering out,
+    // fails here rather than passing a count.
+    expect(
+      [...group.querySelectorAll('input[type="checkbox"]')].map((box) =>
+        box.getAttribute('name'),
+      ),
+    ).toEqual(['can_download', 'can_stream', 'can_stamp'])
+  })
+})

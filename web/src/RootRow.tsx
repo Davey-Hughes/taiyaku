@@ -61,6 +61,7 @@ import {
   type FocusEvent,
   useCallback,
   useEffect,
+  useId,
   useRef,
   useState,
 } from 'react'
@@ -188,6 +189,13 @@ const BAD_INTERVAL =
   'Leave it empty to set no interval at all.'
 
 export function RootRow({ root, probe, onChanged }: RootRowProps) {
+  /**
+   * O165: each text box is named by its label's own words and described by
+   * its hint, through ids rather than through the `<label>` around both —
+   * which named Exclude globs with the hint's whole sentence. Per instance,
+   * because the roots screen draws one card per root.
+   */
+  const fieldIds = useId()
   /**
    * Why the last write or scan *request* failed. Cleared by the next one.
    *
@@ -475,18 +483,31 @@ export function RootRow({ root, probe, onChanged }: RootRowProps) {
               if (next === field.from(root)) return
               save(field, next)
             },
+            'aria-labelledby': `${fieldIds}-${field.name}-label`,
+            'aria-describedby':
+              field.hint === undefined
+                ? undefined
+                : `${fieldIds}-${field.name}-hint`,
           }
           return field.multiline ? (
             <label key={field.name} className="field">
-              <span>{field.label}</span>
+              <span id={`${fieldIds}-${field.name}-label`}>{field.label}</span>
               <textarea rows={3} {...boxProps} />
-              {field.hint !== undefined && <small>{field.hint}</small>}
+              {field.hint !== undefined && (
+                <small id={`${fieldIds}-${field.name}-hint`}>
+                  {field.hint}
+                </small>
+              )}
             </label>
           ) : (
             <label key={field.name} className="field">
-              <span>{field.label}</span>
+              <span id={`${fieldIds}-${field.name}-label`}>{field.label}</span>
               <input type="text" {...boxProps} />
-              {field.hint !== undefined && <small>{field.hint}</small>}
+              {field.hint !== undefined && (
+                <small id={`${fieldIds}-${field.name}-hint`}>
+                  {field.hint}
+                </small>
+              )}
             </label>
           )
         })}

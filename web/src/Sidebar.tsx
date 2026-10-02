@@ -118,7 +118,18 @@ export function Sidebar({
         </li>
         {admin && (
           <li>
-            <NavLink to="/proposals">
+            <NavLink
+              to="/proposals"
+              // O164: a name computed from the word and the badge ran them
+              // together ("Proposals17") and said nothing of what the number
+              // counts. The label says it in the inbox heading's words, and
+              // only while there is a number to say.
+              aria-label={
+                openProposals === undefined
+                  ? undefined
+                  : `Proposals, ${openProposals} open`
+              }
+            >
               Proposals
               {openProposals !== undefined && (
                 <span className="count">{openProposals}</span>

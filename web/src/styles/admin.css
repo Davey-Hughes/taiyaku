@@ -895,13 +895,13 @@
 }
 
 /* The current one of a one-of-N row, wherever the row is. Three preludes
- * because the app marks a chosen one two different ways — `aria-current` on
- * the config nav's links and the preview strip's buttons, `aria-pressed` on
- * the inbox's. That disagreement is real and is the accessibility pass's to
- * settle (spec §12.8); what must not happen meanwhile is the three drifting
- * apart visually, which one rule prevents and three copies would not. */
+ * because each row says "current" in the role that fits its job
+ * (accessibility pass §4.1): the config nav is navigation, `aria-current`;
+ * the preview's buttons are tabs, `aria-selected`; the inbox's kind row
+ * filters, `aria-pressed`. What must not happen is the three drifting apart
+ * visually, which one rule prevents and three copies would not. */
 .config-nav a[aria-current="page"],
-.preview-tabs button[aria-current="true"],
+.preview-tabs button[aria-selected="true"],
 .proposal-tabs button[aria-pressed="true"] {
   color: var(--text);
   box-shadow: inset 0 -2px 0 var(--accent);
@@ -1023,8 +1023,10 @@
 /* Marked with an inset shadow rather than a border, for the reason
  * `.proposal-list li.strong` gives: a border that changes between rows
  * shifts the content beside it. The transparent border above holds the
- * space so the row does not move when it gains a visible one. */
-.rule-row[aria-current="true"] {
+ * space so the row does not move when it gains a visible one. The mark is on
+ * the row's select button, which is what takes focus (O156); `:has()` carries
+ * it up to the row, so the look still follows the attribute. */
+.rule-row:has(> .select[aria-current="true"]) {
   background: var(--surface);
   border-color: var(--line-strong);
   box-shadow: inset 3px 0 0 var(--accent);
@@ -1761,8 +1763,11 @@
   --config-measure: 40rem;
 }
 
-.account > h2 {
+/* An h1 since O163, held at the h2 size it was drawn at: `base.css` sizes
+ * an h1 a step up. */
+.account > h1 {
   margin: 0;
+  font-size: var(--text-h2);
 }
 
 .account-card {

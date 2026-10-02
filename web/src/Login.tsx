@@ -1,6 +1,7 @@
 import { useState, type CSSProperties, type FormEvent } from 'react'
 import { login } from './api'
 import { messageOf } from './message'
+import { useDocumentTitle } from './title'
 import { Wordmark } from './Wordmark'
 
 /**
@@ -47,9 +48,11 @@ const panelStyle: CSSProperties = {
 }
 
 // The wordmark draws itself (`Wordmark.tsx`, `styles/shell.css`); the
-// heading around it only drops its margin.
+// heading around it drops its margin, and since O163 made it the screen's
+// h1, holds the h2 size `base.css` gave it before.
 const headingStyle: CSSProperties = {
   margin: 0,
+  fontSize: 'var(--text-h2)',
 }
 
 const fieldStyle: CSSProperties = {
@@ -86,6 +89,7 @@ export interface LoginProps {
 }
 
 export function Login({ onSignedIn }: LoginProps) {
+  useDocumentTitle('Sign in')
   const [name, setName] = useState('')
   const [password, setPassword] = useState('')
   const [failure, setFailure] = useState<string | null>(null)
@@ -111,11 +115,11 @@ export function Login({ onSignedIn }: LoginProps) {
   }
 
   return (
-    <div className="login" style={overlayStyle}>
+    <main className="login" style={overlayStyle}>
       <form style={panelStyle} onSubmit={submit}>
-        <h2 style={headingStyle}>
+        <h1 style={headingStyle}>
           <Wordmark />
-        </h2>
+        </h1>
         <label style={labelStyle}>
           Name
           {/*
@@ -164,6 +168,6 @@ export function Login({ onSignedIn }: LoginProps) {
           {busy ? 'Signing in…' : 'Sign in'}
         </button>
       </form>
-    </div>
+    </main>
   )
 }

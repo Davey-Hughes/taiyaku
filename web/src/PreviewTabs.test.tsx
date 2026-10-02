@@ -537,3 +537,113 @@ describe('PreviewTabs', () => {
     ).toBeTruthy()
   })
 })
+
+describe('the tabs — O156', () => {
+  const tabs = (host: HTMLElement) => [
+    ...host.querySelectorAll<HTMLElement>('[role="tablist"] > [role="tab"]'),
+  ]
+  const selected = (host: HTMLElement) =>
+    tabs(host).find((t) => t.getAttribute('aria-selected') === 'true')
+  /** A key pressed where focus is, the way a browser would dispatch it. */
+  const press = (
+    key: string,
+    modifiers: KeyboardEventInit = {},
+  ): KeyboardEvent => {
+    const event = new KeyboardEvent('keydown', {
+      key,
+      bubbles: true,
+      cancelable: true,
+      ...modifiers,
+    })
+    act(() => {
+      document.activeElement?.dispatchEvent(event)
+    })
+    return event
+  }
+
+  it('is a tablist of four tabs, the selected one alone in the Tab order', () => {
+    const { host } = render()
+    expect(host.querySelector('nav')).toBeNull()
+    expect(
+      host.querySelector('[role="tablist"]')?.getAttribute('aria-label'),
+    ).toBe('Preview')
+    expect(
+      tabs(host).map((t) => [
+        t.textContent,
+        t.getAttribute('aria-selected'),
+        t.tabIndex,
+      ]),
+    ).toEqual([
+      ['Impact', 'true', 0],
+      ['Matched files', 'false', -1],
+      ['Provenance', 'false', -1],
+      ['Overrides', 'false', -1],
+    ])
+  })
+
+  it('labels its one panel by the selected tab, which every tab controls', () => {
+    const { host, click } = render()
+    click('Provenance')
+    const panel = host.querySelector('[role="tabpanel"]')
+    expect(panel?.id).toBeTruthy()
+    expect(selected(host)?.textContent).toBe('Provenance')
+    expect(panel?.getAttribute('aria-labelledby')).toBe(selected(host)?.id)
+    expect(tabs(host).map((t) => t.getAttribute('aria-controls'))).toEqual(
+      tabs(host).map(() => panel?.id),
+    )
+  })
+
+  it('moves the selection and the focus together on ←, →, Home and End', () => {
+    const { host } = render()
+    act(() => {
+      tabs(host)[0].focus()
+    })
+    const where = () => [
+      selected(host)?.textContent,
+      document.activeElement?.textContent,
+    ]
+    press('ArrowRight')
+    expect(where()).toEqual(['Matched files', 'Matched files'])
+    press('End')
+    expect(where()).toEqual(['Overrides', 'Overrides'])
+    press('ArrowRight')
+    expect(where()).toEqual(['Impact', 'Impact'])
+    press('ArrowLeft')
+    expect(where()).toEqual(['Overrides', 'Overrides'])
+    press('Home')
+    expect(where()).toEqual(['Impact', 'Impact'])
+  })
+
+  it('leaves a modified arrow to the browser', () => {
+    const { host } = render()
+    act(() => {
+      tabs(host)[0].focus()
+    })
+    for (const modifier of ['altKey', 'ctrlKey', 'metaKey'] as const) {
+      const event = press('ArrowRight', { [modifier]: true })
+      expect(event.defaultPrevented, modifier).toBe(false)
+      expect(selected(host)?.textContent, modifier).toBe('Impact')
+    }
+  })
+
+  it('steps from the tab the key was pressed on', () => {
+    const { host } = render()
+    // Focus without selecting: Impact stays selected, Provenance has focus.
+    act(() => {
+      tabs(host)[2].focus()
+    })
+    press('ArrowRight')
+    expect(selected(host)?.textContent).toBe('Overrides')
+  })
+
+  it('claims those four keys and leaves every other alone', () => {
+    const { host } = render()
+    act(() => {
+      tabs(host)[0].focus()
+    })
+    expect(press('ArrowRight').defaultPrevented).toBe(true)
+    expect(press('a').defaultPrevented).toBe(false)
+    expect(press('ArrowDown').defaultPrevented).toBe(false)
+    expect(selected(host)?.textContent).toBe('Matched files')
+  })
+})

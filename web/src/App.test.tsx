@@ -1053,6 +1053,54 @@ describe('leaving the reader', () => {
   })
 })
 
+describe('the reader’s landmark, heading and title — O163, O173', () => {
+  it('is a main, opening with one hidden h1 that names the work and edition, with the bars down', async () => {
+    const host = await open()
+    // Bars down: the top bar is not drawn.
+    expect(host.querySelector('[data-ring="top"]')).toBeNull()
+    const root = host.querySelector('.reader')
+    expect(root?.tagName).toBe('MAIN')
+    const h1s = [...host.querySelectorAll('h1')]
+    expect(h1s.map((h) => [h.textContent, h.className])).toEqual([
+      ['Volume One · Vol. 1 · Raw, monochrome', 'visually-hidden'],
+    ])
+    expect(root?.firstElementChild).toBe(h1s[0])
+  })
+
+  it('says the app’s name alone until the work has loaded — O173', async () => {
+    document.title = 'stale'
+    // Mounted, not yet settled: the load has not answered.
+    mount(<App work={WORK} onLeave={noop} />)
+    expect(document.title).toBe('taiyaku')
+    await settle()
+    expect(document.title).toBe(
+      'Volume One · Vol. 1 · Raw, monochrome — taiyaku',
+    )
+  })
+
+  it('names its tab the same way, and follows the edition — O173', async () => {
+    document.title = 'stale'
+    await open()
+    expect(document.title).toBe(
+      'Volume One · Vol. 1 · Raw, monochrome — taiyaku',
+    )
+    press('2')
+    await settle()
+    expect(document.title).toBe(
+      'Volume One · Vol. 1 · English official — taiyaku',
+    )
+  })
+
+  it('names its tab by the edition alone when the library does not answer — O173', async () => {
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
+    ports.workDetail.mockRejectedValue(new Error('no server'))
+    document.title = 'stale'
+    await open()
+    expect(document.title).toBe('raw — taiyaku')
+    logged.mockRestore()
+  })
+})
+
 // ---- the note editor --------------------------------------------------------
 
 describe('the note editor', () => {

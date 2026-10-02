@@ -27,8 +27,10 @@ import { EmptyState } from './EmptyState'
 import { search as fetchSearch, type SearchHits } from './library'
 import { SeriesGrid } from './SeriesGrid'
 import { messageOf } from './message'
+import { useDocumentTitle } from './title'
 
 export function Search() {
+  useDocumentTitle('Search')
   const [params, setParams] = useSearchParams()
   const q = params.get('q') ?? ''
 
@@ -90,6 +92,8 @@ export function Search() {
 
   return (
     <>
+      {/* O163: one h1 per screen; the search box's own label says the rest. */}
+      <h1 className="visually-hidden">Search</h1>
       <label className="search-box">
         <span>Search</span>
         <input

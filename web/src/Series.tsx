@@ -35,6 +35,7 @@ import {
   workCover,
 } from './library'
 import { messageOf } from './message'
+import { useDocumentTitle } from './title'
 
 interface Loaded {
   series: SeriesCard
@@ -379,6 +380,7 @@ export function Series() {
       : undefined
 
   const [loaded, setLoaded] = useState<Loaded | undefined>()
+  useDocumentTitle(loaded?.series.title)
   const [failure, setFailure] = useState<string | undefined>()
   // **`'all'` rather than the first edition**, so the page with the selector
   // on renders identically to the page with it off until the reader chooses.
@@ -488,6 +490,10 @@ export function Series() {
 
   return (
     <>
+      {/* O163: one h1 on this screen in every state. Until the series has
+          loaded, and when it never does, there is no title to show, so the
+          heading is hidden and says what the screen is. */}
+      {!loaded && <h1 className="visually-hidden">Series</h1>}
       {failure !== undefined && <p role="alert">{failure}</p>}
       {loaded && (
         <>

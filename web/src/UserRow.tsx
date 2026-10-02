@@ -409,7 +409,11 @@ export function UserRow({
           Chromium, `aria-disabled` also kept keyboard focus on the box,
           where `disabled` sent it to BODY the moment it was set
           (`docs/notes.md`, "Admin follow-ups"). */}
-      <div className="checks">
+      {/* O154: one named group, as the grants below are one named group.
+          A `role` and a name rather than a `<fieldset>`: nothing on screen
+          changes, and a fieldset's box model has cost these screens width
+          before (`admin.css`, above `.rule-form .rule-sets`). */}
+      <div className="checks" role="group" aria-label="Permissions">
         <label>
           <input
             type="checkbox"

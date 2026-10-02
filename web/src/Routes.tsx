@@ -28,6 +28,7 @@ import { Proposals } from './Proposals'
 import { Search } from './Search'
 import { Series } from './Series'
 import { Shell } from './Shell'
+import { useDocumentTitle } from './title'
 
 /** The reader, keyed by the slug in the URL. */
 function Reader() {
@@ -59,6 +60,7 @@ function Reader() {
  */
 function AccountScreen() {
   const gate = useGate()
+  useDocumentTitle('Account')
   return <Account placement="page" onSignedOut={() => gate?.signOut()} />
 }
 

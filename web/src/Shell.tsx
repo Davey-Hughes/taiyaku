@@ -194,6 +194,8 @@ export function Shell({ children }: { children: React.ReactNode }) {
   const [menuOpen, setMenuOpen] = useState(false)
   const menuButton = useRef<HTMLButtonElement>(null)
   const column = useRef<HTMLDivElement>(null)
+  /** Where the skip link sends focus (O174). */
+  const mainRef = useRef<HTMLElement>(null)
   const wasOpen = useRef(false)
   const location = useLocation()
 
@@ -252,6 +254,42 @@ export function Shell({ children }: { children: React.ReactNode }) {
       <InboxRefreshContext.Provider value={refreshInbox}>
         <StatusContext.Provider value={status}>
           <div className={classes}>
+            {/* O174: a sighted keyboard user's way past the sidebar. Focus
+                moves by hand rather than by following `#content`, which
+                would put a fragment in the URL and a history entry for Back
+                to walk through. `preventScroll`, because at phone width the
+                bar is sticky and would cover `main`'s top edge. `inert` with
+                the bar and `main`, so the drawer's trap stays sealed.
+
+                **`main` is focusable only while it holds this focus.** A
+                standing `tabIndex` would make it take focus on every click
+                on plain text inside it, and the next `Tab` would start from
+                its top rather than from the click. So the attribute goes on
+                here and comes off when focus leaves. While `main` holds that
+                focus a click on plain text inside it still lands on `main`,
+                until focus next moves. */}
+            {/* biome-ignore lint/a11y/useValidAnchor: a link and not a button — it has a destination, `#content`, and the handler goes there without leaving the fragment in the URL. */}
+            <a
+              className="skip-link"
+              href="#content"
+              inert={menuOpen}
+              onClick={(event) => {
+                event.preventDefault()
+                const main = mainRef.current
+                if (!main) return
+                main.tabIndex = -1
+                main.addEventListener(
+                  'blur',
+                  () => {
+                    main.removeAttribute('tabindex')
+                  },
+                  { once: true },
+                )
+                main.focus({ preventScroll: true })
+              }}
+            >
+              Skip to content
+            </a>
             <header className="phone-bar" inert={menuOpen}>
               <button
                 ref={menuButton}
@@ -317,7 +355,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
                 }}
               />
             )}
-            <main inert={menuOpen}>
+            <main id="content" ref={mainRef} inert={menuOpen}>
               {failure !== undefined && <p role="alert">{failure}</p>}
               {children}
             </main>

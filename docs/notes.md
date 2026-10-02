@@ -23479,3 +23479,171 @@ processes stopped by PID, the event-reporting build removed and the bundle
 rebuilt without it. The original library's sha256 matched the one taken before
 the copy, and `find /home/davey/temp/manga-test -newermt` the rig's start time
 printed nothing.
+
+## The markup (§4, 2026-10-01)
+
+The accessibility pass's third part
+(`docs/superpowers/specs/2026-09-26-accessibility-pass-design.md` §4):
+O154, O156, O163, O164 and O165, and the two rows the branch filed and
+closed, O173 and O174. Branch `a11y-markup`, from `main` at `16504d61`.
+
+**The rig**, as the audit's and §3's: `/home/davey/temp/manga-test/library.db`
+(sha256 `d5ebc0c2…a59e67`, no `-wal` or `-shm` beside it) copied to
+`target/a11y-markup/lib/library.db`, a throwaway account (`a11y8`, `admin`)
+added to the copy only, a release `taiyaku serve --db` on the copy at
+`127.0.0.1:8551`, and two production builds, each behind its own `vite
+preview`: `main` at `16504d61` and the branch at `1d074b38`, whose code is
+`7595fc63`'s. Playwright-driven Chromium (`HeadlessChrome/151.0.7922.34`, as
+the account screen's session list prints it), signed in as
+`a11y8`, at 1440×900 and 390×844. Twelve captures
+at each width against each build: login, the nine library screens the audit
+walked (series `/series/91`, search `?q=one`), and the reader on
+`akame-ga-kill----v01--2015--cbz` with its bars down and up.
+
+**Each capture holds two trees, and they do not name things alike.**
+Playwright's ARIA snapshot, which is what the audit recorded, and Chromium's
+own accessibility tree, read over the DevTools protocol
+(`Accessibility.getFullAXTree`). Row O165, as the audit filed it, says
+"Chromium names the textarea …"; what it quoted was the first. Chromium's own tree applies the stylesheet's
+`text-transform`: the roots screen's field labels, drawn as upper-case
+micro-labels, are named in capitals there — "EDITION KEY", "DEFAULT KIND"
+and "ADD A ROOT" among them — as are the users screen's ("NAME",
+"PASSWORD" and "ROLE" among them) and the account screen's ("CURRENT",
+"NEW"), where Playwright's snapshot gives them as written. On `main`
+and on the branch alike, so older than this branch (O175).
+
+What the two builds say, `main` then the branch:
+
+- **Titles** (O173). `document.title` was "taiyaku reader" on all twelve
+  captures at both widths. On the branch: "Sign in — taiyaku", "Library —
+  taiyaku", "One Piece — taiyaku", "Search — taiyaku", "Proposals — taiyaku",
+  "Rules — taiyaku", "Roots — taiyaku", "Users — taiyaku", "Backup —
+  taiyaku", "Account — taiyaku", and for the reader "Akame ga Kill! · Vol. 1
+  · raw — taiyaku", bars down and up.
+- **Headings and landmarks** (O163). An `h1` on series and proposals only
+  ("One Piece", "17 open"), and no `main` on login or in the reader. On the
+  branch every capture has exactly one `h1` and one `main`: "taiyaku" on
+  login (was a level-2 heading), "Library", "Search", "One Piece",
+  "Proposals, 17 open", "Configuration" on each of the four configuration
+  screens, "Account" (was level 2, its three sections level 3 and now
+  level 2), and "Akame ga Kill! · Vol. 1 · raw" in the reader, with the bars
+  down as well as up. The sidebar's two level-2 headings are unchanged.
+- **The Proposals link** (O164), in Chromium's own tree at 1440: "Proposals17",
+  then "Proposals, 17 open". At 390 neither build's tree holds the link — the
+  drawer is closed.
+- **Exclude globs** (O165), in Chromium's own tree: one name, "EXCLUDE GLOBS
+  (ONE GITIGNORE PATTERN PER LINE) A trailing slash or bare name excludes the
+  directory and everything under it; a '/**' suffix excludes only what's
+  inside it.", and no description; then the name "EXCLUDE GLOBS (ONE GITIGNORE
+  PATTERN PER LINE)" and that sentence as the description.
+- **The permission boxes** (O154): on the users screen, no group round them;
+  then a `group` named "Permissions" on each of the two cards, beside
+  "Roots this account may see".
+- **One-of-N rows** (O156): the rule preview was four buttons inside
+  `navigation "Preview"`; it is a `tablist` "Preview" of four `tab`s —
+  "Impact" selected, "Matched files", "Provenance", "Overrides 1" — and a
+  `tabpanel` named "Impact". The inbox gains `group` "State" and `group`
+  "Kind", and the library `group` "Show". **The selected rule's mark is in
+  neither capture** — what was saved of Chromium's tree carries no `current`
+  — so that part of O156 rests on the tests: the attribute on the row's
+  button and not its `<li>`, in jsdom, and the selected row's computed
+  `box-shadow` against an unselected row's `none`, in the browser project.
+- **The first `Tab` stop** (O174), from a blurred document: the sidebar's
+  Library link at 1440 and ☰ at 390, on all nine library screens; then
+  "Skip to content" on all nine at both widths.
+
+**Nothing else differs.** Every line the two builds' snapshots do not share,
+indentation aside, is one of the above — but for the users and account
+screens' session counts, user-agent lines and Revoke buttons, which are the
+capture's own sign-ins.
+
+**Measured in the browser project, on the way**:
+
+- **A visually hidden span inside a name puts a space before itself.**
+  `Proposals<span class="visually-hidden">, </span>17…` was named
+  "Proposals , 17 open" by `toHaveAccessibleName`: the span is absolutely
+  positioned, which makes it a block. So the link takes an `aria-label`. The
+  inbox's `h1`, where the hidden words come first, is named "Proposals, 17
+  open".
+- **A promoted heading grows a step unless it is held**: with the pin removed,
+  the sign-in heading and the account page's title each computed `32px`
+  against the `24px` of an `h2` beside them.
+- **`main` draws a ring when the skip link sends focus to it**, unless told
+  not to: without `.library > main:focus`, its `outline-style` read `solid`
+  after `Enter` on the link.
+- **Without `position: fixed` the skip link is a cell of `.library`'s grid**
+  at 1440: the sidebar column measured 224 px from the left edge instead of
+  0, and the chip row broke onto three lines. The skip link's own cases did
+  not see it; those two did. The skip link's cases now read the link's
+  computed `position` themselves, and without the declaration both widths
+  fail on `static`.
+- **The chip row** keeps its four buttons on one line with the filters a
+  column gap (24 px) apart, at 1440 and 390, on `main`'s markup and the
+  branch's; without `gap: inherit` on the group the filters touch.
+
+**What the whole-branch review found, and what was measured for each.**
+
+- **A standing `tabIndex={-1}` on `main` takes every click's focus.** §4.6
+  first gave `main` one so the skip link could focus it; the review
+  reproduced, on a scratch page in Chromium, that a click on plain text
+  inside a focusable `main` moves focus to `main`, so the next `Tab` starts
+  from its top. `main` now takes the attribute only while it holds the skip
+  link's focus. With the standing attribute put back, the browser case that
+  clicks the series page's title fails with `main` as the active element;
+  with the `blur` listener deleted, the skip cases fail on the attribute
+  still being there.
+- **The reader named no tab until its work had loaded.** It draws nothing
+  before its load answers, so the tab kept the last screen's title. It says
+  "taiyaku" now, from the first render: a case that reads the title before
+  the load answers failed on `stale` without it.
+- **The tabs' keys claimed modified arrows** — `Alt+←` is the browser's
+  Back — and stepped from the selected tab rather than the focused one. A
+  case pressing each of Alt, Ctrl and ⌘ with `→`, and one pressing `→` on a
+  tab focused without being selected, each failed against the old handler.
+- **The series screen had no `h1` until its series loaded**, and none on a
+  series that is not one. It has a hidden "Series" in those states: with the
+  heading withheld while loading, or for an id that is not a number, the case
+  for that state fails on an empty list.
+
+**Two things found that are older than this branch.** With the reader's
+sidecar read made to fail, `App` rendered no markup at all — in the app
+that is `Routes.tsx`'s black `.reader-route` with nothing on it — with the
+tab reading "taiyaku" and one `console.error` (O176).
+`Config.browser.test.tsx`'s "does not scroll sideways with a populated scan
+report" failed run alone with `-t` — `expected 402 to be less than or equal
+to 390` — once on `main` at `16504d61` and once on the branch, and passed on
+the branch when its whole file ran. It is not simply a matter of order: the
+same case failed inside a whole run on the reader branch on 2026-09-30 and
+twice on this one — the second time inside `scripts/check-all.sh`, with that
+same line, on a tree that differed from the one a green run had just passed
+on by one sentence of `docs/status.md` (O177). **The cause is the fonts.**
+With a probe added to the case and the case run alone, twice: when it
+measured, `document.fonts.status` was `loading` with none of the faces
+loaded and the document's `scrollWidth` was 402; after `await
+document.fonts.ready` it was 390, and the case passed. **And the case cannot
+see the defect it names.** The same probe with `.scan-report > section > dl`
+put back to `.scan-report dl`: the nested `<dl>` computed one 256px column,
+and the document and `main` still read 402 of 390 before the fonts and 390 of
+390 after — as they do with the rule as it stands, where that `<dl>` has no
+grid columns. The case now waits for `document.fonts.ready`, by the user's
+decision of 2026-10-01; run alone it passed three times of three. The probe
+was removed afterwards.
+
+**Captured again after those fixes**, the branch at `a30bcdec`'s code, on the
+same rig rebuilt: every title, `h1`, `main` count and first `Tab` stop the
+same as the branch's first capture, and no line of either tree different but
+the sessions'. So the figures above describe the code as it stands.
+
+**No screen reader was run**, by the user's decision of 2026-10-01: the
+evidence is Chromium's tree and the tests. So O164's VoiceOver reading —
+*"proposals, visited, link"*, no count — is not known to have changed, and
+nothing here says what VoiceOver or Orca does with a `tablist`, a named
+group, a description or a skip link. For a tester who knows VoiceOver, with
+O162's list: whether the Proposals link says its count; whether "Permissions"
+and the three filter groups are spoken; whether Exclude globs' hint is read
+after its name and not as part of it; the preview's tabs; the rotor's
+headings on each screen and in the reader; and the skip link.
+
+Taken down afterwards, both times: every process stopped by PID. The
+original library's sha256 matched the one taken before the copy, and `find
+/home/davey/temp/manga-test -newermt` the rig's start time printed nothing.

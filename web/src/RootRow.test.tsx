@@ -1163,4 +1163,65 @@ describe('RootRow', () => {
     expect(labels).toHaveLength(5)
     expect(labels.every((l) => l.classList.contains('field'))).toBe(true)
   })
+
+  it('names Exclude globs by its label alone and describes it by its hint — O165', async () => {
+    const host = await settle()
+    const box = host.querySelector('textarea[name="exclude_globs"]')
+    if (!box) throw new Error('no exclude_globs box')
+    // What each attribute points at, by id. `getElementById` rather than a
+    // `#` selector: `useId`'s ids are not valid CSS identifiers.
+    const text = (attr: string) => {
+      const id = box.getAttribute(attr)
+      return id === null ? null : document.getElementById(id)?.textContent
+    }
+    expect(text('aria-labelledby')).toBe(
+      'Exclude globs (one gitignore pattern per line)',
+    )
+    expect(text('aria-describedby')).toBe(
+      'A trailing slash or bare name excludes the directory and everything ' +
+        "under it; a '/**' suffix excludes only what's inside it.",
+    )
+  })
+
+  it('names every text box by its label alone, so a later hint cannot join a name — O165', async () => {
+    const host = await settle()
+    const named = ['edition_key', 'default_kind', 'default_language'].map(
+      (name) => {
+        const box = host.querySelector(`input[name="${name}"]`)
+        const id = box?.getAttribute('aria-labelledby')
+        return [
+          name,
+          id ? document.getElementById(id)?.textContent : null,
+          box?.hasAttribute('aria-describedby'),
+        ]
+      },
+    )
+    expect(named).toEqual([
+      ['edition_key', 'Edition key', false],
+      ['default_kind', 'Default kind', false],
+      ['default_language', 'Default language', false],
+    ])
+  })
+
+  it('gives two roots’ boxes ids of their own — O165', async () => {
+    let host: HTMLElement | undefined
+    await act(async () => {
+      host = mount(
+        <>
+          <RootRow root={root()} probe={undefined} onChanged={vi.fn()} />
+          <RootRow
+            root={root({ id: 4, path: '/srv/books' })}
+            probe={undefined}
+            onChanged={vi.fn()}
+          />
+        </>,
+      )
+      await Promise.resolve()
+    })
+    const ids = [
+      ...(host?.querySelectorAll('textarea[name="exclude_globs"]') ?? []),
+    ].map((box) => box.getAttribute('aria-labelledby'))
+    expect(ids).toHaveLength(2)
+    expect(new Set(ids).size).toBe(2)
+  })
 })
