@@ -643,8 +643,11 @@
   color: var(--text);
 }
 
-/* A gap's sentence (`Gap.tsx`), on the black. */
-.reader-gap-title {
+/* A gap's sentence (`Gap.tsx`) and a failed load's heading
+ * (`ReaderFailed.tsx`, O176), on the black. The second is an `<h1>`, and this
+ * is what stands in for the browser's own size and margins on one. */
+.reader-gap-title,
+.reader-failed-title {
   margin: 0;
   font-family: var(--font-title);
   font-size: var(--text-h3);

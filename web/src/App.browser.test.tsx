@@ -1,6 +1,7 @@
 import { act } from 'react'
 import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import { page, userEvent } from 'vitest/browser'
+import { WorkNotFound } from './api'
 import { fakeResolver, whole } from './fixtures'
 import './index.css'
 import { paintedBox } from './notes'
@@ -1080,5 +1081,200 @@ describe('every reader panel keeps Tab inside it, with real keys (spec 2026-09-2
       }
     }
     expect(escaped).toEqual([])
+  })
+})
+
+/**
+ * `ReaderFailed`, as a browser draws it and as a keyboard reaches it — O176.
+ * `App.test.tsx` pins its markup and the load effect's rules around it; what
+ * is asked here is what jsdom has no answer for: whether the three sentences
+ * are legible on the reader's ground with Paper pinned, what the
+ * accessibility tree makes of them, whether a real `Tab` gets to the
+ * button, and — mounted as `Routes.tsx` mounts it — whether it fits the
+ * window and what a long message does to it.
+ *
+ * **The reader's key listener is not subscribed on this screen** — it waits
+ * for a session — so the `Tab` below is the browser's own and nothing claims
+ * it. That is why the walk starts from a button put in front of the reader
+ * rather than from `readerFocused`: there is no page area to focus, and a
+ * press before anything in the test iframe has focus goes to the frame.
+ */
+describe('O176: a work that fails to load, in a browser', () => {
+  /**
+   * `App.test.tsx`'s fixture of the same name: the plain `Error` `api.ts`'s
+   * `getSidecarWithEtag` throws for a 500, with a body of the fixture's own.
+   * The screen shows its message.
+   */
+  const answered500 = () => new Error('loading vol-01: 500 database is locked')
+
+  async function failed(onLeave: () => void = () => {}) {
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
+    onTestFinished(() => logged.mockRestore())
+    ports.getSidecarWithEtag.mockRejectedValue(answered500())
+    await page.viewport(1440, 900)
+    mount(
+      <div style={{ position: 'fixed', inset: 0 }}>
+        <App work={WORK} onLeave={onLeave} />
+      </div>,
+    )
+    await until(() => document.querySelector('[role="alert"]') !== null)
+  }
+
+  const styleOf = (selector: string) =>
+    getComputedStyle(document.querySelector(selector) as HTMLElement)
+
+  it('draws its sentences in Ink on black with Paper pinned, filling the viewport', async () => {
+    document.documentElement.setAttribute('data-theme', 'paper')
+    try {
+      await failed()
+      expect(styleOf('main').backgroundColor).toBe('rgb(0, 0, 0)')
+      expect(getComputedStyle(document.body).backgroundColor).toBe(
+        'rgb(0, 0, 0)',
+      )
+      // Ink's `--text` for the heading and the button, its `--muted` for the
+      // message, and its `--surface` under the button's words.
+      expect(styleOf('h1').color).toBe('rgb(236, 228, 212)')
+      expect(styleOf('[role="alert"]').color).toBe('rgb(166, 155, 135)')
+      expect(styleOf('main button').color).toBe('rgb(236, 228, 212)')
+      expect(styleOf('main button').backgroundColor).toBe('rgb(33, 30, 24)')
+      // `.reader-failed-title`, not the browser's own `h1`: 1.25rem of 16px.
+      expect(styleOf('h1').fontSize).toBe('20px')
+      // `minHeight: 100%` of the box it is mounted in. Whether the document
+      // scrolls is not this case's to say — a `position: fixed` wrapper
+      // never lets it — and is asked in `.reader-route` below.
+      expect(
+        (document.querySelector('main') as HTMLElement).getBoundingClientRect()
+          .height,
+      ).toBe(900)
+      // The control: outside the reader it is Paper's text, so the Ink above
+      // is the screen's own doing and not the page's.
+      const outside = document.createElement('p')
+      document.body.append(outside)
+      // Removed whether or not the line below holds, so that it is never
+      // left in a later case's document.
+      onTestFinished(() => outside.remove())
+      expect(getComputedStyle(outside).color).toBe('rgb(35, 30, 23)')
+    } finally {
+      document.documentElement.removeAttribute('data-theme')
+    }
+  })
+
+  it('is one landmark, one heading, an alert and a button that says where it goes', async () => {
+    await failed()
+    expect(page.getByRole('main').elements()).toHaveLength(1)
+    expect(page.getByRole('heading').elements()).toHaveLength(1)
+    await expect
+      .element(page.getByRole('heading', { level: 1 }))
+      .toHaveAccessibleName('This work could not be opened')
+    expect(
+      page
+        .getByRole('alert')
+        .elements()
+        .map((el) => el.textContent),
+    ).toEqual(['loading vol-01: 500 database is locked'])
+    await expect
+      .element(page.getByRole('button'))
+      .toHaveAccessibleName('Back to the library')
+  })
+
+  it('Tab reaches the button and Enter leaves', async () => {
+    const onLeave = vi.fn()
+    const before = document.createElement('button')
+    before.textContent = 'before the reader'
+    document.body.prepend(before)
+    onTestFinished(() => before.remove())
+    await failed(onLeave)
+    before.focus()
+    await userEvent.tab()
+    expect(focused()).toBe('Back to the library')
+    await userEvent.keyboard('{Enter}')
+    expect(onLeave).toHaveBeenCalledOnce()
+  })
+
+  /**
+   * The screen where `Routes.tsx`'s `Reader` puts it: in `.reader-route`, in
+   * a host the height of the window, the way `#root` is. The cases above
+   * mount in this file's `position: fixed` wrapper, where the document can
+   * never scroll and so says nothing about whether this screen fits it.
+   *
+   * `thrown` is what the sidecar read rejects with, and `work` the slug the
+   * reader is mounted for.
+   */
+  async function failedInItsRoute(thrown: Error, work: string = WORK) {
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
+    onTestFinished(() => logged.mockRestore())
+    ports.getSidecarWithEtag.mockRejectedValue(thrown)
+    await page.viewport(390, 844)
+    const host = mount(
+      <div className="reader-route">
+        <App work={work} onLeave={() => {}} />
+      </div>,
+    )
+    host.style.height = '100%'
+    await until(() => document.querySelector('[role="alert"]') !== null)
+    await document.fonts.ready
+    return {
+      doc: document.documentElement,
+      main: document.querySelector('main') as HTMLElement,
+      heading: document.querySelector('h1') as HTMLElement,
+    }
+  }
+
+  it('fills the window in its route and leaves the document nothing to scroll', async () => {
+    const { doc, main } = await failedInItsRoute(answered500())
+    // The padding is inside the box (`boxSizing`), so `minHeight: 100%` is
+    // the window and not the window and 48px.
+    expect(main.getBoundingClientRect().height).toBe(844)
+    expect([doc.scrollWidth, doc.scrollHeight]).toEqual([
+      doc.clientWidth,
+      doc.clientHeight,
+    ])
+  })
+
+  it('grows with a long message instead of spilling out of the window', async () => {
+    // What a proxy's error page or a long slug would put here: one run with
+    // nowhere to break, and more words than a phone's window holds.
+    const { doc, main, heading } = await failedInItsRoute(
+      new Error(
+        `loading ${'x'.repeat(160)}: 502 ${'the gateway had a great deal to say. '.repeat(60)}`,
+      ),
+    )
+    // `overflowWrap: anywhere` on the message: nothing sideways.
+    expect(doc.scrollWidth).toBeLessThanOrEqual(doc.clientWidth)
+    expect(main.scrollWidth).toBeLessThanOrEqual(main.clientWidth)
+    // `minHeight`, not `height`: the box grows and the document scrolls to
+    // the rest of it, where a box of fixed height would centre what it
+    // cannot hold
+    // and put the heading above the top, out of scrolling's reach.
+    expect(doc.scrollHeight).toBeGreaterThan(doc.clientHeight)
+    expect(heading.getBoundingClientRect().top).toBeGreaterThanOrEqual(0)
+    expect(main.scrollHeight).toBeLessThanOrEqual(main.clientHeight)
+  })
+
+  /**
+   * O179's sentence, for the `WorkNotFound` the sidecar read's 404 throws,
+   * with a slug of 160 characters and nowhere to break. The slug is in a
+   * `<code>` inside the alert, and the `overflowWrap: anywhere` that the case
+   * above measures is set on the alert, not on the `<code>`.
+   *
+   * The reader is mounted for the same slug the error carries.
+   */
+  it('says the sidecar read’s 404 in its own sentence, the long slug in a code no wider than the screen', async () => {
+    const slug = 'x'.repeat(160)
+    const { doc, main } = await failedInItsRoute(
+      new WorkNotFound(slug, `loading ${slug}: 404 no work \`${slug}\``),
+      slug,
+    )
+    const alerts = page.getByRole('alert').elements()
+    expect(alerts.map((el) => el.textContent)).toEqual([
+      `The server found no work named ${slug}.`,
+    ])
+    const codes = [...alerts[0].querySelectorAll('code')]
+    expect(codes.map((el) => el.textContent)).toEqual([slug])
+    expect(codes[0].getBoundingClientRect().width).toBeLessThanOrEqual(
+      main.getBoundingClientRect().width,
+    )
+    expect(doc.scrollWidth).toBeLessThanOrEqual(doc.clientWidth)
+    expect(main.scrollWidth).toBeLessThanOrEqual(main.clientWidth)
   })
 })

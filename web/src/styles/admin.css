@@ -1355,6 +1355,16 @@
   padding: 0;
 }
 
+/* O180: the sentences this screen says name a path as plain text, and a
+   path does not break at a slash — what the watch probe found for a root
+   just added and a refusal, outside any card, and inside one a scan that
+   was turned down, was refused, or ran and failed. Every paragraph under
+   `.roots` is in block flow, so none is a flex or grid item this could
+   narrow. */
+.roots p {
+  overflow-wrap: anywhere;
+}
+
 .root-row {
   border: 1px solid var(--line);
   border-radius: var(--radius-control);
@@ -1364,6 +1374,14 @@
 
 .root-row h3 {
   margin: 0;
+}
+
+/* O180: the card's own heading is the root's path, and a path does not
+   break at a slash — so one with a longer run than the card is wide took
+   the heading, and the document, out of the card. The child combinator
+   leaves the scan report's two headings, which are words, alone. */
+.root-row > h3 {
+  overflow-wrap: anywhere;
 }
 
 /* Three independent facts, each naming what it is a fact about. A sentence
@@ -1385,9 +1403,12 @@
   color: var(--muted);
 }
 
+/* `overflow-wrap`, for O180: the `watch` fact is the probe's own sentence
+   once a root has just been added, and that sentence names the root's path. */
 .root-row .regime dd {
   margin: 0;
   color: var(--text);
+  overflow-wrap: anywhere;
 }
 
 .root-row .fields {
@@ -1503,6 +1524,11 @@
   font-weight: 600;
 }
 
+/* O180 again: this button says "Remove " and then the root's whole path. */
+.remove-root .confirm {
+  overflow-wrap: anywhere;
+}
+
 .add-root {
   display: flex;
   align-items: flex-end;
@@ -1513,12 +1539,25 @@
 /* Scoped to the two top-level lists — one per direct `<section>` — rather
    than to every `<dl>` under `.scan-report`. As a descendant selector this
    also matched `UnreadableCauses`'s own nested `<dl>` of causes, five levels
-   deep inside a `<dd>`, and gave it the same `minmax(16rem, 1fr)` floor: at
-   390px that nested grid computed a hard 256px column, which became the
-   `<dd>`'s automatic minimum width and put the whole document 2px into
-   sideways scroll — `dt` 79.8 + gap + `dd` 256 = 344 inside the 309px row
-   `.unreadable-causes` actually has. `Config.browser.test.tsx` now renders a
-   populated report at 390px to hold this. */
+   deep inside a `<dd>`, and gave it the same `minmax(16rem, 1fr)` floor: in
+   a root's card at 390px that nested grid computed one hard 256px column,
+   which became the `<dd>`'s automatic minimum width in a row with 237px
+   left for it. The list ended 19px past its row and 2px past the card's
+   border.
+
+   **That does not scroll the document where all 390px are the client's**:
+   the card sits 16px inside `main`. An earlier version of this comment said
+   it put the document 2px into sideways scroll at 390px, and gave its
+   figures for a 309px row. A 309px row is what a 375px client width leaves
+   — a 390px window less a 15px scrollbar, say — and measured for O177 at a
+   375px viewport with the defect put back and the fonts in, under a report
+   that names no path, the document is 1px wider than its client.
+
+   `Config.browser.test.tsx`'s "keeps the scan report's list of causes
+   inside its row" holds this, on the list rather than on the document.
+
+   **This rule is not what keeps a report that names paths inside its
+   card**: the two rules under `.scan-report .paths` below are (O178). */
 .scan-report > section > dl {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
@@ -1535,6 +1574,34 @@
 .scan-report .count dt,
 .scan-report .paths dt {
   color: var(--muted);
+}
+
+/* O178: a row that holds a list lets the list drop under its label when the
+   two do not fit on one line. Without this the label and the list shared one
+   line whatever the list held, and a path — which does not break at a slash
+   — took the width it needed out of the card.
+
+   `:not([data-zero])` is "holds a list": a `.paths` row carries `data-zero`
+   when it has nothing to list, and such a row is a label and a `0`, which
+   stays beside its label as every `.count` row's does.
+
+   `align-content`, because a top-level row is stretched to the height of
+   the row beside it in the two-column grid above: left at its default, the
+   label's line and the list's would share the spare height, and the list
+   would start that far below the label it belongs to. */
+.scan-report .paths:not([data-zero]) {
+  flex-wrap: wrap;
+  align-content: flex-start;
+}
+
+/* And a path longer than the line it is given breaks where it must. `.derived`
+   as well as `.scan-report`, for the reason the `[data-zero]` rule below
+   gives: `DeriveSection` is also drawn outside any scan report, in the two
+   removal reports, where these rows are not flex rows but a long path is as
+   long. */
+.scan-report .paths li,
+.derived .paths li {
+  overflow-wrap: anywhere;
 }
 
 /* 36 of this report's 47 facts read `0` or `no` on a clean scan. They are

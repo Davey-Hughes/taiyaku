@@ -23647,3 +23647,315 @@ headings on each screen and in the reader; and the skip link.
 Taken down afterwards, both times: every process stopped by PID. The
 original library's sha256 matched the one taken before the copy, and `find
 /home/davey/temp/manga-test -newermt` the rig's start time printed nothing.
+
+## O176 and O177 (2026-10-02)
+
+Two items from the markup branch's reviews, closed on one branch, and two
+opened by closing them (O178, O179). Each item was built in a worktree of its
+own by a separate agent — a lane — and landed here by cherry-pick. A figure
+below is this branch's own run unless it is marked as the lane's.
+
+**O176: the reader's failed load, driven.** `taiyaku serve` (the release
+binary, built after the last change under `crates/`) on a copy of the real
+library's database, vite's dev server in front of it, Chromium 154 under
+Playwright, signed in as the copy's administrator. A typed `/read/nope`:
+
+- the server answered the sidecar read and the library's detail read with
+  404, body ``no work `nope` ``; the screen drew one `main`, one `h1` ("This
+  work could not be opened"), the alert ``loading nope: 404 no work `nope` ``
+  and the button "Back to the library". Playwright's ARIA snapshot of the
+  page was those four lines and nothing else;
+- at 1440×900 and at 390×844 the document was exactly the window, and
+  `main`'s box was the window's; the heading drew at 20px in `--text` on black, the message in
+  `--muted`, the button in `--text` on `--surface` — the Ink values;
+- the tab read "taiyaku"; nothing had focus but `<body>` on arrival; one `Tab`
+  put the focus ring on the button; `Enter` went to `/` and the library drew
+  its own `h1`; the browser's Back drew the failed screen again;
+- a work the library does hold opened as before, with its own `h1` and no
+  alert.
+
+Beside four of the browser's own "Failed to load resource" lines, the
+console held the load's error once and the detail read's twice. That is
+the dev build: `main.tsx` mounts under `StrictMode`, which runs each effect
+twice, and the load effect's `cancelled` guard silences its first run where
+the detail read has no such guard. What a production bundle logs was not
+measured. The row as filed said "one `console.error`", which is what the
+jsdom fixture gives — it rejects only the sidecar port.
+
+**Each new case was watched failing.** In jsdom, by this branch's own hand:
+the setter deleted (seven of the nine cases fail), the 401 check dropped
+(`expected '<main class="reader" style="box-sizin…' to be ''`), `!session`
+dropped from the guard (the failed screen stays where the reader should
+draw), and the `cancelled` check dropped from the `catch` (both cancellation
+cases fail). In the browser
+project: `.reader` taken off `main` (`'rgba(0, 0, 0, 0)'` for `'rgb(0, 0,
+0)'`), the heading's selector removed (`'32px'` for `'20px'`), `minHeight`
+removed (`168` for `900`), the `h1` made an `h2`, the button given
+`tabIndex={-1}` (`'body'` for `'Back to the library'`) and its `onClick`
+removed. The lane's own table is longer; these are the ones run twice.
+
+**The whole-branch review found four things no case held**, each confirmed
+by breaking it and watching the screen's own cases stay green: three of
+`ReaderFailed.tsx`'s style declarations — `minHeight` made `height`,
+`overflowWrap` taken off the message, `padding` made `margin` — and the
+guard in `App.tsx`, its `failure !== undefined` made a test of truthiness. Two browser cases now mount the screen in `.reader-route` at
+390×844, as `Routes.tsx` does, where the cases before them sat in a
+`position: fixed` wrapper that never lets the document scroll; and one
+jsdom case rejects with an `Error` that carries no message. Against them:
+`height` puts a long message's heading at `-226` (`expected -226 to be
+greater than or equal to 0`); no `overflowWrap` makes the document 837 wide
+of 390; `margin` makes it 868 tall of 844; and truthiness draws no heading.
+`boxSizing`, which a case already held, was dropped as well and makes `main`
+892 tall in the route. The same review asked for
+`.scan-report > section > dl` to be held where CI runs, which the browser
+project is not: `admin-config.css.test.ts` reads the selector off the
+stylesheet, and with the rule put back it fails on `expected [
+'.scan-report dl' ] to deeply equal [ '.scan-report > section > dl' ]`.
+
+**The pixels found what the strings did not (O179).** The alert's text
+content is ``loading nope: 404 no work `nope` ``; what is drawn reads "no
+work ǹopè". Measured on that screen at 16px: in "Zen Kaku Gothic New" a
+backtick alone is 0px wide, `` `n `` is 8.45px — an `n` alone — and
+`` `nope` `` is 34.55px, the same as `nope`; in `system-ui` the backtick is
+4.5px and `` `nope` `` 47.44px against 38.44px. So the face draws the mark
+with no advance, over its neighbours. No other screen was looked at.
+
+**O177: what the scan-report case measured, and never held.** A probe mounted
+the case's own tree — `.roots` > `.root-list` > `.root-row` > `<ScanReport>`
+inside the shell — and read each box after `document.fonts.ready`, then again
+with `--font-ui` and `--font-title` overridden to their fallbacks, which
+reproduced the before-the-fonts figures exactly. Rule as it stands; "list" is
+`.unreadable-causes > dd`, whose nested `<dl>` it wraps; the card's border
+edge is at 374 at 390 and 359 at 375:
+
+| fixture | viewport | fonts | document | list's right edge | past its card |
+|---|---|---|---|---|---|
+| the case's own (names paths) | 390 | in | 390 of 390 | 388.2 | 14.2 |
+| the case's own | 390 | fallback | 402 of 390 | 401.7 | 27.7 |
+| the case's own | 375 | in | 388 of 375 | 388.2 | 29.2 |
+| causes that name no path | 390 | in | 390 of 390 | 357 | inside |
+| causes that name no path | 390 | fallback | 390 of 390 | 357 | inside |
+| the real library's uncounted file | 390 | in | 446 of 390 | 445.8 | 71.8 |
+| the same | 390 | fallback | 459 of 390 | 459.3 | 85.3 |
+| the same | 1280 | in | 1280 of 1280 | 905 | inside |
+
+The last three rows are a report naming `/home/davey/temp/manga-test/Volumes/Bisque
+Doll de Chu ♡/Bisque Doll de Chu ♡.cbz`, the one file "O90: the scan says why
+a file was skipped" records as uncounted, mounted in a card like the rest. No
+scan was run for it. The lane also mounted the whole `<Roots />` screen over
+a mocked API under that report, and its log reads the same widths at all
+three: 446 and 459 of 390, and inside its card at 1280.
+
+**With the rule's defect put back** (`.scan-report dl`), under causes that
+name no path at 390 with the fonts in: the nested `<dl>` is one 256px column
+in a `<dd>` with 237px for it, and its right edge is at 376 — 19px past its
+row, 2px past the card's border, 14px short of the viewport. That is the
+`expected 376 to be less than or equal to 357.5` the new case fails on, run
+by this branch with the rest of the file passing beside it, the old case
+among them. The document reads 390 of 390, so `assertNoSidewaysScroll` could
+never have seen it.
+
+**Where the old comment's figures came from** (the lane's, read from its
+logs and not run twice). The case as it was at `5e09e474`, in a worktree of
+that commit: with the defect put back and with the rule as committed alike,
+it failed alone three times of three on `expected 402 to be less than or
+equal to 390` and passed inside its file three times of three. So ⑤b's
+"watch it fail" watched the fallback font. The 309px row in `admin.css`'s old
+comment is what a 375px client width leaves — a 390px window less a 15px
+scrollbar would be one, and nothing here measured a scrollbar — and there,
+with the defect, no path and the fonts in, the lane read the document 1px
+wider than its client. The comment's 2px was not reproduced. `docs/superpowers/specs/2026-09-17-style-pass-design.md`
+repeats the 2px and the 309px in the paragraph beginning "The fourth does
+not"; it is left as written.
+
+**O178: five candidates, none taken when it was filed** (it was fixed the same
+day: the next section). Injected as a `<style>` in the same
+probe, over four fixtures, three widths and both font stacks:
+
+- `min-width: 0` on `.unreadable-causes > dd`: the real path, in its card,
+  still reads 446 of 390. The inner `.paths > dd` holds the width.
+- `overflow-wrap: anywhere` on `.scan-report .paths li`: nothing past its card
+  in any of the twenty-four readings. The lane's captures show `rar`, in the
+  list of refused formats, broken in two at 390.
+- the same, leaving the formats' list out: nothing past its card. The lane
+  reports a path that fits on one line today (`/srv/manga/Locked`) drawn on
+  two.
+- that, with `flex-shrink` on the label, and that with `flex-wrap: wrap` on
+  the row: nothing past its card. In the lane's captures the second drops a
+  list under its label when it does not fit beside it, and keeps whole a
+  path that fits the row; the real path is longer than the row and still
+  breaks inside a word.
+
+What each wrapping variant does to a row that fits today is the lane's
+reading of its own screenshots, which came out 333px wide for a 390px
+viewport; it was not measured twice and is the first thing to check before
+choosing one.
+
+The same shape elsewhere, from this branch's run with the fonts in and no
+candidate applied: the list in a top-level `.paths` row, under an invented
+fixture, ends 8.2px past its card at 1280 and 11.2px at 375, and at 390
+nothing of it is past the card; the removal report's list, which is outside `.scan-report`, is inside its card
+at 390 and at 1280.
+
+Taken down afterwards: both servers stopped by PID. The real database's
+sha256 and mtime matched the ones taken before the copy, and `find
+/home/davey/temp/manga-test -newermt` the rig's start time, files only,
+printed nothing. Its captures and request log were under `target/`, which was emptied
+later that day; they are not kept.
+
+## O178, O179 and O180, the same day
+
+2026-10-02, later, on the same branch, after the user's answers: fix O178
+here, and have the failed-load screen say a missing work in its own words.
+
+**The rig.** A scratch library under `target/`: one volume that reads, one
+zip whose pages cannot be counted, at `…/Volumes/Bisque Doll de Chu ♡/Bisque
+Doll de Chu ♡.cbz`, and one RAR under a `.cbz` name. Scanned once from the
+command line, and then with the screen's own "Scan now", so the report on
+screen is one the server made: 2 unreadable, 1 `rar`, 1 uncounted. The
+release binary and vite's dev server, Chromium 154 under Playwright. Its
+390px window leaves a 375px client beside a scrollbar, which is why the
+figures below are "of 375". The real library was not served or scanned.
+
+**O178, before and after**, on that report:
+
+| | before | after |
+|---|---|---|
+| the document at 390 | 618 of 375 | 375 of 375 |
+| past the card at 390 | a `<dd>`, to 618 (the card ends at 359) | nothing |
+| at 768 | not read | 753 of 753, nothing past the card |
+| at 1280 | 1280 of 1280 | 1280 of 1280, nothing past the card |
+| "Pages could not be counted" at 1280 | the label's box 85 × 99 beside a `<dd>` 459 wide | 194 × 24 above a `<dd>` 552 wide |
+| the formats' row at 1280 | label 233.6 × 49 at 352.8, list 79.4 × 49 at 594.5 | the same four figures |
+| "Gone before they could be hashed", `0`, at 390 | — | label 205 × 48, the `0` beside it at 334 |
+
+The rules: `flex-wrap: wrap` on `.scan-report .paths:not([data-zero])`, and
+`overflow-wrap: anywhere` on `.scan-report .paths li` and `.derived .paths
+li`. That is the last candidate above, changed three ways. Every list's
+items may break, the formats' included: once a list that does not fit drops
+under its label it is no longer squeezed beside it, which is what broke
+`rar` in two under the second candidate. A row with no list — it carries
+`data-zero` — does not wrap, so its `0` stays beside its label as every
+`.count` row's does. And `.derived .paths li` is in the breaking rule, for
+the removal reports, where these rows are not flex rows and only the
+breaking applies. "Fit" is on one line: at 390, on the rig, the formats'
+label is 221 wide on two lines and its list is under it. A path still
+breaks inside a word where it must: at 390 the uncounted file's draws as
+`/home/davey/projec` / `ts/taiyaku/target/` / `o176-` / `o177/rig2/Volumes/`
+and on, seven lines.
+
+Between the first two readings the document read 525 of 375 with the report
+already inside its card, which is O180.
+
+**Each rule broken by hand**, `Config.browser.test.tsx` run against each:
+
+| taken out | the browser case that failed | on |
+|---|---|---|
+| `flex-wrap` | "drops a list under its label when it does not fit beside it, and only then" | `expected 563 to be greater than or equal to 762` |
+| `.scan-report .paths li` from the breaking rule | "keeps a path longer than its row inside the card, in the faces and in their fallbacks" | `expected 870 to be less than or equal to 390` |
+| `.derived .paths li` from it | "keeps a long path inside the card in a removal report, outside any scan report" | `expected 950 to be less than or equal to 390` |
+| `:not([data-zero])` | "drops a list under its label…" | `expected 120 to be greater than or equal to 357` |
+| `flex-direction: column` added | "drops a list under its label…" | `expected 33 to be greater than or equal to 357` |
+| `.root-row > h3`'s rule | the heading's case, and the confirm button's | `expected 765 to be less than or equal to 390`, twice |
+| `.remove-root .confirm`'s rule | the confirm button's | `expected 577 to be less than or equal to 390` |
+| the paragraphs' rule (then `.roots > p`) narrowed to `.probe` | "keeps the screen’s own sentences about a root inside the window" | `expected 492 to be less than or equal to 390` |
+| O177's defect put back | the list-of-causes case, and two more | `expected 376 to be less than or equal to 357.5` |
+| `align-content` taken off the wrapping rule | "keeps a list that drops close under its label when the row beside it is taller" | `expected 307 to be less than or equal to 40` |
+| `.roots p` put back to `.roots > p` | the refused scan's case, and the failed scan's | `expected 509 to be less than or equal to 390`, twice |
+
+`admin-config.css.test.ts`'s case for the declaration was run beside the
+first four, the sixth, the seventh and the eighth, and failed each time.
+After the last review, four more: `.root-row .regime dd`'s rule removed,
+`expected 439 to be less than or equal to 390` and the node case; the
+paragraphs' rule narrowed to the three parents that then had cases, the
+ran-and-failed case on `expected 519 to be less than or equal to 390`;
+`align-content` removed, and `flex-wrap` given to `.scan-report .count`,
+a node case each. **The second row survived at first**: with
+`.scan-report .paths li` gone every browser case passed, because the causes
+sit inside `DeriveSection` and `.derived .paths li` reaches them alone. The
+case names an unbroken path among the directories the walk could not read
+now, which only the first selector reaches.
+
+Before any of the rules existed the cases failed on: the old populated
+case, asking the card now, on twenty-two elements past its edge; `expected 446 to
+be less than or equal to 390` for the real library's uncounted path, and
+`1015` once an unbroken path was added to it; `expected 514 to be greater
+than or equal to 638` for the list under its label; and `950` for the
+removal report with an unbroken path. That last case first named a longer
+variant of the real path and passed without any fix — outside a scan report these rows are not
+flex rows, and a path with spaces in it wraps — so it was given a path with
+nowhere to break.
+
+**The second whole-branch review found the wrap wrong at 1280.** A top-level
+row is a cell of a two-column grid there and is stretched to the height of
+the row beside it; a flex container that has wrapped shares its spare height
+between its lines, so a dropped list started far below its label. With one
+unreadable directory beside twelve excluded ones the list's top was 307px
+below the label's. `align-content: flex-start` on the wrapping rule. The
+case first measured from the label's bottom edge and passed against the
+defect — the label's own box stretches down its line — and measures from its
+top.
+
+**O180: a root's own path had nowhere to break either.** The scratch
+library's own path has a longer run than a card at 390 is wide.
+
+- The card's heading, `li.root-row > h3 > code`: boxed 33 to 525, the
+  document 525 of 375. After `.root-row > h3`'s rule, 375 of 375.
+- The removal's confirm button, "Remove " and the path: boxed 50 to 398, the
+  document 398 of 375. After `.remove-root .confirm`'s rule, 375 of 375 with
+  the dialog open, and 753 of 753 and 1280 of 1280 at the wider two.
+- The sentence about a root just added, after adding a second scratch
+  directory with a 63-character name: 603 of 375, and no element's box past
+  the window. After the paragraphs' rule, with that root removed and added
+  again: 375 of 375, the sentence 96px tall.
+- A refusal naming that path, from asking for a directory inside it: read
+  only after the rule, 375 of 375 at 390 and 1280 of 1280.
+- Three paragraphs inside a card, named by the reviews from the code and not
+  driven: a refused scan's sentence and a turned-down "Scan now"'s, which
+  each failed a browser case on `expected 509 to be less than or equal to
+  390` while the rule was `.roots > p`; and a scan that ran and failed,
+  whose case was written after the rule became `.roots p` and fails with
+  the rule narrowed by hand.
+- The card's `watch` fact after a failed probe, which is the probe's own
+  sentence and names the path: named by the last review, not driven, 439 of
+  390 in a browser case before `.root-row .regime dd`'s rule.
+
+These are the places one drive and two readings found. Nothing here is a
+sweep that could say the list is complete.
+
+**O179: the failed-load screen says the sidecar read's 404 itself.** `api.ts`
+throws a `WorkNotFound` for it, under the message that read threw before;
+the load's `catch` keeps the slug of one and `messageOf` of anything else.
+The sentence was first "This library has no work named". On the rig a typed
+`/read/nope` read that with `nope` in a `<code>`: the browser's `monospace`
+at 16px in the message's colour. Playwright's ARIA snapshot gave the alert
+as text, `code: nope`, text. The document was the window at 390 and at 1440,
+the button went to `/`, and the scratch library's one work opened with no
+alert. The console, in the dev build, held the `WorkNotFound` once and the
+detail read's error twice.
+
+**And that sentence was false of a work the library does hold.** The server
+reads the reader's works from a list it takes at startup, which its own scan
+report says in a note. With the server running, a third volume was put in
+the scratch library and scanned from the screen: `/api/library/home` named
+`good-series---v03-cbz`, `/api/works` did not, the sidecar read answered 404
+with ``no work `good-series---v03-cbz` ``, and the screen said the library
+had no work by that name. It reads "The server found no work named" now, and
+read so over that slug on the same rig.
+
+The lane that built the type found two of its own cases passing against a
+defect — a slug with nothing to escape, and a logged copy of the error —
+and strengthened both; this branch then took the type check, the `<code>`,
+the 404 branch and the message's `overflowWrap` out by hand, and a case
+failed on each.
+
+**Counts**, each against `main`. `node` 1,409 to 1,420: nine stylesheet
+cases and two for `api.ts`. `jsdom` 1,215 to 1,226: twelve cases added and
+one removed, "routes a failing sidecar read to the console rather than a
+blank reader", which asserted the blank. Browser 143 to 161: six for the
+failed-load screen and twelve for the roots screen.
+
+Taken down afterwards, both times: both servers stopped by PID. The
+captures, the scratch library and the earlier gate logs were under
+`target/`, which was emptied on 2026-10-02 before this branch was pushed;
+they are not kept.

@@ -1,10 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   Unauthenticated,
+  WorkNotFound,
   getJson,
   getNotes,
   getProgress,
   getSidecar,
+  getSidecarWithEtag,
   getTruth,
   changePassword,
   createKey,
@@ -129,6 +131,48 @@ describe('network calls', () => {
     )
 
     await expect(getSidecar('taiyaku')).resolves.toBe(body)
+  })
+
+  /**
+   * O179: the sidecar read gives a 404 a type of its own, `WorkNotFound`, and
+   * nothing else about the throw moves. The message is compared whole, with
+   * `toBe`, in both cases below: it is the string this read threw for every
+   * non-2xx before the type existed, and `messageOf` still hands it to
+   * whoever shows one.
+   *
+   * **The 404's slug has a space in it**, so that the slug as given and the
+   * slug as the URL escapes it are two strings. With `nope`, a `WorkNotFound`
+   * built from the escaped segment passed this case.
+   */
+  it('getSidecarWithEtag rejects a 404 as a WorkNotFound carrying the slug, under the message it threw before', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response('no work `no such`', { status: 404 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const failure = await getSidecarWithEtag('no such').catch((e: unknown) => e)
+    expect(fetchMock).toHaveBeenCalledWith('/api/works/no%20such')
+    expect(failure).toBeInstanceOf(WorkNotFound)
+    expect((failure as WorkNotFound).message).toBe(
+      'loading no such: 404 no work `no such`',
+    )
+    expect((failure as WorkNotFound).work).toBe('no such')
+  })
+
+  it('getSidecarWithEtag leaves any other non-2xx a plain Error, status and body in its message', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValue(new Response('database is locked', { status: 500 })),
+    )
+
+    const failure = await getSidecarWithEtag('nope').catch((e: unknown) => e)
+    expect(failure).toBeInstanceOf(Error)
+    expect(failure).not.toBeInstanceOf(WorkNotFound)
+    expect((failure as Error).message).toBe(
+      'loading nope: 500 database is locked',
+    )
   })
 
   it('getProgress resolves to undefined on a 204 (nothing recorded)', async () => {

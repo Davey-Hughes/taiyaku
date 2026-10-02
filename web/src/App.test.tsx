@@ -52,7 +52,7 @@
 import { act } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { fakeResolver, whole } from './fixtures'
-import { Unauthenticated } from './api'
+import { Unauthenticated, WorkNotFound } from './api'
 import type { WorkDetail } from './library'
 import type { NotesDoc } from './notes'
 import type { Resolver } from './resolver'
@@ -657,15 +657,6 @@ describe('opening a work', () => {
     expect(pages(host).length).toBeGreaterThan(0)
   })
 
-  it('routes a failing sidecar read to the console rather than a blank reader', async () => {
-    const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
-    ports.getSidecarWithEtag.mockRejectedValue(new Error('no server'))
-    const host = await open()
-    expect(host.innerHTML).toBe('')
-    expect(logged).toHaveBeenCalledWith(expect.any(Error))
-    logged.mockRestore()
-  })
-
   it('opens the reader anyway when only the notes read fails', async () => {
     const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
     ports.getNotes.mockRejectedValue(new Error('notes are down'))
@@ -683,6 +674,359 @@ describe('opening a work', () => {
     // `useProgressWrite`'s first-run skip, seen from the component: a load
     // must not `PUT` the position it was just told.
     expect(ports.putProgress).not.toHaveBeenCalled()
+  })
+})
+
+// ---- a load that fails (O176) -------------------------------------------------
+
+/**
+ * The one state the reader had no screen for. `App`'s load effect caught a
+ * failed `openWork` and logged it, and `if (!session) return null` then drew
+ * nothing for good: `Routes.tsx`'s black `.reader-route`, with no message, no
+ * heading, no landmark and no way back but the browser's own. A case in
+ * `opening a work` pinned exactly that — `host.innerHTML` equal to `''` after
+ * a rejected sidecar read, under a name that said "rather than a blank
+ * reader" — and it went when this block arrived.
+ *
+ * **What the screen holds is asserted element by element.** It is a landmark
+ * with a heading, a sentence and a button in it, and a `toContain` over
+ * `innerHTML` cannot tell the message in the alert from the same words
+ * anywhere else. `innerHTML` is compared only against `''`, where nothing is
+ * the claim.
+ *
+ * **The cases after the button's pin what did not change**, because each is
+ * one line of the load effect's `catch`, or of the guard beside
+ * `if (!session) return null`, and each is easy to lose while adding the
+ * setter next to it: a 401 is the gate's and draws and logs nothing here, a
+ * failure that lands after the effect was cancelled reaches neither the
+ * console nor state, a session always draws the reader, and until the load
+ * answers the reader still draws nothing. The last case is the guard's own:
+ * a failure that carries no message is still drawn.
+ *
+ * **O179 gave one failure a sentence of the screen's own**, and the second
+ * and third cases are its: a `WorkNotFound` is said in that sentence, and a
+ * plain `Error` is shown as thrown whatever its message reads like.
+ */
+describe('a work that fails to load — O176', () => {
+  /**
+   * A failure the screen has no words of its own for: the plain `Error`
+   * `api.ts`'s `getSidecarWithEtag` throws for a 500, its sentence, the
+   * status and the body. The body is this fixture's own.
+   */
+  const answered500 = () => new Error('loading vol-01: 500 database is locked')
+
+  /** A sidecar read that answers only when the test says so. */
+  function heldSidecar() {
+    let reject!: (err: unknown) => void
+    const read = new Promise<never>((_, fail) => {
+      reject = fail
+    })
+    return { read, reject }
+  }
+
+  const alerts = (host: HTMLElement) =>
+    [...host.querySelectorAll('[role="alert"]')].map((el) => [
+      el.tagName,
+      el.textContent,
+    ])
+
+  it('draws one main holding one h1, the message in an alert and a button back to the library', async () => {
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const err = answered500()
+    ports.getSidecarWithEtag.mockRejectedValue(err)
+    const host = await open()
+
+    // The landmark is the whole of what is drawn, and it is the reader's own
+    // root class: `.reader` is what `styles/reader.css` gives the black
+    // ground, `color-scheme: dark` and the Ink half of every token.
+    const mains = [...host.querySelectorAll('main')]
+    expect(mains).toHaveLength(1)
+    const [main] = mains
+    expect([...host.children]).toEqual([main])
+    expect(main.classList.contains('reader')).toBe(true)
+
+    // And these three are the whole of the landmark, in the order a screen
+    // reader meets them.
+    expect([...main.children].map((el) => el.tagName)).toEqual([
+      'H1',
+      'P',
+      'BUTTON',
+    ])
+
+    // O163: one heading, and on screen — there is no top bar here to show
+    // the same words, which is what `ReaderHeading` hides its own for.
+    expect(
+      [...host.querySelectorAll('h1')].map((h) => [h.textContent, h.className]),
+    ).toEqual([['This work could not be opened', 'reader-failed-title']])
+
+    // The sentence `messageOf` makes of what was thrown, as `Library.tsx` and
+    // `Series.tsx` show theirs.
+    expect(alerts(main)).toEqual([
+      ['P', 'loading vol-01: 500 database is locked'],
+    ])
+
+    // A real button, in the tab order by being one: enabled, and with no
+    // `tabindex` taking it out.
+    expect(
+      [...main.querySelectorAll('button')].map((b) => [
+        b.type,
+        b.textContent,
+        b.disabled,
+        b.getAttribute('tabindex'),
+      ]),
+    ).toEqual([['button', 'Back to the library', false, null]])
+
+    // And the console still says why, once, with the error itself.
+    expect(logged.mock.calls).toEqual([[err]])
+    logged.mockRestore()
+  })
+
+  /**
+   * O179: the one failure the screen says in its own words. `api.ts`'s
+   * `getSidecarWithEtag` throws a `WorkNotFound` for a 404, and for that the
+   * alert is a sentence naming the slug, in a `<code>`, where every other
+   * failure's is the message. The message carries two backticks and the
+   * sentence none. The console is told as it is for any other failure: once,
+   * with the error.
+   */
+  it('says the server found no work by that name for a WorkNotFound, the slug in a code element', async () => {
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const err = new WorkNotFound(
+      'vol-01',
+      'loading vol-01: 404 no work `vol-01`',
+    )
+    ports.getSidecarWithEtag.mockRejectedValue(err)
+    const host = await open()
+    const main = host.querySelector('main') as HTMLElement
+
+    expect(alerts(main)).toEqual([
+      ['P', 'The server found no work named vol-01.'],
+    ])
+    // One `<code>` on the whole screen, a child of the alert, and the slug is
+    // all it holds.
+    expect(
+      [...main.querySelectorAll('code')].map((el) => [
+        el.parentElement?.getAttribute('role'),
+        el.textContent,
+      ]),
+    ).toEqual([['alert', 'vol-01']])
+    // The heading and the button are the ones every failure gets, and with
+    // the alert they are everything `main` says.
+    expect([...main.children].map((el) => el.textContent)).toEqual([
+      'This work could not be opened',
+      'The server found no work named vol-01.',
+      'Back to the library',
+    ])
+    expect(main.textContent).not.toContain('`')
+
+    // One call, and its argument is the error that was thrown: `toEqual`
+    // passes a copy of it, so the second line asks for the object.
+    expect(logged.mock.calls).toEqual([[err]])
+    expect(logged.mock.calls[0][0]).toBe(err)
+    logged.mockRestore()
+  })
+
+  /**
+   * The screen asks what was thrown, not what it says. This is the string a
+   * `WorkNotFound` carries, on a plain `Error`, and it is shown as any other
+   * plain `Error`'s is.
+   */
+  it('shows a plain Error as thrown even where its message reads like a 404', async () => {
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
+    ports.getSidecarWithEtag.mockRejectedValue(
+      new Error('loading vol-01: 404 no work `vol-01`'),
+    )
+    const host = await open()
+    expect(alerts(host)).toEqual([
+      ['P', 'loading vol-01: 404 no work `vol-01`'],
+    ])
+    expect(host.querySelectorAll('code')).toHaveLength(0)
+    logged.mockRestore()
+  })
+
+  /**
+   * `startup.ts`'s own throw, through the real `openWork` rather than a
+   * rejected port. **The sidecar that reaches it names no hub**, not one with
+   * an empty `editions` map: `orderedEditions` puts the hub first whatever
+   * the map holds, so `editions: {}` under a named hub opens. `startup.test.ts`
+   * says the same of its own case, and this one was first written the other
+   * way and drew the reader.
+   */
+  it('says what openWork threw for a sidecar that names no hub edition', async () => {
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
+    ports.getSidecarWithEtag.mockResolvedValue({
+      json: JSON.stringify({
+        work: { reading: 'rtl' },
+        editions: {},
+        hub: '',
+        alignments: [],
+      }),
+      etag: 's1',
+    })
+    const host = await open()
+    expect(alerts(host)).toEqual([['P', 'vol-01 defines no editions']])
+    logged.mockRestore()
+  })
+
+  it('leaves the tab saying the app’s name, as it did before the load answered — O173', async () => {
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
+    ports.getSidecarWithEtag.mockRejectedValue(answered500())
+    document.title = 'stale'
+    const host = await open()
+    // On screen, so this is the failed screen's title and not the blank one's.
+    expect(host.querySelectorAll('h1')).toHaveLength(1)
+    expect(document.title).toBe('taiyaku')
+    logged.mockRestore()
+  })
+
+  it('its button calls the onLeave prop', async () => {
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
+    ports.getSidecarWithEtag.mockRejectedValue(answered500())
+    const onLeave = vi.fn()
+    const host = mount(<App work={WORK} onLeave={onLeave} />)
+    await settle()
+    // Not on the way in: leaving is the reader's act, not the failure's.
+    expect(onLeave).not.toHaveBeenCalled()
+    click(button(host, 'Back to the library'))
+    expect(onLeave).toHaveBeenCalledOnce()
+    logged.mockRestore()
+  })
+
+  it('draws nothing and logs nothing for a 401, which the gate routes', async () => {
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
+    ports.getSidecarWithEtag.mockRejectedValue(new Unauthenticated())
+    const host = await open()
+    // `Unauthenticated` is an `Error` with a message of its own, so a `catch`
+    // that forgot to ask would draw "not signed in" here and log it. The
+    // first case above is the control: the same fixture with any other error
+    // draws.
+    expect(host.innerHTML).toBe('')
+    expect(logged).not.toHaveBeenCalled()
+    logged.mockRestore()
+  })
+
+  it('says nothing in the console for a failure that lands after the reader has unmounted', async () => {
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const held = heldSidecar()
+    ports.getSidecarWithEtag.mockReturnValueOnce(held.read)
+    mount(<App work={WORK} onLeave={noop} />)
+    await settle()
+    expect(ports.getSidecarWithEtag).toHaveBeenCalledOnce()
+    rerender(null)
+    await act(async () => {
+      held.reject(answered500())
+    })
+    await settle()
+    expect(logged).not.toHaveBeenCalled()
+    logged.mockRestore()
+  })
+
+  /**
+   * The same guard, where what it protects can be seen. An unmounted
+   * component's setter is a no-op React says nothing about, so the case above
+   * can only watch the console. Here the instance stays mounted and its
+   * effect is cancelled by `work` changing in place — which `Routes.tsx`'s
+   * `key={work}` never lets happen in the app, and which is how a test holds
+   * a cancelled load and a live component at once. (`StrictMode`'s second
+   * effect run does the same on every mount in development; nothing here
+   * mounts under it.)
+   *
+   * **The second load is left pending on purpose.** A session outranks a
+   * failure, so a second load that answered would draw the reader whatever
+   * the first one's `catch` had set, and the missing guard would be hidden
+   * behind it. What follows the two assertions is the control: the live
+   * load's own failure does reach this same instance's screen.
+   */
+  it('draws nothing for a failure from a load its effect has since cancelled', async () => {
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const first = heldSidecar()
+    const second = heldSidecar()
+    ports.getSidecarWithEtag
+      .mockReturnValueOnce(first.read)
+      .mockReturnValueOnce(second.read)
+    const host = mount(<App work="one" onLeave={noop} />)
+    await settle()
+    rerender(<App work="two" onLeave={noop} />)
+    await settle()
+    expect(ports.getSidecarWithEtag.mock.calls).toEqual([['one'], ['two']])
+
+    await act(async () => {
+      first.reject(new Error('loading one: 500 database is locked'))
+    })
+    await settle()
+    expect(host.innerHTML).toBe('')
+    expect(logged).not.toHaveBeenCalled()
+
+    await act(async () => {
+      second.reject(new Error('loading two: 500 database is locked'))
+    })
+    await settle()
+    expect(alerts(host)).toEqual([['P', 'loading two: 500 database is locked']])
+    logged.mockRestore()
+  })
+
+  /**
+   * The other half of that: `!session` is in the guard beside `if (!session)
+   * return null`, so the failed screen is only ever drawn in a session's
+   * absence and a loaded reader's render path is the one it always was. The
+   * same in-place change of `work` is the only way to give one instance both
+   * — a first load that failed and a second that answered — and the first
+   * assertion is the control: the failure was on screen before the session
+   * arrived.
+   */
+  it('draws the reader once a load answers, whatever an earlier one left behind', async () => {
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
+    ports.getSidecarWithEtag.mockRejectedValueOnce(
+      new Error('loading one: 500 database is locked'),
+    )
+    const host = mount(<App work="one" onLeave={noop} />)
+    await settle()
+    expect(alerts(host)).toEqual([['P', 'loading one: 500 database is locked']])
+
+    rerender(<App work="two" onLeave={noop} />)
+    await settle()
+    expect(alerts(host)).toEqual([])
+    expect(pages(host)).toEqual([expect.stringContaining('/two/raw/pages/2')])
+    logged.mockRestore()
+  })
+
+  it('draws nothing while the load has not answered, and the screen only once it fails', async () => {
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const held = heldSidecar()
+    ports.getSidecarWithEtag.mockReturnValueOnce(held.read)
+    const host = mount(<App work={WORK} onLeave={noop} />)
+    // Settled, so everything that could answer has — the title fetch among
+    // it — and only the sidecar read is outstanding. `opening a work`'s own
+    // "draws nothing" case asserts before its first `settle()`.
+    await settle()
+    expect(host.innerHTML).toBe('')
+
+    await act(async () => {
+      held.reject(answered500())
+    })
+    await settle()
+    expect(host.querySelectorAll('main')).toHaveLength(1)
+    expect(alerts(host)).toEqual([
+      ['P', 'loading vol-01: 500 database is locked'],
+    ])
+    logged.mockRestore()
+  })
+
+  /**
+   * The guard asks whether there is a failure, not whether it has anything
+   * to say. `messageOf` of an `Error` built with no message is `''`, and a
+   * guard that asked for a message would hand that one back to
+   * `if (!session) return null` and the blank route.
+   */
+  it('draws the screen for a failure that carries no message', async () => {
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
+    ports.getSidecarWithEtag.mockRejectedValue(new Error(''))
+    const host = await open()
+    expect([...host.querySelectorAll('h1')].map((h) => h.textContent)).toEqual([
+      'This work could not be opened',
+    ])
+    expect(alerts(host)).toEqual([['P', '']])
+    logged.mockRestore()
   })
 })
 

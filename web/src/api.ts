@@ -376,6 +376,33 @@ export async function listWorks(): Promise<WorkSummary[]> {
   return res.json()
 }
 
+/**
+ * A 404 from the sidecar read — O179.
+ *
+ * **A type, so that the one screen with words of its own for this can ask
+ * what was thrown rather than read it.** `ReaderFailed.tsx` says "The
+ * server found no work named …" for a `/read/<slug>` the server answers 404,
+ * and `App`'s load effect tells that failure from every other with
+ * `instanceof`, as it tells `Unauthenticated`.
+ *
+ * **The message is the one this read threw for a 404 before the type
+ * existed**: `getSidecarWithEtag` builds one string for every non-2xx and
+ * hands it here, so `messageOf` reads from this what it read from the plain
+ * `Error`. `Labeller.tsx`'s notice is that string, through `getSidecar`.
+ *
+ * `work` is the slug the caller asked for, as it was given and not as the URL
+ * escapes it. The response's body is in the message and nowhere else.
+ */
+export class WorkNotFound extends Error {
+  readonly work: string
+
+  constructor(work: string, message: string) {
+    super(message)
+    this.name = 'WorkNotFound'
+    this.work = work
+  }
+}
+
 export interface FetchedSidecar {
   json: string
   /** Absent only from a server older than the correction route. */
@@ -390,13 +417,21 @@ export interface FetchedSidecar {
  * and the validator is meaningless to it. `getSidecar` below delegates here
  * rather than repeating the fetch, so there is one implementation of "load
  * the sidecar" and not two that have to be kept in step.
+ *
+ * A non-2xx that reaches here — a 401 does not, `request` throws it as
+ * `Unauthenticated` — throws `loading`, the slug, the status and the body in
+ * one message; a 404 throws that message as a `WorkNotFound`.
  */
 export async function getSidecarWithEtag(
   work: string,
 ): Promise<FetchedSidecar> {
   const res = await request(`/api/works/${seg(work)}`)
-  if (!res.ok)
-    throw new Error(`loading ${work}: ${res.status} ${await res.text()}`)
+  if (!res.ok) {
+    const message = `loading ${work}: ${res.status} ${await res.text()}`
+    throw res.status === 404
+      ? new WorkNotFound(work, message)
+      : new Error(message)
+  }
   return { json: await res.text(), etag: res.headers.get('etag') ?? undefined }
 }
 

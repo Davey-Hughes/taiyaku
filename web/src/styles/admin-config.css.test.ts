@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import adminSource from './admin.css?raw'
-import { rules, selectors, withoutComments } from '../testing/css'
+import { rules, selectors, subject, withoutComments } from '../testing/css'
 
 /**
  * ⑤b empties `admin.css` of the two pre-token idioms the style pass replaced
@@ -118,5 +118,78 @@ describe('admin.css quiets every .why on the users screen', () => {
         selectors(prelude).includes('.user-row .why'),
       ),
     ).toBe(false)
+  })
+})
+
+/**
+ * O177. `.scan-report > section > dl` makes a grid of the report's two
+ * top-level lists and of nothing below them. As `.scan-report dl` it also
+ * reached `UnreadableCauses`'s nested `<dl>` of causes and made that a grid
+ * too — one hard column at 390px — which `Config.browser.test.tsx`'s "keeps the scan
+ * report's list of causes inside its row" measures. That case is in the
+ * browser project, which CI does not run; this holds the same rule where CI
+ * does, read off the stylesheet rather than measured.
+ */
+describe("admin.css makes a grid of the scan report's top-level lists only", () => {
+  it('gives grid columns to no dl but a section’s own', () => {
+    const grids = rules(adminSource)
+      .filter(({ body }) => /(?:^|;)\s*grid-template-columns:/.test(body))
+      .flatMap(({ prelude }) => selectors(prelude))
+      .filter(
+        (selector) =>
+          selector.startsWith('.scan-report') && subject(selector) === 'dl',
+      )
+    expect(grids).toEqual(['.scan-report > section > dl'])
+  })
+})
+
+/**
+ * O178 and O180: the rules that keep a path inside its card on the roots
+ * screen. `Config.browser.test.tsx` measures each of them at 390px — a
+ * report naming a path longer than its row, a removal report, the card's own
+ * heading and its `watch` fact, the removal's confirm button and the
+ * sentences the screen says in a paragraph — in the browser project, which
+ * CI does not run. This holds that the declarations are there, where CI
+ * does; what they do is the browser cases' to say.
+ */
+describe('admin.css lets a path break and its list drop under its label', () => {
+  const declares = (selector: string, declaration: RegExp) =>
+    rules(adminSource).some(
+      ({ prelude, body }) =>
+        selectors(prelude).includes(selector) && declaration.test(body),
+    )
+
+  it.each([
+    '.scan-report .paths li',
+    '.derived .paths li',
+    '.root-row > h3',
+    '.remove-root .confirm',
+    '.roots p',
+    '.root-row .regime dd',
+  ])('breaks a long path in %s', (selector) => {
+    expect(declares(selector, /(?:^|;)\s*overflow-wrap:\s*anywhere/)).toBe(true)
+  })
+
+  it('wraps a row that holds a list, and no other row', () => {
+    const wrapping = rules(adminSource)
+      .filter(({ body }) => /(?:^|;)\s*flex-wrap:\s*wrap/.test(body))
+      .flatMap(({ prelude }) => selectors(prelude))
+      .filter(
+        (selector) =>
+          selector.startsWith('.scan-report') || selector.includes('.paths'),
+      )
+    expect(wrapping).toEqual(['.scan-report .paths:not([data-zero])'])
+  })
+
+  // A wrapped row shares its spare height between its lines unless told not
+  // to, and in the two-column grid a row has spare height whenever the row
+  // beside it is taller: the list then starts far below its label.
+  it('keeps a dropped list at the top of a row taller than it needs', () => {
+    expect(
+      declares(
+        '.scan-report .paths:not([data-zero])',
+        /(?:^|;)\s*align-content:\s*flex-start/,
+      ),
+    ).toBe(true)
   })
 })

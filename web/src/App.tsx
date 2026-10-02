@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
 import {
   Unauthenticated,
+  WorkNotFound,
   getNotes,
   getProgress,
   getSidecarWithEtag,
@@ -66,6 +67,7 @@ import { Help } from './Help'
 import { TurnButtons } from './TurnButtons'
 import { controlKind, inPanel, intentOf, isInteractivePress } from './keys'
 import { keyPlan } from './keyplan'
+import { messageOf } from './message'
 import { changeSlice, fieldChanged, sliceFor, sliceReset } from './module'
 import {
   annotationsModule,
@@ -169,6 +171,7 @@ import { cellOf, groups, type Group, type Mode } from './pairing'
 import { loadPrefs, resetPrefs, savePrefs } from './prefs'
 import { display, navigate } from './reading'
 import { readerName, titleLines } from './readerTitle'
+import { ReaderFailed, type LoadFailure } from './ReaderFailed'
 import { ReaderHeading } from './ReaderHeading'
 import { ringStep } from './ring'
 import { Settings } from './Settings'
@@ -285,6 +288,14 @@ export interface AppProps {
 
 function App({ work, onLeave }: AppProps) {
   const [session, setSession] = useState<Session>()
+  // O176: what the load threw, when it threw anything but a 401, as
+  // `ReaderFailed.tsx`'s `LoadFailure` — the slug for a `WorkNotFound` (O179),
+  // and for anything else the sentence `messageOf` makes of it. No `session`
+  // follows it in the app, because `Routes.tsx` keys this component by `work`
+  // and so no instance has its `work` changed under it. `ReaderFailed` draws
+  // it, from beside the `if (!session) return null` far below: the first
+  // place a second render path can sit with no hook after it.
+  const [failure, setFailure] = useState<LoadFailure>()
   // The reading mode is a preference, not component state: it was a
   // `useState` until 2026-08-08 and so was forgotten on every reload, which a
   // reader who works in two-page mode met every time they opened the reader.
@@ -759,7 +770,8 @@ function App({ work, onLeave }: AppProps) {
   // The four reads and the order they happen in are `startup.ts`'s
   // `openWork`, which is where the throw, the notes read's own `catch` and
   // the empty-document fallback all live and can be tested. What is left
-  // here is the effect, the `cancelled` flag and five setters.
+  // here is the effect, the `cancelled` flag, five setters for a load that
+  // answered and one for a load that did not.
   useEffect(() => {
     let cancelled = false
     openWork(STARTUP_PORTS, work)
@@ -783,8 +795,30 @@ function App({ work, onLeave }: AppProps) {
         // `openWork` goes through `api.ts`'s `request`, which fires
         // `whenSignedOut` before it throws, and the gate above this component
         // is what registered for it. Logging it here as well would put a stack
-        // trace in the console of a reader who is being shown a login screen.
-        if (!(err instanceof Unauthenticated)) console.error(err)
+        // trace in the console of a reader who is being shown a login screen,
+        // and it is not a failure to draw either: `Unauthenticated` carries a
+        // message like any `Error`, and the gate is about to unmount this
+        // component for the sign-in form.
+        if (err instanceof Unauthenticated) return
+        console.error(err)
+        // O176. Anything else is a work that will not open — a slug the
+        // library does not hold, a server that did not answer, a sidecar
+        // naming no hub — and it used to end at the line above, with the
+        // route left black. Below the `cancelled` check with everything else
+        // here, so a load that was superseded says nothing.
+        //
+        // O179. The sidecar read's 404 is told apart by its type, as the 401
+        // above is: `api.ts` throws a `WorkNotFound` for it, and what is kept
+        // is the slug it carries, which `ReaderFailed` puts in a sentence of
+        // its own. That is the first of those three and more than it —
+        // `ReaderFailed`'s own comment says what else answers 404. Every
+        // other failure is read with `messageOf`, as `Library.tsx` and
+        // `Series.tsx` read theirs, and shown as that.
+        setFailure(
+          err instanceof WorkNotFound
+            ? { kind: 'not-found', work: err.work }
+            : { kind: 'thrown', message: messageOf(err) },
+        )
       })
     return () => {
       cancelled = true
@@ -1474,6 +1508,16 @@ function App({ work, onLeave }: AppProps) {
     zoomPrefs.onSwap,
   ])
 
+  // O176: the load failed, so there is no reader to draw — `ReaderFailed`
+  // says so and offers the way out, where this returned `null` for good.
+  // Here and not higher, for the reason every hook above gives for being
+  // above: this is the first line after the last of them. `!session` is part
+  // of the test so that a session, once there is one, always draws. What is
+  // asked of `failure` is whether there is one, and never what it holds: an
+  // `Error` may carry no message, and that one is drawn with an empty alert.
+  if (!session && failure !== undefined) {
+    return <ReaderFailed failure={failure} onLeave={onLeave} />
+  }
   if (!session) return null
   // Not `work` — the prop already carries it, and `openWork(STARTUP_PORTS,
   // work)` is what makes `session.work` the same slug for the whole mounted
