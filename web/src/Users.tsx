@@ -200,15 +200,23 @@ export function Users() {
           {adding ? 'Creating…' : 'Add'}
         </button>
         {/*
-          `<code>` rather than backticks: this is a rendered page, and the
-          backticks were drawn as themselves — found by opening the screen
-          against the real library rather than by reading the JSX.
+          Spec C4 §4's rule — "No self-service registration. An admin creates
+          accounts, per A2 §11." — in the words this form shows: `user` and
+          `admin` are the Role select's two options, and "Role" its label. The
+          paragraph named the spec section and the migration until O160.
+
+          "The user role" holds because `role` starts at `'user'` and goes
+          back to it after each successful add, and `addUser` always sends it,
+          so on this form neither the route's default nor the column's ever
+          applies. Both are `user` as well: `users_api::create_user` defaults
+          an omitted role to it, and `004_auth.sql` made the column
+          `DEFAULT 'user'` because migration 1's `DEFAULT 'admin'`, carried
+          into the rebuild unexamined, meant any insert that omitted the role
+          minted an administrator.
         */}
         <p className="why">
-          C4 §4: there is no self-service registration — an administrator makes
-          accounts. A new account is a reader unless this says otherwise, which
-          is the column default <code>004_auth.sql</code> chose because any
-          insert that omitted the role minted an administrator.
+          There is no sign-up: an administrator makes accounts. A new account
+          gets the user role unless Role is set to admin.
         </p>
       </form>
     </section>

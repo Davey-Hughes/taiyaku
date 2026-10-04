@@ -233,6 +233,35 @@ describe('Users', () => {
     expect(usersApi.addUser).toHaveBeenCalledWith('sam', 'hunter2', 'admin')
   })
 
+  it("explains the add form in the administrator's words, not the repository's", async () => {
+    // O160: this paragraph named a spec section and a migration file, neither
+    // of which the person reading the screen can open. The wording is asserted
+    // on the paragraph itself rather than the page, which also carries the
+    // cards.
+    // The backtick and `<code>` checks hold #112's finding, that this
+    // paragraph once drew markdown backticks as themselves (`docs/notes.md`,
+    // "What the pixels found that the tests did not").
+    const host = await settle()
+    const why = host.querySelector('form.add-user > p.why')
+    expect(why).not.toBeNull()
+    const text = why?.textContent ?? ''
+    expect(text).toContain('an administrator makes accounts')
+    expect(text).toContain('the user role unless Role is set to admin')
+    expect(text).not.toMatch(/C4|§|004_auth|\.sql|`/)
+    expect(why?.querySelector('code')).toBeNull()
+    // "Role", `user` and `admin` are the paragraph's words because they are
+    // the form's: the select's label and its two options.
+    const select = host.querySelector('form.add-user select[name="new-role"]')
+    expect(select?.closest('label')?.querySelector('span')?.textContent).toBe(
+      'Role',
+    )
+    expect(
+      [...(select?.querySelectorAll('option') ?? [])]
+        .map((option) => option.textContent)
+        .sort(),
+    ).toEqual(['admin', 'user'])
+  })
+
   it('sends nothing when either box is empty', async () => {
     const host = await settle()
     await fill(host, 'new-name', 'sam')

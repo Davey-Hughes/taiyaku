@@ -39,6 +39,50 @@
   unicode-range: U+0030-0039;
 }
 
+/* A backtick with a width (O179). Zen Kaku Gothic New's Latin files class
+ * seven spacing characters — ` ¨ ´ ¸ ˆ ˚ ˜ — as marks in GDEF: read with
+ * fontTools on 2026-10-02 in @fontsource/zen-kaku-gothic-new 5.3.0, the
+ * latest published. HarfBuzz gives a GDEF mark no advance, so in Chromium
+ * 151 and Firefox 153 each of the seven measured 0 px at 400, 500 and 700,
+ * and ``no work `nope` `` was drawn as "no work ǹopè".
+ *
+ * These faces are the same seven glyphs from the same package's Latin files,
+ * one per weight imported above, with the three layout tables dropped so
+ * nothing calls them marks:
+ *
+ *   pyftsubset zen-kaku-gothic-new-latin-<weight>-normal.woff2 --flavor=woff2
+ *     --unicodes=U+0060,U+00A8,U+00B4,U+00B8,U+02C6,U+02DA,U+02DC
+ *     --drop-tables+=GDEF,GPOS,GSUB '--name-IDs=*'
+ *
+ * (fontTools 4.66.1). Outlines and advances are unchanged — the backtick's is
+ * 352, 365 and 375 units — and the files are 916, 928 and 964 bytes. The
+ * licence is the face's own, `fonts/OFL.txt`. `font-display: swap`, as the
+ * @fontsource faces imported above have it: while a file loads, its characters are
+ * drawn in Zen Kaku, at no width, rather than not drawn. */
+@font-face {
+  font-family: "taiyaku marks";
+  font-weight: 400;
+  src: url("./fonts/marks-400.woff2") format("woff2");
+  font-display: swap;
+  unicode-range: U+0060, U+00A8, U+00B4, U+00B8, U+02C6, U+02DA, U+02DC;
+}
+
+@font-face {
+  font-family: "taiyaku marks";
+  font-weight: 500;
+  src: url("./fonts/marks-500.woff2") format("woff2");
+  font-display: swap;
+  unicode-range: U+0060, U+00A8, U+00B4, U+00B8, U+02C6, U+02DA, U+02DC;
+}
+
+@font-face {
+  font-family: "taiyaku marks";
+  font-weight: 700;
+  src: url("./fonts/marks-700.woff2") format("woff2");
+  font-display: swap;
+  unicode-range: U+0060, U+00A8, U+00B4, U+00B8, U+02C6, U+02DA, U+02DC;
+}
+
 :root {
   color-scheme: light dark;
 
@@ -63,7 +107,7 @@
   --scrim: light-dark(#231e1759, #0000008c);
 
   --font-title: "Shippori Mincho B1", serif;
-  --font-ui: "Zen Kaku Gothic New", system-ui, sans-serif;
+  --font-ui: "taiyaku marks", "Zen Kaku Gothic New", system-ui, sans-serif;
   --font-figures: "taiyaku figures", var(--font-ui);
 
   --text-h1: 2rem;

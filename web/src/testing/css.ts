@@ -1,12 +1,12 @@
 /**
  * Shared parsing for the tests that read a stylesheet's own text rather than
- * render it. Eight call it: `../index.css.test.ts`, `../theme.test.ts`, and
- * `../styles/`'s `base.css.test.ts`, `admin-rules.css.test.ts`,
- * `admin-config.css.test.ts`, `admin-proposals.css.test.ts`,
- * `admin-account.css.test.ts` and `reader.css.test.ts`. **The count is
- * stated because it is what decides whether this module's shape can
- * change**: an open item quoted "three" from an earlier version of this
- * sentence and was wrong by half.
+ * render it. Ten call it: `../index.css.test.ts`, `../theme.test.ts`,
+ * `../classNames.test.ts`, and `../styles/`'s `base.css.test.ts`,
+ * `admin-rules.css.test.ts`, `admin-config.css.test.ts`,
+ * `admin-proposals.css.test.ts`, `admin-account.css.test.ts`,
+ * `reader.css.test.ts` and `tokens.css.test.ts`. **The count is stated because it is what decides
+ * whether this module's shape can change**: an open item quoted "three" from
+ * an earlier version of this sentence and was wrong by half.
  *
  * **Every one of them is a `.ts` in the `node` project, and that is a
  * constraint rather than a coincidence.** Vitest's default `css: false`

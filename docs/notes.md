@@ -23959,3 +23959,138 @@ Taken down afterwards, both times: both servers stopped by PID. The
 captures, the scratch library and the earlier gate logs were under
 `target/`, which was emptied on 2026-10-02 before this branch was pushed;
 they are not kept.
+
+## O158, O160 and O179 (2026-10-03)
+
+Three open items closed on one branch, each built in a worktree of its own
+by a separate agent — a lane — and landed here by cherry-pick. O179's lane
+gathered the evidence and built a candidate, which landed once the user had
+chosen among four ways to fix it. A figure below is this branch's own run unless it
+is marked as the lane's.
+
+**O158: what the scan reads.** `classNames.test.ts` reads the non-test
+`.tsx` files as text, comments stripped with the same tokenising pattern as
+`colourLiterals.test.ts`, and the stylesheets through `testing/css.ts`'s
+`rules()`. The lane's count of what it reads, outside comments: 447
+`className` attributes in 49 non-test `.tsx` files, 416 of them
+`className="…"` and 31 `className={…}`. A plain `rg -c className` gives 450
+lines, three of them inside comments. Spec 2026-09-25's "432 `className` sites in 46 files, 31 of them
+computed" was that day's figure. Of the 31 computed sites, two are ternaries
+over strings and are read in full; the rest draw on `look` and on Shell's
+`classes`, read through their tables, except two the test cannot read and
+names as its limit — `NoteList.tsx`'s `` `note-list-${placement}` `` and
+`ProposalRow.tsx`'s `strength(…)`. `strength()`'s `maybe` and `weak` have no
+rule, and `admin.css`'s strength-strip comment says that is on purpose.
+
+**O158: the first run.** 80 classes no selector names, sorted in the test
+file into 50 that a test selects by (each checked against that test file's
+strings), 8 that something else draws (a `summary` rule, a `.derived` rule,
+`.preview`'s table rules, a `style` prop, a parent's flex layout), and 22
+that nothing reads. The lane found with `git log -G` that none was ever a
+selector under `web/`, so none is a half-finished rename: O158's own
+defect had no live instance. The user chose on 2026-10-03 to leave the 22
+listed rather than file or remove them.
+
+**O158: what fails.** The lane ran sixteen hand mutations: the row's own
+rename, a ternary's string, a `LOOKS` entry, Shell's `classes`, a template's
+whole word, the stylesheet half, a new name, a lost table, a stale and a
+newly-ruled exemption, a hook listed under a test that does not select by
+it, and three of the scanner's own rules all failed; the composed `note-list-${placement}` and
+`curation.ts`'s `'strong'` stayed green, which is where the header puts the
+limit. The lane ran them against a draft one line shorter than
+the committed file, so this branch re-ran all sixteen against the committed
+one, with the lane's script: the same fourteen failed and the same two
+stayed green. The first — `reader-success`
+renamed in `Account.tsx` and `Account.test.tsx`, `reader.css` untouched —
+failed with `"reader-succeeded in ./Account.tsx"`.
+
+**O160.** The paragraph reads "There is no sign-up: an administrator makes
+accounts. A new account gets the user role unless Role is set to admin."
+— the user kept that wording on 2026-10-03 over "a reader", which the row's
+settle-line used and the form never shows. The old paragraph credited the
+column default in `004_auth.sql`; on this form that default never applies,
+because `Users.tsx` starts `role` at `'user'`, sets it back after each add,
+and `addUser` always sends it — and `users_api::create_user` defaults a
+missing role to `user` as well. The JSX comment says so now. The `<code>`
+that the old comment was about went with the paragraph's file name; the
+backtick finding it recorded (#112, "What the pixels found that the tests
+did not") is held by the new case's check that the paragraph has neither a
+backtick nor a `<code>`. This branch put "C4 §4: " back in front by hand and
+the case failed at `Users.test.tsx:249`.
+
+**O179: the glyph.** Read here with fontTools 4.66.1 in
+`@fontsource/zen-kaku-gothic-new` 5.3.0's Latin files at 400, 500 and 700:
+the backtick (U+0060) and ¨ ´ ¸ ˆ ˚ ˜ (U+00A8, U+00B4, U+00B8, U+02C6,
+U+02DA, U+02DC) each have a non-zero advance in `hmtx` — the backtick's is
+352, 365 and 375 units — and each is GDEF class 3, a mark. `^`, `~` and `'`
+are not marks. So the face does not lack a width; HarfBuzz gives a mark
+none. The lane's, not re-measured here: turning `mark`, `mkmk`, `kern`,
+`ccmp` and `liga` off in uharfbuzz still gives the backtick no advance, so
+no `font-feature-settings` fixes it; 5.3.0 is the latest published, and
+upstream's Regular (Version 1.002) classes the backtick the same way; the
+same sweep over Shippori Mincho B1 found only the soft hyphen, which is
+zero-width by design.
+
+**O179: the options, measured by the lane** at 16px in Chromium 151 and
+Firefox 153 under Playwright, after `document.fonts.load` and
+`document.fonts.ready`. In Zen Kaku each of the seven is 0px wide. Borrowed
+through `local()` from the system faces "taiyaku figures" names, the
+backtick is 8px in Chromium — the face that resolved on this machine was DejaVu Sans,
+read over CDP, because `local("Noto Sans")` does not match a face whose full
+name is "Noto Sans Regular" — and 0px again where no listed face exists.
+Cut from Zen Kaku's own Latin files with GDEF, GPOS and GSUB dropped, it is
+6px at 400 in Chromium, and the files are 916, 928 and 964 bytes. Drawing a quoted name
+as `<code>`, or stripping the marks, would have meant routing every place a
+server sentence is drawn through one helper — the lane counted about 34
+places that draw a failure's text and at least four that draw a successful
+response's, such as `ProposalRow.tsx`'s `{proposal.reason}` — and would have left
+the other six characters as they were. This branch looked at the lane's
+screenshots: in Zen Kaku ``no work `nope` `` draws as "no work ǹopè" at all
+three weights; through `local()` the backtick sits loose, with a gap after
+the opening one; cut from Zen Kaku it sits like the face's own apostrophe.
+
+**O179: what fails.** As the lane committed it, `fonts.browser.test.tsx`
+had nine cases, and with `"taiyaku marks"` taken out of `--font-ui` by hand
+six of them failed in the lane's run, at
+"expected 0 to be greater than 10" and at all
+seven characters listed as narrow; the three that pass are the control,
+which holds the defect in Zen Kaku alone. **The branch's whole-branch review
+found what those nine could not see**: a face pointed at another weight's
+file, or a weight's face deleted, still passed all nine, since a backtick is
+5.6 to 6 px at every weight — and CI does not run the browser project at
+all. Two things were added for it. Three browser cases on `˚`, whose
+advance is 497, 410 and 341 units at 400, 500 and 700 (read here with
+fontTools), so that each weight's own width is more than a pixel from the
+others'. And `styles/tokens.css.test.ts`, in the `node` project CI runs,
+which reads `--font-ui` and the three faces off the stylesheet's text: each
+weight Zen Kaku is imported at has a face pointing at its own file, for the
+seven characters, with `font-display: swap` — which the faces lacked until
+that review, and which each of the 607 faces in the five @fontsource
+stylesheets `tokens.css` imports declares. Five hand breaks of
+`tokens.css`, each run against both files: the 500 face pointed at the 400
+file, and the 500 face deleted, each failed one node case and the `˚` case
+at 500; Zen Kaku put ahead of the face in `--font-ui` failed one node case
+and nine of the twelve browser cases; `U+02DA` taken out of the 400 face's
+range failed one node case and two browser cases at 400; and the 700 face
+without `font-display` failed the node case only. **Not measured: iOS
+Safari**, which shapes with CoreText rather than HarfBuzz, so whether the
+defect was ever drawn there is unknown.
+
+**O179: the build.** A production build of this branch, into a scratch
+directory, emits no `marks-*.woff2` of its own: the three faces are inlined
+into the theme stylesheet as `data:` URIs, and its `--font-ui` names them
+first.
+
+**O179: where the backticks come from.** The lane's enumeration, with a
+delegated classification of 243 non-test string literals in the serve,
+library and core crates and six of its claims spot-checked: 174 can reach a
+response body the web app draws. They still carry their backticks; the
+face only makes them drawable.
+
+**Counts**, each against `main`. `node` 1,420 to 1,428: `classNames.test.ts`'s
+six cases and `tokens.css.test.ts`'s two. `jsdom` 1,226 to 1,227: the
+add-account paragraph, whose case also asks that "Role", `user` and `admin`
+are the select's label and options — renaming the label, or an option, by
+hand fails it. Browser 161 to 173: `fonts.browser.test.tsx`'s twelve. The local gate: all green, except the
+standing corpus checks, which were not run because no file under `crates/`
+changed.
