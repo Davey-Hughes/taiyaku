@@ -2,6 +2,7 @@ import { act } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as config from './config'
 import { RootRow } from './RootRow'
+import { fields } from './testing/fields'
 import { mount, rerender } from './testing/mount'
 
 vi.mock('./config', async (importOriginal) => ({
@@ -1174,9 +1175,12 @@ describe('RootRow', () => {
       const id = box.getAttribute(attr)
       return id === null ? null : document.getElementById(id)?.textContent
     }
-    expect(text('aria-labelledby')).toBe(
+    // O175: the name is the box's own `aria-label`. An `aria-labelledby`
+    // would outrank it, so there has to be none.
+    expect(box.getAttribute('aria-label')).toBe(
       'Exclude globs (one gitignore pattern per line)',
     )
+    expect(box.hasAttribute('aria-labelledby')).toBe(false)
     expect(text('aria-describedby')).toBe(
       'A trailing slash or bare name excludes the directory and everything ' +
         "under it; a '/**' suffix excludes only what's inside it.",
@@ -1188,18 +1192,18 @@ describe('RootRow', () => {
     const named = ['edition_key', 'default_kind', 'default_language'].map(
       (name) => {
         const box = host.querySelector(`input[name="${name}"]`)
-        const id = box?.getAttribute('aria-labelledby')
         return [
           name,
-          id ? document.getElementById(id)?.textContent : null,
+          box?.getAttribute('aria-label'),
+          box?.hasAttribute('aria-labelledby'),
           box?.hasAttribute('aria-describedby'),
         ]
       },
     )
     expect(named).toEqual([
-      ['edition_key', 'Edition key', false],
-      ['default_kind', 'Default kind', false],
-      ['default_language', 'Default language', false],
+      ['edition_key', 'Edition key', false, false],
+      ['default_kind', 'Default kind', false, false],
+      ['default_language', 'Default language', false, false],
     ])
   })
 
@@ -1218,10 +1222,22 @@ describe('RootRow', () => {
       )
       await Promise.resolve()
     })
+    // The hint's id: since O175 it is the one id a box points at.
     const ids = [
       ...(host?.querySelectorAll('textarea[name="exclude_globs"]') ?? []),
-    ].map((box) => box.getAttribute('aria-labelledby'))
+    ].map((box) => box.getAttribute('aria-describedby'))
     expect(ids).toHaveLength(2)
     expect(new Set(ids).size).toBe(2)
+  })
+
+  it('gives each control under a field label that label’s words as its aria-label — O175', async () => {
+    const host = await settle()
+    // The four text columns and the scan interval. Counted, because a loop
+    // over nothing passes.
+    const labelled = fields(host.querySelectorAll('.root-row label.field'))
+    expect(labelled).toHaveLength(5)
+    for (const { written, control } of labelled) {
+      expect(control.getAttribute('aria-label'), written).toBe(written)
+    }
   })
 })

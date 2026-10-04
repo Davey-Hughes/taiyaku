@@ -1,3 +1,4 @@
+import { act } from 'react'
 import { describe, expect, it } from 'vitest'
 import { page } from 'vitest/browser'
 // **Required.** `--strip-unit` and friends live in `styles/reader.css`, which
@@ -15,7 +16,7 @@ import './index.css'
 import { Filmstrip, type FilmstripProps } from './Filmstrip'
 import type { Group } from './pairing'
 import type { Position } from './resolver'
-import { mount } from './testing/mount'
+import { mount, rerender } from './testing/mount'
 import {
   requestedTileEdge,
   STRIP_BREAKPOINT_PX,
@@ -53,13 +54,23 @@ function props(overrides: Partial<FilmstripProps> = {}): FilmstripProps {
   }
 }
 
-/** The rail needs the reader's custom properties, which live on `.reader`. */
-function inReader(ui: React.ReactNode) {
-  return mount(
+/**
+ * The rail needs the reader's custom properties, which live on `.reader`.
+ *
+ * Its own function so that a `rerender` can hand React the tree `inReader`
+ * mounted, with the same two wrappers around the strip — which is what keeps
+ * the strip the same instance across it.
+ */
+function reader(ui: React.ReactNode) {
+  return (
     <div className="reader" style={{ position: 'fixed', inset: 0 }}>
       <div style={{ height: 'var(--strip-height)' }}>{ui}</div>
-    </div>,
+    </div>
   )
+}
+
+function inReader(ui: React.ReactNode) {
+  return mount(reader(ui))
 }
 
 const railOf = (host: HTMLElement) =>
@@ -225,6 +236,116 @@ describe("the strip's rung follows the stylesheet's drawn tile height", () => {
       for (const img of images) {
         expect(img.getAttribute('src')).toContain(`/thumb?w=${expected}`)
       }
+    })
+  }
+})
+
+/**
+ * O146: a page turn that lands after the reader has flicked the rail away
+ * from the current tile, in real layout.
+ *
+ * `Filmstrip.test.tsx` holds this in jsdom ("recentres on the new current
+ * tile after a page turn that lands outside the window the reader had flicked
+ * to"), and what it can hold there is which element `scrollIntoView` was last
+ * called on. jsdom has no layout, so that file swaps `scrollIntoView` for a
+ * recorder, stubs the rail's scroll geometry and its box, and dispatches the
+ * scroll event by hand. Whether the rail then *shows* the tile is not a
+ * question it can ask — and the defect was that it did not: the window
+ * rebuilt around the new current tile while the rail stayed scrolled to
+ * wherever the flick had left it (`Filmstrip.tsx`'s centring effect, C1).
+ *
+ * Nothing is stubbed here. The flick is a write to the real `scrollLeft`,
+ * the scroll event is the browser's own, the centring is the real
+ * `scrollIntoView`, and the two things asserted at the end are the rail's
+ * real scroll position and the tile's real box.
+ *
+ * **The turn is a `rerender`, not a second `mount`.** The same instance has
+ * to see `currentIndex` change: a fresh one has no flicked window to be stale
+ * against.
+ */
+describe('a page turn after the reader has flicked the rail', () => {
+  /** Which tiles the window holds, as `groups` indices. */
+  const rendered = (rail: HTMLElement) =>
+    [...rail.querySelectorAll('button')].map((b) => Number(b.dataset.group))
+  const currentOf = (rail: HTMLElement) =>
+    rail.querySelector<HTMLElement>('[aria-current="true"]')
+
+  // One `it()` per direction, as elsewhere in this file. Both directions,
+  // because the rail's scroll range has the opposite sign under `rtl`, and
+  // because the new current tile is off a different end of the rail in each
+  // when the rail fails to follow it — so each of the two bounds asserted at
+  // the end is the one that fails in one direction and passes in the other.
+  for (const reading of ['ltr', 'rtl'] as const) {
+    it(`brings the new current tile on screen, ${reading}`, async () => {
+      await page.viewport(1440, 900)
+      const host = inReader(
+        <Filmstrip {...props({ reading, currentIndex: 60 })} />,
+      )
+      const rail = railOf(host)
+
+      // Where the mount leaves things: the rail scrolled out to tile 60 —
+      // the flick below is a share of that distance, so it must not be 0 —
+      // and a window around it that holds the page the turn will go to and
+      // does not reach the first page, which is where the flick is headed.
+      // Those two are asserted here so that their opposites, after the
+      // flick, are changes the flick made.
+      const centred = rail.scrollLeft
+      expect(centred).not.toBe(0)
+      expect(currentOf(rail)?.dataset.group).toBe('60')
+      expect(rendered(rail)).toContain(61)
+      expect(rendered(rail)).not.toContain(0)
+
+      // THE FLICK: most of the way back toward the first page, to a tenth of
+      // the distance the mount scrolled the rail out. A share of the
+      // browser's own reading rather than a pixel number, because that
+      // reading is negative under `rtl` (the positional test above has the
+      // scale) and this way the sign is the browser's in both directions.
+      //
+      // Inside an `act` held open until the frame after the scroll event:
+      // the rail's scroll handler is throttled to an animation frame, and
+      // this is what puts the state it sets there inside the `act`. The
+      // listener here is added after the rail's own and the frame here is
+      // requested after the rail's, so the rail's runs first both times.
+      await act(async () => {
+        rail.scrollLeft = Math.round(centred / 10)
+        await new Promise((resolve) =>
+          rail.addEventListener('scroll', resolve, { once: true }),
+        )
+        await new Promise((resolve) => requestAnimationFrame(resolve))
+      })
+
+      // THE STATE THIS TEST NAMES, or everything after it proves nothing: a
+      // turn to a tile the window already holds finds that tile on the first
+      // attempt. So the old current tile has to
+      // have left the DOM, the window has to have followed the flick to the
+      // first page, and the page the turn is about to go to has to be
+      // outside it. Polled rather than read once: the window moves on a
+      // frame after the scroll, and what has to hold before the turn is this
+      // condition, not that some number of frames has passed.
+      await expect.poll(() => currentOf(rail)).toBeNull()
+      const flicked = rail.scrollLeft
+      expect(flicked).not.toBe(centred)
+      expect(rendered(rail)).toContain(0)
+      expect(rendered(rail)).not.toContain(61)
+
+      // THE TURN: one page forward, on the same instance.
+      rerender(reader(<Filmstrip {...props({ reading, currentIndex: 61 })} />))
+      expect(railOf(host)).toBe(rail)
+
+      const current = currentOf(rail)
+      expect(current?.dataset.group).toBe('61')
+      const tile = (current as HTMLElement).getBoundingClientRect()
+      const visible = rail.getBoundingClientRect()
+      // A box with no width lies inside any box that holds its edge.
+      expect(tile.width).toBeGreaterThan(0)
+
+      // The rail moved, and the tile the reader is now on lies inside the
+      // rail's own box along the axis it scrolls on — existing is not enough,
+      // since the tile existed under the defect too, off screen. Soft, so
+      // that one failing run reports every reading that fails.
+      expect.soft(rail.scrollLeft).not.toBe(flicked)
+      expect.soft(tile.left).toBeGreaterThanOrEqual(visible.left)
+      expect.soft(tile.right).toBeLessThanOrEqual(visible.right)
     })
   }
 })

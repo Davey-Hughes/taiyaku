@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { Root } from './config'
 import { RuleForm } from './RuleForm'
 import type { Rule } from './rules'
+import { fields } from './testing/fields'
 import { mount } from './testing/mount'
 
 const rule = (over: Partial<Rule> = {}): Rule => ({
@@ -355,5 +356,16 @@ describe('RuleForm', () => {
       pattern: 'Colour/.*',
       kind: 'prefix',
     })
+  })
+
+  it('gives each control its label’s words as its aria-label — O175', () => {
+    const { host } = render()
+    // Three selects and six text boxes. Counted, because a loop over nothing
+    // passes.
+    const labelled = fields(host.querySelectorAll('.rule-form label.field'))
+    expect(labelled).toHaveLength(9)
+    for (const { written, control } of labelled) {
+      expect(control.getAttribute('aria-label'), written).toBe(written)
+    }
   })
 })

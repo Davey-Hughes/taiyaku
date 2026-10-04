@@ -379,9 +379,8 @@ export function humanInterval(secs: number): string {
  * **Replaces the former `regimeLine`, not beside it.** That function's only
  * production caller was the `<p className="regime">` this function's caller
  * now draws as a `<dl>`, and nothing else in this codebase read its return
- * value — `RootRow.tsx` has no `aria-label`. A function kept alive only by
- * tests that exercise it directly would be alive on the strength of its own
- * tests.
+ * value. A function kept alive only by tests that exercise it directly would
+ * be alive on the strength of its own tests.
  */
 export function regimeFacts(
   root: Root,

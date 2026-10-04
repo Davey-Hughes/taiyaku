@@ -2,6 +2,7 @@ import { act } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AcceptForm } from './AcceptForm'
 import * as curation from './curation'
+import { fields } from './testing/fields'
 import { mount, rerender } from './testing/mount'
 
 // `ProposalRow.test.tsx`'s `vi.mock` shape, for the reason its own comment
@@ -973,5 +974,16 @@ describe('AcceptForm', () => {
     await click(accept(host))
 
     expect(control(host, '.accept-failure').textContent).toBe('offline')
+  })
+
+  it('gives each control its label’s words as its aria-label — O175', async () => {
+    const { host } = await ready()
+    // Pattern, match kind, edition key, edition kind and language. Counted,
+    // because a loop over nothing passes.
+    const labelled = fields(host.querySelectorAll('.accept-form label.field'))
+    expect(labelled).toHaveLength(5)
+    for (const { written, control: named } of labelled) {
+      expect(named.getAttribute('aria-label'), written).toBe(written)
+    }
   })
 })

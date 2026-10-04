@@ -2,6 +2,7 @@ import { act } from 'react'
 import { MemoryRouter } from 'react-router'
 import { beforeEach, describe, expect, it, type Mock, vi } from 'vitest'
 import type { Root } from './config'
+import { fields } from './testing/fields'
 import { mount, rerender } from './testing/mount'
 import { UserRow } from './UserRow'
 import * as usersApi from './users'
@@ -1235,5 +1236,17 @@ describe('the permission boxes — O154', () => {
         box.getAttribute('name'),
       ),
     ).toEqual(['can_download', 'can_stream', 'can_stamp'])
+  })
+})
+
+describe('the field labels — O175', () => {
+  it('gives each control under a field label that label’s words as its aria-label', async () => {
+    const { host } = await show(sam(), [user(), sam()])
+    const labelled = fields(host.querySelectorAll('.user-row label.field'))
+    // Role and the new password. Counted, because a loop over nothing passes.
+    expect(labelled).toHaveLength(2)
+    for (const { written, control } of labelled) {
+      expect(control.getAttribute('aria-label'), written).toBe(written)
+    }
   })
 })

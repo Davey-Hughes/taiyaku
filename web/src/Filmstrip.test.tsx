@@ -567,10 +567,9 @@ describe('measuring --strip-unit at runtime', () => {
   // machine, where the rail subtracts 15 px of its own height, a loaded tile
   // is 58.16 px against the same 58 px nominal (54 unit + 2×2 border) — a
   // 0.16 px difference, inside tolerance, which must not cause a write.
-  // *What* performs that subtraction is not established — see `tiles.ts`'s
-  // `refinedStripUnit`, which records why O138 cannot be cited for it — and
-  // this test does not depend on the answer: it pins the tolerance, not a
-  // cause.
+  // *What* performs that subtraction is in `tiles.ts`'s `refinedStripUnit`
+  // doc, and this test does not depend on the answer: it pins the tolerance,
+  // not a cause.
   it('does not write the property when the measured median is within tolerance', () => {
     const host = mount(<Filmstrip {...unitProps()} />)
     const rail = primeRail(host)

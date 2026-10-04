@@ -59,14 +59,12 @@
    * 390×844 on one machine in one browser, the rail subtracts 15 px of its
    * own height under desktop emulation and nothing at all under mobile,
    * so the same tile draws 58.16 px wide in the first and 68.19 in the
-   * second. What performs that subtraction is not established — a classic
-   * scrollbar is the obvious candidate, but O138 measured this rail at
-   * 1440×900 at **0 px** — in headless Chromium, not the driven, emulated
-   * one used here — and found no classic scrollbar
-   * on either this machine or the user's desktop, and left the note that if
-   * the 15 px returned, the unexplained difference was where to start. It
-   * returned; nobody has been there yet. A hardcoded number cannot be right
-   * in both conditions whatever the cause, so `Filmstrip.tsx`'s mount effect
+   * second. What performs that subtraction is a classic scrollbar on the
+   * rail (O145, 2026-10-04): on the machine this was measured on, Chromium
+   * draws one unless it was launched with `--hide-scrollbars` or the page is
+   * under mobile emulation, and both constants here are the width with it
+   * drawn. A hardcoded number cannot be right in both conditions whatever
+   * the cause, so `Filmstrip.tsx`'s mount effect
    * measures the tiles that have actually drawn and overwrites this value on
    * the rail element itself. **The median of them, not one of them**
    * (`tiles.ts`'s `medianTileWidth` and `refinedStripUnit`): a double-page

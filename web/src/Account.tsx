@@ -254,11 +254,16 @@ export function Account(props: AccountProps) {
       <section className={look.section}>
         <SectionHeading className={look.heading}>Password</SectionHeading>
         <form onSubmit={change}>
+          {/* O175: each `aria-label` repeats its label's words because the
+              page's `.field` draws them in capitals, and Chromium's
+              accessibility tree named the box in those capitals. The panel
+              draws them as written and carries the same attribute. */}
           <label className={look.label}>
             Current
             <input
               className={look.field}
               type="password"
+              aria-label="Current"
               autoComplete="current-password"
               value={current}
               onChange={(e) => {
@@ -271,6 +276,7 @@ export function Account(props: AccountProps) {
             <input
               className={look.field}
               type="password"
+              aria-label="New"
               autoComplete="new-password"
               value={next}
               onChange={(e) => {

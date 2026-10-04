@@ -191,9 +191,15 @@ const BAD_INTERVAL =
 export function RootRow({ root, probe, onChanged }: RootRowProps) {
   /**
    * O165: each text box is named by its label's own words and described by
-   * its hint, through ids rather than through the `<label>` around both —
-   * which named Exclude globs with the hint's whole sentence. Per instance,
-   * because the roots screen draws one card per root.
+   * its hint, rather than through the `<label>` around both — which named
+   * Exclude globs with the hint's whole sentence. The hint is reached by an
+   * id, per instance, because the roots screen draws one card per root.
+   *
+   * O175: the name is an `aria-label` holding those words, where it was an
+   * `aria-labelledby` naming the label's `<span>`. `.field` draws the span
+   * in capitals, and Chromium's accessibility tree named the box in those
+   * capitals; `aria-labelledby` outranks `aria-label`, so it had to go
+   * rather than stay beside it.
    */
   const fieldIds = useId()
   /**
@@ -483,7 +489,7 @@ export function RootRow({ root, probe, onChanged }: RootRowProps) {
               if (next === field.from(root)) return
               save(field, next)
             },
-            'aria-labelledby': `${fieldIds}-${field.name}-label`,
+            'aria-label': field.label,
             'aria-describedby':
               field.hint === undefined
                 ? undefined
@@ -491,7 +497,7 @@ export function RootRow({ root, probe, onChanged }: RootRowProps) {
           }
           return field.multiline ? (
             <label key={field.name} className="field">
-              <span id={`${fieldIds}-${field.name}-label`}>{field.label}</span>
+              <span>{field.label}</span>
               <textarea rows={3} {...boxProps} />
               {field.hint !== undefined && (
                 <small id={`${fieldIds}-${field.name}-hint`}>
@@ -501,7 +507,7 @@ export function RootRow({ root, probe, onChanged }: RootRowProps) {
             </label>
           ) : (
             <label key={field.name} className="field">
-              <span id={`${fieldIds}-${field.name}-label`}>{field.label}</span>
+              <span>{field.label}</span>
               <input type="text" {...boxProps} />
               {field.hint !== undefined && (
                 <small id={`${fieldIds}-${field.name}-hint`}>
@@ -516,6 +522,7 @@ export function RootRow({ root, probe, onChanged }: RootRowProps) {
           <input
             type="number"
             name="scan_interval_secs"
+            aria-label="Scan interval (seconds)"
             min="1"
             step="1"
             defaultValue={root.scan_interval_secs ?? ''}

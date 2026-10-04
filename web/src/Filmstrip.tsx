@@ -504,10 +504,8 @@ export function Filmstrip({
   // `refinedStripUnit` for why a runtime measurement replaces a hardcoded
   // constant at all — in short, a tile measured 58.16 px wide under desktop
   // emulation and 68.19 under mobile, on one machine in one browser, and no
-  // constant can be right in both. **Why the contexts differ is not
-  // established**; O138 is the row that would have to answer it and does not
-  // (it measured this rail at 0 px subtraction at 1440×900), so do not cite
-  // it here as though it did,
+  // constant can be right in both (the difference is a classic scrollbar on
+  // the rail, O145),
   // and `reader.css`'s own comment on `--strip-unit` for what the constant
   // is now: a starting estimate for the first paint and for any tile that
   // has not drawn yet, refined here once real geometry exists.

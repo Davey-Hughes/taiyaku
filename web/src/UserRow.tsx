@@ -370,10 +370,15 @@ export function UserRow({
       )}
 
       <div className="fields">
+        {/* O175: the `aria-label` repeats the label's words because `.field`
+            draws them in capitals, and Chromium's accessibility tree named
+            the control in those capitals. The password box below carries one
+            for the same reason. */}
         <label className="field">
           <span>Role</span>
           <select
             name="role"
+            aria-label="Role"
             value={shown.role}
             disabled={saving || isSelf || lastAdmin}
             onChange={(e) => save({ role: e.target.value })}
@@ -495,6 +500,7 @@ export function UserRow({
           <input
             type="password"
             name="password"
+            aria-label="Set a new password"
             value={password}
             disabled={isSelf || saving}
             onChange={(e) => setPassword(e.target.value)}

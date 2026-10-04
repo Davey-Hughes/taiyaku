@@ -1,6 +1,7 @@
 import { act } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Account } from './Account'
+import { fields } from './testing/fields'
 import { mount, rerender } from './testing/mount'
 
 const noop = () => {}
@@ -1166,6 +1167,37 @@ describe('Account', () => {
       ['H2', 'Signed in'],
     ])
   })
+
+  // Both placements. Only the page's labels are `.field`s, and the panel's
+  // boxes carry the same `aria-label` all the same. One `it()` each:
+  // `testing/mount.ts` holds one root.
+  for (const placement of ['page', 'panel'] as const) {
+    it(`gives each password box its label’s words as its aria-label, as a ${placement} — O175`, async () => {
+      vi.stubGlobal(
+        'fetch',
+        server({
+          '/api/keys': () => json([]),
+          '/api/sessions': () => json([]),
+        }),
+      )
+      const host = mount(
+        placement === 'page' ? (
+          <Account placement="page" onSignedOut={noop} />
+        ) : (
+          <Account visible onClose={noop} onSignedOut={noop} />
+        ),
+      )
+      await settle()
+      // Current and New — the screen's only two labels. Counted, because a
+      // loop over nothing passes.
+      const labelled = fields(host.querySelectorAll('label'))
+      expect(labelled).toHaveLength(2)
+      for (const { written, control } of labelled) {
+        expect(control.getAttribute('type'), written).toBe('password')
+        expect(control.getAttribute('aria-label'), written).toBe(written)
+      }
+    })
+  }
 })
 
 /**

@@ -207,11 +207,15 @@ export function Roots() {
 
       {addFailure !== undefined && <p role="alert">{addFailure}</p>}
       <form onSubmit={submit} className="add-root">
+        {/* O175: the `aria-label` repeats the label's words because `.field`
+            draws them in capitals, and Chromium's accessibility tree named
+            the box in those capitals. */}
         <label className="field">
           <span>Add a root</span>
           <input
             type="text"
             name="path"
+            aria-label="Add a root"
             value={path}
             placeholder="/srv/manga"
             onChange={(e) => setPath(e.target.value)}

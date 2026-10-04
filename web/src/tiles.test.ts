@@ -136,7 +136,7 @@ describe('refinedStripUnit', () => {
   // subtracts no height of its own, and a loaded one-unit tile draws wider
   // than the CSS constant claims — 68.19 px outer width, against
   // `--strip-tile-border: 2px` and a nominal `--strip-unit` of 54. (*Why*
-  // the contexts differ is not established — see `refinedStripUnit`'s doc.)
+  // the contexts differ is in `refinedStripUnit`'s doc.)
   // 68.19 - 2*2 = 64.19, which is more than 0.5 px away from 54, so the
   // measurement is not noise and the corrected value comes back.
   it('returns the measured unit when it differs from the current one past tolerance', () => {

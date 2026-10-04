@@ -292,10 +292,14 @@ export function AcceptForm({
     <form className="accept-form" onSubmit={submit}>
       <h2 className="lab">The rule this writes</h2>
       <div className="rule-fields">
+        {/* O175: each `aria-label` below repeats its label's words because
+            `.field` draws them in capitals, and Chromium's accessibility
+            tree named the control in those capitals. */}
         <label className="field pattern">
           <span>Pattern</span>
           <input
             type="text"
+            aria-label="Pattern"
             value={pattern}
             spellCheck={false}
             onChange={(event) => setPattern(event.target.value)}
@@ -313,6 +317,7 @@ export function AcceptForm({
         <label className="field match-kind">
           <span>Match as</span>
           <select
+            aria-label="Match as"
             value={matchKind}
             onChange={(event) => setMatchKind(event.target.value)}
           >
@@ -327,6 +332,7 @@ export function AcceptForm({
           <span>Edition key</span>
           <input
             type="text"
+            aria-label="Edition key"
             value={editionKey}
             spellCheck={false}
             onChange={(event) => setEditionKey(event.target.value)}
@@ -335,6 +341,7 @@ export function AcceptForm({
         <label className="field edition-kind">
           <span>Edition kind</span>
           <select
+            aria-label="Edition kind"
             value={editionKind}
             onChange={(event) => setEditionKind(event.target.value)}
           >
@@ -349,6 +356,7 @@ export function AcceptForm({
           <span>Language</span>
           <input
             type="text"
+            aria-label="Language"
             value={language}
             spellCheck={false}
             onChange={(event) => setLanguage(event.target.value)}

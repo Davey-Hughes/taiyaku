@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import * as config from './config'
 import { GateContext } from './gate'
 import { deferred, flush } from './testing/async'
+import { fields } from './testing/fields'
 import { mount } from './testing/mount'
 import * as usersApi from './users'
 import { Users } from './Users'
@@ -342,5 +343,16 @@ describe('Users', () => {
 
     expect(host.querySelector('[role="alert"]')).toBeNull()
     expect(host.querySelectorAll('li.user-row')).toHaveLength(2)
+  })
+
+  it('gives each add-form control its label’s words as its aria-label — O175', async () => {
+    const host = await settle()
+    // The form's own three, not the card above it: `UserRow.test.tsx` holds
+    // the card's. Counted, because a loop over nothing passes.
+    const labelled = fields(host.querySelectorAll('form.add-user label.field'))
+    expect(labelled).toHaveLength(3)
+    for (const { written, control } of labelled) {
+      expect(control.getAttribute('aria-label'), written).toBe(written)
+    }
   })
 })

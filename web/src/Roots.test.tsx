@@ -2,6 +2,7 @@ import { act } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import * as config from './config'
 import { Roots } from './Roots'
+import { fields } from './testing/fields'
 import { mount } from './testing/mount'
 
 vi.mock('./config', async (importOriginal) => ({
@@ -453,5 +454,16 @@ describe('Roots', () => {
     })
     expect(host.textContent).not.toContain('/srv/stale')
     expect(host.textContent).toContain('/srv/fresh')
+  })
+
+  it('gives the add-form box its label’s words as its aria-label — O175', async () => {
+    const host = await settle()
+    // The form's own box, not the card above it: `RootRow.test.tsx` holds
+    // the card's. Counted, because a loop over nothing passes.
+    const labelled = fields(host.querySelectorAll('form.add-root label.field'))
+    expect(labelled).toHaveLength(1)
+    for (const { written, control } of labelled) {
+      expect(control.getAttribute('aria-label'), written).toBe(written)
+    }
   })
 })

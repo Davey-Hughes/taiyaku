@@ -152,6 +152,9 @@ export function Users() {
       {addFailure !== undefined && <p role="alert">{addFailure}</p>}
       <form onSubmit={submit} className="add-user">
         <h3>Add an account</h3>
+        {/* O175: each `aria-label` below repeats its label's words because
+            `.field` draws them in capitals, and Chromium's accessibility
+            tree named the control in those capitals. */}
         <label className="field">
           <span>Name</span>
           {/*
@@ -163,6 +166,7 @@ export function Users() {
           <input
             type="text"
             name="new-name"
+            aria-label="Name"
             value={name}
             autoCapitalize="none"
             autoCorrect="off"
@@ -175,6 +179,7 @@ export function Users() {
           <input
             type="password"
             name="new-password"
+            aria-label="Password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
           />
@@ -183,6 +188,7 @@ export function Users() {
           <span>Role</span>
           <select
             name="new-role"
+            aria-label="Role"
             value={role}
             onChange={(e) => setRole(e.target.value)}
           >

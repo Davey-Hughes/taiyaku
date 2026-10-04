@@ -22122,7 +22122,9 @@ found by measurement and none by reading:
    `clientHeight` 97), the image draws 81 tall and a loaded tile 58.16 wide;
    under mobile emulation it subtracts nothing, the image draws 96 tall and
    the tile **68.19** — 10.19 px over the nominal the spacers use.
-   **What subtracts those 15 px is still not established.** A classic
+   **What subtracts those 15 px is still not established.** *(O145 has
+   since established it, on 2026-10-04: a classic scrollbar on the rail. See
+   "O145: what takes 15 px of the rail".)* A classic
    scrollbar is the obvious candidate, but O138 measured this same rail at
    1440×900 at **0 px** — in headless Chromium, where this branch measured in a
    driven, emulated one — recorded that neither this
@@ -24094,3 +24096,252 @@ are the select's label and options — renaming the label, or an option, by
 hand fails it. Browser 161 to 173: `fonts.browser.test.tsx`'s twelve. The local gate: all green, except the
 standing corpus checks, which were not run because no file under `crates/`
 changed.
+
+## O145: what takes 15 px of the rail (2026-10-04)
+
+A classic horizontal scrollbar, drawn on the rail itself. The row asked for
+one rail measured across contexts, and this is that: `main`'s code at
+`399b3e3d`, the production build behind `vite preview`, `taiyaku serve` on a
+scratch copy of the real library's database, and
+`akame-ga-kill----v01--2015--cbz` with the bars up and at least five
+thumbnails drawn. The same expressions took every row. "Taken" is the rail's
+`offsetHeight − clientHeight`. "A plain box" is the same subtraction on a
+100×100 `overflow: scroll` element added to the page for the purpose and
+removed again: what a scrollbar costs any box in that context, whatever the
+rail does. The tile is a one-page portrait tile whose thumbnail had loaded,
+and every such tile in a reading agreed.
+
+Two browsers, on one Linux desktop. **The headless shell** is
+`chrome-headless-shell` 151.0.7922.34, launched by a Node script through
+Playwright 1.62.1: once with Playwright's defaults, which put
+`--hide-scrollbars` on its command line, and once with `ignoreDefaultArgs:
+['--hide-scrollbars']` and no other option changed. **Chrome** is Google
+Chrome 154.0.8037.92 with a window, as the chrome-devtools MCP server and the
+Playwright MCP server each launch it, neither with the flag. Whether the flag
+was there was read off each browser's own command line in `/proc`, not taken
+from the options.
+
+| browser | context | taken | a plain box | rail's offset, client | tile | its image |
+|---|---|---|---|---|---|---|
+| headless shell, flag on | desktop 390×844 | 0 | 0 | 112, 112 | 68.19×100 | 64.19×96 |
+| headless shell, flag on | `hasTouch` only, 390×844 | 0 | 0 | 112, 112 | 68.19×100 | 64.19×96 |
+| headless shell, flag on | `isMobile` only, 390×844 | 0 | 0 | 112, 112 | 68.19×100 | 64.19×96 |
+| headless shell, flag on | `isMobile` and `hasTouch`, 390×844 | 0 | 0 | 112, 112 | 68.19×100 | 64.19×96 |
+| headless shell, flag on | the same at `dpr` 3 | 0 | 0 | 112, 112 | 67.89×100 | 63.89×96 |
+| headless shell, flag on | desktop 1440×900 | 0 | 0 | 176, 176 | 111×164 | 107×160 |
+| headless shell, flag off | desktop 390×844 | **15** | 15 | 112, 97 | 58.16×85 | 54.16×81 |
+| headless shell, flag off | `hasTouch` only, 390×844 | **15** | 15 | 112, 97 | 58.16×85 | 54.16×81 |
+| headless shell, flag off | `isMobile` only, 390×844 | 0 | 0 | 112, 112 | 68.19×100 | 64.19×96 |
+| headless shell, flag off | `isMobile` and `hasTouch`, 390×844 | 0 | 0 | 112, 112 | 68.19×100 | 64.19×96 |
+| headless shell, flag off | the same at `dpr` 3 | 0 | 0 | 112, 112 | 67.89×100 | 63.89×96 |
+| headless shell, flag off | desktop 1440×900 | **15** | 15 | 176, 161 | 101×149 | 96.97×145 |
+| Chrome, chrome-devtools MCP | desktop emulation, 390×844 | **15** | 15 | 112, 97 | 58.16×85 | 54.16×81 |
+| Chrome, chrome-devtools MCP | mobile and touch emulation, 390×844 at `dpr` 3 | 0 | 0 | 112, 112 | 67.89×100 | 63.89×96 |
+| Chrome, chrome-devtools MCP | desktop emulation, 1440×900 | **15** | 15 | 176, 161 | 101×149 | 96.97×145 |
+| Chrome, Playwright MCP | 1440×900 | **15** | 15 | 176, 161 | 101×149 | 96.97×145 |
+
+`dpr` is 1 unless a row says otherwise. The twelve headless rows were taken
+twice and agreed in every cell.
+
+**What the rows say.** The rail loses 15 px in exactly the rows where a plain
+box loses 15 px. Two things decide it. With the flag, nothing is taken in
+any context. Without it, 15 px is taken unless the context is `isMobile`.
+`hasTouch` alone changes nothing, though `(pointer: coarse)` matched there,
+so it is not the pointer; and the width changes nothing, 15 at 390 and at
+1440.
+
+**And it can be seen.** A capture of the rail alone, flag off, desktop
+context at 390 wide: a scrollbar along the rail's bottom edge, an arrow
+button at each end and a thumb between, and the tiles shorter above it. The
+same capture with the flag on, and with the flag off under `isMobile`, shows
+no scrollbar and tiles the height of the rail.
+
+**③ against ④, which is the difference O138 named.** O138's row says both
+were taken "through the same Playwright harness". The two sessions'
+transcripts say otherwise. ③'s reading, on 2026-09-19, was the Playwright MCP
+server's `browser_evaluate` in that server's own browser: 15 taken, a client
+height of 161, a tile button 149 tall and its image 145. ④'s, on 2026-09-20,
+was a Node script calling `chromium.launch({ headless: true })` from
+Playwright 1.62.1: 0 taken, 176, 164 and 160. One library, two launches.
+Both are in the table: the Playwright MCP row is ③'s figures to the pixel,
+and the headless shell with the flag on at 1440×900 is ④'s. What command line
+the MCP server's browser had on 2026-09-19 is not recorded; today it is the
+Chrome above.
+
+**O140's two readings** were the chrome-devtools MCP server's Chrome under
+desktop and under mobile emulation, and both come back: 58.16 wide with 15
+taken, and nothing taken under mobile. The mobile tile is 67.89 here where
+O140 recorded 68.19. The thumbnail in that row is 213×320 and is drawn 63.89
+wide at 96 tall.
+
+**Both `--strip-unit` constants are the scrollbar's case.** They are 97 px
+and 54 px. With the scrollbar drawn the image is 96.97 and 54.16 wide, inside
+`refinedStripUnit`'s tolerance, and the rail writes nothing. Without it the
+rail measures its tiles and writes 107 px at 1440×900 and 64.1875 px at
+390×844 (63.890625 px at `dpr` 3).
+
+**What this corrects in O138.** That row closed recording that neither this
+machine's Chromium nor the user's own desktop shows a classic scrollbar. The
+first of those was the headless launch with the flag on. Google Chrome on
+this machine, opened with a window and no flag, draws one on the rail and
+takes the 15 px.
+
+**The iPhone takes nothing.** Safari 26.6.1 by its user-agent, a 440×736
+viewport at `dpr` 3, on the same build over the tailnet: 0 taken, 0 from a plain box, the rail
+112 and 112, a tile 67.89×100 and its image 63.89×96 from a 213×320
+thumbnail, with `--strip-unit` written as 63.890625 px. The page reported
+this itself: a script added to a scratch copy of the build sends its reading
+as a request, and the server's request log holds it at 00:26:00 on
+2026-10-04 under the iPhone's user-agent, after the strip's thumbnails for
+that page were requested. The same script, in the chrome-devtools MCP
+server's Chrome at 1440×900, reported that table row's figures.
+
+**The user's desktop browser was tried and gave no reading.** Firefox 158 on
+Linux opened the volume and requested seventeen strip thumbnails at 00:26:19,
+and no reading followed. Whether the tab closed first or the script failed
+there is not established.
+
+**Not measured**: Firefox; Safari on macOS; Chrome on any other machine or
+desktop; and why `isMobile` removes the scrollbar, beyond that it does.
+
+## O146 and O181 (2026-10-04)
+
+**O146: the case, and what it was watched failing against.** Written in a
+worktree of its own by a separate agent — a lane — and landed here by
+cherry-pick as `1b300032`. The runs below were made again on that commit, and
+a figure is that run's unless it is marked as the lane's.
+`Filmstrip.browser.test.tsx` gains "a page turn after the reader has flicked
+the rail", one case for each reading direction, at 1440×900 on the file's
+120-tile fixture. Nothing is stubbed: the flick is a write to the rail's own
+`scrollLeft`, the scroll event is the browser's, and the turn is a
+`rerender` on the same instance.
+
+Each row is a hand edit to `Filmstrip.tsx`, the two new cases run alone
+against it, and the file put back:
+
+| | the edit | left-to-right | right-to-left |
+|---|---|---|---|
+| control | none | passes | passes |
+| M1 | the retry effect's body removed | fails: `scrollLeft` still 576, the tile's right edge at 6060 against the rail's 1440 | fails: still −576, the tile's left edge at −4620 against the rail's 0 |
+| M2 | `recenter()` and then `pendingRecentre.current = false`, whatever it found | fails, the same two readings | fails, the same two readings |
+| M3 | `if (recenter())` in place of `if (recenter() && !resetPending)` | passes | passes |
+| control, after the last restore | none | passes | passes |
+
+**Why M3 passes there** was checked rather than reasoned: two more edits
+that change no behaviour and throw on one path each. One throws if the
+centring effect's first attempt found a tile while a flick was pending, and
+both cases pass against it. The other throws if that attempt found none, and
+both cases fail with its message. So in these cases the first attempt finds
+no tile, `recenter()` is false, and the condition is false with the guard or
+without it.
+
+**The lane's readings of the unmutated run**, not taken again here: after
+the mount `scrollLeft` is 5759 (−5758 right-to-left); after the flick 576
+(−576) with tiles 0 to 22 rendered and none current; after the turn 5866
+(−5865) with tiles 45 to 77 rendered and tile 61's box from 669 to 770 in a
+rail from 0 to 1440.
+
+**O181: M3 passes everywhere.** With that edit applied, the whole `node`
+and `jsdom` projects pass, 2,655 tests in 125 files, and the whole browser
+project passes, 175 in 14. The lane also tried a flick of 800 px, which it
+reports left the window at tiles 36 to 68 with tile 61 still inside it, so
+that the first attempt does find a tile: with M3 applied the rail landed at
+`scrollLeft` 5866 and the tile at 669 to 770, the unmutated figures. Those
+are the lane's and were not run again. Why the guard changes nothing there
+is not established.
+
+**Counts**, each against `main`: `node` 1,428 and `jsdom` 1,227, unchanged;
+browser 173 to 175, the two new cases.
+
+## O175 and O182 (2026-10-04)
+
+**O175, by the user's choice on 2026-10-04**: fix it now, without first
+hearing a screen reader. Each control under a `.field` label in `UserRow`,
+`Users`, `Roots`, `RootRow`, `AcceptForm`, `RuleForm` and `Account` carries
+its label's words in an `aria-label`. Written in a worktree of its own by a
+separate agent — a lane — and landed here by cherry-pick as `7b8c1bb8`. A
+figure below is this branch's own run on that commit unless it is marked as
+the lane's.
+
+**On the running app, before and after.** Chrome 154.0.8037.92's own tree,
+read as the chrome-devtools MCP server's page snapshot at 1440×900, on a
+production build served against a scratch copy of the real library's
+database: `main` at `399b3e3d` before, in the copy of that build that
+carried O145's probe script, and `7b8c1bb8` after. On the rules screen
+a rule was selected so that its form was drawn, and on the proposals screen a
+row was opened so that its accept form was.
+
+| screen | before | after |
+|---|---|---|
+| users | ROLE, SET A NEW PASSWORD, NAME, PASSWORD, ROLE | Role, Set a new password, Name, Password, Role |
+| roots | EDITION KEY, DEFAULT KIND, DEFAULT LANGUAGE, EXCLUDE GLOBS (ONE GITIGNORE PATTERN PER LINE), SCAN INTERVAL (SECONDS), ADD A ROOT | Edition key, Default kind, Default language, Exclude globs (one gitignore pattern per line), Scan interval (seconds), Add a root |
+| account | CURRENT, NEW | Current, New |
+| rules, the rule form | KIND, MATCH ON, PATTERN, SERIES, EDITION, KIND, LANGUAGE, NOTE, SCOPE | kind, match on, pattern, series, edition, kind, language, note, scope |
+| proposals, the accept form | PATTERN, MATCH AS, EDITION KEY, EDITION KIND, LANGUAGE | Pattern, Match as, Edition key, Edition kind, Language |
+
+Those are every text box, `<select>` and number box inside `<main>` on each
+screen, bar one: the account screen's key-name box, which no `.field` wraps,
+is "Which device is this for?" both times. A `<select>` is a `combobox` in
+that tree, the number box a `spinbutton`, and the rest `textbox`. After, the
+Exclude globs box still carries its hint as its description, and each label's
+own text is still there in capitals as static text beside the control.
+
+**`RootRow`'s four text boxes change mechanism, which is O165's.** They were
+named through `aria-labelledby`, pointing at the label's `<span>`. With
+`aria-labelledby` put back beside the new `aria-label`, Chromium names all
+four in capitals again, so `aria-label` replaces it. With neither, the name
+runs on through the hint, which is what O165 was filed for:
+"EXCLUDE GLOBS (ONE GITIGNORE PATTERN PER LINE) A trailing slash or bare name
+excludes the directory and everything under it; a '/**' suffix excludes only
+what's inside it." Of the three cases in `RootRow.test.tsx` that read
+`aria-labelledby`, two now read `aria-label` and assert that
+`aria-labelledby` is absent, and the third, about two roots' ids, reads
+`aria-describedby`.
+
+**The tests.** `fieldNames.browser.test.tsx` reads
+`Accessibility.getFullAXTree` for its own frame through `cdp()`, in seven
+cases: the add-account form, an account card, the add-root form, a root card,
+the accept form inside an expanded `ProposalRow`, the rule form and the
+account page. Each first asserts that every `.field` label it mounts computes
+`text-transform: uppercase`, then the list of roles and names. A jsdom case
+beside each of the seven components — two for `Account`, page and panel —
+holds each control's `aria-label` to its label's own words through
+`testing/fields.ts`.
+
+**Watched failing**, by the lane's script run again on `7b8c1bb8`:
+
+- Each of the nineteen places an `aria-label` is written, taken out in turn
+  (`RootRow`'s text boxes put back to `aria-labelledby`): the component's
+  jsdom case fails and one browser case fails, the browser failure showing
+  the capitalised name. `markup.browser.test.tsx`, which reads names as
+  Playwright computes them, passes against `RootRow`'s.
+- `aria-describedby` removed from `RootRow`'s boxes: two O165 jsdom cases and
+  `markup.browser.test.tsx`'s O165 case fail.
+- `text-transform: uppercase` deleted from `admin.css`'s shared block: all
+  seven browser cases fail on their first assertion. With the add-root box's
+  `aria-label` removed as well, Chromium names the box "Add a root".
+- `import './index.css'` deleted from the browser file: all seven fail the
+  same way. A separate run at the head, not the script's.
+
+**O182: what is still named in capitals.** In the same tree after the fix, a
+proposal's two `h2.lab` headings are "WHY THIS WAS PROPOSED" and "THE RULE
+THIS WRITES", and the rule form's `sets` fieldset is the group "SETS".
+`.side-role`'s "SUBJECT" and "PROPOSED TARGET" are static text and name
+nothing.
+
+**No screen reader was run.** The capitals were seen in Chromium's tree and
+nowhere else: what Firefox's and Safari's trees name these controls was not
+read, before or after. What to listen for, with Orca on the desktop or
+VoiceOver on a phone or a Mac:
+
+- In the add-account form, a root card and the rule form, whether each box is
+  announced by its label as written ("Edition key", "match on").
+- Whether a label's own text, read on its own, comes out as words or as
+  letters ("ADD A ROOT", "NEW", "ROLE").
+- On a root card, whether Exclude globs is announced by its name and then its
+  hint.
+- In an open proposal, how the two headings are announced, and in the rule
+  form how the `sets` group is (O182).
+
+**Counts**, each against `main`: `node` 1,428, unchanged; `jsdom` 1,227 to
+1,235, the eight new cases; browser 173 to 182, O146's two and these seven.

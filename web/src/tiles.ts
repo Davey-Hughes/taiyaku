@@ -157,20 +157,18 @@ export function normalizedTileWidth(
  * nominal, the mismatch grows and shrinks as tiles load and the window
  * re-anchors, and it shows up as scroll-position drift.
  *
- * **What subtracts those 15 px is not settled here, and this doc does not
- * pretend otherwise.** A classic scrollbar is the obvious candidate and 15 px
- * is its usual thickness — but O138 measured this rail at 1440×900 in this
- * same engine but in *headless* Chromium, not the driven, emulated one used
- * here, and found the subtraction **0 px**, and recorded that neither
- * this machine's Chromium nor the user's own desktop shows a classic
- * scrollbar. That row left the hook this one is hanging on: *"If the 15 px
- * returns, that unexplained difference is where to start."* It has returned
- * and it is still unexplained.
+ * **What subtracts those 15 px is a classic scrollbar on the rail itself**
+ * (O145, 2026-10-04; `docs/notes.md`, "O145: what takes 15 px of the
+ * rail"). Chromium draws one on the machine this was measured on unless it
+ * was launched with `--hide-scrollbars` or the page is under mobile
+ * emulation, and a plain `overflow: scroll` box loses the same 15 px in
+ * exactly the contexts where the rail does. O138's 0 px at 1440×900 was a
+ * headless launch with Playwright's defaults, which add that flag.
  *
- * The fix does not depend on the answer, which is why it did not wait for
- * one: whatever takes the height, a hardcoded number cannot be right in both
- * conditions, and measuring a tile that has actually drawn is correct without
- * knowing why the contexts differ.
+ * The fix did not wait for that answer and does not depend on it: whatever
+ * takes the height, a hardcoded number cannot be right in both conditions,
+ * and measuring a tile that has actually drawn is correct without knowing
+ * why the contexts differ.
  *
  * **The `tolerance` (0.5 px default) is what lets `Filmstrip`'s effect call
  * this at most once per mount and still converge.** Setting `--strip-unit`
@@ -185,12 +183,9 @@ export function normalizedTileWidth(
  * desktop emulation at `dpr` 1 gives, 54.16 against 54 — and not a
  * difference worth a style write. **It is one case and not necessarily the
  * usual one** — mobile emulation at the same size gives 68.19 against the
- * same 58 nominal, where this function does write. What happens at other
- * sizes is not claimed here: the only width measured at 1440×900 is
- * `Filmstrip.browser.test.tsx`'s, which finds a tile within half a pixel of
- * nominal — so the constant appears right there, and an earlier draft of
- * this comment asserting the opposite was inferring widths from O138's
- * *height* readings, which is not something they can support.
+ * same 58 nominal, where this function does write. At 1440×900 the split is
+ * the same (O145): a loaded tile's image draws 96.97 px wide against the
+ * constant's 97 where the scrollbar is drawn, and 107 where it is not.
  */
 export function refinedStripUnit(
   outerWidth: number,

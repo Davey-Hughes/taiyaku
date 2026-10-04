@@ -67,6 +67,9 @@ export function RuleForm({
     }
   }
 
+  // O175: every control here carries its label's words in an `aria-label`,
+  // because `.field` draws them in capitals and Chromium's accessibility
+  // tree named the control in those capitals.
   const text = (
     name:
       | 'pattern'
@@ -82,6 +85,7 @@ export function RuleForm({
       <input
         type="text"
         name={name}
+        aria-label={label}
         value={draft[name] ?? ''}
         onChange={(e) =>
           setDraft((held) => ({
@@ -102,6 +106,7 @@ export function RuleForm({
         <span>kind</span>
         <select
           name="kind"
+          aria-label="kind"
           value={draft.kind}
           onChange={(e) => {
             const kind = e.target.value
@@ -121,6 +126,7 @@ export function RuleForm({
         <span>match on</span>
         <select
           name="match_on"
+          aria-label="match on"
           value={draft.match_on}
           onChange={(e) => {
             const match_on = e.target.value
@@ -152,6 +158,7 @@ export function RuleForm({
         <span>scope</span>
         <select
           name="root_id"
+          aria-label="scope"
           value={draft.root_id === null ? '' : String(draft.root_id)}
           onChange={(e) => {
             const root_id =
