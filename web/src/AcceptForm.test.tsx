@@ -986,4 +986,12 @@ describe('AcceptForm', () => {
       expect(named.getAttribute('aria-label'), written).toBe(written)
     }
   })
+
+  it('gives its heading its words as its aria-label — O182', async () => {
+    // `.lab` draws it in capitals, and Chromium's tree named it in them.
+    const { host } = await ready()
+    const heading = host.querySelector('.accept-form > h2.lab')
+    expect(heading?.textContent).toBe('The rule this writes')
+    expect(heading?.getAttribute('aria-label')).toBe(heading?.textContent)
+  })
 })

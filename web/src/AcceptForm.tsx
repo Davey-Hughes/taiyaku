@@ -290,7 +290,12 @@ export function AcceptForm({
 
   return (
     <form className="accept-form" onSubmit={submit}>
-      <h2 className="lab">The rule this writes</h2>
+      {/* O182: the `aria-label` repeats the heading's words because `.lab`
+          draws them in capitals, and Chromium's accessibility tree named the
+          heading in those capitals. */}
+      <h2 className="lab" aria-label="The rule this writes">
+        The rule this writes
+      </h2>
       <div className="rule-fields">
         {/* O175: each `aria-label` below repeats its label's words because
             `.field` draws them in capitals, and Chromium's accessibility

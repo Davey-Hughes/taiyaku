@@ -24345,3 +24345,44 @@ VoiceOver on a phone or a Mac:
 
 **Counts**, each against `main`: `node` 1,428, unchanged; `jsdom` 1,227 to
 1,235, the eight new cases; browser 173 to 182, O146's two and these seven.
+
+## O182 and O138 (2026-10-04)
+
+**O182, by the user's choice on 2026-10-04 to give these the same fix as
+O175.** A proposal's two `h2.lab` headings and the rule form's `sets`
+fieldset each carry their words in an `aria-label`.
+
+On the running app, in Chrome 154's own tree, read as the chrome-devtools MCP
+server's verbose page snapshot at 1440×900, on a production build of
+`2f3e7f75` served against a scratch copy of the real library's database: the
+proposals screen, with a row opened, has the headings "Roots" and "Library"
+in the sidebar, "Proposals, 17 open", the two sides' titles, "Why this was
+proposed" and "The rule this writes", and the groups "Theme", "State" and
+"Kind"; the rules screen's groups, with a rule selected, are "Theme" and
+"sets". No heading, group or control on either screen is named in capitals. Before the fix the
+same tree named the two headings "WHY THIS WAS PROPOSED" and "THE RULE THIS
+WRITES" and the group "SETS" (the section above).
+
+**The tests.** `fieldNames.browser.test.tsx` reads the tree for headings and
+groups as well as controls, in two more cases, each first asserting that the
+words are drawn with `text-transform: uppercase`. A jsdom case beside each of
+the three components holds the attribute to the words. Each `aria-label`
+taken out by hand failed its jsdom case and its browser case, the browser
+failure showing "WHY THIS WAS PROPOSED", "THE RULE THIS WRITES" or "SETS".
+With `text-transform: uppercase` deleted from `.proposal-detail .lab`, or from
+`.rule-form .rule-sets legend`, the browser case failed on its first
+assertion.
+
+**What is left in capitals.** The two headings' own text, the `sets`
+legend's, each `.field` label's, and `.side-role`'s "SUBJECT" and "PROPOSED
+TARGET" are static text in capitals in that tree.
+
+**O138, reopened by the user's decision the same day.** O145 found the
+15 px in Google Chrome 154 opened here with a window and without
+`--hide-scrollbars`: at 1440×900 the rail reads 176 against a client height
+of 161, and a tile is 149 tall with its image at 145, where the headless
+shell with `--hide-scrollbars` draws no scrollbar and they are 164 and 160. Its three options are unchanged and none is chosen. Firefox, the
+browser the user opened O145's probe page in, gave no reading.
+
+**Counts**, each against `main`: `node` 1,428, unchanged; `jsdom` 1,235 to
+1,238; browser 182 to 184.

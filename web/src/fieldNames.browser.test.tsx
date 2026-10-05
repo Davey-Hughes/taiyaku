@@ -176,8 +176,8 @@ const drawn = (host: HTMLElement): Array<[string, string]> =>
 const CONTROLS = ['textbox', 'combobox', 'spinbutton']
 
 /**
- * `[role, name]` for every text box, `<select>` and number box in this file's
- * frame, as Chromium's accessibility tree has them and in that tree's order.
+ * `[role, name]` for every node of one of `roles` in this file's frame, as
+ * Chromium's accessibility tree has them and in that tree's order.
  *
  * **This file's frame, found by its address.** The session belongs to the
  * page Vitest runs its test files in, each in an `<iframe>` of its own, so
@@ -186,7 +186,7 @@ const CONTROLS = ['textbox', 'combobox', 'spinbutton']
  * **Walked from the root rather than read off in the order sent**, which is
  * level by level and not the order on screen.
  */
-async function controls(): Promise<Array<[string, string]>> {
+async function named(roles: string[]): Promise<Array<[string, string]>> {
   const session = cdp()
   await session.send('Accessibility.enable')
   try {
@@ -206,7 +206,7 @@ async function controls(): Promise<Array<[string, string]>> {
       const node = byId.get(id)
       if (!node) return
       const role = String(node.role?.value)
-      if (!node.ignored && CONTROLS.includes(role)) {
+      if (!node.ignored && roles.includes(role)) {
         found.push([role, String(node.name?.value ?? '')])
       }
       for (const child of node.childIds ?? []) walk(child)
@@ -218,6 +218,44 @@ async function controls(): Promise<Array<[string, string]>> {
   } finally {
     await session.send('Accessibility.disable')
   }
+}
+
+/** Every text box, `<select>` and number box, by `named`. */
+const controls = () => named(CONTROLS)
+
+/**
+ * An expanded `ProposalRow` for `detail`, with its accept form drawn: the row
+ * is what renders `.proposal-detail`, and the form is drawn inside it.
+ */
+async function expandedProposal(): Promise<HTMLElement> {
+  vi.mocked(curation.proposalDetail).mockResolvedValue(detail)
+  vi.mocked(curation.resolution).mockResolvedValue({
+    also_resolves: [],
+    collateral: [],
+    targets_reached: [],
+    entries_matched: 14,
+    subject_reached: true,
+    works_moved: 14,
+  })
+  const host = await shown(
+    <ProposalRow
+      proposal={{
+        ...proposal,
+        subject_title: 'Go-Toubun no Hanayome - Full Color Edition',
+        target_title: 'Go-Toubun no Hanayome',
+      }}
+      expanded={true}
+      onToggle={() => {}}
+      onChanged={() => {}}
+    />,
+  )
+  // Past the form's own debounce, so its sweep lands inside an `act`.
+  await act(async () => {
+    await new Promise((resolve) => {
+      setTimeout(resolve, 400)
+    })
+  })
+  return host
 }
 
 describe('the name Chromium gives a control under a field label — O175', () => {
@@ -297,35 +335,7 @@ describe('the name Chromium gives a control under a field label — O175', () =>
   })
 
   it('names the accept form’s controls as written', async () => {
-    vi.mocked(curation.proposalDetail).mockResolvedValue(detail)
-    vi.mocked(curation.resolution).mockResolvedValue({
-      also_resolves: [],
-      collateral: [],
-      targets_reached: [],
-      entries_matched: 14,
-      subject_reached: true,
-      works_moved: 14,
-    })
-    // The row itself, expanded: `.proposal-detail` is its element, and the
-    // form is drawn inside it.
-    const host = await shown(
-      <ProposalRow
-        proposal={{
-          ...proposal,
-          subject_title: 'Go-Toubun no Hanayome - Full Color Edition',
-          target_title: 'Go-Toubun no Hanayome',
-        }}
-        expanded={true}
-        onToggle={() => {}}
-        onChanged={() => {}}
-      />,
-    )
-    // Past the form's own debounce, so its sweep lands inside an `act`.
-    await act(async () => {
-      await new Promise((resolve) => {
-        setTimeout(resolve, 400)
-      })
-    })
+    const host = await expandedProposal()
     expect(drawn(host)).toEqual([
       ['Pattern', 'uppercase'],
       ['Match as', 'uppercase'],
@@ -386,5 +396,49 @@ describe('the name Chromium gives a control under a field label — O175', () =>
       // The key-name box: no `.field` wraps it, and its placeholder names it.
       ['textbox', 'Which device is this for?'],
     ])
+  })
+})
+
+/**
+ * O182: the same capitals on two headings and a group. `admin.css` draws a
+ * proposal's two `.lab` headings and the rule form's `sets` legend through
+ * `text-transform: uppercase` as well, and Chromium's tree named them in
+ * those capitals. Each now carries its words in an `aria-label`.
+ *
+ * Each case first asserts that the words are drawn in capitals, for the
+ * reason the field cases above do.
+ */
+describe('the name Chromium gives a heading or a group drawn in capitals — O182', () => {
+  it('names a proposal’s two headings as written', async () => {
+    const host = await expandedProposal()
+    expect(
+      [...host.querySelectorAll('h2.lab')].map((heading) => [
+        heading.textContent,
+        getComputedStyle(heading).textTransform,
+      ]),
+    ).toEqual([
+      ['Why this was proposed', 'uppercase'],
+      ['The rule this writes', 'uppercase'],
+    ])
+    expect(await named(['heading'])).toEqual([
+      // The two sides' titles, which are drawn as written.
+      ['heading', 'Go-Toubun no Hanayome - Full Color Edition'],
+      ['heading', 'Go-Toubun no Hanayome'],
+      ['heading', 'Why this was proposed'],
+      ['heading', 'The rule this writes'],
+    ])
+  })
+
+  it('names the rule form’s sets group as written', async () => {
+    const host = await shown(
+      <RuleForm rule={rule} roots={[root]} onCommit={() => {}} />,
+    )
+    const legend = host.querySelector('.rule-sets > legend')
+    if (!legend) throw new Error('the rule form drew no sets legend')
+    expect([
+      legend.textContent,
+      getComputedStyle(legend).textTransform,
+    ]).toEqual(['sets', 'uppercase'])
+    expect(await named(['group'])).toEqual([['group', 'sets']])
   })
 })

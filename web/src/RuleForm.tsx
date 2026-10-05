@@ -144,7 +144,10 @@ export function RuleForm({
 
       {text('pattern', 'pattern')}
 
-      <fieldset className="rule-sets">
+      {/* O182: the `aria-label` repeats the legend's words because
+          `admin.css` draws them in capitals, and Chromium's accessibility
+          tree named the group in those capitals. */}
+      <fieldset className="rule-sets" aria-label="sets">
         <legend>sets</legend>
         {text('set_series', 'series')}
         {text('set_edition_key', 'edition')}

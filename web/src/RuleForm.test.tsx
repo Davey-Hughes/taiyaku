@@ -368,4 +368,14 @@ describe('RuleForm', () => {
       expect(control.getAttribute('aria-label'), written).toBe(written)
     }
   })
+
+  it('gives the sets group its legend’s words as its aria-label — O182', () => {
+    // The legend is drawn in capitals, and Chromium's tree named the group in
+    // them.
+    const { host } = render()
+    const group = host.querySelector('fieldset.rule-sets')
+    const legend = group?.querySelector(':scope > legend')
+    expect(legend?.textContent).toBe('sets')
+    expect(group?.getAttribute('aria-label')).toBe(legend?.textContent)
+  })
 })

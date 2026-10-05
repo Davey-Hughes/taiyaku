@@ -603,6 +603,14 @@ describe('ProposalRow', () => {
     )
   })
 
+  it('gives the reasons’ heading its words as its aria-label — O182', async () => {
+    // `.lab` draws it in capitals, and Chromium's tree named it in them.
+    const host = await open()
+    const heading = host.querySelector('.proposal-detail > h2.lab')
+    expect(heading?.textContent).toBe('Why this was proposed')
+    expect(heading?.getAttribute('aria-label')).toBe(heading?.textContent)
+  })
+
   it('says plainly that nothing has compared the artwork, and offers a control that admits it has not run', async () => {
     // C3 §2's second decision. Every signal above is about names and counts;
     // an absent number that looked like a low score would be worse than a

@@ -245,7 +245,12 @@ function Evidence({
           <SidePanel side={detail.target} which="target" />
         )}
       </div>
-      <h2 className="lab">Why this was proposed</h2>
+      {/* O182: the `aria-label` repeats the heading's words because `.lab`
+          draws them in capitals, and Chromium's accessibility tree named the
+          heading in those capitals. */}
+      <h2 className="lab" aria-label="Why this was proposed">
+        Why this was proposed
+      </h2>
       <ul className="reasons">
         {detail.reasons.map((reason) => (
           <li key={reason.text}>
