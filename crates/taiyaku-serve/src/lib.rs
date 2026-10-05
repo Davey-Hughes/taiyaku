@@ -46,8 +46,10 @@ mod stamp;
 mod stump;
 mod truth;
 mod users_api;
+mod web;
 mod works;
 
+use std::io::Write as _;
 use std::sync::Arc;
 
 pub use composite::{CompositeSource, StumpSide};
@@ -330,6 +332,32 @@ impl StumpConfig {
     }
 }
 
+/// How [`serve`] runs, beyond the library and the works it serves.
+///
+/// **A struct because `serve` reached its limit.** Its eighth positional
+/// argument was `AuthConfig`, and its doc said a ninth must not be positional.
+/// `--web` was the ninth, and it brought the other six with it rather than
+/// starting a struct of one.
+#[derive(Debug, Clone, Default)]
+pub struct ServeOptions {
+    /// `host:port` to listen on.
+    pub addr: String,
+    /// A Stump instance to read pages from, if one is configured.
+    pub stump: Option<StumpConfig>,
+    /// Where `--log-requests` writes, if it was given.
+    pub log_requests: Option<std::path::PathBuf>,
+    /// Throw away every remembered Stump resolution before resolving again.
+    pub refresh_stump: bool,
+    /// `--cache`: the cache root, overriding `$XDG_CACHE_HOME/taiyaku`.
+    pub cache: Option<std::path::PathBuf>,
+    /// What this server knows about the deployment in front of it.
+    pub auth: crate::session::AuthConfig,
+    /// A built web app (`web/dist`) to serve beside the API — see
+    /// [`crate::web`]. `None` serves the API alone, which is what `vite dev`'s
+    /// proxy expects.
+    pub web: Option<std::path::PathBuf>,
+}
+
 /// Bind and serve until interrupted.
 ///
 /// Separate from `build_router` so the router's behaviour is driven directly,
@@ -358,25 +386,23 @@ impl StumpConfig {
 /// accept-loop failure are both worded `{addr}: {e}`, since a process that
 /// may serve several addresses over its life prints nothing else to say
 /// which one failed.
-/// **Eight parameters, which is one past clippy's limit and is the signal to
-/// stop.** Spec A2's own configuration arrived as a struct rather than as three
-/// more booleans for that reason; the next thing this function needs should join
-/// `AuthConfig` or start a second struct beside it, rather than becoming a ninth
-/// positional argument nobody can read at the call site.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "the eighth is AuthConfig, which is itself the fix; a ninth must not be positional"
-)]
+/// Everything but the library and the works arrives as [`ServeOptions`]; the
+/// next option belongs there too.
 pub async fn serve(
     library: Arc<taiyaku_library::Library>,
     works: Vec<Work>,
-    addr: &str,
-    stump: Option<StumpConfig>,
-    log_requests: Option<std::path::PathBuf>,
-    refresh_stump: bool,
-    cache: Option<std::path::PathBuf>,
-    auth: crate::session::AuthConfig,
+    options: ServeOptions,
 ) -> Result<(), String> {
+    let ServeOptions {
+        addr,
+        stump,
+        log_requests,
+        refresh_stump,
+        cache,
+        auth,
+        web,
+    } = options;
+    let addr = addr.as_str();
     // Opened before anything else so a bad `--log-requests` path is a
     // startup failure that can be acted on, rather than an hour of reading
     // on an iPad producing a silently empty file.
@@ -535,6 +561,9 @@ pub async fn serve(
         Ok(swept) => eprintln!("swept {swept} lapsed login-attempt window(s)"),
         Err(complaint) => eprintln!("could not sweep lapsed login attempts: {complaint}"),
     }
+    // Before the bind, so the `listening` line below is never printed while a
+    // signal would still kill the process outright.
+    let stop = shutdown_signal();
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .map_err(|e| format!("{addr}: {e}"))?;
@@ -570,12 +599,108 @@ pub async fn serve(
     // address a request is held against, and without this every request arrives
     // with none — so a limiter keyed on the client would key every client
     // together.
-    axum::serve(
+    //
+    // **Graceful, but not for ever.** `with_graceful_shutdown` waits for every
+    // open connection to finish, and a client that never does (a half-sent
+    // request head, a download crawling to a slow phone) would hold the
+    // process past the container runtime's own stop timeout, and outside a
+    // container make Ctrl-C appear to hang. So once the stop signal has
+    // resolved, the server gets [`SHUTDOWN_GRACE`] and then `serve` returns
+    // whatever is still open.
+    let (stopping, stop_began) = tokio::sync::oneshot::channel::<()>();
+    let server = axum::serve(
         listener,
-        build_router(state).into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        crate::routes::build_router_serving(state, web.as_deref())
+            .into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
-    .await
-    .map_err(|e| format!("{addr}: {e}"))
+    .with_graceful_shutdown(async move {
+        stop.await;
+        let _ = stopping.send(());
+    });
+    let grace_over = async move {
+        // Resolves with the signal, or with an error if the shutdown future
+        // was dropped unsent (it panicked, or the runtime is going away).
+        // axum runs that future as its own task, so the server ending by
+        // itself does not drop the sender. Whichever way it resolves, the
+        // grace starts.
+        let _ = stop_began.await;
+        tokio::time::sleep(SHUTDOWN_GRACE).await;
+    };
+    tokio::select! {
+        outcome = server => outcome.map_err(|e| format!("{addr}: {e}")),
+        () = grace_over => {
+            // Not `eprintln!`, which panics when nothing reads stderr, and
+            // unwinding from here drops the runtime the normal way, which
+            // waits on blocking tasks.
+            let _ = writeln!(
+                std::io::stderr(),
+                "taiyaku serve: closing connections still open"
+            );
+            Ok(())
+        }
+    }
+}
+
+/// How long [`serve`] lets open connections finish after a stop signal before
+/// it returns regardless.
+///
+/// Chosen to leave room, with the caller's own bound on its runtime, inside
+/// the time `docker stop` allows before it kills the container.
+pub const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Resolves when the process is asked to stop: SIGTERM, which `docker stop`
+/// sends, or SIGINT.
+///
+/// **Needed because `taiyaku` is PID 1 in the image.** The kernel gives PID 1
+/// no default action for a signal it has not installed a handler for, so
+/// without this `docker stop` waits out its grace period and then kills the
+/// process.
+///
+/// **Not an `async fn`, so the handlers exist when this returns** rather than
+/// when the future is first polled. `serve` calls it before it prints
+/// `listening`, which makes that line a promise: a signal sent after it is
+/// caught, not one that races the handler's installation.
+fn shutdown_signal() -> impl std::future::Future<Output = ()> {
+    #[cfg(unix)]
+    let (mut terminate, mut interrupt) = {
+        use tokio::signal::unix::{SignalKind, signal};
+        (
+            signal(SignalKind::terminate()),
+            signal(SignalKind::interrupt()),
+        )
+    };
+    async move {
+        #[cfg(unix)]
+        {
+            // A handler that cannot be installed must not read as a request
+            // to stop, so that arm waits forever and the other decides.
+            let terminated = async {
+                match terminate.as_mut() {
+                    Ok(stream) => stream.recv().await,
+                    Err(_) => std::future::pending().await,
+                }
+            };
+            let interrupted = async {
+                match interrupt.as_mut() {
+                    Ok(stream) => stream.recv().await,
+                    Err(_) => std::future::pending().await,
+                }
+            };
+            tokio::select! {
+                _ = terminated => {},
+                _ = interrupted => {},
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            if tokio::signal::ctrl_c().await.is_err() {
+                std::future::pending::<()>().await;
+            }
+        }
+        // Not `eprintln!`: it panics when nothing reads stderr, and that
+        // panic would drop the sender unsent.
+        let _ = writeln!(std::io::stderr(), "taiyaku serve: stopping");
+    }
 }
 
 /// Throw away every work's remembered Stump resolutions — `--refresh-stump`.

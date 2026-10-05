@@ -116,13 +116,22 @@ had made four volume tails look broken. And what the first fix missed: deriving
 only the *spokes* from the hub scored 96% and left the hub unable to follow a
 boundary only a spoke has, which a reader found at one press.
 
+**It can be deployed.** `taiyaku serve --web DIR` serves the built web app
+beside the API, so one process and one port serve both; a path no route
+matched is the app's, except under `/api` and `/opds`, which keep their 404.
+The repository builds an image (`Dockerfile`), CI pushes it to the forge's
+registry on every merge to `main` whose pipeline passes, after running it,
+and `README.md`'s "Running it on a server" is how it is meant to run on the
+NAS. Spec
+`2026-10-04-day-to-day-deployment-design.md`, Part B.
+
 ## What is built
 
-Six crates, 2237 tests, plus 2,666 in `web/`'s TypeScript — 1,428 in the `node`
+Six crates, 2257 tests, plus 2,666 in `web/`'s TypeScript — 1,428 in the `node`
 project and 1,238 in the `jsdom` one — and a hundred and eighty-four more in a
 **browser** project of its own, no dependencies beyond
 `image`, `zip`, `sha2`, `rayon`, `base64` and `serde`, plus `axum`, `tokio`,
-`tower` and `ureq` in the server, `rusqlite` (features `["backup"]`, against
+`tower`, `tower-http` (feature `fs`, for `--web`) and `ureq` in the server, `rusqlite` (features `["backup"]`, against
 the system libsqlite3 rather than bundled — measured at 1 m 43 s to build
 bundled against 3.06 s on a 32-core machine, against a CI with no cargo cache
 and a ten-minute job budget) in the new `taiyaku-library` crate, which
@@ -195,7 +204,7 @@ unmeasured when the browser is absent. That adds `@vitest/browser`,
 `@vitest/browser-playwright` and `playwright` to `web/`'s dev dependencies;
 the runtime list above is unchanged. That list did not grow for L1: zoom is a CSS transform and
 a page of arithmetic, and its corpus experiment fingerprints with `image` and
-`rayon` exactly as `align` already did. Twenty-four of the 2237 are standing checks gated on
+`rayon` exactly as `align` already did. Twenty-four of the 2257 are standing checks gated on
 `TAIYAKU_CORPUS` — seventeen in `crates/taiyaku-cli/src/corpus.rs`, five in
 `crates/taiyaku-serve/src/corpus.rs`, two in
 `crates/taiyaku-library/src/corpus.rs` (this read "nineteen … ten … five"
@@ -347,7 +356,7 @@ taiyaku align  <a-member>... -- <b-member>...   [--ltr] [--cache DIR] [--stats] 
 taiyaku verify <a-member>... -- <b-member>...   [--out FILE] [--sidecar FILE [--cache DIR] [--ltr]]
 taiyaku topology <hub>... -- <spoke>... -- <spoke>...
 taiyaku lookup <taiyaku.json> <from> <to> <page>...
-taiyaku serve  <taiyaku.json>...                [--addr HOST:PORT] [--db PATH] [--stump-url URL] [--stump-key KEY] [--log-requests FILE] [--refresh-stump] [--cache DIR] [--trusted-proxy CIDR]... [--secure-cookies] [--insecure-cookies] [--allow-web-setup]
+taiyaku serve  <taiyaku.json>...                [--addr HOST:PORT] [--db PATH] [--stump-url URL] [--stump-key KEY] [--log-requests FILE] [--refresh-stump] [--cache DIR] [--trusted-proxy CIDR]... [--secure-cookies] [--insecure-cookies] [--allow-web-setup] [--web DIR]
 taiyaku inventory <root>                        [--min-pages N] [--pattern SPEC]
 taiyaku duplicates <copy>... -- <copy>...       [--against <member>...] [--cache DIR] [--ltr]
 taiyaku credits <member>...                     --sidecar FILE [--against EDITION] [--cache DIR] [--write]

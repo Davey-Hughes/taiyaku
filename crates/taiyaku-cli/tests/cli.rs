@@ -914,3 +914,291 @@ fn library_scan_refuses_a_bare_path_and_exits_nonzero() {
     assert!(message.contains("/srv/manga"), "{message}");
     assert!(message.contains("--add"), "{message}");
 }
+
+/// A value in `TAIYAKU_TRUSTED_PROXY` that is not an address range is refused
+/// before anything binds, and the message names the variable: nothing on the
+/// command line was wrong, so a message naming only the value would send a
+/// reader hunting through their flags.
+///
+/// The variable is set on the child's environment and not on this process's,
+/// which other tests in the binary share.
+#[test]
+fn serve_refuses_a_malformed_trusted_proxy_variable_by_name() {
+    let dir = TempDir::new("cli-serve-proxy-env");
+    let sidecar = fixture(&dir);
+    let db_dir = TempDir::new("cli-serve-proxy-env-db");
+    let mut child = ServeChild(
+        taiyaku()
+            .env("TAIYAKU_TRUSTED_PROXY", "nonsense")
+            .args([
+                "serve",
+                &sidecar,
+                "--db",
+                &db_path(&db_dir),
+                "--addr",
+                "127.0.0.1:0",
+            ])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("the binary runs"),
+    );
+
+    // Polled against a deadline: a server that did not refuse would run
+    // forever, and that must fail this test rather than hang it. The deadline
+    // stays below the runner's own kill so that this message is the one printed.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let status = loop {
+        if let Some(status) = child.try_wait().expect("polls the child") {
+            break status;
+        }
+        if std::time::Instant::now() >= deadline {
+            panic!("the server started with a malformed TAIYAKU_TRUSTED_PROXY");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    let mut stderr = String::new();
+    std::io::Read::read_to_string(&mut child.stderr.take().expect("piped"), &mut stderr)
+        .expect("reads stderr");
+
+    assert_eq!(status.code(), Some(1), "{stderr}");
+    assert!(stderr.contains("TAIYAKU_TRUSTED_PROXY"), "{stderr}");
+    assert!(stderr.contains("nonsense"), "{stderr}");
+}
+
+/// A spawned `taiyaku serve`, killed and reaped when it goes out of scope.
+///
+/// A test that panics between the spawn and its own cleanup (a `kill` that did
+/// not run, a poll that failed) would otherwise leave a server running, which
+/// the test runner reports as a leak and which holds its port.
+struct ServeChild(std::process::Child);
+
+impl std::ops::Deref for ServeChild {
+    type Target = std::process::Child;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for ServeChild {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl Drop for ServeChild {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+/// A `taiyaku serve` that has said it is listening, and what it said.
+///
+/// Field order matters: the child is dropped, so killed, before the
+/// directories it uses are removed.
+#[cfg(unix)]
+struct Serving {
+    child: ServeChild,
+    addr: String,
+    seen: Vec<String>,
+    /// Held so the reader thread keeps draining stderr when `keep_reading` is
+    /// set: a pipe nobody reads any more makes the server's next `eprintln!`
+    /// panic.
+    _heard: std::sync::mpsc::Receiver<String>,
+    _dirs: [TempDir; 3],
+}
+
+/// Starts `taiyaku serve` on a free local port and waits for its `listening`
+/// line.
+///
+/// The wait is bounded below the runner's own kill, so a server that never says
+/// it is listening fails with its message instead of being reported as killed.
+#[cfg(unix)]
+fn serve_until_listening(label: &str) -> Serving {
+    serve_listening(label, true)
+}
+
+/// [`serve_until_listening`], optionally letting go of the child's stderr
+/// once the `listening` line is read, so that the server's next write to it
+/// fails as it does under `serve … 2>&1 | tee log` after Ctrl-C.
+#[cfg(unix)]
+fn serve_listening(label: &str, keep_reading: bool) -> Serving {
+    use std::io::{BufRead, BufReader};
+    use std::process::Stdio;
+    use std::time::{Duration, Instant};
+
+    let dir = TempDir::new(&format!("cli-serve-{label}"));
+    let sidecar = fixture(&dir);
+    let db_dir = TempDir::new(&format!("cli-serve-{label}-db"));
+    let cache = TempDir::new(&format!("cli-serve-{label}-cache"));
+    let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("a free port");
+    let addr = probe.local_addr().expect("reads the port").to_string();
+    drop(probe);
+
+    let mut child = ServeChild(
+        taiyaku()
+            .args([
+                "serve",
+                &sidecar,
+                "--db",
+                &db_path(&db_dir),
+                "--cache",
+                cache.to_str().expect("a utf-8 temp path"),
+                "--addr",
+                &addr,
+            ])
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("the binary runs"),
+    );
+
+    // Read on a thread so a server that never says it is listening fails
+    // this test at the deadline instead of blocking it on a read forever.
+    let stderr = child.stderr.take().expect("stderr is piped");
+    let (said, heard) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+            let listening = line.contains("listening");
+            if said.send(line).is_err() || (listening && !keep_reading) {
+                break;
+            }
+        }
+    });
+    let started = Instant::now();
+    let mut seen = Vec::new();
+    loop {
+        let left = Duration::from_secs(20).saturating_sub(started.elapsed());
+        match heard.recv_timeout(left) {
+            Ok(line) => {
+                let listening = line.contains("listening");
+                seen.push(line);
+                if listening {
+                    break;
+                }
+            }
+            Err(_) => panic!("the server never said it was listening: {seen:?}"),
+        }
+    }
+    Serving {
+        child,
+        addr,
+        seen,
+        _heard: heard,
+        _dirs: [dir, db_dir, cache],
+    }
+}
+
+/// Sends SIGTERM to the child, as `docker stop` does to PID 1.
+#[cfg(unix)]
+fn send_sigterm(child: &ServeChild) {
+    let sent = Command::new("kill")
+        .args(["-TERM", &child.id().to_string()])
+        .status()
+        .expect("kill runs");
+    assert!(sent.success(), "kill -TERM failed: {sent:?}");
+}
+
+/// Waits up to `limit` for the child to exit and returns its status; `None` if
+/// it is still running.
+#[cfg(unix)]
+fn exit_within(
+    child: &mut ServeChild,
+    limit: std::time::Duration,
+) -> Option<std::process::ExitStatus> {
+    let deadline = std::time::Instant::now() + limit;
+    loop {
+        if let Some(status) = child.try_wait().expect("polls the child") {
+            return Some(status);
+        }
+        if std::time::Instant::now() >= deadline {
+            return None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
+/// `docker stop` sends SIGTERM to PID 1, and `taiyaku` is PID 1 in the image.
+/// A process with no handler for it ignores it there, so the stop waits out its
+/// grace period and ends in SIGKILL. Here the signal arrives the same way, and
+/// the server must leave on its own with a success status.
+///
+/// The deadline is long on purpose: a loaded runner makes a slow exit, not a
+/// wrong one, and the test only has to tell "exits" from "never exits". It
+/// stays below the runner's own kill, so that its message is the one printed.
+#[cfg(unix)]
+#[test]
+fn serve_exits_cleanly_on_sigterm() {
+    let mut serving = serve_until_listening("sigterm");
+    send_sigterm(&serving.child);
+
+    let status = exit_within(&mut serving.child, std::time::Duration::from_secs(20))
+        .unwrap_or_else(|| panic!("the server ignored SIGTERM: {:?}", serving.seen));
+    assert!(
+        status.success(),
+        "{status:?} after SIGTERM: {:?}",
+        serving.seen
+    );
+}
+
+/// A client that has sent half a request head and goes quiet must not keep the
+/// server from stopping. Graceful shutdown waits for open connections, and this
+/// one never finishes; a download crawling to a slow phone holds it the same
+/// way. Under `docker stop` the process would be killed at the timeout anyway,
+/// but outside a container Ctrl-C would hang.
+#[cfg(unix)]
+#[test]
+fn serve_exits_on_sigterm_with_a_connection_left_open() {
+    use std::io::Write as _;
+    use std::time::Duration;
+
+    let mut serving = serve_until_listening("sigterm-open");
+    let mut stuck = std::net::TcpStream::connect(&serving.addr).expect("connects");
+    stuck
+        .write_all(b"GET / HTTP/1.1\r\nHost: x\r\n")
+        .expect("sends half a request head");
+    // Let the server accept it before the signal, so the connection is open
+    // when shutdown begins.
+    std::thread::sleep(Duration::from_millis(500));
+
+    send_sigterm(&serving.child);
+
+    let limit = taiyaku_serve::SHUTDOWN_GRACE + Duration::from_secs(5);
+    let status = exit_within(&mut serving.child, limit).unwrap_or_else(|| {
+        panic!(
+            "the server did not exit within {limit:?} of SIGTERM with a connection open: {:?}",
+            serving.seen
+        )
+    });
+    assert!(status.success(), "{status:?}: {:?}", serving.seen);
+    drop(stuck);
+}
+
+/// The same stop, with nothing left to read the server's stderr. The bound on
+/// shutdown must not depend on the shutdown lines being writable: a closed
+/// pipe is what `serve … 2>&1 | tee log` leaves behind when Ctrl-C ends `tee`
+/// too, and the server must still stop within its grace, with success.
+#[cfg(unix)]
+#[test]
+fn serve_exits_on_sigterm_with_a_connection_open_and_stderr_closed() {
+    use std::io::Write as _;
+    use std::time::Duration;
+
+    let mut serving = serve_listening("sigterm-open-no-stderr", false);
+    let mut stuck = std::net::TcpStream::connect(&serving.addr).expect("connects");
+    stuck
+        .write_all(b"GET / HTTP/1.1\r\nHost: x\r\n")
+        .expect("sends half a request head");
+    // Long enough for the reader thread to have let go of the pipe, and for
+    // the server to have accepted the connection.
+    std::thread::sleep(Duration::from_millis(500));
+
+    send_sigterm(&serving.child);
+
+    let limit = taiyaku_serve::SHUTDOWN_GRACE + Duration::from_secs(5);
+    let status = exit_within(&mut serving.child, limit).unwrap_or_else(|| {
+        panic!("the server did not exit within {limit:?} of SIGTERM with stderr closed")
+    });
+    assert!(status.success(), "{status:?}");
+    drop(stuck);
+}

@@ -186,7 +186,7 @@ fn print_usage() {
         "       taiyaku serve  <taiyaku.json>... [--addr HOST:PORT] [--db PATH] \
          [--stump-url URL] [--stump-key KEY] [--log-requests FILE] [--refresh-stump] \
          [--cache DIR] [--trusted-proxy CIDR]... [--secure-cookies] \
-         [--insecure-cookies] [--allow-web-setup]"
+         [--insecure-cookies] [--allow-web-setup] [--web DIR]"
     );
     println!("       taiyaku library import <taiyaku.json> [--db PATH]");
     println!(
@@ -1246,6 +1246,7 @@ fn serve(args: &[String]) -> Result<(), String> {
             "--stump-key",
             "--stump-url",
             "--trusted-proxy",
+            "--web",
         ],
     )?;
     let paths: Vec<PathBuf> = args
@@ -1300,7 +1301,7 @@ fn serve(args: &[String]) -> Result<(), String> {
         }
         (None, None) => None,
     };
-    let auth = serve_auth(args)?;
+    let auth = serve_auth(args, std::env::var("TAIYAKU_TRUSTED_PROXY").ok().as_deref())?;
     let log = option_value(args, "--log-requests", "a path")?.map(PathBuf::from);
     // Read before `load_works` so `serve x.json --cache` with nothing after
     // it is refused for the reason that is actually wrong, rather than for a
@@ -1315,6 +1316,9 @@ fn serve(args: &[String]) -> Result<(), String> {
     // resolves them again. The escape hatch for a book added to Stump after a
     // work first resolved, which nothing here notices on its own.
     let refresh_stump = flag_present(args, "--refresh-stump");
+    // Checked before the library is opened, so a mistyped `--web` is refused
+    // for what is actually wrong.
+    let web = web_root(option_value(args, "--web", "a directory")?)?;
 
     // `taiyaku serve <sidecar>...` keeps working, and now means it: every
     // path it is handed is imported into the real, on-disk library — through
@@ -1336,19 +1340,31 @@ fn serve(args: &[String]) -> Result<(), String> {
             sidecar.work.title
         );
     }
-    tokio::runtime::Runtime::new()
-        .map_err(|e| format!("{e}"))?
-        .block_on(taiyaku_serve::serve(
-            Arc::new(db_library),
-            works,
-            addr,
+    let runtime = tokio::runtime::Runtime::new().map_err(|e| format!("{e}"))?;
+    let outcome = runtime.block_on(taiyaku_serve::serve(
+        Arc::new(db_library),
+        works,
+        taiyaku_serve::ServeOptions {
+            addr: addr.to_string(),
             stump,
-            log,
+            log_requests: log,
             refresh_stump,
             cache,
             auth,
-        ))
+            web,
+        },
+    ));
+    // **Not left to `Drop`**, which waits for every blocking task to finish. A
+    // scan started from the web UI is a detached `spawn_blocking`, and dropping
+    // the runtime under one holds the process until the scan ends.
+    runtime.shutdown_timeout(RUNTIME_SHUTDOWN);
+    outcome
 }
+
+/// How long a stopping server waits for blocking tasks before it exits anyway.
+/// Added to `taiyaku_serve::SHUTDOWN_GRACE`, it must stay inside the container
+/// runtime's stop timeout.
+const RUNTIME_SHUTDOWN: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// `--trusted-proxy`, `--insecure-cookies` and `--allow-web-setup`, read into
 /// what `serve` needs (spec A2 §5 and §6).
@@ -1360,11 +1376,18 @@ fn serve(args: &[String]) -> Result<(), String> {
 /// separate flag rather than a silent default, because the failure it prevents
 /// is invisible: the cookie simply works, and is simply readable.
 ///
+/// `from_environment` is `TAIYAKU_TRUSTED_PROXY`, read by the caller so that
+/// this function's tests never depend on the environment they run in.
+///
 /// # Errors
 ///
 /// Returns an error if a `--trusted-proxy` value is not an address or a CIDR
-/// range, naming which one.
-fn serve_auth(args: &[String]) -> Result<taiyaku_serve::session::AuthConfig, String> {
+/// range, naming which one, or if `TAIYAKU_TRUSTED_PROXY` holds one that is
+/// not, naming the variable.
+fn serve_auth(
+    args: &[String],
+    from_environment: Option<&str>,
+) -> Result<taiyaku_serve::session::AuthConfig, String> {
     let mut trusted_proxies = Vec::new();
     // Repeatable, so it is read by scanning rather than through
     // `option_value` — one household can sit behind two proxies, and a flag
@@ -1383,6 +1406,26 @@ fn serve_auth(args: &[String]) -> Result<taiyaku_serve::session::AuthConfig, Str
                 .parse()
                 .map_err(|why| format!("--trusted-proxy {why}"))?,
         );
+    }
+
+    // **The environment is the container's way in, and a flag still wins.** An
+    // image's command is fixed, so a deployment names its proxy in
+    // `TAIYAKU_TRUSTED_PROXY`; any `--trusted-proxy` replaces that list rather
+    // than adding to it, the same precedence `--stump-url` holds over
+    // `TAIYAKU_STUMP_URL`.
+    if trusted_proxies.is_empty()
+        && let Some(listed) = from_environment
+    {
+        for value in listed
+            .split(|c: char| c == ',' || c.is_whitespace())
+            .filter(|value| !value.is_empty())
+        {
+            trusted_proxies.push(
+                value
+                    .parse()
+                    .map_err(|why| format!("TAIYAKU_TRUSTED_PROXY {why}"))?,
+            );
+        }
     }
 
     // **`Secure` cannot be derived from `--trusted-proxy` alone**, which is what
@@ -1405,6 +1448,33 @@ fn serve_auth(args: &[String]) -> Result<taiyaku_serve::session::AuthConfig, Str
         allow_web_setup: flag_present(args, "--allow-web-setup"),
         trusted_proxies,
     })
+}
+
+/// `--web DIR`: a built web app to serve beside the API.
+///
+/// **Refused at startup when `DIR` holds no `index.html`**, rather than served.
+/// Otherwise every page of the app would answer 404 from a server that looks
+/// healthy in every other way, and the mistake — naming `web/` rather than
+/// `web/dist`, or a tree nobody built — is one a person makes once and should
+/// hear about at once.
+///
+/// # Errors
+///
+/// When `DIR` has no `index.html` in it, naming the directory and the command
+/// that builds one.
+fn web_root(dir: Option<&str>) -> Result<Option<PathBuf>, String> {
+    let Some(dir) = dir else {
+        return Ok(None);
+    };
+    let dir = PathBuf::from(dir);
+    if !dir.join("index.html").is_file() {
+        return Err(format!(
+            "--web {}: there is no index.html in it. Build the app with \
+             `pnpm -C web run build` and name `web/dist`",
+            dir.display()
+        ));
+    }
+    Ok(Some(dir))
 }
 
 /// Canonicalise every sidecar path, open the resolved library, import each

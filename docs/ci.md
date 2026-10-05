@@ -11,6 +11,7 @@ to `.github/workflows/`; using the Forgejo path keeps the intent unambiguous.
 | `test` | `cargo llvm-cov nextest --workspace` — runs the tests under nextest's per-test timeout *and* gates their aggregate coverage — then installs node and runs `scripts/coverage-floor.mjs` over a re-rendered JSON report for the per-file half |
 | `wasm` | builds `taiyaku-core` and `taiyaku-wasm` for `wasm32-unknown-unknown`, builds the browser package with `wasm-pack`, and runs `scripts/smoke-wasm.mjs` against the compiled module |
 | `web` | `pnpm install --frozen-lockfile`, `biome check` (formatting **and** lint), `tsc -b` typecheck, `vitest run --coverage` in `web/`, then `scripts/coverage-floor.mjs` for the per-file half |
+| `docker` | **on pushes to `main` only, after the four above pass**: builds the image in an isolated buildx builder, runs it until its health check passes and probes three paths, then pushes `forge.daveynet.xyz/davey/taiyaku:sha-<7>`, and `:latest` when its commit is main's tip — see "The image job" |
 
 The `test` job installs node for one step and one step only. `rust:1-bookworm`
 carries none, and the per-file floor is a node script because it is the *same*
@@ -1549,7 +1550,9 @@ the job, the day its one import can't be resolved.
 A registered `forgejo-runner` with:
 
 - a label matching `runs-on: docker`
-- Docker support, since every job specifies a `container:`
+- Docker support, since every job but `docker` specifies a `container:`
+- the host's Docker socket in the default job container (`docker_host:
+  automount` in the runner's config), which the `docker` job builds with
 
 The label was `ubuntu-latest` until it was measured. git.daveynet.xyz's runner
 advertises `docker`, so every job asked for a label nothing provided and sat in
@@ -1662,6 +1665,59 @@ the runner's own view of the forge, an address on its container network rather
 than the public hostname — an unauthenticated clone fails against
 `http://forgejo:3000`, not against `git.daveynet.xyz`. The workflow derives the
 clone URL from the variable instead of hard-coding either name.
+
+## The image job
+
+`docker` runs on pushes to `main` only, and only once `lint`, `test`, `wasm`
+and `web` have passed. It is never a required status: branch protection on
+`main` names the four `(pull_request)` contexts, and this job never runs on a
+pull request.
+
+**It sets no `container:`.** It needs a Docker CLI and the host's daemon, not
+a toolchain. The runner's default image has git and curl, and the runner
+automounts the host's socket into it. It installs a static Docker CLI matching
+the NAS's daemon (29.5.3) and buildx 0.34.0, both by checksum.
+
+**It builds in an isolated builder named `taiyaku-builder`**, a
+`docker-container` driver, so nothing it builds is tagged under the registry
+name in the host's image store (the throwaway `taiyaku-ci:<sha7>` is loaded
+there, and removed). A local `:latest` moving underneath WUD would look to WUD like no
+change at all. BuildKit then runs as a container of its own, outside the
+runner's `--cpus 4`, so the builder is capped at four CPUs with
+`cpu-quota=400000` and `cpu-period=100000`.
+
+**It runs the image before pushing it.** The image is loaded under a throwaway
+tag (`taiyaku-ci:<sha7>`) and started. The job waits for its health check to
+report `healthy`, and probes `/read/anything` for 200, `/api/me` for 401 and
+`/api/nothing-here` for 404 through `taiyaku-probe`. It then removes the
+container and the image, and pushes. No other job starts the image, and a
+health check that cannot pass would otherwise reach the NAS on a green
+pipeline.
+
+**Each probe runs under `timeout 10`**, so a server that accepts a connection
+and never answers fails the job quickly instead of holding it until the job's
+own timeout.
+
+**`:latest` moves only for the commit that is still `main`'s tip.** The runner
+takes two jobs at once and nothing serialises them, so an older merge's job can
+finish after a newer one's, and the order in which pushes finish is not the
+order of the merges. Before pushing, the job asks the forge for
+`refs/heads/main` (`git ls-remote origin`, through the clone's authenticated
+remote, under `timeout 30`) and compares it with its own commit. When they
+differ, or when the forge cannot be read, it pushes the `sha-<7>` tag alone and
+says so in the log. That keeps a stale build from taking `:latest` in nearly
+every case; a check followed by a push leaves a small window, in which a newer
+merge can land between the two.
+
+**Two secrets**, `REGISTRY_USER` and `REGISTRY_TOKEN`, hold a forge account and
+a token with package write access. Without them the job fails at
+the `Log in to the forge's registry` step, which runs `docker login` after the
+build and the probe have passed; nothing is pushed.
+
+**Its timeout is 60 minutes**, unlike the others' 10. Nothing has timed a
+cold image build on the NAS, whose i7-9700K is slower per core than the
+workstation and carries other load. A first run also pulls three base images
+and installs the toolchain twice. Re-size the figure from the first real runs.
 
 ## Why the variables say Forgejo and not GitHub
 

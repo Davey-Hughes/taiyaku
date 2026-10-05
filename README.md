@@ -371,6 +371,138 @@ spread one edition joins and another splits is simply lost to it — which is wh
 reports 2.12% on that same volume against the 0.91% above. The two measure the same
 property and are not expected to agree.
 
+## Running it on a server
+
+The repository builds one image: the server, with the web app it serves.
+CI pushes it as `forge.daveynet.xyz/davey/taiyaku:sha-<first 7 of the commit>`
+on every merge to `main` whose pipeline passes, and as `:latest` when that
+commit is main's tip. It listens on 8484
+and runs as uid 99, gid 100 (Unraid's `nobody:users`). It needs three mappings:
+
+| Container | What | Back it up? |
+| --- | --- | --- |
+| `/config` | `taiyaku/library.db` and `taiyaku/backups/`: accounts, reading positions, notes, corrections | yes — it is the only copy |
+| `/cache` | covers, tiles and reading-size pages | no — all of it regenerates |
+| `/library` | the manga | it is your library |
+
+A compose file in the shape this repository is meant to be deployed with:
+
+```yaml
+services:
+  taiyaku:
+    image: forge.daveynet.xyz/davey/taiyaku:latest
+    container_name: taiyaku
+    restart: unless-stopped
+    ports:
+      - 55006:8484
+    environment:
+      TAIYAKU_TRUSTED_PROXY: ""   # empty trusts nobody; fill it in as described below
+    volumes:
+      - /mnt/user/appdata/taiyaku/config:/config
+      - /mnt/user/appdata/taiyaku-cache:/cache
+      - "/mnt/user/media 1/Manga:/library"
+```
+
+`/config` and `/cache` must be writable by 99:100. Create them before the first
+start, because a directory Docker creates for you is `root:root`. A root-owned
+`/config` makes the container exit with a permission error; a root-owned
+`/cache` only warns and keeps serving, regenerating every page each time:
+
+```sh
+mkdir -p /mnt/user/appdata/taiyaku/config /mnt/user/appdata/taiyaku-cache
+chown 99:100 /mnt/user/appdata/taiyaku/config /mnt/user/appdata/taiyaku-cache
+```
+
+A root with `keeps_documents` turned on (it is off by default) writes hand
+corrections beside it, in `.taiyaku/`, and for that its directory must be
+writable by 99:100; when it is not, they stay in the database and the save
+answers `persisted: false`. (Nothing schedules scans yet; a later change adds
+that.)
+
+Give the first account a password from the host, then add the library and
+restart, because the reader lists the works it found at startup (a later
+change removes the need):
+
+```sh
+docker exec -it taiyaku taiyaku library user promote davey
+docker exec taiyaku taiyaku library scan --add /library
+docker restart taiyaku
+```
+
+The first scan reads every archive once to hash it, so on a large library it
+takes as long as reading the whole share.
+
+**The database is in WAL mode**, so a backup tool that copies files must stop
+the container first. `taiyaku library backup` is the alternative that does not
+need one.
+
+**Behind Nginx Proxy Manager**, turn "Cache Assets" and "Block Common
+Exploits" off. The first caches script and font files in a shared cache while
+ignoring `Cache-Control`; the second refuses any query parameter whose value
+starts with `/`. Put this in the host's Advanced tab:
+
+```nginx
+real_ip_header CF-Connecting-IP;
+
+location / {
+    proxy_pass http://192.168.1.69:55006;
+    proxy_http_version 1.1;
+    proxy_set_header Host              $http_host;
+    proxy_set_header X-Forwarded-Host  $http_host;
+    proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Real-IP         $remote_addr;
+    proxy_read_timeout 300s;
+    proxy_send_timeout 300s;
+    proxy_buffering off;
+}
+```
+
+Why the whole `location`, and not just the one header taiyaku needs:
+- A `location /` in the Advanced tab replaces NPM's own, and that is the only
+  way in. NPM's own location sets headers of its own, and nginx then ignores
+  any `proxy_set_header` written at server level.
+- `$http_host`, not `$host`, keeps the port. With `$host`, a proxy on a port
+  other than 443 makes every login answer 403, because the browser's `Origin`
+  carries the port and `Host` would not.
+- `real_ip_header CF-Connecting-IP;` is for a name proxied through Cloudflare.
+  NPM's default reads `X-Real-IP`, which Cloudflare does not send, so without
+  the line taiyaku sees a Cloudflare address for every visitor and its login
+  rate limiter keys them all together. With no Cloudflare in front, the line is
+  harmless. It must sit **outside** the `location` block, as above: nginx
+  applies its real-IP module once per request, at server level first, and NPM
+  already sets `real_ip_header X-Real-IP` at http level, which the server
+  inherits, so a line inside the location loses to an `X-Real-IP` header the
+  visitor supplies. Run `docker exec <NPM's container> nginx -t` after saving
+  (`NginxProxyManager` on this NAS; `docker ps` shows yours).
+
+`TAIYAKU_TRUSTED_PROXY` names the address the proxy's connections arrive from,
+as taiyaku sees it, so there is no value to copy from here. Start with it empty,
+as in the compose block, which starts and trusts nobody (session cookies are not
+marked `Secure` until it is set). Then:
+
+1. Load the site once through the proxy, and read `docker logs taiyaku`. It
+   prints a warning that a request carried `X-Forwarded-For` from an address,
+   and that address is the proxy as taiyaku sees it (usually the Docker
+   network's gateway, not NPM's own address).
+2. Put that address in `TAIYAKU_TRUSTED_PROXY` and recreate the container.
+3. Load the site again. The warning must not appear for the new requests. If a
+   warning still names an address, that address is not covered by the value you
+   set.
+
+Taiyaku prints each of the two warnings once per start, so after step 2 look
+for new lines, not old ones.
+
+Updates arrive through WUD watching `:latest` (labels `wud.watch=true`,
+`wud.watch.digest=true`, `wud.trigger.include=docker.redeploy`). To roll back,
+pin a `:sha-…` tag and remove the labels while it is pinned.
+
+Rolling back across a database migration does not work by pinning alone: an
+older image refuses a database a newer taiyaku has written ("written by a newer
+taiyaku") and, under Docker, restarts in a loop. Go back across a migration by
+restoring a backup taken before it, so before merging a change that migrates
+(WUD redeploys on every merge), run `docker exec taiyaku taiyaku library backup`.
+
 ## Design principles
 
 **The sidecar is the product.** The alignment format is meant to be readable by

@@ -1,0 +1,16 @@
+# The build context is the whole repository, and these are what is large or
+# generated in it. The Dockerfile copies named paths only, so this list is
+# about what is sent to the daemon, not about what reaches the image.
+.git
+target
+corpus
+models
+spike
+mutants.out
+.taiyaku-cache
+.superpowers
+.claude
+web/node_modules
+web/dist
+crates/taiyaku-wasm/pkg
+**/*.jsonl

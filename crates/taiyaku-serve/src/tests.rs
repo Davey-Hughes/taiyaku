@@ -419,12 +419,11 @@ async fn serve_binds_the_address_and_answers_on_it() {
             crate::serve(
                 crate::test_support::library(),
                 works,
-                &addr,
-                None,
-                None,
-                false,
-                Some(cache),
-                crate::session::AuthConfig::default(),
+                crate::ServeOptions {
+                    addr,
+                    cache: Some(cache),
+                    ..crate::ServeOptions::default()
+                },
             )
             .await
         }
@@ -458,6 +457,61 @@ async fn serve_binds_the_address_and_answers_on_it() {
         body.contains("\"t\""),
         "and answer with the works it was given: {body}"
     );
+}
+
+/// `serve` hands `ServeOptions::web` on to the router, which the router's own
+/// tests cannot see: they call `build_router_serving` with a directory
+/// themselves. Through a socket, a deep link answers the app's `index.html`.
+///
+/// `multi_thread` and the poll are `serve_binds_the_address_and_answers_on_it`'s,
+/// for its reasons.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn serve_serves_the_web_app_it_is_given() {
+    let tmp = crate::test_support::Fixture::new("serve-web");
+    let works = vec![crate::test_support::work(&tmp)];
+    let dist = tmp.join("dist");
+    std::fs::create_dir_all(&dist).expect("makes the app directory");
+    std::fs::write(dist.join("index.html"), "<!doctype html><p>the app</p>")
+        .expect("writes index.html");
+
+    let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("a free port");
+    let addr = probe.local_addr().unwrap().to_string();
+    drop(probe);
+    let cache = tmp.join("cache");
+
+    let serving = tokio::spawn({
+        let addr = addr.clone();
+        async move {
+            crate::serve(
+                crate::test_support::library(),
+                works,
+                crate::ServeOptions {
+                    addr,
+                    cache: Some(cache),
+                    web: Some(dist),
+                    ..crate::ServeOptions::default()
+                },
+            )
+            .await
+        }
+    });
+
+    let url = format!("http://{addr}/read/x");
+    let mut answered = None;
+    for _ in 0..100 {
+        if serving.is_finished() {
+            break;
+        }
+        if let Ok(mut r) = ureq::get(&url).call() {
+            answered = Some(r.body_mut().read_to_string().unwrap_or_default());
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    serving.abort();
+
+    let body = answered.expect("serve must answer a deep link when it is given an app");
+    assert!(body.contains("the app"), "{body}");
 }
 
 /// Important 2 (whole-branch review): `serve` builds its `ServeState` from
@@ -520,12 +574,11 @@ async fn serve_caches_covers_and_tiles_under_the_resolved_root() {
             crate::serve(
                 crate::test_support::library(),
                 vec![work],
-                &addr,
-                None,
-                None,
-                false,
-                Some(cache),
-                crate::session::AuthConfig::default(),
+                crate::ServeOptions {
+                    addr,
+                    cache: Some(cache),
+                    ..crate::ServeOptions::default()
+                },
             )
             .await
         }

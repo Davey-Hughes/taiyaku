@@ -40,14 +40,15 @@ taiyaku-read = { path = "../taiyaku-read" }
 # it in via hyper-util — but named directly here so `download.rs`'s idle send
 # timeout can name `tokio::time::timeout` without depending on another
 # crate's feature graph to keep enabling it.
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "time"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "sync", "time"] }
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.7", features = ["fs"] }
 ureq = "3.3.0"
 
 [dev-dependencies]
 # `test-support` for `TempDir`, O117: a directory unique to the process and the
 # call, the one helper every crate's tests share.
 taiyaku-read = { path = "../taiyaku-read", features = ["test-support"] }
-tower = { version = "0.5", features = ["util"] }
 zip = "7.2.0"
 
 [lints]

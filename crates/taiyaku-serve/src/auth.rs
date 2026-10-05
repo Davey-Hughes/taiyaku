@@ -153,8 +153,17 @@ pub(crate) fn client_address(
         .and_then(|last| last.trim().parse().ok())
         .unwrap_or(peer)
 }
-/// Whether a request's `X-Forwarded-For` is being ignored for want of a
-/// `--trusted-proxy`.
+/// Why a request's `X-Forwarded-For` is being ignored, when it is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IgnoredForwarded {
+    /// No `--trusted-proxy` is configured at all.
+    NoProxy,
+    /// Some are configured and none contains the peer that connected.
+    NotListed,
+}
+
+/// The warning for a request whose `X-Forwarded-For` is being ignored, and
+/// which case it is; `None` when nothing is being ignored.
 ///
 /// **Extracted from the `if` it used to be**, because it was a decision inside a
 /// `eprintln!` and nothing could assert on it: mutation testing replaced the
@@ -164,12 +173,54 @@ pub(crate) fn client_address(
 /// to the proxy rather than to a reader — precisely the message that must not
 /// cry wolf.
 ///
-/// The `static SAID` at the call site is what makes it print once, and that
+/// **It names the peer it saw, in both cases.** A value for
+/// `TAIYAKU_TRUSTED_PROXY` that parses but is the wrong address stops the
+/// no-proxy warning and leaves every reader held against the proxy's address;
+/// the second case is what still speaks then. The peer in it is the value to
+/// copy only if it is the proxy: the first unlisted request can come from any
+/// client that reaches the port directly.
+///
+/// The `static`s at the call site are what make each case print once, and that
 /// remains untestable in-process: a second test in the same binary sees an
-/// atomic another test already swapped. Splitting the decision out is what makes
-/// the half that *can* be tested testable.
-fn forwarded_but_untrusted(forwarded: bool, config: &crate::session::AuthConfig) -> bool {
-    forwarded && config.trusted_proxies.is_empty()
+/// atomic another test already swapped. Splitting the decision and the text out
+/// is what makes the half that *can* be tested testable.
+fn ignored_forwarded_warning(
+    forwarded: bool,
+    peer: std::net::IpAddr,
+    config: &crate::session::AuthConfig,
+) -> Option<(IgnoredForwarded, String)> {
+    if !forwarded {
+        return None;
+    }
+    if config.trusted_proxies.is_empty() {
+        return Some((
+            IgnoredForwarded::NoProxy,
+            format!(
+                "WARNING: a request carried X-Forwarded-For from {peer} and no trusted \
+                 proxy (TAIYAKU_TRUSTED_PROXY / --trusted-proxy) is configured, so its \
+                 forwarded address was ignored and every request is being held against \
+                 the proxy's own address. The login rate limit therefore applies to a \
+                 whole account rather than to one client, and anyone can lock a reader \
+                 out. Set TAIYAKU_TRUSTED_PROXY or pass --trusted-proxy naming the proxy."
+            ),
+        ));
+    }
+    if config
+        .trusted_proxies
+        .iter()
+        .any(|range| range.contains(peer))
+    {
+        return None;
+    }
+    Some((
+        IgnoredForwarded::NotListed,
+        format!(
+            "WARNING: a request carried X-Forwarded-For from {peer}, which is not a \
+             trusted proxy (TAIYAKU_TRUSTED_PROXY / --trusted-proxy); its forwarded \
+             address was ignored and the request was held against {peer}. If {peer} \
+             is your proxy, the configured value does not contain it."
+        ),
+    ))
 }
 
 /// [`client_address`], reading the peer and the header off what a handler has.
@@ -206,8 +257,9 @@ pub(crate) fn client_of(
         .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
         .map_or(std::net::IpAddr::from([0, 0, 0, 0]), |info| info.0.ip());
 
-    // **A forwarded header with no trusted proxy configured is a
-    // misconfiguration worth saying out loud, once.** §7 keys the lockout on
+    // **A forwarded header that is being ignored can mean a misconfiguration
+    // worth saying out loud, once per case: no trusted proxy configured, or
+    // a peer that none of the configured ones contains.** §7 keys the lockout on
     // `(address, name)` precisely so one misconfigured client locks out only
     // itself — but behind a proxy that is not named by `--trusted-proxy`, every
     // request arrives from the proxy's own address, so the pair collapses to the
@@ -216,19 +268,20 @@ pub(crate) fn client_of(
     // correct password while another account was unaffected.
     //
     // Not silently trusted instead — that is §6's first row, and would let any
-    // client spoof its address. Said once rather than per request, because a
-    // line per page turn is a line nobody reads. Found by the second
+    // client spoof its address. Said once per case rather than per request,
+    // because a line per page turn is a line nobody reads. Found by the second
     // whole-branch review.
-    if forwarded_but_untrusted(forwarded.is_some(), config) {
-        static SAID: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-        if !SAID.swap(true, std::sync::atomic::Ordering::Relaxed) {
-            eprintln!(
-                "WARNING: a request carried X-Forwarded-For and no --trusted-proxy is \
-                 configured, so it was ignored and every request is being held against \
-                 the proxy's own address. The login rate limit therefore applies to a \
-                 whole account rather than to one client, and anyone can lock a reader \
-                 out. Pass --trusted-proxy CIDR naming the proxy."
-            );
+    if let Some((case, text)) = ignored_forwarded_warning(forwarded.is_some(), peer, config) {
+        static SAID_NO_PROXY: std::sync::atomic::AtomicBool =
+            std::sync::atomic::AtomicBool::new(false);
+        static SAID_NOT_LISTED: std::sync::atomic::AtomicBool =
+            std::sync::atomic::AtomicBool::new(false);
+        let said = match case {
+            IgnoredForwarded::NoProxy => &SAID_NO_PROXY,
+            IgnoredForwarded::NotListed => &SAID_NOT_LISTED,
+        };
+        if !said.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            eprintln!("{text}");
         }
     }
 
@@ -544,7 +597,7 @@ fn cross_site() -> Response {
     (
         StatusCode::FORBIDDEN,
         [(header::CONTENT_TYPE, "application/json")],
-        r#"{"error":"this request's Origin does not match this server. If it sits behind a proxy, that proxy must pass the browser's Host through — or name it with --trusted-proxy so X-Forwarded-Host is believed"}"#,
+        r#"{"error":"this request's Origin does not match this server. If it sits behind a proxy, that proxy must pass the browser's Host through — or name it with --trusted-proxy (or TAIYAKU_TRUSTED_PROXY) so X-Forwarded-Host is believed"}"#,
     )
         .into_response()
 }

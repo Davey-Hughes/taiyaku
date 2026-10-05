@@ -24386,3 +24386,83 @@ browser the user opened O145's probe page in, gave no reading.
 
 **Counts**, each against `main`: `node` 1,428, unchanged; `jsdom` 1,235 to
 1,238; browser 182 to 184.
+
+## Deployable (2026-10-04)
+
+Part B of `2026-10-04-day-to-day-deployment-design.md`. What was measured
+while planning it, and what the plan changed because of it.
+
+**A cold release build** of `taiyaku-cli` at `-j 4`, thin LTO and one codegen
+unit, in a fresh target directory: 234 crates in 103 s on this workstation
+(Ryzen 9 9950X3D), the planning session's reading, with no log kept. The NAS
+is an i7-9700K, 8 cores; nothing was timed there. The image at `90e400d6` built
+locally in 118 s, at 174,012,705 bytes (the first attempt failed: the wasm and
+server stages raced on the shared cargo registry cache, and `sharing=locked` on both
+registry cache mounts fixed it).
+
+**The NAS's Docker** is 29.5.3 (API 1.54). The forge's runner automounts the
+host socket into job containers and caps them at four CPUs, a cap that does
+not reach a buildx `docker-container` builder.
+
+**Nginx Proxy Manager**, read from the running container:
+- `conf.d/include/proxy.conf` sets `Host $host`, `X-Forwarded-Scheme`,
+  `X-Forwarded-Proto`, `X-Forwarded-For` and `X-Real-IP`, and no
+  `X-Forwarded-Host`.
+- Every generated `location /` sets headers of its own, so a server-level
+  `proxy_set_header` in the Advanced tab never reaches it.
+- An Advanced config containing `location / {` replaces the generated one
+  (`internal/nginx.js`, `advancedConfigHasDefaultLocation`).
+- `assets.conf` caches by file extension in a public cache, ignoring
+  `Cache-Control` and `Set-Cookie`.
+- `block-exploits.conf` refuses any query parameter whose value starts with
+  `/`.
+- `nginx.conf` sets `proxy_read_timeout 90s`.
+- The proxy listens on host ports 180 and 1443, which is why the Advanced
+  block uses `$http_host`.
+
+**The library share's permissions**: `/mnt/user/media 1/Manga` is
+`root:root 755`; 73 of its 580 directories cannot be written by uid 99; all
+67,925 files are world-readable. So a read-write mount alone lets the
+container write neither `.taiyaku/` nor the watch probe's file at the root.
+
+**Decided 2026-10-04**:
+- The library's permissions stay as they are (`root:root 755`, 73 of 580
+  directories unwritable by uid 99). The user loosens them only for as long as
+  a write needs. A later part (spec Part E, "pending library writes") will
+  queue the writes until an admin flushes them; with the decision on hand
+  documents below, that means only ComicInfo write-backs.
+- The hostname will be `taiyaku.daveynet.xyz`, proxied through Cloudflare
+  (orange cloud) like the user's other sites. Cloudflare's edge reaches NPM
+  directly, not through the Cloudflare tunnel, so taiyaku is public. This
+  replaces the earlier plan of a name that resolves only inside the network.
+- Client addresses behind Cloudflare, measured read-only on the NAS: NPM's
+  global nginx config trusts private ranges and Cloudflare's published ranges
+  (`set_real_ip_from`, via `conf.d/include/ip_ranges.conf`) but sets
+  `real_ip_header X-Real-IP;`, a header Cloudflare does not send. taiyaku takes
+  the rightmost `X-Forwarded-For` entry (`crates/taiyaku-serve/src/auth.rs`,
+  the `rsplit(',')` near line 152), which would be a Cloudflare edge address,
+  so the login rate limiter would key every visitor together. The fix is
+  `real_ip_header CF-Connecting-IP;` on its own line above the Advanced tab's
+  `location /` block, at server level. Inside the location it loses to a
+  client-supplied `X-Real-IP`, because nginx applies its real-IP module once per
+  request, server level first, and NPM sets `real_ip_header X-Real-IP` at http
+  level, which the server inherits. With the line at
+  server level, NPM's `$remote_addr` becomes the client's address as Cloudflare
+  reports it, for requests from Cloudflare's ranges.
+- Cloudflare caching is not a risk for signed-in content: Cloudflare does not
+  cache a response marked `private`, `no-store` or `no-cache`, and every guarded
+  response carries one (`per_reader_by_default` in `routes.rs` adds
+  `private, no-store` where none is set; pages and downloads send
+  `private, no-cache`: `PAGE_CACHE_CONTROL`, and `download.rs`). Content-hashed
+  `/assets/*` are cached at the edge, which is fine because they are
+  immutable.
+- The NAS trial happens after merge, on the image CI builds and pushes. No
+  image is loaded onto the NAS by hand.
+- Hand-written metadata documents may move into appdata (`/config`) instead of
+  `<root>/.taiyaku/`, so a metadata edit would no longer need the library to be
+  writable. Part E's plan settles the details.
+- Because taiyaku is public, O57 (a burst of concurrent logins can allocate
+  about 9.5 GiB of argon2 memory before the rate limiter bounds it) should be
+  fixed soon after. O58 and O60 matter once other accounts exist.
+- Appdata Backup keeps taiyaku on its stop list and excludes the cache
+  directory.

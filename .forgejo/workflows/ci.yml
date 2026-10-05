@@ -32,7 +32,8 @@ env:
 # need either a composite action, which reintroduces the node problem, or a
 # script from the repository, which is not on disk until after the clone.
 #
-# Every job carries `timeout-minutes: 10`, and it is the outer half of a bound
+# Every job but `docker` carries `timeout-minutes: 10` (that one builds an
+# image, takes 60, and says why where it sets it), and it is the outer half of a bound
 # that has two halves. `.config/nextest.toml` bounds a *test* — precisely, by
 # name, at 60 s. This bounds a *job*, which is the only thing that can catch a
 # hang outside a test: a stalled `curl` in one of the five tool-install steps
@@ -41,7 +42,7 @@ env:
 # 10 minutes is 4.5x the worst honest job observed over the ten runs before
 # this branch (134 s). Measured from the forge's own /actions/tasks API over
 # those ten runs: `test` 32-134 s, `lint` 21-85 s, `wasm` 33-84 s, `web` 9-25 s.
-# Uniform across all four rather than tuned per job, because a per-job number
+# Uniform across those four rather than tuned per job, because a per-job number
 # has to be re-tuned as jobs shift and the only property this number needs is
 # to sit between "any honest run" and "hours".
 #
@@ -492,3 +493,130 @@ jobs:
         # aggregated over its matches, and `perFile` inside one is ignored. Both
         # were tried and measured before this script existed.
         run: node scripts/coverage-floor.mjs
+
+  # Builds the image, runs it until its health check passes, and pushes it —
+  # on `main` only, after the four jobs above pass. Never a required status:
+  # branch protection names the four `(pull_request)` contexts, and this job
+  # does not run on a pull request. See docs/ci.md, "The image job".
+  docker:
+    needs: [lint, test, wasm, web]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: docker
+    # Nothing has timed a cold image build on the NAS. Its i7-9700K is
+    # slower per core than the workstation and carries other load, the wasm
+    # and web stages run beside the server stage, and a first run also pulls
+    # three base images and installs the toolchain twice; the builder's cache
+    # makes later runs far shorter. Re-size it from the first real runs.
+    timeout-minutes: 60
+    # No `container:`, unlike every job above. The runner's default image
+    # carries git and curl, and the runner automounts the host's Docker socket
+    # into it (`docker_host: automount`), which is all this job needs.
+    # redextape's image job runs this way on the same runner.
+    steps:
+      - name: Checkout
+        env:
+          TOKEN: ${{ secrets.FORGEJO_TOKEN }}
+        run: |
+          host="${FORGEJO_SERVER_URL#http://}"; host="${host#https://}"
+          scheme="${FORGEJO_SERVER_URL%%://*}"
+          git init -q .
+          git remote add origin "${scheme}://x-access-token:${TOKEN}@${host}/${FORGEJO_REPOSITORY}.git"
+          git fetch -q --depth 1 origin "$FORGEJO_REF"
+          git checkout -q FETCH_HEAD
+      - name: Install the docker CLI and buildx
+        run: |
+          curl -fsSL -o /tmp/docker.tgz \
+            https://download.docker.com/linux/static/stable/x86_64/docker-29.5.3.tgz
+          echo "34eea64e9c3435f5af1b760827a56a561cd67fc2d6e9cd1813b8bb1e3ff7930b  /tmp/docker.tgz" | sha256sum -c -
+          tar -xzf /tmp/docker.tgz -C /usr/local/bin --strip-components=1 docker/docker
+          mkdir -p "$HOME/.docker/cli-plugins"
+          curl -fsSL -o "$HOME/.docker/cli-plugins/docker-buildx" \
+            https://github.com/docker/buildx/releases/download/v0.34.0/buildx-v0.34.0.linux-amd64
+          echo "0144479d5a1cd710be3464ae898628cfa68033e16b225aef52f81930c45ac9b5  $HOME/.docker/cli-plugins/docker-buildx" | sha256sum -c -
+          chmod +x "$HOME/.docker/cli-plugins/docker-buildx"
+          docker version
+          docker buildx version
+      # An isolated docker-container builder, so nothing under the registry
+      # name lands in the host's image store (the smoke build's `--load` does
+      # tag `taiyaku-ci:$SHORT` there, under another name) — a local `:latest`
+      # moving underneath WUD would look like no change at all. Its cache
+      # volume outlives the container, which is why the stale container is
+      # removed with `docker rm` and never `docker buildx rm`. The name is
+      # this repository's alone: redextape's job removes its own builder by
+      # name the same way. The CPU cap is here because BuildKit runs as its
+      # own container, outside the runner's `--cpus 4`.
+      - name: Set up the isolated builder
+        run: |
+          docker rm -f buildx_buildkit_taiyaku-builder0 >/dev/null 2>&1 || true
+          docker buildx create --name taiyaku-builder --driver docker-container \
+            --driver-opt cpu-period=100000 --driver-opt cpu-quota=400000 --use
+      - name: Name the build
+        id: t
+        env:
+          SHA: ${{ github.sha }}
+        run: echo "short=$(echo "$SHA" | cut -c1-7)" >> "$GITHUB_OUTPUT"
+      - name: Build, and load it under a throwaway tag
+        env:
+          SHORT: ${{ steps.t.outputs.short }}
+        run: |
+          docker buildx build --builder taiyaku-builder --load \
+            --provenance=false --sbom=false -t "taiyaku-ci:$SHORT" .
+      # The image is started here because nothing else ever starts it before
+      # it is deployed: a health check that cannot pass would otherwise ship
+      # on a green pipeline, which is what redextape's own Dockerfile records.
+      - name: Run it until it is healthy, and probe it
+        env:
+          SHORT: ${{ steps.t.outputs.short }}
+        run: |
+          name="taiyaku-ci-$SHORT"
+          docker run -d --name "$name" "taiyaku-ci:$SHORT"
+          status=starting
+          for _ in $(seq 1 30); do
+            status=$(docker inspect -f '{{.State.Health.Status}}' "$name")
+            [ "$status" = healthy ] && break
+            [ "$(docker inspect -f '{{.State.Running}}' "$name")" = true ] || break
+            sleep 2
+          done
+          docker logs "$name"
+          [ "$status" = healthy ]
+          timeout 10 docker exec "$name" taiyaku-probe /read/anything 200
+          timeout 10 docker exec "$name" taiyaku-probe /api/me 401
+          timeout 10 docker exec "$name" taiyaku-probe /api/nothing-here 404
+      - name: Remove the probe container and image
+        if: always()
+        env:
+          SHORT: ${{ steps.t.outputs.short }}
+        run: |
+          docker rm -f "taiyaku-ci-$SHORT" >/dev/null 2>&1 || true
+          docker rmi "taiyaku-ci:$SHORT" >/dev/null 2>&1 || true
+      - name: Log in to the forge's registry
+        env:
+          REGISTRY_USER: ${{ secrets.REGISTRY_USER }}
+          REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+        run: echo "$REGISTRY_TOKEN" | docker login forge.daveynet.xyz -u "$REGISTRY_USER" --password-stdin
+      # `:latest` is moved only by the job whose commit is still main's tip.
+      # The runner takes two jobs at once and nothing serialises them, so an
+      # older merge's job can finish after a newer one's, and whichever push
+      # lands last would own `:latest`. The clone above has an authenticated
+      # `origin`, so the tip is asked of the forge now rather than assumed. A
+      # tip that cannot be read is treated as "not the tip": a `sha-` tag is
+      # always safe, and a stale `:latest` is the thing being kept out. POSIX
+      # `sh -e`: the failing command sits on the left of `||`, and no pipeline
+      # carries the status that matters.
+      - name: Push
+        env:
+          SHORT: ${{ steps.t.outputs.short }}
+          SHA: ${{ github.sha }}
+        run: |
+          tips=$(timeout 30 git ls-remote origin refs/heads/main) || tips=""
+          tip=${tips%%[[:space:]]*}
+          set -- -t "forge.daveynet.xyz/davey/taiyaku:sha-$SHORT"
+          if [ "$tip" = "$SHA" ]; then
+            set -- "$@" -t forge.daveynet.xyz/davey/taiyaku:latest
+          elif [ -z "$tip" ]; then
+            echo "could not confirm this commit is main's tip; pushing sha-$SHORT only, not :latest"
+          else
+            echo "main has moved on (tip: $tip); pushing sha-$SHORT only, not :latest"
+          fi
+          docker buildx build --builder taiyaku-builder --push \
+            --provenance=false --sbom=false "$@" .

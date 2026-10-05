@@ -984,32 +984,49 @@ fn an_over_long_prefix_explains_itself_differently_for_a_mapped_address() {
     );
 }
 
-/// The decision behind the `X-Forwarded-For` warning, extracted from the
-/// `eprintln!` it used to live inside so that it can be asserted at all.
+/// The decision and text behind the `X-Forwarded-For` warning, extracted from
+/// the `eprintln!` they used to live inside so that they can be asserted at all.
 ///
 /// The warning tells an operator that their login rate limit is being applied to
 /// the proxy rather than to a reader. `&&` surviving as `||` meant it fired for
 /// every request from a direct client that sent no such header — and a warning
-/// that cries wolf is the one nobody reads on the day it is right.
+/// that cries wolf is the one nobody reads on the day it is right. The peer it
+/// names is the value an operator copies into `TAIYAKU_TRUSTED_PROXY`, so each
+/// case must carry it.
 #[test]
 fn the_forwarded_warning_fires_only_when_a_header_is_being_ignored() {
+    use crate::auth::{IgnoredForwarded, ignored_forwarded_warning};
+    let peer: std::net::IpAddr = "172.18.0.5".parse().expect("parses");
     let mut config = crate::session::AuthConfig::default();
 
     assert!(
-        !crate::auth::forwarded_but_untrusted(false, &config),
+        ignored_forwarded_warning(false, peer, &config).is_none(),
         "no header means nothing is being ignored, whatever the proxy list says"
     );
-    assert!(
-        crate::auth::forwarded_but_untrusted(true, &config),
-        "a header with no --trusted-proxy is exactly the case worth warning about"
-    );
+    let (case, text) = ignored_forwarded_warning(true, peer, &config)
+        .expect("a header with no --trusted-proxy is exactly the case worth warning about");
+    assert_eq!(case, IgnoredForwarded::NoProxy);
+    assert!(text.contains("172.18.0.5"), "{text}");
+    assert!(text.contains("TAIYAKU_TRUSTED_PROXY"), "{text}");
+    assert!(text.contains("--trusted-proxy"), "{text}");
 
     config.trusted_proxies = vec!["10.0.0.0/8".parse().expect("parses")];
     assert!(
-        !crate::auth::forwarded_but_untrusted(true, &config),
+        ignored_forwarded_warning(false, peer, &config).is_none(),
+        "no header, nothing ignored, with a list configured too"
+    );
+    let (case, text) = ignored_forwarded_warning(true, peer, &config)
+        .expect("a header from a peer the list does not contain is being ignored");
+    assert_eq!(case, IgnoredForwarded::NotListed);
+    assert!(text.contains("172.18.0.5"), "{text}");
+    assert!(text.contains("TAIYAKU_TRUSTED_PROXY"), "{text}");
+    assert!(text.contains("--trusted-proxy"), "{text}");
+
+    let trusted: std::net::IpAddr = "10.1.2.3".parse().expect("parses");
+    assert!(
+        ignored_forwarded_warning(true, trusted, &config).is_none(),
         "a header from a configured proxy is being honoured, not ignored"
     );
-    assert!(!crate::auth::forwarded_but_untrusted(false, &config));
 }
 
 /// `failed` builds the 500 every account route answers when the database

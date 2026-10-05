@@ -2833,6 +2833,19 @@ async fn per_reader_by_default(
 }
 
 pub fn build_router(state: Arc<ServeState>) -> Router {
+    build_router_serving(state, None)
+}
+
+/// [`build_router`], plus — given `web` — the built app in that directory,
+/// answering every path no route matched (see [`crate::web`]).
+///
+/// **A parameter rather than a field on [`ServeState`]**: where the app lives
+/// is fixed for the life of the process and read once, here, while the state
+/// is built by hand across this crate's tests, none of which serve an app.
+pub(crate) fn build_router_serving(
+    state: Arc<ServeState>,
+    web: Option<&std::path::Path>,
+) -> Router {
     let log = state.log.clone();
     let guarded = guarded_routes()
         .into_iter()
@@ -2887,59 +2900,67 @@ pub fn build_router(state: Arc<ServeState>) -> Router {
             router.route(path, handler)
         });
 
-    guarded
-        .merge(open)
-        .layer(axum::middleware::from_fn(
-            move |request: axum::extract::Request, next: axum::middleware::Next| {
-                let log = log.clone();
-                async move {
-                    let Some(log) = log else {
-                        return next.run(request).await;
-                    };
-                    let method = request.method().to_string();
-                    // Path *and* query string: a client asking for
-                    // `?width=1536` is invisible if only `path()` is
-                    // logged, and this server's total absence of resize
-                    // support makes that more important to catch, not less.
-                    let path = request
-                        .uri()
-                        .path_and_query()
-                        .map_or_else(
-                            || request.uri().path(),
-                            axum::http::uri::PathAndQuery::as_str,
-                        )
-                        .to_string();
-                    // Read here, before the request is consumed: by the time
-                    // a response exists, what it was asked with is gone.
-                    // Filtered to `LOGGED_HEADERS` at this end rather than
-                    // in `reqlog`, which deliberately knows nothing about
-                    // `http` types — see `Log::begin`.
-                    let headers = crate::reqlog::LOGGED_HEADERS
-                        .iter()
-                        .filter_map(|name| {
-                            let value = request.headers().get(*name)?.to_str().ok()?;
-                            Some(((*name).to_string(), value.to_string()))
-                        })
-                        .collect();
-                    let started = log.begin(headers);
-                    let response = next.run(request).await;
-                    let status = response.status().as_u16();
-                    // The body's own known length, not the Content-Length
-                    // header: axum sets that header when it serialises the
-                    // response, which is after this middleware has already
-                    // run — so reading the header here reports 0 for every
-                    // request, and bytes-per-page is one of the numbers this
-                    // log exists to produce.
-                    let bytes = {
-                        use axum::body::HttpBody;
-                        response.body().size_hint().exact().unwrap_or(0)
-                    };
-                    log.finish(started, &method, &path, status, bytes);
-                    response
-                }
-            },
-        ))
-        .with_state(state)
+    let mut app = guarded.merge(open);
+    // **After the merge, before the log.** A fallback set on `guarded` would
+    // sit inside `per_reader_by_default` and give the app's files `private,
+    // no-store`; one set after the log layer below would be the only thing
+    // `--log-requests` could not see.
+    if let Some(dir) = web {
+        let web = crate::web::Web::new(dir);
+        app = app.fallback(move |request: axum::extract::Request| web.clone().answer(request));
+    }
+
+    app.layer(axum::middleware::from_fn(
+        move |request: axum::extract::Request, next: axum::middleware::Next| {
+            let log = log.clone();
+            async move {
+                let Some(log) = log else {
+                    return next.run(request).await;
+                };
+                let method = request.method().to_string();
+                // Path *and* query string: a client asking for
+                // `?width=1536` is invisible if only `path()` is
+                // logged, and this server's total absence of resize
+                // support makes that more important to catch, not less.
+                let path = request
+                    .uri()
+                    .path_and_query()
+                    .map_or_else(
+                        || request.uri().path(),
+                        axum::http::uri::PathAndQuery::as_str,
+                    )
+                    .to_string();
+                // Read here, before the request is consumed: by the time
+                // a response exists, what it was asked with is gone.
+                // Filtered to `LOGGED_HEADERS` at this end rather than
+                // in `reqlog`, which deliberately knows nothing about
+                // `http` types — see `Log::begin`.
+                let headers = crate::reqlog::LOGGED_HEADERS
+                    .iter()
+                    .filter_map(|name| {
+                        let value = request.headers().get(*name)?.to_str().ok()?;
+                        Some(((*name).to_string(), value.to_string()))
+                    })
+                    .collect();
+                let started = log.begin(headers);
+                let response = next.run(request).await;
+                let status = response.status().as_u16();
+                // The body's own known length, not the Content-Length
+                // header: axum sets that header when it serialises the
+                // response, which is after this middleware has already
+                // run — so reading the header here reports 0 for every
+                // request, and bytes-per-page is one of the numbers this
+                // log exists to produce.
+                let bytes = {
+                    use axum::body::HttpBody;
+                    response.body().size_hint().exact().unwrap_or(0)
+                };
+                log.finish(started, &method, &path, status, bytes);
+                response
+            }
+        },
+    ))
+    .with_state(state)
 }
 
 #[cfg(test)]

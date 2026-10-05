@@ -1224,13 +1224,14 @@ it mutates only changed code and takes minutes.
 
 ### `crates/taiyaku-serve/src/auth.rs`
 
-- `crates/taiyaku-serve/src/auth.rs:224:12: delete ! in client_of`
-  The `!SAID.swap(true, Ordering::Relaxed)` that makes the `X-Forwarded-For`
-  warning print once per process. Deleting the `!` inverts which call prints, and
-  no in-process test can see it: a second test in the same binary observes an
-  atomic the first already swapped, so any assertion here depends on test order.
+- `crates/taiyaku-serve/src/auth.rs:283:12: delete ! in client_of`
+  The `!said.swap(true, Ordering::Relaxed)` that makes each `X-Forwarded-For`
+  warning print once per process, `said` being one of two statics, one per case.
+  Deleting the `!` inverts which call prints, and no in-process test can see it:
+  a second test in the same binary observes an atomic the first already swapped,
+  so any assertion here depends on test order.
 
-  **The decision it guards is tested.** `forwarded_but_untrusted` was extracted
+  **The decision it guards is tested.** `ignored_forwarded_warning` was extracted
   out of this `if` for exactly that reason and
   `auth::tests::the_forwarded_warning_fires_only_when_a_header_is_being_ignored`
   covers it. What is left is the once-ness, which is the part that is genuinely

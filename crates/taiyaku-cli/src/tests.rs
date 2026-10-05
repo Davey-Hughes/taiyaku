@@ -2567,7 +2567,7 @@ fn serve_refuses_an_unknown_flag() {
         err,
         "serve has no flag `--bogus`; its flags are --addr, --allow-web-setup, --cache, \
              --db, --insecure-cookies, --log-requests, --refresh-stump, \
-             --secure-cookies, --stump-key, --stump-url, --trusted-proxy"
+             --secure-cookies, --stump-key, --stump-url, --trusted-proxy, --web"
     );
 }
 
@@ -2976,7 +2976,7 @@ fn align_write_reports_a_read_error_other_than_not_found() {
 /// `Secure` travels in clear over any non-TLS hop behind it.
 #[test]
 fn a_trusted_proxy_implies_a_secure_cookie() {
-    let auth = super::serve_auth(&argv(&["--trusted-proxy", "10.0.0.0/8"])).expect("parses");
+    let auth = super::serve_auth(&argv(&["--trusted-proxy", "10.0.0.0/8"]), None).expect("parses");
     assert_eq!(auth.trusted_proxies.len(), 1);
     assert!(auth.secure_cookies);
     assert!(!auth.allow_web_setup);
@@ -2988,11 +2988,10 @@ fn a_trusted_proxy_implies_a_secure_cookie() {
 /// works, and is simply readable.
 #[test]
 fn insecure_cookies_overrides_that_implication() {
-    let auth = super::serve_auth(&argv(&[
-        "--trusted-proxy",
-        "10.0.0.0/8",
-        "--insecure-cookies",
-    ]))
+    let auth = super::serve_auth(
+        &argv(&["--trusted-proxy", "10.0.0.0/8", "--insecure-cookies"]),
+        None,
+    )
     .expect("parses");
     assert!(!auth.secure_cookies);
     assert_eq!(auth.trusted_proxies.len(), 1);
@@ -3003,7 +3002,7 @@ fn insecure_cookies_overrides_that_implication() {
 /// what makes `--trusted-proxy` the thing that changes the deployment's mind.
 #[test]
 fn no_flags_trusts_nobody() {
-    let auth = super::serve_auth(&argv(&[])).expect("parses");
+    let auth = super::serve_auth(&argv(&[]), None).expect("parses");
     assert!(auth.trusted_proxies.is_empty());
     assert!(!auth.secure_cookies);
     assert!(!auth.allow_web_setup);
@@ -3014,12 +3013,15 @@ fn no_flags_trusts_nobody() {
 /// command's flag handling exists to refuse.
 #[test]
 fn trusted_proxy_is_repeatable() {
-    let auth = super::serve_auth(&argv(&[
-        "--trusted-proxy",
-        "10.0.0.0/8",
-        "--trusted-proxy",
-        "192.168.1.1",
-    ]))
+    let auth = super::serve_auth(
+        &argv(&[
+            "--trusted-proxy",
+            "10.0.0.0/8",
+            "--trusted-proxy",
+            "192.168.1.1",
+        ]),
+        None,
+    )
     .expect("parses");
     assert_eq!(auth.trusted_proxies.len(), 2);
 }
@@ -3029,15 +3031,94 @@ fn trusted_proxy_is_repeatable() {
 /// own address for the life of the deployment.
 #[test]
 fn a_malformed_trusted_proxy_is_refused_by_name() {
-    let err = super::serve_auth(&argv(&["--trusted-proxy", "not-a-range"])).unwrap_err();
+    let err = super::serve_auth(&argv(&["--trusted-proxy", "not-a-range"]), None).unwrap_err();
     assert!(err.contains("--trusted-proxy"), "{err}");
     assert!(err.contains("not-a-range"), "{err}");
 
-    let err = super::serve_auth(&argv(&["--trusted-proxy", "10.0.0.0/33"])).unwrap_err();
+    let err = super::serve_auth(&argv(&["--trusted-proxy", "10.0.0.0/33"]), None).unwrap_err();
     assert!(err.contains("33"), "{err}");
 
-    let err = super::serve_auth(&argv(&["--trusted-proxy"])).unwrap_err();
+    let err = super::serve_auth(&argv(&["--trusted-proxy"]), None).unwrap_err();
     assert!(err.contains("needs a CIDR range"), "{err}");
+}
+
+/// A container's command is fixed by its image, so a deployment names its
+/// proxy in `TAIYAKU_TRUSTED_PROXY`: comma- or space-separated, and implying
+/// `Secure` exactly as the flag does.
+#[test]
+fn trusted_proxy_falls_back_to_the_environment() {
+    let auth = super::serve_auth(&argv(&[]), Some("172.17.0.0/16, 192.168.1.69")).expect("parses");
+    assert_eq!(auth.trusted_proxies.len(), 2);
+    assert!(auth.trusted_proxies[0].contains("172.17.0.5".parse().unwrap()));
+    assert!(auth.trusted_proxies[1].contains("192.168.1.69".parse().unwrap()));
+    assert!(auth.secure_cookies);
+}
+
+/// Any `--trusted-proxy` on the command line replaces the environment's list
+/// rather than adding to it — the precedence `--stump-url` already holds over
+/// `TAIYAKU_STUMP_URL`.
+#[test]
+fn a_trusted_proxy_flag_replaces_the_environment() {
+    let auth = super::serve_auth(
+        &argv(&["--trusted-proxy", "10.0.0.1"]),
+        Some("172.17.0.0/16"),
+    )
+    .expect("parses");
+    assert_eq!(auth.trusted_proxies.len(), 1);
+    assert!(auth.trusted_proxies[0].contains("10.0.0.1".parse().unwrap()));
+    assert!(!auth.trusted_proxies[0].contains("172.17.0.5".parse().unwrap()));
+}
+
+/// An empty value, or one of separators alone, trusts nobody — what an Unraid
+/// template's blank field hands over.
+#[test]
+fn an_empty_environment_value_trusts_nobody() {
+    for value in ["", " , ,"] {
+        let auth = super::serve_auth(&argv(&[]), Some(value)).expect("parses");
+        assert!(auth.trusted_proxies.is_empty(), "{value:?}");
+        assert!(!auth.secure_cookies, "{value:?}");
+    }
+}
+
+/// A value that is not a range is refused at startup, naming the variable and
+/// the value — the variable, because nothing on the command line was wrong.
+#[test]
+fn a_malformed_environment_value_is_refused_by_name() {
+    let err = super::serve_auth(&argv(&[]), Some("172.17.0.0/16,nonsense")).unwrap_err();
+    assert!(err.contains("TAIYAKU_TRUSTED_PROXY"), "{err}");
+    assert!(err.contains("nonsense"), "{err}");
+}
+
+/// `--web` names a built app, so a directory with no `index.html` is refused
+/// before anything binds — naming the directory and what to build.
+#[test]
+fn web_refuses_a_directory_with_no_index() {
+    let scratch = TempDir::new("serve-web-empty");
+    let dir = scratch.to_str().unwrap();
+    let err = super::web_root(Some(dir)).unwrap_err();
+    assert!(err.contains("--web"), "{err}");
+    assert!(err.contains(dir), "{err}");
+    assert!(err.contains("index.html"), "{err}");
+}
+
+/// A directory holding `index.html` is taken as given, and no flag serves no
+/// app at all.
+#[test]
+fn web_accepts_a_built_app_and_is_off_by_default() {
+    let scratch = TempDir::new("serve-web-built");
+    std::fs::write(scratch.join("index.html"), "<!doctype html>").unwrap();
+    assert_eq!(
+        super::web_root(Some(scratch.to_str().unwrap())).unwrap(),
+        Some(scratch.to_path_buf())
+    );
+    assert_eq!(super::web_root(None).unwrap(), None);
+}
+
+/// `--web` with nothing after it is refused by `option_value`'s own rule.
+#[test]
+fn serve_refuses_web_with_no_directory() {
+    let err = serve(&argv(&["--web"])).unwrap_err();
+    assert_eq!(err, "--web needs a directory, and nothing followed it");
 }
 
 /// **`Secure` must be reachable without `--trusted-proxy`**, which is the flag
@@ -3050,7 +3131,7 @@ fn a_malformed_trusted_proxy_is_refused_by_name() {
 /// whole-branch review, 2026-08-18.
 #[test]
 fn secure_cookies_can_be_asked_for_without_trusting_a_proxy() {
-    let auth = super::serve_auth(&argv(&["--secure-cookies"])).expect("parses");
+    let auth = super::serve_auth(&argv(&["--secure-cookies"]), None).expect("parses");
     assert!(auth.secure_cookies);
     assert!(
         auth.trusted_proxies.is_empty(),
@@ -3062,8 +3143,8 @@ fn secure_cookies_can_be_asked_for_without_trusting_a_proxy() {
 /// exactly one way to end up without `Secure` deliberately.
 #[test]
 fn insecure_cookies_overrides_an_explicit_request_too() {
-    let auth =
-        super::serve_auth(&argv(&["--secure-cookies", "--insecure-cookies"])).expect("parses");
+    let auth = super::serve_auth(&argv(&["--secure-cookies", "--insecure-cookies"]), None)
+        .expect("parses");
     assert!(!auth.secure_cookies);
 }
 
