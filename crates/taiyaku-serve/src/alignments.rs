@@ -9,11 +9,11 @@
 //!
 //! **There is no `load` here, deliberately.** The other three read their
 //! document out of the rows on every request; the alignment document is held
-//! in memory for the life of the process (`Work`'s `RwLock<Arc<Sidecar>>`,
-//! seeded at start from `taiyaku_library::project::sidecar`), because every
-//! page request resolves a counterpart through it. A `load` would be a second
-//! way to read what `Work::sidecar()` already answers, and two of those is how
-//! they come to disagree.
+//! in memory (`Work`'s `RwLock<Arc<Sidecar>>`, read from
+//! `taiyaku_library::project::sidecar` at start and again by every refresh of
+//! a live registry), because every page request resolves a counterpart
+//! through it. A `load` would be a second way to read what `Work::sidecar()`
+//! already answers, and two of those is how they come to disagree.
 //!
 //! **This takes a `&Connection`, where the other three take a `&Library`.**
 //! Not a style difference: `store` is called from inside `Work::update`, which

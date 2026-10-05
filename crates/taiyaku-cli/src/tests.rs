@@ -2663,6 +2663,7 @@ fn serve_works_imports_the_given_path_and_the_work_carries_the_librarys_slug() {
 
     let (library, works) =
         serve_works(std::slice::from_ref(&path), Some(db.to_str().unwrap())).expect("builds works");
+    let works = works.snapshot();
 
     assert_eq!(works.len(), 1, "one path, one work");
     // `slugify("Serve Works Fixture")`: lowercased, non-alphanumerics to
@@ -2697,6 +2698,7 @@ fn serve_works_serves_one_work_when_the_same_path_is_given_twice() {
 
     let (_library, works) = serve_works(&[path.clone(), path.clone()], Some(db.to_str().unwrap()))
         .expect("builds works");
+    let works = works.snapshot();
 
     assert_eq!(
         works.len(),
@@ -2769,6 +2771,7 @@ fn serve_works_skips_a_work_it_cannot_import_and_serves_the_rest() {
 
     let (_library, works) = serve_works(&[bad.clone(), good.clone()], Some(db.to_str().unwrap()))
         .expect("one unimportable work must not abort the start");
+    let works = works.snapshot();
 
     let ids: Vec<&str> = works.iter().map(|w| w.id.as_str()).collect();
     assert_eq!(
@@ -2814,6 +2817,7 @@ fn serve_works_serves_two_sidecars_both_named_taiyaku_json() {
     let (_library, works) =
         serve_works(&[first.clone(), second.clone()], Some(db.to_str().unwrap()))
             .expect("two sidecars sharing a filename must both be served");
+    let works = works.snapshot();
 
     let ids: Vec<&str> = works.iter().map(|w| w.id.as_str()).collect();
     assert_eq!(
@@ -2884,6 +2888,7 @@ fn serve_works_survives_a_hub_that_gained_a_member() {
 
     let (library, works) =
         serve_works(std::slice::from_ref(&path), Some(db.to_str().unwrap())).expect("first start");
+    let works = works.snapshot();
     assert_eq!(works.len(), 1);
     assert_eq!(works[0].sidecar().editions["raw"].members.len(), 1);
     // Explicitly dropped before the second `serve_works` call reopens the
@@ -2912,6 +2917,7 @@ fn serve_works_survives_a_hub_that_gained_a_member() {
 
     let (library, works) = serve_works(std::slice::from_ref(&path), Some(db.to_str().unwrap()))
         .expect("a hub that gained a member must not fail serve's startup");
+    let works = works.snapshot();
     assert_eq!(works.len(), 1, "the same work, not a second one");
     assert_eq!(
         works[0].sidecar().editions["raw"].members.len(),

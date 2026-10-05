@@ -1238,7 +1238,7 @@ fn router_with_material_under_a_withheld_root(
     let works = crate::works::from_library(&library).expect("projects the imported work");
     let state = Arc::new(ServeState {
         library,
-        works,
+        works: crate::Works::fixed(works),
         source: Arc::new(crate::LocalLibrary),
         cache_dir: root.join("covers"),
         log: None,
@@ -1332,7 +1332,7 @@ fn two_works_one_withheld(dir: &std::path::Path) -> (axum::Router, Arc<ServeStat
     let works = crate::works::from_library(&library).expect("projects the imported works");
     let state = Arc::new(ServeState {
         library,
-        works,
+        works: crate::Works::fixed(works),
         source: Arc::new(crate::LocalLibrary),
         cache_dir: root.join("covers"),
         log: None,
@@ -1463,7 +1463,7 @@ fn one_work_two_editions_split_across_roots(
     let works = crate::works::from_library(&library).expect("projects the imported work");
     let state = Arc::new(ServeState {
         library,
-        works,
+        works: crate::Works::fixed(works),
         source: Arc::new(crate::LocalLibrary),
         cache_dir: root.join("covers"),
         log: None,
@@ -1583,7 +1583,7 @@ fn one_work_three_editions_hub_withheld(dir: &std::path::Path) -> (axum::Router,
     let works = crate::works::from_library(&library).expect("projects the imported work");
     let state = Arc::new(ServeState {
         library,
-        works,
+        works: crate::Works::fixed(works),
         source: Arc::new(crate::LocalLibrary),
         cache_dir: root.join("covers"),
         log: None,
@@ -1796,7 +1796,7 @@ async fn every_route_declares_its_grant_posture() {
     // now load-bearing for them: **the role gate refuses first**. Deleting it
     // outright would leave the four with no driven proof at all, which is how
     // a reclassification quietly becomes a hole.
-    let refuses_slug = refuses_state.works[0].id.clone();
+    let refuses_slug = refuses_state.works.snapshot()[0].id.clone();
     let refuses_browser = crate::test_support::fixture_session_cookie(&refuses_state.library);
     let (refuses_edition_id, refuses_member_id): (i64, i64) = {
         let conn = refuses_state.library.conn();
@@ -1945,7 +1945,7 @@ async fn every_route_declares_its_grant_posture() {
     // so both proofs see the identical split.
     let tmp3 = crate::test_support::Fixture::new("grant-posture-split");
     let (split_router, split_state) = one_work_two_editions_split_across_roots(&tmp3);
-    let split_slug = split_state.works[0].id.clone();
+    let split_slug = split_state.works.snapshot()[0].id.clone();
 
     // `Refuses`, again: the withheld half (`raw`) of a work that also keeps
     // a granted half (`en`) must still 404. Only the negative case is
@@ -2321,7 +2321,7 @@ async fn every_route_declares_its_grant_posture() {
     // own doc comment says why `split_router` above cannot drive this case.
     let tmp4 = crate::test_support::Fixture::new("grant-posture-triple-filters");
     let (triple_router, triple_state) = one_work_three_editions_hub_withheld(&tmp4);
-    let triple_slug = triple_state.works[0].id.clone();
+    let triple_slug = triple_state.works.snapshot()[0].id.clone();
     let triple_get = triple_router
         .clone()
         .oneshot(
@@ -2601,7 +2601,7 @@ async fn every_route_declares_its_grant_posture() {
 async fn get_sidecar_names_only_visible_editions() {
     let tmp = crate::test_support::Fixture::new("sidecar-split-leak");
     let (router, state) = one_work_two_editions_split_across_roots(&tmp);
-    let slug = state.works[0].id.clone();
+    let slug = state.works.snapshot()[0].id.clone();
     let credential = crate::test_support::fixture_authorization();
 
     let response = router
@@ -2695,7 +2695,7 @@ async fn list_works_names_only_visible_editions_and_cover() {
 async fn patch_alignments_refuses_a_correction_naming_a_withheld_edition() {
     let tmp = crate::test_support::Fixture::new("patch-write-leak");
     let (router, state) = one_work_two_editions_split_across_roots(&tmp);
-    let slug = state.works[0].id.clone();
+    let slug = state.works.snapshot()[0].id.clone();
     let credential = crate::test_support::fixture_authorization();
 
     let seeded_run = |conn: &rusqlite::Connection| -> (i64, i64, i64, i64) {
@@ -2780,7 +2780,7 @@ async fn patch_alignments_refuses_a_correction_naming_a_withheld_edition() {
 async fn a_restricted_readers_own_etag_round_trips_through_a_correction_between_visible_editions() {
     let tmp = crate::test_support::Fixture::new("grant-posture-triple-etag");
     let (router, state) = one_work_three_editions_hub_withheld(&tmp);
-    let slug = state.works[0].id.clone();
+    let slug = state.works.snapshot()[0].id.clone();
     let credential = crate::test_support::fixture_authorization();
 
     let get_response = router
@@ -2832,7 +2832,7 @@ async fn a_restricted_readers_own_etag_round_trips_through_a_correction_between_
 async fn a_correction_between_visible_editions_omits_the_withheld_one_from_its_response() {
     let tmp = crate::test_support::Fixture::new("grant-posture-triple-response-filter");
     let (router, state) = one_work_three_editions_hub_withheld(&tmp);
-    let slug = state.works[0].id.clone();
+    let slug = state.works.snapshot()[0].id.clone();
     let credential = crate::test_support::fixture_authorization();
 
     let get_response = router
@@ -2896,7 +2896,7 @@ async fn a_correction_between_visible_editions_omits_the_withheld_one_from_its_r
 async fn a_correction_naming_the_withheld_edition_on_the_from_side_is_still_refused() {
     let tmp = crate::test_support::Fixture::new("grant-posture-triple-from-guard");
     let (router, state) = one_work_three_editions_hub_withheld(&tmp);
-    let slug = state.works[0].id.clone();
+    let slug = state.works.snapshot()[0].id.clone();
     let credential = crate::test_support::fixture_authorization();
 
     let get_response = router

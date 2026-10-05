@@ -36,7 +36,8 @@ fn a_source_serves_one_member_at_an_offset_within_it() {
 fn state_walks_a_flat_index_across_member_boundaries() {
     let tmp = crate::test_support::Fixture::new("state-page");
     let state = crate::test_support::state(&tmp);
-    let work = &state.works[0];
+    let held = state.works.snapshot();
+    let work = &held[0];
 
     let count = work.sidecar().editions.get("raw").unwrap().total_pages();
     let first = state.page(work, "raw", 0).unwrap();

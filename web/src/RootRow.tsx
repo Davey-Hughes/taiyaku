@@ -225,8 +225,8 @@ export function RootRow({ root, probe, onChanged }: RootRowProps) {
    *
    * **Its own state rather than folded into `report`.** A removal produces a
    * `DeriveReport` and no `ScanReport` — there was no walk — so pushing it
-   * through `ScanOutcome` would need a cast asserting a `scan` and a `note`
-   * that do not exist. See `RemoveRoot`'s `onRemoved` for why it must reach
+   * through `ScanOutcome` would need a cast asserting a `scan` that
+   * does not exist. See `RemoveRoot`'s `onRemoved` for why it must reach
    * somebody at all. Pass 4 of the whole-branch review.
    */
   const [removalDerive, setRemovalDerive] = useState<Derived | null>(null)

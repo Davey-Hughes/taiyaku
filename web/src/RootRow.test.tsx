@@ -597,7 +597,6 @@ describe('RootRow', () => {
           raised: 0,
           root_removed_mid_derive: 0,
         },
-        note: 'a startup snapshot',
       },
       last_scan_at: '2026-09-04T12:00:00Z',
       last_scan_status: 'ok',

@@ -109,6 +109,29 @@ fn seed_fixture_account(library: &taiyaku_library::Library) {
 pub(crate) fn router_over_a_file_backed_library()
 -> (axum::Router, std::sync::Arc<ServeState>, Fixture) {
     let fixture = Fixture::new("file-backed-library");
+    let library = scanned_file_backed_library(&fixture);
+    let works = crate::Works::fixed(
+        crate::works::from_library(&library).expect("projects the scanned works"),
+    );
+    let (router, state) = router_over(library, works, &fixture);
+    (router, state, fixture)
+}
+
+/// One root, one volume, scanned and derived from a real tree on disk into a
+/// file-backed library: what `router_over_a_file_backed_library` and
+/// `router_over_a_live_library` serve.
+///
+/// Laid out as `{fixture}/tree/Scanned/Scanned - v01/` with the database at
+/// `{fixture}/db/library.db`, which is where [`add_a_volume_elsewhere`]
+/// expects to find both.
+///
+/// # Panics
+///
+/// Panics if the tree cannot be written or the library cannot be opened,
+/// scanned or derived.
+pub(crate) fn scanned_file_backed_library(
+    fixture: &Fixture,
+) -> std::sync::Arc<taiyaku_library::Library> {
     let tree = fixture.path().join("tree");
     let db_dir = fixture.path().join("db");
     write_pages(&tree.join("Scanned").join("Scanned - v01"), 2);
@@ -123,8 +146,14 @@ pub(crate) fn router_over_a_file_backed_library()
         taiyaku_library::scan::scan_root(&conn, &root).expect("scans the tree");
         taiyaku_library::derive::derive(&conn).expect("derives the library");
     }
-    let library = std::sync::Arc::new(library);
-    let works = crate::works::from_library(&library).expect("projects the scanned works");
+    std::sync::Arc::new(library)
+}
+
+fn router_over(
+    library: std::sync::Arc<taiyaku_library::Library>,
+    works: crate::Works,
+    fixture: &Fixture,
+) -> (axum::Router, std::sync::Arc<ServeState>) {
     let state = std::sync::Arc::new(ServeState {
         library,
         works,
@@ -136,7 +165,126 @@ pub(crate) fn router_over_a_file_backed_library()
         library_job: Default::default(),
     });
     let router = authenticating(crate::build_router(state.clone()), &state.library);
+    (router, state)
+}
+
+/// [`router_over_a_file_backed_library`], over a **live** registry: the one
+/// `serve` with no paths builds.
+///
+/// # Panics
+///
+/// As [`scanned_file_backed_library`], and if the scanned works will not
+/// project.
+pub(crate) fn router_over_a_live_library() -> (axum::Router, std::sync::Arc<ServeState>, Fixture) {
+    let fixture = Fixture::new("live-library");
+    let library = scanned_file_backed_library(&fixture);
+    let works = crate::Works::library(&library).expect("projects the scanned works");
+    let (router, state) = router_over(library, works, &fixture);
     (router, state, fixture)
+}
+
+/// A **live** registry over a file-backed library holding one scanned work
+/// with two editions and a solved edge between them: what a correction needs,
+/// and what a refresh re-reads. Answers the work's slug.
+///
+/// # Panics
+///
+/// Panics if the work cannot be imported or projected.
+pub(crate) fn router_over_a_live_library_with_an_edge()
+-> (axum::Router, std::sync::Arc<ServeState>, Fixture, String) {
+    let fixture = Fixture::new("live-library-edge");
+    let shelf = fixture.path().to_string_lossy().into_owned();
+    let db_dir = fixture.path().join("db");
+    std::fs::create_dir_all(&db_dir).expect("creates the database directory");
+    let library = taiyaku_library::Library::open(&db_dir.join("library.db"))
+        .expect("opens a file-backed library");
+    seed_fixture_account(&library);
+    let json = format!(
+        r#"{{
+          "taiyaku": 1,
+          "work": {{ "title": "Edged", "reading": "rtl" }},
+          "editions": {{
+            "raw": {{ "label": "Raw", "members": [
+              {{ "path": "{shelf}/raw/c1.cbz", "sha256": "x", "pages": 2 }},
+              {{ "path": "{shelf}/raw/c2.cbz", "sha256": "y", "pages": 2 }}
+            ], "spreads": [] }},
+            "en": {{ "label": "En", "members": [
+              {{ "path": "{shelf}/en/d1.cbz", "sha256": "p", "pages": 2 }},
+              {{ "path": "{shelf}/en/d2.cbz", "sha256": "q", "pages": 2 }}
+            ], "spreads": [] }}
+          }},
+          "hub": "raw",
+          "alignments": []
+        }}"#
+    );
+    {
+        let conn = library.conn();
+        let doc = taiyaku_core::Sidecar::from_json(&json).expect("fixture sidecar parses");
+        let work_id =
+            taiyaku_library::import::scanned(&conn, &doc, None).expect("import as a scan");
+        conn.execute(
+            "INSERT INTO alignment (work_id, from_key, to_key, by) VALUES (?1, 'raw', 'en', 'solver')",
+            [work_id],
+        )
+        .expect("writes the solved edge");
+        let alignment_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO run (alignment_id, ordinal, a_start_page, a_end_page, b_start_page, b_end_page)
+             VALUES (?1, 0, 0, 3, 0, 3)",
+            [alignment_id],
+        )
+        .expect("writes the run");
+    }
+    let library = std::sync::Arc::new(library);
+    let works = crate::Works::library(&library).expect("projects the work");
+    let slug = works.snapshot()[0].id.clone();
+    let (router, state) = router_over(library, works, &fixture);
+    (router, state, fixture, slug)
+}
+
+/// Write `volume` beside the fixture's first volume, then scan and derive it
+/// through a **separate** `Library` over the same file, which is another
+/// process as far as the server's own connections can tell. Answers the
+/// slug the new volume derived to.
+///
+/// # Panics
+///
+/// Panics if the volume cannot be written, scanned or derived, or if it
+/// derives into the first volume's work rather than one of its own.
+pub(crate) fn add_a_volume_elsewhere(fixture: &Fixture, volume: &str) -> String {
+    let tree = fixture.path().join("tree");
+    write_pages(&tree.join("Scanned").join(volume), 3);
+    let other = taiyaku_library::Library::open(&fixture.path().join("db").join("library.db"))
+        .expect("a second library over the same file");
+    let conn = other.conn();
+    let root = taiyaku_library::scan::roots(&conn)
+        .expect("lists the roots")
+        .into_iter()
+        .next()
+        .expect("the fixture's one root");
+    taiyaku_library::scan::scan_root(&conn, &root).expect("scans the tree again");
+    taiyaku_library::derive::derive(&conn).expect("derives the new volume");
+    let slug: String = conn
+        .query_row(
+            "SELECT w.slug FROM work w JOIN edition e ON e.work_id = w.id \
+             JOIN member m ON m.edition_id = e.id WHERE m.path LIKE ?1",
+            [format!("%{volume}%")],
+            |row| row.get(0),
+        )
+        .expect("the new volume derived to a work");
+    let first: String = conn
+        .query_row(
+            "SELECT w.slug FROM work w JOIN edition e ON e.work_id = w.id \
+             JOIN member m ON m.edition_id = e.id WHERE m.path LIKE '%Scanned - v01%'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("the first volume's work");
+    assert_ne!(
+        slug, first,
+        "the new volume must derive to a work of its own, not join the first"
+    );
+    slug
 }
 
 /// [`router_over_a_file_backed_library`], with the fixture account demoted to
@@ -166,7 +314,7 @@ pub(crate) fn router_over_a_file_backed_library_as_a_reader()
 pub(crate) fn state(root: &std::path::Path) -> ServeState {
     ServeState {
         library: library(),
-        works: vec![work(root)],
+        works: crate::Works::fixed(vec![work(root)]),
         source: std::sync::Arc::new(crate::LocalLibrary),
         cache_dir: root.join("covers"),
         log: None,
@@ -184,7 +332,7 @@ pub(crate) fn state(root: &std::path::Path) -> ServeState {
 /// and the pages a correction addresses really exist.
 pub(crate) fn state_with_two_editions(root: &std::path::Path) -> ServeState {
     let mut state = state(root);
-    let path = state.works[0].path.clone();
+    let path = state.works.snapshot()[0].path.clone();
     let json = r#"{
           "taiyaku": 1,
           "work": { "title": "T", "reading": "rtl" },
@@ -204,11 +352,11 @@ pub(crate) fn state_with_two_editions(root: &std::path::Path) -> ServeState {
           ]
         }"#;
     std::fs::write(&path, json).unwrap();
-    state.works = vec![crate::Work::new(
+    state.works = crate::Works::fixed(vec![crate::Work::new(
         "t".into(),
         path,
         taiyaku_core::Sidecar::from_json(json).unwrap(),
-    )];
+    )]);
     state
 }
 
@@ -388,7 +536,7 @@ fn state_over(
 ) -> std::sync::Arc<ServeState> {
     std::sync::Arc::new(ServeState {
         library: library(),
-        works: vec![work],
+        works: crate::Works::fixed(vec![work]),
         source,
         cache_dir: fixture.path().join("covers"),
         log: None,
@@ -692,7 +840,7 @@ pub(crate) async fn router_over_a_library() -> (axum::Router, std::sync::Arc<Ser
     let works = works_in(&library);
     let state = std::sync::Arc::new(ServeState {
         library,
-        works,
+        works: crate::Works::fixed(works),
         source: std::sync::Arc::new(crate::LocalLibrary),
         cache_dir: fixture.join("covers"),
         log: None,
@@ -777,7 +925,7 @@ fn two_editions_in_a_library(
     let source = source(&library);
     let state = std::sync::Arc::new(ServeState {
         library,
-        works,
+        works: crate::Works::fixed(works),
         source,
         cache_dir: fixture.path().join("covers"),
         log: None,
@@ -961,7 +1109,7 @@ pub(crate) fn router_over_a_scanned_work() -> (axum::Router, std::sync::Arc<Serv
     let works = crate::works::from_library(&library).expect("projects the scanned work");
     let state = std::sync::Arc::new(ServeState {
         library,
-        works,
+        works: crate::Works::fixed(works),
         source: std::sync::Arc::new(crate::LocalLibrary),
         cache_dir: fixture.join("covers"),
         log: None,
@@ -1131,7 +1279,7 @@ fn router_over_a_written_tree(
     let works = crate::works::from_library(&library).expect("projects the scanned works");
     let state = std::sync::Arc::new(ServeState {
         library,
-        works,
+        works: crate::Works::fixed(works),
         // Beside the scanned tree rather than inside it: one that appeared
         // under the root would be material a later scan walked.
         cache_dir: fixture.join("covers"),
@@ -1208,7 +1356,7 @@ pub(crate) fn router_over_a_scanned_cbz() -> (axum::Router, std::sync::Arc<Serve
     let works = crate::works::from_library(&library).expect("projects the scanned works");
     let state = std::sync::Arc::new(ServeState {
         library,
-        works,
+        works: crate::Works::fixed(works),
         // Outside the scanned tree, so nothing this creates is material a
         // later scan walks — `router_over_a_scanned_tree`'s own reasoning.
         cache_dir: fixture.path().join("covers"),
@@ -1400,7 +1548,7 @@ pub(crate) fn state_with_two_scanned_roots() -> (axum::Router, std::sync::Arc<Se
     );
     let state = std::sync::Arc::new(ServeState {
         library,
-        works,
+        works: crate::Works::fixed(works),
         source: std::sync::Arc::new(crate::LocalLibrary),
         cache_dir: fixture.join("covers"),
         log: None,
@@ -1520,7 +1668,7 @@ pub(crate) fn router_over_two_scanned_volumes_of_one_series()
     );
     let state = std::sync::Arc::new(ServeState {
         library,
-        works,
+        works: crate::Works::fixed(works),
         source: std::sync::Arc::new(crate::LocalLibrary),
         cache_dir: fixture.join("covers"),
         log: None,
@@ -1599,7 +1747,7 @@ pub(crate) fn router_over_two_scanned_volumes_of_one_series_across_two_roots() -
     );
     let state = std::sync::Arc::new(ServeState {
         library,
-        works,
+        works: crate::Works::fixed(works),
         source: std::sync::Arc::new(crate::LocalLibrary),
         cache_dir: fixture.join("covers"),
         log: None,
@@ -1699,7 +1847,7 @@ pub(crate) fn router_over_two_scanned_volumes_of_one_series_across_two_roots_and
     );
     let state = std::sync::Arc::new(ServeState {
         library,
-        works,
+        works: crate::Works::fixed(works),
         source: std::sync::Arc::new(crate::LocalLibrary),
         cache_dir: fixture.join("covers"),
         log: None,

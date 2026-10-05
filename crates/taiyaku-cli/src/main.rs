@@ -1331,7 +1331,7 @@ fn serve(args: &[String]) -> Result<(), String> {
     // directly rather than through this function, so they are untouched by
     // this change.
     let (db_library, works) = serve_works(&paths, option_value(args, "--db", "a path")?)?;
-    for work in &works {
+    for work in works.snapshot().iter() {
         let sidecar = work.sidecar();
         eprintln!(
             "{} | {} editions | {}",
@@ -1516,19 +1516,27 @@ fn web_root(dir: Option<&str>) -> Result<Option<PathBuf>, String> {
 /// Returns an error if any path cannot be canonicalised, if `db_flag`
 /// resolves to nowhere (see `library::resolve_db_path`), if the library
 /// cannot be opened, or — when paths were named on the command line — if
-/// **every** one of them failed to import (see `library::import_canonical`).
-/// An empty library reached with no paths at all is not an error; see above.
+/// **every** one of them failed to import (see `library::import_canonical`),
+/// or, with no paths, if the library cannot be read at all (see
+/// `Works::library`, which leaves out and names a work that will not project
+/// rather than refusing). An empty library reached with no paths at all is not
+/// an error; see above.
 fn serve_works(
     paths: &[PathBuf],
     db_flag: Option<&str>,
-) -> Result<(taiyaku_library::Library, Vec<taiyaku_serve::Work>), String> {
+) -> Result<(taiyaku_library::Library, taiyaku_serve::Works), String> {
     // **No paths means the whole library** — spec C1 §5.3. Taken before the
     // canonicalisation below, which has nothing to canonicalise.
     if paths.is_empty() {
         let db = library::resolve_db_path(db_flag)?;
         let db_library =
             taiyaku_library::Library::open(&db).map_err(|e| format!("opening the library: {e}"))?;
-        let works = taiyaku_serve::from_library(&db_library)?;
+        // `Works::library` has already printed why it failed, through the
+        // registry's own report, so the error returned here only says where
+        // to look. Returning its text would print the same line twice, once
+        // there and once from `main`.
+        let works = taiyaku_serve::Works::library(&db_library)
+            .map_err(|_| "the library could not be read, for the reason given above".to_string())?;
         if works.is_empty() {
             // Not fatal — see `serve_works`'s own doc comment. The browse
             // UI's `EmptyState.tsx` is what actually tells "no roots" and
@@ -1573,7 +1581,7 @@ fn serve_works(
              each named above"
         ));
     }
-    Ok((db_library, works))
+    Ok((db_library, taiyaku_serve::Works::fixed(works)))
 }
 
 /// Import one canonical path and build the `Work` for it, or `None` when this

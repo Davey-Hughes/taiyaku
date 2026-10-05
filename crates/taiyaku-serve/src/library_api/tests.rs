@@ -93,7 +93,7 @@ async fn the_grid_carries_an_imported_work_in_the_unfiled_bucket() {
 #[tokio::test]
 async fn one_work_is_served_by_slug_and_a_missing_one_is_a_404() {
     let (router, state, _fixture) = test_support::router_over_a_library().await;
-    let slug = state.works[0].id.clone();
+    let slug = state.works.snapshot()[0].id.clone();
     {
         // O73/Task 7b: `EditionCard::missing` has to reach the client or
         // nothing can render it. `browse::missing_by_edition` counts a member
@@ -407,7 +407,7 @@ async fn a_store_error_is_a_500_rather_than_a_panic() {
 #[tokio::test]
 async fn a_restricted_reader_is_refused_the_pages_of_a_root_they_do_not_hold() {
     let (router, state, _fixture) = test_support::router_over_a_scanned_work_in_a_series();
-    let slug = state.works[0].id.clone();
+    let slug = state.works.snapshot()[0].id.clone();
     {
         let conn = state.library.conn();
         conn.execute(
@@ -457,7 +457,7 @@ async fn a_restricted_reader_is_refused_the_pages_of_a_root_they_do_not_hold() {
 #[tokio::test]
 async fn the_same_reader_granted_the_right_root_is_not_refused() {
     let (router, state, _fixture) = test_support::router_over_a_scanned_work_in_a_series();
-    let slug = state.works[0].id.clone();
+    let slug = state.works.snapshot()[0].id.clone();
     {
         let conn = state.library.conn();
         conn.execute("INSERT INTO root (id, path) VALUES (1, '/held')", [])

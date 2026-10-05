@@ -1515,15 +1515,6 @@ fn derive_report_json(report: &derive::DeriveReport) -> serde_json::Value {
 /// client render "what the walk found" and "what derivation made of it" as
 /// the two distinct sections C4 §3's screen actually needs, rather than one
 /// caller having to know which of thirty-odd keys came from which pass.
-///
-/// **`note` — the one thing this body says about what it is not.** C4 §3's
-/// screen reads this report as proof the library is current; the one place
-/// that is not automatically true is `taiyaku-serve`'s own in-memory
-/// `ServeState.works` (see that field's own doc comment), which every
-/// `/api/library/*` route bypasses by reading the database directly, but
-/// which the plain `/api/works` list still reads. Stated here rather than
-/// left for a caller to discover that one list disagrees with a
-/// `last_scan_at` this same response just wrote.
 fn finished_scan_json(
     scan_report: &scan::ScanReport,
     derive_report: &derive::DeriveReport,
@@ -1531,10 +1522,6 @@ fn finished_scan_json(
     serde_json::json!({
         "scan": scan_report_json(scan_report),
         "derive": derive_report_json(derive_report),
-        "note": "this process's own /api/works list is a startup snapshot; \
-                  it is not refreshed by this scan, though every \
-                  /api/library/* route is current, since each reads the \
-                  database directly rather than that in-memory list",
     })
 }
 

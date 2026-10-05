@@ -350,7 +350,7 @@ async fn the_import_route_reports_the_proposals_it_reopens() {
 
     let state = std::sync::Arc::new(crate::ServeState {
         library,
-        works: Vec::new(),
+        works: crate::Works::fixed(Vec::new()),
         source: std::sync::Arc::new(crate::LocalLibrary),
         cache_dir: fixture.path().join("covers"),
         log: None,
@@ -1349,7 +1349,7 @@ fn state_with_many_scan_entries(
     }
     let state = std::sync::Arc::new(crate::ServeState {
         library,
-        works: Vec::new(),
+        works: crate::Works::fixed(Vec::new()),
         source: std::sync::Arc::new(crate::LocalLibrary),
         cache_dir: fixture.path().join("covers"),
         log: None,
@@ -1434,7 +1434,7 @@ async fn the_preview_route_does_not_wait_on_the_shared_connections_mutex() {
     let library = taiyaku_library::Library::open(&path).expect("opens a file-backed library");
     let state = std::sync::Arc::new(crate::ServeState {
         library: std::sync::Arc::new(library),
-        works: Vec::new(),
+        works: crate::Works::fixed(Vec::new()),
         source: std::sync::Arc::new(crate::LocalLibrary),
         cache_dir: fixture.path().join("covers"),
         log: None,
@@ -2413,7 +2413,7 @@ fn state_with_a_root_that_cannot_write_its_document(
 
     let state = std::sync::Arc::new(crate::ServeState {
         library,
-        works: Vec::new(),
+        works: crate::Works::fixed(Vec::new()),
         source: std::sync::Arc::new(crate::LocalLibrary),
         cache_dir: fixture.path().join("covers"),
         log: None,
@@ -2497,7 +2497,7 @@ fn state_with_a_root_that_folds_a_hand_documented_work(
 
     let state = std::sync::Arc::new(crate::ServeState {
         library,
-        works: Vec::new(),
+        works: crate::Works::fixed(Vec::new()),
         source: std::sync::Arc::new(crate::LocalLibrary),
         cache_dir: fixture.path().join("covers"),
         log: None,
@@ -2832,7 +2832,7 @@ fn state_with_a_root_scanned_once_then_given_real_exclusions(
 
     let state = std::sync::Arc::new(crate::ServeState {
         library,
-        works: Vec::new(),
+        works: crate::Works::fixed(Vec::new()),
         source: std::sync::Arc::new(crate::LocalLibrary),
         cache_dir: fixture.path().join("covers"),
         log: None,

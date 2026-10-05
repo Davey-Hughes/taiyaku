@@ -568,10 +568,10 @@ async fn a_percent_encoded_edition_key_in_the_feed_routes_back_to_the_same_editi
     let tmp = crate::test_support::Fixture::new("opds-percent");
     let state = Arc::new(ServeState {
         library: crate::test_support::library(),
-        works: vec![crate::test_support::work_with_edition_key(
+        works: crate::Works::fixed(vec![crate::test_support::work_with_edition_key(
             &tmp,
             "raw color",
-        )],
+        )]),
         source: Arc::new(crate::LocalLibrary),
         cache_dir: tmp.join("covers"),
         log: None,
@@ -935,11 +935,11 @@ fn feed_on_a_current_thread_runtime(dir: &std::path::Path, members: &[(&str, &st
         hub = members[0].0
     );
     let mut state = crate::test_support::state(dir);
-    state.works = vec![crate::Work::new(
+    state.works = crate::Works::fixed(vec![crate::Work::new(
         "t".into(),
         dir.join("work").join("taiyaku.json"),
         taiyaku_core::Sidecar::from_json(&json).unwrap(),
-    )];
+    )]);
     let state = Arc::new(state);
 
     let async_worker = this_thread();
@@ -1114,7 +1114,7 @@ async fn the_cover_cache_key_follows_locate_past_a_pageless_first_member() {
     let dir = tmp.join("covers");
     let state = Arc::new(ServeState {
         library: crate::test_support::library(),
-        works: vec![work_with_a_pageless_first_member(&tmp)],
+        works: crate::Works::fixed(vec![work_with_a_pageless_first_member(&tmp)]),
         source: Arc::new(crate::LocalLibrary),
         cache_dir: dir.clone(),
         log: None,
@@ -1315,7 +1315,7 @@ fn router_with_a_real_page_under_a_withheld_root(
     let works = crate::works::from_library(&library).expect("projects the imported work");
     let state = std::sync::Arc::new(ServeState {
         library,
-        works,
+        works: crate::Works::fixed(works),
         source: Arc::new(crate::LocalLibrary),
         cache_dir: root.join("covers"),
         log: None,
@@ -1383,7 +1383,7 @@ fn router_with_two_editions_split_across_roots(
     let works = crate::works::from_library(&library).expect("projects the imported work");
     let state = std::sync::Arc::new(ServeState {
         library,
-        works,
+        works: crate::Works::fixed(works),
         source: Arc::new(crate::LocalLibrary),
         cache_dir: root.join("covers"),
         log: None,
@@ -1465,7 +1465,7 @@ fn router_with_two_works_one_withheld(
     let works = crate::works::from_library(&library).expect("projects the imported works");
     let state = std::sync::Arc::new(ServeState {
         library,
-        works,
+        works: crate::Works::fixed(works),
         source: Arc::new(crate::LocalLibrary),
         cache_dir: root.join("covers"),
         log: None,
@@ -1500,7 +1500,7 @@ fn router_with_two_works_one_withheld(
 async fn a_restricted_reader_cannot_stream_pages_or_covers_from_a_root_they_do_not_hold() {
     let tmp = crate::test_support::Fixture::new("opds-grant-stream");
     let (router, state) = router_with_a_real_page_under_a_withheld_root(&tmp);
-    let slug = state.works[0].id.clone();
+    let slug = state.works.snapshot()[0].id.clone();
 
     let page =
         crate::test_support::get(&router, &format!("/opds/v1.2/works/{slug}/raw/pages/0")).await;
@@ -1547,7 +1547,7 @@ async fn a_restricted_reader_cannot_stream_pages_or_covers_from_a_root_they_do_n
 async fn a_restricted_readers_work_feed_lists_only_the_editions_they_may_see() {
     let tmp = crate::test_support::Fixture::new("opds-grant-work-feed");
     let (router, state) = router_with_two_editions_split_across_roots(&tmp);
-    let slug = state.works[0].id.clone();
+    let slug = state.works.snapshot()[0].id.clone();
 
     let response = crate::test_support::get(&router, &format!("/opds/v1.2/works/{slug}")).await;
     let status = response.status();
@@ -1578,7 +1578,7 @@ async fn a_restricted_readers_work_feed_lists_only_the_editions_they_may_see() {
 async fn a_restricted_readers_works_list_counts_only_the_editions_they_may_see() {
     let tmp = crate::test_support::Fixture::new("opds-grant-works-count");
     let (router, state) = router_with_two_editions_split_across_roots(&tmp);
-    let slug = state.works[0].id.clone();
+    let slug = state.works.snapshot()[0].id.clone();
 
     let response = crate::test_support::get(&router, "/opds/v1.2/works").await;
     let status = response.status();
@@ -1607,7 +1607,7 @@ async fn a_restricted_readers_works_list_counts_only_the_editions_they_may_see()
 async fn a_restricted_readers_work_feed_404s_when_no_edition_is_visible() {
     let tmp = crate::test_support::Fixture::new("opds-grant-work-feed-hidden");
     let (router, state) = router_with_a_real_page_under_a_withheld_root(&tmp);
-    let slug = state.works[0].id.clone();
+    let slug = state.works.snapshot()[0].id.clone();
 
     let response = crate::test_support::get(&router, &format!("/opds/v1.2/works/{slug}")).await;
     let status = response.status();

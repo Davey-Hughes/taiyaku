@@ -46,7 +46,7 @@
 //! `every_curation_route_refuses_a_reader` does for its own literal `1`s.
 //! Anywhere a request has to actually reach a row, the id is read out of the
 //! fixture instead of guessed, the same way `auth/tests.rs`'s split-root
-//! proof reads `split_state.works[0].id` rather than assuming a slug.
+//! proof reads `split_state.works.snapshot()[0].id` rather than assuming a slug.
 
 use crate::test_support::{self, send_json};
 use axum::http::{Method, StatusCode};
@@ -171,7 +171,7 @@ async fn every_metadata_route_refuses_a_reader() {
 #[tokio::test]
 async fn patching_a_title_writes_the_row_and_the_document() {
     let (router, state, _fixture) = test_support::router_over_a_single_scanned_work();
-    let slug = state.works[0].id.clone();
+    let slug = state.works.snapshot()[0].id.clone();
 
     let response = send_json(
         &router,
@@ -202,7 +202,7 @@ async fn patching_a_title_writes_the_row_and_the_document() {
 #[tokio::test]
 async fn patching_a_work_in_a_root_that_keeps_no_documents_says_so() {
     let (router, state, _fixture) = test_support::router_over_a_single_scanned_work();
-    let slug = state.works[0].id.clone();
+    let slug = state.works.snapshot()[0].id.clone();
     // The fixture keeps documents so the rest of this file can assert on the
     // file; this test is about the other case, so it says so.
     state
@@ -243,7 +243,7 @@ async fn patching_a_work_in_a_root_that_keeps_no_documents_says_so() {
 #[tokio::test]
 async fn patching_a_work_in_a_root_that_keeps_documents_omits_the_field() {
     let (router, state, _fixture) = test_support::router_over_a_single_scanned_work();
-    let slug = state.works[0].id.clone();
+    let slug = state.works.snapshot()[0].id.clone();
 
     let response = send_json(
         &router,
@@ -364,7 +364,7 @@ async fn patching_an_edition_with_nothing_set_invents_no_entry_in_the_answer() {
 #[tokio::test]
 async fn a_clean_edit_omits_why_entirely_rather_than_sending_an_empty_array() {
     let (router, state, _fixture) = test_support::router_over_a_single_scanned_work();
-    let slug = state.works[0].id.clone();
+    let slug = state.works.snapshot()[0].id.clone();
 
     let response = send_json(
         &router,
@@ -1184,7 +1184,7 @@ async fn patch_series_does_not_delete_it_over_a_pre_existing_title_collision() {
 #[tokio::test]
 async fn patching_a_works_series_saves_every_sibling_too() {
     let (router, state, _fixture) = test_support::router_over_two_scanned_volumes_of_one_series();
-    let slug = state.works[0].id.clone();
+    let slug = state.works.snapshot()[0].id.clone();
 
     let response = send_json(
         &router,
@@ -1237,7 +1237,7 @@ async fn patching_a_work_out_of_a_series_saves_the_sibling_left_behind() {
         test_support::router_over_two_scanned_volumes_of_one_series_across_two_roots();
     // `works[0]` is `root_a`'s volume — `router_over_two_scanned_volumes_of_one_series_across_two_roots`'s
     // own doc comment is why: `v01`/`root_a` gets the lower `work.id`.
-    let leaving_slug = state.works[1].id.clone();
+    let leaving_slug = state.works.snapshot()[1].id.clone();
 
     // The same file-not-chmod technique, for the same reason.
     std::fs::write(root_a.join(".taiyaku"), b"not a directory")
@@ -1359,7 +1359,7 @@ async fn patching_a_work_out_of_a_series_reaches_its_real_sibling_not_series_one
 #[tokio::test]
 async fn patching_a_works_volume_writes_the_row_and_the_document() {
     let (router, state, _fixture) = test_support::router_over_a_single_scanned_work();
-    let slug = state.works[0].id.clone();
+    let slug = state.works.snapshot()[0].id.clone();
 
     let response = send_json(
         &router,

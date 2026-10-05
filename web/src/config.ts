@@ -207,8 +207,6 @@ export interface Derived {
 export interface FinishedScan {
   scan: Walk
   derive: Derived
-  /** The server's own note about `/api/works` being a startup snapshot. */
-  note: string
 }
 
 /** A scan that failed or panicked — `run_scan`'s other shape. */

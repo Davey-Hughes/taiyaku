@@ -38,6 +38,7 @@ mod metadata;
 pub mod notes;
 mod opds;
 mod progress;
+mod registry;
 mod reqlog;
 mod routes;
 pub mod session;
@@ -53,29 +54,24 @@ use std::io::Write as _;
 use std::sync::Arc;
 
 pub use composite::{CompositeSource, StumpSide};
+pub use registry::{Refresh, Snapshot, Works};
 pub use reqlog::{Entry, Log};
 pub use routes::build_router;
 pub use source::{LocalLibrary, PageSource, ServedPage};
 // `Progress` moved to `taiyaku-library` (Task 9's `state::progress` needs it
 // there); re-exported from its new home so `crate::Progress` still resolves.
 pub use taiyaku_library::Progress;
-// `from_library` is spec C1 §5.3's answer to the question the comment here
-// used to leave open. It was deleted in whole-branch review 2 as a projection
-// nothing ran — `taiyaku serve <sidecar>...` builds its `Work`s one path at a
-// time in `taiyaku-cli`'s `serve_work`, because it serves the works it was
-// *handed* — and the note left behind named the caller that would want it
-// back: "a `serve --db` with no paths". That is this.
+// `from_library` projects every work in a library once, and refuses the lot if
+// any one will not project. `taiyaku serve` no longer runs it: with no paths
+// it builds a live `Works` through `Works::library`, which reads the same rows
+// but leaves out and names a work that will not project. It stays for the
+// fixtures that build a fixed registry over a library.
 //
 // What it decides about a work whose `sidecar_path` is NULL: the path becomes
 // empty, `Work::has_document` reads that as "no document", and the alignment
 // route writes rows without a file. Nothing else in `serve` reads `Work.path`
 // except two error messages and the bridge row, and a work read from its own
 // row never needs the latter.
-//
-// **Still one projection, not two.** The reason it was deleted — two
-// projections of one thing disagree — is answered by `serve_works` choosing
-// between them rather than by both running: paths on the command line take
-// `serve_work`, no paths takes this.
 pub use works::{Work, from_library, load_works, work_id};
 
 /// Everything a request needs: which works exist, and where pages come from.
@@ -93,26 +89,15 @@ pub struct ServeState {
     /// the *same* database a later `taiyaku library import` reconciles
     /// against, rather than one that vanishes with the process.
     pub library: Arc<taiyaku_library::Library>,
-    /// The works this process serves through `/api/works` and the reader —
-    /// built once, at startup (`taiyaku-cli`'s `serve` calls
-    /// [`from_library`]/[`load_works`] before this struct is ever
-    /// constructed).
+    /// The works this process serves through `/api/works`, the reader's
+    /// routes and OPDS: a [`Works`] registry, live when the server was
+    /// started with no paths and fixed when it was handed sidecar paths.
     ///
-    /// **A startup snapshot, and Task 12's scan trigger is what makes that
-    /// consequence live rather than theoretical.** Every `/api/library/*`
-    /// route (`config_api.rs`, `library_api.rs`) reads `self.library`
-    /// directly, so it is current the instant a scan finishes — but
-    /// `/api/works` and the reader read this field instead, and nothing a
-    /// scan does updates it. A root scanned through
-    /// `POST /api/library/roots/{id}/scan` is fully reflected in every
-    /// `/api/library/*` answer and in `root.last_scan_at`/`last_scan_status`
-    /// the moment `GET` on that same route reports it done — but a brand
-    /// new work that scan just derived will not appear in `/api/works`, and
-    /// an existing one's sidecar will not pick up a rescan's changes, until
-    /// this process restarts. `config_api::finished_scan_json`'s own `note`
-    /// field says so in the response itself, so a caller does not have to
-    /// find this comment to learn it.
-    pub works: Vec<Work>,
+    /// **Look a work up with [`Self::find`] on a runtime worker and with
+    /// [`Self::find_blocking`] on the blocking pool.** A miss in a live
+    /// registry asks the library whether it has moved before answering "no
+    /// work", and that question reads the database.
+    pub works: Works,
     pub source: Arc<dyn PageSource>,
     /// Where generated covers are kept between runs.
     pub cache_dir: std::path::PathBuf,
@@ -220,11 +205,6 @@ pub struct ScanProgress {
 }
 
 impl ServeState {
-    #[must_use]
-    pub fn work(&self, id: &str) -> Option<&Work> {
-        self.works.iter().find(|w| w.id == id)
-    }
-
     /// Where generated filmstrip tiles are kept between runs.
     ///
     /// A sibling of `cache_dir` rather than the same directory, so that the
@@ -246,23 +226,67 @@ impl ServeState {
         self.cache_dir.with_file_name("thumbs")
     }
 
-    /// The work a route names, or the message to send back when it does not
-    /// exist.
+    /// The work a route names, for code running on a runtime worker.
     ///
-    /// Four call sites — the `/api/…` page route, the OPDS work feed, its
-    /// page stream and its cover — each typed their own copy of `` no work
-    /// `{id}` `` before this existed, which is exactly the drift the doc
-    /// comment on `routes.rs`'s own `work()` helper already warned about:
-    /// one place decides what a request for a missing work gets back, so
-    /// four routes cannot drift into four different answers to the same
-    /// question.
+    /// A hit is a read lock held long enough to clone an `Arc`. A miss in a
+    /// live registry first asks, on the blocking pool and never here,
+    /// whether the library has moved since its works were last read, and
+    /// reads them again if it has. So a volume a scan has just derived opens
+    /// on the first request for it rather than after the next refresh tick.
+    ///
+    /// **One wording for a work that does not exist**, shared with
+    /// [`Self::find_blocking`]. Every route that is addressed by work
+    /// answers it the same way.
     ///
     /// # Errors
     ///
     /// Returns an error, worded `` no work `{id}` ``, if `id` names no work
-    /// this server was started with.
-    pub fn work_or_missing(&self, id: &str) -> Result<&Work, String> {
-        self.work(id).ok_or_else(|| format!("no work `{id}`"))
+    /// this server serves, after that refresh for a live registry.
+    pub async fn find(self: &Arc<Self>, id: &str) -> Result<Arc<Work>, String> {
+        if let Some(found) = self.works.get(id) {
+            return Ok(found);
+        }
+        if self.works.is_live() {
+            let asking = Arc::clone(self);
+            // The refresh reports itself, in its own order (`Works::refresh`).
+            if let Err(panicked) =
+                tokio::task::spawn_blocking(move || asking.works.refresh_if_moved(&asking.library))
+                    .await
+            {
+                // Not `eprintln!`, which panics when nothing reads stderr,
+                // and would fail this request over a line nobody can read.
+                let _ = writeln!(
+                    std::io::stderr(),
+                    "taiyaku: the refresh panicked: {panicked}"
+                );
+            }
+            if let Some(found) = self.works.get(id) {
+                return Ok(found);
+            }
+        }
+        Err(no_work(id))
+    }
+
+    /// [`Self::find`], for code already on the blocking pool.
+    ///
+    /// **Reads the database on a miss**, so call it only where blocking is
+    /// allowed: inside `spawn_blocking`, or a test.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::find`].
+    pub fn find_blocking(&self, id: &str) -> Result<Arc<Work>, String> {
+        if let Some(found) = self.works.get(id) {
+            return Ok(found);
+        }
+        if self.works.is_live() {
+            // The refresh reports itself, in its own order (`Works::refresh`).
+            let _ = self.works.refresh_if_moved(&self.library);
+            if let Some(found) = self.works.get(id) {
+                return Ok(found);
+            }
+        }
+        Err(no_work(id))
     }
 
     /// One page of an edition, by its index in that edition's flat sequence.
@@ -390,7 +414,7 @@ pub struct ServeOptions {
 /// next option belongs there too.
 pub async fn serve(
     library: Arc<taiyaku_library::Library>,
-    works: Vec<Work>,
+    works: Works,
     options: ServeOptions,
 ) -> Result<(), String> {
     let ServeOptions {
@@ -432,7 +456,8 @@ pub async fn serve(
             // O11: before resolution, not after, so the run that follows is
             // the one that re-asks.
             if refresh_stump {
-                forget_all_works(&works);
+                let held = works.snapshot();
+                forget_all_works(held.iter().map(|work| &**work));
             }
             let transport: Arc<dyn stump::http::Transport> = Arc::new(
                 stump::http::UreqTransport::new(config.base.clone(), config.key),
@@ -579,15 +604,19 @@ pub async fn serve(
     if let Some((transport, side, base)) = pending {
         let resolving = Arc::clone(&state);
         tokio::task::spawn_blocking(move || {
-            resolve_all_works(
-                transport.as_ref(),
-                &resolving.works,
-                &base,
-                &mut |learned| {
-                    side.learn(learned);
-                },
-            );
+            // The works present at startup, and only those. Stump survives only as
+            // a migration path (the store spec's §10), so a work a later scan adds
+            // is served from disk.
+            let held = resolving.works.snapshot();
+            resolve_all_works(transport.as_ref(), &held[..], &base, &mut |learned| {
+                side.learn(learned);
+            });
         });
+    }
+    // A live registry reads the library again whenever its structure moves.
+    // A fixed one, `serve` handed sidecar paths, never does.
+    if state.works.is_live() {
+        registry::spawn_refresher(Arc::clone(&state), registry::REFRESH_EVERY);
     }
     // Named the same way the bind failure is. Both are reported by a process
     // that may be serving several addresses over its life and prints nothing
@@ -741,13 +770,14 @@ fn forget_all_works<'a>(works: impl IntoIterator<Item = &'a Work>) {
 /// Separate from `serve` so this loop can be driven by a `FakeTransport`
 /// without a socket — `serve`'s only remaining job around this call is
 /// turning the aggregated `Resolutions` into a `CompositeSource`.
-fn resolve_all_works(
+fn resolve_all_works<W: std::borrow::Borrow<Work>>(
     transport: &dyn stump::http::Transport,
-    works: &[Work],
+    works: &[W],
     base: &str,
     learned: &mut dyn FnMut(stump::cache::Resolutions),
 ) {
     for (index, work) in works.iter().enumerate() {
+        let work: &Work = std::borrow::Borrow::borrow(work);
         // O8: this runs before the listener binds, so it is time the server
         // spends unable to answer anything. It used to print one line per
         // work, *after* that work finished — so a work with many unresolved
@@ -792,6 +822,11 @@ fn resolve_all_works(
             break;
         }
     }
+}
+
+/// How every route addressed by work refuses one this server does not serve.
+fn no_work(id: &str) -> String {
+    format!("no work `{id}`")
 }
 
 /// What to say when a run gives up partway, or `None` when it gave up on the

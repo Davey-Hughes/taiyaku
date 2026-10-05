@@ -185,7 +185,6 @@ const derived = (over: Partial<Derived> = {}): Derived => ({
 const finished = (over: Partial<FinishedScan> = {}): FinishedScan => ({
   scan: walk(),
   derive: derived(),
-  note: "this process's own /api/works list is a startup snapshot",
   ...over,
 })
 

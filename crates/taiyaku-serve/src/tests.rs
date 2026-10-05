@@ -270,7 +270,7 @@ fn the_tile_cache_is_a_sibling_of_the_cover_cache() {
 fn a_resolved_root_keeps_covers_and_thumbs_as_siblings() {
     let state = crate::ServeState {
         library: crate::test_support::library(),
-        works: Vec::new(),
+        works: crate::Works::fixed(Vec::new()),
         source: std::sync::Arc::new(crate::LocalLibrary),
         cache_dir: crate::cache_root::cache_root(
             None,
@@ -418,7 +418,7 @@ async fn serve_binds_the_address_and_answers_on_it() {
         async move {
             crate::serve(
                 crate::test_support::library(),
-                works,
+                crate::Works::fixed(works),
                 crate::ServeOptions {
                     addr,
                     cache: Some(cache),
@@ -484,7 +484,7 @@ async fn serve_serves_the_web_app_it_is_given() {
         async move {
             crate::serve(
                 crate::test_support::library(),
-                works,
+                crate::Works::fixed(works),
                 crate::ServeOptions {
                     addr,
                     cache: Some(cache),
@@ -573,7 +573,7 @@ async fn serve_caches_covers_and_tiles_under_the_resolved_root() {
         async move {
             crate::serve(
                 crate::test_support::library(),
-                vec![work],
+                crate::Works::fixed(vec![work]),
                 crate::ServeOptions {
                     addr,
                     cache: Some(cache),
@@ -666,4 +666,64 @@ async fn serve_caches_covers_and_tiles_under_the_resolved_root() {
         "and the tile beside it, in the sibling `thumbs` under the same root: {}",
         expected_tile.display()
     );
+}
+
+/// **`serve` keeps a live registry current on its own.** `/api/works` is a
+/// listing, so it never takes a lookup's miss path; only the refresher
+/// `serve` spawns can make a volume derived after startup appear in it.
+///
+/// `multi_thread` for the reason
+/// `serve_binds_the_address_and_answers_on_it` gives: `ureq` blocks.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn serve_keeps_a_live_library_current_without_a_request_naming_the_work() {
+    let fixture = crate::test_support::Fixture::new("serve-live");
+    let library = crate::test_support::scanned_file_backed_library(&fixture);
+    let works = crate::Works::library(&library).expect("projects the scanned works");
+    let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("a free port");
+    let addr = probe.local_addr().unwrap().to_string();
+    drop(probe);
+    let cache = fixture.path().join("cache");
+
+    let serving = tokio::spawn({
+        let addr = addr.clone();
+        async move {
+            crate::serve(
+                library,
+                works,
+                crate::ServeOptions {
+                    addr,
+                    cache: Some(cache),
+                    ..crate::ServeOptions::default()
+                },
+            )
+            .await
+        }
+    });
+    let slug = crate::test_support::add_a_volume_elsewhere(&fixture, "Scanned - v02");
+
+    let url = format!("http://{addr}/api/works");
+    let wanted = format!("\"{slug}\"");
+    let mut listed = false;
+    for _ in 0..250 {
+        if serving.is_finished() {
+            break;
+        }
+        if let Ok(mut r) = ureq::get(&url)
+            .header(
+                "authorization",
+                crate::test_support::fixture_authorization(),
+            )
+            .call()
+            && r.body_mut()
+                .read_to_string()
+                .unwrap_or_default()
+                .contains(&wanted)
+        {
+            listed = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    serving.abort();
+    assert!(listed, "`/api/works` never listed {slug}");
 }

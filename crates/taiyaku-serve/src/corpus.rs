@@ -109,7 +109,7 @@ fn every_page_the_server_serves_is_the_page_the_aligner_sequenced() {
     let scratch = crate::test_support::Fixture::new("corpus-covers");
     let state = ServeState {
         library: crate::test_support::library(),
-        works,
+        works: crate::Works::fixed(works),
         source: Arc::new(LocalLibrary),
         cache_dir: scratch.join("covers"),
         log: None,
@@ -117,7 +117,8 @@ fn every_page_the_server_serves_is_the_page_the_aligner_sequenced() {
         scans: Default::default(),
         library_job: Default::default(),
     };
-    let work = &state.works[0];
+    let held = state.works.snapshot();
+    let work = &held[0];
     let sidecar = work.sidecar();
 
     let mut compared = 0usize;
@@ -404,7 +405,7 @@ fn a_corpus_edition_with_members(
             let scratch = crate::test_support::Fixture::new("corpus-download-covers");
             let state = Arc::new(ServeState {
                 library: crate::test_support::library(),
-                works,
+                works: crate::Works::fixed(works),
                 source: Arc::new(LocalLibrary),
                 cache_dir: scratch.join("covers"),
                 log: None,
@@ -456,7 +457,7 @@ fn a_corpus_edition_of_one_file(root: &Path) -> (axum::Router, String, String, P
             let scratch = crate::test_support::Fixture::new("corpus-download-covers");
             let state = Arc::new(ServeState {
                 library: crate::test_support::library(),
-                works,
+                works: crate::Works::fixed(works),
                 source: Arc::new(LocalLibrary),
                 cache_dir: scratch.join("covers"),
                 log: None,

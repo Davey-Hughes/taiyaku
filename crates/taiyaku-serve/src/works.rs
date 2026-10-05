@@ -19,10 +19,11 @@ use taiyaku_core::Sidecar;
 ///
 /// The document is held behind an `RwLock<Arc<_>>` rather than owned outright
 /// because `PATCH /api/works/{work}/alignments` replaces it while the server
-/// is running: readers clone an `Arc` and are never blocked by each other, and
-/// a writer swaps a whole new document in under one exclusive lock. The same
-/// shape `StumpSide` already uses for its resolution map, and for the same
-/// reason.
+/// is running, and so does a refresh of a live registry, which reads the
+/// work's rows again (`Work::reproject`): readers clone an `Arc` and are
+/// never blocked by each other, and a writer swaps a whole new document in
+/// under one exclusive lock. The same shape `StumpSide` already uses for its
+/// resolution map, and for the same reason.
 ///
 /// **Deliberately not `Clone`.** A cloned `Work` would carry an independent
 /// lock, so a correction applied to one copy would be invisible to the other —
@@ -151,6 +152,31 @@ impl Work {
         let (next, out) = f(&held)?;
         *held = next;
         Ok(out)
+    }
+
+    /// Replace the document with one read back from the library, holding the
+    /// same exclusive lock [`Self::update`] holds for a correction.
+    ///
+    /// **The read happens inside the lock, not before it.** A refresh that
+    /// read first and swapped under the lock afterwards could swap in a
+    /// document read before a correction committed, after that correction had
+    /// already replaced it, undoing the correction in memory while the rows
+    /// still held it. Holding the lock across the read makes a correction and
+    /// a refresh run one after the other.
+    ///
+    /// # Errors
+    ///
+    /// Returns whatever `read` returns, and leaves the held document as it was.
+    pub(crate) fn reproject(
+        &self,
+        read: impl FnOnce() -> Result<Sidecar, String>,
+    ) -> Result<(), String> {
+        let mut held = match self.sidecar.write() {
+            Ok(held) => held,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        *held = std::sync::Arc::new(read()?);
+        Ok(())
     }
 }
 
@@ -377,7 +403,7 @@ fn find_row_by_slug(conn: &rusqlite::Connection, slug: &str) -> Result<Option<i6
 /// no reason to recompute), and nothing yet reads this row's `content_key`
 /// for any purpose `import::sidecar` itself does not already own. It only
 /// has to be unique, which the slug it is derived from already is among the
-/// works this server was started with.
+/// works this server serves now.
 ///
 /// `INSERT OR IGNORE` rather than a bare `INSERT`: `put_progress` writes with
 /// no `notes_guard` held, so two racing first writes to one work can both
@@ -468,6 +494,12 @@ fn direction_text(direction: taiyaku_core::Direction) -> &'static str {
 /// [`Work::has_document`] reads as "no document". See spec C1 §5.3 for what
 /// that costs at the one route that writes a file.
 ///
+/// **No longer what `serve` itself runs.** `serve` with no paths builds a
+/// live [`crate::Works`] through `Works::library`, which reads the same rows
+/// through the same [`crate::registry::work_rows`]. This stays for the
+/// fixtures that build a fixed registry over a library, the way `load_works`
+/// stays for the ones built from files.
+///
 /// # Errors
 ///
 /// Returns an error if the rows cannot be read, or if a work's document
@@ -475,21 +507,12 @@ fn direction_text(direction: taiyaku_core::Direction) -> &'static str {
 /// are inconsistent, and is worth refusing rather than serving.
 pub fn from_library(library: &taiyaku_library::Library) -> Result<Vec<Work>, String> {
     let conn = library.conn();
-    let mut stmt = conn
-        .prepare("SELECT id, slug, sidecar_path FROM work ORDER BY id")
-        .map_err(|e| format!("listing the library's works: {e}"))?;
-    let rows: Vec<(i64, String, Option<String>)> = stmt
-        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
-        .map_err(|e| format!("listing the library's works: {e}"))?
-        .collect::<rusqlite::Result<_>>()
-        .map_err(|e| format!("reading the library's works: {e}"))?;
-
-    rows.into_iter()
-        .map(|(id, slug, sidecar_path)| {
-            let sidecar = taiyaku_library::project::sidecar(&conn, id)
-                .map_err(|e| format!("projecting work {id} (`{slug}`): {e}"))?;
-            let path = sidecar_path.map_or_else(PathBuf::new, PathBuf::from);
-            Ok(Work::new(slug, path, sidecar))
+    crate::registry::work_rows(&conn)?
+        .into_iter()
+        .map(|row| {
+            let sidecar = taiyaku_library::project::sidecar(&conn, row.id)
+                .map_err(|e| format!("projecting work {} (`{}`): {e}", row.id, row.slug))?;
+            Ok(Work::new(row.slug.clone(), row.path(), sidecar))
         })
         .collect()
 }

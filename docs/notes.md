@@ -24466,3 +24466,139 @@ container write neither `.taiyaku/` nor the watch probe's file at the root.
   fixed soon after. O58 and O60 matter once other accounts exist.
 - Appdata Backup keeps taiyaku on its stop list and excludes the cache
   directory.
+
+**2026-10-05, the image job's first run on `main`** (the squash, `953b2486`):
+193 s by the forge's tasks API, `run_started` 13:39:27 to 13:42:40. It pushed
+`sha-953b248` and `latest`. The job's 60-minute timeout is to be re-sized at
+the next CI change.
+
+## Live works (Part A, 2026-10-04)
+
+Part A of `2026-10-04-day-to-day-deployment-design.md`, which opened and
+closed O183: the reader serves the library as it stands, not as it stood when
+the server started.
+
+**What changed.** Migration 14 adds a one-row table, `structure_version`, and
+eighteen triggers: one after each insert, update and delete on `work`,
+`edition`, `member`, `page_flag`, `alignment` and `run`, the six tables
+`project::sidecar` reads, each adding one to the counter.
+`taiyaku_library::structure::version` reads it. `taiyaku serve` with no paths
+holds its works in a live registry (`registry::Works::library`) in place of a
+`Vec<Work>` built once; `serve` handed sidecar paths holds a fixed one
+(`Works::fixed`) that never reads the library again. A refresh reads the
+counter and, when it differs from the value the registry last read at, reads
+every `work` row again. A work it already holds keeps its `Work`, and its
+document is replaced under that work's own write lock (`Work::reproject`), so
+the notes lock and correction lock every request in flight holds stay the
+ones it holds. A row whose `sidecar_path` changed becomes a new `Work`,
+because `Work.path` is fixed for a `Work`'s life. A row that is gone is no
+longer served. `ServeState::find` is the lookup for code on a runtime worker
+(a hit is a read lock and an `Arc` clone; a miss in a live registry asks for a
+refresh on the blocking pool and looks again), and `ServeState::find_blocking`
+is the same for code already on the blocking pool. `serve` spawns a refresher
+that asks every two seconds (`registry::REFRESH_EVERY`), so `/api/works` and
+the OPDS feed, which never name a work, pick up a new one too. The scan
+report's `note`, which said `/api/works` was a startup snapshot, is gone, with
+the web's drawing of it.
+
+**Why the counter is read before the works, never after.** A write that
+commits while the works are being read leaves the counter ahead of the value
+recorded as seen, so the next refresh reads again. Read afterwards, that write
+would be recorded as seen without ever having been read.
+`a_write_that_lands_while_a_refresh_reads_is_read_by_the_next_one` writes from
+inside the first work's read, and failed with the read moved after the works.
+
+**Why each work is read in its own `BEGIN DEFERRED` transaction.** One
+transaction per work makes its document come from one committed state rather
+than from both sides of a write that lands between two of `project::sidecar`'s
+queries. Deferred, spelled out, because `Library::configure` sets every
+connection's transactions to `IMMEDIATE`, which takes the write lock: a
+refresh would wait out, and hold up, whichever writer was running.
+
+**The race test** (`a_correction_racing_a_refresh_survives_it`). A thread holds
+one work's write lock the way `patch_alignments` does and waits to be let go.
+An unrelated write moves the counter, and a refresh starts on another thread
+with a `project` that reports when it reads. The test waits 500 ms for that
+report, lets the correction write its row and finish, and joins both. A
+correct refresh takes the work's lock before reading it, so it reads after the
+correction and serves it. A refresh that read first would swap a document
+without the correction in once the lock came free. The 500 ms decides only how
+long a correct refresh is given not to read early: the correct path passes
+whatever the timing. With the read moved before the lock it failed: "the
+refresh undid a correction that committed after it began: it read the work
+before taking the work's lock".
+
+**On a copy of the real library.** A release build of the branch as it stood
+before its whole-branch fix round (`34af9649`, before the rebase onto Part B)
+served a scratch copy of `library.db` in no-paths mode. `/api/works` listed
+1896 works and the counter read 0. A separate `taiyaku library scan --add`
+of a new three-directory root reported "3 added, 0 updated, 0 gone; derived
+136 series, 1897 works, 1897 editions, 1897 members". The new work,
+`drive-test---v01`, answered `200` in 0.013972 s on the first request for it.
+Three seconds later `/api/works` listed 1897 and the counter read 18972. The
+first request came right after the scan, so whether the refresher's tick or
+the lookup's miss served it was not separated. The original `library.db`
+hashed the same before and after, and the server's log had no "could not
+refresh" line.
+
+**The counter counts trigger firings, not scans.** That one scan moved it
+from 0 to 18972. Every deriving scan moves it, because derive writes every
+work it derives: its `UPDATE work
+SET series_id = COALESCE(series_id_hand, ?1), volume = …` runs whether or not
+anything changed. The server's scan always derives, and `library scan` does
+unless given `--no-derive`, so every such scan moves the counter and the next
+refresh reads every work.
+
+**Two consequences, by reading the code.** A work whose rows will not project
+keeps the document it had (or, if new, is not served), and is tried again only
+when the counter next moves: the refresh that kept it recorded the counter as
+seen. And a configured Stump source resolves only the works present at
+startup: `serve` hands the resolution the registry's snapshot once, after the
+bind, so a work a later scan adds is served from disk.
+
+**Two fixes for what the rebase onto Part B found.** A refresh with something to say
+printed it with `eprintln!`, which panics when nothing reads stderr. The
+refresher's report of that panic panicked too, and the refresher ended for
+the life of the process: the served works stopped picking up changes on their
+own, and only a lookup miss still refreshed them. The notice and both panic lines now print with `writeln!`
+and ignore the error. `serve_keeps_its_works_current_with_stderr_closed` runs
+the binary over a live library, lets go of its stderr, makes a refresh
+complain (one work's rows will not project) and then waits for a later change
+to be listed; with all three lines back on `eprintln!` it failed, "the
+refresher stopped once a complaint could not be written". It holds the
+refresher's survival, not each line: with only the notice's line, or only the
+refresher's own line, put back on `eprintln!` it passed, because the other of
+the two alone keeps the refresher alive. And a library that stayed unopenable printed its
+complaint every tick, because the message says how long opening waited
+(`(waited 31µs for another process …)`) and the notice compared whole strings.
+Complaints are now compared without that figure, and the line printed keeps
+it. `a_failure_that_differs_only_in_how_long_it_waited_is_said_once` takes a
+real failure's words (a file that is not a database, with its log moved aside)
+and failed before the change: the second wait was said again.
+
+**The mutation sweep** (`scripts/mutants.sh --since main`, after the two
+fixes): 88 mutants in 9 minutes, 65 caught, 22 unviable, 1 missed, no
+timeouts. The one missed, `Works::is_live -> true`, is equivalent: a fixed
+registry asked to refresh answers `Unmoved` without reading. It failed nothing
+in the three crates by hand, and `docs/mutants-baseline.md` records it.
+Each of the 22 unviable is `Default::default()` against a type deriving no
+`Default`, or a `JoinHandle` that cannot be built, and they leave twelve
+functions with no viable mutant at all. Of those, `find`'s and `find_blocking`'s refresh on a miss were each taken out
+by hand and failed a router test, and `read_one` on `IMMEDIATE` failed the
+ordering test. `read_one` with no transaction at all failed nothing, so
+`a_work_is_read_from_one_committed_state_of_the_library` was added: its
+`project` reads the title, lets another connection retitle the work, then
+projects it, and it fails without the transaction ("After" against
+"Before"). Migration 14's SQL is a string literal, which cargo-mutants never
+mutates, so its first task's three hand-applied trigger defects (a trigger
+dropped, a trigger made to add nothing, and an extra trigger on `progress`)
+are that file's only mutation evidence.
+
+**Counts**, each against `main`: Rust 2257 to 2281; `node` 1,428, unchanged;
+`jsdom` 1,238 to 1,237, the case that drew the scan report's `note` deleted;
+browser 184, unchanged.
+
+**Not measured**: the NAS; what a refresh costs while a long derive is
+running, when each work it commits moves the counter and every tick reads
+every work again; how long one refresh of the whole copy takes; and a library
+larger than the 1,896-work copy.

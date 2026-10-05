@@ -39,6 +39,7 @@ pub mod scan;
 pub mod schema;
 pub mod stamp;
 pub mod state;
+pub mod structure;
 pub mod watch;
 
 use std::path::{Path, PathBuf};

@@ -300,7 +300,7 @@ pub(crate) fn if_match_hits(headers: &HeaderMap, tag: &str) -> Option<bool> {
 /// A request naming a work this server does not hold.
 ///
 /// A named type rather than a bare `Response` because a `Response` is 128
-/// bytes and `Result<&Work, Response>` trips `clippy::result_large_err`. It
+/// bytes and `Result<Arc<Work>, Response>` trips `clippy::result_large_err`. It
 /// carries the status and the wording together, which is the point: one
 /// answer to one question, wherever it is asked.
 #[derive(Debug)]
@@ -312,16 +312,12 @@ impl IntoResponse for NoSuchWork {
     }
 }
 
-/// The work a route names, or the refusal to send instead.
-///
-/// Every route below is addressed by work, and M3 added more — a thumbnail, a
-/// stream, a work feed. `ServeState::work_or_missing` is the one place that
-/// decides the wording; this just wraps it in the `Response`-carrying type
-/// `get_sidecar` — the one handler here that touches no disk, and so is the
-/// one that still runs on the async worker, its grant check aside (O115) —
-/// wants.
-fn work<'a>(state: &'a ServeState, id: &str) -> Result<&'a Work, NoSuchWork> {
-    state.work_or_missing(id).map_err(NoSuchWork)
+/// The work a route names, or the refusal to send instead, for a handler on
+/// a runtime worker. `ServeState::find` decides the wording and does the
+/// refresh a miss needs off the worker. This only wraps it in the
+/// `Response`-carrying type `get_sidecar` and `serve_page` want.
+async fn work(state: &Arc<ServeState>, id: &str) -> Result<Arc<Work>, NoSuchWork> {
+    state.find(id).await.map_err(NoSuchWork)
 }
 
 /// Why a progress request could not be answered.
@@ -415,9 +411,8 @@ async fn list_works(
         } else {
             Some(taiyaku_library::browse::visible_editions(&conn, &roots)?)
         };
-        state
-            .works
-            .iter()
+        let held = state.works.snapshot();
+        held.iter()
             // A work absent from `visible`'s keys has no edition inside the
             // grant at all — `browse::visible_editions` never mints an entry
             // for one — so it is dropped here exactly as it was before, and
@@ -789,7 +784,7 @@ async fn get_sidecar(
         Ok(visible) => visible,
         Err(refusal) => return refusal,
     };
-    let found = match work(&state, &id) {
+    let found = match work(&state, &id).await {
         Ok(found) => found,
         Err(missing) => return missing.into_response(),
     };
@@ -915,11 +910,11 @@ async fn serve_page(
     // `304` without a zip decompression or an HTTP round trip to Stump ever
     // happening — the whole point of sending a validator in the first
     // place.
-    let found = match work(&state, &id) {
+    let found = match work(&state, &id).await {
         Ok(found) => found,
         Err(missing) => return missing.into_response(),
     };
-    let (sha256, offset) = match locate_member(found, &edition, index) {
+    let (sha256, offset) = match locate_member(&found, &edition, index) {
         Ok(pair) => pair,
         Err(message) => return not_found(message),
     };
@@ -942,13 +937,13 @@ async fn serve_page(
     // `PageSource` stays synchronous deliberately. The boundary belongs here,
     // where there is exactly one of it, rather than in each implementation.
     let fetched = tokio::task::spawn_blocking(move || {
-        let found = state.work_or_missing(&id)?;
+        let found = state.find_blocking(&id)?;
         let Some(edge) = long_edge else {
-            return state.page(found, &edition, index);
+            return state.page(&found, &edition, index);
         };
         let dir = state.thumb_cache_dir();
         let fitted = crate::cover::cached_or_generated_page(&dir, &sha256, offset, edge, || {
-            state.page(found, &edition, index)
+            state.page(&found, &edition, index)
         })?;
         match fitted {
             // A resize always writes JPEG, and says so rather than echoing
@@ -1080,7 +1075,7 @@ async fn get_thumb(
     // Decoding blocks and can allocate up to `MAX_DECODE_ALLOC`; `get_page`'s
     // reasoning applies unchanged.
     let fetched = tokio::task::spawn_blocking(move || {
-        let found = state.work_or_missing(&id)?;
+        let found = state.find_blocking(&id)?;
         let sidecar = found.sidecar();
         let ed = sidecar
             .editions
@@ -1092,7 +1087,7 @@ async fn get_thumb(
         let sha = ed.members[member].sha256.clone();
         let dir = state.thumb_cache_dir();
         crate::cover::cached_or_generated_thumb(&dir, &sha, offset, edge, || {
-            state.page(found, &edition, index).map(|p| p.bytes)
+            state.page(&found, &edition, index).map(|p| p.bytes)
         })
     })
     .await;
@@ -1211,8 +1206,8 @@ async fn get_notes(
         Err(missing) => return missing.into_response(),
     };
     let loaded = tokio::task::spawn_blocking(move || {
-        let found = state.work_or_missing(&id).map_err(NoNotes::NotFound)?;
-        let notes = crate::notes::load(&state.library, found, user_id)
+        let found = state.find_blocking(&id).map_err(NoNotes::NotFound)?;
+        let notes = crate::notes::load(&state.library, &found, user_id)
             .map_err(NoNotes::Failed)?
             .unwrap_or_else(|| crate::notes::empty(&found.id));
         crate::notes::to_json(&notes).map_err(NoNotes::Failed)
@@ -1282,7 +1277,7 @@ async fn put_notes(
     // below holds an exclusive lock across a file write — `get_page`'s
     // reasoning about the async worker applies unchanged.
     let written = tokio::task::spawn_blocking(move || {
-        let found = state.work_or_missing(&id).map_err(NoNotes::NotFound)?;
+        let found = state.find_blocking(&id).map_err(NoNotes::NotFound)?;
 
         // Held across read, compare and write. Two requests that both read the
         // same document and both find their validator current would otherwise
@@ -1290,7 +1285,7 @@ async fn put_notes(
         // so — see `Work::notes_guard`.
         let _guard = found.notes_guard();
 
-        let current = crate::notes::load(&state.library, found, user_id)
+        let current = crate::notes::load(&state.library, &found, user_id)
             .map_err(NoNotes::Failed)?
             .unwrap_or_else(|| crate::notes::empty(&found.id));
         let tag = notes_etag(&crate::notes::to_json(&current).map_err(NoNotes::Failed)?);
@@ -1321,12 +1316,12 @@ async fn put_notes(
         // at an edition a re-solve renamed from refusing every write that
         // follows it — including the one that would remove it. See
         // `notes::validate`.
-        crate::notes::validate(&incoming, found, &current).map_err(|why| match why {
+        crate::notes::validate(&incoming, &found, &current).map_err(|why| match why {
             crate::notes::Invalid::Missing(message) => NoNotes::NotFound(message),
             crate::notes::Invalid::Refused(message) => NoNotes::Refused(message),
         })?;
 
-        crate::notes::store(&state.library, found, user_id, &incoming).map_err(NoNotes::Failed)?;
+        crate::notes::store(&state.library, &found, user_id, &incoming).map_err(NoNotes::Failed)?;
         crate::notes::to_json(&incoming).map_err(NoNotes::Failed)
     })
     .await;
@@ -1393,8 +1388,8 @@ async fn get_truth(
     // mount — `get_page`'s reasoning about the async worker applies unchanged
     // (O12).
     let loaded = tokio::task::spawn_blocking(move || -> Result<String, NoTruth> {
-        let found = state.work_or_missing(&id).map_err(NoTruth::NotFound)?;
-        let doc = crate::truth::load(&state.library, found)
+        let found = state.find_blocking(&id).map_err(NoTruth::NotFound)?;
+        let doc = crate::truth::load(&state.library, &found)
             .map_err(NoTruth::Failed)?
             .unwrap_or_default();
         Ok(crate::truth::to_json(&doc))
@@ -1462,7 +1457,7 @@ async fn put_truth(
     // below holds an exclusive lock across a file write — `get_page`'s
     // reasoning about the async worker applies unchanged.
     let written = tokio::task::spawn_blocking(move || {
-        let found = state.work_or_missing(&id).map_err(NoTruth::NotFound)?;
+        let found = state.find_blocking(&id).map_err(NoTruth::NotFound)?;
 
         // Held across read, compare and write, on the same mutex
         // `put_notes` holds for the same reason — `Work` has one
@@ -1474,7 +1469,7 @@ async fn put_truth(
         // saying so.
         let _guard = found.notes_guard();
 
-        let current = crate::truth::load(&state.library, found)
+        let current = crate::truth::load(&state.library, &found)
             .map_err(NoTruth::Failed)?
             .unwrap_or_default();
         let tag = notes_etag(&crate::truth::to_json(&current));
@@ -1499,7 +1494,7 @@ async fn put_truth(
             Some(true) => {}
         }
 
-        crate::truth::store(&state.library, found, &incoming).map_err(NoTruth::Failed)?;
+        crate::truth::store(&state.library, &found, &incoming).map_err(NoTruth::Failed)?;
         Ok(crate::truth::to_json(&incoming))
     })
     .await;
@@ -1539,8 +1534,8 @@ async fn get_progress(
     // NFS mount. `get_page`'s reasoning above applies to it unchanged — these
     // two handlers simply did not get it when M2 wrote them.
     let loaded = tokio::task::spawn_blocking(move || {
-        let found = state.work_or_missing(&id).map_err(NoProgress::NotFound)?;
-        crate::progress::load(&state.library, found, user_id).map_err(NoProgress::Failed)
+        let found = state.find_blocking(&id).map_err(NoProgress::NotFound)?;
+        crate::progress::load(&state.library, &found, user_id).map_err(NoProgress::Failed)
     })
     .await;
 
@@ -1580,7 +1575,7 @@ async fn put_progress(
     // handler across the boundary would mean looking the work up twice — once
     // to validate and once inside the closure, which cannot borrow across it.
     let stored = tokio::task::spawn_blocking(move || {
-        let found = state.work_or_missing(&id).map_err(NoProgress::NotFound)?;
+        let found = state.find_blocking(&id).map_err(NoProgress::NotFound)?;
         let sidecar = found.sidecar();
         let edition = sidecar.editions.get(&progress.edition).ok_or_else(|| {
             NoProgress::NotFound(format!("no edition `{}` in work `{id}`", progress.edition))
@@ -1609,7 +1604,7 @@ async fn put_progress(
                 progress.edition, progress.slot
             )));
         }
-        crate::progress::store(&state.library, found, user_id, &progress)
+        crate::progress::store(&state.library, &found, user_id, &progress)
             .map_err(NoProgress::Failed)
     })
     .await;
@@ -1760,8 +1755,8 @@ fn one_slot(text: &str, side: &str) -> Result<taiyaku_core::Slot, Response> {
 /// server holds" and "the document the client was looking at" the same thing.
 ///
 /// **Took no `Extensions` and consulted no grant at all until this joined the
-/// other six.** It resolved its target by slug alone
-/// (`state.work_or_missing`), so a restricted account could both read the
+/// other six.** It resolved its target by slug alone,
+/// so a restricted account could both read the
 /// sidecar this handler returns and write shared `alignment`/`run` rows for a
 /// work outside every root it held — worse than the read leaks the sibling
 /// routes closed, because an alignment is shared library truth rather than
@@ -1868,7 +1863,7 @@ async fn patch_alignments(
     // below holds an exclusive lock across the file write — `get_page`'s
     // reasoning about the async worker applies to it unchanged.
     let written = tokio::task::spawn_blocking(move || {
-        let found = state.work_or_missing(&id).map_err(not_found)?;
+        let found = state.find_blocking(&id).map_err(not_found)?;
         // **The library's connection before the work's document, never the
         // other way round.** `list_works` holds this mutex across a
         // `work.sidecar()` read, so a thread that took the sidecar's write
@@ -1931,7 +1926,8 @@ async fn patch_alignments(
             // disk anywhere.
             //
             // The rows are what every *other* request is answered from
-            // (`taiyaku serve` projects each `Work` out of them at start), so
+            // (`taiyaku serve` projects each `Work` out of them at start, and,
+            // with no paths, again whenever the library's structure moves), so
             // writing only the file left the two disagreeing until the next
             // start re-imported it — O43. Between them, the file is still
             // first: it is the copy a person can read, diff and back up, and
@@ -1974,7 +1970,7 @@ async fn patch_alignments(
                     taiyaku_read::atomic::write(&found.path, json.as_bytes(), "json")
                         .map_err(|why| (StatusCode::INTERNAL_SERVER_ERROR, why).into_response())?;
                 }
-                crate::alignments::store(&conn, found, &next)
+                crate::alignments::store(&conn, &found, &next)
                     .map_err(|why| (StatusCode::INTERNAL_SERVER_ERROR, why).into_response())?;
             }
             // The response is filtered to this caller's grant, the same
@@ -2398,8 +2394,8 @@ pub(crate) fn grant_postures() -> Vec<(&'static str, GrantPosture)> {
                           Refuses entry, get_truth/put_truth take no \
                           Extensions at all, so no request against this route \
                           can currently produce a grant-driven 404 (get_truth \
-                          still 404s an unknown slug through work_or_missing \
-                          — the same as every other route — it is only the \
+                          still 404s an unknown slug, the same as every \
+                          other route — it is only the \
                           grant check that is absent); asserting Refuses here \
                           would encode a false safety claim into the suite. \
                           Reported, not fixed here — see this branch's \

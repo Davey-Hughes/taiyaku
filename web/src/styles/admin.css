@@ -1671,11 +1671,6 @@
   flex: 1;
 }
 
-.scan-report .note {
-  color: var(--muted);
-  font-size: var(--text-meta);
-}
-
 /* Spec C4 §4's users screen and §5's backup screen. Tokens, as the
    settings-area comment above requires and `index.css.test.ts` checks. */
 .users .user-list {

@@ -64,7 +64,6 @@ const derived = (over: Partial<Derived> = {}): Derived => ({
 const finished = (over: Partial<FinishedScan> = {}): FinishedScan => ({
   scan: walk(),
   derive: derived(),
-  note: "this process's own /api/works list is a startup snapshot",
   ...over,
 })
 
@@ -315,11 +314,6 @@ describe('ScanReport', () => {
       />,
     )
     expect(host.textContent).toContain('Monster v1')
-  })
-
-  it('draws the note about /api/works being a startup snapshot', () => {
-    const host = mount(<ScanReport outcome={finished()} />)
-    expect(host.textContent).toContain('startup snapshot')
   })
 
   it('draws a failed scan as the failure it is', () => {

@@ -116,6 +116,11 @@ taiyaku serve --addr 127.0.0.1:8484
 # a work with no sidecar file is served from the database and corrected into
 # it: a hand correction writes the `alignment` and `run` rows and no file,
 # so its only copy lives there until `taiyaku library export` writes one out.
+#
+# a work a later scan derives is served without a restart: every two seconds
+# the server asks whether the library's structure has changed and reads it
+# again if it has, and it asks at once when a request names a work it does
+# not hold yet
 
 # **every route needs a credential.** Give the first account a password from
 # the host's own shell before starting a server — there is no window in which
@@ -419,14 +424,11 @@ writable by 99:100; when it is not, they stay in the database and the save
 answers `persisted: false`. (Nothing schedules scans yet; a later change adds
 that.)
 
-Give the first account a password from the host, then add the library and
-restart, because the reader lists the works it found at startup (a later
-change removes the need):
+Give the first account a password from the host, then add the library:
 
 ```sh
 docker exec -it taiyaku taiyaku library user promote davey
 docker exec taiyaku taiyaku library scan --add /library
-docker restart taiyaku
 ```
 
 The first scan reads every archive once to hash it, so on a large library it

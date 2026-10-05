@@ -379,7 +379,7 @@ async fn a_single_member_edition_is_served_byte_for_byte() {
     let on_disk = std::fs::read(fixture.path().join("a1.cbz")).unwrap();
     let state = std::sync::Arc::new(crate::ServeState {
         library: crate::test_support::library(),
-        works: vec![work],
+        works: crate::Works::fixed(vec![work]),
         source: std::sync::Arc::new(crate::LocalLibrary),
         cache_dir: fixture.path().join("covers"),
         log: None,
@@ -689,7 +689,7 @@ async fn a_directory_member_is_refused_not_streamed() {
 
     let state = std::sync::Arc::new(crate::ServeState {
         library: crate::test_support::library(),
-        works: vec![work],
+        works: crate::Works::fixed(vec![work]),
         source: std::sync::Arc::new(crate::LocalLibrary),
         cache_dir: root.join("covers"),
         log: None,
@@ -975,7 +975,7 @@ async fn a_size_lying_archive_aborts_the_download_instead_of_streaming_a_lie() {
     );
     let state = std::sync::Arc::new(crate::ServeState {
         library: crate::test_support::library(),
-        works: vec![work],
+        works: crate::Works::fixed(vec![work]),
         source: std::sync::Arc::new(crate::LocalLibrary),
         cache_dir: root.join("covers"),
         log: None,
@@ -1179,7 +1179,7 @@ async fn a_single_member_directory_edition_is_generated_not_passed_through() {
     );
     let state = std::sync::Arc::new(crate::ServeState {
         library: crate::test_support::library(),
-        works: vec![work],
+        works: crate::Works::fixed(vec![work]),
         source: std::sync::Arc::new(crate::LocalLibrary),
         cache_dir: root.join("covers"),
         log: None,

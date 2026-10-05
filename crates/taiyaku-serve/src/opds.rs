@@ -191,7 +191,7 @@ pub(crate) async fn works(
         Err(refusal) => return refusal,
     };
     let mut entries = String::new();
-    for work in &state.works {
+    for work in state.works.snapshot().iter() {
         // A work absent from `visible`'s keys has no edition inside the
         // grant at all — `visible_editions`'s own contract — so it is
         // skipped entirely rather than named with a count of zero.
@@ -294,7 +294,7 @@ pub(crate) async fn work_feed(
     AxPath(id): AxPath<String>,
     extensions: axum::http::Extensions,
 ) -> Response {
-    let work = match state.work_or_missing(&id) {
+    let work = match state.find(&id).await {
         Ok(work) => work,
         Err(message) => return missing(message),
     };
@@ -467,14 +467,17 @@ async fn advertised_types(
     let sidecar = Arc::clone(sidecar);
     let visible = visible.cloned();
     let typed = tokio::task::spawn_blocking(move || {
-        let work = state.work_or_missing(&id)?;
+        let work = state.find_blocking(&id)?;
         Ok::<_, String>(
             sidecar
                 .editions
                 .iter()
                 .filter(|(key, _)| visible.as_ref().is_none_or(|v| v.contains(*key)))
                 .map(|(key, edition)| {
-                    (key.clone(), crate::download::advertised_type(work, edition))
+                    (
+                        key.clone(),
+                        crate::download::advertised_type(&work, edition),
+                    )
                 })
                 .collect(),
         )
@@ -542,11 +545,11 @@ pub(crate) async fn stream_page(
     // only the other route is worth. `crate::routes::locate_member` reads
     // nothing but the in-memory sidecar, so a match is answered before the
     // decompression or Stump round trip below ever runs.
-    let found = match state.work_or_missing(&id) {
+    let found = match state.find(&id).await {
         Ok(found) => found,
         Err(e) => return missing(e),
     };
-    let (sha256, offset) = match crate::routes::locate_member(found, &edition, index) {
+    let (sha256, offset) = match crate::routes::locate_member(&found, &edition, index) {
         Ok(pair) => pair,
         Err(e) => return missing(e),
     };
@@ -561,8 +564,8 @@ pub(crate) async fn stream_page(
     }
 
     let fetched = tokio::task::spawn_blocking(move || {
-        let found = state.work_or_missing(&id)?;
-        state.page(found, &edition, index)
+        let found = state.find_blocking(&id)?;
+        state.page(&found, &edition, index)
     })
     .await;
 
@@ -602,7 +605,7 @@ pub(crate) async fn cover(
         return refusal;
     }
     let fetched = tokio::task::spawn_blocking(move || {
-        let work = state.work_or_missing(&id)?;
+        let work = state.find_blocking(&id)?;
         let sidecar = work.sidecar();
         let found = sidecar
             .editions
@@ -620,7 +623,7 @@ pub(crate) async fn cover(
             .ok_or_else(|| format!("`{edition}` has no pages"))?;
         let cover_member = &found.members[position];
         crate::cover::cached_or_generated(&state.cache_dir, &cover_member.sha256, || {
-            state.page(work, &edition, 0).map(|p| p.bytes)
+            state.page(&work, &edition, 0).map(|p| p.bytes)
         })
     })
     .await;

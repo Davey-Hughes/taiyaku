@@ -465,7 +465,7 @@ async fn progress_past_the_end_of_the_edition_is_refused() {
 async fn the_last_slot_of_a_spread_carrying_edition_is_in_range() {
     let tmp = crate::test_support::Fixture::new("progress-spread-slot");
     let state = crate::test_support::state(&tmp);
-    state.works[0]
+    state.works.snapshot()[0]
         .update(|current| {
             let mut next = (**current).clone();
             next.editions
@@ -760,7 +760,7 @@ async fn no_works_route_stalls_the_runtime() {
 
     let tag = sidecar_etag(
         &state
-            .work_or_missing("w")
+            .find_blocking("w")
             .expect("the fixture work")
             .sidecar(),
     );
@@ -920,7 +920,7 @@ async fn no_grant_check_stalls_the_runtime() {
 
     let tag = sidecar_etag(
         &state
-            .work_or_missing("w")
+            .find_blocking("w")
             .expect("the fixture work")
             .sidecar(),
     );
@@ -1086,8 +1086,8 @@ async fn a_hidden_work_is_refused_before_its_validator_is_answered() {
     use axum::http::HeaderMap;
 
     let (state, _fixture) = crate::test_support::state_whose_grant_waits_on_the_library();
-    let found = state.work_or_missing("w").expect("the fixture work");
-    let (sha256, offset) = locate_member(found, "raw", 0).expect("page 0 of `raw`");
+    let found = state.find_blocking("w").expect("the fixture work");
+    let (sha256, offset) = locate_member(&found, "raw", 0).expect("page 0 of `raw`");
     let page_tag = page_etag(&sha256, offset, None);
     let sidecar_tag = sidecar_etag(&found.sidecar());
     let if_none_match = |tag: &str| {
@@ -2255,7 +2255,7 @@ async fn the_sidecar_carries_an_etag_that_tracks_its_content() {
         .await
         .unwrap();
     let tag = first.headers().get(axum::http::header::ETAG).cloned();
-    state.works[0]
+    state.works.snapshot()[0]
         .update(|current| {
             let mut next = (**current).clone();
             next.work.title = "Different".into();
@@ -2385,7 +2385,7 @@ async fn a_correction_is_written_and_read_back() {
     let body = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
         .unwrap();
-    let on_disk = std::fs::read_to_string(&state.works[0].path).unwrap();
+    let on_disk = std::fs::read_to_string(&state.works.snapshot()[0].path).unwrap();
     assert_eq!(status, axum::http::StatusCode::OK);
     assert_ne!(
         fresh,
@@ -2409,7 +2409,7 @@ async fn a_correction_is_written_and_read_back() {
         "the file records who decided: {on_disk}"
     );
     assert_eq!(
-        state.works[0].sidecar().alignments[0]
+        state.works.snapshot()[0].sidecar().alignments[0]
             .runs
             .iter()
             .filter(|r| r.by == Some(taiyaku_core::Source::Hand))
@@ -2492,7 +2492,7 @@ async fn a_correction_survives_the_reimport_a_restart_performs() {
     .await;
     assert_eq!(status, axum::http::StatusCode::OK, "{body}");
 
-    let path = state.works[0].path.clone();
+    let path = state.works.snapshot()[0].path.clone();
     let text = std::fs::read_to_string(&path).expect("the handler wrote the file");
     let doc = taiyaku_core::Sidecar::from_json(&text).expect("the written file parses");
     {
@@ -2546,8 +2546,10 @@ async fn a_no_op_correction_does_not_touch_the_file() {
         "the setup write lands"
     );
 
-    let before_bytes = std::fs::read(&state.works[0].path).unwrap();
-    let before_ino = std::fs::metadata(&state.works[0].path).unwrap().ino();
+    let before_bytes = std::fs::read(&state.works.snapshot()[0].path).unwrap();
+    let before_ino = std::fs::metadata(&state.works.snapshot()[0].path)
+        .unwrap()
+        .ino();
     let second_tag = etag_of(&router, "/api/works/t").await;
 
     // The same assertion again: the document already says slot 2 pairs
@@ -2559,8 +2561,10 @@ async fn a_no_op_correction_does_not_touch_the_file() {
     )
     .await;
 
-    let after_bytes = std::fs::read(&state.works[0].path).unwrap();
-    let after_ino = std::fs::metadata(&state.works[0].path).unwrap().ino();
+    let after_bytes = std::fs::read(&state.works.snapshot()[0].path).unwrap();
+    let after_ino = std::fs::metadata(&state.works.snapshot()[0].path)
+        .unwrap()
+        .ino();
     assert_eq!(
         second_status,
         axum::http::StatusCode::OK,
@@ -2601,7 +2605,7 @@ async fn a_correction_against_a_stale_validator_is_refused() {
     )
     .await;
 
-    let after = state.works[0].sidecar();
+    let after = state.works.snapshot()[0].sidecar();
     let current = sidecar_etag(&after);
     assert_eq!(second, axum::http::StatusCode::PRECONDITION_FAILED);
     // Telling a client only that it lost is not enough to let it recover:
@@ -2742,7 +2746,7 @@ async fn each_refusal_answers_the_status_its_kind_calls_for() {
         r#"{"from":"raw","to":"en","a":"2","b":"1"}"#,
     )
     .await;
-    let unchanged = state.works[0].sidecar().alignments[0].runs.len();
+    let unchanged = state.works.snapshot()[0].sidecar().alignments[0].runs.len();
 
     for ((body, want, names), (got, message)) in cases.iter().zip(&answered) {
         assert_eq!(got, want, "for {body}: {message}");
@@ -2776,7 +2780,7 @@ async fn an_explicit_null_unpairs_the_slot() {
     let state = Arc::new(crate::test_support::state_with_two_editions(&tmp));
     let router = build_router(state.clone());
     let tag = etag_of(&router, "/api/works/t").await;
-    let before = taiyaku_core::resolve(&state.works[0].sidecar(), "raw", "en", 2);
+    let before = taiyaku_core::resolve(&state.works.snapshot()[0].sidecar(), "raw", "en", 2);
 
     let (status, _) = correct_with_body(
         &router,
@@ -2786,7 +2790,7 @@ async fn an_explicit_null_unpairs_the_slot() {
     )
     .await;
 
-    let after = state.works[0].sidecar();
+    let after = state.works.snapshot()[0].sidecar();
     assert_eq!(status, axum::http::StatusCode::OK);
     assert!(
         before.is_some(),
@@ -2965,7 +2969,7 @@ async fn stored_notes_are_served_and_change_the_validator() {
     let state = crate::test_support::state(&tmp);
     crate::notes::store(
         &state.library,
-        &state.works[0],
+        &state.works.snapshot()[0],
         1,
         &crate::notes::Notes {
             work: "t".into(),
@@ -3717,9 +3721,9 @@ async fn two_readers_hold_separate_notes_on_one_work() {
 #[tokio::test]
 async fn correcting_a_work_with_no_document_writes_rows_and_no_file() {
     let (router, state, fixture) = crate::test_support::router_over_a_scanned_work();
-    let slug = state.works[0].id.clone();
+    let slug = state.works.snapshot()[0].id.clone();
     assert!(
-        !state.works[0].has_document(),
+        !state.works.snapshot()[0].has_document(),
         "the fixture is only meaningful for a work with no document"
     );
 
@@ -3834,7 +3838,7 @@ fn router_with_two_works_one_withheld(dir: &std::path::Path) -> (axum::Router, A
     let works = crate::works::from_library(&library).expect("projects the imported works");
     let state = Arc::new(ServeState {
         library,
-        works,
+        works: crate::Works::fixed(works),
         source: Arc::new(crate::LocalLibrary),
         cache_dir: root.join("covers"),
         log: None,
@@ -3872,8 +3876,8 @@ async fn the_work_list_does_not_name_a_work_outside_the_grant() {
 }
 
 // ---------------------------------------------------------------------------
-// The write leak: `patch_alignments` resolved its target by slug alone
-// (`state.work_or_missing`), consulting no `Extensions` and no `Principal` at
+// The write leak: `patch_alignments` resolved its target by slug alone,
+// consulting no `Extensions` and no `Principal` at
 // all — unlike every other route in this file. A restricted account could
 // therefore both read the sidecar this handler returns and write shared
 // `alignment`/`run` rows for a work outside every root it held. This is worse
@@ -3950,7 +3954,7 @@ fn router_over_a_scanned_work_under_a_withheld_root(
     let works = crate::works::from_library(&library).expect("projects the imported work");
     let state = Arc::new(ServeState {
         library,
-        works,
+        works: crate::Works::fixed(works),
         source: Arc::new(crate::LocalLibrary),
         cache_dir: fixture_root.join("covers"),
         log: None,
@@ -3975,12 +3979,12 @@ fn router_over_a_scanned_work_under_a_withheld_root(
 async fn a_restricted_account_cannot_patch_alignments_on_a_work_in_a_withheld_root() {
     let tmp = crate::test_support::Fixture::new("routes-grant-alignments-write");
     let (router, state) = router_over_a_scanned_work_under_a_withheld_root(&tmp);
-    let slug = state.works[0].id.clone();
+    let slug = state.works.snapshot()[0].id.clone();
     // Computed directly from the state the running server holds, rather than
     // fetched through `GET /api/works/{slug}` — that route is already fixed
     // and would itself answer 404 to this restricted account, which is
     // exactly what would make an attacker compute this offline instead.
-    let tag = super::sidecar_etag(&state.works[0].sidecar());
+    let tag = super::sidecar_etag(&state.works.snapshot()[0].sidecar());
 
     let (status, body) = correct_with_body(
         &router,

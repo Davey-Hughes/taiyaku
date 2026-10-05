@@ -423,7 +423,6 @@ export function ScanReport({ outcome }: { outcome: ScanOutcome }) {
     <div className="scan-report">
       <WalkSection walk={outcome.scan} />
       <DeriveSection derive={outcome.derive} />
-      <p className="note">{outcome.note}</p>
     </div>
   )
 }

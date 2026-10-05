@@ -702,7 +702,7 @@ fn prepare(
     edition_key: &str,
 ) -> Result<(Shape, String), Response> {
     let work = state
-        .work_or_missing(slug)
+        .find_blocking(slug)
         .map_err(crate::routes::not_found)?;
     let sidecar = work.sidecar();
     let found = sidecar.editions.get(edition_key).ok_or_else(|| {
@@ -710,7 +710,7 @@ fn prepare(
     })?;
     // A scanned work has no document, so its member paths are absolute and
     // this join is the identity — `derive.rs` says so where it writes them.
-    let paths = member_paths(work, found);
+    let paths = member_paths(&work, found);
     if paths.is_empty() {
         return Err(crate::routes::not_found(format!(
             "`{edition_key}` of `{slug}` has no members"
@@ -1302,7 +1302,7 @@ fn prepare_member(
     ordinal: usize,
 ) -> Result<(std::path::PathBuf, u64, &'static str, String), Response> {
     let work = state
-        .work_or_missing(slug)
+        .find_blocking(slug)
         .map_err(crate::routes::not_found)?;
     let sidecar = work.sidecar();
     let found = sidecar.editions.get(edition_key).ok_or_else(|| {

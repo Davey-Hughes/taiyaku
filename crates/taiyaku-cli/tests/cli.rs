@@ -1001,6 +1001,8 @@ impl Drop for ServeChild {
 struct Serving {
     child: ServeChild,
     addr: String,
+    /// The `--db` it was started with.
+    db: String,
     seen: Vec<String>,
     /// Held so the reader thread keeps draining stderr when `keep_reading` is
     /// set: a pipe nobody reads any more makes the server's next `eprintln!`
@@ -1024,6 +1026,14 @@ fn serve_until_listening(label: &str) -> Serving {
 /// fails as it does under `serve … 2>&1 | tee log` after Ctrl-C.
 #[cfg(unix)]
 fn serve_listening(label: &str, keep_reading: bool) -> Serving {
+    serve_listening_over(label, keep_reading, false)
+}
+
+/// [`serve_listening`], serving the fixture sidecar or, with `whole_library`,
+/// no paths at all: every work in the library, read again whenever the
+/// library moves.
+#[cfg(unix)]
+fn serve_listening_over(label: &str, keep_reading: bool, whole_library: bool) -> Serving {
     use std::io::{BufRead, BufReader};
     use std::process::Stdio;
     use std::time::{Duration, Instant};
@@ -1031,23 +1041,27 @@ fn serve_listening(label: &str, keep_reading: bool) -> Serving {
     let dir = TempDir::new(&format!("cli-serve-{label}"));
     let sidecar = fixture(&dir);
     let db_dir = TempDir::new(&format!("cli-serve-{label}-db"));
+    let db = db_path(&db_dir);
     let cache = TempDir::new(&format!("cli-serve-{label}-cache"));
     let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("a free port");
     let addr = probe.local_addr().expect("reads the port").to_string();
     drop(probe);
 
+    let mut args = vec!["serve"];
+    if !whole_library {
+        args.push(&sidecar);
+    }
+    args.extend([
+        "--db",
+        &db,
+        "--cache",
+        cache.to_str().expect("a utf-8 temp path"),
+        "--addr",
+        &addr,
+    ]);
     let mut child = ServeChild(
         taiyaku()
-            .args([
-                "serve",
-                &sidecar,
-                "--db",
-                &db_path(&db_dir),
-                "--cache",
-                cache.to_str().expect("a utf-8 temp path"),
-                "--addr",
-                &addr,
-            ])
+            .args(&args)
             .stderr(Stdio::piped())
             .spawn()
             .expect("the binary runs"),
@@ -1083,6 +1097,7 @@ fn serve_listening(label: &str, keep_reading: bool) -> Serving {
     Serving {
         child,
         addr,
+        db,
         seen,
         _heard: heard,
         _dirs: [dir, db_dir, cache],
@@ -1201,4 +1216,103 @@ fn serve_exits_on_sigterm_with_a_connection_open_and_stderr_closed() {
     });
     assert!(status.success(), "{status:?}");
     drop(stuck);
+}
+
+/// A live server keeps its works current once nothing reads its stderr. A
+/// refresh with something to say says it there, and with the pipe gone that
+/// write fails; the failure must not end the refresher, or `/api/works`, which
+/// this test reaches without a lookup miss, stays as it was. The pipe goes the way it does under `serve 2>&1
+/// | tee log` once `tee` has.
+#[cfg(unix)]
+#[test]
+fn serve_keeps_its_works_current_with_stderr_closed() {
+    use std::time::Duration;
+    use taiyaku_library::{Library, account, import};
+
+    let serving = serve_listening_over("live-no-stderr", false, true);
+    let library = Library::open(Path::new(&serving.db)).expect("opens the server's library");
+    // A key answers only for an account someone has claimed.
+    let local = account::promote(&library.conn(), "local", "a password", "admin")
+        .expect("claims the seeded account");
+    let key = account::create_key(&library.conn(), local, "test").expect("a key for `local`");
+    let add = |title: &str, sha: &str| -> i64 {
+        let doc = taiyaku_core::Sidecar::from_json(&format!(
+            r#"{{"taiyaku":1,"work":{{"title":"{title}","reading":"rtl"}},
+                 "editions":{{"raw":{{"label":"raw","members":[
+                   {{"path":"/abs/{title} - v01","sha256":"{sha}","pages":4}}]}}}},
+                 "hub":"raw","alignments":[]}}"#
+        ))
+        .expect("parses");
+        import::scanned(&library.conn(), &doc, None).expect("imports")
+    };
+    let broken = add("Broken", "b1");
+    let steady = add("Steady", "s1");
+    let limit = Duration::from_secs(15);
+    assert!(
+        listed_within(&serving, &key, "\"Broken\"", limit)
+            && listed_within(&serving, &key, "\"Steady\"", limit),
+        "the refresher never served the two works"
+    );
+
+    // One write the next refresh both serves and complains about: `Broken`
+    // will not project, and `Steady` has a new title. The title is the sign
+    // that the refresh which wrote to the closed pipe has run.
+    library
+        .conn()
+        .execute_batch(&format!(
+            "BEGIN; \
+             UPDATE work SET reading = 'sideways' WHERE id = {broken}; \
+             UPDATE work SET title = 'Steady, renamed' WHERE id = {steady}; \
+             COMMIT;"
+        ))
+        .expect("writes both");
+    assert!(
+        listed_within(&serving, &key, "\"Steady, renamed\"", limit),
+        "the refresh with a complaint never ran"
+    );
+
+    library
+        .conn()
+        .execute(
+            "UPDATE work SET title = 'Steady, again' WHERE id = ?1",
+            [steady],
+        )
+        .expect("renames it again");
+    assert!(
+        listed_within(&serving, &key, "\"Steady, again\"", limit),
+        "the refresher stopped once a complaint could not be written"
+    );
+}
+
+/// Whether `/api/works`, asked for as `local` with `key`, comes to contain
+/// `wanted` within `limit`.
+#[cfg(unix)]
+fn listed_within(serving: &Serving, key: &str, wanted: &str, limit: std::time::Duration) -> bool {
+    use base64::Engine as _;
+    use std::io::{Read as _, Write as _};
+
+    let credential = base64::engine::general_purpose::STANDARD.encode(format!("local:{key}"));
+    let deadline = std::time::Instant::now() + limit;
+    loop {
+        let mut stream = std::net::TcpStream::connect(&serving.addr).expect("connects");
+        write!(
+            stream,
+            "GET /api/works HTTP/1.1\r\nHost: {}\r\nAuthorization: Basic {credential}\r\n\
+             Connection: close\r\n\r\n",
+            serving.addr
+        )
+        .expect("asks");
+        let mut answer = String::new();
+        stream
+            .read_to_string(&mut answer)
+            .expect("reads the answer");
+        assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
+        if answer.contains(wanted) {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
 }
