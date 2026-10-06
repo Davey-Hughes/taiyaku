@@ -126,9 +126,8 @@ fn using_a_key_records_that_it_was_used() {
     );
 }
 
-/// §8: `user_root` is populated by hand and read by the guard. **Nothing
-/// filters on the answer until spec C1**, which is recorded rather than
-/// discovered — see this function's own doc comment.
+/// §8: a grant written by hand is read back as the folders of the library
+/// granted, and an account with none reads as an empty list.
 #[test]
 fn roots_are_read_per_user() {
     let library = library();
@@ -142,8 +141,11 @@ fn roots_are_read_per_user() {
         "a user granted nothing has no roots, which is not the same as every root"
     );
 
-    conn.execute("INSERT INTO user_root (user_id, root_id) VALUES (1, 7)", [])
-        .expect("grant");
+    conn.execute(
+        "INSERT INTO user_library (user_id, library_id) SELECT 1, library_id FROM root WHERE id = 7",
+        [],
+    )
+    .expect("grant");
     assert_eq!(roots_for(&conn, 1).expect("reads"), vec![7]);
 }
 
@@ -863,36 +865,44 @@ fn a_root(conn: &rusqlite::Connection, id: i64, path: &str) {
     .expect("adding a root");
 }
 
+/// The library root `root` is filed under.
+fn library_of(conn: &rusqlite::Connection, root: i64) -> i64 {
+    conn.query_row("SELECT library_id FROM root WHERE id = ?1", [root], |r| {
+        r.get(0)
+    })
+    .expect("the root's library")
+}
+
 #[test]
-fn granting_a_root_is_idempotent_and_says_which_it_was() {
+fn granting_a_library_is_idempotent_and_says_which_it_was() {
     let library = library();
     let conn = library.conn();
     a_root(&conn, 7, "/library");
 
     assert!(
-        grant_root(&conn, 1, 7).expect("grants"),
+        grant_library(&conn, 1, library_of(&conn, 7)).expect("grants"),
         "the first grant is new"
     );
     assert!(
-        !grant_root(&conn, 1, 7).expect("grants again"),
+        !grant_library(&conn, 1, library_of(&conn, 7)).expect("grants again"),
         "granting twice is not an error and is not a second grant"
     );
     assert_eq!(roots_for(&conn, 1).expect("reads"), vec![7]);
 }
 
 #[test]
-fn revoking_a_root_says_whether_there_was_one() {
+fn revoking_a_library_says_whether_there_was_one() {
     let library = library();
     let conn = library.conn();
     a_root(&conn, 7, "/library");
-    grant_root(&conn, 1, 7).expect("grants");
+    grant_library(&conn, 1, library_of(&conn, 7)).expect("grants");
 
     assert!(
-        revoke_root(&conn, 1, 7).expect("revokes"),
+        revoke_library(&conn, 1, library_of(&conn, 7)).expect("revokes"),
         "the grant was there"
     );
     assert!(
-        !revoke_root(&conn, 1, 7).expect("revokes again"),
+        !revoke_library(&conn, 1, library_of(&conn, 7)).expect("revokes again"),
         "revoking what is not granted is not an error"
     );
     assert!(roots_for(&conn, 1).expect("reads").is_empty());
@@ -915,13 +925,185 @@ fn granted_roots_names_the_paths_for_display() {
     let conn = library.conn();
     a_root(&conn, 7, "/b-library");
     a_root(&conn, 8, "/a-library");
-    grant_root(&conn, 1, 7).expect("grants");
-    grant_root(&conn, 1, 8).expect("grants");
+    grant_library(&conn, 1, library_of(&conn, 7)).expect("grants");
+    grant_library(&conn, 1, library_of(&conn, 8)).expect("grants");
 
     assert_eq!(
         granted_roots(&conn, 1).expect("reads"),
         vec![(8, "/a-library".to_string()), (7, "/b-library".to_string())],
         "ordered by path, which is what a person reads"
+    );
+}
+
+/// Ids that differ between libraries and roots, so a join on the wrong pair
+/// cannot pass by coincidence.
+fn a_two_folder_library_and_another(conn: &rusqlite::Connection) {
+    conn.execute_batch(
+        "INSERT INTO library (id, name) VALUES (70, 'Shelf'), (80, 'Other');
+         INSERT INTO root (id, path, library_id) VALUES
+           (7, '/srv/manga', 70), (8, '/srv/raw', 70), (9, '/srv/other', 80);",
+    )
+    .expect("a library of two folders and one of one");
+}
+
+#[test]
+fn a_granted_library_resolves_to_every_one_of_its_folders() {
+    let library = claimed_library();
+    let conn = library.conn();
+    a_two_folder_library_and_another(&conn);
+    let id = add(&conn, "reader", "pw", "user").expect("adds an account");
+
+    assert!(grant_library(&conn, id, 70).expect("grants"), "a new grant");
+    assert!(
+        !grant_library(&conn, id, 70).expect("grants again"),
+        "and not a second one"
+    );
+
+    assert_eq!(
+        roots_for(&conn, id).expect("reads"),
+        vec![7, 8],
+        "both folders, not Other's"
+    );
+    assert_eq!(libraries_for(&conn, id).expect("reads"), vec![70]);
+    assert_eq!(
+        granted_libraries(&conn, id).expect("reads"),
+        vec![(70, "Shelf".to_string())]
+    );
+    assert_eq!(
+        granted_roots(&conn, id).expect("reads"),
+        vec![(7, "/srv/manga".to_string()), (8, "/srv/raw".to_string())],
+        "and the same folders by path"
+    );
+}
+
+/// [`a_two_folder_library_and_another`], a library `Zines` whose name and
+/// folder's path sort after `Other`'s though its ids sort before, and two
+/// accounts: `reader` granted `Other` and `Zines`, `other` granted `Shelf`
+/// and `Other`. Answers the two accounts in that order.
+fn two_accounts_granted_libraries(conn: &rusqlite::Connection) -> (i64, i64) {
+    a_two_folder_library_and_another(conn);
+    conn.execute_batch(
+        "INSERT INTO library (id, name) VALUES (60, 'Zines');
+         INSERT INTO root (id, path, library_id) VALUES (6, '/srv/zines', 60);",
+    )
+    .expect("a library of one folder");
+    let reader = add(conn, "reader", "pw", "user").expect("adds an account");
+    let other = add(conn, "other", "pw", "user").expect("adds another");
+    grant_library(conn, reader, 80).expect("grants Other");
+    grant_library(conn, reader, 60).expect("grants Zines");
+    grant_library(conn, other, 70).expect("grants the other account Shelf");
+    grant_library(conn, other, 80).expect("and Other");
+    (reader, other)
+}
+
+/// The folders a grant resolves to are those of the account's own libraries,
+/// by id for the guard and by path for a person.
+#[test]
+fn granted_folders_are_read_per_account_and_in_order() {
+    let library = claimed_library();
+    let conn = library.conn();
+    let (reader, _other) = two_accounts_granted_libraries(&conn);
+
+    assert_eq!(
+        roots_for(&conn, reader).expect("reads"),
+        vec![6, 9],
+        "ascending by id, and not the other account's"
+    );
+    assert_eq!(
+        granted_roots(&conn, reader).expect("reads"),
+        vec![(9, "/srv/other".to_string()), (6, "/srv/zines".to_string())],
+        "by path, and not the other account's"
+    );
+}
+
+/// Each account's grants are its own, and a listing is in its stated order.
+#[test]
+fn granted_libraries_are_read_per_account_and_in_order() {
+    let library = claimed_library();
+    let conn = library.conn();
+    let (reader, other) = two_accounts_granted_libraries(&conn);
+
+    assert_eq!(
+        libraries_for(&conn, reader).expect("reads"),
+        vec![60, 80],
+        "ascending by id, and not the other account's"
+    );
+    assert_eq!(
+        granted_libraries(&conn, reader).expect("reads"),
+        vec![(80, "Other".to_string()), (60, "Zines".to_string())],
+        "by name, and not the other account's"
+    );
+
+    assert!(
+        revoke_library(&conn, reader, 80).expect("revokes"),
+        "the grant was there"
+    );
+    assert_eq!(
+        libraries_for(&conn, reader).expect("reads"),
+        vec![60],
+        "the library named went, and only that one"
+    );
+    assert_eq!(
+        libraries_for(&conn, other).expect("reads"),
+        vec![70, 80],
+        "and no other account's grant of it"
+    );
+}
+
+/// A library id no row holds is refused, where a root id would once have
+/// been.
+#[test]
+fn granting_a_library_that_does_not_exist_is_an_error() {
+    let library = claimed_library();
+    let conn = library.conn();
+    let id = add(&conn, "reader", "pw", "user").expect("adds an account");
+
+    let why = grant_library(&conn, id, 999).expect_err("there is no library 999");
+
+    assert!(why.contains("999"), "{why}");
+    assert!(libraries_for(&conn, id).expect("reads").is_empty());
+}
+
+#[test]
+fn a_roots_list_naming_one_folder_of_a_library_keeps_the_whole_library() {
+    let library = claimed_library();
+    let conn = library.conn();
+    a_two_folder_library_and_another(&conn);
+    let id = add(&conn, "reader", "pw", "user").expect("adds an account");
+    grant_library(&conn, id, 70).expect("grants Shelf");
+
+    update(
+        &conn,
+        id,
+        &Patch {
+            roots: Some(vec![7]),
+            ..Patch::default()
+        },
+        None,
+    )
+    .expect("updates");
+
+    assert_eq!(
+        libraries_for(&conn, id).expect("reads"),
+        vec![70],
+        "Shelf is still granted"
+    );
+    assert_eq!(roots_for(&conn, id).expect("reads"), vec![7, 8]);
+
+    update(
+        &conn,
+        id,
+        &Patch {
+            roots: Some(vec![9]),
+            ..Patch::default()
+        },
+        None,
+    )
+    .expect("updates");
+    assert_eq!(
+        libraries_for(&conn, id).expect("reads"),
+        vec![80],
+        "replaced, not appended"
     );
 }
 
@@ -1083,7 +1265,7 @@ fn a_roots_list_replaces_the_grants_rather_than_adding_to_them() {
     let conn = library.conn();
     let (first, second) = two_roots(&conn);
     let id = add(&conn, "reader", "pw", "user").expect("adds an account");
-    grant_root(&conn, id, first).expect("grants the first");
+    grant_library(&conn, id, library_of(&conn, first)).expect("grants the first");
 
     update(
         &conn,
@@ -1103,6 +1285,52 @@ fn a_roots_list_replaces_the_grants_rather_than_adding_to_them() {
     );
 }
 
+/// A list naming folders of two libraries grants both, and a list leaving two
+/// held libraries out revokes both. The other account's grants do not move.
+#[test]
+fn a_roots_list_across_several_libraries_revokes_and_grants_each() {
+    let library = claimed_library();
+    let conn = library.conn();
+    let (reader, other) = two_accounts_granted_libraries(&conn);
+
+    update(
+        &conn,
+        reader,
+        &Patch {
+            roots: Some(vec![7]),
+            ..Patch::default()
+        },
+        None,
+    )
+    .expect("updates");
+    assert_eq!(
+        libraries_for(&conn, reader).expect("reads"),
+        vec![70],
+        "both libraries the list left out went"
+    );
+
+    update(
+        &conn,
+        reader,
+        &Patch {
+            roots: Some(vec![6, 9]),
+            ..Patch::default()
+        },
+        None,
+    )
+    .expect("updates");
+    assert_eq!(
+        libraries_for(&conn, reader).expect("reads"),
+        vec![60, 80],
+        "each library the list named was granted"
+    );
+    assert_eq!(
+        libraries_for(&conn, other).expect("reads"),
+        vec![70, 80],
+        "and the other account's grants are where they were"
+    );
+}
+
 /// An absent `roots` key leaves the grants alone, which is the difference
 /// between `None` and `Some(vec![])` that makes the field an `Option<Vec<_>>`.
 #[test]
@@ -1111,7 +1339,7 @@ fn a_patch_without_a_roots_key_leaves_the_grants_alone() {
     let conn = library.conn();
     let (first, _second) = two_roots(&conn);
     let id = add(&conn, "reader", "pw", "user").expect("adds an account");
-    grant_root(&conn, id, first).expect("grants the first");
+    grant_library(&conn, id, library_of(&conn, first)).expect("grants the first");
 
     update(
         &conn,
@@ -1128,7 +1356,7 @@ fn a_patch_without_a_roots_key_leaves_the_grants_alone() {
 }
 
 /// **An empty list means unrestricted, not blind**, which is spec A2's
-/// sharpest edge and is stated on [`grant_root`]: every account in every
+/// sharpest edge and is stated on [`grant_library`]: every account in every
 /// existing library holds an empty grant, so any other reading would have
 /// emptied every library the day migration 6 applied.
 #[test]
@@ -1137,7 +1365,7 @@ fn an_empty_roots_list_makes_an_account_unrestricted_rather_than_blind() {
     let conn = library.conn();
     let (first, _second) = two_roots(&conn);
     let id = add(&conn, "reader", "pw", "user").expect("adds an account");
-    grant_root(&conn, id, first).expect("grants the first");
+    grant_library(&conn, id, library_of(&conn, first)).expect("grants the first");
 
     update(
         &conn,
@@ -1163,7 +1391,7 @@ fn a_refused_role_change_writes_no_grants_either() {
     let library = claimed_library();
     let conn = library.conn();
     let (first, second) = two_roots(&conn);
-    grant_root(&conn, 1, first).expect("grants the admin the first root");
+    grant_library(&conn, 1, library_of(&conn, first)).expect("grants the admin the first root");
 
     update(
         &conn,
@@ -1194,7 +1422,7 @@ fn removing_an_account_states_what_it_costs_before_it_acts() {
     let (first, _second) = two_roots(&conn);
     let work = a_work(&conn);
     let id = add(&conn, "reader", "pw", "user").expect("adds an account");
-    grant_root(&conn, id, first).expect("grants a root");
+    grant_library(&conn, id, library_of(&conn, first)).expect("grants a root");
     create_key(&conn, id, "tablet").expect("mints a key");
     open_session(&conn, id, "tok", None, None).expect("opens a session");
     conn.execute(
@@ -1246,7 +1474,7 @@ fn removing_an_account_takes_its_positions_notes_sessions_keys_and_grants() {
     let (first, _second) = two_roots(&conn);
     let work = a_work(&conn);
     let id = add(&conn, "reader", "pw", "user").expect("adds an account");
-    grant_root(&conn, id, first).expect("grants a root");
+    grant_library(&conn, id, library_of(&conn, first)).expect("grants a root");
     create_key(&conn, id, "tablet").expect("mints a key");
     open_session(&conn, id, "tok", None, None).expect("opens a session");
     conn.execute(
@@ -1257,7 +1485,7 @@ fn removing_an_account_takes_its_positions_notes_sessions_keys_and_grants() {
 
     remove(&conn, id).expect("removes");
 
-    for table in ["progress", "session", "api_key", "user_root"] {
+    for table in ["progress", "session", "api_key", "user_library"] {
         let left: i64 = conn
             .query_row(
                 &format!("SELECT COUNT(*) FROM {table} WHERE user_id = ?1"),

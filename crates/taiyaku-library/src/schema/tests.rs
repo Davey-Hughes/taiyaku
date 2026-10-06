@@ -602,7 +602,7 @@ fn migration_4_rebuilds_user_without_taking_the_notes_with_it() {
 #[test]
 fn migration_4_creates_every_table_spec_a2_names() {
     let conn = Connection::open_in_memory().expect("in-memory connection");
-    migrate(&conn).expect("migrates");
+    migrate_with(&conn, &MIGRATIONS[..4]).expect("migrates to 4");
     let names = table_names(&conn);
     for expected in ["session", "api_key", "user_root", "login_attempt"] {
         assert!(
@@ -759,8 +759,8 @@ fn migration_6_adds_member_root_id_leaving_existing_members_null() {
 /// The version and the migration count are one fact, and this is the refusal
 /// that depends on it staying true.
 #[test]
-fn the_schema_version_is_fourteen() {
-    assert_eq!(SCHEMA_VERSION, 14);
+fn the_schema_version_is_fifteen() {
+    assert_eq!(SCHEMA_VERSION, 15);
     assert_eq!(
         MIGRATIONS.len(),
         SCHEMA_VERSION as usize,
@@ -1158,4 +1158,738 @@ fn migration_13_gives_every_existing_account_can_stamp_off() {
         .expect("the seeded account carries the column");
 
     assert_eq!(can_stamp, 0, "the seeded administrator may not stamp");
+}
+
+/// A schema-14 library for migration 15 to file, chosen so each backfill rule
+/// gives a different answer from the rule it could be mistaken for.
+///
+/// - Roots 1 and 2 share the last component `Volumes`, so both are named by
+///   their whole path; root 3's `Chapters` is not shared.
+/// - Roots 4 and 5 share the last component `Comics` only once each is
+///   trimmed of spaces, so both are named by their whole path, trimmed.
+///   Root 6's last component is only spaces, so it is named by its whole
+///   path, trimmed.
+/// - Work 20's hub (`raw`) is under root 2 and its `en` edition under root 1:
+///   the hub rule says root 2's library, the lowest-root rule says root 1's.
+/// - Work 40 has a value in every column, each different from the others,
+///   so a rebuild that copied one column into another would show.
+/// - Work 60's hub member is under no root (an imported edition) and its
+///   `scan` edition is under root 1: only the fallback files it.
+/// - Work 50 is wholly imported and stays in no library.
+/// - Series 2 holds work 20 (root 2) and works 30 and 40 (root 3): its
+///   first work's library and its lowest library are root 2's, and the
+///   library most of its works are in is root 3's.
+/// - Series 3 holds nothing.
+/// - Series 4 holds work 70 (root 3) and work 80 (root 1), a tie: its first
+///   work's library is root 3's, and the lower library id is root 1's.
+const SCHEMA_14_LIBRARY: &str = "
+    INSERT INTO user (id, name, password_hash, role) VALUES (2, 'reader', '!', 'user');
+    INSERT INTO root (id, path) VALUES
+      (1, '/srv/a/Volumes'), (2, '/srv/b/Volumes'), (3, '/srv/Chapters'),
+      (4, '/srv/ Comics '), (5, '/srv/old/Comics '), (6, '/srv/   ');
+    INSERT INTO series (id, sort_title) VALUES
+      (1, 'Alpha'), (2, 'Beta'), (3, 'Orphan'), (4, 'Delta');
+    INSERT INTO work (id, content_key, slug, series_id, volume, title, reading, hub, sidecar_path)
+    VALUES (10, 'k-alpha-1', 'alpha-v01', 1, 1, 'Alpha v01', 'rtl', 'raw', NULL),
+           (20, 'k-beta-1',  'beta-v01',  2, 1, 'Beta v01',  'rtl', 'raw', NULL),
+           (30, 'k-beta-2',  'beta-v02',  2, 2, 'Beta v02',  'rtl', 'raw', NULL),
+           (50, 'k-imported', 'imported', NULL, NULL, 'Imported', 'ltr', 'raw',
+                '/docs/imported/taiyaku.json'),
+           (60, 'k-merged',  'merged',    1, 2, 'Alpha v02', 'rtl', 'raw',
+                '/docs/merged/taiyaku.json'),
+           (70, 'k-delta-1', 'delta-v01', 4, 1, 'Delta v01', 'rtl', 'raw', NULL),
+           (80, 'k-delta-2', 'delta-v02', 4, 2, 'Delta v02', 'rtl', 'raw', NULL);
+    INSERT INTO work (id, content_key, slug, series_id, volume, title, reading, hub,
+                      sidecar_path, sidecar_mtime, imported, title_hand, title_derived,
+                      volume_hand, series_id_hand)
+    VALUES (40, 'k-beta-3', 'beta-v03', 2, 3, 'Beta v03', 'rtl', 'raw',
+            '/docs/beta-v03/taiyaku.json', 1700000000, '2026-01-02 03:04:05',
+            'Beta, volume three', 'Beta v03 (derived)', 4.5, 1);
+    INSERT INTO edition (id, work_id, key, label) VALUES
+      (100, 10, 'raw', 'raw'),
+      (200, 20, 'raw', 'raw'), (201, 20, 'en', 'en'),
+      (300, 30, 'raw', 'raw'),
+      (400, 40, 'raw', 'raw'),
+      (500, 50, 'raw', 'raw'),
+      (600, 60, 'raw', 'raw'), (601, 60, 'scan', 'scan'),
+      (700, 70, 'raw', 'raw'),
+      (800, 80, 'raw', 'raw');
+    INSERT INTO member (id, edition_id, ordinal, path, sha256, pages, root_id) VALUES
+      (1, 100, 0, '/srv/a/Volumes/Alpha/v01.cbz',    'a1',  10, 1),
+      (2, 200, 0, '/srv/b/Volumes/Beta/v01.cbz',     'b1',  10, 2),
+      (3, 201, 0, '/srv/a/Volumes/Beta/v01-en.cbz',  'b1e', 10, 1),
+      (4, 300, 0, '/srv/Chapters/Beta/v02.cbz',      'b2',  10, 3),
+      (5, 400, 0, '/srv/Chapters/Beta/v03.cbz',      'b3',  10, 3),
+      (6, 500, 0, '/docs/imported/v.cbz',            'i1',  10, NULL),
+      (7, 600, 0, '/docs/merged/v.cbz',              'm1',  10, NULL),
+      (8, 601, 0, '/srv/a/Volumes/Alpha/v02.cbz',    'm1s', 10, 1),
+      (9, 700, 0, '/srv/Chapters/Delta/v01.cbz',     'd1',  10, 3),
+      (10, 800, 0, '/srv/a/Volumes/Delta/v02.cbz',   'd2',  10, 1);
+    INSERT INTO progress (user_id, work_id, edition, slot) VALUES
+      (1, 10, 'raw', 3), (1, 20, 'en', 4), (2, 50, 'raw', 5);
+    INSERT INTO note (user_id, id, work_id, edition, slot, body, created, updated)
+    VALUES (1, 'n1', 30, 'raw', 2, 'hello', 'now', 'now');
+    INSERT INTO user_root (user_id, root_id) VALUES (2, 1), (2, 3);
+";
+
+/// [`SCHEMA_14_LIBRARY`] at version 14, foreign keys on as `Library::open`
+/// sets them.
+fn a_schema_14_library() -> Connection {
+    let conn = Connection::open_in_memory().expect("in-memory connection");
+    conn.pragma_update(None, "foreign_keys", "ON")
+        .expect("foreign keys on, as `Library::open` sets them");
+    migrate_with(&conn, &MIGRATIONS[..14]).expect("migrates to 14");
+    conn.execute_batch(SCHEMA_14_LIBRARY)
+        .expect("seeds a schema-14 library");
+    conn
+}
+
+/// Every row of `sql`'s answer, each column rendered as text, so two reads
+/// can be compared whole.
+fn rows_of(conn: &Connection, sql: &str) -> Vec<Vec<String>> {
+    let mut stmt = conn.prepare(sql).expect(sql);
+    let width = stmt.column_count();
+    stmt.query_map([], |row| {
+        (0..width)
+            .map(|i| {
+                let value: rusqlite::types::Value = row.get(i)?;
+                Ok(format!("{value:?}"))
+            })
+            .collect::<rusqlite::Result<Vec<_>>>()
+    })
+    .expect(sql)
+    .collect::<rusqlite::Result<Vec<_>>>()
+    .expect(sql)
+}
+
+/// The library each named thing is filed under, by name; `None` for none.
+fn library_names(conn: &Connection, sql: &str) -> Vec<(i64, Option<String>)> {
+    let mut stmt = conn.prepare(sql).expect(sql);
+    stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .expect(sql)
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .expect(sql)
+}
+
+#[test]
+fn migration_15_files_every_root_under_a_library_named_for_its_folder() {
+    let conn = a_schema_14_library();
+    migrate(&conn).expect("migrates to 15");
+    assert_eq!(
+        library_names(
+            &conn,
+            "SELECT r.id, l.name FROM root r LEFT JOIN library l ON l.id = r.library_id ORDER BY r.id"
+        ),
+        vec![
+            (1, Some("/srv/a/Volumes".to_string())),
+            (2, Some("/srv/b/Volumes".to_string())),
+            (3, Some("Chapters".to_string())),
+            (4, Some("/srv/ Comics".to_string())),
+            (5, Some("/srv/old/Comics".to_string())),
+            (6, Some("/srv/".to_string())),
+        ],
+        "two folders called Volumes are named by their whole paths; Chapters by its own; \
+         two called Comics once trimmed by their whole paths, trimmed; and a folder named \
+         only spaces by its whole path, trimmed"
+    );
+}
+
+/// **Two folders whose paths differ only in surrounding spaces keep their
+/// paths as they are.** Both share the leaf `Extra`, so both fall back to the
+/// whole path, and the trimmed paths are the same, so trimming them would
+/// collide on `library.name` and the migration, and the database, would not
+/// open.
+#[test]
+fn migration_15_keeps_whole_paths_that_trimming_would_make_the_same() {
+    let conn = Connection::open_in_memory().expect("in-memory connection");
+    conn.pragma_update(None, "foreign_keys", "ON")
+        .expect("foreign keys on, as `Library::open` sets them");
+    migrate_with(&conn, &MIGRATIONS[..14]).expect("migrates to 14");
+    conn.execute_batch(
+        "INSERT INTO root (id, path) VALUES (1, '/srv/a/Extra'), (2, '/srv/a/Extra ');",
+    )
+    .expect("two folders whose paths differ only in a trailing space");
+    migrate(&conn).expect("migrates to 15 without a name collision");
+    assert_eq!(
+        library_names(
+            &conn,
+            "SELECT r.id, l.name FROM root r LEFT JOIN library l ON l.id = r.library_id ORDER BY r.id"
+        ),
+        vec![
+            (1, Some("/srv/a/Extra".to_string())),
+            (2, Some("/srv/a/Extra ".to_string())),
+        ]
+    );
+}
+
+/// A library's id is never given to a later library. The backfill numbers
+/// each library after its root, and a library made afterwards is numbered
+/// after the highest of those, though that library has since gone and a
+/// lower number is free.
+#[test]
+fn migration_15_never_gives_a_librarys_id_to_another() {
+    let conn = Connection::open_in_memory().expect("in-memory connection");
+    conn.pragma_update(None, "foreign_keys", "ON")
+        .expect("foreign keys on, as `Library::open` sets them");
+    migrate_with(&conn, &MIGRATIONS[..14]).expect("migrates to 14");
+    conn.execute_batch("INSERT INTO root (id, path) VALUES (1, '/srv/manga'), (5, '/srv/comics');")
+        .expect("two roots, the second numbered past a gap");
+    migrate(&conn).expect("migrates to 15");
+    let ids = |conn: &Connection| -> Vec<i64> {
+        conn.prepare("SELECT id FROM library ORDER BY id")
+            .expect("prepares")
+            .query_map([], |r| r.get(0))
+            .expect("reads")
+            .collect::<rusqlite::Result<_>>()
+            .expect("reads")
+    };
+    assert_eq!(
+        ids(&conn),
+        vec![1, 5],
+        "the fixture: each library takes its root's id"
+    );
+
+    conn.execute("DELETE FROM root WHERE id = 5", [])
+        .expect("the last folder of library 5 goes, and the library with it");
+    assert_eq!(ids(&conn), vec![1], "the fixture: library 5 is gone");
+    conn.execute("INSERT INTO root (path) VALUES ('/srv/zines')", [])
+        .expect("a new folder, filed under a library of its own");
+
+    assert_eq!(
+        ids(&conn),
+        vec![1, 6],
+        "the new library is numbered after 5, which no library holds any more"
+    );
+}
+
+#[test]
+fn migration_15_files_each_work_under_its_hub_editions_library() {
+    let conn = a_schema_14_library();
+    migrate(&conn).expect("migrates to 15");
+    assert_eq!(
+        library_names(
+            &conn,
+            "SELECT w.id, l.name FROM work w LEFT JOIN library l ON l.id = w.library_id ORDER BY w.id"
+        ),
+        vec![
+            (10, Some("/srv/a/Volumes".to_string())),
+            (20, Some("/srv/b/Volumes".to_string())),
+            (30, Some("Chapters".to_string())),
+            (40, Some("Chapters".to_string())),
+            (50, None),
+            (60, Some("/srv/a/Volumes".to_string())),
+            (70, Some("Chapters".to_string())),
+            (80, Some("/srv/a/Volumes".to_string())),
+        ],
+        "20 follows its hub, not its lowest root; 60 falls back to its scanned edition; \
+         50 is imported and in no library"
+    );
+}
+
+#[test]
+fn migration_15_files_each_series_where_most_of_its_works_are() {
+    let conn = a_schema_14_library();
+    migrate(&conn).expect("migrates to 15");
+    assert_eq!(
+        library_names(
+            &conn,
+            "SELECT s.id, l.name FROM series s LEFT JOIN library l ON l.id = s.library_id ORDER BY s.id"
+        ),
+        vec![
+            (1, Some("/srv/a/Volumes".to_string())),
+            (2, Some("Chapters".to_string())),
+            (3, None),
+            (4, Some("/srv/a/Volumes".to_string())),
+        ],
+        "Beta's first work and its lowest library are /srv/b/Volumes; two of its three \
+         works are in Chapters; Delta's two works tie, and the lower library id wins over \
+         its first work's"
+    );
+}
+
+/// Every column `work` had at version 14 is read from the table itself rather
+/// than listed here, so none can be left out of the comparison.
+#[test]
+fn migration_15_keeps_every_work_position_and_note_where_it_was() {
+    let conn = a_schema_14_library();
+    let columns: String = conn
+        .query_row(
+            "SELECT group_concat(name, ', ') FROM pragma_table_info('work')",
+            [],
+            |r| r.get(0),
+        )
+        .expect("work's columns at version 14");
+    let works = format!("SELECT {columns} FROM work ORDER BY id");
+    let works = works.as_str();
+    let progress = "SELECT user_id, work_id, edition, slot FROM progress ORDER BY user_id, work_id";
+    let notes = "SELECT user_id, id, work_id, edition, slot, body FROM note ORDER BY id";
+    let before = (
+        rows_of(&conn, works),
+        rows_of(&conn, progress),
+        rows_of(&conn, notes),
+    );
+    let work_40 = rows_of(&conn, &format!("SELECT {columns} FROM work WHERE id = 40"));
+    assert!(
+        !work_40[0].iter().any(|value| value == "Null"),
+        "the fixture's work 40 must fill every column for a swap to show: {work_40:?}"
+    );
+
+    migrate(&conn).expect("migrates to 15");
+
+    assert_eq!(
+        rows_of(&conn, works),
+        before.0,
+        "the rebuild changed a work"
+    );
+    assert_eq!(
+        rows_of(&conn, progress),
+        before.1,
+        "a reading position moved or went"
+    );
+    assert_eq!(rows_of(&conn, notes), before.2, "a note moved or went");
+}
+
+#[test]
+fn migration_15_moves_each_root_grant_to_that_roots_library() {
+    let conn = a_schema_14_library();
+    migrate(&conn).expect("migrates to 15");
+    assert_eq!(
+        library_names(
+            &conn,
+            "SELECT ul.user_id, l.name FROM user_library ul JOIN library l ON l.id = ul.library_id \
+             ORDER BY l.name"
+        ),
+        vec![
+            (2, Some("/srv/a/Volumes".to_string())),
+            (2, Some("Chapters".to_string())),
+        ]
+    );
+    assert!(
+        !table_names(&conn).iter().any(|name| name == "user_root"),
+        "user_root is gone"
+    );
+}
+
+/// `DROP TABLE work` takes migration 001's search triggers and migration 014's
+/// counter triggers with it. `structure::tests` checks the counter's on a
+/// fresh database; this checks both over rows that predate the rebuild.
+#[test]
+fn migration_15_leaves_search_and_the_structure_counter_working_on_work() {
+    let conn = a_schema_14_library();
+    migrate(&conn).expect("migrates to 15");
+
+    let matching = |term: &str| -> Vec<i64> {
+        let mut stmt = conn
+            .prepare("SELECT rowid FROM work_fts WHERE work_fts MATCH ?1 ORDER BY rowid")
+            .expect("prepares");
+        stmt.query_map([term], |r| r.get(0))
+            .expect("searches")
+            .collect::<rusqlite::Result<_>>()
+            .expect("reads")
+    };
+    assert_eq!(
+        matching("Beta"),
+        vec![20, 30, 40],
+        "the index survived the rebuild"
+    );
+
+    let before = crate::structure::version(&conn).expect("reads the counter");
+    conn.execute("UPDATE work SET title = 'Gamma v02' WHERE id = 30", [])
+        .expect("renames a work");
+    assert_eq!(matching("Gamma"), vec![30], "work_au is back");
+    assert!(
+        crate::structure::version(&conn).expect("reads the counter") > before,
+        "structure_work_upd is back"
+    );
+    conn.execute(
+        "INSERT INTO work_fts (work_fts) VALUES ('integrity-check')",
+        [],
+    )
+    .expect("the search index agrees with work");
+}
+
+/// Every index and trigger `work` had before the rebuild is back, word for
+/// word. The case above exercises two of the triggers by what they do; this
+/// pins all of them, and the index, by their definitions. Automatic indexes
+/// have no `sql` and are left out: the constraints they serve are the ones
+/// the rebuild changes.
+#[test]
+fn migration_15_recreates_every_index_and_trigger_work_had() {
+    let conn = a_schema_14_library();
+    let objects = "SELECT type, name, sql FROM sqlite_master \
+                   WHERE tbl_name = 'work' AND type IN ('index', 'trigger') AND sql IS NOT NULL \
+                   ORDER BY name";
+    let before = rows_of(&conn, objects);
+
+    migrate(&conn).expect("migrates to 15");
+
+    assert_eq!(
+        rows_of(&conn, objects),
+        before,
+        "the rebuild lost or changed an index or trigger on work"
+    );
+}
+
+/// Ids for the trigger cases, with library ids that differ from root ids so a
+/// statement joining the wrong pair cannot pass by coincidence.
+const TWO_FOLDER_LIBRARY: &str = "
+    INSERT INTO library (id, name) VALUES (70, 'Shelf'), (80, 'Other');
+    INSERT INTO root (id, path, library_id) VALUES
+      (7, '/srv/manga', 70), (8, '/srv/raw', 70), (9, '/srv/other', 80);
+";
+
+#[test]
+fn a_root_written_without_a_library_is_filed_under_one_of_its_own() {
+    let conn = Connection::open_in_memory().expect("in-memory connection");
+    migrate(&conn).expect("migrates");
+    conn.execute_batch(
+        "INSERT INTO root (path) VALUES ('/x/Extras');
+         INSERT INTO root (path) VALUES ('/y/Extras');
+         INSERT INTO root (path) VALUES ('/');",
+    )
+    .expect("three roots, two sharing a last component");
+    assert_eq!(
+        library_names(
+            &conn,
+            "SELECT r.id, l.name FROM root r LEFT JOIN library l ON l.id = r.library_id ORDER BY r.id"
+        ),
+        vec![
+            (1, Some("Extras".to_string())),
+            (2, Some("/y/Extras".to_string())),
+            (3, Some("/".to_string())),
+        ],
+        "a taken name falls back to the whole path, and so does a path with no last component"
+    );
+}
+
+/// The trigger strips spaces, and only spaces, from both names it can give,
+/// so `libraries::id_of`, which strips the same, finds each library it makes
+/// here by the folder's own spelling of that name. A component that is only
+/// spaces counts as none.
+#[test]
+fn a_root_written_without_a_library_is_given_a_name_without_spaces() {
+    let conn = Connection::open_in_memory().expect("in-memory connection");
+    migrate(&conn).expect("migrates");
+    conn.execute_batch(
+        "INSERT INTO root (path) VALUES ('/x/ Extras ');
+         INSERT INTO root (path) VALUES ('/y/Extras ');
+         INSERT INTO root (path) VALUES ('/z/   ');
+         INSERT INTO root (path) VALUES ('/w/\tTab\t');",
+    )
+    .expect("four roots, two sharing a last component once trimmed");
+    assert_eq!(
+        library_names(
+            &conn,
+            "SELECT r.id, l.name FROM root r LEFT JOIN library l ON l.id = r.library_id ORDER BY r.id"
+        ),
+        vec![
+            (1, Some("Extras".to_string())),
+            (2, Some("/y/Extras".to_string())),
+            (3, Some("/z/".to_string())),
+            (4, Some("\tTab\t".to_string())),
+        ],
+        "each name trimmed of spaces; a taken one falls back to the whole path, trimmed, and \
+         so does a component of spaces alone; a tab is not a space"
+    );
+    for (root, spelling) in [
+        (1, " Extras "),
+        (2, "/y/Extras "),
+        (3, "/z/   "),
+        (4, "\tTab\t"),
+    ] {
+        let filed: i64 = conn
+            .query_row("SELECT library_id FROM root WHERE id = ?1", [root], |r| {
+                r.get(0)
+            })
+            .expect("the root's library");
+        assert_eq!(
+            crate::libraries::id_of(&conn, spelling),
+            Ok(Some(filed)),
+            "`{spelling}` finds root {root}'s library"
+        );
+    }
+}
+
+#[test]
+fn a_library_goes_with_its_last_root_and_takes_its_grants_with_it() {
+    let library = crate::Library::open_in_memory().expect("library");
+    let conn = library.conn();
+    conn.execute_batch(TWO_FOLDER_LIBRARY).expect("seeds");
+    conn.execute(
+        "INSERT INTO user_library (user_id, library_id) VALUES (1, 70), (1, 80)",
+        [],
+    )
+    .expect("grants Shelf, and Other beside it: an only grant would keep its last folder");
+
+    conn.execute("DELETE FROM root WHERE id = 7", [])
+        .expect("removes one folder");
+    let shelf = |conn: &Connection| -> (i64, i64) {
+        conn.query_row(
+            "SELECT (SELECT count(*) FROM library WHERE id = 70),
+                    (SELECT count(*) FROM user_library WHERE library_id = 70)",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .expect("reads")
+    };
+    assert_eq!(
+        shelf(&conn),
+        (1, 1),
+        "a library with a folder left keeps itself and its grant"
+    );
+
+    conn.execute("DELETE FROM root WHERE id = 8", [])
+        .expect("removes the last folder");
+    assert_eq!(
+        shelf(&conn),
+        (0, 0),
+        "the library and its grant went with its last folder"
+    );
+}
+
+#[test]
+fn a_library_goes_when_its_last_root_moves_away_and_its_works_stay() {
+    let library = crate::Library::open_in_memory().expect("library");
+    let conn = library.conn();
+    conn.execute_batch(TWO_FOLDER_LIBRARY).expect("seeds");
+    conn.execute(
+        "INSERT INTO work (id, content_key, slug, title, reading, hub, library_id)
+         VALUES (1, 'k', 's', 'T', 'rtl', 'raw', 80)",
+        [],
+    )
+    .expect("a work in Other");
+
+    conn.execute("UPDATE root SET library_id = 70 WHERE id = 9", [])
+        .expect("moves Other's one folder into Shelf");
+
+    // Counted with its NULL in the predicate: `SELECT library_id FROM work
+    // WHERE id = 1` reads NULL for a deleted work too, and could not tell SET
+    // NULL from CASCADE.
+    let (libraries, unfiled): (i64, i64) = conn
+        .query_row(
+            "SELECT (SELECT count(*) FROM library WHERE id = 80),
+                    (SELECT count(*) FROM work WHERE id = 1 AND library_id IS NULL)",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .expect("reads");
+    assert_eq!(libraries, 0, "Other had no folder left");
+    assert_eq!(
+        unfiled, 1,
+        "its work is kept, in no library, for the next derive to adopt"
+    );
+}
+
+/// [`TWO_FOLDER_LIBRARY`], a third library `Lone` of one folder, two accounts
+/// to grant, and `grants` as `(user_id, library_id)` rows.
+fn libraries_granted(grants: &str) -> crate::Library {
+    let library = crate::Library::open_in_memory().expect("library");
+    {
+        let conn = library.conn();
+        conn.execute_batch(TWO_FOLDER_LIBRARY).expect("seeds");
+        conn.execute_batch(&format!(
+            "INSERT INTO library (id, name) VALUES (90, 'Lone');
+             INSERT INTO root (id, path, library_id) VALUES (5, '/srv/lone', 90);
+             INSERT INTO user (id, name, password_hash) VALUES (2, 'a', 'x'), (3, 'b', 'x');
+             INSERT INTO user_library (user_id, library_id) VALUES {grants};"
+        ))
+        .expect("seeds the grants");
+    }
+    library
+}
+
+/// The roots, libraries and grants, as text.
+fn roots_libraries_and_grants(conn: &Connection) -> Vec<Vec<String>> {
+    rows_of(
+        conn,
+        "SELECT 'root', id, library_id FROM root
+         UNION ALL SELECT 'library', id, NULL FROM library
+         UNION ALL SELECT 'grant', user_id, library_id FROM user_library
+         ORDER BY 1, 2, 3",
+    )
+}
+
+/// The triggers alone, with no Rust check before them, refuse deleting or
+/// moving away `Other`'s one folder while account 2 is granted `Other` and
+/// nothing else, and leave every row as it was. Account 3 holds `Shelf`.
+#[test]
+fn the_last_root_of_an_accounts_only_library_cannot_be_deleted_or_moved_away() {
+    for statement in [
+        "DELETE FROM root WHERE id = 9",
+        "UPDATE root SET library_id = 70 WHERE id = 9",
+        "UPDATE root SET library_id = NULL WHERE id = 9",
+    ] {
+        let library = libraries_granted("(2, 80), (3, 70)");
+        let conn = library.conn();
+        let before = roots_libraries_and_grants(&conn);
+
+        let refused = conn
+            .execute(statement, [])
+            .expect_err("Other is account 2's only grant");
+
+        assert!(
+            refused
+                .to_string()
+                .contains("the only library an account is granted"),
+            "{statement}: {refused}"
+        );
+        assert_eq!(roots_libraries_and_grants(&conn), before, "{statement}");
+    }
+}
+
+/// The same refusals with the `library_emptied_*` triggers dropped and
+/// created again, so that they are the newest triggers on `root`. Those two
+/// delete the library and, through it, the grants the refusal reads.
+#[test]
+fn the_refusal_holds_whichever_trigger_on_root_was_created_last() {
+    for statement in [
+        "DELETE FROM root WHERE id = 9",
+        "UPDATE root SET library_id = 70 WHERE id = 9",
+    ] {
+        let library = libraries_granted("(2, 80), (3, 70)");
+        let conn = library.conn();
+        for trigger in ["library_emptied_by_delete", "library_emptied_by_move"] {
+            let sql: String = conn
+                .query_row(
+                    "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = ?1",
+                    [trigger],
+                    |r| r.get(0),
+                )
+                .expect("the trigger as migration 15 wrote it");
+            conn.execute_batch(&format!("DROP TRIGGER {trigger}; {sql};"))
+                .expect("creates it again");
+        }
+        let before = roots_libraries_and_grants(&conn);
+
+        let refused = conn
+            .execute(statement, [])
+            .expect_err("Other is account 2's only grant");
+
+        assert!(
+            refused
+                .to_string()
+                .contains("the only library an account is granted"),
+            "{statement}: {refused}"
+        );
+        assert_eq!(roots_libraries_and_grants(&conn), before, "{statement}");
+    }
+}
+
+/// An administrator's only grant is kept the same way. The grant does nothing
+/// while the account administers, and its row is what a demotion restores.
+#[test]
+fn the_last_root_of_an_administrators_only_library_cannot_be_deleted_or_moved_away() {
+    for statement in [
+        "DELETE FROM root WHERE id = 9",
+        "UPDATE root SET library_id = 70 WHERE id = 9",
+    ] {
+        let library = libraries_granted("(2, 80)");
+        let conn = library.conn();
+        conn.execute("UPDATE user SET role = 'admin' WHERE id = 2", [])
+            .expect("account 2 administers");
+        let before = roots_libraries_and_grants(&conn);
+
+        let refused = conn
+            .execute(statement, [])
+            .expect_err("Other is account 2's only grant");
+
+        assert!(
+            refused
+                .to_string()
+                .contains("the only library an account is granted"),
+            "{statement}: {refused}"
+        );
+        assert_eq!(roots_libraries_and_grants(&conn), before, "{statement}");
+    }
+}
+
+/// What the same triggers let through. Each statement runs against a fresh
+/// library holding the grants beside it.
+#[test]
+fn a_root_goes_or_moves_where_no_account_is_left_without_a_grant() {
+    for (grants, statement, why) in [
+        (
+            "(2, 80), (2, 70)",
+            "DELETE FROM root WHERE id = 9",
+            "the account holds another library",
+        ),
+        (
+            "(2, 80), (2, 70)",
+            "UPDATE root SET library_id = 70 WHERE id = 9",
+            "the account holds another library",
+        ),
+        (
+            "(2, 80), (2, 90)",
+            "DELETE FROM root WHERE id = 9",
+            "the account holds another library, a later one",
+        ),
+        (
+            "(2, 80), (2, 90)",
+            "UPDATE root SET library_id = 70 WHERE id = 9",
+            "the account holds another library, a later one",
+        ),
+        (
+            "(2, 90)",
+            "DELETE FROM root WHERE id = 9",
+            "the only grant is on another library",
+        ),
+        (
+            "(2, 90)",
+            "UPDATE root SET library_id = 70 WHERE id = 9",
+            "the only grant is on another library",
+        ),
+        (
+            "(2, 70)",
+            "DELETE FROM root WHERE id = 7",
+            "the library keeps a folder",
+        ),
+        (
+            "(2, 70)",
+            "UPDATE root SET library_id = 80 WHERE id = 7",
+            "the library keeps a folder",
+        ),
+        (
+            "(2, 80)",
+            "UPDATE root SET library_id = 80 WHERE id = 9",
+            "the folder moves nowhere",
+        ),
+        (
+            "(2, 80)",
+            "INSERT INTO root (path) VALUES ('/srv/new')",
+            "a new folder being filed under its own library leaves none",
+        ),
+    ] {
+        let library = libraries_granted(grants);
+        let conn = library.conn();
+
+        let changed = conn
+            .execute(statement, [])
+            .unwrap_or_else(|e| panic!("{statement}, where {why}: {e}"));
+
+        assert_eq!(changed, 1, "{statement}");
+    }
+}
+
+#[test]
+fn a_content_key_is_unique_within_a_library_and_a_slug_across_all_of_them() {
+    let conn = Connection::open_in_memory().expect("in-memory connection");
+    conn.pragma_update(None, "foreign_keys", "ON")
+        .expect("foreign keys");
+    migrate(&conn).expect("migrates");
+    conn.execute_batch(TWO_FOLDER_LIBRARY).expect("seeds");
+    let insert = |key: &str, slug: &str, library: i64| {
+        conn.execute(
+            "INSERT INTO work (content_key, slug, title, reading, hub, library_id)
+             VALUES (?1, ?2, 'T', 'rtl', 'raw', ?3)",
+            rusqlite::params![key, slug, library],
+        )
+    };
+    insert("same", "in-shelf", 70).expect("the first copy");
+    insert("same", "in-other", 80).expect("the same content in another library is its own work");
+    let twice =
+        insert("same", "in-shelf-again", 70).expect_err("the same content twice in one library");
+    assert!(twice.to_string().contains("work.content_key"), "{twice}");
+    let slug =
+        insert("fresh", "in-shelf", 80).expect_err("a slug names one work across every library");
+    assert!(slug.to_string().contains("work.slug"), "{slug}");
 }

@@ -116,28 +116,23 @@ pub fn by_api_key(conn: &Connection, secret: &str) -> Result<Option<Account>, St
     Ok(found)
 }
 
-/// The root ids this account has been granted, ascending.
+/// The ids of every folder of every library this account was granted,
+/// ascending.
 ///
-/// **Nothing filters on the answer yet**, and that is recorded rather than
-/// discovered. Spec A2 §8 expected spec B to land afterwards and give `work` a
-/// `root_id`; B landed first and added neither that column nor any other
-/// work-to-root link — `scan_entry.root_id` and `rule.root_id` exist, `member`
-/// has no `scan_entry_id`. Meanwhile `serve` is handed sidecar paths and no
-/// route lists by root, so there is nothing for a filter to filter.
-///
-/// Resolved here anyway so the guard carries a complete principal, and spec C1's
-/// browse API adds a filter rather than a lookup.
-///
-/// An empty answer means **granted nothing**, which is not the same as every
-/// root — the distinction matters the moment C1 does filter, and it is easier to
-/// state now than to reconstruct later.
+/// **Every folder of every library this account was granted — Part F1.** A
+/// grant names a library, and the guard filters on folders, so this is where
+/// one becomes the other. An empty answer means granted nothing, and so
+/// unrestricted: a granted library always has a folder (see `crate::libraries`).
 ///
 /// # Errors
 ///
 /// Returns an error if the query fails.
 pub fn roots_for(conn: &Connection, user_id: i64) -> Result<Vec<i64>, String> {
     let mut statement = conn
-        .prepare("SELECT root_id FROM user_root WHERE user_id = ?1 ORDER BY root_id")
+        .prepare(
+            "SELECT r.id FROM user_library ul JOIN root r ON r.library_id = ul.library_id
+              WHERE ul.user_id = ?1 ORDER BY r.id",
+        )
         .map_err(|e| format!("preparing the granted-roots lookup: {e}"))?;
     let rows = statement
         .query_map(params![user_id], |row| row.get(0))
@@ -146,59 +141,96 @@ pub fn roots_for(conn: &Connection, user_id: i64) -> Result<Vec<i64>, String> {
         .map_err(|e| format!("reading granted roots: {e}"))
 }
 
-/// Grant `user_id` sight of `root_id`.
+/// The libraries this account was granted, ascending.
+///
+/// # Errors
+///
+/// Returns an error if the query fails.
+pub fn libraries_for(conn: &Connection, user_id: i64) -> Result<Vec<i64>, String> {
+    let mut statement = conn
+        .prepare("SELECT library_id FROM user_library WHERE user_id = ?1 ORDER BY library_id")
+        .map_err(|e| format!("preparing the granted-libraries lookup: {e}"))?;
+    let rows = statement
+        .query_map(params![user_id], |row| row.get(0))
+        .map_err(|e| format!("reading granted libraries: {e}"))?;
+    rows.collect::<rusqlite::Result<Vec<i64>>>()
+        .map_err(|e| format!("reading granted libraries: {e}"))
+}
+
+/// Grant `user_id` sight of `library_id`: every folder filed under it.
 ///
 /// **Granting is restricting**, which is the counter-intuitive half of spec
 /// C1 §5.1 and is worth stating where the writer lives: an account with *no*
-/// grants sees every root, because that is the state every account in every
-/// existing library is in, and any other reading would empty every library
-/// the day migration 6 applied. The first grant an account receives is
-/// therefore the moment it stops seeing everything.
+/// grants sees every library, because that is the state every account in
+/// every existing library is in, and any other reading would empty every
+/// library the day migration 6 applied. The first grant an account receives
+/// is therefore the moment it stops seeing everything.
 ///
-/// `INSERT OR IGNORE` rather than a probe and an insert: the table is
-/// `WITHOUT ROWID` with `(user_id, root_id)` as its key, so the conflict is
+/// `INSERT OR IGNORE` rather than a probe and an insert: `user_library` is
+/// `WITHOUT ROWID` with `(user_id, library_id)` as its key, so the conflict is
 /// exactly the case that means "already granted". The return says which
 /// happened, so a CLI can print the truth rather than a cheerful lie.
 ///
 /// # Errors
 ///
-/// Returns an error if the insert fails — which includes a `root_id` no root
-/// row has, since the column REFERENCES `root(id)`.
-pub fn grant_root(conn: &Connection, user_id: i64, root_id: i64) -> Result<bool, String> {
+/// Returns an error if the insert fails — which includes a `library_id` no
+/// library row has, since the column REFERENCES `library(id)`.
+pub fn grant_library(conn: &Connection, user_id: i64, library_id: i64) -> Result<bool, String> {
     let changed = conn
         .execute(
-            "INSERT OR IGNORE INTO user_root (user_id, root_id) VALUES (?1, ?2)",
-            params![user_id, root_id],
+            "INSERT OR IGNORE INTO user_library (user_id, library_id) VALUES (?1, ?2)",
+            params![user_id, library_id],
         )
-        .map_err(|e| format!("granting root {root_id} to user {user_id}: {e}"))?;
+        .map_err(|e| format!("granting library {library_id} to user {user_id}: {e}"))?;
     Ok(changed == 1)
 }
 
 /// Take back a grant, reporting whether there was one.
 ///
 /// **Revoking the last grant makes the account unrestricted again**, not
-/// blind — see [`grant_root`]. That is a sharp edge and it is the same one in
-/// both directions: an operator narrowing an account to one root and then
-/// removing that root has widened it to everything.
+/// blind — see [`grant_library`]. Here that edge is taken on purpose. From
+/// the other direction it is closed: removing the last folder of a library
+/// that is an account's only grant would take the grant with it, and
+/// [`crate::scan::removal_refusal`] refuses that removal.
 ///
 /// # Errors
 ///
 /// Returns an error if the delete fails.
-pub fn revoke_root(conn: &Connection, user_id: i64, root_id: i64) -> Result<bool, String> {
+pub fn revoke_library(conn: &Connection, user_id: i64, library_id: i64) -> Result<bool, String> {
     let changed = conn
         .execute(
-            "DELETE FROM user_root WHERE user_id = ?1 AND root_id = ?2",
-            params![user_id, root_id],
+            "DELETE FROM user_library WHERE user_id = ?1 AND library_id = ?2",
+            params![user_id, library_id],
         )
-        .map_err(|e| format!("revoking root {root_id} from user {user_id}: {e}"))?;
+        .map_err(|e| format!("revoking library {library_id} from user {user_id}: {e}"))?;
     Ok(changed == 1)
 }
 
-/// The roots granted to `user_id`, as `(id, path)`, ordered by path.
+/// The libraries granted to `user_id`, as `(id, name)`, by name.
+///
+/// # Errors
+///
+/// Returns an error if the query fails.
+pub fn granted_libraries(conn: &Connection, user_id: i64) -> Result<Vec<(i64, String)>, String> {
+    let mut statement = conn
+        .prepare(
+            "SELECT l.id, l.name FROM user_library ul JOIN library l ON l.id = ul.library_id
+              WHERE ul.user_id = ?1 ORDER BY l.name",
+        )
+        .map_err(|e| format!("preparing the granted-libraries listing: {e}"))?;
+    let rows = statement
+        .query_map(params![user_id], |row| Ok((row.get(0)?, row.get(1)?)))
+        .map_err(|e| format!("listing granted libraries: {e}"))?;
+    rows.collect::<rusqlite::Result<Vec<(i64, String)>>>()
+        .map_err(|e| format!("listing granted libraries: {e}"))
+}
+
+/// Every folder of every library granted to `user_id`, as `(id, path)`,
+/// ordered by path.
 ///
 /// [`roots_for`] answers the same question in the shape the guard wants — ids
 /// alone, resolved on every request. This one is for a person reading a
-/// terminal, and joins `root` for the path.
+/// screen, and carries each folder's path.
 ///
 /// # Errors
 ///
@@ -206,9 +238,9 @@ pub fn revoke_root(conn: &Connection, user_id: i64, root_id: i64) -> Result<bool
 pub fn granted_roots(conn: &Connection, user_id: i64) -> Result<Vec<(i64, String)>, String> {
     let mut statement = conn
         .prepare(
-            "SELECT r.id, r.path FROM user_root ur
-               JOIN root r ON r.id = ur.root_id
-              WHERE ur.user_id = ?1 ORDER BY r.path",
+            "SELECT r.id, r.path FROM user_library ul
+               JOIN root r ON r.library_id = ul.library_id
+              WHERE ul.user_id = ?1 ORDER BY r.path",
         )
         .map_err(|e| format!("preparing the granted-roots listing: {e}"))?;
     let rows = statement
@@ -702,7 +734,7 @@ pub fn by_id(conn: &Connection, id: i64) -> Result<Option<Account>, String> {
 /// **Every field is "leave it alone" when `None`**, including `roots`: the
 /// difference between `None` (do not touch the grants) and `Some(vec![])`
 /// (grant nothing, which spec A2 defines as *unrestricted* — see
-/// [`grant_root`]) is the whole reason that field is an `Option<Vec<_>>`
+/// [`grant_library`]) is the whole reason that field is an `Option<Vec<_>>`
 /// rather than a `Vec<_>`.
 ///
 /// **`password` is an administrator resetting somebody else's**, and it is
@@ -727,6 +759,8 @@ pub struct Patch {
     pub can_download: Option<bool>,
     pub can_stream: Option<bool>,
     pub can_stamp: Option<bool>,
+    /// Folders, by root id. What is granted is the library each is filed
+    /// under, whole.
     pub roots: Option<Vec<i64>>,
     pub password: Option<String>,
 }
@@ -920,53 +954,60 @@ pub fn update(
     // **Replace-all, diffed rather than deleted and reinserted.** C4 PR 1's
     // §3 correction records what delete-and-reinsert cost the rule table —
     // fresh ids reopened every accepted proposal through an
-    // `ON DELETE SET NULL` — and while `user_root` carries no such foreign
+    // `ON DELETE SET NULL` — and while `user_library` carries no such foreign
     // key, a diff is the same size of code and cannot acquire that class of
     // bug later.
     //
     // **`Some(vec![])` is not the same instruction as `None`.** An absent list
     // leaves the grants alone; an empty one takes them all away, which spec A2
-    // defines as *unrestricted* rather than blind — see [`grant_root`].
+    // defines as *unrestricted* rather than blind — see [`grant_library`].
     if let Some(wanted) = &patch.roots {
-        // **A root id no row holds is the caller's mistake, not a fault.**
-        // `user_root.root_id` REFERENCES `root(id)`, and `INSERT OR IGNORE`
-        // does *not* suppress a foreign-key violation — SQLite's `ON CONFLICT`
-        // algorithm covers UNIQUE, NOT NULL, CHECK and PRIMARY KEY, and FK is
-        // not among them. So `{"roots": [999]}` reached the client as
-        // `500 :: granting root 999 to user 2: FOREIGN KEY constraint failed`
-        // until this was asked first. `config_api::root_exists` is the same
-        // check one module over, added for the same reason: SQLite's own text,
-        // surfaced verbatim, is not an answer. Found by the review of C4 PR 2's
-        // fix round — and the fix round is what introduced it, by widening
-        // every `update` failure from one 409 into three cases and putting
-        // this one in the wrong one.
+        // **Diffed by library, not by root — Part F1.** The Users screen still
+        // sends folders, and a grant names a library. A root-level diff would
+        // revoke a whole library for one folder of it left unticked.
+        let mut wanted_libraries = std::collections::BTreeSet::new();
         for root_id in wanted {
-            let exists: bool = conn
-                .query_row("SELECT 1 FROM root WHERE id = ?1", params![root_id], |_| {
-                    Ok(())
-                })
+            // **A root id no row holds is the caller's mistake, not a fault.**
+            // It has no library to grant, so it is refused here by name.
+            // Before `user_library` it was the foreign key on
+            // `user_root.root_id` that refused it, and `INSERT OR IGNORE`
+            // does *not* suppress a foreign-key violation — SQLite's `ON
+            // CONFLICT` algorithm covers UNIQUE, NOT NULL, CHECK and PRIMARY
+            // KEY, and FK is not among them. So `{"roots": [999]}` reached the
+            // client as `500 :: granting root 999 to user 2: FOREIGN KEY
+            // constraint failed` until this was asked first.
+            // `config_api::root_exists` is the same check one module over,
+            // added for the same reason: SQLite's own text, surfaced verbatim,
+            // is not an answer. Found by the review of C4 PR 2's fix round —
+            // and the fix round is what introduced it, by widening every
+            // `update` failure from one 409 into three cases and putting this
+            // one in the wrong one.
+            let library: Option<i64> = conn
+                .query_row(
+                    "SELECT library_id FROM root WHERE id = ?1",
+                    params![root_id],
+                    |row| row.get(0),
+                )
                 .optional()
-                .map(|found| found.is_some())
                 .map_err(|e| {
                     WriteError::Failed(format!("checking whether root {root_id} exists: {e}"))
                 })?;
-            if !exists {
+            let Some(library) = library else {
                 return Err(WriteError::Unusable(format!(
                     "there is no root {root_id} to grant"
                 )));
-            }
+            };
+            wanted_libraries.insert(library);
         }
-
-        let held = roots_for(conn, id).map_err(WriteError::Failed)?;
-        for root_id in &held {
-            if !wanted.contains(root_id) {
-                revoke_root(conn, id, *root_id).map_err(WriteError::Failed)?;
-            }
+        let held: std::collections::BTreeSet<i64> = libraries_for(conn, id)
+            .map_err(WriteError::Failed)?
+            .into_iter()
+            .collect();
+        for library in held.difference(&wanted_libraries) {
+            revoke_library(conn, id, *library).map_err(WriteError::Failed)?;
         }
-        for root_id in wanted {
-            if !held.contains(root_id) {
-                grant_root(conn, id, *root_id).map_err(WriteError::Failed)?;
-            }
+        for library in wanted_libraries.difference(&held) {
+            grant_library(conn, id, *library).map_err(WriteError::Failed)?;
         }
     }
 
@@ -1270,11 +1311,11 @@ pub struct Removal {
 /// differently.
 fn count_for(conn: &Connection, id: i64, name: String) -> Result<Removal, String> {
     conn.query_row(
-        "SELECT (SELECT COUNT(*) FROM progress  WHERE user_id = ?1),
-                (SELECT COUNT(*) FROM note      WHERE user_id = ?1),
-                (SELECT COUNT(*) FROM session   WHERE user_id = ?1),
-                (SELECT COUNT(*) FROM api_key   WHERE user_id = ?1),
-                (SELECT COUNT(*) FROM user_root WHERE user_id = ?1)",
+        "SELECT (SELECT COUNT(*) FROM progress     WHERE user_id = ?1),
+                (SELECT COUNT(*) FROM note         WHERE user_id = ?1),
+                (SELECT COUNT(*) FROM session      WHERE user_id = ?1),
+                (SELECT COUNT(*) FROM api_key      WHERE user_id = ?1),
+                (SELECT COUNT(*) FROM user_library WHERE user_id = ?1)",
         params![id],
         |row| {
             Ok(Removal {

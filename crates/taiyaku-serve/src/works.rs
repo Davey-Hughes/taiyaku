@@ -401,14 +401,12 @@ fn find_row_by_slug(conn: &rusqlite::Connection, slug: &str) -> Result<Option<i6
 /// here re-derives one (that is `taiyaku_library::identity::content_key`,
 /// which wants the hub edition's member hashes in a shape this function has
 /// no reason to recompute), and nothing yet reads this row's `content_key`
-/// for any purpose `import::sidecar` itself does not already own. It only
-/// has to be unique, which the slug it is derived from already is among the
-/// works this server serves now.
+/// for any purpose `import::sidecar` itself does not already own.
 ///
 /// `INSERT OR IGNORE` rather than a bare `INSERT`: `put_progress` writes with
 /// no `notes_guard` held, so two racing first writes to one work can both
 /// reach here before either has committed. Both compute the identical
-/// `content_key` and `slug`, so the loser's insert is a deliberate no-op
+/// `slug`, which is unique, so the loser's insert is a deliberate no-op
 /// rather than a `UNIQUE` violation, and the `SELECT` that follows finds
 /// whichever of the two committed first.
 ///

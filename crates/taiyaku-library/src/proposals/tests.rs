@@ -1741,9 +1741,11 @@ fn accept_refuses_when_the_subjects_own_directory_is_spelled_the_same_in_two_roo
 
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root_a = scan::add_root(&conn, a.path()).expect("add root a");
+    let root_a =
+        scan::add_root_in(&conn, a.path(), scan::InLibrary::Named("Manga")).expect("add root a");
     scan::scan_root(&conn, &root_a).expect("scan a");
-    let root_b = scan::add_root(&conn, b.path()).expect("add root b");
+    let root_b =
+        scan::add_root_in(&conn, b.path(), scan::InLibrary::Named("Manga")).expect("add root b");
     scan::scan_root(&conn, &root_b).expect("scan b");
     derive::derive(&conn).expect("derive");
 
@@ -3186,9 +3188,11 @@ fn works_moved_counts_moving_members_not_work_rows_that_change_series() {
     );
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root_a = scan::add_root(&conn, a.path()).expect("add root a");
+    let root_a =
+        scan::add_root_in(&conn, a.path(), scan::InLibrary::Named("Manga")).expect("add root a");
     scan::scan_root(&conn, &root_a).expect("scan a");
-    let root_b = scan::add_root(&conn, b.path()).expect("add root b");
+    let root_b =
+        scan::add_root_in(&conn, b.path(), scan::InLibrary::Named("Manga")).expect("add root b");
     scan::scan_root(&conn, &root_b).expect("scan b");
     derive::derive(&conn).expect("derive");
     proposals::raise(&conn).expect("raise");
@@ -3405,9 +3409,12 @@ fn list_filters_by_kind_when_open_holds_more_than_one_kind() {
     // `library_where_two_series_claim_one_title` builds, here added onto the
     // edition-of fixture instead of standing alone, so both kinds are open at
     // once.
+    // Filed under the base series' own library: a same-series proposal pairs
+    // series of one library.
     conn.execute(
-        "INSERT INTO series (sort_title) VALUES ('Alt Title For GTNH')",
-        [],
+        "INSERT INTO series (sort_title, library_id) \
+         SELECT 'Alt Title For GTNH', library_id FROM series WHERE id = ?1",
+        [base_id],
     )
     .expect("claimant series");
     let claimant_id = conn.last_insert_rowid();
@@ -3550,9 +3557,12 @@ fn list_with_no_filter_returns_every_state_and_kind_in_score_order() {
         .expect("base series");
     // A same-series proposal alongside the edition-of pair the base fixture
     // already raises.
+    // Filed under the base series' own library: a same-series proposal pairs
+    // series of one library.
     conn.execute(
-        "INSERT INTO series (sort_title) VALUES ('Alt Title For GTNH')",
-        [],
+        "INSERT INTO series (sort_title, library_id) \
+         SELECT 'Alt Title For GTNH', library_id FROM series WHERE id = ?1",
+        [base_id],
     )
     .expect("claimant series");
     conn.execute(
@@ -3646,9 +3656,12 @@ fn counts_by_kind_separates_kinds_and_respects_state() {
             |r| r.get(0),
         )
         .expect("base series");
+    // Filed under the base series' own library: a same-series proposal pairs
+    // series of one library.
     conn.execute(
-        "INSERT INTO series (sort_title) VALUES ('Alt Title For GTNH')",
-        [],
+        "INSERT INTO series (sort_title, library_id) \
+         SELECT 'Alt Title For GTNH', library_id FROM series WHERE id = ?1",
+        [base_id],
     )
     .expect("claimant series");
     let claimant_id = conn.last_insert_rowid();
@@ -4327,9 +4340,11 @@ fn evidence_lists_a_directory_per_root_for_a_side_spanning_two_roots() {
     );
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root_a = scan::add_root(&conn, a.path()).expect("add root a");
+    let root_a =
+        scan::add_root_in(&conn, a.path(), scan::InLibrary::Named("Manga")).expect("add root a");
     scan::scan_root(&conn, &root_a).expect("scan a");
-    let root_b = scan::add_root(&conn, b.path()).expect("add root b");
+    let root_b =
+        scan::add_root_in(&conn, b.path(), scan::InLibrary::Named("Manga")).expect("add root b");
     scan::scan_root(&conn, &root_b).expect("scan b");
     derive::derive(&conn).expect("derive");
     proposals::raise(&conn).expect("raise");
@@ -4409,9 +4424,11 @@ fn a_refused_rule_is_an_absent_one_and_a_read_that_failed_is_an_error() {
     );
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root_a = scan::add_root(&conn, a.path()).expect("add root a");
+    let root_a =
+        scan::add_root_in(&conn, a.path(), scan::InLibrary::Named("Manga")).expect("add root a");
     scan::scan_root(&conn, &root_a).expect("scan a");
-    let root_b = scan::add_root(&conn, b.path()).expect("add root b");
+    let root_b =
+        scan::add_root_in(&conn, b.path(), scan::InLibrary::Named("Manga")).expect("add root b");
     scan::scan_root(&conn, &root_b).expect("scan b");
     derive::derive(&conn).expect("derive");
     let proposal = proposals::open(&conn, 0.0)
@@ -4420,7 +4437,8 @@ fn a_refused_rule_is_an_absent_one_and_a_read_that_failed_is_an_error() {
         .find(|p| p.kind == "edition-of")
         .expect("an edition-of proposal");
     let subject_title = "Go-Toubun no Hanayome - Full Color Edition";
-    let paths = derive::rel_paths_for_series(&conn, subject_title).expect("sweep");
+    let paths =
+        derive::rel_paths_for_series(&conn, Some(root_a.library_id), subject_title).expect("sweep");
 
     // The refusal: a row that still expands, and still says why it cannot be
     // accepted when asked directly.
@@ -4656,9 +4674,11 @@ fn library_whose_only_volume_is_walked_as_a_directory_from_two_roots()
     let library = Library::open_in_memory().expect("open");
     {
         let conn = library.conn();
-        let root_a = scan::add_root(&conn, a.path()).expect("add root a");
+        let root_a = scan::add_root_in(&conn, a.path(), scan::InLibrary::Named("Manga"))
+            .expect("add root a");
         scan::scan_root(&conn, &root_a).expect("scan a");
-        let root_b = scan::add_root(&conn, b.path()).expect("add root b");
+        let root_b = scan::add_root_in(&conn, b.path(), scan::InLibrary::Named("Manga"))
+            .expect("add root b");
         scan::scan_root(&conn, &root_b).expect("scan b");
         derive::derive(&conn).expect("derive");
     }
@@ -4852,5 +4872,767 @@ fn a_title_correction_leaves_an_attach_chapters_proposal_about_the_same_series()
         open,
         vec![(id, "attach-chapters".to_string(), subject)],
         "one proposal, the same one, still about series {subject}"
+    );
+}
+
+// --- Part F1: proposals within a library ------------------------------------
+
+/// Files a folder under the one library every folder filed this way shares.
+const TOGETHER: scan::InLibrary<'static> = scan::InLibrary::Named("Manga");
+/// Files a folder under a library of its own.
+const APART: scan::InLibrary<'static> = scan::InLibrary::Own;
+
+/// One folder holding volume 1 of each of `titles`, each under a directory
+/// of its own name.
+fn folder_of(label: &str, titles: &[&str]) -> crate::tests::TempDir {
+    let dir = crate::tests::tempdir(label);
+    for (n, title) in (2_usize..).zip(titles) {
+        write_pages(&dir.path().join(title).join(format!("{title} - v01")), n);
+    }
+    dir
+}
+
+/// A store holding `folders`, each filed as it says and scanned in the order
+/// given, after one derive over all of them. Answers the root each folder
+/// became, in that order.
+fn derived_from(
+    folders: &[(&crate::tests::TempDir, scan::InLibrary<'_>)],
+) -> (Library, Vec<scan::Root>) {
+    let library = Library::open_in_memory().expect("open");
+    let mut roots = Vec::new();
+    {
+        let conn = library.conn();
+        for (folder, filed) in folders {
+            let root = scan::add_root_in(&conn, folder.path(), *filed).expect("add root");
+            scan::scan_root(&conn, &root).expect("scan");
+            roots.push(root);
+        }
+        derive::derive(&conn).expect("derive");
+    }
+    (library, roots)
+}
+
+/// The series called `title` in the library `root` is filed under.
+fn series_in(conn: &rusqlite::Connection, root: &scan::Root, title: &str) -> i64 {
+    conn.query_row(
+        "SELECT id FROM series WHERE sort_title = ?1 AND library_id = ?2",
+        rusqlite::params![title, root.library_id],
+        |r| r.get(0),
+    )
+    .expect("a series of that title in that library")
+}
+
+/// Every open proposal as `(kind, subject, target)`, ascending.
+fn open_pairs(conn: &rusqlite::Connection) -> Vec<(String, i64, Option<i64>)> {
+    let mut pairs: Vec<_> = proposals::open(conn, 0.0)
+        .expect("open")
+        .into_iter()
+        .map(|p| (p.kind, p.subject_id, p.target_id))
+        .collect();
+    pairs.sort();
+    pairs
+}
+
+/// The sentence a proposal across two libraries is refused with.
+fn across_libraries_refusal(id: i64) -> String {
+    format!(
+        "proposal {id}: its two series are in different libraries, and a rule moves material \
+         only within one. Dismiss it; the next raise proposes only within a library."
+    )
+}
+
+#[test]
+fn an_edition_of_is_raised_within_a_library_and_never_across_two() {
+    let base = folder_of("proposals-lib-edition-base", &["Go-Toubun no Hanayome"]);
+    let colour = folder_of(
+        "proposals-lib-edition-colour",
+        &["Go-Toubun no Hanayome - Full Color Edition"],
+    );
+
+    let (together, folders) = derived_from(&[(&base, TOGETHER), (&colour, TOGETHER)]);
+    {
+        let conn = together.conn();
+        assert_eq!(
+            open_pairs(&conn),
+            vec![(
+                "edition-of".to_string(),
+                series_in(
+                    &conn,
+                    &folders[1],
+                    "Go-Toubun no Hanayome - Full Color Edition"
+                ),
+                Some(series_in(&conn, &folders[0], "Go-Toubun no Hanayome")),
+            )],
+            "two folders of one library hold the pair, and it is proposed",
+        );
+    }
+
+    let (apart, _folders) = derived_from(&[(&base, APART), (&colour, APART)]);
+    assert_eq!(
+        open_pairs(&apart.conn()),
+        vec![],
+        "the same two folders as two libraries: neither series is offered the other",
+    );
+}
+
+#[test]
+fn a_same_series_is_raised_within_a_library_and_never_across_two() {
+    let established = folder_of("proposals-lib-same-established", &["Kaguya-sama"]);
+    let scanned = folder_of("proposals-lib-same-scanned", &["Kaguya"]);
+    // What is open once `Kaguya-sama` has recorded `Kaguya` as a title of its
+    // own, with the series the proposal would be about and the one it would
+    // join.
+    let raised = |filed: scan::InLibrary<'static>| {
+        let (library, folders) = derived_from(&[(&established, filed), (&scanned, filed)]);
+        let conn = library.conn();
+        let owner = series_in(&conn, &folders[0], "Kaguya-sama");
+        let claimant = series_in(&conn, &folders[1], "Kaguya");
+        conn.execute(
+            "INSERT INTO series_title (series_id, title, hand) VALUES (?1, 'Kaguya', 1)",
+            [owner],
+        )
+        .expect("a title recorded by hand");
+        proposals::raise(&conn).expect("raise");
+        (open_pairs(&conn), claimant, owner)
+    };
+
+    let (open, claimant, owner) = raised(TOGETHER);
+    assert_eq!(
+        open,
+        vec![("same-series".to_string(), claimant, Some(owner))],
+        "two folders of one library: the series named `Kaguya` is offered the one that \
+         records the title",
+    );
+
+    let (open, _claimant, _owner) = raised(APART);
+    assert_eq!(
+        open,
+        vec![],
+        "the same two folders as two libraries: a title recorded in one names no series of \
+         the other",
+    );
+}
+
+#[test]
+fn the_same_title_in_two_libraries_raises_no_proposal_between_them() {
+    let one = folder_of(
+        "proposals-lib-title-one",
+        &["Series", "Series - Full Color"],
+    );
+    let other = folder_of("proposals-lib-title-other", &["Series"]);
+    let (library, folders) = derived_from(&[(&one, APART), (&other, APART)]);
+    let conn = library.conn();
+    assert_ne!(
+        series_in(&conn, &folders[0], "Series"),
+        series_in(&conn, &folders[1], "Series"),
+        "each library has a series of that title",
+    );
+
+    assert_eq!(
+        open_pairs(&conn),
+        vec![(
+            "edition-of".to_string(),
+            series_in(&conn, &folders[0], "Series - Full Color"),
+            Some(series_in(&conn, &folders[0], "Series")),
+        )],
+        "the first library's own pair is proposed, and nothing pairs a series of one library \
+         with the `Series` of the other",
+    );
+}
+
+#[test]
+fn a_series_in_no_library_pairs_only_with_another_in_none_and_has_no_folder_to_accept_from() {
+    let folder = folder_of("proposals-lib-none", &["Base", "Base - Full Color"]);
+    let (library, folders) = derived_from(&[(&folder, APART)]);
+    let conn = library.conn();
+    let filed_base = series_in(&conn, &folders[0], "Base");
+    let filed_colour = series_in(&conn, &folders[0], "Base - Full Color");
+    // The same two titles again in no library, as an imported work's series
+    // are.
+    let mut unfiled = Vec::new();
+    for title in ["Base", "Base - Full Color"] {
+        conn.execute("INSERT INTO series (sort_title) VALUES (?1)", [title])
+            .expect("series");
+        let id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO series_title (series_id, title, is_primary) VALUES (?1, ?2, 1)",
+            rusqlite::params![id, title],
+        )
+        .expect("title");
+        unfiled.push(id);
+    }
+    let (unfiled_base, unfiled_colour) = (unfiled[0], unfiled[1]);
+
+    proposals::raise(&conn).expect("raise");
+
+    assert_eq!(
+        open_pairs(&conn),
+        vec![
+            ("edition-of".to_string(), filed_colour, Some(filed_base)),
+            ("edition-of".to_string(), unfiled_colour, Some(unfiled_base)),
+        ],
+        "the library's pair and the pair in no library, and nothing between a series in a \
+         library and one in none",
+    );
+
+    // The pair in no library has no folder, though the library's folder
+    // holds a directory of the subject's name.
+    let in_none = proposals::open(&conn, 0.0)
+        .expect("open")
+        .into_iter()
+        .find(|p| p.subject_id == unfiled_colour)
+        .expect("the pair in no library")
+        .id;
+    let refused = proposals::preview(&conn, in_none).expect_err("no folder to write a rule for");
+    assert!(
+        refused.contains("nothing has been scanned for this series yet"),
+        "{refused}"
+    );
+}
+
+#[test]
+fn attach_chapters_names_the_series_in_the_chapters_own_library() {
+    let volumes = folder_of("proposals-lib-chapters-volumes", &["Kaguya-sama"]);
+    let chapters = crate::tests::tempdir("proposals-lib-chapters-chapters");
+    for chapter in ["Kaguya-sama - c001", "Kaguya-sama - c002"] {
+        write_pages(&chapters.path().join("Kaguya-sama").join(chapter), 2);
+    }
+    let (library, folders) = derived_from(&[(&volumes, APART), (&chapters, APART)]);
+    let conn = library.conn();
+    let with_volumes = series_in(&conn, &folders[0], "Kaguya-sama");
+    let with_chapters = series_in(&conn, &folders[1], "Kaguya-sama");
+    assert!(
+        with_volumes < with_chapters,
+        "the volumes' series is the older, so it is the one a lookup by title alone finds: \
+         {with_volumes} then {with_chapters}",
+    );
+
+    assert_eq!(
+        open_pairs(&conn),
+        vec![("attach-chapters".to_string(), with_chapters, None)],
+        "the chapters are a question about the series of their own library",
+    );
+}
+
+#[test]
+fn chapter_directories_are_counted_within_a_library_and_never_across_two() {
+    let folder = |label: &str| {
+        let dir = crate::tests::tempdir(label);
+        write_pages(
+            &dir.path().join("Kaguya-sama").join("Kaguya-sama - c001"),
+            2,
+        );
+        dir
+    };
+    let (one, other) = (
+        folder("proposals-lib-chapter-count-one"),
+        folder("proposals-lib-chapter-count-other"),
+    );
+    // Each open proposal's subject, and whether it counts one directory or
+    // two.
+    let counted = |conn: &rusqlite::Connection| -> Vec<(i64, bool, bool)> {
+        let mut counted: Vec<_> = proposals::open(conn, 0.0)
+            .expect("open")
+            .into_iter()
+            .map(|p| {
+                (
+                    p.subject_id,
+                    p.reason.contains("holds one directory"),
+                    p.reason.contains("holds 2 directories"),
+                )
+            })
+            .collect();
+        counted.sort_unstable();
+        counted
+    };
+
+    let (together, folders) = derived_from(&[(&one, TOGETHER), (&other, TOGETHER)]);
+    {
+        let conn = together.conn();
+        assert_eq!(
+            counted(&conn),
+            vec![(series_in(&conn, &folders[1], "Kaguya-sama"), false, true)],
+            "two folders of one library: one series, asked about both directories",
+        );
+    }
+
+    let (apart, folders) = derived_from(&[(&one, APART), (&other, APART)]);
+    let conn = apart.conn();
+    assert_eq!(
+        counted(&conn),
+        vec![
+            (series_in(&conn, &folders[0], "Kaguya-sama"), true, false),
+            (series_in(&conn, &folders[1], "Kaguya-sama"), true, false),
+        ],
+        "the same two folders as two libraries: each series is asked about its own directory",
+    );
+}
+
+#[test]
+fn accepting_reads_only_the_subjects_own_library() {
+    let colour = "Base - Full Color";
+    let other = folder_of("proposals-lib-accept-other", &[colour]);
+    let own = folder_of("proposals-lib-accept-own", &["Base", colour]);
+    let (library, folders) = derived_from(&[(&other, APART), (&own, APART)]);
+    let conn = library.conn();
+    let subject = series_in(&conn, &folders[1], colour);
+    let target = series_in(&conn, &folders[1], "Base");
+    assert!(
+        series_in(&conn, &folders[0], colour) < subject,
+        "the other library's series of the subject's title is the older",
+    );
+    assert_eq!(
+        open_pairs(&conn),
+        vec![("edition-of".to_string(), subject, Some(target))],
+        "one proposal, within the second library",
+    );
+    let id = proposals::open(&conn, 0.0).expect("open").remove(0).id;
+
+    let previewed = proposals::preview(&conn, id).expect(
+        "a rule is offered: the other library's directory of the same name is not the subject's",
+    );
+
+    assert_eq!(
+        (previewed.root_id, previewed.pattern.as_str()),
+        (Some(folders[1].id), "Base - Full Color/"),
+        "scoped to the subject's own folder",
+    );
+    let ev = proposals::evidence(&conn, id).expect("evidence");
+    assert_eq!(
+        ev.subject.directories,
+        vec![folders[1].path.join(colour).to_string_lossy().into_owned()],
+        "the subject's material is its own library's directory alone",
+    );
+    assert_eq!(
+        ev.rule.as_ref(),
+        Some(&previewed),
+        "and the expanded row offers the same rule",
+    );
+    let rule_id = proposals::accept(&conn, id).expect("accepting writes that rule");
+    assert_eq!(rule_of(&conn, id), Some(rule_id));
+}
+
+#[test]
+fn a_proposal_across_two_libraries_is_refused_at_accept() {
+    let base = folder_of("proposals-lib-across-base", &["Base"]);
+    let colour = folder_of("proposals-lib-across-colour", &["Base - Full Color"]);
+    let (library, folders) = derived_from(&[(&base, APART), (&colour, APART)]);
+    let conn = library.conn();
+    let target = series_in(&conn, &folders[0], "Base");
+    let subject = series_in(&conn, &folders[1], "Base - Full Color");
+    // As a raise before libraries left it, or a folder moved between two.
+    conn.execute(
+        "INSERT INTO proposal (kind, subject_id, target_id, score, reason) \
+         VALUES ('edition-of', ?1, ?2, 1, 'x')",
+        [subject, target],
+    )
+    .expect("a proposal across the two");
+    let id = conn.last_insert_rowid();
+    let refusal = across_libraries_refusal(id);
+
+    assert_eq!(
+        proposals::preview(&conn, id).expect_err("no rule is offered"),
+        refusal,
+    );
+    assert_eq!(
+        proposals::accept(&conn, id).expect_err("and none is written"),
+        refusal,
+    );
+    // A rule handed in rather than previewed, as the accept route hands one.
+    let handed = proposals::ProposedRule {
+        root_id: Some(folders[1].id),
+        kind: "prefix".to_string(),
+        pattern: "Base - Full Color/".to_string(),
+        match_on: "path".to_string(),
+        set_series: Some("Base".to_string()),
+        set_edition_key: Some("full-color".to_string()),
+        set_kind: Some("official".to_string()),
+        set_language: None,
+        note: "handed in".to_string(),
+    };
+    assert_eq!(
+        refusal_of(proposals::accept_with(&conn, id, &handed)),
+        refusal,
+        "a rule handed in is refused in the same words",
+    );
+    assert_eq!(state_of(&conn, id), "open", "the proposal stays open");
+    assert_eq!(rule_of(&conn, id), None, "and holds no rule");
+
+    let ev = proposals::evidence(&conn, id).expect("the row still expands");
+    assert!(ev.rule.is_none(), "with no rule to accept: {:?}", ev.rule);
+    assert_eq!(
+        ev.subject.directories,
+        vec![
+            folders[1]
+                .path
+                .join("Base - Full Color")
+                .to_string_lossy()
+                .into_owned()
+        ],
+        "the subject's material, from its own library",
+    );
+    assert_eq!(
+        ev.target.expect("the target side").directories,
+        vec![folders[0].path.join("Base").to_string_lossy().into_owned()],
+        "and the target's, from the other",
+    );
+}
+
+#[test]
+fn a_dry_run_counts_each_librarys_series_apart() {
+    // The first library's `Series` is in its second folder, so that the
+    // folder's id is not its library's.
+    let spare = folder_of("proposals-lib-reach-spare", &["Other"]);
+    let one = folder_of("proposals-lib-reach-one", &["Series"]);
+    let other = folder_of("proposals-lib-reach-other", &["Series"]);
+    let (library, folders) = derived_from(&[(&spare, TOGETHER), (&one, TOGETHER), (&other, APART)]);
+    let conn = library.conn();
+    assert_ne!(
+        folders[1].id, folders[1].library_id,
+        "the folder's id is not its library's",
+    );
+    let rule = proposals::ProposedRule {
+        root_id: None,
+        kind: "prefix".to_string(),
+        pattern: "Series/".to_string(),
+        match_on: "path".to_string(),
+        set_series: Some("Elsewhere".to_string()),
+        set_edition_key: None,
+        set_kind: None,
+        set_language: None,
+        note: "a candidate for every folder".to_string(),
+    };
+
+    let reach = proposals::series_reached_by(&conn, &rule).expect("the dry run");
+
+    assert_eq!(
+        reach.series.keys().copied().collect::<Vec<_>>(),
+        vec![
+            series_in(&conn, &folders[1], "Series"),
+            series_in(&conn, &folders[2], "Series"),
+        ],
+        "each folder's entries belong to the `Series` of its own library, and the rule \
+         reaches both",
+    );
+}
+
+#[test]
+fn a_widened_rule_answers_another_proposal_within_a_library_and_never_across_two() {
+    let base = folder_of("proposals-lib-answers-base", &["Base"]);
+    let rest = folder_of(
+        "proposals-lib-answers-rest",
+        &[
+            "Kaguya",
+            "Kaguya - Full Color Edition",
+            "Base - Full Color Edition",
+        ],
+    );
+    // The `Kaguya` colour edition's proposal, and its rule widened to every
+    // colour edition in every folder.
+    let widened = |conn: &rusqlite::Connection| {
+        let asked = proposal_whose_subject_is(conn, "Kaguya - Full Color Edition");
+        let mut rule = proposals::preview(conn, asked).expect("preview");
+        rule.kind = "regex".to_string();
+        rule.pattern = "^(?<series>.+) - Full Color Edition/".to_string();
+        rule.root_id = None;
+        (asked, rule)
+    };
+
+    let (together, _folders) = derived_from(&[(&base, TOGETHER), (&rest, TOGETHER)]);
+    {
+        let conn = together.conn();
+        let (asked, rule) = widened(&conn);
+        let within = proposal_whose_subject_is(&conn, "Base - Full Color Edition");
+        let resolution = proposals::resolves(&conn, asked, &rule).expect("resolves");
+        assert_eq!(
+            (resolution.also_resolves, resolution.collateral),
+            (vec![within], vec![]),
+            "two folders of one library: the rule answers the `Base` pair too",
+        );
+    }
+
+    let (apart, folders) = derived_from(&[(&base, APART), (&rest, APART)]);
+    let conn = apart.conn();
+    let (asked, rule) = widened(&conn);
+    conn.execute(
+        "INSERT INTO proposal (kind, subject_id, target_id, score, reason) \
+         VALUES ('edition-of', ?1, ?2, 1, 'x')",
+        [
+            series_in(&conn, &folders[1], "Base - Full Color Edition"),
+            series_in(&conn, &folders[0], "Base"),
+        ],
+    )
+    .expect("a proposal across the two");
+    let across = conn.last_insert_rowid();
+
+    let resolution = proposals::resolves(&conn, asked, &rule).expect("resolves");
+
+    assert_eq!(
+        (resolution.also_resolves, resolution.collateral),
+        (vec![], vec!["Base - Full Color Edition".to_string()]),
+        "two libraries: the rule would move the colour edition within its own library, \
+         which answers nothing and is somebody else's material",
+    );
+    let refused = refusal_of(proposals::accept_with(&conn, asked, &rule));
+    assert!(
+        refused.contains("also decides for Base - Full Color Edition"),
+        "{refused}"
+    );
+    assert_eq!(
+        (state_of(&conn, across), rule_of(&conn, across)),
+        ("open".to_string(), None),
+        "and the proposal across the two is left as it was",
+    );
+}
+
+/// The sentence a proposal with one of its two series in no library is
+/// refused with.
+fn one_in_no_library_refusal(id: i64) -> String {
+    format!(
+        "proposal {id}: one of its two series is in no library. A derive files a series under \
+         the library whose folders hold it; if this one is still in none after a scan, dismiss \
+         the proposal."
+    )
+}
+
+/// Where the two series of [`stranded`]'s proposal are.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Stranded {
+    /// Each in a library of its own.
+    AcrossTwoLibraries,
+    /// The subject in a library and the target in none.
+    TargetInNone,
+    /// The subject in none and the target in a library.
+    SubjectInNone,
+}
+
+/// A store with one proposal, inserted by hand: `Base - Full Color` is an
+/// edition of `Base`, the two series placed as `how` says. A series in a
+/// library is scanned from a folder, and one in none is a row with no folder.
+/// Answers the folders, the store, the proposal's id, and a rule for it as
+/// the accept route hands one in.
+fn stranded(
+    how: Stranded,
+) -> (
+    Vec<crate::tests::TempDir>,
+    Library,
+    i64,
+    proposals::ProposedRule,
+) {
+    let (base, colour) = ("Base", "Base - Full Color");
+    let dirs = match how {
+        Stranded::AcrossTwoLibraries => vec![
+            folder_of("proposals-lib-stranded-base", &[base]),
+            folder_of("proposals-lib-stranded-colour", &[colour]),
+        ],
+        Stranded::TargetInNone => vec![folder_of("proposals-lib-stranded-subject", &[colour])],
+        Stranded::SubjectInNone => vec![folder_of("proposals-lib-stranded-target", &[base])],
+    };
+    let filed: Vec<_> = dirs.iter().map(|dir| (dir, APART)).collect();
+    let (library, folders) = derived_from(&filed);
+    let (id, handed) = {
+        let conn = library.conn();
+        let in_none = |title: &str| {
+            conn.execute("INSERT INTO series (sort_title) VALUES (?1)", [title])
+                .expect("series");
+            let id = conn.last_insert_rowid();
+            conn.execute(
+                "INSERT INTO series_title (series_id, title, is_primary) VALUES (?1, ?2, 1)",
+                rusqlite::params![id, title],
+            )
+            .expect("title");
+            id
+        };
+        let (subject, target) = match how {
+            Stranded::AcrossTwoLibraries => (
+                series_in(&conn, &folders[1], colour),
+                series_in(&conn, &folders[0], base),
+            ),
+            Stranded::TargetInNone => (series_in(&conn, &folders[0], colour), in_none(base)),
+            Stranded::SubjectInNone => (in_none(colour), series_in(&conn, &folders[0], base)),
+        };
+        conn.execute(
+            "INSERT INTO proposal (kind, subject_id, target_id, score, reason) \
+             VALUES ('edition-of', ?1, ?2, 1, 'x')",
+            [subject, target],
+        )
+        .expect("the proposal");
+        let handed = proposals::ProposedRule {
+            root_id: Some(folders.last().expect("a folder").id),
+            kind: "prefix".to_string(),
+            pattern: format!("{colour}/"),
+            match_on: "path".to_string(),
+            set_series: Some(base.to_string()),
+            set_edition_key: Some("full-color".to_string()),
+            set_kind: Some("official".to_string()),
+            set_language: None,
+            note: "handed in".to_string(),
+        };
+        (conn.last_insert_rowid(), handed)
+    };
+    (dirs, library, id, handed)
+}
+
+/// [`stranded`]'s proposal is refused in `refusal`'s words by `preview`, by
+/// `accept` and by `accept_with` handed a rule; its row still expands, with
+/// no rule; and nothing is written.
+fn refused_with_nothing_written(how: Stranded, refusal: fn(i64) -> String) {
+    let (_dirs, library, id, handed) = stranded(how);
+    let conn = library.conn();
+    let refusal = refusal(id);
+
+    assert_eq!(
+        proposals::preview(&conn, id).expect_err("no rule is offered"),
+        refusal,
+    );
+    assert_eq!(
+        proposals::accept(&conn, id).expect_err("and none is written"),
+        refusal,
+    );
+    assert_eq!(
+        refusal_of(proposals::accept_with(&conn, id, &handed)),
+        refusal,
+        "a rule handed in is refused in the same words",
+    );
+    let ev = proposals::evidence(&conn, id).expect("the row still expands");
+    assert!(ev.rule.is_none(), "with no rule to accept: {:?}", ev.rule);
+    assert_eq!(
+        (
+            state_of(&conn, id),
+            rule_of(&conn, id),
+            accepted_rules(&conn)
+        ),
+        ("open".to_string(), None, 0),
+        "the proposal is still open, and no rule was written",
+    );
+}
+
+#[test]
+fn a_proposal_whose_target_is_in_no_library_is_refused_in_its_own_words() {
+    refused_with_nothing_written(Stranded::TargetInNone, one_in_no_library_refusal);
+}
+
+#[test]
+fn a_proposal_whose_subject_is_in_no_library_is_refused_in_its_own_words() {
+    refused_with_nothing_written(Stranded::SubjectInNone, one_in_no_library_refusal);
+}
+
+#[test]
+fn preview_refuses_a_proposal_not_within_one_library_before_the_sweep() {
+    // Whether a preview offered a rule, and how many sweeps it took.
+    let previewed = |conn: &rusqlite::Connection, id: i64| {
+        derive::REL_PATHS_BY_SERIES_CALLS.with(|c| c.set(0));
+        let offered = proposals::preview(conn, id).is_ok();
+        (
+            offered,
+            derive::REL_PATHS_BY_SERIES_CALLS.with(std::cell::Cell::get),
+        )
+    };
+
+    let within = library_with_two_suffixed_series();
+    {
+        let conn = within.conn();
+        let id = proposals::open(&conn, 0.0).expect("open").remove(0).id;
+        assert_eq!(
+            previewed(&conn, id),
+            (true, 1),
+            "a proposal within one library is offered a rule, and that takes a sweep",
+        );
+    }
+
+    let refused: Vec<_> = [
+        Stranded::AcrossTwoLibraries,
+        Stranded::TargetInNone,
+        Stranded::SubjectInNone,
+    ]
+    .into_iter()
+    .map(|how| {
+        let (_dirs, library, id, _handed) = stranded(how);
+        let (offered, sweeps) = previewed(&library.conn(), id);
+        (how, offered, sweeps)
+    })
+    .collect();
+    assert_eq!(
+        refused,
+        vec![
+            (Stranded::AcrossTwoLibraries, false, 0),
+            (Stranded::TargetInNone, false, 0),
+            (Stranded::SubjectInNone, false, 0),
+        ],
+        "each is refused, and before any sweep",
+    );
+}
+
+#[test]
+fn chapters_are_a_question_about_the_older_of_two_series_of_one_name_in_a_library() {
+    let dir = crate::tests::tempdir("proposals-lib-oldest");
+    write_pages(
+        &dir.path().join("Kaguya-sama").join("Kaguya-sama - c001"),
+        2,
+    );
+    write_pages(&dir.path().join("Other").join("Other - v01"), 3);
+    let (library, folders) = derived_from(&[(&dir, APART)]);
+    let conn = library.conn();
+    let scanned = series_in(&conn, &folders[0], "Kaguya-sama");
+    // The subject of each open `attach-chapters` proposal, in id order.
+    let asked_about = |conn: &rusqlite::Connection| -> Vec<i64> {
+        let mut asked: Vec<_> = proposals::open(conn, 0.0)
+            .expect("open")
+            .into_iter()
+            .filter(|p| p.kind == "attach-chapters")
+            .map(|p| (p.id, p.subject_id))
+            .collect();
+        asked.sort_unstable();
+        asked.into_iter().map(|(_id, subject)| subject).collect()
+    };
+    assert_eq!(asked_about(&conn), vec![scanned]);
+
+    // The scanned series is given another title, and a volume is then filed
+    // by hand under a series of the scanned name: a second series of that
+    // `sort_title`, in the same library.
+    crate::librarydoc::set_series_titles(
+        &conn,
+        scanned,
+        &[crate::librarydoc::SeriesTitle {
+            title: "かぐや様は告らせたい".to_string(),
+            kind: crate::librarydoc::TitleKind::Native,
+            primary: true,
+        }],
+    )
+    .expect("corrects the scanned series' title");
+    let volume: i64 = conn
+        .query_row("SELECT id FROM work", [], |r| r.get(0))
+        .expect("the one volume");
+    let doc = crate::librarydoc::LibraryDoc::from_json(
+        r#"{"taiyaku_library":1,"updated":"2026-10-06T00:00:00Z",
+            "series":{"chosen":true,"titles":[{"title":"Kaguya-sama","kind":"romaji","primary":true}]}}"#,
+    )
+    .expect("parses");
+    crate::librarydoc::apply(&conn, volume, &doc).expect("files the volume by hand");
+    let by_hand: i64 = conn
+        .query_row("SELECT series_id FROM work WHERE id = ?1", [volume], |r| {
+            r.get(0)
+        })
+        .expect("the series the volume was filed under");
+    let named: Vec<(i64, Option<i64>)> = conn
+        .prepare("SELECT id, library_id FROM series WHERE sort_title = 'Kaguya-sama' ORDER BY id")
+        .expect("prepare")
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .expect("query")
+        .collect::<Result<_, _>>()
+        .expect("collect");
+    let library_id = Some(folders[0].library_id);
+    assert_eq!(
+        named,
+        vec![(scanned, library_id), (by_hand, library_id)],
+        "two series of the scanned name in one library, the scanned one the older",
+    );
+
+    derive::derive(&conn).expect("derive");
+
+    assert_eq!(
+        asked_about(&conn),
+        vec![scanned],
+        "still one question about the chapters, and about the older series",
     );
 }

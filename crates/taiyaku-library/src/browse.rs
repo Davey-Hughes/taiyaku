@@ -8,8 +8,8 @@
 //! # The filter, which is the reason this module exists rather than a handful
 //! # of queries at the call sites
 //!
-//! Every function takes `roots: &[i64]`, the caller's granted roots, and **an
-//! empty slice applies no filter at all**. That is spec C1 §5.1's rule and it
+//! Every function takes `roots: &[i64]`, the folders of the caller's granted
+//! libraries, and **an empty slice applies no filter at all**. That is spec C1 §5.1's rule and it
 //! is counter-intuitive on purpose: `user_root` had no writer before spec C1,
 //! so every account in every existing library holds an empty grant, and any
 //! other reading of empty would have emptied every library the day migration
@@ -269,7 +269,7 @@ const LIST_CAP: i64 = 20;
 ///
 /// Built as a string because the number of parameters varies with the grant,
 /// which a prepared statement cannot express otherwise. The values are `i64`
-/// read from `user_root`, never caller text, so there is nothing here to
+/// read from the store by `account::roots_for`, never caller text, so there is nothing here to
 /// inject; the placeholders are still generated rather than the values
 /// interpolated, so that stays true if the source ever changes.
 ///

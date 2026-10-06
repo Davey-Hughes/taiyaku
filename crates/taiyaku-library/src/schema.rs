@@ -25,7 +25,7 @@
 use rusqlite::Connection;
 
 /// The schema version this build expects.
-pub const SCHEMA_VERSION: u32 = 14;
+pub const SCHEMA_VERSION: u32 = 15;
 
 /// Every migration, in order. Index 0 takes an empty database to version 1.
 ///
@@ -33,7 +33,7 @@ pub const SCHEMA_VERSION: u32 = 14;
 /// migration 1 again, so a change made there reaches new databases only and
 /// the two diverge silently. `002` adds one column to `migrated_document`
 /// rather than changing the table `001` creates, for exactly that reason.
-const MIGRATIONS: [&str; 14] = [
+const MIGRATIONS: [&str; 15] = [
     include_str!("schema/001_initial.sql"),
     include_str!("schema/002_absorbed.sql"),
     include_str!("schema/003_scanner.sql"),
@@ -48,6 +48,7 @@ const MIGRATIONS: [&str; 14] = [
     include_str!("schema/012_root_keeps_documents.sql"),
     include_str!("schema/013_can_stamp.sql"),
     include_str!("schema/014_structure_version.sql"),
+    include_str!("schema/015_libraries.sql"),
 ];
 
 /// The version a database reaches is the number of migrations applied to it,

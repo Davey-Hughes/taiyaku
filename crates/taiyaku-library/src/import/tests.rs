@@ -1769,6 +1769,341 @@ fn two_scanned_works_in_one_directory_do_not_collide() {
     assert_eq!(works, 2);
 }
 
+/// The library `work_id` is filed under, or `None` for none.
+fn library_of(conn: &Connection, work_id: i64) -> Option<i64> {
+    conn.query_row(
+        "SELECT library_id FROM work WHERE id = ?1",
+        [work_id],
+        |r| r.get(0),
+    )
+    .expect("reads")
+}
+
+#[test]
+fn scanned_in_finds_its_own_librarys_work_and_not_anothers() {
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    conn.execute_batch("INSERT INTO library (id, name) VALUES (70, 'A'), (80, 'B');")
+        .expect("two libraries");
+
+    let in_a = scanned_in(&conn, &doc("aa"), 70, None).expect("into A");
+    let in_b = scanned_in(&conn, &doc("aa"), 80, None).expect("into B");
+    let again = scanned_in(&conn, &doc("aa"), 70, None).expect("into A again");
+
+    assert_ne!(
+        in_a, in_b,
+        "the same content in another library is another work"
+    );
+    assert_eq!(again, in_a, "and A finds its own");
+    assert_eq!(
+        (library_of(&conn, in_a), library_of(&conn, in_b)),
+        (Some(70), Some(80))
+    );
+}
+
+#[test]
+fn scanned_in_adopts_a_work_in_no_library() {
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    conn.execute_batch("INSERT INTO library (id, name) VALUES (70, 'A');")
+        .expect("a library");
+    let unfiled = scanned(&conn, &doc("aa"), None).expect("a work in no library");
+
+    let filed = scanned_in(&conn, &doc("aa"), 70, None).expect("into A");
+
+    assert_eq!(filed, unfiled, "the same row");
+    assert_eq!(library_of(&conn, filed), Some(70), "now filed");
+}
+
+#[test]
+fn a_document_import_finds_a_scanned_work_in_any_library() {
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    conn.execute_batch("INSERT INTO library (id, name) VALUES (70, 'A');")
+        .expect("a library");
+    let scanned_id = scanned_in(&conn, &doc("aa"), 70, None).expect("into A");
+
+    let imported = sidecar(&conn, &doc("aa"), Path::new("/x/taiyaku.json")).expect("imports");
+
+    assert_eq!(
+        imported, scanned_id,
+        "content still decides for a document, across libraries"
+    );
+}
+
+/// Two works in no library holding one key, which `work`'s `UNIQUE
+/// (content_key, library_id)` allows since it does not compare NULLs: two
+/// libraries each held a copy and each has gone, as a library goes when its
+/// last folder moves away.
+fn two_unfiled_works_sharing_a_key(conn: &Connection) -> (i64, i64) {
+    conn.execute_batch("INSERT INTO library (id, name) VALUES (70, 'A'), (80, 'B');")
+        .expect("two libraries");
+    let older = scanned_in(conn, &doc("aa"), 70, None).expect("into A");
+    let newer = scanned_in(conn, &doc("aa"), 80, None).expect("into B");
+    conn.execute_batch("DELETE FROM library WHERE id IN (70, 80);")
+        .expect("both libraries go");
+    assert!(older < newer, "the fixture: two rows, in this order");
+    assert_eq!(
+        (library_of(conn, older), library_of(conn, newer)),
+        (None, None),
+        "the fixture: both in no library"
+    );
+    (older, newer)
+}
+
+#[test]
+fn scanned_in_adopts_the_older_of_two_works_in_no_library_and_only_that_one() {
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let (older, newer) = two_unfiled_works_sharing_a_key(&conn);
+    conn.execute_batch("INSERT INTO library (id, name) VALUES (90, 'C');")
+        .expect("a third library");
+
+    let adopted = scanned_in(&conn, &doc("aa"), 90, None).expect("into C");
+    let again = scanned_in(&conn, &doc("aa"), 90, None)
+        .expect("into C again, which must not file the other row beside the first");
+
+    assert_eq!(adopted, older, "the older row is the one adopted");
+    assert_eq!(again, older, "and C finds it as its own from then on");
+    assert_eq!(
+        (library_of(&conn, older), library_of(&conn, newer)),
+        (Some(90), None),
+        "one row filed, the other left in no library"
+    );
+}
+
+#[test]
+fn scanned_in_finds_its_own_work_before_an_older_one_in_no_library() {
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    conn.execute_batch("INSERT INTO library (id, name) VALUES (70, 'A'), (80, 'B');")
+        .expect("two libraries");
+    let older = scanned_in(&conn, &doc("aa"), 70, None).expect("into A");
+    let own = scanned_in(&conn, &doc("aa"), 80, None).expect("into B");
+    conn.execute_batch("DELETE FROM library WHERE id = 70;")
+        .expect("A goes, leaving its work in no library");
+    assert_eq!(library_of(&conn, older), None, "the fixture");
+
+    let found = scanned_in(&conn, &doc("aa"), 80, None).expect("into B again");
+
+    assert_eq!(found, own, "B's own work, though the other row is older");
+    assert_eq!(
+        (library_of(&conn, older), library_of(&conn, own)),
+        (None, Some(80)),
+        "and the older row is left where it was"
+    );
+}
+
+/// A `known` row is the caller's to choose. One of another library is still
+/// the row the import lands on when content finds nothing, and it stays in
+/// the library it is in.
+#[test]
+fn scanned_in_leaves_a_known_work_in_the_library_it_is_in() {
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    conn.execute_batch("INSERT INTO library (id, name) VALUES (70, 'A'), (80, 'B');")
+        .expect("two libraries");
+    let in_a = scanned_in(&conn, &doc("aa"), 70, None).expect("into A");
+
+    let landed = scanned_in(&conn, &doc("bb"), 80, Some(in_a)).expect("into B, known in A");
+
+    assert_eq!(
+        landed, in_a,
+        "the fixture: no work holds the new key, so the known row is the answer"
+    );
+    assert_eq!(
+        library_of(&conn, in_a),
+        Some(70),
+        "and it is filed where it was"
+    );
+}
+
+/// With no library to look in, an import of a document no work holds takes a
+/// work in a library before one in none, however old the unfiled one is, and
+/// then the oldest.
+#[test]
+fn a_document_import_prefers_a_filed_work_and_then_the_oldest() {
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    conn.execute_batch("INSERT INTO library (id, name) VALUES (70, 'A'), (80, 'B'), (90, 'C');")
+        .expect("three libraries");
+    let unfiled = scanned_in(&conn, &doc("aa"), 70, None).expect("into A");
+    let older = scanned_in(&conn, &doc("aa"), 80, None).expect("into B");
+    let newer = scanned_in(&conn, &doc("aa"), 90, None).expect("into C");
+    conn.execute_batch("DELETE FROM library WHERE id = 70;")
+        .expect("A goes, leaving the oldest row in no library");
+    assert!(unfiled < older && older < newer, "the fixture");
+
+    let imported = sidecar(&conn, &doc("aa"), Path::new("/x/taiyaku.json")).expect("imports");
+
+    assert_eq!(imported, older, "the older of the two filed works");
+}
+
+/// The document at `document` imported, with a position and a note on its
+/// work; that work taken by library A's scan; the same content scanned into
+/// library B; and A gone, as a library goes with its last folder. Returns the
+/// document's work, which is the older and in no library, and B's.
+fn a_documents_work_in_no_library_beside_a_filed_one(
+    conn: &Connection,
+    document: &Path,
+) -> (i64, i64) {
+    conn.execute_batch("INSERT INTO library (id, name) VALUES (70, 'A'), (80, 'B');")
+        .expect("two libraries");
+    let (held, _) = reimport(conn, &doc("aa"), document).expect("imports the document");
+    conn.execute_batch(&format!(
+        "INSERT INTO progress (user_id, work_id, edition, slot) VALUES (1, {held}, 'raw', 2);
+         INSERT INTO note (user_id, id, work_id, edition, slot, body, created, updated)
+         VALUES (1, 'n', {held}, 'raw', 1, 'kept', 'now', 'now');"
+    ))
+    .expect("a position and a note on the document's work");
+    let taken = scanned_in(conn, &doc("aa"), 70, None).expect("A's scan");
+    let filed = scanned_in(conn, &doc("aa"), 80, None).expect("B's scan");
+    conn.execute_batch("DELETE FROM library WHERE id = 70;")
+        .expect("A goes, leaving the document's work in no library");
+    assert_eq!(
+        (taken, library_of(conn, held), library_of(conn, filed)),
+        (held, None, Some(80)),
+        "the fixture: the document's work in no library, and B's work of the same content"
+    );
+    assert_eq!(
+        works_holding(conn, document),
+        vec![held],
+        "the fixture: the document's work holds its path"
+    );
+    (held, filed)
+}
+
+/// The works whose `sidecar_path` is `document`, oldest first.
+fn works_holding(conn: &Connection, document: &Path) -> Vec<i64> {
+    conn.prepare("SELECT id FROM work WHERE sidecar_path = ?1 ORDER BY id")
+        .expect("prepares")
+        .query_map([document.to_string_lossy()], |r| r.get(0))
+        .expect("reads")
+        .collect::<rusqlite::Result<_>>()
+        .expect("reads")
+}
+
+/// A document that already has a work lands on that work again, though it is
+/// in no library and another work of the same content is filed. The work
+/// still holds the document's path, and the position and the note.
+#[test]
+fn a_document_lands_on_the_work_that_already_holds_its_path() {
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let document = Path::new("/a/series/taiyaku.json");
+    let (held, _filed) = a_documents_work_in_no_library_beside_a_filed_one(&conn, document);
+
+    let (again, _) = reimport(&conn, &doc("aa"), document).expect("imports again");
+
+    assert_eq!(again, held, "the work that already holds the document");
+    assert_eq!(
+        works_holding(&conn, document),
+        vec![held],
+        "and it holds the document's path still"
+    );
+    let on = |table: &str| -> i64 {
+        conn.query_row(
+            &format!("SELECT count(*) FROM {table} WHERE work_id = ?1"),
+            [again],
+            |r| r.get(0),
+        )
+        .expect("counts")
+    };
+    assert_eq!(
+        (on("progress"), on("note")),
+        (1, 1),
+        "the position and the note are on the work the document landed on"
+    );
+}
+
+/// A document no work holds lands by the order every such document does: on
+/// the filed work, though the older work of that content holds the path of
+/// another document.
+#[test]
+fn a_document_no_work_holds_is_not_drawn_to_another_documents_work() {
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let (_held, filed) = a_documents_work_in_no_library_beside_a_filed_one(
+        &conn,
+        Path::new("/a/series/taiyaku.json"),
+    );
+
+    let imported =
+        sidecar(&conn, &doc("aa"), Path::new("/b/series/taiyaku.json")).expect("imports");
+
+    assert_eq!(imported, filed, "the filed work before the one in none");
+}
+
+/// The same where the work holding the document is in a library, and an older
+/// work of that content is in another: the document lands on its holder, where
+/// the order for a document no work holds would answer the older.
+#[test]
+fn a_document_lands_on_its_holder_though_an_older_work_is_filed_too() {
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    conn.execute_batch("INSERT INTO library (id, name) VALUES (70, 'A'), (80, 'B');")
+        .expect("two libraries");
+    let older = scanned_in(&conn, &doc("aa"), 70, None).expect("into A");
+    let holder = scanned_in(&conn, &doc("aa"), 80, None).expect("into B");
+    conn.execute_batch("DELETE FROM library WHERE id = 70;")
+        .expect("A goes, leaving the older work in no library");
+    let document = Path::new("/b/series/taiyaku.json");
+    let first = sidecar(&conn, &doc("aa"), document).expect("imports onto B's work");
+    conn.execute_batch("INSERT INTO library (id, name) VALUES (90, 'C');")
+        .expect("a third library");
+    let adopted = scanned_in(&conn, &doc("aa"), 90, None).expect("into C");
+    assert_eq!(
+        (
+            first,
+            adopted,
+            library_of(&conn, older),
+            library_of(&conn, holder),
+            works_holding(&conn, document),
+        ),
+        (holder, older, Some(90), Some(80), vec![holder]),
+        "the fixture: both works filed, the older in C, and B's holding the document"
+    );
+
+    let again = sidecar(&conn, &doc("aa"), document).expect("imports again");
+
+    assert_eq!(
+        again, holder,
+        "the work that holds the document, not the older"
+    );
+    assert_eq!(works_holding(&conn, document), vec![holder]);
+}
+
+/// A scan names no document, so a path plays no part in its lookup: a library
+/// finds its own work, which holds a document's path, before a work in no
+/// library, which holds none.
+#[test]
+fn scanned_in_finds_its_own_work_though_it_holds_a_documents_path() {
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    conn.execute_batch("INSERT INTO library (id, name) VALUES (70, 'A'), (80, 'B');")
+        .expect("two libraries");
+    let own = scanned_in(&conn, &doc("aa"), 80, None).expect("into B");
+    let document = Path::new("/b/series/taiyaku.json");
+    let imported = sidecar(&conn, &doc("aa"), document).expect("imports onto B's work");
+    let unfiled = scanned_in(&conn, &doc("aa"), 70, None).expect("into A");
+    conn.execute_batch("DELETE FROM library WHERE id = 70;")
+        .expect("A goes, leaving its work in no library");
+    assert_eq!(
+        (
+            imported,
+            works_holding(&conn, document),
+            library_of(&conn, unfiled)
+        ),
+        (own, vec![own], None),
+        "the fixture: B's work holds a path, and the work in no library does not"
+    );
+
+    let found = scanned_in(&conn, &doc("aa"), 80, None).expect("into B again");
+
+    assert_eq!(found, own, "B's own work");
+    assert_eq!(library_of(&conn, unfiled), None, "and the other is left");
+}
+
 #[test]
 fn aligning_a_scanned_work_later_lands_on_the_same_row() {
     // The whole point: the scanner records a volume, someone aligns it, and

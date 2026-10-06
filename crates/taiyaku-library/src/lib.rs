@@ -25,6 +25,7 @@ mod fold;
 pub mod hand;
 pub mod identity;
 pub mod import;
+pub mod libraries;
 pub mod librarydoc;
 pub mod migrate;
 /// What a proposed rule list would do to the whole library, without doing it.

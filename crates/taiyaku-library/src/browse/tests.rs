@@ -4,6 +4,10 @@ use crate::{Library, Progress, derive, scan, state};
 
 /// Two roots, one series, one volume in each — the shape spec C1 §5.1 is
 /// designed around, and the only one where the filter can be seen working.
+///
+/// Both roots are folders of one library: since Part F1 a work gathers its
+/// editions within a library, and a root of its own library would hold a
+/// work of its own.
 fn two_root_library() -> (
     Library,
     i64,
@@ -19,8 +23,10 @@ fn two_root_library() -> (
     let library = Library::open_in_memory().expect("in-memory");
     let (en_id, raw_id) = {
         let conn = library.conn();
-        let en_root = scan::add_root(&conn, en.path()).expect("adds en");
-        let raw_root = scan::add_root(&conn, raw.path()).expect("adds raw");
+        let en_root =
+            scan::add_root_in(&conn, en.path(), scan::InLibrary::Named("Manga")).expect("adds en");
+        let raw_root = scan::add_root_in(&conn, raw.path(), scan::InLibrary::Named("Manga"))
+            .expect("adds raw");
         // **Each root declares its own edition key**, or both default to
         // `raw` and derivation merges their members into ONE edition — which
         // is correct behaviour and makes this fixture unable to show a filter
@@ -507,8 +513,7 @@ fn a_work_finished_in_one_edition_and_open_in_another_is_still_continuing() {
     );
 }
 
-/// Two roots added the **ordinary** way — no `edition_key` on either — which
-/// is the configuration `library scan --add A` / `--add B` produces.
+/// Two roots of one library, added with no `edition_key` on either.
 ///
 /// Both fall back to `DEFAULT_EDITION_KEY`, so derivation merges their members
 /// into **one** edition. `two_root_library` renames the keys to avoid exactly
@@ -529,8 +534,10 @@ fn merged_edition_library() -> (
     let library = Library::open_in_memory().expect("in-memory");
     let (a_id, b_id) = {
         let conn = library.conn();
-        let ra = scan::add_root(&conn, a.path()).expect("adds a");
-        let rb = scan::add_root(&conn, b.path()).expect("adds b");
+        let ra =
+            scan::add_root_in(&conn, a.path(), scan::InLibrary::Named("Manga")).expect("adds a");
+        let rb =
+            scan::add_root_in(&conn, b.path(), scan::InLibrary::Named("Manga")).expect("adds b");
         scan::scan_root(&conn, &ra).expect("scans a");
         scan::scan_root(&conn, &rb).expect("scans b");
         derive::derive(&conn).expect("derives");
@@ -1697,8 +1704,12 @@ fn library_with_volumes(volumes: usize) -> (Library, crate::tests::TempDir, crat
     let library = Library::open_in_memory().expect("in-memory");
     {
         let conn = library.conn();
-        let en_root = scan::add_root(&conn, en.path()).expect("adds en");
-        let raw_root = scan::add_root(&conn, raw.path()).expect("adds raw");
+        // Folders of one library, as `two_root_library`'s are and for its
+        // reason.
+        let en_root =
+            scan::add_root_in(&conn, en.path(), scan::InLibrary::Named("Manga")).expect("adds en");
+        let raw_root = scan::add_root_in(&conn, raw.path(), scan::InLibrary::Named("Manga"))
+            .expect("adds raw");
         conn.execute(
             "UPDATE root SET edition_key = 'en' WHERE id = ?1",
             [en_root.id],

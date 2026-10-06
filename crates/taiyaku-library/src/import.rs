@@ -41,7 +41,7 @@ fn readable_version(doc: &Sidecar) -> Result<(), String> {
 /// build reads (see [`readable_version`]), if `content_key` fails — a hub
 /// naming no edition — or if SQLite refuses a statement.
 pub fn sidecar(conn: &Connection, doc: &Sidecar, path: &Path) -> Result<i64, String> {
-    import_with(conn, doc, Some(path), Scope::Document, None)
+    import_with(conn, doc, Some(path), Scope::Document, None, None)
 }
 
 /// What the document being imported is entitled to speak for, and so what an
@@ -62,6 +62,12 @@ enum Scope {
 }
 
 /// Import a work the **scanner** derived, which has no document on disk.
+///
+/// **With no library — Part F1.** `derive` calls [`scanned_in`], which looks
+/// for the work in its group's library and files it there. This is the same
+/// import with no library to look in, so content decides across the whole
+/// store, as it did before F1, and a work it mints is in no library. What
+/// follows is true of both.
 ///
 /// `known` is the row derivation already found for this `(series_id,
 /// volume)`, or `None` for a work it has never seen. It is the second
@@ -156,7 +162,29 @@ enum Scope {
 ///
 /// The same as [`sidecar`].
 pub fn scanned(conn: &Connection, doc: &Sidecar, known: Option<i64>) -> Result<i64, String> {
-    import_with(conn, doc, None, Scope::Scan, known)
+    import_with(conn, doc, None, Scope::Scan, None, known)
+}
+
+/// [`scanned`] for a work derived from a library's folders, which is every
+/// work `derive` writes.
+///
+/// **Content decides within `library` — Part F1.** A byte-identical volume
+/// in two libraries is two works, so the content probe looks only at the
+/// works [`crate::libraries::own_or_adoptable_work`] allows `library`: its
+/// own, and those in no library that it may take. The row the import lands
+/// on is filed under `library` where it was in none, and keeps its id and
+/// its slug.
+///
+/// # Errors
+///
+/// As [`scanned`].
+pub fn scanned_in(
+    conn: &Connection,
+    doc: &Sidecar,
+    library_id: i64,
+    known: Option<i64>,
+) -> Result<i64, String> {
+    import_with(conn, doc, None, Scope::Scan, Some(library_id), known)
 }
 
 fn import_with(
@@ -164,6 +192,7 @@ fn import_with(
     doc: &Sidecar,
     path: Option<&Path>,
     scope: Scope,
+    library: Option<i64>,
     known: Option<i64>,
 ) -> Result<i64, String> {
     readable_version(doc)?;
@@ -182,7 +211,8 @@ fn import_with(
     // addresses. A document-backed work is addressed by the path it was read
     // from; a scanned one by the `(series_id, volume)` derivation already
     // resolved it at, which is what `known` carries. Neither is consulted
-    // while the content still matches, and neither can merge two works that
+    // while the content still matches, beyond a document's path choosing
+    // among several works of that content, and neither can merge two works that
     // are genuinely different: one file holds one document, and one series
     // holds one volume 3.
     //
@@ -190,7 +220,7 @@ fn import_with(
     // that it "is its content and nothing else" — and that made every change
     // to its bytes mint a second row and strand the reader's progress on the
     // first. See [`scanned`].
-    let existing = match find_by_key(&tx, &key)? {
+    let existing = match find_by_key(&tx, &key, library, path)? {
         Some(id) => Some(id),
         None => match path {
             Some(path) => find_by_path(&tx, path)?,
@@ -200,10 +230,10 @@ fn import_with(
 
     let work_id = match existing {
         Some(id) => {
-            update_work(&tx, id, doc, path, &key, scope)?;
+            update_work(&tx, id, doc, path, &key, scope, library)?;
             id
         }
-        None => insert_work(&tx, doc, path, &key)?,
+        None => insert_work(&tx, doc, path, &key, library)?,
     };
 
     // Only meaningful when a path was claimed: content decided `work_id`, so
@@ -299,7 +329,8 @@ pub fn reimport(
     // `sidecar` sees a document. This is the only place it can be read.
     readable_version(incoming)?;
     let key = crate::identity::content_key(incoming)?;
-    let Some(work_id) = find_by_key(conn, &key)?.or(find_by_path(conn, path)?) else {
+    let Some(work_id) = find_by_key(conn, &key, None, Some(path))?.or(find_by_path(conn, path)?)
+    else {
         return Ok((sidecar(conn, incoming, path)?, Vec::new()));
     };
 
@@ -454,10 +485,33 @@ fn drop_stale_spoke(
     }
 }
 
-fn find_by_key(conn: &Connection, key: &str) -> Result<Option<i64>, String> {
-    conn.query_row("SELECT id FROM work WHERE content_key = ?1", [key], |row| {
-        row.get(0)
-    })
+/// The work holding `key`.
+///
+/// Given a `library`, a work [`crate::libraries::own_or_adoptable_work`]
+/// allows it: its own first, then the oldest in none. With no library — a
+/// document import, or [`scanned`] — any work in the store: one in a library
+/// before one in none, then the oldest. Given a `document`, the path a
+/// `taiyaku.json` was read from, the work whose `sidecar_path` is that path
+/// answers before any other.
+fn find_by_key(
+    conn: &Connection,
+    key: &str,
+    library: Option<i64>,
+    document: Option<&Path>,
+) -> Result<Option<i64>, String> {
+    let its = crate::libraries::own_or_adoptable_work("work", "?2");
+    let document = document.map(Path::to_string_lossy);
+    conn.query_row(
+        &format!(
+            "SELECT id FROM work
+              WHERE content_key = ?1
+                AND (?2 IS NULL OR {its})
+              ORDER BY (?3 IS NOT NULL AND sidecar_path IS ?3) DESC, library_id IS NULL, id
+              LIMIT 1"
+        ),
+        rusqlite::params![key, library, document],
+        |row| row.get(0),
+    )
     .optional()
     .map_err(|e| format!("looking up a work by content key: {e}"))
 }
@@ -541,14 +595,18 @@ fn update_work(
     path: Option<&Path>,
     key: &str,
     scope: Scope,
+    library: Option<i64>,
 ) -> Result<(), String> {
     if scope == Scope::Scan {
         // `path` is always NULL here — `scanned` passes none — so the
         // COALESCE below would already have left `sidecar_path` alone. What
         // this leaves alone as well is the work block.
+        //
+        // `library_id` is filed only where the row is in no library: the
+        // adoption [`scanned_in`] describes. A row in a library keeps it.
         conn.execute(
-            "UPDATE work SET content_key = ?1 WHERE id = ?2",
-            rusqlite::params![key, work_id],
+            "UPDATE work SET content_key = ?1, library_id = COALESCE(library_id, ?3) WHERE id = ?2",
+            rusqlite::params![key, work_id, library],
         )
         .map_err(|e| format!("updating work {work_id}: {e}"))?;
         return Ok(());
@@ -587,11 +645,13 @@ fn insert_work(
     doc: &Sidecar,
     path: Option<&Path>,
     key: &str,
+    library: Option<i64>,
 ) -> Result<i64, String> {
     let slug = unique_slug(conn, &doc.work.title)?;
     conn.execute(
-        "INSERT INTO work (content_key, slug, title, title_derived, reading, hub, sidecar_path)
-         VALUES (?1, ?2, ?3, ?3, ?4, ?5, ?6)",
+        "INSERT INTO work (content_key, slug, title, title_derived, reading, hub, sidecar_path,
+                           library_id)
+         VALUES (?1, ?2, ?3, ?3, ?4, ?5, ?6, ?7)",
         rusqlite::params![
             key,
             slug,
@@ -599,6 +659,7 @@ fn insert_work(
             direction_text(doc.work.reading),
             doc.hub,
             path.map(|p| p.to_string_lossy().into_owned()),
+            library,
         ],
     )
     .map_err(|e| format!("inserting work: {e}"))?;

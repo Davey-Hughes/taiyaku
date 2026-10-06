@@ -27,7 +27,7 @@
 //!
 //! `work`, `edition` and `member` **rows** are written by [`crate::import`]
 //! alone — this module builds a [`Sidecar`] and hands it to
-//! [`crate::import::scanned`] rather than issuing its own inserts, so the
+//! [`crate::import::scanned_in`] rather than issuing its own inserts, so the
 //! column lists cannot drift from `project.rs`'s reader. What it then writes
 //! itself is exactly what the sidecar format has no field for and so cannot
 //! carry: `work.series_id`, `work.volume`, `edition.kind`/`edition.language`,
@@ -588,12 +588,13 @@ pub fn derive(conn: &Connection) -> Result<DeriveReport, String> {
 /// Turn every `scan_entry` this library holds into series, works, editions and
 /// members, through the rules.
 ///
-/// Idempotent by construction: series are reconciled on `sort_title` and works
-/// on `(series_id, volume)`, so running this twice over unchanged facts writes
-/// the same rows a second time rather than a second set of rows.
+/// Idempotent by construction: series are reconciled on `(library,
+/// sort_title)`, and works on `(series_id, volume)` within the library, so
+/// running this twice over unchanged facts writes the same rows a second time
+/// rather than a second set of rows.
 ///
 /// **No transaction of its own — but everything under it can still be
-/// wrapped in one.** [`crate::import::scanned`] opens one per work and
+/// wrapped in one.** [`crate::import::scanned_in`] opens one per work and
 /// [`crate::fold::absorb`] opens one per fold, and both do it through
 /// [`crate::Nested`] rather than `unchecked_transaction` directly: a plain
 /// `BEGIN` — the same constraint [`crate::import::replace_alignments`]
@@ -640,7 +641,7 @@ pub fn derive_with(conn: &Connection, documents: Documents) -> Result<DeriveRepo
     let mut report = DeriveReport::default();
     let mut groups: BTreeMap<GroupKey, Group> = BTreeMap::new();
     let mut chapter_dirs: BTreeSet<(i64, String)> = BTreeSet::new();
-    let mut named_series: BTreeSet<String> = BTreeSet::new();
+    let mut named_series: BTreeSet<(String, i64)> = BTreeSet::new();
 
     // **Two passes over each root's entries, and the second is what stops a
     // volume being counted twice.** The fact layer records the container
@@ -690,10 +691,10 @@ pub fn derive_with(conn: &Connection, documents: Documents) -> Result<DeriveRepo
     // only unattached chapters: `proposal.subject_id` references `series(id)`,
     // so Task 8's `attach-chapters` proposal has nothing to point at
     // otherwise.
-    let mut series_ids: BTreeMap<String, i64> = BTreeMap::new();
-    for title in named_series {
-        let id = reconcile_series(conn, &title)?;
-        series_ids.insert(title, id);
+    let mut series_ids: BTreeMap<(String, i64), i64> = BTreeMap::new();
+    for (title, library_id) in named_series {
+        let id = reconcile_series(conn, library_id, &title)?;
+        series_ids.insert((title, library_id), id);
     }
     report.series = series_ids.len();
 
@@ -704,11 +705,11 @@ pub fn derive_with(conn: &Connection, documents: Documents) -> Result<DeriveRepo
     // needs the narrower set: only these rows count as evidence that a
     // candidate's material has a home. `group.editions.keys()` is exactly
     // `doc.editions.keys()` below in `write_work`, which is what
-    // `import::scanned`'s `Scope::Scan` arm actually writes into `edition`.
+    // `import::scanned_in`'s `Scope::Scan` arm actually writes into `edition`.
     let mut written_editions: BTreeSet<(i64, String)> = BTreeSet::new();
     for group in groups.into_values() {
         let series_id = *series_ids
-            .get(&group.series)
+            .get(&(group.series.clone(), group.library_id))
             .ok_or_else(|| format!("no series row was reconciled for `{}`", group.series))?;
         let work_id = write_work(conn, series_id, &group, documents, &mut report)?;
         written_editions.extend(group.editions.keys().cloned().map(|key| (work_id, key)));
@@ -897,14 +898,20 @@ pub fn derive_with(conn: &Connection, documents: Documents) -> Result<DeriveRepo
 /// derives from it.
 ///
 /// `rel_path` rather than the absolute path, so one volume-less work present
-/// in two roots is still one work — which is what
+/// in two roots of one library is still one work — which is what
 /// `a_volume_less_work_still_matches_itself_on_the_next_derive` pins, and the
 /// same reason [`Candidate::rel_path`] exists for ordering.
 ///
 /// Entries that carry a chapter *and* a volume still group by that volume,
 /// which is §7's chapter case and stays; an entry with a chapter and no
 /// volume never reaches here at all ([`classify`] settles it first).
-type GroupKey = (String, Option<u64>, Option<String>);
+///
+/// **The fourth element is the library — Part F1.** Last, so a library's
+/// groups sort by title, volume and path as a store's did, and the rows a pass
+/// mints come out in the order they always have. Two folders of one library
+/// group together exactly as two roots did before F1; a folder of another
+/// library never joins them.
+type GroupKey = (String, Option<u64>, Option<String>, i64);
 
 /// One `scan_entry` row, as derivation reads it.
 struct Entry {
@@ -932,9 +939,9 @@ struct Candidate {
     /// The root this entry was walked from.
     ///
     /// **A member has one; a work does not.** The `Group` below collects
-    /// entries across every root, so this is the only level at which the
-    /// question has a single answer — see `member.root_id`'s own comment in
-    /// migration 6, and spec C1 §5.1.
+    /// entries across every root of a library, so this is the only level at
+    /// which the question has a single answer — see `member.root_id`'s own
+    /// comment in migration 6, and spec C1 §5.1.
     root_id: i64,
     sha256: String,
     pages: u32,
@@ -953,11 +960,15 @@ struct Candidate {
     language: Option<String>,
 }
 
-/// One work, before it is a work: every entry across every root that resolved
-/// to the same `(series, volume)`, split by edition key.
+/// One work, before it is a work: every entry across every root *of one
+/// library* that resolved to the same `(series, volume)`, split by edition
+/// key.
 struct Group {
     series: String,
     volume: Option<f64>,
+    /// The library every entry here was walked from, which is the library
+    /// the work is filed under.
+    library_id: i64,
     editions: BTreeMap<String, Vec<Candidate>>,
 }
 
@@ -971,7 +982,7 @@ struct Group {
 struct Sorting<'a> {
     groups: &'a mut BTreeMap<GroupKey, Group>,
     chapter_dirs: &'a mut BTreeSet<(i64, String)>,
-    named_series: &'a mut BTreeSet<String>,
+    named_series: &'a mut BTreeSet<(String, i64)>,
     report: &'a mut DeriveReport,
 }
 
@@ -1245,7 +1256,7 @@ fn classify(
     // *inside* a volume never reach here — `nested_in_claim` dropped them,
     // because that question has already been answered for them.
     if resolved.volume.is_none() && resolved.chapter.is_some() {
-        into.named_series.insert(series);
+        into.named_series.insert((series, root.library_id));
         into.chapter_dirs
             .insert((root.id, parent_of(&entry.rel_path).to_string()));
         return Ok(());
@@ -1285,7 +1296,7 @@ fn classify(
         return Ok(());
     };
 
-    into.named_series.insert(series.clone());
+    into.named_series.insert((series.clone(), root.library_id));
     let volume = resolved.volume;
     // No volume here means no chapter either — the branch above returned for
     // that case — so this is the entry the rules placed in a series and
@@ -1295,10 +1306,16 @@ fn classify(
     } else {
         None
     };
-    let key = (series.clone(), volume.map(f64::to_bits), alone);
+    let key = (
+        series.clone(),
+        volume.map(f64::to_bits),
+        alone,
+        root.library_id,
+    );
     let group = into.groups.entry(key).or_insert_with(|| Group {
         series,
         volume,
+        library_id: root.library_id,
         editions: BTreeMap::new(),
     });
     let edition = group
@@ -1422,21 +1439,47 @@ pub(crate) fn parent_of(rel_path: &str) -> &str {
 /// `series` row without one is invisible to both — and a
 /// `taiyaku.library.json` later applied over a scanned work would mint a
 /// second series beside the derived one rather than finding it.
-fn reconcile_series(conn: &Connection, sort_title: &str) -> Result<i64, String> {
-    let held: Option<i64> = conn
+///
+/// **Within a library — Part F1.** The same title in two libraries is two
+/// series. The row found is the library's own, or else the oldest of that
+/// title in no library that
+/// [`crate::libraries::own_or_adoptable_series`] lets it take, which is then
+/// filed under the library. Where two libraries could take one series the
+/// lower library id does, since [`derive_with`] reconciles in `(title,
+/// library)` order.
+fn reconcile_series(conn: &Connection, library_id: i64, sort_title: &str) -> Result<i64, String> {
+    let its = crate::libraries::own_or_adoptable_series("series", "?2");
+    let held: Option<(i64, Option<i64>)> = conn
         .query_row(
-            "SELECT id FROM series WHERE sort_title = ?1",
-            [sort_title],
-            |r| r.get(0),
+            &format!(
+                "SELECT id, library_id FROM series
+                  WHERE sort_title = ?1 AND {its}
+                  ORDER BY library_id IS NULL, id
+                  LIMIT 1"
+            ),
+            rusqlite::params![sort_title, library_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .optional()
         .map_err(|e| format!("looking up the series `{sort_title}`: {e}"))?;
-    let series_id = if let Some(id) = held {
-        id
-    } else {
-        conn.execute("INSERT INTO series (sort_title) VALUES (?1)", [sort_title])
+    let series_id = match held {
+        Some((id, Some(_))) => id,
+        Some((id, None)) => {
+            conn.execute(
+                "UPDATE series SET library_id = ?1 WHERE id = ?2",
+                rusqlite::params![library_id, id],
+            )
+            .map_err(|e| format!("filing the series `{sort_title}` under its library: {e}"))?;
+            id
+        }
+        None => {
+            conn.execute(
+                "INSERT INTO series (sort_title, library_id) VALUES (?1, ?2)",
+                rusqlite::params![sort_title, library_id],
+            )
             .map_err(|e| format!("inserting the series `{sort_title}`: {e}"))?;
-        conn.last_insert_rowid()
+            conn.last_insert_rowid()
+        }
     };
     // **Only onto a series holding no title — O114.** A correction through
     // `librarydoc::set_series_titles` replaces the whole set and may drop this
@@ -1452,7 +1495,7 @@ fn reconcile_series(conn: &Connection, sort_title: &str) -> Result<i64, String> 
     Ok(series_id)
 }
 
-/// Build one group's document and hand it to [`crate::import::scanned`], then
+/// Build one group's document and hand it to [`crate::import::scanned_in`], then
 /// write the columns the document cannot carry — `work.series_id`,
 /// `work.volume` and, through [`write_chapters`], `member.chapter_declared`.
 ///
@@ -1542,7 +1585,7 @@ fn write_work(
         hub: hub_key,
         // **Empty because a walk has nothing to say here, and empty no longer
         // means deleted.** Solving is `taiyaku align`'s, not the scanner's, so
-        // this document declares no correspondence — and `import::scanned`
+        // this document declares no correspondence — and `import::scanned_in`
         // reads that as silence rather than as an answer: it leaves the work's
         // `alignment`, `run` and `page_flag` rows exactly as they were. Until
         // 2026-08-17 it replaced them wholesale from this empty list, so a
@@ -1555,12 +1598,12 @@ fn write_work(
     // **Counted before the import, because afterwards the row already holds
     // the new key and the move is unobservable.** `content_key` is recomputed
     // here rather than returned from `import` — a sha256 over a handful of
-    // hex digests, against leaving `import::scanned`'s signature answering two
-    // questions instead of one.
+    // hex digests, against leaving `import::scanned_in`'s signature answering
+    // two questions instead of one.
     //
     // **`rekeyed_from` is captured in the same breath, for
     // [`crate::hand::rename_for_rekey`] near the end of this function.**
-    // `held_key` is this row's `content_key` before `import::scanned`
+    // `held_key` is this row's `content_key` before `import::scanned_in`
     // overwrites it — the only place that value is still readable — so it is
     // saved here rather than re-derived from `work.content_key` after the
     // fact, which is what a caller with no memory of `held` would have to do.
@@ -1574,7 +1617,8 @@ fn write_work(
     // The second identity probe: this work's address, for a work that has no
     // document to be addressed by. Without it, the changed files above would
     // mint a second row and leave the reader's progress on the first.
-    let work_id = crate::import::scanned(conn, &doc, held.map(|(id, _, _)| id))?;
+    let work_id =
+        crate::import::scanned_in(conn, &doc, group.library_id, held.map(|(id, _, _)| id))?;
     // **Counted after the import, where `rekeyed` above had to be counted
     // before it.** The two are not the same shape: a `content_key` is
     // overwritten by the import, so the old value is gone once it returns,
@@ -1587,7 +1631,7 @@ fn write_work(
     // **Moved ahead of the read-back below, and of both guards after it.**
     // `write_roots` only issues `UPDATE member SET root_id = ?` from the
     // group's own candidates, matched on `(edition key, ordinal)` —
-    // `import::scanned`, just above, is the only thing either depends on, so
+    // `import::scanned_in`, just above, is the only thing either depends on, so
     // nothing here needs the guard or the read-back to have run first. The
     // read-back does need this to have run first: on a work being minted for
     // the first time, `member.root_id` is still NULL the moment
@@ -1601,7 +1645,7 @@ fn write_work(
     //
     // **`write_chapters` stays below, unmoved, and that is not an
     // oversight.** It looks like the same shape — another targeted update
-    // keyed on `(edition key, ordinal)` from `import::scanned`'s own rows —
+    // keyed on `(edition key, ordinal)` from `import::scanned_in`'s own rows —
     // but it has a real ordering dependency the read-back's `apply` call
     // creates: `librarydoc::apply`'s `apply_members` clears *every* member's
     // chapter for this work unconditionally, then rewrites only the entries
@@ -1617,7 +1661,7 @@ fn write_work(
     write_roots(conn, work_id, group, report)?;
 
     // **The document follows the row here, after `write_roots` and after
-    // `import::scanned`'s own transaction has already committed — never
+    // `import::scanned_in`'s own transaction has already committed — never
     // inside it.** A rollback that left the file renamed would strand it
     // under a key the database never adopted: this module's own defect,
     // inverted, and harder to see, because `hand::reconcile` would then read
@@ -1631,8 +1675,8 @@ fn write_work(
     // `held_member_meta` restores it by matching the old and new rows on
     // `sha256`, and a repacked archive's hash is exactly what changed.
     // `write_roots`, just above, is what restores it, by `(edition key,
-    // ordinal)` instead — and it runs *after* `import::scanned` returns, so it
-    // cannot have run yet at any point inside `import_with`. Calling the
+    // ordinal)` instead — and it runs *after* `import::scanned_in` returns, so
+    // it cannot have run yet at any point inside `import_with`. Calling the
     // rename there, as the first version of this change did, found
     // `path_for` answering `None` for `archived_volumes`' own fixture — a
     // work with exactly one member — and left the document exactly where
@@ -1670,14 +1714,14 @@ fn write_work(
     // itself, precisely because a `.library.json` file sits on disk with
     // nothing in `migrated_document` yet to say so.
     //
-    // **Content matching still finds this row.** `import::scanned`'s own
-    // `find_by_key` probes `content_key` before it ever falls back to the
-    // address `held_work` computed above, and `content_key` is a hash over
-    // the hub edition's members — untouched by a hand-set `series_id` or
-    // `volume`. So a work whose hand metadata has moved its address away
-    // from what the rules currently resolve is still reconciled onto the
-    // same row by its content, exactly as an ordinary rescan is; only the
-    // two columns below are left alone.
+    // **Content matching still finds this row.** `import::scanned_in`'s own
+    // `find_by_key` probes `content_key`, within the group's library, before
+    // it ever falls back to the address `held_work` computed above, and
+    // `content_key` is a hash over the hub edition's members — untouched by a
+    // hand-set `series_id` or `volume`. So a work whose hand metadata has
+    // moved its address away from what the rules currently resolve is still
+    // reconciled onto the same row by its content, exactly as an ordinary
+    // rescan is; only the two columns below are left alone.
     //
     // **That design question is answered, and this guard no longer holds the
     // answer — O80, migration 011.** This paragraph used to end "a provenance
@@ -2034,10 +2078,12 @@ fn superseded(
 /// migration 1 already carries. `volume IS ?2` rather than `=` is kept for
 /// the NULL case below rather than needed here.
 ///
-/// `ORDER BY id LIMIT 1` because two rows really can sit at one address, and
+/// `ORDER BY … id LIMIT 1` because two rows really can sit at one address, and
 /// reading the hub off whichever one SQLite happened to return would make the
 /// answer depend on the page order of a b-tree. The oldest row wins, which is
-/// the one a reader's progress is on.
+/// the one a reader's progress is on. Since F1 that is the oldest of the
+/// group's own library, and a row in no library only where the library has
+/// none at the address.
 ///
 /// **One derive can produce that state on its own**, which an earlier version
 /// of this comment denied by claiming it took a database written before the
@@ -2082,12 +2128,22 @@ fn held_work(
     series_id: i64,
     group: &Group,
 ) -> Result<Option<(i64, String, String)>, String> {
+    // Both statements look only at the works
+    // `libraries::own_or_adoptable_work` allows the group's library, its own
+    // before one in none. A hand-set `series_id_hand` can point a work at a
+    // series of another library, so a row at this address is not always
+    // this library's.
+    let its = crate::libraries::own_or_adoptable_work("work", "?3");
     if group.volume.is_some() {
         return conn
             .query_row(
-                "SELECT id, hub, content_key FROM work
-                  WHERE series_id = ?1 AND volume IS ?2 ORDER BY id LIMIT 1",
-                rusqlite::params![series_id, group.volume],
+                &format!(
+                    "SELECT id, hub, content_key FROM work
+                      WHERE series_id = ?1 AND volume IS ?2
+                        AND {its}
+                      ORDER BY library_id IS NULL, id LIMIT 1"
+                ),
+                rusqlite::params![series_id, group.volume, group.library_id],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .optional()
@@ -2096,13 +2152,16 @@ fn held_work(
     for candidate in group.editions.values().flatten() {
         let held: Option<(i64, String, String)> = conn
             .query_row(
-                "SELECT work.id, work.hub, work.content_key FROM work
-                  WHERE work.series_id = ?1 AND work.volume IS NULL
-                    AND EXISTS (SELECT 1 FROM edition
-                                  JOIN member ON member.edition_id = edition.id
-                                 WHERE edition.work_id = work.id AND member.path = ?2)
-                  ORDER BY work.id LIMIT 1",
-                rusqlite::params![series_id, candidate.path],
+                &format!(
+                    "SELECT work.id, work.hub, work.content_key FROM work
+                      WHERE work.series_id = ?1 AND work.volume IS NULL
+                        AND {its}
+                        AND EXISTS (SELECT 1 FROM edition
+                                      JOIN member ON member.edition_id = edition.id
+                                     WHERE edition.work_id = work.id AND member.path = ?2)
+                      ORDER BY work.library_id IS NULL, work.id LIMIT 1"
+                ),
+                rusqlite::params![series_id, candidate.path, group.library_id],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .optional()
@@ -2124,7 +2183,7 @@ fn held_work(
 ///
 /// Read back rather than diffed against what was there before: the keys this
 /// derive wrote are `doc.editions`, and every other edition on the row is by
-/// definition one [`crate::import::scanned`] left standing.
+/// definition one [`crate::import::scanned_in`] left standing.
 fn kept_editions(conn: &Connection, work_id: i64, doc: &Sidecar) -> Result<usize, String> {
     let mut stmt = conn
         .prepare("SELECT key FROM edition WHERE work_id = ?1")
@@ -2196,7 +2255,7 @@ fn title_of(group: &Group, hub_key: &str) -> String {
 }
 
 /// Write the chapter numbers the rules resolved onto the member rows
-/// `import::scanned` just wrote.
+/// `import::scanned_in` just wrote.
 ///
 /// **Cleared first, and scoped by `chapter_source` — and the write below is
 /// scoped the same way.** A rule edit that stops resolving a chapter must not
@@ -2249,7 +2308,7 @@ fn write_chapters(conn: &Connection, work_id: i64, group: &Group) -> Result<(), 
     Ok(())
 }
 
-/// Write each member's root onto the rows `import::scanned` just wrote.
+/// Write each member's root onto the rows `import::scanned_in` just wrote.
 ///
 /// **The same shape as [`write_chapters`], and for the same reason**: the
 /// sidecar format has no field for a root and must not gain one, because a
@@ -2359,7 +2418,7 @@ fn in_page_order(candidates: &[Candidate]) -> Vec<&Candidate> {
 }
 
 /// Write the edition kind and language the rules resolved onto the `edition`
-/// rows [`crate::import::scanned`] just wrote.
+/// rows [`crate::import::scanned_in`] just wrote.
 ///
 /// **The columns were there and nothing reached them.** `rule` has carried
 /// `set_kind` and `set_language` since the scanner's own migration, the
@@ -2520,10 +2579,10 @@ pub(crate) fn unattached_chapter_dirs(
     Ok(dirs)
 }
 
-/// Every `(root id, rel_path)`, across every root, that the rules currently
-/// resolve to `series` — every `scan_entry` [`admit`] would place in this
-/// series, with unreadable and series-less entries already excluded by that
-/// function.
+/// Every `(root id, rel_path)`, across every root of `library`, that the
+/// rules currently resolve to `series` — every `scan_entry` there [`admit`]
+/// would place in this series, with unreadable and series-less entries
+/// already excluded by that function.
 ///
 /// **Shared with `proposals::accept` for the same reason
 /// [`unattached_chapter_dirs`] is shared with `proposals::raise`.** An
@@ -2551,17 +2610,24 @@ pub(crate) fn unattached_chapter_dirs(
 /// `accept` needs is "where does this series' material live", not "which of
 /// it is a member".
 ///
+/// **Within `library` — Part F1.** Only that library's folders answer, so the
+/// same title in another library contributes nothing. A `library` of `None`
+/// has no folder and answers empty.
+///
 /// # Errors
 ///
 /// Returns an error under the same conditions [`derive`] does: the rules or
 /// roots cannot be read, or a `scan_entry` row will not project.
 pub(crate) fn rel_paths_for_series(
     conn: &Connection,
+    library: Option<i64>,
     series: &str,
 ) -> Result<Vec<(i64, String)>, String> {
-    Ok(rel_paths_by_series(conn, &BTreeSet::from([series]))?
-        .remove(series)
-        .unwrap_or_default())
+    Ok(
+        rel_paths_by_series(conn, &BTreeSet::from([(library, series)]))?
+            .remove(&(library, series.to_string()))
+            .unwrap_or_default(),
+    )
 }
 
 #[cfg(test)]
@@ -2587,10 +2653,18 @@ thread_local! {
         const { std::cell::Cell::new(0) };
 }
 
+/// What [`rel_paths_by_series`] answers: each `(library, title)` asked about,
+/// with the `(root id, rel_path)` of every entry that resolves to it. Named
+/// because `clippy::type_complexity` refuses the type written out.
+pub(crate) type RelPathsBySeries = BTreeMap<(Option<i64>, String), Vec<(i64, String)>>;
+
 /// [`rel_paths_for_series`] for several series in **one** pass.
 ///
-/// Every requested title is a key of the answer, holding an empty `Vec` where
-/// nothing resolved to it — "no entries" is an answer here, not an absence.
+/// Each series is asked about as `(library, title)`, and is answered from
+/// that library's folders only. Every pair asked about is a key of the
+/// answer, holding an empty `Vec` where nothing resolved to it — "no
+/// entries" is an answer here, not an absence — which is what a pair whose
+/// library is `None` always holds, since no folder is in no library.
 ///
 /// **The pass is what costs, not the filter.** Each call compiles every rule
 /// in the library ([`Engine::load`]), reads every root, `SELECT`s every
@@ -2600,16 +2674,16 @@ thread_local! {
 /// at once and used to pay for the whole sweep twice to do it.
 pub(crate) fn rel_paths_by_series(
     conn: &Connection,
-    series: &BTreeSet<&str>,
-) -> Result<BTreeMap<String, Vec<(i64, String)>>, String> {
+    series: &BTreeSet<(Option<i64>, &str)>,
+) -> Result<RelPathsBySeries, String> {
     #[cfg(test)]
     REL_PATHS_BY_SERIES_CALLS.with(|c| c.set(c.get() + 1));
     let (engine, _complaints) = Engine::load(conn)?;
     let roots = crate::scan::roots(conn)?;
     let mut report = DeriveReport::default();
-    let mut found: BTreeMap<String, Vec<(i64, String)>> = series
+    let mut found: RelPathsBySeries = series
         .iter()
-        .map(|title| ((*title).to_string(), Vec::new()))
+        .map(|(library, title)| ((*library, (*title).to_string()), Vec::new()))
         .collect();
 
     for root in &roots {
@@ -2617,7 +2691,7 @@ pub(crate) fn rel_paths_by_series(
             let Some(admitted) = admit(&engine, root, entry, &mut report) else {
                 continue;
             };
-            if let Some(paths) = found.get_mut(&admitted.series) {
+            if let Some(paths) = found.get_mut(&(Some(root.library_id), admitted.series)) {
                 paths.push((root.id, admitted.entry.rel_path));
             }
         }

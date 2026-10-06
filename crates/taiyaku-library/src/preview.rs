@@ -17,6 +17,10 @@ use rusqlite::Connection;
 /// Where one member sits: which series, work and edition hold it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Placement {
+    /// The series' row. Two libraries can each hold a series of one title,
+    /// so the title alone does not say which series this is.
+    pub series_id: i64,
+    /// The series' primary title, or `series` and its id where it has none.
     pub series: String,
     pub work: String,
     pub edition: String,
@@ -59,6 +63,7 @@ pub fn grouping(conn: &Connection) -> Result<Grouping, String> {
             Ok((
                 r.get::<_, String>(0)?,
                 Placement {
+                    series_id,
                     series: r
                         .get::<_, Option<String>>(2)?
                         .unwrap_or_else(|| format!("series {series_id}")),
@@ -135,10 +140,11 @@ fn diff(
     proposals_reopened: usize,
     proposals_raised: usize,
 ) -> Impact {
-    let series_before: std::collections::BTreeSet<&str> =
-        before.values().map(|p| p.series.as_str()).collect();
-    let series_after: std::collections::BTreeSet<&str> =
-        after.values().map(|p| p.series.as_str()).collect();
+    // By row, not by title: one title in two libraries is two series.
+    let series_before: std::collections::BTreeSet<i64> =
+        before.values().map(|p| p.series_id).collect();
+    let series_after: std::collections::BTreeSet<i64> =
+        after.values().map(|p| p.series_id).collect();
 
     Impact {
         series_before: series_before.len(),

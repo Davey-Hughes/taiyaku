@@ -1722,7 +1722,12 @@ pub(crate) fn router_over_two_scanned_volumes_of_one_series_across_two_roots() -
     let library = library();
     {
         let conn = library.conn();
-        let a = taiyaku_library::scan::add_root(&conn, &root_a).expect("adds root a");
+        // **Both roots are folders of one library.** Since Part F1 a series
+        // is one library's, so two roots in libraries of their own would hold
+        // two series of this title, one volume in each.
+        let one_library = taiyaku_library::scan::InLibrary::Named("Manga");
+        let a =
+            taiyaku_library::scan::add_root_in(&conn, &root_a, one_library).expect("adds root a");
         // **These fixtures are about the document, so they keep documents.**
         // Migration 012 made `keeps_documents` default off, which is right for
         // a person's library and wrong for a fixture whose whole subject is
@@ -1732,7 +1737,8 @@ pub(crate) fn router_over_two_scanned_volumes_of_one_series_across_two_roots() -
         conn.execute("UPDATE root SET keeps_documents = 1 WHERE id = ?1", [a.id])
             .expect("the fixture keeps documents");
         taiyaku_library::scan::scan_root(&conn, &a).expect("scans root a");
-        let b = taiyaku_library::scan::add_root(&conn, &root_b).expect("adds root b");
+        let b =
+            taiyaku_library::scan::add_root_in(&conn, &root_b, one_library).expect("adds root b");
         conn.execute("UPDATE root SET keeps_documents = 1 WHERE id = ?1", [b.id])
             .expect("the fixture keeps documents");
         taiyaku_library::scan::scan_root(&conn, &b).expect("scans root b");
@@ -1813,7 +1819,15 @@ pub(crate) fn router_over_two_scanned_volumes_of_one_series_across_two_roots_and
         // this fixture's own doc comment relies on comes from `derive`'s own
         // `BTreeMap<GroupKey, _>`, not from scan order, and proving that is
         // the point of scanning it out of title order here.
-        let a = taiyaku_library::scan::add_root(&conn, &root_a).expect("adds root a");
+        //
+        // **All three roots are folders of one library.** `root_a` and
+        // `root_b` for the plain fixture's reason, and the unrelated root so
+        // that its series is one a document on the shared series' works could
+        // resolve onto: `librarydoc::find_series_by_title` looks within the
+        // work's library.
+        let one_library = taiyaku_library::scan::InLibrary::Named("Manga");
+        let a =
+            taiyaku_library::scan::add_root_in(&conn, &root_a, one_library).expect("adds root a");
         // **These fixtures are about the document, so they keep documents.**
         // Migration 012 made `keeps_documents` default off, which is right for
         // a person's library and wrong for a fixture whose whole subject is
@@ -1823,11 +1837,12 @@ pub(crate) fn router_over_two_scanned_volumes_of_one_series_across_two_roots_and
         conn.execute("UPDATE root SET keeps_documents = 1 WHERE id = ?1", [a.id])
             .expect("the fixture keeps documents");
         taiyaku_library::scan::scan_root(&conn, &a).expect("scans root a");
-        let b = taiyaku_library::scan::add_root(&conn, &root_b).expect("adds root b");
+        let b =
+            taiyaku_library::scan::add_root_in(&conn, &root_b, one_library).expect("adds root b");
         conn.execute("UPDATE root SET keeps_documents = 1 WHERE id = ?1", [b.id])
             .expect("the fixture keeps documents");
         taiyaku_library::scan::scan_root(&conn, &b).expect("scans root b");
-        let unrelated = taiyaku_library::scan::add_root(&conn, &root_unrelated)
+        let unrelated = taiyaku_library::scan::add_root_in(&conn, &root_unrelated, one_library)
             .expect("adds the unrelated root");
         conn.execute(
             "UPDATE root SET keeps_documents = 1 WHERE id = ?1",
@@ -2281,14 +2296,185 @@ pub(crate) fn fixture_authorization() -> String {
 ///
 /// The demotion is the *point* of the helper, not an incidental step, which is
 /// why granting and demoting are not offered separately.
+///
+/// A root is a folder of a library, and a grant names the library. Every
+/// fixture root is a library of its own unless it was filed under a named
+/// one, so for those this grants exactly that root.
 pub(crate) fn grant_root(conn: &rusqlite::Connection, root_id: i64) {
     conn.execute("UPDATE user SET role = 'user' WHERE id = 1", [])
         .expect("a grant restricts a user, never an admin");
-    conn.execute(
-        "INSERT INTO user_root (user_id, root_id) VALUES (1, ?1)",
-        [root_id],
-    )
-    .expect("grants the fixture account a root");
+    let granted = conn
+        .execute(
+            "INSERT INTO user_library (user_id, library_id)
+             SELECT 1, library_id FROM root WHERE id = ?1",
+            [root_id],
+        )
+        .expect("grants the fixture account the root's library");
+    assert_eq!(
+        granted, 1,
+        "there is no root {root_id}, so nothing was granted and the account \
+         is unrestricted, which no grant test can mean"
+    );
+}
+
+/// Three works: one under each folder of the two-folder library `Shelf`, and
+/// one under `Other`. The fixture account is granted `Shelf` through
+/// [`grant_root`] on its first folder, so a test reads both of Shelf's works
+/// and neither of Other's.
+///
+/// **Library ids differ from root ids** (70 and 80 against 1, 2 and 3), so a
+/// grant that resolved a library id as if it were a root id would see one of
+/// Shelf's works and not the other.
+///
+/// # Panics
+///
+/// Panics if a work cannot be imported or filed, or the grant cannot be made.
+pub(crate) fn router_over_a_granted_two_folder_library(
+    dir: &std::path::Path,
+) -> (axum::Router, std::sync::Arc<ServeState>) {
+    let shelf = dir.to_string_lossy().into_owned();
+    let library = library();
+    {
+        let conn = library.conn();
+        conn.execute_batch(
+            "INSERT INTO library (id, name) VALUES (70, 'Shelf'), (80, 'Other');
+             INSERT INTO root (id, path, library_id) VALUES
+               (1, '/shelf-a', 70), (2, '/shelf-b', 70), (3, '/other', 80);",
+        )
+        .expect("a library of two folders and one of one");
+        for (root, title, file) in [
+            (1, "First Folder Work", "first"),
+            (2, "Second Folder Work", "second"),
+            (3, "Other Library Work", "other"),
+        ] {
+            let json = format!(
+                r#"{{
+                  "taiyaku": 1,
+                  "work": {{ "title": "{title}", "reading": "rtl" }},
+                  "editions": {{
+                    "raw": {{ "label": "Raw", "members": [
+                      {{ "path": "{shelf}/{file}.cbz", "sha256": "{file}", "pages": 2 }}
+                    ], "spreads": [] }}
+                  }},
+                  "hub": "raw",
+                  "alignments": []
+                }}"#
+            );
+            let doc = taiyaku_core::Sidecar::from_json(&json).expect("the fixture sidecar parses");
+            let work = taiyaku_library::import::scanned(&conn, &doc, None).expect("imports");
+            conn.execute(
+                "UPDATE member SET root_id = ?1 WHERE edition_id IN \
+                 (SELECT id FROM edition WHERE work_id = ?2)",
+                [root, work],
+            )
+            .expect("files the work under its folder");
+        }
+        grant_root(&conn, 1);
+    }
+    let works = crate::works::from_library(&library).expect("projects the imported works");
+    let state = std::sync::Arc::new(ServeState {
+        library,
+        works: crate::Works::fixed(works),
+        source: std::sync::Arc::new(crate::LocalLibrary),
+        cache_dir: dir.join("covers"),
+        log: None,
+        auth: crate::session::AuthConfig::default(),
+        scans: Default::default(),
+        library_job: Default::default(),
+    });
+    let router = authenticating(crate::build_router(state.clone()), &state.library);
+    (router, state)
+}
+
+/// What migration 15 leaves where one work gathered an edition from each of
+/// two folders, once the next derive has run: the folders are libraries of
+/// their own, `Manga` and `Other`. The work is filed under `Manga`, its hub
+/// edition `en`'s library, and still holds the edition `raw`, whose member is
+/// under `Other`'s folder. `Other` has a work of its own over the same folder.
+///
+/// The fixture account is granted `Manga` alone. Answers the old work's slug
+/// and the new one's, in that order.
+///
+/// # Panics
+///
+/// Panics if the tree cannot be written, a scan or derive fails, or the
+/// derives do not leave the two works described.
+pub(crate) fn router_over_a_work_keeping_another_librarys_edition() -> (
+    axum::Router,
+    std::sync::Arc<ServeState>,
+    Fixture,
+    [String; 2],
+) {
+    let fixture = Fixture::new("kept-edition");
+    let hub = fixture.path().join("hub");
+    let other = fixture.path().join("other");
+    write_pages(&hub.join("Series").join("Series - v01"), 2);
+    write_pages(&other.join("Series").join("Series - v01"), 3);
+
+    let library = library();
+    let slugs = {
+        let conn = library.conn();
+        let one_library = taiyaku_library::scan::InLibrary::Named("Manga");
+        let h = taiyaku_library::scan::add_root_in(&conn, &hub, one_library).expect("adds hub");
+        let o = taiyaku_library::scan::add_root_in(&conn, &other, one_library).expect("adds other");
+        taiyaku_library::scan::update_root(
+            &conn,
+            h.id,
+            &taiyaku_library::scan::RootPatch {
+                edition_key: Some(Some("en".to_string())),
+                ..Default::default()
+            },
+        )
+        .expect("the hub folder's edition sorts first, so it is the hub");
+        for root in taiyaku_library::scan::roots(&conn).expect("lists the roots") {
+            taiyaku_library::scan::scan_root(&conn, &root).expect("scans");
+        }
+        taiyaku_library::derive::derive(&conn).expect("derives one work of two editions");
+
+        conn.execute("INSERT INTO library (id, name) VALUES (90, 'Other')", [])
+            .expect("a library for the other folder");
+        conn.execute("UPDATE root SET library_id = 90 WHERE id = ?1", [o.id])
+            .expect("as migration 15 files each root under a library of its own");
+        taiyaku_library::derive::derive(&conn).expect("the first derive within libraries");
+
+        let slug_in = |library: i64| -> String {
+            conn.query_row(
+                "SELECT slug FROM work WHERE library_id = ?1",
+                [library],
+                |r| r.get(0),
+            )
+            .expect("one work in each library")
+        };
+        let slugs = [slug_in(h.library_id), slug_in(90)];
+        let kept: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM edition e JOIN work w ON w.id = e.work_id
+                   JOIN member m ON m.edition_id = e.id
+                  WHERE w.slug = ?1 AND e.key = 'raw' AND m.root_id = ?2",
+                rusqlite::params![slugs[0], o.id],
+                |r| r.get(0),
+            )
+            .expect("counts the kept edition's members");
+        assert_eq!(
+            kept, 1,
+            "the fixture: Manga's work keeps `raw`, its member under Other's folder"
+        );
+        grant_root(&conn, h.id);
+        slugs
+    };
+    let works = crate::works::from_library(&library).expect("projects the scanned works");
+    let state = std::sync::Arc::new(ServeState {
+        library,
+        works: crate::Works::fixed(works),
+        source: std::sync::Arc::new(crate::LocalLibrary),
+        cache_dir: fixture.join("covers"),
+        log: None,
+        auth: crate::session::AuthConfig::default(),
+        scans: Default::default(),
+        library_job: Default::default(),
+    });
+    let router = authenticating(crate::build_router(state.clone()), &state.library);
+    (router, state, fixture, slugs)
 }
 
 mod pinned {

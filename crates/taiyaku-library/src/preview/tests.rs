@@ -382,6 +382,148 @@ fn a_preview_of_removing_a_merging_rule_shows_the_split() {
     );
 }
 
+/// A store where two libraries each hold a series called `Alpha`: `Manga`
+/// holds `Alpha` and `Beta`, one in each of its two folders, and `Other`
+/// holds `Alpha` and `Gamma` in its one. Returns the directory, the store and
+/// `Manga`'s second folder, which is the one holding `Beta`.
+///
+/// **`Manga` has two folders so that the second one's id is not its
+/// library's.** A rule on that folder read as a rule on the library of that
+/// id would match nothing, since `Other` holds no `Beta`.
+fn two_libraries_sharing_a_title() -> (crate::tests::TempDir, crate::Library, crate::scan::Root) {
+    let dir = crate::tests::tempdir("preview-shared-title");
+    let folders = [
+        ("manga-a", "Manga", vec![("Alpha", 1)]),
+        ("manga-b", "Manga", vec![("Beta", 2)]),
+        ("other", "Other", vec![("Alpha", 3), ("Gamma", 4)]),
+    ];
+    let library = crate::Library::open_in_memory().expect("an in-memory library opens");
+    let mut roots = Vec::new();
+    {
+        let conn = library.conn();
+        for (folder, name, volumes) in folders {
+            let at = dir.path().join(folder);
+            for (series, volume) in volumes {
+                crate::scan::tests::write_archive(
+                    &at.join(series).join(format!("{series} - v0{volume}.cbz")),
+                    2,
+                );
+            }
+            let root = crate::scan::add_root_in(&conn, &at, crate::scan::InLibrary::Named(name))
+                .expect("adding the folder");
+            crate::scan::scan_root(&conn, &root).expect("scanning the folder");
+            roots.push(root);
+        }
+        crate::derive::derive(&conn).expect("deriving the fixture");
+        assert_eq!(
+            series_holding_a_member(&conn),
+            [
+                ("Alpha", "Manga"),
+                ("Alpha", "Other"),
+                ("Beta", "Manga"),
+                ("Gamma", "Other"),
+            ]
+            .map(|(title, library)| (title.to_string(), library.to_string())),
+            "the fixture: `Alpha` in both libraries, and one more series in each"
+        );
+        assert_ne!(
+            roots[1].id, roots[1].library_id,
+            "the fixture: the folder a rule names is not numbered as its library is"
+        );
+    }
+    let beta_folder = roots.swap_remove(1);
+    (dir, library, beta_folder)
+}
+
+/// Every series holding a member, as `(title, library)`, read from the rows
+/// rather than through [`grouping`].
+fn series_holding_a_member(conn: &rusqlite::Connection) -> Vec<(String, String)> {
+    conn.prepare(
+        "SELECT s.sort_title, l.name FROM series s JOIN library l ON l.id = s.library_id
+          WHERE EXISTS (SELECT 1 FROM work w
+                          JOIN edition e ON e.work_id = w.id
+                          JOIN member m ON m.edition_id = e.id
+                         WHERE w.series_id = s.id)
+          ORDER BY s.sort_title, l.name",
+    )
+    .expect("prepares")
+    .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+    .expect("reads")
+    .collect::<rusqlite::Result<_>>()
+    .expect("reads")
+}
+
+/// One title in two libraries is two series, and a preview counts them as
+/// two. A rule files `Manga`'s `Beta` as `Gamma`, a title only `Other` holds,
+/// so `Manga` gains a `Gamma` of its own beside `Other`'s: as many series
+/// hold a member after as before, and none has merged.
+#[test]
+fn filing_a_series_under_a_title_only_another_library_holds_is_not_previewed_as_a_merge() {
+    let (_dir, library, beta_folder) = two_libraries_sharing_a_title();
+    let conn = library.conn();
+    let mut proposed = crate::rules::read(&conn).unwrap().0;
+    proposed.push(crate::rules::Rule {
+        root_id: Some(beta_folder.id),
+        pattern: "^Beta/".to_string(),
+        ..crate::tests::a_rule_setting_series("Gamma")
+    });
+
+    let predicted = preview(&conn, &proposed).unwrap();
+
+    assert_eq!(
+        predicted,
+        Impact {
+            series_before: 4,
+            series_after: 4,
+            series_merged: 0,
+            works_rehomed: 1,
+            works_orphaned: 0,
+            proposals_reopened: 0,
+            proposals_raised: 0,
+        },
+        "`Beta`'s one work moves, and no series is lost to another"
+    );
+
+    let applied = crate::preview::apply(&conn, &proposed).unwrap();
+
+    assert_eq!(
+        predicted, applied.impact,
+        "the predicted Impact is not what the save produced"
+    );
+    assert_eq!(
+        series_holding_a_member(&conn),
+        [
+            ("Alpha", "Manga"),
+            ("Alpha", "Other"),
+            ("Gamma", "Manga"),
+            ("Gamma", "Other"),
+        ]
+        .map(|(title, library)| (title.to_string(), library.to_string())),
+        "and the save left `Manga` a `Gamma` of its own"
+    );
+}
+
+/// The unchanged rule list over the same store: `series_before` is every
+/// series holding a member, the two called `Alpha` among them.
+#[test]
+fn the_unchanged_rules_count_one_title_in_two_libraries_as_two_series() {
+    let (_dir, library, _beta_folder) = two_libraries_sharing_a_title();
+    let conn = library.conn();
+    let unchanged = crate::rules::read(&conn).unwrap().0;
+
+    let predicted = preview(&conn, &unchanged).unwrap();
+
+    assert_eq!(
+        (
+            predicted.series_before,
+            predicted.series_after,
+            predicted.series_merged
+        ),
+        (4, 4, 0),
+        "every series holding a member, where counting titles would find one fewer"
+    );
+}
+
 /// The reopen case: `proposals_reopened` used to be `proposals_resolved`,
 /// which every test above — and every test that existed before this one —
 /// could only ever assert as `0`, because `open_before.saturating_sub(open_after)`

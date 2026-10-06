@@ -1229,7 +1229,7 @@ fn work_with_a_pageless_first_member(dir: &std::path::Path) -> crate::Work {
 // The whole-branch review closed the equivalent hole on the `/api/…` side —
 // `refuse_if_hidden` and `get_sidecar`'s use of `browse::work` — and this
 // mirror of those routes was never covered. `taiyaku library user
-// grant-root` ships grants for real, so a restricted account reading the
+// grant-library` ships grants for real, so a restricted account reading the
 // bytes of a root it does not hold through these routes is not theoretical.
 //
 // Every fixture below imports through `taiyaku_library::import::scanned`
@@ -1641,6 +1641,30 @@ async fn the_works_feed_does_not_name_a_work_outside_the_grant() {
     assert!(
         !body.contains("Hidden Work"),
         "a work outside the grant must not be named in the works feed: {body}"
+    );
+}
+
+/// A reader granted the library `Shelf` is fed the work under each of its two
+/// folders, and not the work under `Other`.
+#[tokio::test]
+async fn the_works_feed_names_every_folder_of_a_granted_library() {
+    let tmp = crate::test_support::Fixture::new("opds-granted-library");
+    let (router, _state) = crate::test_support::router_over_a_granted_two_folder_library(&tmp);
+
+    let response = crate::test_support::get(&router, "/opds/v1.2/works").await;
+    let status = response.status();
+    let body = crate::test_support::body_string(response).await;
+
+    assert_eq!(status, StatusCode::OK, "{body}");
+    for title in ["First Folder Work", "Second Folder Work"] {
+        assert!(
+            body.contains(title),
+            "a work under a folder of the granted library is missing: {title}: {body}"
+        );
+    }
+    assert!(
+        !body.contains("Other Library Work"),
+        "a work of a library that was not granted is named: {body}"
     );
 }
 

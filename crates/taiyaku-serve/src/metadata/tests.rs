@@ -974,11 +974,11 @@ async fn patching_a_series_title_to_text_another_series_already_holds_does_not_d
 /// stop it from being read back through `librarydoc::of` and re-resolved.
 ///
 /// The collision is planted on the *unrelated* series deliberately, not the
-/// shared one: `find_series_by_title`'s `SELECT ... WHERE title = ?1` scans
-/// the `(series_id, title)` covering index in series-id order, so the match
-/// with the lower id wins regardless of which row was written first, and the
-/// fixture's own doc comment establishes that the unrelated series is always
-/// minted with the lower id.
+/// shared one: `find_series_by_title` looks among the series of the work's
+/// library, where the fixture puts both, and answers the one with the lower
+/// id regardless of which row was written first, and the fixture's own doc
+/// comment establishes that the unrelated series is always minted with the
+/// lower id.
 #[tokio::test]
 async fn patch_series_does_not_delete_it_over_a_pre_existing_title_collision() {
     let (router, state, _fixture, _root_a) =

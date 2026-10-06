@@ -64,6 +64,9 @@ and reading logic runs in the browser and, later, inside a native shell.
 # volumes, chapters — without touching any of it; --add remembers the root so
 # a later run needs no flag. The commands below still take real file paths,
 # not names
+# --library NAME files the folder under that library, creating it, so two
+# folders (Volumes and Chapters, say) derive as one shelf; without it, a
+# folder is a library of its own. `taiyaku library libraries` lists them
 taiyaku library scan --add /srv/manga
 
 # pair a Japanese raw against an English release and write the sidecar
@@ -160,19 +163,19 @@ TAIYAKU_STUMP_URL=https://stump.example TAIYAKU_STUMP_KEY=… \
 # a key is shown once, because only its hash is stored:
 taiyaku library key create davey --name ipad
 
-# share part of a library rather than all of it. **a grant is a restriction**,
-# and an account holding none sees every root — so the FIRST grant is the one
-# that narrows an account, not the one that widens it:
-taiyaku library user grant-root alice /shelf/manga
-taiyaku library user revoke-root alice /shelf/manga
+# share some libraries rather than all of them. **a grant is a restriction**,
+# and an account holding none sees every library — so the FIRST grant is the
+# one that narrows an account, not the one that widens it:
+taiyaku library user grant-library alice Manga
+taiyaku library user revoke-library alice Manga
 #
-# a restricted account sees only the editions whose files sit under a root it
-# was granted, and cannot read their pages either. a work imported from a
-# `taiyaku.json` sits under no root at all, so it is visible only to an
+# a restricted account sees only the editions whose files sit under a folder of
+# a library it was granted, and cannot read their pages either. a work imported
+# from a `taiyaku.json` sits under no root at all, so it is visible only to an
 # unrestricted account. members scanned before this feature existed carry no
 # root until the schema migration recovers it from their paths; anything it
 # cannot recover stays unrooted and invisible to a restricted account, and
-# `grant-root` says so when it finds any.
+# `grant-library` says so when it finds any.
 
 # take a backup. the database is the only copy of notes, collections, tags,
 # external ids, users and read history — a sidecar export carries none of
@@ -428,8 +431,11 @@ Give the first account a password from the host, then add the library:
 
 ```sh
 docker exec -it taiyaku taiyaku library user promote davey
-docker exec taiyaku taiyaku library scan --add /library
+docker exec taiyaku taiyaku library scan --add /library --library Manga
 ```
+
+`--library` names the library the folder is filed under, and creates it. Left
+out, the folder becomes a library named for the folder, `library` here.
 
 The first scan reads every archive once to hash it, so on a large library it
 takes as long as reading the whole share.

@@ -132,7 +132,7 @@ async fn every_route_refuses_an_anonymous_request() {
         // Spec C4 §4's user administration, PR 2 — admin-gated *inside* each
         // handler, the identical reasoning the scan comment just above gives,
         // and with the sharpest instance of it: these routes are the only
-        // writer of `role`, `can_download`, `can_stream` and `user_root` in
+        // writer of `role`, `can_download`, `can_stream` and `user_library` in
         // the product, so an anonymous request reaching one at all would be
         // an anonymous request able to grant itself administration.
         "/api/library/users",
@@ -1215,8 +1215,12 @@ fn router_with_material_under_a_withheld_root(
         // had been deleted.
         conn.execute("UPDATE user SET role = 'user' WHERE id = 1", [])
             .expect("a grant restricts a user, never an admin");
-        conn.execute("INSERT INTO user_root (user_id, root_id) VALUES (1, 1)", [])
-            .expect("grants the fixture account the other root");
+        conn.execute(
+            "INSERT INTO user_library (user_id, library_id)
+             SELECT 1, library_id FROM root WHERE id = 1",
+            [],
+        )
+        .expect("grants the fixture account the other root");
 
         conn.execute(
             "INSERT INTO series (id, sort_title) VALUES (1, 'Series')",
@@ -1326,8 +1330,12 @@ fn two_works_one_withheld(dir: &std::path::Path) -> (axum::Router, Arc<ServeStat
         // had been deleted.
         conn.execute("UPDATE user SET role = 'user' WHERE id = 1", [])
             .expect("a grant restricts a user, never an admin");
-        conn.execute("INSERT INTO user_root (user_id, root_id) VALUES (1, 1)", [])
-            .expect("grants only the visible root");
+        conn.execute(
+            "INSERT INTO user_library (user_id, library_id)
+             SELECT 1, library_id FROM root WHERE id = 1",
+            [],
+        )
+        .expect("grants only the visible root");
     }
     let works = crate::works::from_library(&library).expect("projects the imported works");
     let state = Arc::new(ServeState {
@@ -1437,8 +1445,12 @@ fn one_work_two_editions_split_across_roots(
         // had been deleted.
         conn.execute("UPDATE user SET role = 'user' WHERE id = 1", [])
             .expect("a grant restricts a user, never an admin");
-        conn.execute("INSERT INTO user_root (user_id, root_id) VALUES (1, 1)", [])
-            .expect("grants only the visible root");
+        conn.execute(
+            "INSERT INTO user_library (user_id, library_id)
+             SELECT 1, library_id FROM root WHERE id = 1",
+            [],
+        )
+        .expect("grants only the visible root");
 
         // Filed under a series — its only work, mirroring
         // `router_with_material_under_a_withheld_root` — so
@@ -1577,8 +1589,12 @@ fn one_work_three_editions_hub_withheld(dir: &std::path::Path) -> (axum::Router,
         // had been deleted.
         conn.execute("UPDATE user SET role = 'user' WHERE id = 1", [])
             .expect("a grant restricts a user, never an admin");
-        conn.execute("INSERT INTO user_root (user_id, root_id) VALUES (1, 1)", [])
-            .expect("grants only the visible root");
+        conn.execute(
+            "INSERT INTO user_library (user_id, library_id)
+             SELECT 1, library_id FROM root WHERE id = 1",
+            [],
+        )
+        .expect("grants only the visible root");
     }
     let works = crate::works::from_library(&library).expect("projects the imported work");
     let state = Arc::new(ServeState {
@@ -2946,7 +2962,7 @@ async fn a_correction_naming_the_withheld_edition_on_the_from_side_is_still_refu
 /// see get their cached `.library.json` refreshed. That was O86, and this rule
 /// is why it cannot happen rather than why it is refused.
 ///
-/// **Here rather than at `taiyaku library user grant-root`**: all three
+/// **Here rather than at `taiyaku library user grant-library`**: all three
 /// resolvers (API key, HTTP Basic, session cookie) build through
 /// `from_account`, so this cannot be forgotten by a route, and it covers a
 /// grant that already exists — including one held by an account promoted to
@@ -3004,6 +3020,49 @@ fn a_users_grant_and_capabilities_are_left_exactly_as_the_row_holds_them() {
         "and their flags are still their own"
     );
     assert!(principal.can_stream);
+}
+
+/// A grant names a library, and the principal carries every folder of it:
+/// both of `Shelf`'s and not `Other`'s, whether a key, a password or a session
+/// cookie resolved it.
+#[test]
+fn a_principal_holds_every_folder_of_a_granted_library() {
+    let tmp = crate::test_support::Fixture::new("auth-granted-library");
+    let (_router, state) = crate::test_support::router_over_a_granted_two_folder_library(&tmp);
+    let client = std::net::IpAddr::from([127, 0, 0, 1]);
+
+    let super::Resolved::Yes(by_key, super::By::Key) = super::from_basic(
+        &state,
+        &crate::test_support::fixture_authorization(),
+        client,
+    ) else {
+        panic!("the fixture's key resolves to its account");
+    };
+    assert_eq!(by_key.roots, vec![1, 2], "by key");
+
+    let password = basic(
+        crate::test_support::FIXTURE_NAME,
+        crate::test_support::FIXTURE_PASSWORD,
+    );
+    let super::Resolved::Yes(by_password, super::By::Password) =
+        super::from_basic(&state, &password, client)
+    else {
+        panic!("the fixture's password resolves to its account");
+    };
+    assert_eq!(by_password.roots, vec![1, 2], "by password");
+
+    let cookie = crate::test_support::fixture_session_cookie(&state.library);
+    let token = cookie
+        .split_once('=')
+        .expect("a `name=token` cookie")
+        .1
+        .to_string();
+    let crate::session::FromCookie::Resolved(by_cookie) =
+        crate::session::from_cookie(&state, &token, &axum::http::Method::GET, None, None)
+    else {
+        panic!("the fixture's session resolves to its account");
+    };
+    assert_eq!(by_cookie.roots, vec![1, 2], "by session cookie");
 }
 
 /// **No module answers the role question alone — O93.**

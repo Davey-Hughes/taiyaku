@@ -1133,6 +1133,370 @@ fn adding_a_root_writes_the_probes_interval_onto_the_stored_row() {
     );
 }
 
+// --- the library a root is filed under -------------------------------------
+
+/// The name of the library `root` is filed under.
+fn library_of(conn: &Connection, root: &Root) -> String {
+    conn.query_row(
+        "SELECT name FROM library WHERE id = ?1",
+        [root.library_id],
+        |r| r.get(0),
+    )
+    .expect("the root's library exists")
+}
+
+#[test]
+fn a_folder_added_on_its_own_is_a_library_named_for_it() {
+    let parent = crate::tests::tempdir("scan-own-library");
+    let a = parent.path().join("a").join("Volumes");
+    let b = parent.path().join("b").join("Volumes");
+    std::fs::create_dir_all(&a).expect("mkdir");
+    std::fs::create_dir_all(&b).expect("mkdir");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+
+    let first = add_root(&conn, &a).expect("adds a");
+    let second = add_root(&conn, &b).expect("adds b");
+
+    assert_ne!(
+        first.library_id, second.library_id,
+        "each is a library of its own"
+    );
+    assert_eq!(library_of(&conn, &first), "Volumes");
+    assert_eq!(
+        library_of(&conn, &second),
+        b.canonicalize().expect("canonical").to_string_lossy(),
+        "a taken name falls back to the whole path"
+    );
+    assert_eq!(
+        roots(&conn)
+            .expect("lists")
+            .iter()
+            .map(|r| r.library_id)
+            .collect::<Vec<_>>(),
+        vec![first.library_id, second.library_id],
+        "roots reads back what add_root returned"
+    );
+}
+
+#[test]
+fn a_folder_added_to_a_named_library_joins_it_or_creates_it() {
+    let parent = crate::tests::tempdir("scan-named-library");
+    let (volumes, chapters, other) = (
+        parent.path().join("Volumes"),
+        parent.path().join("Chapters"),
+        parent.path().join("Other"),
+    );
+    for dir in [&volumes, &chapters, &other] {
+        std::fs::create_dir_all(dir).expect("mkdir");
+    }
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+
+    let first = add_root_in(&conn, &volumes, InLibrary::Named("Manga")).expect("creates Manga");
+    let second = add_root_in(&conn, &chapters, InLibrary::Named(" Manga ")).expect("joins Manga");
+    let third = add_root(&conn, &other).expect("a library of its own");
+
+    assert_eq!(
+        first.library_id, second.library_id,
+        "the second folder joined, by trimmed name"
+    );
+    assert_ne!(third.library_id, first.library_id);
+    assert_eq!(library_of(&conn, &first), "Manga");
+}
+
+/// A folder's name can begin or end with spaces, and a library's name made by
+/// the trigger or `libraries::create` never does: the trigger strips them, as
+/// `libraries::create` strips them from a name it is given. Otherwise
+/// `Named("Manga")` could not find the library and would make a second one.
+#[test]
+fn a_folder_named_with_spaces_is_a_library_its_name_without_them_joins() {
+    let parent = crate::tests::tempdir("scan-library-spaces");
+    let (spaced, other) = (parent.path().join(" Manga "), parent.path().join("Other"));
+    for dir in [&spaced, &other] {
+        std::fs::create_dir_all(dir).expect("mkdir");
+    }
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+
+    let own = add_root(&conn, &spaced).expect("a library of its own");
+    let joined = add_root_in(&conn, &other, InLibrary::Named("Manga")).expect("joins it");
+
+    assert_eq!(
+        library_of(&conn, &own),
+        "Manga",
+        "named for its folder, without the spaces"
+    );
+    assert_eq!(
+        joined.library_id, own.library_id,
+        "`Manga` found the folder's library"
+    );
+    assert_eq!(
+        crate::libraries::list(&conn).expect("lists").len(),
+        1,
+        "and made no second library"
+    );
+}
+
+/// A named add looks the name up as it was given: of two libraries a trailing
+/// space apart, the folder joins the one named, space and all.
+#[test]
+fn a_folder_joins_the_library_holding_exactly_the_name_given() {
+    let dir = crate::tests::tempdir("scan-exact-library-name");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    conn.execute_batch(
+        "INSERT INTO library (id, name) VALUES (1, '/srv/manga'), (2, '/srv/manga ');",
+    )
+    .expect("two libraries a space apart");
+
+    let root = add_root_in(&conn, dir.path(), InLibrary::Named("/srv/manga ")).expect("joins");
+
+    assert_eq!(library_of(&conn, &root), "/srv/manga ");
+}
+
+#[test]
+fn a_refused_folder_names_no_library_into_being() {
+    let dir = crate::tests::tempdir("scan-refused-library");
+    let nested = dir.path().join("inner");
+    std::fs::create_dir(&nested).expect("mkdir");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    add_root(&conn, dir.path()).expect("the outer root");
+
+    add_root_checked_in(&conn, &nested, InLibrary::Named("Never"))
+        .expect_err("a root inside another is refused");
+
+    assert_eq!(
+        crate::libraries::id_of(&conn, "Never").expect("reads"),
+        None,
+        "the refusal left no library behind"
+    );
+}
+
+/// The unchecked path's half of the same promise: the library is created in
+/// the folder's transaction, so an insert refused after it leaves none.
+#[test]
+fn a_folder_refused_at_the_insert_leaves_no_library_behind() {
+    let dir = crate::tests::tempdir("scan-refused-insert-library");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    add_root(&conn, dir.path()).expect("the root");
+
+    add_root_in(&conn, dir.path(), InLibrary::Named("Never"))
+        .expect_err("the path is already a root");
+
+    assert_eq!(
+        crate::libraries::id_of(&conn, "Never").expect("reads"),
+        None,
+        "the refused insert took its new library with it"
+    );
+}
+
+/// **`last_insert_rowid()` after `INSERT INTO root` must still be the
+/// root's**, though a library row may have been inserted just before it
+/// (`libraries::create`, for a new named library) or inside it (migration
+/// 15's `root_gets_a_library`). Where every root is a library of its own, a
+/// fresh database gives each root and its library the same id, and a test
+/// cannot tell one from the other. Two folders filed under one library put
+/// the ids out of step before the roots this test reads, and it reads them
+/// back through `roots` too.
+#[test]
+fn a_new_root_is_returned_with_its_own_id_not_its_librarys() {
+    let parent = crate::tests::tempdir("scan-root-id-not-library-id");
+    let dirs: Vec<PathBuf> = ["a", "b", "own", "named"]
+        .iter()
+        .map(|name| {
+            let dir = parent.path().join(name);
+            std::fs::create_dir(&dir).expect("mkdir");
+            dir.canonicalize().expect("canonical")
+        })
+        .collect();
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    add_root_in(&conn, &dirs[0], InLibrary::Named("Shared")).expect("a");
+    add_root_in(&conn, &dirs[1], InLibrary::Named("Shared")).expect("b");
+
+    let own = add_root(&conn, &dirs[2]).expect("a library of its own");
+    let named = add_root_in(&conn, &dirs[3], InLibrary::Named("Fresh")).expect("a new library");
+
+    let id_of_root_at = |dir: &Path| -> i64 {
+        conn.query_row(
+            "SELECT id FROM root WHERE path = ?1",
+            [dir.to_string_lossy()],
+            |r| r.get(0),
+        )
+        .expect("the root's row")
+    };
+    for (added, dir, name) in [(&own, &dirs[2], "own"), (&named, &dirs[3], "Fresh")] {
+        assert_ne!(
+            added.id, added.library_id,
+            "the fixture must tell a root's id from its library's: {added:?}"
+        );
+        assert_eq!(
+            (added.id, added.path.as_path()),
+            (id_of_root_at(dir), dir.as_path()),
+            "the id returned is the root row's own"
+        );
+        assert_eq!(library_of(&conn, added), name, "and its library is its own");
+    }
+    assert_eq!(
+        roots(&conn).expect("lists")[2..],
+        [own.clone(), named.clone()],
+        "roots reads back each root's own id and its library's"
+    );
+}
+
+/// The checked path refuses a folder that cannot be a library of its own,
+/// and only that one. Migration 15's trigger tries the folder's last
+/// component and then its whole path; with both taken its insert would fail
+/// on `library.name`'s UNIQUE, which `add_root_checked_in` would report as a
+/// store fault. Each folder here is checked against the libraries the ones
+/// before it made.
+#[test]
+fn a_folder_is_refused_a_library_of_its_own_only_when_both_its_names_are_taken() {
+    let parent = crate::tests::tempdir("scan-own-library-clash");
+    let dirs: Vec<PathBuf> = ["a/Volumes", "b/Volumes", "c/Volumes", "Other"]
+        .iter()
+        .map(|rel| {
+            let dir = parent.path().join(rel);
+            std::fs::create_dir_all(&dir).expect("mkdir");
+            dir.canonicalize().expect("canonical")
+        })
+        .collect();
+    let (a, b, c, other) = (&dirs[0], &dirs[1], &dirs[2], &dirs[3]);
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let c_whole = c.to_string_lossy().into_owned();
+
+    let first = add_root_checked(&conn, a).expect("Volumes is free");
+    let second = add_root_checked(&conn, b).expect("Volumes is taken, b's whole path is free");
+    add_root_checked_in(&conn, other, InLibrary::Named(&c_whole))
+        .expect("a library that happens to be called c's whole path");
+    let before = crate::libraries::list(&conn).expect("lists");
+
+    let refused = add_root_checked(&conn, c).expect_err("both of c's names are taken");
+
+    assert_eq!(library_of(&conn, &first.root), "Volumes");
+    assert_eq!(library_of(&conn, &second.root), b.to_string_lossy());
+    assert!(
+        matches!(refused, AddRootError::Unusable(_)),
+        "a clash of names is this caller's to fix, not a store fault: {refused:?}"
+    );
+    let refused = refused.to_string();
+    assert!(
+        refused.contains("`Volumes`") && refused.contains(&format!("`{c_whole}`")),
+        "the refusal names both taken names: {refused}"
+    );
+    assert_eq!(
+        crate::libraries::list(&conn).expect("lists"),
+        before,
+        "the refusal added no library and no folder"
+    );
+}
+
+/// `/` has no last component, so the trigger names its library by the whole
+/// path alone, and only that name can clash.
+#[test]
+fn the_filesystem_root_can_be_refused_on_its_whole_path_alone() {
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let slash = Path::new("/");
+    assert_eq!(own_library_clash(&conn, slash).expect("reads"), None);
+
+    crate::libraries::create(&conn, "/").expect("a library called `/`");
+
+    let why = own_library_clash(&conn, slash)
+        .expect("reads")
+        .expect("`/` is taken, and there is no other name to try");
+    assert!(why.contains("`/`"), "{why}");
+}
+
+/// `own_library_clash` refuses exactly the folders the trigger cannot file:
+/// each path here is asked of both, the trigger by an insert rolled back
+/// afterwards. The paths need not exist, since neither reads the disk. The
+/// libraries are chosen so that comparing a name with its spaces, or without
+/// its tabs, would answer differently from the trigger.
+#[test]
+fn own_library_clash_refuses_exactly_what_the_trigger_cannot_name() {
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    for name in ["Manga", "/c/ Manga", "/d/", "/g/\tManga"] {
+        crate::libraries::create(&conn, name).expect("a library");
+    }
+    let refused_by_trigger = |candidate: &str| -> bool {
+        conn.execute_batch("SAVEPOINT trial").expect("savepoint");
+        let refused = conn
+            .execute("INSERT INTO root (path) VALUES (?1)", [candidate])
+            .is_err();
+        conn.execute_batch("ROLLBACK TO trial; RELEASE trial")
+            .expect("rolls back");
+        refused
+    };
+
+    let answers: Vec<(&str, bool, bool)> = [
+        "/a/ Manga ",
+        "/c/ Manga ",
+        "/c/ Manga",
+        "/d/  ",
+        "/e/  ",
+        "/f/Comics",
+        "/g/\tManga\t",
+    ]
+    .into_iter()
+    .map(|candidate| {
+        let clash = own_library_clash(&conn, Path::new(candidate)).expect("reads");
+        (candidate, clash.is_some(), refused_by_trigger(candidate))
+    })
+    .collect();
+
+    assert_eq!(
+        answers,
+        vec![
+            ("/a/ Manga ", false, false),
+            ("/c/ Manga ", true, true),
+            ("/c/ Manga", true, true),
+            ("/d/  ", true, true),
+            ("/e/  ", false, false),
+            ("/f/Comics", false, false),
+            ("/g/\tManga\t", false, false),
+        ],
+        "(path, own_library_clash refuses, the trigger refuses)"
+    );
+}
+
+/// A library named nothing is the caller's mistake: refused as `Unusable`,
+/// before anything is written, rather than reaching `libraries::create`'s
+/// own refusal inside the insert and coming back as a store fault.
+#[test]
+fn a_library_named_nothing_is_refused_as_the_callers_mistake() {
+    let dir = crate::tests::tempdir("scan-library-named-nothing");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+
+    for blank in ["\t", "\n "] {
+        let invisible = add_root_checked_in(&conn, dir.path(), InLibrary::Named(blank))
+            .expect_err("a name of only whitespace");
+        assert!(
+            matches!(invisible, AddRootError::Unusable(_)),
+            "a name of only whitespace is refused like a blank one: {invisible:?}"
+        );
+    }
+    let refused =
+        add_root_checked_in(&conn, dir.path(), InLibrary::Named("  ")).expect_err("a blank name");
+
+    assert!(
+        matches!(refused, AddRootError::Unusable(_)),
+        "a blank name is this caller's to fix, not a store fault: {refused:?}"
+    );
+    assert!(refused.to_string().contains("needs a name"), "{refused}");
+    assert_eq!(
+        roots(&conn).expect("lists"),
+        Vec::new(),
+        "nothing was added"
+    );
+}
+
 // --- update_root -------------------------------------------------------
 
 /// The trap `rules::update`'s own test names: a patch must change only the
@@ -1821,6 +2185,260 @@ fn remove_root_repairs_a_surviving_documents_gap_only_after_its_own_commit() {
         "the reconcile pass that repairs the gap must open its own transaction after \
          remove_root's own COMMIT, never before it: {statements:?}"
     );
+}
+
+// --- removal, and an account's only grant --------------------------------
+
+/// Three libraries over real folders, each folder holding one volume:
+/// `Shelf` of two folders, then `Solo` and `Lone` of one each, so that the
+/// last two have a library id that is not their folder's id. Answers the
+/// roots in that order.
+fn three_libraries(parent: &Path, conn: &Connection) -> [Root; 4] {
+    let mut added = Vec::new();
+    for (folder, library, series) in [
+        ("shelf-a", "Shelf", "Alpha"),
+        ("shelf-b", "Shelf", "Gamma"),
+        ("solo", "Solo", "Beta"),
+        ("lone", "Lone", "Delta"),
+    ] {
+        let dir = parent.join(folder);
+        write_archive(
+            &dir.join(series).join(format!("{series} - v01.cbz")),
+            2 + added.len(),
+        );
+        let root = add_root_in(conn, &dir, InLibrary::Named(library)).expect("adds the folder");
+        scan_root(conn, &root).expect("scans it");
+        added.push(root);
+    }
+    crate::derive::derive(conn).expect("derives");
+    for root in &added[2..] {
+        assert_ne!(
+            root.id, root.library_id,
+            "the fixture must tell a folder's id from its library's: {root:?}"
+        );
+    }
+    added.try_into().expect("four roots")
+}
+
+/// A new account called `name`, granted each of `libraries` by name.
+fn an_account_granted(conn: &Connection, name: &str, role: &str, libraries: &[&str]) -> i64 {
+    conn.execute(
+        "INSERT INTO user (name, password_hash, role) VALUES (?1, 'x', ?2)",
+        [name, role],
+    )
+    .expect("adds the account");
+    let id = conn.last_insert_rowid();
+    for library in libraries {
+        let library = crate::libraries::id_of(conn, library)
+            .expect("reads")
+            .expect("the library exists");
+        crate::account::grant_library(conn, id, library).expect("grants");
+    }
+    id
+}
+
+/// The roots, libraries, works, members, scan entries and grants, as text.
+fn what_a_removal_touches(conn: &Connection) -> Vec<String> {
+    let mut rows = Vec::new();
+    for sql in [
+        "SELECT 'root', id, path, library_id FROM root ORDER BY id",
+        "SELECT 'library', id, name, NULL FROM library ORDER BY id",
+        "SELECT 'work', id, slug, library_id FROM work ORDER BY id",
+        "SELECT 'member', id, path, root_id FROM member ORDER BY id",
+        "SELECT 'scan_entry', id, rel_path, root_id FROM scan_entry ORDER BY id",
+        "SELECT 'grant', user_id, library_id, NULL FROM user_library ORDER BY 2, 3",
+    ] {
+        let mut statement = conn.prepare(sql).expect(sql);
+        let read = statement
+            .query_map([], |r| {
+                Ok(format!(
+                    "{} {} {:?} {:?}",
+                    r.get::<_, String>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, rusqlite::types::Value>(2)?,
+                    r.get::<_, rusqlite::types::Value>(3)?,
+                ))
+            })
+            .expect(sql)
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .expect(sql);
+        rows.extend(read);
+    }
+    rows
+}
+
+/// Decision C of Part F1. `Solo` is the only grant of `alex`, of `sam` and of
+/// the administrator `zed`, so removing its one folder is refused, naming
+/// them in name order, and nothing goes. An account that also holds `Shelf`
+/// is not named, nor is one restricted to `Shelf`.
+#[test]
+fn removing_the_last_folder_of_an_accounts_only_library_is_refused_and_removes_nothing() {
+    let dir = crate::tests::tempdir("scan-removal-only-grant");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let [_, _, solo, _] = three_libraries(dir.path(), &conn);
+    an_account_granted(&conn, "sam", "user", &["Solo"]);
+    an_account_granted(&conn, "alex", "user", &["Solo"]);
+    an_account_granted(&conn, "zed", "admin", &["Solo"]);
+    an_account_granted(&conn, "both", "user", &["Solo", "Shelf"]);
+    an_account_granted(&conn, "pat", "user", &["Shelf"]);
+    let before = what_a_removal_touches(&conn);
+    assert!(
+        before.iter().any(|row| row.starts_with("member "))
+            && before.iter().any(|row| row.starts_with("work ")),
+        "the fixture has works and members to lose: {before:?}"
+    );
+
+    let refused = remove_root(&conn, solo.id).expect_err("Solo is an only grant");
+
+    assert_eq!(
+        what_a_removal_touches(&conn),
+        before,
+        "a refused removal removes nothing"
+    );
+    assert_eq!(
+        refused,
+        format!(
+            "{} is the last folder of the library `Solo`, which is the only library `alex`, \
+             `sam` and `zed` are granted. Removing it would delete those grants, and an account \
+             with no grant sees every library. First grant each another library, or revoke \
+             this one",
+            solo.path.display()
+        )
+    );
+}
+
+/// The same removal once the account holds another library too: the folder
+/// goes, and its library and that grant with it.
+#[test]
+fn removing_the_last_folder_of_a_library_is_allowed_when_its_accounts_hold_another() {
+    let dir = crate::tests::tempdir("scan-removal-second-grant");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let [shelf_a, shelf_b, solo, _] = three_libraries(dir.path(), &conn);
+    let alex = an_account_granted(&conn, "alex", "user", &["Solo", "Shelf"]);
+
+    let (removal, _) = remove_root(&conn, solo.id).expect("alex keeps Shelf");
+
+    assert_eq!(removal.works, 1, "Solo's one volume went with it");
+    assert_eq!(crate::libraries::id_of(&conn, "Solo").expect("reads"), None);
+    assert_eq!(
+        crate::account::roots_for(&conn, alex).expect("reads"),
+        vec![shelf_a.id, shelf_b.id],
+        "still restricted, to the library that is left"
+    );
+}
+
+/// The same where the other library was made after the one removed, so its id
+/// is the higher of the two.
+#[test]
+fn removing_the_last_folder_of_a_library_is_allowed_when_its_accounts_hold_a_later_one() {
+    let dir = crate::tests::tempdir("scan-removal-later-grant");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let [_, _, solo, lone] = three_libraries(dir.path(), &conn);
+    assert!(
+        solo.library_id < lone.library_id,
+        "the fixture: Lone is the later library"
+    );
+    let alex = an_account_granted(&conn, "alex", "user", &["Solo", "Lone"]);
+
+    remove_root(&conn, solo.id).expect("alex keeps Lone");
+
+    assert_eq!(crate::libraries::id_of(&conn, "Solo").expect("reads"), None);
+    assert_eq!(
+        crate::account::roots_for(&conn, alex).expect("reads"),
+        vec![lone.id],
+        "still restricted, to the library that is left"
+    );
+}
+
+/// The same removal where no account is restricted to `Solo`, though one is
+/// restricted to `Lone`, another library of one folder.
+#[test]
+fn removing_the_last_folder_of_a_library_nobody_is_restricted_to_is_allowed() {
+    let dir = crate::tests::tempdir("scan-removal-no-only-grant");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let [_, _, solo, lone] = three_libraries(dir.path(), &conn);
+    let pat = an_account_granted(&conn, "pat", "user", &["Lone"]);
+
+    let (removal, _) = remove_root(&conn, solo.id).expect("nobody is restricted to Solo");
+
+    assert_eq!(removal.works, 1);
+    assert_eq!(
+        crate::account::roots_for(&conn, pat).expect("reads"),
+        vec![lone.id],
+        "and the account restricted elsewhere is where it was"
+    );
+}
+
+/// A folder that is not its library's last goes, though the library is an
+/// account's only grant: the library and the grant stay.
+#[test]
+fn removing_one_folder_of_two_is_allowed_though_the_library_is_an_only_grant() {
+    let dir = crate::tests::tempdir("scan-removal-not-last-folder");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let [shelf_a, shelf_b, _, _] = three_libraries(dir.path(), &conn);
+    let pat = an_account_granted(&conn, "pat", "user", &["Shelf"]);
+
+    remove_root(&conn, shelf_a.id).expect("Shelf keeps a folder");
+
+    assert_eq!(
+        crate::account::roots_for(&conn, pat).expect("reads"),
+        vec![shelf_b.id],
+        "the grant resolves to the folder that is left"
+    );
+}
+
+/// The dry run answers the removal's refusal, in the same words, where it
+/// would have answered counts.
+#[test]
+fn the_cost_of_a_refused_removal_is_the_refusal() {
+    let dir = crate::tests::tempdir("scan-removal-cost-only-grant");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let [_, _, solo, _] = three_libraries(dir.path(), &conn);
+    an_account_granted(&conn, "alex", "user", &["Solo"]);
+    let before = what_a_removal_touches(&conn);
+
+    let quoted = removal_cost(&conn, solo.id).expect_err("the dry run is refused too");
+
+    assert_eq!(
+        quoted,
+        format!(
+            "{} is the last folder of the library `Solo`, which is the only library `alex` is \
+             granted. Removing it would delete that grant, and an account with no grant sees \
+             every library. First grant it another library, or revoke this one",
+            solo.path.display()
+        )
+    );
+    assert_eq!(
+        Some(&quoted),
+        removal_refusal(&conn, solo.id).expect("reads").as_ref(),
+        "which is the check's own answer"
+    );
+    assert_eq!(
+        remove_root(&conn, solo.id).expect_err("and the removal's"),
+        quoted
+    );
+    assert_eq!(what_a_removal_touches(&conn), before);
+}
+
+/// The check answers nothing for a removal that may go ahead, and for a root
+/// that is not there.
+#[test]
+fn a_removal_that_may_go_ahead_has_no_refusal() {
+    let dir = crate::tests::tempdir("scan-removal-no-refusal");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let [shelf_a, _, solo, _] = three_libraries(dir.path(), &conn);
+    an_account_granted(&conn, "pat", "user", &["Shelf"]);
+
+    assert_eq!(removal_refusal(&conn, shelf_a.id), Ok(None));
+    assert_eq!(removal_refusal(&conn, solo.id), Ok(None));
+    assert_eq!(removal_refusal(&conn, 999), Ok(None));
 }
 
 /// The pattern language is gitignore's, taken from the crate rather than

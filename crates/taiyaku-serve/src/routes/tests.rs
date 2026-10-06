@@ -3875,6 +3875,148 @@ async fn the_work_list_does_not_name_a_work_outside_the_grant() {
     );
 }
 
+/// What migration 15 leaves where a work spanned two folders, read by a
+/// reader granted the hub folder's library alone. The old work is theirs,
+/// with its hub edition `en`. The edition `raw` it kept from the other
+/// library's folder is not listed with it, and its pages, thumbnail and
+/// downloads answer as a work that does not exist, here and under OPDS. So
+/// does the other library's own work.
+#[tokio::test]
+async fn a_reader_is_refused_the_edition_a_work_kept_from_a_library_they_are_not_granted() {
+    let (router, _state, _fixture, [old, new]) =
+        crate::test_support::router_over_a_work_keeping_another_librarys_edition();
+    let json = |body: String| -> serde_json::Value { serde_json::from_str(&body).expect("json") };
+    let get = |path: String| {
+        let router = router.clone();
+        async move {
+            let response = crate::test_support::get(&router, &path).await;
+            let status = response.status();
+            let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+                .await
+                .unwrap();
+            (status, String::from_utf8_lossy(&bytes).into_owned())
+        }
+    };
+
+    let (status, listed) = get("/api/works".to_string()).await;
+    assert_eq!(status, StatusCode::OK, "{listed}");
+    assert_eq!(
+        json(listed),
+        serde_json::json!([{
+            "slug": old,
+            "title": "Series - v01",
+            "series": "Series",
+            "volume": 1.0,
+            "editions": ["en"],
+            "cover": format!("/api/works/{old}/en/pages/0/thumb"),
+        }]),
+        "the old work alone, with the granted library's edition alone"
+    );
+
+    let (status, sidecar) = get(format!("/api/works/{old}")).await;
+    assert_eq!(status, StatusCode::OK, "{sidecar}");
+    let editions: Vec<String> = json(sidecar)["editions"]
+        .as_object()
+        .expect("editions")
+        .keys()
+        .cloned()
+        .collect();
+    assert_eq!(editions, ["en"], "the sidecar names no kept edition");
+
+    let (status, feed) = get(format!("/opds/v1.2/works/{old}")).await;
+    assert_eq!(status, StatusCode::OK, "{feed}");
+    assert!(feed.contains("/en/"), "{feed}");
+    assert!(
+        !feed.contains("/raw/"),
+        "the feed names the kept edition: {feed}"
+    );
+
+    let (status, page) = get(format!("/api/works/{old}/en/pages/0")).await;
+    assert_eq!(status, StatusCode::OK, "the granted edition's page: {page}");
+
+    for path in [
+        format!("/api/works/{old}/raw/pages/0"),
+        format!("/api/works/{old}/raw/pages/0/thumb"),
+        format!("/api/works/{old}/raw/download"),
+        format!("/api/works/{old}/raw/members/0/download"),
+        format!("/opds/v1.2/works/{old}/raw/pages/0"),
+        format!("/opds/v1.2/works/{old}/raw/cover"),
+        format!("/opds/v1.2/works/{old}/raw/download"),
+    ] {
+        let (status, body) = get(path.clone()).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{path}: {body}");
+        assert_eq!(body, format!("no work `{old}`"), "{path}");
+    }
+
+    for path in [
+        format!("/api/works/{new}"),
+        format!("/api/works/{new}/raw/pages/0"),
+    ] {
+        let (status, body) = get(path.clone()).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{path}: {body}");
+        assert_eq!(body, format!("no work `{new}`"), "{path}");
+    }
+}
+
+/// A reader granted the library `Shelf` is listed the work under each of its
+/// two folders and may open each and ask for its pages. The work under
+/// `Other` is not listed, and its own address and its pages answer as a work
+/// that does not exist.
+#[tokio::test]
+async fn the_work_list_names_every_folder_of_a_granted_library() {
+    let tmp = crate::test_support::Fixture::new("routes-granted-library");
+    let (router, state) = crate::test_support::router_over_a_granted_two_folder_library(&tmp);
+    let slug_of = |title: &str| -> String {
+        state
+            .library
+            .conn()
+            .query_row("SELECT slug FROM work WHERE title = ?1", [title], |r| {
+                r.get(0)
+            })
+            .expect("the work's slug")
+    };
+
+    let response = crate::test_support::get(&router, "/api/works").await;
+    let status = response.status();
+    let listed = crate::test_support::body_string(response).await;
+    assert_eq!(status, StatusCode::OK, "{listed}");
+    assert!(
+        !listed.contains("Other Library Work"),
+        "a work of a library that was not granted is listed: {listed}"
+    );
+
+    for title in ["First Folder Work", "Second Folder Work"] {
+        assert!(
+            listed.contains(title),
+            "a work under a folder of the granted library is missing: {title}: {listed}"
+        );
+        let slug = slug_of(title);
+        let work = crate::test_support::get(&router, &format!("/api/works/{slug}")).await;
+        assert_eq!(work.status(), StatusCode::OK, "{title}");
+        // The fixture's member files are not on disk, so a page is a 404
+        // either way. The grant's refusal names the work and nothing else.
+        let page =
+            crate::test_support::get(&router, &format!("/api/works/{slug}/raw/pages/0")).await;
+        assert_ne!(
+            crate::test_support::body_string(page).await,
+            format!("no work `{slug}`"),
+            "{title}: its pages were refused by the grant"
+        );
+    }
+
+    let other = slug_of("Other Library Work");
+    for path in [
+        format!("/api/works/{other}"),
+        format!("/api/works/{other}/raw/pages/0"),
+    ] {
+        let response = crate::test_support::get(&router, &path).await;
+        let status = response.status();
+        let body = crate::test_support::body_string(response).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{path}: {body}");
+        assert_eq!(body, format!("no work `{other}`"), "{path}");
+    }
+}
+
 // ---------------------------------------------------------------------------
 // The write leak: `patch_alignments` resolved its target by slug alone,
 // consulting no `Extensions` and no `Principal` at

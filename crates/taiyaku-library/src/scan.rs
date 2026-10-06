@@ -68,6 +68,9 @@ pub struct Root {
     /// already holds a `Root` and `hand::save` is the only caller that does
     /// not.
     pub keeps_documents: bool,
+    /// The library this folder is filed under — migration 15. Every root has
+    /// one; see [`crate::libraries`].
+    pub library_id: i64,
 }
 
 /// Every scan root this library knows about, oldest first.
@@ -79,7 +82,7 @@ pub fn roots(conn: &Connection) -> Result<Vec<Root>, String> {
     let mut stmt = conn
         .prepare(
             "SELECT id, path, edition_key, default_kind, default_language, exclude_globs, \
-             scan_interval_secs, keeps_documents \
+             scan_interval_secs, keeps_documents, library_id \
              FROM root ORDER BY id",
         )
         .map_err(|e| format!("listing roots: {e}"))?;
@@ -94,6 +97,7 @@ pub fn roots(conn: &Connection) -> Result<Vec<Root>, String> {
                 exclude_globs: r.get(5)?,
                 scan_interval_secs: r.get(6)?,
                 keeps_documents: r.get(7)?,
+                library_id: r.get(8)?,
             })
         })
         .map_err(|e| format!("listing roots: {e}"))?;
@@ -113,26 +117,64 @@ pub fn roots(conn: &Connection) -> Result<Vec<Root>, String> {
 ///
 /// Returns an error if `path` cannot be canonicalised — it must exist — or if
 /// the insert fails, which includes a `path` this library already holds a
-/// root for.
+/// root for, and a folder whose library of its own cannot be named because
+/// both names [`InLibrary::Own`] tries are taken ([`add_root_checked`]
+/// refuses that one first, saying so).
 pub fn add_root(conn: &Connection, path: &Path) -> Result<Root, String> {
+    add_root_in(conn, path, InLibrary::Own)
+}
+
+/// Which library a folder joins when it is added.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InLibrary<'a> {
+    /// A library of its own, named for the folder by migration 15's
+    /// `root_gets_a_library`: its last path component, or its whole path
+    /// when a library already has that name, stripped of spaces either way.
+    Own,
+    /// The library with this name, created if there is none.
+    Named(&'a str),
+}
+
+/// [`add_root`], filing the folder under `library`.
+///
+/// **A named library that does not exist yet is created here, in the same
+/// transaction as the folder**, so a refused insert leaves no empty library
+/// behind. See [`crate::libraries`] for why an empty one must not exist.
+///
+/// # Errors
+///
+/// As [`add_root`], and if `library` names nothing once trimmed.
+pub fn add_root_in(conn: &Connection, path: &Path, library: InLibrary<'_>) -> Result<Root, String> {
     let canonical = path
         .canonicalize()
         .map_err(|e| format!("{}: {e}", path.display()))?;
-    conn.execute(
-        "INSERT INTO root (path) VALUES (?1)",
-        rusqlite::params![canonical.to_string_lossy()],
+    let tx = crate::Nested::open(conn, "add_root")
+        .map_err(|e| format!("starting to add root {}: {e}", canonical.display()))?;
+    let chosen = match library {
+        InLibrary::Own => None,
+        InLibrary::Named(name) => Some(match crate::libraries::id_of(&tx, name)? {
+            Some(id) => id,
+            None => crate::libraries::create(&tx, name)?,
+        }),
+    };
+    tx.execute(
+        "INSERT INTO root (path, library_id) VALUES (?1, ?2)",
+        rusqlite::params![canonical.to_string_lossy(), chosen],
     )
     .map_err(|e| format!("adding root {}: {e}", canonical.display()))?;
-    let id = conn.last_insert_rowid();
+    let id = tx.last_insert_rowid();
     // Read back rather than hard-coded, so the column's default — migration
-    // 012's `DEFAULT 0` — stays the one place that decides it.
-    let keeps_documents = conn
+    // 012's `DEFAULT 0` — stays the one place that decides it, and so a
+    // library migration 15's trigger chose is the one recorded.
+    let (keeps_documents, library_id) = tx
         .query_row(
-            "SELECT keeps_documents FROM root WHERE id = ?1",
+            "SELECT keeps_documents, library_id FROM root WHERE id = ?1",
             [id],
-            |r| r.get(0),
+            |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .map_err(|e| format!("reading root {}: {e}", canonical.display()))?;
+    tx.commit()
+        .map_err(|e| format!("committing root {}: {e}", canonical.display()))?;
     Ok(Root {
         id,
         path: canonical,
@@ -142,7 +184,53 @@ pub fn add_root(conn: &Connection, path: &Path) -> Result<Root, String> {
         exclude_globs: None,
         scan_interval_secs: None,
         keeps_documents,
+        library_id,
     })
+}
+
+/// Why a folder at `canonical` cannot be a library of its own, if it cannot.
+///
+/// **Migration 15's `root_gets_a_library` names that library, and
+/// [`add_root_checked_in`] asks the trigger's own question here first**
+/// rather than leaving its insert to fail on `library.name`'s UNIQUE: the
+/// folder's last path component, or its whole path when the component is
+/// empty or already a library's name. When the whole path is a library's
+/// name too, the trigger has no third name to try, and [`InLibrary::Own`]
+/// promises none, so this refuses and says which names are taken. The last
+/// component is what follows the path's last `/`, as the trigger's `rtrim`
+/// finds it. Both names are stripped of spaces by
+/// [`crate::libraries::trim_name`], as the trigger strips them with SQLite's
+/// `trim`, so a component is empty for `/` and for a folder named only
+/// spaces.
+fn own_library_clash(conn: &Connection, canonical: &Path) -> Result<Option<String>, String> {
+    let taken = |name: &str| -> Result<bool, String> {
+        conn.query_row(
+            "SELECT EXISTS (SELECT 1 FROM library WHERE name = ?1)",
+            [name],
+            |r| r.get(0),
+        )
+        .map_err(|e| format!("looking up the library `{name}`: {e}"))
+    };
+    let path = canonical.to_string_lossy();
+    let whole = crate::libraries::trim_name(&path);
+    let leaf = crate::libraries::trim_name(path.rsplit('/').next().unwrap_or_default());
+    if !leaf.is_empty() && !taken(leaf)? {
+        return Ok(None);
+    }
+    if !taken(whole)? {
+        return Ok(None);
+    }
+    Ok(Some(if leaf.is_empty() {
+        format!(
+            "{path} cannot be a library of its own: a library is already called `{whole}`; \
+             add it to a library by name"
+        )
+    } else {
+        format!(
+            "{path} cannot be a library of its own: libraries are already called `{leaf}` \
+             and `{whole}`; add it to a library by name"
+        )
+    }))
 }
 
 /// How long [`add_root_checked`] waits for its own watch probe's event to
@@ -158,7 +246,7 @@ pub fn add_root(conn: &Connection, path: &Path) -> Result<Root, String> {
 /// ever changes, this one should change with it.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// What [`add_root_checked`] built: the row [`add_root`] inserted, the watch
+/// What [`add_root_checked`] built: the row [`add_root_in`] inserted, the watch
 /// experiment run against it immediately, and the interval that experiment
 /// implies.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -177,22 +265,25 @@ pub struct Added {
 /// handler — `taiyaku-serve`'s `create_rule`/`patch_rule` pre-check their
 /// own caller-fault cases before ever writing, and reserve a 500 for the
 /// store call itself. `add_root_checked` could offer no such split before
-/// this type existed: all three of its own checks (exists, readable,
-/// overlaps) run *inside* this function, not in the handler that calls it,
-/// so a caller had nothing of its own to pre-check against and
-/// `taiyaku-serve`'s `create_root` was left folding every failure this
-/// function could produce — a bad path and a database gone read-only
-/// alike — into the same 400.
+/// this type existed: its own checks run *inside* this function, not in the
+/// handler that calls it, so a caller had nothing of its own to pre-check
+/// against and `taiyaku-serve`'s `create_root` was left folding every
+/// failure this function could produce — a bad path and a database gone
+/// read-only alike — into the same 400.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AddRootError {
     /// `path` itself: it does not exist, this process cannot read it, or it
     /// overlaps a root already held, nested in either direction. The
     /// message already names which, and for an overlap, the colliding root
-    /// by path and id.
+    /// by path and id. Or the library it would join cannot be named: an
+    /// [`InLibrary::Named`] that is empty once trimmed, or an
+    /// [`InLibrary::Own`] whose two possible names are both taken, which
+    /// the message names.
     Unusable(String),
     /// The store itself failed: [`roots`] (the overlap check's own read),
-    /// the insert inside [`add_root`], or the post-insert [`update_root`]
-    /// write that records the watch probe's interval.
+    /// the library-name lookup, the insert inside [`add_root_in`], or the
+    /// post-insert [`update_root`] write that records the watch probe's
+    /// interval.
     Failed(String),
 }
 
@@ -206,9 +297,18 @@ impl std::fmt::Display for AddRootError {
 
 impl std::error::Error for AddRootError {}
 
-/// Add a new scan root at `path`, having run C4 §2's three validations that
-/// [`add_root`] itself does not — "because the failures are silent
-/// otherwise."
+/// [`add_root_checked_in`], with the folder a library of its own.
+///
+/// # Errors
+///
+/// As [`add_root_checked_in`].
+pub fn add_root_checked(conn: &Connection, path: &Path) -> Result<Added, AddRootError> {
+    add_root_checked_in(conn, path, InLibrary::Own)
+}
+
+/// Add a new scan root at `path`, filed under `library`, having run C4 §2's
+/// three validations that [`add_root`] itself does not — "because the
+/// failures are silent otherwise."
 ///
 /// 1. **Readable, by this process, not merely present.** `path.canonicalize`
 ///    answers "does it exist" and nothing else: it succeeds against a
@@ -239,29 +339,44 @@ impl std::error::Error for AddRootError {}
 ///    answer is written to `scan_interval_secs` immediately, not left at
 ///    the column default until some later call happens to set it.
 ///
-/// [`add_root`] itself is unchanged and still validates nothing: a great many
-/// fixtures call it directly, and a validation that runs inside every fixture
-/// is a validation nobody can test the absence of. This is the checked path a
-/// person takes when adding a root they have not already vetted by hand —
-/// through `taiyaku library scan --add`, or the HTTP API on their behalf.
-/// That command took the unchecked one until O47, and this doc named `import`
-/// as a caller of [`add_root`], which it has never been.
+/// **And the library it joins can be named**, checked with the first two,
+/// before anything is written: an [`InLibrary::Named`] needs a name once
+/// trimmed, and an [`InLibrary::Own`] needs a name migration 15's trigger can
+/// give it (see `own_library_clash`). Otherwise the first would surface as a
+/// store fault and the second as a bare UNIQUE failure on `library.name`,
+/// though both are this caller's to fix.
+///
+/// **The library is created only once every validation has passed**, by
+/// [`add_root_in`], so a refused path names no library into being.
+///
+/// [`add_root`] and [`add_root_in`] still validate nothing: a great many
+/// fixtures call them directly, and a validation that runs inside every
+/// fixture is a validation nobody can test the absence of. This is the
+/// checked path a person takes when adding a root they have not already
+/// vetted by hand — through `taiyaku library scan --add`, or the HTTP API on
+/// their behalf. That command took the unchecked one until O47, and this doc
+/// named `import` as a caller of [`add_root`], which it has never been.
 ///
 /// # Errors
 ///
 /// Returns [`AddRootError::Unusable`] if `path` cannot be canonicalised (it
-/// must exist), if the canonical path cannot be read as a directory, or if
-/// it is inside or contains a root already held — every one of those is
-/// this caller's own mistake, an `error` a person can act on. The
-/// exact-duplicate case is intercepted by the nesting check (a path
-/// trivially contains itself) and produces an "is inside existing root"
-/// message, not a separate duplicate-path error.
+/// must exist), if the canonical path cannot be read as a directory, if it
+/// is inside or contains a root already held, or if the library it would
+/// join cannot be named — every one of those is this caller's own mistake,
+/// an `error` a person can act on. The exact-duplicate case is intercepted
+/// by the nesting check (a path trivially contains itself) and produces an
+/// "is inside existing root" message, not a separate duplicate-path error.
 ///
 /// Returns [`AddRootError::Failed`] if the store itself refuses along the
-/// way — the overlap check's own read ([`roots`]), the insert
-/// ([`add_root`]), or the write that records the watch probe's interval
-/// ([`update_root`]) — none of which is this caller's mistake to fix.
-pub fn add_root_checked(conn: &Connection, path: &Path) -> Result<Added, AddRootError> {
+/// way — the overlap check's own read ([`roots`]), the library-name lookup,
+/// the insert ([`add_root_in`]), or the write that records the watch probe's
+/// interval ([`update_root`]) — none of which is this caller's mistake to
+/// fix.
+pub fn add_root_checked_in(
+    conn: &Connection,
+    path: &Path,
+    library: InLibrary<'_>,
+) -> Result<Added, AddRootError> {
     let canonical = path
         .canonicalize()
         .map_err(|e| AddRootError::Unusable(format!("{}: {e}", path.display())))?;
@@ -289,7 +404,24 @@ pub fn add_root_checked(conn: &Connection, path: &Path) -> Result<Added, AddRoot
         }
     }
 
-    let root = add_root(conn, &canonical).map_err(AddRootError::Failed)?;
+    match library {
+        // Any whitespace, not only spaces: refusing a name that would be
+        // invisible is not stripping one, so lookups keep `trim_name`'s set.
+        InLibrary::Named(name) if name.trim().is_empty() => {
+            return Err(AddRootError::Unusable(format!(
+                "{}: a library needs a name",
+                canonical.display()
+            )));
+        }
+        InLibrary::Named(_) => {}
+        InLibrary::Own => {
+            if let Some(why) = own_library_clash(conn, &canonical).map_err(AddRootError::Failed)? {
+                return Err(AddRootError::Unusable(why));
+            }
+        }
+    }
+
+    let root = add_root_in(conn, &canonical, library).map_err(AddRootError::Failed)?;
 
     let probe = crate::watch::probe(&canonical, PROBE_TIMEOUT);
     let interval = crate::watch::interval_for(&probe);
@@ -468,13 +600,89 @@ const DOOMED_WORKS: &str = "
               AND (m2.root_id IS NULL OR m2.root_id != ?1)
            )";
 
+/// Why root `id` may not be removed, if it may not: it is the last folder of
+/// a library, and that library is the only one some account is granted.
+///
+/// **Decision C of Part F1.** A library goes with its last folder and its
+/// grants go with it (migration 15), and an account left holding no grant
+/// sees every library. This names each such account, so an administrator can
+/// grant it another library, or revoke this one on purpose, first. An
+/// administrator's own grant counts like anyone's: its row is kept so that a
+/// demotion restores it.
+///
+/// [`remove_root`] and [`removal_cost`] ask this before they delete anything.
+/// Migration 15's `only_grant_refuses_delete` trigger asks it again of the
+/// `DELETE` itself, with a message that names no account.
+///
+/// # Errors
+///
+/// Returns an error if the read fails. An `id` naming no root is `Ok(None)`.
+pub fn removal_refusal(conn: &Connection, id: i64) -> Result<Option<String>, String> {
+    let mut statement = conn
+        .prepare(
+            "SELECT r.path, l.name, u.name
+               FROM root r
+               JOIN library l ON l.id = r.library_id
+               JOIN user_library ul ON ul.library_id = r.library_id
+               JOIN user u ON u.id = ul.user_id
+              WHERE r.id = ?1
+                AND NOT EXISTS (SELECT 1 FROM root other
+                                 WHERE other.library_id = r.library_id AND other.id <> r.id)
+                AND NOT EXISTS (SELECT 1 FROM user_library held
+                                 WHERE held.user_id = ul.user_id
+                                   AND held.library_id <> ul.library_id)
+              ORDER BY u.name",
+        )
+        .map_err(|e| format!("checking whose only grant root {id} holds: {e}"))?;
+    let restricted = statement
+        .query_map([id], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })
+        .map_err(|e| format!("checking whose only grant root {id} holds: {e}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("checking whose only grant root {id} holds: {e}"))?;
+    let Some(((path, library, last), others)) = restricted.split_last() else {
+        return Ok(None);
+    };
+    let (accounts, advice) = if others.is_empty() {
+        (
+            format!("`{last}` is granted"),
+            "Removing it would delete that grant, and an account with no grant sees every \
+             library. First grant it another library, or revoke this one",
+        )
+    } else {
+        let others: Vec<String> = others
+            .iter()
+            .map(|(_, _, account)| format!("`{account}`"))
+            .collect();
+        (
+            format!("{} and `{last}` are granted", others.join(", ")),
+            "Removing it would delete those grants, and an account with no grant sees every \
+             library. First grant each another library, or revoke this one",
+        )
+    };
+    Ok(Some(format!(
+        "{path} is the last folder of the library `{library}`, which is the only library \
+         {accounts}. {advice}"
+    )))
+}
+
 /// Delete root `id`, every work that lived entirely under it, and re-derive
 /// — the mechanism [`removal_cost`] runs and rolls back, and [`remove_root`]
 /// runs and commits.
 ///
+/// **Refused before anything is deleted** where [`removal_refusal`] says so:
+/// the refusal is this function's error, for the dry run as for the removal.
+///
 /// **Delete-plus-derive, not a bare `DELETE FROM root`.** `scan_entry`,
-/// `dir_state`, `rule` and `user_root` all cascade with the root
-/// (`schema/003_scanner.sql`, `schema/004_auth.sql`), but `work`, `edition`,
+/// `dir_state` and `rule` cascade with the root, and a library left with no
+/// root goes with it (migration 15's `library_emptied_by_delete`), taking its
+/// `user_library` grants (`schema/003_scanner.sql`,
+/// `schema/015_libraries.sql`), but `work`, `edition`,
 /// `member`, `progress` and `note` do not follow — `progress` and `note` are
 /// keyed on `work_id` and carry no root at all, and `member.root_id` is `ON
 /// DELETE SET NULL`, not `CASCADE`, precisely so an ordinary rescan finding a
@@ -515,11 +723,15 @@ const DOOMED_WORKS: &str = "
 ///
 /// # Errors
 ///
-/// Returns an error if any statement here or in `derive_with` is refused.
+/// Returns [`removal_refusal`]'s refusal where there is one, and an error if
+/// any statement here or in `derive_with` is refused.
 fn apply_removal(
     conn: &Connection,
     id: i64,
 ) -> Result<(Removal, crate::derive::DeriveReport), String> {
+    if let Some(refusal) = removal_refusal(conn, id)? {
+        return Err(refusal);
+    }
     let works: i64 = conn
         .query_row(
             &format!("SELECT COUNT(*) FROM ({DOOMED_WORKS})"),
@@ -607,7 +819,8 @@ fn apply_removal(
 /// # Errors
 ///
 /// Returns an error if SQLite refuses the transaction or if [`apply_removal`]
-/// fails.
+/// fails. A removal [`removal_refusal`] refuses is an error here too, in the
+/// refusal's words, so a dry run states it where it would have stated counts.
 pub fn removal_cost(
     conn: &Connection,
     id: i64,
@@ -670,7 +883,9 @@ pub fn removal_cost(
 /// Returns an error if SQLite refuses the transaction, if [`apply_removal`]
 /// fails, if the commit itself is refused, or if the post-commit derive
 /// fails — in which case the removal itself has already committed and only
-/// the reconciliation pass over its aftermath did not complete.
+/// the reconciliation pass over its aftermath did not complete. A removal
+/// [`removal_refusal`] refuses is an error in the refusal's words, and
+/// nothing is removed.
 pub fn remove_root(
     conn: &Connection,
     id: i64,

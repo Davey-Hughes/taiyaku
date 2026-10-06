@@ -2222,7 +2222,7 @@ pub(crate) fn guarded_routes() -> Vec<(&'static str, axum::routing::MethodRouter
         // **Spec C4 §4's user-administration routes, PR 2.** Admin-gated for
         // the reason every route in this block is, with one of its own: this
         // is the only writer of `role`, `can_download`, `can_stream` and
-        // `user_root` in the product, so a route here that landed in
+        // `user_library` in the product, so a route here that landed in
         // `open_routes` would let anybody grant themselves anything.
         // `users_api::tests::every_users_route_refuses_a_reader` drives them
         // all for a 403.

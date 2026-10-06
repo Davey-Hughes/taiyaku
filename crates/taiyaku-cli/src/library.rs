@@ -68,6 +68,7 @@ pub(crate) fn command(args: &[String]) -> Result<(), String> {
         Some("import") => import(&args[1..]),
         Some("export") => export(&args[1..]),
         Some("scan") => scan(&args[1..]),
+        Some("libraries") => libraries(&args[1..]),
         Some("rules") => rules(&args[1..]),
         Some("proposals") => proposals(&args[1..]),
         Some("user") => crate::user::command(&args[1..]),
@@ -75,12 +76,12 @@ pub(crate) fn command(args: &[String]) -> Result<(), String> {
         Some("root") => root_command(&args[1..]),
         Some("backup") => backup(&args[1..]),
         Some(other) => Err(format!(
-            "library has no subcommand `{other}`; it has import, export, scan, rules, \
-             proposals, user, key, root and backup"
+            "library has no subcommand `{other}`; it has import, export, scan, libraries, \
+             rules, proposals, user, key, root and backup"
         )),
         None => Err(
-            "library needs a subcommand: import, export, scan, rules, proposals, user, key, \
-             root or backup"
+            "library needs a subcommand: import, export, scan, libraries, rules, proposals, \
+             user, key, root or backup"
                 .to_string(),
         ),
     }
@@ -301,11 +302,19 @@ fn resolve_export_user(conn: &rusqlite::Connection, named: Option<&str>) -> Resu
 /// uses this exact figure in its worked example.
 const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
-/// `taiyaku library scan`: walk every known root — or, under `--root PATH`,
-/// just one — record what §8's report says about each, derive series, works,
-/// editions and members from the facts, and raise whatever proposals the new
-/// structure supports. `--no-derive` stops after the walk, which is what
-/// makes "what would the facts be" answerable without changing structure.
+/// `taiyaku library scan`: walk every known root, or one library's under
+/// `--library NAME`, or one root under `--root PATH`; record what §8's report
+/// says about each, derive series, works, editions and members from the
+/// facts, and raise whatever proposals the new structure supports.
+/// `--no-derive` stops after the walk, which is what makes "what would the
+/// facts be" answerable without changing structure.
+///
+/// **`--add PATH` files the folder under `--library NAME`**, creating that
+/// library where no library has the name, **and under a library of its own
+/// where `--library` is absent**, and prints which library that is, by the
+/// name the store holds, and whether the add created it. The folders to walk
+/// are chosen after the add, so `--add PATH --library NAME` walks `NAME`'s
+/// folders, the new one among them.
 ///
 /// **A root that cannot be scanned does not take the others down with it,
 /// but it does take the exit status down with it.** Neither an outright
@@ -323,17 +332,24 @@ fn scan(args: &[String]) -> Result<(), String> {
     reject_unknown_flags(
         "library scan",
         args,
-        &["--add", "--root", "--no-derive", "--db"],
+        &["--add", "--library", "--root", "--no-derive", "--db"],
     )?;
     reject_positional_arguments(
         "library scan",
         args,
-        &["--add", "--root", "--db"],
+        &["--add", "--library", "--root", "--db"],
         "a path reaches this command as `--add PATH` (a root it does not \
          know yet) or `--root PATH` (one it does)",
     )?;
     let add = option_value(args, "--add", "a path")?;
     let root_filter = option_value(args, "--root", "a path")?;
+    let library_name = option_value(args, "--library", "a library name")?;
+    if root_filter.is_some() && library_name.is_some() {
+        return Err(
+            "`--root` and `--library` each choose which folders are walked; pass one of them"
+                .to_string(),
+        );
+    }
     let no_derive = flag_present(args, "--no-derive");
     let db = resolve_db_path(option_value(args, "--db", "a path")?)?;
     let library = Library::open(&db).map_err(|e| format!("opening the library: {e}"))?;
@@ -343,15 +359,38 @@ fn scan(args: &[String]) -> Result<(), String> {
         // inside or around one already held has the overlap walked twice, and
         // derive admits the same directory as two members of one work (O47).
         let conn = library.conn();
-        taiyaku_library::scan::add_root_checked(&conn, Path::new(path))
+        // Asked before the add, which makes the library where none answers.
+        let (filed, joined) = match library_name {
+            Some(name) => (
+                taiyaku_library::scan::InLibrary::Named(name),
+                taiyaku_library::libraries::id_of(&conn, name)?,
+            ),
+            None => (taiyaku_library::scan::InLibrary::Own, None),
+        };
+        let added = taiyaku_library::scan::add_root_checked_in(&conn, Path::new(path), filed)
             .map_err(|e| format!("adding root {path}: {e}"))?;
+        println!(
+            "{}",
+            added_line(
+                &stored_name(&conn, added.root.library_id)?,
+                joined.is_none()
+            )
+        );
     }
 
     let roots = {
         let conn = library.conn();
         taiyaku_library::scan::roots(&conn)?
     };
-    let selected = select_roots(roots, root_filter)?;
+    let library_filter = match library_name {
+        Some(name) => Some(
+            taiyaku_library::libraries::id_of(&library.conn(), name)?.ok_or_else(|| {
+                format!("no library named `{name}`; `taiyaku library libraries` lists them")
+            })?,
+        ),
+        None => None,
+    };
+    let selected = select_roots(roots, root_filter, library_filter)?;
     let total = selected.len();
     let mut failed: Vec<String> = Vec::new();
 
@@ -416,20 +455,28 @@ fn scan_result(failed: &[String], total: usize) -> Result<(), String> {
     ))
 }
 
-/// Which roots `scan` processes this run: every known root, or — under
-/// `--root PATH` — the single one whose canonical path matches.
+/// Which roots `scan` processes this run: every known root, or the roots of
+/// the one library whose id is `library`, or — under `--root PATH` — the
+/// single one whose canonical path matches `root`. `scan` refuses `--root`
+/// with `--library`, so it passes at most one of the two.
 ///
 /// # Errors
 ///
-/// Returns an error naming `--add` if `roots` is empty and no `--root` filter
-/// was given — a scan with nothing to scan is a refusal, not a silent
-/// success over an empty library — or naming `path` if `--root PATH` cannot
-/// be canonicalised (it must exist) or matches no root this library knows.
+/// Returns an error naming `--add` if no `--root` filter was given and there
+/// is no root to walk, in the store or in `library` — a scan with nothing to
+/// scan is a refusal, not a silent success over an empty library — or naming
+/// `root` if `--root PATH` cannot be canonicalised (it must exist) or matches
+/// no root this library knows.
 fn select_roots(
     roots: Vec<taiyaku_library::scan::Root>,
-    filter: Option<&str>,
+    root: Option<&str>,
+    library: Option<i64>,
 ) -> Result<Vec<taiyaku_library::scan::Root>, String> {
-    if let Some(path) = filter {
+    let roots = match library {
+        Some(id) => roots.into_iter().filter(|r| r.library_id == id).collect(),
+        None => roots,
+    };
+    if let Some(path) = root {
         let canonical = Path::new(path)
             .canonicalize()
             .map_err(|e| format!("--root {path}: {e}"))?;
@@ -444,9 +491,87 @@ fn select_roots(
         return Ok(matched);
     }
     if roots.is_empty() {
-        return Err("this library has no roots to scan; pass --add PATH to add one".to_string());
+        return Err("there are no folders to scan; pass --add PATH to add one".to_string());
     }
     Ok(roots)
+}
+
+/// `taiyaku library libraries [--db PATH]`: every library, its folders, and
+/// how many works each holds, then how many works are in none.
+///
+/// # Errors
+///
+/// Returns an error for an unknown flag or a bare word, if the database
+/// cannot be opened, or if a read fails.
+fn libraries(args: &[String]) -> Result<(), String> {
+    reject_unknown_flags("library libraries", args, &["--db"])?;
+    reject_positional_arguments("library libraries", args, &["--db"], "it takes flags only")?;
+    let db = resolve_db_path(option_value(args, "--db", "a path")?)?;
+    let library = Library::open(&db).map_err(|e| format!("opening the library: {e}"))?;
+    let conn = library.conn();
+    let listed = taiyaku_library::libraries::list(&conn)?;
+    if let Some(line) = no_libraries_line(listed.len()) {
+        println!("{line}");
+    }
+    for one in &listed {
+        println!("{}", library_line(one));
+        for folder in &one.folders {
+            println!("  {}", folder.display());
+        }
+    }
+    if let Some(line) = unfiled_line(taiyaku_library::libraries::unfiled_works(&conn)?) {
+        println!("{line}");
+    }
+    Ok(())
+}
+
+/// What the listing says where there is no library to list, and the command
+/// that makes one. Extracted for the reason [`unfiled_line`] was.
+fn no_libraries_line(libraries: usize) -> Option<String> {
+    (libraries == 0).then(|| {
+        "no libraries yet; `taiyaku library scan --add PATH` adds a folder as one".to_string()
+    })
+}
+
+/// One library's heading line.
+fn library_line(listed: &taiyaku_library::libraries::Listed) -> String {
+    format!(
+        "{}: {} folder(s), {} work(s)",
+        listed.name,
+        listed.folders.len(),
+        listed.works
+    )
+}
+
+/// The works in no library, said only when there are some. Extracted for the
+/// reason `user::unrooted_note` was: a comparison inside a `println!`
+/// survives mutation.
+fn unfiled_line(works: usize) -> Option<String> {
+    (works > 0).then(|| format!("{works} work(s) in no library"))
+}
+
+/// What `scan --add` says once the folder is added: the library it is now
+/// in, by the name the store holds for it, and whether the add `created`
+/// that library or the folder joined one already there.
+fn added_line(library: &str, created: bool) -> String {
+    if created {
+        format!("created the library `{library}` for this folder")
+    } else {
+        format!("filed under the library `{library}`")
+    }
+}
+
+/// The name the store holds for the library with this id.
+///
+/// # Errors
+///
+/// Returns an error if the read fails, which includes no library having the
+/// id.
+pub(crate) fn stored_name(conn: &rusqlite::Connection, id: i64) -> Result<String, String> {
+    conn.query_row("SELECT name FROM library WHERE id = ?1", [id], |row| {
+        row.get(0)
+    })
+    .map_err(|e| format!("reading the name of library {id}: {e}"))
 }
 
 const DOCUMENTS_USAGE: &str = "usage: taiyaku library root documents <path> on|off [--db PATH]";
@@ -523,10 +648,8 @@ fn root_documents(args: &[String]) -> Result<(), String> {
 /// resolved the same way [`select_roots`] resolves `scan --root`, so
 /// `./library` and its absolute spelling name the same row here too.
 ///
-/// **Does not fall back to a stored, uncanonicalisable path**, unlike
-/// `library user grant-root`'s own resolver (`crate::user::root_by_path`): a
-/// grant can usefully be withdrawn from a root whose disk is gone, but there
-/// is nothing for `hand::reconcile` to write into on a root that cannot be
+/// **Does not fall back to a stored, uncanonicalisable path**: there is
+/// nothing for `hand::reconcile` to write into on a root that cannot be
 /// found, so this command's requirement is exactly `--root`'s.
 ///
 /// # Errors

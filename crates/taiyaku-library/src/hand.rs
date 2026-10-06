@@ -43,13 +43,12 @@ const DIR: &str = ".taiyaku";
 ///
 /// **The hub edition's first member that still names a root decides the
 /// root** — not simply its first member. A `Group` collects entries across
-/// every root, so "which root" has a single answer only at member level —
-/// the same reasoning `member.root_id`'s own comment in migration 6 gives for
-/// that column existing. `member.root_id` is `ON DELETE SET NULL`, so a hub
-/// edition can mix members with a root and members without one; no current
-/// code path deletes a `root` row, but the query orders by ordinal and skips
-/// rootless members rather than assuming the first member by ordinal always
-/// has one.
+/// every root of one library, so "which root" has a single answer only at
+/// member level — the same reasoning `member.root_id`'s own comment in
+/// migration 6 gives for that column existing. `member.root_id` is `ON DELETE SET NULL`, so a hub
+/// edition can mix members with a root and members without one, and the
+/// query orders by ordinal and skips rootless members rather than assuming
+/// the first member by ordinal always has one.
 ///
 /// `None` is the ordinary answer for a work imported from a sidecar: it has a
 /// `sidecar_path`, so `<stem>.library.json` beside it is already its home and

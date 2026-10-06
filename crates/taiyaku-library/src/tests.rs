@@ -180,11 +180,20 @@ pub(crate) fn library_with_two_roots() -> FixtureLibrary {
         crate::scan::add_root(&conn, &dir.path().join("_unused_c"))
             .expect("adding the third placeholder root");
 
-        let root_a = crate::scan::add_root(&conn, &root_a_dir).expect("adding root a");
+        // **The three real roots are folders of one library.** The widening
+        // rule this fixture's tests append merges their series into one, and
+        // since Part F1 a series is one library's: three libraries would
+        // each keep a series called `Alpha`. The placeholders stay libraries
+        // of their own, which costs nothing, since nothing is scanned there.
+        let one_library = crate::scan::InLibrary::Named("Preview");
+        let root_a =
+            crate::scan::add_root_in(&conn, &root_a_dir, one_library).expect("adding root a");
         crate::scan::scan_root(&conn, &root_a).expect("scanning root a");
-        let root_b = crate::scan::add_root(&conn, &root_b_dir).expect("adding root b");
+        let root_b =
+            crate::scan::add_root_in(&conn, &root_b_dir, one_library).expect("adding root b");
         crate::scan::scan_root(&conn, &root_b).expect("scanning root b");
-        let root_c = crate::scan::add_root(&conn, &root_c_dir).expect("adding root c");
+        let root_c =
+            crate::scan::add_root_in(&conn, &root_c_dir, one_library).expect("adding root c");
         crate::scan::scan_root(&conn, &root_c).expect("scanning root c");
 
         // Task 5's `preview::rows_for` provenance test needs a root whose own

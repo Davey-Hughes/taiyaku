@@ -926,12 +926,10 @@ fn set_series_titles_refuses_more_than_one_primary_title() {
 
 /// **Half two of the Critical the delta review of the fix waves
 /// (`f133b3e..910b15a`) found.** Before this refusal existed,
-/// [`set_series_titles`]'s own plain `INSERT` was the only writer anywhere in
-/// the workspace that could put the same title text on two different series
-/// at once (`derive::reconcile_series` resolves by `sort_title` first, and
-/// [`apply_series`] resolves by text — neither can manufacture the
-/// collision). Once it existed, [`find_series_by_title`]'s own un-`LIMIT`ed
-/// `SELECT` could answer either series for that text, and a caller resolving
+/// [`set_series_titles`]'s own plain `INSERT` could put the same title text
+/// on two different series at once. Once that state existed,
+/// [`find_series_by_title`]'s `SELECT`, un-`LIMIT`ed then, could answer
+/// either series for that text, and a caller resolving
 /// through it — `apply_series`, reached from `patch_series`'s own per-work
 /// loop before it called [`apply_with_series_id`] instead — could migrate
 /// every work in a series onto the wrong one and orphan the series the

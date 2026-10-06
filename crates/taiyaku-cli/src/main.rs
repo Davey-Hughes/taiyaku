@@ -207,7 +207,15 @@ fn print_usage() {
     println!(
         "       taiyaku library export <work>|--all [--dir DIR|--in-place] [--user NAME] [--db PATH]"
     );
-    println!("       taiyaku library scan  [--add PATH] [--root PATH] [--no-derive] [--db PATH]");
+    println!("       taiyaku library libraries [--db PATH]");
+    println!(
+        "       taiyaku library scan  [--add PATH] [--library NAME | --root PATH] [--no-derive] \
+         [--db PATH]  (--add files a folder under --library, creating it; alone, as a \
+         library of its own)"
+    );
+    println!(
+        "       taiyaku library user grant-library|revoke-library <user> <library> [--db PATH]"
+    );
     println!("       taiyaku library rules [--export | --import FILE] [--db PATH]");
     println!(
         "       taiyaku library proposals [--min-score N] [--accept ID] [--dismiss ID] \

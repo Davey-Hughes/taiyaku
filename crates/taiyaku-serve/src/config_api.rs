@@ -1185,10 +1185,13 @@ enum RootAnswer {
     Missing(i64),
     /// The caller's own mistake, decided before any store call or inside
     /// one: a body that could not be read as a path or a patch, or
-    /// [`scan::AddRootError::Unusable`] — one of `add_root_checked`'s three
-    /// refusals (does not exist, cannot be read, overlaps an existing root),
-    /// its own message already naming which.
+    /// [`scan::AddRootError::Unusable`] — one of `add_root_checked`'s
+    /// refusals, its own message already naming which.
     Unusable(String),
+    /// Well-formed, names a real root, and still not allowed — 409, in
+    /// [`scan::removal_refusal`]'s words: the root is the last folder of a
+    /// library that is some account's only grant.
+    Refused(String),
     /// A store failure — 500. Includes [`scan::AddRootError::Failed`]: a
     /// fault inside `add_root_checked`'s own store calls is exactly as much
     /// a 500 here as one inside [`scan::update_root`] or
@@ -1201,6 +1204,7 @@ impl IntoResponse for RootAnswer {
         let (status, message) = match self {
             Self::Missing(id) => (StatusCode::NOT_FOUND, format!("there is no root {id}")),
             Self::Unusable(why) => (StatusCode::BAD_REQUEST, why),
+            Self::Refused(why) => (StatusCode::CONFLICT, why),
             Self::Failed(why) => (StatusCode::INTERNAL_SERVER_ERROR, why),
         };
         (status, Json(serde_json::json!({ "error": message }))).into_response()
@@ -1922,20 +1926,21 @@ pub(crate) async fn list_roots(
     }
 }
 
-/// `POST /api/library/roots` — add a root, running C4 §2's three
-/// validations [`scan::add_root_checked`] carries: it must exist, be
-/// readable by this process, and not overlap a root already held, in either
-/// direction. Every one of those is this caller's own mistake — 400, naming
-/// what it was, `add_root_checked`'s own message.
+/// `POST /api/library/roots` — add a root, running the checks
+/// [`scan::add_root_checked`] carries: it must exist, be readable by this
+/// process, and not overlap a root already held, in either direction. Every
+/// one of those is this caller's own mistake — 400, naming what it was,
+/// `add_root_checked`'s own message.
 ///
 /// **A store fault along the way is a 500, not folded into that same 400.**
 /// `add_root_checked` returns [`scan::AddRootError`], not a bare `String`,
 /// precisely so this handler can tell its two shapes apart:
-/// [`scan::AddRootError::Unusable`] is one of the three validations above,
+/// [`scan::AddRootError::Unusable`] is a refusal of what the caller sent,
 /// [`scan::AddRootError::Failed`] is the overlap check's own read, the
-/// insert, or the write that records the watch probe's interval failing for
-/// a reason that has nothing to do with what the caller sent — a transient
-/// SQL fault must not tell a caller they made a mistake they did not make.
+/// library-name lookup, the insert, or the write that records the watch
+/// probe's interval failing for a reason that has nothing to do with what
+/// the caller sent — a transient SQL fault must not tell a caller they made
+/// a mistake they did not make.
 ///
 /// **Takes its connection from [`taiyaku_library::Library::working`], not
 /// [`taiyaku_library::Library::conn`].** `add_root_checked` runs its watch
@@ -2066,6 +2071,11 @@ pub(crate) struct DeleteRootQuery {
 /// [`root_exists`]'s own doc comment says why: neither `removal_cost` nor
 /// `remove_root` reports "no such root" on its own.
 ///
+/// **A removal [`scan::removal_refusal`] refuses is a 409 in its words, for
+/// the dry run and the removal alike**, asked here before either store call.
+/// Both store calls refuse it too, as an error with nothing to tell it from
+/// a store fault, which this route would answer 500.
+///
 /// Takes its connection from `working`, not `conn`, for the identical reason
 /// [`create_root`]'s own doc comment gives — both `removal_cost` and
 /// `remove_root` derive.
@@ -2094,6 +2104,9 @@ pub(crate) async fn delete_root(
         let working = state.library.working().map_err(RootAnswer::Failed)?;
         if !root_exists(&working, id).map_err(RootAnswer::Failed)? {
             return Err(RootAnswer::Missing(id));
+        }
+        if let Some(refusal) = scan::removal_refusal(&working, id).map_err(RootAnswer::Failed)? {
+            return Err(RootAnswer::Refused(refusal));
         }
         if dry_run {
             scan::removal_cost(&working, id).map_err(RootAnswer::Failed)

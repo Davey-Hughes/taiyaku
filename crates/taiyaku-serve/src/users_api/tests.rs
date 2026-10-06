@@ -961,7 +961,7 @@ async fn an_api_key_reaches_no_user_administration_route() {
     }
 }
 
-/// **A root id no row holds is 400, not 500.** `user_root.root_id` REFERENCES
+/// **A root id no row holds is 400, not 500.** `user_root.root_id` referenced
 /// `root(id)` and `INSERT OR IGNORE` does not suppress a foreign-key
 /// violation, so `{"roots": [999]}` reached the client as
 /// `500 :: granting root 999 to user 2: FOREIGN KEY constraint failed`.
@@ -1121,4 +1121,117 @@ async fn patching_a_user_refuses_a_non_boolean_can_stamp() {
     .await;
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+/// `method uri` carrying `body`, from the browser of a second account that
+/// administers. A fixture whose own account holds a grant has demoted it to a
+/// reader, and these routes are an administrator's.
+async fn send_as_another_administrator(
+    router: &axum::Router,
+    state: &crate::ServeState,
+    method: Method,
+    uri: &str,
+    body: &serde_json::Value,
+) -> axum::http::Response<axum::body::Body> {
+    use tower::ServiceExt as _;
+
+    let token = taiyaku_library::credential::mint_token();
+    {
+        let conn = state.library.conn();
+        conn.execute(
+            "INSERT OR IGNORE INTO user (name, password_hash, role)
+             VALUES ('curator', ?1, 'admin')",
+            [test_support::FIXTURE_PHC],
+        )
+        .expect("adds the second administrator");
+        let curator = user_id_on(&conn, "curator");
+        taiyaku_library::account::open_session(&conn, curator, &token, Some("the suite"), None)
+            .expect("opens the administrator's session");
+    }
+    router
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .method(method)
+                .uri(uri)
+                .header(
+                    axum::http::header::COOKIE,
+                    format!("{}={token}", crate::session::COOKIE_NAME),
+                )
+                .header(axum::http::header::HOST, "test")
+                .header(axum::http::header::ORIGIN, "http://test")
+                .header(axum::http::header::CONTENT_TYPE, "application/json")
+                .body(axum::body::Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+}
+
+/// [`user_id`], on a connection the caller already holds.
+fn user_id_on(conn: &rusqlite::Connection, name: &str) -> i64 {
+    conn.query_row("SELECT id FROM user WHERE name = ?1", [name], |r| r.get(0))
+        .expect("the account exists")
+}
+
+/// The Users screen is sent folders and sends folders back, and a grant names
+/// a library. The fixture account, granted `Shelf`, is listed with both of
+/// Shelf's folders; a patch naming one of them leaves the library granted,
+/// so the list still shows both.
+#[tokio::test]
+async fn the_users_screen_lists_and_keeps_a_libraries_folders() {
+    let tmp = test_support::Fixture::new("users-granted-library");
+    let (router, state) = test_support::router_over_a_granted_two_folder_library(&tmp);
+    let reader = user_id(&state, test_support::FIXTURE_NAME);
+    let folders_listed = |body: String| -> Vec<i64> {
+        let json: serde_json::Value = serde_json::from_str(&body).expect("json");
+        json["users"]
+            .as_array()
+            .expect("users")
+            .iter()
+            .find(|u| u["id"] == reader)
+            .expect("the fixture account")["roots"]
+            .as_array()
+            .expect("roots")
+            .iter()
+            .map(|root| root["id"].as_i64().expect("a root id"))
+            .collect()
+    };
+    let nothing = serde_json::json!({});
+
+    let listed =
+        send_as_another_administrator(&router, &state, Method::GET, "/api/library/users", &nothing)
+            .await;
+    assert_eq!(listed.status(), StatusCode::OK);
+    assert_eq!(
+        folders_listed(test_support::body_string(listed).await),
+        vec![1, 2],
+        "both folders of the granted library, and not Other's"
+    );
+
+    let patched = send_as_another_administrator(
+        &router,
+        &state,
+        Method::PATCH,
+        &format!("/api/library/users/{reader}"),
+        &serde_json::json!({ "roots": [1] }),
+    )
+    .await;
+    let status = patched.status();
+    let body = test_support::body_string(patched).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let listed =
+        send_as_another_administrator(&router, &state, Method::GET, "/api/library/users", &nothing)
+            .await;
+    assert_eq!(
+        folders_listed(test_support::body_string(listed).await),
+        vec![1, 2],
+        "one folder of Shelf sent back, and Shelf is still granted whole"
+    );
+    let conn = state.library.conn();
+    assert_eq!(
+        taiyaku_library::account::libraries_for(&conn, reader).expect("reads"),
+        vec![70]
+    );
 }

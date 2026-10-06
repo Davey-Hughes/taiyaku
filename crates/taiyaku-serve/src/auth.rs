@@ -323,7 +323,8 @@ pub struct Principal {
     pub role: Role,
     pub can_download: bool,
     pub can_stream: bool,
-    /// The roots this account was granted, and **the restriction**.
+    /// The folders of the libraries this account was granted, and **the
+    /// restriction**.
     ///
     /// An empty grant sees *every* root, which is counter-intuitive and
     /// deliberate: `user_root` had no writer before spec C1, so every account
@@ -332,7 +333,7 @@ pub struct Principal {
     /// grant a **non-admin** account receives is the moment it stops seeing
     /// everything.
     ///
-    /// **Always empty for an administrator, whatever `user_root` holds —
+    /// **Always empty for an administrator, whatever `user_library` holds —
     /// O86.** [`Principal::from_account`] drops the grant there rather than
     /// here, so nothing downstream has to ask about the role: this field alone
     /// is the answer, and it already means "unrestricted" when empty. The row
@@ -385,10 +386,10 @@ impl Principal {
     /// **An administrator is unrestricted in every dimension, whatever the
     /// rows say — O86.**
     ///
-    /// `role`, `user_root`, `can_download` and `can_stream` are four
-    /// independent columns and spec A2 lists them side by side without saying
-    /// whether they compose. They do not: **role dominates the other three**,
-    /// and this is the one place that is decided.
+    /// `role`, the grants in `user_library`, `can_download` and `can_stream`
+    /// are four independent settings and spec A2 lists them side by side
+    /// without saying whether they compose. They do not: **role dominates the
+    /// other three**, and this is the one place that is decided.
     ///
     /// The reason is not tidiness. An administrator edits rows that no grant
     /// can scope: `series_title` is keyed `(series_id, title)` with no
@@ -403,7 +404,7 @@ impl Principal {
     /// would have to remember.
     ///
     /// **Dropped here rather than refused by `taiyaku library user
-    /// grant-root`.** All three resolvers — API key, HTTP Basic, session
+    /// grant-library`.** All three resolvers — API key, HTTP Basic, session
     /// cookie — build through this function, so no route can be forgotten;
     /// and a CLI refusal would leave an existing grant live, including one on
     /// an account promoted to admin after it was granted. The row is kept

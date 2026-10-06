@@ -24602,3 +24602,200 @@ browser 184, unchanged.
 running, when each work it commits moves the counter and every tick reads
 every work again; how long one refresh of the whole copy takes; and a library
 larger than the 1,896-work copy.
+
+## Libraries, F1 (2026-10-06)
+
+Part F1 of `docs/superpowers/specs/2026-10-05-libraries-design.md`: the store
+keeps libraries, and nothing in the web app changes yet.
+
+**What changed.** Migration 15 adds `library` (a name, unique), gives `root`,
+`series` and `work` a `library_id`, rebuilds `work` so that `content_key` is
+unique within a library rather than across the store, and replaces `user_root`
+with `user_library`. Each existing root becomes a library of its own, taking
+the root's id. A library's id is `AUTOINCREMENT`, so it is never given to a
+later library. Triggers keep the shape: `root_gets_a_library` files a
+root inserted without a library under one of its own, the two
+`library_emptied_*` delete a library with its last root, and the two
+`only_grant_refuses_*` refuse to delete or re-file the last root of a library
+that is some account's only grant. Derivation groups by library, and its
+series and work lookups are scoped to it. Proposals pair series of one
+library only, and one whose two series are in different libraries is refused
+at accept. A grant names a library and resolves to its folders. The CLI
+gained `library libraries`, `scan --library` and `user
+grant-library|revoke-library`; `scan --add` says which library the folder
+went to and whether it made it, and `user list` shows each account's grants.
+
+**Migration 15 files a work under its hub edition's library** because
+`hand::path_for` addresses a work's document off the hub edition's root, so
+the work stays with its document.
+
+**`ON DELETE SET NULL`, not CASCADE, on `work` and `series`.** A library goes
+only with its last root. Where the root is removed, `scan::apply_removal` has
+already deleted every work that root alone accounted for; what still carries
+the library has material elsewhere, and CASCADE would delete it uncounted.
+
+**A row in no library is taken only by a library whose folders hold it.**
+The plan had any library take one, the lowest id first. A review ran it: a
+folder alone in its library was moved to another, a third library with a
+lower id then scanned a folder holding the same title and volume, and the
+moved folder's work went to the third library with its reading position.
+Now a work in no library is taken by a library only where it has a member
+under one of that library's roots, or no member under any root (an imported
+one); a series likewise, by its works. The rule is written once, as
+`libraries::own_or_adoptable_work` and `own_or_adoptable_series`, and
+spliced into each statement by which a derive or a hand document finds a
+work or a series for a library.
+
+**Removing the last folder of a library that is an account's only grant is
+refused**, naming the accounts. A library goes with its last folder and its
+grants with it, and an account with no grant sees every library. The check
+is `scan::removal_refusal`, asked by the removal and by its dry run, and the
+route answers it 409. An administrator's grant counts: it does nothing while
+the account administers, and its row is what a demotion restores.
+
+**A library's name is looked up as given first, and stripped of spaces
+second.** Migration 15's backfill keeps the spaces of two folders whose whole
+paths differ only in surrounding spaces. With a stripped lookup alone, run
+over such a backfill, the spaced library's own name answered the other one:
+`scan --library` walked the other's folder and `grant-library` granted it
+while printing the name typed.
+
+**Two fixes from reading the branch whole.** The rule preview counted
+series by title, which was right while one title was one series. A reviewer
+ran it with `Alpha` in two libraries: it previewed four series where five
+held works, and reported a rename into a title only the other library holds
+as a merge. It counts series by row now. And a `taiyaku.json` import, which
+looks its work up across the store, chose among several works of one content
+without asking which already held the document. Run with the same bytes in
+two libraries and the first library's folder since removed, the document's
+next import moved it to the other library's work and left the first with
+the reader's position and note. The work whose `sidecar_path` is the
+document's path answers first now. A first import of a document beside one
+library's copy can still land on another library's work of that content
+(O194).
+
+**On a copy of the real library** (`/home/davey/temp/manga-test/library.db`,
+copied to scratch; the release binary at `93bd9033`; `uptime` read between
+3.8 and 5.3 across the timed runs):
+
+- Before: schema 13, one root, 1896 works, 138 series.
+- `library libraries` migrated the copy to 15 and listed it in 0.015 s:
+  `Volumes: 1 folder(s), 1896 work(s)`. The dump of every work's id, slug,
+  content key, title and series was byte-identical to before. 134 series were
+  filed and 4, each holding no work, were in no library. The FTS
+  integrity check, `foreign_key_check` and `integrity_check` were clean.
+- A scratch folder holding `Akame ga KILL!/Akame ga KILL! - v01`, a title the
+  copy already has, added with `scan --add … --library "Drive Other"`: 0.50 s,
+  `derived 136 series, 1897 works`, one work in `Drive Other` and 1896 in
+  `Volumes`, two series of that title, and the dump of `Volumes`' works still
+  byte-identical, then and after eight more derives. That derive also filed
+  one of the four series in no library under `Volumes`, the one a
+  chapter-only directory there names; the other three stayed.
+- `main` (`d1630cbb`), given the same folder on a second copy, answered
+  `1896 works … 1 rekeyed, 1 merged`: it folded the scratch volume into
+  `Volumes`' first work and changed that work's content key.
+- A walk of the scratch folder and a derive of everything took 0.43 to
+  0.62 s on the branch and 0.37 to 0.45 s on `main`, over five runs of each,
+  interleaved.
+- Served: the administrator was listed 1897 works by `/api/works` and by
+  OPDS, and 2 roots; an account granted `Drive Other` alone, 1, 1 and 1, and
+  a 404 for a work of `Volumes`. `DELETE /api/library/roots/2`, dry run and
+  real, answered 409 with the refusal naming that account, and the works
+  were still 1897.
+- The original's digest was unchanged afterwards, and nothing under its
+  folder was newer than the marker laid down when the copy was made.
+- After `library.id` became `AUTOINCREMENT`, the migration was run again on a
+  fresh copy with the same result: the dump byte-identical and the three
+  integrity checks clean. A library made after another had been deleted took
+  the next number, 3, and not the freed 2.
+
+**What a folder moved between libraries does**, for F2's Move action (O192).
+Nothing in F1 moves one; each of these was run by a reviewer, by setting
+`root.library_id` by hand and deriving:
+
+- A folder alone in its library, moved into a library holding nothing at its
+  works' addresses: the works keep their rows, slugs and positions and are
+  filed under the new library (`derive::tests`'
+  `a_folder_moved_out_of_a_library_it_was_alone_in_keeps_its_works` and
+  `a_folder_moved_out_of_its_library_and_then_changed_keeps_its_work`).
+- The same folder moved into a library that holds the same edition of a
+  volume: the moved work stays in no library with its position, and both
+  derives that were run reported `unfolded_works=1`.
+- Moved into a library that holds the volume under another edition key: the
+  moved work is folded into that one (`emptied_works=1`,
+  `moved_positions=1`), its row and slug are deleted, and its series is left
+  in no library.
+- A folder moved out of a library that keeps another folder: its works are
+  minted again under the new library and the old ones folded into them, so
+  each has a new id and slug. With `keeps_documents` off, the new work had
+  lost its hand title, hand volume and tag, and the series' alt title and
+  external id stayed on the old series; with it on, they came back from the
+  document.
+- A work spanning the moved folder and one that stays is not folded: the old
+  work keeps both editions and both positions, and the new library's work
+  has no position.
+- A work with members under two libraries' folders, in no library, goes to
+  the library with the lower id whatever its hub.
+
+One of these needs no move. Where migration 15 split a work across two
+libraries, removing the folder that holds the old work's hub edition leaves
+that work in no library with its positions and notes, an empty hub edition
+and the other library's kept edition, and the derives run after it each
+reported `unfolded_works=1`. Removing the other folder instead removes the split-off
+work, counted, and leaves the old work an empty edition with its position and
+note still on it.
+
+**What migration 15 leaves in a store that held works across two roots, or
+an accepted proposal**, each run by a reviewer; the one-edition case was run
+in a store the branch made and split by hand. The real copy has one root and no accepted
+proposal, so none of this.
+
+- A work with an edition from each root: the old work keeps its id, slug,
+  hand title, document, and the positions and notes on both editions. The
+  other root's library gets a new work with a new slug, the derived title and
+  no positions. A second and a third scan change no row.
+- One edition gathered from both roots: the old work is rekeyed and keeps
+  only its own root's pages. In the run it went from 5 pages to 2 with a
+  position left at slot 4, and the other folder's pages became a new work
+  with no position.
+- A series that spanned the roots keeps its hand titles in the library where
+  most of its works are. The other library's works move to a newly minted
+  series of the scanned title, and where documents are kept each scan
+  reports "1 document(s) disagree with the database".
+- A proposal accepted before F1 leaves its subject series holding no work,
+  so the migration leaves that series in no library. Un-accepting and
+  accepting again is refused until a scan has filed it (O190).
+
+**On SQLite 3.40.1**, which CI and the image link where this workstation has
+3.53: the tests of the three crates that link SQLite (`taiyaku-library`,
+`taiyaku-serve`, `taiyaku-cli`) were run inside `rust:1-bookworm` over an
+export of the branch, and all passed but two, which trace with `strace`;
+that container did not have it. Reviewers also ran migration 15 and its
+triggers on 3.40.1 builds of their own.
+
+**For F2 and F3**, from the whole-branch reviews. Unticking one folder of a
+two-folder library on the Users screen does nothing (O193). The Roots
+screen never shows the name of the library a folder it adds was given, and
+draws the 409 refusal as the raw response. An unrestricted account's grid,
+search, works list and OPDS feed show two series or two works of one name
+with nothing to tell them apart.
+
+**The mutation sweep** (`scripts/mutants.sh --since main`): 249 mutants in
+20 minutes, 199 caught, 50 unviable, none missed, no timeouts. Each unviable
+one replaces a function's whole body with a value that does not compile
+there, which leaves some functions in the changed lines with no viable
+mutant; `docs/mutants-baseline.md` names them. cargo-mutants never mutates a
+string literal, and much of the branch's scoping is SQL inside one. What
+those statements say was tested by the defects applied by hand in the
+branch's tasks and reviews.
+
+**Counts**, each against `main`: Rust 2281 to 2421. The web's are unchanged,
+since no file under `web/` changed.
+
+**Not measured**: the NAS; a library larger than the 1,896-work copy; how
+many titles or byte-identical volumes the NAS's libraries share (spec §13);
+what the adoption rule's subqueries cost where many rows are in no library,
+since on the copy every work was filed; and `scan --library`
+beside a folder of another library with `keeps_documents` on, where the
+store-wide derive that follows can write a missing document back under that
+other folder (read, not run).

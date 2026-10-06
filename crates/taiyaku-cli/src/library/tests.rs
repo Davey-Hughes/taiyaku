@@ -253,6 +253,7 @@ fn library_refuses_an_unknown_subcommand() {
     assert!(err.contains("frobnicate"), "{err}");
     assert!(err.contains("import"), "{err}");
     assert!(err.contains("export"), "{err}");
+    assert!(err.contains("scan, libraries,"), "{err}");
 }
 
 #[test]
@@ -260,6 +261,7 @@ fn library_with_no_subcommand_is_a_refusal_not_a_panic() {
     let err = command(&[]).unwrap_err();
     assert!(err.contains("import"), "{err}");
     assert!(err.contains("export"), "{err}");
+    assert!(err.contains("scan, libraries,"), "{err}");
 }
 
 // -- import: argument validation, no filesystem or database touched -------
@@ -2062,20 +2064,24 @@ fn a_root(id: i64, path: &Path) -> taiyaku_library::scan::Root {
         exclude_globs: None,
         scan_interval_secs: None,
         keeps_documents: false,
+        library_id: 1,
     }
 }
 
 #[test]
 fn select_roots_refuses_an_empty_list_and_names_add() {
-    let err = select_roots(Vec::new(), None).unwrap_err();
-    assert!(err.contains("--add"), "{err}");
+    let err = select_roots(Vec::new(), None, None).unwrap_err();
+    assert_eq!(
+        err,
+        "there are no folders to scan; pass --add PATH to add one"
+    );
 }
 
 #[test]
 fn select_roots_with_no_filter_returns_every_root() {
     let dir = scratch("select-roots-no-filter");
     let roots = vec![a_root(1, &dir)];
-    let selected = select_roots(roots.clone(), None).expect("selects");
+    let selected = select_roots(roots.clone(), None, None).expect("selects");
     assert_eq!(selected, roots);
 }
 
@@ -2091,7 +2097,7 @@ fn select_roots_filters_to_the_named_path() {
         a_root(2, &b.canonicalize().unwrap()),
     ];
 
-    let selected = select_roots(roots, Some(a.to_str().unwrap())).expect("selects");
+    let selected = select_roots(roots, Some(a.to_str().unwrap()), None).expect("selects");
     assert_eq!(selected.len(), 1);
     assert_eq!(selected[0].id, 1);
 }
@@ -2105,8 +2111,122 @@ fn select_roots_refuses_a_path_matching_no_known_root() {
     std::fs::create_dir_all(&elsewhere).unwrap();
     let roots = vec![a_root(1, &known.canonicalize().unwrap())];
 
-    let err = select_roots(roots, Some(elsewhere.to_str().unwrap())).unwrap_err();
+    let err = select_roots(roots, Some(elsewhere.to_str().unwrap()), None).unwrap_err();
     assert!(err.contains("--add"), "{err}");
+}
+
+/// The folder of another library carries the wanted library's id as its own
+/// id, and is not kept for it.
+#[test]
+fn select_roots_keeps_only_the_named_librarys_folders() {
+    let dir = scratch("select-roots-library");
+    let roots = vec![
+        taiyaku_library::scan::Root {
+            library_id: 70,
+            ..a_root(1, &dir.join("a"))
+        },
+        taiyaku_library::scan::Root {
+            library_id: 80,
+            ..a_root(70, &dir.join("b"))
+        },
+        taiyaku_library::scan::Root {
+            library_id: 70,
+            ..a_root(3, &dir.join("c"))
+        },
+        taiyaku_library::scan::Root {
+            library_id: 60,
+            ..a_root(4, &dir.join("d"))
+        },
+    ];
+    let selected = select_roots(roots, None, Some(70)).expect("selects");
+    assert_eq!(
+        selected.iter().map(|r| r.id).collect::<Vec<_>>(),
+        vec![1, 3]
+    );
+}
+
+/// A library none of the roots is filed under leaves nothing to walk, which
+/// is the refusal an empty store gets.
+#[test]
+fn select_roots_refuses_a_library_with_no_folder_to_walk() {
+    let dir = scratch("select-roots-empty-library");
+    let roots = vec![taiyaku_library::scan::Root {
+        library_id: 80,
+        ..a_root(1, &dir.join("a"))
+    }];
+    let err = select_roots(roots, None, Some(70)).unwrap_err();
+    assert_eq!(
+        err,
+        "there are no folders to scan; pass --add PATH to add one"
+    );
+}
+
+// -- libraries: the lines are pure, the command hits a real database --------
+
+#[test]
+fn the_library_line_names_the_library_and_counts_its_folders_and_works() {
+    let listed = taiyaku_library::libraries::Listed {
+        id: 7,
+        name: "Manga".to_string(),
+        folders: vec![
+            PathBuf::from("/srv/volumes"),
+            PathBuf::from("/srv/chapters"),
+        ],
+        works: 5,
+    };
+    assert_eq!(library_line(&listed), "Manga: 2 folder(s), 5 work(s)");
+}
+
+#[test]
+fn the_unfiled_line_appears_only_when_works_are_in_no_library() {
+    assert_eq!(unfiled_line(0), None);
+    assert!(unfiled_line(1).is_some());
+    assert_eq!(unfiled_line(3).as_deref(), Some("3 work(s) in no library"));
+}
+
+#[test]
+fn the_added_line_says_whether_the_library_was_created_or_joined() {
+    assert_eq!(
+        added_line("Manga", true),
+        "created the library `Manga` for this folder"
+    );
+    assert_eq!(
+        added_line("Manga", false),
+        "filed under the library `Manga`"
+    );
+}
+
+#[test]
+fn the_no_libraries_line_appears_only_when_there_is_no_library() {
+    assert_eq!(
+        no_libraries_line(0).as_deref(),
+        Some("no libraries yet; `taiyaku library scan --add PATH` adds a folder as one")
+    );
+    assert_eq!(no_libraries_line(1), None);
+}
+
+#[test]
+fn libraries_refuses_a_bare_word_and_an_unknown_flag() {
+    let dir = scratch("libraries-refusals");
+    let db = dir.join("library.db").display().to_string();
+
+    assert_eq!(
+        command(&[
+            "libraries".into(),
+            "Manga".into(),
+            "--db".into(),
+            db.clone()
+        ]),
+        Err(
+            "library libraries takes no arguments, and `Manga` was given as one — it takes \
+             flags only"
+                .to_string()
+        )
+    );
+    assert_eq!(
+        command(&["libraries".into(), "--all".into(), "--db".into(), db]),
+        Err("library libraries has no flag `--all`; its flags are --db".to_string())
+    );
 }
 
 // -- scan: command dispatch, over a real filesystem and database ------------
@@ -2367,6 +2487,104 @@ fn scan_root_flag_scans_only_the_named_root() {
         "--root b must not have scanned root a's new file"
     );
     assert_eq!(b_has_new, 1, "--root b must have scanned root b's new file");
+}
+
+/// A folder at `path` holding one file, and its canonical path.
+fn a_folder(path: &Path) -> PathBuf {
+    std::fs::create_dir_all(path).expect("mkdir");
+    std::fs::write(path.join("placeholder.txt"), b"x").expect("write");
+    path.canonicalize().expect("canonical")
+}
+
+/// `scan --add folder --no-derive` against `db`, under `--library` when one
+/// is named.
+fn scan_add(db: &Path, folder: &Path, library: Option<&str>) -> Result<(), String> {
+    let mut args = vec![
+        "scan".to_string(),
+        "--add".to_string(),
+        folder.display().to_string(),
+    ];
+    if let Some(name) = library {
+        args.extend(["--library".to_string(), name.to_string()]);
+    }
+    args.extend([
+        "--no-derive".to_string(),
+        "--db".to_string(),
+        db.display().to_string(),
+    ]);
+    command(&args)
+}
+
+/// Every library `db` holds with its folders, sorted.
+fn libraries_and_folders(db: &Path) -> Vec<(String, Vec<PathBuf>)> {
+    let library = taiyaku_library::Library::open(db).expect("open");
+    let conn = library.conn();
+    let mut held: Vec<_> = taiyaku_library::libraries::list(&conn)
+        .expect("lists")
+        .into_iter()
+        .map(|one| (one.name, one.folders))
+        .collect();
+    held.sort();
+    held
+}
+
+/// `--add` with no `--library` makes a library for the folder. A library
+/// already called by the folder's name does not take it: the folder's
+/// library is named by its whole path.
+#[test]
+fn scan_add_without_a_library_never_joins_one_already_held() {
+    let dir = scratch("scan-add-own-library");
+    let first = a_folder(&dir.join("one/Manga"));
+    let second = a_folder(&dir.join("two/Manga"));
+    let db = dir.join("library.db");
+
+    scan_add(&db, &first, None).expect("adds the first folder");
+    scan_add(&db, &second, None).expect("adds the second folder");
+
+    let mut expected = vec![
+        ("Manga".to_string(), vec![first]),
+        (second.display().to_string(), vec![second]),
+    ];
+    expected.sort();
+    assert_eq!(libraries_and_folders(&db), expected);
+}
+
+/// The same where the library was named with `--library`: a folder called
+/// what that library is called is not added to it.
+#[test]
+fn scan_add_without_a_library_does_not_join_the_library_its_folder_is_named_for() {
+    let dir = scratch("scan-add-named-apart");
+    let shelf = a_folder(&dir.join("shelf"));
+    let volumes = a_folder(&dir.join("Volumes"));
+    let db = dir.join("library.db");
+
+    scan_add(&db, &shelf, Some("Volumes")).expect("adds the shelf as `Volumes`");
+    scan_add(&db, &volumes, None).expect("adds the folder called Volumes");
+
+    let mut expected = vec![
+        ("Volumes".to_string(), vec![shelf]),
+        (volumes.display().to_string(), vec![volumes]),
+    ];
+    expected.sort();
+    assert_eq!(libraries_and_folders(&db), expected);
+}
+
+/// `--add PATH --library NAME` files the folder under `NAME`, which is made
+/// by the first such add and joined by the second.
+#[test]
+fn scan_add_with_a_library_files_the_folder_under_it() {
+    let dir = scratch("scan-add-named");
+    let volumes = a_folder(&dir.join("Volumes"));
+    let chapters = a_folder(&dir.join("Chapters"));
+    let db = dir.join("library.db");
+
+    scan_add(&db, &volumes, Some("Manga")).expect("adds the first folder, making `Manga`");
+    scan_add(&db, &chapters, Some("Manga")).expect("adds the second folder to `Manga`");
+
+    assert_eq!(
+        libraries_and_folders(&db),
+        vec![("Manga".to_string(), vec![volumes, chapters])]
+    );
 }
 
 /// §8.1's refusal on one root — and an outright `scan_root` error, the same

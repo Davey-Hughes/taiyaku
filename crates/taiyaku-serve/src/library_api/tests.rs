@@ -475,6 +475,56 @@ async fn the_same_reader_granted_the_right_root_is_not_refused() {
     );
 }
 
+/// The titles in `listed`, sorted.
+fn titles_in(listed: &serde_json::Value) -> Vec<String> {
+    let mut titles: Vec<String> = listed
+        .as_array()
+        .expect("a list of works")
+        .iter()
+        .map(|work| work["title"].as_str().expect("a title").to_string())
+        .collect();
+    titles.sort();
+    titles
+}
+
+/// A reader granted the library `Shelf` browses the work under each of its
+/// two folders, and not the work under `Other`: in the grid, in a search, on
+/// the home lists and at each work's own address.
+#[tokio::test]
+async fn the_grid_shows_every_folder_of_a_granted_library() {
+    let tmp = test_support::Fixture::new("library-api-granted-library");
+    let (router, state) = test_support::router_over_a_granted_two_folder_library(&tmp);
+    let shelf = vec![
+        "First Folder Work".to_string(),
+        "Second Folder Work".to_string(),
+    ];
+
+    let grid = get_json(&router, "/api/library/series").await;
+    assert_eq!(titles_in(&grid["unfiled"]), shelf, "the grid: {grid}");
+
+    let found = get_json(&router, "/api/library/search?q=Work").await;
+    assert_eq!(titles_in(&found["unfiled"]), shelf, "a search: {found}");
+
+    let home = get_json(&router, "/api/library/home").await;
+    assert_eq!(titles_in(&home["added"]), shelf, "recently added: {home}");
+
+    for (title, expected) in [
+        ("First Folder Work", axum::http::StatusCode::OK),
+        ("Second Folder Work", axum::http::StatusCode::OK),
+        ("Other Library Work", axum::http::StatusCode::NOT_FOUND),
+    ] {
+        let slug: String = state
+            .library
+            .conn()
+            .query_row("SELECT slug FROM work WHERE title = ?1", [title], |r| {
+                r.get(0)
+            })
+            .expect("the work's slug");
+        let response = get(&router, &format!("/api/library/works/{slug}")).await;
+        assert_eq!(response.status(), expected, "{title}");
+    }
+}
+
 #[tokio::test]
 async fn the_grid_carries_the_two_fields_the_chips_sort_and_filter_on() {
     // **Not `router_over_a_library`.** That fixture only imports a work via
