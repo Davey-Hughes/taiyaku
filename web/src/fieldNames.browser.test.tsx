@@ -575,7 +575,11 @@ describe('the headings of the libraries screen, in Chromium’s own tree', () =>
       { role: 'heading', name: 'Manga', level: 3 },
       { role: 'heading', name: root.path, level: 4 },
       { role: 'heading', name: 'What the walk found', level: 5 },
-      { role: 'heading', name: 'What derivation made of it', level: 5 },
+      {
+        role: 'heading',
+        name: 'What derivation made of every library',
+        level: 5,
+      },
       { role: 'heading', name: 'Make a library', level: 3 },
     ])
   })
@@ -615,7 +619,11 @@ describe('the headings of the libraries screen, in Chromium’s own tree', () =>
     await press(host.querySelector('.remove-library .confirm') as Element)
     expect(await treeOf(['heading'])).toEqual([
       { role: 'heading', name: 'Libraries', level: 2 },
-      { role: 'heading', name: 'What derivation made of it', level: 3 },
+      {
+        role: 'heading',
+        name: 'What derivation made of every library',
+        level: 3,
+      },
       { role: 'heading', name: 'Make a library', level: 3 },
     ])
   })

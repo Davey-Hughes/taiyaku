@@ -125,7 +125,7 @@ describe('RemoveRoot', () => {
       ...host.querySelectorAll('.removal-derive .report-heading'),
     ]
     expect(headings.map((h) => h.textContent)).toEqual([
-      'What derivation made of it',
+      'What derivation made of every library',
     ])
     expect(headings.map((h) => h.tagName)).toEqual(['H5'])
   })

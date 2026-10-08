@@ -4,11 +4,12 @@
 //! **A library is born with a folder and goes with its last one.** There is no
 //! public way to make an empty one: [`crate::scan::add_root_in`] creates a
 //! named library in the same transaction as the folder it is created for, and
-//! migration 15's triggers file a root inserted without a library under one of
-//! its own and delete a library whose last root goes. A grant names a library
-//! and `account::roots_for` resolves it to that library's folders, so an empty
-//! library would be a grant resolving to no folder, which `Principal.roots`
-//! reads as unrestricted.
+//! the `root_gets_a_library` trigger (migration 16) files a root inserted
+//! without a library under one of its own, and migration 15's
+//! `library_emptied_by_delete` deletes a library whose last root goes. A grant
+//! names a library and `account::roots_for` resolves it to that library's
+//! folders, so an empty library would be a grant resolving to no folder, which
+//! `Principal.roots` reads as unrestricted.
 
 use std::path::PathBuf;
 
@@ -69,43 +70,38 @@ pub fn list(conn: &Connection) -> Result<Vec<Listed>, String> {
     Ok(listed)
 }
 
-/// `name` with spaces stripped from both ends, and nothing else stripped.
+/// `name` with white space stripped from both ends: the characters Unicode
+/// calls White_Space, which `str::trim` strips.
 ///
 /// **One character set wherever a library name is made or looked up.**
-/// Migration 15's trigger and backfill name a library with SQLite's
-/// one-argument `trim`, which strips spaces only, so Rust strips the same:
-/// `str::trim` would also strip tabs and other whitespace the trigger keeps,
-/// and a name stripped one way could not be found by a lookup stripped the
-/// other.
+/// Migration 16's trigger names a library with SQLite's two-argument `trim`
+/// over the same characters, listed by code point, so a name made by either
+/// is found by a lookup made through this one. `libraries/tests.rs` checks the
+/// lists against this.
 pub(crate) fn trim_name(name: &str) -> &str {
-    name.trim_matches(' ')
+    name.trim()
 }
 
-/// The library called `name`, if there is one: the library holding exactly
-/// `name`, and otherwise the one holding `name` stripped of spaces as
-/// [`trim_name`] strips them.
+/// The library called `name`, if there is one: the library whose name is
+/// `name` stripped by [`trim_name`], in any ASCII case.
 ///
-/// [`create`] and migration 15's trigger store a name stripped, so the
-/// stripped lookup finds a name typed with a space too many. Migration 15's
-/// backfill keeps the spaces of folders whose whole paths differ only in
-/// surrounding spaces, and the exact lookup comes first for those: such a
-/// name answers its own library, not the one holding the same name without
-/// the spaces.
+/// At most one answers. A name is stored stripped, and migration 16's index
+/// refuses two names that differ only in ASCII case.
 ///
 /// # Errors
 ///
 /// Returns an error if the read fails.
 pub fn id_of(conn: &Connection, name: &str) -> Result<Option<i64>, String> {
     conn.query_row(
-        "SELECT id FROM library WHERE name IN (?1, ?2) ORDER BY name = ?1 DESC LIMIT 1",
-        [name, trim_name(name)],
+        "SELECT id FROM library WHERE name = ?1 COLLATE NOCASE",
+        [trim_name(name)],
         |r| r.get(0),
     )
     .optional()
     .map_err(|e| format!("looking up the library `{name}`: {e}"))
 }
 
-/// A new library called `name`, stripped of spaces by [`trim_name`].
+/// A new library called `name`, stripped by [`trim_name`].
 /// **Crate-only**, so a library is only ever made together with its first
 /// folder; see this module's doc.
 ///
@@ -113,13 +109,10 @@ pub fn id_of(conn: &Connection, name: &str) -> Result<Option<i64>, String> {
 ///
 /// Returns an error if `name` is empty once trimmed, or taken.
 pub(crate) fn create(conn: &Connection, name: &str) -> Result<i64, String> {
-    // Any whitespace counts as no name, not only spaces: refusing a name that
-    // would be invisible is not stripping one, so the stored name keeps
-    // `trim_name`'s set.
-    if name.trim().is_empty() {
+    let name = trim_name(name);
+    if name.is_empty() {
         return Err("a library needs a name".to_string());
     }
-    let name = trim_name(name);
     conn.execute("INSERT INTO library (name) VALUES (?1)", [name])
         .map_err(|e| format!("creating the library `{name}`: {e}"))?;
     Ok(conn.last_insert_rowid())
@@ -151,18 +144,20 @@ pub enum RenameError {
 /// Rename library `id`, storing `name` stripped by [`trim_name`], and answer
 /// the name stored.
 ///
-/// **`library.name`'s UNIQUE is what refuses a name another library holds.**
-/// A lookup before the write would be a second statement for a second writer
-/// to land between, and the CLI is one.
+/// **`library.name`'s UNIQUE and migration 16's index are what refuse a name
+/// another library holds**, in any ASCII case. A lookup before the write
+/// would be a second statement for a second writer to land between, and the
+/// CLI is one. The refusal names the other library as it is stored, which is
+/// not `name` where only the case differs.
 ///
 /// # Errors
 ///
 /// See [`RenameError`].
 pub fn rename(conn: &Connection, id: i64, name: &str) -> Result<String, RenameError> {
-    if name.trim().is_empty() {
+    let name = trim_name(name);
+    if name.is_empty() {
         return Err(RenameError::Unusable("a library needs a name".to_string()));
     }
-    let name = trim_name(name);
     match conn.execute(
         "UPDATE library SET name = ?2 WHERE id = ?1",
         rusqlite::params![id, name],
@@ -172,8 +167,17 @@ pub fn rename(conn: &Connection, id: i64, name: &str) -> Result<String, RenameEr
         Err(rusqlite::Error::SqliteFailure(e, _))
             if e.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE =>
         {
+            let holder: Option<String> = conn
+                .query_row(
+                    "SELECT name FROM library WHERE name = ?1 COLLATE NOCASE AND id <> ?2",
+                    rusqlite::params![name, id],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(|e| RenameError::Failed(format!("renaming library {id}: {e}")))?;
             Err(RenameError::Unusable(format!(
-                "a library is already called `{name}`"
+                "a library is already called `{}`",
+                holder.as_deref().unwrap_or(name)
             )))
         }
         Err(e) => Err(RenameError::Failed(format!("renaming library {id}: {e}"))),

@@ -35,29 +35,9 @@ import { FolderPicker } from './FolderPicker'
 import { createLibrary, type Library, listLibraries } from './libraries'
 import { LibraryCard } from './LibraryCard'
 import { sentenceOf } from './message'
+import { Refusal } from './Refusal'
+import { reveal } from './reveal'
 import { DeriveSection } from './ScanReport'
-
-/**
- * Whether the head of `el` is in the window, below whatever sticks to its top.
- * `scroll-margin-top` is where the stylesheet says how much that is.
- */
-function inView(el: HTMLElement): boolean {
-  const at = el.getBoundingClientRect()
-  const clear = Number.parseFloat(getComputedStyle(el).scrollMarginTop) || 0
-  return (
-    at.top >= clear - 1 &&
-    at.top + Math.min(at.height, 48) <= window.innerHeight
-  )
-}
-
-/**
- * Scrolls `el` to the top of the view unless its head is already in it.
- * Not `block: 'nearest'`: for a report taller than the window that lands on
- * its foot. `scrollIntoView` is optional-chained because jsdom has none.
- */
-function reveal(el: HTMLElement) {
-  if (!inView(el)) el.scrollIntoView?.({ block: 'start' })
-}
 
 export function Libraries() {
   const [libraries, setLibraries] = useState<Library[] | undefined>()
@@ -78,6 +58,15 @@ export function Libraries() {
   const [name, setName] = useState('')
   const [folders, setFolders] = useState<string[]>([])
   const [creating, setCreating] = useState(false)
+  /** The text in the make form's path box, which is not a folder until added. */
+  const [pending, setPending] = useState('')
+  const heldWhy = useId()
+  /**
+   * "Make the library" is held while no folder is on the list, and a path in
+   * the box looks like one that is (O209). Said only then: a held button
+   * with an empty box has nothing in it to explain.
+   */
+  const heldByPath = folders.length === 0 && pending.trim() !== ''
   /** What the re-derive after the last removal found, and whose it was. */
   const [removal, setRemoval] = useState<
     { name: string; derive: Derived } | undefined
@@ -324,6 +313,7 @@ export function Libraries() {
         )}
         <FolderPicker
           action="Add to the list"
+          onPath={setPending}
           onPick={(path) => {
             setCreateFailure(undefined)
             setFolders((held) => (held.includes(path) ? held : [...held, path]))
@@ -332,10 +322,17 @@ export function Libraries() {
         <button
           type="submit"
           disabled={creating || name === '' || folders.length === 0}
+          aria-describedby={heldByPath ? heldWhy : undefined}
         >
           {creating ? 'Checking…' : 'Make the library'}
         </button>
-        {createFailure !== undefined && <p role="alert">{createFailure}</p>}
+        {heldByPath && (
+          <p className="why" id={heldWhy}>
+            The folder in the box is not on the list yet: “Add to the list” puts
+            it there.
+          </p>
+        )}
+        {createFailure !== undefined && <Refusal>{createFailure}</Refusal>}
         <p className="why">
           Folders in one library are derived together: a chapter release in one
           folder joins its volume in another as a second edition.

@@ -110,7 +110,7 @@ describe('the Rules screen’s save report', () => {
       await document.fonts.ready
 
       const heading = details.querySelector('.report-heading') as HTMLElement
-      expect(heading.textContent).toBe('What derivation made of it')
+      expect(heading.textContent).toBe('What derivation made of every library')
       const style = getComputedStyle(heading)
       // The body's size: never louder than the summary that opened it.
       expect(style.fontSize).toBe(

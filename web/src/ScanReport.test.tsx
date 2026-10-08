@@ -68,6 +68,13 @@ const finished = (over: Partial<FinishedScan> = {}): FinishedScan => ({
 })
 
 describe('ScanReport', () => {
+  it('heads the derive block as covering every library', () => {
+    const host = mount(<ScanReport outcome={finished()} />)
+    expect(
+      host.querySelector('.derived h3, .derived h4, .derived h5')?.textContent,
+    ).toBe('What derivation made of every library')
+  })
+
   it('draws an empty unreadable list as zero rather than omitting it', () => {
     // C4 §3's whole discipline. "Nothing unreadable this time" and "this
     // field does not exist in this version" must not look the same, and a

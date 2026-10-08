@@ -235,12 +235,12 @@ describe('RootRow', () => {
   it('draws the 409 naming the scan already running', async () => {
     vi.mocked(config.startScan).mockRejectedValue(
       new Error(
-        '/api/library/roots/3/scan: 409 a scan of root 3 (/srv/manga) is already running',
+        '/api/library/roots/3/scan: 409 a scan of /srv/manga is already running',
       ),
     )
     const host = await settle()
     await act(async () => {
-      press(host, 'Scan now').click()
+      press(host, 'Scan folder').click()
       await Promise.resolve()
       await Promise.resolve()
     })
@@ -322,7 +322,7 @@ describe('RootRow', () => {
     const changed = vi.fn()
     const host = await settle({}, changed)
     await act(async () => {
-      press(host, 'Scan now').click()
+      press(host, 'Scan folder').click()
       await Promise.resolve()
       await Promise.resolve()
     })
@@ -347,7 +347,7 @@ describe('RootRow', () => {
   it('clears a stale notice when it adopts a scan', async () => {
     const host = await settle()
     await act(async () => {
-      press(host, 'Scan now').click()
+      press(host, 'Scan folder').click()
       await Promise.resolve()
       await Promise.resolve()
     })
@@ -438,13 +438,13 @@ describe('RootRow', () => {
     expect(config.removeRoot).not.toHaveBeenCalled()
   })
 
-  it('is held while the library’s removal is open: Scan now and Remove… are disabled and send nothing', async () => {
+  it('is held while the library’s removal is open: Scan folder and Remove… are disabled and send nothing', async () => {
     const host = await settle()
     await act(async () => {
       rerender(<RootRow root={root()} held onChanged={vi.fn()} />)
       await Promise.resolve()
     })
-    for (const label of ['Scan now', 'Remove…']) {
+    for (const label of ['Scan folder', 'Remove…']) {
       expect(press(host, label).disabled, label).toBe(true)
       press(host, label).click()
     }
@@ -477,7 +477,7 @@ describe('RootRow', () => {
     expect(onBusy).toHaveBeenLastCalledWith(false)
 
     await act(async () => {
-      press(host as HTMLElement, 'Scan now').click()
+      press(host as HTMLElement, 'Scan folder').click()
       await Promise.resolve()
       await Promise.resolve()
     })
@@ -519,7 +519,7 @@ describe('RootRow', () => {
     )
     const host = await settle()
     await act(async () => {
-      press(host, 'Scan now').click()
+      press(host, 'Scan folder').click()
       await Promise.resolve()
       await Promise.resolve()
     })
@@ -548,7 +548,7 @@ describe('RootRow', () => {
     const changed = vi.fn()
     const host = await settle({}, changed)
     await act(async () => {
-      press(host, 'Scan now').click()
+      press(host, 'Scan folder').click()
       await Promise.resolve()
       await Promise.resolve()
     })
@@ -570,7 +570,7 @@ describe('RootRow', () => {
     )
     const host = await settle()
     await act(async () => {
-      press(host, 'Scan now').click()
+      press(host, 'Scan folder').click()
       await Promise.resolve()
       await Promise.resolve()
     })
@@ -611,7 +611,7 @@ describe('RootRow', () => {
       new Error('/api/library/roots/3/scan: 502 bad gateway'),
     )
     await act(async () => {
-      press(host, 'Scan now').click()
+      press(host, 'Scan folder').click()
       await Promise.resolve()
       await Promise.resolve()
     })
@@ -625,7 +625,7 @@ describe('RootRow', () => {
     expect(
       [...host.querySelectorAll('[role="alert"]')].map((a) => a.textContent),
     ).toEqual(['bad gateway'])
-    expect(press(host, 'Scan now').disabled).toBe(false)
+    expect(press(host, 'Scan folder').disabled).toBe(false)
   })
 
   it('counts missed polls afresh when it adopts a scan', async () => {
@@ -641,7 +641,7 @@ describe('RootRow', () => {
     const changed = vi.fn()
     const host = await settle({}, changed)
     await act(async () => {
-      press(host, 'Scan now').click()
+      press(host, 'Scan folder').click()
       await Promise.resolve()
       await Promise.resolve()
     })
@@ -678,7 +678,7 @@ describe('RootRow', () => {
       )
     const host = await settle()
     await act(async () => {
-      press(host, 'Scan now').click()
+      press(host, 'Scan folder').click()
       await Promise.resolve()
       await Promise.resolve()
     })
@@ -697,17 +697,17 @@ describe('RootRow', () => {
   it("draws a refusal's sentence, not the response it came in", async () => {
     vi.mocked(config.startScan).mockRejectedValue(
       new Error(
-        '/api/library/roots/3/scan: 409 {"error":"a scan of root 3 (/srv/manga) is already running"}',
+        '/api/library/roots/3/scan: 409 {"error":"a scan of /srv/manga is already running"}',
       ),
     )
     const host = await settle()
     await act(async () => {
-      press(host, 'Scan now').click()
+      press(host, 'Scan folder').click()
       await Promise.resolve()
       await Promise.resolve()
     })
     expect(host.querySelector('[role="alert"]')?.textContent).toBe(
-      'a scan of root 3 (/srv/manga) is already running',
+      'a scan of /srv/manga is already running',
     )
     // The 409 is still read from the message, so the row still polls.
     expect(host.querySelector('.scanning')).not.toBeNull()
@@ -747,7 +747,7 @@ describe('RootRow', () => {
 
     const host = await settle()
     await act(async () => {
-      press(host, 'Scan now').click()
+      press(host, 'Scan folder').click()
       await Promise.resolve()
       await Promise.resolve()
     })
@@ -786,7 +786,7 @@ describe('RootRow', () => {
     })
     const host = await settle({}, onChanged)
     await act(async () => {
-      press(host, 'Scan now').click()
+      press(host, 'Scan folder').click()
       await Promise.resolve()
       await Promise.resolve()
     })
@@ -801,7 +801,7 @@ describe('RootRow', () => {
   it('draws the failure when a patch is refused', async () => {
     vi.mocked(config.patchRoot).mockRejectedValue(
       new Error(
-        "/api/library/roots/3: 400 the root's `edition_key` must be a string or null",
+        "/api/library/roots/3: 400 the folder's `edition_key` must be a string or null",
       ),
     )
     const host = await settle()
@@ -849,7 +849,7 @@ describe('RootRow', () => {
     // defect.** The `.catch` used to `setRunning(false)`, so one blip — a
     // proxy 502, a `SQLITE_BUSY` while the scan's own writes hold the file —
     // tore the interval down for good: no progress, no eventual report, and a
-    // re-enabled "Scan now" whose only answer is a 409 about the scan still
+    // re-enabled "Scan folder" whose only answer is a 409 about the scan still
     // running. That is precisely the state this file's mount-read exists to
     // prevent, reached by a different door. The old test pinned it as
     // intended behaviour, which is worse than not having tested it.
@@ -873,7 +873,7 @@ describe('RootRow', () => {
 
     const host = await settle()
     await act(async () => {
-      press(host, 'Scan now').click()
+      press(host, 'Scan folder').click()
       await Promise.resolve()
       await Promise.resolve()
     })
@@ -904,7 +904,7 @@ describe('RootRow', () => {
       .mockRejectedValue(new Error('500 reading the registry'))
     const host = await settle()
     await act(async () => {
-      press(host, 'Scan now').click()
+      press(host, 'Scan folder').click()
       await Promise.resolve()
       await Promise.resolve()
     })
@@ -938,7 +938,7 @@ describe('RootRow', () => {
       await Promise.resolve()
       await Promise.resolve()
     })
-    expect(press(host, 'Scan now').disabled).toBe(true)
+    expect(press(host, 'Scan folder').disabled).toBe(true)
   })
 
   it('puts the checkbox back when its save is refused', async () => {
@@ -1029,7 +1029,7 @@ describe('RootRow', () => {
     })
     const host = await settle()
     await act(async () => {
-      press(host, 'Scan now').click()
+      press(host, 'Scan folder').click()
       await Promise.resolve()
       await Promise.resolve()
     })
@@ -1039,7 +1039,7 @@ describe('RootRow', () => {
       await Promise.resolve()
     })
     expect(host.querySelector('.scan-report')).not.toBeNull()
-    expect(host.textContent).toContain('What derivation made of it')
+    expect(host.textContent).toContain('What derivation made of every library')
     // The report's two headings sit one level beneath the card's h4.
     expect(
       [...host.querySelectorAll('.scan-report .report-heading')].map(
@@ -1143,8 +1143,8 @@ describe('RootRow', () => {
     // **Review finding 2.** `scanStatus` was reached only from the interval,
     // and the interval only existed once `begin()` had run — so an admin who
     // navigated away during a scan and came back saw no progress, no eventual
-    // report, and an enabled "Scan now" that answers 409. The server keeps its
-    // registry precisely so a client can poll across requests.
+    // report, and an enabled "Scan folder" that answers 409. The server keeps
+    // its registry precisely so a client can poll across requests.
     vi.mocked(config.scanStatus).mockResolvedValue({
       root_id: 3,
       running: true,
@@ -1183,7 +1183,7 @@ describe('RootRow', () => {
       })
     const host = await settle()
     await act(async () => {
-      press(host, 'Scan now').click()
+      press(host, 'Scan folder').click()
       await Promise.resolve()
       await Promise.resolve()
     })
@@ -1209,7 +1209,7 @@ describe('RootRow', () => {
     })
     const host = await settle()
     await act(async () => {
-      press(host, 'Scan now').click()
+      press(host, 'Scan folder').click()
       await Promise.resolve()
       await Promise.resolve()
     })
@@ -1227,21 +1227,21 @@ describe('RootRow', () => {
       last_scan_status: null,
     })
     await act(async () => {
-      press(host, 'Scan now').click()
+      press(host, 'Scan folder').click()
       await Promise.resolve()
       await Promise.resolve()
     })
     expect(host.textContent).not.toContain('47s')
   })
 
-  it('sends one POST for a double-pressed Scan now', async () => {
+  it('sends one POST for a double-pressed Scan folder', async () => {
     // **Review finding 5.** `disabled={running}` and `running` was set in the
     // `.then`, so two rapid presses both sent — and the second's 409, about
     // the admin's own scan, landed in the alert slot while that scan ran fine.
     const host = await settle()
     await act(async () => {
-      press(host, 'Scan now').click()
-      press(host, 'Scan now').click()
+      press(host, 'Scan folder').click()
+      press(host, 'Scan folder').click()
       await Promise.resolve()
       await Promise.resolve()
     })
@@ -1309,7 +1309,7 @@ describe('RootRow', () => {
       })
     const host = await settle()
     await act(async () => {
-      press(host, 'Scan now').click()
+      press(host, 'Scan folder').click()
       await Promise.resolve()
       await Promise.resolve()
     })
@@ -1332,7 +1332,7 @@ describe('RootRow', () => {
     // That is verbatim the state `misses`' own doc comment exists to prevent.
     vi.mocked(config.startScan).mockRejectedValue(
       new Error(
-        '/api/library/roots/3/scan: 409 a scan of root 3 (/srv/manga) is already running',
+        '/api/library/roots/3/scan: 409 a scan of /srv/manga is already running',
       ),
     )
     // **The mount read must say "not running", or this passes for the wrong
@@ -1358,7 +1358,7 @@ describe('RootRow', () => {
     const host = await settle()
     expect(host.textContent).not.toContain('Scanning')
     await act(async () => {
-      press(host, 'Scan now').click()
+      press(host, 'Scan folder').click()
       await Promise.resolve()
       await Promise.resolve()
     })
@@ -1368,7 +1368,7 @@ describe('RootRow', () => {
       await Promise.resolve()
     })
     expect(host.textContent).toContain('Scanning')
-    expect(press(host, 'Scan now').disabled).toBe(true)
+    expect(press(host, 'Scan folder').disabled).toBe(true)
   })
 
   // --- whole-branch review pass 4, 2026-09-04 ----------------------------
@@ -1483,21 +1483,21 @@ describe('RootRow', () => {
 
   it('reads the status from the error, not from a 409 anywhere in the text', async () => {
     // **Pass 4, finding 5.** `why.includes('409')` matched the substring
-    // anywhere — so removing root 409 from another tab and pressing Scan now
+    // anywhere — so removing root 409 from another tab and pressing Scan folder
     // gave a 404 whose body reads "no root with id 409", and the card entered
     // a fake running state and settled on a message about a restart.
     vi.mocked(config.startScan).mockRejectedValue(
-      new Error('/api/library/roots/409/scan: 404 there is no root 409'),
+      new Error('/api/library/roots/409/scan: 404 there is no folder 409'),
     )
     const host = await settle()
     await act(async () => {
-      press(host, 'Scan now').click()
+      press(host, 'Scan folder').click()
       await Promise.resolve()
       await Promise.resolve()
     })
     expect(host.textContent).not.toContain('Scanning')
     expect(host.querySelector('[role="alert"]')?.textContent).toContain(
-      'there is no root 409',
+      'there is no folder 409',
     )
   })
 

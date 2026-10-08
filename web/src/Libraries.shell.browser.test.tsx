@@ -380,6 +380,78 @@ describe('the Libraries screen in the real Shell', () => {
   })
 
   for (const [width, height] of SIZES) {
+    /**
+     * O209: the pressed control at the very foot of the window, and its
+     * refusal drawn beneath it, below the fold, is brought into view.
+     */
+    async function atTheFoot(el: HTMLElement) {
+      el.scrollIntoView({ block: 'end' })
+      await new Promise((r) => setTimeout(r, 60))
+      expect(
+        Math.abs(el.getBoundingClientRect().bottom - window.innerHeight),
+      ).toBeLessThan(2)
+    }
+
+    it(`brings the make form’s refusal into view from the foot, at ${width}`, async () => {
+      vi.mocked(librariesApi.createLibrary).mockRejectedValue(
+        new Error('/api/library/libraries: 400 {"error":"refused"}'),
+      )
+      const host = await shell(width, height)
+      const form = host.querySelector('form.add-library') as HTMLFormElement
+      await fill(
+        form.querySelector('input[name="library-name"]') as Element,
+        'Comics',
+      )
+      await fill(
+        form.querySelector('input[name="path"]') as Element,
+        '/srv/comics',
+      )
+      await click(form.querySelector('button[name="pick"]') as Element)
+      const make = form.querySelector('button[type="submit"]') as HTMLElement
+      await atTheFoot(make)
+      await press(make)
+      await settle()
+      expectInSight(form.querySelector('[role="alert"]') as Element)
+      expectInSight(make)
+    })
+
+    it(`brings a refused Add folder into view from the foot, at ${width}`, async () => {
+      vi.mocked(librariesApi.addFolder).mockRejectedValue(
+        new Error('/api/library/libraries/1/folders: 400 {"error":"refused"}'),
+      )
+      const host = await shell(width, height)
+      const picker = card(host, 'Manga').querySelector(
+        ':scope > .add-root',
+      ) as HTMLElement
+      await fill(
+        picker.querySelector('input[name="path"]') as Element,
+        '/srv/extra',
+      )
+      const pick = picker.querySelector('button[name="pick"]') as HTMLElement
+      await atTheFoot(pick)
+      await press(pick)
+      await settle()
+      expectInSight(picker.querySelector('[role="alert"]') as Element)
+    })
+
+    it(`brings a refused rename into view from the foot, at ${width}`, async () => {
+      vi.mocked(librariesApi.renameLibrary).mockRejectedValue(
+        new Error('/api/library/libraries/1: 400 {"error":"refused"}'),
+      )
+      const host = await shell(width, height)
+      const manga = card(host, 'Manga')
+      await click(
+        manga.querySelector('button[name="rename-library"]') as Element,
+      )
+      const form = manga.querySelector('form.rename-library') as HTMLElement
+      await fill(form.querySelector('input') as Element, 'Manga 2')
+      const save = form.querySelector('button[type="submit"]') as HTMLElement
+      await atTheFoot(save)
+      await press(save)
+      await settle()
+      expectInSight(form.querySelector('[role="alert"]') as Element)
+    })
+
     it(`draws a rename’s refusal on a line of its own beneath the form’s controls, at ${width}`, async () => {
       vi.mocked(librariesApi.renameLibrary).mockRejectedValue(
         new Error(

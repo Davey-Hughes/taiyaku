@@ -2349,7 +2349,8 @@ fn scan_add_refuses_a_root_inside_a_known_root() {
         db.display().to_string(),
     ])
     .expect_err("a root inside a known root must be refused");
-    assert!(err.contains("is inside existing root"), "{err}");
+    assert!(err.contains(" is inside "), "{err}");
+    assert!(err.contains("a folder of the library"), "{err}");
     assert_eq!(
         roots_and_members(&db),
         (1, 1),
@@ -2383,7 +2384,8 @@ fn scan_add_refuses_a_root_containing_a_known_root() {
         db.display().to_string(),
     ])
     .expect_err("a root containing a known root must be refused");
-    assert!(err.contains("contains existing root"), "{err}");
+    assert!(err.contains(" contains "), "{err}");
+    assert!(err.contains("a folder of the library"), "{err}");
     assert_eq!(
         roots_and_members(&db),
         (1, 1),

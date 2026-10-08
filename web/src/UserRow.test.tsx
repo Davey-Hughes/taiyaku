@@ -728,7 +728,7 @@ describe('the fields', () => {
     })
   })
 
-  it('lifts the limit only by Every library, which sends the empty list', async () => {
+  it('asks before Every library lifts a limit, and lifts it on the answer', async () => {
     const me = user()
     const other = user({
       id: 2,
@@ -738,10 +738,142 @@ describe('the fields', () => {
     })
     vi.mocked(usersApi.patchUser).mockResolvedValue({ ...other, libraries: [] })
     const { host } = await show(other, [me, other], { actingAs: 1 })
+
     await click(radio(host, 'every'))
+    expect(usersApi.patchUser).not.toHaveBeenCalled()
+    expect(radio(host, 'only').checked).toBe(true)
+    const asking = control(host, '.grants .lift-limit')
+    expect(asking.getAttribute('role')).toBe('group')
+    expect(asking.querySelector('p')?.textContent).toBe(
+      'sam would see every library, including any added later, and the ticks below would be cleared.',
+    )
+
+    await click(control(host, 'button[name="lift-limit"]'))
     expect(usersApi.patchUser).toHaveBeenCalledWith(2, { libraries: [] })
     expect(radio(host, 'every').checked).toBe(true)
     expect(host.querySelector('.grant-list')).toBeNull()
+    expect(host.querySelector('.lift-limit')).toBeNull()
+    expect(document.activeElement).toBe(radio(host, 'every'))
+  })
+
+  it('moves focus to Keep the limit when the question opens, and describes the group by its sentence', async () => {
+    const me = user()
+    const other = user({
+      id: 2,
+      name: 'sam',
+      role: 'user',
+      libraries: [{ id: 70, name: 'Manga' }],
+    })
+    const { host } = await show(other, [me, other], { actingAs: 1 })
+    await click(radio(host, 'every'))
+
+    expect(document.activeElement).toBe(
+      control(host, 'button[name="keep-limit"]'),
+    )
+    const asking = control(host, '.grants .lift-limit')
+    expect(asking.getAttribute('aria-label')).toBe('Lift the limit')
+    const described = asking.getAttribute('aria-describedby')
+    expect(described).toBeTruthy()
+    const sentence = described ? document.getElementById(described) : null
+    expect(sentence?.textContent).toBe(
+      'sam would see every library, including any added later, and the ticks below would be cleared.',
+    )
+  })
+
+  it('takes the question away when Only these is chosen again, and sends nothing', async () => {
+    const me = user()
+    const other = user({
+      id: 2,
+      name: 'sam',
+      role: 'user',
+      libraries: [{ id: 70, name: 'Manga' }],
+    })
+    const { host } = await show(other, [me, other], { actingAs: 1 })
+    await click(radio(host, 'every'))
+    expect(host.querySelector('.lift-limit')).not.toBeNull()
+
+    await click(radio(host, 'only'))
+    expect(host.querySelector('.lift-limit')).toBeNull()
+    expect(usersApi.patchUser).not.toHaveBeenCalled()
+    expect(radio(host, 'only').checked).toBe(true)
+  })
+
+  it('retires the question when the account holds no grant, and does not bring it back', async () => {
+    const me = user()
+    const other = user({
+      id: 2,
+      name: 'sam',
+      role: 'user',
+      libraries: [{ id: 70, name: 'Manga' }],
+    })
+    const { host } = await show(other, [me, other], { actingAs: 1 })
+    await click(radio(host, 'every'))
+    expect(host.querySelector('.lift-limit')).not.toBeNull()
+
+    const again = (who: usersApi.User) =>
+      act(async () => {
+        rerender(
+          <MemoryRouter>
+            <UserRow
+              user={who}
+              users={[me, who]}
+              libraries={[MANGA, COMICS]}
+              actingAs={1}
+              onChanged={vi.fn()}
+            />
+          </MemoryRouter>,
+        )
+        await Promise.resolve()
+      })
+    // Lifted elsewhere: the list brings the account with no grant.
+    await again({ ...other, libraries: [] })
+    expect(host.querySelector('.lift-limit')).toBeNull()
+    // A grant again: the question was answered by the account, not re-asked.
+    await again({ ...other, libraries: [{ id: 80, name: 'Comics' }] })
+    expect(host.querySelector('.lift-limit')).toBeNull()
+  })
+
+  it('holds both answers while a write is in flight', async () => {
+    const me = user()
+    const other = user({
+      id: 2,
+      name: 'sam',
+      role: 'user',
+      libraries: [{ id: 70, name: 'Manga' }],
+    })
+    vi.mocked(usersApi.patchUser).mockImplementation(
+      () => new Promise(() => undefined),
+    )
+    const { host } = await show(other, [me, other], { actingAs: 1 })
+    await click(radio(host, 'every'))
+    await click(control(host, 'input[name="can_stream"]'))
+    expect(usersApi.patchUser).toHaveBeenCalledTimes(1)
+    expect(
+      control<HTMLButtonElement>(host, 'button[name="lift-limit"]').disabled,
+    ).toBe(true)
+    expect(
+      control<HTMLButtonElement>(host, 'button[name="keep-limit"]').disabled,
+    ).toBe(true)
+  })
+
+  it('keeps the limit when the answer is no, and puts focus back on Only these', async () => {
+    const me = user()
+    const other = user({
+      id: 2,
+      name: 'sam',
+      role: 'user',
+      libraries: [{ id: 70, name: 'Manga' }],
+    })
+    const { host } = await show(other, [me, other], { actingAs: 1 })
+
+    await click(radio(host, 'every'))
+    await click(control(host, 'button[name="keep-limit"]'))
+
+    expect(usersApi.patchUser).not.toHaveBeenCalled()
+    expect(host.querySelector('.lift-limit')).toBeNull()
+    expect(radio(host, 'only').checked).toBe(true)
+    expect(tick(host, 70).checked).toBe(true)
+    expect(document.activeElement).toBe(radio(host, 'only'))
   })
 
   it('sends nothing for Only these until a library is ticked', async () => {
@@ -763,6 +895,7 @@ describe('the fields', () => {
     await click(radio(host, 'every'))
     expect(usersApi.patchUser).not.toHaveBeenCalled()
     expect(host.querySelector('.grant-list')).toBeNull()
+    expect(host.querySelector('.lift-limit')).toBeNull()
 
     await click(radio(host, 'only'))
     await click(tick(host, 80))
@@ -789,6 +922,7 @@ describe('the fields', () => {
     await click(radio(host, 'only'))
     await click(tick(host, 80))
     await click(radio(host, 'every'))
+    await click(control(host, 'button[name="lift-limit"]'))
 
     expect(usersApi.patchUser).toHaveBeenNthCalledWith(1, 2, {
       libraries: [80],
@@ -819,6 +953,7 @@ describe('the fields', () => {
     expect(radio(host, 'only').checked).toBe(true)
     expect(radio(host, 'every').checked).toBe(false)
     expect(host.querySelector('.grant-list')).not.toBeNull()
+    expect(host.querySelector('.lift-limit')).toBeNull()
   })
 
   it('does not switch to Only these while another write is being saved', async () => {

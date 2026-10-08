@@ -1597,6 +1597,15 @@
   margin: 0;
 }
 
+/* A refusal beneath its button is scrolled to with `block: 'nearest'`, which
+   leaves its foot on the window's edge to within a pixel's rounding; this is
+   the breath it keeps from that edge. */
+.add-library > [role="alert"],
+.rename-library > [role="alert"],
+.add-root > [role="alert"] {
+  scroll-margin-bottom: 0.5rem;
+}
+
 /* The box and its two buttons on one line where they fit, wrapping where
    they do not. */
 .folder-picker {
@@ -2003,6 +2012,20 @@
    unbroken word as its width, and a name without a space is one. */
 .user-row .grants .grant-list {
   padding-left: var(--space-5);
+}
+
+/* O195: the question "Every library" asks before it lifts a limit. Its
+   sentence on a line of its own, and the two answers beside each other. */
+.grants .lift-limit {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin: var(--space-2) 0;
+}
+
+.grants .lift-limit p {
+  flex-basis: 100%;
+  margin: 0;
 }
 
 .user-row .grant-list label > span,

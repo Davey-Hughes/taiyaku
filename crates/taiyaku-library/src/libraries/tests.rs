@@ -55,29 +55,80 @@ fn a_library_needs_a_name_and_one_of_its_own() {
     assert!(create(&conn, " Manga").unwrap_err().contains("UNIQUE"));
 }
 
-/// A name is looked up as given first, and stripped of spaces second. Two
-/// libraries can differ only in a trailing space, as migration 15's backfill
-/// leaves folders whose whole paths differ only so.
+/// Every white-space character Unicode names, at either end, and nothing
+/// inside a name or outside that set.
 #[test]
-fn a_name_finds_the_library_holding_exactly_it_before_the_one_holding_it_stripped() {
+fn trim_name_strips_white_space_and_nothing_else() {
+    assert_eq!(trim_name("\t\u{3000}Manga\u{a0}\n "), "Manga");
+    assert_eq!(
+        trim_name("\u{200B}Manga"),
+        "\u{200B}Manga",
+        "a zero-width space is not white space"
+    );
+    assert_eq!(trim_name("Light novels"), "Light novels");
+}
+
+/// Every list migration 16 strips with is the set [`trim_name`] strips, so a
+/// name the trigger makes is found by a lookup made in Rust.
+#[test]
+fn migration_16_strips_the_characters_trim_name_strips() {
+    let rust: Vec<u32> = (0..=0x10_FFFF_u32)
+        .filter_map(char::from_u32)
+        .filter(|c| c.is_whitespace())
+        .map(u32::from)
+        .collect();
+    let sql = include_str!("../schema/016_library_names.sql");
+    let lists: Vec<Vec<u32>> = sql
+        .match_indices("char(")
+        .map(|(at, _)| {
+            let rest = &sql[at + "char(".len()..];
+            rest[..rest.find(')').expect("a closing parenthesis")]
+                .split(',')
+                .map(|n| n.trim().parse().expect("a code point"))
+                .collect()
+        })
+        .collect();
+    assert!(!lists.is_empty(), "the migration strips with a list");
+    for list in lists {
+        assert_eq!(list, rust);
+    }
+}
+
+/// A name is found stripped and in any ASCII case.
+#[test]
+fn a_name_finds_its_library_stripped_and_in_any_case() {
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    conn.execute_batch(
-        "INSERT INTO library (id, name) VALUES (1, '/srv/manga'), (2, '/srv/manga '),
-                                               (3, 'Comics');",
-    )
-    .expect("two libraries a space apart, and a third");
+    conn.execute_batch("INSERT INTO library (id, name) VALUES (1, 'Manga'), (3, 'Comics');")
+        .expect("two libraries");
 
     let found = |name: &str| id_of(&conn, name).expect("reads");
-    assert_eq!(found("/srv/manga "), Some(2), "its own name, space and all");
-    assert_eq!(found("/srv/manga"), Some(1));
-    assert_eq!(
-        found("/srv/manga  "),
-        Some(1),
-        "no library holds two spaces, so the stripped name answers"
-    );
-    assert_eq!(found(" Comics "), Some(3), "a space too many either side");
+    assert_eq!(found("Manga"), Some(1));
+    assert_eq!(found(" MANGA\t"), Some(1));
+    assert_eq!(found("\u{3000}comics\n"), Some(3));
     assert_eq!(found("Zines"), None);
+}
+
+/// Another library's name in another case is refused in the holder's own
+/// spelling; a library's own name in another case is a rename.
+#[test]
+fn a_rename_is_refused_a_name_another_library_holds_in_another_case() {
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    conn.execute_batch("INSERT INTO library (id, name) VALUES (1, 'Manga'), (2, 'Comics');")
+        .expect("two libraries");
+
+    assert_eq!(
+        rename(&conn, 2, "\tMANGA\n"),
+        Err(RenameError::Unusable(
+            "a library is already called `Manga`".to_string()
+        ))
+    );
+    assert_eq!(rename(&conn, 1, " MANGA "), Ok("MANGA".to_string()));
+    assert_eq!(
+        rename(&conn, 2, "\u{3000}Light novels\n"),
+        Ok("Light novels".to_string())
+    );
 }
 
 #[test]

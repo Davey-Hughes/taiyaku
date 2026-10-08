@@ -48,6 +48,12 @@ export interface FolderPickerProps {
    * what the caller said about the path that was there is stale.
    */
   onEdit?: () => void
+  /**
+   * The text in the box, each time it changes: typed, browsed to, or emptied
+   * once a pick was taken. A caller that holds a button until something is
+   * picked says why from this.
+   */
+  onPath?: (path: string) => void
 }
 
 export function FolderPicker({
@@ -55,8 +61,16 @@ export function FolderPicker({
   onPick,
   disabled = false,
   onEdit,
+  onPath,
 }: FolderPickerProps) {
   const [path, setPath] = useState('')
+  // In a ref, so a caller's new closure on each render does not count as a
+  // change of path.
+  const told = useRef(onPath)
+  told.current = onPath
+  useEffect(() => {
+    told.current?.(path)
+  }, [path])
   const [picking, setPicking] = useState(false)
   /** A ref as well as `picking`: two presses before a render both read false. */
   const inFlight = useRef(false)

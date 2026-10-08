@@ -1175,6 +1175,50 @@ async fn a_libraries_list_naming_a_library_that_does_not_exist_is_the_callers_mi
     );
 }
 
+/// **A library with no folder is 409.** Granted, it would resolve to no
+/// folder and the account would be unrestricted, so the patch is refused with
+/// the library named and nothing is written.
+#[tokio::test]
+async fn a_libraries_list_naming_a_library_with_no_folder_is_refused_409() {
+    let (router, state, _fixture) = test_support::router_over_a_single_scanned_work();
+    let (library, _name) = the_fixture_library(&state);
+    let id = a_reader(&router, &state).await;
+    let empty: i64 = {
+        let conn = state.library.conn();
+        conn.execute("INSERT INTO library (name) VALUES ('Empty')", [])
+            .expect("a library with no folder, as only a hand can make one");
+        conn.last_insert_rowid()
+    };
+
+    for listed in [
+        serde_json::json!([empty]),
+        serde_json::json!([library, empty]),
+    ] {
+        let response = send_json(
+            &router,
+            Method::PATCH,
+            &format!("/api/library/users/{id}"),
+            &serde_json::json!({ "libraries": listed }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::CONFLICT, "{listed}");
+        let body: serde_json::Value =
+            serde_json::from_str(&test_support::body_string(response).await).expect("json");
+        assert_eq!(
+            body["error"], "the library `Empty` has no folder, so there is nothing in it to grant",
+            "{body}"
+        );
+    }
+
+    let conn = state.library.conn();
+    assert!(
+        taiyaku_library::account::libraries_for(&conn, id)
+            .expect("reads")
+            .is_empty(),
+        "and no grant was written"
+    );
+}
+
 /// A refused list undoes the rest of its own body: the rename and the
 /// capability, written before the grants were reached, are what they were.
 #[tokio::test]

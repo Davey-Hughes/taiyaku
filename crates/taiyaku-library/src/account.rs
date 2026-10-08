@@ -122,7 +122,8 @@ pub fn by_api_key(conn: &Connection, secret: &str) -> Result<Option<Account>, St
 /// **Every folder of every library this account was granted — Part F1.** A
 /// grant names a library, and the guard filters on folders, so this is where
 /// one becomes the other. An empty answer means granted nothing, and so
-/// unrestricted: a granted library always has a folder (see `crate::libraries`).
+/// unrestricted: a granted library always has a folder, which [`ungrantable`]
+/// holds where a grant is written.
 ///
 /// # Errors
 ///
@@ -157,6 +158,42 @@ pub fn libraries_for(conn: &Connection, user_id: i64) -> Result<Vec<i64>, String
         .map_err(|e| format!("reading granted libraries: {e}"))
 }
 
+/// Why a library cannot be granted.
+enum Ungrantable {
+    /// No library has the id.
+    Missing,
+    /// The library, by name, has no folder.
+    NoFolder(String),
+}
+
+/// Why library `library_id` may not be granted, if it may not.
+///
+/// **A library with no folder is refused**: [`roots_for`] resolves a grant to
+/// its library's folders, and an account whose grants resolve to none is
+/// unrestricted, so as an account's only grant it would lift the limit it was
+/// meant to set. No public path makes such a library (`crate::libraries`), and
+/// this holds the line where a grant is written, not only where libraries are
+/// made.
+fn ungrantable(conn: &Connection, library_id: i64) -> Result<Option<Ungrantable>, String> {
+    conn.query_row(
+        "SELECT name, EXISTS (SELECT 1 FROM root WHERE library_id = ?1)
+           FROM library WHERE id = ?1",
+        params![library_id],
+        |row| Ok((row.get::<_, String>(0)?, row.get::<_, bool>(1)?)),
+    )
+    .optional()
+    .map(|found| match found {
+        None => Some(Ungrantable::Missing),
+        Some((name, false)) => Some(Ungrantable::NoFolder(name)),
+        Some((_, true)) => None,
+    })
+    .map_err(|e| format!("checking whether library {library_id} can be granted: {e}"))
+}
+
+fn no_folder(name: &str) -> String {
+    format!("the library `{name}` has no folder, so there is nothing in it to grant")
+}
+
 /// Grant `user_id` sight of `library_id`: every folder filed under it.
 ///
 /// **Granting is restricting**, which is the counter-intuitive half of spec
@@ -173,9 +210,17 @@ pub fn libraries_for(conn: &Connection, user_id: i64) -> Result<Vec<i64>, String
 ///
 /// # Errors
 ///
-/// Returns an error if the insert fails — which includes a `library_id` no
-/// library row has, since the column REFERENCES `library(id)`.
+/// Returns an error if no library has `library_id`, if the library has no
+/// folder (the grant would resolve to none and so lift the limit it sets), or
+/// if the insert fails.
 pub fn grant_library(conn: &Connection, user_id: i64, library_id: i64) -> Result<bool, String> {
+    match ungrantable(conn, library_id)? {
+        Some(Ungrantable::Missing) => {
+            return Err(format!("there is no library {library_id} to grant"));
+        }
+        Some(Ungrantable::NoFolder(name)) => return Err(no_folder(&name)),
+        None => {}
+    }
     let changed = conn
         .execute(
             "INSERT OR IGNORE INTO user_library (user_id, library_id) VALUES (?1, ?2)",
@@ -944,22 +989,20 @@ pub fn update(
             // violation (SQLite's `ON CONFLICT` covers UNIQUE, NOT NULL,
             // CHECK and PRIMARY KEY, and FK is not among them), so left to
             // `grant_library` this reaches the client as a 500 carrying
-            // SQLite's own text. The list is checked whole before a grant is
+            // SQLite's own text. **A library with no folder is refused too**
+            // ([`ungrantable`]). The list is checked whole before a grant is
             // written, and a refusal rolls back whatever the same patch wrote
             // before it, since the scope is never committed.
-            let exists: bool = conn
-                .query_row(
-                    "SELECT EXISTS (SELECT 1 FROM library WHERE id = ?1)",
-                    params![library_id],
-                    |row| row.get(0),
-                )
-                .map_err(|e| {
-                    WriteError::Failed(format!("checking whether library {library_id} exists: {e}"))
-                })?;
-            if !exists {
-                return Err(WriteError::Unusable(format!(
-                    "there is no library {library_id} to grant"
-                )));
+            match ungrantable(conn, *library_id).map_err(WriteError::Failed)? {
+                Some(Ungrantable::Missing) => {
+                    return Err(WriteError::Unusable(format!(
+                        "there is no library {library_id} to grant"
+                    )));
+                }
+                Some(Ungrantable::NoFolder(name)) => {
+                    return Err(WriteError::Refused(no_folder(&name)));
+                }
+                None => {}
             }
             wanted_libraries.insert(*library_id);
         }

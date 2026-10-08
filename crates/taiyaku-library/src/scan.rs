@@ -127,9 +127,10 @@ pub fn add_root(conn: &Connection, path: &Path) -> Result<Root, String> {
 /// Which library a folder joins when it is added.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InLibrary<'a> {
-    /// A library of its own, named for the folder by migration 15's
-    /// `root_gets_a_library`: its last path component, or its whole path
-    /// when a library already has that name, stripped of spaces either way.
+    /// A library of its own, named for the folder by the
+    /// `root_gets_a_library` trigger (migration 16): its last path component,
+    /// or its whole path when a library already has that name in any ASCII
+    /// case, stripped of white space either way.
     Own,
     /// The library with this name, created if there is none.
     Named(&'a str),
@@ -169,7 +170,7 @@ pub fn add_root_in(conn: &Connection, path: &Path, library: InLibrary<'_>) -> Re
     let id = tx.last_insert_rowid();
     // Read back rather than hard-coded, so the column's default — migration
     // 012's `DEFAULT 0` — stays the one place that decides it, and so a
-    // library migration 15's trigger chose is the one recorded.
+    // library the `root_gets_a_library` trigger chose is the one recorded.
     let (keeps_documents, library_id) = tx
         .query_row(
             "SELECT keeps_documents, library_id FROM root WHERE id = ?1",
@@ -194,7 +195,7 @@ pub fn add_root_in(conn: &Connection, path: &Path, library: InLibrary<'_>) -> Re
 
 /// Why a folder at `canonical` cannot be a library of its own, if it cannot.
 ///
-/// **Migration 15's `root_gets_a_library` names that library, and
+/// **The `root_gets_a_library` trigger (migration 16) names that library, and
 /// [`add_root_checked_in`] asks the trigger's own question here first**
 /// rather than leaving its insert to fail on `library.name`'s UNIQUE: the
 /// folder's last path component, or its whole path when the component is
@@ -202,14 +203,15 @@ pub fn add_root_in(conn: &Connection, path: &Path, library: InLibrary<'_>) -> Re
 /// name too, the trigger has no third name to try, and [`InLibrary::Own`]
 /// promises none, so this refuses and says which names are taken. The last
 /// component is what follows the path's last `/`, as the trigger's `rtrim`
-/// finds it. Both names are stripped of spaces by
+/// finds it. Both names are stripped of white space by
 /// [`crate::libraries::trim_name`], as the trigger strips them with SQLite's
-/// `trim`, so a component is empty for `/` and for a folder named only
-/// spaces.
+/// two-argument `trim` over the same characters, and are asked in any ASCII
+/// case, as the trigger asks them. A component is empty for `/` and for a
+/// folder named only white space.
 fn own_library_clash(conn: &Connection, canonical: &Path) -> Result<Option<String>, String> {
     let taken = |name: &str| -> Result<bool, String> {
         conn.query_row(
-            "SELECT EXISTS (SELECT 1 FROM library WHERE name = ?1)",
+            "SELECT EXISTS (SELECT 1 FROM library WHERE name = ?1 COLLATE NOCASE)",
             [name],
             |r| r.get(0),
         )
@@ -334,8 +336,8 @@ pub fn add_root_checked(conn: &Connection, path: &Path) -> Result<Added, AddRoot
 ///    keeps a symlink or a `..` from slipping a nested path past a raw
 ///    string comparison. Overlapping roots double-count every file beneath
 ///    the overlap, and the symptom — duplicate works — looks nothing like
-///    the cause, so the refusal names the existing root it overlaps with
-///    rather than only saying "nested."
+///    the cause, so the refusal names the existing folder it overlaps with,
+///    and that folder's library, rather than only saying "nested."
 /// 3. **The watcher probe, run now rather than left for the first scan.**
 ///    [`crate::watch::probe`] answers whether this root can be watched at
 ///    all — spec B §8's experiment — run at the moment a root is added
@@ -347,10 +349,10 @@ pub fn add_root_checked(conn: &Connection, path: &Path) -> Result<Added, AddRoot
 ///
 /// **And the library it joins can be named**, checked with the first two,
 /// before anything is written: an [`InLibrary::Named`] needs a name once
-/// trimmed, and an [`InLibrary::Own`] needs a name migration 15's trigger can
-/// give it (see `own_library_clash`). Otherwise the first would surface as a
-/// store fault and the second as a bare UNIQUE failure on `library.name`,
-/// though both are this caller's to fix.
+/// trimmed, and an [`InLibrary::Own`] needs a name the `root_gets_a_library`
+/// trigger can give it (see `own_library_clash`). Otherwise the first would
+/// surface as a store fault and the second as a bare UNIQUE failure on
+/// `library.name`, though both are this caller's to fix.
 ///
 /// **The library is created only once every validation has passed**, by
 /// [`add_root_in`], so a refused path names no library into being.
@@ -372,7 +374,7 @@ pub fn add_root_checked(conn: &Connection, path: &Path) -> Result<Added, AddRoot
 /// every one of those is this caller's own mistake,
 /// an `error` a person can act on. The exact-duplicate case is intercepted
 /// by the nesting check (a path trivially contains itself) and produces an
-/// "is inside existing root" message, not a separate duplicate-path error.
+/// "is inside" message, not a separate duplicate-path error.
 ///
 /// Returns [`AddRootError::Failed`] if the store itself refuses along the
 /// way — the overlap check's own read ([`roots`]), the library-name lookup,
@@ -387,9 +389,7 @@ pub fn add_root_checked_in(
     let canonical = vetted(conn, path)?;
 
     match library {
-        // Any whitespace, not only spaces: refusing a name that would be
-        // invisible is not stripping one, so lookups keep `trim_name`'s set.
-        InLibrary::Named(name) if name.trim().is_empty() => {
+        InLibrary::Named(name) if crate::libraries::trim_name(name).is_empty() => {
             return Err(AddRootError::Unusable(format!(
                 "{}: a library needs a name",
                 canonical.display()
@@ -431,22 +431,25 @@ fn vetted(conn: &Connection, path: &Path) -> Result<PathBuf, AddRootError> {
     })?;
 
     for existing in roots(conn).map_err(AddRootError::Failed)? {
-        if canonical.starts_with(&existing.path) {
-            return Err(AddRootError::Unusable(format!(
-                "{} is inside existing root {} (id {})",
-                canonical.display(),
-                existing.path.display(),
-                existing.id
-            )));
-        }
-        if existing.path.starts_with(&canonical) {
-            return Err(AddRootError::Unusable(format!(
-                "{} contains existing root {} (id {})",
-                canonical.display(),
-                existing.path.display(),
-                existing.id
-            )));
-        }
+        let relation = if canonical.starts_with(&existing.path) {
+            "is inside"
+        } else if existing.path.starts_with(&canonical) {
+            "contains"
+        } else {
+            continue;
+        };
+        // Named by its library, which is how the Libraries screen groups its
+        // folders, and not by its id, which no screen shows.
+        let library = crate::libraries::name_of(conn, existing.library_id)
+            .map_err(AddRootError::Failed)?
+            .map_or_else(String::new, |name| {
+                format!(", a folder of the library `{name}`")
+            });
+        return Err(AddRootError::Unusable(format!(
+            "{} {relation} {}{library}",
+            canonical.display(),
+            existing.path.display()
+        )));
     }
     Ok(canonical)
 }
@@ -513,10 +516,10 @@ pub fn create_library(
             "a library needs at least one folder".to_string(),
         ));
     }
-    if name.trim().is_empty() {
+    let name = crate::libraries::trim_name(name);
+    if name.is_empty() {
         return Err(AddRootError::Unusable("a library needs a name".to_string()));
     }
-    let name = crate::libraries::trim_name(name);
 
     let mut canonical: Vec<PathBuf> = Vec::with_capacity(paths.len());
     for path in paths {
@@ -542,12 +545,12 @@ pub fn create_library(
     // free would then fail at the insert as a store fault, not as the
     // caller's mistake. The paths are vetted before it because vetting reads
     // the disk.
-    if crate::libraries::id_of(&tx, name)
-        .map_err(AddRootError::Failed)?
-        .is_some()
-    {
+    if let Some(held) = crate::libraries::id_of(&tx, name).map_err(AddRootError::Failed)? {
+        let stored = crate::libraries::name_of(&tx, held)
+            .map_err(AddRootError::Failed)?
+            .unwrap_or_else(|| name.to_string());
         return Err(AddRootError::Unusable(format!(
-            "a library is already called `{name}`; add the folder to it instead"
+            "a library is already called `{stored}`; add the folder to it instead"
         )));
     }
     let library_id = crate::libraries::create(&tx, name).map_err(AddRootError::Failed)?;
@@ -733,7 +736,7 @@ fn only_grant_of(names: &[String]) -> (String, &'static str) {
         (
             format!("`{last}` is granted"),
             "Removing it would delete that grant, and an account with no grant sees every \
-             library. First grant it another library, or revoke this one",
+             library. First grant it another library, or revoke this one.",
         )
     } else {
         let others: Vec<String> = others
@@ -743,7 +746,7 @@ fn only_grant_of(names: &[String]) -> (String, &'static str) {
         (
             format!("{} and `{last}` are granted", others.join(", ")),
             "Removing it would delete those grants, and an account with no grant sees every \
-             library. First grant each another library, or revoke this one",
+             library. First grant each another library, or revoke this one.",
         )
     }
 }
@@ -1217,7 +1220,7 @@ impl Excluder {
         // than unwrapped anyway: this module's rule is that a pattern
         // problem is a complaint, never a panic.
         let gitignore = builder.build().unwrap_or_else(|why| {
-            complaints.push(format!("compiling this root's exclude patterns: {why}"));
+            complaints.push(format!("compiling this folder's exclude patterns: {why}"));
             ignore::gitignore::Gitignore::empty()
         });
         Self {
@@ -1277,7 +1280,7 @@ pub fn check_exclude_globs(patterns: &str) -> Result<(), String> {
     for line in patterns.lines() {
         builder.add_line(None, line).map_err(|why| {
             format!(
-                "the root's `exclude_globs` line `{}` is not a usable pattern: {why}",
+                "the folder's `exclude_globs` line `{}` is not a usable pattern: {why}",
                 line.trim()
             )
         })?;
@@ -1285,7 +1288,7 @@ pub fn check_exclude_globs(patterns: &str) -> Result<(), String> {
     builder
         .build()
         .map(|_| ())
-        .map_err(|why| format!("the root's `exclude_globs` will not compile: {why}"))
+        .map_err(|why| format!("the folder's `exclude_globs` will not compile: {why}"))
 }
 
 // --- the scan --------------------------------------------------------------
@@ -1424,6 +1427,12 @@ impl ScanReport {
 /// recorded as `last_scan_status = 'failed'` before it propagates — the one
 /// case this function tries hardest not to leave silent, since it is the
 /// one nobody chose.
+///
+/// **Nothing is recorded for a folder that is no longer the one walked.** A
+/// folder can be removed while its walk runs, and its id given to a folder
+/// added after it. The walk's entries are written only where, inside the
+/// transaction that writes them, `root.id` still names `root.path`, and the
+/// status write here asks the same, so neither lands on another folder.
 pub fn scan_root(conn: &Connection, root: &Root) -> Result<ScanReport, String> {
     let result = scan_root_inner(conn, root);
     let status = match &result {
@@ -1439,8 +1448,9 @@ pub fn scan_root(conn: &Connection, root: &Root) -> Result<ScanReport, String> {
     // already carries a store fault, since both run against the same
     // connection.
     let _ = conn.execute(
-        "UPDATE root SET last_scan_at = datetime('now'), last_scan_status = ?2 WHERE id = ?1",
-        rusqlite::params![root.id, status],
+        "UPDATE root SET last_scan_at = datetime('now'), last_scan_status = ?2 \
+         WHERE id = ?1 AND path = ?3",
+        rusqlite::params![root.id, status, root.path.to_string_lossy()],
     );
     result
 }
@@ -1473,12 +1483,17 @@ pub fn scan_root(conn: &Connection, root: &Root) -> Result<ScanReport, String> {
 /// # Errors
 ///
 /// Returns an error only if the `UPDATE` itself is refused.
-pub fn mark_derive_failed(conn: &Connection, id: i64) -> Result<(), String> {
+pub fn mark_derive_failed(conn: &Connection, root: &Root) -> Result<(), String> {
     conn.execute(
-        "UPDATE root SET last_scan_status = 'failed' WHERE id = ?1",
-        [id],
+        "UPDATE root SET last_scan_status = 'failed' WHERE id = ?1 AND path = ?2",
+        rusqlite::params![root.id, root.path.to_string_lossy()],
     )
-    .map_err(|e| format!("recording that root {id}'s post-scan derive failed: {e}"))?;
+    .map_err(|e| {
+        format!(
+            "recording that the post-scan derive of folder {} failed: {e}",
+            root.path.display()
+        )
+    })?;
     Ok(())
 }
 
@@ -1505,7 +1520,7 @@ fn scan_root_inner(conn: &Connection, root: &Root) -> Result<ScanReport, String>
                 [root.id],
                 |r| r.get(0),
             )
-            .map_err(|e| format!("counting what this root already held: {e}"))?;
+            .map_err(|e| format!("counting what this folder already held: {e}"))?;
         if held > 1 {
             // A fourth cause, alongside the three below: this root's own
             // `exclude_globs` can cover everything beneath it just as
@@ -1527,7 +1542,7 @@ fn scan_root_inner(conn: &Connection, root: &Root) -> Result<ScanReport, String>
             let remedy = if excluded_everything {
                 format!(
                     "This scan's own exclude_globs excluded {} director{} and {} \
-                     file{} beneath this root, which is enough on its own to \
+                     file{} beneath this folder, which is enough on its own to \
                      produce exactly this — loosen or clear the patterns before \
                      assuming anything is actually gone.",
                     walk.excluded_dirs.len(),
@@ -1540,7 +1555,7 @@ fn scan_root_inner(conn: &Connection, root: &Root) -> Result<ScanReport, String>
                     if walk.excluded_files == 1 { "" } else { "s" },
                 )
             } else {
-                "If the root has genuinely become empty, remove it.".to_string()
+                "If the folder has genuinely become empty, remove it.".to_string()
             };
             return Ok(ScanReport {
                 root: root.path.clone(),
@@ -1557,9 +1572,9 @@ fn scan_root_inner(conn: &Connection, root: &Root) -> Result<ScanReport, String>
                 refused: Some(format!(
                     "{} scanned empty while the library holds {held} entries for it — \
                      refusing to apply. An unmounted share, a bind mount that was not \
-                     ready, a renamed directory, or this root's own exclude_globs \
+                     ready, a renamed directory, or this folder's own exclude_globs \
                      excluding everything beneath it all look exactly like this, and \
-                     applying it would drop every work under this root along with the \
+                     applying it would drop every work under this folder along with the \
                      reading positions and notes attached to them. {remedy}",
                     root.path.display()
                 )),
@@ -1586,6 +1601,27 @@ fn scan_root_inner(conn: &Connection, root: &Root) -> Result<ScanReport, String>
     let tx = conn
         .unchecked_transaction()
         .map_err(|e| format!("starting the scan transaction: {e}"))?;
+    // The connection begins its transactions `Immediate`, so the write lock is
+    // held from here: no removal can commit between this question and the
+    // writes below.
+    let still_this_folder: bool = tx
+        .query_row(
+            "SELECT EXISTS (SELECT 1 FROM root WHERE id = ?1 AND path = ?2)",
+            rusqlite::params![root.id, root.path.to_string_lossy()],
+            |r| r.get(0),
+        )
+        .map_err(|e| {
+            format!(
+                "checking that {} is still a folder: {e}",
+                root.path.display()
+            )
+        })?;
+    if !still_this_folder {
+        return Err(format!(
+            "{} was removed while it was being scanned, so nothing was recorded",
+            root.path.display()
+        ));
+    }
     let mut report = ScanReport::for_root(&root.path);
     report.unreadable_dirs = walk.unreadable;
     report.excluded_dirs = walk.excluded_dirs;
@@ -1887,7 +1923,7 @@ struct Held {
 fn held_for(conn: &Connection, root_id: i64) -> Result<HashMap<String, Held>, String> {
     let mut stmt = conn
         .prepare("SELECT rel_path, size, mtime, kind FROM scan_entry WHERE root_id = ?1")
-        .map_err(|e| format!("reading what this root held: {e}"))?;
+        .map_err(|e| format!("reading what this folder held: {e}"))?;
     let rows = stmt
         .query_map([root_id], |r| {
             Ok((
@@ -1899,7 +1935,7 @@ fn held_for(conn: &Connection, root_id: i64) -> Result<HashMap<String, Held>, St
                 },
             ))
         })
-        .map_err(|e| format!("reading what this root held: {e}"))?;
+        .map_err(|e| format!("reading what this folder held: {e}"))?;
     Ok(rows.filter_map(Result::ok).collect())
 }
 

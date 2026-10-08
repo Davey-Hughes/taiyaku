@@ -227,6 +227,24 @@ describe('FolderPicker, browsing', () => {
     expect(onPick).toHaveBeenCalledWith('/media/Manga')
   })
 
+  it('tells onPath each text the box holds: typed, browsed to, and emptied by a pick', async () => {
+    const onPath = vi.fn()
+    const host = mount(
+      <FolderPicker action="Add folder" onPick={vi.fn()} onPath={onPath} />,
+    )
+    expect(onPath).toHaveBeenLastCalledWith('')
+
+    await typeInto(box(host), '/srv/typed')
+    expect(onPath).toHaveBeenLastCalledWith('/srv/typed')
+
+    await press(browse(host))
+    await press(entries(host)[0])
+    expect(onPath).toHaveBeenLastCalledWith('/media')
+
+    await press(pick(host))
+    expect(onPath).toHaveBeenLastCalledWith('')
+  })
+
   it('goes up to the parent, and from a prefix to the prefixes', async () => {
     const host = mount(<FolderPicker action="Add folder" onPick={vi.fn()} />)
     await press(browse(host))

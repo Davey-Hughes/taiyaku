@@ -256,12 +256,12 @@ refusal — a name already taken, a folder inside another, a path that cannot be
 read — is drawn as the server's own sentence. Removing a library or a folder
 states what it will take — works, reading positions, notes — and offers no
 confirm button at all until those counts have arrived; a library that is some
-account's only grant is refused instead, naming the accounts. **Scan now** on a
-library walks each of its folders in turn and derives once. A scan started from
-the screen reports both halves of what it did in full: the walk and the
+account's only grant is refused instead, naming the accounts. **Scan library**
+on a library walks each of its folders in turn and derives once. A scan started
+from the screen reports both halves of what it did in full: the walk and the
 derivation, every field, with what it *could not* do listed before what it did,
-and an empty list drawn as `0` rather than left out — so "nothing was
-unreadable this time" cannot be mistaken for "this version does not say".
+and an empty list drawn as `0` rather than left out — so "nothing was unreadable
+this time" cannot be mistaken for "this version does not say".
 
 **The rule editor is built too**, at `/config/rules` — the screen the whole
 preview mechanism exists for, and the settings area's landing tab. An ordered
@@ -444,7 +444,7 @@ name and one or more folders, picked in a browser that starts at `/media`:
 the image sets `TAIYAKU_FOLDERS=/media`, and the browser lists nothing
 outside it. Two folders in one library, `/media/Manga/Volumes` and
 `/media/Manga/Chapters` say, are derived together, so a chapter release
-joins its volume as another edition. Scan now on a library's card walks its
+joins its volume as another edition. Scan library on a library's card walks its
 folders and derives once.
 
 `TAIYAKU_FOLDERS` is a `:`-separated list, because a folder's path can hold a
@@ -466,6 +466,8 @@ docker exec taiyaku taiyaku library scan --add /media/Manga/Volumes --library Ma
 ```
 
 `--library` names the library the folder is filed under, and creates it.
+A name is read without its surrounding white space and without regard to ASCII
+case, so `--library manga` files a folder under the library `Manga`.
 Left out, the folder becomes a library named for the folder, `Volumes` here.
 
 The first scan reads every archive once to hash it, so on a large library it

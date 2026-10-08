@@ -2509,3 +2509,38 @@ mod pinned {
         ));
     }
 }
+
+/// [`crate::ServeState::library_job`], held by a thread of its own until this
+/// is dropped. A library's scan takes the lock before it walks anything, so
+/// one reserved and spawned meanwhile waits, and a test sees it running for as
+/// long as it likes. A thread, not a guard in the test: a guard held across the
+/// test's awaits is what `clippy::await_holding_lock` refuses.
+pub(crate) struct HeldJob {
+    release: Option<std::sync::mpsc::Sender<()>>,
+    holder: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Drop for HeldJob {
+    fn drop(&mut self) {
+        drop(self.release.take());
+        if let Some(holder) = self.holder.take() {
+            holder.join().expect("the holder thread ends");
+        }
+    }
+}
+
+pub(crate) fn holding_the_job(state: &std::sync::Arc<crate::ServeState>) -> HeldJob {
+    let (release, released) = std::sync::mpsc::channel::<()>();
+    let (locked_tx, locked) = std::sync::mpsc::channel::<()>();
+    let state = std::sync::Arc::clone(state);
+    let holder = std::thread::spawn(move || {
+        let _job = state.library_job.lock().expect("the job lock is free");
+        locked_tx.send(()).expect("the test is waiting");
+        let _ = released.recv();
+    });
+    locked.recv().expect("the holder took the lock");
+    HeldJob {
+        release: Some(release),
+        holder: Some(holder),
+    }
+}

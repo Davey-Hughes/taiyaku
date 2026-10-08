@@ -749,7 +749,7 @@ describe('the Configuration screens at 390px', () => {
     // `ScanReport` draws a failed scan as one paragraph, and the server's
     // sentence for it names the root's path.
     await page.viewport(390, 844)
-    const why = `root 3 (${UNBROKEN_ROOT.path}) scanned, but deriving its structure afterward failed: database is locked`
+    const why = `${UNBROKEN_ROOT.path} was scanned, but deriving its structure afterward failed: database is locked`
     const host = await act(async () => {
       const mounted = mount(
         inShell(
@@ -774,8 +774,8 @@ describe('the Configuration screens at 390px', () => {
     assertNoSidewaysScroll(host)
   })
 
-  it('keeps a turned-down “Scan now”’s sentence inside the window', async () => {
-    // The card's own alert, for a "Scan now" the server turned down with a
+  it('keeps a turned-down “Scan folder”’s sentence inside the window', async () => {
+    // The card's own alert, for a "Scan folder" the server turned down with a
     // sentence that names the root's path — as its 409 for a scan already
     // running does.
     await page.viewport(390, 844)
@@ -794,7 +794,7 @@ describe('the Configuration screens at 390px', () => {
       // The folder's own button: the library's, above it, is another route's.
       const scan = [
         ...host.querySelectorAll<HTMLButtonElement>('.root-row button'),
-      ].find((b) => b.textContent === 'Scan now')
+      ].find((b) => b.textContent === 'Scan folder')
       scan?.click()
       await Promise.resolve()
       await Promise.resolve()

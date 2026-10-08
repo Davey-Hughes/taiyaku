@@ -108,6 +108,30 @@ afterEach(() => {
 })
 
 describe('LibraryCard', () => {
+  it('words the library’s button Scan library and each folder’s Scan folder', async () => {
+    const { host } = await shown()
+    expect(button(host, 'scan-library').textContent).toBe('Scan library')
+    expect(
+      [0, 1].map((row) =>
+        [...host.querySelectorAll('.root-row')[row].querySelectorAll('button')]
+          .map((b) => b.textContent)
+          .filter((text) => text?.startsWith('Scan')),
+      ),
+    ).toEqual([['Scan folder'], ['Scan folder']])
+  })
+
+  it('says a scan is running in the library, not that it is scanning the library’s folders', async () => {
+    vi.mocked(api.libraryScanStatus).mockResolvedValue({
+      ...idle(7),
+      running: true,
+      elapsed_secs: 9,
+    })
+    const { host } = await shown()
+    expect(
+      host.querySelector('.library-card > .scanning')?.textContent,
+    ).toMatch(/^A scan is running in this library… 9s$/)
+  })
+
   it('names the library, what it holds, and a row per folder', async () => {
     const { host } = await shown()
     expect(host.querySelector('.library-card > h3')?.textContent).toBe('Manga')
@@ -227,7 +251,7 @@ describe('LibraryCard', () => {
   it("draws a refused folder's sentence and keeps what was typed", async () => {
     vi.mocked(api.addFolder).mockRejectedValue(
       new Error(
-        '/api/library/libraries/7/folders: 400 {"error":"/media/Manga/Volumes/x is inside existing root /media/Manga/Volumes (id 1)"}',
+        '/api/library/libraries/7/folders: 400 {"error":"/media/Manga/Volumes/x is inside /media/Manga/Volumes, a folder of the library `Manga`"}',
       ),
     )
     const { host, onChanged } = await shown()
@@ -240,7 +264,7 @@ describe('LibraryCard', () => {
     await press(picker.querySelector('button[name="pick"]') as Element)
 
     expect(picker.querySelector('[role="alert"]')?.textContent).toBe(
-      '/media/Manga/Volumes/x is inside existing root /media/Manga/Volumes (id 1)',
+      '/media/Manga/Volumes/x is inside /media/Manga/Volumes, a folder of the library `Manga`',
     )
     expect(host.querySelector('.library-card > [role="alert"]')).toBeNull()
     expect(box.value).toBe('/media/Manga/Volumes/x')
@@ -380,7 +404,7 @@ describe('LibraryCard', () => {
     expect(host.querySelector('.remove-library')).toBeNull()
   })
 
-  it('holds Scan now and Remove while the scan is being started', async () => {
+  it('holds Scan library and Remove while the scan is being started', async () => {
     vi.mocked(api.startLibraryScan).mockReturnValue(new Promise(() => {}))
     const { host } = await shown()
     await press(button(host, 'scan-library'))
@@ -533,7 +557,7 @@ const cardAlert = (host: HTMLElement) =>
   host.querySelector('.library-card > [role="alert"]')
 
 describe('LibraryCard, a library and its folders', () => {
-  it('holds the library’s Scan now and Remove while a folder’s removal is being confirmed', async () => {
+  it('holds the library’s Scan library and Remove while a folder’s removal is being confirmed', async () => {
     vi.mocked(config.removalCost).mockResolvedValue(counted())
     const { host } = await shown()
     await press(rowButton(host, 0, 'Remove…'))
@@ -549,7 +573,7 @@ describe('LibraryCard, a library and its folders', () => {
     expect(host.querySelector('.remove-root .counts')).not.toBeNull()
   })
 
-  it('holds every folder’s Scan now and Remove while the library’s removal is open, and sends nothing from them', async () => {
+  it('holds every folder’s Scan folder and Remove while the library’s removal is open, and sends nothing from them', async () => {
     vi.mocked(api.libraryRemovalCost).mockResolvedValue(counted(12))
     vi.mocked(config.startScan).mockResolvedValue({
       root_id: 1,
@@ -560,9 +584,9 @@ describe('LibraryCard, a library and its folders', () => {
     expect(host.querySelector('.remove-library .counts')).not.toBeNull()
 
     for (const row of [0, 1]) {
-      expect(rowButton(host, row, 'Scan now').disabled).toBe(true)
+      expect(rowButton(host, row, 'Scan folder').disabled).toBe(true)
       expect(rowButton(host, row, 'Remove…').disabled).toBe(true)
-      await press(rowButton(host, row, 'Scan now'))
+      await press(rowButton(host, row, 'Scan folder'))
       await press(rowButton(host, row, 'Remove…'))
     }
     expect(config.startScan).not.toHaveBeenCalled()
@@ -575,17 +599,17 @@ describe('LibraryCard, a library and its folders', () => {
         (b) => b.textContent === 'Cancel',
       ) as Element,
     )
-    expect(rowButton(host, 0, 'Scan now').disabled).toBe(false)
+    expect(rowButton(host, 0, 'Scan folder').disabled).toBe(false)
     expect(rowButton(host, 0, 'Remove…').disabled).toBe(false)
   })
 
-  it('holds the library’s Scan now and Remove while a folder is scanning from its own button, and sends nothing from them', async () => {
+  it('holds the library’s Scan library and Remove while a folder is scanning from its own button, and sends nothing from them', async () => {
     vi.mocked(config.startScan).mockResolvedValue({
       root_id: 2,
       status_url: '/api/library/roots/2/scan',
     } as never)
     const { host } = await shown()
-    await press(rowButton(host, 1, 'Scan now'))
+    await press(rowButton(host, 1, 'Scan folder'))
     expect(
       host.querySelectorAll('.root-row')[1].querySelector('.scanning'),
     ).not.toBeNull()
@@ -619,7 +643,7 @@ describe('LibraryCard, a library and its folders', () => {
       status_url: '/api/library/roots/2/scan',
     } as never)
     const { host } = await shown()
-    await press(rowButton(host, 1, 'Scan now'))
+    await press(rowButton(host, 1, 'Scan folder'))
     expect(button(host, 'scan-library').disabled).toBe(true)
     await tick()
     expect(button(host, 'scan-library').disabled).toBe(false)
@@ -931,19 +955,19 @@ const runningRows = (...ids: number[]) =>
 const held = (...buttons: HTMLButtonElement[]) => buttons.map((b) => b.disabled)
 
 describe('LibraryCard, scans and removals of a library and its folders exclude each other', () => {
-  it('holds a folder’s Scan now and Remove… while a sibling is scanning, and sends nothing from them', async () => {
+  it('holds a folder’s Scan folder and Remove… while a sibling is scanning, and sends nothing from them', async () => {
     vi.mocked(config.startScan).mockResolvedValue({
       root_id: 1,
       status_url: '/api/library/roots/1/scan',
     } as never)
     const { host } = await shown()
     runningRows(1)
-    await press(rowButton(host, 0, 'Scan now'))
+    await press(rowButton(host, 0, 'Scan folder'))
 
     expect(
-      held(rowButton(host, 1, 'Scan now'), rowButton(host, 1, 'Remove…')),
+      held(rowButton(host, 1, 'Scan folder'), rowButton(host, 1, 'Remove…')),
     ).toEqual([true, true])
-    await press(rowButton(host, 1, 'Scan now'))
+    await press(rowButton(host, 1, 'Scan folder'))
     await press(rowButton(host, 1, 'Remove…'))
     expect(config.startScan).toHaveBeenCalledTimes(1)
     expect(config.startScan).toHaveBeenCalledWith(1)
@@ -953,19 +977,19 @@ describe('LibraryCard, scans and removals of a library and its folders exclude e
     runningRows()
     await tick()
     expect(
-      held(rowButton(host, 1, 'Scan now'), rowButton(host, 1, 'Remove…')),
+      held(rowButton(host, 1, 'Scan folder'), rowButton(host, 1, 'Remove…')),
     ).toEqual([false, false])
   })
 
-  it('holds a folder’s Scan now and Remove… while a sibling’s removal is being confirmed, and leaves that dialog live', async () => {
+  it('holds a folder’s Scan folder and Remove… while a sibling’s removal is being confirmed, and leaves that dialog live', async () => {
     vi.mocked(config.removalCost).mockResolvedValue(counted())
     const { host } = await shown()
     await press(rowButton(host, 0, 'Remove…'))
 
     expect(
-      held(rowButton(host, 1, 'Scan now'), rowButton(host, 1, 'Remove…')),
+      held(rowButton(host, 1, 'Scan folder'), rowButton(host, 1, 'Remove…')),
     ).toEqual([true, true])
-    await press(rowButton(host, 1, 'Scan now'))
+    await press(rowButton(host, 1, 'Scan folder'))
     await press(rowButton(host, 1, 'Remove…'))
     expect(config.startScan).not.toHaveBeenCalled()
     expect(config.removalCost).toHaveBeenCalledTimes(1)
@@ -982,7 +1006,7 @@ describe('LibraryCard, scans and removals of a library and its folders exclude e
       ) as Element,
     )
     expect(
-      held(rowButton(host, 1, 'Scan now'), rowButton(host, 1, 'Remove…')),
+      held(rowButton(host, 1, 'Scan folder'), rowButton(host, 1, 'Remove…')),
     ).toEqual([false, false])
   })
 
@@ -1076,7 +1100,7 @@ describe('LibraryCard, scans and removals of a library and its folders exclude e
     )
   })
 
-  it('holds every folder’s Scan now and Remove… while a scan the card found at mount is running', async () => {
+  it('holds every folder’s Scan folder and Remove… while a scan the card found at mount is running', async () => {
     vi.mocked(api.libraryScanStatus).mockResolvedValue({
       ...idle(7),
       running: true,
@@ -1085,12 +1109,15 @@ describe('LibraryCard, scans and removals of a library and its folders exclude e
     const { host } = await shown()
     expect(
       host.querySelector('.library-card > .scanning')?.textContent,
-    ).toContain('Scanning this library')
+    ).toContain('A scan is running in this library')
     for (const row of [0, 1]) {
       expect(
-        held(rowButton(host, row, 'Scan now'), rowButton(host, row, 'Remove…')),
+        held(
+          rowButton(host, row, 'Scan folder'),
+          rowButton(host, row, 'Remove…'),
+        ),
       ).toEqual([true, true])
-      await press(rowButton(host, row, 'Scan now'))
+      await press(rowButton(host, row, 'Scan folder'))
       await press(rowButton(host, row, 'Remove…'))
     }
     expect(config.startScan).not.toHaveBeenCalled()
@@ -1099,7 +1126,7 @@ describe('LibraryCard, scans and removals of a library and its folders exclude e
     expect(host.querySelector('.remove-root')).toBeNull()
   })
 
-  it('holds every folder’s Scan now and Remove… once a 409 has told the card a scan is running', async () => {
+  it('holds every folder’s Scan folder and Remove… once a 409 has told the card a scan is running', async () => {
     vi.mocked(api.startLibraryScan).mockRejectedValue(
       new Error(
         '/api/library/libraries/7/scan: 409 {"error":"a scan of this library is already running"}',
@@ -1117,7 +1144,10 @@ describe('LibraryCard, scans and removals of a library and its folders exclude e
     )
     for (const row of [0, 1]) {
       expect(
-        held(rowButton(host, row, 'Scan now'), rowButton(host, row, 'Remove…')),
+        held(
+          rowButton(host, row, 'Scan folder'),
+          rowButton(host, row, 'Remove…'),
+        ),
       ).toEqual([true, true])
       await press(rowButton(host, row, 'Remove…'))
     }
@@ -1127,20 +1157,23 @@ describe('LibraryCard, scans and removals of a library and its folders exclude e
     vi.mocked(api.libraryScanStatus).mockResolvedValue(idle(7))
     await tick()
     expect(
-      held(rowButton(host, 0, 'Scan now'), rowButton(host, 0, 'Remove…')),
+      held(rowButton(host, 0, 'Scan folder'), rowButton(host, 0, 'Remove…')),
     ).toEqual([false, false])
   })
 
-  it('holds every folder’s Scan now and Remove… while the card’s own scan is being started', async () => {
+  it('holds every folder’s Scan folder and Remove… while the card’s own scan is being started', async () => {
     const start = deferred<never>()
     vi.mocked(api.startLibraryScan).mockReturnValue(start.promise)
     const { host } = await shown()
     await press(button(host, 'scan-library'))
     for (const row of [0, 1]) {
       expect(
-        held(rowButton(host, row, 'Scan now'), rowButton(host, row, 'Remove…')),
+        held(
+          rowButton(host, row, 'Scan folder'),
+          rowButton(host, row, 'Remove…'),
+        ),
       ).toEqual([true, true])
-      await press(rowButton(host, row, 'Scan now'))
+      await press(rowButton(host, row, 'Scan folder'))
       await press(rowButton(host, row, 'Remove…'))
     }
     expect(config.startScan).not.toHaveBeenCalled()
@@ -1153,12 +1186,12 @@ describe('LibraryCard, scans and removals of a library and its folders exclude e
     const start = deferred<never>()
     vi.mocked(config.startScan).mockReturnValue(start.promise)
     const { host } = await shown()
-    await press(rowButton(host, 1, 'Scan now'))
+    await press(rowButton(host, 1, 'Scan folder'))
     expect(
       held(button(host, 'scan-library'), button(host, 'remove-library')),
     ).toEqual([true, true])
     expect(
-      held(rowButton(host, 0, 'Scan now'), rowButton(host, 0, 'Remove…')),
+      held(rowButton(host, 0, 'Scan folder'), rowButton(host, 0, 'Remove…')),
     ).toEqual([true, true])
     await press(button(host, 'scan-library'))
     expect(api.startLibraryScan).not.toHaveBeenCalled()
@@ -1171,7 +1204,7 @@ describe('LibraryCard, scans and removals of a library and its folders exclude e
     } as never)
     const { host } = await shown()
     runningRows(2)
-    await press(rowButton(host, 1, 'Scan now'))
+    await press(rowButton(host, 1, 'Scan folder'))
     expect(button(host, 'scan-library').disabled).toBe(true)
 
     await act(async () => {
@@ -1190,7 +1223,7 @@ describe('LibraryCard, scans and removals of a library and its folders exclude e
     } as never)
     const { host } = await shown()
     runningRows(2)
-    await press(rowButton(host, 1, 'Scan now'))
+    await press(rowButton(host, 1, 'Scan folder'))
     await act(async () => {
       rerender(
         cardOf(
@@ -1212,7 +1245,7 @@ describe('LibraryCard, scans and removals of a library and its folders exclude e
     await tick()
     expect(button(host, 'scan-library').disabled).toBe(false)
     expect(button(host, 'remove-library').disabled).toBe(false)
-    expect(rowButton(host, 0, 'Scan now').disabled).toBe(false)
+    expect(rowButton(host, 0, 'Scan folder').disabled).toBe(false)
   })
 
   it('holds the library’s removal when a folder is found scanning under its open dialog, and asks its cost again when that ends', async () => {
@@ -1349,7 +1382,7 @@ describe('LibraryCard, scans and removals of a library and its folders exclude e
     })
     const { host } = await shown()
     runningRows(1)
-    await press(rowButton(host, 0, 'Scan now'))
+    await press(rowButton(host, 0, 'Scan folder'))
     expect(
       host.querySelectorAll('.root-row')[0].querySelector('.scanning'),
     ).not.toBeNull()

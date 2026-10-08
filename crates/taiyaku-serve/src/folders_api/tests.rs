@@ -285,11 +285,11 @@ fn a_prefix_that_is_a_symlink_is_its_target() {
     ));
 }
 
-/// Nothing leads above a prefix, and a folder one level down leads to the one
-/// above it. Where one prefix lies inside another, a browser starting at the
-/// inner one is not led out of it either.
+/// Nothing leads above a prefix that no other prefix holds, and a folder one
+/// level down leads to the one above it. Where one prefix lies inside
+/// another, Up from the inner one leads to the outer one's folder above it.
 #[test]
-fn the_parent_stops_at_a_prefix() {
+fn the_parent_stops_at_a_prefix_no_other_holds() {
     let fixture = test_support::Fixture::new("folders-parent");
     let (media, _elsewhere) = a_share(&fixture);
     let manga = media.join("Manga");
@@ -298,8 +298,15 @@ fn the_parent_stops_at_a_prefix() {
     assert_eq!(list(&prefixes, Some(&media)).expect("lists").parent, None);
     assert_eq!(
         list(&prefixes, Some(&manga)).expect("lists").parent,
+        Some(media.clone()),
+        "the inner prefix sits inside the outer one"
+    );
+    assert_eq!(
+        list(std::slice::from_ref(&manga), Some(&manga))
+            .expect("lists")
+            .parent,
         None,
-        "the inner prefix is a prefix too"
+        "alone, the inner prefix leads nowhere"
     );
     let volumes = manga.join("Volumes");
     assert_eq!(

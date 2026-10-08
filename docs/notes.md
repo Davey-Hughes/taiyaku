@@ -24989,3 +24989,164 @@ connections racing: two creates with overlapping folders, a removal against
 a scan that is walking, and a removal whose derive fails after its commit
 (the routes then leave that library's registry entries in place). How long a
 rehearsal holds its write lock on the real library.
+
+## Libraries, F2a follow-ups (2026-10-07)
+
+The branch `f2a-followups` answers O195 to O209 on the rulings of 2026-10-07
+(`docs/status.md` has each row). This section records what was measured on it.
+The hand defects listed below are as each task's report gives them; no log of
+those runs is kept.
+
+**Checked before migration 16 was written.** Neither local store holds two
+library names that differ only in case or in surrounding white space. The
+workstation's `~/.local/share/taiyaku/library.db` was at schema 15 with 13
+distinct names; the real-library copy at `/home/davey/temp/manga-test/library.db`
+was at schema 13, with one folder. The NAS store was not read.
+
+**Hand defects, and the test each turned red.**
+
+- *O206, migration 16 and the names (task 1).* `trim_name` as
+  `trim_matches(' ')`: `trim_name_strips_white_space_and_nothing_else`. Code
+  point 8287 out of a trigger list:
+  `migration_16_strips_the_characters_trim_name_strips` and
+  `a_root_written_without_a_library_is_named_without_white_space_or_a_case_clash`,
+  and only after the trigger test also inserted `/b{n}/{c}` for each white-space
+  character, since the first version of it passed with the code point removed.
+  `id_of` without `NOCASE`: `a_name_finds_its_library_stripped_and_in_any_case`.
+  The trigger's `name = leaf` without `NOCASE`: the trigger test, on `UNIQUE
+  constraint failed: library.name`. `own_library_clash` without `NOCASE`:
+  `a_folder_whose_two_names_are_taken_in_another_case_is_refused_naming_both`.
+  The first `UPDATE` deleted:
+  `migration_16_strips_names_and_keeps_an_id_beside_a_name_another_holds`.
+  `CREATE UNIQUE INDEX` replaced by `SELECT 1;`: that test and
+  `a_rename_is_refused_a_name_another_library_holds_in_another_case`. The rename
+  and create refusals formatting `name` and not the holder as stored: the rename
+  test and `a_library_is_not_made_under_a_name_another_holds_in_another_case`.
+  A second review found the first `UPDATE`'s `trim(name, WS) <> ''` guard
+  unexercised; the migration test then gained a library named `' '`, and with
+  the guard deleted it fails on that library.
+- *O205, a library with no folder is not granted (task 2).*
+  `Some((_, false)) => None` in `ungrantable`:
+  `a_library_with_no_folder_is_not_granted` and
+  `a_libraries_list_naming_a_library_with_no_folder_is_refused_409` (200 against
+  409). `update` mapping the refusal to `WriteError::Unusable`: both again (400
+  against 409).
+- *O200, server sentences (task 3).* Each of the overlap sentences,
+  `only_grant_of`'s two full stops, the scan 409, the derive-failure sentence,
+  the 404 and the patch nouns turned a test red; the folder PATCH's "must be a
+  JSON object" sentence turned none until
+  `a_folder_patch_that_is_not_an_object_is_refused_in_the_folders_words` was
+  added. Swapping only the relation word of the overlap sentence to "existing
+  root" passed, since `contains(" is inside ")` is satisfied by either; putting
+  the whole old format back failed three tests. A review then found
+  `check_exclude_globs`, the empty-scan advice and the `root_panicked` texts
+  still saying root. The advice and panic texts have no test that reads them,
+  and `check_exclude_globs`'s `will not compile` sentence cannot be reached from
+  a route, because the `ignore` crate refuses a line at `add_line`.
+- *O196, removal against a reserved scan (task 4).* The registry check deleted
+  from `delete_root`: `a_folder_is_not_removed_while_a_scan_of_it_is_reserved`
+  (200 against 409). The same from `delete_library`:
+  `a_library_is_not_removed_while_a_scan_of_one_of_its_folders_is_reserved`. The job's re-read
+  deleted: `a_folders_scan_walks_nothing_when_its_folder_changed_while_it_waited`
+  (3 entries filed under the new folder against 0). `Some(now) if now.path == root.path` as
+  `Some(now)`: the same test. `finish_reservation`'s guard as an unconditional
+  insert, and `scan_and_finish` inserting directly:
+  `a_folders_scan_lands_only_on_its_own_reservation`. The re-read returning the
+  folder as the request found it:
+  `a_folders_scan_walks_the_settings_the_folder_holds_when_it_starts`. Six
+  `libraries_api` tests that sent a `DELETE` with a scan reserved, to stand for
+  a removal in the window, now remove through the store, since the route
+  refuses that now.
+- *O207, Up from a nested folder (task 5).* The old `if prefixes.canonical.contains(&canonical) { None }`
+  put back: `the_parent_stops_at_a_prefix_no_other_holds`, on "the inner prefix
+  sits inside the outer one".
+- *O195, the lift question (task 6).* `seeEvery` saving at once: three jsdom
+  cases and the five browser cases. `keepLimit` without its focus call:
+  `expected <body> to be <input>`. `lift` without `setLifting(false)`: the first
+  case stayed green, so a case that does not ask again after a lift was added,
+  and it fails. The render-time retire line deleted: the case that retires the
+  question when the account holds no grant. `disabled` dropped from either
+  button: the case that holds both answers while a write is out. The `focus`
+  call after a lift dropped: the lift case.
+- *O199, O198, the words (task 7).* Each of the four strings put back ("Scan
+  now" on the card, "Scan now" on the row, "Scanning this library's folders…",
+  "What derivation made of it") turned tests red, the row's 38.
+- *O201, held buttons (task 8).* The `border-style` line deleted from the base
+  rule: `expected 'solid' to be 'dashed'`; the `background` line deleted:
+  `expected 'rgb(233, 226, 210)' to be 'rgb(243, 238, 227)'`.
+- *O209, refusals into view (task 9).* The refusal effect's body deleted: six
+  browser cases (make, Add folder and rename, at 390 and 1280 wide).
+  `nearest` as `start`: only the rename case turned red, at both sizes (the make
+  form and Add folder sit near the document's foot, where the two land the
+  same). `heldByPath` without `folders.length === 0 &&`: no test failed until
+  one typed a second path after the pick. `.trim()` removed from the held test:
+  the case that types a box of spaces alone. The onPath effect deleted: the
+  `FolderPicker` and `Libraries` held-sentence tests. Without
+  `scroll-margin-bottom: 0.5rem`, four of the six cases failed by 0.05 to 0.48
+  px, because `nearest` leaves a refusal's foot on the window's edge.
+
+**Narrowed rows.** The Dismiss, Reopen and Compare buttons on the proposals
+panel set their own `background` and border, so the base rule for a held button
+does not reach them and they keep a muted word as their held look (O201). The
+classes `.preview-tabs button`, `.proposal-tabs button`, `.library-chips button`,
+`.browse-settings button` and `.reader-button` also set a background; none of
+the first four has a `disabled` attribute in its component, and `.reader-button`
+has a held look of its own.
+
+**How the web lane ran.** For a while two agents worked in one worktree. Task 7's
+commit swept up the `UserRow` edits of Task 6's fix round; the lane was rebuilt
+by path before landing, so each commit holds only its own files, and the rebuilt
+tree was proved identical.
+
+**The drive**, at `ded8d669`, in Chromium, with the release binary and the
+production build, over a fresh store and scratch folders that hardlink 176
+volumes of the real library's. Its readings and pictures are in
+`.superpowers/sdd/f2a-followups-evidence/drive/`, which is not committed.
+
+- O206: a library made under the name `"  Spare\t"` was stored and drawn
+  `Spare`. Making `manga` beside `Manga` was refused
+  ``a library is already called `Manga`; add the folder to it instead``, and
+  renaming `Comics` to `MANGA` ``a library is already called `Manga` ``.
+- O200: adding a series' folder inside `…/Manga/Volumes` to Manga was refused
+  ``… is inside …/Manga/Volumes, a folder of the library `Manga` ``.
+- O209: with a path typed and not added, "Make the library" was held and the
+  sentence stood beneath it, and adding the path took both away; a box of
+  spaces alone drew no sentence. A refused make, add and rename, each pressed
+  with its control at the foot of the window, at 1280 × 800, where `main`
+  scrolls, and at 390 × 844, where the window scrolls under a 52 px bar: each
+  sentence ended wholly in view.
+- O207: with `…/media` and `…/media/Manga` configured, Up from
+  `…/media/Manga` listed `…/media`, and Up again listed the configured
+  folders.
+- O199 and O198: the buttons read "Scan library" and "Scan folder". While
+  Manga's scan ran, the card read "A scan is running in this library…" with a
+  counter, and the report's derive block was headed "What derivation made of
+  every library". A scan of one folder held the card's other buttons and drew
+  no line on the card.
+- O201: while Manga scanned, its held buttons computed a dashed border on the
+  page's ground (`rgb(243, 238, 227)` light, `rgb(21, 19, 15)` dark), and
+  Comics' live buttons a solid one on the surface colour (`rgb(233, 226, 210)`,
+  `rgb(33, 30, 24)`), with the same text colour.
+- O196: while Manga's scan ran, removing the library, rehearsed and for real,
+  and rehearsing the removal of one of its folders each answered 409 naming a
+  folder. Once the scan ended both rehearsals answered 200. Nothing was
+  removed.
+- O195: on an account granted Comics alone, a click on "Every library" and
+  ArrowUp on "Only these" each opened the question with focus on "Keep the
+  limit" and sent nothing. "Keep the limit" sent nothing and put focus on
+  "Only these". Shift+Tab and Enter, on "See every library", sent
+  `{"libraries":[]}`. With focus on "Keep the limit", ArrowDown did nothing,
+  and the question stayed open.
+- Afterwards nothing under the real library's folder was newer than the
+  drive's start, its `library.db` digest was unchanged, and no hardlinked
+  volume had been written.
+
+**Migration 16 on copies of the two local stores.** The workstation's store,
+at schema 15, kept its 13 names, each the same as in the original. The real
+library's copy went from schema 13 to 16 with one library, `Volumes`, holding
+its 1896 works. `integrity_check` and `foreign_key_check` were clean on both,
+and each original's digest was the same afterwards. A synthetic store at
+schema 15 holding a name that migration 16 would also have made failed the
+migration and stayed at 15. The reading is in
+`.superpowers/sdd/f2a-followups-evidence/migration16-store-copies.log`, which
+is not committed.

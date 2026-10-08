@@ -751,9 +751,9 @@ describe('Libraries, focus and the two slots', () => {
     // Held: the library's buttons and its folder's. The Add folder button is
     // disabled in every card until a path is typed, scanning or not.
     expect(held(cards()[0])).toEqual([
-      'Scan now',
+      'Scan library',
       'Remove library…',
-      'Scan now',
+      'Scan folder',
       'Remove…',
       'Add folder',
     ])
@@ -1079,5 +1079,64 @@ describe('Libraries, a folder’s removal', () => {
         (h) => h.textContent,
       ),
     ).toEqual(['Comics'])
+  })
+
+  it('says why Make the library is held while a path waits in the box', async () => {
+    const host = await shown()
+    const form = host.querySelector('form.add-library') as HTMLFormElement
+    const make = form.querySelector(
+      'button[type="submit"]',
+    ) as HTMLButtonElement
+    await typeInto(
+      form.querySelector('input[name="library-name"]') as HTMLInputElement,
+      'Comics',
+    )
+    await typeInto(
+      form.querySelector('input[name="path"]') as HTMLInputElement,
+      '/srv/comics',
+    )
+
+    expect(make.disabled).toBe(true)
+    const why = document.getElementById(
+      make.getAttribute('aria-describedby') ?? '',
+    )
+    expect(why?.textContent).toBe(
+      'The folder in the box is not on the list yet: “Add to the list” puts it there.',
+    )
+
+    await press(form.querySelector('button[name="pick"]') as Element)
+    expect(make.disabled).toBe(false)
+    expect(make.getAttribute('aria-describedby')).toBeNull()
+    expect(form.textContent).not.toContain('is not on the list yet')
+
+    // Another path waiting in the box does not hold the button: a folder is
+    // on the list already.
+    await typeInto(
+      form.querySelector('input[name="path"]') as HTMLInputElement,
+      '/srv/more',
+    )
+    expect(make.disabled).toBe(false)
+    expect(make.getAttribute('aria-describedby')).toBeNull()
+    expect(form.textContent).not.toContain('is not on the list yet')
+  })
+
+  it('says nothing of a box holding only white space', async () => {
+    const host = await shown()
+    const form = host.querySelector('form.add-library') as HTMLFormElement
+    const make = form.querySelector(
+      'button[type="submit"]',
+    ) as HTMLButtonElement
+    await typeInto(
+      form.querySelector('input[name="path"]') as HTMLInputElement,
+      '   ',
+    )
+    expect(make.getAttribute('aria-describedby')).toBeNull()
+    expect(form.textContent).not.toContain('is not on the list yet')
+  })
+
+  it('says nothing of the box while the box is empty', async () => {
+    const host = await shown()
+    const form = host.querySelector('form.add-library') as HTMLFormElement
+    expect(form.textContent).not.toContain('is not on the list yet')
   })
 })

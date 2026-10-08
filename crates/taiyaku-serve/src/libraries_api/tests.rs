@@ -1,4 +1,4 @@
-use crate::test_support::{self, get_json, send_json};
+use crate::test_support::{self, HeldJob, get_json, holding_the_job, send_json};
 use axum::http::{Method, StatusCode};
 
 /// Sends, and answers the status with the body parsed as JSON.
@@ -1074,41 +1074,6 @@ async fn until_the_library_scan_ends(router: &axum::Router, id: i64) -> serde_js
     panic!("the library's scan did not end within ten seconds");
 }
 
-/// [`crate::ServeState::library_job`], held by a thread of its own until this
-/// is dropped. A library's scan takes the lock before it walks anything, so
-/// one reserved and spawned meanwhile waits, and a test sees it running for as
-/// long as it likes. A thread, not a guard in the test: a guard held across the
-/// test's awaits is what `clippy::await_holding_lock` refuses.
-struct HeldJob {
-    release: Option<std::sync::mpsc::Sender<()>>,
-    holder: Option<std::thread::JoinHandle<()>>,
-}
-
-impl Drop for HeldJob {
-    fn drop(&mut self) {
-        drop(self.release.take());
-        if let Some(holder) = self.holder.take() {
-            holder.join().expect("the holder thread ends");
-        }
-    }
-}
-
-fn holding_the_job(state: &std::sync::Arc<crate::ServeState>) -> HeldJob {
-    let (release, released) = std::sync::mpsc::channel::<()>();
-    let (locked_tx, locked) = std::sync::mpsc::channel::<()>();
-    let state = std::sync::Arc::clone(state);
-    let holder = std::thread::spawn(move || {
-        let _job = state.library_job.lock().expect("the job lock is free");
-        locked_tx.send(()).expect("the test is waiting");
-        let _ = released.recv();
-    });
-    locked.recv().expect("the holder took the lock");
-    HeldJob {
-        release: Some(release),
-        holder: Some(holder),
-    }
-}
-
 fn a_scan_running_on(state: &crate::ServeState, folder: i64) {
     state.scans.lock().unwrap().insert(
         folder,
@@ -1310,6 +1275,37 @@ async fn while_a_librarys_scan_runs_its_folders_answer_as_scanning() {
     .await;
     assert_eq!(status, StatusCode::ACCEPTED);
     until_the_library_scan_ends(&router, id).await;
+}
+
+/// While a scan of one of its folders is reserved, a library is neither
+/// rehearsed nor removed: 409 naming that folder, and the store as it was.
+#[tokio::test]
+async fn a_library_is_not_removed_while_a_scan_of_one_of_its_folders_is_reserved() {
+    let (router, state, fixture) = test_support::router_over_a_single_scanned_work();
+    let (id, folders) = a_library_with_an_unscanned_second_folder(&router, &fixture).await;
+    a_scan_running_on(&state, folders[1]);
+    let listed = get_json(&router, "/api/library/libraries").await;
+    let path = listed["libraries"][0]["folders"][1]["path"]
+        .as_str()
+        .expect("a path")
+        .to_string();
+    let stored = the_store(&state);
+
+    for query in ["?dry_run=true", ""] {
+        let (status, refused) = answered(
+            &router,
+            Method::DELETE,
+            &format!("/api/library/libraries/{id}{query}"),
+            &serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT, "{query}: {refused}");
+        assert_eq!(
+            the_sentence(&refused),
+            format!("a scan of {path} is running; remove the library once it has finished")
+        );
+        assert_eq!(the_store(&state), stored, "{query} removed something");
+    }
 }
 
 /// A scan of one folder already running refuses the library's, names that
@@ -1947,15 +1943,18 @@ async fn a_library_of_its_own(
     )
 }
 
-async fn remove_library(router: &axum::Router, id: i64) {
-    let (status, removed) = answered(
-        router,
-        Method::DELETE,
-        &format!("/api/library/libraries/{id}"),
-        &serde_json::json!({}),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{removed}");
+/// A removal of library `id` that landed after the `DELETE`'s check of the
+/// registry and before the scan took the job lock, which the route refuses once
+/// the scan is reserved: through the store, then the registry's slots cleared
+/// as the route clears them when it answers.
+fn remove_library(state: &crate::ServeState, id: i64) {
+    let working = state.library.working().expect("a working connection");
+    let folders = super::folders_of(&working, id).expect("the folders");
+    taiyaku_library::scan::remove_library(&working, id).expect("removes the library");
+    let mut scans = state.scans.lock().unwrap();
+    for folder in &folders {
+        scans.remove(&folder.id);
+    }
 }
 
 /// A job that answers fewer reports than there are folders still releases
@@ -2008,7 +2007,7 @@ async fn a_library_removed_while_its_scan_waits_leaves_nothing_behind() {
         super::library_scan_job(id),
     );
 
-    remove_library(&router, id).await;
+    remove_library(&state, id);
     drop(held);
     the_job_ends(job).await;
 
@@ -2038,7 +2037,7 @@ async fn a_scan_that_waited_through_a_removal_does_not_touch_the_folder_that_too
         super::library_scan_job(id),
     );
 
-    remove_library(&router, id).await;
+    remove_library(&state, id);
     let (fresh, fresh_folder) = a_library_of_its_own(&router, &fixture, "Fresh").await;
     assert_eq!(fresh_folder, folder, "the freed id is the next folder's");
     drop(held);
@@ -2145,7 +2144,7 @@ async fn a_scan_that_waited_through_a_removal_leaves_a_later_scans_reservation_a
         started,
         super::library_scan_job(id),
     );
-    remove_library(&router, id).await;
+    remove_library(&state, id);
     let (fresh, fresh_folder) = a_library_of_its_own(&router, &fixture, "Fresh").await;
     assert_eq!(fresh_folder, folder, "the freed id is the next folder's");
     let fresh_roots = {
@@ -2190,15 +2189,11 @@ fn a_waiting_scan(
     (held, job)
 }
 
-async fn remove_folder(router: &axum::Router, folder: i64) {
-    let (status, removed) = answered(
-        router,
-        Method::DELETE,
-        &format!("/api/library/roots/{folder}"),
-        &serde_json::json!({}),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{removed}");
+/// [`remove_library`]'s twin for one folder.
+fn remove_folder(state: &crate::ServeState, folder: i64) {
+    let working = state.library.working().expect("a working connection");
+    taiyaku_library::scan::remove_root(&working, folder).expect("removes the folder");
+    state.scans.lock().unwrap().remove(&folder);
 }
 
 async fn add_folder_to(router: &axum::Router, library: i64, path: &str) -> i64 {
@@ -2237,7 +2232,7 @@ async fn a_scan_that_waited_through_a_swapped_folder_does_not_walk_the_old_path_
     let (id, folders) = a_library_with_an_unscanned_second_folder(&router, &fixture).await;
     let (held, job) = a_waiting_scan(&state, id);
 
-    remove_folder(&router, folders[1]).await;
+    remove_folder(&state, folders[1]);
     let swapped = add_folder_to(&router, id, &a_folder_of(&fixture, "Third", "Third Series")).await;
     assert_eq!(swapped, folders[1], "the new folder took the freed id");
     drop(held);
@@ -2263,7 +2258,7 @@ async fn a_scan_that_waited_through_a_folder_re_added_under_a_new_id_walks_nothi
         .to_string();
     let (held, job) = a_waiting_scan(&state, id);
 
-    remove_folder(&router, folders[1]).await;
+    remove_folder(&state, folders[1]);
     let (_other, taken) = a_library_of_its_own(&router, &fixture, "Other").await;
     assert_eq!(taken, folders[1], "another library's folder took the id");
     let back = add_folder_to(&router, id, &second_path).await;
@@ -2292,7 +2287,7 @@ async fn a_scan_that_waited_through_a_removed_folder_walks_nothing() {
     let before = get_json(&router, &a_folders_scan(folders[0])).await["last_scan_status"].clone();
     let (held, job) = a_waiting_scan(&state, id);
 
-    remove_folder(&router, folders[1]).await;
+    remove_folder(&state, folders[1]);
     drop(held);
     the_job_ends(job).await;
 

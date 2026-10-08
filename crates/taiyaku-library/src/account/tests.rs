@@ -955,6 +955,47 @@ fn a_granted_library_resolves_to_every_one_of_its_folders() {
     );
 }
 
+/// A library with no folder resolves to no folder, which the guard reads as
+/// unrestricted, so granting it is refused, by the patch and by the CLI's
+/// call alike, and nothing is granted.
+#[test]
+fn a_library_with_no_folder_is_not_granted() {
+    let library = claimed_library();
+    let conn = library.conn();
+    a_two_folder_library_and_another(&conn);
+    conn.execute("INSERT INTO library (id, name) VALUES (90, 'Empty')", [])
+        .expect("a library with no folder, as only a hand can make one");
+    let id = add(&conn, "reader", "pw", "user").expect("adds an account");
+
+    let refused = update(
+        &conn,
+        id,
+        &Patch {
+            libraries: Some(vec![70, 90]),
+            ..Patch::default()
+        },
+        None,
+    )
+    .expect_err("Empty has no folder");
+    assert_eq!(
+        refused,
+        WriteError::Refused(
+            "the library `Empty` has no folder, so there is nothing in it to grant".to_string()
+        )
+    );
+    assert!(
+        libraries_for(&conn, id).expect("reads").is_empty(),
+        "Shelf was not granted either"
+    );
+
+    let why = grant_library(&conn, id, 90).expect_err("Empty has no folder");
+    assert!(why.contains("`Empty` has no folder"), "{why}");
+    assert!(libraries_for(&conn, id).expect("reads").is_empty());
+
+    let missing = grant_library(&conn, id, 999).expect_err("no such library");
+    assert_eq!(missing, "there is no library 999 to grant");
+}
+
 /// [`a_two_folder_library_and_another`], a library `Zines` whose name and
 /// folder's path sort after `Other`'s though its ids sort before, and two
 /// accounts: `reader` granted `Other` and `Zines`, `other` granted `Shelf`

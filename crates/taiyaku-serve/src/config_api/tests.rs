@@ -1719,6 +1719,12 @@ async fn patching_or_deleting_an_unknown_root_is_a_404() {
     )
     .await;
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let text = test_support::body_string(response).await;
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&text).expect("a JSON body"),
+        serde_json::json!({ "error": "there is no folder 999999" }),
+        "the Libraries screen draws this, and it shows folders"
+    );
 
     let response = send_json(
         &router,
@@ -1728,6 +1734,11 @@ async fn patching_or_deleting_an_unknown_root_is_a_404() {
     )
     .await;
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let text = test_support::body_string(response).await;
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&text).expect("a JSON body"),
+        serde_json::json!({ "error": "there is no folder 999999" }),
+    );
 }
 
 /// C4 §2's whole point: the counts reach the caller **before** anything is
@@ -1986,6 +1997,9 @@ async fn patching_a_root_with_bad_fields_names_a_root_not_a_rule() {
         ("keeps_documents", serde_json::json!("yes")), // patch_bool
         ("edition_key", serde_json::json!(123)),       // patch_nullable_text
         ("scan_interval_secs", serde_json::json!("soon")), // patch_nullable_i64
+        ("default_kind", serde_json::json!(1)),        // patch_nullable_text
+        ("default_language", serde_json::json!(1)),    // patch_nullable_text
+        ("exclude_globs", serde_json::json!(1)),       // patch_nullable_text
     ] {
         let response = send_json(
             &router,
@@ -2000,14 +2014,37 @@ async fn patching_a_root_with_bad_fields_names_a_root_not_a_rule() {
         let json: serde_json::Value = serde_json::from_str(&text).expect("a JSON body");
         let error = json["error"].as_str().expect("an `error` string");
         assert!(
-            error.contains(&format!("the root's `{field}`")),
-            "the message must name a root: {error}"
+            error.contains(&format!("the folder's `{field}`")),
+            "the message must name a folder: {error}"
         );
         assert!(
             !error.contains("the rule's"),
             "a roots-route validation message must never name a rule: {error}"
         );
     }
+}
+
+/// A folder's settings that are not an object are refused in the folder's
+/// words, which are the ones the Libraries screen draws.
+#[tokio::test]
+async fn a_folder_patch_that_is_not_an_object_is_refused_in_the_folders_words() {
+    let (router, state, _fixture) = test_support::router_over_a_single_scanned_work();
+    let root_id = only_root_id(&state);
+
+    let response = send_json(
+        &router,
+        Method::PATCH,
+        &format!("/api/library/roots/{root_id}"),
+        &serde_json::json!([1, 2]),
+    )
+    .await;
+    let status = response.status();
+    let text = test_support::body_string(response).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{text}");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&text).expect("a JSON body"),
+        serde_json::json!({ "error": "a folder's settings must be a JSON object" }),
+    );
 }
 
 /// IMPORTANT 1's regression guard: parameterising `required_str`/
@@ -2031,7 +2068,7 @@ async fn a_rules_route_validation_message_still_names_a_rule() {
     let text = test_support::body_string(response).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{text}");
     assert!(text.contains("the rule's `kind`"), "{text}");
-    assert!(!text.contains("the root's"), "{text}");
+    assert!(!text.contains("the folder's"), "{text}");
 
     // `patch_bool`, `patch_nullable_text` and `patch_nullable_i64`, via
     // `rule_patch_from_json` — the id need not exist, since a patch this
@@ -2055,7 +2092,7 @@ async fn a_rules_route_validation_message_still_names_a_rule() {
             text.contains(&format!("the rule's `{field}`")),
             "{field}: {text}"
         );
-        assert!(!text.contains("the root's"), "{field}: {text}");
+        assert!(!text.contains("the folder's"), "{field}: {text}");
     }
 }
 
@@ -2252,9 +2289,13 @@ async fn a_derive_failure_after_a_successful_scan_corrects_last_scan_status() {
 
     let job = std::sync::Mutex::new(());
     let outcome = crate::config_api::run_scan_inner(&library, &root, &job);
+    let why = outcome.expect_err("the derive must actually fail, or this test proves nothing");
     assert!(
-        outcome.is_err(),
-        "the derive must actually fail, or this test proves nothing: {outcome:?}"
+        why.starts_with(&format!(
+            "{} was scanned, but deriving",
+            root.path.display()
+        )),
+        "{why}"
     );
 
     let conn = library.conn();
@@ -2577,6 +2618,21 @@ async fn a_second_scan_of_a_root_already_scanning_is_refused() {
         response.status(),
         StatusCode::CONFLICT,
         "a scan already running must refuse a second start, not queue it"
+    );
+    let path = {
+        let conn = state.library.conn();
+        taiyaku_library::scan::roots(&conn)
+            .expect("reads the roots")
+            .into_iter()
+            .find(|root| root.id == root_id)
+            .expect("the root")
+            .path
+    };
+    let text = test_support::body_string(response).await;
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&text).expect("a JSON body"),
+        serde_json::json!({ "error": format!("a scan of {} is already running", path.display()) }),
+        "the refusal names the folder by its path, not by an id the screen never shows"
     );
 
     // A *finished* scan does not block a fresh one — only `done: false`
@@ -3727,6 +3783,13 @@ async fn a_roots_patch_refuses_an_exclude_globs_line_that_will_not_compile() {
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     let text = test_support::body_string(response).await;
     assert!(text.contains("a{b"), "the refusal names the line: {text}");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&text).expect("a JSON body"),
+        serde_json::json!({ "error": "the folder's `exclude_globs` line `a{b` is not a usable pattern: error parsing \
+                      glob 'a{b': unclosed alternate group; missing '}' (maybe escape '{' with \
+                      '[{]'?)" }),
+        "the folder's words, whole"
+    );
 
     assert_eq!(
         root_text_column(&state, root_id, "exclude_globs").as_deref(),
@@ -3800,5 +3863,243 @@ fn a_scan_that_panicked_is_an_error_report_that_says_so() {
     assert_eq!(
         crate::config_api::scan_report_of(Ok(Err("it failed".to_string()))),
         serde_json::json!({ "error": "it failed" })
+    );
+}
+
+/// While a scan of a folder is reserved, neither a rehearsal nor a removal
+/// of it goes ahead: 409 in a sentence naming the folder, nothing removed,
+/// and the reservation left as it was. Once the scan is done, it is removed.
+#[tokio::test]
+async fn a_folder_is_not_removed_while_a_scan_of_it_is_reserved() {
+    let (router, state, _fixture) = test_support::router_over_a_single_scanned_work();
+    let root_id = only_root_id(&state);
+    let path = taiyaku_library::scan::roots(&state.library.conn()).expect("roots")[0]
+        .path
+        .display()
+        .to_string();
+    let started = std::time::Instant::now();
+    state.scans.lock().unwrap().insert(
+        root_id,
+        crate::ScanProgress {
+            started,
+            done: false,
+            report: None,
+        },
+    );
+
+    for query in ["?dry_run=true", ""] {
+        let response = send_json(
+            &router,
+            Method::DELETE,
+            &format!("/api/library/roots/{root_id}{query}"),
+            &serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::CONFLICT, "{query}");
+        let body: serde_json::Value =
+            serde_json::from_str(&test_support::body_string(response).await).expect("JSON");
+        assert_eq!(
+            body,
+            serde_json::json!({
+                "error": format!("a scan of {path} is running; remove the folder once it has finished")
+            })
+        );
+        assert_eq!(
+            only_root_id(&state),
+            root_id,
+            "{query}: nothing was removed"
+        );
+        let scans = state.scans.lock().unwrap();
+        let held = &scans[&root_id];
+        assert!(
+            !held.done && held.started == started,
+            "{query}: the reservation stands"
+        );
+    }
+
+    state
+        .scans
+        .lock()
+        .unwrap()
+        .get_mut(&root_id)
+        .expect("held")
+        .done = true;
+    let response = send_json(
+        &router,
+        Method::DELETE,
+        &format!("/api/library/roots/{root_id}"),
+        &serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+/// A folder's scan that waited while its folder was removed, and another
+/// folder took the freed id, walks nothing: nothing of the removed folder's
+/// is filed under the new one, the new one is not marked scanned, and the
+/// report says why.
+#[tokio::test]
+async fn a_folders_scan_walks_nothing_when_its_folder_changed_while_it_waited() {
+    let (_router, state, fixture) = test_support::router_over_a_single_scanned_work();
+    let asked = taiyaku_library::scan::roots(&state.library.conn())
+        .expect("roots")
+        .remove(0);
+    let started = std::time::Instant::now();
+    state.scans.lock().unwrap().insert(
+        asked.id,
+        crate::ScanProgress {
+            started,
+            done: false,
+            report: None,
+        },
+    );
+    {
+        // Through the store, as a removal that landed between the `DELETE`'s
+        // check and its commit would.
+        let working = state.library.working().expect("a working connection");
+        taiyaku_library::scan::remove_root(&working, asked.id).expect("removes the folder");
+        let other = fixture.path().join("Other");
+        std::fs::create_dir_all(&other).expect("mkdir");
+        let added =
+            taiyaku_library::scan::add_root_checked(&working, &other).expect("adds another");
+        assert_eq!(
+            added.root.id, asked.id,
+            "the freed id went to the new folder"
+        );
+    }
+
+    let job = std::sync::Arc::clone(&state);
+    let root = asked.clone();
+    tokio::task::spawn_blocking(move || crate::config_api::scan_and_finish(&job, &root, started))
+        .await
+        .expect("the job ends");
+
+    let conn = state.library.conn();
+    let entries: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM scan_entry WHERE root_id = ?1",
+            [asked.id],
+            |r| r.get(0),
+        )
+        .expect("counts");
+    assert_eq!(
+        entries, 0,
+        "nothing of the removed folder's was filed under the new one"
+    );
+    let status: Option<String> = conn
+        .query_row(
+            "SELECT last_scan_status FROM root WHERE id = ?1",
+            [asked.id],
+            |r| r.get(0),
+        )
+        .expect("reads");
+    assert_eq!(status, None, "the new folder was never scanned");
+    drop(conn);
+    assert_eq!(
+        state.scans.lock().unwrap()[&asked.id].report,
+        Some(serde_json::json!({ "error": crate::config_api::FOLDER_CHANGED }))
+    );
+}
+
+/// A finished folder scan's report lands on its own reservation and on no
+/// other: not on one another scan made on the same id, and not on an id a
+/// removal cleared.
+#[tokio::test]
+async fn a_folders_scan_lands_only_on_its_own_reservation() {
+    let (_router, state, _fixture) = test_support::router_over_a_single_scanned_work();
+    let root = taiyaku_library::scan::roots(&state.library.conn())
+        .expect("roots")
+        .remove(0);
+    let ours = std::time::Instant::now();
+    let theirs = ours + std::time::Duration::from_millis(1);
+    state.scans.lock().unwrap().insert(
+        root.id,
+        crate::ScanProgress {
+            started: theirs,
+            done: false,
+            report: None,
+        },
+    );
+
+    let job = std::sync::Arc::clone(&state);
+    let asked = root.clone();
+    tokio::task::spawn_blocking(move || crate::config_api::scan_and_finish(&job, &asked, ours))
+        .await
+        .expect("the job ends");
+    {
+        let scans = state.scans.lock().unwrap();
+        let held = &scans[&root.id];
+        assert!(!held.done && held.started == theirs && held.report.is_none());
+    }
+
+    state.scans.lock().unwrap().remove(&root.id);
+    let job = std::sync::Arc::clone(&state);
+    let asked = root.clone();
+    tokio::task::spawn_blocking(move || crate::config_api::scan_and_finish(&job, &asked, ours))
+        .await
+        .expect("the job ends");
+    assert!(
+        state.scans.lock().unwrap().get(&root.id).is_none(),
+        "a cleared slot stays clear"
+    );
+}
+
+/// A folder's scan walks the folder as it stands once the scan starts: a
+/// setting changed between the request's reading and the job lock is the one
+/// the walk honours.
+#[tokio::test]
+async fn a_folders_scan_walks_the_settings_the_folder_holds_when_it_starts() {
+    let (_router, state, _fixture) = test_support::router_over_a_single_scanned_work();
+    let asked = taiyaku_library::scan::roots(&state.library.conn())
+        .expect("roots")
+        .remove(0);
+    test_support::write_pages(&asked.path.join("Extra").join("Extra - v01"), 2);
+    let entries_under_extra = |state: &crate::ServeState| -> i64 {
+        state
+            .library
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM scan_entry WHERE root_id = ?1 AND rel_path LIKE 'Extra%'",
+                [asked.id],
+                |r| r.get(0),
+            )
+            .expect("counts")
+    };
+    let job = std::sync::Arc::clone(&state);
+    let first = asked.clone();
+    tokio::task::spawn_blocking(move || {
+        crate::config_api::scan_and_finish(&job, &first, std::time::Instant::now());
+    })
+    .await
+    .expect("the job ends");
+    assert!(
+        entries_under_extra(&state) > 0,
+        "the first walk recorded Extra"
+    );
+
+    // After the request read the folder, and before the job took its lock.
+    let patch = taiyaku_library::scan::RootPatch {
+        exclude_globs: Some(Some("Extra/".to_string())),
+        ..Default::default()
+    };
+    let working = state.library.working().expect("a working connection");
+    assert!(taiyaku_library::scan::update_root(&working, asked.id, &patch).expect("patches"));
+    drop(working);
+
+    let job = std::sync::Arc::clone(&state);
+    let stale = asked.clone();
+    assert_eq!(
+        stale.exclude_globs, None,
+        "the request read the folder before the change"
+    );
+    tokio::task::spawn_blocking(move || {
+        crate::config_api::scan_and_finish(&job, &stale, std::time::Instant::now());
+    })
+    .await
+    .expect("the job ends");
+    assert_eq!(
+        entries_under_extra(&state),
+        0,
+        "the walk honoured the exclusion it found"
     );
 }

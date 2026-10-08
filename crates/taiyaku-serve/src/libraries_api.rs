@@ -2,9 +2,9 @@
 //! `docs/superpowers/specs/2026-10-05-libraries-design.md`.
 //!
 //! **A library that exists is addressed by its id**, in the path. A name is
-//! read only to make a library or to rename one: a name migration 15's
-//! backfill kept can carry spaces at its ends, and an id is never given to a
-//! later library.
+//! read only to make a library or to rename one: a name of white space alone
+//! keeps its ends, which migration 16 strips from every other, and an id is
+//! never given to a later library.
 //!
 //! **The folder rows inside a library's card are still `config_api`'s.** A
 //! folder's settings, its own scan and its removal are routes under
@@ -54,8 +54,9 @@ enum LibraryAnswer {
     /// found it.
     Unusable(String),
     /// Well-formed, names a real library, and still not allowed: 409, in the
-    /// words of [`scan::library_removal_refusal`] for a removal, and of
-    /// [`reserve_folders`] for a scan.
+    /// words of [`scan::library_removal_refusal`] for a removal, of
+    /// `config_api::removal_waits_for` for a removal held up by a scan of one
+    /// of its folders, and of [`reserve_folders`] for a scan.
     Refused(String),
     /// A store failure: 500.
     Failed(String),
@@ -389,10 +390,13 @@ pub(crate) async fn delete_library(
     let scans_state = Arc::clone(&state);
     let removed = tokio::task::spawn_blocking(move || {
         let working = state.library.working().map_err(LibraryAnswer::Failed)?;
-        let folders: Vec<i64> = folders_of(&working, id)?
-            .iter()
-            .map(|root| root.id)
-            .collect();
+        let folders = folders_of(&working, id)?;
+        if let Some(root) = crate::config_api::a_scan_reserved_on(&state, &folders) {
+            return Err(LibraryAnswer::Refused(
+                crate::config_api::removal_waits_for(root, "the library"),
+            ));
+        }
+        let folders: Vec<i64> = folders.iter().map(|root| root.id).collect();
         if let Some(refusal) =
             scan::library_removal_refusal(&working, id).map_err(LibraryAnswer::Failed)?
         {
@@ -495,7 +499,7 @@ fn run_library_scan_inner(
             Ok(report) => walked.push(report),
             Err(why) => {
                 for earlier in &roots[..walked.len()] {
-                    let _ = scan::mark_derive_failed(&working, earlier.id);
+                    let _ = scan::mark_derive_failed(&working, earlier);
                 }
                 return Err(format!("scanning {}: {why}", root.path.display()));
             }
@@ -505,7 +509,7 @@ fn run_library_scan_inner(
         Ok(report) => report,
         Err(why) => {
             for root in &roots {
-                let _ = scan::mark_derive_failed(&working, root.id);
+                let _ = scan::mark_derive_failed(&working, root);
             }
             return Err(format!(
                 "the library's folders were scanned, but deriving its structure afterward \
@@ -612,18 +616,7 @@ where
             let report = reports.next().unwrap_or_else(
                 || serde_json::json!({ "error": "the scan ended without a report for this folder" }),
             );
-            // Only this scan's own reservation, which its start instant
-            // names, is replaced: a removal clears the entry, and a scan of
-            // a folder that took the freed id holds an entry of its own.
-            if let Some(entry) = scans.get_mut(&root.id)
-                && entry.started == started
-            {
-                *entry = crate::ScanProgress {
-                    started,
-                    done: true,
-                    report: Some(report),
-                };
-            }
+            crate::config_api::finish_reservation(&mut scans, root.id, started, report);
         }
     })
 }

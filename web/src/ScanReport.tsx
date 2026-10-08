@@ -319,7 +319,9 @@ export function DeriveSection({
 }) {
   return (
     <section className="derived">
-      <ReportHeading level={level}>What derivation made of it</ReportHeading>
+      <ReportHeading level={level}>
+        What derivation made of every library
+      </ReportHeading>
       <dl>
         {/* What it did not do, first. */}
         <UnreadableCauses unreadable={derive.unreadable} />

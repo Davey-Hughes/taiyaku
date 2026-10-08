@@ -107,7 +107,16 @@ body {
   cursor: pointer;
 }
 
+/* O201: a button nobody may press now is drawn so, on every screen these rules
+   reach: the page's own ground and a dashed border, the way the proposals
+   panel's Accept is drawn held, and its word at full contrast, since the
+   sentence beside it that says why is read with it. Written wholly in
+   `:where()`, it has no specificity, so a class rule or an inline style that
+   sets a button's `background` or `border-style` wins over it, and such a
+   button keeps whatever held look its own rules give it, or none. */
 :where(.library, .login) :where(button:disabled) {
+  background: var(--bg);
+  border-style: dashed;
   cursor: default;
 }
 

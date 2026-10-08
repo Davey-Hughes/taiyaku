@@ -76,8 +76,8 @@ use crate::{ServeState, auth::Principal};
 pub(crate) struct Listing {
     /// The path listed, canonical. `None` where the prefixes were listed.
     pub path: Option<PathBuf>,
-    /// Where "up" goes. `None` at a prefix, and where the prefixes were
-    /// listed.
+    /// Where "up" goes. `None` at a prefix no other prefix holds, and where
+    /// the prefixes were listed.
     pub parent: Option<PathBuf>,
     /// Each directory's name and path. A directory's entries are in byte
     /// order of their names, so a capital sorts before a lower-case letter. A
@@ -336,12 +336,13 @@ pub(crate) fn list(prefixes: &[PathBuf], path: Option<&Path>) -> Result<Listing,
     }
     folders.sort();
 
-    // Nothing leads above a prefix, even where one prefix lies inside another.
-    let parent = if prefixes.canonical.contains(&canonical) {
-        None
-    } else {
-        canonical.parent().map(Path::to_path_buf)
-    };
+    // Up goes to the folder above while that folder is inside a prefix: from
+    // a prefix that sits inside another, to the outer one's folder, and from
+    // any other prefix nowhere.
+    let parent = canonical
+        .parent()
+        .filter(|parent| prefixes.within(parent))
+        .map(Path::to_path_buf);
     Ok(Listing {
         path: Some(canonical),
         parent,

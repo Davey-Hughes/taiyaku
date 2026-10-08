@@ -34,13 +34,14 @@
  * one library to another by unticking first would see every library in
  * between. The server would accept that request, and the card refuses it
  * anyway: "the server is the authority" lets the card be stricter than the
- * server, never looser.
+ * server, never looser. Choosing "Every library" on an account that holds
+ * grants asks first, since an arrow key chooses on the radios as a click does.
  *
  * **The confirm does not exist until the counts do**, and the real `DELETE` is
  * sent from here and nowhere else. `RemoveRoot`'s reasoning, on the route
  * `users_api` calls the second-most destructive in the product.
  */
-import { useId, useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import { Link } from 'react-router'
 import type { Library } from './libraries'
 import { sentenceOf } from './message'
@@ -265,6 +266,28 @@ export function UserRow({
    */
   const [choosing, setChoosing] = useState(false)
   const restricted = granted.length > 0 || choosing
+  /**
+   * "Every library" was chosen on an account that holds grants, and the card
+   * is asking before it lifts the limit.
+   *
+   * **Asked, not saved at once (O195).** An arrow key on the radios chooses
+   * as a click does, so one key pressed on "Only these" sent the empty list,
+   * and the account saw every library with its ticks gone and nothing asked.
+   */
+  const [lifting, setLifting] = useState(false)
+  // Retired during render, as `applied` is: a list read that brings the account
+  // lifted elsewhere must not leave the question waiting for its next grant.
+  if (lifting && granted.length === 0) setLifting(false)
+  const everyRadio = useRef<HTMLInputElement>(null)
+  const onlyRadio = useRef<HTMLInputElement>(null)
+  const keepButton = useRef<HTMLButtonElement>(null)
+  const liftId = useId()
+  // The arrow key that opened the question left focus on the radio it moved
+  // to, which still reads as unchosen; the answer that changes nothing is the
+  // safe place to land, and the group's description is read as focus enters.
+  useEffect(() => {
+    if (lifting) keepButton.current?.focus()
+  }, [lifting])
 
   /**
    * Grants whose library the list does not hold, as when the list was read
@@ -320,7 +343,20 @@ export function UserRow({
       setChoosing(false)
       return
     }
-    save({ libraries: [] }, () => setChoosing(false))
+    setLifting(true)
+  }
+
+  const lift = () => {
+    save({ libraries: [] }, () => {
+      setChoosing(false)
+      everyRadio.current?.focus()
+    })
+  }
+
+  /** The question goes, and focus goes back to the choice that stands. */
+  const keepLimit = () => {
+    setLifting(false)
+    onlyRadio.current?.focus()
   }
 
   const submitPassword = (e: React.FormEvent) => {
@@ -543,6 +579,7 @@ export function UserRow({
               <input
                 type="radio"
                 name={`sees-${user.id}`}
+                ref={everyRadio}
                 value="every"
                 checked={!restricted}
                 aria-disabled={saving}
@@ -554,6 +591,7 @@ export function UserRow({
               <input
                 type="radio"
                 name={`sees-${user.id}`}
+                ref={onlyRadio}
                 value="only"
                 checked={restricted}
                 aria-disabled={saving}
@@ -561,9 +599,46 @@ export function UserRow({
                   if (inFlight.current) return
                   setChoosing(true)
                 }}
+                // A radio already chosen fires no change, and "Only these"
+                // stands while the question is up, so choosing it again by
+                // click or by an arrow key is heard here.
+                onClick={() => {
+                  if (inFlight.current) return
+                  setLifting(false)
+                }}
               />
               <span>Only these</span>
             </label>
+            {lifting && (
+              <div
+                className="lift-limit"
+                role="group"
+                aria-label="Lift the limit"
+                aria-describedby={liftId}
+              >
+                <p id={liftId}>
+                  {shown.name} would see every library, including any added
+                  later, and the ticks below would be cleared.
+                </p>
+                <button
+                  type="button"
+                  name="lift-limit"
+                  disabled={saving}
+                  onClick={lift}
+                >
+                  See every library
+                </button>
+                <button
+                  type="button"
+                  name="keep-limit"
+                  ref={keepButton}
+                  disabled={saving}
+                  onClick={keepLimit}
+                >
+                  Keep the limit
+                </button>
+              </div>
+            )}
             {restricted && (
               <ul className="grant-list">
                 {libraries.map((library) => {

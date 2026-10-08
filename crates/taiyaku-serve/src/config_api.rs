@@ -517,7 +517,7 @@ fn patch_string(body: &serde_json::Value, field: &str) -> Result<Option<String>,
 /// anything else (`Some(Some(value))`) replaces it.
 ///
 /// `noun` names the caller for the one message this can produce — `"rule"`
-/// from [`rule_patch_from_json`]'s `root_id`, `"root"` from
+/// from [`rule_patch_from_json`]'s `root_id`, `"folder"` from
 /// [`root_patch_from_json`]'s `scan_interval_secs` — shared for the same
 /// reason [`required_str`] takes the same parameter.
 fn patch_nullable_i64(
@@ -1184,9 +1184,10 @@ enum RootAnswer {
     /// one: a body that could not be read as a patch, or a scan the caller
     /// asked for wrongly.
     Unusable(String),
-    /// Well-formed, names a real root, and still not allowed — 409, in
-    /// [`scan::removal_refusal`]'s words: the root is the last folder of a
-    /// library that is some account's only grant.
+    /// Well-formed, names a real root, and still not allowed — 409: in
+    /// [`scan::removal_refusal`]'s words, the root is the last folder of a
+    /// library that is some account's only grant; in [`removal_waits_for`]'s,
+    /// a scan of it is reserved.
     Refused(String),
     /// A store failure — 500: one inside [`scan::update_root`] or
     /// [`scan::remove_root`], say.
@@ -1196,7 +1197,7 @@ enum RootAnswer {
 impl IntoResponse for RootAnswer {
     fn into_response(self) -> Response {
         let (status, message) = match self {
-            Self::Missing(id) => (StatusCode::NOT_FOUND, format!("there is no root {id}")),
+            Self::Missing(id) => (StatusCode::NOT_FOUND, format!("there is no folder {id}")),
             Self::Unusable(why) => (StatusCode::BAD_REQUEST, why),
             Self::Refused(why) => (StatusCode::CONFLICT, why),
             Self::Failed(why) => (StatusCode::INTERNAL_SERVER_ERROR, why),
@@ -1277,15 +1278,15 @@ pub(crate) fn added_json(added: &scan::Added) -> serde_json::Value {
 /// caller no way to clear it — `rules::RulePatch`'s five non-nullable
 /// columns take the same two-way reading for the same reason.
 ///
-/// **Every call below passes `"root"`.** [`patch_nullable_text`],
+/// **Every call below passes `"folder"`.** [`patch_nullable_text`],
 /// [`patch_nullable_i64`] and [`patch_bool`] are the identical functions
 /// [`rule_patch_from_json`] calls with `"rule"` — this is not a second copy
 /// of their validation logic, only a different noun for the message each
 /// can produce, so a stray `{"keeps_documents": "yes"}` here is reported
-/// against a root rather than "the rule's `keeps_documents`".
+/// against a folder rather than "the rule's `keeps_documents`".
 fn root_patch_from_json(body: &serde_json::Value) -> Result<scan::RootPatch, String> {
     if !body.is_object() {
-        return Err("a root patch must be a JSON object".to_string());
+        return Err("a folder's settings must be a JSON object".to_string());
     }
     // **Refused here rather than at the store**, so a typo is caught at save
     // rather than after a scan. `Some(None)` — clearing the column — is not
@@ -1294,17 +1295,17 @@ fn root_patch_from_json(body: &serde_json::Value) -> Result<scan::RootPatch, Str
     // that means nothing useful, which is why a stored pattern that will not
     // build is *also* handled, in `scan::Excluder::build`, rather than
     // treated as impossible.
-    let exclude_globs = patch_nullable_text(body, "exclude_globs", "root")?;
+    let exclude_globs = patch_nullable_text(body, "exclude_globs", "folder")?;
     if let Some(Some(patterns)) = &exclude_globs {
         scan::check_exclude_globs(patterns)?;
     }
     Ok(scan::RootPatch {
-        edition_key: patch_nullable_text(body, "edition_key", "root")?,
-        default_kind: patch_nullable_text(body, "default_kind", "root")?,
-        default_language: patch_nullable_text(body, "default_language", "root")?,
+        edition_key: patch_nullable_text(body, "edition_key", "folder")?,
+        default_kind: patch_nullable_text(body, "default_kind", "folder")?,
+        default_language: patch_nullable_text(body, "default_language", "folder")?,
         exclude_globs,
-        scan_interval_secs: patch_nullable_i64(body, "scan_interval_secs", "root")?,
-        keeps_documents: patch_bool(body, "keeps_documents", "root")?,
+        scan_interval_secs: patch_nullable_i64(body, "scan_interval_secs", "folder")?,
+        keeps_documents: patch_bool(body, "keeps_documents", "folder")?,
     })
 }
 
@@ -1559,6 +1560,13 @@ pub(crate) fn finished_scan_json(
 /// unwatched in the background, so there is nobody here to answer a refusal
 /// to, and [`scan_status`] is where a caller learns how long the wait plus
 /// the scan together took either way.
+///
+/// **The folder is read again once the lock is held**, as
+/// `libraries_api::run_library_scan_inner` reads a library's folders again:
+/// `root` is what the request found, and a folder removed while the scan
+/// waited, or whose id another folder has taken, is answered with
+/// [`FOLDER_CHANGED`] and nothing is walked. Where the folder is the same, the
+/// second reading is what is walked, with the settings it holds now.
 fn run_scan_inner(
     library: &taiyaku_library::Library,
     root: &scan::Root,
@@ -1568,14 +1576,21 @@ fn run_scan_inner(
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let working = library.working()?;
-    let scan_report = scan::scan_root(&working, root)?;
+    // The re-read the doc describes.
+    let root = match scan::roots(&working)?
+        .into_iter()
+        .find(|now| now.id == root.id)
+    {
+        Some(now) if now.path == root.path => now,
+        _ => return Err(FOLDER_CHANGED.to_string()),
+    };
+    let scan_report = scan::scan_root(&working, &root)?;
     let derive_report = match derive::derive(&working) {
         Ok(report) => report,
         Err(why) => {
-            let _ = scan::mark_derive_failed(&working, root.id);
+            let _ = scan::mark_derive_failed(&working, &root);
             return Err(format!(
-                "root {} ({}) scanned, but deriving its structure afterward failed: {why}",
-                root.id,
+                "{} was scanned, but deriving its structure afterward failed: {why}",
                 root.path.display()
             ));
         }
@@ -1633,6 +1648,68 @@ pub(crate) fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
         .map(|s| (*s).to_string())
         .or_else(|| payload.downcast_ref::<String>().cloned())
         .unwrap_or_else(|| "the scan panicked with a payload that names no message".to_string())
+}
+
+/// What a folder's report says of a scan that found its folder gone, or
+/// another folder holding its id, once the scan could start.
+pub(crate) const FOLDER_CHANGED: &str =
+    "the folder was removed or changed while the scan waited to start, so nothing was scanned";
+
+/// The first of `roots` with a scan reserved and not yet done, if any.
+pub(crate) fn a_scan_reserved_on<'a>(
+    state: &crate::ServeState,
+    roots: &'a [scan::Root],
+) -> Option<&'a scan::Root> {
+    let scans = state
+        .scans
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    roots
+        .iter()
+        .find(|root| scans.get(&root.id).is_some_and(|progress| !progress.done))
+}
+
+/// The refusal of a removal that a scan of `root` holds up. `what` is what
+/// was to be removed.
+pub(crate) fn removal_waits_for(root: &scan::Root, what: &str) -> String {
+    format!(
+        "a scan of {} is running; remove {what} once it has finished",
+        root.path.display()
+    )
+}
+
+/// Mark the scan reserved on `id` at `started` done, with `report`.
+///
+/// **Only that reservation is replaced**, which its start instant names: a
+/// removal clears the entry, and a scan of a folder that took the freed id
+/// holds an entry of its own. A report with no reservation of its own to land
+/// on is dropped, since nothing is waiting for it.
+pub(crate) fn finish_reservation(
+    scans: &mut std::collections::HashMap<i64, crate::ScanProgress>,
+    id: i64,
+    started: Instant,
+    report: serde_json::Value,
+) {
+    if let Some(entry) = scans.get_mut(&id)
+        && entry.started == started
+    {
+        *entry = crate::ScanProgress {
+            started,
+            done: true,
+            report: Some(report),
+        };
+    }
+}
+
+/// [`start_scan`]'s background job: scan `root`, as the request found it, and
+/// land the report on the reservation made at `started`.
+pub(crate) fn scan_and_finish(state: &crate::ServeState, root: &scan::Root, started: Instant) {
+    let report = run_scan(&state.library, root, &state.library_job);
+    let mut scans = state
+        .scans
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    finish_reservation(&mut scans, root.id, started, report);
 }
 
 /// The one query parameter [`start_scan`] recognises by name without
@@ -1716,7 +1793,7 @@ pub(crate) async fn start_scan(
             None => return RootAnswer::Missing(id).into_response(),
         },
         Ok(Err(no_answer)) => return no_answer.into_response(),
-        Err(why) => return root_panicked("looking up a root to scan", &why),
+        Err(why) => return root_panicked("looking up a folder to scan", &why),
     };
 
     let started = Instant::now();
@@ -1730,7 +1807,7 @@ pub(crate) async fn start_scan(
                 StatusCode::CONFLICT,
                 Json(serde_json::json!({
                     "error": format!(
-                        "a scan of root {id} ({}) is already running",
+                        "a scan of {} is already running",
                         root.path.display()
                     ),
                 })),
@@ -1748,21 +1825,7 @@ pub(crate) async fn start_scan(
     }
 
     let spawn_state = Arc::clone(&state);
-    tokio::task::spawn_blocking(move || {
-        let report = run_scan(&spawn_state.library, &root, &spawn_state.library_job);
-        let mut scans = spawn_state
-            .scans
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        scans.insert(
-            id,
-            crate::ScanProgress {
-                started,
-                done: true,
-                report: Some(report),
-            },
-        );
-    });
+    tokio::task::spawn_blocking(move || scan_and_finish(&spawn_state, &root, started));
 
     (
         StatusCode::ACCEPTED,
@@ -1848,7 +1911,7 @@ pub(crate) async fn scan_status(
             },
         )
         .optional()
-        .map_err(|e| RootAnswer::Failed(format!("reading root {id}'s scan status: {e}")))
+        .map_err(|e| RootAnswer::Failed(format!("reading folder {id}'s scan status: {e}")))
     })
     .await;
 
@@ -1856,7 +1919,7 @@ pub(crate) async fn scan_status(
         Ok(Ok(Some(pair))) => pair,
         Ok(Ok(None)) => return RootAnswer::Missing(id).into_response(),
         Ok(Err(no_answer)) => return no_answer.into_response(),
-        Err(why) => return root_panicked("reading a root's scan status", &why),
+        Err(why) => return root_panicked("reading a folder's scan status", &why),
     };
 
     match entry {
@@ -1936,7 +1999,7 @@ pub(crate) async fn list_roots(
     match built {
         Ok(Ok(body)) => Json(body).into_response(),
         Ok(Err(no_answer)) => no_answer.into_response(),
-        Err(why) => root_panicked("listing roots", &why),
+        Err(why) => root_panicked("listing folders", &why),
     }
 }
 
@@ -1972,7 +2035,7 @@ pub(crate) async fn patch_root(
     match updated {
         Ok(Ok(())) => StatusCode::NO_CONTENT.into_response(),
         Ok(Err(no_answer)) => no_answer.into_response(),
-        Err(why) => root_panicked("patching a root", &why),
+        Err(why) => root_panicked("patching a folder", &why),
     }
 }
 
@@ -2034,6 +2097,23 @@ pub(crate) struct DeleteRootQuery {
 /// Both store calls refuse it too, as an error with nothing to tell it from
 /// a store fault, which this route would answer 500.
 ///
+/// **A removal is also refused, 409, while a scan of the folder is reserved**,
+/// for the dry run and the removal alike, in [`removal_waits_for`]'s words. The
+/// registry is asked when the request arrives, and a scan can be reserved after
+/// that and before the removal commits; holding the registry's lock across a
+/// removal's derive would stall every status read. What covers that window is
+/// [`run_scan_inner`]'s reading of its folder again under the job lock: a scan
+/// reserved in it walks nothing where the folder is gone.
+///
+/// **That does not reach a walk already past its re-read when the removal
+/// commits**, since the removal takes no job lock and commits on a connection
+/// of its own. [`scan::scan_root`] holds that case: it records a walk only
+/// where, under its write lock, the folder's id still names the path it
+/// walked, and its status write asks the same. A walk whose folder went, or
+/// whose id another folder took, records nothing, and the route has cleared
+/// the folder's registry slot, so [`finish_reservation`] drops whatever the
+/// scan reports.
+///
 /// Takes its connection from `working`, not `conn`: both `removal_cost` and
 /// `remove_root` derive, and a derive held on the shared connection stalls
 /// every other request for as long as it takes.
@@ -2060,8 +2140,15 @@ pub(crate) async fn delete_root(
     let scans_state = Arc::clone(&state);
     let removed = tokio::task::spawn_blocking(move || {
         let working = state.library.working().map_err(RootAnswer::Failed)?;
-        if !root_exists(&working, id).map_err(RootAnswer::Failed)? {
+        let Some(root) = scan::roots(&working)
+            .map_err(RootAnswer::Failed)?
+            .into_iter()
+            .find(|root| root.id == id)
+        else {
             return Err(RootAnswer::Missing(id));
+        };
+        if a_scan_reserved_on(&state, std::slice::from_ref(&root)).is_some() {
+            return Err(RootAnswer::Refused(removal_waits_for(&root, "the folder")));
         }
         if let Some(refusal) = scan::removal_refusal(&working, id).map_err(RootAnswer::Failed)? {
             return Err(RootAnswer::Refused(refusal));
@@ -2099,7 +2186,7 @@ pub(crate) async fn delete_root(
         }))
         .into_response(),
         Ok(Err(no_answer)) => no_answer.into_response(),
-        Err(why) => root_panicked("removing a root", &why),
+        Err(why) => root_panicked("removing a folder", &why),
     }
 }
 

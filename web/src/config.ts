@@ -410,7 +410,7 @@ export function regimeFacts(
  * to act on the status — a folder's row treats a 409 from `startScan` as
  * proof a scan is running — was matching `message.includes('409')`, which is
  * satisfied by a 409 *anywhere*: removing root 409 from another tab produced
- * a 404 whose body reads `there is no root 409`, and the screen entered a
+ * a 404 whose body reads `there is no folder 409`, and the screen entered a
  * fake running state on the strength of the id. Anchored to the start, where
  * the path (which never contains a space) is followed by `: ` and the status.
  * Whole-branch review pass 4, 2026-09-04.

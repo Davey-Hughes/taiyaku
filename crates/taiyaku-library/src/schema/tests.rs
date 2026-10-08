@@ -759,8 +759,8 @@ fn migration_6_adds_member_root_id_leaving_existing_members_null() {
 /// The version and the migration count are one fact, and this is the refusal
 /// that depends on it staying true.
 #[test]
-fn the_schema_version_is_fifteen() {
-    assert_eq!(SCHEMA_VERSION, 15);
+fn the_schema_version_is_sixteen() {
+    assert_eq!(SCHEMA_VERSION, 16);
     assert_eq!(
         MIGRATIONS.len(),
         SCHEMA_VERSION as usize,
@@ -1274,7 +1274,7 @@ fn library_names(conn: &Connection, sql: &str) -> Vec<(i64, Option<String>)> {
 #[test]
 fn migration_15_files_every_root_under_a_library_named_for_its_folder() {
     let conn = a_schema_14_library();
-    migrate(&conn).expect("migrates to 15");
+    migrate_with(&conn, &MIGRATIONS[..15]).expect("migrates to 15");
     assert_eq!(
         library_names(
             &conn,
@@ -1309,7 +1309,7 @@ fn migration_15_keeps_whole_paths_that_trimming_would_make_the_same() {
         "INSERT INTO root (id, path) VALUES (1, '/srv/a/Extra'), (2, '/srv/a/Extra ');",
     )
     .expect("two folders whose paths differ only in a trailing space");
-    migrate(&conn).expect("migrates to 15 without a name collision");
+    migrate_with(&conn, &MIGRATIONS[..15]).expect("migrates to 15 without a name collision");
     assert_eq!(
         library_names(
             &conn,
@@ -1334,7 +1334,7 @@ fn migration_15_never_gives_a_librarys_id_to_another() {
     migrate_with(&conn, &MIGRATIONS[..14]).expect("migrates to 14");
     conn.execute_batch("INSERT INTO root (id, path) VALUES (1, '/srv/manga'), (5, '/srv/comics');")
         .expect("two roots, the second numbered past a gap");
-    migrate(&conn).expect("migrates to 15");
+    migrate_with(&conn, &MIGRATIONS[..15]).expect("migrates to 15");
     let ids = |conn: &Connection| -> Vec<i64> {
         conn.prepare("SELECT id FROM library ORDER BY id")
             .expect("prepares")
@@ -1365,7 +1365,7 @@ fn migration_15_never_gives_a_librarys_id_to_another() {
 #[test]
 fn migration_15_files_each_work_under_its_hub_editions_library() {
     let conn = a_schema_14_library();
-    migrate(&conn).expect("migrates to 15");
+    migrate_with(&conn, &MIGRATIONS[..15]).expect("migrates to 15");
     assert_eq!(
         library_names(
             &conn,
@@ -1389,7 +1389,7 @@ fn migration_15_files_each_work_under_its_hub_editions_library() {
 #[test]
 fn migration_15_files_each_series_where_most_of_its_works_are() {
     let conn = a_schema_14_library();
-    migrate(&conn).expect("migrates to 15");
+    migrate_with(&conn, &MIGRATIONS[..15]).expect("migrates to 15");
     assert_eq!(
         library_names(
             &conn,
@@ -1434,7 +1434,7 @@ fn migration_15_keeps_every_work_position_and_note_where_it_was() {
         "the fixture's work 40 must fill every column for a swap to show: {work_40:?}"
     );
 
-    migrate(&conn).expect("migrates to 15");
+    migrate_with(&conn, &MIGRATIONS[..15]).expect("migrates to 15");
 
     assert_eq!(
         rows_of(&conn, works),
@@ -1452,7 +1452,7 @@ fn migration_15_keeps_every_work_position_and_note_where_it_was() {
 #[test]
 fn migration_15_moves_each_root_grant_to_that_roots_library() {
     let conn = a_schema_14_library();
-    migrate(&conn).expect("migrates to 15");
+    migrate_with(&conn, &MIGRATIONS[..15]).expect("migrates to 15");
     assert_eq!(
         library_names(
             &conn,
@@ -1476,7 +1476,7 @@ fn migration_15_moves_each_root_grant_to_that_roots_library() {
 #[test]
 fn migration_15_leaves_search_and_the_structure_counter_working_on_work() {
     let conn = a_schema_14_library();
-    migrate(&conn).expect("migrates to 15");
+    migrate_with(&conn, &MIGRATIONS[..15]).expect("migrates to 15");
 
     let matching = |term: &str| -> Vec<i64> {
         let mut stmt = conn
@@ -1521,7 +1521,7 @@ fn migration_15_recreates_every_index_and_trigger_work_had() {
                    ORDER BY name";
     let before = rows_of(&conn, objects);
 
-    migrate(&conn).expect("migrates to 15");
+    migrate_with(&conn, &MIGRATIONS[..15]).expect("migrates to 15");
 
     assert_eq!(
         rows_of(&conn, objects),
@@ -1562,52 +1562,100 @@ fn a_root_written_without_a_library_is_filed_under_one_of_its_own() {
     );
 }
 
-/// The trigger strips spaces, and only spaces, from both names it can give,
-/// so `libraries::id_of`, which strips the same, finds each library it makes
-/// here by the folder's own spelling of that name. A component that is only
-/// spaces counts as none.
+/// The trigger strips every character `libraries::trim_name` strips, each on
+/// its own at both ends of a folder's name, and keeps one that is not white
+/// space. A name taken in another case is taken.
 #[test]
-fn a_root_written_without_a_library_is_given_a_name_without_spaces() {
+fn a_root_written_without_a_library_is_named_without_white_space_or_a_case_clash() {
     let conn = Connection::open_in_memory().expect("in-memory connection");
     migrate(&conn).expect("migrates");
-    conn.execute_batch(
-        "INSERT INTO root (path) VALUES ('/x/ Extras ');
-         INSERT INTO root (path) VALUES ('/y/Extras ');
-         INSERT INTO root (path) VALUES ('/z/   ');
-         INSERT INTO root (path) VALUES ('/w/\tTab\t');",
-    )
-    .expect("four roots, two sharing a last component once trimmed");
-    assert_eq!(
-        library_names(
-            &conn,
-            "SELECT r.id, l.name FROM root r LEFT JOIN library l ON l.id = r.library_id ORDER BY r.id"
-        ),
-        vec![
-            (1, Some("Extras".to_string())),
-            (2, Some("/y/Extras".to_string())),
-            (3, Some("/z/".to_string())),
-            (4, Some("\tTab\t".to_string())),
-        ],
-        "each name trimmed of spaces; a taken one falls back to the whole path, trimmed, and \
-         so does a component of spaces alone; a tab is not a space"
-    );
-    for (root, spelling) in [
-        (1, " Extras "),
-        (2, "/y/Extras "),
-        (3, "/z/   "),
-        (4, "\tTab\t"),
-    ] {
-        let filed: i64 = conn
-            .query_row("SELECT library_id FROM root WHERE id = ?1", [root], |r| {
-                r.get(0)
-            })
-            .expect("the root's library");
+    let name_of_root = |path: &str| -> String {
+        conn.query_row(
+            "SELECT l.name FROM root r JOIN library l ON l.id = r.library_id WHERE r.path = ?1",
+            [path],
+            |row| row.get(0),
+        )
+        .expect("the root has a library")
+    };
+
+    let spaces = (0..=0x10_FFFF_u32)
+        .filter_map(char::from_u32)
+        .filter(|c| c.is_whitespace());
+    for (n, c) in spaces.enumerate() {
+        let path = format!("/w{n}/{c}Leaf{n}{c}");
+        conn.execute("INSERT INTO root (path) VALUES (?1)", [&path])
+            .expect("a root");
         assert_eq!(
-            crate::libraries::id_of(&conn, spelling),
-            Ok(Some(filed)),
-            "`{spelling}` finds root {root}'s library"
+            name_of_root(&path),
+            format!("Leaf{n}"),
+            "U+{:04X}",
+            u32::from(c)
+        );
+
+        // A component that is only the character is none, so the whole path
+        // names the library, stripped the same way.
+        let bare = format!("/b{n}/{c}");
+        conn.execute("INSERT INTO root (path) VALUES (?1)", [&bare])
+            .expect("a root");
+        assert_eq!(
+            name_of_root(&bare),
+            format!("/b{n}/"),
+            "U+{:04X}",
+            u32::from(c)
         );
     }
+
+    conn.execute(
+        "INSERT INTO root (path) VALUES ('/z/\u{200B}Zero\u{200B}')",
+        [],
+    )
+    .expect("a root");
+    assert_eq!(
+        name_of_root("/z/\u{200B}Zero\u{200B}"),
+        "\u{200B}Zero\u{200B}"
+    );
+
+    conn.execute("INSERT INTO root (path) VALUES ('/x/Extras')", [])
+        .expect("a root named Extras");
+    conn.execute("INSERT INTO root (path) VALUES ('/y/EXTRAS')", [])
+        .expect("a root whose name is taken in another case");
+    assert_eq!(name_of_root("/y/EXTRAS"), "/y/EXTRAS");
+}
+
+/// **Migration 16 brings the names already stored under both rules.** A name
+/// that is an older library's once stripped and folded keeps its id beside
+/// it; every other name is stripped; one that is only white space is left.
+/// `' Manga '` would collide with `'Manga'` on `library.name`'s own UNIQUE if
+/// it were stripped first, so the order of the two steps is held too.
+#[test]
+fn migration_16_strips_names_and_keeps_an_id_beside_a_name_another_holds() {
+    let conn = Connection::open_in_memory().expect("in-memory connection");
+    conn.pragma_update(None, "foreign_keys", "ON")
+        .expect("foreign keys on, as `Library::open` sets them");
+    migrate_with(&conn, &MIGRATIONS[..15]).expect("migrates to 15");
+    conn.execute_batch(
+        "INSERT INTO library (id, name) VALUES
+           (1, 'Manga'), (2, ' Manga '), (3, 'MANGA'), (4, 'Comics' || char(9)), (5, char(9)), (6, ' ');",
+    )
+    .expect("six libraries");
+
+    migrate(&conn).expect("migrates to 16");
+
+    assert_eq!(
+        library_names(&conn, "SELECT id, name FROM library ORDER BY id"),
+        vec![
+            (1, Some("Manga".to_string())),
+            (2, Some("Manga (2)".to_string())),
+            (3, Some("MANGA (3)".to_string())),
+            (4, Some("Comics".to_string())),
+            (5, Some("\t".to_string())),
+            (6, Some(" ".to_string())),
+        ]
+    );
+    let refused = conn
+        .execute("INSERT INTO library (name) VALUES ('COMICS')", [])
+        .expect_err("one name in another case");
+    assert!(refused.to_string().contains("UNIQUE"), "{refused}");
 }
 
 #[test]

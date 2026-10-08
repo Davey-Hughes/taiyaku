@@ -16,17 +16,17 @@
  * **It asks the library's status once on mount**, for `RootRow`'s reason: a
  * scan started before this card was drawn is still running.
  *
- * **A 409 from Scan now is proof a scan is in flight**, of the library or of
- * one folder, so the card draws the sentence and polls. The sentence goes
+ * **A 409 from Scan library is proof a scan is in flight**, of the library or
+ * of one folder, so the card draws the sentence and polls. The sentence goes
  * when that scan ends.
  *
  * **Scans and removals of a library and its folders exclude each other.** The
  * card is busy while it is scanning, starting a scan or knows of one, while
  * its removal dialog is open or its removal is on its way, and while any
  * folder row says it is scanning, starting a scan or confirming a removal.
- * Each row is told whether something *else* is busy, and holds its Scan now
+ * Each row is told whether something *else* is busy, and holds its Scan folder
  * and its Remove…, and closes an open removal dialog; the card holds its own
- * Scan now and Remove library… while anything is busy, and its removal's
+ * Scan library and Remove library… while anything is busy, and its removal's
  * confirm while a scan of the library is known or a folder is busy. A held
  * control is a disabled one and sends nothing. A scan holds neither Rename…
  * nor Add folder nor a folder's settings; the removal of the library holds
@@ -49,6 +49,7 @@ import {
   startLibraryScan,
 } from './libraries'
 import { messageOf, sentenceOf } from './message'
+import { Refusal } from './Refusal'
 import { RemoveLibrary } from './RemoveLibrary'
 import { RootRow } from './RootRow'
 
@@ -140,7 +141,7 @@ export function LibraryCard({
         setRunning(true)
       })
       .catch(() => {
-        // Silent, as `RootRow`'s mount read is: pressing Scan now is what
+        // Silent, as `RootRow`'s mount read is: pressing Scan folder is what
         // surfaces a real fault.
       })
     return () => {
@@ -244,7 +245,7 @@ export function LibraryCard({
   const own = running || starting || removing
   /**
    * Whether anything is going on in this library: its own scan or removal,
-   * or a folder scanning or confirming a removal. Scan now and Remove
+   * or a folder scanning or confirming a removal. Scan library and Remove
    * library… are held while it is.
    */
   const busy = own || rowsBusy
@@ -287,7 +288,7 @@ export function LibraryCard({
           onClick={scan}
           disabled={busy}
         >
-          Scan now
+          Scan library
         </button>
         <button
           type="button"
@@ -311,7 +312,7 @@ export function LibraryCard({
       </div>
       {running && (
         <p className="scanning">
-          Scanning this library's folders…
+          A scan is running in this library…
           {elapsed === null ? '' : ` ${Math.round(elapsed)}s`}
         </p>
       )}
@@ -345,7 +346,7 @@ export function LibraryCard({
           >
             Cancel
           </button>
-          {renameFailure !== undefined && <p role="alert">{renameFailure}</p>}
+          {renameFailure !== undefined && <Refusal>{renameFailure}</Refusal>}
         </form>
       )}
 
@@ -386,7 +387,7 @@ export function LibraryCard({
           disabled={removing}
           onEdit={() => setAddFailure(undefined)}
         />
-        {addFailure !== undefined && <p role="alert">{addFailure}</p>}
+        {addFailure !== undefined && <Refusal>{addFailure}</Refusal>}
       </div>
     </li>
   )

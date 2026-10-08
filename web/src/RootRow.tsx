@@ -11,11 +11,11 @@
  * server keeps `ServeState.scans` precisely so a client can poll a scan across
  * requests; a card that only ever polled after pressing its own button showed
  * nothing at all to an admin who navigated away during a scan and came back —
- * no progress, no eventual report, and an enabled "Scan now" whose only answer
- * was a 409 about the scan they had started themselves. Whole-branch review,
- * 2026-09-04. The cost is one request per root per mount, against an in-memory
- * registry lookup plus one indexed row — far below the dry-run counts, which
- * stay lazy because each of those is a real derivation.
+ * no progress, no eventual report, and an enabled "Scan folder" whose only
+ * answer was a 409 about the scan they had started themselves. Whole-branch
+ * review, 2026-09-04. The cost is one request per root per mount, against an
+ * in-memory registry lookup plus one indexed row — far below the dry-run
+ * counts, which stay lazy because each of those is a real derivation.
  *
  * **A field is patched on blur, and only the field the admin actually
  * edited** — an absent key means "leave this column alone" to
@@ -92,8 +92,8 @@ export interface RootRowProps {
   lastOf?: string
   /**
    * Something else in the library is going on: a scan of the library, a
-   * removal of it, or another folder's scan or removal dialog. Scan now and
-   * Remove… do nothing then and are drawn disabled, and an open removal
+   * removal of it, or another folder's scan or removal dialog. Scan folder
+   * and Remove… do nothing then and are drawn disabled, and an open removal
    * dialog is closed.
    */
   held?: boolean
@@ -295,9 +295,9 @@ export function RootRow({
   const changed = useRef(onChanged)
   changed.current = onChanged
 
-  // The card holds this row's sibling rows, and its own Scan now and Remove
-  // library…, while this row is doing something, so it is told. Held in a ref
-  // for the reason above, and told "not busy" when the row goes.
+  // The card holds this row's sibling rows, and its own Scan library and
+  // Remove library…, while this row is doing something, so it is told. Held in
+  // a ref for the reason above, and told "not busy" when the row goes.
   const busyNow = running || starting || confirming
   const told = useRef(onBusy)
   told.current = onBusy
@@ -324,7 +324,7 @@ export function RootRow({
    * **A single failure must not abandon a live scan.** The `.catch` used to
    * `setRunning(false)`, which tore the interval down for good — so one blip
    * (a proxy 502, a `SQLITE_BUSY` while the scan's own writes hold the file)
-   * produced no progress, no eventual report, and a re-enabled "Scan now"
+   * produced no progress, no eventual report, and a re-enabled "Scan folder"
    * whose only answer is a 409 about the scan still running: exactly the state
    * the mount read above exists to prevent, reached by another door. Review
    * pass 2, 2026-09-04. Three is chosen, not measured — long enough to ride
@@ -396,14 +396,14 @@ export function RootRow({
       .catch(() => {
         // Deliberately silent. A status read this card did not ask for must
         // not put a red alert over a screen the admin has only just opened;
-        // pressing "Scan now" is what surfaces a real fault.
+        // pressing "Scan folder" is what surfaces a real fault.
       })
     return () => {
       cancelled = true
     }
   }, [root.id, absorb])
 
-  // **A scan this row did not start.** The library's own Scan now holds this
+  // **A scan this row did not start.** The library's Scan library holds this
   // folder's registry slot, and its card bumps `adopt` when one starts. The
   // row then polls as it does after its own button. The value it was mounted
   // with is not a start: a card mounted mid-scan is adopted by the mount read
@@ -649,7 +649,7 @@ export function RootRow({
           onClick={begin}
           disabled={running || starting || confirming || held}
         >
-          Scan now
+          Scan folder
         </button>
         <button
           type="button"
