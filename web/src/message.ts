@@ -36,6 +36,31 @@ function isPlainSentence(body: string): boolean {
 }
 
 /**
+ * The body of a thrown `path: status body`, trimmed, or `undefined` for a
+ * failure that is not a response. The one place the two readers below find
+ * it, so that they cannot disagree about what a body is.
+ */
+function bodyOf(message: string): string | undefined {
+  const found = /^\S+: \d{3} ([\s\S]*)$/.exec(message)
+  return found === null ? undefined : found[1].trim()
+}
+
+/** A body that is a JSON object, parsed, or `undefined`. */
+function objectOf(
+  body: string | undefined,
+): Record<string, unknown> | undefined {
+  if (body === undefined || !body.startsWith('{')) return undefined
+  try {
+    const parsed: unknown = JSON.parse(body)
+    return typeof parsed === 'object' && parsed !== null
+      ? (parsed as Record<string, unknown>)
+      : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
  * A refusal's own sentence, where the server sent one.
  *
  * `api.ts` throws `path: status body`. The library and user administration
@@ -53,24 +78,23 @@ function isPlainSentence(body: string): boolean {
  */
 export function sentenceOf(err: unknown): string {
   const message = messageOf(err)
-  const found = /^\S+: \d{3} ([\s\S]*)$/.exec(message)
-  if (found === null) return message
-  const body = found[1].trim()
-  if (body === '') return message
+  const body = bodyOf(message)
+  if (body === undefined || body === '') return message
   if (!body.startsWith('{')) return isPlainSentence(body) ? body : message
-  try {
-    const parsed: unknown = JSON.parse(body)
-    if (
-      typeof parsed === 'object' &&
-      parsed !== null &&
-      'error' in parsed &&
-      typeof parsed.error === 'string' &&
-      parsed.error.trim() !== ''
-    ) {
-      return parsed.error
-    }
-  } catch {
-    // Not JSON after all, so the whole message stands.
-  }
-  return message
+  const error = objectOf(body)?.error
+  return typeof error === 'string' && error.trim() !== '' ? error : message
+}
+
+/**
+ * The volumes a refused move lists beside its sentence, or none. The
+ * sentence names the first few; this is all of them. Read from the same body
+ * as `sentenceOf`'s, and answering none for a failure that is not a
+ * response, a body that is not an object, or a `volumes` that is not a list
+ * of strings.
+ */
+export function volumesOf(err: unknown): string[] {
+  const volumes = objectOf(bodyOf(messageOf(err)))?.volumes
+  return Array.isArray(volumes) && volumes.every((v) => typeof v === 'string')
+    ? volumes
+    : []
 }

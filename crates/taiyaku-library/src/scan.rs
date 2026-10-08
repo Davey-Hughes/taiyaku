@@ -730,7 +730,7 @@ const DOOMED_WORKS: &str = "
 
 /// "`a` is granted" or "`a`, `b` and `c` are granted", with the advice that
 /// goes with one account or several. `names` is not empty.
-fn only_grant_of(names: &[String]) -> (String, &'static str) {
+pub(crate) fn only_grant_of(names: &[String]) -> (String, &'static str) {
     let (last, others) = names.split_last().expect("at least one account");
     if others.is_empty() {
         (
@@ -769,45 +769,68 @@ fn only_grant_of(names: &[String]) -> (String, &'static str) {
 ///
 /// Returns an error if the read fails. An `id` naming no root is `Ok(None)`.
 pub fn removal_refusal(conn: &Connection, id: i64) -> Result<Option<String>, String> {
-    let mut statement = conn
-        .prepare(
-            "SELECT r.path, l.name, u.name
-               FROM root r
-               JOIN library l ON l.id = r.library_id
-               JOIN user_library ul ON ul.library_id = r.library_id
-               JOIN user u ON u.id = ul.user_id
-              WHERE r.id = ?1
-                AND NOT EXISTS (SELECT 1 FROM root other
-                                 WHERE other.library_id = r.library_id AND other.id <> r.id)
-                AND NOT EXISTS (SELECT 1 FROM user_library held
-                                 WHERE held.user_id = ul.user_id
-                                   AND held.library_id <> ul.library_id)
-              ORDER BY u.name",
+    let Some((path, library_id, library, shared)) = conn
+        .query_row(
+            "SELECT r.path, l.id, l.name,
+                    EXISTS (SELECT 1 FROM root other
+                             WHERE other.library_id = r.library_id AND other.id <> r.id)
+               FROM root r JOIN library l ON l.id = r.library_id
+              WHERE r.id = ?1",
+            [id],
+            |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, bool>(3)?,
+                ))
+            },
         )
-        .map_err(|e| format!("checking whose only grant root {id} holds: {e}"))?;
-    let restricted = statement
-        .query_map([id], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, String>(2)?,
-            ))
-        })
+        .optional()
         .map_err(|e| format!("checking whose only grant root {id} holds: {e}"))?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| format!("checking whose only grant root {id} holds: {e}"))?;
-    let Some((path, library, _)) = restricted.first() else {
+    else {
         return Ok(None);
     };
-    let names: Vec<String> = restricted
-        .iter()
-        .map(|(_, _, account)| account.clone())
-        .collect();
+    if shared {
+        return Ok(None);
+    }
+    let names = only_grant_holders(conn, library_id)?;
+    if names.is_empty() {
+        return Ok(None);
+    }
     let (accounts, advice) = only_grant_of(&names);
     Ok(Some(format!(
         "{path} is the last folder of the library `{library}`, which is the only library \
          {accounts}. {advice}"
     )))
+}
+
+/// The accounts, by name, whose only grant is library `library_id`. Empty
+/// where there are none, and where `library_id` names no library.
+///
+/// The one place Rust asks this: [`removal_refusal`], [`library_removal_refusal`]
+/// and a folder move's refusal are built on it.
+pub(crate) fn only_grant_holders(
+    conn: &Connection,
+    library_id: i64,
+) -> Result<Vec<String>, String> {
+    let mut statement = conn
+        .prepare(
+            "SELECT u.name
+               FROM user_library ul
+               JOIN user u ON u.id = ul.user_id
+              WHERE ul.library_id = ?1
+                AND NOT EXISTS (SELECT 1 FROM user_library held
+                                 WHERE held.user_id = ul.user_id
+                                   AND held.library_id <> ul.library_id)
+              ORDER BY u.name",
+        )
+        .map_err(|e| format!("checking whose only grant library {library_id} is: {e}"))?;
+    statement
+        .query_map([library_id], |r| r.get::<_, String>(0))
+        .map_err(|e| format!("checking whose only grant library {library_id} is: {e}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("checking whose only grant library {library_id} is: {e}"))
 }
 
 /// Count what root `id` alone accounts for, then delete it: its works, the
@@ -1059,33 +1082,11 @@ pub fn library_removal_refusal(
     conn: &Connection,
     library_id: i64,
 ) -> Result<Option<String>, String> {
-    let mut statement = conn
-        .prepare(
-            "SELECT l.name, u.name
-               FROM library l
-               JOIN user_library ul ON ul.library_id = l.id
-               JOIN user u ON u.id = ul.user_id
-              WHERE l.id = ?1
-                AND NOT EXISTS (SELECT 1 FROM user_library held
-                                 WHERE held.user_id = ul.user_id
-                                   AND held.library_id <> ul.library_id)
-              ORDER BY u.name",
-        )
-        .map_err(|e| format!("checking whose only grant library {library_id} is: {e}"))?;
-    let restricted = statement
-        .query_map([library_id], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-        })
-        .map_err(|e| format!("checking whose only grant library {library_id} is: {e}"))?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| format!("checking whose only grant library {library_id} is: {e}"))?;
-    let Some((library, _)) = restricted.first() else {
+    let names = only_grant_holders(conn, library_id)?;
+    if names.is_empty() {
         return Ok(None);
-    };
-    let names: Vec<String> = restricted
-        .iter()
-        .map(|(_, account)| account.clone())
-        .collect();
+    }
+    let library = crate::libraries::name_of(conn, library_id)?.unwrap_or_default();
     let (accounts, advice) = only_grant_of(&names);
     Ok(Some(format!(
         "`{library}` is the only library {accounts}. {advice}"

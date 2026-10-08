@@ -43,6 +43,7 @@ mod progress;
 mod registry;
 mod reqlog;
 mod routes;
+mod scan_jobs;
 pub mod session;
 mod source;
 mod stamp;
@@ -146,7 +147,7 @@ pub struct ServeState {
     /// A `Mutex<()>` closes that gap by construction: acquiring it and
     /// running the long job are the same critical section.
     ///
-    /// **What this closes.** `config_api::run_scan_inner`'s own scan derives
+    /// **What this closes.** `scan_jobs::run`'s own scan derives
     /// one work at a time, holding no lock of its own across the whole pass —
     /// the right grain for a scan, so a half-finished one still leaves most
     /// of the library current. `taiyaku_library::preview::apply` instead

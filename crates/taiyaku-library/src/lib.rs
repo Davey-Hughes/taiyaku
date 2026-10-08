@@ -35,6 +35,7 @@ pub mod preview;
 pub mod progressdoc;
 pub mod project;
 pub mod proposals;
+pub mod relocate;
 pub mod rules;
 pub mod scan;
 pub mod schema;

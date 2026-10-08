@@ -1166,38 +1166,40 @@ pub(crate) async fn import_rules(
 
 // --- roots <-> JSON --------------------------------------------------------
 
-/// Why a `/api/library/roots*` route could not answer.
+/// Why a `/api/library/roots*` or `/api/library/libraries*` route could not
+/// answer.
 ///
-/// **Not [`NoAnswer`] reused.** Every rules route above already ships that
-/// type's plain-text body — task 8's own shape, and its own tests already
-/// read it with `text.contains(...)`. This task's own brief asks for a
-/// caller's mistake to come back "with the store's own message in an
-/// `error` field" instead — a JSON body — and widening `NoAnswer` to do that
-/// would rewrite the wire format of seven routes this task never touches for
-/// the sake of four it does. A second, small type is cheaper than that, and
-/// leaves task 8's answer alone.
+/// **Not [`NoAnswer`] reused.** The rules routes answer that type's plain
+/// text, and their tests read it so. These routes answer a caller's mistake
+/// as JSON, with the store's own sentence in an `error` field.
 #[derive(Debug)]
-enum RootAnswer {
-    /// `id` names no root — 404.
-    Missing(i64),
+pub(crate) enum AdminAnswer {
+    /// `id` names no folder — 404.
+    MissingFolder(i64),
+    /// `id` names no library — 404.
+    MissingLibrary(i64),
     /// The caller's own mistake, decided before any store call or inside
     /// one: a body that could not be read as a patch, or a scan the caller
     /// asked for wrongly.
     Unusable(String),
-    /// Well-formed, names a real root, and still not allowed — 409: in
-    /// [`scan::removal_refusal`]'s words, the root is the last folder of a
-    /// library that is some account's only grant; in [`removal_waits_for`]'s,
-    /// a scan of it is reserved.
+    /// Well-formed, names a real folder or library, and still not allowed —
+    /// 409: in [`scan::removal_refusal`]'s words, the folder is the last of a
+    /// library that is some account's only grant; in
+    /// [`crate::scan_jobs::removal_waits_for`]'s, a scan of it is reserved; in
+    /// [`crate::scan_jobs::reserve`]'s, a scan would be a second.
     Refused(String),
     /// A store failure — 500: one inside [`scan::update_root`] or
     /// [`scan::remove_root`], say.
     Failed(String),
 }
 
-impl IntoResponse for RootAnswer {
+impl IntoResponse for AdminAnswer {
     fn into_response(self) -> Response {
         let (status, message) = match self {
-            Self::Missing(id) => (StatusCode::NOT_FOUND, format!("there is no folder {id}")),
+            Self::MissingFolder(id) => (StatusCode::NOT_FOUND, format!("there is no folder {id}")),
+            Self::MissingLibrary(id) => {
+                (StatusCode::NOT_FOUND, format!("there is no library {id}"))
+            }
             Self::Unusable(why) => (StatusCode::BAD_REQUEST, why),
             Self::Refused(why) => (StatusCode::CONFLICT, why),
             Self::Failed(why) => (StatusCode::INTERNAL_SERVER_ERROR, why),
@@ -1206,12 +1208,12 @@ impl IntoResponse for RootAnswer {
     }
 }
 
-/// [`panicked`]'s twin for the roots routes: the one failure `spawn_blocking`
-/// itself can hand back, worded through [`RootAnswer`] rather than
-/// [`NoAnswer`] so the body stays JSON like every other refusal these routes
-/// send.
-fn root_panicked(what: &str, why: &tokio::task::JoinError) -> Response {
-    RootAnswer::Failed(format!("{what} panicked: {why}")).into_response()
+/// [`panicked`]'s twin for the folder and library routes: the one failure
+/// `spawn_blocking` itself can hand back, worded through [`AdminAnswer`]
+/// rather than [`NoAnswer`] so the body stays JSON like every other refusal
+/// these routes send.
+pub(crate) fn admin_panicked(what: &str, why: &tokio::task::JoinError) -> Response {
+    AdminAnswer::Failed(format!("{what} panicked: {why}")).into_response()
 }
 
 /// One `root` row, as [`list_roots`] sends it and `libraries_api` sends the
@@ -1499,8 +1501,8 @@ pub(crate) fn derive_report_json(report: &derive::DeriveReport) -> serde_json::V
     })
 }
 
-/// What one root's finished scan produced — [`run_scan`]'s success body, and
-/// [`ScanProgress::report`]'s shape once `done` is true.
+/// What one root's finished scan produced — [`crate::scan_jobs::run`]'s
+/// success body, and [`ScanProgress::report`]'s shape once `done` is true.
 ///
 /// **Two nested objects, `"scan"` and `"derive"`, not one flat merge of both
 /// structs' fields.** The two reports are two different passes over the
@@ -1520,198 +1522,6 @@ pub(crate) fn finished_scan_json(
     })
 }
 
-/// Run one root's scan and derive on a connection of its own — the whole job
-/// [`start_scan`] hands to [`tokio::task::spawn_blocking`], never awaited by
-/// the request that started it.
-///
-/// **`state.library.working()`, not `state.library.conn()`.** This module's
-/// own doc comment states the reasoning [`preview_rules`] and
-/// `libraries_api`'s routes already act on for a shorter wait; a full scan is
-/// the longest-running thing this server ever does to a library, and holding
-/// the shared `Mutex<Connection>` for its whole length would stall every other
-/// request this server is serving — reads and writes alike — for as long as
-/// the walk takes. `working` opens a genuine second connection where the library is
-/// file-backed, so an ordinary request proceeds on the shared connection the
-/// whole time this runs.
-///
-/// # Errors
-///
-/// Returns an error — the message [`run_scan`] renders into the registry's
-/// `report.error` rather than propagating — if opening the second connection,
-/// [`scan::scan_root`], or [`fn@derive::derive`] fails.
-///
-/// **A derive failure also corrects `last_scan_status` before returning.**
-/// [`scan::scan_root`] already wrote `"ok"` the moment its own walk
-/// committed, before this function's own call to [`fn@derive::derive`] even
-/// started — so without this, a root whose walk succeeded but whose derive
-/// then failed kept reading `"ok"`: the one column C4 §3's regime line trusts
-/// to say a scan is trustworthy, saying so about a library that is now only
-/// partly derived (whole-branch review, Important 1). See
-/// [`scan::mark_derive_failed`] for why the correction lives in
-/// `taiyaku-library` rather than here.
-///
-/// **Takes [`crate::ServeState::library_job`] for its whole length, walk and
-/// derive both — whole-branch review, I4.** See that field's own doc comment
-/// for the interleaving this closes: without it, a save's own transaction
-/// could replace the rule table and re-derive the whole library while this
-/// function's own `derive::derive` was still mid-pass under an `Engine`
-/// compiled from the rules that transaction just replaced. Unlike
-/// [`save_rules`]'s own `try_lock`, this blocks: a scan already runs
-/// unwatched in the background, so there is nobody here to answer a refusal
-/// to, and [`scan_status`] is where a caller learns how long the wait plus
-/// the scan together took either way.
-///
-/// **The folder is read again once the lock is held**, as
-/// `libraries_api::run_library_scan_inner` reads a library's folders again:
-/// `root` is what the request found, and a folder removed while the scan
-/// waited, or whose id another folder has taken, is answered with
-/// [`FOLDER_CHANGED`] and nothing is walked. Where the folder is the same, the
-/// second reading is what is walked, with the settings it holds now.
-fn run_scan_inner(
-    library: &taiyaku_library::Library,
-    root: &scan::Root,
-    job: &std::sync::Mutex<()>,
-) -> Result<serde_json::Value, String> {
-    let _job = job
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let working = library.working()?;
-    // The re-read the doc describes.
-    let root = match scan::roots(&working)?
-        .into_iter()
-        .find(|now| now.id == root.id)
-    {
-        Some(now) if now.path == root.path => now,
-        _ => return Err(FOLDER_CHANGED.to_string()),
-    };
-    let scan_report = scan::scan_root(&working, &root)?;
-    let derive_report = match derive::derive(&working) {
-        Ok(report) => report,
-        Err(why) => {
-            let _ = scan::mark_derive_failed(&working, &root);
-            return Err(format!(
-                "{} was scanned, but deriving its structure afterward failed: {why}",
-                root.path.display()
-            ));
-        }
-    };
-    Ok(finished_scan_json(&scan_report, &derive_report))
-}
-
-/// [`run_scan_inner`], with a mid-scan panic caught rather than left to take
-/// the registry entry down with it.
-///
-/// **Why this matters here and not at every other `spawn_blocking` call in
-/// this module.** Every other one is `.await`ed by the request that spawned
-/// it, so a panic surfaces as a `JoinError` that request can still answer —
-/// [`panicked`], [`root_panicked`]. This one is not: [`start_scan`] answers
-/// `202` and returns before this closure even starts running, so nothing is
-/// left holding a `JoinHandle` to notice a panic if one happened. Without
-/// this, a scan that panicked partway — a bug in `sniff`, an unexpected
-/// filesystem error this module's own callers have not yet learned to
-/// tolerate — would leave its registry entry at `done: false` forever: no
-/// later request would ever flip it, `GET` would report "still running" to
-/// every caller until the process restarts, and the 409 refusal above would
-/// then refuse every future scan of that root for the rest of this run.
-/// [`std::panic::catch_unwind`] is what keeps a single bad scan from taking
-/// that root's scan slot down with it — the caught payload is rendered as
-/// this report's `error`, `done` is still set `true`, and the root can be
-/// scanned again on the next `POST`.
-fn run_scan(
-    library: &taiyaku_library::Library,
-    root: &scan::Root,
-    job: &std::sync::Mutex<()>,
-) -> serde_json::Value {
-    scan_report_of(std::panic::catch_unwind(std::panic::AssertUnwindSafe(
-        || run_scan_inner(library, root, job),
-    )))
-}
-
-/// What a scan's registry entry holds once `outcome` is known: its report, or
-/// the `{"error": …}` of a failure or a caught panic.
-fn scan_report_of(
-    outcome: std::thread::Result<Result<serde_json::Value, String>>,
-) -> serde_json::Value {
-    match outcome {
-        Ok(Ok(report)) => report,
-        Ok(Err(why)) => serde_json::json!({ "error": why }),
-        Err(payload) => serde_json::json!({
-            "error": format!("the scan panicked: {}", panic_message(payload.as_ref())),
-        }),
-    }
-}
-
-/// What a caught panic said, or that it said nothing readable.
-pub(crate) fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
-    payload
-        .downcast_ref::<&str>()
-        .map(|s| (*s).to_string())
-        .or_else(|| payload.downcast_ref::<String>().cloned())
-        .unwrap_or_else(|| "the scan panicked with a payload that names no message".to_string())
-}
-
-/// What a folder's report says of a scan that found its folder gone, or
-/// another folder holding its id, once the scan could start.
-pub(crate) const FOLDER_CHANGED: &str =
-    "the folder was removed or changed while the scan waited to start, so nothing was scanned";
-
-/// The first of `roots` with a scan reserved and not yet done, if any.
-pub(crate) fn a_scan_reserved_on<'a>(
-    state: &crate::ServeState,
-    roots: &'a [scan::Root],
-) -> Option<&'a scan::Root> {
-    let scans = state
-        .scans
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    roots
-        .iter()
-        .find(|root| scans.get(&root.id).is_some_and(|progress| !progress.done))
-}
-
-/// The refusal of a removal that a scan of `root` holds up. `what` is what
-/// was to be removed.
-pub(crate) fn removal_waits_for(root: &scan::Root, what: &str) -> String {
-    format!(
-        "a scan of {} is running; remove {what} once it has finished",
-        root.path.display()
-    )
-}
-
-/// Mark the scan reserved on `id` at `started` done, with `report`.
-///
-/// **Only that reservation is replaced**, which its start instant names: a
-/// removal clears the entry, and a scan of a folder that took the freed id
-/// holds an entry of its own. A report with no reservation of its own to land
-/// on is dropped, since nothing is waiting for it.
-pub(crate) fn finish_reservation(
-    scans: &mut std::collections::HashMap<i64, crate::ScanProgress>,
-    id: i64,
-    started: Instant,
-    report: serde_json::Value,
-) {
-    if let Some(entry) = scans.get_mut(&id)
-        && entry.started == started
-    {
-        *entry = crate::ScanProgress {
-            started,
-            done: true,
-            report: Some(report),
-        };
-    }
-}
-
-/// [`start_scan`]'s background job: scan `root`, as the request found it, and
-/// land the report on the reservation made at `started`.
-pub(crate) fn scan_and_finish(state: &crate::ServeState, root: &scan::Root, started: Instant) {
-    let report = run_scan(&state.library, root, &state.library_job);
-    let mut scans = state
-        .scans
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    finish_reservation(&mut scans, root.id, started, report);
-}
-
 /// The one query parameter [`start_scan`] recognises by name without
 /// implementing — see that function's own doc comment on `?full=` for why a
 /// caller who sends it gets a `400` rather than axum silently dropping a key
@@ -1721,7 +1531,7 @@ pub(crate) fn scan_and_finish(state: &crate::ServeState, root: &scan::Root, star
 /// whole-branch review, Critical 2's own sibling audit.** The explicit check
 /// on `start_scan` catches exactly `?full=`, spelled exactly that way; a typo
 /// of that key, or any other key nobody has named yet, would otherwise be
-/// dropped by `serde_urlencoded` the same silent way `DeleteRootQuery`'s own
+/// dropped by `serde_urlencoded` the same silent way [`DryRunQuery`]'s own
 /// `dry_run` was — see that struct's own doc comment for the shape this
 /// closes.
 #[derive(Debug, Default, serde::Deserialize)]
@@ -1774,7 +1584,7 @@ pub(crate) async fn start_scan(
         return refusal;
     }
     if query.full.is_some() {
-        return RootAnswer::Unusable(
+        return AdminAnswer::Unusable(
             "?full= is not implemented — every scan already walks the whole tree; omit it"
                 .to_string(),
         )
@@ -1784,48 +1594,23 @@ pub(crate) async fn start_scan(
     let lookup_state = Arc::clone(&state);
     let found = tokio::task::spawn_blocking(move || {
         let conn = lookup_state.library.conn();
-        scan::roots(&conn).map_err(RootAnswer::Failed)
+        scan::roots(&conn).map_err(AdminAnswer::Failed)
     })
     .await;
     let root = match found {
         Ok(Ok(roots)) => match roots.into_iter().find(|r| r.id == id) {
             Some(root) => root,
-            None => return RootAnswer::Missing(id).into_response(),
+            None => return AdminAnswer::MissingFolder(id).into_response(),
         },
         Ok(Err(no_answer)) => return no_answer.into_response(),
-        Err(why) => return root_panicked("looking up a folder to scan", &why),
+        Err(why) => return admin_panicked("looking up a folder to scan", &why),
     };
 
     let started = Instant::now();
-    {
-        let mut scans = state
-            .scans
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if scans.get(&id).is_some_and(|progress| !progress.done) {
-            return (
-                StatusCode::CONFLICT,
-                Json(serde_json::json!({
-                    "error": format!(
-                        "a scan of {} is already running",
-                        root.path.display()
-                    ),
-                })),
-            )
-                .into_response();
-        }
-        scans.insert(
-            id,
-            crate::ScanProgress {
-                started,
-                done: false,
-                report: None,
-            },
-        );
+    if let Err(refused) = crate::scan_jobs::reserve(&state, std::slice::from_ref(&root), started) {
+        return AdminAnswer::Refused(refused).into_response();
     }
-
-    let spawn_state = Arc::clone(&state);
-    tokio::task::spawn_blocking(move || scan_and_finish(&spawn_state, &root, started));
+    crate::scan_jobs::spawn(state, vec![root], started, crate::scan_jobs::Reread::Folder);
 
     (
         StatusCode::ACCEPTED,
@@ -1911,15 +1696,15 @@ pub(crate) async fn scan_status(
             },
         )
         .optional()
-        .map_err(|e| RootAnswer::Failed(format!("reading folder {id}'s scan status: {e}")))
+        .map_err(|e| AdminAnswer::Failed(format!("reading folder {id}'s scan status: {e}")))
     })
     .await;
 
     let (last_scan_at, last_scan_status) = match found {
         Ok(Ok(Some(pair))) => pair,
-        Ok(Ok(None)) => return RootAnswer::Missing(id).into_response(),
+        Ok(Ok(None)) => return AdminAnswer::MissingFolder(id).into_response(),
         Ok(Err(no_answer)) => return no_answer.into_response(),
-        Err(why) => return root_panicked("reading a folder's scan status", &why),
+        Err(why) => return admin_panicked("reading a folder's scan status", &why),
     };
 
     match entry {
@@ -1986,8 +1771,8 @@ pub(crate) async fn list_roots(
     }
     let built = tokio::task::spawn_blocking(move || {
         let conn = state.library.conn();
-        let roots = roots_with_last_scan(&conn).map_err(RootAnswer::Failed)?;
-        Ok::<_, RootAnswer>(serde_json::json!({
+        let roots = roots_with_last_scan(&conn).map_err(AdminAnswer::Failed)?;
+        Ok::<_, AdminAnswer>(serde_json::json!({
             "roots": roots
                 .iter()
                 .map(|(root, at, status)| root_json(root, at.as_deref(), status.as_deref()))
@@ -1999,7 +1784,7 @@ pub(crate) async fn list_roots(
     match built {
         Ok(Ok(body)) => Json(body).into_response(),
         Ok(Err(no_answer)) => no_answer.into_response(),
-        Err(why) => root_panicked("listing folders", &why),
+        Err(why) => admin_panicked("listing folders", &why),
     }
 }
 
@@ -2019,15 +1804,15 @@ pub(crate) async fn patch_root(
     }
     let patch = match root_patch_from_json(&body) {
         Ok(patch) => patch,
-        Err(why) => return RootAnswer::Unusable(why).into_response(),
+        Err(why) => return AdminAnswer::Unusable(why).into_response(),
     };
 
     let updated = tokio::task::spawn_blocking(move || {
         let conn = state.library.conn();
         match scan::update_root(&conn, id, &patch) {
             Ok(true) => Ok(()),
-            Ok(false) => Err(RootAnswer::Missing(id)),
-            Err(why) => Err(RootAnswer::Failed(why)),
+            Ok(false) => Err(AdminAnswer::MissingFolder(id)),
+            Err(why) => Err(AdminAnswer::Failed(why)),
         }
     })
     .await;
@@ -2035,12 +1820,13 @@ pub(crate) async fn patch_root(
     match updated {
         Ok(Ok(())) => StatusCode::NO_CONTENT.into_response(),
         Ok(Err(no_answer)) => no_answer.into_response(),
-        Err(why) => root_panicked("patching a folder", &why),
+        Err(why) => admin_panicked("patching a folder", &why),
     }
 }
 
-/// The one query parameter [`delete_root`] reads — see that function's own
-/// doc comment for what it changes.
+/// The one query parameter [`delete_root`] and
+/// `libraries_api::delete_library` read — see [`delete_root`]'s own doc comment
+/// for what it changes.
 ///
 /// **`deny_unknown_fields` — whole-branch review, Critical 2.** Without it,
 /// `serde_urlencoded` drops any key this struct does not name rather than
@@ -2054,9 +1840,9 @@ pub(crate) async fn patch_root(
 /// destructive.
 #[derive(Debug, Default, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct DeleteRootQuery {
+pub(crate) struct DryRunQuery {
     #[serde(default)]
-    dry_run: bool,
+    pub(crate) dry_run: bool,
 }
 
 /// `DELETE /api/library/roots/{id}` — remove a root, every work that lived
@@ -2098,12 +1884,13 @@ pub(crate) struct DeleteRootQuery {
 /// a store fault, which this route would answer 500.
 ///
 /// **A removal is also refused, 409, while a scan of the folder is reserved**,
-/// for the dry run and the removal alike, in [`removal_waits_for`]'s words. The
-/// registry is asked when the request arrives, and a scan can be reserved after
-/// that and before the removal commits; holding the registry's lock across a
-/// removal's derive would stall every status read. What covers that window is
-/// [`run_scan_inner`]'s reading of its folder again under the job lock: a scan
-/// reserved in it walks nothing where the folder is gone.
+/// for the dry run and the removal alike, in
+/// [`crate::scan_jobs::removal_waits_for`]'s words. The registry is asked when
+/// the request arrives, and a scan can be reserved after that and before the
+/// removal commits; holding the registry's lock across a removal's derive
+/// would stall every status read. What covers that window is
+/// [`crate::scan_jobs::run`]'s reading of its folder again under the job lock:
+/// a scan reserved in it walks nothing where the folder is gone.
 ///
 /// **That does not reach a walk already past its re-read when the removal
 /// commits**, since the removal takes no job lock and commits on a connection
@@ -2111,8 +1898,8 @@ pub(crate) struct DeleteRootQuery {
 /// where, under its write lock, the folder's id still names the path it
 /// walked, and its status write asks the same. A walk whose folder went, or
 /// whose id another folder took, records nothing, and the route has cleared
-/// the folder's registry slot, so [`finish_reservation`] drops whatever the
-/// scan reports.
+/// the folder's registry slot, so [`crate::scan_jobs::finish_reservation`]
+/// drops whatever the scan reports.
 ///
 /// Takes its connection from `working`, not `conn`: both `removal_cost` and
 /// `remove_root` derive, and a derive held on the shared connection stalls
@@ -2130,7 +1917,7 @@ pub(crate) async fn delete_root(
     Extension(principal): Extension<Principal>,
     extensions: axum::http::Extensions,
     AxPath(id): AxPath<i64>,
-    Query(query): Query<DeleteRootQuery>,
+    Query(query): Query<DryRunQuery>,
 ) -> Response {
     if let Some(refusal) = crate::session::administering_or_forbidden(&principal, &extensions) {
         return refusal;
@@ -2139,24 +1926,27 @@ pub(crate) async fn delete_root(
 
     let scans_state = Arc::clone(&state);
     let removed = tokio::task::spawn_blocking(move || {
-        let working = state.library.working().map_err(RootAnswer::Failed)?;
+        let working = state.library.working().map_err(AdminAnswer::Failed)?;
         let Some(root) = scan::roots(&working)
-            .map_err(RootAnswer::Failed)?
+            .map_err(AdminAnswer::Failed)?
             .into_iter()
             .find(|root| root.id == id)
         else {
-            return Err(RootAnswer::Missing(id));
+            return Err(AdminAnswer::MissingFolder(id));
         };
-        if a_scan_reserved_on(&state, std::slice::from_ref(&root)).is_some() {
-            return Err(RootAnswer::Refused(removal_waits_for(&root, "the folder")));
+        if crate::scan_jobs::a_scan_reserved_on(&state, std::slice::from_ref(&root)).is_some() {
+            return Err(AdminAnswer::Refused(crate::scan_jobs::removal_waits_for(
+                &root,
+                "the folder",
+            )));
         }
-        if let Some(refusal) = scan::removal_refusal(&working, id).map_err(RootAnswer::Failed)? {
-            return Err(RootAnswer::Refused(refusal));
+        if let Some(refusal) = scan::removal_refusal(&working, id).map_err(AdminAnswer::Failed)? {
+            return Err(AdminAnswer::Refused(refusal));
         }
         if dry_run {
-            scan::removal_cost(&working, id).map_err(RootAnswer::Failed)
+            scan::removal_cost(&working, id).map_err(AdminAnswer::Failed)
         } else {
-            scan::remove_root(&working, id).map_err(RootAnswer::Failed)
+            scan::remove_root(&working, id).map_err(AdminAnswer::Failed)
         }
     })
     .await;
@@ -2186,7 +1976,7 @@ pub(crate) async fn delete_root(
         }))
         .into_response(),
         Ok(Err(no_answer)) => no_answer.into_response(),
-        Err(why) => root_panicked("removing a folder", &why),
+        Err(why) => admin_panicked("removing a folder", &why),
     }
 }
 

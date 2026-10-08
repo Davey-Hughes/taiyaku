@@ -218,6 +218,16 @@ async fn adding_a_folder_refuses_a_reader() {
 }
 
 #[tokio::test]
+async fn moving_a_folder_refuses_a_reader() {
+    a_reader_is_refused(Method::POST, "/api/library/roots/1/move").await;
+}
+
+#[tokio::test]
+async fn rehearsing_a_move_refuses_a_reader() {
+    a_reader_is_refused(Method::POST, "/api/library/roots/1/move?dry_run=true").await;
+}
+
+#[tokio::test]
 async fn listing_libraries_refuses_nobody() {
     an_unsigned_request_is_refused(Method::GET, "/api/library/libraries").await;
 }
@@ -240,6 +250,11 @@ async fn removing_a_library_refuses_nobody() {
 #[tokio::test]
 async fn adding_a_folder_refuses_nobody() {
     an_unsigned_request_is_refused(Method::POST, "/api/library/libraries/1/folders").await;
+}
+
+#[tokio::test]
+async fn moving_a_folder_refuses_nobody() {
+    an_unsigned_request_is_refused(Method::POST, "/api/library/roots/1/move").await;
 }
 
 /// Two libraries with different non-zero counts of each kind, one of them
@@ -1579,11 +1594,11 @@ async fn a_panicking_scan_leaves_no_folder_running() {
     };
 
     let started = std::time::Instant::now();
-    super::reserve_folders(&state, &roots, started).expect("reserves");
+    crate::scan_jobs::reserve(&state, &roots, started).expect("reserves");
     assert_eq!(get_json(&router, &the_scan_of(id)).await["running"], true);
     // The job dies holding the job lock, which poisons it: the scans after it
     // must go on regardless.
-    super::spawn_library_scan(std::sync::Arc::clone(&state), roots, started, |state, _| {
+    crate::scan_jobs::spawn_job(std::sync::Arc::clone(&state), roots, started, |state, _| {
         let _job = state.library_job.lock().expect("the job lock is free");
         panic!("a walk went wrong")
     });
@@ -1726,6 +1741,8 @@ async fn an_api_key_reaches_no_libraries_route() {
         (Method::DELETE, "/api/library/libraries/1"),
         (Method::DELETE, "/api/library/libraries/1?dry_run=true"),
         (Method::POST, "/api/library/libraries/1/folders"),
+        (Method::POST, "/api/library/roots/1/move"),
+        (Method::POST, "/api/library/roots/1/move?dry_run=true"),
         (Method::GET, "/api/library/libraries/1/scan"),
         (Method::POST, "/api/library/libraries/1/scan"),
     ] {
@@ -1911,7 +1928,7 @@ async fn a_removal_reports_its_works_positions_and_notes_each_by_its_own_count()
     assert_eq!(left("work"), 1, "only a's work is left");
 }
 
-/// Waits for the job `spawn_library_scan` started, with a bound that fails
+/// Waits for the job `scan_jobs::spawn` started, with a bound that fails
 /// the test where a job never ends.
 async fn the_job_ends(job: tokio::task::JoinHandle<()>) {
     tokio::time::timeout(std::time::Duration::from_secs(10), job)
@@ -1968,9 +1985,9 @@ async fn a_job_answering_too_few_reports_releases_every_folder() {
         super::folders_of(&conn, id).expect("the folders")
     };
     let started = std::time::Instant::now();
-    super::reserve_folders(&state, &roots, started).expect("reserves");
+    crate::scan_jobs::reserve(&state, &roots, started).expect("reserves");
 
-    let job = super::spawn_library_scan(std::sync::Arc::clone(&state), roots, started, |_, _| {
+    let job = crate::scan_jobs::spawn_job(std::sync::Arc::clone(&state), roots, started, |_, _| {
         Ok(vec![serde_json::json!({ "scan": "the first's" })])
     });
     the_job_ends(job).await;
@@ -1999,12 +2016,12 @@ async fn a_library_removed_while_its_scan_waits_leaves_nothing_behind() {
     };
     let started = std::time::Instant::now();
     let held = holding_the_job(&state);
-    super::reserve_folders(&state, &roots, started).expect("reserves");
-    let job = super::spawn_library_scan(
+    crate::scan_jobs::reserve(&state, &roots, started).expect("reserves");
+    let job = crate::scan_jobs::spawn(
         std::sync::Arc::clone(&state),
         roots,
         started,
-        super::library_scan_job(id),
+        crate::scan_jobs::Reread::Library(id),
     );
 
     remove_library(&state, id);
@@ -2029,12 +2046,12 @@ async fn a_scan_that_waited_through_a_removal_does_not_touch_the_folder_that_too
     };
     let started = std::time::Instant::now();
     let held = holding_the_job(&state);
-    super::reserve_folders(&state, &roots, started).expect("reserves");
-    let job = super::spawn_library_scan(
+    crate::scan_jobs::reserve(&state, &roots, started).expect("reserves");
+    let job = crate::scan_jobs::spawn(
         std::sync::Arc::clone(&state),
         roots,
         started,
-        super::library_scan_job(id),
+        crate::scan_jobs::Reread::Library(id),
     );
 
     remove_library(&state, id);
@@ -2067,12 +2084,12 @@ async fn a_scan_that_waited_through_a_new_folder_walks_nothing() {
     let captured = roots[0].id;
     let started = std::time::Instant::now();
     let held = holding_the_job(&state);
-    super::reserve_folders(&state, &roots, started).expect("reserves");
-    let job = super::spawn_library_scan(
+    crate::scan_jobs::reserve(&state, &roots, started).expect("reserves");
+    let job = crate::scan_jobs::spawn(
         std::sync::Arc::clone(&state),
         roots,
         started,
-        super::library_scan_job(id),
+        crate::scan_jobs::Reread::Library(id),
     );
     let (status, added) = answered(
         &router,
@@ -2137,12 +2154,12 @@ async fn a_scan_that_waited_through_a_removal_leaves_a_later_scans_reservation_a
     };
     let started = std::time::Instant::now();
     let held = holding_the_job(&state);
-    super::reserve_folders(&state, &roots, started).expect("reserves");
-    let job = super::spawn_library_scan(
+    crate::scan_jobs::reserve(&state, &roots, started).expect("reserves");
+    let job = crate::scan_jobs::spawn(
         std::sync::Arc::clone(&state),
         roots,
         started,
-        super::library_scan_job(id),
+        crate::scan_jobs::Reread::Library(id),
     );
     remove_library(&state, id);
     let (fresh, fresh_folder) = a_library_of_its_own(&router, &fixture, "Fresh").await;
@@ -2152,7 +2169,7 @@ async fn a_scan_that_waited_through_a_removal_leaves_a_later_scans_reservation_a
         super::folders_of(&conn, fresh).expect("the folders")
     };
     let later = std::time::Instant::now();
-    super::reserve_folders(&state, &fresh_roots, later).expect("reserves");
+    crate::scan_jobs::reserve(&state, &fresh_roots, later).expect("reserves");
 
     drop(held);
     the_job_ends(job).await;
@@ -2179,12 +2196,12 @@ fn a_waiting_scan(
     };
     let held = holding_the_job(state);
     let started = std::time::Instant::now();
-    super::reserve_folders(state, &roots, started).expect("reserves");
-    let job = super::spawn_library_scan(
+    crate::scan_jobs::reserve(state, &roots, started).expect("reserves");
+    let job = crate::scan_jobs::spawn(
         std::sync::Arc::clone(state),
         roots,
         started,
-        super::library_scan_job(id),
+        crate::scan_jobs::Reread::Library(id),
     );
     (held, job)
 }
@@ -2377,7 +2394,7 @@ async fn a_libraries_closure_that_panicked_is_a_500_naming_what_was_running() {
     .await
     .expect_err("a panicking closure joins as an error");
 
-    let response = super::library_panicked("listing libraries", &why);
+    let response = crate::config_api::admin_panicked("listing libraries", &why);
     let status = response.status();
     let content_type = response
         .headers()
@@ -2642,4 +2659,630 @@ async fn the_whole_flow_over_a_file_backed_store() {
             .expect("counts");
         assert_eq!(rows, 0, "folder {folder} left rows");
     }
+}
+
+/// Polls a folder's own status route until it says nothing is running, and
+/// answers it; fails the test if the scan outlasts the ceiling.
+async fn until_the_folders_scan_ends(router: &axum::Router, folder: i64) -> serde_json::Value {
+    for _ in 0..400 {
+        let status = get_json(router, &a_folders_scan(folder)).await;
+        if status["running"] == false && !status["report"].is_null() {
+            return status;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    panic!("the folder's scan did not end within ten seconds");
+}
+
+/// A folder scanned through its own route, in a library of two folders, is
+/// walked and derived: its report is a finished scan, not the library's
+/// "changed while the scan waited" answer, which only a scan that reads the
+/// library's folders again can give.
+#[tokio::test]
+async fn a_folder_scanned_by_its_own_route_in_a_library_of_two_is_walked() {
+    let (router, _state, fixture) = test_support::router_over_a_single_scanned_work();
+    let (_id, folders) = a_library_with_an_unscanned_second_folder(&router, &fixture).await;
+
+    let (status, started) = answered(
+        &router,
+        Method::POST,
+        &a_folders_scan(folders[1]),
+        &serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{started}");
+    let own = until_the_folders_scan_ends(&router, folders[1]).await;
+
+    assert_eq!(keys_of(&own["report"]), vec!["derive", "scan"], "{own}");
+    assert_eq!(own["last_scan_status"], "ok", "{own}");
+}
+
+/// A folder whose walk fails, scanned through its own route, reports the
+/// store's own sentence and none of the library route's wording of it.
+#[tokio::test]
+async fn a_folders_walk_failure_is_reported_in_the_stores_words() {
+    let (router, state, fixture) = test_support::router_over_a_single_scanned_work();
+    let (_id, folders) = a_library_with_an_unscanned_second_folder(&router, &fixture).await;
+    let gone = {
+        let conn = state.library.conn();
+        taiyaku_library::scan::roots(&conn)
+            .expect("roots")
+            .into_iter()
+            .find(|root| root.id == folders[1])
+            .expect("the folder")
+    };
+    std::fs::remove_dir_all(&gone.path).expect("removes the folder");
+    let stores_words = {
+        let working = state.library.working().expect("a working connection");
+        taiyaku_library::scan::scan_root(&working, &gone).expect_err("the walk fails")
+    };
+
+    let (status, started) = answered(
+        &router,
+        Method::POST,
+        &a_folders_scan(folders[1]),
+        &serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{started}");
+    let own = until_the_folders_scan_ends(&router, folders[1]).await;
+
+    assert_eq!(
+        own["report"],
+        serde_json::json!({ "error": stores_words }),
+        "{own}"
+    );
+}
+
+/// A library scanned through its own route that waits on the job lock while a
+/// folder is added to the library walks nothing: each folder it reserved ends
+/// with the library's "changed" answer.
+#[tokio::test]
+async fn a_librarys_scan_through_its_route_notices_a_folder_added_while_it_waited() {
+    let (router, state, fixture) = test_support::router_over_a_single_scanned_work();
+    let listed = get_json(&router, "/api/library/libraries").await;
+    let id = listed["libraries"][0]["id"].as_i64().expect("an id");
+    let captured = listed["libraries"][0]["folders"][0]["id"]
+        .as_i64()
+        .expect("an id");
+    let held = holding_the_job(&state);
+    let (status, started) = answered(
+        &router,
+        Method::POST,
+        &the_scan_of(id),
+        &serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{started}");
+    let late = add_folder_to(&router, id, &a_folder_of(&fixture, "Late", "Late Series")).await;
+    drop(held);
+    until_the_library_scan_ends(&router, id).await;
+
+    let own = get_json(&router, &a_folders_scan(captured)).await;
+    assert_eq!(
+        own["report"],
+        serde_json::json!({ "error": crate::scan_jobs::CHANGED }),
+        "{own}"
+    );
+    assert_eq!(
+        scan_entries_in(&state, late),
+        0,
+        "the new folder is not walked"
+    );
+}
+
+async fn moved(
+    router: &axum::Router,
+    folder: i64,
+    dry_run: bool,
+    body: &serde_json::Value,
+) -> (StatusCode, serde_json::Value) {
+    let query = if dry_run { "?dry_run=true" } else { "" };
+    answered(
+        router,
+        Method::POST,
+        &format!("/api/library/roots/{folder}/move{query}"),
+        body,
+    )
+    .await
+}
+
+/// Two libraries of one folder each. The rehearsal says what the move would
+/// do and changes nothing; the move does it.
+#[tokio::test]
+async fn a_folder_is_rehearsed_and_then_moved_to_another_library() {
+    let (router, state, _fixture) = test_support::state_with_two_scanned_roots();
+    let listed = get_json(&router, "/api/library/libraries").await;
+    let a = the_library(&listed, "root-a")["id"]
+        .as_i64()
+        .expect("an id");
+    let folder = the_library(&listed, "root-b")["folders"][0]["id"]
+        .as_i64()
+        .expect("a folder id");
+    let to = serde_json::json!({ "library": a });
+    let stored = the_store(&state);
+
+    let (status, rehearsed) = moved(&router, folder, true, &to).await;
+    assert_eq!(status, StatusCode::OK, "{rehearsed}");
+    assert_eq!(rehearsed["dry_run"], true);
+    assert_eq!(rehearsed["moved"]["library"], "root-a");
+    assert_eq!(rehearsed["moved"]["works_kept"], 1, "{rehearsed}");
+    assert_eq!(
+        rehearsed["moved"]["library_removed"], "root-b",
+        "{rehearsed}"
+    );
+    assert_eq!(
+        keys_of(&rehearsed["moved"]),
+        [
+            "alignments_dropped",
+            "grants_removed",
+            "library",
+            "library_id",
+            "library_removed",
+            "notes",
+            "positions",
+            "series_joined",
+            "works_joined",
+            "works_kept",
+            "works_split",
+        ]
+    );
+    assert!(rehearsed["derive"].is_object(), "{rehearsed}");
+    assert_eq!(get_json(&router, "/api/library/libraries").await, listed);
+    assert_eq!(the_store(&state), stored, "the rehearsal changed the store");
+
+    let (status, done) = moved(&router, folder, false, &to).await;
+    assert_eq!(status, StatusCode::OK, "{done}");
+    assert_eq!(done["dry_run"], false);
+    assert_eq!(done["moved"], rehearsed["moved"]);
+    let after = get_json(&router, "/api/library/libraries").await;
+    let libraries = after["libraries"].as_array().expect("libraries");
+    assert_eq!(libraries.len(), 1, "{after}");
+    assert_eq!(
+        libraries[0]["folders"].as_array().expect("folders").len(),
+        2
+    );
+    assert_eq!(libraries[0]["works"], 2, "{after}");
+}
+
+#[tokio::test]
+async fn a_folder_is_moved_to_a_library_made_for_it() {
+    let (router, _state, fixture) = test_support::state_with_two_scanned_roots();
+    let listed = get_json(&router, "/api/library/libraries").await;
+    let a = the_library(&listed, "root-a");
+    let (status, added) = answered(
+        &router,
+        Method::POST,
+        &format!("/api/library/libraries/{}/folders", a["id"]),
+        &serde_json::json!({ "path": a_folder_of(&fixture, "Extra", "Gamma") }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{added}");
+    let folder = added["root"]["id"].as_i64().expect("a folder id");
+
+    let (status, done) = moved(
+        &router,
+        folder,
+        false,
+        &serde_json::json!({ "new_library": " Extras " }),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "{done}");
+    assert_eq!(done["moved"]["library"], "Extras");
+    assert_eq!(done["moved"]["library_removed"], serde_json::Value::Null);
+    let after = get_json(&router, "/api/library/libraries").await;
+    assert_eq!(the_library(&after, "Extras")["folders"][0]["id"], folder);
+    assert_eq!(
+        the_library(&after, "root-a")["folders"]
+            .as_array()
+            .expect("folders")
+            .len(),
+        1
+    );
+}
+
+/// The same volume under the same edition key in both libraries: 409, the
+/// volume named in the sentence and listed beside it, and nothing changed.
+#[tokio::test]
+async fn a_refused_move_is_a_409_naming_its_volumes() {
+    let (router, state, fixture) = test_support::router_over_a_single_scanned_work();
+    let mut ids = Vec::new();
+    for name in ["One", "Two"] {
+        let (status, made) = answered(
+            &router,
+            Method::POST,
+            "/api/library/libraries",
+            &serde_json::json!({ "name": name, "folders": [a_folder_of(&fixture, name, "Same")] }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{made}");
+        let id = made["library"]["id"].as_i64().expect("an id");
+        let (status, _) = answered(
+            &router,
+            Method::POST,
+            &format!("/api/library/libraries/{id}/scan"),
+            &serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED);
+        until_the_library_scan_ends(&router, id).await;
+        ids.push((
+            id,
+            made["library"]["folders"][0]["id"]
+                .as_i64()
+                .expect("a folder"),
+        ));
+    }
+    let stored = the_store(&state);
+
+    for dry_run in [true, false] {
+        let (status, refused) = moved(
+            &router,
+            ids[0].1,
+            dry_run,
+            &serde_json::json!({ "library": ids[1].0 }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT, "{refused}");
+        assert_eq!(keys_of(&refused), ["error", "volumes"], "{refused}");
+        assert!(
+            refused["error"]
+                .as_str()
+                .expect("an error")
+                .contains("same edition key"),
+            "{refused}"
+        );
+        assert_eq!(
+            refused["volumes"].as_array().expect("volumes").len(),
+            1,
+            "{refused}"
+        );
+    }
+    assert_eq!(the_store(&state), stored);
+}
+
+#[tokio::test]
+async fn a_move_that_names_no_one_target_or_nothing_there_is_the_callers_mistake() {
+    let (router, state, _fixture) = test_support::state_with_two_scanned_roots();
+    let listed = get_json(&router, "/api/library/libraries").await;
+    let a = the_library(&listed, "root-a");
+    let own = a["id"].as_i64().expect("an id");
+    let folder = a["folders"][0]["id"].as_i64().expect("a folder id");
+    let stored = the_store(&state);
+
+    for (body, status, says) in [
+        (
+            serde_json::json!({}),
+            StatusCode::BAD_REQUEST,
+            "exactly one",
+        ),
+        (
+            serde_json::json!({ "library": 1, "new_library": "X" }),
+            StatusCode::BAD_REQUEST,
+            "exactly one",
+        ),
+        (
+            serde_json::json!({ "library": "one" }),
+            StatusCode::BAD_REQUEST,
+            "`library`",
+        ),
+        (
+            serde_json::json!({ "new_library": 7 }),
+            StatusCode::BAD_REQUEST,
+            "`new_library`",
+        ),
+        (
+            serde_json::json!({ "new_library": "  " }),
+            StatusCode::BAD_REQUEST,
+            "name",
+        ),
+        (
+            serde_json::json!({ "new_library": "root-b" }),
+            StatusCode::BAD_REQUEST,
+            "root-b",
+        ),
+        (
+            serde_json::json!({ "library": own }),
+            StatusCode::BAD_REQUEST,
+            "root-a",
+        ),
+        (
+            serde_json::json!({ "library": 4242 }),
+            StatusCode::NOT_FOUND,
+            "there is no library 4242",
+        ),
+    ] {
+        for dry_run in [true, false] {
+            let (got, refused) = moved(&router, folder, dry_run, &body).await;
+            assert_eq!(got, status, "{body}: {refused}");
+            assert!(the_sentence(&refused).contains(says), "{body}: {refused}");
+        }
+    }
+    let (status, missing) = moved(
+        &router,
+        4242,
+        false,
+        &serde_json::json!({ "new_library": "X" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{missing}");
+    assert_eq!(the_sentence(&missing), "there is no folder 4242");
+
+    let (status, not_json) = answered_raw(
+        &router,
+        Method::POST,
+        &format!("/api/library/roots/{folder}/move"),
+        "not json",
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{not_json}");
+    assert!(the_sentence(&not_json).contains("JSON"), "{not_json}");
+
+    let (status, no_id) = answered(
+        &router,
+        Method::POST,
+        "/api/library/roots/one/move",
+        &serde_json::json!({ "new_library": "X" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{no_id}");
+    assert_eq!(
+        the_sentence(&no_id),
+        "`one` is not a folder id; an id is a whole number"
+    );
+
+    let (status, misspelt) = answered(
+        &router,
+        Method::POST,
+        &format!("/api/library/roots/{folder}/move?dryrun=true"),
+        &serde_json::json!({ "new_library": "X" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{misspelt}");
+    assert!(the_sentence(&misspelt).contains("query"), "{misspelt}");
+    assert_eq!(the_store(&state), stored);
+}
+
+/// A rehearsal is `dry_run=true` and nothing else; the spellings that could be
+/// read as either answer 400 and move nothing, and `dry_run=false` moves.
+#[tokio::test]
+async fn a_move_spelt_any_other_way_is_refused_and_false_moves() {
+    let (router, state, _fixture) = test_support::state_with_two_scanned_roots();
+    let listed = get_json(&router, "/api/library/libraries").await;
+    let a = the_library(&listed, "root-a")["id"]
+        .as_i64()
+        .expect("an id");
+    let folder = the_library(&listed, "root-b")["folders"][0]["id"]
+        .as_i64()
+        .expect("a folder id");
+    let path = format!("/api/library/roots/{folder}/move");
+    let to = serde_json::json!({ "library": a });
+    let stored = the_store(&state);
+
+    for query in [
+        "?dry_run=",
+        "?dry_run",
+        "?dry_run=true&dry_run=false",
+        "?dry_run=false&dry_run=true",
+    ] {
+        let (status, refused) =
+            answered(&router, Method::POST, &format!("{path}{query}"), &to).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{query}: {refused}");
+        assert!(
+            the_sentence(&refused).contains("query"),
+            "{query}: {refused}"
+        );
+        assert_eq!(the_store(&state), stored, "{query} moved something");
+    }
+
+    let (status, done) =
+        answered(&router, Method::POST, &format!("{path}?dry_run=false"), &to).await;
+    assert_eq!(status, StatusCode::OK, "{done}");
+    assert_eq!(done["dry_run"], false, "{done}");
+    let after = get_json(&router, "/api/library/libraries").await;
+    assert_eq!(
+        after["libraries"].as_array().expect("libraries").len(),
+        1,
+        "{after}"
+    );
+}
+
+/// A move derives the whole store, so it does not run beside a scan: 409 at
+/// once, for a rehearsal too, and nothing moved.
+#[tokio::test]
+async fn a_move_is_refused_while_a_scan_holds_the_library() {
+    let (router, state, _fixture) = test_support::state_with_two_scanned_roots();
+    let listed = get_json(&router, "/api/library/libraries").await;
+    let a = the_library(&listed, "root-a")["id"]
+        .as_i64()
+        .expect("an id");
+    let folder = the_library(&listed, "root-b")["folders"][0]["id"]
+        .as_i64()
+        .expect("a folder id");
+    let stored = the_store(&state);
+    let held = holding_the_job(&state);
+
+    for dry_run in [true, false] {
+        let (status, refused) = moved(
+            &router,
+            folder,
+            dry_run,
+            &serde_json::json!({ "library": a }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT, "{refused}");
+        assert_eq!(keys_of(&refused), ["error", "volumes"], "{refused}");
+        assert!(
+            refused["error"]
+                .as_str()
+                .expect("an error")
+                .contains("running")
+        );
+        assert_eq!(refused["volumes"], serde_json::json!([]), "{refused}");
+    }
+    drop(held);
+    assert_eq!(the_store(&state), stored);
+}
+
+/// A scan reserved and waiting holds no job lock, so the move asks the
+/// registry: for a folder of the library the folder leaves and for one of the
+/// library it goes to. The reservation is left as it was.
+#[tokio::test]
+async fn a_move_is_refused_while_a_scan_of_either_library_is_reserved() {
+    let (router, state, _fixture) = test_support::state_with_two_scanned_roots();
+    let listed = get_json(&router, "/api/library/libraries").await;
+    let a = the_library(&listed, "root-a");
+    let b = the_library(&listed, "root-b");
+    let a_folder = a["folders"][0]["id"].as_i64().expect("a folder id");
+    let b_folder = b["folders"][0]["id"].as_i64().expect("a folder id");
+    let to = serde_json::json!({ "library": a["id"] });
+    let stored = the_store(&state);
+
+    for (reserved, path) in [
+        (a_folder, &a["folders"][0]["path"]),
+        (b_folder, &b["folders"][0]["path"]),
+    ] {
+        a_scan_running_on(&state, reserved);
+        for dry_run in [true, false] {
+            let (status, refused) = moved(&router, b_folder, dry_run, &to).await;
+            assert_eq!(status, StatusCode::CONFLICT, "{reserved}: {refused}");
+            assert_eq!(
+                refused["error"],
+                format!(
+                    "a scan of {} is running; move the folder once it has finished",
+                    path.as_str().expect("a path")
+                ),
+                "{refused}"
+            );
+            assert_eq!(the_store(&state), stored, "{reserved} {dry_run} moved");
+            assert!(
+                state
+                    .scans
+                    .lock()
+                    .unwrap()
+                    .get(&reserved)
+                    .is_some_and(|p| !p.done),
+                "the reservation on {reserved} was taken away"
+            );
+        }
+        state.scans.lock().unwrap().remove(&reserved);
+    }
+
+    // A new library is made, so only the folder's own library is asked.
+    a_scan_running_on(&state, a_folder);
+    let (status, made) = moved(
+        &router,
+        b_folder,
+        true,
+        &serde_json::json!({ "new_library": "Elsewhere" }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "a scan of an unrelated library: {made}"
+    );
+}
+
+/// A scan reserved on a sibling of the moving folder, in the folder's own
+/// library, holds the move up: the library's derive would run under it.
+#[tokio::test]
+async fn a_move_is_refused_while_a_scan_of_a_sibling_folder_is_reserved() {
+    let (router, state, fixture) = test_support::router_over_a_single_scanned_work();
+    let (_, [moving, sibling]) = a_library_with_an_unscanned_second_folder(&router, &fixture).await;
+    let stored = the_store(&state);
+    a_scan_running_on(&state, sibling);
+
+    for dry_run in [true, false] {
+        let (status, refused) = moved(
+            &router,
+            moving,
+            dry_run,
+            &serde_json::json!({ "new_library": "Elsewhere" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT, "{refused}");
+        assert!(
+            refused["error"]
+                .as_str()
+                .expect("an error")
+                .contains("is running; move the folder once it has finished"),
+            "{refused}"
+        );
+    }
+    assert_eq!(the_store(&state), stored);
+}
+
+/// A store fault in a move is the server's, not the caller's.
+#[tokio::test]
+async fn a_store_fault_moving_a_folder_is_a_500_not_a_400() {
+    let (_router, state, _fixture) = test_support::state_with_two_scanned_roots();
+    let folder = {
+        let conn = state.library.conn();
+        let folder = taiyaku_library::scan::roots(&conn).expect("lists")[1].id;
+        conn.pragma_update(None, "query_only", true)
+            .expect("sets query_only");
+        folder
+    };
+    let body = serde_json::json!({ "new_library": "Elsewhere" });
+
+    let response = crate::libraries_api::move_folder(
+        axum::extract::State(std::sync::Arc::clone(&state)),
+        axum::extract::Extension(an_administrator()),
+        test_support::from_a_browser(),
+        axum::extract::Path(folder.to_string()),
+        Ok(axum::extract::Query(crate::config_api::DryRunQuery {
+            dry_run: false,
+        })),
+        axum::body::Bytes::from(body.to_string()),
+    )
+    .await;
+    let (status, text) = parsed(response).await;
+    assert_eq!(
+        status,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "a store fault must not be answered as the caller's own mistake: {text}"
+    );
+}
+
+/// Every value of `moved` under its own key, each a different value, so a
+/// pair of keys swapped cannot pass.
+#[test]
+fn moved_is_written_with_each_value_under_its_own_key() {
+    let moved = taiyaku_library::relocate::Moved {
+        library_id: 11,
+        library: "Target".to_string(),
+        works_kept: 22,
+        works_joined: 33,
+        works_split: 44,
+        series_joined: 55,
+        positions: 66,
+        notes: 77,
+        alignments_dropped: 88,
+        library_removed: Some("Left".to_string()),
+        grants_removed: 99,
+    };
+    let expected = serde_json::json!({
+        "library_id": 11,
+        "library": "Target",
+        "works_kept": 22,
+        "works_joined": 33,
+        "works_split": 44,
+        "series_joined": 55,
+        "positions": 66,
+        "notes": 77,
+        "alignments_dropped": 88,
+        "library_removed": "Left",
+        "grants_removed": 99,
+    });
+    assert_eq!(super::moved_json(&moved), expected);
+
+    let kept = taiyaku_library::relocate::Moved {
+        library_removed: None,
+        ..moved
+    };
+    let mut expected = expected;
+    expected["library_removed"] = serde_json::Value::Null;
+    assert_eq!(super::moved_json(&kept), expected);
 }

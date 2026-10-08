@@ -22,6 +22,8 @@ vi.mock('./libraries', async (importOriginal) => ({
   libraryRemovalCost: vi.fn(),
   libraryScanStatus: vi.fn(),
   listLibraries: vi.fn(),
+  moveCost: vi.fn(),
+  moveFolder: vi.fn(),
   removeLibrary: vi.fn(),
   renameLibrary: vi.fn(),
   startLibraryScan: vi.fn(),
@@ -116,6 +118,19 @@ describe('Libraries', () => {
       ),
     ).toEqual(['Comics', 'Manga'])
     expect(host.querySelector('.empty')).toBeNull()
+
+    const manga = host.querySelectorAll('.library-card')[1]
+    const move = [
+      ...(manga.querySelector('.root-row')?.querySelectorAll('button') ?? []),
+    ].find((b) => b.textContent === 'Move…') as HTMLButtonElement
+    await press(move)
+    const options = [
+      ...(
+        manga.querySelector('select[name="move-target"]') as HTMLSelectElement
+      ).options,
+    ].map((o) => o.textContent)
+    expect(options).toContain('Comics')
+    expect(options).not.toContain('Manga')
   })
 
   it('makes a library from a name and the folders chosen, then reloads', async () => {
@@ -754,6 +769,7 @@ describe('Libraries, focus and the two slots', () => {
       'Scan library',
       'Remove library…',
       'Scan folder',
+      'Move…',
       'Remove…',
       'Add folder',
     ])
@@ -898,6 +914,281 @@ describe('Libraries, focus and the two slots', () => {
     expect(host.querySelector('.libraries > [role="alert"]')?.textContent).toBe(
       'The libraries list could not be read again (the store is locked), so what is drawn may be out of date.',
     )
+  })
+})
+
+describe('Libraries, a folder’s move', () => {
+  it('keeps what deriving after the move found, named for the folder and the library, once the list has reloaded', async () => {
+    const answer = (dry_run: boolean): api.MoveAnswer => ({
+      moved: {
+        library_id: 2,
+        library: 'Comics',
+        works_kept: 1,
+        works_joined: 0,
+        works_split: 0,
+        series_joined: 2,
+        // The rehearsal's counts differ from the move's: the kept report
+        // can only have the move's.
+        positions: dry_run ? 1 : 3,
+        notes: 0,
+        alignments_dropped: 0,
+        library_removed: null,
+        grants_removed: 0,
+      },
+      derive: { ...emptyDerive, lost_positions: dry_run ? 2 : 6 },
+      dry_run,
+    })
+    vi.mocked(api.moveCost).mockResolvedValue(answer(true))
+    vi.mocked(api.moveFolder).mockResolvedValue(answer(false))
+    vi.mocked(api.listLibraries).mockResolvedValue({
+      libraries: [
+        library(1, 'Manga', ['/media/Manga/Volumes', '/media/Manga/Chapters']),
+        library(2, 'Comics', ['/media/Comics']),
+      ],
+    })
+    const host = await shown()
+    vi.mocked(api.listLibraries).mockResolvedValue({
+      libraries: [
+        library(1, 'Manga', ['/media/Manga/Volumes']),
+        library(2, 'Comics', ['/media/Comics', '/media/Manga/Chapters']),
+      ],
+    })
+    const row = host.querySelectorAll('.root-row')[1]
+    await press(
+      [...row.querySelectorAll('button')].find(
+        (b) => b.textContent === 'Move…',
+      ) as Element,
+    )
+    await act(async () => {
+      const box = row.querySelector(
+        'select[name="move-target"]',
+      ) as HTMLSelectElement
+      Object.getOwnPropertyDescriptor(
+        HTMLSelectElement.prototype,
+        'value',
+      )?.set?.call(box, '2')
+      box.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+    await press(row.querySelector('button[name="rehearse"]') as Element)
+    await press(row.querySelector('.move-root .confirm') as Element)
+
+    const report = host.querySelector(
+      '.libraries > .removal-report',
+    ) as HTMLElement
+    expect(report.querySelector(':scope > p')?.textContent).toBe(
+      'Moved /media/Manga/Chapters from Manga to Comics.',
+    )
+    // What the move did leads, in the past tense, before what deriving found.
+    const did = report.querySelector('.move-counts')?.textContent ?? ''
+    expect(did).toContain(
+      '1 work kept its address, 0 works joined a work Comics already held, as another edition, and 0 works were split between the two libraries.',
+    )
+    expect(did).toContain('3 in-progress positions and 0 notes went with them.')
+    expect(did).toContain('2 series already in Comics gained volumes.')
+    expect(
+      [...report.querySelectorAll(':scope > p')].map((p) => p.textContent),
+    ).toEqual([
+      'Moved /media/Manga/Chapters from Manga to Comics.',
+      'What deriving after the move found:',
+    ])
+    expect(
+      report.querySelector('[data-field="lost_positions"] dd')?.textContent,
+    ).toBe('6')
+    const pathsOf = (card: Element) =>
+      [...card.querySelectorAll('.root-row code')].map((c) => c.textContent)
+    const cards = host.querySelectorAll('.library-card')
+    expect(pathsOf(cards[0])).toEqual(['/media/Manga/Volumes'])
+    expect(pathsOf(cards[1])).toEqual([
+      '/media/Comics',
+      '/media/Manga/Chapters',
+    ])
+  })
+
+  /** Moves Manga's second folder to `to` and answers the report kept. */
+  async function keptReport(
+    to: '2' | 'new',
+    moved: Partial<api.Moved>,
+  ): Promise<HTMLElement> {
+    const answer = (dry_run: boolean): api.MoveAnswer => ({
+      moved: { ...movedAnswer(null).moved, ...moved },
+      derive: emptyDerive,
+      dry_run,
+    })
+    vi.mocked(api.moveCost).mockResolvedValue(answer(true))
+    vi.mocked(api.moveFolder).mockResolvedValue(answer(false))
+    vi.mocked(api.listLibraries).mockResolvedValue({
+      libraries: [
+        library(1, 'Manga', ['/media/Manga/Volumes', '/media/Manga/Chapters']),
+        library(2, 'Comics', ['/media/Comics']),
+      ],
+    })
+    const host = await shown()
+    const row = host.querySelectorAll('.root-row')[1]
+    await press(
+      [...row.querySelectorAll('button')].find(
+        (b) => b.textContent === 'Move…',
+      ) as Element,
+    )
+    await act(async () => {
+      const box = row.querySelector(
+        'select[name="move-target"]',
+      ) as HTMLSelectElement
+      Object.getOwnPropertyDescriptor(
+        HTMLSelectElement.prototype,
+        'value',
+      )?.set?.call(box, to)
+      box.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+    if (to === 'new') {
+      await typeInto(
+        row.querySelector('input[name="new-library"]') as HTMLInputElement,
+        'Extras',
+      )
+    }
+    await press(row.querySelector('button[name="rehearse"]') as Element)
+    await press(row.querySelector('.move-root .confirm') as Element)
+    return host.querySelector('.libraries > .removal-report') as HTMLElement
+  }
+
+  it('leaves the join out of the kept report where the target was made by the move', async () => {
+    const report = await keptReport('new', {
+      library: 'Extras',
+      library_id: 9,
+      works_kept: 2,
+    })
+    expect(report.querySelector('.move-counts')?.textContent).toContain(
+      '2 works kept their address and 0 works were split between the two libraries.',
+    )
+    expect(report.textContent).not.toContain('joined')
+  })
+
+  it('says what the move dropped and removed, in the past tense', async () => {
+    const report = await keptReport('2', {
+      alignments_dropped: 2,
+      library_removed: 'Manga',
+      grants_removed: 3,
+    })
+    const did = report.querySelector('.move-counts')?.textContent ?? ''
+    expect(did).toContain(
+      '2 alignments between editions the move separated were dropped.',
+    )
+    expect(did).toContain(
+      'Manga had no other folder, so it was removed, with 3 grants.',
+    )
+  })
+
+  /** Moves the second folder of Manga to Comics, the list failing to reload. */
+  async function moveThenFailToReload(
+    host: HTMLElement,
+    library_removed: string | null,
+  ) {
+    vi.mocked(api.listLibraries).mockRejectedValue(
+      new Error('/api/library/libraries: 500 {"error":"the store is locked"}'),
+    )
+    const row = host.querySelectorAll('.root-row')[1]
+    await press(
+      [...row.querySelectorAll('button')].find(
+        (b) => b.textContent === 'Move…',
+      ) as Element,
+    )
+    await act(async () => {
+      const box = row.querySelector(
+        'select[name="move-target"]',
+      ) as HTMLSelectElement
+      Object.getOwnPropertyDescriptor(
+        HTMLSelectElement.prototype,
+        'value',
+      )?.set?.call(box, '2')
+      box.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+    await press(row.querySelector('button[name="rehearse"]') as Element)
+    await press(row.querySelector('.move-root .confirm') as Element)
+    return library_removed
+  }
+
+  const movedAnswer = (library_removed: string | null): api.MoveAnswer => ({
+    moved: {
+      library_id: 2,
+      library: 'Comics',
+      works_kept: 1,
+      works_joined: 0,
+      works_split: 0,
+      series_joined: 0,
+      positions: 0,
+      notes: 0,
+      alignments_dropped: 0,
+      library_removed,
+      grants_removed: 0,
+    },
+    derive: emptyDerive,
+    dry_run: false,
+  })
+
+  it('drops a moved folder from its library at once when the list that follows cannot be read', async () => {
+    vi.mocked(api.moveCost).mockResolvedValue({
+      ...movedAnswer(null),
+      dry_run: true,
+    })
+    vi.mocked(api.moveFolder).mockResolvedValue(movedAnswer(null))
+    vi.mocked(api.listLibraries).mockResolvedValue({
+      libraries: [
+        library(1, 'Manga', ['/media/Manga/Volumes', '/media/Manga/Chapters']),
+        library(2, 'Comics', ['/media/Comics']),
+      ],
+    })
+    const host = await shown()
+    await moveThenFailToReload(host, null)
+    // Gone from Manga; not drawn in Comics, which the reload would do.
+    expect(
+      [...host.querySelectorAll('.root-row code')].map((c) => c.textContent),
+    ).toEqual(['/media/Manga/Volumes', '/media/Comics'])
+    expect(
+      host.querySelector('.libraries > .removal-report > p')?.textContent,
+    ).toBe('Moved /media/Manga/Chapters from Manga to Comics.')
+    expect(
+      host.querySelector('.libraries > [role="alert"]')?.textContent,
+    ).toContain('the store is locked')
+  })
+
+  it('drops the library a move emptied at once when the list that follows cannot be read', async () => {
+    vi.mocked(api.moveCost).mockResolvedValue({
+      ...movedAnswer('Manga'),
+      dry_run: true,
+    })
+    vi.mocked(api.moveFolder).mockResolvedValue(movedAnswer('Manga'))
+    vi.mocked(api.listLibraries).mockResolvedValue({
+      libraries: [
+        library(1, 'Manga', ['/media/Manga/Chapters']),
+        library(2, 'Comics', ['/media/Comics']),
+      ],
+    })
+    const host = await shown()
+    const row = host.querySelectorAll('.root-row')[0]
+    vi.mocked(api.listLibraries).mockRejectedValue(
+      new Error('/api/library/libraries: 500 {"error":"the store is locked"}'),
+    )
+    await press(
+      [...row.querySelectorAll('button')].find(
+        (b) => b.textContent === 'Move…',
+      ) as Element,
+    )
+    await act(async () => {
+      const box = row.querySelector(
+        'select[name="move-target"]',
+      ) as HTMLSelectElement
+      Object.getOwnPropertyDescriptor(
+        HTMLSelectElement.prototype,
+        'value',
+      )?.set?.call(box, '2')
+      box.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+    await press(row.querySelector('button[name="rehearse"]') as Element)
+    await press(row.querySelector('.move-root .confirm') as Element)
+    expect(
+      [...host.querySelectorAll('.library-card > h3')].map(
+        (h) => h.textContent,
+      ),
+    ).toEqual(['Comics'])
   })
 })
 

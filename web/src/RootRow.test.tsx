@@ -1,11 +1,18 @@
 import { act } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as config from './config'
+import * as api from './libraries'
 import { RootRow } from './RootRow'
 import { emptyDerive } from './testing/derive'
+import { deferred, flush } from './testing/async'
 import { fields } from './testing/fields'
 import { mount, rerender } from './testing/mount'
 
+vi.mock('./libraries', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./libraries')>()),
+  moveCost: vi.fn(),
+  moveFolder: vi.fn(),
+}))
 vi.mock('./config', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./config')>()),
   patchRoot: vi.fn(),
@@ -450,6 +457,193 @@ describe('RootRow', () => {
     }
     expect(config.startScan).not.toHaveBeenCalled()
     expect(host.querySelector('.remove-root')).toBeNull()
+  })
+
+  describe('Move…', () => {
+    const moveTo = {
+      from: { id: 5, name: 'Chapters' },
+      targets: [{ id: 7, name: 'Manga' }],
+    }
+    const answered = (dry_run: boolean): api.MoveAnswer => ({
+      moved: {
+        library_id: 7,
+        library: 'Manga',
+        works_kept: 1,
+        works_joined: 0,
+        works_split: 0,
+        series_joined: 0,
+        positions: 0,
+        notes: 0,
+        alignments_dropped: 0,
+        library_removed: null,
+        grants_removed: 0,
+      },
+      derive: { ...emptyDerive, lost_positions: dry_run ? 2 : 6 },
+      dry_run,
+    })
+    const mounted = async (
+      props: Partial<Parameters<typeof RootRow>[0]> = {},
+    ) => {
+      let host: HTMLElement | undefined
+      await act(async () => {
+        host = mount(
+          <RootRow
+            root={root()}
+            moveTo={moveTo}
+            onChanged={vi.fn()}
+            {...props}
+          />,
+        )
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+      if (!host) throw new Error('nothing mounted')
+      return host
+    }
+    const choose = async (host: HTMLElement, value: string) => {
+      await act(async () => {
+        const box = host.querySelector(
+          'select[name="move-target"]',
+        ) as HTMLSelectElement
+        Object.getOwnPropertyDescriptor(
+          HTMLSelectElement.prototype,
+          'value',
+        )?.set?.call(box, value)
+        box.dispatchEvent(new Event('change', { bubbles: true }))
+      })
+    }
+
+    it('is offered only where the row was told where to, and holds Scan folder and Remove… while open', async () => {
+      const bare = await settle()
+      expect(
+        [...bare.querySelectorAll('button')].some(
+          (b) => b.textContent === 'Move…',
+        ),
+      ).toBe(false)
+
+      const host = await mounted()
+      await act(async () => {
+        press(host, 'Move…').click()
+        await Promise.resolve()
+      })
+      expect(
+        host.querySelector('[aria-label="Move the folder at /srv/manga"]'),
+      ).not.toBeNull()
+      for (const label of ['Scan folder', 'Remove…', 'Move…']) {
+        expect(press(host, label).disabled, label).toBe(true)
+      }
+    })
+
+    it('holds Move… while a removal is being confirmed', async () => {
+      const host = await mounted()
+      await act(async () => {
+        press(host, 'Remove…').click()
+        await Promise.resolve()
+      })
+      expect(press(host, 'Move…').disabled).toBe(true)
+    })
+
+    it('closes its dialog when a scan the mount read finds begins', async () => {
+      const status = deferred<config.ScanStatus>()
+      vi.mocked(config.scanStatus).mockReturnValue(status.promise)
+      const host = await mounted()
+      await act(async () => {
+        press(host, 'Move…').click()
+        await Promise.resolve()
+      })
+      expect(host.querySelector('.move-root')).not.toBeNull()
+      await flush(() =>
+        status.resolve({
+          root_id: 3,
+          running: true,
+          elapsed_secs: 1,
+          report: null,
+          last_scan_at: null,
+          last_scan_status: null,
+        }),
+      )
+      expect(host.querySelector('.move-root')).toBeNull()
+    })
+
+    it('closes its dialog when the library’s scan is adopted', async () => {
+      const host = await mounted()
+      await act(async () => {
+        press(host, 'Move…').click()
+        await Promise.resolve()
+      })
+      expect(host.querySelector('.move-root')).not.toBeNull()
+      await act(async () => {
+        rerender(
+          <RootRow
+            root={root()}
+            moveTo={moveTo}
+            adopt={1}
+            onChanged={vi.fn()}
+          />,
+        )
+        await Promise.resolve()
+      })
+      expect(host.querySelector('.move-root')).toBeNull()
+    })
+
+    it('reports the row busy while its dialog is open, and not once it is closed', async () => {
+      const onBusy = vi.fn()
+      const host = await mounted({ onBusy })
+      expect(onBusy).toHaveBeenLastCalledWith(false)
+      await act(async () => {
+        press(host, 'Move…').click()
+        await Promise.resolve()
+      })
+      expect(onBusy).toHaveBeenLastCalledWith(true)
+      await act(async () => {
+        press(host, 'Cancel').click()
+        await Promise.resolve()
+      })
+      expect(onBusy).toHaveBeenLastCalledWith(false)
+    })
+
+    it('closes its dialog when the row becomes held', async () => {
+      const host = await mounted()
+      await act(async () => {
+        press(host, 'Move…').click()
+        await Promise.resolve()
+      })
+      expect(host.querySelector('.move-root')).not.toBeNull()
+      await act(async () => {
+        rerender(
+          <RootRow root={root()} moveTo={moveTo} held onChanged={vi.fn()} />,
+        )
+        await Promise.resolve()
+      })
+      expect(host.querySelector('.move-root')).toBeNull()
+    })
+
+    it('reloads once the folder has moved', async () => {
+      vi.mocked(api.moveCost).mockResolvedValue(answered(true))
+      vi.mocked(api.moveFolder).mockResolvedValue(answered(false))
+      const onChanged = vi.fn()
+      const onMoved = vi.fn()
+      const host = await mounted({ onChanged, onMoved })
+      await act(async () => {
+        press(host, 'Move…').click()
+        await Promise.resolve()
+      })
+      await choose(host, '7')
+      await act(async () => {
+        press(host, 'See what this would do').click()
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+      await act(async () => {
+        press(host, 'Move /srv/manga to Manga').click()
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+      expect(api.moveFolder).toHaveBeenCalledWith(3, { library: 7 })
+      expect(onChanged).toHaveBeenCalledTimes(1)
+      expect(onMoved).toHaveBeenCalledWith(answered(false))
+      expect(host.querySelector('.move-root')).toBeNull()
+    })
   })
 
   it('tells its card when it is scanning or confirming a removal, and when it is not', async () => {

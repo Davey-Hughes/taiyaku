@@ -1060,7 +1060,7 @@ async fn deleting_an_account_that_does_not_exist_is_404_on_both_halves() {
 
 /// **A closure that panicked is a 500 naming what was running** — the same
 /// contract `curation::panicked`, `metadata::panicked` and
-/// `config_api::root_panicked` each hold, tested the same way for the same
+/// `config_api::admin_panicked` each hold, tested the same way for the same
 /// reason: nothing provokes a real panic inside a `spawn_blocking` on these
 /// routes, so `replace user_panicked -> Response with Default::default()` — an
 /// empty 200 — survived every test until this was written. Found by C4 PR 2's

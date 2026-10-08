@@ -213,7 +213,7 @@ export interface FinishedScan {
   derive: Derived
 }
 
-/** A scan that failed or panicked — `run_scan`'s other shape. */
+/** A scan that failed or panicked: a scan report's other shape. */
 export interface FailedScan {
   error: string
 }

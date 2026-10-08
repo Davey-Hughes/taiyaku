@@ -75,6 +75,37 @@ describe('admin.css marks the removal blocks with --danger', () => {
 })
 
 /**
+ * A move's box is the removal's without the danger strip: a strip would say
+ * this step is graver than it is.
+ */
+describe('admin.css gives the move dialog no danger strip', () => {
+  it('sets a box-shadow on no rule that names .move-root', () => {
+    const shadowed = rules(adminSource)
+      .filter(({ body }) => /(?:^|;)\s*box-shadow:/.test(body))
+      .flatMap(({ prelude }) => selectors(prelude))
+      .filter((selector) => selector.includes('.move-root'))
+    expect(shadowed).toEqual([])
+  })
+})
+
+/**
+ * The move's confirm is marked as the action as the removals' are, with the
+ * token a move's weight calls for: `--accent`, not `--danger`.
+ */
+describe('admin.css marks the move confirm as the action', () => {
+  it('takes --accent on its border and its text, and a heavier weight', () => {
+    const confirm = rules(adminSource).find(
+      ({ prelude }) => prelude === '.move-root .confirm',
+    )
+    expect(confirm, '.move-root .confirm must exist').toBeTruthy()
+    expect(confirm?.body).toMatch(/(?:^|;)\s*border-color:\s*var\(--accent\)/)
+    expect(confirm?.body).toMatch(/(?:^|;)\s*color:\s*var\(--accent\)/)
+    expect(confirm?.body).toMatch(/(?:^|;)\s*font-weight:\s*600/)
+    expect(confirm?.body).not.toMatch(/--danger/)
+  })
+})
+
+/**
  * Task 2's own rule: one `--config-measure` on the card, not a width on each
  * control inside it. Static rather than measured — the browser pass
  * (`Config.browser.test.tsx`) is what proves the measure actually reaches
@@ -85,7 +116,7 @@ describe('admin.css sets the settings-area measure once', () => {
   it('sets the measure once rather than per control', () => {
     const widths = rules(adminSource)
       .filter(({ prelude }) =>
-        /\.(root-row|user-row|add-user|add-root|library-card|add-library|rename-library|folder-picker)\b/.test(
+        /\.(root-row|user-row|add-user|add-root|library-card|add-library|rename-library|folder-picker|move-root)\b/.test(
           prelude,
         ),
       )
@@ -173,6 +204,8 @@ describe('admin.css lets a path break and its list drop under its label', () => 
     '.library-card > h3',
     '.remove-root .confirm',
     '.remove-library .confirm',
+    '.move-root .confirm',
+    '.move-volumes li',
     '.libraries p',
     '.add-library .chosen-folders code',
     '.folder-browser .where',

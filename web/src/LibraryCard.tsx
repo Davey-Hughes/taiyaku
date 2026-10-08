@@ -23,14 +23,14 @@
  * **Scans and removals of a library and its folders exclude each other.** The
  * card is busy while it is scanning, starting a scan or knows of one, while
  * its removal dialog is open or its removal is on its way, and while any
- * folder row says it is scanning, starting a scan or confirming a removal.
- * Each row is told whether something *else* is busy, and holds its Scan folder
- * and its Remove…, and closes an open removal dialog; the card holds its own
- * Scan library and Remove library… while anything is busy, and its removal's
- * confirm while a scan of the library is known or a folder is busy. A held
- * control is a disabled one and sends nothing. A scan holds neither Rename…
- * nor Add folder nor a folder's settings; the removal of the library holds
- * Rename… and Add folder.
+ * folder row says it is scanning, starting a scan, or has a removal or a move
+ * dialog open. Each row is told whether something *else* is busy, and holds
+ * its Scan folder, its Move… and its Remove…, and closes an open removal or
+ * move dialog; the card holds its own Scan library and Remove library…
+ * while anything is busy, and its removal's confirm while a scan of the
+ * library is known or a folder is busy. A held control is a disabled one and
+ * sends nothing. A scan holds neither Rename… nor Add folder nor a folder's
+ * settings; the removal of the library holds Rename… and Add folder.
  */
 import { useEffect, useRef, useState } from 'react'
 import {
@@ -45,16 +45,20 @@ import {
   addFolder,
   type Library,
   libraryScanStatus,
+  type MoveAnswer,
   renameLibrary,
   startLibraryScan,
 } from './libraries'
 import { messageOf, sentenceOf } from './message'
 import { Refusal } from './Refusal'
+import type { NamedLibrary } from './MoveRoot'
 import { RemoveLibrary } from './RemoveLibrary'
 import { RootRow } from './RootRow'
 
 export interface LibraryCardProps {
   library: Library
+  /** Every other library, for a folder's Move…. */
+  others: NamedLibrary[]
   /** Watch probes of folders added in this session, by path. */
   probes: Record<string, Probe>
   /** A folder was added here: its probe is the screen's to keep. */
@@ -76,6 +80,11 @@ export interface LibraryCardProps {
    * drawn once the list reloads.
    */
   onFolderRemoved: (path: string, answer: RemovalAnswer) => void
+  /**
+   * A folder of this library is now in another: its path, and what the move
+   * did and what deriving after it found. Handed up for the same reason.
+   */
+  onFolderMoved: (path: string, answer: MoveAnswer) => void
 }
 
 /** How many consecutive failed polls a running scan survives, as `RootRow`'s. */
@@ -88,11 +97,13 @@ function count(n: number, one: string, many: string): string {
 
 export function LibraryCard({
   library,
+  others,
   probes,
   onAdded,
   onChanged,
   onRemoved,
   onFolderRemoved,
+  onFolderMoved,
 }: LibraryCardProps) {
   /** Why the card's last scan could not start, or its poll failed. */
   const [failure, setFailure] = useState<string | undefined>()
@@ -106,8 +117,9 @@ export function LibraryCard({
   /** Why the last rename was refused. Drawn in the rename form. */
   const [renameFailure, setRenameFailure] = useState<string | undefined>()
   /**
-   * The rows that are scanning, starting a scan or confirming a removal, by
-   * path: the key the rows are drawn by, which outlasts a change of id.
+   * The rows that are scanning, starting a scan, or have a removal or a move
+   * dialog open, by path: the key the rows are drawn by, which outlasts a
+   * change of id.
    */
   const [busyRows, setBusyRows] = useState<ReadonlySet<string>>(new Set())
   const [renaming, setRenaming] = useState(false)
@@ -245,8 +257,8 @@ export function LibraryCard({
   const own = running || starting || removing
   /**
    * Whether anything is going on in this library: its own scan or removal,
-   * or a folder scanning or confirming a removal. Scan library and Remove
-   * library… are held while it is.
+   * or a folder scanning or with a removal or a move dialog open. Scan
+   * library and Remove library… are held while it is.
    */
   const busy = own || rowsBusy
   /** Whether something other than the folder at `path` is going on. */
@@ -373,9 +385,14 @@ export function LibraryCard({
             adopt={adopt}
             lastOf={library.folders.length === 1 ? library.name : undefined}
             held={othersBusy(root.path)}
+            moveTo={{
+              from: { id: library.id, name: library.name },
+              targets: others,
+            }}
             onBusy={(on) => reportRow(root.path, on)}
             onChanged={onChanged}
             onRemoved={(answer) => onFolderRemoved(root.path, answer)}
+            onMoved={(answer) => onFolderMoved(root.path, answer)}
           />
         ))}
       </ul>

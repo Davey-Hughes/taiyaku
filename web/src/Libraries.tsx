@@ -19,12 +19,12 @@
  * runs when a folder is added and at no other time, so a folder added in
  * this session has a watch state and one read from the list does not.
  *
- * **A removal's re-derive report is kept here, not in the card or the
- * folder's row.** What was removed is not drawn once the list reloads, and
- * the report is the one place a lost position or an unwritable document is
- * said. It is
- * named for the library, or for the folder where the library stays, replaced
- * by the next removal and cleared when a library is made.
+ * **A removal's re-derive report, or a move's, is kept here, not in the card
+ * or the folder's row.** What was removed or moved is not drawn where it was
+ * once the list reloads, and the report is the one place a lost position or
+ * an unwritable document is said. A removal's is named for the library, or
+ * for the folder where the library stays, and a move's for the folder. It is
+ * replaced by the next removal or move, and cleared when a library is made.
  *
  * **Reads carry a sequence number.** Several are routinely in flight, and
  * they need not answer in order.
@@ -32,8 +32,15 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import type { Added, Derived, Probe, RemovalAnswer } from './config'
 import { FolderPicker } from './FolderPicker'
-import { createLibrary, type Library, listLibraries } from './libraries'
+import {
+  createLibrary,
+  type Library,
+  listLibraries,
+  type MoveAnswer,
+  type Moved,
+} from './libraries'
 import { LibraryCard } from './LibraryCard'
+import { MoveCounts } from './MoveCounts'
 import { sentenceOf } from './message'
 import { Refusal } from './Refusal'
 import { reveal } from './reveal'
@@ -67,9 +74,18 @@ export function Libraries() {
    * with an empty box has nothing in it to explain.
    */
   const heldByPath = folders.length === 0 && pending.trim() !== ''
-  /** What the re-derive after the last removal found, and whose it was. */
+  /**
+   * What the re-derive after the last removal, or the derive after the last
+   * move, found, and whose it was.
+   */
   const [removal, setRemoval] = useState<
-    { name: string; derive: Derived } | undefined
+    | {
+        name: string
+        derive: Derived
+        /** A move's: what it did, and where from. Absent for a removal's. */
+        move?: { moved: Moved; from?: string; newLibrary: boolean }
+      }
+    | undefined
   >()
   const [probes, setProbes] = useState<Record<string, Probe>>({})
   /** A ref as well as `creating`: two submits before a render both read false. */
@@ -161,6 +177,47 @@ export function Libraries() {
     [dropLibrary],
   )
 
+  /**
+   * A folder was moved to another library. Its derive's report is kept here
+   * for the reason a removal's is: the row that asked is unmounted by the
+   * reload, which the row asks for itself once this returns. It replaces a
+   * removal's, being drawn in its place, and is named for the folder and the
+   * library it went to.
+   */
+  const folderMoved = useCallback(
+    (id: number, path: string, answer: MoveAnswer) => {
+      setRemoval({
+        name: path,
+        derive: answer.derive,
+        move: {
+          moved: answer.moved,
+          from: drawn.current?.find((one) => one.id === id)?.name,
+          // A target the screen does not draw is one the move made.
+          newLibrary: !drawn.current?.some(
+            (one) => one.id === answer.moved.library_id,
+          ),
+        },
+      })
+      // Dropped from what is drawn at once, for the reason a removed folder
+      // is: if the reload fails, a folder that is gone from its library
+      // would stay, with live buttons. A library the move emptied went with
+      // it. The folder is not drawn in its new library: the reload does that.
+      setLibraries((held) =>
+        answer.moved.library_removed !== null
+          ? held?.filter((one) => one.id !== id)
+          : held?.map((one) =>
+              one.id === id
+                ? {
+                    ...one,
+                    folders: one.folders.filter((f) => f.path !== path),
+                  }
+                : one,
+            ),
+      )
+    },
+    [],
+  )
+
   const report = useRef<HTMLDivElement>(null)
   const reportLabel = useId()
   // What was removed was somewhere down the page and the report is at the top,
@@ -243,8 +300,24 @@ export function Libraries() {
           aria-labelledby={reportLabel}
         >
           <p id={reportLabel}>
-            What re-deriving after removing {removal.name} found:
+            {removal.move === undefined
+              ? `What re-deriving after removing ${removal.name} found:`
+              : `Moved ${removal.name}${
+                  removal.move.from === undefined
+                    ? ''
+                    : ` from ${removal.move.from}`
+                } to ${removal.move.moved.library}.`}
           </p>
+          {removal.move !== undefined && (
+            <>
+              <MoveCounts
+                moved={removal.move.moved}
+                past
+                newLibrary={removal.move.newLibrary}
+              />
+              <p>What deriving after the move found:</p>
+            </>
+          )}
           <DeriveSection derive={removal.derive} />
         </div>
       )}
@@ -263,12 +336,18 @@ export function Libraries() {
                 // By id: a library's id is never given to a later library.
                 key={library.id}
                 library={library}
+                others={libraries
+                  .filter((other) => other.id !== library.id)
+                  .map(({ id, name }) => ({ id, name }))}
                 probes={probes}
                 onAdded={remember}
                 onChanged={reload}
                 onRemoved={(name, answer) => removed(library.id, name, answer)}
                 onFolderRemoved={(path, answer) =>
                   folderRemoved(library.id, path, answer)
+                }
+                onFolderMoved={(path, answer) =>
+                  folderMoved(library.id, path, answer)
                 }
               />
             ))}

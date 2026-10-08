@@ -78,6 +78,8 @@ import {
   startScan,
   statusOf,
 } from './config'
+import type { MoveAnswer } from './libraries'
+import { MoveRoot, type NamedLibrary } from './MoveRoot'
 import { RemoveRoot } from './RemoveRoot'
 import { ScanReport } from './ScanReport'
 import { messageOf, sentenceOf } from './message'
@@ -92,18 +94,32 @@ export interface RootRowProps {
   lastOf?: string
   /**
    * Something else in the library is going on: a scan of the library, a
-   * removal of it, or another folder's scan or removal dialog. Scan folder
-   * and Remove… do nothing then and are drawn disabled, and an open removal
-   * dialog is closed.
+   * removal of it, or another folder's scan, removal dialog or move dialog.
+   * Scan folder, Move… and Remove… do nothing then and are drawn disabled,
+   * and an open removal or move dialog is closed.
    */
   held?: boolean
-  /** Says whether this row is scanning, starting a scan or confirming a removal. */
+  /**
+   * Where this folder could be moved. A library's card always gives it; a
+   * row drawn without it has no Move….
+   */
+  moveTo?: { from: NamedLibrary; targets: NamedLibrary[] }
+  /**
+   * Says whether this row is scanning, starting a scan, or has a removal or a
+   * move dialog open.
+   */
   onBusy?: (busy: boolean) => void
   /**
    * The folder is gone, with what its re-derive found. The row is not drawn
    * once the list reloads, so the screen keeps the report.
    */
   onRemoved?: (answer: RemovalAnswer) => void
+  /**
+   * The folder has moved, with what the move did and what deriving after it
+   * found. The row is not drawn once the list reloads, so the screen keeps
+   * the report.
+   */
+  onMoved?: (answer: MoveAnswer) => void
   /**
    * The list reloads on a save, a removal, or a finished scan. `quiet` is a
    * scan that ended by itself: no press started that read.
@@ -215,8 +231,10 @@ export function RootRow({
   adopt,
   lastOf,
   held = false,
+  moveTo,
   onBusy,
   onRemoved,
+  onMoved,
   onChanged,
 }: RootRowProps) {
   /**
@@ -245,6 +263,7 @@ export function RootRow({
   /** The sentence of a 409, true only until the scan it names ends. */
   const [conflict, setConflict] = useState<string | undefined>()
   const [confirming, setConfirming] = useState(false)
+  const [moving, setMoving] = useState(false)
   const [running, setRunning] = useState(false)
   const [starting, setStarting] = useState(false)
   const [elapsed, setElapsed] = useState<number | undefined>()
@@ -298,7 +317,7 @@ export function RootRow({
   // The card holds this row's sibling rows, and its own Scan library and
   // Remove library…, while this row is doing something, so it is told. Held in
   // a ref for the reason above, and told "not busy" when the row goes.
-  const busyNow = running || starting || confirming
+  const busyNow = running || starting || confirming || moving
   const told = useRef(onBusy)
   told.current = onBusy
   useEffect(() => {
@@ -369,8 +388,10 @@ export function RootRow({
     }) => {
       setElapsed(status.elapsed_secs)
       if (status.running) {
-        // A removal being confirmed quotes counts from before this scan.
+        // A removal or a move being confirmed quotes counts from before this
+        // scan.
         setConfirming(false)
+        setMoving(false)
         setRunning(true)
         return
       }
@@ -416,6 +437,7 @@ export function RootRow({
     setConflict(undefined)
     setScanNotice(undefined)
     setConfirming(false)
+    setMoving(false)
     setReport(null)
     setElapsed(undefined)
     misses.current = 0
@@ -647,14 +669,23 @@ export function RootRow({
         <button
           type="button"
           onClick={begin}
-          disabled={running || starting || confirming || held}
+          disabled={running || starting || confirming || moving || held}
         >
           Scan folder
         </button>
+        {moveTo !== undefined && (
+          <button
+            type="button"
+            onClick={() => setMoving(true)}
+            disabled={running || starting || confirming || moving || held}
+          >
+            Move…
+          </button>
+        )}
         <button
           type="button"
           onClick={() => setConfirming(true)}
-          disabled={running || starting || confirming || held}
+          disabled={running || starting || confirming || moving || held}
         >
           Remove…
         </button>
@@ -666,6 +697,20 @@ export function RootRow({
         </p>
       )}
       {report !== null && <ScanReport outcome={report} level={5} />}
+      {moving && moveTo !== undefined && (
+        <MoveRoot
+          root={root}
+          from={moveTo.from}
+          targets={moveTo.targets}
+          held={held}
+          onCancel={() => setMoving(false)}
+          onMoved={(answer) => {
+            setMoving(false)
+            onMoved?.(answer)
+            onChanged()
+          }}
+        />
+      )}
       {confirming && (
         <RemoveRoot
           root={root}

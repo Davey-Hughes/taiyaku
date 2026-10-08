@@ -26,18 +26,17 @@ React 19, vitest, biome, pnpm.
 
 ## Read this first
 
-**This plan was written on 2026-10-06, before F2a was built.** Tasks 1 to 3
-touch only `taiyaku-library` and stand as written. Tasks 4 and 5 build on
-files F2a creates (`libraries_api.rs`, `libraries.ts`, `LibraryCard.tsx`,
-`RootRow.tsx`'s props) and name them as F2a's plan
-(`docs/superpowers/plans/2026-10-06-libraries-f2a-admin.md`) names them.
-Before Task 4, read those files on `main` as merged and correct this plan's
-names against them. If F2a shipped something this plan contradicts, stop and
+**This plan was written on 2026-10-06, before F2a was built.** It was read
+against `main` at `6846c7e7` (F2a and its follow-ups merged) on 2026-10-07,
+and each task that main contradicts now opens with a **Corrected against
+main** block. **Where that block and the task's text below it disagree, the
+block governs.** Task 4 is new: O208's merges in `taiyaku-serve`, which the
+user ruled into F2b. If you find something else main contradicts, stop and
 ask.
 
 ## Global Constraints
 
-- **Branch:** `folder-move`, cut from `main` after F2a has merged.
+- **Branch:** `folder-move`, cut from `main` at `6846c7e7`.
 - **The spec is `docs/superpowers/specs/2026-10-05-libraries-design.md`.**
   Read "Decisions the user made, 2026-10-06, for F2", §6.2 and §12's Move
   list before Task 1, and O192's row in `docs/status.md` with "What a folder
@@ -69,7 +68,7 @@ ask.
   node --project jsdom --reporter=default`, `pnpm -C web run test:browser`.
 - **A class a component writes has a stylesheet rule in the same commit.**
   `web/src/classNames.test.ts`, in the node project, fails for a class no
-  selector names, so Task 5's node project is red until its Step 4 has added
+  selector names, so Task 6's node project is red until its Step 4 has added
   the rules for `move-root`, `move-counts` and `move-volumes`.
 - **"Pre-existing" means it fails the same way on `main`**, checked in a
   worktree at the commit this branch was cut from.
@@ -92,7 +91,7 @@ ask.
   found in them goes in the report for `docs/status.md`.
 - **Evidence goes in `.superpowers/sdd/folder-move-evidence/`** (`$EVID`),
   gitignored, never under `target/`. Stamp each log with its commit.
-- **Never touch `/home/davey/temp/manga-test/`.** Task 6 copies its
+- **Never touch `/home/davey/temp/manga-test/`.** Task 7 copies its
   `library.db` and proves the original byte-identical afterwards.
 
 ## Spec corrections needed
@@ -125,6 +124,16 @@ to the reading given here.
    notes or ground-truth pages after it than before.
 6. **A refusal's body lists the volumes** (`"volumes": [...]`) beside its
    sentence, which names the first few and how many more.
+
+## Ruled, 2026-10-07
+
+- **The six spec corrections above are approved as written** (the user, by
+  AskUserQuestion, before Task 1 was dispatched).
+- **O208 is merged whole in F2b**: the only-grant query in Task 2; the folder
+  and library routes' answer type, panic answer and dry-run query, and the
+  per-folder scan's reservation and job beside the library scan's, in Task 4.
+  The user chose to merge the third too, over the recommendation to leave it.
+  Task 7 closes O208.
 
 ## Decided while planning
 
@@ -159,12 +168,16 @@ to the reading given here.
   are called from it and stay private.
 - `relocate.rs` (new) and `relocate/tests.rs`: `Target`, `Moved`,
   `MoveError`, `move_cost`, `move_root`.
-- `scan.rs`: `only_grant_accounts` cut out of `removal_refusal`, for the
-  move's own sentence.
+- `scan.rs`: `only_grant_holders`, the one only-grant query, under
+  `removal_refusal`, `library_removal_refusal` and the move (O208).
 - `lib.rs`: `pub mod relocate;`.
 
 **`crates/taiyaku-serve/src/`**
 
+- `config_api.rs`, `libraries_api.rs`: one answer type, one panic answer and
+  one dry-run query for both route families; the scans' reservation, job and
+  registry write-back once (Task 4, O208), in a module of their own if that
+  reads better than either file.
 - `libraries_api.rs`: `move_folder` and its JSON.
 - `routes.rs`, `auth/tests.rs`: the route lists.
 
@@ -183,6 +196,18 @@ to the reading given here.
 **Files:**
 - Modify: `crates/taiyaku-library/src/fold.rs`
 - Test: `crates/taiyaku-library/src/fold/tests.rs`
+
+**Corrected against main (2026-10-07).**
+
+- `crate::state::put_progress` takes `(conn, work_id, user_id, &Progress)`.
+  The tests below pass `(1, from)` and `(1, into)`, which is the wrong order:
+  write `put_progress(&conn, from, 1, …)` and `put_progress(&conn, into, 1,
+  …)`. As written, the "already holds" case puts its position on work 1 for
+  user 2, and the refusal it names is never reached.
+- `fold.rs` already has a `pub struct Moved`, `absorb`'s, and
+  `fold/tests.rs` imports it. `Rehomed` is a different name and
+  `relocate::Moved` (Task 3) lives in another module; leave `fold::Moved` as
+  it is.
 
 **Interfaces:**
 - Consumes: `fold`'s private `move_positions`, `move_notes`, `move_truth`,
@@ -743,7 +768,56 @@ git commit -m "fold::rehome_editions: an edition row moves to another work with 
 - Create: `crates/taiyaku-library/src/relocate.rs`,
   `crates/taiyaku-library/src/relocate/tests.rs`
 - Modify: `crates/taiyaku-library/src/lib.rs` (`pub mod relocate;`),
-  `crates/taiyaku-library/src/scan.rs` (`only_grant_accounts`)
+  `crates/taiyaku-library/src/scan.rs` (`only_grant_holders`)
+
+**Corrected against main (2026-10-07).**
+
+1. **O208: one only-grant query, not a third.** Main holds the query twice:
+   `scan::removal_refusal` (root `id` is its library's last folder, and
+   accounts hold that library as their only grant) and
+   `scan::library_removal_refusal` (accounts hold library `library_id` as
+   their only grant). Step 4 below would cut a third shape out of the first.
+   Instead write one function:
+
+   ```rust
+   /// The accounts, by name, whose only grant is library `library_id`. Empty
+   /// where there are none, and where `library_id` names no library.
+   pub(crate) fn only_grant_holders(conn: &Connection, library_id: i64)
+       -> Result<Vec<String>, String>;
+   ```
+
+   and build `removal_refusal`, `library_removal_refusal` and
+   `relocate::refused_before`'s first check on it. `removal_refusal` reads
+   the root's path, its library's id and name, and whether another root
+   shares the library, then asks `only_grant_holders`; an `id` naming no root
+   is still `Ok(None)`. **Both sentences stay word for word**, and
+   `scan::`'s existing tests pass unedited. Afterwards the crate's Rust holds
+   one statement that asks "only grant" (migration 15's triggers keep their
+   own SQL: a trigger cannot call Rust). Wherever this task's text says
+   `only_grant_accounts`, read this. `only_grant_of` becomes `pub(crate)` as
+   Step 5 says.
+2. **`refused_before`'s first check** is: the folder is its library's last
+   (no other root has `folder.library_id`) and `only_grant_holders(conn,
+   folder.library_id)` is not empty. The sentence is Step 5's, with
+   `folder.path` and `folder.library`. Step 7's defect 4 becomes "delete that
+   check in `refused_before`".
+3. **Names (O206, migration 16).** `libraries::id_of` now finds a name in any
+   ASCII case, and `trim_name` strips all Unicode white space. In `resolve`:
+   test emptiness with `crate::libraries::trim_name(name).is_empty()`, not
+   `name.trim()` (the module's rule: one character set wherever a name is
+   made or looked up); and refuse a taken name **naming the library as it is
+   stored**, as `scan::create_library` does: read it back with `name_of` and
+   say "a library is already called `{stored}`; move the folder to it
+   instead". Add one case to the first test: `("comics", "already called
+   `Comics`")`.
+4. `scan::scan_root(conn, &root)` now records a walk only where, under its
+   write lock, the folder's id still names its path (O196), and
+   `account::grant_library` refuses a library with no folder (O205). Neither
+   touches these fixtures, which scan folders that stand and grant libraries
+   that hold one.
+5. **O200: a refusal a person reads says "folder", never "root".**
+   `folder()`'s `MoveError::Missing` reads "there is no folder {root_id}",
+   and the first test's `4242` case still holds.
 
 **Interfaces:**
 - Consumes: `scan::{roots, Root, update_root, RootPatch}`,
@@ -1418,6 +1492,21 @@ git commit -m "relocate: what refuses a folder move before anything is written"
 **Files:**
 - Modify: `crates/taiyaku-library/src/relocate.rs`,
   `crates/taiyaku-library/src/relocate/tests.rs`
+
+**Corrected against main (2026-10-07).**
+
+- **Spec correction 3, approved, has no test in Step 1's list.** Add one:
+  `a_divided_work_whose_hub_moves_to_a_library_holding_its_volume_is_refused`.
+  Library `A` of two folders, each holding `Series v01`: the moving folder
+  with edition key `en`, the other with none (`raw`), so one work of two
+  editions whose hub is `en` (assert the fixture: one work, `hub = 'en'`).
+  Library `B` of one folder holding `Series v01` with no edition key. Move
+  the `en` folder to `B`. Assert `MoveError::Refused` naming the volume, for
+  `move_cost` and `move_root` alike, and `dump` unchanged after each. Say in
+  the report which check refused it (a pre-check, or which arm of the
+  verdict). If the move is **not** refused, stop and report the rows: the
+  design then needs the user.
+- Task 2's correction 1 renamed the only-grant helper; nothing here calls it.
 
 **Interfaces:**
 - Consumes: Task 1's `fold::{rehome_editions, Rehoming, Rehomed}`; Task 2's
@@ -2587,7 +2676,7 @@ the fixture from `proposals/tests.rs` that raises an `edition-of` proposal),
 library, and print the proposal's row and what
 `proposals::acceptable` (or the function `--accept` calls) answers for it.
 Put the output in `$EVID/o190-after-a-move.log`. Assert only that the move
-succeeded and the proposal row still exists. Task 6 writes what the log
+succeeded and the proposal row still exists. Task 7 writes what the log
 shows into O190.
 
 - [ ] **Step 7: Whole crates, then commit**
@@ -2601,7 +2690,139 @@ git commit -m "relocate: a folder moves with its works' rows, a divided work is 
 
 ---
 
-## Task 4: The route
+## Task 4: O208's merges in `taiyaku-serve`
+
+Added on 2026-10-07 by the user's ruling (see "Ruled, 2026-10-07"). It
+changes no route's behaviour: it makes the folder routes and the library
+routes share what they wrote twice, so that Task 5's move route is built on
+one of each.
+
+**Files:**
+- Modify: `crates/taiyaku-serve/src/config_api.rs`,
+  `crates/taiyaku-serve/src/libraries_api.rs`
+- Create, if it reads better than either file:
+  `crates/taiyaku-serve/src/scan_jobs.rs` (and `mod scan_jobs;` in `lib.rs`)
+- Tests: only a renamed import may change in `config_api/tests.rs`,
+  `libraries_api/tests.rs`, `auth/tests.rs` or `tests.rs`. A test written for
+  Step 3's gap, if one is needed, goes beside its neighbours.
+
+**What is written twice on `main` at `6846c7e7`** (O208's row):
+
+1. **The answer.** `config_api::RootAnswer` with `root_panicked`, and
+   `libraries_api::LibraryAnswer` with `library_panicked` and
+   `panicked_answer`. The same four variants and the same
+   `{"error": "<sentence>"}` body; only the 404's sentence differs ("there
+   is no folder {id}", "there is no library {id}"). `NoAnswer`, the rules
+   routes' plain-text answer, is a different thing and does not change.
+2. **The dry-run query.** `config_api::DeleteRootQuery` and
+   `libraries_api::DeleteLibraryQuery`: identical structs,
+   `deny_unknown_fields` with `dry_run: bool` defaulting to false.
+3. **The scans.** The per-folder route (`config_api::start_scan`'s inline
+   check-and-reserve, `scan_and_finish`, `run_scan`, `run_scan_inner`,
+   `scan_report_of`) beside the library route (`libraries_api::reserve_folders`,
+   `spawn_library_scan`, `library_scan_job`, `run_library_scan_inner`,
+   `reports_of`). Both reserve under `state.scans`'s one lock and refuse
+   "a scan of {path} is already running"; take `state.library_job`, blocking,
+   for the walks and the derive; read their folders again under it (one
+   folder: its id still names its path, or `FOLDER_CHANGED`; a library: the
+   same ids and paths in the same number, or `CHANGED`); walk; derive once;
+   correct each walked folder's status with `scan::mark_derive_failed` where
+   the derive fails; catch a panic; and write each folder's report back over
+   its own reservation only (`finish_reservation`).
+
+**Interfaces (produced, and consumed by Task 5):**
+
+```rust
+// config_api.rs, where RootAnswer is now. pub(crate).
+pub(crate) enum AdminAnswer {
+    MissingFolder(i64),   // 404 "there is no folder {id}"
+    MissingLibrary(i64),  // 404 "there is no library {id}"
+    Unusable(String),     // 400
+    Refused(String),      // 409
+    Failed(String),       // 500
+}
+impl IntoResponse for AdminAnswer { /* {"error": sentence} */ }
+pub(crate) fn admin_panicked(what: &str, why: &tokio::task::JoinError) -> Response;
+pub(crate) struct DryRunQuery { dry_run: bool } // deny_unknown_fields, default
+
+// scan_jobs.rs (or wherever the three scan pieces land, once):
+pub(crate) enum Reread { Folder, Library(i64) }
+pub(crate) fn reserve(state: &ServeState, roots: &[scan::Root], started: Instant)
+    -> Result<(), String>; // the "already running" sentence
+pub(crate) fn spawn(state: Arc<ServeState>, roots: Vec<scan::Root>,
+    started: Instant, reread: Reread) -> tokio::task::JoinHandle<()>;
+// and a_scan_reserved_on, removal_waits_for, finish_reservation,
+// FOLDER_CHANGED and CHANGED moved beside them.
+```
+
+The names are this plan's. If one reads wrong against the code, choose
+another and say so in the report; Task 5 is dispatched with what you chose.
+
+**Rules:**
+
+- **No route's status, body keys or sentences change.** Each route keeps the
+  words it has today for the same event, including where the two differ: the
+  per-folder route's walk failure is the store's own error, the library's is
+  "scanning {path}: {why}"; their derive-failure sentences differ too. Let
+  `Reread` decide the words, or have the shared job answer what failed and
+  each route word it: your choice, said in the report.
+- **Every existing test passes unedited**, but for a renamed import. If an
+  assertion has to change, stop and report which, and why.
+- No `.await` while a `std::sync::Mutex` is held; no lock order that the
+  current code does not already take (`scans` is never held across
+  `library_job`).
+- Doc comments move with their code and say what the merged code does, not
+  that it was merged.
+
+- [ ] **Step 1: Merge the answer and the query**
+
+Replace both answer types and both panic answers with `AdminAnswer` and
+`admin_panicked`, and both query structs with `DryRunQuery`. Run
+`cargo test -p taiyaku-serve -- --test-threads=8`. Expected: PASS, unedited.
+
+- [ ] **Step 2: Merge the scans**
+
+One reservation, one background runner and one job, which both routes call.
+`start_scan` reserves `std::slice::from_ref(&root)` through `reserve` and
+answers its refusal 409 as today; `start_library_scan` reserves the library's
+folders. Run the same command. Expected: PASS, unedited.
+
+- [ ] **Step 3: Watch the merge hold, one defect at a time, restoring between**
+
+1. In `reserve`, make the busy check find nothing
+   (`is_some_and(|progress| !progress.done)` → `is_some_and(|_| false)`).
+   Expect **both** routes' "already running" tests to fail; name each in the
+   report. If only one route's do, the merge left that route on its own path.
+2. In the `Reread::Folder` comparison, compare ids only. Expect
+   `config_api`'s test of a folder removed while its scan waited, whose id
+   another folder took, to fail.
+3. In the `Reread::Library` comparison, drop the count of folders. Expect a
+   library test of a folder added while its scan waited to fail. If none
+   does, that is a gap: write one beside
+   `a_scan_that_waited_through_a_removal_does_not_touch_the_folder_that_took_its_id`
+   (a library scan held on the job lock, a folder added to the library, the
+   lock released: nothing walked, each report `CHANGED`), and watch it fail
+   against this defect.
+4. In `finish_reservation`, drop the `entry.started == started` test.
+   Expect `a_folders_scan_lands_only_on_its_own_reservation` and
+   `a_scan_that_waited_through_a_removal_leaves_a_later_scans_reservation_alone`
+   to fail.
+5. Swap the two 404 sentences in `AdminAnswer`. Expect the folder and the
+   library 404 tests to fail (`config_api/tests.rs`'s "there is no folder
+   999999", `libraries_api/tests.rs`'s "there is no library {id}").
+
+- [ ] **Step 4: Whole crates, then commit**
+
+Run the three commands of Task 1's Step 6. Then:
+
+```bash
+git add crates/taiyaku-serve/src
+git commit -m "O208: one answer, one dry-run query and one scan job for the folder and library routes"
+```
+
+---
+
+## Task 5: The route
 
 **Files:**
 - Modify: `crates/taiyaku-serve/src/libraries_api.rs`,
@@ -2609,7 +2830,51 @@ git commit -m "relocate: a folder moves with its works' rows, a divided work is 
 - Modify: `crates/taiyaku-serve/src/routes.rs`,
   `crates/taiyaku-serve/src/auth/tests.rs`
 
-Read "Read this first" at the top of this plan before starting.
+**Corrected against main (2026-10-07).**
+
+1. **Every refusal is JSON, as this module's doc says.** Read the request as
+   `delete_library` does: the id from the path as `AxPath<String>`, answered
+   400 "`{raw}` is not a folder id; an id is a whole number" where it is not
+   a number; the query as `Result<Query<DryRunQuery>, QueryRejection>`,
+   answered 400 "the query could not be read: …"; the body as `Bytes` through
+   `json_body`. Not the typed `AxPath<i64>`, `Query<MoveQuery>` and
+   `Json<Value>` of Step 2, which answer axum's plain text. `DryRunQuery` is
+   Task 4's, so there is no `MoveQuery`. The misspelt-key case asserts the
+   sentence holds "query"; add `?dry_run=`, `?dry_run`,
+   `?dry_run=true&dry_run=false` and the reverse, each a 400 that moves
+   nothing, as `a_dry_run_spelt_any_other_way_is_refused_and_false_removes`
+   does for a library.
+2. **Task 4's names** in place of `LibraryAnswer` and `library_panicked`:
+   `AdminAnswer`, `admin_panicked` (or what Task 4's report says it chose).
+3. **A refused move's body is the module's only two-key refusal**:
+   `{"error", "volumes"}` (spec correction 6, approved). The module doc's
+   paragraph on the refusal shape says so in one sentence. The file's
+   `the_sentence` helper asserts one key, so the 409 tests read `error` and
+   `volumes` themselves; the 400 and 404 tests use `the_sentence`.
+4. **O196's rule, for a move.** Before the job lock is asked for, answer 409
+   where a scan is reserved on any folder of the moved folder's library, or,
+   for `{"library": id}`, of that library: "a scan of {path} is running; move
+   the folder once it has finished" (`removal_waits_for`'s shape). A scan
+   reserved and waiting holds no job lock, so `try_lock` alone does not see
+   it. Test it: `a_move_is_refused_while_a_scan_of_either_library_is_reserved`,
+   with the file's `a_scan_running_on(state, folder)` on the target library's
+   folder and then on the source's, for the rehearsal and the move; 409,
+   nothing moved (`the_store` unchanged), and the reservation still there.
+   Watch it fail with the check deleted.
+5. **The job-lock test** holds the lock with `test_support::holding_the_job`,
+   not a hand-made thread.
+6. **There is no `every_libraries_route_refuses_a_reader`.** The file tests
+   each route by name: add `moving_a_folder_refuses_a_reader`,
+   `rehearsing_a_move_refuses_a_reader` and `moving_a_folder_refuses_nobody`
+   in that pattern, and both the move and its rehearsal to
+   `an_api_key_reaches_no_libraries_route`'s list. Step 3's defect 5 then
+   expects `moving_a_folder_refuses_a_reader` to fail.
+7. **O200: a refusal says "folder", never "root".** Task 2 words
+   `relocate`'s `MoveError::Missing` for a folder "there is no folder {id}";
+   this route's own sentences do the same.
+8. `routes.rs`'s `guarded_routes` and `grant_postures`, and `auth/tests.rs`'s
+   two path lists, are as Step 2 names them: put the move beside the other
+   `/api/library/roots/{id}` paths.
 
 **Interfaces:**
 - Consumes: Task 3's `relocate::{move_cost, move_root, Target, Moved,
@@ -3054,7 +3319,7 @@ git commit -m "POST /api/library/roots/{id}/move: a folder moved or rehearsed, r
 
 ---
 
-## Task 5: Move… on the folder row
+## Task 6: Move… on the folder row
 
 **Files:**
 - Modify: `web/src/libraries.ts`, `web/src/libraries.test.ts`,
@@ -3066,8 +3331,37 @@ git commit -m "POST /api/library/roots/{id}/move: a folder moved or rehearsed, r
   `web/src/styles/admin-config.css.test.ts`,
   `web/src/Config.browser.test.tsx`
 
+**Corrected against main (2026-10-07).**
+
+1. **`sentenceOf` does not change.** On main it also draws a plain-text body
+   that `isPlainSentence` accepts, and trims; Step 1's `bodyOf` rewrite
+   would drop both. Add `volumesOf` beside it, reading the same
+   `path: status {json}` shape. If you factor out a shared parse,
+   `message.test.ts`'s existing cases pass unedited.
+2. **The row's button reads "Scan folder"** (O199). Where this task says
+   "Scan now", it means that button.
+3. **The row's busy protocol (F2a).** A row tells its card it is busy
+   (`onBusy`, from `busyNow = running || starting || confirming`) and is told
+   when something else in the library is (`held`). An open move dialog is
+   busy: `busyNow` includes `moving`, so the card holds the other rows and
+   its own Scan library and Remove library… while it is open. Move… is
+   disabled when Remove… is (`running || starting || confirming || held`)
+   and while `moving`; Scan folder and Remove… are disabled while `moving`
+   too. `MoveRoot` takes `held` and cancels itself when it turns true, but
+   not while its move is out, as `RemoveRoot`'s effect does (read it). Tests,
+   in `RootRow.test.tsx`: an open move dialog reports the row busy, and a row
+   that becomes held closes its move dialog.
+4. **A refusal is drawn with `Refusal`** (`Refusal.tsx`, O209), so it is
+   brought into view, not with a bare `<p role="alert">`. The tests'
+   `[role="alert"]` still finds it.
+5. **The library's derive heading** (`DeriveSection`) reads "What derivation
+   made of every library" since O198; the dialog's `<details>` summary above
+   it stays as Step 2 writes it.
+6. `config.Root`'s fields are the ten in Step 2's fixture, and
+   `testing/{async,derive,input,mount}.ts` export what Step 2 imports.
+
 **Interfaces:**
-- Consumes: Task 4's route; F2a's `sentenceOf`, `Library`, `RootRow`,
+- Consumes: Task 5's route; F2a's `sentenceOf`, `Library`, `RootRow`,
   `LibraryCard`, `testing/input.ts`, `testing/derive.ts`.
 - Produces:
   ```ts
@@ -3849,7 +4143,18 @@ git commit -m "Move… on a folder row: a target, a rehearsal that says what wou
 
 ---
 
-## Task 6: On real material, the docs, the sweep, the gate and the claim check
+## Task 7: On real material, the docs, the sweep, the gate and the claim check
+
+**Corrected against main (2026-10-07).**
+
+- F2a's drive log is `.superpowers/sdd/libraries-admin-evidence/drive-final-904bec95/drive.log`,
+  not `libraries-f2a-evidence/drive.log`.
+- Step 1's "Scan now" is "Scan folder" on a row and "Scan library" on a card
+  (O199). In its step 6, start the copy's library's **Scan library**.
+- Step 2 also **closes O208**, all three of its duplicates (the user's ruling
+  of 2026-10-07; Tasks 2 and 4 did the work), with the five-part edit.
+- Step 2's O192 sentence names, besides the tests, the refusal while a scan
+  of either library is reserved (Task 5).
 
 **Files:**
 - Modify: `docs/status.md`, `docs/notes.md`, `docs/mutants-baseline.md`,
@@ -4005,7 +4310,7 @@ are each a separate yes.
 
 | Spec | Task |
 | --- | --- |
-| The route, its two bodies, `?dry_run` | 4 |
+| The route, its two bodies, `?dry_run` | 5 |
 | Re-file works wholly the folder's, and their series | 3 (`refile`) |
 | A series of the same title in the target | 3 (`refile`, `series_joined`) |
 | Split, the work with its hub, history with the edition | 1, 3 (`split`) |
@@ -4016,11 +4321,12 @@ are each a separate yes.
 | Refused: one edition on both sides | 2 |
 | Refused by what the derive reports, and a work left unfiled | 3 (the verdict) |
 | Refused: an account's only grant, by name | 2 |
-| 409 while a scan runs | 4 |
-| The screen: target, counts, Confirm, a refusal with its volumes | 5 |
-| O190's case run and reported | 3 Step 6, 6 Step 2 |
-| On a copy of the real library, the untouched works unchanged | 6 |
-| Closes O192; O191's sentence | 6 |
+| 409 while a scan runs, or is reserved on either library | 5 |
+| The screen: target, counts, Confirm, a refusal with its volumes | 6 |
+| O190's case run and reported | 3 Step 6, 7 Step 2 |
+| On a copy of the real library, the untouched works unchanged | 7 |
+| Closes O192 and O208; O191's sentence | 7 |
+| O208: one only-grant query; one answer, dry-run query and scan job | 2, 4 |
 
 **What was probed and what was not.** Probed on 2026-10-06
 (`.superpowers/sdd/folder-move-evidence/plan-probe-062d09ef.log`), in a store
@@ -4037,10 +4343,11 @@ folder that keeps documents, a work placed in a series by hand, and a volume
 held in two libraries by identical bytes under different titles.
 
 **Names used across tasks.** `fold::{rehome_editions, Rehomed, Rehoming}`
-(1 → 3); `scan::{only_grant_accounts, only_grant_of}` (2);
+(1 → 3); `scan::{only_grant_holders, only_grant_of}` (2);
+`config_api::{AdminAnswer, admin_panicked, DryRunQuery}` and the scan jobs (4 → 5);
 `relocate::{Target, MoveError}` and the private `Folder`, `folder`,
 `resolve`, `refused_before`, `first_few` (2 → 3);
-`relocate::{Moved, move_cost, move_root}` (3 → 4); the route and `Moved`'s
-eleven JSON keys (4 → 5); `libraries.ts`'s `MoveTarget`, `Moved`,
+`relocate::{Moved, move_cost, move_root}` (3 → 5); the route and `Moved`'s
+eleven JSON keys (5 → 6); `libraries.ts`'s `MoveTarget`, `Moved`,
 `MoveAnswer`, `moveCost`, `moveFolder`, `message.ts`'s `volumesOf`,
-`NamedLibrary`, `RootRow`'s `moveTo`, `LibraryCard`'s `others` (5).
+`NamedLibrary`, `RootRow`'s `moveTo`, `LibraryCard`'s `others` (6).

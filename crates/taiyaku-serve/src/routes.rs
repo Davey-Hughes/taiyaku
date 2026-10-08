@@ -2202,6 +2202,10 @@ pub(crate) fn guarded_routes() -> Vec<(&'static str, axum::routing::MethodRouter
             axum::routing::patch(crate::config_api::patch_root)
                 .delete(crate::config_api::delete_root),
         ),
+        (
+            "/api/library/roots/{id}/move",
+            axum::routing::post(crate::libraries_api::move_folder),
+        ),
         // **Spec C4 §3's scan-control route, task 12 of the branch plan.**
         // Admin-gated like every other route in this block, and for the
         // identical reason: the server has never scanned before this task,
@@ -2716,6 +2720,15 @@ pub(crate) fn grant_postures() -> Vec<(&'static str, GrantPosture)> {
                           writes with no account-scoped meaning to filter \
                           against, the identical reasoning \
                           /api/library/rules/{id} states for a rule",
+            },
+        ),
+        (
+            "/api/library/roots/{id}/move",
+            GrantIndependent {
+                reason: "moves one folder between libraries, a write to the \
+                          whole store that changes what a library is and so \
+                          what a grant on it means, with no account's own \
+                          grant to filter it by",
             },
         ),
         // Spec C4 §3's scan-control route, task 12 of the branch plan.

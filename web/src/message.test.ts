@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { messageOf, sentenceOf } from './message'
+import { messageOf, sentenceOf, volumesOf } from './message'
 
 describe('messageOf', () => {
   it('reads an Error by its message rather than its toString', () => {
@@ -130,5 +130,34 @@ describe('sentenceOf', () => {
 
   it('reads a thrown value that is not an Error as messageOf does', () => {
     expect(sentenceOf('plain')).toBe('plain')
+  })
+})
+
+describe('volumesOf', () => {
+  it('answers the volumes a refusal lists', () => {
+    const thrown = new Error(
+      '/api/library/roots/3/move: 409 {"error":"cannot be moved","volumes":["A v01 (raw)","B v02 (raw)"]}',
+    )
+    expect(volumesOf(thrown)).toEqual(['A v01 (raw)', 'B v02 (raw)'])
+  })
+
+  it('reads a body with whitespace around it, as sentenceOf does', () => {
+    const thrown = new Error(
+      '/api/library/roots/3/move: 409 \n {"error":"x","volumes":["A v01 (raw)"]}\n',
+    )
+    expect(sentenceOf(thrown)).toBe('x')
+    expect(volumesOf(thrown)).toEqual(['A v01 (raw)'])
+  })
+
+  it('answers none where there is no list, or it is not one of strings', () => {
+    for (const message of [
+      '/api/library/roots/3/move: 409 {"error":"a scan is running","volumes":[]}',
+      '/api/library/roots/3/move: 409 {"error":"x"}',
+      '/api/library/roots/3/move: 409 {"error":"x","volumes":[1,2]}',
+      '/api/library/roots/3/move: 500 plain text',
+      'Failed to fetch',
+    ]) {
+      expect(volumesOf(new Error(message))).toEqual([])
+    }
   })
 })

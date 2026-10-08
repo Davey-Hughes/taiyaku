@@ -22,6 +22,8 @@ vi.mock('./libraries', async (importOriginal) => ({
   libraryRemovalCost: vi.fn(),
   libraryScanStatus: vi.fn(),
   listFolders: vi.fn(),
+  moveCost: vi.fn(),
+  moveFolder: vi.fn(),
   removeLibrary: vi.fn(),
   renameLibrary: vi.fn(),
   startLibraryScan: vi.fn(),
@@ -64,17 +66,20 @@ async function shown(library = manga()) {
   const onChanged = vi.fn()
   const onRemoved = vi.fn()
   const onFolderRemoved = vi.fn()
+  const onFolderMoved = vi.fn()
   let host: HTMLElement | undefined
   await act(async () => {
     host = mount(
       <ul>
         <LibraryCard
           library={library}
+          others={[{ id: 8, name: 'Comics' }]}
           probes={{}}
           onAdded={onAdded}
           onChanged={onChanged}
           onRemoved={onRemoved}
           onFolderRemoved={onFolderRemoved}
+          onFolderMoved={onFolderMoved}
         />
       </ul>,
     )
@@ -82,7 +87,14 @@ async function shown(library = manga()) {
     await Promise.resolve()
   })
   if (!host) throw new Error('nothing mounted')
-  return { host, onAdded, onChanged, onRemoved, onFolderRemoved }
+  return {
+    host,
+    onAdded,
+    onChanged,
+    onRemoved,
+    onFolderRemoved,
+    onFolderMoved,
+  }
 }
 
 const button = (host: HTMLElement, name: string) =>
@@ -923,16 +935,79 @@ describe('LibraryCard, what it says went wrong', () => {
   })
 })
 
+describe('LibraryCard, moving a folder', () => {
+  it('hands a folder’s move up by its path', async () => {
+    const moved: api.MoveAnswer = {
+      moved: {
+        library_id: 8,
+        library: 'Comics',
+        works_kept: 1,
+        works_joined: 0,
+        works_split: 0,
+        series_joined: 0,
+        positions: 0,
+        notes: 0,
+        alignments_dropped: 0,
+        library_removed: null,
+        grants_removed: 0,
+      },
+      derive: { ...emptyDerive, lost_positions: 6 },
+      dry_run: false,
+    }
+    vi.mocked(api.moveCost).mockResolvedValue({
+      ...moved,
+      derive: { ...emptyDerive, lost_positions: 2 },
+      dry_run: true,
+    })
+    vi.mocked(api.moveFolder).mockResolvedValue(moved)
+    const { host, onFolderMoved, onFolderRemoved } = await shown()
+    await press(rowButton(host, 1, 'Move…'))
+    await act(async () => {
+      const box = host.querySelector(
+        'select[name="move-target"]',
+      ) as HTMLSelectElement
+      Object.getOwnPropertyDescriptor(
+        HTMLSelectElement.prototype,
+        'value',
+      )?.set?.call(box, '8')
+      box.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+    await press(host.querySelector('button[name="rehearse"]') as Element)
+    await press(host.querySelector('.move-root .confirm') as Element)
+    expect(onFolderMoved).toHaveBeenCalledWith('/media/Manga/Chapters', moved)
+    expect(onFolderRemoved).not.toHaveBeenCalled()
+  })
+
+  it('offers each folder the other libraries', async () => {
+    const { host } = await shown()
+    const row = host.querySelector('.root-row') as HTMLElement
+    const move = [...row.querySelectorAll('button')].find(
+      (b) => b.textContent === 'Move…',
+    ) as HTMLButtonElement
+    await press(move)
+    const target = row.querySelector(
+      'select[name="move-target"]',
+    ) as HTMLSelectElement
+    expect([...target.options].map((o) => o.textContent)).toEqual([
+      'Choose a library…',
+      'Comics',
+      'A new library…',
+    ])
+  })
+})
+
 /** The card as the screen draws it, for a test that changes its library. */
 const cardOf = (library: api.Library) => (
   <ul>
     <LibraryCard
       library={library}
+      others={[{ id: 8, name: 'Comics' }]}
       probes={{}}
       onAdded={vi.fn()}
       onChanged={vi.fn()}
       onRemoved={vi.fn()}
       onFolderRemoved={vi.fn()}
+      onFolderMoved={vi.fn()}
     />
   </ul>
 )

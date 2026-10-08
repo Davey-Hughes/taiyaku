@@ -24710,6 +24710,7 @@ copied to scratch; the release binary at `93bd9033`; `uptime` read between
   the next number, 3, and not the freed 2.
 
 **What a folder moved between libraries does**, for F2's Move action (O192).
+*(O192 has since closed: its row in `docs/status.md` says what Move does in each case.)*
 Nothing in F1 moves one; each of these was run by a reviewer, by setting
 `root.library_id` by hand and deriving:
 
@@ -24805,7 +24806,8 @@ other folder (read, not run).
 
 Part F2a of `docs/superpowers/specs/2026-10-05-libraries-design.md`: the
 Libraries screen, the folder browser and grants by library. Moving a folder
-between libraries is F2b and is not here (O192).
+between libraries is F2b and is not here (O192). *(It has since been built; see
+"Libraries, F2b".)*
 
 **What changed.** The store makes a library with its folders in one
 transaction (`scan::create_library`), adds a folder to a library by id,
@@ -25150,3 +25152,147 @@ schema 15 holding a name that migration 16 would also have made failed the
 migration and stayed at 15. The reading is in
 `.superpowers/sdd/f2a-followups-evidence/migration16-store-copies.log`, which
 is not committed.
+
+## Libraries, F2b (2026-10-08)
+
+The branch `folder-move` builds Move, the last part of F2: a folder's row on
+Configuration → Libraries moves the folder to another library or to a new
+one (`docs/superpowers/plans/2026-10-06-libraries-f2b-move.md`). It closes
+O192, and O208, whose duplicates it merges. This section records what was
+decided, what was built and what was measured. The logs it cites are in
+`.superpowers/sdd/folder-move-evidence/`, which is not committed.
+
+**Decided by the user, 2026-10-07.** The plan's six spec corrections, as
+written: a split drops, and counts, an alignment between two editions it
+separates; a series the target holds no series of the title of, and every
+work of which moves, moves whole, and otherwise the target gets a series of
+that title; a third refusal, where the hub moves, other editions stay and the
+target holds the volume; a rehearsal derives twice; a reader's place is also
+checked by counting; a refusal lists its volumes beside its sentence. O208's
+three duplicates merged here, the per-folder scan job included. Then, from
+the reviews: the real move's answer is handed up to the screen as a
+removal's is; a join that loses a row a person made refuses the move; a
+work placed in a series by hand, where that series keeps works the move
+leaves behind, refuses the move; the counts a move answers are the rows that
+move; and a confirm the server refuses takes the rehearsal away with it, so
+the person asks again. **Three rules were the controller's, not the
+user's**: a move is refused where the derive before it, over the store as it
+stands, would itself lose a row, with a sentence saying to scan first; where
+a divided work would be folded away; and where the edition a split would
+replace carries something a person put on it.
+
+**What a move does** (`relocate::move_root`; `move_cost` is the same inside
+a transaction it rolls back):
+
+1. Refuses, before it files any work (`refused_before`), where the folder is
+   its library's last and that library is an account's only grant
+   (`scan::only_grant_holders`); where one edition has files under the
+   folder and elsewhere; where the target holds a volume of the folder's
+   under the same edition key; and where a work placed in a series by hand
+   would move and leave other works of that series behind.
+2. Derives once (`Documents::Skip`) and refuses where that derive reports a
+   lost position, a dropped note, a discarded row or an alignment it could
+   not carry.
+3. Takes a census: the works wholly under the folder, the works divided by
+   it, the rows that will move, and the store's positions, notes and
+   ground-truth pages.
+4. Files under the target each work whose hub edition is under the folder,
+   unless the target holds a work of its content key or at its address, and
+   each series every work of which moved, unless the target holds a series
+   of its title.
+5. Changes the folder's library. Migration 15's trigger removes the library
+   it left where it was the last folder.
+6. Derives (`Documents::Skip`).
+7. Splits: each edition whose library this move changed is given, with what
+   readers put on it, to the work the derive made for it on the other side
+   (`fold::rehome_editions`, which moves the edition row itself and refuses
+   seven cases before writing, among them an edition on the other side that
+   carries anything a person made: a hand label, kind or language, a hand
+   chapter number, a page flag or an edition credit).
+8. Refuses the whole move, naming the works or volumes, where an edition had
+   nowhere to go; where a divided work no longer stands where its hub went;
+   where the derive in step 6 reports a loss that the one in step 2 did not;
+   where a work newly could not be joined; where a work of the folder stands
+   outside the target or in no library; or where the store holds fewer
+   positions, notes or ground-truth pages than the census counted.
+9. Commits, and derives again with documents reconciled.
+
+**What the plan had not run, and what the store did.** `relocate`'s own
+statements and `rehome_editions` inside a move are held by
+`relocate/tests.rs`'s and `fold/tests.rs`'s cases, watched failing against
+defects put back by hand (the tasks' reports and
+`f2b-task-3-defects.log`, `f2b-task-3-fix1-defects.log`,
+`f2b-task-3-sweep-defects.log`). A folder that keeps documents keeps its
+works' documents where they were
+(`a_move_with_documents_kept_leaves_the_works_document_where_it_was`), and
+the pass after the commit writes back a document that had gone missing
+(`a_move_writes_back_a_document_that_went_missing`). A work placed in a
+series by hand is refused where its series keeps works behind, and moves
+with the series where it does not. A work with no volume, of identical
+bytes in both libraries under the same edition key, is refused
+(`a_work_with_the_same_content_key_in_the_target_is_refused_and_not_a_store_fault`).
+Identical bytes under different titles was not run.
+
+**What the whole-branch reviews found.** Two Critical findings, both in the
+shape migration 15 leaves when it splits a work across two libraries
+(O191): moving the hub's folder into the library holding the other half
+folded the work away, its id, slug and hand title with it, while answering
+that it had split it; and a split replaced the other library's edition and
+with it a hand label, kind, language and chapter number. Both moves are
+refused now. A second pass found that a split also moved an edition the move
+had not touched, and that page flags on the replaced edition were lost; both
+are fixed. On the screen: a failed reload after a move left the moved folder
+and an emptied library drawn with live buttons, the confirm's refusal slot
+was never cleared, and two hand-ups (the rehearsal answered after the target
+changed, the rehearsal's report handed up for the move's) were held by no
+test.
+
+**The drive** (`drive/readings.md`, at 7b31b366, then a second look at
+3d60b92c). A copy of the real library's store, 1,896 works in one folder,
+served with a scratch folder of two volumes repacked from one of its own:
+`Enidewi - v01`, which the copy holds, and `Drive Test Comic - v01`, which it
+does not. Made a library `Chapters` of the scratch folder, with edition key
+`chapters`, and left a reading position on its `Enidewi` volume. Moved it into
+the copy's library: the rehearsal said one work keeps its address and one
+joins a work the library holds, as another edition, and answered in 1.4 s;
+the move answered in 12.5 s, and afterwards the copy's `Enidewi - v01` held
+both editions with the position on `chapters`. Moved it out to a new library:
+one work kept its address and one was split, the move answered in 12.3 s,
+and the split work held the position. With the edition key cleared, moving
+it back was refused, naming `Enidewi - v01.cbz (raw)`. A rehearsal sent
+from the page beside a scan of the copy's library was refused, naming the
+folder under scan.
+A scan with
+its derive takes about as long over that store, on `main` as on the branch
+(O210, `o210-timings.log`); the move's own steps were not timed apart. Afterwards every work the copy held was the same row
+(id, slug, content key, title, series), the only new rows being the two
+scratch volumes', and the original store was untouched (`sha256sum -c` OK,
+nothing under `/home/davey/temp/manga-test` newer than the marker). Three of the
+things the drive found on the screen were fixed before the second look: the
+report kept after a move showed only the derive after the commit, which
+reads "Reading positions moved 0", and not the move's own counts; the
+confirm looked like Cancel; and the wording of several sentences. The confirm
+still names the folder's whole path, as a removal's names it, and the
+server's sentences are as they were.
+
+**The mutation sweep.** `scripts/mutants.sh --since main` at 958d680b: 225
+mutants in 30 minutes, 183 caught, 29 unviable, 13 missed, all 13 in
+`relocate.rs` and `fold.rs`. Each was killed at 7b31b366 by a test or by
+deleting the code it lived in. A sweep of those two files whole at 7b31b366:
+292 mutants in 33 minutes, 276 caught, 10 unviable, 6 missed, all six in
+lines of `fold.rs` F2b did not change (O211). Every unviable mutant but two
+replaces a function's whole body with a value that does not compile there;
+the two are `&&` as `||` inside a `let` chain, in
+`scan_jobs::finish_reservation` in the first run and `fold::unplaceable` in
+the second. After the last change to `relocate.rs`, at cde926ee, a run over
+it alone: 92 mutants in 12 minutes, 87 caught, 5 unviable, none missed. **No
+mutant is made of SQL in a string literal**, which is most of what Move's
+refusals, re-filing and split say; the defects put back by hand are their
+evidence.
+
+**SQLite 3.40.1.** The three crates in `rust:1-bookworm` (`libsqlite3-0`
+3.40.1-2+deb12u2) at 7b31b366: 2404 passed, and the two that fail there by
+design, needing `strace`, failed (`sqlite340-7b31b366.log`).
+
+**Not measured.** The NAS. A library larger than the copy. A move of a
+folder holding thousands of works that all join. Where O210's time goes.

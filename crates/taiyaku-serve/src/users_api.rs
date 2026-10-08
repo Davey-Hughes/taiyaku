@@ -32,7 +32,7 @@ use crate::{ServeState, auth::Principal};
 
 /// Why a users route could not answer.
 ///
-/// Shaped like `config_api::RootAnswer`.
+/// Shaped like `config_api::AdminAnswer`.
 #[derive(Debug)]
 enum UserAnswer {
     /// `id` names no account — 404.
@@ -94,7 +94,7 @@ fn answered(why: account::WriteError) -> UserAnswer {
     }
 }
 
-/// `config_api::root_panicked`'s twin for this module: the one failure
+/// `config_api::admin_panicked`'s twin for this module: the one failure
 /// `spawn_blocking` itself can hand back, worded through [`UserAnswer`] so the
 /// body stays JSON like every other refusal these routes send.
 fn user_panicked(what: &str, why: &tokio::task::JoinError) -> Response {
@@ -438,7 +438,7 @@ pub(crate) async fn patch_user(
 
 /// The one query parameter [`delete_user`] reads.
 ///
-/// **`deny_unknown_fields`, for the reason `config_api::DeleteRootQuery`
+/// **`deny_unknown_fields`, for the reason `config_api::DryRunQuery`
 /// carries in full**: without it `serde_urlencoded` drops any key this struct
 /// does not name rather than refusing the request, so `?dryrun=true` — one key
 /// off from the one this struct actually reads — answered `200 OK` and ran the

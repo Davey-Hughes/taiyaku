@@ -1896,7 +1896,7 @@ async fn removing_a_readers_only_library_is_a_conflict_naming_the_reader() {
     assert_eq!(response.status(), StatusCode::OK);
 }
 
-/// **Whole-branch review, Critical 2.** `DeleteRootQuery` had no
+/// **Whole-branch review, Critical 2.** `DryRunQuery` had no
 /// `deny_unknown_fields`, so `serde_urlencoded` silently dropped any query
 /// key it did not recognise and `dry_run` defaulted to `false` — meaning
 /// `?dryrun=true` (missing the underscore) or `?dryRun=true` (the wrong
@@ -2241,7 +2241,7 @@ fn write_page_dir(dir: &std::path::Path, pages: usize) {
     }
 }
 
-/// **Whole-branch review, Important 1 — the legibility half.** `run_scan_inner`
+/// **Whole-branch review, Important 1 — the legibility half.** `scan_jobs::run`
 /// runs `scan::scan_root` and `derive::derive` as two separate calls, and
 /// `scan_root` itself already writes `last_scan_status = "ok"` the moment its
 /// own walk commits — before the derive half of the job has even started.
@@ -2288,7 +2288,12 @@ async fn a_derive_failure_after_a_successful_scan_corrects_last_scan_status() {
     };
 
     let job = std::sync::Mutex::new(());
-    let outcome = crate::config_api::run_scan_inner(&library, &root, &job);
+    let outcome = crate::scan_jobs::run(
+        &library,
+        std::slice::from_ref(&root),
+        crate::scan_jobs::Reread::Folder,
+        &job,
+    );
     let why = outcome.expect_err("the derive must actually fail, or this test proves nothing");
     assert!(
         why.starts_with(&format!(
@@ -3003,18 +3008,18 @@ async fn a_scan_report_names_the_work_a_folded_documents_orphan_was_absorbed_int
     );
 }
 
-/// IMPORTANT 1 — `run_scan_inner`'s own analogue of
+/// IMPORTANT 1 — `scan_jobs::run`'s own analogue of
 /// `the_preview_route_does_not_wait_on_the_shared_connections_mutex`, that
 /// test's own doc comment gives the whole reasoning: every other fixture in
 /// this crate is in-memory, where `Library::working` hands back the very
 /// same guard `Library::conn` would, so swapping `working()` for `conn()`
-/// inside `run_scan_inner` is invisible to any test built over one of them.
+/// inside `scan_jobs::run` is invisible to any test built over one of them.
 /// Only a **file-backed** library gives `working()` a genuine second
 /// connection, which is the property this test exists to prove is actually
 /// used — for a walk plus a library-wide derive, longer than a preview ever
 /// runs.
 ///
-/// Calls `run_scan_inner` directly rather than through `start_scan`: the
+/// Calls `scan_jobs::run` directly rather than through `start_scan`: the
 /// route's own first `spawn_blocking` looks up the root through `conn()`
 /// too (IMPORTANT 5's own lookup, mirrored from this route), so holding the
 /// shared mutex around the whole request would stall on that fast lookup
@@ -3051,7 +3056,12 @@ async fn a_scan_does_not_wait_on_the_shared_connections_mutex() {
 
     let started = std::time::Instant::now();
     let job = std::sync::Mutex::new(());
-    let result = crate::config_api::run_scan_inner(&library, &root, &job);
+    let result = crate::scan_jobs::run(
+        &library,
+        std::slice::from_ref(&root),
+        crate::scan_jobs::Reread::Folder,
+        &job,
+    );
     let elapsed = started.elapsed();
 
     release_tx.send(()).ok();
@@ -3061,7 +3071,7 @@ async fn a_scan_does_not_wait_on_the_shared_connections_mutex() {
     assert!(
         elapsed < std::time::Duration::from_secs(2),
         "the scan waited {elapsed:?} for `Library::conn`'s mutex while a background thread \
-         held it — `run_scan_inner` must open `Library::working`'s own connection instead of \
+         held it — `scan_jobs::run` must open `Library::working`'s own connection instead of \
          `conn()`"
     );
 }
@@ -3433,8 +3443,8 @@ async fn a_closure_that_panicked_is_a_500_naming_what_was_running() {
     );
 }
 
-/// [`crate::config_api::root_panicked`]'s own contract — [`panicked`]'s
-/// twin for the roots routes, worded through JSON (`RootAnswer`) rather
+/// [`crate::config_api::admin_panicked`]'s own contract — [`panicked`]'s
+/// twin for the roots routes, worded through JSON (`AdminAnswer`) rather
 /// than plain text (`NoAnswer`), so this checks the `"error"` key rather
 /// than the raw body.
 #[tokio::test]
@@ -3445,7 +3455,7 @@ async fn a_roots_closure_that_panicked_is_a_500_naming_what_was_running() {
     .await
     .expect_err("a panicking closure joins as an error");
 
-    let response = crate::config_api::root_panicked("listing roots", &why);
+    let response = crate::config_api::admin_panicked("listing roots", &why);
     let status = response.status();
     let body = test_support::body_string(response).await;
     let json: serde_json::Value = serde_json::from_str(&body).expect("a JSON body");
@@ -3834,17 +3844,17 @@ async fn a_roots_patch_may_still_clear_exclude_globs() {
 fn a_panics_message_is_read_from_either_string_payload() {
     let caught = |f: fn()| std::panic::catch_unwind(f).expect_err("panics");
     assert_eq!(
-        crate::config_api::panic_message(caught(|| panic!("a literal")).as_ref()),
+        crate::scan_jobs::panic_message(caught(|| panic!("a literal")).as_ref()),
         "a literal"
     );
     assert_eq!(
-        crate::config_api::panic_message(
+        crate::scan_jobs::panic_message(
             caught(|| panic!("{}", String::from("a built one"))).as_ref()
         ),
         "a built one"
     );
     assert_eq!(
-        crate::config_api::panic_message(caught(|| std::panic::panic_any(7_u8)).as_ref()),
+        crate::scan_jobs::panic_message(caught(|| std::panic::panic_any(7_u8)).as_ref()),
         "the scan panicked with a payload that names no message"
     );
 }
@@ -3853,16 +3863,16 @@ fn a_panics_message_is_read_from_either_string_payload() {
 /// sentence's first words.
 #[test]
 fn a_scan_that_panicked_is_an_error_report_that_says_so() {
-    let outcome = std::panic::catch_unwind(|| -> Result<serde_json::Value, String> {
+    let outcome = std::panic::catch_unwind(|| -> Result<Vec<serde_json::Value>, String> {
         panic!("a walk went wrong")
     });
     assert_eq!(
-        crate::config_api::scan_report_of(outcome),
-        serde_json::json!({ "error": "the scan panicked: a walk went wrong" })
+        crate::scan_jobs::reports_of(1, outcome),
+        vec![serde_json::json!({ "error": "the scan panicked: a walk went wrong" })]
     );
     assert_eq!(
-        crate::config_api::scan_report_of(Ok(Err("it failed".to_string()))),
-        serde_json::json!({ "error": "it failed" })
+        crate::scan_jobs::reports_of(1, Ok(Err("it failed".to_string()))),
+        vec![serde_json::json!({ "error": "it failed" })]
     );
 }
 
@@ -3970,7 +3980,7 @@ async fn a_folders_scan_walks_nothing_when_its_folder_changed_while_it_waited() 
 
     let job = std::sync::Arc::clone(&state);
     let root = asked.clone();
-    tokio::task::spawn_blocking(move || crate::config_api::scan_and_finish(&job, &root, started))
+    crate::scan_jobs::spawn(job, vec![root], started, crate::scan_jobs::Reread::Folder)
         .await
         .expect("the job ends");
 
@@ -3997,7 +4007,7 @@ async fn a_folders_scan_walks_nothing_when_its_folder_changed_while_it_waited() 
     drop(conn);
     assert_eq!(
         state.scans.lock().unwrap()[&asked.id].report,
-        Some(serde_json::json!({ "error": crate::config_api::FOLDER_CHANGED }))
+        Some(serde_json::json!({ "error": crate::scan_jobs::FOLDER_CHANGED }))
     );
 }
 
@@ -4023,7 +4033,7 @@ async fn a_folders_scan_lands_only_on_its_own_reservation() {
 
     let job = std::sync::Arc::clone(&state);
     let asked = root.clone();
-    tokio::task::spawn_blocking(move || crate::config_api::scan_and_finish(&job, &asked, ours))
+    crate::scan_jobs::spawn(job, vec![asked], ours, crate::scan_jobs::Reread::Folder)
         .await
         .expect("the job ends");
     {
@@ -4035,7 +4045,7 @@ async fn a_folders_scan_lands_only_on_its_own_reservation() {
     state.scans.lock().unwrap().remove(&root.id);
     let job = std::sync::Arc::clone(&state);
     let asked = root.clone();
-    tokio::task::spawn_blocking(move || crate::config_api::scan_and_finish(&job, &asked, ours))
+    crate::scan_jobs::spawn(job, vec![asked], ours, crate::scan_jobs::Reread::Folder)
         .await
         .expect("the job ends");
     assert!(
@@ -4067,9 +4077,12 @@ async fn a_folders_scan_walks_the_settings_the_folder_holds_when_it_starts() {
     };
     let job = std::sync::Arc::clone(&state);
     let first = asked.clone();
-    tokio::task::spawn_blocking(move || {
-        crate::config_api::scan_and_finish(&job, &first, std::time::Instant::now());
-    })
+    crate::scan_jobs::spawn(
+        job,
+        vec![first],
+        std::time::Instant::now(),
+        crate::scan_jobs::Reread::Folder,
+    )
     .await
     .expect("the job ends");
     assert!(
@@ -4092,9 +4105,12 @@ async fn a_folders_scan_walks_the_settings_the_folder_holds_when_it_starts() {
         stale.exclude_globs, None,
         "the request read the folder before the change"
     );
-    tokio::task::spawn_blocking(move || {
-        crate::config_api::scan_and_finish(&job, &stale, std::time::Instant::now());
-    })
+    crate::scan_jobs::spawn(
+        job,
+        vec![stale],
+        std::time::Instant::now(),
+        crate::scan_jobs::Reread::Folder,
+    )
     .await
     .expect("the job ends");
     assert_eq!(

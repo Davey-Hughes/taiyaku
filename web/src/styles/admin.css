@@ -569,6 +569,7 @@
 .add-root .field,
 .add-library .field,
 .rename-library .field,
+.move-root .field,
 .account .field {
   min-width: 0;
   display: grid;
@@ -654,6 +655,8 @@
 .add-root .field input,
 .add-library .field input,
 .rename-library .field input,
+.move-root .field input,
+.move-root .field select,
 .account .field input,
 .account .account-row input {
   /* **A `<select>`'s intrinsic width is its widest option, and a grid item
@@ -712,6 +715,8 @@
   .add-root .field input,
   .add-library .field input,
   .rename-library .field input,
+  .move-root .field input,
+  .move-root .field select,
   .account .field input,
   .account .account-row input {
     font-size: max(16px, var(--text-ui));
@@ -1685,6 +1690,15 @@
   margin-top: var(--space-4);
 }
 
+/* A move is a dialog of the same kind as a removal's and not so grave, so it
+   takes the box and not the strip. */
+.move-root {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  margin-top: var(--space-4);
+  padding: var(--space-4);
+}
+
 /* A library's dialog sits above that library's folder cards, which a
    folder's own never does: it is followed by the card it would remove. */
 .remove-library {
@@ -1718,6 +1732,7 @@
 }
 
 .remove-root .counts,
+.move-root .counts,
 .remove-user .counts,
 .remove-library .counts {
   font-weight: 600;
@@ -1751,6 +1766,27 @@
 /* O180 again: this button says "Remove " and then the whole path or name. */
 .remove-root .confirm,
 .remove-library .confirm {
+  overflow-wrap: anywhere;
+}
+
+/* The sentences a rehearsal says, held to the measure the removal's own are. */
+.move-counts {
+  max-width: 60ch;
+}
+
+/* The button that does the thing takes the token on its border and its
+   text, as the removals' do with `--danger`; here it is `--accent`, which
+   clears AA as text on the button's own `--surface` in both schemes. */
+.move-root .confirm {
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* The move's confirm says "Move ", the whole path, " to " and a library's
+   name, and the volumes a refusal lists are paths too. */
+.move-root .confirm,
+.move-volumes li {
   overflow-wrap: anywhere;
 }
 

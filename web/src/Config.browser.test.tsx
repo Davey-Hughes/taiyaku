@@ -58,6 +58,7 @@ vi.mock('./libraries', async (importOriginal) => ({
   libraryScanStatus: vi.fn(),
   listFolders: vi.fn(),
   listLibraries: vi.fn(),
+  moveCost: vi.fn(),
   removeLibrary: vi.fn(),
 }))
 
@@ -367,6 +368,152 @@ describe('the Configuration screens at 390px', () => {
     expect(confirm?.textContent).toBe(`Remove ${UNBROKEN_ROOT.path}`)
     assertNoSidewaysScroll(host)
     expect(pastItsCard(host)).toEqual([])
+  })
+
+  /**
+   * The move dialog on a long path and a long library name (the same O180
+   * defect): a folder in one library, a second library whose name has nowhere
+   * to break, Move… pressed, the second chosen and the rehearsal asked for.
+   */
+  async function rehearsedMove(
+    asked: Promise<librariesApi.MoveAnswer> | Error,
+  ) {
+    await page.viewport(390, 844)
+    vi.mocked(librariesApi.listLibraries).mockResolvedValue({
+      libraries: [
+        {
+          id: 1,
+          name: 'Manga',
+          works: 0,
+          books: 0,
+          folders: [UNBROKEN_ROOT],
+        },
+        {
+          id: 2,
+          name: UNBROKEN_NAME,
+          works: 0,
+          books: 0,
+          folders: [root({ id: 4, path: '/srv/other' })],
+        },
+      ],
+    })
+    if (asked instanceof Error) {
+      vi.mocked(librariesApi.moveCost).mockRejectedValue(asked)
+    } else {
+      vi.mocked(librariesApi.moveCost).mockResolvedValue(await asked)
+    }
+    const host = await act(async () => {
+      const mounted = mount(inShell(<Libraries />))
+      await Promise.resolve()
+      await Promise.resolve()
+      return mounted
+    })
+    const card = host.querySelector('.library-card') as HTMLElement
+    await act(async () => {
+      const open = [...card.querySelectorAll('button')].find(
+        (b) => b.textContent === 'Move…',
+      )
+      open?.click()
+      await Promise.resolve()
+    })
+    await act(async () => {
+      const box = card.querySelector(
+        'select[name="move-target"]',
+      ) as HTMLSelectElement
+      Object.getOwnPropertyDescriptor(
+        HTMLSelectElement.prototype,
+        'value',
+      )?.set?.call(box, '2')
+      box.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+    await press(card.querySelector('button[name="rehearse"]') as Element)
+    await document.fonts.ready
+    return { host, card }
+  }
+
+  it('keeps a move’s refusal and the list of volumes it names inside the card', async () => {
+    const volumes = Array.from({ length: 20 }, (_, i) =>
+      `${String(i).padStart(2, '0')}_`.padEnd(80, 'v'),
+    )
+    const { host, card } = await rehearsedMove(
+      new Error(
+        `/api/library/roots/3/move?dry_run=true: 409 ${JSON.stringify({
+          error: `${UNBROKEN_NAME} already holds volumes of ${UNBROKEN_ROOT.path}`,
+          volumes,
+        })}`,
+      ),
+    )
+    const list = card.querySelector('.move-volumes') as HTMLDetailsElement
+    list.open = true
+    await document.fonts.ready
+    expect(list.querySelectorAll('li')).toHaveLength(20)
+    assertNoSidewaysScroll(host)
+    expect(pastItsCard(host)).toEqual([])
+  })
+
+  it('keeps a move’s confirm button inside the card for the same path and name', async () => {
+    const { host, card } = await rehearsedMove(
+      Promise.resolve({
+        moved: {
+          library_id: 2,
+          library: UNBROKEN_NAME,
+          works_kept: 1,
+          works_joined: 0,
+          works_split: 0,
+          series_joined: 0,
+          positions: 0,
+          notes: 0,
+          alignments_dropped: 0,
+          library_removed: null,
+          grants_removed: 0,
+        },
+        derive: derived(),
+        dry_run: true,
+      }),
+    )
+    const confirm = card.querySelector('.move-root .confirm')
+    expect(confirm?.textContent).toBe(
+      `Move ${UNBROKEN_ROOT.path} to ${UNBROKEN_NAME}`,
+    )
+    assertNoSidewaysScroll(host)
+    expect(pastItsCard(host)).toEqual([])
+  })
+
+  it('draws a move’s confirm as the action: --accent on its border and text, and heavier', async () => {
+    const { card } = await rehearsedMove(
+      Promise.resolve({
+        moved: {
+          library_id: 2,
+          library: 'Comics',
+          works_kept: 1,
+          works_joined: 0,
+          works_split: 0,
+          series_joined: 0,
+          positions: 0,
+          notes: 0,
+          alignments_dropped: 0,
+          library_removed: null,
+          grants_removed: 0,
+        },
+        derive: derived(),
+        dry_run: true,
+      }),
+    )
+    const confirm = card.querySelector('.move-root .confirm') as HTMLElement
+    const rehearse = card.querySelector(
+      'button[name="rehearse"]',
+    ) as HTMLElement
+    // The token as the browser resolves it, whichever scheme is in force.
+    const probe = document.createElement('span')
+    probe.style.color = 'var(--accent)'
+    card.append(probe)
+    const accent = getComputedStyle(probe).color
+    probe.remove()
+    const style = getComputedStyle(confirm)
+    expect(style.borderTopColor).toBe(accent)
+    expect(style.color).toBe(accent)
+    expect(style.fontWeight).toBe('600')
+    expect(getComputedStyle(rehearse).borderTopColor).not.toBe(accent)
   })
 
   /** Makes a library through the form: a name, one folder chosen, submitted. */

@@ -9,7 +9,8 @@
 //! **The folder rows inside a library's card are still `config_api`'s.** A
 //! folder's settings, its own scan and its removal are routes under
 //! `/api/library/roots/{id}`. This module makes libraries, adds folders to
-//! them, removes them whole, and scans all of a library's folders at once.
+//! them, removes them whole, scans all of a library's folders at once, and
+//! moves a folder from one library to another (`/api/library/roots/{id}/move`).
 //!
 //! **A refusal these handlers make is `{"error": "<sentence>"}`**: 400, 404,
 //! 409 and 500, including the ones axum would otherwise answer in plain text
@@ -19,7 +20,8 @@
 //! is plain text where a device credential's is JSON. A refusal made before a
 //! handler runs is not in this shape: an over-size body's 413, a path that is
 //! not UTF-8, and a method a route does not mount. The guard's 401 is
-//! `{"error":"unauthorized"}`.
+//! `{"error":"unauthorized"}`. The one refusal with a second key is a move's
+//! 409, `{"error", "volumes"}`, which lists the volumes that stand in its way.
 //!
 //! Every read or write of the library is made on the blocking pool, and a
 //! handler that derives or probes takes
@@ -37,70 +39,31 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use taiyaku_library::{derive, libraries, scan};
+use taiyaku_library::{libraries, relocate, scan};
 
 use crate::config_api::{
-    added_json, derive_report_json, finished_scan_json, panic_message, removal_json, root_json,
-    roots_with_last_scan,
+    AdminAnswer, DryRunQuery, added_json, admin_panicked, derive_report_json, removal_json,
+    root_json, roots_with_last_scan,
 };
 use crate::{ServeState, auth::Principal};
 
-/// Why one of these routes did not answer with what was asked for.
-#[derive(Debug)]
-enum LibraryAnswer {
-    /// `id` names no library: 404.
-    Missing(i64),
-    /// The caller's own mistake: 400, in the store's sentence where the store
-    /// found it.
-    Unusable(String),
-    /// Well-formed, names a real library, and still not allowed: 409, in the
-    /// words of [`scan::library_removal_refusal`] for a removal, of
-    /// `config_api::removal_waits_for` for a removal held up by a scan of one
-    /// of its folders, and of [`reserve_folders`] for a scan.
-    Refused(String),
-    /// A store failure: 500.
-    Failed(String),
-}
-
-impl IntoResponse for LibraryAnswer {
-    fn into_response(self) -> Response {
-        let (status, message) = match self {
-            Self::Missing(id) => (StatusCode::NOT_FOUND, format!("there is no library {id}")),
-            Self::Unusable(why) => (StatusCode::BAD_REQUEST, why),
-            Self::Refused(why) => (StatusCode::CONFLICT, why),
-            Self::Failed(why) => (StatusCode::INTERNAL_SERVER_ERROR, why),
-        };
-        (status, Json(serde_json::json!({ "error": message }))).into_response()
-    }
-}
-
-/// The one failure `spawn_blocking` itself can hand back, as JSON like every
-/// other refusal here.
-fn library_panicked(what: &str, why: &tokio::task::JoinError) -> Response {
-    panicked_answer(what, why).into_response()
-}
-
-fn panicked_answer(what: &str, why: &tokio::task::JoinError) -> LibraryAnswer {
-    LibraryAnswer::Failed(format!("{what} panicked: {why}"))
-}
-
-fn added_error(error: scan::AddRootError) -> LibraryAnswer {
+fn added_error(error: scan::AddRootError) -> AdminAnswer {
     match error {
-        scan::AddRootError::Unusable(why) => LibraryAnswer::Unusable(why),
-        scan::AddRootError::Failed(why) => LibraryAnswer::Failed(why),
+        scan::AddRootError::Unusable(why) => AdminAnswer::Unusable(why),
+        scan::AddRootError::Failed(why) => AdminAnswer::Failed(why),
     }
 }
 
 /// The request body as JSON, or the caller's mistake.
-fn json_body(bytes: &Bytes) -> Result<serde_json::Value, LibraryAnswer> {
+fn json_body(bytes: &Bytes) -> Result<serde_json::Value, AdminAnswer> {
     serde_json::from_slice(bytes)
-        .map_err(|e| LibraryAnswer::Unusable(format!("the request body must be JSON: {e}")))
+        .map_err(|e| AdminAnswer::Unusable(format!("the request body must be JSON: {e}")))
 }
 
 /// A library id from the path, which is a whole number.
-fn library_id(raw: &str) -> Result<i64, LibraryAnswer> {
+fn library_id(raw: &str) -> Result<i64, AdminAnswer> {
     raw.parse().map_err(|_| {
-        LibraryAnswer::Unusable(format!(
+        AdminAnswer::Unusable(format!(
             "`{raw}` is not a library id; an id is a whole number"
         ))
     })
@@ -108,24 +71,24 @@ fn library_id(raw: &str) -> Result<i64, LibraryAnswer> {
 
 /// A library's `name`, or `missing` as the caller's mistake: each route says
 /// what it was asking for.
-fn name_from_json(body: &serde_json::Value, missing: &str) -> Result<String, LibraryAnswer> {
+fn name_from_json(body: &serde_json::Value, missing: &str) -> Result<String, AdminAnswer> {
     body.get("name")
         .and_then(serde_json::Value::as_str)
         .map(str::to_string)
-        .ok_or_else(|| LibraryAnswer::Unusable(missing.to_string()))
+        .ok_or_else(|| AdminAnswer::Unusable(missing.to_string()))
 }
 
-/// The folders of library `id`, oldest first, or [`LibraryAnswer::Missing`]
+/// The folders of library `id`, oldest first, or [`AdminAnswer::MissingLibrary`]
 /// where there is no such library.
-fn folders_of(conn: &rusqlite::Connection, id: i64) -> Result<Vec<scan::Root>, LibraryAnswer> {
+fn folders_of(conn: &rusqlite::Connection, id: i64) -> Result<Vec<scan::Root>, AdminAnswer> {
     if libraries::name_of(conn, id)
-        .map_err(LibraryAnswer::Failed)?
+        .map_err(AdminAnswer::Failed)?
         .is_none()
     {
-        return Err(LibraryAnswer::Missing(id));
+        return Err(AdminAnswer::MissingLibrary(id));
     }
     Ok(scan::roots(conn)
-        .map_err(LibraryAnswer::Failed)?
+        .map_err(AdminAnswer::Failed)?
         .into_iter()
         .filter(|root| root.library_id == id)
         .collect())
@@ -165,32 +128,30 @@ pub(crate) async fn list_libraries(
     }
     let built = tokio::task::spawn_blocking(move || {
         let conn = state.library.conn();
-        libraries_json(&conn).map_err(LibraryAnswer::Failed)
+        libraries_json(&conn).map_err(AdminAnswer::Failed)
     })
     .await;
 
     match built {
         Ok(Ok(libraries)) => Json(serde_json::json!({ "libraries": libraries })).into_response(),
         Ok(Err(no_answer)) => no_answer.into_response(),
-        Err(why) => library_panicked("listing libraries", &why),
+        Err(why) => admin_panicked("listing libraries", &why),
     }
 }
 
 /// `name` and `folders`, as [`create_library`]'s body is read.
-fn new_library_from_json(
-    body: &serde_json::Value,
-) -> Result<(String, Vec<PathBuf>), LibraryAnswer> {
+fn new_library_from_json(body: &serde_json::Value) -> Result<(String, Vec<PathBuf>), AdminAnswer> {
     let name = name_from_json(body, "a library needs a `name`, a string")?;
     let listed = body
         .get("folders")
         .and_then(serde_json::Value::as_array)
         .ok_or_else(|| {
-            LibraryAnswer::Unusable("a library needs `folders`, an array of paths".to_string())
+            AdminAnswer::Unusable("a library needs `folders`, an array of paths".to_string())
         })?;
     let mut folders = Vec::with_capacity(listed.len());
     for entry in listed {
         folders.push(absolute_folder(entry.as_str().ok_or_else(|| {
-            LibraryAnswer::Unusable("a library's `folders` must be an array of paths".to_string())
+            AdminAnswer::Unusable("a library's `folders` must be an array of paths".to_string())
         })?)?);
     }
     Ok((name, folders))
@@ -214,19 +175,19 @@ pub(crate) async fn create_library(
     };
 
     let created = tokio::task::spawn_blocking(move || {
-        let working = state.library.working().map_err(LibraryAnswer::Failed)?;
+        let working = state.library.working().map_err(AdminAnswer::Failed)?;
         let made = scan::create_library(&working, &name, &folders).map_err(added_error)?;
         let library = libraries_json(&working)
-            .map_err(LibraryAnswer::Failed)?
+            .map_err(AdminAnswer::Failed)?
             .into_iter()
             .find(|library| library["id"] == made.library_id)
             .ok_or_else(|| {
-                LibraryAnswer::Failed(format!(
+                AdminAnswer::Failed(format!(
                     "library {} was made and is not listed",
                     made.library_id
                 ))
             })?;
-        Ok::<_, LibraryAnswer>(serde_json::json!({
+        Ok::<_, AdminAnswer>(serde_json::json!({
             "library": library,
             "added": made.folders.iter().map(added_json).collect::<Vec<_>>(),
         }))
@@ -236,7 +197,7 @@ pub(crate) async fn create_library(
     match created {
         Ok(Ok(body)) => Json(body).into_response(),
         Ok(Err(no_answer)) => no_answer.into_response(),
-        Err(why) => library_panicked("creating a library", &why),
+        Err(why) => admin_panicked("creating a library", &why),
     }
 }
 
@@ -266,9 +227,9 @@ pub(crate) async fn patch_library(
     let renamed = tokio::task::spawn_blocking(move || {
         let conn = state.library.conn();
         libraries::rename(&conn, id, &name).map_err(|error| match error {
-            libraries::RenameError::Missing(id) => LibraryAnswer::Missing(id),
-            libraries::RenameError::Unusable(why) => LibraryAnswer::Unusable(why),
-            libraries::RenameError::Failed(why) => LibraryAnswer::Failed(why),
+            libraries::RenameError::Missing(id) => AdminAnswer::MissingLibrary(id),
+            libraries::RenameError::Unusable(why) => AdminAnswer::Unusable(why),
+            libraries::RenameError::Failed(why) => AdminAnswer::Failed(why),
         })
     })
     .await;
@@ -276,7 +237,7 @@ pub(crate) async fn patch_library(
     match renamed {
         Ok(Ok(name)) => Json(serde_json::json!({ "id": id, "name": name })).into_response(),
         Ok(Err(no_answer)) => no_answer.into_response(),
-        Err(why) => library_panicked("renaming a library", &why),
+        Err(why) => admin_panicked("renaming a library", &why),
     }
 }
 
@@ -286,24 +247,24 @@ pub(crate) async fn patch_library(
 /// which is the command line's own word and not a request's, and answers an
 /// empty one with an operating-system error that names nothing, so neither is
 /// passed on.
-fn absolute_folder(raw: &str) -> Result<PathBuf, LibraryAnswer> {
+fn absolute_folder(raw: &str) -> Result<PathBuf, AdminAnswer> {
     let path = PathBuf::from(raw);
     if path.is_absolute() {
         Ok(path)
     } else {
-        Err(LibraryAnswer::Unusable(format!(
+        Err(AdminAnswer::Unusable(format!(
             "a folder's path must be absolute, and `{raw}` is not"
         )))
     }
 }
 
 /// `path`, as [`add_folder`]'s body is read.
-fn folder_path_from_json(body: &serde_json::Value) -> Result<PathBuf, LibraryAnswer> {
+fn folder_path_from_json(body: &serde_json::Value) -> Result<PathBuf, AdminAnswer> {
     let raw = body
         .get("path")
         .and_then(serde_json::Value::as_str)
         .ok_or_else(|| {
-            LibraryAnswer::Unusable("adding a folder needs a `path`, a string".to_string())
+            AdminAnswer::Unusable("adding a folder needs a `path`, a string".to_string())
         })?;
     absolute_folder(raw)
 }
@@ -330,7 +291,7 @@ pub(crate) async fn add_folder(
     };
 
     let added = tokio::task::spawn_blocking(move || {
-        let working = state.library.working().map_err(LibraryAnswer::Failed)?;
+        let working = state.library.working().map_err(AdminAnswer::Failed)?;
         folders_of(&working, id)?;
         scan::add_root_checked_in(&working, &path, scan::InLibrary::Id(id)).map_err(added_error)
     })
@@ -339,20 +300,8 @@ pub(crate) async fn add_folder(
     match added {
         Ok(Ok(added)) => Json(added_json(&added)).into_response(),
         Ok(Err(no_answer)) => no_answer.into_response(),
-        Err(why) => library_panicked("adding a folder", &why),
+        Err(why) => admin_panicked("adding a folder", &why),
     }
-}
-
-/// The one query parameter [`delete_library`] reads.
-///
-/// `deny_unknown_fields`, for the reason `config_api::DeleteRootQuery`
-/// carries: a misspelt `dry_run` must be refused, not dropped, on a route
-/// whose other reading removes a library.
-#[derive(Debug, Default, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct DeleteLibraryQuery {
-    #[serde(default)]
-    dry_run: bool,
 }
 
 /// `DELETE /api/library/libraries/{id}`: remove a library, or with
@@ -367,7 +316,7 @@ pub(crate) async fn delete_library(
     Extension(principal): Extension<Principal>,
     extensions: axum::http::Extensions,
     AxPath(id): AxPath<String>,
-    query: Result<Query<DeleteLibraryQuery>, QueryRejection>,
+    query: Result<Query<DryRunQuery>, QueryRejection>,
 ) -> Response {
     if let Some(refusal) = crate::session::administering_or_forbidden(&principal, &extensions) {
         return refusal;
@@ -379,7 +328,7 @@ pub(crate) async fn delete_library(
     let dry_run = match query {
         Ok(Query(query)) => query.dry_run,
         Err(rejection) => {
-            return LibraryAnswer::Unusable(format!(
+            return AdminAnswer::Unusable(format!(
                 "the query could not be read: {}",
                 rejection.body_text()
             ))
@@ -389,25 +338,26 @@ pub(crate) async fn delete_library(
 
     let scans_state = Arc::clone(&state);
     let removed = tokio::task::spawn_blocking(move || {
-        let working = state.library.working().map_err(LibraryAnswer::Failed)?;
+        let working = state.library.working().map_err(AdminAnswer::Failed)?;
         let folders = folders_of(&working, id)?;
-        if let Some(root) = crate::config_api::a_scan_reserved_on(&state, &folders) {
-            return Err(LibraryAnswer::Refused(
-                crate::config_api::removal_waits_for(root, "the library"),
-            ));
+        if let Some(root) = crate::scan_jobs::a_scan_reserved_on(&state, &folders) {
+            return Err(AdminAnswer::Refused(crate::scan_jobs::removal_waits_for(
+                root,
+                "the library",
+            )));
         }
         let folders: Vec<i64> = folders.iter().map(|root| root.id).collect();
         if let Some(refusal) =
-            scan::library_removal_refusal(&working, id).map_err(LibraryAnswer::Failed)?
+            scan::library_removal_refusal(&working, id).map_err(AdminAnswer::Failed)?
         {
-            return Err(LibraryAnswer::Refused(refusal));
+            return Err(AdminAnswer::Refused(refusal));
         }
         let (removal, derived) = if dry_run {
             scan::library_removal_cost(&working, id)
         } else {
             scan::remove_library(&working, id)
         }
-        .map_err(LibraryAnswer::Failed)?;
+        .map_err(AdminAnswer::Failed)?;
         Ok((removal, derived, folders))
     })
     .await;
@@ -436,189 +386,8 @@ pub(crate) async fn delete_library(
         }))
         .into_response(),
         Ok(Err(no_answer)) => no_answer.into_response(),
-        Err(why) => library_panicked("removing a library", &why),
+        Err(why) => admin_panicked("removing a library", &why),
     }
-}
-
-/// What each folder's report says of a scan that found its library changed.
-const CHANGED: &str = "the library's folders changed while the scan waited to start, so nothing \
-                       was scanned";
-
-/// Walk each of `roots`, the folders of library `id`, in turn and derive
-/// once: one report per root, in order, each its own walk with the one derive.
-///
-/// Holds [`ServeState::library_job`] across the walks and the derive, as
-/// `config_api::run_scan_inner` holds it across one of each.
-///
-/// **The folders are read again once the lock is held.** `roots` is what the
-/// request found; a library removed or given other folders while the scan
-/// waited is not the one that was asked for, and its folders' ids may belong
-/// to others by now. Where the two readings differ in the ids or paths of the
-/// folders, or in their number, nothing is walked. Where they agree the
-/// second reading is what is walked, with the settings the folders hold now.
-///
-/// # Errors
-///
-/// Returns the sentence every folder's report then carries: [`CHANGED`] where
-/// the library is gone or its folders differ, the store's own words where the
-/// second reading failed. The first walk that fails ends the scan: no later
-/// folder is walked and nothing is derived. Each folder already walked has its
-/// `last_scan_status` corrected by [`scan::mark_derive_failed`], as a failed
-/// derive's folders have: its walk wrote `ok`, and what it found was not
-/// derived.
-fn run_library_scan_inner(
-    library: &taiyaku_library::Library,
-    id: i64,
-    roots: &[scan::Root],
-    job: &std::sync::Mutex<()>,
-) -> Result<Vec<serde_json::Value>, String> {
-    let _job = job
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let working = library.working()?;
-    let roots = match folders_of(&working, id) {
-        Ok(now) => {
-            let same = now.len() == roots.len()
-                && now
-                    .iter()
-                    .zip(roots)
-                    .all(|(now, asked)| now.id == asked.id && now.path == asked.path);
-            if !same {
-                return Err(CHANGED.to_string());
-            }
-            now
-        }
-        Err(LibraryAnswer::Missing(_)) => return Err(CHANGED.to_string()),
-        Err(
-            LibraryAnswer::Unusable(why) | LibraryAnswer::Refused(why) | LibraryAnswer::Failed(why),
-        ) => return Err(why),
-    };
-    let mut walked = Vec::with_capacity(roots.len());
-    for root in &roots {
-        match scan::scan_root(&working, root) {
-            Ok(report) => walked.push(report),
-            Err(why) => {
-                for earlier in &roots[..walked.len()] {
-                    let _ = scan::mark_derive_failed(&working, earlier);
-                }
-                return Err(format!("scanning {}: {why}", root.path.display()));
-            }
-        }
-    }
-    let derived = match derive::derive(&working) {
-        Ok(report) => report,
-        Err(why) => {
-            for root in &roots {
-                let _ = scan::mark_derive_failed(&working, root);
-            }
-            return Err(format!(
-                "the library's folders were scanned, but deriving its structure afterward \
-                 failed: {why}"
-            ));
-        }
-    };
-    Ok(walked
-        .iter()
-        .map(|walk| finished_scan_json(walk, &derived))
-        .collect())
-}
-
-/// The job [`start_library_scan`] hands to [`spawn_library_scan`] for
-/// library `id`.
-fn library_scan_job(
-    id: i64,
-) -> impl FnOnce(&ServeState, &[scan::Root]) -> Result<Vec<serde_json::Value>, String> + Send + 'static
-{
-    move |state, roots| run_library_scan_inner(&state.library, id, roots, &state.library_job)
-}
-
-/// What each of `count` folders' registry entry then holds: `outcome`'s
-/// reports, or, where it failed or panicked, the same `{"error": …}` for every
-/// folder, so none is left running for good. Its caller catches a panic for
-/// the reason `config_api::run_scan` catches one: nothing awaits the job, so
-/// nothing else would see it.
-fn reports_of(
-    count: usize,
-    outcome: std::thread::Result<Result<Vec<serde_json::Value>, String>>,
-) -> Vec<serde_json::Value> {
-    let why = match outcome {
-        Ok(Ok(reports)) => return reports,
-        Ok(Err(why)) => why,
-        Err(payload) => format!("the scan panicked: {}", panic_message(payload.as_ref())),
-    };
-    (0..count)
-        .map(|_| serde_json::json!({ "error": why }))
-        .collect()
-}
-
-/// Reserve the registry slot of each of `roots` for one scan that started at
-/// `started`, or refuse naming a folder already being scanned.
-///
-/// The check and the reservations are one lock: a refusal reserves nothing,
-/// and two requests racing for the same folders cannot both find them free.
-fn reserve_folders(
-    state: &ServeState,
-    roots: &[scan::Root],
-    started: Instant,
-) -> Result<(), LibraryAnswer> {
-    let mut scans = state
-        .scans
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some(busy) = roots
-        .iter()
-        .find(|root| scans.get(&root.id).is_some_and(|progress| !progress.done))
-    {
-        return Err(LibraryAnswer::Refused(format!(
-            "a scan of {} is already running",
-            busy.path.display()
-        )));
-    }
-    for root in roots {
-        scans.insert(
-            root.id,
-            crate::ScanProgress {
-                started,
-                done: false,
-                report: None,
-            },
-        );
-    }
-    Ok(())
-}
-
-/// Run `job` on the blocking pool, and when it ends, however it ends, mark
-/// every one of `roots` done with its report, or with an error where the job
-/// answered none for it.
-///
-/// A reservation is identified by its `started`: an entry that another scan
-/// started, or that a removal cleared, is left as it is.
-fn spawn_library_scan<F>(
-    state: Arc<ServeState>,
-    roots: Vec<scan::Root>,
-    started: Instant,
-    job: F,
-) -> tokio::task::JoinHandle<()>
-where
-    F: FnOnce(&ServeState, &[scan::Root]) -> Result<Vec<serde_json::Value>, String>
-        + Send
-        + 'static,
-{
-    tokio::task::spawn_blocking(move || {
-        let outcome =
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job(&state, &roots)));
-        let mut reports = reports_of(roots.len(), outcome).into_iter();
-        let mut scans = state
-            .scans
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        for root in &roots {
-            let report = reports.next().unwrap_or_else(
-                || serde_json::json!({ "error": "the scan ended without a report for this folder" }),
-            );
-            crate::config_api::finish_reservation(&mut scans, root.id, started, report);
-        }
-    })
 }
 
 /// The folders of library `id` for a scan route, or the answer to give.
@@ -626,7 +395,7 @@ async fn scan_folders(
     state: &Arc<ServeState>,
     id: i64,
     what: &'static str,
-) -> Result<Vec<scan::Root>, LibraryAnswer> {
+) -> Result<Vec<scan::Root>, AdminAnswer> {
     let lookup_state = Arc::clone(state);
     let found = tokio::task::spawn_blocking(move || {
         let conn = lookup_state.library.conn();
@@ -635,7 +404,7 @@ async fn scan_folders(
     .await;
     match found {
         Ok(found) => found,
-        Err(why) => Err(panicked_answer(what, &why)),
+        Err(why) => Err(AdminAnswer::Failed(format!("{what} panicked: {why}"))),
     }
 }
 
@@ -645,7 +414,7 @@ async fn scan_folders(
 /// **The scan holds the registry slot of each folder.** A scan already
 /// running on one folder refuses the library's, naming the folder, with no
 /// slot taken for the others. And while the library's runs,
-/// `config_api::start_scan` refuses each folder by the check it always made.
+/// `config_api::start_scan` refuses each folder as already being scanned.
 /// A folder's slot is released when the whole scan ends, since the one derive
 /// is part of each folder's report.
 pub(crate) async fn start_library_scan(
@@ -663,7 +432,7 @@ pub(crate) async fn start_library_scan(
         Err(why) => return why.into_response(),
     };
     if let Some(query) = query.filter(|query| !query.is_empty()) {
-        return LibraryAnswer::Unusable(format!(
+        return AdminAnswer::Unusable(format!(
             "starting a scan takes no query, and `?{query}` was sent; every scan walks the \
              whole of each folder"
         ))
@@ -675,10 +444,10 @@ pub(crate) async fn start_library_scan(
     };
 
     let started = Instant::now();
-    if let Err(refused) = reserve_folders(&state, &roots, started) {
-        return refused.into_response();
+    if let Err(refused) = crate::scan_jobs::reserve(&state, &roots, started) {
+        return AdminAnswer::Refused(refused).into_response();
     }
-    spawn_library_scan(state, roots, started, library_scan_job(id));
+    crate::scan_jobs::spawn(state, roots, started, crate::scan_jobs::Reread::Library(id));
 
     (
         StatusCode::ACCEPTED,
@@ -742,6 +511,186 @@ pub(crate) async fn library_scan_status(
             .collect::<Vec<_>>(),
     }))
     .into_response()
+}
+
+/// Where a move's body says the folder goes.
+enum MoveTo {
+    Library(i64),
+    New(String),
+}
+
+/// Exactly one of `library`, a library's id, and `new_library`, a name.
+fn move_target_from_json(body: &serde_json::Value) -> Result<MoveTo, AdminAnswer> {
+    match (body.get("library"), body.get("new_library")) {
+        (Some(id), None) => id.as_i64().map(MoveTo::Library).ok_or_else(|| {
+            AdminAnswer::Unusable("`library` must be a library id, a whole number".to_string())
+        }),
+        (None, Some(name)) => name
+            .as_str()
+            .map(|name| MoveTo::New(name.to_string()))
+            .ok_or_else(|| {
+                AdminAnswer::Unusable("`new_library` must be a name, a string".to_string())
+            }),
+        _ => Err(AdminAnswer::Unusable(
+            "a move names exactly one of `library`, a library id, and `new_library`, a name"
+                .to_string(),
+        )),
+    }
+}
+
+/// [`relocate::Moved`], over the wire.
+///
+/// Destructured with no `..`, so that a field added to it is a compile error
+/// here and not a count the screen never draws.
+fn moved_json(moved: &relocate::Moved) -> serde_json::Value {
+    let relocate::Moved {
+        library_id,
+        library,
+        works_kept,
+        works_joined,
+        works_split,
+        series_joined,
+        positions,
+        notes,
+        alignments_dropped,
+        library_removed,
+        grants_removed,
+    } = moved;
+    serde_json::json!({
+        "library_id": library_id,
+        "library": library,
+        "works_kept": works_kept,
+        "works_joined": works_joined,
+        "works_split": works_split,
+        "series_joined": series_joined,
+        "positions": positions,
+        "notes": notes,
+        "alignments_dropped": alignments_dropped,
+        "library_removed": library_removed,
+        "grants_removed": grants_removed,
+    })
+}
+
+/// `POST /api/library/roots/{id}/move`: move a folder to another library or
+/// to a new one, or with `?dry_run=true` answer what that would do. `body` is
+/// `{"library": id}` or `{"new_library": name}`; [`relocate`] is where the
+/// move is.
+///
+/// **A scan reserved on any folder of either library refuses it**, the folder's
+/// own library and the target, as [`delete_library`] refuses a removal: a scan
+/// that is queued holds no job lock, so the lock alone would not see it.
+///
+/// **Then it asks for [`ServeState::library_job`] and does not wait for it.**
+/// A move derives the whole store, and under a scan's derive or a rule save it
+/// would file works by rules or facts the other is replacing. So it answers
+/// 409 at once where one holds the lock, as `config_api::save_rules` does, for
+/// the rehearsal as for the move: the rehearsal runs the same derives.
+///
+/// **A refusal is a 409 with its sentence and its volumes**, all of them
+/// where the sentence names the first few. Where a scan or a rule save is the
+/// reason, `volumes` is empty.
+pub(crate) async fn move_folder(
+    State(state): State<Arc<ServeState>>,
+    Extension(principal): Extension<Principal>,
+    extensions: axum::http::Extensions,
+    AxPath(id): AxPath<String>,
+    query: Result<Query<DryRunQuery>, QueryRejection>,
+    body: Bytes,
+) -> Response {
+    if let Some(refusal) = crate::session::administering_or_forbidden(&principal, &extensions) {
+        return refusal;
+    }
+    let id = match id.parse::<i64>() {
+        Ok(id) => id,
+        Err(_) => {
+            return AdminAnswer::Unusable(format!(
+                "`{id}` is not a folder id; an id is a whole number"
+            ))
+            .into_response();
+        }
+    };
+    let dry_run = match query {
+        Ok(Query(query)) => query.dry_run,
+        Err(rejection) => {
+            return AdminAnswer::Unusable(format!(
+                "the query could not be read: {}",
+                rejection.body_text()
+            ))
+            .into_response();
+        }
+    };
+    let to = match json_body(&body).and_then(|body| move_target_from_json(&body)) {
+        Ok(read) => read,
+        Err(why) => return why.into_response(),
+    };
+
+    let moved = tokio::task::spawn_blocking(move || {
+        let working = state
+            .library
+            .working()
+            .map_err(relocate::MoveError::Failed)?;
+        let roots = scan::roots(&working).map_err(relocate::MoveError::Failed)?;
+        let Some(folder) = roots.iter().find(|root| root.id == id) else {
+            return Err(relocate::MoveError::Missing(format!(
+                "there is no folder {id}"
+            )));
+        };
+        let held_up = roots.iter().filter(|root| {
+            root.library_id == folder.library_id
+                || matches!(to, MoveTo::Library(library) if root.library_id == library)
+        });
+        let held_up: Vec<scan::Root> = held_up.cloned().collect();
+        if let Some(root) = crate::scan_jobs::a_scan_reserved_on(&state, &held_up) {
+            return Err(relocate::MoveError::Refused {
+                why: crate::scan_jobs::waits_for(root, "move the folder"),
+                volumes: Vec::new(),
+            });
+        }
+        let _job = match state.library_job.try_lock() {
+            Ok(held) => held,
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => {
+                return Err(relocate::MoveError::Refused {
+                    why: "a scan or a rule save is running; move the folder when it has \
+                          finished"
+                        .to_string(),
+                    volumes: Vec::new(),
+                });
+            }
+        };
+        let target = match &to {
+            MoveTo::Library(library) => relocate::Target::Library(*library),
+            MoveTo::New(name) => relocate::Target::New(name),
+        };
+        if dry_run {
+            relocate::move_cost(&working, id, target)
+        } else {
+            relocate::move_root(&working, id, target)
+        }
+    })
+    .await;
+
+    match moved {
+        Ok(Ok((moved, derived))) => Json(serde_json::json!({
+            "moved": moved_json(&moved),
+            "derive": derive_report_json(&derived),
+            "dry_run": dry_run,
+        }))
+        .into_response(),
+        Ok(Err(relocate::MoveError::Refused { why, volumes })) => (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({ "error": why, "volumes": volumes })),
+        )
+            .into_response(),
+        Ok(Err(relocate::MoveError::Missing(why))) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": why })),
+        )
+            .into_response(),
+        Ok(Err(relocate::MoveError::Unusable(why))) => AdminAnswer::Unusable(why).into_response(),
+        Ok(Err(relocate::MoveError::Failed(why))) => AdminAnswer::Failed(why).into_response(),
+        Err(why) => admin_panicked("moving a folder", &why),
+    }
 }
 
 #[cfg(test)]

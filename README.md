@@ -256,7 +256,11 @@ refusal — a name already taken, a folder inside another, a path that cannot be
 read — is drawn as the server's own sentence. Removing a library or a folder
 states what it will take — works, reading positions, notes — and offers no
 confirm button at all until those counts have arrived; a library that is some
-account's only grant is refused instead, naming the accounts. **Scan library**
+account's only grant is refused instead, naming the accounts. A folder's row
+has **Move…**, to another library or a new one: it says what the move would do —
+how many works keep their address, how many join a work the library already
+holds, how many are split — before it offers the move, and refuses, naming what
+stands in the way, a move that cannot keep every reader's place. **Scan library**
 on a library walks each of its folders in turn and derives once. A scan started
 from the screen reports both halves of what it did in full: the walk and the
 derivation, every field, with what it *could not* do listed before what it did,

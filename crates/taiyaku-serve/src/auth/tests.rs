@@ -124,6 +124,7 @@ async fn every_route_refuses_an_anonymous_request() {
         // these are guarded here first.
         "/api/library/roots",
         "/api/library/roots/{id}",
+        "/api/library/roots/{id}/move",
         // Spec C4 §3's scan-control route, task 12 of the branch plan —
         // admin-gated *inside* the handler, the identical reasoning the
         // roots comment just above gives for why it matters doubly that it
@@ -1717,7 +1718,7 @@ async fn every_route_declares_its_grant_posture() {
     );
     assert_eq!(
         table.len() - driven,
-        38,
+        39,
         "the remaining guarded routes must be GrantIndependent or KnownGap — \
          see the `driven` assertion just above, which this one is the other \
          half of. A new admin-only route is GrantIndependent: it changes who \
@@ -3162,6 +3163,7 @@ const REFUSE_A_DEVICE_CREDENTIAL: &[&str] = &[
     "/api/library/rules/import",
     "/api/library/roots",
     "/api/library/roots/{id}",
+    "/api/library/roots/{id}/move",
     "/api/library/roots/{id}/scan",
     "/api/library/libraries",
     "/api/library/libraries/{id}",

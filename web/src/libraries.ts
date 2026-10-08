@@ -7,10 +7,11 @@
  *
  * **A folder's own routes are still `config.ts`'s.** A library's card holds a
  * `RootRow` per folder, and that row patches, scans and removes its folder
- * through `/api/library/roots/{id}`. What a library does whole is here.
+ * through `/api/library/roots/{id}`. What a library does whole is here, and
+ * so is moving a folder from one library to another.
  */
 import { getJson, sendJson } from './api'
-import type { Added, RemovalAnswer, Root } from './config'
+import type { Added, Derived, RemovalAnswer, Root } from './config'
 
 /** One library, as `GET /api/library/libraries` sends it. */
 export interface Library {
@@ -119,4 +120,64 @@ export const listFolders = (path?: string) =>
     path === undefined
       ? '/api/library/folders'
       : `/api/library/folders?path=${encodeURIComponent(path)}`,
+  )
+
+/** Where a folder moves to: a library that exists, or one made by the move. */
+export type MoveTarget = { library: number } | { new_library: string }
+
+/** What a move did or, rehearsed, would do. */
+export interface Moved {
+  /** The library the folder is in after the move. */
+  library_id: number
+  /** That library's name. */
+  library: string
+  /** Works whose address does not change. */
+  works_kept: number
+  /** Works that join a work the target already holds, as another edition. */
+  works_joined: number
+  /** Works whose editions end up in two libraries. */
+  works_split: number
+  /** Series the target already holds that gain volumes from the folder. */
+  series_joined: number
+  /** Reading positions that go with the folder's editions. */
+  positions: number
+  /** Notes that go with the folder's editions. */
+  notes: number
+  /** Alignments between editions that the move separates, which are dropped. */
+  alignments_dropped: number
+  /** The name of the folder's old library, where the move empties and removes it. */
+  library_removed: string | null
+  /** Grants that went with that library. */
+  grants_removed: number
+}
+
+/** `POST /api/library/roots/{id}/move`'s answer, a rehearsal's or a move's. */
+export interface MoveAnswer {
+  moved: Moved
+  /** What deriving the store after the move found. */
+  derive: Derived
+  dry_run: boolean
+}
+
+/**
+ * What moving folder `rootId` to `to` would do, without doing it. A move
+ * that would be refused is refused here in the same words, with the volumes
+ * that stand in its way.
+ */
+export const moveCost = (rootId: number, to: MoveTarget): Promise<MoveAnswer> =>
+  expectBody(
+    sendJson<MoveAnswer>(
+      `/api/library/roots/${rootId}/move?dry_run=true`,
+      'POST',
+      to,
+    ),
+  )
+
+/** Moves folder `rootId` to `to`. */
+export const moveFolder = (
+  rootId: number,
+  to: MoveTarget,
+): Promise<MoveAnswer> =>
+  expectBody(
+    sendJson<MoveAnswer>(`/api/library/roots/${rootId}/move`, 'POST', to),
   )
