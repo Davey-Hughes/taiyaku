@@ -163,6 +163,7 @@ fn router_over(
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
         library_job: Default::default(),
+        folders: Vec::new(),
     });
     let router = authenticating(crate::build_router(state.clone()), &state.library);
     (router, state)
@@ -321,6 +322,7 @@ pub(crate) fn state(root: &std::path::Path) -> ServeState {
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
         library_job: Default::default(),
+        folders: Vec::new(),
     }
 }
 
@@ -543,6 +545,7 @@ fn state_over(
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
         library_job: Default::default(),
+        folders: Vec::new(),
     })
 }
 
@@ -847,6 +850,7 @@ pub(crate) async fn router_over_a_library() -> (axum::Router, std::sync::Arc<Ser
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
         library_job: Default::default(),
+        folders: Vec::new(),
     });
     let router = authenticating(crate::build_router(state.clone()), &state.library);
     (router, state, fixture)
@@ -932,6 +936,7 @@ fn two_editions_in_a_library(
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
         library_job: Default::default(),
+        folders: Vec::new(),
     });
     (state, work_id)
 }
@@ -1116,6 +1121,7 @@ pub(crate) fn router_over_a_scanned_work() -> (axum::Router, std::sync::Arc<Serv
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
         library_job: Default::default(),
+        folders: Vec::new(),
     });
     // `authenticating`, because `library()` seeds a claimed account and every
     // route is behind the guard since spec A2 — the same wrapper
@@ -1198,7 +1204,7 @@ pub(crate) fn router_over_a_scanned_work_as_a_reader()
 ///
 /// Each page's bytes carry the directory's own name, which is what stops two
 /// volumes of the same length colliding on `content_key`.
-fn write_pages(dir: &std::path::Path, pages: usize) {
+pub(crate) fn write_pages(dir: &std::path::Path, pages: usize) {
     std::fs::create_dir_all(dir).expect("mkdir");
     let label = dir.to_string_lossy().into_owned();
     for page in 0..pages {
@@ -1288,6 +1294,7 @@ fn router_over_a_written_tree(
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
         library_job: Default::default(),
+        folders: Vec::new(),
     });
     let router = authenticating(crate::build_router(state.clone()), &state.library);
     (router, state, fixture)
@@ -1365,6 +1372,7 @@ pub(crate) fn router_over_a_scanned_cbz() -> (axum::Router, std::sync::Arc<Serve
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
         library_job: Default::default(),
+        folders: Vec::new(),
     });
     let router = authenticating(crate::build_router(state.clone()), &state.library);
     (router, state, fixture)
@@ -1555,6 +1563,7 @@ pub(crate) fn state_with_two_scanned_roots() -> (axum::Router, std::sync::Arc<Se
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
         library_job: Default::default(),
+        folders: Vec::new(),
     });
     let router = authenticating(crate::build_router(state.clone()), &state.library);
     (router, state, fixture)
@@ -1675,6 +1684,7 @@ pub(crate) fn router_over_two_scanned_volumes_of_one_series()
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
         library_job: Default::default(),
+        folders: Vec::new(),
     });
     let router = authenticating(crate::build_router(state.clone()), &state.library);
     (router, state, fixture)
@@ -1760,6 +1770,7 @@ pub(crate) fn router_over_two_scanned_volumes_of_one_series_across_two_roots() -
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
         library_job: Default::default(),
+        folders: Vec::new(),
     });
     let router = authenticating(crate::build_router(state.clone()), &state.library);
     (router, state, fixture, root_a)
@@ -1869,6 +1880,7 @@ pub(crate) fn router_over_two_scanned_volumes_of_one_series_across_two_roots_and
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
         library_job: Default::default(),
+        folders: Vec::new(),
     });
     let router = authenticating(crate::build_router(state.clone()), &state.library);
     (router, state, fixture, root_a)
@@ -2381,6 +2393,7 @@ pub(crate) fn router_over_a_granted_two_folder_library(
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
         library_job: Default::default(),
+        folders: Vec::new(),
     });
     let router = authenticating(crate::build_router(state.clone()), &state.library);
     (router, state)
@@ -2472,6 +2485,7 @@ pub(crate) fn router_over_a_work_keeping_another_librarys_edition() -> (
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
         library_job: Default::default(),
+        folders: Vec::new(),
     });
     let router = authenticating(crate::build_router(state.clone()), &state.library);
     (router, state, fixture, slugs)

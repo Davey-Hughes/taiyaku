@@ -2,22 +2,21 @@
  * The users screen — spec C4 §4 and the build design's §6.2.
  *
  * **The list owns who exists; each card owns what it is doing.**
- * `Roots`/`RootRow`'s split, and the same reason: a patch, a revocation and a
+ * `Libraries`/`LibraryCard`'s split, and the same reason: a patch, a revocation and a
  * dry run belong to the account being administered.
  *
  * **Two failure slots, not one.** `reload` is handed to every card as
  * `onChanged`, so a revocation, a capability toggle or a removal fires a list
  * read — and a single slot meant any of them silently erased the add form's
  * refusal, which is the one message naming why an account could not be
- * created. Found on the roots screen by PR A's second review pass; written
- * this way here rather than found again.
+ * created. `Libraries` keeps the same two slots, for the same reason.
  *
- * **The roots list is fetched here, once, and handed down.** `config.ts`
- * already has the client — one client and two screens rather than a second
- * fetch that could disagree (§6.2) — and a card fetching its own would ask N
- * times for one answer. **A failed read is drawn**, because the grant editor's
- * empty state and its failure look identical on screen and mean opposite
- * things: an empty grant is *unrestricted*.
+ * **The libraries list is fetched here, once, and handed down.**
+ * `libraries.ts` already has the client — one client and two screens rather
+ * than a second fetch that could disagree (§6.2) — and a card fetching its
+ * own would ask N times for one answer. **A failed read is drawn**, because
+ * the grant editor's empty state and its failure look identical on screen and
+ * mean opposite things: an empty grant is *unrestricted*.
  *
  * **The caller's own account comes from the gate, not from a second request.**
  * `useGate()` already holds `me()`'s answer for the page load. `undefined`
@@ -29,19 +28,19 @@
  * and React matching on `key` would hand a recycled id the removed account's
  * card instance, with its open removal dialog and typed password. `user.name`
  * is `UNIQUE`; a rename remounts the card, which is the right thing to lose.
- * `Roots.tsx` carries the same note about `root.id`.
+ * `LibraryCard.tsx` carries the same note about a folder's id.
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { listRoots, type Root } from './config'
 import { useGate } from './gate'
+import { type Library, listLibraries } from './libraries'
+import { sentenceOf } from './message'
 import { addUser, listUsers, ROLES, type User } from './users'
 import { UserRow } from './UserRow'
-import { messageOf } from './message'
 
 export function Users() {
   const [users, setUsers] = useState<User[] | undefined>()
-  const [roots, setRoots] = useState<Root[] | undefined>()
-  const [rootsFailure, setRootsFailure] = useState<string | undefined>()
+  const [libraries, setLibraries] = useState<Library[] | undefined>()
+  const [librariesFailure, setLibrariesFailure] = useState<string | undefined>()
   /** Why the list could not be read. Separate from `addFailure`. */
   const [failure, setFailure] = useState<string | undefined>()
   /** Why the last add was refused. Cleared only by the next add. */
@@ -75,7 +74,7 @@ export function Users() {
       })
       .catch((err: unknown) => {
         if (seq !== latest.current) return
-        setFailure(messageOf(err))
+        setFailure(sentenceOf(err))
       })
   }, [])
 
@@ -85,15 +84,15 @@ export function Users() {
 
   useEffect(() => {
     let cancelled = false
-    listRoots()
+    listLibraries()
       .then((body) => {
         if (cancelled) return
-        setRoots(body.roots)
-        setRootsFailure(undefined)
+        setLibraries(body.libraries)
+        setLibrariesFailure(undefined)
       })
       .catch((err: unknown) => {
         if (cancelled) return
-        setRootsFailure(messageOf(err))
+        setLibrariesFailure(sentenceOf(err))
       })
     return () => {
       cancelled = true
@@ -119,7 +118,7 @@ export function Users() {
       .catch((err: unknown) => {
         inFlight.current = false
         setAdding(false)
-        setAddFailure(messageOf(err))
+        setAddFailure(sentenceOf(err))
       })
   }
 
@@ -127,10 +126,10 @@ export function Users() {
     <section className="users">
       <h2>Users</h2>
       {failure !== undefined && <p role="alert">{failure}</p>}
-      {rootsFailure !== undefined && (
+      {librariesFailure !== undefined && (
         <p role="alert">
-          The roots list could not be read ({rootsFailure}), so the grant
-          editors below show nothing rather than what this library has.
+          The libraries list could not be read ({librariesFailure}), so the
+          grant editors below show nothing rather than what there is.
         </p>
       )}
 
@@ -141,7 +140,7 @@ export function Users() {
               key={account.name}
               user={account}
               users={users}
-              roots={roots}
+              libraries={libraries}
               actingAs={gate?.who.user_id}
               onChanged={reload}
             />

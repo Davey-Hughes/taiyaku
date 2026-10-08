@@ -578,6 +578,7 @@ async fn a_percent_encoded_edition_key_in_the_feed_routes_back_to_the_same_editi
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
         library_job: Default::default(),
+        folders: Vec::new(),
     });
     let app = feed_router().with_state(state);
 
@@ -1121,6 +1122,7 @@ async fn the_cover_cache_key_follows_locate_past_a_pageless_first_member() {
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
         library_job: Default::default(),
+        folders: Vec::new(),
     });
     let app = feed_router().with_state(state);
 
@@ -1322,6 +1324,7 @@ fn router_with_a_real_page_under_a_withheld_root(
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
         library_job: Default::default(),
+        folders: Vec::new(),
     });
     let router = crate::test_support::key_authenticating(crate::build_router(state.clone()));
     (router, state)
@@ -1390,6 +1393,7 @@ fn router_with_two_editions_split_across_roots(
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
         library_job: Default::default(),
+        folders: Vec::new(),
     });
     let router = crate::test_support::key_authenticating(crate::build_router(state.clone()));
     (router, state)
@@ -1472,6 +1476,7 @@ fn router_with_two_works_one_withheld(
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
         library_job: Default::default(),
+        folders: Vec::new(),
     });
     let router = crate::test_support::key_authenticating(crate::build_router(state.clone()));
     (router, state)

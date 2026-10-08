@@ -5,13 +5,14 @@ import * as config from './config'
 import { Config } from './Config'
 import * as backupApi from './backup'
 import * as curation from './curation'
+import * as librariesApi from './libraries'
 import * as rulesApi from './rules'
 import * as usersApi from './users'
 import { mount } from './testing/mount'
 
-vi.mock('./config', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('./config')>()),
-  listRoots: vi.fn(),
+vi.mock('./libraries', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./libraries')>()),
+  listLibraries: vi.fn(),
 }))
 vi.mock('./rules', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./rules')>()),
@@ -50,7 +51,7 @@ async function at(entry: string) {
 
 beforeEach(() => {
   vi.clearAllMocks()
-  vi.mocked(config.listRoots).mockResolvedValue({ roots: [] })
+  vi.mocked(librariesApi.listLibraries).mockResolvedValue({ libraries: [] })
   vi.mocked(rulesApi.listRules).mockResolvedValue({ rules: [], complaints: [] })
   vi.mocked(rulesApi.previewRules).mockResolvedValue({
     impact: {
@@ -82,7 +83,7 @@ describe('Config', () => {
   })
 
   it('draws one sub-nav link per tab', async () => {
-    const host = await at('/config/roots')
+    const host = await at('/config/libraries')
     expect(host.querySelectorAll('.config-nav a')).toHaveLength(
       config.TABS.length,
     )
@@ -98,7 +99,7 @@ describe('Config', () => {
   })
 
   it('marks the current tab', async () => {
-    const host = await at('/config/roots')
+    const host = await at('/config/libraries')
     expect(
       host.querySelector('.config-nav a[aria-current="page"]'),
     ).not.toBeNull()
@@ -115,6 +116,12 @@ describe('Config', () => {
         host.querySelector('.config > :not(.config-nav):not(h1)'),
       ).not.toBeNull()
     }
+  })
+
+  it('sends the old roots tab to the libraries screen', async () => {
+    const host = await at('/config/roots')
+    expect(host.querySelector('.libraries')).not.toBeNull()
+    expect(document.title).toBe('Libraries — taiyaku')
   })
 
   it('redirects a sub-path that names no tab', async () => {

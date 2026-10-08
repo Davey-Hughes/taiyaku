@@ -1753,7 +1753,7 @@ fn removing_one_root_leaves_the_other_roots_works_alone() {
 
 /// `remove_root` must send `DELETE FROM root` *inside* an already-open
 /// transaction, not as a bare, individually auto-committed statement — the
-/// property that makes `apply_removal`'s three deletes and the `derive_with`
+/// property that makes `take_root`'s three deletes and the `derive_with`
 /// pass beneath them one atomic unit rather than three separate facts a
 /// crash between them could tear apart. No functional test on the happy
 /// path this suite otherwise exercises can tell the two implementations
@@ -2439,6 +2439,615 @@ fn a_removal_that_may_go_ahead_has_no_refusal() {
     assert_eq!(removal_refusal(&conn, shelf_a.id), Ok(None));
     assert_eq!(removal_refusal(&conn, solo.id), Ok(None));
     assert_eq!(removal_refusal(&conn, 999), Ok(None));
+}
+
+fn library_called(conn: &Connection, name: &str) -> i64 {
+    crate::libraries::id_of(conn, name)
+        .expect("reads")
+        .expect("the library exists")
+}
+
+/// The one work with a member under folder `root_id`.
+fn work_under(conn: &Connection, root_id: i64) -> i64 {
+    conn.query_row(
+        "SELECT DISTINCT e.work_id FROM member m JOIN edition e ON e.id = m.edition_id
+          WHERE m.root_id = ?1",
+        [root_id],
+        |r| r.get(0),
+    )
+    .expect("one work under the folder")
+}
+
+/// `account` has a reading position on `work`, and `notes` notes.
+fn read_with_notes(conn: &Connection, account: i64, work: i64, notes: usize) {
+    conn.execute(
+        "INSERT INTO progress (user_id, work_id, edition, slot) VALUES (?1, ?2, 'en', 1)",
+        [account, work],
+    )
+    .expect("a position");
+    for n in 0..notes {
+        conn.execute(
+            "INSERT INTO note (user_id, id, work_id, edition, slot, body, created, updated)
+             VALUES (?1, ?2, ?3, 'en', 1, 'x', 'now', 'now')",
+            rusqlite::params![account, format!("note-{account}-{work}-{n}"), work],
+        )
+        .expect("a note");
+    }
+}
+
+/// What is left of a library's footprint in the store, as text.
+fn rows_of_library(conn: &Connection, library: i64) -> Vec<String> {
+    let mut rows = Vec::new();
+    for sql in [
+        "SELECT 'library', id FROM library WHERE id = ?1",
+        "SELECT 'root', id FROM root WHERE library_id = ?1",
+        "SELECT 'grant', user_id FROM user_library WHERE library_id = ?1",
+        "SELECT 'work', id FROM work WHERE library_id = ?1",
+    ] {
+        let mut statement = conn.prepare(sql).expect(sql);
+        let read = statement
+            .query_map([library], |r| {
+                Ok(format!(
+                    "{} {}",
+                    r.get::<_, String>(0)?,
+                    r.get::<_, i64>(1)?
+                ))
+            })
+            .expect(sql)
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .expect(sql);
+        rows.extend(read);
+    }
+    rows
+}
+
+#[test]
+fn removing_a_library_takes_each_folders_works_and_the_library() {
+    let parent = crate::tests::tempdir("remove-library");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    three_libraries(parent.path(), &conn);
+    let shelf = library_called(&conn, "Shelf");
+    an_account_granted(&conn, "pat", "user", &["Shelf", "Solo"]);
+
+    let (removal, _derived) = remove_library(&conn, shelf).expect("removes");
+
+    assert_eq!(removal.works, 2, "one work under each of Shelf's folders");
+    assert_eq!(
+        crate::libraries::name_of(&conn, shelf).expect("reads"),
+        None
+    );
+    assert_eq!(rows_of_library(&conn, shelf), Vec::<String>::new());
+    let left: Vec<String> = conn
+        .prepare("SELECT l.name FROM work w JOIN library l ON l.id = w.library_id ORDER BY 1")
+        .expect("prepares")
+        .query_map([], |r| r.get(0))
+        .expect("reads")
+        .collect::<rusqlite::Result<_>>()
+        .expect("reads");
+    assert_eq!(
+        left,
+        vec!["Lone", "Solo"],
+        "the other libraries' works stand"
+    );
+    for (table, held) in [("work", 2), ("member", 2), ("root", 2)] {
+        assert_eq!(
+            conn.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r
+                .get::<_, i64>(0))
+                .expect("counts"),
+            held,
+            "the {table} rows of the libraries that stand, and no more"
+        );
+    }
+    assert_eq!(
+        conn.query_row("SELECT count(*) FROM user_library", [], |r| r
+            .get::<_, i64>(0))
+            .expect("counts"),
+        1,
+        "the account keeps its grant of the library that stands"
+    );
+}
+
+/// Works, positions and notes each sum across the folders, with a different
+/// figure for each so that no two can be swapped for one another.
+#[test]
+fn removing_a_library_sums_works_positions_and_notes_across_its_folders() {
+    let parent = crate::tests::tempdir("remove-library-sums");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let [shelf_a, shelf_b, _, _] = three_libraries(parent.path(), &conn);
+    let (pat, sam) = (
+        an_account_granted(&conn, "pat", "user", &[]),
+        an_account_granted(&conn, "sam", "user", &[]),
+    );
+    let (alpha, gamma) = (work_under(&conn, shelf_a.id), work_under(&conn, shelf_b.id));
+    read_with_notes(&conn, pat, alpha, 2);
+    read_with_notes(&conn, pat, gamma, 3);
+    read_with_notes(&conn, sam, gamma, 0);
+
+    let (cost, _derived) =
+        library_removal_cost(&conn, library_called(&conn, "Shelf")).expect("costs");
+
+    assert_eq!(
+        (cost.works, cost.positions, cost.notes),
+        (2, 3, 5),
+        "{cost:?}"
+    );
+}
+
+/// A library `Manga` of two folders, `hub` and `other`, made in `order` so
+/// that the one with the lower folder id differs between the two orders.
+///
+/// Each holds `Series` volume 1, which is one work across the two folders.
+/// With `an_edition_per_folder` the first folder made is given the edition
+/// key `en`, and the work has two editions, one under each folder; without,
+/// it has one edition holding a member under each folder. `hub` also holds
+/// a work of its own, `Extra`. Positions and notes are put on both works,
+/// with a different figure for each of works, positions and notes.
+///
+/// Answers what the library's dry run and its removal each counted, after
+/// asserting the fixture's own shape and that each folder's own dry run
+/// counts only what that folder alone accounts for.
+fn a_library_removed_across_two_folders(order: [usize; 2], an_edition_per_folder: bool) -> Removal {
+    let parent = crate::tests::tempdir("remove-library-spanning");
+    let dirs = [parent.path().join("hub"), parent.path().join("other")];
+    let pages = if an_edition_per_folder {
+        [2, 3]
+    } else {
+        [2, 2]
+    };
+    for (dir, pages) in dirs.iter().zip(pages) {
+        write_archive(&dir.join("Series").join("Series - v01.cbz"), pages);
+    }
+    write_archive(&dirs[0].join("Extra").join("Extra - v01.cbz"), 2);
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let made = create_library(
+        &conn,
+        "Manga",
+        &[dirs[order[0]].clone(), dirs[order[1]].clone()],
+    )
+    .expect("creates");
+    if an_edition_per_folder {
+        update_root(
+            &conn,
+            made.folders[0].root.id,
+            &RootPatch {
+                edition_key: Some(Some("en".to_string())),
+                ..Default::default()
+            },
+        )
+        .expect("the first folder's volume is its own edition");
+    }
+    for root in roots(&conn).expect("lists") {
+        scan_root(&conn, &root).expect("scans");
+    }
+    crate::derive::derive(&conn).expect("derives");
+
+    let hub = made.folders[order.iter().position(|&i| i == 0).expect("hub")]
+        .root
+        .id;
+    let ids = |sql: &str| -> Vec<i64> {
+        conn.prepare(sql)
+            .expect("prepares")
+            .query_map([], |r| r.get(0))
+            .expect("reads")
+            .collect::<rusqlite::Result<_>>()
+            .expect("reads")
+    };
+    let spanning = ids(
+        "SELECT e.work_id FROM member m JOIN edition e ON e.id = m.edition_id
+                         GROUP BY e.work_id HAVING count(DISTINCT m.root_id) = 2",
+    );
+    assert_eq!(
+        spanning.len(),
+        1,
+        "the fixture: one work across the two folders"
+    );
+    let editions: i64 = conn
+        .query_row(
+            "SELECT count(DISTINCT e.id) FROM edition e WHERE e.work_id = ?1",
+            [spanning[0]],
+            |r| r.get(0),
+        )
+        .expect("counts");
+    assert_eq!(
+        editions,
+        if an_edition_per_folder { 2 } else { 1 },
+        "the fixture's editions of the work"
+    );
+    assert_eq!(
+        ids("SELECT count(*) FROM work"),
+        vec![2],
+        "the fixture: the spanning work and `Extra`"
+    );
+    let extra = work_under(&conn, hub);
+    assert_ne!(extra, spanning[0], "the fixture: `Extra` is `hub`'s alone");
+
+    let (pat, sam) = (
+        an_account_granted(&conn, "pat", "user", &[]),
+        an_account_granted(&conn, "sam", "user", &[]),
+    );
+    read_with_notes(&conn, pat, spanning[0], 2);
+    read_with_notes(&conn, sam, spanning[0], 0);
+    read_with_notes(&conn, pat, extra, 4);
+    for folder in &made.folders {
+        let alone = removal_cost(&conn, folder.root.id).expect("costs").0;
+        assert_eq!(
+            alone.works,
+            usize::from(folder.root.id == hub),
+            "the fixture: a folder alone accounts for `Extra` if it is `hub`, and never for \
+             the spanning work"
+        );
+    }
+
+    let (cost, _derived) = library_removal_cost(&conn, made.library_id).expect("costs");
+    let (removed, _derived) = remove_library(&conn, made.library_id).expect("removes");
+    assert_eq!(removed, cost, "the dry run is what the removal then does");
+    for table in ["work", "edition", "member", "progress", "note"] {
+        assert_eq!(
+            conn.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r
+                .get::<_, i64>(0))
+                .expect("counts"),
+            0,
+            "no {table} row is left"
+        );
+    }
+    cost
+}
+
+/// A work with an edition under each of a library's two folders: neither
+/// folder alone accounts for it, so each folder's own dry run counts none of
+/// it, and the library's counts it once, whichever folder is taken first.
+#[test]
+fn a_library_removal_counts_a_work_with_an_edition_per_folder_once() {
+    let forward = a_library_removed_across_two_folders([0, 1], true);
+
+    assert_eq!(
+        (forward.works, forward.positions, forward.notes),
+        (2, 3, 6),
+        "{forward:?}"
+    );
+    assert_eq!(
+        a_library_removed_across_two_folders([1, 0], true),
+        forward,
+        "whichever folder is taken first"
+    );
+}
+
+/// A work with one edition holding a member under each of a library's two
+/// folders: the same count, by the same rule, for a different shape.
+#[test]
+fn a_library_removal_counts_a_work_with_one_edition_in_both_folders_once() {
+    let forward = a_library_removed_across_two_folders([0, 1], false);
+
+    assert_eq!(
+        (forward.works, forward.positions, forward.notes),
+        (2, 3, 6),
+        "{forward:?}"
+    );
+    assert_eq!(
+        a_library_removed_across_two_folders([1, 0], false),
+        forward,
+        "whichever folder is taken first"
+    );
+}
+
+/// The first folder's work has a position and a note, and the second folder's
+/// removal is made to fail. Neither the dry run nor the removal may leave the
+/// first folder's removal behind.
+#[test]
+fn a_library_removal_that_fails_part_way_removes_nothing() {
+    let parent = crate::tests::tempdir("remove-library-part-way");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let [shelf_a, shelf_b, _, _] = three_libraries(parent.path(), &conn);
+    let pat = an_account_granted(&conn, "pat", "user", &[]);
+    read_with_notes(&conn, pat, work_under(&conn, shelf_a.id), 2);
+    conn.execute_batch(&format!(
+        "CREATE TEMP TRIGGER planted BEFORE DELETE ON main.root
+           WHEN old.id = {} BEGIN SELECT RAISE(ABORT, 'planted'); END",
+        shelf_b.id
+    ))
+    .expect("plants the fault");
+    let stands = |conn: &Connection| {
+        let mut rows = what_a_removal_touches(conn);
+        for table in ["progress", "note"] {
+            rows.push(format!(
+                "{table} {}",
+                conn.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r
+                    .get::<_, i64>(0))
+                    .expect("counts")
+            ));
+        }
+        rows
+    };
+    let before = stands(&conn);
+    let shelf = library_called(&conn, "Shelf");
+
+    let costed = library_removal_cost(&conn, shelf).expect_err("the second folder fails");
+    assert!(costed.contains("planted"), "{costed}");
+    assert_eq!(stands(&conn), before, "after the dry run");
+    let removed = remove_library(&conn, shelf).expect_err("the second folder fails");
+    assert!(removed.contains("planted"), "{removed}");
+    assert_eq!(stands(&conn), before, "after the removal");
+}
+
+#[test]
+fn the_cost_of_removing_a_library_leaves_the_database_as_it_found_it() {
+    let parent = crate::tests::tempdir("remove-library-cost");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    three_libraries(parent.path(), &conn);
+    let before = what_a_removal_touches(&conn);
+
+    let (cost, _derived) =
+        library_removal_cost(&conn, library_called(&conn, "Shelf")).expect("costs");
+
+    assert_eq!(cost.works, 2);
+    assert_eq!(what_a_removal_touches(&conn), before);
+}
+
+/// An id that names no library is not an error and takes nothing.
+#[test]
+fn a_library_id_that_names_no_library_removes_nothing() {
+    let parent = crate::tests::tempdir("remove-library-none");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    three_libraries(parent.path(), &conn);
+    // The derive that follows rewrites member rows under new ids, so what is
+    // compared is everything else, and the members by path and root.
+    let stands = |conn: &Connection| -> Vec<String> {
+        let mut rows: Vec<String> = what_a_removal_touches(conn)
+            .into_iter()
+            .filter(|row| !row.starts_with("member "))
+            .collect();
+        let mut members = conn
+            .prepare("SELECT path, root_id FROM member ORDER BY path")
+            .expect("prepares")
+            .query_map([], |r| {
+                Ok(format!(
+                    "{} {}",
+                    r.get::<_, String>(0)?,
+                    r.get::<_, i64>(1)?
+                ))
+            })
+            .expect("reads")
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .expect("reads");
+        rows.append(&mut members);
+        rows
+    };
+    let before = stands(&conn);
+
+    assert_eq!(library_removal_refusal(&conn, 999), Ok(None));
+    assert_eq!(
+        library_removal_cost(&conn, 999).expect("costs").0,
+        Removal::default()
+    );
+    assert_eq!(
+        remove_library(&conn, 999).expect("removes").0,
+        Removal::default()
+    );
+    assert_eq!(stands(&conn), before);
+}
+
+/// `Shelf` has two folders, so no single folder of it is "the last folder of
+/// a library" and the per-folder refusal is never asked. The library's own is.
+#[test]
+fn removing_a_library_that_is_an_accounts_only_grant_is_refused_by_name() {
+    let parent = crate::tests::tempdir("remove-library-refused");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    three_libraries(parent.path(), &conn);
+    an_account_granted(&conn, "bo", "user", &["Shelf"]);
+    an_account_granted(&conn, "alex", "user", &["Shelf"]);
+    an_account_granted(&conn, "both", "user", &["Shelf", "Solo"]);
+    let shelf = library_called(&conn, "Shelf");
+    let before = what_a_removal_touches(&conn);
+
+    let refusal = library_removal_refusal(&conn, shelf)
+        .expect("reads")
+        .expect("refuses");
+    assert_eq!(
+        refusal,
+        "`Shelf` is the only library `alex` and `bo` are granted. Removing it would delete \
+         those grants, and an account with no grant sees every library. First grant each \
+         another library, or revoke this one"
+    );
+
+    for attempt in [
+        library_removal_cost(&conn, shelf),
+        remove_library(&conn, shelf),
+    ] {
+        assert_eq!(attempt.expect_err("refuses"), refusal);
+    }
+    assert_eq!(what_a_removal_touches(&conn), before);
+    assert_eq!(
+        library_removal_refusal(&conn, library_called(&conn, "Lone")).expect("reads"),
+        None
+    );
+}
+
+/// An administrator's grant counts like anyone's, for the library's own
+/// refusal as for a folder's, and it is the sentence of the library's own
+/// removal whether the library has one folder or two.
+#[test]
+fn an_administrators_only_grant_refuses_a_library_removal() {
+    let parent = crate::tests::tempdir("remove-library-refused-admin");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    three_libraries(parent.path(), &conn);
+    an_account_granted(&conn, "ada", "admin", &["Shelf"]);
+    an_account_granted(&conn, "alex", "user", &["Solo"]);
+    let before = what_a_removal_touches(&conn);
+
+    for (library, account) in [("Shelf", "ada"), ("Solo", "alex")] {
+        let id = library_called(&conn, library);
+        let refusal = format!(
+            "`{library}` is the only library `{account}` is granted. Removing it would delete \
+             that grant, and an account with no grant sees every library. First grant it \
+             another library, or revoke this one"
+        );
+        assert_eq!(
+            library_removal_refusal(&conn, id),
+            Ok(Some(refusal.clone()))
+        );
+        assert_eq!(
+            library_removal_cost(&conn, id).expect_err("the dry run is refused"),
+            refusal
+        );
+        assert_eq!(
+            remove_library(&conn, id).expect_err("the removal is refused"),
+            refusal
+        );
+    }
+    assert_eq!(what_a_removal_touches(&conn), before);
+}
+
+/// An account holding two libraries is left with one when either goes, so
+/// neither the earlier-made nor the later-made is refused, and removing one
+/// goes through.
+#[test]
+fn a_library_that_is_not_an_accounts_only_grant_may_be_removed_whichever_was_made_first() {
+    let parent = crate::tests::tempdir("remove-library-not-only");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    three_libraries(parent.path(), &conn);
+    let dual = an_account_granted(&conn, "dual", "user", &["Shelf", "Solo"]);
+    let (shelf, solo) = (
+        library_called(&conn, "Shelf"),
+        library_called(&conn, "Solo"),
+    );
+    assert!(shelf < solo, "the fixture: Shelf is the earlier-made");
+
+    assert_eq!(library_removal_refusal(&conn, shelf), Ok(None));
+    assert_eq!(library_removal_refusal(&conn, solo), Ok(None));
+    remove_library(&conn, solo).expect("the later-made goes");
+
+    assert_eq!(
+        crate::account::roots_for(&conn, dual).expect("reads").len(),
+        2,
+        "the account keeps Shelf's two folders"
+    );
+    assert!(
+        library_removal_refusal(&conn, shelf)
+            .expect("reads")
+            .is_some(),
+        "and Shelf is now its only grant"
+    );
+}
+
+/// What each removal reports of the derive that follows it, over a library
+/// whose figures differ from one another.
+#[test]
+fn a_library_removal_reports_the_derive_that_follows_it() {
+    let parent = crate::tests::tempdir("remove-library-report");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    for volume in ["v01", "v02", "v03"] {
+        write_archive(
+            &parent
+                .path()
+                .join("kept")
+                .join("Kept")
+                .join(format!("Kept - {volume}.cbz")),
+            2,
+        );
+    }
+    write_archive(
+        &parent
+            .path()
+            .join("gone")
+            .join("Gone")
+            .join("Gone - v01.cbz"),
+        2,
+    );
+    let kept = create_library(&conn, "Kept", &[parent.path().join("kept")]).expect("creates");
+    let gone = create_library(&conn, "Gone", &[parent.path().join("gone")]).expect("creates");
+    for root in roots(&conn).expect("lists") {
+        scan_root(&conn, &root).expect("scans");
+    }
+    crate::derive::derive(&conn).expect("derives");
+    assert_ne!(kept.library_id, gone.library_id);
+
+    let (_, predicted) = library_removal_cost(&conn, gone.library_id).expect("costs");
+    let (_, derived) = remove_library(&conn, gone.library_id).expect("removes");
+
+    for (which, report) in [("the dry run", predicted), ("the removal", derived)] {
+        assert_eq!(
+            (report.series, report.works, report.editions, report.members),
+            (1, 3, 3, 3),
+            "{which}: what the derive found standing"
+        );
+    }
+}
+
+/// A surviving library's missing hand document is repaired by a real
+/// removal, which derives for real after its commit, and not by the dry run,
+/// which rolls back and must write nothing to disk.
+#[test]
+fn removing_a_library_repairs_a_surviving_documents_gap_and_its_cost_does_not() {
+    let dir = crate::tests::tempdir("remove-library-reconcile");
+    let library = Library::open_in_memory().expect("library");
+    let conn = library.conn();
+    write_archive(
+        &dir.path().join("a").join("Alpha").join("Alpha - v01.cbz"),
+        3,
+    );
+    write_archive(&dir.path().join("b").join("Beta").join("Beta - v01.cbz"), 3);
+    let kept = create_library(&conn, "Kept", &[dir.path().join("a")]).expect("creates");
+    let doomed = create_library(&conn, "Doomed", &[dir.path().join("b")]).expect("creates");
+    conn.execute(
+        "UPDATE root SET keeps_documents = 1 WHERE id = ?1",
+        [kept.folders[0].root.id],
+    )
+    .expect("the kept folder keeps documents");
+    for root in roots(&conn).expect("lists") {
+        scan_root(&conn, &root).expect("scans");
+    }
+    crate::derive::derive(&conn).expect("derives");
+    let alpha = work_under(&conn, kept.folders[0].root.id);
+    let mut doc = crate::librarydoc::of(&conn, alpha).expect("projects");
+    doc.title = Some("Hand-Set Alpha Title".to_string());
+    crate::librarydoc::apply(&conn, alpha, &doc).expect("applies");
+    let saved = crate::hand::save(&conn, alpha).expect("saves");
+    let document = saved.path.expect("a kept folder's work has an address");
+    std::fs::remove_file(&document).expect("the gap");
+
+    let (_, rehearsed) = library_removal_cost(&conn, doomed.library_id).expect("costs");
+    assert!(!document.exists(), "the dry run writes nothing to disk");
+    let (_, removed) = remove_library(&conn, doomed.library_id).expect("removes");
+
+    assert!(document.exists(), "the removal reconciles documents");
+    assert_eq!(
+        rehearsed.repaired_documents, 0,
+        "the dry run's derive repairs nothing"
+    );
+    assert_eq!(
+        removed.repaired_documents, 1,
+        "the removal answers the report of the derive after its commit"
+    );
+}
+
+/// With one account, the refusal says "is granted" and "it".
+#[test]
+fn the_refusal_for_one_account_is_in_the_singular() {
+    let parent = crate::tests::tempdir("remove-library-refused-one");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    three_libraries(parent.path(), &conn);
+    an_account_granted(&conn, "alex", "user", &["Shelf"]);
+
+    assert_eq!(
+        library_removal_refusal(&conn, library_called(&conn, "Shelf")),
+        Ok(Some(
+            "`Shelf` is the only library `alex` is granted. Removing it would delete that \
+             grant, and an account with no grant sees every library. First grant it another \
+             library, or revoke this one"
+                .to_string()
+        ))
+    );
 }
 
 /// The pattern language is gitignore's, taken from the crate rather than
@@ -3272,4 +3881,165 @@ fn a_directory_only_pattern_does_not_swallow_a_present_file_of_the_same_name() {
         file_row, 1,
         "the file must become a scan_entry row, not be silently excluded: {report:?}"
     );
+}
+
+fn two_folders(parent: &Path) -> (PathBuf, PathBuf) {
+    let (a, b) = (parent.join("Volumes"), parent.join("Chapters"));
+    for dir in [&a, &b] {
+        std::fs::create_dir_all(dir).expect("mkdir");
+    }
+    (a, b)
+}
+
+#[test]
+fn a_library_is_made_with_each_of_its_folders() {
+    let parent = crate::tests::tempdir("create-library");
+    let (a, b) = two_folders(parent.path());
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+
+    let made = create_library(&conn, " Manga ", &[a.clone(), b.clone()]).expect("creates");
+
+    assert_eq!(made.name, "Manga", "the name as stored");
+    assert_eq!(
+        crate::libraries::name_of(&conn, made.library_id)
+            .expect("reads")
+            .as_deref(),
+        Some("Manga")
+    );
+    let held: Vec<(PathBuf, i64)> = roots(&conn)
+        .expect("lists")
+        .into_iter()
+        .map(|r| (r.path, r.library_id))
+        .collect();
+    assert_eq!(
+        held,
+        vec![
+            (a.canonicalize().expect("canonical"), made.library_id),
+            (b.canonicalize().expect("canonical"), made.library_id),
+        ]
+    );
+    assert_eq!(made.folders.len(), 2);
+    assert_eq!(
+        made.folders
+            .iter()
+            .map(|f| f.root.clone())
+            .collect::<Vec<_>>(),
+        roots(&conn).expect("lists"),
+        "the folders are answered in the order given, as stored"
+    );
+}
+
+fn libraries_and_roots(conn: &Connection) -> (i64, i64) {
+    let count = |table: &str| -> i64 {
+        conn.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))
+            .expect("counts")
+    };
+    (count("library"), count("root"))
+}
+
+#[test]
+fn a_library_is_refused_whole_for_one_bad_folder() {
+    let parent = crate::tests::tempdir("create-library-refused");
+    let (a, b) = two_folders(parent.path());
+    let inside = a.join("inside");
+    std::fs::create_dir_all(&inside).expect("mkdir");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+
+    for (paths, says) in [
+        (vec![a.clone(), parent.path().join("missing")], "missing"),
+        (vec![a.clone(), inside.clone()], "overlap"),
+        (vec![inside.clone(), a.clone()], "overlap"),
+        (vec![a.clone(), a.clone()], "overlap"),
+        (Vec::new(), "at least one folder"),
+    ] {
+        let why = create_library(&conn, "Manga", &paths).expect_err("refuses");
+        assert!(
+            matches!(&why, AddRootError::Unusable(text) if text.contains(says)),
+            "{why:?}"
+        );
+        assert_eq!(
+            libraries_and_roots(&conn),
+            (0, 0),
+            "nothing was made: {paths:?}"
+        );
+    }
+    assert!(matches!(
+        create_library(&conn, "  ", std::slice::from_ref(&b)),
+        Err(AddRootError::Unusable(why)) if why.contains("needs a name")
+    ));
+    assert_eq!(libraries_and_roots(&conn), (0, 0));
+}
+
+/// The second folder's insert is refused by a trigger planted for it, after
+/// both paths were vetted. The library and the first folder must go with it.
+#[test]
+fn a_library_whose_second_folder_fails_at_the_insert_leaves_nothing() {
+    let parent = crate::tests::tempdir("create-library-insert");
+    let (a, b) = two_folders(parent.path());
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    conn.execute_batch(
+        "CREATE TEMP TRIGGER refuse_a_second_root BEFORE INSERT ON root
+         WHEN (SELECT count(*) FROM root) >= 1
+         BEGIN SELECT RAISE(ABORT, 'planted'); END;",
+    )
+    .expect("plants the refusal");
+
+    let why = create_library(&conn, "Manga", &[a, b]).expect_err("refuses");
+
+    assert!(
+        matches!(&why, AddRootError::Failed(text) if text.contains("planted")),
+        "{why:?}"
+    );
+    assert_eq!(libraries_and_roots(&conn), (0, 0));
+}
+
+#[test]
+fn a_library_is_not_made_under_a_name_already_taken() {
+    let parent = crate::tests::tempdir("create-library-taken");
+    let (a, b) = two_folders(parent.path());
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    add_root_in(&conn, &a, InLibrary::Named("Manga")).expect("Manga exists");
+    let inside = a.join("inside");
+    std::fs::create_dir_all(&inside).expect("mkdir");
+
+    let why = create_library(&conn, "Other", std::slice::from_ref(&inside)).expect_err("refuses");
+    assert!(
+        matches!(&why, AddRootError::Unusable(text) if text.contains("is inside existing root")),
+        "{why:?}"
+    );
+    assert_eq!(libraries_and_roots(&conn), (1, 1));
+
+    for name in ["Manga", " Manga "] {
+        let why = create_library(&conn, name, std::slice::from_ref(&b)).expect_err("refuses");
+        assert!(
+            matches!(&why, AddRootError::Unusable(text) if text.contains("already called `Manga`")),
+            "{why:?}"
+        );
+    }
+    assert_eq!(libraries_and_roots(&conn), (1, 1));
+}
+
+#[test]
+fn a_folder_joins_a_library_by_its_id_and_no_library_by_an_id_none_has() {
+    let parent = crate::tests::tempdir("add-by-id");
+    let (a, b) = two_folders(parent.path());
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let first = add_root_in(&conn, &a, InLibrary::Named("Manga")).expect("Manga exists");
+
+    let why = add_root_checked_in(&conn, &b, InLibrary::Id(first.library_id + 1))
+        .expect_err("no library has that id");
+    assert!(
+        matches!(&why, AddRootError::Unusable(text) if text.contains("there is no library")),
+        "{why:?}"
+    );
+    assert_eq!(libraries_and_roots(&conn), (1, 1));
+
+    let added = add_root_checked_in(&conn, &b, InLibrary::Id(first.library_id)).expect("joins");
+    assert_eq!(added.root.library_id, first.library_id);
+    assert_eq!(libraries_and_roots(&conn), (1, 2));
 }

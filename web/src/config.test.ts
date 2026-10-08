@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Unauthenticated } from './api'
 import {
-  addRoot,
   humanInterval,
   listRoots,
   patchRoot,
@@ -77,17 +76,18 @@ describe('regimeFacts', () => {
   // since each is one arm of the same three-entry result.
 
   it('names each fact under its own label, in order watch / scan every / last scan', () => {
-    // `GET /api/library/roots` carries no probe (only `POST` does) and this
-    // root has never been scanned and has no interval set — every arm at
-    // its fallback, and the order the caller's `<dl>` renders in. Spec
-    // §3.1: the honest gap beats a number nobody measured.
+    // A folder read from a list carries no probe (only a route that adds a
+    // folder runs one) and this root has never been scanned and has no
+    // interval set — every arm at its fallback, and the order the caller's
+    // `<dl>` renders in. Spec §3.1: the honest gap beats a number nobody
+    // measured.
     const bare = root({
       scan_interval_secs: null,
       last_scan_at: null,
       last_scan_status: null,
     })
     expect(regimeFacts(bare)).toEqual([
-      { label: 'watch', value: 'unknown — probed when a root is added' },
+      { label: 'watch', value: 'unknown — probed when a folder is added' },
       { label: 'scan every', value: 'not set' },
       { label: 'last scan', value: 'never' },
     ])
@@ -168,18 +168,6 @@ describe('the roots client', () => {
     vi.stubGlobal('fetch', fetchMock)
     await listRoots()
     expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/library/roots')
-  })
-
-  it('posts the path, and nothing else, to add a root', async () => {
-    const fetchMock = vi
-      .fn()
-      .mockImplementation(() => json({ root: {}, watching: true }))
-    vi.stubGlobal('fetch', fetchMock)
-    await addRoot('/srv/manga')
-    expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/library/roots')
-    const init = fetchMock.mock.calls[0]?.[1] as RequestInit
-    expect(init.method).toBe('POST')
-    expect(init.body).toBe(JSON.stringify({ path: '/srv/manga' }))
   })
 
   it('patches with only the columns it was handed', async () => {
@@ -263,9 +251,10 @@ describe('the roots client', () => {
   })
 
   it("carries the server's own sentence out of a refusal, not just the code", async () => {
-    // Spec §3.2: the screen renders the message that names *which* of the
-    // three validations failed. A thrower that dropped the body would throw
-    // that away at the client boundary.
+    // The screen renders the server's message, which names why a write was
+    // refused. A thrower that dropped the body would throw that away at the
+    // client boundary. Driven through `patchRoot`; the other writes send through
+    // the same `sendJson`.
     vi.stubGlobal(
       'fetch',
       vi.fn().mockResolvedValue(
@@ -274,6 +263,8 @@ describe('the roots client', () => {
         }),
       ),
     )
-    await expect(addRoot('/srv/a/b')).rejects.toThrow(/sits inside/)
+    await expect(patchRoot(3, { edition_key: null })).rejects.toThrow(
+      /sits inside/,
+    )
   })
 })

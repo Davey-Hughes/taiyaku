@@ -151,7 +151,6 @@ const HOOKS: Record<string, string[]> = {
   ],
   './ProposalRow.test.tsx': ['page'],
   './Proposals.test.tsx': ['tab', 'weak-check'],
-  './Roots.test.tsx': ['probe'],
   './RuleEditor.test.tsx': [
     'busy',
     'held-edit',
@@ -166,7 +165,7 @@ const HOOKS: Record<string, string[]> = {
     'delete',
     'override-badge',
   ],
-  './UserRow.test.tsx': ['done', 'grants', 'reset'],
+  './UserRow.test.tsx': ['done', 'reset'],
 }
 
 /**
@@ -181,7 +180,6 @@ const ELSEWHERE: Record<string, string> = {
   matched: "admin.css's `.preview` table rules; a comment beside them names it",
   'removal-derive':
     "admin.css's `summary` and `.derived` rules, whose comments name it",
-  'removal-report': "admin.css's `.derived` rule, whose comment names it",
   'save-derive': "admin.css's `summary` rule, whose comment names it",
 }
 
@@ -210,12 +208,9 @@ const UNREAD = [
   'scanning',
   'series-count',
   'stamp-failure',
-  'unknown',
-  'unrestricted',
   'unwritten',
   'verdict',
   'walk',
-  'where',
   'you',
 ]
 

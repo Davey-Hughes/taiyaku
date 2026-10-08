@@ -22,7 +22,7 @@ async fn the_user_list_carries_sessions_keys_and_grants() {
         "can_log_in",
         "sessions",
         "keys",
-        "roots",
+        "libraries",
     ] {
         assert!(
             !first[key].is_null(),
@@ -31,7 +31,11 @@ async fn the_user_list_carries_sessions_keys_and_grants() {
     }
     assert!(first["sessions"].is_array(), "{json}");
     assert!(first["keys"].is_array(), "{json}");
-    assert!(first["roots"].is_array(), "{json}");
+    assert!(first["libraries"].is_array(), "{json}");
+    assert!(
+        first.get("roots").is_none(),
+        "the old key is gone, not sent beside the new one: {json}"
+    );
     assert_eq!(
         first["keys"].as_array().expect("keys").len(),
         1,
@@ -326,31 +330,204 @@ async fn a_misspelled_dry_run_is_refused_rather_than_deleting() {
     );
 }
 
-/// A `roots` list in the patch body writes the grants, which is PR2 §1.2's
-/// whole reason for putting it there rather than on a fifth route.
+/// The library a single-scanned-work fixture's root is filed under, and its
+/// name.
+fn the_fixture_library(state: &crate::ServeState) -> (i64, String) {
+    let conn = state.library.conn();
+    conn.query_row(
+        "SELECT l.id, l.name FROM root r JOIN library l ON l.id = r.library_id",
+        [],
+        |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)),
+    )
+    .expect("the fixture's root has a library")
+}
+
+/// A `libraries` list in the patch body writes the grants, which is PR2 §1.2's
+/// whole reason for putting it there rather than on a fifth route. The answer
+/// carries each library by id and name.
 #[tokio::test]
-async fn a_roots_list_in_the_patch_body_writes_the_grants() {
+async fn a_libraries_list_in_the_patch_body_writes_the_grants() {
     let (router, state, _fixture) = test_support::router_over_a_single_scanned_work();
-    let root = {
-        let conn = state.library.conn();
-        conn.query_row("SELECT id FROM root", [], |r| r.get::<_, i64>(0))
-            .expect("the fixture's root")
-    };
+    let (library, name) = the_fixture_library(&state);
     let id = a_reader(&router, &state).await;
 
-    send_json(
+    let response = send_json(
         &router,
         Method::PATCH,
         &format!("/api/library/users/{id}"),
-        &serde_json::json!({ "roots": [root] }),
+        &serde_json::json!({ "libraries": [library] }),
     )
     .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value =
+        serde_json::from_str(&test_support::body_string(response).await).expect("json");
+
+    assert_eq!(
+        body["user"]["libraries"],
+        serde_json::json!([{ "id": library, "name": name }]),
+        "{body}"
+    );
+    assert!(body["user"].get("roots").is_none(), "{body}");
+    let conn = state.library.conn();
+    assert_eq!(
+        taiyaku_library::account::libraries_for(&conn, id).expect("reads"),
+        vec![library]
+    );
+}
+
+/// `[]` takes every grant away, which is unrestricted, and the answer says so
+/// by carrying an empty list; an absent key, in the same route, leaves the
+/// grants as they were.
+#[tokio::test]
+async fn an_empty_libraries_list_revokes_everything_and_an_absent_key_changes_nothing() {
+    let (router, state, _fixture) = test_support::router_over_a_single_scanned_work();
+    let (library, _name) = the_fixture_library(&state);
+    let id = a_reader(&router, &state).await;
+    {
+        let conn = state.library.conn();
+        taiyaku_library::account::grant_library(&conn, id, library).expect("grants");
+    }
+
+    let response = send_json(
+        &router,
+        Method::PATCH,
+        &format!("/api/library/users/{id}"),
+        &serde_json::json!({ "can_stream": false }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value =
+        serde_json::from_str(&test_support::body_string(response).await).expect("json");
+    assert_eq!(
+        body["user"]["libraries"].as_array().map(Vec::len),
+        Some(1),
+        "an absent key left the grant: {body}"
+    );
+    {
+        let conn = state.library.conn();
+        assert_eq!(
+            taiyaku_library::account::libraries_for(&conn, id).expect("reads"),
+            vec![library]
+        );
+    }
+
+    let response = send_json(
+        &router,
+        Method::PATCH,
+        &format!("/api/library/users/{id}"),
+        &serde_json::json!({ "libraries": [] }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value =
+        serde_json::from_str(&test_support::body_string(response).await).expect("json");
+    assert_eq!(
+        body["user"]["libraries"],
+        serde_json::json!([]),
+        "an empty list is an empty answer: {body}"
+    );
+    let conn = state.library.conn();
+    assert!(
+        taiyaku_library::account::libraries_for(&conn, id)
+            .expect("reads")
+            .is_empty()
+    );
+}
+
+/// `libraries` is an array of numbers; anything else is the caller's mistake
+/// and writes nothing, whatever else the body said.
+#[tokio::test]
+async fn a_libraries_value_that_is_not_an_array_of_numbers_is_refused() {
+    let (router, state, _fixture) = test_support::router_over_a_single_scanned_work();
+    let (library, _name) = the_fixture_library(&state);
+    let id = a_reader(&router, &state).await;
+    {
+        let conn = state.library.conn();
+        taiyaku_library::account::grant_library(&conn, id, library).expect("grants");
+    }
+
+    for bad in [
+        serde_json::json!("everything"),
+        serde_json::json!({ "id": library }),
+        serde_json::json!([library, "x"]),
+        serde_json::json!([1.5]),
+        serde_json::Value::Null,
+    ] {
+        let response = send_json(
+            &router,
+            Method::PATCH,
+            &format!("/api/library/users/{id}"),
+            &serde_json::json!({ "can_stream": false, "libraries": bad }),
+        )
+        .await;
+        let status = response.status();
+        let text = test_support::body_string(response).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{bad}: {text}");
+        assert!(
+            text.contains("`libraries` must be an array of library ids"),
+            "{bad}: {text}"
+        );
+    }
 
     let conn = state.library.conn();
     assert_eq!(
-        taiyaku_library::account::roots_for(&conn, id).expect("reads"),
-        vec![root]
+        taiyaku_library::account::libraries_for(&conn, id).expect("reads"),
+        vec![library],
+        "no grant moved"
     );
+    assert!(
+        taiyaku_library::account::by_id(&conn, id)
+            .expect("reads")
+            .expect("the account")
+            .can_stream,
+        "and the other field in the body was not written either"
+    );
+}
+
+/// The screen sent folder ids under `roots` until it sent library ids under
+/// `libraries`. The old key is refused by name, never dropped: dropped, the
+/// request would answer 200 having changed no grant.
+#[tokio::test]
+async fn a_roots_key_in_the_patch_body_is_refused_naming_libraries() {
+    let (router, state, _fixture) = test_support::router_over_a_single_scanned_work();
+    let (library, _name) = the_fixture_library(&state);
+    let id = a_reader(&router, &state).await;
+
+    for body in [
+        serde_json::json!({ "can_stream": false, "roots": [1] }),
+        serde_json::json!({ "can_stream": false, "roots": null }),
+        serde_json::json!({ "can_stream": false, "roots": [1], "libraries": [library] }),
+    ] {
+        let response = send_json(
+            &router,
+            Method::PATCH,
+            &format!("/api/library/users/{id}"),
+            &body,
+        )
+        .await;
+
+        let status = response.status();
+        let text = test_support::body_string(response).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}: {text}");
+        assert!(
+            text.contains("`roots` is no longer accepted: send `libraries`"),
+            "{body}: {text}"
+        );
+        let conn = state.library.conn();
+        assert!(
+            taiyaku_library::account::libraries_for(&conn, id)
+                .expect("reads")
+                .is_empty(),
+            "{body}"
+        );
+        assert!(
+            taiyaku_library::account::by_id(&conn, id)
+                .expect("reads")
+                .expect("the account")
+                .can_stream,
+            "nothing else in {body} was written"
+        );
+    }
 }
 
 /// The "a device was lost" case. `account::revoke_session` is already scoped
@@ -961,38 +1138,105 @@ async fn an_api_key_reaches_no_user_administration_route() {
     }
 }
 
-/// **A root id no row holds is 400, not 500.** `user_root.root_id` referenced
-/// `root(id)` and `INSERT OR IGNORE` does not suppress a foreign-key
-/// violation, so `{"roots": [999]}` reached the client as
-/// `500 :: granting root 999 to user 2: FOREIGN KEY constraint failed`.
-///
-/// **The fix round introduced this**, by widening every `update` failure from
-/// one 409 into three cases and filing this one as a fault. Found by the
-/// review of that round.
+/// **A library id no row holds is 400, not 500.** `user_library.library_id`
+/// references `library(id)` and `INSERT OR IGNORE` does not suppress a
+/// foreign-key violation, so `{"libraries": [999]}` would reach the client as
+/// SQLite's own text were the id not asked about first. A list naming a
+/// library that is there before one that is not writes nothing.
 #[tokio::test]
-async fn a_roots_list_naming_a_root_that_does_not_exist_is_the_callers_mistake() {
+async fn a_libraries_list_naming_a_library_that_does_not_exist_is_the_callers_mistake() {
     let (router, state, _fixture) = test_support::router_over_a_single_scanned_work();
+    let (library, _name) = the_fixture_library(&state);
+    let id = a_reader(&router, &state).await;
+
+    for listed in [serde_json::json!([999]), serde_json::json!([library, 999])] {
+        let response = send_json(
+            &router,
+            Method::PATCH,
+            &format!("/api/library/users/{id}"),
+            &serde_json::json!({ "libraries": listed }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{listed}");
+        assert!(
+            test_support::body_string(response)
+                .await
+                .contains("there is no library 999"),
+            "the refusal names the library that is not there: {listed}"
+        );
+    }
+
+    let conn = state.library.conn();
+    assert!(
+        taiyaku_library::account::libraries_for(&conn, id)
+            .expect("reads")
+            .is_empty(),
+        "and no grant was written"
+    );
+}
+
+/// A refused list undoes the rest of its own body: the rename and the
+/// capability, written before the grants were reached, are what they were.
+#[tokio::test]
+async fn a_refused_libraries_list_leaves_the_rest_of_its_body_unwritten() {
+    let (router, state, _fixture) = test_support::router_over_a_single_scanned_work();
+    let (library, _name) = the_fixture_library(&state);
     let id = a_reader(&router, &state).await;
 
     let response = send_json(
         &router,
         Method::PATCH,
         &format!("/api/library/users/{id}"),
-        &serde_json::json!({ "roots": [999] }),
+        &serde_json::json!({
+            "name": "renamed",
+            "can_stream": false,
+            "libraries": [library, 999],
+        }),
     )
     .await;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    assert!(
-        test_support::body_string(response).await.contains("999"),
-        "the refusal names the root that is not there"
-    );
 
     let conn = state.library.conn();
+    let account = taiyaku_library::account::by_id(&conn, id)
+        .expect("reads")
+        .expect("the account");
+    assert_eq!(account.name, "reader", "the rename was undone");
+    assert!(account.can_stream, "and so was the capability");
     assert!(
-        taiyaku_library::account::roots_for(&conn, id)
+        taiyaku_library::account::libraries_for(&conn, id)
             .expect("reads")
             .is_empty(),
         "and no grant was written"
+    );
+}
+
+/// An administrator's own grants are written like anyone's.
+#[tokio::test]
+async fn an_administrator_patching_their_own_libraries_is_written() {
+    let (router, state, _fixture) = test_support::router_over_a_single_scanned_work();
+    let (library, name) = the_fixture_library(&state);
+    let me = user_id(&state, test_support::FIXTURE_NAME);
+
+    let response = send_json(
+        &router,
+        Method::PATCH,
+        &format!("/api/library/users/{me}"),
+        &serde_json::json!({ "libraries": [library] }),
+    )
+    .await;
+    let status = response.status();
+    let text = test_support::body_string(response).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let body: serde_json::Value = serde_json::from_str(&text).expect("json");
+    assert_eq!(
+        body["user"]["libraries"],
+        serde_json::json!([{ "id": library, "name": name }]),
+        "{body}"
+    );
+    let conn = state.library.conn();
+    assert_eq!(
+        taiyaku_library::account::libraries_for(&conn, me).expect("reads"),
+        vec![library]
     );
 }
 
@@ -1174,39 +1418,43 @@ fn user_id_on(conn: &rusqlite::Connection, name: &str) -> i64 {
         .expect("the account exists")
 }
 
-/// The Users screen is sent folders and sends folders back, and a grant names
-/// a library. The fixture account, granted `Shelf`, is listed with both of
-/// Shelf's folders; a patch naming one of them leaves the library granted,
-/// so the list still shows both.
+/// The Users screen is sent libraries and sends library ids back. The fixture
+/// account, granted `Shelf`, is listed with it by id and name, whole, and not
+/// with its folders; a patch naming both libraries lists both, by name, and a
+/// patch naming one keeps only that one.
 #[tokio::test]
-async fn the_users_screen_lists_and_keeps_a_libraries_folders() {
+async fn the_users_screen_lists_and_replaces_an_accounts_libraries() {
     let tmp = test_support::Fixture::new("users-granted-library");
     let (router, state) = test_support::router_over_a_granted_two_folder_library(&tmp);
     let reader = user_id(&state, test_support::FIXTURE_NAME);
-    let folders_listed = |body: String| -> Vec<i64> {
+    let libraries_listed = |body: String| -> serde_json::Value {
         let json: serde_json::Value = serde_json::from_str(&body).expect("json");
-        json["users"]
+        let account = json["users"]
             .as_array()
             .expect("users")
             .iter()
             .find(|u| u["id"] == reader)
-            .expect("the fixture account")["roots"]
-            .as_array()
-            .expect("roots")
-            .iter()
-            .map(|root| root["id"].as_i64().expect("a root id"))
-            .collect()
+            .expect("the fixture account")
+            .clone();
+        assert!(account.get("roots").is_none(), "{account}");
+        account["libraries"].clone()
     };
     let nothing = serde_json::json!({});
+    let bystander = {
+        let conn = state.library.conn();
+        let id = taiyaku_library::account::add(&conn, "bystander", "pw", "user").expect("adds");
+        taiyaku_library::account::grant_library(&conn, id, 80).expect("grants Other");
+        id
+    };
 
     let listed =
         send_as_another_administrator(&router, &state, Method::GET, "/api/library/users", &nothing)
             .await;
     assert_eq!(listed.status(), StatusCode::OK);
     assert_eq!(
-        folders_listed(test_support::body_string(listed).await),
-        vec![1, 2],
-        "both folders of the granted library, and not Other's"
+        libraries_listed(test_support::body_string(listed).await),
+        serde_json::json!([{ "id": 70, "name": "Shelf" }]),
+        "the granted library, and not Other"
     );
 
     let patched = send_as_another_administrator(
@@ -1214,21 +1462,54 @@ async fn the_users_screen_lists_and_keeps_a_libraries_folders() {
         &state,
         Method::PATCH,
         &format!("/api/library/users/{reader}"),
-        &serde_json::json!({ "roots": [1] }),
+        &serde_json::json!({ "libraries": [80, 70] }),
     )
     .await;
     let status = patched.status();
     let body = test_support::body_string(patched).await;
     assert_eq!(status, StatusCode::OK, "{body}");
+    let answered: serde_json::Value = serde_json::from_str(&body).expect("json");
+    assert_eq!(
+        answered["user"]["libraries"],
+        serde_json::json!([{ "id": 80, "name": "Other" }, { "id": 70, "name": "Shelf" }]),
+        "by name, whatever order the list was sent in"
+    );
 
     let listed =
         send_as_another_administrator(&router, &state, Method::GET, "/api/library/users", &nothing)
             .await;
     assert_eq!(
-        folders_listed(test_support::body_string(listed).await),
-        vec![1, 2],
-        "one folder of Shelf sent back, and Shelf is still granted whole"
+        libraries_listed(test_support::body_string(listed).await),
+        serde_json::json!([{ "id": 80, "name": "Other" }, { "id": 70, "name": "Shelf" }]),
+        "the list route carries the same shape for two grants"
     );
+    let listed =
+        send_as_another_administrator(&router, &state, Method::GET, "/api/library/users", &nothing)
+            .await;
+    let json: serde_json::Value =
+        serde_json::from_str(&test_support::body_string(listed).await).expect("json");
+    let theirs = json["users"]
+        .as_array()
+        .expect("users")
+        .iter()
+        .find(|u| u["id"] == bystander)
+        .expect("the other account")["libraries"]
+        .clone();
+    assert_eq!(
+        theirs,
+        serde_json::json!([{ "id": 80, "name": "Other" }]),
+        "each row carries its own account's libraries and not another's"
+    );
+
+    let patched = send_as_another_administrator(
+        &router,
+        &state,
+        Method::PATCH,
+        &format!("/api/library/users/{reader}"),
+        &serde_json::json!({ "libraries": [70] }),
+    )
+    .await;
+    assert_eq!(patched.status(), StatusCode::OK);
     let conn = state.library.conn();
     assert_eq!(
         taiyaku_library::account::libraries_for(&conn, reader).expect("reads"),

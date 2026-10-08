@@ -11,11 +11,14 @@ import * as config from './config'
 import type { Derived, FinishedScan, Unreadable, Walk } from './config'
 import { GateContext } from './gate'
 import { Backup } from './Backup'
+import * as librariesApi from './libraries'
 import * as backupApi from './backup'
-import { Roots } from './Roots'
+import { FolderPicker } from './FolderPicker'
+import { Libraries } from './Libraries'
 import { Users } from './Users'
 import * as usersApi from './users'
 import { DeriveSection, ScanReport } from './ScanReport'
+import { press, submit, typeInto } from './testing/input'
 import { mount } from './testing/mount'
 
 /**
@@ -29,8 +32,8 @@ import { mount } from './testing/mount'
  * Chromium checks each of Tasks 1–6 did by hand into standing assertions.
  *
  * **These three screens take no props and fetch their own data**, so this
- * file stubs `./config`, `./users` and `./backup` exactly as `Roots.test.tsx`,
- * `Users.test.tsx` and `Backup.test.tsx` do — copying each mock surface from
+ * file stubs `./config`, `./libraries`, `./users` and `./backup` exactly as
+ * `Libraries.test.tsx`, `Users.test.tsx` and `Backup.test.tsx` do — copying each mock surface from
  * its matching jsdom test rather than guessing which functions a mount
  * actually calls. `mount` keeps ONE module-level host, torn down in
  * `afterEach` — one mount per `it()`, never two, or the second leaks into
@@ -42,12 +45,20 @@ import { mount } from './testing/mount'
 
 vi.mock('./config', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./config')>()),
-  addRoot: vi.fn(),
-  listRoots: vi.fn(),
   patchRoot: vi.fn(),
   removalCost: vi.fn(),
   scanStatus: vi.fn(),
   startScan: vi.fn(),
+}))
+
+vi.mock('./libraries', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./libraries')>()),
+  createLibrary: vi.fn(),
+  libraryRemovalCost: vi.fn(),
+  libraryScanStatus: vi.fn(),
+  listFolders: vi.fn(),
+  listLibraries: vi.fn(),
+  removeLibrary: vi.fn(),
 }))
 
 vi.mock('./users', async (importOriginal) => ({
@@ -94,6 +105,23 @@ const root = (over: Partial<config.Root> = {}): config.Root => ({
  */
 const longPathRoot = root({ path: '/home/davey/temp/manga-test/Volumes' })
 
+/** A library of one folder, as the grant editor lists it. */
+const libraryOf = (folder: config.Root): librariesApi.Library => ({
+  id: 70,
+  name: 'Manga',
+  works: 0,
+  books: 0,
+  folders: [folder],
+})
+
+/** One library holding `folders`, as the list route sends it. */
+const holding = (...folders: config.Root[]) => ({
+  libraries: [{ id: 1, name: 'Manga', works: 0, books: 0, folders }],
+})
+
+/** A library name with sixty characters and nowhere to break. */
+const UNBROKEN_NAME = 'Omnibus_Editions'.repeat(4).slice(0, 60)
+
 /** A root whose path has a longer run between hyphens and spaces than a card at 390 is wide. */
 const UNBROKEN_ROOT = root({
   path: '/home/davey/projects/taiyaku/target/a_scratch_library/Volumes',
@@ -109,7 +137,7 @@ const user = (over: Partial<usersApi.User> = {}): usersApi.User => ({
   can_log_in: true,
   sessions: [],
   keys: [],
-  roots: [],
+  libraries: [],
   ...over,
 })
 
@@ -208,14 +236,20 @@ beforeEach(() => {
     last_scan_at: null,
     last_scan_status: null,
   })
-  vi.mocked(config.listRoots).mockResolvedValue({ roots: [] })
+  vi.mocked(librariesApi.libraryScanStatus).mockResolvedValue({
+    library_id: 1,
+    running: false,
+    elapsed_secs: null,
+    folders: [],
+  })
+  vi.mocked(librariesApi.listLibraries).mockResolvedValue({ libraries: [] })
   vi.mocked(usersApi.listUsers).mockResolvedValue({ users: [] })
   vi.mocked(backupApi.listBackups).mockResolvedValue({ backups: [] })
 })
 
 describe('the Configuration screens at 390px', () => {
   /**
-   * `<Roots>`/`<Users>`/`<Backup>` mount standalone in production too — they
+   * `<Libraries>`/`<Users>`/`<Backup>` mount standalone in production too — they
    * are routed inside `Shell`'s `<main>`, which is where `.library > main`'s
    * own CSS (`shell.css`) applies. Reproducing that ancestor here, the same
    * way `AcceptForm.browser.test.tsx` and `Proposals.browser.test.tsx` do
@@ -242,16 +276,41 @@ describe('the Configuration screens at 390px', () => {
     expect(main!.scrollWidth).toBeLessThanOrEqual(main!.clientWidth)
   }
 
-  it('does not scroll sideways on the roots screen', async () => {
+  it('does not scroll sideways on the libraries screen, and wraps the rename form inside its card', async () => {
     await page.viewport(390, 844)
-    vi.mocked(config.listRoots).mockResolvedValue({ roots: [longPathRoot] })
+    vi.mocked(librariesApi.listLibraries).mockResolvedValue(
+      holding(longPathRoot),
+    )
     const host = await act(async () => {
-      const mounted = mount(inShell(<Roots />))
+      const mounted = mount(inShell(<Libraries />))
       await Promise.resolve()
       await Promise.resolve()
       return mounted
     })
     assertNoSidewaysScroll(host)
+    // The library's three actions share a row that must wrap: at 320px they
+    // ask for more than is left them in every face. The fallback faces are
+    // forced so that the result does not depend on whether the web faces have
+    // loaded.
+    withFallbackFonts()
+    await page.viewport(320, 844)
+    await press(host.querySelector('button[name="rename-library"]') as Element)
+    assertNoSidewaysScroll(host)
+    for (const selector of ['.library-card > .actions', '.rename-library']) {
+      const row = host.querySelector(selector) as HTMLElement
+      const edge = row.getBoundingClientRect().right + 0.5
+      expect(
+        [...row.children]
+          .filter((el) => el.getBoundingClientRect().right > edge)
+          .map((el) => `${el.tagName.toLowerCase()}.${el.className}`),
+        selector,
+      ).toEqual([])
+      // Each keeps its words on one line: a row that does not wrap shrinks
+      // its buttons until their labels break.
+      for (const button of row.querySelectorAll('button')) {
+        expect(button.getBoundingClientRect().height, selector).toBeLessThan(44)
+      }
+    }
   })
 
   it('keeps a root’s own path inside its card when the path has nowhere to break', async () => {
@@ -260,9 +319,11 @@ describe('the Configuration screens at 390px', () => {
     // out of the card, and the document with it — found on a scratch library
     // under `target/`, whose path is that long (O180).
     await page.viewport(390, 844)
-    vi.mocked(config.listRoots).mockResolvedValue({ roots: [UNBROKEN_ROOT] })
+    vi.mocked(librariesApi.listLibraries).mockResolvedValue(
+      holding(UNBROKEN_ROOT),
+    )
     const host = await act(async () => {
-      const mounted = mount(inShell(<Roots />))
+      const mounted = mount(inShell(<Libraries />))
       await Promise.resolve()
       await Promise.resolve()
       return mounted
@@ -270,20 +331,25 @@ describe('the Configuration screens at 390px', () => {
     await document.fonts.ready
     assertNoSidewaysScroll(host)
     expect(pastItsCard(host)).toEqual([])
+    // The path is the card's heading and takes no margin of its own.
+    const heading = host.querySelector('.root-row > h4') as HTMLElement
+    expect(getComputedStyle(heading).marginTop).toBe('0px')
   })
 
   it('keeps the removal’s confirm button inside the card for the same path', async () => {
     // Another place this screen draws a root's path: `RemoveRoot`'s confirm
     // button says "Remove " and then the whole of it (O180).
     await page.viewport(390, 844)
-    vi.mocked(config.listRoots).mockResolvedValue({ roots: [UNBROKEN_ROOT] })
+    vi.mocked(librariesApi.listLibraries).mockResolvedValue(
+      holding(UNBROKEN_ROOT),
+    )
     vi.mocked(config.removalCost).mockResolvedValue({
       removed: { works: 1, positions: 0, notes: 0 },
       derive: derived(),
       dry_run: true,
     })
     const host = await act(async () => {
-      const mounted = mount(inShell(<Roots />))
+      const mounted = mount(inShell(<Libraries />))
       await Promise.resolve()
       await Promise.resolve()
       return mounted
@@ -303,78 +369,63 @@ describe('the Configuration screens at 390px', () => {
     expect(pastItsCard(host)).toEqual([])
   })
 
-  /** Types a path into the add form and submits it, as `Roots.test.tsx` does. */
-  async function addPath(host: HTMLElement, path: string) {
-    const box = host.querySelector('input[name="path"]') as HTMLInputElement
-    await act(async () => {
-      const setter = Object.getOwnPropertyDescriptor(
-        HTMLInputElement.prototype,
-        'value',
-      )?.set
-      setter?.call(box, path)
-      box.dispatchEvent(new Event('input', { bubbles: true }))
-    })
-    const form = host.querySelector('form.add-root') as HTMLFormElement
-    await act(async () => {
-      form.dispatchEvent(
-        new Event('submit', { bubbles: true, cancelable: true }),
-      )
-      await Promise.resolve()
-      await Promise.resolve()
-    })
+  /** Makes a library through the form: a name, one folder chosen, submitted. */
+  async function makeLibrary(host: HTMLElement, name: string, path: string) {
+    const form = host.querySelector('form.add-library') as HTMLFormElement
+    await typeInto(
+      form.querySelector('input[name="library-name"]') as HTMLInputElement,
+      name,
+    )
+    await typeInto(
+      form.querySelector('input[name="path"]') as HTMLInputElement,
+      path,
+    )
+    await press(form.querySelector('button[name="pick"]') as Element)
+    await submit(form)
   }
 
-  it('keeps the screen’s own sentences about a root inside the window', async () => {
-    // The two sentences this screen says outside any card, each naming a
-    // path as plain text: what the watch probe found for a root just added,
-    // and the server's refusal of one. Neither is an element wider than its
-    // box — the words run out of a paragraph that stays its own width — so
-    // only the document can see them (O180).
+  it('keeps the screen’s own sentence about a refused library inside the window', async () => {
+    // The one sentence this screen says outside any card, naming a path as
+    // plain text: the server's refusal of a library. It is not an element
+    // wider than its box — the words run out of a paragraph that stays its
+    // own width — so only the document can see it (O180).
     await page.viewport(390, 844)
-    // An empty list first and the new root after, as the server would answer
-    // either side of the add: `Roots` drops the probe's sentence when the
-    // list it reloads does not hold the root it is about.
-    vi.mocked(config.listRoots)
-      .mockResolvedValueOnce({ roots: [] })
-      .mockResolvedValue({ roots: [UNBROKEN_ROOT] })
-    vi.mocked(config.addRoot).mockResolvedValueOnce({
-      root: UNBROKEN_ROOT,
-      watching: true,
-      watch_reason: null,
-      interval_secs: 86400,
-    })
+    vi.mocked(librariesApi.createLibrary).mockRejectedValueOnce(
+      new Error(
+        `/api/library/libraries: 400 {"error":"${UNBROKEN_ROOT.path}: cannot be read: Permission denied (os error 13)"}`,
+      ),
+    )
     const host = await act(async () => {
-      const mounted = mount(inShell(<Roots />))
+      const mounted = mount(inShell(<Libraries />))
       await Promise.resolve()
       await Promise.resolve()
       return mounted
     })
-    await addPath(host, UNBROKEN_ROOT.path)
+    await makeLibrary(host, 'Manga', UNBROKEN_ROOT.path)
     await document.fonts.ready
-    expect(host.querySelector('p.probe')?.textContent).toContain(
-      UNBROKEN_ROOT.path,
-    )
+    const alerts = [...host.querySelectorAll('form.add-library [role="alert"]')]
+    expect(alerts.map((el) => el.textContent)).toEqual([
+      `${UNBROKEN_ROOT.path}: cannot be read: Permission denied (os error 13)`,
+    ])
     assertNoSidewaysScroll(host)
-
-    vi.mocked(config.addRoot).mockRejectedValueOnce(
-      new Error(`/api/library/roots: 400 ${UNBROKEN_ROOT.path} cannot be read`),
+    expect(alerts[0].getBoundingClientRect().right).toBeLessThanOrEqual(
+      document.documentElement.clientWidth,
     )
-    await addPath(host, UNBROKEN_ROOT.path)
-    expect(
-      [...host.querySelectorAll('.roots > [role="alert"]')].map(
-        (el) => el.textContent,
-      ),
-    ).toEqual([`/api/library/roots: 400 ${UNBROKEN_ROOT.path} cannot be read`])
-    // The probe's sentence is gone by now — a new submit clears it — so
-    // what the document measures here is the refusal alone.
-    expect(host.querySelector('p.probe')).toBeNull()
-    assertNoSidewaysScroll(host)
+    // The folder that was refused stays on the list, its path breaking and its
+    // button whole on the row's far edge.
+    const row = host.querySelector('.chosen-folders li') as HTMLElement
+    const button = row.querySelector('button') as HTMLElement
+    expect(button.getBoundingClientRect().height).toBeLessThan(44)
+    expect(button.getBoundingClientRect().right).toBeCloseTo(
+      row.getBoundingClientRect().right,
+      0,
+    )
   })
 
   /**
    * A scan report in a root's card, the way `RootRow.tsx` mounts one: a bare
    * `.root-row` `<li>` in the list, holding the `unreadable` block these two
-   * cases are about. The roots case above mocks `scanStatus` with
+   * cases are about. The libraries case above mocks `scanStatus` with
    * `report: null`, so it lays out no report at all.
    *
    * **The card is what makes the report narrow enough to matter.** Its
@@ -391,7 +442,7 @@ describe('the Configuration screens at 390px', () => {
     return await act(async () => {
       const mounted = mount(
         inShell(
-          <section className="roots">
+          <section className="libraries">
             <ul className="root-list">
               <li className="root-row">
                 <ScanReport
@@ -481,6 +532,14 @@ describe('the Configuration screens at 390px', () => {
     await document.fonts.ready
     assertNoSidewaysScroll(host)
     expect(pastItsCard(host)).toEqual([])
+    // Inside a folder's card a report's headings step off what is above them
+    // and sit near what they head.
+    const headings = [...host.querySelectorAll('.report-heading')]
+    expect(headings).toHaveLength(2)
+    for (const heading of headings) {
+      expect(getComputedStyle(heading).marginTop).toBe('12px')
+      expect(getComputedStyle(heading).marginBottom).toBe('8px')
+    }
   })
 
   /** The one file the real library's scan left uncounted: longer than any row here. */
@@ -651,26 +710,31 @@ describe('the Configuration screens at 390px', () => {
   })
 
   it('keeps a failed watch probe’s reason inside the card', async () => {
-    // The card's `watch` fact is the probe's own sentence once a root has
-    // just been added, and `watch.rs` puts the root's path in it.
+    // The card's `watch` fact is the probe's own sentence once a folder has
+    // just been added, and `watch.rs` puts the path in it.
     await page.viewport(390, 844)
-    vi.mocked(config.listRoots)
-      .mockResolvedValueOnce({ roots: [] })
-      .mockResolvedValue({ roots: [UNBROKEN_ROOT] })
     const reason = `watching ${UNBROKEN_ROOT.path}: No space left on device (os error 28)`
-    vi.mocked(config.addRoot).mockResolvedValueOnce({
-      root: UNBROKEN_ROOT,
-      watching: false,
-      watch_reason: reason,
-      interval_secs: 86400,
+    vi.mocked(librariesApi.listLibraries)
+      .mockResolvedValueOnce({ libraries: [] })
+      .mockResolvedValue(holding(UNBROKEN_ROOT))
+    vi.mocked(librariesApi.createLibrary).mockResolvedValueOnce({
+      library: holding(UNBROKEN_ROOT).libraries[0],
+      added: [
+        {
+          root: UNBROKEN_ROOT,
+          watching: false,
+          watch_reason: reason,
+          interval_secs: 3600,
+        },
+      ],
     })
     const host = await act(async () => {
-      const mounted = mount(inShell(<Roots />))
+      const mounted = mount(inShell(<Libraries />))
       await Promise.resolve()
       await Promise.resolve()
       return mounted
     })
-    await addPath(host, UNBROKEN_ROOT.path)
+    await makeLibrary(host, 'Manga', UNBROKEN_ROOT.path)
     await document.fonts.ready
     expect(
       [...host.querySelectorAll('.root-row .regime dd')].map(
@@ -689,7 +753,7 @@ describe('the Configuration screens at 390px', () => {
     const host = await act(async () => {
       const mounted = mount(
         inShell(
-          <section className="roots">
+          <section className="libraries">
             <ul className="root-list">
               <li className="root-row">
                 <ScanReport outcome={{ error: why }} />
@@ -715,19 +779,22 @@ describe('the Configuration screens at 390px', () => {
     // sentence that names the root's path — as its 409 for a scan already
     // running does.
     await page.viewport(390, 844)
-    vi.mocked(config.listRoots).mockResolvedValue({ roots: [UNBROKEN_ROOT] })
+    vi.mocked(librariesApi.listLibraries).mockResolvedValue(
+      holding(UNBROKEN_ROOT),
+    )
     const why = `/api/library/roots/3/scan: 500 ${UNBROKEN_ROOT.path} could not be scanned`
     vi.mocked(config.startScan).mockRejectedValueOnce(new Error(why))
     const host = await act(async () => {
-      const mounted = mount(inShell(<Roots />))
+      const mounted = mount(inShell(<Libraries />))
       await Promise.resolve()
       await Promise.resolve()
       return mounted
     })
     await act(async () => {
-      const scan = [...host.querySelectorAll('button')].find(
-        (b) => b.textContent === 'Scan now',
-      )
+      // The folder's own button: the library's, above it, is another route's.
+      const scan = [
+        ...host.querySelectorAll<HTMLButtonElement>('.root-row button'),
+      ].find((b) => b.textContent === 'Scan now')
       scan?.click()
       await Promise.resolve()
       await Promise.resolve()
@@ -737,7 +804,7 @@ describe('the Configuration screens at 390px', () => {
       [...host.querySelectorAll('.root-row > [role="alert"]')].map(
         (el) => el.textContent,
       ),
-    ).toEqual([why])
+    ).toEqual([`${UNBROKEN_ROOT.path} could not be scanned`])
     assertNoSidewaysScroll(host)
   })
 
@@ -746,7 +813,7 @@ describe('the Configuration screens at 390px', () => {
     const host = await act(async () => {
       const mounted = mount(
         inShell(
-          <section className="roots">
+          <section className="libraries">
             <ul className="root-list">
               <li className="root-row">
                 <div className="removal-report">
@@ -776,11 +843,284 @@ describe('the Configuration screens at 390px', () => {
     expect(pastItsCard(host)).toEqual([])
   })
 
+  /** The library of one folder, named `name`, mounted in the shell. */
+  async function libraryNamed(name: string, folder: config.Root) {
+    vi.mocked(librariesApi.listLibraries).mockResolvedValue({
+      libraries: [{ ...holding(folder).libraries[0], name }],
+    })
+    return await act(async () => {
+      const mounted = mount(inShell(<Libraries />))
+      await Promise.resolve()
+      await Promise.resolve()
+      return mounted
+    })
+  }
+
+  it('keeps a library whose name has nowhere to break inside the window', async () => {
+    // A library is named by a person, and a name need not hold a space. It is
+    // drawn as the card's heading and, below, in the form that renames it.
+    await page.viewport(390, 844)
+    const host = await libraryNamed(UNBROKEN_NAME, UNBROKEN_ROOT)
+    await document.fonts.ready
+    const heading = host.querySelector('.library-card > h3') as HTMLElement
+    expect(heading.textContent).toBe(UNBROKEN_NAME)
+    assertNoSidewaysScroll(host)
+    expect(heading.scrollWidth).toBeLessThanOrEqual(heading.clientWidth)
+    await press(host.querySelector('button[name="rename-library"]') as Element)
+    assertNoSidewaysScroll(host)
+  })
+
+  it('keeps a chosen folder’s button whole, on the row’s far edge', async () => {
+    // The path gives way and the button does not: a word broken over two
+    // lines, and a width that differs from one row to the next, read as two
+    // controls.
+    await page.viewport(390, 844)
+    const host = await act(async () => {
+      const mounted = mount(inShell(<Libraries />))
+      await Promise.resolve()
+      await Promise.resolve()
+      return mounted
+    })
+    const form = host.querySelector('form.add-library') as HTMLFormElement
+    for (const path of [
+      '/srv/a',
+      `/srv/${'a_directory_with_no_break_'.repeat(6)}`,
+    ]) {
+      await typeInto(
+        form.querySelector('input[name="path"]') as HTMLInputElement,
+        path,
+      )
+      await press(form.querySelector('button[name="pick"]') as Element)
+    }
+    await document.fonts.ready
+    const rows = [...form.querySelectorAll('.chosen-folders li')]
+    expect(rows).toHaveLength(2)
+    const widths = rows.map((row) => {
+      const button = row.querySelector('button') as HTMLElement
+      const at = button.getBoundingClientRect()
+      expect(at.height).toBeLessThan(44)
+      expect(at.right).toBeCloseTo(row.getBoundingClientRect().right, 0)
+      return at.width
+    })
+    expect(widths[1]).toBeCloseTo(widths[0], 0)
+    assertNoSidewaysScroll(host)
+  })
+
+  it('keeps the folder browser inside the card', async () => {
+    await page.viewport(390, 844)
+    vi.mocked(librariesApi.listFolders).mockResolvedValue({
+      path: UNBROKEN_ROOT.path,
+      parent: '/',
+      folders: [
+        {
+          name: 'x'.repeat(80),
+          path: `${UNBROKEN_ROOT.path}/${'x'.repeat(80)}`,
+        },
+      ],
+    })
+    const host = await libraryNamed('Manga', UNBROKEN_ROOT)
+    await press(
+      host.querySelector(
+        '.library-card > .add-root button[name="browse"]',
+      ) as Element,
+    )
+    await document.fonts.ready
+    const browser = host.querySelector('.folder-browser') as HTMLElement
+    const entry = host.querySelector('.folder-list button') as HTMLElement
+    expect(entry.textContent).toBe('x'.repeat(80))
+    assertNoSidewaysScroll(host)
+    expect(entry.getBoundingClientRect().right).toBeLessThanOrEqual(
+      browser.getBoundingClientRect().right,
+    )
+    const where = host.querySelector('.folder-browser .where') as HTMLElement
+    expect(where.getBoundingClientRect().right).toBeLessThanOrEqual(
+      browser.getBoundingClientRect().right,
+    )
+    // The box has a line of its own and the two buttons share the one beneath
+    // it: neither is left alone on a line (`flex-basis` of the box).
+    const buttons = ['pick', 'browse'].map((name) =>
+      (
+        host.querySelector(
+          `.library-card > .add-root button[name="${name}"]`,
+        ) as HTMLElement
+      ).getBoundingClientRect(),
+    )
+    expect(buttons[1].top).toBe(buttons[0].top)
+  })
+
+  it('keeps the folder browser’s own path inside it, whatever paragraph rule is above it', async () => {
+    // Under `.libraries` the screen's paragraph rule breaks the path as well,
+    // so the card's case cannot tell whether `.folder-browser .where` does.
+    // Mounted bare, only that rule is left to.
+    await page.viewport(390, 844)
+    vi.mocked(librariesApi.listFolders).mockResolvedValue({
+      path: UNBROKEN_ROOT.path,
+      parent: '/',
+      folders: [],
+    })
+    const host = await act(async () => {
+      const mounted = mount(
+        inShell(<FolderPicker action="Add folder" onPick={() => undefined} />),
+      )
+      await Promise.resolve()
+      return mounted
+    })
+    await press(host.querySelector('button[name="browse"]') as Element)
+    await document.fonts.ready
+    const where = host.querySelector('.folder-browser .where') as HTMLElement
+    expect(where.textContent).toBe(UNBROKEN_ROOT.path)
+    const box = host.querySelector('.folder-browser') as HTMLElement
+    assertNoSidewaysScroll(host)
+    expect(where.getBoundingClientRect().right).toBeLessThanOrEqual(
+      box.getBoundingClientRect().right,
+    )
+  })
+
+  it('keeps the library’s removal inside the window', async () => {
+    await page.viewport(390, 844)
+    vi.mocked(librariesApi.libraryRemovalCost).mockResolvedValue({
+      removed: { works: 1, positions: 0, notes: 0 },
+      derive: derived(),
+      dry_run: true,
+    })
+    const host = await libraryNamed(UNBROKEN_NAME, UNBROKEN_ROOT)
+    await press(host.querySelector('button[name="remove-library"]') as Element)
+    await document.fonts.ready
+    const confirm = host.querySelector(
+      '.remove-library .confirm',
+    ) as HTMLElement
+    expect(confirm.textContent).toBe(`Remove ${UNBROKEN_NAME}`)
+    assertNoSidewaysScroll(host)
+    const box = host.querySelector('.remove-library') as HTMLElement
+    expect(confirm.getBoundingClientRect().right).toBeLessThanOrEqual(
+      box.getBoundingClientRect().right,
+    )
+    // The dialog is followed by the card it would remove, and is clear of it.
+    const next = host.querySelector('.library-card > .root-list') as HTMLElement
+    expect(
+      next.getBoundingClientRect().top - box.getBoundingClientRect().bottom,
+    ).toBeGreaterThanOrEqual(16)
+  })
+
+  it('keeps what a removal’s re-derive found inside the window', async () => {
+    // The screen draws the report itself, above the list, once the library
+    // that was removed is no longer there to hold it.
+    await page.viewport(390, 844)
+    vi.mocked(librariesApi.libraryRemovalCost).mockResolvedValue({
+      removed: { works: 1, positions: 0, notes: 0 },
+      derive: derived(),
+      dry_run: true,
+    })
+    vi.mocked(librariesApi.removeLibrary).mockResolvedValue({
+      removed: { works: 1, positions: 0, notes: 0 },
+      derive: derived({
+        unreadable: {
+          total: 1,
+          refused_format: 0,
+          by_format: {},
+          uncounted: [UNBROKEN_PATH],
+          vanished: [],
+          no_pages: 0,
+        },
+      }),
+      dry_run: false,
+    })
+    const host = await libraryNamed(UNBROKEN_NAME, UNBROKEN_ROOT)
+    await press(host.querySelector('button[name="remove-library"]') as Element)
+    vi.mocked(librariesApi.listLibraries).mockResolvedValue({ libraries: [] })
+    await press(host.querySelector('.remove-library .confirm') as Element)
+    await document.fonts.ready
+    const report = host.querySelector(
+      '.libraries > .removal-report',
+    ) as HTMLElement
+    expect(report.querySelector('p')?.textContent).toBe(
+      `What re-deriving after removing ${UNBROKEN_NAME} found:`,
+    )
+    expect(report.textContent).toContain(UNBROKEN_PATH)
+    // Drawn as a box, so a long report reads as one notice above the list.
+    expect(getComputedStyle(report).borderTopWidth).toBe('1px')
+    assertNoSidewaysScroll(host)
+    const edge = report.getBoundingClientRect().right + 0.5
+    expect(
+      [...report.querySelectorAll('*')]
+        .filter((el) => el.getBoundingClientRect().right > edge)
+        .map((el) => `${el.tagName.toLowerCase()}.${el.className}`),
+    ).toEqual([])
+  })
+
+  it('brings the head of a removal’s report into view, from the foot of a long page', async () => {
+    // The removed card is lower down than the report, which is above the
+    // list. Focus alone scrolls a report taller than the window only as far
+    // as its foot, so the head, whose opening sentence says whose it is,
+    // has to be put in view as well.
+    await page.viewport(390, 844)
+    vi.mocked(librariesApi.listLibraries).mockResolvedValue({
+      libraries: [
+        {
+          ...holding(longPathRoot, root({ id: 4, path: '/srv/b' }))
+            .libraries[0],
+        },
+        {
+          id: 2,
+          name: 'Comics',
+          works: 0,
+          books: 0,
+          folders: [root({ id: 5, path: '/srv/comics' })],
+        },
+      ],
+    })
+    vi.mocked(librariesApi.libraryRemovalCost).mockResolvedValue({
+      removed: { works: 0, positions: 0, notes: 0 },
+      derive: derived(),
+      dry_run: true,
+    })
+    vi.mocked(librariesApi.removeLibrary).mockResolvedValue({
+      removed: { works: 0, positions: 0, notes: 0 },
+      derive: derived({ lost_positions: 4 }),
+      dry_run: false,
+    })
+    const host = await act(async () => {
+      const mounted = mount(inShell(<Libraries />))
+      await Promise.resolve()
+      await Promise.resolve()
+      return mounted
+    })
+    await document.fonts.ready
+    // The document scrolls here, not `main`: `assertNoSidewaysScroll` reads
+    // both for that reason.
+    const doc = document.documentElement
+    expect(doc.scrollHeight).toBeGreaterThan(doc.clientHeight * 1.5)
+    window.scrollTo(0, doc.scrollHeight)
+    const remove = host.querySelectorAll('button[name="remove-library"]')[1]
+    await press(remove)
+    vi.mocked(librariesApi.listLibraries).mockResolvedValue({
+      libraries: [holding(longPathRoot).libraries[0]],
+    })
+    await press(host.querySelector('.remove-library .confirm') as Element)
+    const report = host.querySelector(
+      '.libraries > .removal-report',
+    ) as HTMLElement
+    expect(document.activeElement).toBe(report)
+    // The report is taller than the window, and its head is what is in view.
+    expect(report.getBoundingClientRect().height).toBeGreaterThan(
+      doc.clientHeight,
+    )
+    const head = (
+      report.querySelector('p') as HTMLElement
+    ).getBoundingClientRect()
+    expect(head.top).toBeGreaterThanOrEqual(0)
+    expect(head.bottom).toBeLessThanOrEqual(doc.clientHeight)
+  })
+
   it('does not scroll sideways on the users screen', async () => {
     await page.viewport(390, 844)
-    vi.mocked(config.listRoots).mockResolvedValue({ roots: [longPathRoot] })
+    // The grant editor draws a library's folders, so the path that must wrap
+    // is the one that is on screen.
+    vi.mocked(librariesApi.listLibraries).mockResolvedValue({
+      libraries: [libraryOf(UNBROKEN_ROOT)],
+    })
     vi.mocked(usersApi.listUsers).mockResolvedValue({
-      users: [user()],
+      users: [user({ libraries: [{ id: 70, name: 'Manga' }] })],
     })
     const host = await act(async () => {
       const mounted = mount(
@@ -798,6 +1138,61 @@ describe('the Configuration screens at 390px', () => {
     })
     assertNoSidewaysScroll(host)
   })
+
+  it.each([
+    ['read', true],
+    ['unread', false],
+  ])(
+    'keeps a granted library with a name that has nowhere to break inside the window, its list %s',
+    async (_state, read) => {
+      // The grant editor draws a library's name beside its tick, and in the
+      // sentence that stands in for the list when the list was not read.
+      await page.viewport(390, 844)
+      if (read) {
+        vi.mocked(librariesApi.listLibraries).mockResolvedValue({
+          libraries: [
+            {
+              ...libraryOf(UNBROKEN_ROOT),
+              name: UNBROKEN_NAME,
+            },
+          ],
+        })
+      } else {
+        vi.mocked(librariesApi.listLibraries).mockRejectedValue(
+          new Error('/api/library/libraries: 500 the store is locked'),
+        )
+      }
+      vi.mocked(usersApi.listUsers).mockResolvedValue({
+        users: [
+          user({
+            role: 'user',
+            libraries: [{ id: 70, name: UNBROKEN_NAME }],
+          }),
+        ],
+      })
+      const host = await act(async () => {
+        const mounted = mount(
+          inShell(
+            <MemoryRouter>
+              <GateContext value={{ who, signOut: () => undefined }}>
+                <Users />
+              </GateContext>
+            </MemoryRouter>,
+          ),
+        )
+        await Promise.resolve()
+        await Promise.resolve()
+        return mounted
+      })
+      await document.fonts.ready
+      expect(host.querySelector('.grants')?.textContent).toContain(
+        UNBROKEN_NAME,
+      )
+      assertNoSidewaysScroll(host)
+      const group = host.querySelector('.grants') as HTMLElement
+      expect(group.scrollWidth).toBeLessThanOrEqual(group.clientWidth)
+    },
+  )
 
   it('does not scroll sideways on the backup screen', async () => {
     await page.viewport(390, 844)
@@ -821,9 +1216,11 @@ describe('the Configuration screens at 390px', () => {
 describe('the Configuration screens at desktop width', () => {
   it('keeps every control inside the card that holds it', async () => {
     await page.viewport(1280, 900)
-    vi.mocked(config.listRoots).mockResolvedValue({ roots: [longPathRoot] })
+    vi.mocked(librariesApi.listLibraries).mockResolvedValue({
+      libraries: [libraryOf(longPathRoot)],
+    })
     vi.mocked(usersApi.listUsers).mockResolvedValue({
-      users: [user({ roots: [] })],
+      users: [user({ libraries: [{ id: 70, name: 'Manga' }] })],
     })
     const host = await act(async () => {
       const mounted = mount(
@@ -942,9 +1339,11 @@ describe('the Configuration screens at desktop width', () => {
 
   it('puts each root fact on its own row beside its label', async () => {
     await page.viewport(1280, 900)
-    vi.mocked(config.listRoots).mockResolvedValue({ roots: [longPathRoot] })
+    vi.mocked(librariesApi.listLibraries).mockResolvedValue(
+      holding(longPathRoot),
+    )
     const host = await act(async () => {
-      const mounted = mount(<Roots />)
+      const mounted = mount(<Libraries />)
       await Promise.resolve()
       await Promise.resolve()
       return mounted
@@ -965,6 +1364,245 @@ describe('the Configuration screens at desktop width', () => {
       const dd = row.querySelector('dd')!.getBoundingClientRect()
       expect(dd.left).toBeGreaterThan(dt.right - 1)
     }
+  })
+})
+
+describe('the libraries screen at desktop width', () => {
+  /** Two libraries, the second holding only entries nothing reads yet. */
+  const TWO = {
+    libraries: [
+      {
+        id: 1,
+        name: 'Manga',
+        works: 5,
+        books: 0,
+        folders: [longPathRoot],
+      },
+      {
+        id: 2,
+        name: 'Light novels',
+        works: 0,
+        books: 3,
+        folders: [root({ id: 4, path: '/srv/novels' })],
+      },
+    ],
+  }
+
+  async function shown(ui: React.ReactNode = <Libraries />) {
+    await page.viewport(1280, 900)
+    vi.mocked(librariesApi.listLibraries).mockResolvedValue(TWO)
+    const host = await act(async () => {
+      const mounted = mount(ui)
+      await Promise.resolve()
+      await Promise.resolve()
+      return mounted
+    })
+    await document.fonts.ready
+    return host
+  }
+
+  const box = (el: Element) => el.getBoundingClientRect()
+
+  it('sets each library on the measure, parts it from the next by a rule, and boxes the form', async () => {
+    const host = await shown()
+    const [first, second] = [...host.querySelectorAll('.library-card')]
+    expect(box(first).width).toBeLessThanOrEqual(40 * 16 + 0.5)
+    expect(getComputedStyle(first).borderTopWidth).toBe('0px')
+    expect(getComputedStyle(second).borderTopWidth).toBe('1px')
+    expect(getComputedStyle(second).paddingTop).toBe('16px')
+
+    // What a library holds is quiet: the colour and size of the folder
+    // card's own labels.
+    const quiet = getComputedStyle(host.querySelector('.regime dt') as Element)
+    for (const selector of ['.holds', '.no-readable']) {
+      const sentence = getComputedStyle(
+        host.querySelector(`.library-card ${selector}`) as Element,
+      )
+      expect(sentence.color, selector).toBe(quiet.color)
+      expect(sentence.fontSize, selector).toBe(quiet.fontSize)
+    }
+
+    // The form is boxed, as a folder's card is: a library is not.
+    const form = host.querySelector('form.add-library') as HTMLElement
+    expect(getComputedStyle(form).borderTopWidth).toBe('1px')
+    expect(getComputedStyle(form).paddingTop).toBe('16px')
+    // Its one action keeps its own width and does not stretch across.
+    const submit = form.querySelector('button[type="submit"]') as HTMLElement
+    expect(box(submit).width).toBeLessThan(box(form).width / 2)
+
+    // The picker under a library's folders ends on the card's right edge: the
+    // box takes the room the two buttons leave.
+    const add = host.querySelector('.library-card > .add-root') as HTMLElement
+    const browse = add.querySelector('button[name="browse"]') as HTMLElement
+    expect(box(browse).right).toBeCloseTo(box(add).right, 0)
+  })
+
+  it('ends the make-a-library form where a library’s card ends', async () => {
+    // The form is boxed and a card is not, so a form that adds its border and
+    // padding to the measure ends past the card above it.
+    const host = await shown()
+    const form = host.querySelector('form.add-library') as HTMLElement
+    const card = host.querySelector('.library-card') as HTMLElement
+    expect(box(form).right).toBeCloseTo(box(card).right, 0)
+    expect(box(form).width).toBeLessThanOrEqual(40 * 16 + 0.5)
+  })
+
+  it('draws the two boxes of a folder’s first row at one height', async () => {
+    // A neighbour's textarea, and its hint, made the row taller than a box
+    // needs; a box in a grid stretches to its row unless told not to.
+    const host = await shown()
+    const edition = host.querySelector('input[name="edition_key"]') as Element
+    const language = host.querySelector(
+      'input[name="default_language"]',
+    ) as Element
+    expect(box(language).height).toBe(box(edition).height)
+  })
+
+  it('puts the removal’s report on the measure, as a grid', async () => {
+    const host = await shown()
+    vi.mocked(librariesApi.libraryRemovalCost).mockResolvedValue({
+      removed: { works: 5, positions: 0, notes: 0 },
+      derive: derived(),
+      dry_run: true,
+    })
+    vi.mocked(librariesApi.removeLibrary).mockResolvedValue({
+      removed: { works: 5, positions: 0, notes: 0 },
+      derive: derived({ lost_positions: 4 }),
+      dry_run: false,
+    })
+    await press(host.querySelector('button[name="remove-library"]') as Element)
+    vi.mocked(librariesApi.listLibraries).mockResolvedValue({
+      libraries: [TWO.libraries[1]],
+    })
+    await press(host.querySelector('.remove-library .confirm') as Element)
+    const report = host.querySelector('.libraries > .removal-report') as Element
+    // The report ends where a library's card does.
+    expect(box(report).right).toBeCloseTo(
+      box(host.querySelector('.library-card') as Element).right,
+      0,
+    )
+    // Its lists are the two-column grid a folder's scan report has, so a
+    // report of this many rows is not a page tall.
+    const list = report.querySelector('.derived > dl') as Element
+    expect(getComputedStyle(list).display).toBe('grid')
+    expect(
+      getComputedStyle(list).gridTemplateColumns.split(' ').length,
+    ).toBeGreaterThan(1)
+    // A heading of the report is its own size, not a library's name.
+    const heading = report.querySelector('.report-heading') as Element
+    expect(getComputedStyle(heading).marginTop).toBe('20px')
+    expect(Number.parseFloat(getComputedStyle(heading).fontSize)).toBeLessThan(
+      Number.parseFloat(
+        getComputedStyle(host.querySelector('.library-card > h3') as Element)
+          .fontSize,
+      ),
+    )
+  })
+
+  it('draws a report’s heading alike at every level its caller may pass', async () => {
+    // Styled by class, not by tag: a heading is the same label whether the
+    // screen holds the report under an h2 or a folder's card holds it under
+    // an h4. The browser's own heading faces differ from level to level, so
+    // only the class can make these equal.
+    await page.viewport(1280, 900)
+    const host = await act(async () => {
+      const mounted = mount(
+        <div className="library">
+          <main>
+            <section className="libraries">
+              <h2>Libraries</h2>
+              {([3, 4, 5, 6] as const).map((level) => (
+                <DeriveSection key={level} derive={derived()} level={level} />
+              ))}
+            </section>
+          </main>
+        </div>,
+      )
+      await Promise.resolve()
+      return mounted
+    })
+    await document.fonts.ready
+    const headings = [...host.querySelectorAll('.report-heading')]
+    expect(headings.map((h) => h.tagName)).toEqual(['H3', 'H4', 'H5', 'H6'])
+    const reference = getComputedStyle(headings[0])
+    expect(reference.fontWeight).toBe('600')
+    expect(reference.lineHeight).toBe('20px')
+    // The title face, as the screen's own heading has it.
+    expect(reference.fontFamily).toBe(
+      getComputedStyle(host.querySelector('h2') as Element).fontFamily,
+    )
+    for (const heading of headings) {
+      const style = getComputedStyle(heading)
+      expect(style.fontFamily, heading.tagName).toBe(reference.fontFamily)
+      expect(style.fontWeight, heading.tagName).toBe(reference.fontWeight)
+      expect(style.lineHeight, heading.tagName).toBe(reference.lineHeight)
+      expect(style.fontSize, heading.tagName).toBe(reference.fontSize)
+    }
+  })
+
+  it('puts the folder browser on a line of its own, and its folders full width', async () => {
+    vi.mocked(librariesApi.listFolders).mockResolvedValue({
+      path: '/a',
+      parent: '/',
+      folders: [{ name: 'b', path: '/a/b' }],
+    })
+    const host = await shown(
+      <FolderPicker action="Add folder" onPick={() => undefined} />,
+    )
+    await press(host.querySelector('button[name="browse"]') as Element)
+    const browser = host.querySelector('.folder-browser') as Element
+    expect(box(browser).width).toBeCloseTo(
+      box(host.querySelector('.folder-picker') as Element).width,
+      0,
+    )
+    // A folder's button takes the whole row of the list it is in.
+    const entry = host.querySelector('.folder-list button') as Element
+    expect(box(entry).width).toBeCloseTo(
+      box(host.querySelector('.folder-list') as Element).width,
+      0,
+    )
+  })
+
+  it('draws the grants of an account as one group, with the ticks under their radio', async () => {
+    vi.mocked(usersApi.listUsers).mockResolvedValue({
+      users: [user({ role: 'user', libraries: [{ id: 1, name: 'Manga' }] })],
+    })
+    const host = await shown(
+      <MemoryRouter>
+        <GateContext value={{ who, signOut: () => undefined }}>
+          <Users />
+        </GateContext>
+      </MemoryRouter>,
+    )
+    const group = host.querySelector('.user-row .grants') as HTMLElement
+    expect(getComputedStyle(group).borderTopWidth).toBe('1px')
+    expect(getComputedStyle(group).borderTopStyle).toBe('solid')
+    expect(getComputedStyle(group).borderTopColor).toBe(
+      getComputedStyle(host.querySelector('.user-row') as Element)
+        .borderTopColor,
+    )
+    // A box, then a gap, then its words: for both radios and each tick.
+    for (const label of group.querySelectorAll(
+      ':scope > label, .grant-list label',
+    )) {
+      expect(getComputedStyle(label).display).toBe('flex')
+      expect(getComputedStyle(label).columnGap).toBe('8px')
+    }
+    const radio = group.querySelector('input[type="radio"]') as Element
+    const tick = group.querySelector('.grant-list input') as Element
+    expect(box(tick).left).toBeGreaterThan(box(radio).left + 16)
+
+    // The group stands a step below the boxes above it, and its legend is a
+    // quiet label on the border: smaller than the words beneath it and not
+    // in their colour.
+    expect(getComputedStyle(group).marginTop).toBe('12px')
+    const legend = group.querySelector(':scope > legend') as HTMLElement
+    const words = group.querySelector(':scope > label') as HTMLElement
+    expect(getComputedStyle(legend).fontSize).toBe('12px')
+    expect(getComputedStyle(legend).paddingLeft).toBe('4px')
+    expect(getComputedStyle(legend).color).not.toBe(
+      getComputedStyle(words).color,
+    )
   })
 })
 

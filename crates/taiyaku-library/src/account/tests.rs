@@ -919,22 +919,6 @@ fn an_account_with_no_grant_has_an_empty_list_rather_than_an_error() {
     assert!(roots_for(&conn, 1).expect("reads").is_empty());
 }
 
-#[test]
-fn granted_roots_names_the_paths_for_display() {
-    let library = library();
-    let conn = library.conn();
-    a_root(&conn, 7, "/b-library");
-    a_root(&conn, 8, "/a-library");
-    grant_library(&conn, 1, library_of(&conn, 7)).expect("grants");
-    grant_library(&conn, 1, library_of(&conn, 8)).expect("grants");
-
-    assert_eq!(
-        granted_roots(&conn, 1).expect("reads"),
-        vec![(8, "/a-library".to_string()), (7, "/b-library".to_string())],
-        "ordered by path, which is what a person reads"
-    );
-}
-
 /// Ids that differ between libraries and roots, so a join on the wrong pair
 /// cannot pass by coincidence.
 fn a_two_folder_library_and_another(conn: &rusqlite::Connection) {
@@ -969,11 +953,6 @@ fn a_granted_library_resolves_to_every_one_of_its_folders() {
         granted_libraries(&conn, id).expect("reads"),
         vec![(70, "Shelf".to_string())]
     );
-    assert_eq!(
-        granted_roots(&conn, id).expect("reads"),
-        vec![(7, "/srv/manga".to_string()), (8, "/srv/raw".to_string())],
-        "and the same folders by path"
-    );
 }
 
 /// [`a_two_folder_library_and_another`], a library `Zines` whose name and
@@ -997,7 +976,7 @@ fn two_accounts_granted_libraries(conn: &rusqlite::Connection) -> (i64, i64) {
 }
 
 /// The folders a grant resolves to are those of the account's own libraries,
-/// by id for the guard and by path for a person.
+/// by id for the guard.
 #[test]
 fn granted_folders_are_read_per_account_and_in_order() {
     let library = claimed_library();
@@ -1008,11 +987,6 @@ fn granted_folders_are_read_per_account_and_in_order() {
         roots_for(&conn, reader).expect("reads"),
         vec![6, 9],
         "ascending by id, and not the other account's"
-    );
-    assert_eq!(
-        granted_roots(&conn, reader).expect("reads"),
-        vec![(9, "/srv/other".to_string()), (6, "/srv/zines".to_string())],
-        "by path, and not the other account's"
     );
 }
 
@@ -1064,37 +1038,57 @@ fn granting_a_library_that_does_not_exist_is_an_error() {
     assert!(libraries_for(&conn, id).expect("reads").is_empty());
 }
 
+/// A list names libraries. `7` is a folder of library 70 and no library's id,
+/// so a writer that still read the list as folders would grant 70 for it.
 #[test]
-fn a_roots_list_naming_one_folder_of_a_library_keeps_the_whole_library() {
+fn a_libraries_list_names_libraries_and_never_a_folder() {
     let library = claimed_library();
     let conn = library.conn();
     a_two_folder_library_and_another(&conn);
     let id = add(&conn, "reader", "pw", "user").expect("adds an account");
-    grant_library(&conn, id, 70).expect("grants Shelf");
 
     update(
         &conn,
         id,
         &Patch {
-            roots: Some(vec![7]),
+            libraries: Some(vec![70]),
             ..Patch::default()
         },
         None,
     )
     .expect("updates");
+    assert_eq!(libraries_for(&conn, id).expect("reads"), vec![70]);
+    assert_eq!(
+        roots_for(&conn, id).expect("reads"),
+        vec![7, 8],
+        "the library, with both its folders"
+    );
 
+    let why = update(
+        &conn,
+        id,
+        &Patch {
+            libraries: Some(vec![7]),
+            ..Patch::default()
+        },
+        None,
+    )
+    .expect_err("there is no library 7");
+    assert!(
+        matches!(&why, WriteError::Unusable(text) if text.contains("there is no library 7")),
+        "{why:?}"
+    );
     assert_eq!(
         libraries_for(&conn, id).expect("reads"),
         vec![70],
-        "Shelf is still granted"
+        "the refusal wrote nothing"
     );
-    assert_eq!(roots_for(&conn, id).expect("reads"), vec![7, 8]);
 
     update(
         &conn,
         id,
         &Patch {
-            roots: Some(vec![9]),
+            libraries: Some(vec![80]),
             ..Patch::default()
         },
         None,
@@ -1105,6 +1099,69 @@ fn a_roots_list_naming_one_folder_of_a_library_keeps_the_whole_library() {
         vec![80],
         "replaced, not appended"
     );
+}
+
+/// A list refused part-way writes nothing, and nothing else the same patch
+/// carried: the first id is a library, the second is not. The grants are
+/// untouched, and the name and capability written before the grants were
+/// reached are undone with them, because the patch is one transaction.
+#[test]
+fn a_libraries_list_refused_part_way_writes_nothing_of_the_patch() {
+    let library = claimed_library();
+    let conn = library.conn();
+    a_two_folder_library_and_another(&conn);
+    let id = add(&conn, "reader", "pw", "user").expect("adds an account");
+    grant_library(&conn, id, 80).expect("grants Other");
+
+    let why = update(
+        &conn,
+        id,
+        &Patch {
+            name: Some("renamed".to_string()),
+            can_stream: Some(false),
+            libraries: Some(vec![70, 999]),
+            ..Patch::default()
+        },
+        None,
+    )
+    .expect_err("there is no library 999");
+
+    assert!(
+        matches!(&why, WriteError::Unusable(text) if text.contains("there is no library 999")),
+        "{why:?}"
+    );
+    assert_eq!(
+        libraries_for(&conn, id).expect("reads"),
+        vec![80],
+        "neither the good id was granted nor the held one revoked"
+    );
+    let account = by_id(&conn, id).expect("reads").expect("the account");
+    assert_eq!(account.name, "reader", "the rename was undone");
+    assert!(account.can_stream, "and so was the capability");
+}
+
+/// A list naming one library twice is accepted rather than refused as a
+/// mistake, and the account holds the library once, as the table's key
+/// requires.
+#[test]
+fn a_libraries_list_naming_one_library_twice_grants_it_once() {
+    let library = claimed_library();
+    let conn = library.conn();
+    a_two_folder_library_and_another(&conn);
+    let id = add(&conn, "reader", "pw", "user").expect("adds an account");
+
+    update(
+        &conn,
+        id,
+        &Patch {
+            libraries: Some(vec![70, 70]),
+            ..Patch::default()
+        },
+        None,
+    )
+    .expect("updates");
+
+    assert_eq!(libraries_for(&conn, id).expect("reads"), vec![70]);
 }
 
 // --- spec C4 §4: user administration -------------------------------------
@@ -1249,7 +1306,8 @@ fn patching_an_account_that_does_not_exist_names_the_id() {
     assert!(why.to_string().contains("4242"), "{why}");
 }
 
-/// Two roots to grant, since a test about *replacing* a grant list needs more
+/// Two folders, each a library of its own, to grant: a test about *replacing* a
+/// grant list needs more
 /// than one id to tell "replaced" from "appended".
 fn two_roots(conn: &rusqlite::Connection) -> (i64, i64) {
     a_root(conn, 7, "/srv/manga");
@@ -1257,10 +1315,10 @@ fn two_roots(conn: &rusqlite::Connection) -> (i64, i64) {
     (7, 8)
 }
 
-/// PR2 §1.2: a `roots` list replaces the grant set wholesale rather than
+/// PR2 §1.2: a `libraries` list replaces the grant set wholesale rather than
 /// adding to it.
 #[test]
-fn a_roots_list_replaces_the_grants_rather_than_adding_to_them() {
+fn a_libraries_list_replaces_the_grants_rather_than_adding_to_them() {
     let library = claimed_library();
     let conn = library.conn();
     let (first, second) = two_roots(&conn);
@@ -1271,7 +1329,7 @@ fn a_roots_list_replaces_the_grants_rather_than_adding_to_them() {
         &conn,
         id,
         &Patch {
-            roots: Some(vec![second]),
+            libraries: Some(vec![library_of(&conn, second)]),
             ..Patch::default()
         },
         None,
@@ -1285,10 +1343,10 @@ fn a_roots_list_replaces_the_grants_rather_than_adding_to_them() {
     );
 }
 
-/// A list naming folders of two libraries grants both, and a list leaving two
+/// A list naming two libraries grants both, and a list leaving two
 /// held libraries out revokes both. The other account's grants do not move.
 #[test]
-fn a_roots_list_across_several_libraries_revokes_and_grants_each() {
+fn a_libraries_list_across_several_libraries_revokes_and_grants_each() {
     let library = claimed_library();
     let conn = library.conn();
     let (reader, other) = two_accounts_granted_libraries(&conn);
@@ -1297,7 +1355,7 @@ fn a_roots_list_across_several_libraries_revokes_and_grants_each() {
         &conn,
         reader,
         &Patch {
-            roots: Some(vec![7]),
+            libraries: Some(vec![70]),
             ..Patch::default()
         },
         None,
@@ -1313,7 +1371,7 @@ fn a_roots_list_across_several_libraries_revokes_and_grants_each() {
         &conn,
         reader,
         &Patch {
-            roots: Some(vec![6, 9]),
+            libraries: Some(vec![60, 80]),
             ..Patch::default()
         },
         None,
@@ -1324,6 +1382,22 @@ fn a_roots_list_across_several_libraries_revokes_and_grants_each() {
         vec![60, 80],
         "each library the list named was granted"
     );
+
+    update(
+        &conn,
+        reader,
+        &Patch {
+            libraries: Some(vec![70, 80]),
+            ..Patch::default()
+        },
+        None,
+    )
+    .expect("updates");
+    assert_eq!(
+        libraries_for(&conn, reader).expect("reads"),
+        vec![70, 80],
+        "one library held and wanted stays, one is added, and the one left out goes"
+    );
     assert_eq!(
         libraries_for(&conn, other).expect("reads"),
         vec![70, 80],
@@ -1331,10 +1405,10 @@ fn a_roots_list_across_several_libraries_revokes_and_grants_each() {
     );
 }
 
-/// An absent `roots` key leaves the grants alone, which is the difference
+/// An absent `libraries` key leaves the grants alone, which is the difference
 /// between `None` and `Some(vec![])` that makes the field an `Option<Vec<_>>`.
 #[test]
-fn a_patch_without_a_roots_key_leaves_the_grants_alone() {
+fn a_patch_without_a_libraries_key_leaves_the_grants_alone() {
     let library = claimed_library();
     let conn = library.conn();
     let (first, _second) = two_roots(&conn);
@@ -1360,7 +1434,7 @@ fn a_patch_without_a_roots_key_leaves_the_grants_alone() {
 /// existing library holds an empty grant, so any other reading would have
 /// emptied every library the day migration 6 applied.
 #[test]
-fn an_empty_roots_list_makes_an_account_unrestricted_rather_than_blind() {
+fn an_empty_libraries_list_makes_an_account_unrestricted_rather_than_blind() {
     let library = claimed_library();
     let conn = library.conn();
     let (first, _second) = two_roots(&conn);
@@ -1371,7 +1445,7 @@ fn an_empty_roots_list_makes_an_account_unrestricted_rather_than_blind() {
         &conn,
         id,
         &Patch {
-            roots: Some(Vec::new()),
+            libraries: Some(Vec::new()),
             ..Patch::default()
         },
         None,
@@ -1391,14 +1465,14 @@ fn a_refused_role_change_writes_no_grants_either() {
     let library = claimed_library();
     let conn = library.conn();
     let (first, second) = two_roots(&conn);
-    grant_library(&conn, 1, library_of(&conn, first)).expect("grants the admin the first root");
+    grant_library(&conn, 1, library_of(&conn, first)).expect("grants the admin the first library");
 
     update(
         &conn,
         1,
         &Patch {
             role: Some("user".to_string()),
-            roots: Some(vec![second]),
+            libraries: Some(vec![library_of(&conn, second)]),
             ..Patch::default()
         },
         None,

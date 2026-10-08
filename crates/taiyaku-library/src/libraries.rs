@@ -125,6 +125,89 @@ pub(crate) fn create(conn: &Connection, name: &str) -> Result<i64, String> {
     Ok(conn.last_insert_rowid())
 }
 
+/// The name of library `id`, if there is one.
+///
+/// # Errors
+///
+/// Returns an error if the read fails.
+pub fn name_of(conn: &Connection, id: i64) -> Result<Option<String>, String> {
+    conn.query_row("SELECT name FROM library WHERE id = ?1", [id], |r| r.get(0))
+        .optional()
+        .map_err(|e| format!("looking up library {id}: {e}"))
+}
+
+/// Why [`rename`] would not rename a library.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RenameError {
+    /// No library has this id.
+    Missing(i64),
+    /// The caller's own mistake: no name once trimmed, or one another library
+    /// holds.
+    Unusable(String),
+    /// A store fault.
+    Failed(String),
+}
+
+/// Rename library `id`, storing `name` stripped by [`trim_name`], and answer
+/// the name stored.
+///
+/// **`library.name`'s UNIQUE is what refuses a name another library holds.**
+/// A lookup before the write would be a second statement for a second writer
+/// to land between, and the CLI is one.
+///
+/// # Errors
+///
+/// See [`RenameError`].
+pub fn rename(conn: &Connection, id: i64, name: &str) -> Result<String, RenameError> {
+    if name.trim().is_empty() {
+        return Err(RenameError::Unusable("a library needs a name".to_string()));
+    }
+    let name = trim_name(name);
+    match conn.execute(
+        "UPDATE library SET name = ?2 WHERE id = ?1",
+        rusqlite::params![id, name],
+    ) {
+        Ok(0) => Err(RenameError::Missing(id)),
+        Ok(_) => Ok(name.to_string()),
+        Err(rusqlite::Error::SqliteFailure(e, _))
+            if e.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE =>
+        {
+            Err(RenameError::Unusable(format!(
+                "a library is already called `{name}`"
+            )))
+        }
+        Err(e) => Err(RenameError::Failed(format!("renaming library {id}: {e}"))),
+    }
+}
+
+/// How many entries the scans of library `id`'s folders recorded as an EPUB
+/// (fixed-layout or reflowable) or a PDF, which derivation does not admit.
+/// Entries in other formats it does not admit, such as rar, 7z and tar, are not
+/// counted.
+///
+/// The Libraries screen says "no readable files yet" on this, for a library
+/// that holds such files and no work.
+///
+/// # Errors
+///
+/// Returns an error if the read fails.
+pub fn books(conn: &Connection, id: i64) -> Result<usize, String> {
+    use taiyaku_read::Format;
+    conn.query_row(
+        "SELECT count(*) FROM scan_entry e JOIN root r ON r.id = e.root_id
+          WHERE r.library_id = ?1 AND e.format IN (?2, ?3, ?4)",
+        rusqlite::params![
+            id,
+            Format::EpubFixed.token(),
+            Format::EpubReflow.token(),
+            Format::Pdf.token(),
+        ],
+        |r| r.get::<_, i64>(0),
+    )
+    .map(|n| usize::try_from(n).unwrap_or(usize::MAX))
+    .map_err(|e| format!("counting the books of library {id}: {e}"))
+}
+
 /// SQL that is true of a `work` row library `library` may derive onto: a work
 /// filed under it, or a work in no library that it may take.
 ///

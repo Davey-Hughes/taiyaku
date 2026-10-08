@@ -90,7 +90,6 @@
 //! derivations share — the term the quadratic cost is actually in, and the
 //! one dimension neither limit touched before it existed.
 
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -322,13 +321,11 @@ fn rule_json(rule: &rules::Rule) -> serde_json::Value {
 }
 
 /// A required string field, or the caller's own mistake named against
-/// `noun` — `"rule"` from [`rule_from_json`]/[`new_rule_from_json`],
-/// `"root"` from [`root_path_from_json`], the one root-route caller of this
-/// helper. Shared rather than duplicated per route, so the wording for a
-/// missing or mistyped string field cannot drift between the two callers —
-/// [`root_patch_from_json`]'s own doc comment says the same for
-/// [`patch_bool`]/[`patch_nullable_text`]/[`patch_nullable_i64`], the other
-/// three helpers this file shares between the rules and roots routes.
+/// `noun` — `"rule"` from [`rule_from_json`]/[`new_rule_from_json`]. The noun
+/// is a parameter so the wording is said once for whatever the field belongs
+/// to; [`root_patch_from_json`]'s own doc comment says the same for
+/// [`patch_bool`]/[`patch_nullable_text`]/[`patch_nullable_i64`], which this
+/// file shares between the rules and roots routes.
 fn required_str<'a>(
     body: &'a serde_json::Value,
     field: &str,
@@ -1184,18 +1181,15 @@ enum RootAnswer {
     /// `id` names no root — 404.
     Missing(i64),
     /// The caller's own mistake, decided before any store call or inside
-    /// one: a body that could not be read as a path or a patch, or
-    /// [`scan::AddRootError::Unusable`] — one of `add_root_checked`'s
-    /// refusals, its own message already naming which.
+    /// one: a body that could not be read as a patch, or a scan the caller
+    /// asked for wrongly.
     Unusable(String),
     /// Well-formed, names a real root, and still not allowed — 409, in
     /// [`scan::removal_refusal`]'s words: the root is the last folder of a
     /// library that is some account's only grant.
     Refused(String),
-    /// A store failure — 500. Includes [`scan::AddRootError::Failed`]: a
-    /// fault inside `add_root_checked`'s own store calls is exactly as much
-    /// a 500 here as one inside [`scan::update_root`] or
-    /// [`scan::remove_root`] already is.
+    /// A store failure — 500: one inside [`scan::update_root`] or
+    /// [`scan::remove_root`], say.
     Failed(String),
 }
 
@@ -1219,8 +1213,8 @@ fn root_panicked(what: &str, why: &tokio::task::JoinError) -> Response {
     RootAnswer::Failed(format!("{what} panicked: {why}")).into_response()
 }
 
-/// One `root` row, as [`list_roots`] sends it and [`create_root`] sends the
-/// row it just minted.
+/// One `root` row, as [`list_roots`] sends it and `libraries_api` sends the
+/// folders of a library.
 ///
 /// **`last_scan_at`/`last_scan_status` are read separately from
 /// [`scan::Root`], not carried on it** — that type has neither column: Task
@@ -1234,7 +1228,7 @@ fn root_panicked(what: &str, why: &tokio::task::JoinError) -> Response {
 /// earlier one has scanned carries a real timestamp and status here; one
 /// that has not yet still reads `null` for both, exactly as it always did.
 /// C4 §3's regime line needs the columns present, not populated.
-fn root_json(
+pub(crate) fn root_json(
     root: &scan::Root,
     last_scan_at: Option<&str>,
     last_scan_status: Option<&str>,
@@ -1253,26 +1247,22 @@ fn root_json(
     })
 }
 
-/// [`create_root`]'s success body: the row [`scan::add_root_checked`]
-/// minted, plus the watch probe it ran immediately and the interval that
-/// probe implies — [`scan::Added`]'s own three fields, over the wire.
+/// The success body for a folder added, in `libraries_api`: the row
+/// [`scan::add_root_checked_in`] minted, plus the watch probe it ran
+/// immediately and the interval that probe implies — [`scan::Added`]'s own
+/// three fields, over the wire.
 ///
 /// `last_scan_at`/`last_scan_status` are sent `null` unconditionally rather
 /// than queried: a root this call just inserted has never been scanned, so
 /// both are genuinely absent and asking the database to confirm that would
 /// be a second round trip for an answer this call already knows.
-fn added_json(added: &scan::Added) -> serde_json::Value {
+pub(crate) fn added_json(added: &scan::Added) -> serde_json::Value {
     serde_json::json!({
         "root": root_json(&added.root, None, None),
         "watching": added.probe.watching,
         "watch_reason": added.probe.reason,
         "interval_secs": added.interval.as_secs(),
     })
-}
-
-/// A required `path` field — [`create_root`]'s only input.
-fn root_path_from_json(body: &serde_json::Value) -> Result<PathBuf, String> {
-    required_str(body, "path", "root").map(PathBuf::from)
 }
 
 /// A patch, as [`patch_root`]'s body is read.
@@ -1320,7 +1310,7 @@ fn root_patch_from_json(body: &serde_json::Value) -> Result<scan::RootPatch, Str
 
 /// What one [`scan::Removal`] costs, over the wire — [`delete_root`]'s body,
 /// whether `dry_run` asked for a rehearsal or the real thing.
-fn removal_json(removal: &scan::Removal) -> serde_json::Value {
+pub(crate) fn removal_json(removal: &scan::Removal) -> serde_json::Value {
     serde_json::json!({
         "works": removal.works,
         "positions": removal.positions,
@@ -1439,7 +1429,7 @@ fn unreadable_json(unreadable: &derive::Unreadable) -> serde_json::Value {
 /// states the whole argument, and this is the renderer that argument was
 /// actually written for: [`derive::DeriveReport`] is the struct four of the
 /// deleted keys came from.
-fn derive_report_json(report: &derive::DeriveReport) -> serde_json::Value {
+pub(crate) fn derive_report_json(report: &derive::DeriveReport) -> serde_json::Value {
     let derive::DeriveReport {
         series,
         works,
@@ -1519,7 +1509,7 @@ fn derive_report_json(report: &derive::DeriveReport) -> serde_json::Value {
 /// client render "what the walk found" and "what derivation made of it" as
 /// the two distinct sections C4 §3's screen actually needs, rather than one
 /// caller having to know which of thirty-odd keys came from which pass.
-fn finished_scan_json(
+pub(crate) fn finished_scan_json(
     scan_report: &scan::ScanReport,
     derive_report: &derive::DeriveReport,
 ) -> serde_json::Value {
@@ -1534,12 +1524,12 @@ fn finished_scan_json(
 /// the request that started it.
 ///
 /// **`state.library.working()`, not `state.library.conn()`.** This module's
-/// own doc comment states the reasoning [`preview_rules`] and [`create_root`]
-/// already act on for a shorter wait; a full scan is the longest-running
-/// thing this server ever does to a library, and holding the shared
-/// `Mutex<Connection>` for its whole length would stall every other request
-/// this server is serving — reads and writes alike — for as long as the walk
-/// takes. `working` opens a genuine second connection where the library is
+/// own doc comment states the reasoning [`preview_rules`] and
+/// `libraries_api`'s routes already act on for a shorter wait; a full scan is
+/// the longest-running thing this server ever does to a library, and holding
+/// the shared `Mutex<Connection>` for its whole length would stall every other
+/// request this server is serving — reads and writes alike — for as long as
+/// the walk takes. `working` opens a genuine second connection where the library is
 /// file-backed, so an ordinary request proceeds on the shared connection the
 /// whole time this runs.
 ///
@@ -1617,23 +1607,32 @@ fn run_scan(
     root: &scan::Root,
     job: &std::sync::Mutex<()>,
 ) -> serde_json::Value {
-    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        run_scan_inner(library, root, job)
-    }));
+    scan_report_of(std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+        || run_scan_inner(library, root, job),
+    )))
+}
+
+/// What a scan's registry entry holds once `outcome` is known: its report, or
+/// the `{"error": …}` of a failure or a caught panic.
+fn scan_report_of(
+    outcome: std::thread::Result<Result<serde_json::Value, String>>,
+) -> serde_json::Value {
     match outcome {
         Ok(Ok(report)) => report,
         Ok(Err(why)) => serde_json::json!({ "error": why }),
-        Err(payload) => {
-            let message = payload
-                .downcast_ref::<&str>()
-                .map(|s| (*s).to_string())
-                .or_else(|| payload.downcast_ref::<String>().cloned())
-                .unwrap_or_else(|| {
-                    "the scan panicked with a payload that names no message".to_string()
-                });
-            serde_json::json!({ "error": format!("the scan panicked: {message}") })
-        }
+        Err(payload) => serde_json::json!({
+            "error": format!("the scan panicked: {}", panic_message(payload.as_ref())),
+        }),
     }
+}
+
+/// What a caught panic said, or that it said nothing readable.
+pub(crate) fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    payload
+        .downcast_ref::<&str>()
+        .map(|s| (*s).to_string())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "the scan panicked with a payload that names no message".to_string())
 }
 
 /// The one query parameter [`start_scan`] recognises by name without
@@ -1883,6 +1882,35 @@ pub(crate) async fn scan_status(
 
 // --- roots: routes -----------------------------------------------------
 
+/// A root, with its `last_scan_at` and `last_scan_status`.
+pub(crate) type RootWithScan = (scan::Root, Option<String>, Option<String>);
+
+/// Every root with the two scan columns [`scan::Root`] does not carry, in
+/// [`scan::roots`]'s order: the root, `last_scan_at`, `last_scan_status`.
+///
+/// `scan::Root` carries neither column — see [`root_json`]'s own doc comment —
+/// so they are read here, in one extra query rather than one per root.
+pub(crate) fn roots_with_last_scan(
+    conn: &rusqlite::Connection,
+) -> Result<Vec<RootWithScan>, String> {
+    let roots = scan::roots(conn)?;
+    let mut stmt = conn
+        .prepare("SELECT id, last_scan_at, last_scan_status FROM root")
+        .map_err(|e| format!("reading scan status: {e}"))?;
+    let mut meta: std::collections::HashMap<i64, (Option<String>, Option<String>)> = stmt
+        .query_map([], |r| Ok((r.get::<_, i64>(0)?, (r.get(1)?, r.get(2)?))))
+        .map_err(|e| format!("reading scan status: {e}"))?
+        .collect::<Result<_, _>>()
+        .map_err(|e| format!("reading scan status: {e}"))?;
+    Ok(roots
+        .into_iter()
+        .map(|root| {
+            let (at, status) = meta.remove(&root.id).unwrap_or_default();
+            (root, at, status)
+        })
+        .collect())
+}
+
 /// `GET /api/library/roots` — every scan root this library holds, oldest
 /// first ([`scan::roots`]'s own order).
 pub(crate) async fn list_roots(
@@ -1895,25 +1923,11 @@ pub(crate) async fn list_roots(
     }
     let built = tokio::task::spawn_blocking(move || {
         let conn = state.library.conn();
-        let roots = scan::roots(&conn).map_err(RootAnswer::Failed)?;
-        // `scan::Root` carries neither column — see `root_json`'s own doc
-        // comment — so they are read here, directly, in one extra query
-        // rather than one per root.
-        let mut stmt = conn
-            .prepare("SELECT id, last_scan_at, last_scan_status FROM root")
-            .map_err(|e| RootAnswer::Failed(format!("reading scan status: {e}")))?;
-        let meta: std::collections::HashMap<i64, (Option<String>, Option<String>)> = stmt
-            .query_map([], |r| Ok((r.get::<_, i64>(0)?, (r.get(1)?, r.get(2)?))))
-            .map_err(|e| RootAnswer::Failed(format!("reading scan status: {e}")))?
-            .collect::<Result<_, _>>()
-            .map_err(|e| RootAnswer::Failed(format!("reading scan status: {e}")))?;
+        let roots = roots_with_last_scan(&conn).map_err(RootAnswer::Failed)?;
         Ok::<_, RootAnswer>(serde_json::json!({
             "roots": roots
                 .iter()
-                .map(|root| {
-                    let (at, status) = meta.get(&root.id).cloned().unwrap_or_default();
-                    root_json(root, at.as_deref(), status.as_deref())
-                })
+                .map(|(root, at, status)| root_json(root, at.as_deref(), status.as_deref()))
                 .collect::<Vec<_>>(),
         }))
     })
@@ -1923,62 +1937,6 @@ pub(crate) async fn list_roots(
         Ok(Ok(body)) => Json(body).into_response(),
         Ok(Err(no_answer)) => no_answer.into_response(),
         Err(why) => root_panicked("listing roots", &why),
-    }
-}
-
-/// `POST /api/library/roots` — add a root, running the checks
-/// [`scan::add_root_checked`] carries: it must exist, be readable by this
-/// process, and not overlap a root already held, in either direction. Every
-/// one of those is this caller's own mistake — 400, naming what it was,
-/// `add_root_checked`'s own message.
-///
-/// **A store fault along the way is a 500, not folded into that same 400.**
-/// `add_root_checked` returns [`scan::AddRootError`], not a bare `String`,
-/// precisely so this handler can tell its two shapes apart:
-/// [`scan::AddRootError::Unusable`] is a refusal of what the caller sent,
-/// [`scan::AddRootError::Failed`] is the overlap check's own read, the
-/// library-name lookup, the insert, or the write that records the watch
-/// probe's interval failing for a reason that has nothing to do with what
-/// the caller sent — a transient SQL fault must not tell a caller they made
-/// a mistake they did not make.
-///
-/// **Takes its connection from [`taiyaku_library::Library::working`], not
-/// [`taiyaku_library::Library::conn`].** `add_root_checked` runs its watch
-/// probe synchronously before answering — up to two seconds waiting for a
-/// filesystem event, per that function's own doc comment — and holds
-/// whatever connection it was handed for the whole of that wait. Two
-/// seconds on the shared `Mutex<Connection>` would stall every other request
-/// this server is serving for longer than [`preview_rules`]'s own measured
-/// 281 ms derivation, which is the entire reason that route takes this same
-/// second connection instead — this module's own doc comment states it in
-/// full. The identical trade, for a longer wait.
-pub(crate) async fn create_root(
-    State(state): State<Arc<ServeState>>,
-    Extension(principal): Extension<Principal>,
-    extensions: axum::http::Extensions,
-    Json(body): Json<serde_json::Value>,
-) -> Response {
-    if let Some(refusal) = crate::session::administering_or_forbidden(&principal, &extensions) {
-        return refusal;
-    }
-    let path = match root_path_from_json(&body) {
-        Ok(path) => path,
-        Err(why) => return RootAnswer::Unusable(why).into_response(),
-    };
-
-    let created = tokio::task::spawn_blocking(move || {
-        let working = state.library.working().map_err(RootAnswer::Failed)?;
-        scan::add_root_checked(&working, &path).map_err(|e| match e {
-            scan::AddRootError::Unusable(why) => RootAnswer::Unusable(why),
-            scan::AddRootError::Failed(why) => RootAnswer::Failed(why),
-        })
-    })
-    .await;
-
-    match created {
-        Ok(Ok(added)) => Json(added_json(&added)).into_response(),
-        Ok(Err(no_answer)) => no_answer.into_response(),
-        Err(why) => root_panicked("adding a root", &why),
     }
 }
 
@@ -2076,9 +2034,9 @@ pub(crate) struct DeleteRootQuery {
 /// Both store calls refuse it too, as an error with nothing to tell it from
 /// a store fault, which this route would answer 500.
 ///
-/// Takes its connection from `working`, not `conn`, for the identical reason
-/// [`create_root`]'s own doc comment gives — both `removal_cost` and
-/// `remove_root` derive.
+/// Takes its connection from `working`, not `conn`: both `removal_cost` and
+/// `remove_root` derive, and a derive held on the shared connection stalls
+/// every other request for as long as it takes.
 ///
 /// **The body also carries a `"derive"` key, [`derive_report_json`] over
 /// whichever [`crate::derive::DeriveReport`] `removal_cost`/`remove_root`
@@ -2121,8 +2079,10 @@ pub(crate) async fn delete_root(
     // `state.scans` entry left under that id would then answer for a root it
     // was never scanning — `scan_status` returning the *deleted* root's old
     // report, or `start_scan` refusing the new root as "already running" —
-    // so a real (non-`dry_run`) removal that actually committed clears the
-    // slot here. A dry run or a failed removal leaves nothing to invalidate.
+    // so a real (non-`dry_run`) removal that answers `Ok` clears the slot
+    // here. A dry run leaves nothing to invalidate. A removal that commits and
+    // then fails its reconcile derive answers an error with the root gone and
+    // the slot left.
     if !dry_run && matches!(&removed, Ok(Ok(_))) {
         scans_state
             .scans

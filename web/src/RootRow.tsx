@@ -71,7 +71,7 @@ import {
   regimeFacts,
   type Root,
   type RootPatch,
-  type Derived,
+  type RemovalAnswer,
   SCAN_POLL_MS,
   type ScanOutcome,
   scanStatus,
@@ -79,15 +79,36 @@ import {
   statusOf,
 } from './config'
 import { RemoveRoot } from './RemoveRoot'
-import { DeriveSection, ScanReport } from './ScanReport'
-import { messageOf } from './message'
+import { ScanReport } from './ScanReport'
+import { messageOf, sentenceOf } from './message'
 
 export interface RootRowProps {
   root: Root
   /** Only a root added in this session has one. See `config.ts`'s `Probe`. */
   probe?: Probe
-  /** The list reloads on a save, a removal, or a finished scan. */
-  onChanged: () => void
+  /** Bumped by the library's card when it starts a scan of the library. */
+  adopt?: number
+  /** The library's name, where this is its only folder. */
+  lastOf?: string
+  /**
+   * Something else in the library is going on: a scan of the library, a
+   * removal of it, or another folder's scan or removal dialog. Scan now and
+   * Remove… do nothing then and are drawn disabled, and an open removal
+   * dialog is closed.
+   */
+  held?: boolean
+  /** Says whether this row is scanning, starting a scan or confirming a removal. */
+  onBusy?: (busy: boolean) => void
+  /**
+   * The folder is gone, with what its re-derive found. The row is not drawn
+   * once the list reloads, so the screen keeps the report.
+   */
+  onRemoved?: (answer: RemovalAnswer) => void
+  /**
+   * The list reloads on a save, a removal, or a finished scan. `quiet` is a
+   * scan that ended by itself: no press started that read.
+   */
+  onChanged: (quiet?: boolean) => void
 }
 
 /**
@@ -188,12 +209,21 @@ const BAD_INTERVAL =
   'A scan interval has to be a whole number of seconds, at least one. ' +
   'Leave it empty to set no interval at all.'
 
-export function RootRow({ root, probe, onChanged }: RootRowProps) {
+export function RootRow({
+  root,
+  probe,
+  adopt,
+  lastOf,
+  held = false,
+  onBusy,
+  onRemoved,
+  onChanged,
+}: RootRowProps) {
   /**
    * O165: each text box is named by its label's own words and described by
    * its hint, rather than through the `<label>` around both — which named
    * Exclude globs with the hint's whole sentence. The hint is reached by an
-   * id, per instance, because the roots screen draws one card per root.
+   * id, per instance, because the libraries screen draws a card per folder.
    *
    * O175: the name is an `aria-label` holding those words, where it was an
    * `aria-labelledby` naming the label's `<span>`. `.field` draws the span
@@ -205,31 +235,20 @@ export function RootRow({ root, probe, onChanged }: RootRowProps) {
   /**
    * Why the last write or scan *request* failed. Cleared by the next one.
    *
-   * **Separate from `scanNotice`, for the reason `Roots.tsx` keeps `failure`
-   * and `addFailure` apart** — and this is the same defect one level down,
-   * left standing when that one was fixed. A single slot meant a routine
-   * `PATCH` succeeding wiped "this server has no record of that scan", which
-   * is the one message saying the library may be half-derived. Pass 3 of the
-   * whole-branch review.
+   * **Separate from `scanNotice`**, so that a routine `PATCH` succeeding does
+   * not wipe "this server has no record of that scan", which is the one
+   * message saying the library may be half-derived.
    */
   const [failure, setFailure] = useState<string | undefined>()
   /** What the scan poll has to say. Cleared only by starting another scan. */
   const [scanNotice, setScanNotice] = useState<string | undefined>()
+  /** The sentence of a 409, true only until the scan it names ends. */
+  const [conflict, setConflict] = useState<string | undefined>()
   const [confirming, setConfirming] = useState(false)
   const [running, setRunning] = useState(false)
   const [starting, setStarting] = useState(false)
   const [elapsed, setElapsed] = useState<number | undefined>()
   const [report, setReport] = useState<ScanOutcome | null>(null)
-  /**
-   * What the real removal's own re-derive found, kept after the dialog closes.
-   *
-   * **Its own state rather than folded into `report`.** A removal produces a
-   * `DeriveReport` and no `ScanReport` — there was no walk — so pushing it
-   * through `ScanOutcome` would need a cast asserting a `scan` that
-   * does not exist. See `RemoveRoot`'s `onRemoved` for why it must reach
-   * somebody at all. Pass 4 of the whole-branch review.
-   */
-  const [removalDerive, setRemovalDerive] = useState<Derived | null>(null)
   /**
    * Which text boxes the admin has actually typed in since focusing them.
    *
@@ -276,6 +295,17 @@ export function RootRow({ root, probe, onChanged }: RootRowProps) {
   const changed = useRef(onChanged)
   changed.current = onChanged
 
+  // The card holds this row's sibling rows, and its own Scan now and Remove
+  // library…, while this row is doing something, so it is told. Held in a ref
+  // for the reason above, and told "not busy" when the row goes.
+  const busyNow = running || starting || confirming
+  const told = useRef(onBusy)
+  told.current = onBusy
+  useEffect(() => {
+    told.current?.(busyNow)
+    return () => told.current?.(false)
+  }, [busyNow])
+
   /**
    * Whether a `POST` is already on its way.
    *
@@ -310,7 +340,7 @@ export function RootRow({ root, probe, onChanged }: RootRowProps) {
         onChanged()
       })
       .catch((err: unknown) => {
-        setFailure(messageOf(err))
+        setFailure(sentenceOf(err))
       })
   }
 
@@ -321,7 +351,7 @@ export function RootRow({ root, probe, onChanged }: RootRowProps) {
         onChanged()
       })
       .catch((err: unknown) => {
-        setFailure(messageOf(err))
+        setFailure(sentenceOf(err))
       })
   }
 
@@ -339,6 +369,8 @@ export function RootRow({ root, probe, onChanged }: RootRowProps) {
     }) => {
       setElapsed(status.elapsed_secs)
       if (status.running) {
+        // A removal being confirmed quotes counts from before this scan.
+        setConfirming(false)
         setRunning(true)
         return
       }
@@ -371,6 +403,25 @@ export function RootRow({ root, probe, onChanged }: RootRowProps) {
     }
   }, [root.id, absorb])
 
+  // **A scan this row did not start.** The library's own Scan now holds this
+  // folder's registry slot, and its card bumps `adopt` when one starts. The
+  // row then polls as it does after its own button. The value it was mounted
+  // with is not a start: a card mounted mid-scan is adopted by the mount read
+  // above.
+  const adopted = useRef(adopt)
+  useEffect(() => {
+    if (adopt === adopted.current) return
+    adopted.current = adopt
+    setFailure(undefined)
+    setConflict(undefined)
+    setScanNotice(undefined)
+    setConfirming(false)
+    setReport(null)
+    setElapsed(undefined)
+    misses.current = 0
+    setRunning(true)
+  }, [adopt])
+
   const begin = useCallback(() => {
     // Guarded synchronously, not by `disabled` alone: that left two rapid
     // presses both sending, and the second's 409 — about the admin's own scan
@@ -379,9 +430,9 @@ export function RootRow({ root, probe, onChanged }: RootRowProps) {
     inFlight.current = true
     setStarting(true)
     setFailure(undefined)
+    setConflict(undefined)
     setScanNotice(undefined)
     setReport(null)
-    setRemovalDerive(null)
     setElapsed(undefined)
     misses.current = 0
     startScan(root.id)
@@ -394,7 +445,8 @@ export function RootRow({ root, probe, onChanged }: RootRowProps) {
         inFlight.current = false
         setStarting(false)
         const why = messageOf(err)
-        setFailure(why)
+        if (statusOf(why) === 409) setConflict(sentenceOf(err))
+        else setFailure(sentenceOf(err))
         // **A 409 is positive proof a scan is in flight**, so it starts the
         // poll rather than only complaining. Without this the card stayed
         // blind after any route back to a re-enabled button — three failed
@@ -418,6 +470,7 @@ export function RootRow({ root, probe, onChanged }: RootRowProps) {
           misses.current = 0
           absorb(status)
           if (status.running) return
+          setConflict(undefined)
           // **A `null` report on a stopped scan is not a clean finish.** The
           // registry is in memory, so a `serve` restarted mid-scan answers
           // exactly this — and writing it through silently cleared "Scanning…"
@@ -429,14 +482,17 @@ export function RootRow({ root, probe, onChanged }: RootRowProps) {
                 'finished. Scan again to be sure.',
             )
           }
-          changed.current()
+          changed.current(true)
         })
         .catch((err: unknown) => {
           if (cancelled) return
           misses.current += 1
           if (misses.current < POLL_MISSES_ALLOWED) return
           setRunning(false)
-          setScanNotice(messageOf(err))
+          // The 409's sentence is true while the scan it named is watched,
+          // and nothing watches it now.
+          setConflict(undefined)
+          setScanNotice(sentenceOf(err))
         })
     }, SCAN_POLL_MS)
     return () => {
@@ -447,9 +503,9 @@ export function RootRow({ root, probe, onChanged }: RootRowProps) {
 
   return (
     <li className="root-row">
-      <h3>
+      <h4>
         <code>{root.path}</code>
-      </h3>
+      </h4>
       <dl className="regime">
         {regimeFacts(root, probe).map(({ label, value }) => (
           <div key={label}>
@@ -459,6 +515,7 @@ export function RootRow({ root, probe, onChanged }: RootRowProps) {
         ))}
       </dl>
       {failure !== undefined && <p role="alert">{failure}</p>}
+      {conflict !== undefined && <p role="alert">{conflict}</p>}
       {scanNotice !== undefined && (
         <p role="alert" className="scan-notice">
           {scanNotice}
@@ -570,7 +627,7 @@ export function RootRow({ root, probe, onChanged }: RootRowProps) {
                   // doc comment for why this box is controlled and the text
                   // ones are not.
                   setKeepsDocuments(!next)
-                  setFailure(messageOf(err))
+                  setFailure(sentenceOf(err))
                 })
             }}
           />
@@ -581,24 +638,23 @@ export function RootRow({ root, probe, onChanged }: RootRowProps) {
       <div className="actions">
         {/*
           `confirming` disables this too, and that is not tidiness. The
-          removal dialog fetches its dry run once, on `[root.id]`, and never
-          refetches — so a scan started here while it is open imports works
-          underneath a sentence still quoting the old counts, and the confirm
-          below it then sends a real DELETE into a running derive, which is
-          the interleaving `DeriveReport::root_removed_mid_derive` counts.
-          Review pass 2, 2026-09-04.
+          removal dialog asks its dry run once, when it opens, so a scan
+          started here while it is open imports works underneath a sentence
+          still quoting the old counts, and the confirm below it then sends a
+          real DELETE into a running derive, which is the interleaving
+          `DeriveReport::root_removed_mid_derive` counts.
         */}
         <button
           type="button"
           onClick={begin}
-          disabled={running || starting || confirming}
+          disabled={running || starting || confirming || held}
         >
           Scan now
         </button>
         <button
           type="button"
           onClick={() => setConfirming(true)}
-          disabled={running || starting || confirming}
+          disabled={running || starting || confirming || held}
         >
           Remove…
         </button>
@@ -609,20 +665,16 @@ export function RootRow({ root, probe, onChanged }: RootRowProps) {
           Scanning…{elapsed === undefined ? '' : ` ${Math.round(elapsed)}s`}
         </p>
       )}
-      {report !== null && <ScanReport outcome={report} />}
-      {removalDerive !== null && (
-        <div className="removal-report">
-          <p>What re-deriving after that removal found:</p>
-          <DeriveSection derive={removalDerive} />
-        </div>
-      )}
+      {report !== null && <ScanReport outcome={report} level={5} />}
       {confirming && (
         <RemoveRoot
           root={root}
+          lastOf={lastOf}
+          held={held}
           onCancel={() => setConfirming(false)}
           onRemoved={(answer) => {
             setConfirming(false)
-            setRemovalDerive(answer.derive)
+            onRemoved?.(answer)
             onChanged()
           }}
         />

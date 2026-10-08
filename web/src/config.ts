@@ -5,7 +5,7 @@
  * **Separate from `library.ts`** for the reason that file gives for being
  * separate from `api.ts`: the two share a session and nothing else. Every
  * route here is admin-gated and all but two of them write; nothing in browse
- * does either.
+ * does either. The Libraries screen's own client is `libraries.ts`.
  *
  * **`TABS` lives here rather than in `Config.tsx`** so that the sub-nav which
  * draws it and the index redirect which picks a landing screen read one list.
@@ -35,7 +35,7 @@ export interface Tab {
  */
 export const TABS: Tab[] = [
   { path: 'rules', label: 'Rules' },
-  { path: 'roots', label: 'Roots' },
+  { path: 'libraries', label: 'Libraries' },
   { path: 'users', label: 'Users' },
   { path: 'backup', label: 'Backup' },
 ]
@@ -65,16 +65,20 @@ export interface Root {
 /**
  * What `watch::probe` found — an *experiment*, per spec B §8, not a lookup.
  *
- * **Only `POST /api/library/roots` carries this.** The list route does not,
- * and re-probing every root on every page load would turn a page load into N
- * filesystem experiments. Spec §3.1: a stated gap beats an invented number.
+ * **Only the two routes that add a folder carry this**:
+ * `POST /api/library/libraries` and `POST /api/library/libraries/{id}/folders`.
+ * The list route does not, and re-probing every folder on every page load
+ * would turn a page load into N filesystem experiments. Spec §3.1: a stated gap beats an invented number.
  */
 export interface Probe {
   watching: boolean
   watch_reason: string | null
 }
 
-/** `POST /api/library/roots`'s answer: the row it minted and the probe it ran. */
+/**
+ * The row a folder's adding minted and the probe it ran. A library's make
+ * route answers a list of these, and a folder's own add route answers one.
+ */
 export interface Added extends Probe {
   root: Root
   interval_secs: number
@@ -274,18 +278,6 @@ async function expectBody<T>(sent: Promise<T | undefined>): Promise<T> {
 
 export const listRoots = () => getJson<{ roots: Root[] }>('/api/library/roots')
 
-/**
- * Add a root, and get back the three validations' verdict.
- *
- * A refusal throws with the server's own sentence, which names *which* of the
- * three failed — the path does not exist, the server cannot read it, or it
- * overlaps an existing root in one direction or the other. Spec §3.2: the
- * screen renders that message and adds nothing, because a client-side guess
- * at readability is a guess about a process it is not.
- */
-export const addRoot = (path: string): Promise<Added> =>
-  expectBody(sendJson<Added>('/api/library/roots', 'POST', { path }))
-
 /** Change only the columns `patch` names. Answers 204. */
 export const patchRoot = (id: number, patch: RootPatch) =>
   sendJson<void>(`/api/library/roots/${id}`, 'PATCH', patch)
@@ -364,14 +356,14 @@ export function humanInterval(secs: number): string {
  * **A sentence was the wrong shape for them.** Joining the three with `·`
  * put four `·`-separated pieces on one line — the third fact appending its
  * own outcome — and a bare value does not say what it is:
- * `unknown — probed when a root is added` is only legible beside the word
+ * `unknown — probed when a folder is added` is only legible beside the word
  * `watch`, and `never` beside `last scan`. Nothing here is ever absent; each
  * arm has a fallback, which is why labels rather than omission are what make
  * a missing fact readable (spec §11.6).
  *
  * **`probe` is optional and its absence is stated, not defaulted.** Only
- * `POST /api/library/roots` runs the probe, so a root loaded from the list has
- * no watch state at all — and "watching" would be a claim, while "not
+ * the two routes that add a folder run the probe, so a folder loaded from the
+ * list has no watch state at all — and "watching" would be a claim, while "not
  * watching" would be a different one.
  *
  * **Replaces the former `regimeLine`, not beside it.** That function's only
@@ -386,7 +378,7 @@ export function regimeFacts(
 ): Array<{ label: string; value: string }> {
   const watch =
     probe === undefined
-      ? 'unknown — probed when a root is added'
+      ? 'unknown — probed when a folder is added'
       : probe.watching
         ? 'watching'
         : probe.watch_reason === null
@@ -415,7 +407,7 @@ export function regimeFacts(
  * one.
  *
  * `api.ts` throws `` `${path}: ${status} ${body}` ``, and a caller that needs
- * to act on the status — the roots screen treats a 409 from `startScan` as
+ * to act on the status — a folder's row treats a 409 from `startScan` as
  * proof a scan is running — was matching `message.includes('409')`, which is
  * satisfied by a 409 *anywhere*: removing root 409 from another tab produced
  * a 404 whose body reads `there is no root 409`, and the screen entered a

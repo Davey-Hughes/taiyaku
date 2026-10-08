@@ -225,31 +225,6 @@ pub fn granted_libraries(conn: &Connection, user_id: i64) -> Result<Vec<(i64, St
         .map_err(|e| format!("listing granted libraries: {e}"))
 }
 
-/// Every folder of every library granted to `user_id`, as `(id, path)`,
-/// ordered by path.
-///
-/// [`roots_for`] answers the same question in the shape the guard wants — ids
-/// alone, resolved on every request. This one is for a person reading a
-/// screen, and carries each folder's path.
-///
-/// # Errors
-///
-/// Returns an error if the query fails.
-pub fn granted_roots(conn: &Connection, user_id: i64) -> Result<Vec<(i64, String)>, String> {
-    let mut statement = conn
-        .prepare(
-            "SELECT r.id, r.path FROM user_library ul
-               JOIN root r ON r.library_id = ul.library_id
-              WHERE ul.user_id = ?1 ORDER BY r.path",
-        )
-        .map_err(|e| format!("preparing the granted-roots listing: {e}"))?;
-    let rows = statement
-        .query_map(params![user_id], |row| Ok((row.get(0)?, row.get(1)?)))
-        .map_err(|e| format!("listing granted roots: {e}"))?;
-    rows.collect::<rusqlite::Result<Vec<(i64, String)>>>()
-        .map_err(|e| format!("listing granted roots: {e}"))
-}
-
 /// Whether any admin can actually log in.
 ///
 /// **Role is not enough, and reading it alone is the bug this doc comment
@@ -731,7 +706,7 @@ pub fn by_id(conn: &Connection, id: i64) -> Result<Option<Account>, String> {
 
 /// What [`update`] may change about one account.
 ///
-/// **Every field is "leave it alone" when `None`**, including `roots`: the
+/// **Every field is "leave it alone" when `None`**, including `libraries`: the
 /// difference between `None` (do not touch the grants) and `Some(vec![])`
 /// (grant nothing, which spec A2 defines as *unrestricted* — see
 /// [`grant_library`]) is the whole reason that field is an `Option<Vec<_>>`
@@ -759,9 +734,9 @@ pub struct Patch {
     pub can_download: Option<bool>,
     pub can_stream: Option<bool>,
     pub can_stamp: Option<bool>,
-    /// Folders, by root id. What is granted is the library each is filed
-    /// under, whole.
-    pub roots: Option<Vec<i64>>,
+    /// Library ids. Replaces the account's grants: `Some(vec![])` takes them
+    /// all, which is unrestricted, and `None` leaves them alone.
+    pub libraries: Option<Vec<i64>>,
     pub password: Option<String>,
 }
 
@@ -954,50 +929,39 @@ pub fn update(
     // **Replace-all, diffed rather than deleted and reinserted.** C4 PR 1's
     // §3 correction records what delete-and-reinsert cost the rule table —
     // fresh ids reopened every accepted proposal through an
-    // `ON DELETE SET NULL` — and while `user_library` carries no such foreign
-    // key, a diff is the same size of code and cannot acquire that class of
-    // bug later.
+    // `ON DELETE SET NULL` — and while nothing refers to a `user_library` row
+    // that way, a diff is the same size of code and cannot acquire that class
+    // of bug later.
     //
     // **`Some(vec![])` is not the same instruction as `None`.** An absent list
     // leaves the grants alone; an empty one takes them all away, which spec A2
     // defines as *unrestricted* rather than blind — see [`grant_library`].
-    if let Some(wanted) = &patch.roots {
-        // **Diffed by library, not by root — Part F1.** The Users screen still
-        // sends folders, and a grant names a library. A root-level diff would
-        // revoke a whole library for one folder of it left unticked.
+    if let Some(wanted) = &patch.libraries {
         let mut wanted_libraries = std::collections::BTreeSet::new();
-        for root_id in wanted {
-            // **A root id no row holds is the caller's mistake, not a fault.**
-            // It has no library to grant, so it is refused here by name.
-            // Before `user_library` it was the foreign key on
-            // `user_root.root_id` that refused it, and `INSERT OR IGNORE`
-            // does *not* suppress a foreign-key violation — SQLite's `ON
-            // CONFLICT` algorithm covers UNIQUE, NOT NULL, CHECK and PRIMARY
-            // KEY, and FK is not among them. So `{"roots": [999]}` reached the
-            // client as `500 :: granting root 999 to user 2: FOREIGN KEY
-            // constraint failed` until this was asked first.
-            // `config_api::root_exists` is the same check one module over,
-            // added for the same reason: SQLite's own text, surfaced verbatim,
-            // is not an answer. Found by the review of C4 PR 2's fix round —
-            // and the fix round is what introduced it, by widening every
-            // `update` failure from one 409 into three cases and putting this
-            // one in the wrong one.
-            let library: Option<i64> = conn
+        for library_id in wanted {
+            // **An id no library holds is the caller's mistake, not a
+            // fault.** `INSERT OR IGNORE` does not suppress a foreign-key
+            // violation (SQLite's `ON CONFLICT` covers UNIQUE, NOT NULL,
+            // CHECK and PRIMARY KEY, and FK is not among them), so left to
+            // `grant_library` this reaches the client as a 500 carrying
+            // SQLite's own text. The list is checked whole before a grant is
+            // written, and a refusal rolls back whatever the same patch wrote
+            // before it, since the scope is never committed.
+            let exists: bool = conn
                 .query_row(
-                    "SELECT library_id FROM root WHERE id = ?1",
-                    params![root_id],
+                    "SELECT EXISTS (SELECT 1 FROM library WHERE id = ?1)",
+                    params![library_id],
                     |row| row.get(0),
                 )
-                .optional()
                 .map_err(|e| {
-                    WriteError::Failed(format!("checking whether root {root_id} exists: {e}"))
+                    WriteError::Failed(format!("checking whether library {library_id} exists: {e}"))
                 })?;
-            let Some(library) = library else {
+            if !exists {
                 return Err(WriteError::Unusable(format!(
-                    "there is no root {root_id} to grant"
+                    "there is no library {library_id} to grant"
                 )));
-            };
-            wanted_libraries.insert(library);
+            }
+            wanted_libraries.insert(*library_id);
         }
         let held: std::collections::BTreeSet<i64> = libraries_for(conn, id)
             .map_err(WriteError::Failed)?

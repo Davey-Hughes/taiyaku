@@ -1,17 +1,17 @@
 import { act } from 'react'
 import { MemoryRouter } from 'react-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import * as config from './config'
 import { GateContext } from './gate'
+import * as librariesApi from './libraries'
 import { deferred, flush } from './testing/async'
 import { fields } from './testing/fields'
 import { mount } from './testing/mount'
 import * as usersApi from './users'
 import { Users } from './Users'
 
-vi.mock('./config', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('./config')>()),
-  listRoots: vi.fn(),
+vi.mock('./libraries', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./libraries')>()),
+  listLibraries: vi.fn(),
 }))
 vi.mock('./users', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./users')>()),
@@ -34,7 +34,7 @@ const user = (over: Partial<usersApi.User> = {}): usersApi.User => ({
   can_log_in: true,
   sessions: [],
   keys: [],
-  roots: [],
+  libraries: [],
   ...over,
 })
 
@@ -89,7 +89,7 @@ async function submitAdd(host: HTMLElement) {
 beforeEach(() => {
   vi.clearAllMocks()
   vi.mocked(usersApi.listUsers).mockResolvedValue({ users: [user()] })
-  vi.mocked(config.listRoots).mockResolvedValue({ roots: [] })
+  vi.mocked(librariesApi.listLibraries).mockResolvedValue({ libraries: [] })
   vi.mocked(usersApi.revokeUserSession).mockResolvedValue(undefined)
 })
 
@@ -182,6 +182,108 @@ describe('Users', () => {
     )
   })
 
+  it('draws the server sentence, not the path and status, for a refused add', async () => {
+    vi.mocked(usersApi.addUser).mockRejectedValue(
+      new Error(
+        '/api/library/users: 400 {"error":"an account named sam already exists"}',
+      ),
+    )
+    const host = await settle()
+    await fill(host, 'new-name', 'sam')
+    await fill(host, 'new-password', 'hunter2')
+    await submitAdd(host)
+    expect(host.querySelector('[role="alert"]')?.textContent).toBe(
+      'an account named sam already exists',
+    )
+  })
+
+  it('draws the server sentence, not the path and status, for a list that was refused', async () => {
+    vi.mocked(usersApi.listUsers).mockRejectedValue(
+      new Error(
+        '/api/library/users: 403 {"error":"an API key is not an administrator"}',
+      ),
+    )
+    const host = await settle()
+    expect(host.querySelector('[role="alert"]')?.textContent).toBe(
+      'an API key is not an administrator',
+    )
+  })
+
+  it('offers each card the libraries, and names its radios for its own account', async () => {
+    vi.mocked(librariesApi.listLibraries).mockResolvedValue({
+      libraries: [{ id: 70, name: 'Manga', works: 0, books: 0, folders: [] }],
+    })
+    vi.mocked(usersApi.listUsers).mockResolvedValue({
+      users: [
+        user(),
+        user({
+          id: 2,
+          name: 'sam',
+          role: 'user',
+          libraries: [{ id: 70, name: 'Manga' }],
+        }),
+      ],
+    })
+    const host = await settle()
+    const cards = [...host.querySelectorAll('li.user-row')]
+    const granted = cards[1]?.querySelector<HTMLInputElement>(
+      'input[name="library-70"]',
+    )
+    expect(granted?.checked).toBe(true)
+    // One radio group per card: a shared name would make the two cards one.
+    const radios = host.querySelectorAll<HTMLInputElement>(
+      '.grants input[type="radio"]',
+    )
+    expect([...radios].map((radio) => radio.name)).toEqual([
+      'sees-1',
+      'sees-1',
+      'sees-2',
+      'sees-2',
+    ])
+  })
+
+  it('gives each card its own last-tick sentence, and each box points at its own', async () => {
+    vi.mocked(librariesApi.listLibraries).mockResolvedValue({
+      libraries: [
+        { id: 70, name: 'Manga', works: 0, books: 0, folders: [] },
+        { id: 80, name: 'Comics', works: 0, books: 0, folders: [] },
+      ],
+    })
+    vi.mocked(usersApi.listUsers).mockResolvedValue({
+      users: [
+        user({
+          id: 2,
+          name: 'sam',
+          role: 'user',
+          libraries: [{ id: 70, name: 'Manga' }],
+        }),
+        user({
+          id: 3,
+          name: 'kim',
+          role: 'user',
+          libraries: [{ id: 80, name: 'Comics' }],
+        }),
+      ],
+    })
+    const host = await settle()
+    const [sam, kim] = [...host.querySelectorAll('li.user-row')]
+    const sentence = (card: Element) =>
+      [...card.querySelectorAll('.grants .why')].find((p) =>
+        p.textContent?.includes('The last tick cannot be cleared'),
+      )
+    const described = (card: Element, box: string) =>
+      card
+        .querySelector(`input[name="${box}"]`)
+        ?.getAttribute('aria-describedby')
+    const samId = sentence(sam)?.id
+    const kimId = sentence(kim)?.id
+    expect(samId).toBeTruthy()
+    expect(kimId).toBeTruthy()
+    expect(samId).not.toBe(kimId)
+    expect(described(sam, 'library-70')).toBe(samId)
+    expect(described(kim, 'library-80')).toBe(kimId)
+  })
+
   it('sends one POST for two submits dispatched before the first answers', async () => {
     // A ref rather than `disabled={adding}`: React batches state, so both
     // handlers read `adding === false`. Reachable by holding Enter in the name
@@ -270,23 +372,28 @@ describe('Users', () => {
     expect(usersApi.addUser).not.toHaveBeenCalled()
   })
 
-  it('says so when the roots list could not be read, rather than drawing an empty one', async () => {
-    // The grant editor draws "This library has no roots yet" for an empty
+  it('says so when the libraries list could not be read, rather than drawing an empty one', async () => {
+    // The grant editor draws "There are no libraries yet" for an empty
     // array, and a failed read would make that sentence a lie about the one
     // control whose empty state means *unrestricted*.
-    vi.mocked(config.listRoots).mockRejectedValue(
-      new Error('/api/library/roots: 500 the store is unavailable'),
+    vi.mocked(librariesApi.listLibraries).mockRejectedValue(
+      new Error(
+        '/api/library/libraries: 500 {"error":"the store is unavailable"}',
+      ),
     )
     const host = await settle()
-    expect(host.textContent).toContain('roots list could not be read')
+    // The server's sentence, in the whole alert, not the path and status.
+    expect(host.querySelector('[role="alert"]')?.textContent).toBe(
+      'The libraries list could not be read (the store is unavailable), so the grant editors below show nothing rather than what there is.',
+    )
     // And the card says the same thing where the editor would be, rather than
-    // claiming the library has no roots — the two look identical and mean
+    // claiming there are no libraries — the two look identical and mean
     // opposite things, since an empty grant is *unrestricted*.
     expect(host.querySelector('.grants')?.textContent).toContain(
       'has not been read',
     )
     expect(host.querySelector('.grants')?.textContent).not.toContain(
-      'no roots yet',
+      'no libraries yet',
     )
   })
   // **The two `seq !== latest.current` guards, which no test had reached.**

@@ -1,20 +1,20 @@
 /**
- * Removing a root, and what it costs — spec C4 §2.
+ * Removing a folder, and what it costs — spec C4 §2.
  *
  * **The most destructive action in the product, and it does not look like
- * one.** Works derive from `scan_entry` + `rule`; dropping a root drops its
+ * one.** Works derive from `scan_entry` + `rule`; dropping a folder drops its
  * entries, and progress, notes and read history all hang off works. So this
  * states its counts before it acts, and the real `DELETE` is sent from here
  * and nowhere else.
  *
  * **The dry run is fetched when this mounts, not when the card renders.** A
- * count per root per page load is a derivation-shaped question asked about
- * roots nobody is removing — `removal_cost` runs the same apply-read-rollback
+ * count per folder per page load is a derivation-shaped question asked about
+ * folders nobody is removing — `removal_cost` runs the same apply-read-rollback
  * machinery the rule preview does, measured at a median of 281 ms on a real
  * library.
  *
  * **The confirm does not exist until the counts do.** A button that removes a
- * root while the sentence above it says nothing is the failure this whole
+ * folder while the sentence above it says nothing is the failure this whole
  * component exists to prevent, and "the dry run failed" is exactly when a
  * person is most likely to press on regardless.
  *
@@ -40,7 +40,7 @@ import {
   type Root,
 } from './config'
 import { DeriveSection } from './ScanReport'
-import { messageOf } from './message'
+import { sentenceOf } from './message'
 
 /**
  * `n` of a thing, in the number the count actually is.
@@ -56,9 +56,20 @@ function count(n: number, one: string, many: string): string {
 
 export interface RemoveRootProps {
   root: Root
+  /**
+   * The library's name, where this is its only folder: the library goes with
+   * it, and the dialog says so.
+   */
+  lastOf?: string
+  /**
+   * Something else in the folder's library has begun, so the counts quoted
+   * here are from before it. The dialog cancels itself when this becomes
+   * true, as its Cancel does, and so not while its removal is out.
+   */
+  held?: boolean
   onCancel: () => void
   /**
-   * Called once the root is actually gone, with what the removal actually
+   * Called once the folder is actually gone, with what the removal actually
    * did.
    *
    * **The real answer, not the rehearsal's.** This used to be `() => void`
@@ -72,14 +83,27 @@ export interface RemoveRootProps {
   onRemoved: (answer: RemovalAnswer) => void
 }
 
-export function RemoveRoot({ root, onCancel, onRemoved }: RemoveRootProps) {
+export function RemoveRoot({
+  root,
+  lastOf,
+  held = false,
+  onCancel,
+  onRemoved,
+}: RemoveRootProps) {
   const [cost, setCost] = useState<RemovalAnswer | undefined>()
   const [failure, setFailure] = useState<string | undefined>()
   const [removing, setRemoving] = useState(false)
+  // Read when `held` changes, and not a dependency: a removal that is refused
+  // while the hold stands must leave its refusal drawn.
+  const state = useRef({ removing, onCancel })
+  state.current = { removing, onCancel }
+  useEffect(() => {
+    if (held && !state.current.removing) state.current.onCancel()
+  }, [held])
   /**
    * Whether the real `DELETE` is already on its way.
    *
-   * **A ref, for the reason `RootRow`'s and `Roots`' own are** — React batches
+   * **A ref, for the reason `RootRow`'s and `Libraries`' own are** — React batches
    * state, so `disabled={removing}` alone let two presses dispatched before
    * the next render both send. This is the one button on the branch where an
    * unguarded second dispatch is least worth leaving to luck: C4 §2 calls it
@@ -97,7 +121,7 @@ export function RemoveRoot({ root, onCancel, onRemoved }: RemoveRootProps) {
       })
       .catch((err: unknown) => {
         if (cancelled) return
-        setFailure(messageOf(err))
+        setFailure(sentenceOf(err))
       })
     return () => {
       cancelled = true
@@ -108,12 +132,13 @@ export function RemoveRoot({ root, onCancel, onRemoved }: RemoveRootProps) {
     if (inFlight.current) return
     inFlight.current = true
     setRemoving(true)
+    setFailure(undefined)
     removeRoot(root.id)
       .then((answer) => onRemoved(answer))
       .catch((err: unknown) => {
         inFlight.current = false
         setRemoving(false)
-        setFailure(messageOf(err))
+        setFailure(sentenceOf(err))
       })
   }
 
@@ -121,7 +146,7 @@ export function RemoveRoot({ root, onCancel, onRemoved }: RemoveRootProps) {
     <div
       className="remove-root"
       role="group"
-      aria-label={`Remove the root at ${root.path}`}
+      aria-label={`Remove the folder at ${root.path}`}
     >
       {failure !== undefined && <p role="alert">{failure}</p>}
       {cost === undefined ? (
@@ -137,6 +162,12 @@ export function RemoveRoot({ root, onCancel, onRemoved }: RemoveRootProps) {
             )}{' '}
             and {count(cost.removed.notes, 'note', 'notes')}.
           </p>
+          {lastOf !== undefined && (
+            <p className="last-folder">
+              This is the only folder of the library {lastOf}, so removing it
+              removes the library too.
+            </p>
+          )}
           <p className="irreversible">
             Nothing here can be undone from this screen. The files on disk are
             untouched; what goes is everything this library derived from them,
@@ -151,8 +182,8 @@ export function RemoveRoot({ root, onCancel, onRemoved }: RemoveRootProps) {
             {removing ? 'Removing…' : `Remove ${root.path}`}
           </button>
           <details className="removal-derive">
-            <summary>What re-deriving without this root would find</summary>
-            <DeriveSection derive={cost.derive} />
+            <summary>What re-deriving without this folder would find</summary>
+            <DeriveSection derive={cost.derive} level={5} />
           </details>
         </>
       )}

@@ -78,11 +78,16 @@ const answer = (over: Partial<config.Removal> = {}): config.RemovalAnswer => ({
   dry_run: true,
 })
 
-async function settle(onRemoved = vi.fn()) {
+async function settle(onRemoved = vi.fn(), lastOf?: string) {
   let host: HTMLElement | undefined
   await act(async () => {
     host = mount(
-      <RemoveRoot root={root} onCancel={vi.fn()} onRemoved={onRemoved} />,
+      <RemoveRoot
+        root={root}
+        lastOf={lastOf}
+        onCancel={vi.fn()}
+        onRemoved={onRemoved}
+      />,
     )
     await Promise.resolve()
     await Promise.resolve()
@@ -113,14 +118,41 @@ beforeEach(() => {
 })
 
 describe('RemoveRoot', () => {
+  it('draws the rehearsal’s report headings one level beneath the folder’s path', async () => {
+    // The dialog sits in a card whose heading is an h4.
+    const host = await settle()
+    const headings = [
+      ...host.querySelectorAll('.removal-derive .report-heading'),
+    ]
+    expect(headings.map((h) => h.textContent)).toEqual([
+      'What derivation made of it',
+    ])
+    expect(headings.map((h) => h.tagName)).toEqual(['H5'])
+  })
+
   it('states all three counts before it acts', async () => {
     // The whole sentence, not three loose digits: `toContain('3')` is
-    // satisfied by any string holding a 3 anywhere, including the root's own
+    // satisfied by any string holding a 3 anywhere, including the folder's own
     // id in the aria-label, so it would pass against a dialog that never
     // drew the positions count at all.
     expect((await settle()).textContent).toContain(
       'This removes 412 works, 3 in-progress positions and 27 notes.',
     )
+  })
+
+  it('says the library goes too where this is its only folder', async () => {
+    const host = await settle(vi.fn(), 'Manga')
+    expect(host.querySelector('.last-folder')?.textContent).toBe(
+      'This is the only folder of the library Manga, so removing it removes the library too.',
+    )
+    expect(
+      host.querySelector('[role="group"]')?.getAttribute('aria-label'),
+    ).toBe('Remove the folder at /srv/manga')
+  })
+
+  it('says nothing about a library where other folders stay', async () => {
+    const host = await settle()
+    expect(host.querySelector('.last-folder')).toBeNull()
   })
 
   it('draws a zero rather than saying nothing about it', async () => {
@@ -172,6 +204,31 @@ describe('RemoveRoot', () => {
     )
   })
 
+  it("draws the refusal's sentence when the dry run is refused with one", async () => {
+    vi.mocked(config.removalCost).mockRejectedValue(
+      new Error('/api/library/roots/3: 403 {"error":"an administrator only"}'),
+    )
+    const host = await settle()
+    expect(host.querySelector('[role="alert"]')?.textContent).toBe(
+      'an administrator only',
+    )
+  })
+
+  it("draws the refusal's sentence when the real removal is refused", async () => {
+    vi.mocked(config.removeRoot).mockRejectedValue(
+      new Error('/api/library/roots/3: 409 {"error":"a scan is running"}'),
+    )
+    const host = await settle()
+    await act(async () => {
+      press(host, 'Remove /srv/manga').click()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(host.querySelector('[role="alert"]')?.textContent).toBe(
+      'a scan is running',
+    )
+  })
+
   it('does not offer a confirm while the counts are unknown', async () => {
     vi.mocked(config.removalCost).mockRejectedValue(new Error('500'))
     const host = await settle()
@@ -207,7 +264,7 @@ describe('RemoveRoot', () => {
 
   it('re-offers the confirm when the removal itself fails', async () => {
     // A removal that failed must not leave the button stuck at "Removing…"
-    // with nothing said: the root is still there and the person needs both
+    // with nothing said: the folder is still there and the person needs both
     // the reason and a way to try again.
     vi.mocked(config.removeRoot).mockRejectedValue(
       new Error('/api/library/roots/3: 500 deriving after the removal failed'),
@@ -222,6 +279,30 @@ describe('RemoveRoot', () => {
       'deriving after the removal failed',
     )
     expect(press(host, 'Remove /srv/manga').disabled).toBe(false)
+  })
+
+  it('holds no failure while the next removal is in flight', async () => {
+    vi.mocked(config.removeRoot)
+      .mockRejectedValueOnce(
+        new Error('/api/library/roots/3: 500 {"error":"the disk is full"}'),
+      )
+      .mockReturnValueOnce(new Promise(() => {}))
+    const host = await settle()
+    await act(async () => {
+      press(host, 'Remove /srv/manga').click()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(host.querySelector('[role="alert"]')?.textContent).toBe(
+      'the disk is full',
+    )
+    await act(async () => {
+      press(host, 'Remove /srv/manga').click()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(host.querySelector('[role="alert"]')).toBeNull()
+    expect(config.removeRoot).toHaveBeenCalledTimes(2)
   })
 
   it('does not write back a dry run that arrived after it closed', async () => {

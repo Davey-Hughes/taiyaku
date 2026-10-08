@@ -7,16 +7,19 @@ import { Account } from './Account'
 import * as api from './api'
 import * as config from './config'
 import * as curation from './curation'
+import * as librariesApi from './libraries'
 // **Required.** The capitals this file is about are `admin.css`'s, which
 // reaches the app through `index.css`; without it every label is drawn as
 // written and each case's first assertion fails.
 import './index.css'
 import { ProposalRow } from './ProposalRow'
 import { RootRow } from './RootRow'
-import { Roots } from './Roots'
+import { Libraries } from './Libraries'
 import { RuleForm } from './RuleForm'
 import type { Rule } from './rules'
+import { emptyDerive } from './testing/derive'
 import { fields } from './testing/fields'
+import { press } from './testing/input'
 import { mount } from './testing/mount'
 import { UserRow } from './UserRow'
 import * as usersApi from './users'
@@ -53,8 +56,15 @@ vi.mock('./api', async (importOriginal) => ({
 
 vi.mock('./config', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./config')>()),
-  listRoots: vi.fn(),
   scanStatus: vi.fn(),
+}))
+
+vi.mock('./libraries', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./libraries')>()),
+  libraryRemovalCost: vi.fn(),
+  libraryScanStatus: vi.fn(),
+  listLibraries: vi.fn(),
+  removeLibrary: vi.fn(),
 }))
 
 vi.mock('./curation', async (importOriginal) => ({
@@ -91,7 +101,7 @@ const user = (over: Partial<usersApi.User> = {}): usersApi.User => ({
   can_log_in: true,
   sessions: [],
   keys: [],
-  roots: [],
+  libraries: [],
   ...over,
 })
 
@@ -187,6 +197,17 @@ const CONTROLS = ['textbox', 'combobox', 'spinbutton']
  * level by level and not the order on screen.
  */
 async function named(roles: string[]): Promise<Array<[string, string]>> {
+  return (await treeOf(roles)).map(({ role, name }) => [role, name])
+}
+
+/** One node of Chromium's tree: its role, its name and, for a heading, its level. */
+interface Node {
+  role: string
+  name: string
+  level: number | undefined
+}
+
+async function treeOf(roles: string[]): Promise<Node[]> {
   const session = cdp()
   await session.send('Accessibility.enable')
   try {
@@ -201,13 +222,18 @@ async function named(roles: string[]): Promise<Array<[string, string]>> {
       frameId: mine[0].frame.id,
     })
     const byId = new Map(nodes.map((node) => [node.nodeId, node]))
-    const found: Array<[string, string]> = []
+    const found: Node[] = []
     const walk = (id: string) => {
       const node = byId.get(id)
       if (!node) return
       const role = String(node.role?.value)
       if (!node.ignored && roles.includes(role)) {
-        found.push([role, String(node.name?.value ?? '')])
+        const level = node.properties?.find((p) => p.name === 'level')
+        found.push({
+          role,
+          name: String(node.name?.value ?? ''),
+          level: level === undefined ? undefined : Number(level.value.value),
+        })
       }
       for (const child of node.childIds ?? []) walk(child)
     }
@@ -262,7 +288,7 @@ describe('the name Chromium gives a control under a field label — O175', () =>
   it('names the add-account form’s controls as written', async () => {
     // No accounts, so the form's controls are the only ones on the screen.
     vi.mocked(usersApi.listUsers).mockResolvedValue({ users: [] })
-    vi.mocked(config.listRoots).mockResolvedValue({ roots: [] })
+    vi.mocked(librariesApi.listLibraries).mockResolvedValue({ libraries: [] })
     const host = await shown(<Users />)
     expect(drawn(host)).toEqual([
       ['Name', 'uppercase'],
@@ -284,7 +310,7 @@ describe('the name Chromium gives a control under a field label — O175', () =>
         <UserRow
           user={sam}
           users={[user(), sam]}
-          roots={[root]}
+          libraries={[]}
           onChanged={() => {}}
         />
       </MemoryRouter>,
@@ -299,12 +325,18 @@ describe('the name Chromium gives a control under a field label — O175', () =>
     ])
   })
 
-  it('names the add-root form’s box as written', async () => {
-    // No roots, so the form's box is the only one on the screen.
-    vi.mocked(config.listRoots).mockResolvedValue({ roots: [] })
-    const host = await shown(<Roots />)
-    expect(drawn(host)).toEqual([['Add a root', 'uppercase']])
-    expect(await controls()).toEqual([['textbox', 'Add a root']])
+  it('names the make-a-library form’s boxes as written', async () => {
+    // No libraries, so the form's two boxes are the only ones on the screen.
+    vi.mocked(librariesApi.listLibraries).mockResolvedValue({ libraries: [] })
+    const host = await shown(<Libraries />)
+    expect(drawn(host)).toEqual([
+      ['Name', 'uppercase'],
+      ['Folder path', 'uppercase'],
+    ])
+    expect(await controls()).toEqual([
+      ['textbox', 'Name'],
+      ['textbox', 'Folder path'],
+    ])
   })
 
   it('names a root card’s controls as written', async () => {
@@ -440,5 +472,151 @@ describe('the name Chromium gives a heading or a group drawn in capitals — O18
       getComputedStyle(legend).textTransform,
     ]).toEqual(['sets', 'uppercase'])
     expect(await named(['group'])).toEqual([['group', 'sets']])
+  })
+})
+
+/**
+ * A library's card has two headings: its name, and each folder's path a level
+ * below. What the tree makes of them is held beside the capitals cases
+ * because the make-a-library form's own heading is drawn by the same sheet.
+ */
+describe('the headings of the libraries screen, in Chromium’s own tree', () => {
+  it('reads the screen, the library, its folder and the form in order', async () => {
+    vi.mocked(config.scanStatus).mockResolvedValue({
+      root_id: 3,
+      running: false,
+      report: null,
+      last_scan_at: null,
+      last_scan_status: null,
+    })
+    vi.mocked(librariesApi.libraryScanStatus).mockResolvedValue({
+      library_id: 1,
+      running: false,
+      elapsed_secs: null,
+      folders: [],
+    })
+    vi.mocked(librariesApi.listLibraries).mockResolvedValue({
+      libraries: [
+        { id: 1, name: 'Manga', works: 0, books: 0, folders: [root] },
+      ],
+    })
+    const host = await shown(<Libraries />)
+    expect(
+      [...host.querySelectorAll('h1, h2, h3, h4, h5, h6')].map(
+        (h) => h.tagName,
+      ),
+    ).toEqual(['H2', 'H3', 'H4', 'H3'])
+    const tree = await named(['heading'])
+    expect(tree).toEqual([
+      ['heading', 'Libraries'],
+      ['heading', 'Manga'],
+      ['heading', root.path],
+      ['heading', 'Make a library'],
+    ])
+  })
+
+  it('reads a folder’s scan report one level beneath the folder’s path', async () => {
+    // A report's two headings are named by their words and sit under the
+    // heading of whatever draws them.
+    const finishedScan = {
+      scan: {
+        root: root.path,
+        dirs: 1,
+        files: 1,
+        added: 0,
+        updated: 0,
+        gone: 0,
+        refused: null,
+        unreadable_dirs: [],
+        excluded_dirs: [],
+        excluded_files: 0,
+        bad_exclude_patterns: [],
+        forgotten_by_exclusion: 0,
+      },
+      derive: emptyDerive,
+    }
+    // Running when the card is drawn, so it adopts the scan and polls; the
+    // poll then finds it finished, with its report.
+    vi.mocked(config.scanStatus)
+      .mockResolvedValueOnce({
+        root_id: 3,
+        running: true,
+        elapsed_secs: 1,
+        report: null,
+        last_scan_at: null,
+        last_scan_status: null,
+      })
+      .mockResolvedValue({
+        root_id: 3,
+        running: false,
+        report: finishedScan,
+        last_scan_at: null,
+        last_scan_status: null,
+      })
+    vi.mocked(librariesApi.libraryScanStatus).mockResolvedValue({
+      library_id: 1,
+      running: false,
+      elapsed_secs: null,
+      folders: [],
+    })
+    vi.mocked(librariesApi.listLibraries).mockResolvedValue({
+      libraries: [
+        { id: 1, name: 'Manga', works: 0, books: 0, folders: [root] },
+      ],
+    })
+    await shown(<Libraries />)
+    await act(async () => {
+      await new Promise((resolve) => {
+        setTimeout(resolve, config.SCAN_POLL_MS + 400)
+      })
+    })
+    expect(await treeOf(['heading'])).toEqual([
+      { role: 'heading', name: 'Libraries', level: 2 },
+      { role: 'heading', name: 'Manga', level: 3 },
+      { role: 'heading', name: root.path, level: 4 },
+      { role: 'heading', name: 'What the walk found', level: 5 },
+      { role: 'heading', name: 'What derivation made of it', level: 5 },
+      { role: 'heading', name: 'Make a library', level: 3 },
+    ])
+  })
+
+  it('reads a removal’s report one level beneath the screen', async () => {
+    vi.mocked(librariesApi.libraryScanStatus).mockResolvedValue({
+      library_id: 1,
+      running: false,
+      elapsed_secs: null,
+      folders: [],
+    })
+    vi.mocked(config.scanStatus).mockResolvedValue({
+      root_id: 3,
+      running: false,
+      report: null,
+      last_scan_at: null,
+      last_scan_status: null,
+    })
+    vi.mocked(librariesApi.listLibraries).mockResolvedValue({
+      libraries: [
+        { id: 1, name: 'Manga', works: 0, books: 0, folders: [root] },
+      ],
+    })
+    vi.mocked(librariesApi.libraryRemovalCost).mockResolvedValue({
+      removed: { works: 0, positions: 0, notes: 0 },
+      derive: emptyDerive,
+      dry_run: true,
+    })
+    vi.mocked(librariesApi.removeLibrary).mockResolvedValue({
+      removed: { works: 0, positions: 0, notes: 0 },
+      derive: emptyDerive,
+      dry_run: false,
+    })
+    const host = await shown(<Libraries />)
+    await press(host.querySelector('button[name="remove-library"]') as Element)
+    vi.mocked(librariesApi.listLibraries).mockResolvedValue({ libraries: [] })
+    await press(host.querySelector('.remove-library .confirm') as Element)
+    expect(await treeOf(['heading'])).toEqual([
+      { role: 'heading', name: 'Libraries', level: 2 },
+      { role: 'heading', name: 'What derivation made of it', level: 3 },
+      { role: 'heading', name: 'Make a library', level: 3 },
+    ])
   })
 })

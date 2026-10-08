@@ -347,9 +347,10 @@ describe('admin.css carries a coarse-pointer floor', () => {
     '.proposals .checks label',
     // The user row's per-root grant rows, which none of the `.checks` lines
     // can reach: `UserRow` draws one `<li><label>` per root inside a
-    // `.grant-list`, and that label has no rule of its own anywhere in this
-    // stylesheet.
+    // `.grant-list`, and none of the `.checks` lines names that label.
     '.user-row .grant-list label',
+    // The two radios above them, a box and its words as well.
+    '.user-row .grants > label',
     // The box itself, scoped to the three roots rather than to `.checks`.
     // `.checks` holds five of these boxes and never held all of them — see
     // `scopes the box to the three roots` below, which is the half of this
@@ -578,13 +579,19 @@ describe('admin.css carries a coarse-pointer floor', () => {
     expect(coarse).not.toMatch(/\.checks\s+input\[type="checkbox"\]/)
   })
 
+  it('gives the two radios of the grants the same centred 44px row', () => {
+    const radios = '.user-row .grants > label'
+    expect(coarse).toMatch(inRule(radios, 'display:\\s*flex'))
+    expect(coarse).toMatch(inRule(radios, 'align-items:\\s*center'))
+    expect(coarse).toMatch(inRule(radios, 'min-height:\\s*44px'))
+  })
+
   it('gives the grant list the same centred 44px row', () => {
     // `display: flex` is not decoration here and is the reason this is three
     // assertions rather than one. `.checks label` is already flex from its
     // own rule above, so its floor adds only the height and the centring; a
-    // `.grant-list` label has no rule at all and is an inline box, and
-    // `min-height` does nothing to an inline box — measured at 390px, 13×13
-    // in a row with no floor at all.
+    // `.grant-list` label is flex through its own base rule, which is why the
+    // floor can name `min-height` at all: it does nothing to an inline box.
     const grant = '.user-row .grant-list label'
     expect(coarse).toMatch(inRule(grant, 'display:\\s*flex'))
     expect(coarse).toMatch(inRule(grant, 'align-items:\\s*center'))
@@ -612,6 +619,18 @@ describe('admin.css carries a coarse-pointer floor', () => {
    * not have.
    */
   const boxRule = ':where(.proposals, .account, .config) input[type="checkbox"]'
+
+  it('gives the radios the ticks’ 24px box, in the one rule', () => {
+    // A radio beside a tick drawn at 13px against 24 reads as a different
+    // kind of row, and the grants hold both. They share the selector list, so
+    // a copy of the rule for one cannot satisfy this.
+    const radio = ':where(.proposals, .account, .config) input[type="radio"]'
+    expect(coarse).toMatch(
+      new RegExp(
+        `${escaped(boxRule)}\\s*,\\s*${escaped(radio)}\\s*\\{[^}]*inline-size:\\s*24px`,
+      ),
+    )
+  })
 
   it('keeps the 24px box from shrinking in the row it sits in', () => {
     // A flex item's base size is its max-content width, so a root path on

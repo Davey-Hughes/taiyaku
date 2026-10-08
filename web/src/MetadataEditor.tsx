@@ -375,7 +375,7 @@ export function MetadataEditor({
     // slow double-click; the ref is what stops two presses dispatched inside
     // one React batch, before that attribute reaches the DOM. Every other
     // ref-guarded control in this tree carries both — `RemoveRoot`,
-    // `UserRow`, `Users`, `Roots`, `RootRow`, `Backup`, `RuleEditor` — and
+    // `UserRow`, `Users`, `Libraries`, `RootRow`, `Backup`, `RuleEditor` — and
     // this control and the confirm below were the two exceptions until pass 3
     // swept for the shape.
     //

@@ -567,6 +567,8 @@
 .user-row .field,
 .add-user .field,
 .add-root .field,
+.add-library .field,
+.rename-library .field,
 .account .field {
   min-width: 0;
   display: grid;
@@ -650,6 +652,8 @@
 .add-user .field input,
 .add-user .field select,
 .add-root .field input,
+.add-library .field input,
+.rename-library .field input,
 .account .field input,
 .account .account-row input {
   /* **A `<select>`'s intrinsic width is its widest option, and a grid item
@@ -706,6 +710,8 @@
   .add-user .field input,
   .add-user .field select,
   .add-root .field input,
+  .add-library .field input,
+  .rename-library .field input,
   .account .field input,
   .account .account-row input {
     font-size: max(16px, var(--text-ui));
@@ -1312,7 +1318,7 @@
    figure per control, and this pass has already spent four review rounds on
    that kind of drift (spec §11.4). `.account`'s 40rem is the precedent and
    the value. */
-.roots,
+.libraries,
 .users,
 .backup {
   --config-measure: 40rem;
@@ -1321,7 +1327,9 @@
 .root-row,
 .user-row,
 .add-root,
-.add-user {
+.add-user,
+.library-card,
+.add-library {
   max-width: var(--config-measure);
 }
 
@@ -1340,28 +1348,31 @@
    role hint and match it. The one in `.add-user` was larger until O153
    widened that rule to `.users .why`.
 
-   `.roots` is deliberately not in this list: `RootRow.tsx` has no `.why` at
-   all, and a selector that matches nothing is the inert rule this task
-   dropped `.scan-report` to avoid. */
+   `.libraries .why` is the one beneath the make-a-library form: it
+   explains the control above it as the users screen's do, and `RootRow` and
+   `LibraryCard` draw none. */
 .users .why,
+.libraries .why,
 .account .why,
 .backup .what-a-backup-is {
   max-width: 60ch;
 }
 
-.roots .root-list {
+.libraries .library-list,
+.library-card .root-list {
   list-style: none;
   margin: 0;
   padding: 0;
 }
 
 /* O180: the sentences this screen says name a path as plain text, and a
-   path does not break at a slash — what the watch probe found for a root
-   just added and a refusal, outside any card, and inside one a scan that
-   was turned down, was refused, or ran and failed. Every paragraph under
-   `.roots` is in block flow, so none is a flex or grid item this could
-   narrow. */
-.roots p {
+   path does not break at a slash. Outside any card that is a list that
+   could not be read and a library that was not made, and the sentence over
+   a removal's report; inside one, a scan that was turned down, was refused,
+   or ran and failed. A paragraph that is a flex or grid item breaks its
+   words but keeps the width its track gives it, so a sentence that must not
+   widen its box is measured, not assumed. */
+.libraries p {
   overflow-wrap: anywhere;
 }
 
@@ -1372,20 +1383,38 @@
   padding: var(--space-4);
 }
 
-.root-row h3 {
+.root-row h4 {
   margin: 0;
 }
 
-/* O180: the card's own heading is the root's path, and a path does not
+/* O180: the card's own heading is the folder's path, and a path does not
    break at a slash — so one with a longer run than the card is wide took
-   the heading, and the document, out of the card. The child combinator
-   leaves the scan report's two headings, which are words, alone. */
-.root-row > h3 {
+   the heading, and the document, out of the card. */
+.root-row > h4 {
   overflow-wrap: anywhere;
 }
 
+/* A report's two section headings, drawn at whatever level its caller says
+   is beneath the heading that holds it. Styled by class and not by tag, so
+   they draw alike at any level and never as a library's name or a folder's
+   path; the size is the body's, so a heading in a report is never louder
+   than the one above it. Inside a folder's card, which packs its facts
+   close, a heading takes a step off the facts above and sits near the ones
+   it heads. */
+.report-heading {
+  margin: 1.25rem 0;
+  font-family: var(--font-title);
+  font-size: 1rem;
+  font-weight: 600;
+  line-height: 1.25;
+}
+
+.root-row .report-heading {
+  margin: var(--space-3) 0 var(--space-2);
+}
+
 /* Three independent facts, each naming what it is a fact about. A sentence
-   was the wrong shape for them: `unknown — probed when a root is added` does
+   was the wrong shape for them: `unknown — probed when a folder is added` does
    not say what is unknown (spec §11.6). */
 .root-row .regime {
   display: grid;
@@ -1414,6 +1443,7 @@
 .root-row .fields {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+  align-items: start;
   gap: 0.5rem;
 }
 
@@ -1467,6 +1497,147 @@
   font-size: var(--text-ui);
 }
 
+/* A library is a heading and what is done to it whole, over its folders'
+   cards. It draws no box of its own: the folder rows inside it already do,
+   and a box in a box costs each row the width of two paddings at 390px. A
+   rule above each library after the first is what tells one from the
+   next. */
+.library-card {
+  margin-bottom: var(--space-5);
+}
+
+.library-card + .library-card {
+  border-top: 1px solid var(--line);
+  padding-top: var(--space-4);
+}
+
+/* A library is named by a person, and a name need not hold a space. */
+.library-card > h3 {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.library-card .holds,
+.library-card .no-readable {
+  color: var(--muted);
+  font-size: var(--text-meta);
+  margin: var(--space-1) 0 0;
+  max-width: 60ch;
+}
+
+.library-card > .actions,
+.rename-library {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-2);
+  margin: var(--space-3) 0;
+}
+
+/* The form is the same heading level as a library's name and sits where the
+   next library would. A library is unboxed and parted from the next by a
+   rule; a form is boxed, as a folder's card is, and that is what says it is
+   the screen's and not another library. */
+.add-library {
+  box-sizing: border-box;
+  display: grid;
+  gap: var(--space-3);
+  margin-top: var(--space-5);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  padding: var(--space-4);
+}
+
+.add-library h3 {
+  margin: 0;
+}
+
+.chosen-folders {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.chosen-folders li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+
+.add-library .chosen-folders code {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* The path gives way and the button does not: a two-word button broken over
+   two lines, and a different width on each row, reads as two controls. */
+.chosen-folders button {
+  flex: none;
+}
+
+/* The submit is the form's one action, not a field to stretch across the
+   grid. */
+.add-library > button[type="submit"] {
+  justify-self: start;
+}
+
+/* The refusal answers the button above it, so it keeps the form's own gap
+   from it rather than a paragraph's margins on top of the gap. */
+.add-library > [role="alert"] {
+  margin: 0;
+}
+
+/* The rename's refusal answers the form's controls, so it takes a line of its
+   own beneath them at the form's own gap, as the make form's does, and not a
+   paragraph's margins beside the buttons. */
+.rename-library > [role="alert"] {
+  flex-basis: 100%;
+  margin: 0;
+}
+
+/* The box and its two buttons on one line where they fit, wrapping where
+   they do not. */
+.folder-picker {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-2);
+}
+
+.folder-picker .field {
+  flex: 1 1 20rem;
+}
+
+/* The browser, when open, on a line of its own beneath the box. */
+.folder-browser {
+  flex-basis: 100%;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  padding: var(--space-3);
+}
+
+.folder-browser .where {
+  min-width: 0;
+  margin: 0 0 var(--space-2);
+  overflow-wrap: anywhere;
+}
+
+.folder-list {
+  list-style: none;
+  margin: var(--space-2) 0 0;
+  padding: 0;
+  display: grid;
+  gap: var(--space-1);
+}
+
+.folder-list button {
+  width: 100%;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+
 /* The most destructive action in the product. C4 §2 opened by saying it did
    not look like one, and C4's own answer was the counts this block still
    renders — the live figure, stated before it acts. This is the other half:
@@ -1485,7 +1656,8 @@
    and the verb. Three danger-coloured elements around one already-guarded
    step is the shouting this comment starts by refusing. */
 .remove-root,
-.remove-user {
+.remove-user,
+.remove-library {
   border: 1px solid var(--line);
   box-shadow: inset 3px 0 0 var(--danger);
   border-radius: var(--radius-control);
@@ -1499,17 +1671,59 @@
    never had. `.remove-root` sits directly in the root row's own flow, after
    `.actions` and whatever scan report precedes it, and still needs one.
    Measured in the browser, not reasoned about. */
-.remove-root {
+.remove-root,
+.remove-library {
   margin-top: var(--space-4);
 }
 
+/* A library's dialog sits above that library's folder cards, which a
+   folder's own never does: it is followed by the card it would remove. */
+.remove-library {
+  margin-bottom: var(--space-4);
+}
+
+/* What the re-derive after a removal found, drawn by the screen above the
+   list. Boxed on the settings area's
+   measure, border box and all, so it ends where a library card does, and so
+   a report of a few dozen rows reads as one notice and not as the screen's
+   own content; its opening sentence says whose it is. */
+.libraries > .removal-report {
+  box-sizing: border-box;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  margin: var(--space-4) 0;
+  max-width: var(--config-measure);
+  padding: var(--space-4);
+}
+
+/* What is scrolled to the top of the view lands beneath the phone bar's
+   edge, and a half-line of air keeps a focus ring whole. */
+.libraries > .removal-report,
+.libraries > [role="alert"] {
+  scroll-margin-top: calc(var(--sticky-top, 0px) + 0.5rem);
+}
+
+.libraries > .removal-report > p:first-child {
+  font-weight: 600;
+  margin-top: 0;
+}
+
 .remove-root .counts,
-.remove-user .counts {
+.remove-user .counts,
+.remove-library .counts {
   font-weight: 600;
 }
 
+/* The library going with its last folder is a second thing removed, so it is
+   drawn as strongly as the counts above it. */
+.remove-root .last-folder {
+  font-weight: 600;
+  max-width: 60ch;
+}
+
 .remove-root .irreversible,
-.remove-user .irreversible {
+.remove-user .irreversible,
+.remove-library .irreversible {
   color: var(--muted);
   font-size: var(--text-meta);
   max-width: 60ch;
@@ -1518,21 +1732,22 @@
 /* The button that does the thing takes the token on its border and its
    text; everything else in the block keeps the ordinary control look. */
 .remove-root .confirm,
-.remove-user .confirm {
+.remove-user .confirm,
+.remove-library .confirm {
   border-color: var(--danger);
   color: var(--danger);
   font-weight: 600;
 }
 
-/* O180 again: this button says "Remove " and then the root's whole path. */
-.remove-root .confirm {
+/* O180 again: this button says "Remove " and then the whole path or name. */
+.remove-root .confirm,
+.remove-library .confirm {
   overflow-wrap: anywhere;
 }
 
+/* The folder picker under a library's rows. It lays out its own line, so
+   this is a block, not a flex row around it. */
 .add-root {
-  display: flex;
-  align-items: flex-end;
-  gap: 0.5rem;
   margin-top: 1rem;
 }
 
@@ -1627,15 +1842,14 @@
    the muted colour stops winning and every zero row renders at full
    strength again.
 
-   **`.derived`, not only `.scan-report`, reaches all three of
-   `DeriveSection`'s mount points.** A whole-branch minor over ⑤b found
-   `data-zero` inert in two of them: `RemoveRoot.tsx`'s `.removal-derive`
-   `<details>` and `RootRow.tsx`'s `.removal-report` render `<DeriveSection>`
-   outside any `.scan-report` ancestor, so their zeros stayed at full
-   `--text` beside a scan report where zeros recede. `.derived` is the class
-   `DeriveSection` itself always renders on its wrapping `<section>` — the
-   same component, unlike `.scan-report`, which only `ScanReport` renders —
-   so this reaches all three without touching any component's markup.
+   **`.derived`, not only `.scan-report`, reaches every place
+   `DeriveSection` is drawn.** The removal dialogs' `.removal-derive`
+   `<details>` render `<DeriveSection>` outside any `.scan-report` ancestor,
+   so a rule keyed on `.scan-report` alone leaves their zeros at full `--text`
+   beside a scan report where zeros recede. `.derived` is the class `DeriveSection`
+   itself always renders on its wrapping `<section>` — the same component,
+   unlike `.scan-report`, which only `ScanReport` renders — so this reaches
+   them without touching any component's markup.
    `.scan-report [data-zero] dd` stays: it is what still reaches
    `WalkSection`'s own zero rows, which exist only inside a `.scan-report`
    and are not `.derived`'s to cover. */
@@ -1710,6 +1924,7 @@
    `--text`. `.locked` stays scoped to the card because nothing outside one
    carries it. */
 .users .why,
+.libraries .why,
 .user-row .locked {
   color: var(--muted);
   font-size: var(--text-meta);
@@ -1737,12 +1952,62 @@
   margin: var(--space-2) 0 0;
 }
 
+/* A box and its words on one line with a gap between them, for the two radios
+   and for each library's tick. The coarse-pointer block below raises each to a
+   44px row. */
+.user-row .grants > label,
+.user-row .grant-list label {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+
 .user-row .grant-list,
 .user-row .session-list,
 .user-row .key-list {
   list-style: none;
   margin: 0;
   padding: 0;
+}
+
+.user-row .grant-folders {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 0 var(--space-5);
+  color: var(--muted);
+  font-size: var(--text-meta);
+}
+
+.user-row .grant-folders code {
+  overflow-wrap: anywhere;
+}
+
+/* The grants are one group inside the card, boxed as the rule form's `sets`
+   group is and in the card's own line colour. */
+.user-row .grants {
+  margin: var(--space-3) 0 0;
+  padding: var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+}
+
+.user-row .grants legend {
+  padding: 0 var(--space-1);
+  color: var(--muted);
+  font-size: var(--text-meta);
+}
+
+/* The ticks belong to "Only these", so they sit under its words and not at
+   the radios' edge. A library's name beside its tick, and the sentence that
+   says the list was not read, break where they must: a `<fieldset>` otherwise takes its widest
+   unbroken word as its width, and a name without a space is one. */
+.user-row .grants .grant-list {
+  padding-left: var(--space-5);
+}
+
+.user-row .grant-list label > span,
+.user-row .grants .unknown {
+  overflow-wrap: anywhere;
 }
 
 .user-row .session-list li,
@@ -1808,7 +2073,7 @@
    reader's own classes and this one `admin.css`'s (spec §12.5).
 
    ⑤c made it a settings screen rather than a page of hairlines: a card per
-   section on the same measure the roots and users screens use, the `.field`
+   section on the same measure the libraries and users screens use, the `.field`
    micro-label on the two boxes that have a label, and quiet text bought with
    `--muted` and size. It was bought with `opacity` before, and the 0.6 dim on
    a session's "last seen" measured 4.18:1 on Paper at 16px — under AA.
@@ -2094,35 +2359,23 @@
    to do with that treatment. That one was caught in review; this one was
    not.
 
-   **The grant rows need two declarations the `.checks` rows do not.**
    `.checks label` is already `display: flex` with a gap from its own rule
    above, so its floor adds only the height and the centring. A
-   `.grant-list` label has no rule at all and so is an inline box, and
-   `min-height` does nothing to one: measured at 390 px before this rule, the
-   box was 13×13 and the row was 48 px only because the root path wrapped to
-   two lines, with the box 6 px under the row's top and 29 px above its
-   bottom. So that rule carries the `display: flex` and the gap as well, and
-   reaches the same centred row the `.checks` labels get: measured after,
-   24×24 in a 48 px row, 12 px above the box and 12 below. Forty-eight
-   rather than forty-four because the path still wraps, which is what a floor
-   is for — the row is at least 44 and is taller when its own content asks.
-   **The two rows are still not twins and this does not make them one**: a
-   `.checks` sentence is `--text-ui` at 14 px and a root path is 16, because
-   only `.checks label` carries a `font-size`. That is a typography
-   difference rather than a target one, it predates this floor, and a floor
-   is the wrong place to settle it.
+   `.grant-list` label is an inline box until the base rule above makes it
+   a flex one, and `min-height` does nothing to an inline box. So that rule
+   carries the `display: flex` and the gap as well, and reaches the same
+   centred row the `.checks` labels get. **The two rows are still not
+   twins**: a `.checks` sentence is `--text-ui` at 14 px and a grant row's
+   words are not, because only `.checks label` carries a `font-size`. That
+   is a typography difference rather than a target one, it predates this
+   floor, and a floor is the wrong place to settle it.
 
    **`flex-shrink: 0` is what makes the 24 px above a size rather than a
-   wish**, and the grant list is where that showed. A flex item's base size
-   is its max-content width, and a root path on one line measures 304 px
-   against a 292 px row — so the free space is negative, and the default
-   `flex-shrink: 1` takes it out of *both* items, the box included: measured
-   20.27×24 on this library's `/home/davey/temp/manga-test/Volumes`, against
-   a rule that says 24. With the declaration only the sentence gives way,
-   wrapping at its one hyphen (`/home/davey/temp/manga-`, then
-   `test/Volumes`) inside the 253 px left to it — its own min-content is
-   207 — so nothing overflows: the `<li>`'s `scrollWidth` and `clientWidth`
-   are both 292. Written on the box rule rather than on the grant rule
+   wish.** A flex item's base size is its max-content width, so a label
+   whose words are longer than its row has negative free space, and the
+   default `flex-shrink: 1` takes it out of *both* items, the box included.
+   With the declaration only the words give way, wrapping inside what is
+   left to them. Written on the box rule rather than on the grant rule
    because it is true of every checkbox here: `.checks label` and
    `.rule-row` are flex containers too, and both only happen to have slack
    today.
@@ -2147,8 +2400,8 @@
 
    Nothing here could be settled on a phone and did not need to be: the rule
    was *absent*, so a fine-pointer measurement is the coarse one. That is the
-   opposite of O151, where a rule existed and lost. The figures for the grant
-   rows, the enable box, the two links and the three toggles were taken
+   opposite of O151, where a rule existed and lost. The figures for the enable
+   box, the two links and the three toggles were taken
    differently and are worth more: a Chromium context with `hasTouch` and
    `isMobile` set at 390 px matches `(pointer: coarse)` and `(any-pointer:
    coarse)` and reports no `(pointer: fine)` at all, so this block was live
@@ -2282,6 +2535,7 @@
     align-items: center;
   }
 
+  .user-row .grants > label,
   .user-row .grant-list label {
     display: flex;
     align-items: center;
@@ -2324,7 +2578,8 @@
     min-block-size: 44px;
   }
 
-  :where(.proposals, .account, .config) input[type="checkbox"] {
+  :where(.proposals, .account, .config) input[type="checkbox"],
+  :where(.proposals, .account, .config) input[type="radio"] {
     inline-size: 24px;
     block-size: 24px;
     flex-shrink: 0;

@@ -45,7 +45,7 @@
  * order.** Several commits can be in flight — a blur that starts a preview,
  * then a click on another rule before it lands — and without this an earlier
  * response arriving later would write a stale impact under a Save button that
- * states a number from it. `Roots.tsx` and `Search.tsx` carry the same
+ * states a number from it. `Libraries.tsx` and `Search.tsx` carry the same
  * counter for the same reason.
  *
  * **A successful save re-previews the list it just saved, and Save stays
@@ -204,7 +204,7 @@ export function RuleEditor() {
   const [failure, setFailure] = useState<string | undefined>()
   /**
    * Which proposals the last import reopened, if any. Separate from
-   * `failure` for the reason `Roots.tsx`'s `addFailure` is separate from its
+   * `failure` for the reason `Libraries.tsx`'s `createFailure` is separate from its
    * `failure`, and read that file's own doc comment on the pair: `sendImport`
    * fires a follow-up `runPreview` right after landing, and that preview's
    * success path unconditionally clears `failure` — so a notice stored there
@@ -474,7 +474,7 @@ export function RuleEditor() {
    * to cover.
    */
   const beginImport = (file: { text: () => Promise<string> }) => {
-    // Cleared up front, the same as `Roots.tsx`'s `addFailure` — so a stale
+    // Cleared up front, the same as `Libraries.tsx`'s `createFailure` — so a stale
     // notice from a previous import cannot outlive this one, whichever way
     // it resolves.
     setImportNotice(undefined)

@@ -46,23 +46,28 @@ describe('admin.css holds no pre-token idiom', () => {
  * describe block below: this is cheaper than a browser assertion and the
  * token's own contrast is already covered by `index.css.test.ts`.
  */
-describe('admin.css marks the two removal blocks with --danger', () => {
+describe('admin.css marks the removal blocks with --danger', () => {
   it('puts the token on the strip and on the confirm button', () => {
     const strip = rules(adminSource).find(
-      ({ prelude }) => prelude === '.remove-root, .remove-user',
+      ({ prelude }) =>
+        prelude === '.remove-root, .remove-user, .remove-library',
     )
-    expect(strip, '.remove-root, .remove-user must exist').toBeTruthy()
+    expect(
+      strip,
+      '.remove-root, .remove-user, .remove-library must exist',
+    ).toBeTruthy()
     expect(strip?.body).toMatch(
       /(?:^|;)\s*box-shadow:\s*inset 3px 0 0 var\(--danger\)/,
     )
 
     const confirm = rules(adminSource).find(
       ({ prelude }) =>
-        prelude === '.remove-root .confirm, .remove-user .confirm',
+        prelude ===
+        '.remove-root .confirm, .remove-user .confirm, .remove-library .confirm',
     )
     expect(
       confirm,
-      '.remove-root .confirm, .remove-user .confirm must exist',
+      '.remove-root .confirm, .remove-user .confirm, .remove-library .confirm must exist',
     ).toBeTruthy()
     expect(confirm?.body).toMatch(/(?:^|;)\s*border-color:\s*var\(--danger\)/)
     expect(confirm?.body).toMatch(/;\s*color:\s*var\(--danger\)/)
@@ -80,7 +85,9 @@ describe('admin.css sets the settings-area measure once', () => {
   it('sets the measure once rather than per control', () => {
     const widths = rules(adminSource)
       .filter(({ prelude }) =>
-        /\.(root-row|user-row|add-user|add-root)\b/.test(prelude),
+        /\.(root-row|user-row|add-user|add-root|library-card|add-library|rename-library|folder-picker)\b/.test(
+          prelude,
+        ),
       )
       .filter(({ body }) => /(?:^|;)\s*width:/.test(body))
       .map(({ prelude }) => prelude)
@@ -144,7 +151,7 @@ describe("admin.css makes a grid of the scan report's top-level lists only", () 
 })
 
 /**
- * O178 and O180: the rules that keep a path inside its card on the roots
+ * O178 and O180: the rules that keep a path inside its card on the libraries
  * screen. `Config.browser.test.tsx` measures each of them at 390px — a
  * report naming a path longer than its row, a removal report, the card's own
  * heading and its `watch` fact, the removal's confirm button and the
@@ -162,9 +169,15 @@ describe('admin.css lets a path break and its list drop under its label', () => 
   it.each([
     '.scan-report .paths li',
     '.derived .paths li',
-    '.root-row > h3',
+    '.root-row > h4',
+    '.library-card > h3',
     '.remove-root .confirm',
-    '.roots p',
+    '.remove-library .confirm',
+    '.libraries p',
+    '.add-library .chosen-folders code',
+    '.folder-browser .where',
+    '.folder-list button',
+    '.user-row .grant-folders code',
     '.root-row .regime dd',
   ])('breaks a long path in %s', (selector) => {
     expect(declares(selector, /(?:^|;)\s*overflow-wrap:\s*anywhere/)).toBe(true)
@@ -192,4 +205,17 @@ describe('admin.css lets a path break and its list drop under its label', () => 
       ),
     ).toBe(true)
   })
+})
+
+describe('admin.css styles the field labels of the libraries screen', () => {
+  it.each(['.add-library', '.rename-library'])(
+    'scopes the field rules to %s',
+    (container) => {
+      const preludes = rules(adminSource).flatMap(({ prelude }) =>
+        selectors(prelude),
+      )
+      expect(preludes).toContain(`${container} .field`)
+      expect(preludes).toContain(`${container} .field input`)
+    },
+  )
 })

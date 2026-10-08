@@ -2190,17 +2190,13 @@ pub(crate) fn guarded_routes() -> Vec<(&'static str, axum::routing::MethodRouter
             "/api/library/rules/import",
             axum::routing::post(crate::config_api::import_rules),
         ),
-        // **Spec C4 §2's roots routes, task 11 of the branch plan.**
-        // Admin-gated the same way the rules block above is, and for the
-        // identical reason stated on each of theirs: a route that adds,
-        // edits or destroys a scan root cannot afford to land in
-        // `open_routes`. `config_api::tests::every_config_api_route_refuses
-        // _a_reader` (task 8's own hand-typed list, not an enumeration — see
-        // its own doc comment) is extended to drive all four of these too.
-        (
-            "/api/library/roots",
-            get(crate::config_api::list_roots).post(crate::config_api::create_root),
-        ),
+        // **Spec C4 §2's roots routes.** Admin-gated the same way the rules
+        // block above is, and for the identical reason stated on each of
+        // theirs: a route that edits or destroys a scan root cannot afford to
+        // land in `open_routes`. `config_api::tests::every_roots_route_refuses
+        // _a_reader` is a hand-typed list, not an enumeration, and drives
+        // each of these for a 403.
+        ("/api/library/roots", get(crate::config_api::list_roots)),
         (
             "/api/library/roots/{id}",
             axum::routing::patch(crate::config_api::patch_root)
@@ -2210,7 +2206,7 @@ pub(crate) fn guarded_routes() -> Vec<(&'static str, axum::routing::MethodRouter
         // Admin-gated like every other route in this block, and for the
         // identical reason: the server has never scanned before this task,
         // and the trigger that lets it start one is exactly as destructive a
-        // capability as adding or removing a root above. `POST` starts a scan
+        // capability as removing a root above. `POST` starts a scan
         // — refusing a second one already running against the same root,
         // 409, rather than queuing it — and `GET` reads the registry
         // `ServeState.scans` holds for it: live progress while the spawned
@@ -2218,6 +2214,33 @@ pub(crate) fn guarded_routes() -> Vec<(&'static str, axum::routing::MethodRouter
         (
             "/api/library/roots/{id}/scan",
             get(crate::config_api::scan_status).post(crate::config_api::start_scan),
+        ),
+        // The libraries an administrator makes, renames and removes on
+        // Configuration → Libraries. Admin-gated inside each handler, like
+        // the roots routes above, whose folder rows these cards hold.
+        (
+            "/api/library/libraries",
+            get(crate::libraries_api::list_libraries).post(crate::libraries_api::create_library),
+        ),
+        (
+            "/api/library/libraries/{id}",
+            axum::routing::patch(crate::libraries_api::patch_library)
+                .delete(crate::libraries_api::delete_library),
+        ),
+        (
+            "/api/library/libraries/{id}/folders",
+            axum::routing::post(crate::libraries_api::add_folder),
+        ),
+        (
+            "/api/library/libraries/{id}/scan",
+            axum::routing::get(crate::libraries_api::library_scan_status)
+                .post(crate::libraries_api::start_library_scan),
+        ),
+        // The folder browser behind "add a folder": directories beneath the
+        // prefixes the server was started with, and nowhere else.
+        (
+            "/api/library/folders",
+            get(crate::folders_api::list_folders),
         ),
         // **Spec C4 §4's user-administration routes, PR 2.** Admin-gated for
         // the reason every route in this block is, with one of its own: this
@@ -2680,7 +2703,7 @@ pub(crate) fn grant_postures() -> Vec<(&'static str, GrantPosture)> {
         (
             "/api/library/roots",
             GrantIndependent {
-                reason: "admin-only; lists and adds scan roots, which are a \
+                reason: "admin-only; lists scan roots, which are a \
                           property of the scan itself rather than of any \
                           one account's access to it — the same standing \
                           the rules block above holds",
@@ -2705,6 +2728,48 @@ pub(crate) fn grant_postures() -> Vec<(&'static str, GrantPosture)> {
                           /api/library/roots/{id} holds for a root's own \
                           edit or removal, one step earlier in this same \
                           table",
+            },
+        ),
+        (
+            "/api/library/libraries",
+            GrantIndependent {
+                reason: "admin-only; lists and makes libraries, and what an \
+                          account is granted is a library, so filtering this \
+                          list by the administrator's own grant would hide \
+                          the libraries being administered",
+            },
+        ),
+        (
+            "/api/library/libraries/{id}",
+            GrantIndependent {
+                reason: "renames or removes one library, a write to the \
+                          whole store with no account-scoped meaning to \
+                          filter against",
+            },
+        ),
+        (
+            "/api/library/libraries/{id}/folders",
+            GrantIndependent {
+                reason: "adds a folder to one library, a write to the \
+                          whole store with no account-scoped meaning to \
+                          filter against",
+            },
+        ),
+        (
+            "/api/library/libraries/{id}/scan",
+            GrantIndependent {
+                reason: "starts or reports on a scan of one library's \
+                          folders, as the standing /api/library/roots/{id}/scan \
+                          does for one folder",
+            },
+        ),
+        (
+            "/api/library/folders",
+            GrantIndependent {
+                reason: "admin-only; names directories beneath the prefixes \
+                          the server was started with, which are a fact \
+                          about the deployment and hold nothing any \
+                          account's grant could scope",
             },
         ),
         // Spec C4 §4's user routes, PR 2. Every entry states its own reason

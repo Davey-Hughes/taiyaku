@@ -3845,6 +3845,7 @@ fn router_with_two_works_one_withheld(dir: &std::path::Path) -> (axum::Router, A
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
         library_job: Default::default(),
+        folders: Vec::new(),
     });
     let router = build_router(state.clone());
     (router, state)
@@ -4103,6 +4104,7 @@ fn router_over_a_scanned_work_under_a_withheld_root(
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
         library_job: Default::default(),
+        folders: Vec::new(),
     });
     let router = build_router(state.clone());
     (router, state)

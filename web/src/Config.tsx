@@ -27,14 +27,14 @@ import { Navigate, NavLink, Route, Routes, useLocation } from 'react-router'
 import { Backup } from './Backup'
 import { TABS } from './config'
 import { RuleEditor } from './RuleEditor'
-import { Roots } from './Roots'
+import { Libraries } from './Libraries'
 import { Users } from './Users'
 import { useDocumentTitle } from './title'
 
 /** Which component draws each tab. Keyed by `Tab.path`. */
 const SCREENS: Record<string, React.ReactNode> = {
   rules: <RuleEditor />,
-  roots: <Roots />,
+  libraries: <Libraries />,
   users: <Users />,
   backup: <Backup />,
 }
@@ -72,6 +72,12 @@ export function Config() {
         {TABS.map((tab) => (
           <Route key={tab.path} path={tab.path} element={SCREENS[tab.path]} />
         ))}
+        {/* A bookmark to the old Roots tab goes to the Libraries screen, not
+            to the leading tab. */}
+        <Route
+          path="roots"
+          element={<Navigate to="/config/libraries" replace />}
+        />
         {/*
           `Routes.tsx` matches `/config/*` before its own catch-all, so a bad
           sub-path never reaches that one — `/config/rules` drew the sub-nav

@@ -4,7 +4,9 @@
 2026-10-05; the details below are written for review. This is Part F of
 `docs/superpowers/specs/2026-10-04-day-to-day-deployment-design.md`. It comes
 after Part A (live works) merges and before Parts C, D and E. The first scan of
-the real library waits for it.
+the real library waits for it. F1 merged as #187 on 2026-10-06. F2's design
+was settled in conversation the same day: its decisions are under "Decisions
+the user made, 2026-10-06, for F2", and §5, §6, §6.2, §11 and §12 carry them.
 
 Komga and Stump each hold about eleven libraries on the user's NAS. Each is one
 folder of `/mnt/user/media 1`:
@@ -71,6 +73,8 @@ state. Each carried a recommendation, and the user accepted all six on
      names the old works because the new ones hold the same members
      (`(root_id, path, sha256)`), and `fold::absorb` carries positions and
      notes across. One test pins it.
+   - **Replaced on 2026-10-06.** There is still a Move action. How it carries
+     a folder's works is now §6.2's, not the mint-and-fold described here.
 6. **Where Part C's schedule lives.**
    - **Recommendation: at the library**, as Komga and Stump keep it: one scan
      interval and one watch switch per library. "Scan now" on a library walks
@@ -87,6 +91,44 @@ folder goes; `scan --add PATH` without `--library` always makes a new library;
 and removing or moving away a library's last folder is refused while some
 account's grants consist of that library alone, naming those accounts, so that
 no account silently widens to every library.
+
+## Decisions the user made, 2026-10-06, for F2
+
+F1's reviews ran what the store does when a folder's library is changed by
+hand (O192; `docs/notes.md`, "Libraries, F1 (2026-10-06)"), and found that the
+Users screen cannot revoke a library of two folders (O193). The user ruled on
+both, and on how F2 ships.
+
+1. **Move keeps what it can.** Move re-files the works and series that are
+   wholly the folder's before it derives, so each keeps its row, slug,
+   positions, notes and hand metadata. Decision 5 had the derive write them
+   again and fold the old ones in. Run in F1, that gave each work a new id and
+   slug where the old library kept another folder, and with `keeps_documents`
+   off the new work had lost its hand title, hand volume and tag.
+2. **A work the move divides is split, and a move that cannot keep a reader's
+   place is refused.** §6.2 has both. Offered against refusing both, and
+   against moving regardless and listing what was left over.
+3. **The Users card names the unrestricted state**: "Every library" or "Only
+   these" (§5). Offered against library checkboxes alone.
+4. **F2 is two PRs.** F2a is everything but Move, and F2b is Move (§11). The
+   first scans on the NAS wait on F2a only.
+
+Five smaller points were put to the user as defaults the same day. Four were
+accepted as written and the first was changed:
+
+- **Each folder row keeps its own Scan button** beside the library's Scan now.
+  The default offered was to scan per library only.
+- `POST /api/library/roots` is removed. The web adds a folder to a library by
+  the library's id, or together with a new library.
+- Creating a library under a name already taken is refused, not joined.
+- A refusal is drawn as the server's sentence. F1's review saw the Roots
+  screen draw the 409 removal refusal as the raw response.
+- The image's `TAIYAKU_FOLDERS` and the README's mount change move from F3
+  into F2a.
+
+Left out of F2 on purpose: O60, O189, O190 and O194. O191 needs no code here:
+§6.2's split leaves neither work an edition kept from the other library's
+folder, which is the shape O191 needs.
 
 ## 1. What was read
 
@@ -282,9 +324,27 @@ carry a library, and does not need to.
   in `browse` and every `edition_visible` check is unchanged.
 - **An empty grant is still unrestricted, and an admin is still unrestricted.**
 - **CLI:** `library user grant-root`/`revoke-root` become
-  `grant-library`/`revoke-library`, naming a library by name. The Users
-  screen's root checkboxes become library checkboxes (`Users.tsx`,
-  `Patch::roots` becomes `Patch::libraries`).
+  `grant-library`/`revoke-library`, naming a library by name.
+- **The Users screen grants libraries** (F2a; closes O193). `Patch::roots`
+  becomes `Patch::libraries`, a list of library ids that replaces the
+  account's grants. A body that still carries `roots` is refused, naming
+  `libraries`. `user_json` sends `libraries`, each an id and a name, where it
+  sent `roots`. The screen reads the libraries it offers from
+  `GET /api/library/libraries` (§6).
+- **The card names the unrestricted state** (decision 3 of 2026-10-06). It
+  draws two radio buttons, "Every library, including any added later" and
+  "Only these", and under the second one box per library, each with that
+  library's folders beside it.
+  - The last tick cannot be cleared. Choosing "Every library" is what lifts
+    the limit, and it sends the empty list.
+  - Choosing "Only these" on an unrestricted account sends nothing until a box
+    is ticked.
+  - The server's rule is unchanged: an empty grant is unrestricted. The screen
+    refuses one request the server would accept, which is the direction
+    `UserRow.tsx`'s own doc allows.
+  - Why: each tick is saved at once. With boxes alone, moving an account from
+    one library to another by unticking first leaves it unrestricted until the
+    second click, and for good if that click never comes.
 - A library added later is invisible to a restricted account until granted,
   which is what a grant has always meant here.
 
@@ -299,29 +359,52 @@ library card.
   yet says so (§7).
 - **Create**: a name, and one or more folders picked with a **folder browser**,
   below. The typed-path field stays, for a path the browser cannot reach.
+  - A name already taken is refused. Adding to a library that exists is Add
+    folder, on that library's card.
+  - The folders are added together or not at all: one refused path leaves no
+    library and no folder behind.
 - **Edit**:
-  - rename;
+  - rename, to a name no other library holds;
   - add a folder;
   - each folder's settings, today's `RootRow` fields (edition key, default
     kind, default language, exclude globs, keeps documents);
   - remove a folder, with today's `?dry_run` count first;
-  - move a folder to another library (decision 5).
+  - move a folder to another library (F2b, §6.2).
+- **A library that exists is addressed by its id**, in a route and in a
+  request body. A name is sent only to make a library or rename one. A name
+  the backfill kept can carry spaces at its ends, and an id is never given to
+  a later library (`AUTOINCREMENT`).
 - **Scan now on a library** walks each of its folders in turn and derives once.
   It reuses `run_scan_inner`'s walk per root, holding `library_job` across the
   whole library. Progress is reported per folder, through today's per-root
   `scans` registry. A second Scan now on a library already scanning answers
   409, as a second scan of one root does today.
+- **Each folder row keeps its own Scan button**, over today's
+  `POST /api/library/roots/{id}/scan`. A library's scan holds the registry
+  slot of each of its folders while it runs. So a folder's own scan answers
+  409 while its library's is running, and the library's answers 409 while one
+  of its folders' is.
 - **Remove a library**: the sum of its folders' `Removal`s first, then
-  `scan::remove_root` for each folder and the library row.
+  `scan::remove_root` for each folder and the library row. The refusal for a
+  library that is an account's only grant is asked of the library before
+  anything is counted or removed, for the dry run and the removal alike.
+- **A refusal is drawn as the server's sentence**, on this screen and in its
+  dialogs: the `error` of the response, not its path, status and body.
 - **The API:**
   - `GET/POST /api/library/libraries`;
   - `PATCH`/`DELETE /api/library/libraries/{id}` (`DELETE` with `?dry_run`);
   - `POST/GET /api/library/libraries/{id}/scan`;
   - `POST /api/library/libraries/{id}/folders` (add), and
-    `POST /api/library/roots/{id}/move` (move).
+    `POST /api/library/roots/{id}/move` (move; F2b).
 
-  `PATCH`/`DELETE /api/library/roots/{id}` stay for the folder rows. All of
-  these are admin-only, through `administering_or_forbidden`.
+  `PATCH`/`DELETE /api/library/roots/{id}` and
+  `POST/GET /api/library/roots/{id}/scan` stay for the folder rows, and
+  `GET /api/library/roots` stays for the rule editor, which lists folders for
+  a rule's scope. **`POST /api/library/roots` is removed**: it made a library
+  of the folder's own, named by the folder, and where both names it could try
+  were taken it told the caller to "add it to a library by name", which no
+  route could do. All of these are admin-only, through
+  `administering_or_forbidden`.
 - **The CLI keeps parity**:
   - `taiyaku library scan --add PATH [--library NAME]` adds a folder,
     creating the library when the name is new. The name defaults to the
@@ -351,6 +434,101 @@ Adding a folder still goes through `add_root_checked`. The browser is a way to
 find a path, not a second way to add one, so the nesting refusal and the probe
 are unchanged.
 
+### 6.2 Moving a folder (F2b)
+
+`POST /api/library/roots/{id}/move` takes `{"library": N}`, the id of a
+library that exists, or `{"new_library": "name"}`, a library made for the
+folder. With `?dry_run=true` it answers what the move would do and writes
+nothing. A library is born with a folder, so the second form is the only way
+to give a folder a library of its own again.
+
+**What F1 found.** Reviewers set `root.library_id` by hand and derived. O192
+and `docs/notes.md` ("Libraries, F1 (2026-10-06)") hold each run:
+
+1. A folder alone in its library, moved to a library holding none of its
+   volumes: its works keep their rows, slugs and positions.
+2. A folder leaving a library that keeps another folder: each of its works is
+   written again under the new library and the old one folded into it, so each
+   has a new id and slug.
+3. Moved to a library that holds the volume under another edition key: the
+   moved work is folded into that work and its position follows.
+4. Moved to a library that holds the volume under the same edition key: the
+   moved work is left in no library.
+5. A work with one edition under the moved folder and one under a folder that
+   stays: it is left whole in the old library, and the new library gets a
+   second work with no position.
+
+**Move is a writer in front of the derive, and the derive does not change.**
+In one transaction it:
+
+1. sets the folder's library, making the new library first where one is named;
+2. **re-files** each work whose every member is under the folder, and each
+   series whose every work is such a work, under the target library. Where the
+   target already holds a series of that `sort_title`, the moved works join it
+   and that series' titles stand;
+3. **splits** each work that has an edition under the folder and an edition
+   elsewhere. The work's row goes with its hub edition, because its content
+   key and its hand document are both the hub's (`identity`,
+   `hand::path_for`), and that is how migration 15 filed a work that spanned
+   two roots. The editions on the other side become a new work in that side's
+   library. Each edition's positions and notes go with the edition; `progress`
+   and `note` name a work and an edition key, so they can;
+4. derives.
+
+Cases 1 and 2 become one case, in which the works keep their rows. Case 3
+ends as it does today: the moved work and the target's are one volume of one
+series in one library, and the derive folds them.
+
+**It is rehearsed before it is done.** The dry run runs the same statements
+and rolls them back, as `scan::removal_cost` does for a removal, and derives
+with `Documents::Skip` so that no document is written. It answers counts:
+
+- works that keep their address;
+- works that join a work the target already holds, as another edition;
+- works split, and series merged;
+- positions and notes carried;
+- where the folder is its library's last, that the library goes with the move
+  (migration 15's `library_emptied_by_move`), and how many grants go with it.
+
+**It is refused where a reader's place cannot be kept exactly**, by the dry
+run and by the move alike, naming the volumes and writing nothing:
+
+- the target holds the volume under the same edition key (case 4). One edition
+  cannot take both sets of pages and keep a position on either;
+- one edition has members under the moved folder and under a folder that
+  stays. F1's notes record such an edition divided between two libraries, in
+  a store split by hand: the work went from five pages to two, with a position
+  left at slot 4.
+
+The rehearsal is what finds these. A move is refused where its derive reports
+a work it could not fold, a position lost or a note dropped that the same
+derive would not have reported before the move, or where it leaves in no
+library a work that was in one.
+
+**It is refused, too, where F1's decision already refuses**: the folder is its
+library's last and that library is the only grant of some account. The
+sentence names the accounts, as a removal's does. Migration 15's
+`only_grant_refuses_move` trigger stands behind it.
+
+**It does not run beside a scan.** Move asks for `library_job` as a rule save
+does, and answers 409 while a scan holds it.
+
+**After the commit** it derives once more with documents reconciled, as
+`scan::remove_root` does after a removal.
+
+**The screen.** Move… on a folder row opens a group as `RemoveRoot` does for a
+removal: the target (another library, or a new one's name), the rehearsal's
+counts as a sentence, Confirm and Cancel. A refusal is drawn where the counts
+would be, with the volumes it names.
+
+**What Move does not do.** It moves no file: the folder's path, its settings
+and the rules scoped to it are untouched. It does not merge two libraries in
+one action; each folder is moved in turn.
+
+**One thing the F2b plan must run and report.** A move can put the two series
+of an open proposal in different libraries, which is O190's case reached
+without a store from before F1.
+
 ## 7. Libraries of formats taiyaku cannot read yet
 
 Books, Light Novels and Magazines hold EPUB and PDF. They can be created and
@@ -368,7 +546,8 @@ rescan.
 
 The stack mounts the whole media share instead of one folder:
 `"/mnt/user/media 1:/media"`. The image sets `TAIYAKU_FOLDERS=/media`. The
-README's compose file and its "Running it on a server" section change with F.
+README's compose file and its "Running it on a server" section change with
+F2a, since the libraries below are created as soon as it merges.
 
 The user creates the libraries in the UI before the first scan:
 1. **Manga**: `/media/Manga/Volumes` and `/media/Manga/Chapters`.
@@ -382,10 +561,12 @@ The user creates the libraries in the UI before the first scan:
 ## 9. Interaction with the other parts
 
 - **Part A (live works)** needs nothing new. Library writes are `work` writes,
-  which move the counter, and the registry re-reads. A folder move re-derives,
-  and the moved works are new rows that the registry picks up within one
-  refresh. O184 (a write within one refresh of a deletion resurrects a work)
-  is reachable through a move exactly as through any deletion; Part D fixes it.
+  which move the counter, and the registry re-reads. A folder move (§6.2)
+  re-files the works that are wholly the folder's, so those keep their rows. A
+  work's row still goes where the derive folds a moved work into one the
+  target already holds, and O184 (a write within one refresh of a deletion
+  resurrects a work) is reachable through that fold as through any deletion;
+  Part D fixes it.
 - **Part C (scheduled scans)**: the schedule is per library (decision 6). C's
   roots-screen settings (§4.3 of the deployment spec) become library settings.
   Its scheduler walks a library's folders in turn, as Scan now does.
@@ -416,15 +597,17 @@ F is too large for one PR. It splits where each piece is usable on its own:
    CLI (`--library`, `libraries`, `grant-library`). Afterwards the store and
    the CLI know libraries, while the web UI still shows roots, which still
    work.
-2. **F2, the admin UI**: the Libraries screen, the folder browser and its API,
-   Scan now per library, remove with counts, move a folder, and the Users
-   screen's library grants. After F2 the user can create the libraries and
-   run the first scan.
+2. **F2, the admin UI**, in two PRs (decision 4 of 2026-10-06):
+   - **F2a**: the Libraries screen, the folder browser and its API, Scan now
+     per library, remove with counts, the Users screen's library grants, and
+     the image's `TAIYAKU_FOLDERS` with the README's mount change. It closes
+     O193. After F2a the user can create the libraries and run the first scan.
+   - **F2b**: Move (§6.2). It closes O192.
 3. **F3, browsing**: `?library=` through grid, search and home; the sidebar's
-   LIBRARIES list; OPDS's Libraries navigation; and the README and NAS mount
-   change.
+   LIBRARIES list; and OPDS's Libraries navigation.
 
-F2 is what the first scan waits on. F3 can follow it without any rescan.
+F2a is what the first scan waits on. F2b and F3 can follow it without any
+rescan.
 
 ## 12. Testing
 
@@ -460,9 +643,34 @@ F2 is what the first scan waits on. F3 can follow it without any rescan.
   - the listing is sorted and skips dot-entries.
 - **The admin UI:**
   - Scan now on a two-folder library walks both folders and derives once;
-  - 409 on a second start;
+  - 409 on a second start, on a folder's scan while its library's runs, and
+    on a library's while one of its folders' runs;
   - remove's dry run sums both folders;
+  - creating a library with two folders, one of them refused, leaves no
+    library and no folder;
+  - a name already taken is refused at create and at rename;
   - the web tests for the Libraries screen and the Users grants.
+- **The Users grants (F2a):**
+  - a library of two folders is one box, and unticking it revokes it;
+  - the last tick cannot be cleared, and "Every library" sends the empty list;
+  - "Only these" on an unrestricted account sends nothing until a tick;
+  - a `PATCH` carrying `roots` is refused, naming `libraries`.
+- **Move (F2b)**, each test watched failing against the defect it names:
+  - §6.2's cases 1 and 2: the works keep id, slug, positions, notes and hand
+    metadata, with `keeps_documents` off and on;
+  - case 3: the moved work is folded into the target's, positions carried;
+  - case 4, and one edition with members on both sides: refused, the volumes
+    named, and the store as it was;
+  - a split with the hub staying and with the hub moving: the work's row is
+    with its hub, and each edition's positions and notes are with the edition;
+  - a series of the same title in the target: the moved works join it;
+  - the dry run leaves the database and each folder's `.taiyaku/` as they
+    were;
+  - a library's last folder moved: the library goes, the grants are counted,
+    and an account's only grant refuses it by name;
+  - 409 while a scan runs;
+  - on a scratch copy of the real library, a second folder moved in and out
+    again, with the dump of the works it does not touch unchanged.
 - **Real material:** a scratch copy of the real-library database with two
   folders made into one library, and a third into another. The library pages
   and OPDS are checked to show each library's works only.

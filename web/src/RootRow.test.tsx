@@ -2,6 +2,7 @@ import { act } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as config from './config'
 import { RootRow } from './RootRow'
+import { emptyDerive } from './testing/derive'
 import { fields } from './testing/fields'
 import { mount, rerender } from './testing/mount'
 
@@ -27,54 +28,6 @@ const root = (over: Partial<config.Root> = {}): config.Root => ({
   last_scan_status: null,
   ...over,
 })
-
-/**
- * A whole `DeriveReport`, because `RemoveRoot` renders one.
- *
- * `{} as Derived` passed while the dialog drew only its three counts and
- * stopped passing the moment it drew the report too — a cast that lies about a
- * shape, caught by the component that started reading it.
- */
-const emptyDerive: config.Derived = {
-  series: 0,
-  works: 0,
-  editions: 0,
-  members: 0,
-  unattached_chapter_dirs: 0,
-  unreadable: {
-    total: 0,
-    refused_format: 0,
-    by_format: {},
-    uncounted: [],
-    vanished: [],
-    no_pages: 0,
-  },
-  suppressed: 0,
-  rekeyed: 0,
-  kept_editions: 0,
-  emptied_works: 0,
-  unfolded_works: 0,
-  unfoldable: [],
-  unreadable_hand: [],
-  repaired_documents: 0,
-  unwritable_documents: [],
-  orphan_documents: [],
-  declined_documents: [],
-  stale_documents: [],
-  moved_positions: 0,
-  lost_positions: 0,
-  moved_notes: 0,
-  dropped_notes: 0,
-  moved_truth_pages: 0,
-  moved_truth_collisions: 0,
-  discarded_rows: 0,
-  uncarried_alignments: 0,
-  series_holding_no_work: 0,
-  merged: 0,
-  unrecognised_kinds: 0,
-  raised: 0,
-  root_removed_mid_derive: 0,
-}
 
 function press(host: HTMLElement, label: string) {
   const button = [...host.querySelectorAll('button')].find((b) =>
@@ -172,11 +125,20 @@ async function tabThrough(host: HTMLElement, name: string) {
   })
 }
 
-async function settle(over: Partial<config.Root> = {}, onChanged = vi.fn()) {
+async function settle(
+  over: Partial<config.Root> = {},
+  onChanged = vi.fn(),
+  lastOf?: string,
+) {
   let host: HTMLElement | undefined
   await act(async () => {
     host = mount(
-      <RootRow root={root(over)} probe={undefined} onChanged={onChanged} />,
+      <RootRow
+        root={root(over)}
+        probe={undefined}
+        lastOf={lastOf}
+        onChanged={onChanged}
+      />,
     )
     await Promise.resolve()
   })
@@ -240,7 +202,7 @@ describe('RootRow', () => {
     // one this card was not handed a probe for (drawn as `unknown`, not
     // defaulted to a claim either way).
     expect(pairs).toEqual([
-      ['watch', 'unknown — probed when a root is added'],
+      ['watch', 'unknown — probed when a folder is added'],
       ['scan every', '24h'],
       ['last scan', 'never'],
     ])
@@ -285,6 +247,470 @@ describe('RootRow', () => {
     expect(host.querySelector('[role="alert"]')?.textContent).toContain(
       'already running',
     )
+  })
+
+  it('polls its own status when the library starts a scan of it', async () => {
+    vi.mocked(config.scanStatus).mockResolvedValue({
+      root_id: 3,
+      running: false,
+      report: null,
+      last_scan_at: null,
+      last_scan_status: null,
+    })
+    const changed = vi.fn()
+    const host = await settle({}, changed)
+    expect(host.querySelector('.scanning')).toBeNull()
+    vi.mocked(config.scanStatus).mockClear()
+
+    await act(async () => {
+      rerender(<RootRow root={root()} adopt={1} onChanged={changed} />)
+      await Promise.resolve()
+    })
+    expect(host.querySelector('.scanning')).not.toBeNull()
+    expect(config.startScan).not.toHaveBeenCalled()
+
+    await act(async () => {
+      vi.advanceTimersByTime(config.SCAN_POLL_MS)
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(config.scanStatus).toHaveBeenCalledWith(3)
+  })
+
+  it('does not start polling for an adopt it was mounted with', async () => {
+    let host: HTMLElement | undefined
+    await act(async () => {
+      host = mount(<RootRow root={root()} adopt={4} onChanged={vi.fn()} />)
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(host?.querySelector('.scanning')).toBeNull()
+  })
+
+  it('draws the library name in the removal dialog where it is handed one', async () => {
+    const host = await settle({}, vi.fn(), 'Manga')
+    await act(async () => {
+      press(host, 'Remove…').click()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(host.querySelector('.last-folder')?.textContent).toBe(
+      'This is the only folder of the library Manga, so removing it removes the library too.',
+    )
+  })
+
+  it('draws no library sentence in the removal dialog without one', async () => {
+    const host = await settle()
+    await act(async () => {
+      press(host, 'Remove…').click()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(host.querySelector('.remove-root')).not.toBeNull()
+    expect(host.querySelector('.last-folder')).toBeNull()
+  })
+
+  it('clears a stale failure and a stale report when it adopts a scan', async () => {
+    vi.mocked(config.scanStatus).mockResolvedValue({
+      root_id: 3,
+      running: false,
+      report: { error: 'the scan panicked' },
+      last_scan_at: '2026-09-04T12:00:00Z',
+      last_scan_status: 'failed',
+    })
+    vi.mocked(config.patchRoot).mockRejectedValue(new Error('500 disk full'))
+    const changed = vi.fn()
+    const host = await settle({}, changed)
+    await act(async () => {
+      press(host, 'Scan now').click()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    await act(async () => {
+      vi.advanceTimersByTime(config.SCAN_POLL_MS)
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    await edit(host, 'default_language', 'ja')
+    expect(host.textContent).toContain('the scan panicked')
+    expect(host.textContent).toContain('disk full')
+
+    await act(async () => {
+      rerender(<RootRow root={root()} adopt={1} onChanged={changed} />)
+      await Promise.resolve()
+    })
+    expect(host.textContent).not.toContain('the scan panicked')
+    expect(host.textContent).not.toContain('disk full')
+    expect(host.querySelector('.scanning')).not.toBeNull()
+  })
+
+  it('clears a stale notice when it adopts a scan', async () => {
+    const host = await settle()
+    await act(async () => {
+      press(host, 'Scan now').click()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    await act(async () => {
+      vi.advanceTimersByTime(config.SCAN_POLL_MS)
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(host.querySelector('.scan-notice')?.textContent).toContain(
+      'no record of that scan',
+    )
+
+    await act(async () => {
+      rerender(<RootRow root={root()} adopt={1} onChanged={vi.fn()} />)
+      await Promise.resolve()
+    })
+    expect(host.querySelector('.scan-notice')).toBeNull()
+  })
+
+  it('forgets the last scan’s elapsed time when it adopts a scan', async () => {
+    // Running with a figure already, as a scan found on mount is.
+    vi.mocked(config.scanStatus).mockResolvedValue({
+      root_id: 3,
+      running: true,
+      elapsed_secs: 12,
+      report: null,
+      last_scan_at: null,
+      last_scan_status: null,
+    })
+    const host = await settle()
+    expect(host.querySelector('.scanning')?.textContent).toBe('Scanning… 12s')
+
+    await act(async () => {
+      rerender(<RootRow root={root()} adopt={1} onChanged={vi.fn()} />)
+      await Promise.resolve()
+    })
+    // A new scan has run for no time yet, whatever the last one reached.
+    expect(host.querySelector('.scanning')?.textContent).toBe('Scanning…')
+  })
+
+  it('closes an open removal dialog when it adopts a scan, and sends nothing', async () => {
+    // The dialog quotes counts from before the scan, over a live confirm.
+    const onChanged = vi.fn()
+    const host = await settle({}, onChanged)
+    await act(async () => {
+      press(host, 'Remove…').click()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(host.querySelector('.remove-root .confirm')).not.toBeNull()
+
+    await act(async () => {
+      rerender(<RootRow root={root()} adopt={1} onChanged={onChanged} />)
+      await Promise.resolve()
+    })
+    expect(host.querySelector('.remove-root')).toBeNull()
+    expect(config.removeRoot).not.toHaveBeenCalled()
+    expect(host.querySelector('.scanning')).not.toBeNull()
+  })
+
+  it('closes an open removal dialog when its own mount read finds a scan running', async () => {
+    let answer: (v: config.ScanStatus) => void = () => {}
+    vi.mocked(config.scanStatus).mockReturnValue(
+      new Promise((resolve) => {
+        answer = resolve
+      }),
+    )
+    const host = await settle()
+    await act(async () => {
+      press(host, 'Remove…').click()
+      await Promise.resolve()
+    })
+    expect(host.querySelector('.remove-root .confirm')).not.toBeNull()
+    await act(async () => {
+      answer({
+        root_id: 3,
+        running: true,
+        elapsed_secs: 7,
+        report: null,
+        last_scan_at: null,
+        last_scan_status: null,
+      })
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(host.querySelector('.remove-root')).toBeNull()
+    expect(host.querySelector('.scanning')?.textContent).toBe('Scanning… 7s')
+    expect(config.removeRoot).not.toHaveBeenCalled()
+  })
+
+  it('is held while the library’s removal is open: Scan now and Remove… are disabled and send nothing', async () => {
+    const host = await settle()
+    await act(async () => {
+      rerender(<RootRow root={root()} held onChanged={vi.fn()} />)
+      await Promise.resolve()
+    })
+    for (const label of ['Scan now', 'Remove…']) {
+      expect(press(host, label).disabled, label).toBe(true)
+      press(host, label).click()
+    }
+    expect(config.startScan).not.toHaveBeenCalled()
+    expect(host.querySelector('.remove-root')).toBeNull()
+  })
+
+  it('tells its card when it is scanning or confirming a removal, and when it is not', async () => {
+    const onBusy = vi.fn()
+    let host: HTMLElement | undefined
+    await act(async () => {
+      host = mount(
+        <RootRow root={root()} onBusy={onBusy} onChanged={vi.fn()} />,
+      )
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    if (!host) throw new Error('nothing mounted')
+    expect(onBusy).toHaveBeenLastCalledWith(false)
+
+    await act(async () => {
+      press(host as HTMLElement, 'Remove…').click()
+      await Promise.resolve()
+    })
+    expect(onBusy).toHaveBeenLastCalledWith(true)
+    await act(async () => {
+      press(host as HTMLElement, 'Cancel').click()
+      await Promise.resolve()
+    })
+    expect(onBusy).toHaveBeenLastCalledWith(false)
+
+    await act(async () => {
+      press(host as HTMLElement, 'Scan now').click()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(onBusy).toHaveBeenLastCalledWith(true)
+  })
+
+  it('hands its removal’s answer up, and draws no report of its own', async () => {
+    const onRemoved = vi.fn()
+    let host: HTMLElement | undefined
+    await act(async () => {
+      host = mount(
+        <RootRow root={root()} onRemoved={onRemoved} onChanged={vi.fn()} />,
+      )
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    if (!host) throw new Error('nothing mounted')
+    await act(async () => {
+      press(host as HTMLElement, 'Remove…').click()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    await act(async () => {
+      host?.querySelector<HTMLElement>('.remove-root .confirm')?.click()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(onRemoved).toHaveBeenCalledWith(
+      expect.objectContaining({ dry_run: false }),
+    )
+    expect(host.querySelector('.removal-report')).toBeNull()
+  })
+
+  it('keeps a 409’s sentence only until the scan it named has ended', async () => {
+    vi.mocked(config.startScan).mockRejectedValue(
+      new Error(
+        '/api/library/roots/3/scan: 409 {"error":"a scan of /srv/manga is already running"}',
+      ),
+    )
+    const host = await settle()
+    await act(async () => {
+      press(host, 'Scan now').click()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(host.querySelector('[role="alert"]')?.textContent).toBe(
+      'a scan of /srv/manga is already running',
+    )
+    expect(host.querySelector('.scanning')).not.toBeNull()
+
+    vi.mocked(config.scanStatus).mockResolvedValue({
+      root_id: 3,
+      running: false,
+      report: { error: 'the scan panicked' },
+      last_scan_at: '2026-09-04T12:00:00Z',
+      last_scan_status: 'failed',
+    })
+    await act(async () => {
+      vi.advanceTimersByTime(config.SCAN_POLL_MS)
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(host.querySelector('.scanning')).toBeNull()
+    expect(host.textContent).not.toContain('is already running')
+  })
+
+  it('asks for the list again, quietly, when its scan ends', async () => {
+    const changed = vi.fn()
+    const host = await settle({}, changed)
+    await act(async () => {
+      press(host, 'Scan now').click()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    await act(async () => {
+      vi.advanceTimersByTime(config.SCAN_POLL_MS)
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(host.querySelector('.scanning')).toBeNull()
+    expect(changed).toHaveBeenCalledTimes(1)
+    expect(changed).toHaveBeenCalledWith(true)
+  })
+
+  it('keeps a 409’s sentence through a poll that finds the scan still running', async () => {
+    vi.mocked(config.startScan).mockRejectedValue(
+      new Error(
+        '/api/library/roots/3/scan: 409 {"error":"a scan of /srv/manga is already running"}',
+      ),
+    )
+    const host = await settle()
+    await act(async () => {
+      press(host, 'Scan now').click()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    const poll = async () => {
+      await act(async () => {
+        vi.advanceTimersByTime(config.SCAN_POLL_MS)
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+    }
+    vi.mocked(config.scanStatus).mockResolvedValueOnce({
+      root_id: 3,
+      running: true,
+      elapsed_secs: 4,
+      report: null,
+      last_scan_at: null,
+      last_scan_status: null,
+    })
+    await poll()
+    expect(host.querySelector('[role="alert"]')?.textContent).toBe(
+      'a scan of /srv/manga is already running',
+    )
+    expect(host.querySelector('.scanning')).not.toBeNull()
+
+    await poll()
+    expect(host.querySelector('.scanning')).toBeNull()
+    expect(host.textContent).not.toContain('is already running')
+  })
+
+  it('drops a 409’s sentence when its poll is abandoned, since nothing can keep it true', async () => {
+    vi.mocked(config.startScan).mockRejectedValue(
+      new Error(
+        '/api/library/roots/3/scan: 409 {"error":"a scan of /srv/manga is already running"}',
+      ),
+    )
+    const host = await settle()
+    vi.mocked(config.scanStatus).mockRejectedValue(
+      new Error('/api/library/roots/3/scan: 502 bad gateway'),
+    )
+    await act(async () => {
+      press(host, 'Scan now').click()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    for (let i = 0; i < 3; i++) {
+      await act(async () => {
+        vi.advanceTimersByTime(config.SCAN_POLL_MS)
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+    }
+    expect(
+      [...host.querySelectorAll('[role="alert"]')].map((a) => a.textContent),
+    ).toEqual(['bad gateway'])
+    expect(press(host, 'Scan now').disabled).toBe(false)
+  })
+
+  it('counts missed polls afresh when it adopts a scan', async () => {
+    vi.mocked(config.scanStatus)
+      .mockResolvedValueOnce({
+        root_id: 3,
+        running: false,
+        report: null,
+        last_scan_at: null,
+        last_scan_status: null,
+      })
+      .mockRejectedValue(new Error('502'))
+    const changed = vi.fn()
+    const host = await settle({}, changed)
+    await act(async () => {
+      press(host, 'Scan now').click()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    const poll = async () => {
+      await act(async () => {
+        vi.advanceTimersByTime(config.SCAN_POLL_MS)
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+    }
+    await poll()
+    await poll()
+    await act(async () => {
+      rerender(<RootRow root={root()} adopt={1} onChanged={changed} />)
+      await Promise.resolve()
+    })
+    await poll()
+    expect(host.querySelector('.scanning')).not.toBeNull()
+  })
+
+  it('draws the sentence of the refusal that ends a run of failed polls', async () => {
+    vi.mocked(config.scanStatus)
+      .mockResolvedValueOnce({
+        root_id: 3,
+        running: false,
+        report: null,
+        last_scan_at: null,
+        last_scan_status: null,
+      })
+      .mockRejectedValue(
+        new Error(
+          '/api/library/roots/3/scan: 500 {"error":"the registry is unreadable"}',
+        ),
+      )
+    const host = await settle()
+    await act(async () => {
+      press(host, 'Scan now').click()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    for (let i = 0; i < 3; i++) {
+      await act(async () => {
+        vi.advanceTimersByTime(config.SCAN_POLL_MS)
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+    }
+    expect(host.querySelector('.scan-notice')?.textContent).toBe(
+      'the registry is unreadable',
+    )
+  })
+
+  it("draws a refusal's sentence, not the response it came in", async () => {
+    vi.mocked(config.startScan).mockRejectedValue(
+      new Error(
+        '/api/library/roots/3/scan: 409 {"error":"a scan of root 3 (/srv/manga) is already running"}',
+      ),
+    )
+    const host = await settle()
+    await act(async () => {
+      press(host, 'Scan now').click()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(host.querySelector('[role="alert"]')?.textContent).toBe(
+      'a scan of root 3 (/srv/manga) is already running',
+    )
+    // The 409 is still read from the message, so the row still polls.
+    expect(host.querySelector('.scanning')).not.toBeNull()
   })
 
   it('polls while a scan runs and stops when it finishes', async () => {
@@ -614,6 +1040,12 @@ describe('RootRow', () => {
     })
     expect(host.querySelector('.scan-report')).not.toBeNull()
     expect(host.textContent).toContain('What derivation made of it')
+    // The report's two headings sit one level beneath the card's h4.
+    expect(
+      [...host.querySelectorAll('.scan-report .report-heading')].map(
+        (h) => h.tagName,
+      ),
+    ).toEqual(['H5', 'H5'])
   })
 
   it('opens the removal dialog and closes it again without removing', async () => {
@@ -854,8 +1286,8 @@ describe('RootRow', () => {
   // --- whole-branch review pass 3, 2026-09-04 ----------------------------
 
   it('keeps a scan warning when an unrelated field is saved', async () => {
-    // **Pass 3, finding 1 — the same single-slot defect this branch already
-    // fixed one level up in `Roots.tsx`, left standing here.** A scan
+    // **Pass 3, finding 1 — the single-slot defect `Libraries.tsx` also
+    // avoids, by keeping its list failure and its create refusal apart.** A scan
     // interrupted by a restart leaves "no record of that scan" on the card;
     // editing any field then succeeded and wiped the only notice saying the
     // library may be half-derived.

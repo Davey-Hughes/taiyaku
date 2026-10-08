@@ -2566,7 +2566,7 @@ fn serve_refuses_an_unknown_flag() {
     assert_eq!(
         err,
         "serve has no flag `--bogus`; its flags are --addr, --allow-web-setup, --cache, \
-             --db, --insecure-cookies, --log-requests, --refresh-stump, \
+             --db, --folders, --insecure-cookies, --log-requests, --refresh-stump, \
              --secure-cookies, --stump-key, --stump-url, --trusted-proxy, --web"
     );
 }
@@ -3093,6 +3093,194 @@ fn a_malformed_environment_value_is_refused_by_name() {
     let err = super::serve_auth(&argv(&[]), Some("172.17.0.0/16,nonsense")).unwrap_err();
     assert!(err.contains("TAIYAKU_TRUSTED_PROXY"), "{err}");
     assert!(err.contains("nonsense"), "{err}");
+}
+
+/// `--folders` is repeatable, and `TAIYAKU_FOLDERS` is read only when no flag
+/// was given. The variable is passed in rather than read here, so no test
+/// sets it for the ones beside it.
+#[test]
+fn serve_folders_reads_each_flag_and_the_variable_only_without_one() {
+    let paths = |words: &[&str]| words.iter().map(PathBuf::from).collect::<Vec<_>>();
+
+    assert_eq!(super::serve_folders(&argv(&[]), None), Ok(Vec::new()));
+    assert_eq!(
+        super::serve_folders(&argv(&[]), Some("/media:/mnt/user/media 1::/a,b")),
+        Ok(paths(&["/media", "/mnt/user/media 1", "/a,b"])),
+        "split on colons alone: a path may hold a space or a comma"
+    );
+    assert_eq!(
+        super::serve_folders(
+            &argv(&["--folders", "/one", "--db", "x.db", "--folders", "/two"]),
+            Some("/media")
+        ),
+        Ok(paths(&["/one", "/two"])),
+        "a flag replaces the variable's list"
+    );
+    assert!(super::serve_folders(&argv(&["--folders"]), None).is_err());
+    assert!(super::serve_folders(&argv(&["--folders", "--db"]), None).is_err());
+    assert!(
+        super::serve_folders(&argv(&["--folders"]), Some("/media")).is_err(),
+        "a flag with no value is refused, not replaced by the variable"
+    );
+}
+
+/// One entry, an empty entry between two colons, and a variable that is set
+/// and empty (what an Unraid template's blank field hands over).
+#[test]
+fn the_folders_variable_with_one_entry_an_empty_one_or_none() {
+    let paths = |words: &[&str]| words.iter().map(PathBuf::from).collect::<Vec<_>>();
+
+    assert_eq!(
+        super::serve_folders(&argv(&[]), Some("/media")),
+        Ok(paths(&["/media"]))
+    );
+    assert_eq!(
+        super::serve_folders(&argv(&[]), Some("/a::/b")),
+        Ok(paths(&["/a", "/b"])),
+        "an empty entry is no folder, not the working directory"
+    );
+    for value in ["", ":", "::"] {
+        assert_eq!(
+            super::serve_folders(&argv(&[]), Some(value)),
+            Ok(Vec::new()),
+            "{value:?}"
+        );
+    }
+}
+
+/// The environment `serve_options` reads, as a lookup over fixed pairs, so a
+/// test names the variables it sets and the process's own are never read.
+fn an_environment<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
+    move |name| {
+        pairs
+            .iter()
+            .find(|(key, _)| *key == name)
+            .map(|(_, value)| (*value).to_string())
+    }
+}
+
+/// What `serve` hands the server: the folders reach `ServeOptions` from the
+/// variable `TAIYAKU_FOLDERS` by that name and no other, a flag replaces them,
+/// and a relative entry is passed as written (the server makes it absolute
+/// against its working directory when it reads it).
+#[test]
+fn serve_options_carries_the_folders_from_the_flag_or_the_variable() {
+    let paths = |words: &[&str]| words.iter().map(PathBuf::from).collect::<Vec<_>>();
+    let options = |args: &[&str], pairs: &[(&str, &str)]| {
+        super::serve_options(&argv(args), &an_environment(pairs)).expect("options")
+    };
+
+    assert_eq!(options(&[], &[]).folders, Vec::<PathBuf>::new());
+    assert_eq!(
+        options(&[], &[("TAIYAKU_FOLDERS", "/media:/mnt/b")]).folders,
+        paths(&["/media", "/mnt/b"])
+    );
+    assert_eq!(
+        options(&[], &[("TAIYAKU_FOLDER", "/x"), ("FOLDERS", "/y")]).folders,
+        Vec::<PathBuf>::new(),
+        "no other name is read"
+    );
+    assert_eq!(
+        options(&["--folders", "/one"], &[("TAIYAKU_FOLDERS", "/media")]).folders,
+        paths(&["/one"])
+    );
+    assert_eq!(
+        options(&["--folders", "shelf/manga"], &[]).folders,
+        paths(&["shelf/manga"]),
+        "a relative folder is passed as written"
+    );
+    assert_eq!(
+        options(&[], &[("TAIYAKU_FOLDERS", "shelf:/abs")]).folders,
+        paths(&["shelf", "/abs"])
+    );
+    let carried = options(
+        &["--addr", "0.0.0.0:9", "--trusted-proxy", "10.0.0.1"],
+        &[("TAIYAKU_FOLDERS", "/media")],
+    );
+    assert_eq!(carried.addr, "0.0.0.0:9");
+    assert_eq!(carried.auth.trusted_proxies.len(), 1);
+}
+
+/// Each variable `serve_options` reads is read under its own name, and nothing
+/// is read under another: one table over all four, each set alone.
+#[test]
+fn serve_options_reads_each_variable_under_its_own_name() {
+    let options = |pairs: &[(&str, &str)], args: &[&str]| {
+        super::serve_options(&argv(args), &an_environment(pairs))
+    };
+
+    let proxied = options(&[("TAIYAKU_TRUSTED_PROXY", "10.0.0.1")], &[]).expect("options");
+    assert_eq!(proxied.auth.trusted_proxies.len(), 1);
+    assert!(proxied.auth.secure_cookies);
+    assert!(
+        options(&[("TAIYAKU_TRUSTED_PROXIES", "10.0.0.1")], &[])
+            .expect("options")
+            .auth
+            .trusted_proxies
+            .is_empty()
+    );
+
+    let foldered = options(&[("TAIYAKU_FOLDERS", "/media")], &[]).expect("options");
+    assert_eq!(foldered.folders, vec![PathBuf::from("/media")]);
+
+    let stumped = options(
+        &[
+            ("TAIYAKU_STUMP_URL", "https://stump.test"),
+            ("TAIYAKU_STUMP_KEY", "secret"),
+        ],
+        &[],
+    )
+    .expect("options");
+    assert!(stumped.stump.is_some());
+    assert!(
+        options(&[("TAIYAKU_STUMP_URL", "https://stump.test")], &[]).is_err(),
+        "a URL alone needs a key, and the key's variable name is the one named"
+    );
+    assert!(
+        options(&[("TAIYAKU_STUMP_KEY", "secret")], &[]).is_err(),
+        "a key alone needs a URL"
+    );
+    assert!(
+        options(
+            &[
+                ("TAIYAKU_STUMP_URL_X", "https://stump.test"),
+                ("TAIYAKU_STUMP_KEY_X", "secret"),
+            ],
+            &[]
+        )
+        .expect("options")
+        .stump
+        .is_none(),
+        "no other names are read"
+    );
+}
+
+/// `serve` knows the flag, and reads it before it opens a library.
+#[test]
+fn serve_accepts_folders_and_refuses_one_with_no_directory() {
+    // A `serve` that did not refuse would open the library and serve until the
+    // process ends, so it runs on a thread, on a library and a port of its
+    // own, and the answer is waited for with a bound that fails with a
+    // message. That thread is left behind on the failing path, and ends with
+    // the test process.
+    let scratch = TempDir::new("serve-folders-no-directory");
+    let db = scratch.join("library.db");
+    let args = argv(&[
+        "--db",
+        db.to_str().unwrap(),
+        "--addr",
+        "127.0.0.1:0",
+        "--folders",
+    ]);
+    let (sent, heard) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = sent.send(super::serve(&args));
+    });
+    let answer = heard
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("`serve --folders` with no directory after it should have refused, but it went on to serve");
+    let err = answer.unwrap_err();
+    assert!(err.contains("--folders needs a directory"), "{err}");
 }
 
 /// `--web` names a built app, so a directory with no `index.html` is refused

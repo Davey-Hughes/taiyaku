@@ -4,9 +4,9 @@
  *
  * **Separate from `config.ts`** for the reason that file gives for being
  * separate from `library.ts`: the two share a session and nothing else. What
- * they do share is the roots list, and `Users.tsx` fetches it from `config.ts`
- * rather than declaring a second one — one client, two screens, rather than a
- * second fetch that could disagree.
+ * they do share is the libraries list, which is `libraries.ts`'s and which
+ * `Users.tsx` fetches once rather than declaring a second one — one client,
+ * two screens, rather than a second fetch that could disagree.
  *
  * **`SessionRow` and `ApiKey` are imported, not redeclared.** `user_json`'s
  * `sessions[]` and `keys[]` are field-for-field the shapes `/api/sessions` and
@@ -26,10 +26,10 @@ import { type ApiKey, getJson, sendJson, type SessionRow } from './api'
 /** The two values `004_auth.sql`'s `CHECK (role IN (…))` accepts. */
 export const ROLES = ['user', 'admin'] as const
 
-/** One root this account may see, as `user_json`'s `roots` sends it. */
+/** One library this account is granted, as `user_json`'s `libraries` sends it. */
 export interface Grant {
   id: number
-  path: string
+  name: string
 }
 
 /** One account, whole, as `GET /api/library/users` sends it. */
@@ -49,7 +49,7 @@ export interface User {
   sessions: SessionRow[]
   keys: ApiKey[]
   /** **Empty means unrestricted, not blind** — spec A2, O54. */
-  roots: Grant[]
+  libraries: Grant[]
   /**
    * **The one capability `role` does not imply.** Every other capability on
    * this row is read as `admin || column` by `Principal::from_account`; this
@@ -66,7 +66,7 @@ export interface User {
  *
  * **Absent and present mean different things**, which is why every field is
  * optional: the server reads an absent key as "leave this column alone".
- * `roots: []` is the one that reads oddly and is deliberate — it grants
+ * `libraries: []` is the one that reads oddly and is deliberate — it grants
  * nothing, which spec A2 defines as *unrestricted*.
  */
 export interface UserPatch {
@@ -75,8 +75,12 @@ export interface UserPatch {
   can_download?: boolean
   can_stream?: boolean
   can_stamp?: boolean
-  /** The whole grant list, replacing what is there. There is no per-root route. */
-  roots?: number[]
+  /**
+   * The whole list of granted libraries, by id, replacing what is there.
+   * `[]` grants nothing, which is unrestricted; the card sends it only for
+   * its "Every library" choice.
+   */
+  libraries?: number[]
   /**
    * An administrator resetting **somebody else's** password. The store ends
    * every session the target holds and leaves the caller's alone; the route

@@ -246,16 +246,21 @@ predicted — and which accepted proposals it reopened. It is not the same as
 accepted proposal whose rule it replaces: that is right for a rule document
 carried in from another library and wrong for a save.
 
-**The roots screen is built**, at `/config/roots` — an admin-only settings area
-beside the library, where a root is added, edited, scanned and removed from the
-browser rather than a terminal. Adding one renders whichever of the three
-checks the server refused on, and on a success shows the watcher probe it just
-ran, so the scan regime is known before the first scan rather than discovered
-later. Removing one states what it will take — works, reading positions, notes
-— and offers no confirm button at all until those counts have arrived. A scan
-started from the screen reports both halves of what it did in full: the walk
-and the derivation, every field, with what it *could not* do listed before what
-it did, and an empty list drawn as `0` rather than left out — so "nothing was
+**The Libraries screen is built**, at `/config/libraries` — an admin-only
+settings area beside the library, where a library is made, renamed, scanned and
+removed from the browser rather than a terminal, and so is each folder in it;
+`/config/roots` lands there. A library is made from a name and one or more
+folders, each typed or found with the folder browser, which lists only beneath
+the folders the server was started with (`--folders`, or `TAIYAKU_FOLDERS`). A
+refusal — a name already taken, a folder inside another, a path that cannot be
+read — is drawn as the server's own sentence. Removing a library or a folder
+states what it will take — works, reading positions, notes — and offers no
+confirm button at all until those counts have arrived; a library that is some
+account's only grant is refused instead, naming the accounts. **Scan now** on a
+library walks each of its folders in turn and derives once. A scan started from
+the screen reports both halves of what it did in full: the walk and the
+derivation, every field, with what it *could not* do listed before what it did,
+and an empty list drawn as `0` rather than left out — so "nothing was
 unreadable this time" cannot be mistaken for "this version does not say".
 
 **The rule editor is built too**, at `/config/rules` — the screen the whole
@@ -274,11 +279,12 @@ a tab nobody clicked. A rule an accepted proposal wrote is marked, and deleting
 it says which proposal that reopens before it does anything.
 
 **And the last two tabs are built**, at `/config/users` and `/config/backup`.
-One card per account: its role, whether it may download and stream, which roots
-it may see — an empty list is *unrestricted*, and the card says so, because the
-empty state and a failed read look identical and mean opposite things — and,
-when expanded, its open sessions and its API keys, each revocable one at a time
-for the device that was lost. The account this browser is signed in as is
+One card per account: its role, whether it may download and stream, which
+libraries it may see — *Every library, including any added later*, or *Only
+these* with a tick per library, where the last tick cannot be cleared and
+lifting the limit is choosing *Every library* — and, when expanded, its open
+sessions and its API keys, each revocable one at a time for the device that was
+lost. The account this browser is signed in as is
 marked, and so is the session in front of you, so revoking one is not a guess.
 The two things that would lock a library out of its own administration are
 refused by the server and drawn as one reason over both controls: the last
@@ -391,7 +397,7 @@ and runs as uid 99, gid 100 (Unraid's `nobody:users`). It needs three mappings:
 | --- | --- | --- |
 | `/config` | `taiyaku/library.db` and `taiyaku/backups/`: accounts, reading positions, notes, corrections | yes — it is the only copy |
 | `/cache` | covers, tiles and reading-size pages | no — all of it regenerates |
-| `/library` | the manga | it is your library |
+| `/media` | the share your libraries' folders are in | it is your library |
 
 A compose file in the shape this repository is meant to be deployed with:
 
@@ -408,7 +414,7 @@ services:
     volumes:
       - /mnt/user/appdata/taiyaku/config:/config
       - /mnt/user/appdata/taiyaku-cache:/cache
-      - "/mnt/user/media 1/Manga:/library"
+      - "/mnt/user/media 1:/media"
 ```
 
 `/config` and `/cache` must be writable by 99:100. Create them before the first
@@ -427,15 +433,40 @@ writable by 99:100; when it is not, they stay in the database and the save
 answers `persisted: false`. (Nothing schedules scans yet; a later change adds
 that.)
 
-Give the first account a password from the host, then add the library:
+Give the first account a password from the host:
 
 ```sh
 docker exec -it taiyaku taiyaku library user promote davey
-docker exec taiyaku taiyaku library scan --add /library --library Manga
 ```
 
-`--library` names the library the folder is filed under, and creates it. Left
-out, the folder becomes a library named for the folder, `library` here.
+Then sign in and make the libraries on Configuration → Libraries. Each is a
+name and one or more folders, picked in a browser that starts at `/media`:
+the image sets `TAIYAKU_FOLDERS=/media`, and the browser lists nothing
+outside it. Two folders in one library, `/media/Manga/Volumes` and
+`/media/Manga/Chapters` say, are derived together, so a chapter release
+joins its volume as another edition. Scan now on a library's card walks its
+folders and derives once.
+
+`TAIYAKU_FOLDERS` is a `:`-separated list, because a folder's path can hold a
+space or a comma. `taiyaku serve --folders DIR`, repeatable, sets the same
+list on the command line and wins over the variable.
+
+The image does not create `/media`, so a container that maps nothing there
+browses nothing, and `serve` prints each folder it was given that is not a
+directory. A `TAIYAKU_FOLDERS` that is set and empty replaces the image's
+default and lists nothing. A deployment that mapped its share at `/library`
+before sees an empty browser until it maps `/media` or sets `TAIYAKU_FOLDERS`
+to where the share is. A relative folder is taken from the directory the
+server runs in.
+
+The same from the host, for a script:
+
+```sh
+docker exec taiyaku taiyaku library scan --add /media/Manga/Volumes --library Manga
+```
+
+`--library` names the library the folder is filed under, and creates it.
+Left out, the folder becomes a library named for the folder, `Volumes` here.
 
 The first scan reads every archive once to hash it, so on a large library it
 takes as long as reading the whole share.

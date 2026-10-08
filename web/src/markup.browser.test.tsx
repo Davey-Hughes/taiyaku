@@ -62,7 +62,7 @@ const user = (over: Partial<usersApi.User> = {}): usersApi.User => ({
   can_log_in: true,
   sessions: [],
   keys: [],
-  roots: [],
+  libraries: [],
   ...over,
 })
 
@@ -114,15 +114,27 @@ describe('names — §4.3 and §4.4', () => {
       mount(
         <MemoryRouter>
           <UserRow
-            user={user()}
+            user={user({ libraries: [{ id: 70, name: 'Manga' }] })}
             users={[user()]}
-            roots={[root()]}
+            libraries={[
+              {
+                id: 70,
+                name: 'Manga',
+                works: 0,
+                books: 0,
+                folders: [root()],
+              },
+            ]}
             onChanged={() => {}}
           />
         </MemoryRouter>,
       )
       await Promise.resolve()
     })
+    // The grant box is drawn, so a group that swallowed it would show here.
+    expect(
+      page.getByRole('checkbox', { name: 'Manga' }).elements(),
+    ).toHaveLength(1)
     const boxes = page
       .getByRole('group', { name: 'Permissions', exact: true })
       .getByRole('checkbox')

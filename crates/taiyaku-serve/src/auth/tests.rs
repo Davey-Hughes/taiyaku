@@ -129,6 +129,11 @@ async fn every_route_refuses_an_anonymous_request() {
         // roots comment just above gives for why it matters doubly that it
         // is guarded here first.
         "/api/library/roots/{id}/scan",
+        "/api/library/libraries",
+        "/api/library/libraries/{id}",
+        "/api/library/libraries/{id}/folders",
+        "/api/library/libraries/{id}/scan",
+        "/api/library/folders",
         // Spec C4 §4's user administration, PR 2 — admin-gated *inside* each
         // handler, the identical reasoning the scan comment just above gives,
         // and with the sharpest instance of it: these routes are the only
@@ -1249,6 +1254,7 @@ fn router_with_material_under_a_withheld_root(
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
         library_job: Default::default(),
+        folders: Vec::new(),
     });
     (build_router(state.clone()), state)
 }
@@ -1347,6 +1353,7 @@ fn two_works_one_withheld(dir: &std::path::Path) -> (axum::Router, Arc<ServeStat
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
         library_job: Default::default(),
+        folders: Vec::new(),
     });
     (build_router(state.clone()), state)
 }
@@ -1482,6 +1489,7 @@ fn one_work_two_editions_split_across_roots(
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
         library_job: Default::default(),
+        folders: Vec::new(),
     });
     (build_router(state.clone()), state)
 }
@@ -1606,6 +1614,7 @@ fn one_work_three_editions_hub_withheld(dir: &std::path::Path) -> (axum::Router,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
         library_job: Default::default(),
+        folders: Vec::new(),
     });
     (build_router(state.clone()), state)
 }
@@ -1690,7 +1699,7 @@ async fn every_route_declares_its_grant_posture() {
         .count();
     assert_eq!(
         driven, 19,
-        "19 of the 45 guarded routes must be classified Refuses, Filters or \
+        "19 of the guarded routes must be classified Refuses, Filters or \
          RefusesAndFilters and driven by the proofs below — a route's \
          posture changed without this count moving to match, so a route \
          this suite believes it proves may no longer be one it does. It was \
@@ -1708,20 +1717,12 @@ async fn every_route_declares_its_grant_posture() {
     );
     assert_eq!(
         table.len() - driven,
-        33,
-        "the remaining 33 guarded routes must be GrantIndependent or \
-         KnownGap — see the `driven == 19` assertion just above, which this \
-         one is the other half of. Was 19, then 15 while I8 held the four \
-         metadata routes in the driven half, 19 again once O86 returned \
-         them, 23 once task 8 added spec C4 §6's four rule-editor routes, \
-         25 once task 11 added spec C4 §2's two roots routes, 26 once task \
-         12 added spec C4 §3's one scan-control route, and 32 now C4 PR 2 \
-         added spec C4 §4's four user routes and §5's two backup routes — \
-         every one of the thirteen, GrantIndependent C3 §6's \
-         ComicInfo write-back is the one route that has moved it since: \
-         admin-only like the rest, and gated again on a capability an \
-         administrator does not inherit, which changes who may call it and \
-         not what any caller's grant would filter"
+        38,
+        "the remaining guarded routes must be GrantIndependent or KnownGap — \
+         see the `driven` assertion just above, which this one is the other \
+         half of. A new admin-only route is GrantIndependent: it changes who \
+         may call it and not what any caller's grant would filter, so it moves \
+         this count and leaves the driven one alone"
     );
 
     let credential = crate::test_support::fixture_authorization();
@@ -3162,6 +3163,11 @@ const REFUSE_A_DEVICE_CREDENTIAL: &[&str] = &[
     "/api/library/roots",
     "/api/library/roots/{id}",
     "/api/library/roots/{id}/scan",
+    "/api/library/libraries",
+    "/api/library/libraries/{id}",
+    "/api/library/libraries/{id}/folders",
+    "/api/library/libraries/{id}/scan",
+    "/api/library/folders",
     "/api/library/proposals",
     "/api/library/proposals/{id}",
     "/api/library/proposals/{id}/resolution",

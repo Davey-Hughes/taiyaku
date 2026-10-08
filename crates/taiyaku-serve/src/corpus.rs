@@ -116,6 +116,7 @@ fn every_page_the_server_serves_is_the_page_the_aligner_sequenced() {
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
         library_job: Default::default(),
+        folders: Vec::new(),
     };
     let held = state.works.snapshot();
     let work = &held[0];
@@ -412,6 +413,7 @@ fn a_corpus_edition_with_members(
                 auth: crate::session::AuthConfig::default(),
                 scans: Default::default(),
                 library_job: Default::default(),
+                folders: Vec::new(),
             });
             let router = crate::test_support::authenticating(
                 crate::build_router(state.clone()),
@@ -464,6 +466,7 @@ fn a_corpus_edition_of_one_file(root: &Path) -> (axum::Router, String, String, P
                 auth: crate::session::AuthConfig::default(),
                 scans: Default::default(),
                 library_job: Default::default(),
+                folders: Vec::new(),
             });
             let router = crate::test_support::authenticating(
                 crate::build_router(state.clone()),

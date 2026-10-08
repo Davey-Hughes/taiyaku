@@ -73,9 +73,12 @@ COPY --from=web /src/web/dist /app/web
 COPY --chmod=0755 deploy/probe.sh /usr/local/bin/taiyaku-probe
 # The database lands at /config/taiyaku/library.db and its backups beside it;
 # covers and tiles under /cache/taiyaku. Map /config somewhere backed up and
-# /cache somewhere that is not: everything in it is regenerable.
+# /cache somewhere that is not: everything in it is regenerable. /media is
+# where the Libraries screen's folder browser starts: map the share that
+# holds every library's folders there.
 ENV XDG_DATA_HOME=/config \
-    XDG_CACHE_HOME=/cache
+    XDG_CACHE_HOME=/cache \
+    TAIYAKU_FOLDERS=/media
 # Unraid's `nobody:users`, which owns its shares.
 USER 99:100
 EXPOSE 8484

@@ -357,6 +357,7 @@ async fn the_import_route_reports_the_proposals_it_reopens() {
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
         library_job: Default::default(),
+        folders: Vec::new(),
     });
 
     // The rule set exactly as it stood before the accept above — importing
@@ -1356,6 +1357,7 @@ fn state_with_many_scan_entries(
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
         library_job: Default::default(),
+        folders: Vec::new(),
     });
     (state, fixture)
 }
@@ -1441,6 +1443,7 @@ async fn the_preview_route_does_not_wait_on_the_shared_connections_mutex() {
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
         library_job: Default::default(),
+        folders: Vec::new(),
     });
 
     // A background thread takes `Library::conn`'s mutex and holds it — for up
@@ -1514,9 +1517,8 @@ async fn a_roots_route_refusal_does_not_claim_to_be_the_rule_editor() {
 }
 
 /// [`every_config_api_route_refuses_a_reader`]'s own reasoning, extended to
-/// the four roots routes task 11 adds and the one scan-control route task 12
-/// adds: a reviewer's checklist goes stale the first time someone adds a
-/// route and does not think about it.
+/// the roots routes and the scan-control route: a reviewer's checklist goes
+/// stale the first time someone adds a route and does not think about it.
 ///
 /// **This is the test the third mutation question drives**: hand-removing
 /// `admin_or_forbidden` from either [`crate::config_api::start_scan`] or
@@ -1531,7 +1533,6 @@ async fn every_roots_route_refuses_a_reader() {
 
     for (method, path) in [
         (Method::GET, "/api/library/roots".to_string()),
-        (Method::POST, "/api/library/roots".to_string()),
         (Method::PATCH, format!("/api/library/roots/{root_id}")),
         (Method::DELETE, format!("/api/library/roots/{root_id}")),
         (Method::GET, format!("/api/library/roots/{root_id}/scan")),
@@ -1631,82 +1632,6 @@ async fn the_root_list_carries_the_exclude_globs_the_row_holds() {
         patched["exclude_globs"], "**/extras/**",
         "the pattern the patch stored, read back off the list: {after}"
     );
-}
-
-/// A root that exists, is readable and does not overlap anything is added,
-/// probed and listed — the ordinary path through all three of C4 §2's
-/// checks.
-#[tokio::test]
-async fn a_root_can_be_added_and_then_appears_in_the_list() {
-    let (router, _state, _fixture) = test_support::router_over_a_single_scanned_work();
-    let fixture = test_support::Fixture::new("add-root");
-    std::fs::create_dir_all(fixture.path().join("New Root")).expect("mkdir");
-    let body = serde_json::json!({ "path": fixture.path().to_string_lossy() });
-
-    let response = send_json(&router, Method::POST, "/api/library/roots", &body).await;
-    let status = response.status();
-    let text = test_support::body_string(response).await;
-    assert_eq!(status, StatusCode::OK, "{text}");
-    let created: serde_json::Value = serde_json::from_str(&text).expect("a JSON body");
-    let id = created["root"]["id"].as_i64().expect("a minted id");
-    assert!(
-        created["root"]["path"]
-            .as_str()
-            .unwrap()
-            .contains("taiyaku-test-add-root")
-    );
-    assert!(created["watching"].is_boolean(), "{created}");
-    assert!(created["interval_secs"].is_number(), "{created}");
-
-    let listed = get_json(&router, "/api/library/roots").await;
-    assert!(
-        listed["roots"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|r| r["id"] == id),
-        "the added root is listed: {listed}"
-    );
-}
-
-/// A path that does not exist is this caller's own mistake — 400 with a JSON
-/// `error` field naming it, not a 500 carrying `std::io::Error`'s own text
-/// unattributed.
-#[tokio::test]
-async fn adding_a_root_at_a_path_that_does_not_exist_is_a_400() {
-    let (router, _state, _fixture) = test_support::router_over_a_single_scanned_work();
-    let body = serde_json::json!({ "path": "/no/such/path/taiyaku-test-missing-root" });
-
-    let response = send_json(&router, Method::POST, "/api/library/roots", &body).await;
-    let status = response.status();
-    let text = test_support::body_string(response).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "{text}");
-    let json: serde_json::Value = serde_json::from_str(&text).expect("a JSON body");
-    assert!(
-        json["error"]
-            .as_str()
-            .unwrap()
-            .contains("taiyaku-test-missing-root"),
-        "{text}"
-    );
-}
-
-/// IMPORTANT — a root nested inside one this library already holds is
-/// refused with 400 and a JSON `error` field naming the collision, not a 500
-/// carrying a raw `UNIQUE constraint failed` or silently double-counting
-/// every file beneath the overlap.
-#[tokio::test]
-async fn adding_a_nested_root_is_refused_with_the_reason() {
-    let (router, state, _fixture) = test_support::state_with_two_scanned_roots();
-    let nested = test_support::a_path_inside_the_first_root(&state);
-    let body = serde_json::json!({ "path": nested });
-
-    let response = send_json(&router, Method::POST, "/api/library/roots", &body).await;
-    let status = response.status();
-    let text = test_support::body_string(response).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "{text}");
-    let json: serde_json::Value = serde_json::from_str(&text).expect("a JSON body");
-    assert!(json["error"].as_str().unwrap().contains("inside"), "{text}");
 }
 
 /// [`patching_a_rule_leaves_an_omitted_field_alone_but_clears_a_null_one`]'s
@@ -2005,13 +1930,11 @@ async fn a_misspelled_dry_run_query_key_is_refused_not_silently_ignored() {
     }
 }
 
-// --- fix round 1 -----------------------------------------------------------
+// --- the roots routes' wording and nullable columns ------------------------
 //
-// Three findings from the review of task 11's roots routes, each with its
-// own test(s) below: IMPORTANT 1 (every validation message on the roots
-// routes said "the rule's"), IMPORTANT 2 (`create_root` folded a genuine
-// store fault into a 400), IMPORTANT 3 (only 2 of `RootPatch`'s 5 nullable
-// columns were exercised by a test).
+// IMPORTANT 1 (every validation message on the roots routes said "the
+// rule's") and IMPORTANT 3 (only 2 of `RootPatch`'s 5 nullable columns were
+// exercised by a test) each have their own tests below.
 
 /// A JSON object with exactly one key — the shape every wording/nullable
 /// test below sends, built rather than spelled with `serde_json::json!`
@@ -2046,36 +1969,6 @@ fn root_int_column(state: &crate::ServeState, id: i64, column: &str) -> Option<i
         |r| r.get(0),
     )
     .expect("reads the root row")
-}
-
-/// IMPORTANT 1 — `root_path_from_json` reuses `required_str` verbatim from
-/// the rules routes, and before this fix `required_str` hardcoded "the
-/// rule's `{field}`" regardless of which route called it. A `POST` with no
-/// body at all is `path` missing, the one field `root_path_from_json` reads.
-#[tokio::test]
-async fn creating_a_root_with_no_path_names_a_root_not_a_rule() {
-    let (router, _state, _fixture) = test_support::router_over_a_single_scanned_work();
-
-    let response = send_json(
-        &router,
-        Method::POST,
-        "/api/library/roots",
-        &serde_json::json!({}),
-    )
-    .await;
-    let status = response.status();
-    let text = test_support::body_string(response).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "{text}");
-    let json: serde_json::Value = serde_json::from_str(&text).expect("a JSON body");
-    let error = json["error"].as_str().expect("an `error` string");
-    assert!(
-        error.contains("the root's `path`"),
-        "the message must name a root: {error}"
-    );
-    assert!(
-        !error.contains("the rule's"),
-        "a roots-route validation message must never name a rule: {error}"
-    );
 }
 
 /// IMPORTANT 1's other half: `root_patch_from_json` reuses `patch_bool`,
@@ -2164,54 +2057,6 @@ async fn a_rules_route_validation_message_still_names_a_rule() {
         );
         assert!(!text.contains("the root's"), "{field}: {text}");
     }
-}
-
-/// IMPORTANT 2 — `create_root` used to fold `add_root_checked`'s whole
-/// `Result` into a 400, so a genuine store fault (disk full, database busy)
-/// answered exactly like a bad path. Here the path is real, readable and
-/// overlaps nothing — every one of `add_root_checked`'s own caller-fault
-/// checks passes — and `PRAGMA query_only` then makes the connection itself
-/// refuse the write, standing in for the store fault a real disk-full or
-/// busy database would produce. `Library::working` returns the identical
-/// shared connection for an in-memory library
-/// (`taiyaku_library::Library::working`'s own doc comment, "an in-memory
-/// library has no file to open a second time"), so the pragma set here is
-/// the one `create_root`'s handler actually writes through.
-#[tokio::test]
-async fn a_store_fault_creating_a_root_is_a_500_not_a_400() {
-    let (_router, state, _fixture) = test_support::router_over_a_single_scanned_work();
-    let fixture = test_support::Fixture::new("create-root-store-fault");
-    std::fs::create_dir_all(fixture.path().join("New Root")).expect("mkdir");
-    {
-        let conn = state.library.conn();
-        conn.pragma_update(None, "query_only", true)
-            .expect("sets query_only");
-    }
-    let body = serde_json::json!({ "path": fixture.path().to_string_lossy() });
-
-    // **Called directly rather than through the router, and the pragma is
-    // why.** `query_only` refuses *every* write on this connection, including
-    // the expiry slide `account::session_owner` performs on each request — so
-    // a request through the router is refused 401 by the guard, before the
-    // handler this test is about ever runs. (An API key's `last_used` write is
-    // deliberately best-effort and swallowed, which is why this passed while
-    // the suite authenticated with one; it cannot go back to a key, because
-    // O93's gate now refuses one on this route.) The store fault under test is
-    // the handler's, so the handler is what it calls.
-    let response = crate::config_api::create_root(
-        axum::extract::State(std::sync::Arc::clone(&state)),
-        axum::extract::Extension(an_administrator()),
-        test_support::from_a_browser(),
-        axum::Json(body),
-    )
-    .await;
-    let status = response.status();
-    let text = test_support::body_string(response).await;
-    assert_eq!(
-        status,
-        StatusCode::INTERNAL_SERVER_ERROR,
-        "a store fault must not be answered as the caller's own mistake: {text}"
-    );
 }
 
 /// IMPORTANT 3 — `RootPatch`'s five nullable columns (`edition_key`,
@@ -2500,6 +2345,7 @@ fn state_with_a_root_that_cannot_write_its_document(
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
         library_job: Default::default(),
+        folders: Vec::new(),
     });
     (state, fixture)
 }
@@ -2584,6 +2430,7 @@ fn state_with_a_root_that_folds_a_hand_documented_work(
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
         library_job: Default::default(),
+        folders: Vec::new(),
     });
     (state, fixture)
 }
@@ -2919,6 +2766,7 @@ fn state_with_a_root_scanned_once_then_given_real_exclusions(
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
         library_job: Default::default(),
+        folders: Vec::new(),
     });
     (state, fixture)
 }
@@ -3311,15 +3159,16 @@ async fn deleting_a_root_clears_its_stale_scan_registry_entry() {
     // emptied, with no `AUTOINCREMENT`, SQLite reissues the id it just freed.
     let new_fixture = test_support::Fixture::new("reused-root-id");
     std::fs::create_dir_all(new_fixture.path().join("New Root")).expect("mkdir");
-    let body = serde_json::json!({ "path": new_fixture.path().to_string_lossy() });
-    let response = send_json(&router, Method::POST, "/api/library/roots", &body).await;
-    let text = test_support::body_string(response).await;
-    let created: serde_json::Value = serde_json::from_str(&text).expect("a JSON body");
-    let new_id = created["root"]["id"].as_i64().expect("a minted id");
+    let new_id = {
+        let working = state.library.working().expect("a working connection");
+        taiyaku_library::scan::add_root_checked(&working, new_fixture.path())
+            .expect("adds the folder")
+            .root
+            .id
+    };
     assert_eq!(
         new_id, root_id,
-        "this test only proves what it means to prove if the freed id was actually reused: \
-         {text}"
+        "this test only proves what it means to prove if the freed id was actually reused"
     );
 
     let status = crate::config_api::scan_status(
@@ -3913,5 +3762,43 @@ async fn a_roots_patch_may_still_clear_exclude_globs() {
         root_text_column(&state, root_id, "exclude_globs"),
         None,
         "an empty column is not a pattern and must not be refused as one"
+    );
+}
+
+/// A caught panic's message is read from a `&str` payload, from a `String`
+/// one, and, from any other, is said not to be readable.
+#[test]
+fn a_panics_message_is_read_from_either_string_payload() {
+    let caught = |f: fn()| std::panic::catch_unwind(f).expect_err("panics");
+    assert_eq!(
+        crate::config_api::panic_message(caught(|| panic!("a literal")).as_ref()),
+        "a literal"
+    );
+    assert_eq!(
+        crate::config_api::panic_message(
+            caught(|| panic!("{}", String::from("a built one"))).as_ref()
+        ),
+        "a built one"
+    );
+    assert_eq!(
+        crate::config_api::panic_message(caught(|| std::panic::panic_any(7_u8)).as_ref()),
+        "the scan panicked with a payload that names no message"
+    );
+}
+
+/// A root's scan that panics is its `{"error": …}` and says so in the
+/// sentence's first words.
+#[test]
+fn a_scan_that_panicked_is_an_error_report_that_says_so() {
+    let outcome = std::panic::catch_unwind(|| -> Result<serde_json::Value, String> {
+        panic!("a walk went wrong")
+    });
+    assert_eq!(
+        crate::config_api::scan_report_of(outcome),
+        serde_json::json!({ "error": "the scan panicked: a walk went wrong" })
+    );
+    assert_eq!(
+        crate::config_api::scan_report_of(Ok(Err("it failed".to_string()))),
+        serde_json::json!({ "error": "it failed" })
     );
 }

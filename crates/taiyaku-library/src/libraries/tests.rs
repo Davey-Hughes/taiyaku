@@ -93,3 +93,115 @@ fn unfiled_works_counts_only_works_in_no_library() {
     .expect("works");
     assert_eq!(unfiled_works(&conn).expect("counts"), 2);
 }
+
+#[test]
+fn a_library_is_named_by_its_id() {
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let id = create(&conn, "Manga").expect("creates");
+    assert_eq!(name_of(&conn, id).expect("reads").as_deref(), Some("Manga"));
+    assert_eq!(name_of(&conn, id + 1).expect("reads"), None);
+}
+
+#[test]
+fn a_rename_stores_the_name_stripped_and_answers_it() {
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let id = create(&conn, "Manga").expect("creates");
+    let other = create(&conn, "Books").expect("creates");
+    assert_eq!(rename(&conn, id, "  Comics ").expect("renames"), "Comics");
+    assert_eq!(
+        name_of(&conn, other).expect("reads").as_deref(),
+        Some("Books"),
+        "another library keeps its name"
+    );
+    assert_eq!(
+        name_of(&conn, id).expect("reads").as_deref(),
+        Some("Comics")
+    );
+    assert_eq!(
+        rename(&conn, id, "Comics").expect("its own name is not taken"),
+        "Comics"
+    );
+}
+
+#[test]
+fn a_rename_is_refused_as_the_callers_mistake_or_as_no_such_library() {
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let manga = create(&conn, "Manga").expect("creates");
+    create(&conn, "Comics").expect("creates");
+
+    assert!(matches!(
+        rename(&conn, manga, " \t"),
+        Err(RenameError::Unusable(why)) if why.contains("needs a name")
+    ));
+    assert!(matches!(
+        rename(&conn, manga, "Comics"),
+        Err(RenameError::Unusable(why)) if why.contains("already called `Comics`")
+    ));
+    assert_eq!(
+        name_of(&conn, manga).expect("reads").as_deref(),
+        Some("Manga"),
+        "a refused rename wrote nothing"
+    );
+    assert_eq!(rename(&conn, 999, "Other"), Err(RenameError::Missing(999)));
+}
+
+/// Only the UNIQUE constraint is the caller's mistake: any other failure of
+/// the write is the store's, and is reported in the store's words.
+#[test]
+fn a_rename_that_fails_for_another_reason_is_the_stores_fault() {
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let id = create(&conn, "Manga").expect("creates");
+    conn.execute_batch(
+        "CREATE TEMP TRIGGER planted BEFORE UPDATE ON main.library
+         BEGIN SELECT RAISE(ABORT, 'planted'); END",
+    )
+    .expect("plants the trigger");
+
+    match rename(&conn, id, "Comics") {
+        Err(RenameError::Failed(why)) => assert!(why.contains("planted"), "{why}"),
+        other => panic!("expected the store's failure, got {other:?}"),
+    }
+    conn.execute_batch("DROP TRIGGER planted")
+        .expect("drops it");
+    assert_eq!(
+        name_of(&conn, id).expect("reads").as_deref(),
+        Some("Manga"),
+        "a failed rename wrote nothing"
+    );
+}
+
+/// Two libraries, so a count that forgot the library reads the other's rows.
+#[test]
+fn books_counts_the_librarys_own_epub_and_pdf_entries() {
+    let parent = crate::tests::tempdir("libraries-books");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let mut roots = Vec::new();
+    for name in ["Books", "Manga"] {
+        let dir = parent.path().join(name);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        roots.push(add_root_in(&conn, &dir, InLibrary::Named(name)).expect("adds"));
+    }
+    for (root, rel_path, format) in [
+        (&roots[0], "a.epub", Some("epub-reflow")),
+        (&roots[0], "b.epub", Some("epub-fixed")),
+        (&roots[0], "c.pdf", Some("pdf")),
+        (&roots[0], "d.cbz", Some("zip")),
+        (&roots[0], "e.bin", None),
+        (&roots[1], "f.pdf", Some("pdf")),
+    ] {
+        conn.execute(
+            "INSERT INTO scan_entry (root_id, rel_path, kind, format, size, mtime)
+             VALUES (?1, ?2, 'file', ?3, 1, 1)",
+            rusqlite::params![root.id, rel_path, format],
+        )
+        .expect("a scanned entry");
+    }
+
+    assert_eq!(books(&conn, roots[0].library_id).expect("counts"), 3);
+    assert_eq!(books(&conn, roots[1].library_id).expect("counts"), 1);
+}

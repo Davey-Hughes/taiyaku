@@ -131,7 +131,7 @@ function Orphans({ orphans }: { orphans: Orphan[] }) {
   )
 }
 
-/** The documents a root no longer keeps — declined, not orphaned. */
+/** The documents a folder no longer keeps — declined, not orphaned. */
 function Declines({ declined }: { declined: Declined[] }) {
   return (
     <div
@@ -139,7 +139,7 @@ function Declines({ declined }: { declined: Declined[] }) {
       data-field="declined_documents"
       data-zero={declined.length === 0 ? '' : undefined}
     >
-      <dt>Documents this root no longer keeps</dt>
+      <dt>Documents this folder no longer keeps</dt>
       <dd>
         {declined.length}
         {declined.length > 0 && (
@@ -222,10 +222,29 @@ function UnreadableCauses({ unreadable }: { unreadable: Unreadable }) {
   )
 }
 
-function WalkSection({ walk }: { walk: Walk }) {
+/**
+ * The heading level of a report's two section headings. A report is drawn
+ * beneath whatever heading holds it, and its caller says which level that
+ * leaves.
+ */
+export type ReportLevel = 3 | 4 | 5 | 6
+
+/** The section heading at `level`, drawn by its class and not by its tag. */
+function ReportHeading({
+  level,
+  children,
+}: {
+  level: ReportLevel
+  children: string
+}) {
+  const Tag = `h${level}` as 'h3'
+  return <Tag className="report-heading">{children}</Tag>
+}
+
+function WalkSection({ walk, level }: { walk: Walk; level: ReportLevel }) {
   return (
     <section className="walk">
-      <h3>What the walk found</h3>
+      <ReportHeading level={level}>What the walk found</ReportHeading>
       {walk.refused !== null && (
         <p role="alert" className="refused">
           This scan was refused and nothing was applied: {walk.refused}
@@ -271,7 +290,7 @@ function WalkSection({ walk }: { walk: Walk }) {
         <Count field="updated" label="Updated" n={walk.updated} />
         <Count field="gone" label="Gone" n={walk.gone} />
         <div className="count" data-field="root">
-          <dt>Root</dt>
+          <dt>Folder</dt>
           <dd>
             <code>{walk.root}</code>
           </dd>
@@ -291,10 +310,16 @@ function WalkSection({ walk }: { walk: Walk }) {
  * straight back. One component, two callers, rather than a second rendering of
  * thirty-one fields that could drift from this one.
  */
-export function DeriveSection({ derive }: { derive: Derived }) {
+export function DeriveSection({
+  derive,
+  level = 3,
+}: {
+  derive: Derived
+  level?: ReportLevel
+}) {
   return (
     <section className="derived">
-      <h3>What derivation made of it</h3>
+      <ReportHeading level={level}>What derivation made of it</ReportHeading>
       <dl>
         {/* What it did not do, first. */}
         <UnreadableCauses unreadable={derive.unreadable} />
@@ -331,7 +356,7 @@ export function DeriveSection({ derive }: { derive: Derived }) {
         />
         <Count
           field="root_removed_mid_derive"
-          label="Roots removed mid-derive"
+          label="Folders removed mid-derive"
           n={derive.root_removed_mid_derive}
         />
         <Count
@@ -411,7 +436,13 @@ export function DeriveSection({ derive }: { derive: Derived }) {
   )
 }
 
-export function ScanReport({ outcome }: { outcome: ScanOutcome }) {
+export function ScanReport({
+  outcome,
+  level = 3,
+}: {
+  outcome: ScanOutcome
+  level?: ReportLevel
+}) {
   if (scanFailed(outcome)) {
     return (
       <div className="scan-report">
@@ -421,8 +452,8 @@ export function ScanReport({ outcome }: { outcome: ScanOutcome }) {
   }
   return (
     <div className="scan-report">
-      <WalkSection walk={outcome.scan} />
-      <DeriveSection derive={outcome.derive} />
+      <WalkSection walk={outcome.scan} level={level} />
+      <DeriveSection derive={outcome.derive} level={level} />
     </div>
   )
 }

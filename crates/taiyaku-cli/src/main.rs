@@ -186,7 +186,7 @@ fn print_usage() {
         "       taiyaku serve  <taiyaku.json>... [--addr HOST:PORT] [--db PATH] \
          [--stump-url URL] [--stump-key KEY] [--log-requests FILE] [--refresh-stump] \
          [--cache DIR] [--trusted-proxy CIDR]... [--secure-cookies] \
-         [--insecure-cookies] [--allow-web-setup] [--web DIR]"
+         [--insecure-cookies] [--allow-web-setup] [--web DIR] [--folders DIR]..."
     );
     println!("       taiyaku library import <taiyaku.json> [--db PATH]");
     println!(
@@ -1247,6 +1247,7 @@ fn serve(args: &[String]) -> Result<(), String> {
             "--allow-web-setup",
             "--cache",
             "--db",
+            "--folders",
             "--insecure-cookies",
             "--log-requests",
             "--refresh-stump",
@@ -1284,21 +1285,72 @@ fn serve(args: &[String]) -> Result<(), String> {
         ));
     }
 
+    // What `ServeOptions` carries is read here, before the library is opened,
+    // so a mistyped flag or variable is refused for what is actually wrong.
+    let options = serve_options(args, &|name| std::env::var(name).ok())?;
+
+    // `taiyaku serve <sidecar>...` keeps working, and now means it: every
+    // path it is handed is imported into the real, on-disk library — through
+    // `library::import_canonical`, the same function `taiyaku library
+    // import` calls, so a work this command imports and one a person imports
+    // by hand agree on what row it is (see `library.rs`'s own doc comment on
+    // the placeholder-path hazard this closes). This is the migration path
+    // for an existing install, and it is what keeps `serve/src/corpus.rs`'s
+    // corpus-gated tests alive — they call `taiyaku_serve::load_works`
+    // directly rather than through this function, so they are untouched by
+    // this change.
     // **No paths is now an invocation rather than a mistake** — spec C1 §5.3.
     // The scanner produces works with no `sidecar_path` at all, so there is
     // nothing to put on a command line; `serve --db` is how a browse UI's
     // `/read/{work}` link reaches one. `serve_works` answers for both cases,
     // including the refusal when the library turns out to hold nothing.
+    let (db_library, works) = serve_works(&paths, option_value(args, "--db", "a path")?)?;
+    for work in works.snapshot().iter() {
+        let sidecar = work.sidecar();
+        eprintln!(
+            "{} | {} editions | {}",
+            work.id,
+            sidecar.editions.len(),
+            sidecar.work.title
+        );
+    }
+    let runtime = tokio::runtime::Runtime::new().map_err(|e| format!("{e}"))?;
+    let outcome = runtime.block_on(taiyaku_serve::serve(Arc::new(db_library), works, options));
+    // **Not left to `Drop`**, which waits for every blocking task to finish. A
+    // scan started from the web UI is a detached `spawn_blocking`, and dropping
+    // the runtime under one holds the process until the scan ends.
+    runtime.shutdown_timeout(RUNTIME_SHUTDOWN);
+    outcome
+}
+
+/// How long a stopping server waits for blocking tasks before it exits anyway.
+/// Added to `taiyaku_serve::SHUTDOWN_GRACE`, it must stay inside the container
+/// runtime's stop timeout.
+const RUNTIME_SHUTDOWN: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// What `serve` puts in `taiyaku_serve::ServeOptions`, read from its flags and
+/// from `environment`, which is the process's own in `serve` and a fixed table
+/// in a test. Split out so what reaches `taiyaku_serve::ServeOptions`, and under
+/// which variable name, is held by a test that does not touch the real
+/// environment or bind a port.
+///
+/// # Errors
+///
+/// Returns an error for any flag or variable `serve` refuses.
+fn serve_options(
+    args: &[String],
+    environment: &dyn Fn(&str) -> Option<String>,
+) -> Result<taiyaku_serve::ServeOptions, String> {
     let addr = option_value(args, "--addr", "a host:port")?.unwrap_or("127.0.0.1:8484");
 
     // A key on the command line is visible in `ps`, so the environment is the
     // documented way and the flag is the override.
     let key = option_value(args, "--stump-key", "an API key")?
         .map(str::to_string)
-        .or_else(|| std::env::var("TAIYAKU_STUMP_KEY").ok());
+        .or_else(|| environment("TAIYAKU_STUMP_KEY"));
     let base = option_value(args, "--stump-url", "a URL")?
         .map(str::to_string)
-        .or_else(|| std::env::var("TAIYAKU_STUMP_URL").ok());
+        .or_else(|| environment("TAIYAKU_STUMP_URL"));
     let stump = match (base, key) {
         (Some(base), Some(key)) => Some(taiyaku_serve::StumpConfig::new(base, key)),
         (Some(_), None) => {
@@ -1309,7 +1361,8 @@ fn serve(args: &[String]) -> Result<(), String> {
         }
         (None, None) => None,
     };
-    let auth = serve_auth(args, std::env::var("TAIYAKU_TRUSTED_PROXY").ok().as_deref())?;
+    let auth = serve_auth(args, environment("TAIYAKU_TRUSTED_PROXY").as_deref())?;
+    let folders = serve_folders(args, environment("TAIYAKU_FOLDERS").as_deref())?;
     let log = option_value(args, "--log-requests", "a path")?.map(PathBuf::from);
     // Read before `load_works` so `serve x.json --cache` with nothing after
     // it is refused for the reason that is actually wrong, rather than for a
@@ -1327,52 +1380,56 @@ fn serve(args: &[String]) -> Result<(), String> {
     // Checked before the library is opened, so a mistyped `--web` is refused
     // for what is actually wrong.
     let web = web_root(option_value(args, "--web", "a directory")?)?;
-
-    // `taiyaku serve <sidecar>...` keeps working, and now means it: every
-    // path it is handed is imported into the real, on-disk library — through
-    // `library::import_canonical`, the same function `taiyaku library
-    // import` calls, so a work this command imports and one a person imports
-    // by hand agree on what row it is (see `library.rs`'s own doc comment on
-    // the placeholder-path hazard this closes). This is the migration path
-    // for an existing install, and it is what keeps `serve/src/corpus.rs`'s
-    // three corpus-gated tests alive — they call `taiyaku_serve::load_works`
-    // directly rather than through this function, so they are untouched by
-    // this change.
-    let (db_library, works) = serve_works(&paths, option_value(args, "--db", "a path")?)?;
-    for work in works.snapshot().iter() {
-        let sidecar = work.sidecar();
-        eprintln!(
-            "{} | {} editions | {}",
-            work.id,
-            sidecar.editions.len(),
-            sidecar.work.title
-        );
-    }
-    let runtime = tokio::runtime::Runtime::new().map_err(|e| format!("{e}"))?;
-    let outcome = runtime.block_on(taiyaku_serve::serve(
-        Arc::new(db_library),
-        works,
-        taiyaku_serve::ServeOptions {
-            addr: addr.to_string(),
-            stump,
-            log_requests: log,
-            refresh_stump,
-            cache,
-            auth,
-            web,
-        },
-    ));
-    // **Not left to `Drop`**, which waits for every blocking task to finish. A
-    // scan started from the web UI is a detached `spawn_blocking`, and dropping
-    // the runtime under one holds the process until the scan ends.
-    runtime.shutdown_timeout(RUNTIME_SHUTDOWN);
-    outcome
+    Ok(taiyaku_serve::ServeOptions {
+        addr: addr.to_string(),
+        stump,
+        log_requests: log,
+        refresh_stump,
+        cache,
+        auth,
+        web,
+        folders,
+    })
 }
 
-/// How long a stopping server waits for blocking tasks before it exits anyway.
-/// Added to `taiyaku_serve::SHUTDOWN_GRACE`, it must stay inside the container
-/// runtime's stop timeout.
-const RUNTIME_SHUTDOWN: std::time::Duration = std::time::Duration::from_secs(2);
+/// `--folders DIR`, repeatable, or `TAIYAKU_FOLDERS`: the directories the
+/// Libraries screen's folder browser may list beneath.
+///
+/// `from_environment` is `TAIYAKU_FOLDERS`, read by the caller as
+/// `serve_auth`'s is. It is a `:`-separated list, as `PATH` is, because a
+/// path can hold a space or a comma. Any `--folders` replaces it, the
+/// precedence `--trusted-proxy` holds over its variable.
+///
+/// Nothing is checked here. A prefix that does not exist when a request
+/// arrives, an unmounted share for one, lists nothing then.
+///
+/// # Errors
+///
+/// Returns an error if a `--folders` has no value.
+fn serve_folders(args: &[String], from_environment: Option<&str>) -> Result<Vec<PathBuf>, String> {
+    let mut folders = Vec::new();
+    for (index, arg) in args.iter().enumerate() {
+        if arg != "--folders" {
+            continue;
+        }
+        let value = args
+            .get(index + 1)
+            .filter(|next| !next.starts_with("--"))
+            .ok_or("--folders needs a directory")?;
+        folders.push(PathBuf::from(value));
+    }
+    if folders.is_empty()
+        && let Some(listed) = from_environment
+    {
+        folders.extend(
+            listed
+                .split(':')
+                .filter(|value| !value.is_empty())
+                .map(PathBuf::from),
+        );
+    }
+    Ok(folders)
+}
 
 /// `--trusted-proxy`, `--insecure-cookies` and `--allow-web-setup`, read into
 /// what `serve` needs (spec A2 §5 and §6).

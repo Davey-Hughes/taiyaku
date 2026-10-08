@@ -27,6 +27,8 @@ mod cover;
 /// caller.
 mod curation;
 pub(crate) mod download;
+mod folders_api;
+mod libraries_api;
 pub mod library_api;
 mod metadata;
 /// A work's notes, beside its sidecar.
@@ -109,8 +111,9 @@ pub struct ServeState {
     /// Spec A2 §6 and §5. Small because §11 puts TLS in a reverse proxy, so
     /// none of that is here.
     pub auth: crate::session::AuthConfig,
-    /// Every root scan currently running or just finished, by root id — Task
-    /// 12's registry for `POST`/`GET /api/library/roots/{id}/scan`.
+    /// Every root scan currently running or just finished, by root id: the
+    /// registry for `POST`/`GET /api/library/roots/{id}/scan`, and for a
+    /// library's scan, which holds an entry for each of its folders at once.
     ///
     /// **In-process only, and deliberately.** Nothing here survives a
     /// restart: a process that died mid-scan left no lock behind, and the
@@ -124,11 +127,11 @@ pub struct ServeState {
     ///
     /// A `Mutex<HashMap>` rather than a `DashMap` or similar: entries are
     /// read and written under a lock held only long enough to check, insert
-    /// or replace one key, never across the scan itself — `start_scan` drops
-    /// the guard before `tokio::task::spawn_blocking` ever begins walking a
-    /// filesystem, and the spawned task reacquires it only to write its
-    /// finished report back. A crate this size gains nothing from a
-    /// lock-free map for that shape of access.
+    /// or replace the keys of one scan, never across the scan itself —
+    /// `start_scan` drops the guard before `tokio::task::spawn_blocking`
+    /// ever begins walking a filesystem, and the spawned task reacquires it
+    /// only to write its finished report back. A crate this size gains
+    /// nothing from a lock-free map for that shape of access.
     pub scans: Arc<std::sync::Mutex<std::collections::HashMap<i64, ScanProgress>>>,
     /// The lock a scan's derive and a save's `preview::apply` both take
     /// before calling [`taiyaku_library::Library::working`] — whole-branch
@@ -170,6 +173,9 @@ pub struct ServeState {
     /// background, and `scan_status` is where a caller learns how long that
     /// took either way.
     pub library_job: Arc<std::sync::Mutex<()>>,
+    /// The directories `GET /api/library/folders` may list beneath:
+    /// `--folders`, or `TAIYAKU_FOLDERS`. Empty lists nothing.
+    pub folders: Vec<std::path::PathBuf>,
 }
 
 /// One root's scan, as the registry in [`ServeState::scans`] tracks it —
@@ -380,6 +386,16 @@ pub struct ServeOptions {
     /// [`crate::web`]. `None` serves the API alone, which is what `vite dev`'s
     /// proxy expects.
     pub web: Option<std::path::PathBuf>,
+    /// `--folders`: what the folder browser may list beneath.
+    pub folders: Vec<std::path::PathBuf>,
+}
+
+/// Says, line by line to `say`, why each folder the server was started with
+/// lists nothing. Split from `serve` so a test can read what it says.
+pub(crate) fn announce_folders(folders: &[std::path::PathBuf], say: &mut dyn FnMut(&str)) {
+    for line in folders_api::notices(folders) {
+        say(&line);
+    }
 }
 
 /// Bind and serve until interrupted.
@@ -425,6 +441,7 @@ pub async fn serve(
         cache,
         auth,
         web,
+        folders,
     } = options;
     let addr = addr.as_str();
     // Opened before anything else so a bad `--log-requests` path is a
@@ -506,6 +523,8 @@ pub async fn serve(
         eprintln!("{complaint}");
     }
 
+    announce_folders(&folders, &mut |line| eprintln!("{line}"));
+
     let state = Arc::new(ServeState {
         library,
         works,
@@ -515,6 +534,7 @@ pub async fn serve(
         auth,
         scans: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         library_job: Arc::new(std::sync::Mutex::new(())),
+        folders,
     });
 
     // §4's other half: expired sessions are deleted lazily on lookup, and swept

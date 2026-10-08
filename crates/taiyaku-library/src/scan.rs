@@ -133,6 +133,9 @@ pub enum InLibrary<'a> {
     Own,
     /// The library with this name, created if there is none.
     Named(&'a str),
+    /// The library with this id. [`add_root_checked_in`] refuses an id no
+    /// library holds; [`add_root_in`] does not ask whether one does.
+    Id(i64),
 }
 
 /// [`add_root`], filing the folder under `library`.
@@ -156,6 +159,7 @@ pub fn add_root_in(conn: &Connection, path: &Path, library: InLibrary<'_>) -> Re
             Some(id) => id,
             None => crate::libraries::create(&tx, name)?,
         }),
+        InLibrary::Id(id) => Some(id),
     };
     tx.execute(
         "INSERT INTO root (path, library_id) VALUES (?1, ?2)",
@@ -267,9 +271,9 @@ pub struct Added {
 /// store call itself. `add_root_checked` could offer no such split before
 /// this type existed: its own checks run *inside* this function, not in the
 /// handler that calls it, so a caller had nothing of its own to pre-check
-/// against and `taiyaku-serve`'s `create_root` was left folding every
-/// failure this function could produce — a bad path and a database gone
-/// read-only alike — into the same 400.
+/// against and a handler was left folding every failure this function could
+/// produce — a bad path and a database gone read-only alike — into the same
+/// 400.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AddRootError {
     /// `path` itself: it does not exist, this process cannot read it, or it
@@ -278,7 +282,9 @@ pub enum AddRootError {
     /// by path and id. Or the library it would join cannot be named: an
     /// [`InLibrary::Named`] that is empty once trimmed, or an
     /// [`InLibrary::Own`] whose two possible names are both taken, which
-    /// the message names.
+    /// the message names. Or an [`InLibrary::Id`] no library holds. For
+    /// [`create_library`]: no folder given, a name empty once trimmed or
+    /// already a library's, or two of the folders given overlapping.
     Unusable(String),
     /// The store itself failed: [`roots`] (the overlap check's own read),
     /// the library-name lookup, the insert inside [`add_root_in`], or the
@@ -362,7 +368,8 @@ pub fn add_root_checked(conn: &Connection, path: &Path) -> Result<Added, AddRoot
 /// Returns [`AddRootError::Unusable`] if `path` cannot be canonicalised (it
 /// must exist), if the canonical path cannot be read as a directory, if it
 /// is inside or contains a root already held, or if the library it would
-/// join cannot be named — every one of those is this caller's own mistake,
+/// join cannot be named (an [`InLibrary::Id`] no library holds is one) —
+/// every one of those is this caller's own mistake,
 /// an `error` a person can act on. The exact-duplicate case is intercepted
 /// by the nesting check (a path trivially contains itself) and produces an
 /// "is inside existing root" message, not a separate duplicate-path error.
@@ -377,6 +384,44 @@ pub fn add_root_checked_in(
     path: &Path,
     library: InLibrary<'_>,
 ) -> Result<Added, AddRootError> {
+    let canonical = vetted(conn, path)?;
+
+    match library {
+        // Any whitespace, not only spaces: refusing a name that would be
+        // invisible is not stripping one, so lookups keep `trim_name`'s set.
+        InLibrary::Named(name) if name.trim().is_empty() => {
+            return Err(AddRootError::Unusable(format!(
+                "{}: a library needs a name",
+                canonical.display()
+            )));
+        }
+        InLibrary::Named(_) => {}
+        InLibrary::Own => {
+            if let Some(why) = own_library_clash(conn, &canonical).map_err(AddRootError::Failed)? {
+                return Err(AddRootError::Unusable(why));
+            }
+        }
+        InLibrary::Id(id) => {
+            if crate::libraries::name_of(conn, id)
+                .map_err(AddRootError::Failed)?
+                .is_none()
+            {
+                return Err(AddRootError::Unusable(format!(
+                    "{}: there is no library {id}",
+                    canonical.display()
+                )));
+            }
+        }
+    }
+
+    let root = add_root_in(conn, &canonical, library).map_err(AddRootError::Failed)?;
+    probed(conn, root)
+}
+
+/// `path` in canonical form, having checked that it exists, that this
+/// process can list it, and that it is neither inside nor around a root
+/// already held: [`add_root_checked_in`]'s first two validations.
+fn vetted(conn: &Connection, path: &Path) -> Result<PathBuf, AddRootError> {
     let canonical = path
         .canonicalize()
         .map_err(|e| AddRootError::Unusable(format!("{}: {e}", path.display())))?;
@@ -403,27 +448,13 @@ pub fn add_root_checked_in(
             )));
         }
     }
+    Ok(canonical)
+}
 
-    match library {
-        // Any whitespace, not only spaces: refusing a name that would be
-        // invisible is not stripping one, so lookups keep `trim_name`'s set.
-        InLibrary::Named(name) if name.trim().is_empty() => {
-            return Err(AddRootError::Unusable(format!(
-                "{}: a library needs a name",
-                canonical.display()
-            )));
-        }
-        InLibrary::Named(_) => {}
-        InLibrary::Own => {
-            if let Some(why) = own_library_clash(conn, &canonical).map_err(AddRootError::Failed)? {
-                return Err(AddRootError::Unusable(why));
-            }
-        }
-    }
-
-    let root = add_root_in(conn, &canonical, library).map_err(AddRootError::Failed)?;
-
-    let probe = crate::watch::probe(&canonical, PROBE_TIMEOUT);
+/// [`add_root_checked_in`]'s third validation, for a root just inserted: the
+/// watch probe, and the interval it implies written to the row.
+fn probed(conn: &Connection, root: Root) -> Result<Added, AddRootError> {
+    let probe = crate::watch::probe(&root.path, PROBE_TIMEOUT);
     let interval = crate::watch::interval_for(&probe);
     let interval_secs = interval.as_secs() as i64;
     update_root(
@@ -443,6 +474,99 @@ pub fn add_root_checked_in(
         },
         probe,
         interval,
+    })
+}
+
+/// What [`create_library`] made.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Created {
+    pub library_id: i64,
+    /// The name as stored.
+    pub name: String,
+    /// Each folder with its watch probe, in the order given.
+    pub folders: Vec<Added>,
+}
+
+/// A new library called `name` holding each of `paths`: every folder, or no
+/// library and no folder.
+///
+/// Every path is vetted before anything is written, against the roots held
+/// and against the other paths given. The library and its folders are then
+/// inserted in one transaction. The watch probes run after it commits,
+/// because each waits up to [`PROBE_TIMEOUT`] and a write transaction held
+/// that long would stall every other writer.
+///
+/// # Errors
+///
+/// Returns [`AddRootError::Unusable`] for no path, a name that is empty once
+/// trimmed or that a library already holds, a path [`add_root_checked_in`]
+/// would refuse, or two of the paths overlapping. Returns
+/// [`AddRootError::Failed`] if the store refuses; a fault while recording a
+/// probe's interval is one, and by then the library exists.
+pub fn create_library(
+    conn: &Connection,
+    name: &str,
+    paths: &[PathBuf],
+) -> Result<Created, AddRootError> {
+    if paths.is_empty() {
+        return Err(AddRootError::Unusable(
+            "a library needs at least one folder".to_string(),
+        ));
+    }
+    if name.trim().is_empty() {
+        return Err(AddRootError::Unusable("a library needs a name".to_string()));
+    }
+    let name = crate::libraries::trim_name(name);
+
+    let mut canonical: Vec<PathBuf> = Vec::with_capacity(paths.len());
+    for path in paths {
+        let held = vetted(conn, path)?;
+        if let Some(earlier) = canonical
+            .iter()
+            .find(|earlier| held.starts_with(earlier) || earlier.starts_with(&held))
+        {
+            return Err(AddRootError::Unusable(format!(
+                "{} and {} overlap; a library's folders may not be the same folder or sit \
+                 inside one another",
+                earlier.display(),
+                held.display()
+            )));
+        }
+        canonical.push(held);
+    }
+
+    let tx = crate::Nested::open(conn, "create_library")
+        .map_err(|e| AddRootError::Failed(format!("starting to create `{name}`: {e}")))?;
+    // Asked inside the transaction: a lookup before it would be a second
+    // statement for another writer to land between, and the name it found
+    // free would then fail at the insert as a store fault, not as the
+    // caller's mistake. The paths are vetted before it because vetting reads
+    // the disk.
+    if crate::libraries::id_of(&tx, name)
+        .map_err(AddRootError::Failed)?
+        .is_some()
+    {
+        return Err(AddRootError::Unusable(format!(
+            "a library is already called `{name}`; add the folder to it instead"
+        )));
+    }
+    let library_id = crate::libraries::create(&tx, name).map_err(AddRootError::Failed)?;
+    let mut inserted = Vec::with_capacity(canonical.len());
+    for path in &canonical {
+        inserted
+            .push(add_root_in(&tx, path, InLibrary::Id(library_id)).map_err(AddRootError::Failed)?);
+    }
+    tx.commit()
+        .map_err(|e| AddRootError::Failed(format!("committing the library `{name}`: {e}")))?;
+
+    let mut folders = Vec::with_capacity(inserted.len());
+    for root in inserted {
+        folders.push(probed(conn, root)?);
+    }
+    Ok(Created {
+        library_id,
+        name: name.to_string(),
+        folders,
     })
 }
 
@@ -557,11 +681,11 @@ pub struct Removal {
 }
 
 /// Every work whose *every* member sits under root `?1` — the works
-/// [`apply_removal`] deletes, and what [`Removal::works`] counts.
+/// [`take_root`] deletes, and what [`Removal::works`] counts.
 ///
 /// **A subquery, reused by parameter rather than materialised into a
 /// `Vec<i64>` and an `IN (?, ?, …)` built for it.** Three of
-/// [`apply_removal`]'s statements need this exact set — the work count, the
+/// [`take_root`]'s statements need this exact set — the work count, the
 /// positions it holds, the notes it holds — and a fourth, the delete, needs
 /// it a fourth time; passing `id` as `?1` to each is simpler than binding a
 /// list of a size decided at runtime, and there is only ever one definition
@@ -587,7 +711,8 @@ pub struct Removal {
 /// `schema/006_member_root.sql`'s `ON DELETE SET NULL` erases exactly that
 /// the instant the `root` row goes — the same column O54 records as the one
 /// that excludes a member from every root grant once it reads `NULL`.
-/// [`apply_removal`] reads this before it deletes anything.
+/// [`take_root`] reads this before it deletes anything, and [`apply_removal`] and
+/// [`apply_library_removal`] reach it through that.
 const DOOMED_WORKS: &str = "
     SELECT DISTINCT e.work_id
       FROM member m
@@ -599,6 +724,29 @@ const DOOMED_WORKS: &str = "
             WHERE e2.work_id = e.work_id
               AND (m2.root_id IS NULL OR m2.root_id != ?1)
            )";
+
+/// "`a` is granted" or "`a`, `b` and `c` are granted", with the advice that
+/// goes with one account or several. `names` is not empty.
+fn only_grant_of(names: &[String]) -> (String, &'static str) {
+    let (last, others) = names.split_last().expect("at least one account");
+    if others.is_empty() {
+        (
+            format!("`{last}` is granted"),
+            "Removing it would delete that grant, and an account with no grant sees every \
+             library. First grant it another library, or revoke this one",
+        )
+    } else {
+        let others: Vec<String> = others
+            .iter()
+            .map(|account| format!("`{account}`"))
+            .collect();
+        (
+            format!("{} and `{last}` are granted", others.join(", ")),
+            "Removing it would delete those grants, and an account with no grant sees every \
+             library. First grant each another library, or revoke this one",
+        )
+    }
+}
 
 /// Why root `id` may not be removed, if it may not: it is the last folder of
 /// a library, and that library is the only one some account is granted.
@@ -645,93 +793,34 @@ pub fn removal_refusal(conn: &Connection, id: i64) -> Result<Option<String>, Str
         .map_err(|e| format!("checking whose only grant root {id} holds: {e}"))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| format!("checking whose only grant root {id} holds: {e}"))?;
-    let Some(((path, library, last), others)) = restricted.split_last() else {
+    let Some((path, library, _)) = restricted.first() else {
         return Ok(None);
     };
-    let (accounts, advice) = if others.is_empty() {
-        (
-            format!("`{last}` is granted"),
-            "Removing it would delete that grant, and an account with no grant sees every \
-             library. First grant it another library, or revoke this one",
-        )
-    } else {
-        let others: Vec<String> = others
-            .iter()
-            .map(|(_, _, account)| format!("`{account}`"))
-            .collect();
-        (
-            format!("{} and `{last}` are granted", others.join(", ")),
-            "Removing it would delete those grants, and an account with no grant sees every \
-             library. First grant each another library, or revoke this one",
-        )
-    };
+    let names: Vec<String> = restricted
+        .iter()
+        .map(|(_, _, account)| account.clone())
+        .collect();
+    let (accounts, advice) = only_grant_of(&names);
     Ok(Some(format!(
         "{path} is the last folder of the library `{library}`, which is the only library \
          {accounts}. {advice}"
     )))
 }
 
-/// Delete root `id`, every work that lived entirely under it, and re-derive
-/// — the mechanism [`removal_cost`] runs and rolls back, and [`remove_root`]
-/// runs and commits.
-///
-/// **Refused before anything is deleted** where [`removal_refusal`] says so:
-/// the refusal is this function's error, for the dry run as for the removal.
-///
-/// **Delete-plus-derive, not a bare `DELETE FROM root`.** `scan_entry`,
-/// `dir_state` and `rule` cascade with the root, and a library left with no
-/// root goes with it (migration 15's `library_emptied_by_delete`), taking its
-/// `user_library` grants (`schema/003_scanner.sql`,
-/// `schema/015_libraries.sql`), but `work`, `edition`,
-/// `member`, `progress` and `note` do not follow — `progress` and `note` are
-/// keyed on `work_id` and carry no root at all, and `member.root_id` is `ON
-/// DELETE SET NULL`, not `CASCADE`, precisely so an ordinary rescan finding a
-/// root briefly missing cannot delete a library's pages
-/// (`schema/006_member_root.sql`). A bare delete would leave every work,
-/// edition, member, note and reading position standing with `member.root_id`
-/// quietly `NULL` — invisible to every grant (O54) — asserting evidence that
-/// is gone. This function does the rest of the job: [`DOOMED_WORKS`] names
-/// what `?1` alone accounts for, deleted explicitly and before the `root` row
-/// goes, and `derive_with` re-derives everything else — `series`,
-/// `kept_editions` on a work that only partly depended on `?1`, and
-/// `crate::proposals::raise` for whatever the loss changes.
+/// Count what root `id` alone accounts for, then delete it: its works, the
+/// members it supplied to works that survive it, and the root. No refusal is
+/// asked and nothing is derived; [`apply_removal`] and
+/// [`apply_library_removal`] do both around it.
 ///
 /// **A member `DOOMED_WORKS` excluded, on a work that survives on some other
 /// root, is deleted here too — explicitly, not left to strand.** Once its
-/// own work is spared the delete above, that member's `root_id` still names
-/// `?1`, and the `root` row this function is about to delete would otherwise
-/// leave it `NULL` through `schema/006_member_root.sql`'s own `ON DELETE SET
-/// NULL` — the exact O54 shape, on a smaller scale, that this whole function
-/// exists to rule out. The work stays, since it has material elsewhere; the
-/// one member that does not is taken with the root that supplied it.
-///
-/// **Always derives under [`crate::derive::Documents::Skip`], never
-/// `Reconcile` — whole-branch review, Important 2.** This function's own
-/// writes run inside a transaction that belongs to its caller — committed by
-/// [`remove_root`], rolled back by [`removal_cost`] — and `Reconcile` writes
-/// and renames hand-metadata documents under `<root>/.taiyaku/` while that
-/// transaction is still open. `write_work`'s own doc comment states the
-/// invariant this would break: a document is renamed only after its
-/// database transaction "has already committed — never inside it. A
-/// rollback that left the file renamed would strand it under a key the
-/// database never adopted." Before this fix, `remove_root` passed `Reconcile`
-/// here, so a document deleted just before a removal was found present
-/// again immediately after it — written mid-transaction, and left in place
-/// even had the removal then failed and rolled back. [`remove_root`] now
-/// runs the real, `Reconcile`-mode pass itself, after its own transaction
-/// commits — see that function's own doc.
-///
-/// # Errors
-///
-/// Returns [`removal_refusal`]'s refusal where there is one, and an error if
-/// any statement here or in `derive_with` is refused.
-fn apply_removal(
-    conn: &Connection,
-    id: i64,
-) -> Result<(Removal, crate::derive::DeriveReport), String> {
-    if let Some(refusal) = removal_refusal(conn, id)? {
-        return Err(refusal);
-    }
+/// own work is spared the works delete, that member's `root_id` still names
+/// `id`, and the `root` row deleted last would otherwise leave it `NULL`
+/// through `schema/006_member_root.sql`'s own `ON DELETE SET NULL` — the
+/// exact O54 shape, on a smaller scale, that removal exists to rule out. The
+/// work stays, since it has material elsewhere; the one member that does not
+/// is taken with the root that supplied it.
+fn take_root(conn: &Connection, id: i64) -> Result<Removal, String> {
     let works: i64 = conn
         .query_row(
             &format!("SELECT COUNT(*) FROM ({DOOMED_WORKS})"),
@@ -766,16 +855,69 @@ fn apply_removal(
     conn.execute("DELETE FROM root WHERE id = ?1", [id])
         .map_err(|e| format!("removing root {id}: {e}"))?;
 
+    Ok(Removal {
+        works: usize::try_from(works).unwrap_or(usize::MAX),
+        positions: usize::try_from(positions).unwrap_or(usize::MAX),
+        notes: usize::try_from(notes).unwrap_or(usize::MAX),
+    })
+}
+
+/// Delete root `id`, every work that lived entirely under it, and re-derive
+/// — the mechanism [`removal_cost`] runs and rolls back, and [`remove_root`]
+/// runs and commits.
+///
+/// **Refused before anything is deleted** where [`removal_refusal`] says so:
+/// the refusal is this function's error, for the dry run as for the removal.
+///
+/// **Delete-plus-derive, not a bare `DELETE FROM root`.** `scan_entry`,
+/// `dir_state` and `rule` cascade with the root, and a library left with no
+/// root goes with it (migration 15's `library_emptied_by_delete`), taking its
+/// `user_library` grants (`schema/003_scanner.sql`,
+/// `schema/015_libraries.sql`), but `work`, `edition`,
+/// `member`, `progress` and `note` do not follow — `progress` and `note` are
+/// keyed on `work_id` and carry no root at all, and `member.root_id` is `ON
+/// DELETE SET NULL`, not `CASCADE`, precisely so an ordinary rescan finding a
+/// root briefly missing cannot delete a library's pages
+/// (`schema/006_member_root.sql`). A bare delete would leave every work,
+/// edition, member, note and reading position standing with `member.root_id`
+/// quietly `NULL` — invisible to every grant (O54) — asserting evidence that
+/// is gone. This function does the rest of the job: [`DOOMED_WORKS`] names
+/// what `?1` alone accounts for, deleted explicitly and before the `root` row
+/// goes, and `derive_with` re-derives everything else — `series`,
+/// `kept_editions` on a work that only partly depended on `?1`, and
+/// `crate::proposals::raise` for whatever the loss changes.
+///
+/// **Always derives under [`crate::derive::Documents::Skip`], never
+/// `Reconcile` — whole-branch review, Important 2.** This function's own
+/// writes run inside a transaction that belongs to its caller — committed by
+/// [`remove_root`], rolled back by [`removal_cost`] — and `Reconcile` writes
+/// and renames hand-metadata documents under `<root>/.taiyaku/` while that
+/// transaction is still open. `write_work`'s own doc comment states the
+/// invariant this would break: a document is renamed only after its
+/// database transaction "has already committed — never inside it. A
+/// rollback that left the file renamed would strand it under a key the
+/// database never adopted." Before this fix, `remove_root` passed `Reconcile`
+/// here, so a document deleted just before a removal was found present
+/// again immediately after it — written mid-transaction, and left in place
+/// even had the removal then failed and rolled back. [`remove_root`] now
+/// runs the real, `Reconcile`-mode pass itself, after its own transaction
+/// commits — see that function's own doc.
+///
+/// # Errors
+///
+/// Returns [`removal_refusal`]'s refusal where there is one, and an error if
+/// [`take_root`] or `derive_with` is refused.
+fn apply_removal(
+    conn: &Connection,
+    id: i64,
+) -> Result<(Removal, crate::derive::DeriveReport), String> {
+    if let Some(refusal) = removal_refusal(conn, id)? {
+        return Err(refusal);
+    }
+    let removal = take_root(conn, id)?;
     let derived = crate::derive::derive_with(conn, crate::derive::Documents::Skip)?;
 
-    Ok((
-        Removal {
-            works: usize::try_from(works).unwrap_or(usize::MAX),
-            positions: usize::try_from(positions).unwrap_or(usize::MAX),
-            notes: usize::try_from(notes).unwrap_or(usize::MAX),
-        },
-        derived,
-    ))
+    Ok((removal, derived))
 }
 
 /// What removing root `id` would cost, found by actually doing it — inside a
@@ -897,6 +1039,128 @@ pub fn remove_root(
         .map_err(|e| format!("committing the removal of root {id}: {e}"))?;
     let derived = crate::derive::derive(conn)
         .map_err(|e| format!("reconciling documents after removing root {id}: {e}"))?;
+    Ok((removal, derived))
+}
+
+/// Why library `library_id` may not be removed, if it may not: it is the only
+/// library some account is granted.
+///
+/// [`removal_refusal`]'s rule, asked of a whole library. A library of two
+/// folders is never refused by that one, which speaks only for a library's
+/// last folder, so this is asked before the first folder goes.
+///
+/// # Errors
+///
+/// Returns an error if the read fails. An id naming no library is `Ok(None)`.
+pub fn library_removal_refusal(
+    conn: &Connection,
+    library_id: i64,
+) -> Result<Option<String>, String> {
+    let mut statement = conn
+        .prepare(
+            "SELECT l.name, u.name
+               FROM library l
+               JOIN user_library ul ON ul.library_id = l.id
+               JOIN user u ON u.id = ul.user_id
+              WHERE l.id = ?1
+                AND NOT EXISTS (SELECT 1 FROM user_library held
+                                 WHERE held.user_id = ul.user_id
+                                   AND held.library_id <> ul.library_id)
+              ORDER BY u.name",
+        )
+        .map_err(|e| format!("checking whose only grant library {library_id} is: {e}"))?;
+    let restricted = statement
+        .query_map([library_id], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })
+        .map_err(|e| format!("checking whose only grant library {library_id} is: {e}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("checking whose only grant library {library_id} is: {e}"))?;
+    let Some((library, _)) = restricted.first() else {
+        return Ok(None);
+    };
+    let names: Vec<String> = restricted
+        .iter()
+        .map(|(_, account)| account.clone())
+        .collect();
+    let (accounts, advice) = only_grant_of(&names);
+    Ok(Some(format!(
+        "`{library}` is the only library {accounts}. {advice}"
+    )))
+}
+
+/// Remove each folder of `library_id` in turn, summing what each takes, then
+/// derive once.
+///
+/// **One folder after another inside the caller's transaction, never one dry
+/// run per folder.** [`DOOMED_WORKS`] names a work for a folder only when
+/// every member of it is under that folder. A work with an edition under each
+/// of two folders is therefore named for neither while both stand, and for
+/// the second once [`take_root`] has deleted the first's members.
+fn apply_library_removal(
+    conn: &Connection,
+    library_id: i64,
+) -> Result<(Removal, crate::derive::DeriveReport), String> {
+    if let Some(refusal) = library_removal_refusal(conn, library_id)? {
+        return Err(refusal);
+    }
+    let folders: Vec<i64> = conn
+        .prepare("SELECT id FROM root WHERE library_id = ?1 ORDER BY id")
+        .map_err(|e| format!("listing the folders of library {library_id}: {e}"))?
+        .query_map([library_id], |r| r.get(0))
+        .map_err(|e| format!("listing the folders of library {library_id}: {e}"))?
+        .collect::<Result<_, _>>()
+        .map_err(|e| format!("listing the folders of library {library_id}: {e}"))?;
+    let mut total = Removal::default();
+    for folder in folders {
+        let taken = take_root(conn, folder)?;
+        total.works += taken.works;
+        total.positions += taken.positions;
+        total.notes += taken.notes;
+    }
+    let derived = crate::derive::derive_with(conn, crate::derive::Documents::Skip)?;
+    Ok((total, derived))
+}
+
+/// What removing library `library_id` would cost, found by doing it inside a
+/// transaction this rolls back: [`removal_cost`], for a library.
+///
+/// # Errors
+///
+/// As [`removal_cost`]. A removal [`library_removal_refusal`] refuses is an
+/// error in the refusal's words.
+pub fn library_removal_cost(
+    conn: &Connection,
+    library_id: i64,
+) -> Result<(Removal, crate::derive::DeriveReport), String> {
+    let tx = crate::Nested::open(conn, "library_removal_cost")
+        .map_err(|e| format!("starting the library-removal-cost transaction: {e}"))?;
+    let removal = apply_library_removal(&tx, library_id)?;
+    // Not committed: dropping `tx` is the rollback, as in `removal_cost`.
+    drop(tx);
+    Ok(removal)
+}
+
+/// Remove library `library_id`: each of its folders, the works they alone
+/// accounted for, and the library, which migration 15 deletes with its last
+/// folder. Then derive again with documents reconciled, after the commit, for
+/// [`remove_root`]'s reason.
+///
+/// # Errors
+///
+/// As [`remove_root`]. A removal [`library_removal_refusal`] refuses is an
+/// error in the refusal's words, and nothing is removed.
+pub fn remove_library(
+    conn: &Connection,
+    library_id: i64,
+) -> Result<(Removal, crate::derive::DeriveReport), String> {
+    let tx = crate::Nested::open(conn, "remove_library")
+        .map_err(|e| format!("starting the library-removal transaction: {e}"))?;
+    let (removal, _predicted) = apply_library_removal(&tx, library_id)?;
+    tx.commit()
+        .map_err(|e| format!("committing the removal of library {library_id}: {e}"))?;
+    let derived = crate::derive::derive(conn)
+        .map_err(|e| format!("reconciling documents after removing library {library_id}: {e}"))?;
     Ok((removal, derived))
 }
 

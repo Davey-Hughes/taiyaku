@@ -26,18 +26,24 @@
  * `A` — and this card said "open any work and press A", which an administrator
  * of a library with no readable work could not do.
  *
- * **Grants are sent whole.** There is no route that grants or revokes one
- * root; `account::Patch::roots` replaces the list, an absent key leaves it
- * alone, and `[]` means unrestricted rather than blind — spec A2 and O54,
- * which is why the empty case is a sentence on screen rather than a silence.
+ * **Grants are libraries, sent whole, and the unrestricted state has a
+ * name.** `account::Patch::libraries` replaces the list, an absent key
+ * leaves it alone, and `[]` means unrestricted, not blind. The card draws
+ * that as a choice between "Every library" and "Only these", and will not
+ * clear the last tick: each tick is saved at once, so an account moved from
+ * one library to another by unticking first would see every library in
+ * between. The server would accept that request, and the card refuses it
+ * anyway: "the server is the authority" lets the card be stricter than the
+ * server, never looser.
  *
  * **The confirm does not exist until the counts do**, and the real `DELETE` is
  * sent from here and nowhere else. `RemoveRoot`'s reasoning, on the route
  * `users_api` calls the second-most destructive in the product.
  */
-import { useRef, useState } from 'react'
+import { useId, useRef, useState } from 'react'
 import { Link } from 'react-router'
-import type { Root } from './config'
+import type { Library } from './libraries'
+import { sentenceOf } from './message'
 import {
   onlyAdminWhoCanLogIn,
   patchUser,
@@ -50,7 +56,6 @@ import {
   type User,
   type UserPatch,
 } from './users'
-import { messageOf } from './message'
 
 export interface UserRowProps {
   user: User
@@ -60,18 +65,18 @@ export interface UserRowProps {
    */
   users: User[]
   /**
-   * This library's roots, for the grant editor — `undefined` where that list
-   * has not been read.
+   * Every library, for the grant editor — `undefined` where that list has
+   * not been read.
    *
-   * **Three states rather than two.** `roots ?? []` would draw "this library
-   * has no roots yet" while the read was still in flight and for ever after
-   * one that failed: a positive false claim about the library, on the one
+   * **Three states rather than two.** Reading an unread list as `[]` would
+   * draw "there are no libraries yet" while the read was still in flight and
+   * for ever after one that failed: a positive false claim, on the one
    * control whose *empty* state means unrestricted. What the card can always
-   * say is what this account is granted, because `user.roots` carries the
-   * paths as well as the ids; what it cannot do without the list is offer a
-   * root nobody granted yet.
+   * say is which libraries the account is granted, because `user.libraries`
+   * carries their names; what it cannot do without the list is offer a
+   * library nobody granted yet.
    */
-  roots?: Root[]
+  libraries?: Library[]
   /**
    * The account this browser is signed in as, or `undefined` where no gate
    * sits above — which `gate.ts` defines as "no account known", never "an
@@ -107,7 +112,7 @@ function count(n: number, one: string, many: string): string {
 export function UserRow({
   user,
   users,
-  roots,
+  libraries,
   actingAs,
   onChanged,
 }: UserRowProps) {
@@ -153,6 +158,8 @@ export function UserRow({
    * when that read fails instead. Third review pass.
    */
   const [removed, setRemoved] = useState(false)
+  /** Names the sentence that says why the last tick will not clear. */
+  const lastTickId = useId()
   /**
    * Whether the real `DELETE` is already on its way.
    *
@@ -216,10 +223,11 @@ export function UserRow({
    * so between a 200 and the list landing this card is still drawing what it
    * held before the write, with its controls live again. That window is a
    * defect rather than a cosmetic lag on the one control that sends a *whole
-   * list*: ticking a second root inside it computes the new grants from the
-   * pre-patch `user.roots` and so silently revokes the first. Holding until
-   * `onChanged` settles keeps this card's props and its controls in step, and
-   * costs the reload's few hundred milliseconds on a screen touched rarely.
+   * list*: ticking a second library inside it computes the new grants from
+   * the pre-patch `user.libraries` and so silently revokes the first. Holding
+   * until `onChanged` settles keeps this card's props and its controls in
+   * step, and costs the reload's few hundred milliseconds on a screen touched
+   * rarely.
    */
   const settled = (after?: () => void) => {
     after?.()
@@ -234,7 +242,7 @@ export function UserRow({
     inFlight.current = false
     setSaving(false)
     setRemoving(false)
-    setFailure(messageOf(err))
+    setFailure(sentenceOf(err))
   }
 
   const save = (patch: UserPatch, after?: () => void) => {
@@ -247,12 +255,73 @@ export function UserRow({
       .catch(failed)
   }
 
-  const granted = shown.roots.map((g) => g.id)
+  const granted = shown.libraries.map((g) => g.id)
+  /**
+   * "Only these" was chosen on an account that holds no grant yet.
+   *
+   * Local, because there is nothing to save: an empty list is unrestricted,
+   * so the choice is not a fact about the account until a library is ticked.
+   * Choosing "Every library" again puts it back, and sends nothing either.
+   */
+  const [choosing, setChoosing] = useState(false)
+  const restricted = granted.length > 0 || choosing
 
-  const toggleGrant = (id: number, on: boolean) =>
-    save({
-      roots: on ? [...granted, id] : granted.filter((held) => held !== id),
-    })
+  /**
+   * Grants whose library the list does not hold, as when the list was read
+   * before the library was made. No box is drawn for them, so they are named:
+   * the sentence about the last tick would otherwise stand over no tick.
+   */
+  const unlisted =
+    libraries === undefined
+      ? []
+      : shown.libraries.filter((g) => !libraries.some((l) => l.id === g.id))
+
+  /**
+   * Said whenever the list has been read, since a grant the list does not
+   * hold is drawn nowhere else. Where they are all there is, it does not say "also".
+   */
+  const called = unlisted.map((g) => g.name)
+  const names =
+    called.length < 2
+      ? called.join('')
+      : `${called.slice(0, -1).join(', ')} and ${called[called.length - 1]}`
+  const unlistedLine =
+    unlisted.length === 0 ? null : (
+      <p className="why" data-field="unlisted-grants">
+        {unlisted.length === shown.libraries.length
+          ? `This account is granted ${names}, which the list does not hold.`
+          : `Also granted, though the list does not hold ${
+              unlisted.length === 1 ? 'it' : 'them'
+            }: ${names}.`}
+      </p>
+    )
+
+  const toggleGrant = (id: number, on: boolean) => {
+    const next = on ? [...granted, id] : granted.filter((held) => held !== id)
+    // **The last tick is not cleared here.** An empty list is unrestricted,
+    // and each tick is saved at once: unticking the last library on the way
+    // to ticking another would leave the account seeing every library until
+    // the second click, and for good if that click never came. "Every
+    // library" is the control that says so.
+    if (next.length === 0) return
+    save({ libraries: next })
+  }
+
+  /**
+   * **Neither radio acts while a write is in flight**, for the reason the
+   * boxes do not: `begin` refuses a second write through `inFlight`, and a
+   * radio that only changes local state would still redraw the card — "Every
+   * library" pressed while a tick is being saved would draw the account
+   * unrestricted before the tick landed.
+   */
+  const seeEvery = () => {
+    if (inFlight.current) return
+    if (granted.length === 0) {
+      setChoosing(false)
+      return
+    }
+    save({ libraries: [] }, () => setChoosing(false))
+  }
 
   const submitPassword = (e: React.FormEvent) => {
     e.preventDefault()
@@ -298,7 +367,7 @@ export function UserRow({
     // Cancel, Remove… again — and nothing makes them answer in order, so a
     // slow first answer landing after a failed second drew five counts and an
     // enabled *Remove sam* underneath an alert saying the count could not be
-    // taken. `Users`, `Backup` and `Roots` all carry the same counter. Fourth
+    // taken. `Users`, `Backup` and `Libraries` all carry the same counter. Fourth
     // review pass.
     const seq = ++latestCost.current
     setConfirming(true)
@@ -311,7 +380,7 @@ export function UserRow({
       })
       .catch((err: unknown) => {
         if (seq !== latestCost.current) return
-        setCostFailure(messageOf(err))
+        setCostFailure(sentenceOf(err))
       })
   }
 
@@ -452,45 +521,97 @@ export function UserRow({
       </div>
 
       <fieldset className="grants">
-        <legend>Roots this account may see</legend>
-        {roots === undefined ? (
+        <legend>Libraries this account may see</legend>
+        {libraries === undefined ? (
           <p className="unknown">
-            The roots list has not been read, so there is nothing to offer here.{' '}
-            {shown.roots.length === 0
+            The libraries list has not been read, so there is nothing to offer
+            here.{' '}
+            {shown.libraries.length === 0
               ? 'This account is granted none, which is unrestricted.'
-              : `This account is granted ${shown.roots
-                  .map((g) => g.path)
+              : `This account is granted ${shown.libraries
+                  .map((g) => g.name)
                   .join(', ')}.`}
           </p>
-        ) : roots.length === 0 ? (
-          <p className="empty">This library has no roots yet.</p>
+        ) : libraries.length === 0 ? (
+          <>
+            <p className="empty">There are no libraries yet.</p>
+            {unlistedLine}
+          </>
         ) : (
-          <ul className="grant-list">
-            {roots.map((root) => (
-              // Keyed by path rather than id: SQLite reissues a freed
-              // `root.id`, and `Roots.tsx` carries the same note for the same
-              // reason. Two roots may not overlap, so a path cannot collide.
-              <li key={root.path}>
-                <label>
-                  <input
-                    type="checkbox"
-                    name={`root-${root.id}`}
-                    checked={granted.includes(root.id)}
-                    aria-disabled={saving}
-                    onChange={(e) => toggleGrant(root.id, e.target.checked)}
-                  />
-                  <span>{root.path}</span>
-                </label>
-              </li>
-            ))}
-          </ul>
-        )}
-        {roots !== undefined && (
-          <p className="unrestricted">
-            Nothing ticked means unrestricted — every root, including any added
-            later. It does not mean no roots at all, which is why an account
-            with an empty list sees the whole library.
-          </p>
+          <>
+            <label>
+              <input
+                type="radio"
+                name={`sees-${user.id}`}
+                value="every"
+                checked={!restricted}
+                aria-disabled={saving}
+                onChange={seeEvery}
+              />
+              <span>Every library, including any added later</span>
+            </label>
+            <label>
+              <input
+                type="radio"
+                name={`sees-${user.id}`}
+                value="only"
+                checked={restricted}
+                aria-disabled={saving}
+                onChange={() => {
+                  if (inFlight.current) return
+                  setChoosing(true)
+                }}
+              />
+              <span>Only these</span>
+            </label>
+            {restricted && (
+              <ul className="grant-list">
+                {libraries.map((library) => {
+                  const last = granted.length === 1 && granted[0] === library.id
+                  return (
+                    <li key={library.id}>
+                      <label>
+                        <input
+                          type="checkbox"
+                          name={`library-${library.id}`}
+                          checked={granted.includes(library.id)}
+                          aria-disabled={saving || last}
+                          aria-describedby={last ? lastTickId : undefined}
+                          onChange={(e) =>
+                            toggleGrant(library.id, e.target.checked)
+                          }
+                        />
+                        <span>{library.name}</span>
+                      </label>
+                      <ul className="grant-folders">
+                        {library.folders.map((folder) => (
+                          <li key={folder.path}>
+                            <code>{folder.path}</code>
+                          </li>
+                        ))}
+                      </ul>
+                    </li>
+                  )
+                })}
+              </ul>
+            )}
+            {unlistedLine}
+            {restricted && granted.length === 0 && (
+              <p className="why">Nothing is saved until a library is ticked.</p>
+            )}
+            {granted.length === 1 && unlisted.length === 0 && (
+              <p className="why" id={lastTickId}>
+                The last tick cannot be cleared here. Choose “Every library” to
+                lift the limit.
+              </p>
+            )}
+            {shown.role === 'admin' && (
+              <p className="why">
+                An administrator sees every library whatever is chosen here. The
+                choice takes effect if the role becomes user.
+              </p>
+            )}
+          </>
         )}
       </fieldset>
 
@@ -647,7 +768,12 @@ export function UserRow({
                     'open sessions',
                   )}
                   , {count(cost.removed.keys, 'API key', 'API keys')} and{' '}
-                  {count(cost.removed.grants, 'root grant', 'root grants')}.
+                  {count(
+                    cost.removed.grants,
+                    'library grant',
+                    'library grants',
+                  )}
+                  .
                 </p>
                 <p className="irreversible">
                   No work, edition or member goes with it — the library itself

@@ -386,6 +386,7 @@ async fn a_single_member_edition_is_served_byte_for_byte() {
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
         library_job: Default::default(),
+        folders: Vec::new(),
     });
     let router =
         crate::test_support::authenticating(crate::build_router(state.clone()), &state.library);
@@ -696,6 +697,7 @@ async fn a_directory_member_is_refused_not_streamed() {
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
         library_job: Default::default(),
+        folders: Vec::new(),
     });
     let router =
         crate::test_support::authenticating(crate::build_router(state.clone()), &state.library);
@@ -982,6 +984,7 @@ async fn a_size_lying_archive_aborts_the_download_instead_of_streaming_a_lie() {
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
         library_job: Default::default(),
+        folders: Vec::new(),
     });
     let router =
         crate::test_support::authenticating(crate::build_router(state.clone()), &state.library);
@@ -1186,6 +1189,7 @@ async fn a_single_member_directory_edition_is_generated_not_passed_through() {
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
         library_job: Default::default(),
+        folders: Vec::new(),
     });
     let router =
         crate::test_support::authenticating(crate::build_router(state.clone()), &state.library);

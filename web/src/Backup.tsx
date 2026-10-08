@@ -70,8 +70,8 @@ export function Backup() {
    * in flight here: the mount's, and the one a finished `POST` fires. Without
    * this, a slow mount read landing after the take's answer put the
    * *pre-backup* list back on screen, so the file that had just been written
-   * was missing from the list that reported it. `Roots.tsx` carries the same
-   * counter, added by its fourth review pass.
+   * was missing from the list that reported it. `Libraries.tsx` carries the same
+   * counter.
    */
   const latest = useRef(0)
 

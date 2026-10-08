@@ -24774,7 +24774,8 @@ that container did not have it. Reviewers also ran migration 15 and its
 triggers on 3.40.1 builds of their own.
 
 **For F2 and F3**, from the whole-branch reviews. Unticking one folder of a
-two-folder library on the Users screen does nothing (O193). The Roots
+two-folder library on the Users screen does nothing (O193; *it has since
+closed, with F2a: see its row*). The Roots
 screen never shows the name of the library a folder it adds was given, and
 draws the 409 refusal as the raw response. An unrestricted account's grid,
 search, works list and OPDS feed show two series or two works of one name
@@ -24799,3 +24800,192 @@ since on the copy every work was filed; and `scan --library`
 beside a folder of another library with `keeps_documents` on, where the
 store-wide derive that follows can write a missing document back under that
 other folder (read, not run).
+
+## Libraries, F2a (2026-10-06)
+
+Part F2a of `docs/superpowers/specs/2026-10-05-libraries-design.md`: the
+Libraries screen, the folder browser and grants by library. Moving a folder
+between libraries is F2b and is not here (O192).
+
+**What changed.** The store makes a library with its folders in one
+transaction (`scan::create_library`), adds a folder to a library by id,
+renames a library, and removes one whole (`scan::remove_library`, with
+`library_removal_cost` as its rehearsal). `account::Patch` takes `libraries`,
+a list of library ids, where it took `roots`. The server gained
+`/api/library/libraries` (list, create), `/api/library/libraries/{id}`
+(rename, remove, and `?dry_run=true`), `…/{id}/folders` (add), `…/{id}/scan`
+(start, status) and `/api/library/folders` (the folder browser), all
+administrator-only; `POST /api/library/roots` is gone, and a users `PATCH`
+that carries `roots` is refused with a sentence naming `libraries`. `taiyaku
+serve` takes `--folders DIR`, repeatable, or `TAIYAKU_FOLDERS`; the image
+sets the variable to `/media`. In the web app `/config/libraries` replaces
+the Roots screen (`/config/roots` redirects to it) and the Users card grants
+libraries: "Every library, including any added later", or "Only these" with a
+tick per library.
+
+**The plan's four corrections to the spec, as built.**
+
+- `TAIYAKU_FOLDERS` is split on `:` only, since a folder's path can hold a
+  comma or a space (the NAS share is `/mnt/user/media 1`). `--folders`
+  replaces the variable when given.
+- A library's removal is not the sum of its folders' own counts.
+  `scan::DOOMED_WORKS` counts a work for a folder only when every member of
+  it is under that folder, so a work with an edition in each of two folders
+  is in neither folder's count. `remove_library` takes the folders one after
+  another inside one transaction and sums as it goes, so such a work is
+  counted when its last folder goes
+  (`a_library_removal_counts_a_work_with_an_edition_per_folder_once`,
+  `a_library_removal_counts_a_work_with_one_edition_in_both_folders_once`),
+  and a removal that fails part-way removes nothing
+  (`a_library_removal_that_fails_part_way_removes_nothing`).
+- A library's scan reports per folder as a running flag, then every folder's
+  report at once: the derive runs once, after the last walk, and each
+  folder's report carries it. So each folder's registry entry is running
+  until the whole scan ends.
+- "No readable files yet" is drawn from a count the store keeps
+  (`libraries::books`): the card says it when the library has no work and
+  its scans recorded at least one EPUB or PDF entry.
+
+**Removing a library that is an account's only grant is refused**, naming
+the accounts, by `scan::library_removal_refusal`, asked before anything is
+deleted by the removal and by its rehearsal; the route answers 409. It is
+F1's rule for a library's last folder, asked of the library.
+
+**The folder browser lists only beneath the configured folders, and says
+nothing about anything else.** `folders_api`'s first version answered 403
+for a path outside that exists and 400 for one that does not, and printed
+the canonical path in the 403, so a request could learn what exists anywhere
+and where a link points. It was rebuilt twice. As it stands: the path as
+sent must begin, by whole components, with a configured folder; it is then
+walked one name at a time from that folder, each name looked up without
+following it; a link is followed one hop at a time and only where each hop
+lands inside a configured folder; and anything else gets one refusal, built
+from the path as sent, whether or not it exists. A broken or looping link
+inside a configured folder is refused the same way, and so is a spelling
+such as `/proc/self/root/<folder>`. The walk rests on the file system not
+changing under it: with a second thread swapping a directory inside the
+folder for a link out while `list` was called in a loop, some of its
+answers were listings of the directory outside (O197).
+
+**A library's scan checks its folders again before it walks.** The job is
+reserved in the scan registry when the request arrives and may wait for the
+job lock. Once it holds the lock it reads the library's folders again and
+walks nothing if they are not the folders it reserved, and it writes a
+report back only over its own reservation. The older per-folder scan job
+does neither (O196).
+
+**The two routes that take a folder's path refuse one that is empty or not
+absolute**, before the store is asked. The store's own check, which the CLI
+shares, resolves a relative path against the working directory, which is
+right at a terminal and wrong in a server.
+
+**On the Libraries screen a library and its folders hold each other's scans
+and removals.** While a library is scanning, starting a scan, or known to be
+scanning, while its removal dialog is open or its removal is out, or while
+any of its folders is scanning or confirming a removal, every other Scan now
+and Remove in that library is held. Folder settings, Rename and Add folder
+are not held by a scan. A refused make, add or rename is drawn in the form
+that was submitted, and a removal's re-derive report is kept at the top of
+the screen, with focus moved to it, for a library's removal and for a
+folder's.
+
+**Departures from the plan made while building**, each after a review ran
+the plan's version:
+
+- `FolderPicker` holds one pick at a time, and the removal's report is drawn
+  by the screen and not by the card that asked, which is gone by then (the
+  plan's "Changed while building").
+- The folder browser leaves out an entry whose name is not UTF-8, where the
+  plan listed it lossily: such a path could not be entered or picked.
+- The folder browser's refusal rule, above, where the plan's code compared
+  the canonical path and answered by whether it resolved.
+- A failed read of a directory answers an error where the plan's code
+  returned the entries read so far.
+- The make-a-library form draws its refusal inside the form, where the plan
+  drew it between the list and the form.
+- `sentenceOf` draws a short one-line plain-text body as the sentence (a
+  reader's 403 is plain text); anything else keeps its path and status.
+
+**The mutation sweep** (`scripts/mutants.sh --since main`) ran twice. At
+`fb6b58e7`: 147 mutants, 117 caught, 27 unviable, 2 missed, 1 timeout. The
+two missed were `libraries::rename`'s guard on the UNIQUE code and
+`libraries_api::library_panicked`; the timeout was a test that called
+`serve` in-process with no bound. At `71632679`, after a test for each: 149
+mutants, 122 caught, 27 unviable, none missed, no timeout.
+
+**On SQLite 3.40.1** (`rust:1-bookworm`, at `377cfcd5`; the Rust code is
+unchanged since): `taiyaku-cli` 548 and 37 passed; `taiyaku-library` 981
+passed, 1 failed, 4 ignored; `taiyaku-serve` 742 passed, 1 failed. The two
+failures are the two that need `strace`, which the container lacks.
+
+**On a copy of the real library** (`/home/davey/temp/manga-test/library.db`,
+copied to scratch; the release binary and the built web app at `904bec95`;
+driven through the screen in a browser as an administrator, with a second
+browser for a second account):
+
+- `/config/libraries` listed the copy's one library, "Volumes", as "1896
+  works in 1 folder", and `/config/roots` landed there.
+- Browse… listed one folder at the top, the scratch share the server was
+  started with, and Up from it led back to that list and nowhere else. A
+  library made from two folders found that way read "0 works in 2 folders".
+- Scan now on it took 1.006 s from the request to the first status read that
+  found it done; the request log carries no duration for the scan itself.
+  Both folder rows said "Scanning…" while it ran and each then showed a
+  report, and the card read "1 work in 2 folders".
+- With a third folder of twelve volumes added and scanned, the library read
+  "13 works in 3 folders" and "Volumes" still "1896 works in 1 folder"; the
+  store held 1896 and 13. The one volume both libraries hold is a work of
+  each.
+- While the library scanned, its Scan now and Remove library…, and each
+  folder's Scan now and Remove…, were disabled, and Rename… and Browse…
+  were not. A folder's Scan now pressed from a second tab was
+  refused 409: "a scan of root 2 (…) is already running".
+- A rename was taken. A rename to "Volumes" was refused under the name box:
+  "a library is already called `Volumes`".
+- An account set to "Only these" with that library ticked was shown 2 series
+  and 13 volumes and none of the first library's 1896. Its last tick would
+  not clear ("The last tick cannot be cleared here. Choose “Every library”
+  to lift the limit."), and "Every library" left it no grant.
+- With the library that account's only grant, Remove library… was refused
+  409, naming the account. With a second grant the dialog read "Removing
+  Drive Renamed removes its 3 folders, 13 works, 0 in-progress positions and
+  0 notes."; the rehearsal took 0.47 s and the removal 0.90 s. Afterwards
+  the card was gone, "Volumes" read "1896 works in 1 folder", the
+  re-derive's report stood at the top of the screen and focus was on it.
+- A library of one folder holding one PDF read "0 works in 1 folder" and "No
+  readable files yet: its scans found 1 EPUB or PDF file, and reading those
+  arrives with the books work. A rescan is all this library will need then."
+- A folder removed from a two-folder library: "This removes 12 works, 0
+  in-progress positions and 0 notes."; then the card read "1 work in 1
+  folder" and the report named the folder's path. Its last folder removed:
+  the card went, and the report named the library.
+- A path typed by hand is not confined as the browser is: `/etc` was added
+  as a folder, and its watch probe was refused by permissions. A relative
+  path was refused: "a folder's path must be absolute, and `relative/dir` is
+  not".
+- At 390 wide a removal's report began 60 px down, below the 52 px bar.
+- A refusal is drawn directly under the button pressed. Where that button
+  sat at the foot of a 900 px window the sentence was below the fold, and
+  the page did not move (O209).
+- A reload in the middle of a scan showed the card scanning again, with the
+  same buttons held.
+- One ArrowUp on the "Only these" radio, reached by Tab alone, selected
+  "Every library", and the account's grant was gone (O195).
+- The request log held 613 lines: 13 answered 4xx, each caused on purpose or
+  by signing in, and none 5xx.
+- The original's digest was unchanged afterwards, and nothing under its
+  folder was newer than the marker laid down when the copy was made.
+
+**Counts**, each beside the figure `docs/status.md` gave on `main`: 2554 Rust
+tests (2421); in `web/`, 1,461 in the `node` project (1,428), 1,411 in the
+`jsdom` one (1,237) and 226 in the browser project (184).
+
+**Not measured.** The NAS, and the image, which was not built. A directory
+listing on a disk that is asleep (spec §13). A screen reader on the new
+controls. Any browser but Chromium: iOS Safari resolving `env()` inside the
+custom property the phone bar's height now comes from, and a browser without
+scroll anchoring when a scan ends under a person who is typing. Two
+connections racing: two creates with overlapping folders, a removal against
+a scan that is walking, and a removal whose derive fails after its commit
+(the routes then leave that library's registry entries in place). How long a
+rehearsal holds its write lock on the real library.

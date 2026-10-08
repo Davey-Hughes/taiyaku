@@ -102,7 +102,7 @@ fn user_panicked(what: &str, why: &tokio::task::JoinError) -> Response {
 }
 
 /// One account, whole, as C4 §4's screen shows it: the row, whether anybody
-/// can log in as it, its sessions, its keys and its root grants.
+/// can log in as it, its sessions, its keys and the libraries it is granted.
 ///
 /// **All five together rather than a row plus three more requests.** The
 /// screen shows them beside the account, and a list that answered the row
@@ -112,7 +112,7 @@ fn user_json(
     can_log_in: bool,
     sessions: &[SessionSummary],
     keys: &[KeySummary],
-    roots: &[(i64, String)],
+    libraries: &[(i64, String)],
 ) -> serde_json::Value {
     serde_json::json!({
         "id": account.id,
@@ -139,9 +139,9 @@ fn user_json(
             "created": k.created,
             "last_used": k.last_used,
         })).collect::<Vec<_>>(),
-        "roots": roots.iter().map(|(id, path)| serde_json::json!({
+        "libraries": libraries.iter().map(|(id, name)| serde_json::json!({
             "id": id,
-            "path": path,
+            "name": name,
         })).collect::<Vec<_>>(),
     })
 }
@@ -166,8 +166,8 @@ fn assembled(
 ) -> Result<serde_json::Value, String> {
     let sessions = account::sessions_of(conn, account.id, current_token)?;
     let keys = account::keys_of(conn, account.id)?;
-    let roots = account::granted_roots(conn, account.id)?;
-    Ok(user_json(account, can_log_in, &sessions, &keys, &roots))
+    let libraries = account::granted_libraries(conn, account.id)?;
+    Ok(user_json(account, can_log_in, &sessions, &keys, &libraries))
 }
 
 /// `GET /api/library/users` — every account, with what C4 §4's screen shows
@@ -279,7 +279,7 @@ fn can_log_in(conn: &rusqlite::Connection, id: i64) -> Result<bool, String> {
 
 /// A patch, as [`patch_user`]'s body is read.
 ///
-/// **`roots` is `Option<Vec<i64>>` and the two `None`s mean different
+/// **`libraries` is `Option<Vec<i64>>` and the two `None`s mean different
 /// things**: an absent key leaves the grants alone, and `[]` grants nothing —
 /// which spec A2 defines as *unrestricted*, not blind. `account::Patch`'s own
 /// doc comment carries the argument; this function is where JSON's
@@ -323,19 +323,27 @@ fn user_patch_from_json(body: &serde_json::Value) -> Result<account::Patch, Stri
                 .ok_or_else(|| "`can_stamp` must be a boolean".to_string())?,
         );
     }
-    if let Some(v) = body.get("roots") {
+    // **The old key is refused, not ignored.** An ignored `roots` would
+    // answer 200 having changed no grant, to a client that believes it
+    // restricted an account.
+    if body.get("roots").is_some() {
+        return Err(
+            "`roots` is no longer accepted: send `libraries`, a list of library ids".to_string(),
+        );
+    }
+    if let Some(v) = body.get("libraries") {
         let listed = v
             .as_array()
-            .ok_or_else(|| "`roots` must be an array of root ids".to_string())?;
+            .ok_or_else(|| "`libraries` must be an array of library ids".to_string())?;
         let mut ids = Vec::with_capacity(listed.len());
         for entry in listed {
             ids.push(
                 entry
                     .as_i64()
-                    .ok_or_else(|| "`roots` must be an array of root ids".to_string())?,
+                    .ok_or_else(|| "`libraries` must be an array of library ids".to_string())?,
             );
         }
-        patch.roots = Some(ids);
+        patch.libraries = Some(ids);
     }
     if let Some(v) = body.get("password") {
         patch.password = Some(

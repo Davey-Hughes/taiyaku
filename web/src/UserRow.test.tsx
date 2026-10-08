@@ -1,8 +1,9 @@
 import { act } from 'react'
 import { MemoryRouter } from 'react-router'
 import { beforeEach, describe, expect, it, type Mock, vi } from 'vitest'
-import type { Root } from './config'
+import type { Library } from './libraries'
 import { fields } from './testing/fields'
+import { typeInto } from './testing/input'
 import { mount, rerender } from './testing/mount'
 import { UserRow } from './UserRow'
 import * as usersApi from './users'
@@ -26,23 +27,34 @@ const user = (over: Partial<usersApi.User> = {}): usersApi.User => ({
   can_log_in: true,
   sessions: [],
   keys: [],
-  roots: [],
+  libraries: [],
   ...over,
 })
 
-const root = (over: Partial<Root> = {}): Root => ({
-  id: 3,
-  path: '/srv/manga',
-  edition_key: 'en',
-  default_kind: 'manga',
-  default_language: 'en',
-  exclude_globs: null,
-  scan_interval_secs: 86400,
-  keeps_documents: false,
-  last_scan_at: null,
-  last_scan_status: null,
-  ...over,
+const lib = (id: number, name: string, paths: string[]): Library => ({
+  id,
+  name,
+  works: 0,
+  books: 0,
+  folders: paths.map((path, i) => ({
+    id: id * 10 + i,
+    path,
+    edition_key: null,
+    default_kind: null,
+    default_language: null,
+    exclude_globs: null,
+    scan_interval_secs: null,
+    keeps_documents: false,
+    last_scan_at: null,
+    last_scan_status: null,
+  })),
 })
+
+const MANGA = lib(70, 'Manga', [
+  '/media/Manga/Volumes',
+  '/media/Manga/Chapters',
+])
+const COMICS = lib(80, 'Comics', ['/media/Comics'])
 
 const sam = () => user({ id: 2, name: 'sam', role: 'admin' })
 
@@ -55,7 +67,7 @@ async function show(
   who: usersApi.User,
   everyone: usersApi.User[],
   over: {
-    roots?: Root[] | null
+    libraries?: Library[] | null
     actingAs?: number
     onChanged?: Mock
   } = {},
@@ -69,8 +81,12 @@ async function show(
         <UserRow
           user={who}
           users={everyone}
-          // `null` asks for the unread state; absent means one ordinary root.
-          roots={over.roots === null ? undefined : (over.roots ?? [root()])}
+          // `null` asks for the unread state; absent means the two libraries.
+          libraries={
+            over.libraries === null
+              ? undefined
+              : (over.libraries ?? [MANGA, COMICS])
+          }
           actingAs={over.actingAs}
           onChanged={changed}
         />
@@ -102,6 +118,17 @@ async function choose(host: HTMLElement, selector: string, value: string) {
   })
 }
 
+const radio = (host: HTMLElement, value: 'every' | 'only') =>
+  control<HTMLInputElement>(
+    host,
+    `.grants input[type="radio"][value="${value}"]`,
+  )
+/** The sentence naming grants whose library the list does not hold. */
+const unlisted = (host: HTMLElement) =>
+  host.querySelector('.grants [data-field="unlisted-grants"]')
+const tick = (host: HTMLElement, id: number) =>
+  control<HTMLInputElement>(host, `input[name="library-${id}"]`)
+
 async function click(el: Element) {
   await act(async () => {
     ;(el as HTMLElement).click()
@@ -124,14 +151,22 @@ beforeEach(() => {
         id,
         name: id === 1 ? 'davey' : 'sam',
         role: id === 1 ? 'admin' : 'user',
-        ...(patch.roots === undefined
+        ...(patch.libraries === undefined
           ? {}
-          : { roots: patch.roots.map((r) => ({ id: r, path: `/srv/${r}` })) }),
+          : {
+              libraries: patch.libraries.map((l) => ({
+                id: l,
+                name: `library ${l}`,
+              })),
+            }),
       }),
     ),
   )
   vi.mocked(usersApi.revokeUserSession).mockResolvedValue(undefined)
   vi.mocked(usersApi.revokeUserKey).mockResolvedValue(undefined)
+  // `clearAllMocks` keeps an implementation, so a dry run one case made fail
+  // would fail the next case's too.
+  vi.mocked(usersApi.removalCost).mockReset()
 })
 
 describe('the two invariants on the last administrator', () => {
@@ -265,22 +300,31 @@ describe('the fields', () => {
     expect(usersApi.patchUser).toHaveBeenCalledWith(2, { can_download: false })
   })
 
-  it('sends the whole grant list when a root is ticked, because there is no per-root route', async () => {
+  it('sends the whole list when a library is ticked', async () => {
     const me = user()
-    const other = user({ id: 2, name: 'sam', role: 'user' })
-    const { host } = await show(other, [me, other], {
-      actingAs: 1,
-      roots: [root({ id: 3 }), root({ id: 4, path: '/srv/raw' })],
+    const other = user({
+      id: 2,
+      name: 'sam',
+      role: 'user',
+      libraries: [{ id: 70, name: 'Manga' }],
     })
-    await click(control(host, 'input[name="root-4"]'))
-    expect(usersApi.patchUser).toHaveBeenCalledWith(2, { roots: [4] })
+    vi.mocked(usersApi.patchUser).mockResolvedValue({
+      ...other,
+      libraries: [
+        { id: 70, name: 'Manga' },
+        { id: 80, name: 'Comics' },
+      ],
+    })
+    const { host } = await show(other, [me, other], { actingAs: 1 })
+    await click(tick(host, 80))
+    expect(usersApi.patchUser).toHaveBeenCalledWith(2, { libraries: [70, 80] })
   })
 
   it('holds every control until the reload it triggered has landed', async () => {
     // **The window between a 200 and the list coming back.** `user` is a
     // prop, so inside it the card still draws its pre-patch grants with the
     // boxes live — and `toggleGrant` computes a *whole list* from those, so a
-    // second tick there sends the new root alone and silently revokes the
+    // second tick there sends the new library alone and silently revokes the
     // first. Held until `onChanged` settles.
     let release: (() => void) | undefined
     const changed = vi.fn(
@@ -290,15 +334,20 @@ describe('the fields', () => {
         }),
     )
     const me = user()
-    const other = user({ id: 2, name: 'sam', role: 'user' })
+    const other = user({
+      id: 2,
+      name: 'sam',
+      role: 'user',
+      libraries: [{ id: 70, name: 'Manga' }],
+    })
     const { host } = await show(other, [me, other], {
       actingAs: 1,
-      roots: [root({ id: 3 }), root({ id: 4, path: '/srv/raw' })],
+      libraries: [MANGA, COMICS, lib(90, 'Raws', ['/media/Raws'])],
       onChanged: changed,
     })
 
-    await click(control(host, 'input[name="root-3"]'))
-    expect(usersApi.patchUser).toHaveBeenCalledWith(2, { roots: [3] })
+    await click(tick(host, 80))
+    expect(usersApi.patchUser).toHaveBeenCalledWith(2, { libraries: [70, 80] })
 
     // **Held, but not greyed — O159.** Every checkbox on the card says it is
     // held to a screen reader and keeps its fill. `disabled` took the fill
@@ -310,8 +359,9 @@ describe('the fields', () => {
       'can_download',
       'can_stream',
       'can_stamp',
-      'root-3',
-      'root-4',
+      'library-70',
+      'library-80',
+      'library-90',
     ])
     for (const box of boxes) {
       expect(box.disabled, box.name).toBe(false)
@@ -328,7 +378,7 @@ describe('the fields', () => {
     // refuses it. This case alone cannot say the guard is the ref: by now
     // the card has rendered `saving`, so a guard reading that would pass
     // here too. The double-press DELETE cases below are what prove the ref.
-    const second = control<HTMLInputElement>(host, 'input[name="root-4"]')
+    const second = tick(host, 90)
     const stream = control<HTMLInputElement>(host, 'input[name="can_stream"]')
     await act(async () => {
       second.click()
@@ -340,16 +390,28 @@ describe('the fields', () => {
     expect(second.checked).toBe(false)
     expect(stream.checked).toBe(true)
 
+    // The radios are pressed mid-save too, and each is marked held. That the
+    // guards in front of them are what keep them still is held by the cases
+    // below that press them within one `act`; here `begin` would refuse a
+    // write anyway.
+    await act(async () => {
+      radio(host, 'every').click()
+      radio(host, 'only').click()
+      await Promise.resolve()
+    })
+    expect(usersApi.patchUser).toHaveBeenCalledTimes(1)
+    expect(radio(host, 'only').checked).toBe(true)
+    expect(radio(host, 'every').checked).toBe(false)
+    expect(radio(host, 'every').getAttribute('aria-disabled')).toBe('true')
+    expect(radio(host, 'only').getAttribute('aria-disabled')).toBe('true')
+
     await act(async () => {
       release?.()
       await Promise.resolve()
       await Promise.resolve()
     })
-    expect(
-      control<HTMLInputElement>(host, 'input[name="root-4"]').getAttribute(
-        'aria-disabled',
-      ),
-    ).toBe('false')
+    expect(tick(host, 90).getAttribute('aria-disabled')).toBe('false')
+    expect(radio(host, 'every').getAttribute('aria-disabled')).toBe('false')
   })
 
   it('computes the next grant list from the answer when the reload brings nothing', async () => {
@@ -359,62 +421,487 @@ describe('the fields', () => {
     // live over pre-write values and the next tick computed a whole grant
     // list from them, silently revoking the first.
     const me = user()
-    const other = user({ id: 2, name: 'sam', role: 'user' })
+    const other = user({
+      id: 2,
+      name: 'sam',
+      role: 'user',
+      libraries: [{ id: 70, name: 'Manga' }],
+    })
     vi.mocked(usersApi.patchUser).mockResolvedValue(
       user({
         id: 2,
         name: 'sam',
         role: 'user',
-        roots: [{ id: 3, path: '/srv/manga' }],
+        libraries: [
+          { id: 70, name: 'Manga' },
+          { id: 80, name: 'Comics' },
+        ],
       }),
     )
     // The parent answers, and hands back the same props it already had.
     const changed = vi.fn(() => Promise.resolve())
     const { host } = await show(other, [me, other], {
       actingAs: 1,
-      roots: [root({ id: 3 }), root({ id: 4, path: '/srv/raw' })],
       onChanged: changed,
     })
 
-    await click(control(host, 'input[name="root-3"]'))
-    expect(usersApi.patchUser).toHaveBeenNthCalledWith(1, 2, { roots: [3] })
+    await click(tick(host, 80))
+    expect(usersApi.patchUser).toHaveBeenNthCalledWith(1, 2, {
+      libraries: [70, 80],
+    })
     // Drawn from the answer, not from the props that never moved.
-    expect(
-      control<HTMLInputElement>(host, 'input[name="root-3"]').checked,
-    ).toBe(true)
+    expect(tick(host, 80).checked).toBe(true)
 
-    await click(control(host, 'input[name="root-4"]'))
-    expect(usersApi.patchUser).toHaveBeenNthCalledWith(2, 2, { roots: [3, 4] })
+    await click(tick(host, 70))
+    expect(usersApi.patchUser).toHaveBeenNthCalledWith(2, 2, {
+      libraries: [80],
+    })
   })
 
-  it('says the roots list has not been read, and names what is granted', async () => {
-    // `roots ?? []` drew "this library has no roots yet" while the read was
-    // in flight and for ever after one that failed — a positive false claim
-    // about the library, on the control whose empty state means unrestricted.
+  it('says the libraries list has not been read, and names what is granted', async () => {
+    // An unread list must not be drawn as an empty one: "there are no
+    // libraries yet" would be a positive false claim, on the control whose
+    // empty state means unrestricted.
     const me = user()
     const other = user({
       id: 2,
       name: 'sam',
       role: 'user',
-      roots: [{ id: 3, path: '/srv/manga' }],
+      libraries: [{ id: 70, name: 'Manga' }],
     })
     const { host } = await show(other, [me, other], {
       actingAs: 1,
-      roots: null,
+      libraries: null,
     })
     const grants = control(host, '.grants').textContent ?? ''
     expect(grants).toContain('has not been read')
-    expect(grants).toContain('/srv/manga')
-    expect(grants).not.toContain('no roots yet')
+    expect(grants).toContain('Manga')
+    expect(grants).not.toContain('no libraries yet')
+    expect(host.querySelector('.grants input')).toBeNull()
+  })
+
+  it('says an unread list leaves an account with no grant unrestricted', async () => {
+    // With the list unread this sentence is the only place the card says so.
+    const me = user()
+    const other = user({ id: 2, name: 'sam', role: 'user' })
+    const { host } = await show(other, [me, other], {
+      actingAs: 1,
+      libraries: null,
+    })
+    expect(control(host, '.grants p.unknown').textContent).toBe(
+      'The libraries list has not been read, so there is nothing to offer here. This account is granted none, which is unrestricted.',
+    )
+  })
+
+  it('draws an account with no grant as seeing every library, with no boxes', async () => {
+    const me = user()
+    const other = user({ id: 2, name: 'sam', role: 'user' })
+    const { host } = await show(other, [me, other], { actingAs: 1 })
+    expect(control(host, '.grants legend').textContent).toBe(
+      'Libraries this account may see',
+    )
+    expect(radio(host, 'every').checked).toBe(true)
+    expect(radio(host, 'only').checked).toBe(false)
+    expect(host.querySelector('.grant-list')).toBeNull()
+    // Neither hint is drawn for an account that has not chosen to restrict.
+    const grants = control(host, '.grants').textContent ?? ''
+    expect(grants).not.toContain('Nothing is saved')
+    expect(grants).not.toContain('The last tick')
+  })
+
+  it('words its two choices, and names them for this account alone', async () => {
+    const me = user()
+    const other = user({ id: 2, name: 'sam', role: 'user' })
+    const { host } = await show(other, [me, other], { actingAs: 1 })
+    expect(radio(host, 'every').closest('label')?.textContent).toBe(
+      'Every library, including any added later',
+    )
+    expect(radio(host, 'only').closest('label')?.textContent).toBe('Only these')
+    // Two cards sharing one name would be one radio group to a browser.
+    expect(radio(host, 'every').name).toBe('sees-2')
+    expect(radio(host, 'only').name).toBe('sees-2')
+  })
+
+  it('draws a granted account as Only these, a box per library with its folders', async () => {
+    const me = user()
+    const other = user({
+      id: 2,
+      name: 'sam',
+      role: 'user',
+      libraries: [{ id: 70, name: 'Manga' }],
+    })
+    const { host } = await show(other, [me, other], { actingAs: 1 })
+    expect(radio(host, 'only').checked).toBe(true)
+    expect(tick(host, 70).checked).toBe(true)
+    expect(tick(host, 80).checked).toBe(false)
+    const manga = tick(host, 70).closest('li') as HTMLElement
+    expect(manga.querySelector('label span')?.textContent).toBe('Manga')
+    expect(
+      [...manga.querySelectorAll('.grant-folders code')].map(
+        (c) => c.textContent,
+      ),
+    ).toEqual(['/media/Manga/Volumes', '/media/Manga/Chapters'])
+    const comics = tick(host, 80).closest('li') as HTMLElement
+    expect(comics.querySelector('label span')?.textContent).toBe('Comics')
+    expect(
+      [...comics.querySelectorAll('.grant-folders code')].map(
+        (c) => c.textContent,
+      ),
+    ).toEqual(['/media/Comics'])
+  })
+
+  // O193: a library of two folders is one box, and unticking it revokes it.
+  it('revokes a library of two folders by its one box', async () => {
+    const me = user()
+    const other = user({
+      id: 2,
+      name: 'sam',
+      role: 'user',
+      libraries: [
+        { id: 70, name: 'Manga' },
+        { id: 80, name: 'Comics' },
+      ],
+    })
+    const { host } = await show(other, [me, other], { actingAs: 1 })
+    // Two grants held: the last-tick sentence is not drawn, and no box is held.
+    expect(control(host, '.grants').textContent).not.toContain('The last tick')
+    expect(tick(host, 70).getAttribute('aria-disabled')).toBe('false')
+    await click(tick(host, 70))
+    expect(usersApi.patchUser).toHaveBeenCalledWith(2, { libraries: [80] })
+  })
+
+  it('will not clear the last tick, and says what lifts the limit', async () => {
+    const me = user()
+    const other = user({
+      id: 2,
+      name: 'sam',
+      role: 'user',
+      libraries: [{ id: 70, name: 'Manga' }],
+    })
+    const { host } = await show(other, [me, other], { actingAs: 1 })
+    expect(tick(host, 70).getAttribute('aria-disabled')).toBe('true')
+    // Only the last tick is held: the other box is live.
+    expect(tick(host, 80).getAttribute('aria-disabled')).toBe('false')
+    expect(control(host, '.grants').textContent).toContain(
+      'The last tick cannot be cleared here. Choose “Every library” to lift the limit.',
+    )
+
+    await click(tick(host, 70))
+
+    expect(usersApi.patchUser).not.toHaveBeenCalled()
+    expect(tick(host, 70).checked).toBe(true)
+  })
+
+  it('pairs the last tick with the sentence that says why it will not clear', async () => {
+    const me = user()
+    const other = user({
+      id: 2,
+      name: 'sam',
+      role: 'user',
+      libraries: [{ id: 70, name: 'Manga' }],
+    })
+    const { host } = await show(other, [me, other], { actingAs: 1 })
+    const why = [...host.querySelectorAll('.grants .why')].find((p) =>
+      p.textContent?.includes('The last tick cannot be cleared'),
+    )
+    const id = why?.getAttribute('id')
+    expect(id).toBeTruthy()
+    expect(tick(host, 70).getAttribute('aria-describedby')).toBe(id)
+    // A box that can be cleared points at nothing.
+    expect(tick(host, 80).hasAttribute('aria-describedby')).toBe(false)
+  })
+
+  it('names a grant whose library the list does not hold, and says it is the only one, with no last tick to point at', async () => {
+    const me = user()
+    const ghost = { id: 99, name: 'Gone' }
+    const alone = user({ id: 2, name: 'sam', role: 'user', libraries: [ghost] })
+    const { host } = await show(alone, [me, alone], { actingAs: 1 })
+    // No box is drawn for it, so it is named where it can be read.
+    expect(host.querySelector('input[name="library-99"]')).toBeNull()
+    expect(unlisted(host)?.textContent).toBe(
+      'This account is granted Gone, which the list does not hold.',
+    )
+    // The sentence about the last tick would name a tick that is not drawn.
+    expect(control(host, '.grants').textContent).not.toContain('last tick')
+    expect(radio(host, 'only').checked).toBe(true)
+  })
+
+  it('names only the grants the list does not hold, beside the ones it does', async () => {
+    const me = user()
+    const mixed = user({
+      id: 2,
+      name: 'sam',
+      role: 'user',
+      libraries: [
+        { id: 70, name: 'Manga' },
+        { id: 98, name: 'Gone' },
+        { id: 99, name: 'Lost' },
+      ],
+    })
+    const { host } = await show(mixed, [me, mixed], { actingAs: 1 })
+    expect(unlisted(host)?.textContent).toBe(
+      'Also granted, though the list does not hold them: Gone and Lost.',
+    )
+    expect(tick(host, 70).checked).toBe(true)
+  })
+
+  it.each([
+    [['Gone', 'Lost'], 'Gone and Lost'],
+    [['Gone', 'Lost', 'Found'], 'Gone, Lost and Found'],
+  ])(
+    'joins several unlisted grants, %j, with "and", so that no pair reads as one name',
+    async (names, joined) => {
+      const me = user()
+      const sam = user({
+        id: 2,
+        name: 'sam',
+        role: 'user',
+        libraries: names.map((name, i) => ({ id: 90 + i, name })),
+      })
+      const { host } = await show(sam, [me, sam], { actingAs: 1 })
+      expect(unlisted(host)?.textContent).toBe(
+        `This account is granted ${joined}, which the list does not hold.`,
+      )
+    },
+  )
+
+  it('names a grant in a list that was read and holds no library', async () => {
+    const me = user()
+    const alone = user({
+      id: 2,
+      name: 'sam',
+      role: 'user',
+      libraries: [{ id: 99, name: 'Gone' }],
+    })
+    const { host } = await show(alone, [me, alone], {
+      actingAs: 1,
+      libraries: [],
+    })
+    expect(control(host, '.grants .empty').textContent).toBe(
+      'There are no libraries yet.',
+    )
+    expect(unlisted(host)?.textContent).toBe(
+      'This account is granted Gone, which the list does not hold.',
+    )
+  })
+
+  it('draws no line about unlisted grants for an account whose grants are all listed', async () => {
+    const me = user()
+    const held = user({
+      id: 2,
+      name: 'sam',
+      role: 'user',
+      libraries: [{ id: 70, name: 'Manga' }],
+    })
+    const { host } = await show(held, [me, held], { actingAs: 1 })
+    expect(unlisted(host)).toBeNull()
+  })
+
+  it('matches a grant to a library by id, whatever either is called', async () => {
+    const me = user()
+    const renamed = user({
+      id: 2,
+      name: 'sam',
+      role: 'user',
+      libraries: [{ id: 70, name: 'Manga, before it was renamed' }],
+    })
+    const { host } = await show(renamed, [me, renamed], { actingAs: 1 })
+    expect(unlisted(host)).toBeNull()
+    expect(tick(host, 70).checked).toBe(true)
+  })
+
+  it('keeps a grant the list does not hold when another library is ticked', async () => {
+    const me = user()
+    const mixed = user({
+      id: 2,
+      name: 'sam',
+      role: 'user',
+      libraries: [
+        { id: 99, name: 'Gone' },
+        { id: 70, name: 'Manga' },
+      ],
+    })
+    const { host } = await show(mixed, [me, mixed], { actingAs: 1 })
+    await click(tick(host, 80))
+    expect(usersApi.patchUser).toHaveBeenCalledWith(2, {
+      libraries: [99, 70, 80],
+    })
+  })
+
+  it('lifts the limit only by Every library, which sends the empty list', async () => {
+    const me = user()
+    const other = user({
+      id: 2,
+      name: 'sam',
+      role: 'user',
+      libraries: [{ id: 70, name: 'Manga' }],
+    })
+    vi.mocked(usersApi.patchUser).mockResolvedValue({ ...other, libraries: [] })
+    const { host } = await show(other, [me, other], { actingAs: 1 })
+    await click(radio(host, 'every'))
+    expect(usersApi.patchUser).toHaveBeenCalledWith(2, { libraries: [] })
+    expect(radio(host, 'every').checked).toBe(true)
     expect(host.querySelector('.grant-list')).toBeNull()
   })
 
-  it('says that nothing ticked means unrestricted', async () => {
-    // Counter-intuitive and load-bearing: an empty grant is every root, not
-    // none. Spec A2, O54 — every account in every existing library holds one.
+  it('sends nothing for Only these until a library is ticked', async () => {
     const me = user()
-    const { host } = await show(me, [me, sam()], { actingAs: 99 })
-    expect(host.textContent).toContain('unrestricted')
+    const other = user({ id: 2, name: 'sam', role: 'user' })
+    vi.mocked(usersApi.patchUser).mockResolvedValue({
+      ...other,
+      libraries: [{ id: 80, name: 'Comics' }],
+    })
+    const { host } = await show(other, [me, other], { actingAs: 1 })
+
+    await click(radio(host, 'only'))
+    expect(usersApi.patchUser).not.toHaveBeenCalled()
+    expect(radio(host, 'only').checked).toBe(true)
+    expect(control(host, '.grants').textContent).toContain(
+      'Nothing is saved until a library is ticked',
+    )
+
+    await click(radio(host, 'every'))
+    expect(usersApi.patchUser).not.toHaveBeenCalled()
+    expect(host.querySelector('.grant-list')).toBeNull()
+
+    await click(radio(host, 'only'))
+    await click(tick(host, 80))
+    expect(usersApi.patchUser).toHaveBeenCalledTimes(1)
+    expect(usersApi.patchUser).toHaveBeenCalledWith(2, { libraries: [80] })
+  })
+
+  it('puts an account back to Every library after Only these and a tick', async () => {
+    // A reload that brings nothing, so the card runs on the answers it kept.
+    const me = user()
+    const other = user({ id: 2, name: 'sam', role: 'user' })
+    vi.mocked(usersApi.patchUser)
+      .mockResolvedValueOnce({
+        ...other,
+        libraries: [{ id: 80, name: 'Comics' }],
+      })
+      .mockResolvedValueOnce({ ...other, libraries: [] })
+    const changed = vi.fn(() => Promise.resolve())
+    const { host } = await show(other, [me, other], {
+      actingAs: 1,
+      onChanged: changed,
+    })
+
+    await click(radio(host, 'only'))
+    await click(tick(host, 80))
+    await click(radio(host, 'every'))
+
+    expect(usersApi.patchUser).toHaveBeenNthCalledWith(1, 2, {
+      libraries: [80],
+    })
+    expect(usersApi.patchUser).toHaveBeenNthCalledWith(2, 2, { libraries: [] })
+    expect(radio(host, 'every').checked).toBe(true)
+    expect(radio(host, 'only').checked).toBe(false)
+    expect(host.querySelector('.grant-list')).toBeNull()
+    expect(control(host, '.grants').textContent).not.toContain(
+      'Nothing is saved',
+    )
+  })
+
+  it('keeps drawing Only these when Every library is pressed while a tick is being saved', async () => {
+    const me = user()
+    const other = user({ id: 2, name: 'sam', role: 'user' })
+    vi.mocked(usersApi.patchUser).mockImplementation(
+      () => new Promise(() => undefined),
+    )
+    const { host } = await show(other, [me, other], { actingAs: 1 })
+    await click(radio(host, 'only'))
+    await click(tick(host, 80))
+    expect(usersApi.patchUser).toHaveBeenCalledTimes(1)
+
+    await click(radio(host, 'every'))
+
+    expect(usersApi.patchUser).toHaveBeenCalledTimes(1)
+    expect(radio(host, 'only').checked).toBe(true)
+    expect(radio(host, 'every').checked).toBe(false)
+    expect(host.querySelector('.grant-list')).not.toBeNull()
+  })
+
+  it('does not switch to Only these while another write is being saved', async () => {
+    const me = user()
+    const other = user({ id: 2, name: 'sam', role: 'user' })
+    vi.mocked(usersApi.patchUser).mockImplementation(
+      () => new Promise(() => undefined),
+    )
+    const { host } = await show(other, [me, other], { actingAs: 1 })
+    await click(control(host, 'input[name="can_stream"]'))
+    expect(usersApi.patchUser).toHaveBeenCalledTimes(1)
+
+    await click(radio(host, 'only'))
+
+    expect(radio(host, 'every').checked).toBe(true)
+    expect(radio(host, 'only').checked).toBe(false)
+    expect(host.querySelector('.grant-list')).toBeNull()
+  })
+
+  /**
+   * **Inside one `act`, nothing has rendered between two clicks**, so a handler
+   * reading the `saving` state still sees false after a write has begun. Only
+   * a handler that reads the ref sees the write. A reset click and a radio
+   * click in one `act` is how the two are told apart: by the time the other
+   * tests press the radio, the card has rendered `saving`.
+   */
+  async function resetThen(host: HTMLElement, second: Element) {
+    await typeInto(
+      control<HTMLInputElement>(host, 'input[name="password"]'),
+      'hunter2',
+    )
+    await act(async () => {
+      control<HTMLElement>(host, 'button[name="reset"]').click()
+      ;(second as HTMLElement).click()
+      await Promise.resolve()
+    })
+    expect(usersApi.patchUser).toHaveBeenCalledTimes(1)
+    expect(usersApi.patchUser).toHaveBeenCalledWith(2, { password: 'hunter2' })
+  }
+
+  it('does not switch to Only these in the same act as a write that has just begun', async () => {
+    const me = user()
+    const other = user({ id: 2, name: 'sam', role: 'user' })
+    vi.mocked(usersApi.patchUser).mockImplementation(
+      () => new Promise(() => undefined),
+    )
+    const { host } = await show(other, [me, other], { actingAs: 1 })
+    await resetThen(host, radio(host, 'only'))
+    expect(radio(host, 'every').checked).toBe(true)
+    expect(host.querySelector('.grant-list')).toBeNull()
+  })
+
+  it('does not switch back to Every library in the same act as a write that has just begun', async () => {
+    const me = user()
+    const other = user({ id: 2, name: 'sam', role: 'user' })
+    vi.mocked(usersApi.patchUser).mockImplementation(
+      () => new Promise(() => undefined),
+    )
+    const { host } = await show(other, [me, other], { actingAs: 1 })
+    await click(radio(host, 'only'))
+    expect(host.querySelector('.grant-list')).not.toBeNull()
+    await resetThen(host, radio(host, 'every'))
+    expect(radio(host, 'only').checked).toBe(true)
+    expect(host.querySelector('.grant-list')).not.toBeNull()
+  })
+
+  it('says an administrator sees everything whatever is chosen', async () => {
+    const me = user()
+    const admin = user({
+      id: 2,
+      name: 'sam',
+      role: 'admin',
+      libraries: [{ id: 70, name: 'Manga' }],
+    })
+    const { host } = await show(admin, [me, admin], { actingAs: 1 })
+    expect(control(host, '.grants').textContent).toContain(
+      'An administrator sees every library',
+    )
+    const reader = user({ id: 3, name: 'kim', role: 'user' })
+    const other = await show(reader, [me, reader], { actingAs: 1 })
+    expect(control(other.host, '.grants').textContent).not.toContain(
+      'An administrator sees every library',
+    )
   })
 
   it('patches the role when the dropdown is live', async () => {
@@ -432,25 +919,6 @@ describe('the fields', () => {
     const { host } = await show(other, [me, other], { actingAs: 1 })
     await click(control(host, 'input[name="can_stream"]'))
     expect(usersApi.patchUser).toHaveBeenCalledWith(2, { can_stream: false })
-  })
-
-  it('sends the grant list without the root that was unticked', async () => {
-    const me = user()
-    const other = user({
-      id: 2,
-      name: 'sam',
-      role: 'user',
-      roots: [
-        { id: 3, path: '/srv/manga' },
-        { id: 4, path: '/srv/raw' },
-      ],
-    })
-    const { host } = await show(other, [me, other], {
-      actingAs: 1,
-      roots: [root({ id: 3 }), root({ id: 4, path: '/srv/raw' })],
-    })
-    await click(control(host, 'input[name="root-3"]'))
-    expect(usersApi.patchUser).toHaveBeenCalledWith(2, { roots: [4] })
   })
 
   it('offers can_stamp as a third capability, and sends it on its own', async () => {
@@ -487,11 +955,17 @@ describe('the fields', () => {
     ).toBe(false)
   })
 
-  it('says the library has no roots rather than drawing an empty editor', async () => {
+  it('says there are no libraries rather than drawing an empty editor', async () => {
     const me = user()
     const other = user({ id: 2, name: 'sam', role: 'user' })
-    const { host } = await show(other, [me, other], { actingAs: 1, roots: [] })
-    expect(host.textContent).toContain('This library has no roots yet')
+    const { host } = await show(other, [me, other], {
+      actingAs: 1,
+      libraries: [],
+    })
+    expect(control(host, '.grants').textContent).toContain(
+      'There are no libraries yet',
+    )
+    expect(host.querySelector('.grants input')).toBeNull()
   })
 
   it('draws the server sentence when a patch is refused', async () => {
@@ -501,13 +975,13 @@ describe('the fields', () => {
     const other = user({ id: 2, name: 'sam', role: 'admin' })
     vi.mocked(usersApi.patchUser).mockRejectedValue(
       new Error(
-        '/api/library/users/2: 409 demoting `sam` would leave this library with no administrator who can log in',
+        '/api/library/users/2: 409 {"error":"demoting `sam` would leave this library with no administrator who can log in"}',
       ),
     )
     const { host } = await show(other, [me, other], { actingAs: 1 })
     await click(control(host, 'input[name="can_download"]'))
-    expect(host.querySelector('[role="alert"]')?.textContent).toContain(
-      'no administrator who can log in',
+    expect(host.querySelector('[role="alert"]')?.textContent).toBe(
+      'demoting `sam` would leave this library with no administrator who can log in',
     )
   })
 
@@ -748,7 +1222,7 @@ describe('a revocation answering after a fresher list', () => {
           <UserRow
             user={fresher}
             users={[user(), fresher]}
-            roots={[root()]}
+            libraries={[MANGA]}
             actingAs={1}
             onChanged={vi.fn()}
           />
@@ -864,7 +1338,7 @@ describe('removal', () => {
           <UserRow
             user={remade}
             users={[me, remade]}
-            roots={[root()]}
+            libraries={[MANGA]}
             actingAs={1}
             onChanged={vi.fn()}
           />
@@ -1024,11 +1498,47 @@ describe('removal', () => {
     expect(counts).toContain('1 note')
     expect(counts).toContain('2 open sessions')
     expect(counts).toContain('0 API keys')
-    expect(counts).toContain('3 root grants')
+    expect(counts).toContain('3 library grants')
     expect(usersApi.removeUser).not.toHaveBeenCalled()
 
     await click(control(host, 'button[name="confirm-remove"]'))
     expect(usersApi.removeUser).toHaveBeenCalledWith(2)
+  })
+
+  it('draws the server sentence when the dry run is refused', async () => {
+    const me = user()
+    const other = user({ id: 2, name: 'sam', role: 'user' })
+    vi.mocked(usersApi.removalCost).mockRejectedValue(
+      new Error(
+        '/api/library/users/2?dry_run=true: 409 {"error":"removing `sam` would leave this library with no administrator who can log in"}',
+      ),
+    )
+    const { host } = await show(other, [me, other], { actingAs: 1 })
+    await click(control(host, 'button[name="remove"]'))
+    expect(host.querySelector('[role="alert"]')?.textContent).toBe(
+      'removing `sam` would leave this library with no administrator who can log in',
+    )
+  })
+
+  it('says one library grant in the singular', async () => {
+    const me = user()
+    const other = user({ id: 2, name: 'sam', role: 'user' })
+    vi.mocked(usersApi.removalCost).mockResolvedValue({
+      removed: {
+        name: 'sam',
+        positions: 0,
+        notes: 0,
+        sessions: 0,
+        keys: 0,
+        grants: 1,
+      },
+      dry_run: true,
+    })
+    const { host } = await show(other, [me, other], { actingAs: 1 })
+    await click(control(host, 'button[name="remove"]'))
+    expect(control(host, '.counts').textContent).toContain(
+      'and 1 library grant.',
+    )
   })
 
   it('closes without sending anything when the dialog is cancelled', async () => {

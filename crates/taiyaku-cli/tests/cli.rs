@@ -202,6 +202,21 @@ fn the_usage_advertises_serve_cache() {
     );
 }
 
+#[test]
+fn the_usage_advertises_serve_folders() {
+    let run = taiyaku().output().expect("the binary runs");
+
+    let stdout = String::from_utf8_lossy(&run.stdout);
+    let serve_line = stdout
+        .lines()
+        .find(|l| l.contains("taiyaku serve"))
+        .expect("the usage lists serve");
+    assert!(
+        serve_line.contains("[--folders DIR]..."),
+        "serve's usage line advertises the flag: {serve_line}"
+    );
+}
+
 /// `library scan` and `library rules` reached `command`'s dispatch and
 /// `README.md`/`docs/status.md` without ever reaching `print_usage` — a
 /// person running bare `taiyaku` could not discover either. No test named
@@ -1509,6 +1524,84 @@ fn serve_refuses_a_malformed_trusted_proxy_variable_by_name() {
     assert_eq!(status.code(), Some(1), "{stderr}");
     assert!(stderr.contains("TAIYAKU_TRUSTED_PROXY"), "{stderr}");
     assert!(stderr.contains("nonsense"), "{stderr}");
+}
+
+/// A folder the server was started with that is not there is named on its
+/// console before it says it is listening, so a deployer whose share is not
+/// mapped sees why the browser is empty. A `TAIYAKU_FOLDERS` is set on the
+/// child's environment (never this process's) and a `--folders` given beside
+/// it: the flag replaces the variable, so only the flag's folder is in use.
+#[cfg(unix)]
+#[test]
+fn serve_says_which_folders_it_cannot_browse() {
+    use std::io::{BufRead, BufReader};
+    use std::process::Stdio;
+    use std::time::{Duration, Instant};
+
+    let dir = TempDir::new("cli-serve-folders");
+    let db_dir = TempDir::new("cli-serve-folders-db");
+    let cache = TempDir::new("cli-serve-folders-cache");
+    let from_variable = dir.join("unmapped-variable");
+    let from_flag = dir.join("unmapped-flag");
+    let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("a free port");
+    let addr = probe.local_addr().expect("reads the port").to_string();
+    drop(probe);
+
+    let mut child = ServeChild(
+        taiyaku()
+            .env("TAIYAKU_FOLDERS", &from_variable)
+            .args([
+                "serve",
+                "--db",
+                &db_path(&db_dir),
+                "--cache",
+                cache.to_str().expect("a utf-8 temp path"),
+                "--addr",
+                &addr,
+                "--folders",
+            ])
+            .arg(&from_flag)
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("the binary runs"),
+    );
+    let stderr = child.stderr.take().expect("stderr is piped");
+    let (said, heard) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+            if said.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    let started = Instant::now();
+    let mut seen = Vec::new();
+    loop {
+        let left = Duration::from_secs(20).saturating_sub(started.elapsed());
+        match heard.recv_timeout(left) {
+            Ok(line) => {
+                let listening = line.contains("listening");
+                seen.push(line);
+                if listening {
+                    break;
+                }
+            }
+            Err(_) => panic!("the server never said it was listening: {seen:?}"),
+        }
+    }
+
+    let said_of = |path: &std::path::Path| {
+        seen.iter()
+            .filter(|line| line.contains(&path.display().to_string()))
+            .count()
+    };
+    assert_eq!(said_of(&from_flag), 1, "{seen:?}");
+    assert_eq!(
+        said_of(&from_variable),
+        0,
+        "a flag replaces the variable, so the variable's folder is not in use: {seen:?}"
+    );
 }
 
 /// A spawned `taiyaku serve`, killed and reaped when it goes out of scope.
