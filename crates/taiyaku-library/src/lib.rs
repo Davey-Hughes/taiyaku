@@ -550,14 +550,17 @@ impl std::ops::Deref for Working<'_> {
 /// the choice is read off what the connection is already doing —
 /// [`Connection::is_autocommit`] is false only when something has already
 /// opened a transaction this one must nest inside instead of colliding
-/// with, which today is only ever [`crate::preview::preview`] — and every
-/// other call site keeps the exact `BEGIN`/lock behaviour it always had.
+/// with — a caller wrapping a whole derive, as [`crate::preview::preview`]
+/// does, or `derive::write_work`'s own scope for one work, which every
+/// import and `librarydoc::apply` inside a derive nests in since O210 — and
+/// every other call site keeps the exact `BEGIN`/lock behaviour it always
+/// had.
 ///
 /// **The cost `preview` pays for that outer transaction is real and
 /// undocumented anywhere else.** Because `preview` holds a `BEGIN IMMEDIATE`
 /// for a whole library-wide derivation rather than per work, every `Nested`
-/// scope opened underneath it — one per `import::scanned` call and one per
-/// `fold::absorb` call — takes the `SAVEPOINT` branch, and the write lock the
+/// scope opened underneath it takes the `SAVEPOINT` branch, and the write
+/// lock the
 /// outer `BEGIN IMMEDIATE` holds stays taken for as long as that entire
 /// derivation runs: exactly the span `Library::working`'s second connection
 /// exists to let a long job occupy without starving every other request.

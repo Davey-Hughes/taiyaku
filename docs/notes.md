@@ -25296,3 +25296,60 @@ design, needing `strace`, failed (`sqlite340-7b31b366.log`).
 
 **Not measured.** The NAS. A library larger than the copy. A move of a
 folder holding thousands of works that all join. Where O210's time goes.
+*O210 has since been measured and closed — see "O210: a derive's commits" below.*
+
+## O210: a derive's commits (2026-10-08)
+
+**Where the twelve seconds went.** The store was a fresh copy of
+`/home/davey/temp/manga-test/library.db`, itself a copy of the real library
+(1,896 works), with a scratch
+folder of one volume added as the library `Chapters`: 1,897 works. Over it,
+`taiyaku library scan --root <the scratch folder>` with `main`'s release binary
+at d0508b2a took 11.85, 11.83 and 11.75 s with the store on ext4, of which
+1.4 s was CPU, and 0.46, 0.46 and 0.48 s with the same copy on tmpfs, where a
+sync costs nothing (`runs-ext4-tmpfs-d0508b2a.log`). `strace -c` over one ext4
+run counted 7,774 `fdatasync` calls taking 10.4 s, 1.34 ms each. A stack for
+each (`strace -k`, resolved with `addr2line`) put 7,762 of them at four sites
+in `derive::write_work`, each reached about once per work: the commit of
+`import::scanned_in`'s transaction, `write_roots`, the `UPDATE work` and
+`write_edition_metadata`, the last three each committed alone
+(`fdatasync-chains-d0508b2a.txt`). `Library::configure` sets no `synchronous`
+pragma, so SQLite's default, `FULL`, syncs every commit. Of the 0.46 s left
+on tmpfs, 76% of the samples were in SQLite and 45% under
+`sqlite3_prepare_v3` (`perf-tmpfs-d0508b2a.txt`).
+
+**The fix.** `write_work` opens one `Nested` scope for the work and commits
+it at the end; the import's own scope nests in it. A work rekeyed under
+`Documents::Reconcile` commits twice, before its document is renamed and
+after, so the rename follows a committed key — where the derive is not inside
+a caller's transaction, as a rule save's is; there the first commit is a
+`RELEASE`, as the import's was on `main`. Three ways were put to the
+user — this one, `PRAGMA synchronous = NORMAL`, and one transaction for a
+whole derive — and the user chose this one. Over the same store, alternating
+with `main`'s binary: `main` 11.61, 11.59 and 11.69 s; the fix 3.69, 3.67 and
+3.66 s. `fdatasync`: 7,774 calls and 10.8 s against 2,023 and 2.8 s. The two
+stores left behind differ only in the scan's timestamps and the scratch
+folder's mtime (`compare-o210-fix.log`). A move of the scratch folder into
+the copy's library through `POST /api/library/roots/2/move`, by the server's
+own figures: the rehearsal 1.35 s with `main` and 1.36 s with the fix; the
+move 12.68 s with `main` and 4.97 s with the fix, both answering the same
+counts (`move-o210-fix.log`). The fix's binary was built from the working tree
+before two comments lost their figures; its code is the commit's.
+
+**Tests.** Three, each run against the defect put back by hand and failing
+(`mutations-o210-fix.log`). `a_derive_over_unchanged_files_commits_each_work_once`
+counts the commits that write to the WAL, with `wal_hook`: on `main`'s code
+it read 8 for the fixture's two works. Not SQLite's commit hook, which also
+fires for a write statement that changed nothing, one that writes no frame
+and costs no sync. `a_work_that_fails_part_way_leaves_none_of_its_rows_behind`
+failed on `main`'s code with the member's root written back after the
+refusal. `a_rekeyed_works_document_follows_only_a_committed_key` failed with
+the rename moved inside the one scope: the document was not at the address
+the rolled-back key gives.
+
+**Isolation.** Nothing under `/home/davey/temp/manga-test` is newer than the
+marker, `sha256sum -c` passes on its `library.db`, and the stat of
+`library.db`, `-wal` and `-shm` is unchanged (`isolation.log`).
+
+**Not measured.** The NAS. A scan that changes many works: every figure
+above is a derive over unchanged files.

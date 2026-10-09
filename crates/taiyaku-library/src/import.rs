@@ -198,10 +198,10 @@ fn import_with(
     readable_version(doc)?;
     let key = crate::identity::content_key(doc)?;
     // `crate::Nested`, not `unchecked_transaction` directly: `derive_with`
-    // calls this once per work through `write_work`, and `preview::preview`
-    // wraps a whole `derive_with` pass in a transaction of its own to roll
-    // it back in one motion — a plain `BEGIN` here would refuse outright the
-    // moment that outer transaction is open. See `Nested`'s own doc for why
+    // calls this once per work inside `write_work`'s own scope, and
+    // `preview::preview` wraps a whole `derive_with` pass in a transaction of
+    // its own to roll it back in one motion — a plain `BEGIN` here would
+    // refuse outright inside either. See `Nested`'s own doc for why
     // a `SAVEPOINT` cannot simply replace `unchecked_transaction` everywhere
     // instead.
     let tx = crate::Nested::open(conn, "import_with")

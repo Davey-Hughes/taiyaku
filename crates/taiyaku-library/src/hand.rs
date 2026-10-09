@@ -334,7 +334,8 @@ pub fn load(
 /// Move this work's document from the address it had under `old_key` to the
 /// one it has now.
 ///
-/// **Called from `derive::write_work`, immediately after `write_roots`.** An
+/// **Called from `derive::write_work`, after `write_roots` and the commit
+/// that follows it.** An
 /// earlier version called this from `import_with`, right after `tx.commit()`
 /// — the moment that looks like it should work, since the old `content_key`
 /// is still readable from the row just replaced. It cannot: for a

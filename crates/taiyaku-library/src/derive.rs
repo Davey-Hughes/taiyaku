@@ -594,16 +594,19 @@ pub fn derive(conn: &Connection) -> Result<DeriveReport, String> {
 /// rather than a second set of rows.
 ///
 /// **No transaction of its own — but everything under it can still be
-/// wrapped in one.** [`crate::import::scanned_in`] opens one per work and
-/// [`crate::fold::absorb`] opens one per fold, and both do it through
-/// [`crate::Nested`] rather than `unchecked_transaction` directly: a plain
-/// `BEGIN` — the same constraint [`crate::import::replace_alignments`]
-/// records — is refused outright inside an already-open transaction, where
-/// `Nested` instead nests as a `SAVEPOINT`. Called plainly, as every caller
-/// but [`crate::preview::preview`] calls it, nothing is open yet, so `Nested`
-/// takes the real-`BEGIN` branch at both sites and a derive is atomic per
-/// work and not across the library — the right grain for that case: a
-/// library that half-derives has half its works current, not none of them.
+/// wrapped in one.** [`write_work`] opens one per work, which
+/// [`crate::import::scanned_in`]'s own nests in, and [`crate::fold::absorb`]
+/// opens one per fold; all three do it through [`crate::Nested`] rather than
+/// `unchecked_transaction` directly: a plain `BEGIN` — the same constraint
+/// [`crate::import::replace_alignments`] records — is refused outright inside
+/// an already-open transaction, where `Nested` instead nests as a
+/// `SAVEPOINT`. Called plainly, as [`fn@derive`]'s callers call it, nothing
+/// is open yet, so `Nested` takes the real-`BEGIN` branch for each work and
+/// each fold and a derive is atomic per work — save a work rekeyed under
+/// [`Documents::Reconcile`], which commits before and after
+/// [`crate::hand::rename_for_rekey`] (see [`write_work`]) — and not across
+/// the library: the right grain for that case, since a library that
+/// half-derives has half its works current, not none of them.
 ///
 /// **`preview` is the one caller that needs the library-wide grain, and gets
 /// it without this function changing at all.** It wraps a whole `derive_with`
@@ -1539,6 +1542,17 @@ fn write_work(
         );
     }
 
+    // **One commit for the work, not one per statement — O210.** Every commit
+    // waits for the disk, and this function used to make four: the import's
+    // own transaction, then `write_roots`, the `UPDATE work` and
+    // `write_edition_metadata` each committed alone. Everything below runs on
+    // `conn` inside this scope — `Nested` is a state of the
+    // connection, not a second handle — and the import's own `Nested`, like
+    // `librarydoc::apply`'s, nests in it as a `SAVEPOINT`. Opened before
+    // `held_work` reads, so the address it finds is the one the import
+    // writes over.
+    let mut tx = crate::Nested::open(conn, "write_work")
+        .map_err(|e| format!("starting to write a work of `{}`: {e}", group.series))?;
     let held = held_work(conn, series_id, group)?;
     // Only a genuinely new work chooses one, and then the choice is arbitrary
     // but permanent: whichever key sorts first among the editions it has
@@ -1660,12 +1674,17 @@ fn write_work(
     // `member.root_id`.
     write_roots(conn, work_id, group, report)?;
 
-    // **The document follows the row here, after `write_roots` and after
-    // `import::scanned_in`'s own transaction has already committed — never
-    // inside it.** A rollback that left the file renamed would strand it
-    // under a key the database never adopted: this module's own defect,
-    // inverted, and harder to see, because `hand::reconcile` would then read
-    // every root as clean.
+    // **The document follows the row here, after `write_roots` and after the
+    // work's first commit — never inside it.** A rollback that left the file
+    // renamed would strand it under a key the database never adopted: this
+    // module's own defect, inverted, and harder to see, because
+    // `hand::reconcile` would then read every root as clean. **So a rekeyed
+    // work is the one that commits twice**: the import and `write_roots` here,
+    // before the rename, and the rest of the work in a second scope after it,
+    // so the read-back below still finds the document at the address the
+    // rename gave it. Inside a caller's own transaction — a rule save's
+    // derive runs in one — that first commit is a `RELEASE`, as the import's
+    // own was before O210.
     //
     // **Why here and not in `import_with`, where an earlier version of this
     // change placed it.** `hand::path_for` resolves a work's address through
@@ -1686,7 +1705,11 @@ fn write_work(
     // the way a brand-new work's hand document already does, above.
     if let Some(old_key) = rekeyed_from {
         if documents == Documents::Reconcile {
+            tx.commit()
+                .map_err(|e| format!("committing work {work_id} before its rekey: {e}"))?;
             crate::hand::rename_for_rekey(conn, work_id, &old_key)?;
+            tx = crate::Nested::open(conn, "write_work")
+                .map_err(|e| format!("resuming work {work_id} after its rekey: {e}"))?;
         }
     }
 
@@ -1806,6 +1829,8 @@ fn write_work(
     .map_err(|e| format!("attaching work {work_id} to series {series_id}: {e}"))?;
     write_edition_metadata(conn, work_id, group, report)?;
     write_chapters(conn, work_id, group)?;
+    tx.commit()
+        .map_err(|e| format!("committing work {work_id}: {e}"))?;
     report.works += 1;
     Ok(work_id)
 }

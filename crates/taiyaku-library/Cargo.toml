@@ -81,8 +81,11 @@ workspace = true
 # `trace_v2`. Cargo unions features across the two tables for the test target
 # and leaves the lib build with `backup` only, so tracing costs nothing in the
 # binary that serves pages.
+#
+# `hooks` on the same terms, for O210: `derive`'s tests count the commits a
+# pass writes to the WAL, and `wal_hook` is how they see one.
 [dev-dependencies]
-rusqlite = { version = "0.38", features = ["trace"] }
+rusqlite = { version = "0.38", features = ["trace", "hooks"] }
 # `test-support` on the same terms, for O104: `stamp`'s tests assert the
 # syscalls `rewrite_one` makes, through the one strace parser `atomic`'s tests
 # already use rather than a second copy of it. And for O117's `TempDir`.

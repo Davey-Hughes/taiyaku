@@ -607,9 +607,9 @@ fn external_of(conn: &Connection, series_id: i64) -> Result<BTreeMap<String, Str
 /// present, and there is nothing to attach a stale chapter number to.
 pub fn apply(conn: &Connection, work_id: i64, doc: &LibraryDoc) -> Result<(), String> {
     // `crate::Nested`, not `unchecked_transaction` directly: `derive::write_work`
-    // reaches this through `librarydoc::apply` while `preview::preview_with_rows`
-    // holds the whole derivation in a transaction of its own — a plain `BEGIN`
-    // here refuses outright the moment that outer transaction is open, and the
+    // reaches this inside its own scope for the work, and
+    // `preview::preview_with_rows` holds the whole derivation in a transaction
+    // of its own — a plain `BEGIN` here refuses outright inside either, and the
     // refusal used to be swallowed into `DeriveReport::unreadable_hand` rather
     // than surfaced (whole-branch review, Critical 1). See `Nested`'s own doc
     // for why a `SAVEPOINT` cannot simply replace `unchecked_transaction`

@@ -1279,6 +1279,59 @@ fn a_re_derive_still_writes_the_volume_for_a_work_no_hand_document_has_touched()
     );
 }
 
+thread_local! {
+    static WAL_COMMITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// The commits `conn` writes to its WAL while `pass` runs — the ones that wait
+/// for the disk. SQLite's commit hook would also count a write statement that
+/// changed nothing (`reconcile_series`'s `INSERT … WHERE NOT EXISTS` over a
+/// series it already holds), which writes no frame and costs no sync; the WAL
+/// hook fires only for a commit that wrote frames. It takes a plain `fn`, hence
+/// the thread-local: SQLite calls it on the thread running the statement.
+///
+/// Setting a WAL hook replaces the automatic checkpoint, which is SQLite's own
+/// WAL hook, so this sets the default back afterwards.
+fn wal_commits_during<T>(conn: &rusqlite::Connection, pass: impl FnOnce() -> T) -> (usize, T) {
+    fn count(_: &rusqlite::hooks::Wal, _: std::os::raw::c_int) -> rusqlite::Result<()> {
+        WAL_COMMITS.with(|n| n.set(n.get() + 1));
+        Ok(())
+    }
+    WAL_COMMITS.with(|n| n.set(0));
+    conn.wal_hook(Some(count));
+    let out = pass();
+    conn.wal_hook(None);
+    conn.pragma_update(None, "wal_autocheckpoint", 1000)
+        .expect("restoring the automatic checkpoint");
+    (WAL_COMMITS.with(std::cell::Cell::get), out)
+}
+
+/// **O210: a derive commits each work once.** Every commit waits for the
+/// disk, and `write_work` used to make four per work — the import's own
+/// transaction, then `write_roots`, the `UPDATE work` and
+/// `write_edition_metadata` each committed alone — which over a real
+/// library's store was nearly all of a scan's time.
+///
+/// Counted on a second derive over unchanged files, which is what a move's
+/// last pass is, and a scan where no file changed. On disk, because an
+/// in-memory store has no WAL.
+#[test]
+fn a_derive_over_unchanged_files_commits_each_work_once() {
+    let tree = fixture();
+    let store = crate::tests::tempdir("derive-commits");
+    let library = Library::open(&store.path().join("library.db")).expect("open");
+    let conn = library.conn();
+    let root = scan::add_root(&conn, tree.path()).expect("add");
+    scan::scan_root(&conn, &root).expect("scan");
+    derive::derive(&conn).expect("first derive");
+
+    let (commits, report) = wal_commits_during(&conn, || derive::derive(&conn));
+    let report = report.expect("second derive");
+
+    assert_eq!(report.works, 2, "the fixture's two volumes: {report:?}");
+    assert_eq!(commits, 2, "one commit per work: {report:?}");
+}
+
 /// Every edition's `(key, kind, language)`, in a fixed order — the shape an
 /// assertion about the two columns `derive::write_edition_metadata` writes
 /// needs, since `SELECT … LIMIT 1` would pass on a library where only one of
@@ -3771,6 +3824,133 @@ fn a_rekeyed_digest_takes_its_document_with_it() {
         path.is_file(),
         "the document is at the new address: {}",
         path.display()
+    );
+}
+
+/// Make the `UPDATE work` that `write_work` runs after the rename refuse,
+/// for work `work_id` alone — a failure late in the work, past every write
+/// the import and `write_roots` made.
+fn refuse_the_series_update(conn: &Connection, work_id: i64) {
+    conn.execute_batch(&format!(
+        "CREATE TEMP TRIGGER refuse_the_series_update
+           BEFORE UPDATE OF series_id, volume ON work WHEN OLD.id = {work_id}
+         BEGIN SELECT RAISE(ABORT, 'refused by the test'); END;"
+    ))
+    .expect("installing the refusal");
+}
+
+/// **O210: a work that fails part-way leaves none of its rows behind.**
+/// `write_work` commits once, at the end, so a refusal after `write_roots`
+/// rolls back what `write_roots` wrote along with the rest. When each
+/// statement committed alone, the member's root came back here although the
+/// work never finished.
+#[test]
+fn a_work_that_fails_part_way_leaves_none_of_its_rows_behind() {
+    let tree = fixture();
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = scan::add_root(&conn, tree.path()).expect("add");
+    scan::scan_root(&conn, &root).expect("scan");
+    derive::derive(&conn).expect("first derive");
+    let work_id: i64 = conn
+        .query_row("SELECT id FROM work ORDER BY id LIMIT 1", [], |r| r.get(0))
+        .expect("a work was derived");
+    conn.execute(
+        "UPDATE member SET root_id = NULL
+          WHERE edition_id IN (SELECT id FROM edition WHERE work_id = ?1)",
+        [work_id],
+    )
+    .expect("clearing the roots write_roots puts back");
+    refuse_the_series_update(&conn, work_id);
+
+    let refused = derive::derive(&conn).expect_err("the refusal fails the derive");
+
+    assert!(refused.contains("refused by the test"), "{refused}");
+    let roots: Vec<Option<i64>> = conn
+        .prepare(
+            "SELECT m.root_id FROM member m JOIN edition e ON e.id = m.edition_id
+              WHERE e.work_id = ?1",
+        )
+        .expect("prepare")
+        .query_map([work_id], |r| r.get(0))
+        .expect("query")
+        .collect::<Result<_, _>>()
+        .expect("collect");
+    assert_eq!(
+        roots,
+        vec![None],
+        "write_roots ran before the refusal, and its write went back with the work"
+    );
+}
+
+/// **O210: a rekeyed work commits before its document moves.** The rename
+/// must follow rows that are committed, so `write_work` commits a rekeyed
+/// work's import and `write_roots` first, renames, and writes the rest in a
+/// second scope. A refusal in that second scope then leaves the document at
+/// the address the committed key gives it. Renamed inside the one scope, the
+/// refusal would roll the key back and leave the document under a key the
+/// database never kept — the strand `rename_for_rekey` exists to prevent.
+#[test]
+fn a_rekeyed_works_document_follows_only_a_committed_key() {
+    let dir = archived_volumes();
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = scan::add_root(&conn, dir.path()).expect("add");
+    conn.execute(
+        "UPDATE root SET keeps_documents = 1 WHERE id = ?1",
+        [root.id],
+    )
+    .expect("the fixture keeps documents");
+    scan::scan_root(&conn, &root).expect("scan");
+    derive::derive(&conn).expect("first derive");
+    let work_id: i64 = conn
+        .query_row("SELECT id FROM work ORDER BY id LIMIT 1", [], |r| r.get(0))
+        .expect("a work was derived");
+    let mut doc = crate::librarydoc::of(&conn, work_id).expect("projecting");
+    doc.title = Some("Hand Set".to_string());
+    crate::librarydoc::apply(&conn, work_id, &doc).expect("applying");
+    crate::hand::save(&conn, work_id).expect("saving");
+    let key_before: String = conn
+        .query_row(
+            "SELECT content_key FROM work WHERE id = ?1",
+            [work_id],
+            |r| r.get(0),
+        )
+        .expect("the key the document was saved under");
+    // The rekey `a_rekeyed_digest_takes_its_document_with_it` makes, by the
+    // same route: a digest the next derive trusts without re-hashing.
+    conn.execute(
+        "UPDATE scan_entry SET sha256 = 'moved'
+          WHERE rel_path = (SELECT substr(m.path, length(r.path) + 2)
+                              FROM member m
+                              JOIN edition e ON e.id = m.edition_id
+                              JOIN root r ON r.id = m.root_id
+                             WHERE e.work_id = ?1)",
+        [work_id],
+    )
+    .expect("rekeying");
+    refuse_the_series_update(&conn, work_id);
+
+    derive::derive(&conn).expect_err("the refusal fails the derive");
+
+    let path = crate::hand::path_for(&conn, work_id)
+        .expect("addressing")
+        .expect("a rooted work has an address");
+    assert!(
+        path.is_file(),
+        "the document is at the address the committed key gives: {}",
+        path.display()
+    );
+    let key_after: String = conn
+        .query_row(
+            "SELECT content_key FROM work WHERE id = ?1",
+            [work_id],
+            |r| r.get(0),
+        )
+        .expect("the work is still there");
+    assert_ne!(
+        key_after, key_before,
+        "the rekey was committed, so the document moved"
     );
 }
 
