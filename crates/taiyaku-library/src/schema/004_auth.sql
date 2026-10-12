@@ -24,8 +24,8 @@ ALTER TABLE user ADD COLUMN can_stream   INTEGER NOT NULL DEFAULT 1;
 --
 -- Migration 1 seeds `(1, 'local', 'admin')` with a NULL hash, so "make it NOT
 -- NULL" needs an answer for that row rather than a constraint it violates. It
--- gets `'!'`: not a well-formed PHC string, so `credential::verify_password`
--- refuses it for every password, the way /etc/shadow refuses a locked account.
+-- gets `'!'`: not a well-formed PHC string, so no password verifies against
+-- it, the way /etc/shadow refuses a locked account.
 -- `account::admin_exists` reads the same placeholder, which is why a fresh
 -- library has an admin row and no admin — and therefore why §5's claim route
 -- is still open on it. `taiyaku library user promote` replaces it, and §5

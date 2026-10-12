@@ -50,6 +50,9 @@ ureq = "3.3.0"
 # call, the one helper every crate's tests share.
 taiyaku-read = { path = "../taiyaku-read", features = ["test-support"] }
 zip = "7.2.0"
+# `hooks` for the verify-permit tests (O57): they see a commit from inside it, on
+# the thread that is writing it, to ask whether a permit was free at that moment.
+rusqlite = { version = "0.38", features = ["hooks"] }
 
 [lints]
 workspace = true

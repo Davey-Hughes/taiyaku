@@ -465,15 +465,16 @@ fn refuse(path: &str) -> Response {
 ///
 /// **Resolution happens inside `spawn_blocking`**, for the same reason every
 /// handler in `routes.rs` does: it reads SQLite through `state.library`, whose
-/// `conn()` is a `MutexGuard`, and a password additionally costs an argon2
-/// verify measured at 11.9 ms. Doing either on the async worker stalls that
-/// whole tokio worker, and on a `current_thread` runtime the whole runtime —
-/// which `auth::tests::the_guard_does_not_stall_the_runtime` asserts
-/// (named `routes::tests::a_progress_read_does_not_stall_the_runtime` until
-/// O71, which found that the guard, not a progress read, is what it sees), and
+/// `conn()` is a `MutexGuard`, and a password additionally waits for a verify
+/// permit (O57) and costs an argon2 verify measured at 11.9 ms. Doing any of
+/// it on the async worker stalls that whole tokio worker, and on a
+/// `current_thread` runtime the whole runtime — which
+/// `auth::tests::the_guard_does_not_stall_the_runtime` asserts (named
+/// `routes::tests::a_progress_read_does_not_stall_the_runtime` until O71,
+/// which found that the guard, not a progress read, is what it sees), and
 /// which it caught this middleware doing when the guard was first written. A
-/// guard is the one piece of middleware every request passes through,
-/// so it is the worst possible place to block.
+/// guard is the one piece of middleware every request passes through, so it is
+/// the worst possible place to block.
 pub(crate) async fn guard(
     State(state): State<Arc<ServeState>>,
     request: Request,
@@ -699,8 +700,14 @@ fn resolve(state: &ServeState, offered: &Offered) -> Resolved {
 /// `Library::conn()` hands out a `MutexGuard` over the one connection this
 /// process has (O42, O52), so verifying inside its scope would serialise every
 /// other request in the server behind 11.9 ms of hashing per login. The hash is
-/// read, the guard dropped, the verify done, and the connection re-taken only
-/// for the roots — three short holds rather than one long one.
+/// read, the guard dropped, the verify done, and the connection taken again
+/// afterwards — short holds rather than one long one.
+///
+/// **What it does hold across argon2 is one of the server's verify permits
+/// (O57)**, taken after the lockout has been read once and before it is read
+/// again, and given back once the failure is recorded or the verify has
+/// passed. The permit comes before the connection every time. The key path
+/// above returns before it is taken.
 fn from_basic(state: &ServeState, header: &str, client: std::net::IpAddr) -> Resolved {
     use taiyaku_library::{account, credential};
 
@@ -729,9 +736,10 @@ fn from_basic(state: &ServeState, header: &str, client: std::net::IpAddr) -> Res
     // `Authorization: Basic` verification only*". Without this a password is
     // guessable at any rate through any guarded route, while ten tries at the
     // login route lock the pair out — guarding the one door a guesser has no
-    // reason to use. Each guess also costs a `spawn_blocking` thread for 11.9 ms
-    // and argon2's 19 MiB buffer, so the limit is what bounds an unauthenticated
-    // denial of service as much as a dictionary.
+    // reason to use. Each guess also takes a `spawn_blocking` thread, and then
+    // one of the server's verify permits and the working memory that comes
+    // with it until its failure is recorded, so the limit is what bounds an
+    // unauthenticated denial of service as much as a dictionary.
     //
     // Checked before the account is looked up, so a locked-out pair costs no
     // argon2 at all.
@@ -743,21 +751,34 @@ fn from_basic(state: &ServeState, header: &str, client: std::net::IpAddr) -> Res
     // needs it more than the login route does, because it is reachable on every
     // guarded path rather than one.
     let wide = account::address_key(&client.to_string());
-    {
+    // Asked twice below, so written once: both reads must ask both keys and
+    // fail the same way.
+    let locked_out = || {
         let conn = state.library.conn();
         // **Fails closed.** `unwrap_or(false)` read any SQLite error as "not
         // locked out", and the errors reachable here — SQLITE_BUSY on the one
         // mutex-guarded connection `serve` and `library import` share — are
         // exactly the ones a flood produces. The control bounding both the
-        // dictionary attack and the 19 MiB-per-guess denial of service would
-        // have disappeared under the load that triggers it.
+        // dictionary attack and what each guess costs would have disappeared
+        // under the load that triggers it.
         // `admin_exists(...).unwrap_or(true)` in `session.rs` already had this
         // shape; this did not. Found by the second whole-branch review.
-        if account::is_address_locked_out(&conn, &wide).unwrap_or(true)
+        account::is_address_locked_out(&conn, &wide).unwrap_or(true)
             || account::is_locked_out(&conn, &key).unwrap_or(true)
-        {
-            return Resolved::TooMany;
-        }
+    };
+    if locked_out() {
+        return Resolved::TooMany;
+    }
+    // **That read bounds the flood and not the burst (O57)**: requests that
+    // arrive together all pass it before any of them has failed. So a permit
+    // is taken and the lockout read again under it, and the permit is kept
+    // until this request's own failure is recorded. The only requests
+    // between the second read and that record are the ones holding a permit.
+    // The first read stays for the caller already locked out, who is refused
+    // by it without a wait. `session::login` does the same.
+    let mut permit = state.auth.verifies.permit();
+    if locked_out() {
+        return Resolved::TooMany;
     }
 
     let found = {
@@ -779,7 +800,7 @@ fn from_basic(state: &ServeState, header: &str, client: std::net::IpAddr) -> Res
         // that an unknown name is indistinguishable from a wrong password by
         // response time. `let _ =` rather than an `#[expect]`, because the
         // lint is right that a returned bool is usually a decision.
-        let _ = credential::verify_password(&secret, credential::DECOY_HASH);
+        let _ = crate::session::verify_holding(&mut permit, &secret, credential::DECOY_HASH);
         let conn = state.library.conn();
         // Both, unconditionally — `||` short-circuits, and the wide key is
         // the counter that bounds the cost of this exact path.
@@ -790,9 +811,9 @@ fn from_basic(state: &ServeState, header: &str, client: std::net::IpAddr) -> Res
         }
         return Resolved::No;
     };
-    // The mutex is released above and re-taken below: argon2 runs holding
-    // nothing (O42, O52).
-    if !credential::verify_password(&secret, &phc) {
+    // The mutex is released above and re-taken below: argon2 runs holding the
+    // permit and not the connection (O42, O52).
+    if !crate::session::verify_holding(&mut permit, &secret, &phc) {
         let conn = state.library.conn();
         // A failure that cannot be recorded is answered as a lockout rather
         // than as an ordinary refusal: an unrecordable failure is an unbounded
@@ -806,6 +827,8 @@ fn from_basic(state: &ServeState, header: &str, client: std::net::IpAddr) -> Res
         }
         return Resolved::No;
     }
+    // The verify passed and there is no failure to record.
+    drop(permit);
 
     let conn = state.library.conn();
     // Getting it right forgets the mistakes before it — the pair only, so one

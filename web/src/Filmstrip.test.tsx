@@ -382,6 +382,18 @@ describe('reading direction', () => {
   })
 })
 
+describe('the rail', () => {
+  // O138. The class is what `styles/reader.css` hides the rail's scrollbar
+  // by: `styles/reader.css.test.ts` holds the declarations, and
+  // `Filmstrip.browser.test.tsx` that the two meet.
+  it('wears the class the stylesheet hides its scrollbar by', () => {
+    const host = mount(<Filmstrip {...props()} />)
+    expect((host.firstElementChild as HTMLElement).className).toBe(
+      'reader-strip-rail',
+    )
+  })
+})
+
 describe('recentring on a thumbnail load', () => {
   // This used to pin the opposite: a rail-level `load` listener that
   // re-centred on every descendant thumbnail's load, added back when a tile
@@ -462,7 +474,7 @@ describe('measuring --strip-unit at runtime', () => {
   // O140's measured phone case (390×844, dpr 3, mobile emulation): a
   // loaded one-unit tile's outer width is 68.19 px. Border 2 px either side
   // gives a measured unit of 64.19, ten-odd pixels past the nominal 54 the
-  // CSS constant claims — well outside the 0.5 px tolerance, so the
+  // rail is primed with — well outside the 0.5 px tolerance, so the
   // corrected value is written onto the rail once `medianTileWidth`'s
   // minimum sample (3, fix-round review finding A) agrees on it.
   it('writes the median measured unit once at least 3 one-unit tiles have loaded, past tolerance', () => {
@@ -563,13 +575,9 @@ describe('measuring --strip-unit at runtime', () => {
     expect(rail.style.getPropertyValue('--strip-unit')).toBe('54px')
   })
 
-  // O140's other measured case: under desktop emulation at dpr 1 on the same
-  // machine, where the rail subtracts 15 px of its own height, a loaded tile
-  // is 58.16 px against the same 58 px nominal (54 unit + 2×2 border) — a
-  // 0.16 px difference, inside tolerance, which must not cause a write.
-  // *What* performs that subtraction is in `tiles.ts`'s `refinedStripUnit`
-  // doc, and this test does not depend on the answer: it pins the tolerance,
-  // not a cause.
+  // A loaded tile 58.16 px wide against a 58 px nominal (54 unit + 2×2
+  // border) is a 0.16 px difference, inside tolerance, which must not cause
+  // a write.
   it('does not write the property when the measured median is within tolerance', () => {
     const host = mount(<Filmstrip {...unitProps()} />)
     const rail = primeRail(host)
@@ -1246,5 +1254,85 @@ describe('the strip as one stop (spec 2026-09-26 §3.2)', () => {
     expect(document.activeElement).toBe(target)
     expect(target?.getAttribute('aria-current')).toBe('true')
     expect(target?.tabIndex).toBe(0)
+  })
+})
+
+// O138. jsdom has no layout, so `scrollLeft` here is a number the handler
+// wrote and not a place the rail went: which way the rail moves on screen is
+// `Filmstrip.browser.test.tsx`'s to say. What is held here is that the rail
+// listens, applies `stripWheel`'s answer the way the rail runs, cancels what
+// it takes and nothing else, and leaves one listener behind a change of
+// direction rather than two.
+describe('the wheel on the rail', () => {
+  const railOf = (host: HTMLElement) => host.firstElementChild as HTMLElement
+  /** `false` once a listener has cancelled the event: `dispatchEvent`'s own answer. */
+  const send = (rail: HTMLElement, init: WheelEventInit) =>
+    rail.dispatchEvent(
+      new WheelEvent('wheel', { bubbles: true, cancelable: true, ...init }),
+    )
+
+  it('moves the rail right for a notch down where the pages run left to right', () => {
+    const rail = railOf(mount(<Filmstrip {...props({ reading: 'ltr' })} />))
+    expect(send(rail, { deltaY: 100 })).toBe(false)
+    expect(rail.scrollLeft).toBe(100)
+  })
+
+  it('moves it left where they run right to left', () => {
+    const rail = railOf(mount(<Filmstrip {...props({ reading: 'rtl' })} />))
+    expect(send(rail, { deltaY: 100 })).toBe(false)
+    expect(rail.scrollLeft).toBe(-100)
+  })
+
+  it('leaves a wheel it does not take uncancelled, and the rail where it was', () => {
+    const rail = railOf(mount(<Filmstrip {...props()} />))
+    expect(send(rail, { deltaY: 100, ctrlKey: true })).toBe(true)
+    expect(rail.scrollLeft).toBe(0)
+  })
+
+  // Two listeners would move the rail right and then left, and leave it at 0.
+  it('listens once after the direction is flipped', () => {
+    const host = mount(<Filmstrip {...props({ reading: 'ltr' })} />)
+    rerender(<Filmstrip {...props({ reading: 'rtl' })} />)
+    const rail = railOf(host)
+    send(rail, { deltaY: 100 })
+    expect(rail.scrollLeft).toBe(-100)
+  })
+
+  // The listener is on the rail itself: every case above dispatches at the
+  // rail, which a listener on any ancestor would also see. The target here is
+  // the rail's parent, the nearest element outside it.
+  it('leaves a wheel outside the rail alone, and takes the same wheel on it', () => {
+    const rail = railOf(mount(<Filmstrip {...props()} />))
+    const outside = rail.parentElement as HTMLElement
+    expect(send(outside, { deltaY: 100 })).toBe(true)
+    expect(rail.scrollLeft).toBe(0)
+    // THE CONTROL: the same wheel, at the rail, is taken.
+    expect(send(rail, { deltaY: 100 })).toBe(false)
+    expect(rail.scrollLeft).toBe(100)
+  })
+
+  // The cases above each send a wheel at the rail itself, from a rail at
+  // rest. A wheel in use is over a tile, the event bubbles up to the rail, and
+  // the rail is wherever the last wheel left it. So: from a rail that has
+  // already moved, at a tile, twice. Held here: the write adds to `scrollLeft`
+  // and does not assign it, a wheel over a tile is the rail's, and the
+  // listener outlives its first event.
+  it('moves a rail that has already moved, by a wheel on a tile, each time', () => {
+    const rail = railOf(mount(<Filmstrip {...props({ reading: 'ltr' })} />))
+    rail.scrollLeft = 250
+    const tile = rail.querySelector('button') as HTMLElement
+    expect(send(tile, { deltaY: 100 })).toBe(false)
+    expect(rail.scrollLeft).toBe(350)
+    expect(send(tile, { deltaY: 100 })).toBe(false)
+    expect(rail.scrollLeft).toBe(450)
+  })
+
+  // The bar is hidden by the stylesheet and the wheel is handled here, which
+  // makes `overflow-x: hidden` look like a tidy-up that shows nothing on
+  // screen. It would also take away the touch flick, the sideways swipe and
+  // Shift with the wheel, all of which are the browser's scrolling of this box.
+  it('is still a box the browser scrolls', () => {
+    const rail = railOf(mount(<Filmstrip {...props()} />))
+    expect(rail.style.overflowX).toBe('auto')
   })
 })

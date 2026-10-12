@@ -690,12 +690,13 @@ async fn neither_user_route_will_write_an_empty_password() {
     let (_, stored) = taiyaku_library::account::by_name(&conn, "reader")
         .expect("reads")
         .expect("exists");
+    let mut memory = taiyaku_library::credential::WorkingMemory::new();
     assert!(
-        taiyaku_library::credential::verify_password("hunter2", &stored),
+        taiyaku_library::credential::verify_password_in(&mut memory, "hunter2", &stored),
         "the original password still works, so the refusal wrote nothing"
     );
     assert!(
-        !taiyaku_library::credential::verify_password("", &stored),
+        !taiyaku_library::credential::verify_password_in(&mut memory, "", &stored),
         "and the empty one does not"
     );
 }

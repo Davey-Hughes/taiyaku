@@ -82,7 +82,8 @@
 // They are covered when two decodes actually collide on the permit and
 // uncovered when the scheduler happens not to overlap them. So the figures
 // quoted here are the lower of the two runs, and the honest margin is 67 lines
-// rather than 68.
+// rather than 68. (The semaphore has since moved to `limit.rs`, where a
+// password verify waits on it too; the two runs are from before that.)
 //
 // The two-point rule was not applied on top of that, and the reason it gives
 // does not transfer: docs/ci.md derives it from v8 counting what a run loaded,
@@ -490,8 +491,8 @@ reportAggregate(format, files)
  * workspace could lose with the aggregate threshold still green, so every file
  * at or under it is a file that could go entirely dark unnoticed by
  * `--fail-under-lines`. It is printed, not gated: the number moves every commit
- * and by a few lines of measurement noise besides (see the `cover.rs`
- * `Semaphore` note above), so a threshold on it would be red for reasons that
+ * and by a few lines of measurement noise besides (see the `Semaphore` note
+ * above), so a threshold on it would be red for reasons that
  * are not defects. What is gated is the per-file floor above, which does not
  * move with the margin.
  *

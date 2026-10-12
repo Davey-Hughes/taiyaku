@@ -51,7 +51,11 @@ fn an_account_is_found_by_name_with_its_stored_hash() {
         "migration 4 defaults both capabilities on"
     );
     assert!(account.can_stream);
-    assert!(credential::verify_password("hunter2", &stored));
+    assert!(credential::verify_password_in(
+        &mut credential::WorkingMemory::new(),
+        "hunter2",
+        &stored
+    ));
 
     assert!(by_name(&conn, "nobody").expect("reads").is_none());
 }
@@ -467,7 +471,11 @@ fn promotion_reaches_the_seeded_row_and_keeps_what_hangs_off_it() {
         })
         .expect("reads");
     assert_eq!(name, "davey");
-    assert!(credential::verify_password("a password", &hash));
+    assert!(credential::verify_password_in(
+        &mut credential::WorkingMemory::new(),
+        "a password",
+        &hash
+    ));
 
     let note: String = conn
         .query_row("SELECT body FROM note WHERE user_id = 1", [], |row| {
@@ -537,8 +545,16 @@ fn changing_a_password_ends_the_other_sessions_only() {
     );
 
     let (_, phc) = by_name(&conn, "davey").expect("reads").expect("exists");
-    assert!(credential::verify_password("second", &phc));
-    assert!(!credential::verify_password("first", &phc));
+    assert!(credential::verify_password_in(
+        &mut credential::WorkingMemory::new(),
+        "second",
+        &phc
+    ));
+    assert!(!credential::verify_password_in(
+        &mut credential::WorkingMemory::new(),
+        "first",
+        &phc
+    ));
 }
 
 /// An admin resetting somebody else's password ends every session that account
@@ -1735,7 +1751,11 @@ fn a_patched_password_ends_every_session_and_keeps_every_key() {
     assert!(sessions_of(&conn, id, None).expect("reads").is_empty());
     assert_eq!(keys_of(&conn, id).expect("reads").len(), 1);
     let (_, stored) = by_name(&conn, "reader").expect("reads").expect("exists");
-    assert!(credential::verify_password("rotated", &stored));
+    assert!(credential::verify_password_in(
+        &mut credential::WorkingMemory::new(),
+        "rotated",
+        &stored
+    ));
 }
 
 /// **An administrator may patch their own row while sending their role back

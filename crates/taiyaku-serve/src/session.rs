@@ -1,18 +1,22 @@
 //! The browser's half of the guard: a cookie, an origin check, and the two
 //! routes that start and end a session.
 //!
-//! An OPDS client needs none of this — it sends `Authorization: Basic` and is
-//! answered by `auth::from_basic`. What is here exists because a browser cannot
-//! hold a credential the way Panels can, and because a cookie brings a problem
-//! a header does not: it is sent by the browser whether or not the page asking
+//! An OPDS client needs none of the cookie — it sends `Authorization: Basic` and
+//! is answered by `auth::from_basic`. The cookie is here because a browser
+//! cannot hold a credential the way Panels can, and it brings a problem a
+//! header does not: it is sent by the browser whether or not the page asking
 //! for it is ours. [`origin_is_acceptable`] is the whole of the answer to that.
+//!
+//! The permits a password verify runs under are here as well
+//! ([`VerifyLimit`]), and both halves take them.
 //!
 //! Spec A2 §4 is the design.
 
 use axum::extract::{Request, State};
 use axum::http::{Method, StatusCode, header};
 use axum::response::{IntoResponse as _, Response};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
+use taiyaku_library::credential::WorkingMemory;
 
 use crate::ServeState;
 use crate::auth::Principal;
@@ -20,7 +24,8 @@ use crate::auth::Principal;
 pub(crate) const COOKIE_NAME: &str = "taiyaku_session";
 const MAX_AGE_SECS: i64 = taiyaku_library::account::SESSION_DAYS * 24 * 60 * 60;
 
-/// What `serve` knows about the deployment it sits in.
+/// What `serve` knows about the deployment it sits in, and the permits its
+/// password verifies run under.
 ///
 /// Small on purpose: spec A2 §11 puts TLS in a reverse proxy, so none of it is
 /// here. §6 is the whole of what this server knows about being behind one.
@@ -42,6 +47,183 @@ pub struct AuthConfig {
     /// the default and trusts nobody, so an unconfigured server rate-limits on
     /// the address that actually connected.
     pub trusted_proxies: Vec<crate::auth::Cidr>,
+    /// The permits a password verify runs under (O57). See [`VerifyLimit`]
+    /// for why they are here and not in a `static`.
+    pub verifies: VerifyLimit,
+}
+
+/// How many password verifies one server runs at once, and so the most
+/// working memories it makes (O57).
+///
+/// **What it bounds is memory.** A verify runs argon2 in a [`WorkingMemory`],
+/// which for a hash this server made is as large as `credential`'s memory
+/// cost. The memory is its permit's for as long as the permit is held, and a
+/// server makes a new one only when every one it has is in a permit holder's
+/// hands. So it never makes more of them than this, and it keeps the ones it
+/// has made. Without the permits every request of a burst would run in a
+/// buffer of its own. With them a request past the count waits its turn on a
+/// `spawn_blocking` thread, holding no memory.
+///
+/// The count is a decision and not a measurement. The memory it bounds does
+/// not depend on how fast the host is.
+///
+/// **Verifies, not hashes.** The routes that set a password hash it while
+/// they hold the library's one connection, so at most one of those runs at a
+/// time already, and none of them takes a permit. They hash in a memory
+/// `credential::hash_password` keeps for the process. It is one memory for as
+/// long as those routes run one at a time, and the only one argon2 runs in
+/// here that is not a permit's.
+pub(crate) const MAX_CONCURRENT_VERIFIES: usize = 4;
+
+/// The permits a password verify runs under, [`MAX_CONCURRENT_VERIFIES`] of
+/// them for each server, and the working memories those verifies run in.
+///
+/// **A field of [`AuthConfig`] rather than a `static`**, so that each
+/// `ServeState` has its own. One process serves one library, so in `serve`
+/// the two are the same thing. In the tests they are not: a test holds every
+/// permit of its own server to see what waits for one, and with a `static` it
+/// would hold every other test's too wherever tests share a process, which is
+/// how `.cargo/mutants.toml` runs them. `cover::tests`' `ONE_HOLDER` is what
+/// that costs a `static`.
+///
+/// Cloning shares the permits and the memories, so a copy of the
+/// configuration is not a second limit.
+#[derive(Debug, Clone)]
+pub struct VerifyLimit(Arc<Verifies>);
+
+/// What every clone of one [`VerifyLimit`] shares.
+#[derive(Debug)]
+struct Verifies {
+    permits: crate::limit::Semaphore,
+    /// The working memories no permit is holding.
+    ///
+    /// **A server never makes more of them than it has permits.** Only a
+    /// permit holder takes one from here or makes one, it makes one only when
+    /// there is none here to take, and it puts its own back before its permit
+    /// is anyone else's. So whenever one is made, every memory made before it
+    /// is held by another permit holder, and there are fewer of those than
+    /// there are permits.
+    ///
+    /// **A leaf lock.** It is taken to move one memory in or out and released
+    /// at once: never held while waiting for a permit or for the library's
+    /// connection, and never across a verify.
+    spare: Mutex<Vec<WorkingMemory>>,
+    /// How many working memories this has made.
+    #[cfg(test)]
+    made: std::sync::atomic::AtomicUsize,
+}
+
+impl Default for VerifyLimit {
+    fn default() -> Self {
+        Self(Arc::new(Verifies {
+            permits: crate::limit::Semaphore::new(MAX_CONCURRENT_VERIFIES),
+            spare: Mutex::new(Vec::new()),
+            #[cfg(test)]
+            made: std::sync::atomic::AtomicUsize::new(0),
+        }))
+    }
+}
+
+impl VerifyLimit {
+    /// Wait for a permit, and hold it until the returned value drops. With
+    /// it comes a working memory: a spare one an earlier permit gave back, or,
+    /// when none is spare, a new one that holds nothing until a verify runs
+    /// in it.
+    ///
+    /// **It blocks, so it is called on the blocking pool and never on a
+    /// runtime worker**, like the SQLite reads on either side of it.
+    ///
+    /// **Take it before the library's connection, and never while holding
+    /// the connection.** A verifying path holds its permit and then asks for
+    /// the connection. Anything that held the connection and waited here
+    /// would stop every one of them, and they it.
+    #[must_use = "a permit that is not kept is given back at once"]
+    pub(crate) fn permit(&self) -> VerifyPermit<'_> {
+        let held = self.0.permits.acquire();
+        // Asked for only now that the permit is held: `Verifies::spare` has
+        // why that is what bounds how many are made.
+        let spare = self
+            .0
+            .spare
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .pop();
+        let memory = spare.unwrap_or_else(|| {
+            #[cfg(test)]
+            self.0
+                .made
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            WorkingMemory::new()
+        });
+        VerifyPermit {
+            memory,
+            spare: &self.0.spare,
+            _held: held,
+        }
+    }
+
+    /// Every permit at once, so that the next verify waits until they drop.
+    #[cfg(test)]
+    pub(crate) fn hold_all(&self) -> Vec<VerifyPermit<'_>> {
+        (0..MAX_CONCURRENT_VERIFIES)
+            .map(|_| self.permit())
+            .collect()
+    }
+
+    /// How many working memories this server has made since it started.
+    #[cfg(test)]
+    pub(crate) fn memories_made(&self) -> usize {
+        self.0.made.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// How each working memory no permit is holding prints itself. `Debug`
+    /// is the one thing a memory says outside its own crate, and what it says
+    /// is how much it holds.
+    #[cfg(test)]
+    pub(crate) fn spare_memories(&self) -> Vec<String> {
+        self.0
+            .spare
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .map(|memory| format!("{memory:?}"))
+            .collect()
+    }
+}
+
+/// One of a server's verify permits, and the working memory a verify under
+/// it runs in. Both are given back when it drops.
+#[derive(Debug)]
+pub(crate) struct VerifyPermit<'a> {
+    memory: WorkingMemory,
+    spare: &'a Mutex<Vec<WorkingMemory>>,
+    _held: crate::limit::SemaphoreGuard<'a>,
+}
+
+impl Drop for VerifyPermit<'_> {
+    /// **The memory goes back before the permit does.** This runs before
+    /// `_held` drops, so by the time anyone else can hold this permit its
+    /// memory is spare again. In the other order the next holder could find
+    /// nothing spare and make a memory the server already had.
+    fn drop(&mut self) {
+        let memory = std::mem::take(&mut self.memory);
+        self.spare
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(memory);
+    }
+}
+
+/// Whether `password` is the one `phc` was made from, for a caller holding a
+/// permit, computed in that permit's working memory.
+///
+/// **The one place this crate verifies a password somebody offered.** It
+/// takes the permit so that a verify cannot be written without one in hand,
+/// and takes it mutably because the permit's memory is what argon2 fills. A
+/// permit bound to `_` is given back before the next statement runs, and it
+/// has no name to pass here.
+pub(crate) fn verify_holding(permit: &mut VerifyPermit<'_>, password: &str, phc: &str) -> bool {
+    taiyaku_library::credential::verify_password_in(&mut permit.memory, password, phc)
 }
 
 /// The `Set-Cookie` value for a new session.
@@ -306,9 +488,9 @@ pub(crate) async fn login(
         .and_then(|value| value.to_str().ok())
         .map(str::to_string);
 
-    // `spawn_blocking` for the same two reasons the guard uses it: SQLite behind
-    // a mutex, and an argon2 verify measured at 11.9 ms. A login is the one
-    // request guaranteed to pay the second.
+    // `spawn_blocking` for the reasons the guard uses it: SQLite behind a
+    // mutex, an argon2 verify measured at 11.9 ms, and since O57 a wait for a
+    // permit before it. A login that is not locked out pays all three.
     let opened = tokio::task::spawn_blocking(move || {
         use taiyaku_library::{account, credential};
 
@@ -322,16 +504,31 @@ pub(crate) async fn login(
         // is a fresh counter and the decoy verify below is free to run — see
         // `account::address_key`.
         let wide = account::address_key(&address.to_string());
-        {
+        // Asked twice below, so written once: both reads must ask both keys
+        // and fail the same way.
+        let locked_out = || {
             let conn = state.library.conn();
             // Fails closed: `unwrap_or(false)` read a SQLITE_BUSY on the one
             // shared connection as "not locked out", losing the limiter under
             // exactly the load that triggers it.
-            if account::is_address_locked_out(&conn, &wide).unwrap_or(true)
+            account::is_address_locked_out(&conn, &wide).unwrap_or(true)
                 || account::is_locked_out(&conn, &key).unwrap_or(true)
-            {
-                return Attempt::TooMany;
-            }
+        };
+        if locked_out() {
+            return Attempt::TooMany;
+        }
+        // **O57: a permit, and then the same question a second time.** The
+        // read above is what refuses a caller already locked out: it costs
+        // that caller neither a wait nor a verify. It cannot bound a burst,
+        // because requests that arrive together all pass it before any of
+        // them has failed. So the lockout is read again here, by a request
+        // holding a permit it keeps until its own failure is recorded. The
+        // only requests between this read and that record are the ones
+        // holding a permit, so a burst costs the allowance it found and at
+        // most one more verify for each other permit.
+        let mut permit = state.auth.verifies.permit();
+        if locked_out() {
+            return Attempt::TooMany;
         }
 
         let found = {
@@ -344,7 +541,7 @@ pub(crate) async fn login(
         // `credential::DECOY_HASH`; the same split exists in `auth::from_basic`,
         // and measured here at 274 ms against 4 ms before this line.
         let Some((found, phc)) = found else {
-            let _ = credential::verify_password(&body.password, credential::DECOY_HASH);
+            let _ = verify_holding(&mut permit, &body.password, credential::DECOY_HASH);
             let conn = state.library.conn();
             // **Both, unconditionally.** `||` short-circuits, so a pair-key
             // failure that errored skipped the wide key entirely — the one
@@ -357,8 +554,9 @@ pub(crate) async fn login(
             }
             return Attempt::No;
         };
-        // Verified holding no lock — see `auth::from_basic`.
-        if !credential::verify_password(&body.password, &phc) {
+        // Verified holding the permit and not the library's connection — see
+        // `auth::from_basic`.
+        if !verify_holding(&mut permit, &body.password, &phc) {
             let conn = state.library.conn();
             // An unrecordable failure is an unbounded one; the safe reading of
             // "the limiter is not working" is to stop rather than to continue.
@@ -373,6 +571,9 @@ pub(crate) async fn login(
             }
             return Attempt::No;
         }
+        // The verify passed and there is no failure to record, so the next
+        // one may start.
+        drop(permit);
 
         let token = credential::mint_token();
         {
@@ -896,16 +1097,14 @@ pub(crate) async fn change_password(
     let token = token_of(&headers);
 
     let changed = tokio::task::spawn_blocking(move || {
-        use taiyaku_library::{account, credential};
+        use taiyaku_library::account;
 
         // **§7 applies here too**, and did not: this verifies the current
         // password with argon2 and nothing counted the failures — unlimited
         // guesses at the one secret standing between a borrowed session and
         // permanent account takeover, which is the exact scenario this route's
-        // own doc says the current-password requirement exists for. It is also
-        // an authenticated denial of service, since every guess pins a
-        // `spawn_blocking` thread for 11.9 ms and allocates 19 MiB. Found by the
-        // third whole-branch review.
+        // own doc says the current-password requirement exists for. Found by
+        // the third whole-branch review.
         // **Keyed on the account as well as the address.** A bare
         // `"  change-password"` made one counter for every reader behind one
         // address: a household where somebody mistyped their old password ten
@@ -920,11 +1119,20 @@ pub(crate) async fn change_password(
             &address.to_string(),
             &format!("  change-password {user_id}"),
         );
-        {
+        // Asked twice below, so written once.
+        let locked_out = || {
             let conn = state.library.conn();
-            if account::is_locked_out(&conn, &key).unwrap_or(true) {
-                return Some(Outcome::TooMany);
-            }
+            account::is_locked_out(&conn, &key).unwrap_or(true)
+        };
+        if locked_out() {
+            return Some(Outcome::TooMany);
+        }
+        // O57: a permit, and the same question again under it, the permit
+        // kept until a failure is recorded. `login` has the reasoning. This
+        // route is behind the guard, so its burst is one account's.
+        let mut permit = state.auth.verifies.permit();
+        if locked_out() {
+            return Some(Outcome::TooMany);
         }
 
         let phc = {
@@ -936,14 +1144,18 @@ pub(crate) async fn change_password(
                 .ok()?;
             account::by_name(&conn, &name).ok()??.1
         };
-        // Verified holding no lock, like every other argon2 call on this path.
-        if !credential::verify_password(&body.current, &phc) {
+        // Verified holding the permit and not the connection.
+        if !verify_holding(&mut permit, &body.current, &phc) {
             let conn = state.library.conn();
             if account::note_failure(&conn, &key).is_err() {
                 return Some(Outcome::TooMany);
             }
             return Some(Outcome::Wrong);
         }
+        // Given back before the new password is hashed. `set_password` hashes
+        // while it holds the connection, as every route that sets a password
+        // does, and none of them holds a permit.
+        drop(permit);
         let conn = state.library.conn();
         // `token` is kept, so a reader is not signed out of the browser they
         // changed it from. Every other session ends (§4).

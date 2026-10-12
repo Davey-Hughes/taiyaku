@@ -258,7 +258,7 @@ export function zoomAt(
 /**
  * `WheelEvent.deltaMode`'s three values, named — `DOM_DELTA_PIXEL`,
  * `DOM_DELTA_LINE`, `DOM_DELTA_PAGE`. Not guesses; these are fixed by the
- * event interface. `wheelBy` still reads anything *else* as pixels rather than
+ * event interface. `wheelNotches` reads anything *else* as pixels rather than
  * switching exhaustively — see its default arm for why.
  */
 const PIXELS = 0
@@ -346,8 +346,28 @@ export function wheelBy(
   // `1` rather than as `NaN`: `zoomAt` declines a non-finite `by` anyway, but
   // a factor of exactly one says "no zoom was asked for" here, where the
   // decision is actually made, instead of deferring it one call.
-  if (!Number.isFinite(wheel.deltaY) || wheel.deltaY === 0) return 1
   if (!Number.isFinite(step) || step <= 0) return 1
+  const notches = wheelNotches(wheel)
+  if (notches === 0) return 1
+  // Up the page is `deltaY < 0` in every mode, and up is zoom in.
+  return step ** (wheel.deltaY < 0 ? notches : -notches)
+}
+
+/**
+ * How many notches one wheel event carries: `wheelBy`'s normalisation, on its
+ * own, for a caller that wants the count and not a zoom factor. The strip's
+ * rail is the other one (`tiles.ts`'s `stripWheel`).
+ *
+ * Never negative: which way the wheel turned is `deltaY`'s sign, and the
+ * caller's to read. `0` for a wheel that cannot be read, or that carries
+ * nothing.
+ */
+export function wheelNotches(wheel: {
+  deltaY: number
+  deltaMode: number
+  ctrlKey: boolean
+}): number {
+  if (!Number.isFinite(wheel.deltaY) || wheel.deltaY === 0) return 0
   const pinch = wheel.ctrlKey && wheel.deltaMode === PIXELS
   const per = pinch
     ? PER_NOTCH.pinch
@@ -359,12 +379,10 @@ export function wheelBy(
           // read as pixels zooms too slowly, where reading it as lines or
           // pages would zoom about thirty or a hundred times too fast.
           PER_NOTCH.pixels
-  const notches = Math.min(
+  return Math.min(
     Math.abs(wheel.deltaY) / per,
     pinch ? MAX_PINCH_NOTCHES : MAX_NOTCHES,
   )
-  // Up the page is `deltaY < 0` in every mode, and up is zoom in.
-  return step ** (wheel.deltaY < 0 ? notches : -notches)
 }
 
 /**

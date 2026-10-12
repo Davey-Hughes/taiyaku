@@ -57,6 +57,15 @@ fn same_anchor(a: &Note, b: &Note) -> bool {
     a.edition == b.edition && a.slot == b.slot && a.region == b.region
 }
 
+/// [`validate_against`], against the work's own sidecar.
+///
+/// # Errors
+///
+/// Returns what [`validate_against`] returns.
+pub fn validate(notes: &Notes, work: &Work, stored: &Notes) -> Result<(), Invalid> {
+    validate_against(notes, &work.id, &work.sidecar(), stored)
+}
+
 /// Everything that has to be true of a notes document before it replaces one.
 ///
 /// Refusing here is what keeps a note from being written against an edition
@@ -78,29 +87,38 @@ fn same_anchor(a: &Note, b: &Note) -> bool {
 /// *new* bad anchor, and moving an existing note onto one — the cases where
 /// this write is what makes the anchor wrong.
 ///
+/// **Against the sidecar it is handed, which need not be the work's whole
+/// one.** `routes::put_notes` hands it the document a caller is shown, so an
+/// edition their grant hides is an edition the work does not have, here and
+/// in the refusal's words (O60).
+///
 /// # Errors
 ///
 /// Returns `Invalid::Refused` (a 400's shape) if `notes.work` does not match
-/// `work.id`, if two notes in the document share an `id`, if a note's colour
+/// `work`, if two notes in the document share an `id`, if a note's colour
 /// is not lowercase ASCII letters, digits and dashes of at most 24
 /// characters, or if a note's region strays outside `0..1` of its slot by
 /// more than floating-point slack.
 ///
 /// Returns `Invalid::Missing` (a 404's shape) if a note's anchor — its
-/// `edition` and `slot` — is new or has moved, and names an edition `work`
+/// `edition` and `slot` — is new or has moved, and names an edition `sidecar`
 /// does not have, or a slot at or past that edition's slot count. An anchor
 /// already present, unmoved, in `stored` is exempt from that edition/slot
 /// check, which is what keeps a re-solve that invalidates an untouched
 /// note's anchor from refusing every write on the work thereafter.
-pub fn validate(notes: &Notes, work: &Work, stored: &Notes) -> Result<(), Invalid> {
-    if notes.work != work.id {
+pub fn validate_against(
+    notes: &Notes,
+    work: &str,
+    sidecar: &taiyaku_core::Sidecar,
+    stored: &Notes,
+) -> Result<(), Invalid> {
+    if notes.work != work {
         return Err(Invalid::Refused(format!(
             "these notes name the work `{}`, but this is `{}`",
-            notes.work, work.id
+            notes.work, work
         )));
     }
 
-    let sidecar = work.sidecar();
     let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
     for note in &notes.notes {
         if !seen.insert(note.id.as_str()) {
@@ -123,7 +141,7 @@ pub fn validate(notes: &Notes, work: &Work, stored: &Notes) -> Result<(), Invali
             let edition = sidecar.editions.get(&note.edition).ok_or_else(|| {
                 Invalid::Missing(format!(
                     "note `{}` names the edition `{}`, which work `{}` does not have",
-                    note.id, note.edition, work.id
+                    note.id, note.edition, work
                 ))
             })?;
 
@@ -270,14 +288,14 @@ pub fn load(library: &Library, work: &Work, user_id: i64) -> Result<Option<Notes
 /// a work label, and `taiyaku_library::state::notes` reconstructs it on read
 /// from `work_id`'s own slug — which, by construction, is `work.id`, so a
 /// caller-supplied `notes.work` that differs never survives to be read back
-/// differently. `notes::validate` already refuses any document where it
-/// differs before this is ever called, so nothing here re-checks it.
+/// differently. `notes::validate_against` already refuses any document where
+/// it differs before this is ever called, so nothing here re-checks it.
 ///
 /// # Errors
 ///
 /// Returns an error if SQLite fails — including a `UNIQUE` violation on a
-/// note `id` repeated in `notes.notes`, since this module's own `validate`
-/// is what is relied on to have refused that already.
+/// note `id` repeated in `notes.notes`, since this module's own
+/// `validate_against` is what is relied on to have refused that already.
 pub fn store(library: &Library, work: &Work, user_id: i64, notes: &Notes) -> Result<(), String> {
     let conn = library.conn();
     let work_id = works::row_id_for_write(&conn, work)?;

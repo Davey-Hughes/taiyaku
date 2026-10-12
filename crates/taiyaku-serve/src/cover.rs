@@ -32,7 +32,6 @@
 //! directory is cleared by hand.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Condvar, Mutex};
 
 use taiyaku_read::MAX_DECODE_ALLOC;
 
@@ -403,64 +402,14 @@ fn cached(path: &Path) -> Option<Vec<u8>> {
 /// while another finishes.
 const MAX_CONCURRENT_GENERATIONS: usize = 2;
 
-/// A minimal counting semaphore, built on `Mutex` and `Condvar` so this stays
-/// dependency-free.
+/// The permits [`MAX_CONCURRENT_GENERATIONS`] describes.
 ///
 /// Guards only the *generation* step — fetching and decoding a cover or tile in
 /// `at_path`, resizing a reading page in `cached_or_generated_page` — never the
 /// cache-hit read, which has to stay fully parallel or a warm OPDS grid would
 /// queue behind a decode limit it does not need.
-#[derive(Debug)]
-struct Semaphore {
-    available: Mutex<usize>,
-    released: Condvar,
-}
-
-impl Semaphore {
-    const fn new(permits: usize) -> Self {
-        Self {
-            available: Mutex::new(permits),
-            released: Condvar::new(),
-        }
-    }
-
-    /// Block until a permit is free, then hold it until the returned guard
-    /// drops.
-    fn acquire(&self) -> SemaphoreGuard<'_> {
-        let mut available = self
-            .available
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        while *available == 0 {
-            available = self
-                .released
-                .wait(available)
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-        }
-        *available -= 1;
-        SemaphoreGuard { semaphore: self }
-    }
-}
-
-#[derive(Debug)]
-struct SemaphoreGuard<'a> {
-    semaphore: &'a Semaphore,
-}
-
-impl Drop for SemaphoreGuard<'_> {
-    fn drop(&mut self) {
-        let mut available = self
-            .semaphore
-            .available
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        *available += 1;
-        drop(available);
-        self.semaphore.released.notify_one();
-    }
-}
-
-static GENERATION_LIMIT: Semaphore = Semaphore::new(MAX_CONCURRENT_GENERATIONS);
+static GENERATION_LIMIT: crate::limit::Semaphore =
+    crate::limit::Semaphore::new(MAX_CONCURRENT_GENERATIONS);
 
 /// Decode a page with this crate's allocation ceiling in force.
 ///

@@ -456,11 +456,9 @@ async fn list_works(
 /// single-reader deployment pays nothing for this. A grant that names roots
 /// is asked on the blocking pool, through [`on_the_grant`] (O115).
 ///
-/// **Progress, notes and truth are deliberately not guarded here.** They are
-/// per-user state keyed on a work rather than the library's material, a
-/// reader can only write their own, and widening the check to them is a
-/// question about what a grant *means* rather than about what it leaks —
-/// recorded as an open item rather than answered in a fix round.
+/// **Progress, notes and truth name a work and no edition, so they ask
+/// [`visible_editions_or_refuse`] instead** (O60): a work the grant hides
+/// whole is refused there as it is here.
 pub(crate) async fn refuse_if_hidden(
     state: &Arc<ServeState>,
     extensions: &axum::http::Extensions,
@@ -769,6 +767,22 @@ fn filter_sidecar_editions(
         filtered.hub = first.clone();
     }
     filtered
+}
+
+/// The sidecar a write is validated against for this caller: `found`'s own
+/// for a caller with no grant limits, and [`filter_sidecar_editions`]'s copy
+/// for one whose grant names roots.
+///
+/// **So an edition outside the grant is refused in the words an edition the
+/// work does not have is refused in**, by the check that already refuses the
+/// second (O60). `put_progress` and `put_notes` each look an edition up in
+/// this document and are given no second question to ask.
+fn sidecar_as_seen(found: &Work, visible: Option<&HashSet<String>>) -> Arc<taiyaku_core::Sidecar> {
+    let sidecar = found.sidecar();
+    match visible {
+        Some(keys) => Arc::new(filter_sidecar_editions(&sidecar, keys)),
+        None => sidecar,
+    }
 }
 
 async fn get_sidecar(
@@ -1205,6 +1219,13 @@ async fn get_notes(
         Ok(id) => id,
         Err(missing) => return missing.into_response(),
     };
+    // O60: a work outside the caller's grant is answered as a slug no work
+    // holds. Asked here, where the work is looked up. For an account with no
+    // grant limits the question is answered without the library
+    // (`on_the_grant`).
+    if let Err(refusal) = visible_editions_or_refuse(&state, &extensions, &id).await {
+        return refusal;
+    }
     let loaded = tokio::task::spawn_blocking(move || {
         let found = state.find_blocking(&id).map_err(NoNotes::NotFound)?;
         let notes = crate::notes::load(&state.library, &found, user_id)
@@ -1273,6 +1294,14 @@ async fn put_notes(
         Err(missing) => return missing.into_response(),
     };
 
+    // O60, as `get_notes` asks it: after the body is parsed, so a body that
+    // is not notes is refused as that whatever work it names. The answer is
+    // kept for `notes::validate_against` below.
+    let visible = match visible_editions_or_refuse(&state, &extensions, &id).await {
+        Ok(visible) => visible,
+        Err(refusal) => return refusal,
+    };
+
     // Serialising, hashing and writing all block, and the read-compare-write
     // below holds an exclusive lock across a file write — `get_page`'s
     // reasoning about the async worker applies unchanged.
@@ -1315,8 +1344,14 @@ async fn put_notes(
         // write is not re-checked, which is what stops one note left pointing
         // at an edition a re-solve renamed from refusing every write that
         // follows it — including the one that would remove it. See
-        // `notes::validate`.
-        crate::notes::validate(&incoming, &found, &current).map_err(|why| match why {
+        // `notes::validate_against`.
+        crate::notes::validate_against(
+            &incoming,
+            &found.id,
+            &sidecar_as_seen(&found, visible.as_ref()),
+            &current,
+        )
+        .map_err(|why| match why {
             crate::notes::Invalid::Missing(message) => NoNotes::NotFound(message),
             crate::notes::Invalid::Refused(message) => NoNotes::Refused(message),
         })?;
@@ -1350,10 +1385,10 @@ async fn put_notes(
 /// Why a truth request could not be answered.
 ///
 /// `NoNotes`'s split, minus `Refused`: nothing here validates an incoming
-/// document against the sidecar the way `notes::validate` does — a truth
-/// document names no slot and no edition list to check a page against — so
-/// there is no third kind of client mistake to tell apart from a missing
-/// work.
+/// document against the sidecar the way `notes::validate_against` does — a
+/// truth document names no slot and no edition list to check a page against
+/// — so there is no third kind of client mistake to tell apart from a
+/// missing work.
 #[derive(Debug)]
 enum NoTruth {
     NotFound(String),
@@ -1381,9 +1416,15 @@ impl IntoResponse for NoTruth {
 /// one.
 async fn get_truth(
     State(state): State<Arc<ServeState>>,
+    extensions: axum::http::Extensions,
     AxPath(id): AxPath<String>,
     headers: HeaderMap,
 ) -> Response {
+    // O60, as `get_notes` asks it. A truth document is shared, and a caller
+    // whose grant hides the whole work is not told the work exists.
+    if let Err(refusal) = visible_editions_or_refuse(&state, &extensions, &id).await {
+        return refusal;
+    }
     // A file read, on the same disk a page comes from and behind the same NFS
     // mount — `get_page`'s reasoning about the async worker applies unchanged
     // (O12).
@@ -1435,6 +1476,7 @@ async fn get_truth(
 #[allow(clippy::result_large_err)]
 async fn put_truth(
     State(state): State<Arc<ServeState>>,
+    extensions: axum::http::Extensions,
     AxPath(id): AxPath<String>,
     headers: HeaderMap,
     body: axum::body::Bytes,
@@ -1452,6 +1494,11 @@ async fn put_truth(
         Ok(doc) => doc,
         Err(why) => return bad_request(why),
     };
+
+    // O60, as `put_notes` asks it: after the body is parsed.
+    if let Err(refusal) = visible_editions_or_refuse(&state, &extensions, &id).await {
+        return refusal;
+    }
 
     // Serialising, hashing and writing all block, and the read-compare-write
     // below holds an exclusive lock across a file write — `get_page`'s
@@ -1530,12 +1577,29 @@ async fn get_progress(
         Err(missing) => return missing.into_response(),
     };
 
+    // O60, as `get_notes` asks it. The answer is kept: it is the set of
+    // editions this caller may be told of.
+    let visible = match visible_editions_or_refuse(&state, &extensions, &id).await {
+        Ok(visible) => visible,
+        Err(refusal) => return refusal,
+    };
+
     // O12: a file read, on the same disk a page comes from and behind the same
     // NFS mount. `get_page`'s reasoning above applies to it unchanged — these
     // two handlers simply did not get it when M2 wrote them.
     let loaded = tokio::task::spawn_blocking(move || {
         let found = state.find_blocking(&id).map_err(NoProgress::NotFound)?;
-        crate::progress::load(&state.library, &found, user_id).map_err(NoProgress::Failed)
+        crate::progress::load(&state.library, &found, user_id)
+            .map(|mut positions| {
+                // A position on an edition outside the grant is left out, as
+                // `get_sidecar` leaves the edition out. With none left the
+                // answer below is 204, nothing recorded.
+                if let Some(keys) = &visible {
+                    positions.retain(|position| keys.contains(&position.edition));
+                }
+                positions
+            })
+            .map_err(NoProgress::Failed)
     })
     .await;
 
@@ -1545,8 +1609,8 @@ async fn get_progress(
         // is that same fact, and it stays a status code rather than becoming
         // a document a client has to unpack.
         Ok(Ok(positions)) if positions.is_empty() => StatusCode::NO_CONTENT.into_response(),
-        // Every edition the reader holds a position in, newest first —
-        // `crate::progress::load`'s own promise, unchanged here.
+        // The positions the closure above let through, newest first:
+        // `crate::progress::load`'s order, kept.
         Ok(Ok(positions)) => {
             axum::Json(serde_json::json!({ "positions": positions })).into_response()
         }
@@ -1570,13 +1634,22 @@ async fn put_progress(
         Err(missing) => return missing.into_response(),
     };
 
+    // O60, as `get_notes` asks it. The answer is kept for the edition check
+    // below.
+    let visible = match visible_editions_or_refuse(&state, &extensions, &id).await {
+        Ok(visible) => visible,
+        Err(refusal) => return refusal,
+    };
+
     // Validation moves in here with the write rather than staying outside it.
     // It reads the in-memory sidecar and blocks on nothing, but splitting the
     // handler across the boundary would mean looking the work up twice — once
     // to validate and once inside the closure, which cannot borrow across it.
     let stored = tokio::task::spawn_blocking(move || {
         let found = state.find_blocking(&id).map_err(NoProgress::NotFound)?;
-        let sidecar = found.sidecar();
+        // The document this caller is shown (O60), so an edition outside the
+        // grant is refused just below as one the work does not have.
+        let sidecar = sidecar_as_seen(&found, visible.as_ref());
         let edition = sidecar.editions.get(&progress.edition).ok_or_else(|| {
             NoProgress::NotFound(format!("no edition `{}` in work `{id}`", progress.edition))
         })?;
@@ -1760,8 +1833,7 @@ fn one_slot(text: &str, side: &str) -> Result<taiyaku_core::Slot, Response> {
 /// sidecar this handler returns and write shared `alignment`/`run` rows for a
 /// work outside every root it held — worse than the read leaks the sibling
 /// routes closed, because an alignment is shared library truth rather than
-/// per-account state, and O60's "nothing leaks" reasoning for progress, notes
-/// and truth does not carry to it.
+/// per-account state.
 ///
 /// **Filters its response exactly as `get_sidecar` does, and for the same
 /// reason — this was declared a 404-only lookup and was not one.** This
@@ -2321,7 +2393,7 @@ pub(crate) enum GrantPosture {
     /// A list: the route answers 200, and material outside the grant must
     /// simply never be named in the body.
     Filters,
-    /// **Both of the above, for one route with two distinct grant-facing
+    /// **Both of the above, for a route with two distinct grant-facing
     /// jobs.** A single posture per route was the table's own premise until
     /// `/api/works/{work}/alignments` broke it: `patch_alignments` refuses a
     /// request that itself *names* a withheld edition (`Refuses`, on the
@@ -2333,48 +2405,22 @@ pub(crate) enum GrantPosture {
     /// filter went unproven — `every_route_declares_its_grant_posture`'s
     /// `Filters` completeness check has no reason to look at a route the
     /// table calls `Refuses`. A second table (refuse-postures crossed with
-    /// filter-postures) was rejected: every other route needs only one axis,
-    /// so a second table would carry an empty column for all but this one
-    /// entry. A combined variant costs one arm in each match already written
-    /// for `Refuses` and `Filters` and states the truth in one place.
+    /// filter-postures) was rejected: most routes need only one axis, so a
+    /// second table would carry an empty column for nearly every entry. A
+    /// combined variant costs one arm in each match already written for
+    /// `Refuses` and `Filters` and states the truth in one place.
     RefusesAndFilters,
     /// The grant cannot apply — `reason` says why, stated per entry rather
     /// than inherited, the same rule [`open_routes`] holds its own list to.
     GrantIndependent { reason: &'static str },
-    /// **Not one of the three above, and deliberately so.** Reserved for a
-    /// route that is neither: shared library material, the way an alignment
-    /// or a sidecar is, so `GrantIndependent` would misstate it as being
-    /// about the account rather than the library — but unenforced, so no
-    /// request against it can produce the 404 `Refuses` would assert without
-    /// the test asserting something false about what the code does today.
-    /// `auth::tests::every_route_declares_its_grant_posture` does not drive a
-    /// request for this case; it only checks the entry exists. See its own
-    /// doc comment, and this branch's grant-enumeration report, for why.
-    KnownGap {
-        open_item: &'static str,
-        reason: &'static str,
-    },
 }
 
 /// The table [`GrantPosture`]'s own doc comment describes: every entry in
 /// [`guarded_routes`], in the same order, classified by how it must answer a
 /// caller whose grant does not cover the material a request names.
-///
-/// # `/api/works/{work}/truth` is not `Refuses`, and this is not an oversight
-///
-/// `get_truth`/`put_truth` take no `Extensions` at all — unlike every other
-/// route in this table — so they cannot consult `Principal` under any
-/// circumstance, and a truth document is shared library material rather than
-/// the per-account state O60 found "nothing leaks" for in progress and notes.
-/// O60 already names this exact gap ("truth is the awkward one, since it is
-/// shared rather than per-account") and defers it to spec C4's permission
-/// model rather than "a sixth call to a helper." This table does not close
-/// that decision — doing so was out of scope for the write leak this branch
-/// closed in `patch_alignments` — but it also must not claim a safety
-/// property the code does not have, which is what `KnownGap` is for.
 #[cfg(test)]
 pub(crate) fn grant_postures() -> Vec<(&'static str, GrantPosture)> {
-    use GrantPosture::{Filters, GrantIndependent, KnownGap, Refuses, RefusesAndFilters};
+    use GrantPosture::{Filters, GrantIndependent, Refuses, RefusesAndFilters};
     vec![
         ("/api/works", Filters),
         // Was `Refuses` until this table's proof was extended to a work
@@ -2391,44 +2437,18 @@ pub(crate) fn grant_postures() -> Vec<(&'static str, GrantPosture)> {
             "/api/works/{work}/{edition}/members/{ordinal}/download",
             Refuses,
         ),
-        (
-            "/api/works/{work}/progress",
-            GrantIndependent {
-                reason: "per-account state on a work, keyed by user_id — O60: \
-                          \"nothing leaks: progress and notes are per-account, \
-                          and a reader can only write their own.\" A \
-                          restricted reader can create a position on a work \
-                          outside their grant, but can only ever read or \
-                          overwrite their own row, never another reader's or \
-                          the library's shared material",
-            },
-        ),
-        (
-            "/api/works/{work}/notes",
-            GrantIndependent {
-                reason: "O60's identical reasoning for progress, applied to \
-                          notes: per-account, keyed by user_id, and a reader \
-                          can only ever act on their own",
-            },
-        ),
-        (
-            "/api/works/{work}/truth",
-            KnownGap {
-                open_item: "O60",
-                reason: "shared library material, not per-account — O60's own \
-                          words: \"truth is the awkward one, since it is \
-                          shared rather than per-account\" — and unlike every \
-                          Refuses entry, get_truth/put_truth take no \
-                          Extensions at all, so no request against this route \
-                          can currently produce a grant-driven 404 (get_truth \
-                          still 404s an unknown slug, the same as every \
-                          other route — it is only the \
-                          grant check that is absent); asserting Refuses here \
-                          would encode a false safety claim into the suite. \
-                          Reported, not fixed here — see this branch's \
-                          grant-enumeration report",
-            },
-        ),
+        // A work outside the grant is refused as a slug no work holds, and
+        // the read of a work the caller sees part of leaves out a position on
+        // an edition outside the grant.
+        ("/api/works/{work}/progress", RefusesAndFilters),
+        // A work outside the grant is refused. The document is the reader's
+        // own and is sent whole, so there is no filtering to declare.
+        ("/api/works/{work}/notes", Refuses),
+        // `get_truth` and `put_truth` refuse a work outside the grant. For a
+        // work the caller sees part of, the document is sent whole and
+        // written whole, the edition outside the grant included (O191),
+        // which is why this is `Refuses` and not `RefusesAndFilters`.
+        ("/api/works/{work}/truth", Refuses),
         // Was briefly `Filters`, for `/api/works/{work}`'s exact reason: the
         // response-leak fix round put `patch_alignments` on the same
         // `visible_editions_or_refuse` helper `get_sidecar` uses, and a

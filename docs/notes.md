@@ -25353,3 +25353,365 @@ marker, `sha256sum -c` passes on its `library.db`, and the stat of
 
 **Not measured.** The NAS. A scan that changes many works: every figure
 above is a derive over unchanged files.
+
+## O57, O60 and O138 (2026-10-12)
+
+Three open items the user ruled on, on 2026-10-11, built as three lanes and
+landed as one branch. The spec is
+`docs/superpowers/specs/2026-10-11-o57-o60-o138-design.md`; its §6 and §7 say
+what reading for the plan, and then building it, corrected. Every log named
+below is in `.superpowers/sdd/o57-o60-o138-evidence/`, which is not committed.
+Those subagent reports that the session's transcript still held as messages
+are in its `agent-reports/`. Not every review's is among them.
+
+### O138: what the rail takes now
+
+**The rig** is O145's with one piece fewer. A production build, served by
+`taiyaku serve --web` on a scratch copy of the real library's database, and
+`akame-ga-kill----v01--2015--cbz` with the bars up and at least five
+thumbnails drawn. Three builds: `79163624`, whose `web/` is `main`'s; the
+branch at `11a903a7`, with the rule and the wheel in; and the branch with
+the two constants changed, the change committed as `76f52e3e` (its log,
+`rail-after-w3-constants.json`, carries no commit). The browser is
+`chrome-headless-shell`
+151.0.7922.34 launched through Playwright with `--hide-scrollbars` removed,
+the launch O145's table shows taking 15 px as Chrome with a window does, and
+with Playwright's defaults as the control. Whether the flag was there was
+read off the browser's command line in `/proc`, not taken from the options.
+"A plain box" is O145's: a 100×100 `overflow: scroll` element added to the
+page and removed again. `dpr` is 1 unless a row says otherwise. The script
+is `rail-measure.cjs`.
+
+| build | flag | context | a plain box | rail's offset, client | tile | its image | written on the rail |
+|---|---|---|---|---|---|---|---|
+| `79163624` | off | desktop 1440×900 | 15 | 176, 161 | 101×149 | 96.97×145 | nothing |
+| `79163624` | off | desktop 390×844 | 15 | 112, 97 | 58.16×85 | 54.16×81 | nothing |
+| `79163624` | off | mobile and touch, 390×844 at `dpr` 3 | 0 | 112, 112 | 67.89×100 | 63.89×96 | 63.890625 px |
+| `79163624` | on | desktop 1440×900 | 0 | 176, 176 | 111×164 | 107×160 | 107 px |
+| `79163624` | on | desktop 390×844 | 0 | 112, 112 | 68.19×100 | 64.19×96 | 64.1875 px |
+| `11a903a7` | off | desktop 1440×900 | 15 | 176, 176 | 111×164 | 107×160 | 107 px |
+| `11a903a7` | off | desktop 390×844 | 15 | 112, 112 | 68.19×100 | 64.19×96 | 64.1875 px |
+| `11a903a7` | off | mobile and touch, 390×844 at `dpr` 3 | 0 | 112, 112 | 67.89×100 | 63.89×96 | 63.890625 px |
+| `76f52e3e` | off | desktop 1440×900 | 15 | 176, 176 | 111×164 | 107×160 | nothing |
+| `76f52e3e` | off | desktop 390×844 | 15 | 112, 112 | 68.19×100 | 64.19×96 | nothing |
+| `76f52e3e` | off | mobile and touch, 390×844 at `dpr` 3 | 0 | 112, 112 | 68×100 | 63.89×96 | nothing |
+
+The first two rows are O145's to the pixel. In the desktop rows of the two
+later builds with the flag off, the plain box still loses its 15 px and the
+rail loses none: the browser draws classic scrollbars and the rail does not
+have one. On each of the two later builds the rail wears `reader-strip-rail`
+and its computed `scrollbar-width` is `none`. The control launch, with the
+flag on, was read on those two builds as well and is not in the table; its
+plain box takes nothing.
+
+**Chrome with a window.** Google Chrome 155.0.8059.39, as the
+chrome-devtools MCP server launches it, at 1440×900 on the build of
+`76f52e3e`: a plain box 15, the
+rail 176 and 176, a tile 111×164, its image 107×160, nothing written on the
+rail.
+
+**The two constants.** `--strip-unit` was 97 px and 54 px, the widths with
+the scrollbar drawn. With nothing taken the median one-page image is 107 px
+at 1440×900 and 64.1875 px at 390×844, and 63.890625 px on a phone at `dpr`
+3. They are now 107 px and 64 px. 64 is inside `refinedStripUnit`'s half
+pixel of both phone readings, so the rail writes nothing in any of the three
+contexts, which is the `76f52e3e` rows' last column. On the phone row the
+tile is 68 px where it was 67.89: the floor is the constant and its two
+borders.
+
+**The wheel.** On the build of `11a903a7`, with the pointer over the rail
+and Playwright's wheel turned one 100 px notch down (`page.mouse.wheel`, a
+real wheel event and not a made one): as the volume reads, the rail a
+reversed row, `scrollLeft` went from 0 to −100; with `d` pressed, the rail a
+plain row, from 0 to 100. The same at 1440×900 and at 390×844, under both
+launches. A reversed row's scroll range runs negative toward later pages, so
+both are toward later pages. In Chrome with a window the wheel was a made
+event, since that server has none of its own: taken, 0 to −100, and the same
+event with Ctrl held left alone.
+
+**Tests, and what each was watched failing against.** The declarations are
+held in the `node` project (`styles/reader.css.test.ts`), with a check that
+both rules stand at the top level and not inside an at-rule, which the
+file's `declared` cannot see. The class is held in `jsdom`, and that the
+rule reaches the rail in the browser project, on a fixture that overflows.
+`stripWheel`'s cases are in `tiles.test.ts` and `wheelNotches`' in
+`viewport.test.ts`. The listener's are in `Filmstrip.test.tsx`: both
+directions, a wheel it leaves alone, one listener after the direction flips,
+a wheel outside the rail, a wheel on a tile from a rail that has already
+moved, and that the rail is still `overflow-x: auto`. The browser cases use
+a real wheel, in both directions: toward later pages, cancelled at the
+rail's end, and a sideways wheel left to the browser, which moves the rail
+with it. Ctrl, Shift and a sideways delta are sent as made events beside one
+the rail takes, since a real Ctrl with the wheel zooms the browser's own
+page. The implementers' mutations are in `o57-task-W1-mutations.md` and
+`o57-task-W2-mutations.md`. The reviews' own mutations found these passing
+at the time: the listener on `window`, against the wheel's own cases in
+jsdom and in the browser; the rail made `overflow-x: hidden`, against the
+whole jsdom and browser projects; and the WebKit rule moved inside a media
+block, against all three projects. And
+these passing the two projects CI runs, caught only by the browser project:
+the write assigned and not added, a wheel over a tile ignored, a listener
+that fires once, and both rules moved inside a media block. Each now fails
+a test in a project CI runs. One more is equivalent and is left:
+`{ passive: false }` dropped, which is the default for a wheel listener on
+an element.
+
+**Not measured, and not claimed.**
+- **Firefox.** `stripWheel` reads a line-mode wheel and a pixel-mode one as
+  the same notch. By the whole-branch review's account of Firefox's
+  `WheelEvent.cpp`, which it had from a summary, Firefox hands a page which
+  reads a wheel's deltas before its `deltaMode` pixels and mode 0, as this
+  code and the zoom's both do. A notch in Firefox
+  may then move the strip less than 100 px. Playwright's wheel is sent in
+  pixels and a made line-mode event is exempt, so neither could show it.
+- **A wheel under a hand.** Every reading used Playwright's wheel or a made
+  event.
+- **A device.** `scrollbar-width: none` also takes away the overlay bar that
+  showed while the rail moved. Not looked at on the iPhone.
+- **The page behind the bar.** The spec's first reason for cancelling a
+  wheel at the rail's end was that the page behind would scroll in scroll
+  mode. The bottom bar is beside the page area and not inside it, and the
+  review found a wheel over the rail leaving the page still with no listener
+  at all (in a replica of the reader's boxes, Chromium 151 and Firefox 153).
+  Nothing was fixed there.
+
+**What the ruling costs.** The bar's thumb was a mouse's fast way across a
+long volume. A notch moves the strip 100 px, against a tile pitch of 117 px
+at 900 px and wider and 74 px below. While correcting, the review measured
+the preview in Chromium 151: with the pointer still, one 300 px wheel moved
+the tile under it from 60 to 63, and the preview was told 60, none, 63. By
+its reading of `Chrome.tsx`, a notch that changes the tile under the pointer
+is then, while correcting, one request for a page.
+
+**Isolation.** The servers ran on copies of the database in the session's
+scratchpad. The real `library.db`'s digest was the same before and after
+(`real-db.sha256.before-w3`, `real-db.sha256.after-w3`).
+
+### O60: a hidden work, driven
+
+**The rig.** A scratch store built for the purpose: four real volumes
+hardlinked into two folders, scanned as two libraries, `Shelf` (two volumes
+of one series) and `Other` (two of another); an administrator, and an
+account `reader` granted `Shelf` alone. A debug build of `main`'s code and
+one of the branch at `7fdcc5b8`, each on its own fresh copy of that store.
+The script, `o60-drive.py`, signs in as each account and sends eleven
+requests to a work of `Other`, to a slug no work holds, and to a work of
+`Shelf`: the six, and the writes with their own checks failing (an edition
+the work lacks, a slot past the end, no `If-Match`, a stale one, a body that
+is not notes). It compares the first two answers with each other, status
+and body, the slug put aside.
+
+| | hidden work against unknown slug | what the hidden work answered |
+|---|---|---|
+| `main` | 10 of 11 differ | 204 to a position read and to a position write; `` `raw` has 219 slots `` to a slot past the end; 200 with the documents; 428, and 412 carrying the document's current `ETag`, to the notes and truth writes |
+| the branch | 0 of 11 differ | `` 404 no work `…` `` to ten; 400 to the body that is not notes, as the unknown slug and the granted work also answer |
+
+The one request that agreed on `main` is the body that does not parse, which
+both answer before any work is looked up.
+
+On `main` the position write on the hidden work reached the store: after the
+run it held two positions for `reader`, one of them on a work that account
+cannot open. On the branch it held one.
+
+**An administrator's answers** to the same eleven on the same work are the
+same on both builds: 204, 204, the two 404s that name the edition and the
+slot count, 200, 428, 412, 400, 200, 428, 412.
+
+**A narrowed grant.** `reader` writes a position on a work of `Shelf` and
+reads it back. The grant is then moved to `Other` with
+`taiyaku library user grant-library` and `revoke-library`, while the server
+runs. On `main` the read still answers 200 with the position. On the branch
+it answers `` 404 no work `…` ``, the store still holds the row, and with
+`Shelf` granted again the read answers 200 with the same position.
+
+**Tests.** They are in `routes/tests.rs`, each named in O60's row, with
+`auth::tests::every_route_declares_its_grant_posture`, which now drives the
+three routes. The implementers' mutations are in the three task reports
+(`o57-task-A1-report.md` and its two neighbours). The reviews' own found
+things the first tests did not hold, each now held: a grant asked later
+than a write's own checks, or about the work the body names; a position on
+an edition key the work no longer has, sent to an account with no limits
+and not to one with them; in the posture test, a declaration that
+understates what a route does, and the new branch skipped; a notes write
+that asks the grant about the path's work and then stores under the work
+its body names; and a conditional read answered 304 before the grant is
+asked, for an empty document's tag, which anyone can compute.
+
+**Not held.** The walk over `guarded_routes()` reaches a write handler only
+as far as its parse of `{}`.
+
+**Isolation.** The four volumes in the scratch store are hardlinks, so a
+write through one would have been a write to the real file. Their
+modification times are still from May 2025 and July 2026, and the rig made no
+file beside them (`o60-drive-isolation.txt`).
+
+### O57: what a burst costs, measured three times
+
+**The rig.** Release builds, each run a fresh process on a fresh copy of a
+small scratch store. `o57-burst.py` opens N connections, releases N logins
+together, each with a name nobody holds and a wrong password, all from one
+address, and reads the server's resident memory from `/proc`: before, at its
+peak (sampled every 2 ms, and the kernel's own high-water mark), and after.
+This workstation: glibc 2.44, 32 threads, with other work running on it. The
+figures move between runs: `main`'s peak for forty read 709.2 MiB in one run
+and 626.9 MiB in another.
+
+| build | allocator | burst | answered 401, 429 | resident before | peak | later |
+|---|---|---|---|---|---|---|
+| `main` `451f6910` | default | 40 | 40, 0 | 13.0 MiB | 709.2 MiB | not read |
+| `main` `451f6910` | default | 40 | 40, 0 | 11.0 MiB | 626.9 MiB | 33.2 MiB at 1 s |
+| `main` `451f6910` | default | 200 | 155, 45 | 13.4 MiB | 1211.8 MiB | not read |
+| `7f39f666`, the cap alone | default | 40 | 40, 0 | 11.1 MiB | 603.2 MiB | 603.6 MiB at 30 s |
+| `7f39f666`, the cap alone | default | 200 | 52, 148 | 13.5 MiB | 629.6 MiB | not read |
+| `7f39f666`, the cap alone | `MALLOC_MMAP_THRESHOLD_=1048576` | 40 | 40, 0 | 11.6 MiB | 90.3 MiB | 14.4 MiB at 1 s |
+| `7f39f666`, the cap alone | `MALLOC_MMAP_THRESHOLD_=1048576` | 200 | 53, 147 | 11.4 MiB | 95.7 MiB | 19.8 MiB at 1 s |
+| `7f39f666`, the cap alone | `MALLOC_ARENA_MAX=1` | 40 | 40, 0 | 11.1 MiB | 89.5 MiB | 13.7 MiB at 1 s |
+| `da47d1f6`, the branch | default | 40 | 40, 0 | 13.4 MiB | 92.1 MiB | 92.2 MiB at 30 s |
+| `da47d1f6`, the branch | default | 200 | 52, 148 | 12.3 MiB | 96.5 MiB | 95.9 MiB at 30 s |
+
+(`o57-burst-main-451f6910-40.log` and `-200.log`, `o57-burst-probes.log`,
+`o57-burst-branch-7f39f666-200.log`, `o57-burst-final-da47d1f6.log`.)
+
+**The cap does what it says for the count, and at first did not for the
+memory.** Of two hundred at once the capped server verified between 51 and
+53 and answered the rest 429, where `main` verified 155: the lockout is read
+again under a permit, so at most three requests are past that read when the
+fiftieth failure lands. But with the cap alone the server held about
+600 MiB after a burst of forty and still held it thirty seconds later,
+where `main` with the same defaults, in the one run that read it again, was
+at 33 MiB a second later.
+
+**Why.** argon2 asks the allocator for its 19 MiB a run. On `main` the forty
+requests of a burst ask together, glibc serves those that ask before the
+first is freed with `mmap`, and a block served so is unmapped when it is
+freed. Once a large block has been freed glibc raises
+its `mmap` threshold to that size, and later requests of that size are
+served from the calling thread's own arena, where a freed block stays. Under
+the cap the verifies run four at a time on as many blocking-pool threads as
+the burst is wide, so all but the first few are served that way, and the
+arena that served one keeps it. The two settings in the table separate the two
+things: with the threshold pinned, or with one arena, the same capped build
+peaks near 90 MiB and a second later is under 20 MiB, which is four buffers
+in use and none kept. `unsafe_code` is forbidden in this workspace, so
+`mallopt` was not open, and a setting in the image would have left the
+binary as it was. The image is `debian:bookworm-slim`, so the deployed
+server is glibc as well.
+
+**The fix** was to stop asking the allocator. `argon2`'s
+`hash_password_into_with_memory` runs in memory the caller supplies. A
+verify permit owns one such memory (`credential::WorkingMemory`), a server
+makes a new one only when every one it has is in a permit holder's hands,
+and a memory is wiped after every run. Hashing a password takes a memory
+from a store the process keeps and puts it back. The last two rows are the
+result: a peak of four memories over the starting size, kept.
+
+**What it costs.** Those memories are the server's for the life of the
+process: about 80 MiB over its starting size once four verifies have run at
+once. With glibc's defaults `main` was at 33 MiB a second after its burst,
+in the one such run that read it again.
+
+**The verifier is now this project's own, held to argon2's.**
+`credential::verify_password_in` is `password-hash`'s default verifier and
+`argon2`'s `hash_password_customized` written against supplied memory: the
+algorithm, version and parameters are the stored hash's, the salt is the
+hash's salt decoded, and the comparison is `Output`'s own. `credential`
+no longer exports `argon2`'s allocating verifier, which is the oracle in
+`credential/tests.rs`. `the_two_verifiers_agree` puts a table of cases to
+both, each case in a memory filled with other words first. Task B4's review
+put 219 odd PHC strings by three passwords to both, in fresh, reused and
+pre-filled memory, and 1,017 parameter cells in dirty memory to argon2's
+hasher and the mirror's: no disagreement and no panic
+(`b4-review/review_probe.rs`). The review of the fixes ran the same probe
+again at `da47d1f6`, in a debug build and a release one, with the same
+result (`delta-rust/review_probe.adapted-da47d1f6.rs`). It found one panic
+that is `argon2`'s own, in both verifiers alike: `p` at or above 2^29
+overflows a multiplication in `argon2`'s `params.rs`, which panics in a
+debug build and answers `false` in a release build.
+
+**The wipe, read in a release build.** `cargo build --release -p
+taiyaku-cli` at `da47d1f6`, the image's build command but for its
+`--locked`, with this machine's toolchain, disassembled by the review of the
+fixes (`delta-rust/hash_in.release.asm`, `hash_password.release.asm`).
+`credential::hash_in` is a function of its own in that build. Each way out
+of it joins at one `memset` over the run's blocks, and the unwind's landing
+pad makes the same call. By the review's reading of the binary, `hash_in` is
+called from `hash_password` and `verify_password_in`, and the hash store's
+lock is released before the call. That is one build read, and no test holds
+it.
+
+**What the wipe covers** is the working memory. `argon2` keeps the run's
+initial hash and a copy of its last block on its own stack, and the output,
+the decoded salt and the password are not wiped either. So the wipe takes
+away the copy that would have stayed for the life of the process, and does
+not stop somebody who can read the process's memory just after a verify.
+
+**A flood, and the blocking pool (the whole-branch review's measurement).**
+A request waiting for a permit parks a blocking-pool thread, and every
+request needs one of those. Release builds; an open loop of `GET /api/works`
+with a wrong Basic password, each request on its own connection and from its
+own address, so nothing is ever locked out; a reader with an API key probing
+every 100 ms; the server pinned with `taskset`; the store on tmpfs; machine
+load about 13 (`wbr-rust/flood-*.log`, `flood.py`).
+
+| CPUs | flood | build | reader median, 90th, slowest | most threads | most resident |
+|---|---|---|---|---|---|
+| 8 | 200/s, 6 s | branch | 0.4, 0.6, 1.0 ms | 13 | 90 MiB |
+| 8 | 200/s, 6 s | `main` | 0.8, 3.7, 6.2 ms | 24 | 300 MiB |
+| 8 | 360/s, 20 s | branch | 0.4, 1.1, 3.3 ms | 242 | 107 MiB |
+| 8 | 360/s, 20 s | `main` | 7166, 10923, 13315 ms | 521 | 13477 MiB |
+| 8 | 500/s, 6 s | branch | 0.5, 1199, 1463 ms | 521 | 128 MiB |
+| 8 | 500/s, 6 s | `main` | 5542, 7305, 10018 ms | 521 | 10895 MiB |
+| 16 | 420/s, 18 s | branch | 4781, 7955, 8480 ms | 529 | 170 MiB |
+| 16 | 420/s, 18 s | `main` | 0.5, 1625, 4343 ms | 529 | 11231 MiB |
+
+The branch in that table is `6c771e25`, before the wipe and the hash store;
+nothing since changes where a waiter waits. On eight cores, which is what
+the NAS has, the branch was no worse than `main` at any rate tried and far
+better past about 350 a second. On sixteen, at the one rate tried there,
+`main` mostly coped and the branch's reader waited seconds: four permits
+answer
+about 350 verifies a second here whatever the core count, and `main`'s
+ceiling rises with cores until its memory does. That is O214, and the
+review's way to close it needs no bound: wait for the permit in the async
+handler and not on a pool thread.
+
+**Tests.** In `session/tests.rs`, for each of the three paths: a request
+that waited for a permit reads the lockout again; a caller already locked
+out is refused while the test holds every permit; a burst against a counter
+one failure under its ceiling is verified at most four times; the failure is
+recorded holding the permit, seen from a SQLite commit hook on the recording
+thread; the lockout read fails closed. And: only a password verify waits for
+a permit; a request waiting for one does not hold the library's connection;
+the password change gives its permit back before it hashes; each of the five
+verifies runs in its permit's memory; a server makes no more memories than
+it has permits. In `credential/tests.rs`: the two verifiers agree over a
+table of cases; a working memory grows to what a run needs and is not made
+again, read from a count of its growths that only the test build has; it
+holds nothing of a run that returned, was refused or unwound; hashes one
+after another run in one kept memory, read from a count of the memories the
+store has made; a hash does not wait for a run that is holding a memory; and
+a lent memory goes back to its store zeroed when its run unwinds. None needs
+a race to pass: where a test waits, it is the defect that needs the time.
+The implementers' mutations are in `o57-task-B2-mutations.md`,
+`o57-task-B3-mutations.md` and `o57-task-B4-mutations.md`, and the review of
+the fixes' own in `delta-rust/logs/`.
+
+**What no test holds** is O215's list in `docs/status.md`.
+
+**SQLite 3.40.1.** The three crates' tests ran in `rust:1-bookworm` at
+`4aa8cf21`, where `libsqlite3-0` is 3.40.1-2+deb12u2
+(`bookworm-sqlite340-4aa8cf21.log`, whose first lines print the image and
+that version). Two failed, the two that trace system calls: the container
+has no `strace`.
+
+**The standing corpus checks** passed at `4aa8cf21`, 24 of 24
+(`corpus-4aa8cf21.log`). One of them compares against a Stump server and
+does nothing where no address for one is set. Run again alone at `9a4f9e98`
+it printed that it was skipping (`corpus-stump-skip-9a4f9e98.log`).
+
+**What the plan got wrong about its own tests.** It said nothing in a test
+could order a permit's release against the record of the failure. A commit
+hook can, and two reviewers each showed it.
+
+**Not measured.** The NAS, for any of it. A flood through the proxy in
+front of the deployed server. What a wipe costs there.

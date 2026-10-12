@@ -386,7 +386,11 @@ async fn an_api_key_authenticates_without_reaching_argon2() {
         )
         .expect("gives the account a hash nothing verifies against");
         assert!(
-            !credential::verify_password("anything at all", "$argon2id$unverifiable"),
+            !credential::verify_password_in(
+                &mut credential::WorkingMemory::new(),
+                "anything at all",
+                "$argon2id$unverifiable"
+            ),
             "this test's proof rests on the password path being unable to succeed"
         );
         conn.execute(
@@ -608,10 +612,10 @@ fn a_forwarded_chain_is_read_from_the_right_end() {
 /// fifteen minutes — so the limiter guarded the one door a guesser has no
 /// reason to use.
 ///
-/// It is also an unauthenticated denial of service in its own right: each guess
-/// holds a `spawn_blocking` thread for the measured 11.9 ms and allocates
-/// argon2's 19 MiB `m_cost` buffer, and nothing bounds how many a stranger may
-/// start.
+/// It was also an unauthenticated denial of service in its own right: each
+/// guess held a `spawn_blocking` thread for the measured 11.9 ms and allocated
+/// argon2's 19 MiB `m_cost` buffer, and nothing bounded how many a stranger
+/// might start.
 ///
 /// Found by the whole-branch review, 2026-08-18.
 #[tokio::test]
@@ -712,6 +716,7 @@ fn every_forwarded_line_is_read_not_just_the_first() {
         secure_cookies: false,
         allow_web_setup: false,
         trusted_proxies: vec!["10.0.0.0/8".parse().expect("cidr")],
+        verifies: crate::session::VerifyLimit::default(),
     };
     let mut extensions = axum::http::Extensions::new();
     extensions.insert(axum::extract::ConnectInfo(std::net::SocketAddr::from((
@@ -1636,10 +1641,9 @@ fn one_work_three_editions_hub_withheld(dir: &std::path::Path) -> (axum::Router,
 /// request from an account granted a *different* root than the material it
 /// addresses, and asserted 404; every `Filters` entry is driven the same way
 /// and asserted to name the granted material while omitting the withheld
-/// material. `GrantIndependent` and `KnownGap` entries are declared rather
-/// than driven — the former because there is no grant behaviour to exercise,
-/// the latter because driving one would assert something false about code
-/// this branch did not change. See `GrantPosture`'s own doc comment for both.
+/// material. `GrantIndependent` entries are declared rather than driven,
+/// because there is no grant behaviour to exercise. See `GrantPosture`'s own
+/// doc comment.
 #[tokio::test]
 async fn every_route_declares_its_grant_posture() {
     use crate::routes::GrantPosture;
@@ -1655,19 +1659,13 @@ async fn every_route_declares_its_grant_posture() {
     );
 
     // Every declared (rather than driven) entry has to say why, rather than
-    // an empty string quietly satisfying the type — `GrantIndependent` and
-    // `KnownGap` exist so a reviewer reads a reason, not so the match arm
-    // compiles.
+    // an empty string quietly satisfying the type — `GrantIndependent`
+    // exists so a reviewer reads a reason, not so the match arm compiles.
     for (pattern, posture) in &table {
         match posture {
             GrantPosture::GrantIndependent { reason } => assert!(
                 !reason.is_empty(),
                 "{pattern} is classified GrantIndependent but states no reason"
-            ),
-            GrantPosture::KnownGap { open_item, reason } => assert!(
-                !open_item.is_empty() && !reason.is_empty(),
-                "{pattern} is classified KnownGap but does not name the open \
-                 item and reason it defers to"
             ),
             GrantPosture::Refuses | GrantPosture::Filters | GrantPosture::RefusesAndFilters => {}
         }
@@ -1699,8 +1697,8 @@ async fn every_route_declares_its_grant_posture() {
         })
         .count();
     assert_eq!(
-        driven, 19,
-        "19 of the guarded routes must be classified Refuses, Filters or \
+        driven, 22,
+        "22 of the guarded routes must be classified Refuses, Filters or \
          RefusesAndFilters and driven by the proofs below — a route's \
          posture changed without this count moving to match, so a route \
          this suite believes it proves may no longer be one it does. It was \
@@ -1714,12 +1712,14 @@ async fn every_route_declares_its_grant_posture() {
          made unrepresentable — so the proof is void rather than lost. Tasks \
          8, 11 and 12 all only ever added `GrantIndependent` routes, so none \
          of the three moved this count, and neither does C4 PR 2's user \
-         administration for the same reason"
+         administration for the same reason. **O60 raised it to 22**: progress, \
+         notes and truth refuse a work outside the grant, where they had been \
+         declared and not driven"
     );
     assert_eq!(
         table.len() - driven,
-        39,
-        "the remaining guarded routes must be GrantIndependent or KnownGap — \
+        36,
+        "the remaining guarded routes must be GrantIndependent — \
          see the `driven` assertion just above, which this one is the other \
          half of. A new admin-only route is GrantIndependent: it changes who \
          may call it and not what any caller's grant would filter, so it moves \
@@ -1974,6 +1974,7 @@ async fn every_route_declares_its_grant_posture() {
     // change is not evidence" trap
     // `router_with_material_under_a_withheld_root`'s own doc comment warns
     // about, the wrong way round.
+    let mut names_a_work_only = 0_usize;
     for (pattern, posture) in &table {
         if !matches!(
             posture,
@@ -1991,6 +1992,32 @@ async fn every_route_declares_its_grant_posture() {
                 | "/api/library/editions/{id}"
                 | "/api/library/members/{id}"
         ) {
+            continue;
+        }
+        // **A path with no `{edition}` names the work, and this account may
+        // see the work**: `en` is theirs. Progress, notes and truth are the
+        // three (O60), and what they must not do here is refuse. This is the
+        // other half of the loop over the wholly hidden work above, which a
+        // route refusing every caller with a grant would pass on its own.
+        if !pattern.contains("{edition}") {
+            let path = pattern.replace("{work}", &split_slug);
+            let response = split_router
+                .clone()
+                .oneshot(
+                    Request::get(&path)
+                        .header("authorization", &credential)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .expect("router answers");
+            assert!(
+                response.status().is_success(),
+                "{pattern} names a work and no edition, and GET {path} from an account \
+                 granted one of that work's two editions answered {}",
+                response.status()
+            );
+            names_a_work_only += 1;
             continue;
         }
         let path = pattern
@@ -2019,6 +2046,13 @@ async fn every_route_declares_its_grant_posture() {
             response.status()
         );
     }
+    assert_eq!(
+        names_a_work_only, 3,
+        "three paths name a work and no edition — progress, notes and truth — and \
+         each must answer success to an account granted one of the work's editions. \
+         A different count means the branch that sends that request skipped one, or \
+         a route was added that it now covers without being counted here"
+    );
 
     // `patch_edition`/`patch_member`'s own split proof (I8): the finding's
     // exact shape — an edition (and its one member) sharing a work with a
@@ -2595,6 +2629,59 @@ async fn every_route_declares_its_grant_posture() {
     // string-membership assertions cannot express as cleanly as a direct
     // numeric comparison can.
 
+    // `/api/works/{work}/progress` (`get_progress`) — `RefusesAndFilters`
+    // since O60. Its refusal is driven by the first `Refuses` loop, against
+    // the wholly hidden work. This is the other half: a position on `raw`,
+    // written straight into the store as one held from before the grant was
+    // narrowed would be, is not named to a reader granted `en` alone, and the
+    // one on `en` is. Last of the proofs on this fixture, so no other reads a
+    // store with these two rows in it.
+    {
+        let split_work = split_state
+            .find_blocking(&split_slug)
+            .expect("the split work");
+        for edition in ["raw", "en"] {
+            crate::progress::store(
+                &split_state.library,
+                &split_work,
+                1,
+                &crate::Progress {
+                    edition: edition.to_string(),
+                    slot: 1,
+                },
+            )
+            .expect("stores a position");
+        }
+    }
+    let progress_response = split_router
+        .clone()
+        .oneshot(
+            Request::get(format!("/api/works/{split_slug}/progress"))
+                .header("authorization", &credential)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("router answers");
+    let progress_status = progress_response.status();
+    let progress_body = crate::test_support::body_string(progress_response).await;
+    assert_eq!(progress_status, StatusCode::OK, "{progress_body}");
+    let progress_json: serde_json::Value =
+        serde_json::from_str(&progress_body).expect("valid JSON");
+    let progress_editions: Vec<&str> = progress_json["positions"]
+        .as_array()
+        .expect("a positions array")
+        .iter()
+        .map(|p| p["edition"].as_str().expect("a string"))
+        .collect();
+    assert_eq!(
+        progress_editions,
+        vec!["en"],
+        "/api/works/{{work}}/progress is classified RefusesAndFilters but named a position \
+         on an edition outside the grant: {progress_body}"
+    );
+    proven_filters.insert("/api/works/{work}/progress");
+
     for (pattern, posture) in &table {
         if matches!(
             posture,
@@ -2607,6 +2694,23 @@ async fn every_route_declares_its_grant_posture() {
                  filtered"
             );
         }
+    }
+    // The other direction: a filter proof is only evidence for a route the
+    // table says filters, so a route declared plain `Refuses` (or anything
+    // else) while a proof was driven for it is an understated declaration.
+    for pattern in &proven_filters {
+        let (_, posture) = table
+            .iter()
+            .find(|(declared, _)| declared == pattern)
+            .unwrap_or_else(|| panic!("{pattern} was proven filtered but is not in the table"));
+        assert!(
+            matches!(
+                posture,
+                GrantPosture::Filters | GrantPosture::RefusesAndFilters
+            ),
+            "{pattern} had its response proven filtered, but the table declares it \
+             {posture:?}, not Filters or RefusesAndFilters"
+        );
     }
 }
 

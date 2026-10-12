@@ -16,6 +16,7 @@ import {
   paintedIn,
   panBy,
   wheelBy,
+  wheelNotches,
   zoomAt,
 } from './viewport'
 
@@ -238,6 +239,35 @@ describe('panBy', () => {
 
   it('has nowhere to go at fit-whole', () => {
     expect(panBy(WHOLE, 0.3, 0.3)).toEqual(WHOLE)
+  })
+})
+
+describe('wheelNotches', () => {
+  const wheel = (deltaY: number, deltaMode = 0, ctrlKey = false) => ({
+    deltaY,
+    deltaMode,
+    ctrlKey,
+  })
+
+  it('is one for one detent in each deltaMode, whichever way it turns', () => {
+    expect(wheelNotches(wheel(100, 0))).toBe(1)
+    expect(wheelNotches(wheel(-100, 0))).toBe(1)
+    expect(wheelNotches(wheel(3, 1))).toBe(1)
+    expect(wheelNotches(wheel(1, 2))).toBe(1)
+  })
+
+  it('is a share of a notch for a share of a detent', () => {
+    expect(wheelNotches(wheel(25, 0))).toBeCloseTo(0.25, 12)
+  })
+
+  it('caps one event at four notches, and a pinch at one', () => {
+    expect(wheelNotches(wheel(100_000, 0))).toBe(4)
+    expect(wheelNotches(wheel(100, 0, true))).toBe(1)
+  })
+
+  it('is zero for a wheel it cannot read', () => {
+    expect(wheelNotches(wheel(0))).toBe(0)
+    expect(wheelNotches(wheel(Number.NaN))).toBe(0)
   })
 })
 

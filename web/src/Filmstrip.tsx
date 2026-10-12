@@ -10,6 +10,7 @@ import {
   normalizedTileWidth,
   refinedStripUnit,
   spacerWidth,
+  stripWheel,
   stripWindow,
   tileMinWidth,
   tilePages,
@@ -90,18 +91,16 @@ const resolvedTileStyle: CSSProperties = {
  *
  * 16 rather than some smaller number: `focusAtFraction` returns the tile at
  * the rail's *leading* edge for the current scroll fraction, and the
- * viewport extends roughly 13 tiles forward from there at the widest
- * supported width (1440 px, a tile's nominal outer width around 101 px at
- * that breakpoint — `Filmstrip.browser.test.tsx` derives the nominal from
- * computed CSS and checks a rendered tile's width against it, though the
- * test itself only asserts that figure is greater than 50, not that it is
- * exactly 101) — not ~7 either side of the focus, which an earlier version
- * of this margin assumed in order to justify a fixed tile-count drift before
- * re-anchoring. That assumption was wrong, and cost real frames: measured at
- * 1440×900 during a fast scroll, a spacer stood inside the visible strip on
- * 7 frames, the worst one a 321 px gap in a 1440 px rail. 16 is 3 tiles of
- * slack over the 13-tile reach the viewport actually has, kept as a round
- * number rather than shaved to the exact minimum.
+ * viewport extends about a dozen tiles forward from there at the widest
+ * supported width (1440 px, over a tile's nominal outer width and the gap
+ * beside it: `--strip-unit`, two borders and `--strip-gap`) — not ~7 either
+ * side of the focus, which an earlier version of this margin assumed in
+ * order to justify a fixed tile-count drift before re-anchoring. That
+ * assumption was wrong, and cost real frames: measured at 1440×900 during a
+ * fast scroll, a spacer stood inside the visible strip on 7 frames, the
+ * worst one a 321 px gap in a 1440 px rail. 16 leaves a few tiles of slack
+ * over the reach the viewport has, kept as a round number rather than
+ * shaved to the exact minimum.
  *
  * A 237-tile rail with `windowMargin` at 12 built about 25 tiles per change
  * (O140: 237 tiles cost 274 ms, 20 tiles 38 ms); at 16 a change builds about
@@ -127,7 +126,7 @@ const spacerStyle: CSSProperties = { flex: '0 0 auto', height: '100%' }
 // that draws wider than its nominal — a double-page scan the sidecar did not
 // mark `spread: true`, which `tileUnits` therefore calls one unit — still
 // draws at its own width rather than letterboxing inside a box a quarter of
-// its size. Measured on the running app: 197.33 px against a nominal 101.
+// its size.
 const tileImgStyle: CSSProperties = {
   height: '100%',
   width: 'auto',
@@ -461,10 +460,9 @@ export function Filmstrip({
     // rail back to the current tile — reported from a real iPhone as a
     // flick that swipes and then returns to the current page within about a
     // second, which made the rail impossible to make progress on. The
-    // floor's growth is small enough on the common case — a loaded portrait
-    // tile measured 58.16 px against a 58 px floor at 390x844 — that losing
-    // the listener trades away only the rare, cosmetic case of an unmarked
-    // spread (58 px to 112 px) for a rail that can be scrolled at all.
+    // floor's growth is small enough on the common case that losing the
+    // listener trades away only the rare, cosmetic case of an unmarked
+    // spread for a rail that can be scrolled at all.
   }, [currentIndex, visible, correcting?.pairedIndex, anchor])
 
   // The follow the effect above asks for. No dependency list, so it retries on
@@ -500,15 +498,10 @@ export function Filmstrip({
 
   // Refines `--strip-unit` from real tiles' drawn widths, once, the first
   // time enough qualifying tiles have actually loaded (`medianTileWidth`'s
-  // own minimum sample — see `tiles.ts`). See `tiles.ts`'s
-  // `refinedStripUnit` for why a runtime measurement replaces a hardcoded
-  // constant at all — in short, a tile measured 58.16 px wide under desktop
-  // emulation and 68.19 under mobile, on one machine in one browser, and no
-  // constant can be right in both (the difference is a classic scrollbar on
-  // the rail, O145),
-  // and `reader.css`'s own comment on `--strip-unit` for what the constant
-  // is now: a starting estimate for the first paint and for any tile that
-  // has not drawn yet, refined here once real geometry exists.
+  // own minimum sample — see `tiles.ts`). See `reader.css`'s own comment on
+  // `--strip-unit` for what the constant is now: a starting estimate for the
+  // first paint and for any tile that has not drawn yet, refined here once
+  // real geometry exists.
   //
   // A ref, not state: writing `--strip-unit` is a direct DOM mutation onto
   // the rail element, the same way `scrollIntoView` above already is, and
@@ -703,10 +696,10 @@ export function Filmstrip({
   // was wrong: it assumed the viewport straddles the focus tile roughly
   // evenly, when `focusAtFraction` actually returns the tile at the rail's
   // *leading* edge for the scroll fraction, and the viewport extends forward
-  // from there — about 13 tiles at 1440 px, not ~7 either side. Measured at
-  // 1440×900 during a fast scroll, that mistake showed up as a spacer inside
-  // the visible strip on 7 frames, the worst one a 321 px gap in a 1440 px
-  // rail.
+  // from there — about a dozen tiles at 1440 px, not ~7 either side. Measured
+  // at 1440×900 during a fast scroll, that mistake showed up as a spacer
+  // inside the visible strip on 7 frames, the worst one a 321 px gap in a
+  // 1440 px rail.
   //
   // What replaces it: read where the rail's own spacers sit against the
   // visible rail, from the DOM, and rebuild once one of them is within a
@@ -810,9 +803,38 @@ export function Filmstrip({
     }
   }, [])
 
+  // The wheel, since the rail draws no scrollbar for a mouse to drag (O138).
+  // Subscribed by hand for the reason `App.tsx`'s own wheel effect gives:
+  // React's `wheel` listener is passive, and this one has to
+  // `preventDefault()`.
+  //
+  // An effect of its own rather than a third listener in the one above. That
+  // one is attached once per mount and reads everything through refs;
+  // `reading` is the one render-scoped value this needs, and it changes on
+  // `d` and never on a page turn.
+  //
+  // The write to `scrollLeft` fires the browser's own `scroll`, so the window
+  // follows a wheel the way it follows a flick.
+  useEffect(() => {
+    const rail = railRef.current
+    if (!rail) return
+    const later = stepFor(1, reading)
+    const onWheel = (event: WheelEvent) => {
+      const px = stripWheel(event)
+      if (px === undefined) return
+      // Before the write, and whether or not the rail can move: a wheel the
+      // rail takes is never the page's too, at either end of the rail.
+      event.preventDefault()
+      rail.scrollLeft += later * px
+    }
+    rail.addEventListener('wheel', onWheel, { passive: false })
+    return () => rail.removeEventListener('wheel', onWheel)
+  }, [reading])
+
   return (
     <div
       ref={railRef}
+      className="reader-strip-rail"
       style={{
         ...railStyle,
         // Derived from `stepFor` rather than re-deciding what `rtl` means:

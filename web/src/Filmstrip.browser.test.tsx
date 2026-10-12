@@ -1,6 +1,6 @@
 import { act } from 'react'
 import { describe, expect, it } from 'vitest'
-import { page } from 'vitest/browser'
+import { page, userEvent } from 'vitest/browser'
 // **Required.** `--strip-unit` and friends live in `styles/reader.css`, which
 // reaches the app through `index.css`. Without this import,
 // `getPropertyValue('--strip-unit')` below returns `''`, `Number.parseFloat`
@@ -348,4 +348,213 @@ describe('a page turn after the reader has flicked the rail', () => {
       expect.soft(tile.right).toBeLessThanOrEqual(visible.right)
     })
   }
+})
+
+/**
+ * O138: the rail draws no scrollbar.
+ *
+ * What is read here is the cascade: that the rail wears the class and the
+ * rule reaches it. It is not the scrollbar. O145 found that Playwright's
+ * defaults launch Chromium with `--hide-scrollbars`, so in this project the
+ * rail's `clientHeight` equals its `offsetHeight` with the rule or without
+ * it. The scrollbar itself is read on the running app (`docs/notes.md`).
+ */
+describe("the rail's scrollbar", () => {
+  it('is declared away on the rail itself', async () => {
+    await page.viewport(1440, 900)
+    const host = inReader(<Filmstrip {...props()} />)
+    const rail = railOf(host)
+    // The fixture overflows, which is the one state a scrollbar is drawn in.
+    expect(rail.scrollWidth).toBeGreaterThan(rail.clientWidth)
+    expect(getComputedStyle(rail).getPropertyValue('scrollbar-width')).toBe(
+      'none',
+    )
+  })
+})
+
+/**
+ * O138: the wheel moves the rail, which draws no scrollbar.
+ *
+ * `tiles.test.ts` holds which wheels the rail takes and how far each moves
+ * it, and `Filmstrip.test.tsx` that the listener applies the answer. What
+ * neither can ask is which way the rail *goes*: jsdom has no layout, so a
+ * `scrollLeft` there is a number and not a direction. Here the wheel is a
+ * real one (`userEvent.wheel` hovers the rail and turns the mouse's wheel),
+ * and what is read is where two tiles stand afterwards.
+ *
+ * **Both directions, every case.** The rail's scroll range has the opposite
+ * sign under `rtl`, so a handler that forgot the direction is right in one
+ * and wrong in the other.
+ */
+describe('the wheel on the rail', () => {
+  /** How far a tile's centre is from the rail's, along the axis it scrolls on. */
+  const fromCentre = (rail: HTMLElement, group: number) => {
+    const tile = rail.querySelector<HTMLElement>(`[data-group="${group}"]`)
+    if (!tile) throw new Error(`tile ${group} is not rendered`)
+    const t = tile.getBoundingClientRect()
+    const r = rail.getBoundingClientRect()
+    return Math.abs(t.left + t.width / 2 - (r.left + r.width / 2))
+  }
+
+  /**
+   * The rail, with focus on its current tile.
+   *
+   * Vitest runs this in an iframe, and a real input sent before anything in
+   * it has focus can go to the frame around it: `App.browser.test.tsx`'s
+   * `readerFocused` has the case. The current tile is the rail's one stop.
+   */
+  function focusedRail(overrides: Partial<FilmstripProps>) {
+    const host = inReader(<Filmstrip {...props(overrides)} />)
+    const rail = railOf(host)
+    act(() =>
+      rail
+        .querySelector<HTMLElement>('[aria-current="true"]')
+        ?.focus({ preventScroll: true }),
+    )
+    return rail
+  }
+
+  /**
+   * The next wheel event to reach the window. A listener here runs after the
+   * rail's own, so `defaultPrevented` is what the rail decided.
+   */
+  const nextWheel = () =>
+    new Promise<WheelEvent>((resolve) =>
+      window.addEventListener('wheel', resolve, { once: true }),
+    )
+
+  /** The `scroll` the write fires, and the frame the rail's handler takes after it. */
+  const twoFrames = async () => {
+    await new Promise((resolve) => requestAnimationFrame(resolve))
+    await new Promise((resolve) => requestAnimationFrame(resolve))
+  }
+
+  for (const reading of ['ltr', 'rtl'] as const) {
+    it(`moves toward later pages on a notch down, ${reading}`, async () => {
+      await page.viewport(1440, 900)
+      const rail = focusedRail({ reading, currentIndex: 60 })
+      const before = rail.scrollLeft
+      const later = fromCentre(rail, 70)
+      const earlier = fromCentre(rail, 50)
+
+      const seen = nextWheel()
+      await act(async () => {
+        await userEvent.wheel(rail, { delta: { y: 100 } })
+        await seen
+        await twoFrames()
+      })
+
+      expect((await seen).defaultPrevented).toBe(true)
+      expect(Math.abs(rail.scrollLeft - before)).toBeCloseTo(100, 0)
+      // THE DIRECTION, asked of the tiles and not of `scrollLeft`'s sign: a
+      // page ten on is 100 px nearer the middle of the rail, and a page ten
+      // back 100 px further from it.
+      expect(fromCentre(rail, 70)).toBeCloseTo(later - 100, 0)
+      expect(fromCentre(rail, 50)).toBeCloseTo(earlier + 100, 0)
+    })
+  }
+
+  for (const reading of ['ltr', 'rtl'] as const) {
+    it(`takes a notch at the rail's end and does not pass it on, ${reading}`, async () => {
+      await page.viewport(1440, 900)
+      const rail = focusedRail({ reading, currentIndex: 119 })
+
+      // THE STATE THIS TEST NAMES: the rail stands at its far end, so a notch
+      // toward later pages has nowhere to go.
+      const span = rail.scrollWidth - rail.clientWidth
+      expect(span).toBeGreaterThan(0)
+      expect(Math.abs(rail.scrollLeft)).toBeCloseTo(span, 0)
+      const before = rail.scrollLeft
+
+      const seen = nextWheel()
+      await act(async () => {
+        await userEvent.wheel(rail, { delta: { y: 100 } })
+        await seen
+        await twoFrames()
+      })
+
+      expect(rail.scrollLeft).toBe(before)
+      expect((await seen).defaultPrevented).toBe(true)
+    })
+  }
+
+  // Made events, not real ones: a real wheel with Ctrl held zooms the
+  // browser's page, for this test and for every one after it. A made event
+  // has no default action, so nothing moves unless the rail's listener
+  // moves it.
+  it('leaves Ctrl, Shift and a sideways delta alone', async () => {
+    await page.viewport(1440, 900)
+    const rail = focusedRail({ currentIndex: 60 })
+    const before = rail.scrollLeft
+    /** `false` once a listener has cancelled the event. */
+    const send = (init: WheelEventInit) =>
+      rail.dispatchEvent(
+        new WheelEvent('wheel', { bubbles: true, cancelable: true, ...init }),
+      )
+
+    expect(send({ deltaY: 100, ctrlKey: true })).toBe(true)
+    expect(send({ deltaY: 100, shiftKey: true })).toBe(true)
+    expect(send({ deltaX: 100 })).toBe(true)
+    expect(rail.scrollLeft).toBe(before)
+
+    // THE CONTROL: the same event with no key held is taken, so the three
+    // above reached the listener and it was the listener that declined them.
+    let passed = true
+    await act(async () => {
+      passed = send({ deltaY: 100 })
+      await twoFrames()
+    })
+    expect(passed).toBe(false)
+    expect(rail.scrollLeft).not.toBe(before)
+  })
+
+  // The listener is on the rail itself: a made event is right here, since a
+  // real wheel outside the rail would scroll the page. The target is the rail's
+  // parent, the `inReader` wrapper that gives the strip its height, the
+  // nearest element outside the rail.
+  it('leaves a wheel outside the rail alone, and takes the same wheel on it', async () => {
+    await page.viewport(1440, 900)
+    const rail = focusedRail({ currentIndex: 60 })
+    const outside = rail.parentElement as HTMLElement
+    const before = rail.scrollLeft
+    const send = (target: HTMLElement) =>
+      target.dispatchEvent(
+        new WheelEvent('wheel', {
+          bubbles: true,
+          cancelable: true,
+          deltaY: 100,
+        }),
+      )
+
+    expect(send(outside)).toBe(true)
+    expect(rail.scrollLeft).toBe(before)
+
+    // THE CONTROL: the same wheel, at the rail, is taken.
+    let passed = true
+    await act(async () => {
+      passed = send(rail)
+      await twoFrames()
+    })
+    expect(passed).toBe(false)
+    expect(rail.scrollLeft).not.toBe(before)
+  })
+
+  // `leaves Ctrl, Shift and a sideways delta alone` shows the listener
+  // declining a sideways delta, not that anything then moves the rail. This one is a real sideways wheel: the
+  // rail's listener leaves it alone, and the browser, scrolling a box that is
+  // still `overflow-x: auto`, moves the rail with it. Polled, since that scroll
+  // is the browser's own and lands on its schedule rather than the test's.
+  it('leaves a real sideways wheel to the browser, which moves the rail', async () => {
+    await page.viewport(1440, 900)
+    const rail = focusedRail({ currentIndex: 60 })
+    const before = rail.scrollLeft
+    const seen = nextWheel()
+    await act(async () => {
+      await userEvent.wheel(rail, { delta: { x: 100 } })
+      await seen
+      await twoFrames()
+    })
+    expect((await seen).defaultPrevented).toBe(false)
+    await expect.poll(() => rail.scrollLeft).not.toBe(before)
+  })
 })

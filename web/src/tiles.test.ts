@@ -7,6 +7,7 @@ import {
   normalizedTileWidth,
   refinedStripUnit,
   spacerWidth,
+  stripWheel,
   stripWindow,
   tileMinWidth,
   tilePages,
@@ -132,23 +133,17 @@ describe('normalizedTileWidth', () => {
 })
 
 describe('refinedStripUnit', () => {
-  // O140's measured case: under mobile emulation at 390×844 the rail
-  // subtracts no height of its own, and a loaded one-unit tile draws wider
-  // than the CSS constant claims — 68.19 px outer width, against
-  // `--strip-tile-border: 2px` and a nominal `--strip-unit` of 54. (*Why*
-  // the contexts differ is in `refinedStripUnit`'s doc.)
-  // 68.19 - 2*2 = 64.19, which is more than 0.5 px away from 54, so the
-  // measurement is not noise and the corrected value comes back.
+  // A loaded one-unit tile 68.19 px wide, against `--strip-tile-border: 2px`
+  // and a current `--strip-unit` of 54: 68.19 - 2*2 = 64.19, which is more
+  // than 0.5 px away from 54, so the measurement is not noise and the
+  // corrected value comes back.
   it('returns the measured unit when it differs from the current one past tolerance', () => {
     expect(refinedStripUnit(68.19, 2, 54)).toBeCloseTo(64.19, 5)
   })
 
-  // The same machine's other case, measured under desktop emulation at
-  // dpr 1, where the rail does subtract 15 px of its own height: a loaded
-  // tile there is 58.16 px against the same 58 px nominal (54 unit + 2*2
-  // border) — 58.16 - 4 = 54.16, only 0.16 px from the current 54, well
-  // inside tolerance, and must not cause a write: a constant already this
-  // close is sub-pixel rounding, not a platform difference.
+  // A loaded tile 58.16 px wide against the same 58 px nominal (54 unit +
+  // 2*2 border): 58.16 - 4 = 54.16, only 0.16 px from the current 54, well
+  // inside tolerance, and must not cause a write.
   it('returns undefined when the measured unit is within tolerance of the current one', () => {
     expect(refinedStripUnit(58.16, 2, 54)).toBeUndefined()
   })
@@ -278,13 +273,7 @@ describe('spacerWidth', () => {
   //
   // The border term is `tiles * 2`, not `units * 2`: every tile has two
   // borders whatever its width. A tile's nominal OUTER width is therefore
-  // `units * --strip-unit + 2 * --strip-tile-border`, which measures 101 px
-  // at 1440x900 against the 100.97 px a loaded one-page tile occupied before
-  // O140 touched anything. Measured on the running app: a 237-tile rail
-  // whose tiles are all at their nominal width is
-  // `237*101 + 236*6 + 16 = 25369`, and the live rail read 25465 — the 96 px
-  // difference being the one tile on that volume whose image is wider than
-  // its nominal and is allowed to exceed it (see `tileStyle`'s `minWidth`).
+  // `units * --strip-unit + 2 * --strip-tile-border`.
   it('sums the units, the borders and the internal gaps', () => {
     expect(spacerWidth(5, 4)).toBe(
       'calc(var(--strip-unit) * 5 + var(--strip-tile-border) * 8 + var(--strip-gap) * 3)',
@@ -336,5 +325,67 @@ describe('focusAtFraction', () => {
 
   it('is zero for an empty rail', () => {
     expect(focusAtFraction([], 0.5)).toBe(0)
+  })
+})
+
+describe('stripWheel', () => {
+  const wheel = (
+    over: Partial<{
+      deltaX: number
+      deltaY: number
+      deltaMode: number
+      ctrlKey: boolean
+      shiftKey: boolean
+    }> = {},
+  ) => ({
+    deltaX: 0,
+    deltaY: 0,
+    deltaMode: 0,
+    ctrlKey: false,
+    shiftKey: false,
+    ...over,
+  })
+
+  it('moves toward later pages for a notch down, and earlier for a notch up', () => {
+    expect(stripWheel(wheel({ deltaY: 100 }))).toBe(100)
+    expect(stripWheel(wheel({ deltaY: -100 }))).toBe(-100)
+  })
+
+  it('moves the rail by a pixel-mode wheel’s own delta', () => {
+    expect(stripWheel(wheel({ deltaY: 40 }))).toBeCloseTo(40, 10)
+    expect(stripWheel(wheel({ deltaY: -7 }))).toBeCloseTo(-7, 10)
+  })
+
+  // One detent, reported three ways: `viewport.ts`'s `wheelNotches`.
+  it('reads one detent alike in pixels, lines and pages', () => {
+    expect(stripWheel(wheel({ deltaY: 3, deltaMode: 1 }))).toBe(100)
+    expect(stripWheel(wheel({ deltaY: 1, deltaMode: 2 }))).toBe(100)
+  })
+
+  it('caps one event at four notches', () => {
+    expect(stripWheel(wheel({ deltaY: 100_000 }))).toBe(400)
+    expect(stripWheel(wheel({ deltaY: -100_000 }))).toBe(-400)
+  })
+
+  it('leaves Ctrl and Shift to the browser', () => {
+    expect(stripWheel(wheel({ deltaY: 100, ctrlKey: true }))).toBeUndefined()
+    expect(stripWheel(wheel({ deltaY: 100, shiftKey: true }))).toBeUndefined()
+  })
+
+  it('leaves a sideways delta to the browser, a tie included', () => {
+    expect(stripWheel(wheel({ deltaX: 100 }))).toBeUndefined()
+    expect(stripWheel(wheel({ deltaX: 100, deltaY: 30 }))).toBeUndefined()
+    expect(stripWheel(wheel({ deltaX: -100, deltaY: 30 }))).toBeUndefined()
+    expect(stripWheel(wheel({ deltaX: 100, deltaY: 100 }))).toBeUndefined()
+  })
+
+  it('takes a vertical wheel that drifts a little sideways', () => {
+    expect(stripWheel(wheel({ deltaX: 30, deltaY: 100 }))).toBe(100)
+    expect(stripWheel(wheel({ deltaX: -30, deltaY: -100 }))).toBe(-100)
+  })
+
+  it('takes nothing from a wheel it cannot read', () => {
+    expect(stripWheel(wheel())).toBeUndefined()
+    expect(stripWheel(wheel({ deltaY: Number.NaN }))).toBeUndefined()
   })
 })

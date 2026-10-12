@@ -19,9 +19,10 @@ import { TopBar } from './TopBar'
 /// the tile — at 160px a thumbnail cannot answer "is this the same drawing",
 /// which is the whole question a correction asks.
 ///
-/// One request per hovered tile, and only while correcting. That is not the
-/// cold-strip burst O9 and O11 discuss: a reader hovers a handful of
-/// candidates, one at a time, at human speed.
+/// One request per tile the pointer comes over, whether the pointer moved or
+/// the wheel carried the tile under it, and only while correcting. That is not
+/// the cold-strip burst O9 and O11 discuss: candidates come one at a time, at
+/// human speed.
 const previewMaxHeight = '55vh'
 
 // The bottom bar (spec 2026-09-17 §8.4): one full-width band docked to the

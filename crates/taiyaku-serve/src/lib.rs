@@ -30,6 +30,7 @@ pub(crate) mod download;
 mod folders_api;
 mod libraries_api;
 pub mod library_api;
+mod limit;
 mod metadata;
 /// A work's notes, beside its sidecar.
 ///
@@ -107,7 +108,9 @@ pub struct ServeState {
     /// Set when `--log-requests` was given; otherwise nothing is recorded.
     pub log: Option<Arc<crate::reqlog::Log>>,
     /// What this server knows about the deployment it sits in: whether the
-    /// session cookie carries `Secure`, and whether the claim route exists.
+    /// session cookie carries `Secure`, whether the claim route exists, and
+    /// which proxies it believes. It also carries the permits this server's
+    /// password verifies run under.
     ///
     /// Spec A2 §6 and §5. Small because §11 puts TLS in a reverse proxy, so
     /// none of that is here.

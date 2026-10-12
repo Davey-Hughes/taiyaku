@@ -295,7 +295,8 @@ fn promote_claims_the_seeded_account_end_to_end() {
     let (_, phc) = account::by_name(&conn, "davey")
         .expect("reads")
         .expect("exists");
-    assert!(taiyaku_library::credential::verify_password(
+    assert!(taiyaku_library::credential::verify_password_in(
+        &mut taiyaku_library::credential::WorkingMemory::new(),
         "a real password",
         &phc
     ));
@@ -345,7 +346,8 @@ fn changing_a_password_from_the_command_line_ends_open_sessions() {
     let (_, phc) = account::by_name(&conn, "davey")
         .expect("reads")
         .expect("exists");
-    assert!(taiyaku_library::credential::verify_password(
+    assert!(taiyaku_library::credential::verify_password_in(
+        &mut taiyaku_library::credential::WorkingMemory::new(),
         "a new one",
         &phc
     ));

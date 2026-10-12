@@ -52,21 +52,11 @@
   --strip-tile: 160px;
   /* One nominal page-width in the strip, and the two figures the rail's own
    * geometry is made of. `--strip-unit` is **a starting value, not the last
-   * word**: it is the width a one-page tile's image drew at this breakpoint
-   * when measured on a desktop (O140, 2026-09-21), which is not `--strip-tile`
-   * times an aspect — `--strip-tile` is a height and the image draws shorter
-   * than it. **How much shorter is not the same everywhere**: measured at
-   * 390×844 on one machine in one browser, the rail subtracts 15 px of its
-   * own height under desktop emulation and nothing at all under mobile,
-   * so the same tile draws 58.16 px wide in the first and 68.19 in the
-   * second. What performs that subtraction is a classic scrollbar on the
-   * rail (O145, 2026-10-04): on the machine this was measured on, Chromium
-   * draws one unless it was launched with `--hide-scrollbars` or the page is
-   * under mobile emulation, and both constants here are the width with it
-   * drawn. A hardcoded number cannot be right in both conditions whatever
-   * the cause, so `Filmstrip.tsx`'s mount effect
-   * measures the tiles that have actually drawn and overwrites this value on
-   * the rail element itself. **The median of them, not one of them**
+   * word**: it is the width a one-page tile's image drew at this breakpoint,
+   * read on the running app with no scrollbar on the rail (O138,
+   * 2026-10-11). `Filmstrip.tsx`'s mount
+   * effect measures the tiles that have actually drawn and overwrites this
+   * value on the rail element itself. **The median of them, not one of them**
    * (`tiles.ts`'s `medianTileWidth` and `refinedStripUnit`): a double-page
    * scan the sidecar never marked `spread: true` is a one-unit tile drawing
    * at two, so taking whichever tile loaded first could set this to double.
@@ -86,7 +76,7 @@
    * `tiles.ts`'s `spacerWidth` sums it over the tiles a spacer stands in
    * for, and nothing has to measure a tile to know where the next one
    * starts. */
-  --strip-unit: 97px;
+  --strip-unit: 107px;
   --strip-gap: 6px;
   --strip-tile-border: 2px;
   /* The rail's 6 px padding and a tile's 2 px border, top and bottom
@@ -126,7 +116,7 @@
 @media (width < 900px) {
   .reader {
     --strip-tile: 96px;
-    --strip-unit: 54px;
+    --strip-unit: 64px;
   }
 }
 
@@ -284,6 +274,16 @@
 .reader-readout {
   color: var(--muted);
   font-size: var(--text-meta);
+}
+
+/* The strip's rail draws no scrollbar (O138). The second rule is for a WebKit
+ * that does not know the first's property. */
+.reader-strip-rail {
+  scrollbar-width: none;
+}
+
+.reader-strip-rail::-webkit-scrollbar {
+  display: none;
 }
 
 /* The strip's R/L mark on half a spread, drawn over the thumbnail. */

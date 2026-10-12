@@ -718,9 +718,9 @@ async fn guessing_at_names_is_rate_limited_as_well() {
 /// returned in under a millisecond. `credential::DECOY_HASH` then made an
 /// unknown name cost what a real one costs, deliberately, to close a timing
 /// oracle. That turned the documented trade into an unauthenticated denial of
-/// service: every request carrying a name nobody has ever used takes a
-/// `spawn_blocking` thread and argon2's 19 MiB for ~12 ms, with no counter it
-/// can ever reach, and leaves a `login_attempt` row behind as well.
+/// service: every request carrying a name nobody has ever used took a
+/// `spawn_blocking` thread and 19 MiB of argon2's buffer for ~12 ms, with no
+/// counter it could ever reach, and left a `login_attempt` row behind as well.
 ///
 /// One fix produced the other finding two rounds later. The wider key —
 /// the address alone, at `ADDRESS_LOCKOUT_AFTER` — is what bounds it, and it
@@ -1469,7 +1469,11 @@ async fn changing_a_password_needs_the_current_one() {
     let (_, phc) = account::by_name(&conn, crate::test_support::FIXTURE_NAME)
         .expect("reads")
         .expect("exists");
-    assert!(credential::verify_password("a new one", &phc));
+    assert!(credential::verify_password_in(
+        &mut WorkingMemory::new(),
+        "a new one",
+        &phc
+    ));
     // §4: the browser that made the change keeps its session; every other one
     // ends, so a compromised session cannot outlive the change meant to end it.
     assert!(
@@ -1520,7 +1524,7 @@ async fn a_cross_site_page_cannot_change_a_password() {
 /// password at all, unrecoverably.**
 ///
 /// `credential::hash_password("")` produces a well-formed PHC string rather than
-/// `LOCKED`, so `verify_password("", phc)` answers true and anybody can sign in.
+/// `LOCKED`, so a verify of `""` against it answers true and anybody can sign in.
 /// And `admin_exists` counts `password_hash <> '!'`, so it then answers true and
 /// the claim route 404s — the mistake cannot be undone through the web at all.
 ///
@@ -1667,6 +1671,7 @@ fn a_forwarded_host_is_honoured_only_from_a_trusted_peer() {
         secure_cookies: false,
         allow_web_setup: false,
         trusted_proxies: vec!["10.0.0.0/8".parse().expect("cidr")],
+        verifies: VerifyLimit::default(),
     };
     assert_eq!(
         effective_host(&trusting, &extensions, &headers).as_deref(),
@@ -2010,4 +2015,1150 @@ async fn guessing_the_current_password_is_rate_limited() {
         StatusCode::TOO_MANY_REQUESTS,
         "a locked-out caller must not be let through by finally guessing right"
     );
+}
+
+/// The address every `oneshot` request is held against: `auth::client_of`'s
+/// stated placeholder for a request that carries no peer.
+const NO_PEER: &str = "0.0.0.0";
+
+/// How long a test waits for something a correct server does not let happen.
+///
+/// **No correct run needs it to be any particular length**: what a test reads
+/// after the wait is the same on a machine of any speed. The wait is spent in
+/// two ways.
+///
+/// **A test that has sent requests leaves them this long before it acts**,
+/// and there only a wrong implementation makes use of it. A request waiting
+/// for a permit this test holds is still waiting however long this is. A
+/// request that should have waited and did not needs time to get past the
+/// point it should have stopped at, and this is that time.
+///
+/// **The probe in [`told_and_free_at_each_commit`] is given this long to take
+/// a permit**, at each commit. At a commit the request makes while it holds
+/// its permit, a correct run sits out all of it: the permit the probe is
+/// waiting for is the request's own. A wrong implementation has given that
+/// permit back by then, and is found at once.
+const SETTLE: std::time::Duration = std::time::Duration::from_millis(300);
+
+/// How long any of these tests waits for its answers before it fails.
+const LIMIT: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// How many requests a burst sends.
+const BURST: usize = 12;
+
+// More than there are permits, or no implementation could exceed the bound
+// the burst tests assert.
+const _: () = assert!(BURST > MAX_CONCURRENT_VERIFIES);
+
+/// Puts `key`'s failures at `count`, inside the current window.
+fn wind(state: &ServeState, key: &str, count: i64) {
+    let conn = state.library.conn();
+    account::note_failure(&conn, key).expect("records a failure to wind from");
+    conn.execute(
+        "UPDATE login_attempt SET count = ?2 WHERE key = ?1",
+        rusqlite::params![key, count],
+    )
+    .expect("winds the counter");
+}
+
+/// Sends every request at once, each on a task of its own.
+fn send_all(
+    state: &Arc<ServeState>,
+    requests: Vec<Request<Body>>,
+) -> Vec<tokio::task::JoinHandle<StatusCode>> {
+    requests
+        .into_iter()
+        .map(|request| {
+            let router = build_router(state.clone());
+            tokio::spawn(async move { router.oneshot(request).await.expect("answers").status() })
+        })
+        .collect()
+}
+
+/// What each of `sent` was answered, in the order they were sent, or `None`
+/// if they had not all answered within [`LIMIT`].
+async fn answers(sent: Vec<tokio::task::JoinHandle<StatusCode>>) -> Option<Vec<StatusCode>> {
+    tokio::time::timeout(LIMIT, async {
+        let mut statuses = Vec::with_capacity(sent.len());
+        for handle in sent {
+            statuses.push(handle.await.expect("the request did not panic"));
+        }
+        statuses
+    })
+    .await
+    .ok()
+}
+
+/// Sends `request` while this test holds every permit, raises `key` to
+/// `ceiling` while the request waits, frees the permits, and answers what the
+/// request was told.
+///
+/// `key` is under its ceiling when the request arrives, so the request passes
+/// the read it makes before it waits. The read it makes once it holds a
+/// permit comes after the raise, and refuses it as locked out. A request
+/// that does not ask again, or never waited, is verified instead.
+async fn told_after_waiting(
+    state: &Arc<ServeState>,
+    request: Request<Body>,
+    key: &str,
+    ceiling: i64,
+) -> StatusCode {
+    let held = state.auth.verifies.hold_all();
+    let sent = send_all(state, vec![request]);
+    tokio::time::sleep(SETTLE).await;
+    wind(state, key, ceiling);
+    drop(held);
+    answers(sent)
+        .await
+        .expect("the request answers once the permits are free")[0]
+}
+
+/// Sends `request` while this test holds every permit, and answers what it
+/// was told while they were still held, or `None` if it waited for one.
+async fn told_while_every_permit_is_held(
+    state: &Arc<ServeState>,
+    request: Request<Body>,
+) -> Option<StatusCode> {
+    let held = state.auth.verifies.hold_all();
+    let sent = send_all(state, vec![request]);
+    let answered = answers(sent).await;
+    // Before the caller asserts, so a request this has shown to be waiting is
+    // let go and the runtime can shut down.
+    drop(held);
+    answered.map(|statuses| statuses[0])
+}
+
+/// Sends `requests` while this test holds every permit, so that none of them
+/// is verified before the permits are freed. Then frees the permits and
+/// answers what each was told.
+///
+/// [`SETTLE`] is how long the requests are given to reach the point they
+/// wait at; nothing asserts that they did.
+async fn burst(state: &Arc<ServeState>, requests: Vec<Request<Body>>) -> Vec<StatusCode> {
+    let held = state.auth.verifies.hold_all();
+    let sent = send_all(state, requests);
+    tokio::time::sleep(SETTLE).await;
+    drop(held);
+    answers(sent)
+        .await
+        .expect("every request answers once the permits are free")
+}
+
+/// What a burst may come to against a counter that stood one failure under
+/// its ceiling.
+///
+/// Of the reads made under a permit, the ones that come before the first
+/// failure lands are verified and answered `refused`, and every later one is
+/// locked out. A permit is held from that read until the failure is recorded, so
+/// the first group all hold permits at one moment: it is at most
+/// `MAX_CONCURRENT_VERIFIES`, whatever the scheduling.
+fn assert_one_allowance(statuses: &[StatusCode], refused: StatusCode) {
+    let verified = statuses.iter().filter(|status| **status == refused).count();
+    let locked = statuses
+        .iter()
+        .filter(|status| **status == StatusCode::TOO_MANY_REQUESTS)
+        .count();
+    assert_eq!(
+        verified + locked,
+        statuses.len(),
+        "an answer that is neither a refusal nor a lockout: {statuses:?}"
+    );
+    assert!(
+        verified >= 1,
+        "the last of the allowance was not spendable: {statuses:?}"
+    );
+    assert!(
+        verified <= MAX_CONCURRENT_VERIFIES,
+        "{verified} of {} requests were verified against a counter one failure under its \
+         ceiling. Only a request holding one of the {MAX_CONCURRENT_VERIFIES} permits can \
+         read that counter before the first failure lands: {statuses:?}",
+        statuses.len()
+    );
+}
+
+/// A login as `name` with `password`.
+fn login_as(name: &str, password: &str) -> Request<Body> {
+    Request::post("/api/session")
+        .header("content-type", "application/json")
+        .header("host", "test")
+        .header("origin", "http://test")
+        .body(Body::from(format!(
+            r#"{{"name":"{name}","password":"{password}"}}"#
+        )))
+        .unwrap()
+}
+
+/// A login the server must refuse: a password nobody holds.
+fn wrong_login(name: &str) -> Request<Body> {
+    login_as(name, "not the password")
+}
+
+/// **O57: a login that waited for a permit reads the lockout again once it
+/// has one.**
+///
+/// The limiter checked its counters and then did the work, so requests that
+/// arrived together all read a count under the ceiling and every one of them
+/// was verified. The permit closes that only if the lockout is asked again
+/// behind it: this login passes the first read, waits for a permit while its
+/// address is locked out, and must be told so.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_login_that_waited_for_a_permit_reads_the_lockout_again() {
+    let tmp = crate::test_support::Fixture::new("verify-permit-login");
+    let state = Arc::new(crate::test_support::state(&tmp));
+
+    let told = told_after_waiting(
+        &state,
+        wrong_login("nobody-at-all"),
+        &account::address_key(NO_PEER),
+        account::ADDRESS_LOCKOUT_AFTER,
+    )
+    .await;
+
+    assert_eq!(
+        told,
+        StatusCode::TOO_MANY_REQUESTS,
+        "the address was locked out while this login waited for a permit, and it was \
+         verified all the same: it did not ask again once it held one, or never waited"
+    );
+}
+
+/// **A login already locked out is refused at once.** It does not wait for a
+/// permit to be told so.
+///
+/// The second read alone would refuse it too, after a wait. That wait is a
+/// place in the queue for a permit, taken by a caller the server has already
+/// decided to refuse, and a flood from a locked-out address is exactly the
+/// caller that would fill it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_locked_out_login_is_refused_while_every_permit_is_held() {
+    let tmp = crate::test_support::Fixture::new("verify-permit-login-locked");
+    let state = Arc::new(crate::test_support::state(&tmp));
+    wind(
+        &state,
+        &account::address_key(NO_PEER),
+        account::ADDRESS_LOCKOUT_AFTER,
+    );
+
+    let told = told_while_every_permit_is_held(&state, wrong_login("nobody-at-all")).await;
+
+    assert_eq!(
+        told,
+        Some(StatusCode::TOO_MANY_REQUESTS),
+        "a login from an address already locked out waited for a verify permit before \
+         it was refused"
+    );
+}
+
+/// A burst of names nobody holds, against an address one failure under its
+/// ceiling: the decoy verify, and the wide key that bounds it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_burst_of_invented_names_spends_one_allowance_at_the_login_route() {
+    let tmp = crate::test_support::Fixture::new("verify-burst-names");
+    let state = Arc::new(crate::test_support::state(&tmp));
+    wind(
+        &state,
+        &account::address_key(NO_PEER),
+        account::ADDRESS_LOCKOUT_AFTER - 1,
+    );
+
+    let requests = (0..BURST)
+        .map(|n| wrong_login(&format!("nobody-{n}")))
+        .collect();
+    let statuses = burst(&state, requests).await;
+
+    assert_one_allowance(&statuses, StatusCode::UNAUTHORIZED);
+}
+
+/// The same burst at one real account, one failure under the pair's ceiling:
+/// the real verify.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_burst_at_one_name_spends_one_allowance_at_the_login_route() {
+    let tmp = crate::test_support::Fixture::new("verify-burst-one-name");
+    let state = Arc::new(crate::test_support::state(&tmp));
+    wind(
+        &state,
+        &account::attempt_key(NO_PEER, crate::test_support::FIXTURE_NAME),
+        account::LOCKOUT_AFTER - 1,
+    );
+
+    let requests = (0..BURST)
+        .map(|_| wrong_login(crate::test_support::FIXTURE_NAME))
+        .collect();
+    let statuses = burst(&state, requests).await;
+
+    assert_one_allowance(&statuses, StatusCode::UNAUTHORIZED);
+}
+
+/// A guarded request carrying `password` over `Authorization: Basic`.
+fn basic_as(name: &str, password: &str) -> Request<Body> {
+    use base64::Engine as _;
+    let credentials =
+        base64::engine::general_purpose::STANDARD.encode(format!("{name}:{password}").as_bytes());
+    Request::get("/api/works")
+        .header("host", "test")
+        .header("authorization", format!("Basic {credentials}"))
+        .body(Body::empty())
+        .unwrap()
+}
+
+/// A guarded request carrying a wrong password over `Authorization: Basic`.
+fn wrong_basic(name: &str) -> Request<Body> {
+    basic_as(name, "not the password")
+}
+
+/// A password change behind `cookie` giving `current` as the current password.
+fn change_with(cookie: &str, current: &str) -> Request<Body> {
+    Request::put("/api/password")
+        .header("cookie", cookie)
+        .header("host", "test")
+        .header("origin", "http://test")
+        .header("content-type", "application/json")
+        .body(Body::from(format!(
+            r#"{{"current":"{current}","next":"a new one"}}"#
+        )))
+        .unwrap()
+}
+
+/// A password change behind `cookie` whose current password is wrong.
+fn wrong_change(cookie: &str) -> Request<Body> {
+    change_with(cookie, "not the password")
+}
+
+/// The key `change_password` counts account 1's wrong guesses under.
+fn change_key() -> String {
+    account::attempt_key(NO_PEER, "  change-password 1")
+}
+
+/// `a_login_that_waited_for_a_permit_reads_the_lockout_again`, on the
+/// `Authorization: Basic` path.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_basic_request_that_waited_for_a_permit_reads_the_lockout_again() {
+    let tmp = crate::test_support::Fixture::new("verify-permit-basic");
+    let state = Arc::new(crate::test_support::state(&tmp));
+
+    let told = told_after_waiting(
+        &state,
+        wrong_basic(crate::test_support::FIXTURE_NAME),
+        &account::attempt_key(NO_PEER, crate::test_support::FIXTURE_NAME),
+        account::LOCKOUT_AFTER,
+    )
+    .await;
+
+    assert_eq!(
+        told,
+        StatusCode::TOO_MANY_REQUESTS,
+        "the pair was locked out while this request waited for a permit, and its \
+         password was verified all the same"
+    );
+}
+
+/// The same on the password change, whose wrong guess answers 403.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_password_change_that_waited_for_a_permit_reads_the_lockout_again() {
+    let tmp = crate::test_support::Fixture::new("verify-permit-change");
+    let state = Arc::new(crate::test_support::state(&tmp));
+    let cookie = crate::test_support::fixture_session_cookie(&state.library);
+
+    let told = told_after_waiting(
+        &state,
+        wrong_change(&cookie),
+        &change_key(),
+        account::LOCKOUT_AFTER,
+    )
+    .await;
+
+    assert_eq!(
+        told,
+        StatusCode::TOO_MANY_REQUESTS,
+        "the account's guesses were spent while this change waited for a permit, and \
+         its current password was verified all the same"
+    );
+}
+
+/// `a_locked_out_login_is_refused_while_every_permit_is_held`, on the
+/// `Authorization: Basic` path. This is the path a flood most easily takes:
+/// it is open on every guarded route.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_locked_out_basic_request_is_refused_while_every_permit_is_held() {
+    let tmp = crate::test_support::Fixture::new("verify-permit-basic-locked");
+    let state = Arc::new(crate::test_support::state(&tmp));
+    wind(
+        &state,
+        &account::attempt_key(NO_PEER, crate::test_support::FIXTURE_NAME),
+        account::LOCKOUT_AFTER,
+    );
+
+    let told =
+        told_while_every_permit_is_held(&state, wrong_basic(crate::test_support::FIXTURE_NAME))
+            .await;
+
+    assert_eq!(
+        told,
+        Some(StatusCode::TOO_MANY_REQUESTS),
+        "a Basic request from a pair already locked out waited for a verify permit \
+         before it was refused"
+    );
+}
+
+/// The same on the password change.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_locked_out_password_change_is_refused_while_every_permit_is_held() {
+    let tmp = crate::test_support::Fixture::new("verify-permit-change-locked");
+    let state = Arc::new(crate::test_support::state(&tmp));
+    let cookie = crate::test_support::fixture_session_cookie(&state.library);
+    wind(&state, &change_key(), account::LOCKOUT_AFTER);
+
+    let told = told_while_every_permit_is_held(&state, wrong_change(&cookie)).await;
+
+    assert_eq!(
+        told,
+        Some(StatusCode::TOO_MANY_REQUESTS),
+        "a password change from an account whose guesses were spent waited for a \
+         verify permit before it was refused"
+    );
+}
+
+/// A burst of wrong passwords for one account over Basic, one failure under
+/// the pair's ceiling.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_burst_over_basic_spends_one_allowance() {
+    let tmp = crate::test_support::Fixture::new("verify-burst-basic");
+    let state = Arc::new(crate::test_support::state(&tmp));
+    wind(
+        &state,
+        &account::attempt_key(NO_PEER, crate::test_support::FIXTURE_NAME),
+        account::LOCKOUT_AFTER - 1,
+    );
+
+    let requests = (0..BURST)
+        .map(|_| wrong_basic(crate::test_support::FIXTURE_NAME))
+        .collect();
+    let statuses = burst(&state, requests).await;
+
+    assert_one_allowance(&statuses, StatusCode::UNAUTHORIZED);
+}
+
+/// A burst of password changes from one signed-in account, one failure under
+/// its ceiling.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_burst_of_password_changes_spends_one_allowance() {
+    let tmp = crate::test_support::Fixture::new("verify-burst-change");
+    let state = Arc::new(crate::test_support::state(&tmp));
+    let cookie = crate::test_support::fixture_session_cookie(&state.library);
+    wind(&state, &change_key(), account::LOCKOUT_AFTER - 1);
+
+    let requests = (0..BURST).map(|_| wrong_change(&cookie)).collect();
+    let statuses = burst(&state, requests).await;
+
+    assert_one_allowance(&statuses, StatusCode::FORBIDDEN);
+}
+
+/// **Only a password verify waits for a permit.** With every permit held, a
+/// request by API key, a request by session cookie, and an administrator
+/// adding an account are all served.
+///
+/// The key and the cookie are what a reader presents on every page, and
+/// neither waits for a permit. The account is the lock order: the route
+/// hashes its new password while it holds the library's connection, so if it
+/// also waited for a permit it would be waiting on the verifying paths while
+/// they wait on it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn only_a_password_verify_waits_for_a_permit() {
+    let tmp = crate::test_support::Fixture::new("verify-permit-others");
+    let state = Arc::new(crate::test_support::state(&tmp));
+    let cookie = crate::test_support::fixture_session_cookie(&state.library);
+
+    let by_key = Request::get("/api/works")
+        .header("host", "test")
+        .header(
+            "authorization",
+            crate::test_support::fixture_authorization(),
+        )
+        .body(Body::empty())
+        .unwrap();
+    let by_cookie = Request::get("/api/works")
+        .header("host", "test")
+        .header("cookie", &cookie)
+        .body(Body::empty())
+        .unwrap();
+    let adding_an_account = Request::post("/api/library/users")
+        .header("cookie", &cookie)
+        .header("host", "test")
+        .header("origin", "http://test")
+        .header("content-type", "application/json")
+        .body(Body::from(r#"{"name":"reader","password":"hunter2"}"#))
+        .unwrap();
+
+    let held = state.auth.verifies.hold_all();
+    let sent = send_all(&state, vec![by_key, by_cookie, adding_an_account]);
+    let answered = answers(sent).await;
+    // Before the assertion, so a request this test has shown to be waiting is
+    // let go and the runtime can shut down.
+    drop(held);
+
+    assert_eq!(
+        answered.expect(
+            "a request that verifies no password waited for a verify permit: by key, by \
+             cookie, or the route that hashes a new account's password"
+        ),
+        [StatusCode::OK, StatusCode::OK, StatusCode::OK]
+    );
+}
+
+/// **The order is the permit, then the library's connection.** A login, a
+/// Basic request and a password change all wait for a permit, and while they
+/// wait the connection is free for anyone.
+///
+/// The other order is a server that stops: a request holding the one
+/// connection while it waits for a permit keeps every permit holder from the
+/// read and the write it holds its permit for.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_request_waiting_for_a_permit_does_not_hold_the_librarys_connection() {
+    let tmp = crate::test_support::Fixture::new("verify-permit-order");
+    let state = Arc::new(crate::test_support::state(&tmp));
+    let cookie = crate::test_support::fixture_session_cookie(&state.library);
+
+    let held = state.auth.verifies.hold_all();
+    let sent = send_all(
+        &state,
+        vec![
+            wrong_login(crate::test_support::FIXTURE_NAME),
+            wrong_basic(crate::test_support::FIXTURE_NAME),
+            wrong_change(&cookie),
+        ],
+    );
+    tokio::time::sleep(SETTLE).await;
+
+    // On a thread of its own and under a time limit, so that a connection
+    // somebody is holding fails this test instead of hanging it.
+    let (reached, waited) = std::sync::mpsc::channel();
+    std::thread::spawn({
+        let library = Arc::clone(&state.library);
+        move || {
+            drop(library.conn());
+            let _ = reached.send(());
+        }
+    });
+    let free = waited
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .is_ok();
+    drop(held);
+
+    assert!(
+        free,
+        "the library's connection could not be taken while three requests waited for a \
+         verify permit, so one of them is holding it"
+    );
+    assert_eq!(
+        answers(sent)
+            .await
+            .expect("the three answer once the permits are free"),
+        [
+            StatusCode::UNAUTHORIZED,
+            StatusCode::UNAUTHORIZED,
+            StatusCode::FORBIDDEN
+        ]
+    );
+}
+
+/// Sends `request` to a server whose last free permit is the request's own,
+/// and answers what it was told along with whether anybody else could take a
+/// permit at each commit it made.
+///
+/// A commit hook runs on the thread that is writing, inside the commit, so
+/// this sees the permit at the moment the record is being made and not
+/// before or after it. At each commit a thread of its own asks for a permit
+/// and the hook waits [`SETTLE`] for it. **The wait is only how a defect
+/// shows**: the one permit that is free belongs to the request, so a request
+/// that still holds it leaves the probe waiting however long that is, and one
+/// that has given it back is found at once.
+async fn told_and_free_at_each_commit(
+    state: &Arc<ServeState>,
+    request: Request<Body>,
+) -> (StatusCode, Vec<bool>) {
+    let mut held = state.auth.verifies.hold_all();
+    drop(held.pop());
+
+    let free_at_commit = Arc::new(std::sync::Mutex::new(Vec::<bool>::new()));
+    {
+        let limit = state.auth.verifies.clone();
+        let seen = Arc::clone(&free_at_commit);
+        state
+            .library
+            .conn()
+            .commit_hook(Some(move || {
+                let (took, waited) = std::sync::mpsc::channel();
+                let limit = limit.clone();
+                std::thread::spawn(move || {
+                    let permit = limit.permit();
+                    let _ = took.send(());
+                    drop(permit);
+                });
+                let free = waited.recv_timeout(SETTLE).is_ok();
+                seen.lock().expect("the probe does not panic").push(free);
+                false
+            }))
+            .expect("installs the hook");
+    }
+
+    let sent = send_all(state, vec![request]);
+    let answered = answers(sent).await;
+    // Before the caller asserts, so a red run still lets the runtime shut down.
+    drop(held);
+
+    let told = answered.expect("the request answers")[0];
+    let seen = free_at_commit
+        .lock()
+        .expect("the probe does not panic")
+        .clone();
+    (told, seen)
+}
+
+/// **The permit is held until the failure is recorded.** A login for a name
+/// nobody holds records two failures, the pair's and then the address's, and
+/// no permit is free at either.
+///
+/// Given back before the record, a permit would let a request that has not yet
+/// read the lockout take it and read a count the first has not yet raised.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_login_for_an_unknown_name_records_its_failure_holding_its_permit() {
+    let tmp = crate::test_support::Fixture::new("verify-record-login-decoy");
+    let state = Arc::new(crate::test_support::state(&tmp));
+
+    let (told, free) = told_and_free_at_each_commit(&state, wrong_login("nobody-at-all")).await;
+
+    assert_eq!(told, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        free,
+        [false, false],
+        "a permit was free while a login's failure was being recorded, so the login \
+         gave its own back before the record"
+    );
+}
+
+/// The same for a real account with a wrong password.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_login_with_a_wrong_password_records_its_failure_holding_its_permit() {
+    let tmp = crate::test_support::Fixture::new("verify-record-login-real");
+    let state = Arc::new(crate::test_support::state(&tmp));
+
+    let (told, free) =
+        told_and_free_at_each_commit(&state, wrong_login(crate::test_support::FIXTURE_NAME)).await;
+
+    assert_eq!(told, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        free,
+        [false, false],
+        "a permit was free while a login's failure was being recorded, so the login \
+         gave its own back before the record"
+    );
+}
+
+/// The same over `Authorization: Basic`, for a name nobody holds.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_basic_request_for_an_unknown_name_records_its_failure_holding_its_permit() {
+    let tmp = crate::test_support::Fixture::new("verify-record-basic-decoy");
+    let state = Arc::new(crate::test_support::state(&tmp));
+
+    let (told, free) = told_and_free_at_each_commit(&state, wrong_basic("nobody-at-all")).await;
+
+    assert_eq!(told, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        free,
+        [false, false],
+        "a permit was free while a Basic request's failure was being recorded, so the \
+         request gave its own back before the record"
+    );
+}
+
+/// The same over `Authorization: Basic`, for a real account.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_basic_request_with_a_wrong_password_records_its_failure_holding_its_permit() {
+    let tmp = crate::test_support::Fixture::new("verify-record-basic-real");
+    let state = Arc::new(crate::test_support::state(&tmp));
+
+    let (told, free) =
+        told_and_free_at_each_commit(&state, wrong_basic(crate::test_support::FIXTURE_NAME)).await;
+
+    assert_eq!(told, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        free,
+        [false, false],
+        "a permit was free while a Basic request's failure was being recorded, so the \
+         request gave its own back before the record"
+    );
+}
+
+/// The same on the password change, which records one failure.
+///
+/// A request by cookie makes commits of its own before the handler takes a
+/// permit, when the guard looks the session up: `session_owner` sweeps and
+/// slides it, and each is a write. The permit is free at those, since the
+/// request has none yet. The failure's record is the last commit it makes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_password_change_records_its_failure_holding_its_permit() {
+    let tmp = crate::test_support::Fixture::new("verify-record-change");
+    let state = Arc::new(crate::test_support::state(&tmp));
+    let cookie = crate::test_support::fixture_session_cookie(&state.library);
+
+    let (told, free) = told_and_free_at_each_commit(&state, wrong_change(&cookie)).await;
+
+    assert_eq!(told, StatusCode::FORBIDDEN);
+    assert_eq!(
+        free.last(),
+        Some(&false),
+        "a permit was free while a password change's failure was being recorded, so \
+         the change gave its own back before the record (free at each commit: {free:?})"
+    );
+}
+
+/// **A password change gives its permit back before it hashes the new
+/// password.** `set_password` hashes while it holds the library's connection,
+/// and its commit is where this sees the permit: a change still holding the
+/// last one would wait there for itself.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_password_change_hashes_the_new_password_holding_no_permit() {
+    let tmp = crate::test_support::Fixture::new("verify-change-hash");
+    let state = Arc::new(crate::test_support::state(&tmp));
+    let cookie = crate::test_support::fixture_session_cookie(&state.library);
+
+    // All but one permit are this test's, so the change's is the last one.
+    let mut held = state.auth.verifies.hold_all();
+    drop(held.pop());
+    assert_eq!(
+        held.len(),
+        MAX_CONCURRENT_VERIFIES - 1,
+        "exactly one permit must be free: with two, the commit hook's own permit would be \
+         granted whether or not the change still held one, and the test would see nothing"
+    );
+    {
+        let limit = state.auth.verifies.clone();
+        state
+            .library
+            .conn()
+            .commit_hook(Some(move || {
+                drop(limit.permit());
+                false
+            }))
+            .expect("installs the hook");
+    }
+
+    let sent = send_all(
+        &state,
+        vec![change_with(&cookie, crate::test_support::FIXTURE_PASSWORD)],
+    );
+    let answered = answers(sent).await;
+    drop(held);
+
+    assert_eq!(
+        answered.expect("the change was still holding its permit when it wrote the new hash"),
+        [StatusCode::NO_CONTENT]
+    );
+}
+
+/// A burst of names nobody holds over Basic, against an address one failure
+/// under its ceiling: the decoy verify, and the wide key that bounds it on
+/// the path every guarded route shares.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_burst_of_invented_names_spends_one_allowance_over_basic() {
+    let tmp = crate::test_support::Fixture::new("verify-burst-basic-names");
+    let state = Arc::new(crate::test_support::state(&tmp));
+    wind(
+        &state,
+        &account::address_key(NO_PEER),
+        account::ADDRESS_LOCKOUT_AFTER - 1,
+    );
+
+    let requests = (0..BURST)
+        .map(|n| wrong_basic(&format!("nobody-{n}")))
+        .collect();
+    let statuses = burst(&state, requests).await;
+
+    assert_one_allowance(&statuses, StatusCode::UNAUTHORIZED);
+}
+
+/// A server whose `login_attempt` cannot be read.
+fn state_with_unreadable_attempts(tmp: &crate::test_support::Fixture) -> Arc<ServeState> {
+    let state = Arc::new(crate::test_support::state(tmp));
+    state
+        .library
+        .conn()
+        .execute("DROP TABLE login_attempt", [])
+        .expect("drops");
+    state
+}
+
+/// **The lockout read fails closed.** With `login_attempt` unreadable, a
+/// login with the RIGHT password is answered as a lockout. A wrong one would
+/// be answered 429 by the failure that cannot be recorded, whichever way the
+/// read went.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_login_whose_lockout_cannot_be_read_is_answered_as_a_lockout() {
+    let tmp = crate::test_support::Fixture::new("verify-failclosed-login");
+    let state = state_with_unreadable_attempts(&tmp);
+
+    let response = build_router(state)
+        .oneshot(login_as(
+            crate::test_support::FIXTURE_NAME,
+            crate::test_support::FIXTURE_PASSWORD,
+        ))
+        .await
+        .expect("answers");
+
+    assert_eq!(
+        response.status(),
+        StatusCode::TOO_MANY_REQUESTS,
+        "a lockout the server could not read was read as not locked out"
+    );
+}
+
+/// The same over `Authorization: Basic`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_basic_request_whose_lockout_cannot_be_read_is_answered_as_a_lockout() {
+    let tmp = crate::test_support::Fixture::new("verify-failclosed-basic");
+    let state = state_with_unreadable_attempts(&tmp);
+
+    let response = build_router(state)
+        .oneshot(basic_as(
+            crate::test_support::FIXTURE_NAME,
+            crate::test_support::FIXTURE_PASSWORD,
+        ))
+        .await
+        .expect("answers");
+
+    assert_eq!(
+        response.status(),
+        StatusCode::TOO_MANY_REQUESTS,
+        "a lockout the server could not read was read as not locked out"
+    );
+}
+
+/// The same on the password change.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_password_change_whose_lockout_cannot_be_read_is_answered_as_a_lockout() {
+    let tmp = crate::test_support::Fixture::new("verify-failclosed-change");
+    let state = state_with_unreadable_attempts(&tmp);
+    let cookie = crate::test_support::fixture_session_cookie(&state.library);
+
+    let response = build_router(state)
+        .oneshot(change_with(&cookie, crate::test_support::FIXTURE_PASSWORD))
+        .await
+        .expect("answers");
+
+    assert_eq!(
+        response.status(),
+        StatusCode::TOO_MANY_REQUESTS,
+        "a lockout the server could not read was read as not locked out"
+    );
+}
+
+/// What `request` is answered, sent on its own and waited for.
+async fn answer_to(state: &Arc<ServeState>, request: Request<Body>) -> Response {
+    build_router(state.clone())
+        .oneshot(request)
+        .await
+        .expect("answers")
+}
+
+/// Asserts what can be seen of where `state`'s server has verified: it has
+/// made one working memory, the one is spare again now that nothing is being
+/// verified, and a verify has run in it.
+///
+/// The last is read from how the memory prints, which is no longer how a new
+/// one prints. A server that made its memories and then verified each
+/// password in a memory made for the call would count the same and bound
+/// nothing.
+fn assert_verified_in_one_memory(state: &ServeState) {
+    assert_eq!(
+        state.auth.verifies.memories_made(),
+        1,
+        "the verifies that came one after another did not all run in the first one's \
+         working memory"
+    );
+    let spare = state.auth.verifies.spare_memories();
+    assert_eq!(
+        spare.len(),
+        1,
+        "the one working memory was not given back with the last permit: {spare:?}"
+    );
+    assert_ne!(
+        spare[0],
+        format!("{:?}", WorkingMemory::new()),
+        "the working memory this server made holds what a new one holds, so its verifies \
+         ran somewhere else"
+    );
+}
+
+/// **Verifies that come one after another all run in one working memory.**
+///
+/// A permit takes a memory an earlier permit gave back before it makes one,
+/// so a server whose verifies never overlap makes one memory and no second.
+/// Every login here is for a name nobody holds, so each is verified against
+/// the decoy and none of them is refused as locked out before it reaches a
+/// permit: a login that was never verified would say nothing about the
+/// memory it ran in.
+///
+/// **So this is also where the login route's decoy verify is held to its
+/// permit's memory.** Each other place a password is verified has a test of
+/// its own below, and
+/// [`a_login_at_a_real_account_is_verified_in_its_permits_memory`] says why.
+#[tokio::test]
+async fn logins_one_after_another_run_in_one_working_memory() {
+    let tmp = crate::test_support::Fixture::new("verify-memory-in-turn");
+    let state = Arc::new(crate::test_support::state(&tmp));
+    assert_eq!(
+        state.auth.verifies.memories_made(),
+        0,
+        "a server that has verified nothing has already made a working memory"
+    );
+
+    for n in 0..BURST {
+        assert_eq!(
+            answer_to(&state, wrong_login(&format!("nobody-{n}")))
+                .await
+                .status(),
+            StatusCode::UNAUTHORIZED,
+            "login {n} was not verified"
+        );
+    }
+
+    assert_verified_in_one_memory(&state);
+}
+
+/// **The login route verifies a real account's password in its permit's
+/// memory.**
+///
+/// A password is verified by the login route, for a name nobody holds and
+/// for a real account, by `Authorization: Basic` for the same two, and by
+/// the password change. Each is one line that borrows its permit's working
+/// memory, and each could as easily verify in a memory of its own: it would
+/// answer the same, and bring back a buffer for every request, which is what
+/// the permits' memories are there to stop. A test that mixes them cannot
+/// tell, because one verify in the permit's memory is all
+/// [`assert_verified_in_one_memory`] can see. So each has a test in which it
+/// is the only verify its server runs.
+///
+/// **Here that is the login route's verify of a real account.** Both logins
+/// are at the fixture account, and a name that exists is never verified
+/// against the decoy. The route is outside the guard, so nothing is verified
+/// before it, and opening a session verifies nothing after. The second login
+/// gives the right password and is answered with a session, which no other
+/// verify could have let through.
+#[tokio::test]
+async fn a_login_at_a_real_account_is_verified_in_its_permits_memory() {
+    let tmp = crate::test_support::Fixture::new("verify-site-login-real");
+    let state = Arc::new(crate::test_support::state(&tmp));
+    let name = crate::test_support::FIXTURE_NAME;
+
+    assert_eq!(
+        answer_to(&state, wrong_login(name)).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        answer_to(
+            &state,
+            login_as(name, crate::test_support::FIXTURE_PASSWORD)
+        )
+        .await
+        .status(),
+        StatusCode::NO_CONTENT,
+        "the fixture account's own password did not open a session, so these logins \
+         did not reach the verify of a real account"
+    );
+
+    assert_verified_in_one_memory(&state);
+}
+
+/// **`Authorization: Basic` verifies a name nobody holds in its permit's
+/// memory.**
+///
+/// The verify reached is `from_basic`'s against the decoy, in the guard, and
+/// it is the only one: neither name exists, so there is no account's hash to
+/// verify against, and a request the guard refuses never reaches a handler.
+#[tokio::test]
+async fn a_basic_request_for_an_unknown_name_is_verified_in_its_permits_memory() {
+    let tmp = crate::test_support::Fixture::new("verify-site-basic-decoy");
+    let state = Arc::new(crate::test_support::state(&tmp));
+
+    for name in ["nobody-at-all", "nobody-else"] {
+        assert_eq!(
+            answer_to(&state, wrong_basic(name)).await.status(),
+            StatusCode::UNAUTHORIZED,
+            "a Basic request as {name:?} was not refused by the guard"
+        );
+    }
+
+    assert_verified_in_one_memory(&state);
+}
+
+/// **`Authorization: Basic` verifies a real account's password in its
+/// permit's memory.**
+///
+/// The verify reached is `from_basic`'s of the fixture account's hash, in the
+/// guard. A name that exists is never verified against the decoy. The second
+/// request gives the right password, which only this verify could have let
+/// through the guard, and the handler it then reaches lists works and
+/// verifies nothing.
+#[tokio::test]
+async fn a_basic_request_at_a_real_account_is_verified_in_its_permits_memory() {
+    let tmp = crate::test_support::Fixture::new("verify-site-basic-real");
+    let state = Arc::new(crate::test_support::state(&tmp));
+    let name = crate::test_support::FIXTURE_NAME;
+
+    assert_eq!(
+        answer_to(&state, wrong_basic(name)).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        answer_to(
+            &state,
+            basic_as(name, crate::test_support::FIXTURE_PASSWORD)
+        )
+        .await
+        .status(),
+        StatusCode::OK,
+        "the fixture account's own password did not pass the guard, so these requests \
+         did not reach the verify of a real account"
+    );
+
+    assert_verified_in_one_memory(&state);
+}
+
+/// **The password change verifies the current password in its permit's
+/// memory.**
+///
+/// Both requests come by session cookie, which the guard resolves without
+/// verifying anything. Sent over Basic, a change would be verified once in
+/// the guard and again in the handler, and this would be a test of two
+/// places. The second request gives the right current password and the
+/// change is made, which only this verify could have allowed. The new
+/// password is then hashed, and a hash runs in the memories the process keeps
+/// for hashing and not in a permit's.
+#[tokio::test]
+async fn a_password_change_is_verified_in_its_permits_memory() {
+    let tmp = crate::test_support::Fixture::new("verify-site-change");
+    let state = Arc::new(crate::test_support::state(&tmp));
+    let cookie = crate::test_support::fixture_session_cookie(&state.library);
+
+    assert_eq!(
+        answer_to(&state, wrong_change(&cookie)).await.status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        answer_to(
+            &state,
+            change_with(&cookie, crate::test_support::FIXTURE_PASSWORD)
+        )
+        .await
+        .status(),
+        StatusCode::NO_CONTENT,
+        "the fixture account's own password did not change it, so these requests did \
+         not reach the verify of the current password"
+    );
+
+    assert_verified_in_one_memory(&state);
+}
+
+/// **A server makes no more working memories than it has permits, however
+/// many passwords it verifies and however they arrive.**
+///
+/// A memory these verifies have run in is the size of `credential`'s memory
+/// cost, so this is the bound on what a burst of logins can make the server
+/// hold. A memory for each request is the same burst with no bound at all.
+///
+/// The wait inside [`burst`] is not what this reads. The bound holds whatever
+/// order the requests run in, and a server that made a memory for every
+/// verify would have made at least as many as there were verifies however
+/// they arrived.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_burst_of_logins_runs_in_no_more_working_memories_than_there_are_permits() {
+    let tmp = crate::test_support::Fixture::new("verify-memory-burst");
+    let state = Arc::new(crate::test_support::state(&tmp));
+
+    let requests = (0..BURST)
+        .map(|n| wrong_login(&format!("nobody-{n}")))
+        .collect();
+    let statuses = burst(&state, requests).await;
+
+    assert_eq!(
+        statuses,
+        [StatusCode::UNAUTHORIZED; BURST],
+        "not every login of the burst was verified"
+    );
+    let made = state.auth.verifies.memories_made();
+    assert!(
+        made <= MAX_CONCURRENT_VERIFIES,
+        "{made} working memories were made for a burst of {BURST} logins, by a server \
+         with {MAX_CONCURRENT_VERIFIES} permits"
+    );
+    let spare = state.auth.verifies.spare_memories();
+    assert_eq!(
+        spare.len(),
+        made,
+        "a working memory was not given back with its permit: {spare:?}"
+    );
+    // The memories made are the ones the burst ran in, or the bound above is
+    // on something the verifies never touched.
+    let unused = format!("{:?}", WorkingMemory::new());
+    assert!(
+        spare.iter().all(|memory| *memory != unused),
+        "a working memory this server made holds what a new one holds, so a verify of \
+         the burst ran somewhere else: {spare:?}"
+    );
+}
+
+/// **A password verified in a memory other verifies have used is answered as
+/// it would be in a new one.**
+///
+/// The memory a login runs in is the one the login before it ran in: here a
+/// decoy verify, then wrong guesses at a real account, then the right
+/// password. The right password opens a session after the wrong ones, a
+/// wrong one is refused after the right one, and the right one opens a
+/// session again. The server made one memory for all of them, which is what
+/// makes this about a used one.
+#[tokio::test]
+async fn a_login_verified_in_a_used_working_memory_is_answered_as_in_a_new_one() {
+    let tmp = crate::test_support::Fixture::new("verify-memory-used");
+    let state = Arc::new(crate::test_support::state(&tmp));
+    let name = crate::test_support::FIXTURE_NAME;
+    let right = || login_as(name, crate::test_support::FIXTURE_PASSWORD);
+
+    for wrong in [
+        wrong_login("nobody-at-all"),
+        wrong_login(name),
+        wrong_login(name),
+    ] {
+        assert_eq!(
+            answer_to(&state, wrong).await.status(),
+            StatusCode::UNAUTHORIZED
+        );
+    }
+
+    let opened = answer_to(&state, right()).await;
+    assert_eq!(
+        opened.status(),
+        StatusCode::NO_CONTENT,
+        "the right password was refused in a working memory wrong ones had used"
+    );
+    assert!(
+        opened
+            .headers()
+            .get(header::SET_COOKIE)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|cookie| cookie.starts_with(&format!("{COOKIE_NAME}="))),
+        "the login was answered 204 and no session cookie came with it"
+    );
+
+    assert_eq!(
+        answer_to(&state, wrong_login(name)).await.status(),
+        StatusCode::UNAUTHORIZED,
+        "a wrong password was accepted in the working memory the right one had just used"
+    );
+    assert_eq!(
+        answer_to(&state, right()).await.status(),
+        StatusCode::NO_CONTENT
+    );
+
+    // Or none of the answers above was shown to come from a used memory.
+    assert_verified_in_one_memory(&state);
 }

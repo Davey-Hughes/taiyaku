@@ -2499,11 +2499,15 @@ mod pinned {
     /// route tests answering 401 rather than as anything naming the cause.
     #[test]
     fn the_fixture_hash_still_verifies() {
-        assert!(taiyaku_library::credential::verify_password(
+        use taiyaku_library::credential::{WorkingMemory, verify_password_in};
+
+        assert!(verify_password_in(
+            &mut WorkingMemory::new(),
             super::FIXTURE_PASSWORD,
             super::FIXTURE_PHC
         ));
-        assert!(!taiyaku_library::credential::verify_password(
+        assert!(!verify_password_in(
+            &mut WorkingMemory::new(),
             "not the fixture password",
             super::FIXTURE_PHC
         ));

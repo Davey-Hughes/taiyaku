@@ -60,8 +60,8 @@ describe('the reader root', () => {
       `${STRIP_TILE_PX.narrow}px`,
     ])
     expect(declared(readerSource, '.reader', '--strip-unit')).toEqual([
-      '97px',
-      '54px',
+      '107px',
+      '64px',
     ])
     // Anchored to the phone breakpoint's own `.reader` block, not a search of
     // the whole file — but not exclusive: `--strip-unit` lives in the same
@@ -285,5 +285,37 @@ describe('the bars’ and the borrowed mark’s colours', () => {
     expect(
       declared(readerSource, '.reader-section-head-stacked', 'margin-top'),
     ).toEqual(['var(--space-2)'])
+  })
+})
+
+describe('the strip’s rail', () => {
+  /**
+   * O138. `Filmstrip.test.tsx` holds that the rail wears the class and
+   * `Filmstrip.browser.test.tsx` that the first rule reaches it. The second
+   * rule is held here and nowhere else.
+   */
+  it('draws no scrollbar, by the standard property and by WebKit’s own', () => {
+    expect(
+      declared(readerSource, '.reader-strip-rail', 'scrollbar-width'),
+    ).toEqual(['none'])
+    expect(
+      declared(
+        readerSource,
+        '.reader-strip-rail::-webkit-scrollbar',
+        'display',
+      ),
+    ).toEqual(['none'])
+  })
+
+  /**
+   * `declared` finds a rule by its prelude and cannot see an enclosing
+   * at-rule, so either rule moved inside `@media (width < 900px)` would still
+   * be found, and the scrollbar would come back above that width. A rule at
+   * the top level starts a line.
+   */
+  it('stands at the top level of the stylesheet, not inside an at-rule', () => {
+    const source = withoutComments(readerSource)
+    expect(source).toMatch(/^\.reader-strip-rail \{/m)
+    expect(source).toMatch(/^\.reader-strip-rail::-webkit-scrollbar \{/m)
   })
 })

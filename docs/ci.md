@@ -958,7 +958,9 @@ covered when two cover decodes actually collide on the permit and uncovered when
 the scheduler does not overlap them. Every figure in this section is quoted from
 the lower run, so the honest margin is **67 lines**. This is the one place the
 Rust gate is not reproducible, and it is 0.07 points against a 0.95-point
-margin.
+margin. *(The semaphore has since moved to `taiyaku-serve/src/limit.rs`, with
+O57 on 2026-10-12, where a password verify waits on it as well as a cover
+decode. The two runs above are from before that.)*
 
 The two-point rule was not re-applied on top of that, because its stated reason
 above is v8 counting what a run loaded — a different and much larger

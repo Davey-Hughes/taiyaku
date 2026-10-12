@@ -503,9 +503,9 @@ async fn the_last_slot_of_a_spread_carrying_edition_is_in_range() {
 /// account, for a handler called directly.
 ///
 /// **An empty grant, and that is chosen.** For a principal carrying roots,
-/// `get_page`, `get_thumb` and `patch_alignments` wait on the library's mutex
-/// first for their grant check, and the watchdog measures a call's first wait,
-/// so it would measure that check rather than the closures this test is for.
+/// a handler that asks a grant waits on the library's mutex first for that
+/// check, and the watchdog measures a call's first wait, so it would measure
+/// the check rather than the closures this test is for.
 /// The check has its own test, `no_grant_check_stalls_the_runtime`, since O115.
 /// Until O115 closed it ran on the async worker, and `docs/notes.md`, "O71",
 /// records those stalls measured.
@@ -677,7 +677,12 @@ async fn no_works_route_stalls_the_runtime() {
 
     let (stalled, response) = the_runtime_stalls_on(
         &library,
-        get_truth(State(Arc::clone(&state)), w(), HeaderMap::new()),
+        get_truth(
+            State(Arc::clone(&state)),
+            as_the_fixture_account(),
+            w(),
+            HeaderMap::new(),
+        ),
     )
     .await;
     assert!(
@@ -692,6 +697,7 @@ async fn no_works_route_stalls_the_runtime() {
         &library,
         put_truth(
             State(Arc::clone(&state)),
+            as_the_fixture_account(),
             w(),
             if_match(&tag),
             Bytes::from(truth),
@@ -829,6 +835,9 @@ async fn assert_answered(handler: &str, response: Response, expected: StatusCode
 /// `visible_editions_or_refuse` since O119, and
 /// [`neither_opds_feed_asks_a_grant_on_the_async_worker`] holds it beside
 /// `opds::works`.
+///
+/// **And the six O60 added**: progress, notes and truth, read and write, ask
+/// `visible_editions_or_refuse` before their own closure.
 ///
 /// **The watchdog measures each call's first wait on the library's mutex**:
 /// [`crate::test_support::the_runtime_stalls_on`] holds it once and lets it go
@@ -1000,6 +1009,111 @@ async fn no_grant_check_stalls_the_runtime() {
     }
     assert_answered("download::member", response, StatusCode::OK).await;
 
+    // O60: progress, notes and truth ask the grant too. Ordered as
+    // `no_works_route_stalls_the_runtime` orders them, so each can succeed:
+    // the progress write before its read, each document read before the write
+    // that sends its `ETag` back.
+    let tag_of = |response: &Response| {
+        response
+            .headers()
+            .get(header::ETAG)
+            .expect("an ETag")
+            .to_str()
+            .expect("an ETag is text")
+            .to_string()
+    };
+    let with_tag = |tag: &str| {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::IF_MATCH,
+            tag.parse().expect("an ETag is a header value"),
+        );
+        headers
+    };
+
+    let position: crate::Progress =
+        serde_json::from_str(r#"{"edition":"raw","slot":1}"#).expect("a position");
+    let (stalled, response) = the_runtime_stalls_on(
+        &library,
+        put_progress(
+            State(Arc::clone(&state)),
+            granted(),
+            w(),
+            axum::Json(position),
+        ),
+    )
+    .await;
+    if stalled {
+        stalled_on.push("put_progress");
+    }
+    assert_answered("put_progress", response, StatusCode::NO_CONTENT).await;
+
+    let (stalled, response) = the_runtime_stalls_on(
+        &library,
+        get_progress(State(Arc::clone(&state)), granted(), w()),
+    )
+    .await;
+    if stalled {
+        stalled_on.push("get_progress");
+    }
+    assert_answered("get_progress", response, StatusCode::OK).await;
+
+    let (stalled, response) = the_runtime_stalls_on(
+        &library,
+        get_notes(State(Arc::clone(&state)), granted(), w(), HeaderMap::new()),
+    )
+    .await;
+    if stalled {
+        stalled_on.push("get_notes");
+    }
+    assert_eq!(response.status(), StatusCode::OK, "get_notes");
+    let tag = tag_of(&response);
+    let notes = crate::test_support::body_string(response).await;
+
+    let (stalled, response) = the_runtime_stalls_on(
+        &library,
+        put_notes(
+            State(Arc::clone(&state)),
+            granted(),
+            w(),
+            with_tag(&tag),
+            Bytes::from(notes),
+        ),
+    )
+    .await;
+    if stalled {
+        stalled_on.push("put_notes");
+    }
+    assert_answered("put_notes", response, StatusCode::OK).await;
+
+    let (stalled, response) = the_runtime_stalls_on(
+        &library,
+        get_truth(State(Arc::clone(&state)), granted(), w(), HeaderMap::new()),
+    )
+    .await;
+    if stalled {
+        stalled_on.push("get_truth");
+    }
+    assert_eq!(response.status(), StatusCode::OK, "get_truth");
+    let tag = tag_of(&response);
+    let truth = crate::test_support::body_string(response).await;
+
+    let (stalled, response) = the_runtime_stalls_on(
+        &library,
+        put_truth(
+            State(Arc::clone(&state)),
+            granted(),
+            w(),
+            with_tag(&tag),
+            Bytes::from(truth),
+        ),
+    )
+    .await;
+    if stalled {
+        stalled_on.push("put_truth");
+    }
+    assert_answered("put_truth", response, StatusCode::OK).await;
+
     assert!(
         stalled_on.is_empty(),
         "for a reader whose grant names roots, these asked it on the async worker: {stalled_on:?}"
@@ -1007,9 +1121,8 @@ async fn no_grant_check_stalls_the_runtime() {
 }
 
 /// **Neither OPDS feed asks a grant on the async worker** — O119: the property
-/// [`no_grant_check_stalls_the_runtime`] holds for the eight handlers that ask
-/// through `refuse_if_hidden` and `visible_editions_or_refuse`, held for the
-/// two that asked through code of their own.
+/// [`no_grant_check_stalls_the_runtime`] holds for the handlers it drives,
+/// held for the two that asked through code of their own.
 ///
 /// `opds::works` read a restricted reader's visible editions through
 /// `opds::visible_editions_by_work`, and `opds::work_feed` through an inline
@@ -4025,8 +4138,7 @@ async fn the_work_list_names_every_folder_of_a_granted_library() {
 // therefore both read the sidecar this handler returns and write shared
 // `alignment`/`run` rows for a work outside every root it held. This is worse
 // than the six read leaks: an alignment is shared library truth rather than
-// per-account state, so O60's "nothing leaks" reasoning for progress, notes
-// and truth does not carry to it.
+// per-account state.
 // ---------------------------------------------------------------------------
 
 /// A router over a work with two editions and a solved alignment edge
@@ -4442,4 +4554,1022 @@ async fn a_sized_cover_answers_its_own_validator_with_a_304() {
         768,
         "the first `w` decides the size"
     );
+}
+
+// ---------------------------------------------------------------------------
+// O60: progress, notes and truth ask the grant. A work outside it is answered
+// on those six routes as a slug no work holds is.
+// ---------------------------------------------------------------------------
+
+/// One request through a fixture router, answered as its status and its body.
+///
+/// `if_match` is what a document write sends and `body` what any write does;
+/// a plain read sends neither. The answer's body is read as text whatever it
+/// holds, so a route that answers bytes can be asked too.
+async fn answered(
+    router: &axum::Router,
+    method: axum::http::Method,
+    uri: &str,
+    if_match: Option<&str>,
+    body: Option<&str>,
+) -> (StatusCode, String) {
+    let mut request = Request::builder().method(method).uri(uri);
+    if let Some(tag) = if_match {
+        request = request.header(header::IF_MATCH, tag);
+    }
+    let body = match body {
+        Some(text) => {
+            request = request.header(header::CONTENT_TYPE, "application/json");
+            Body::from(text.to_string())
+        }
+        None => Body::empty(),
+    };
+    let response = router
+        .clone()
+        .oneshot(request.body(body).unwrap())
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+        .await
+        .unwrap();
+    (status, String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// One of the six requests O60 names, as [`the_six_requests`] builds it.
+struct Asked {
+    handler: &'static str,
+    method: axum::http::Method,
+    uri: String,
+    if_match: Option<String>,
+    body: Option<String>,
+    /// What a caller who may see the work is answered.
+    seen: StatusCode,
+}
+
+/// The six requests O60 names, against `slug`: each one this server carries
+/// out for a caller who may see the work, in an order each can succeed in.
+///
+/// The two tags are the ones a work nobody has written on answers with. Every
+/// request here is one the server carries out, so each write carries the tag
+/// it needs; the writes that fail a check of their own, a missing or stale tag
+/// among them, are sent by
+/// [`a_write_to_a_hidden_work_is_refused_before_its_own_checks_are_made`].
+fn the_six_requests(slug: &str) -> Vec<Asked> {
+    use axum::http::Method;
+
+    let notes_tag = notes_etag(&crate::notes::to_json(&crate::notes::empty(slug)).unwrap());
+    let truth_tag = notes_etag(&crate::truth::to_json(&taiyaku_core::TruthDoc::new()));
+    let note = format!(
+        r#"{{"work":"{slug}","notes":[{{"id":"01J8","edition":"raw","slot":1,"body":"kept",
+               "created":"2026-08-05T10:00:00Z","updated":"2026-08-05T10:00:00Z"}}]}}"#
+    );
+    let truth = r#"{"taiyaku_truth":1,"editions":{"raw":{
+        "members":[{"sha256":"labelled"}],
+        "pages":{"0":[{"x":0.1,"y":0.2,"w":0.3,"h":0.4,"axis":"v",
+                       "kind":"dialogue","ignore":false,"text":"a"}]}}}}"#;
+    vec![
+        Asked {
+            handler: "put_progress",
+            method: Method::PUT,
+            uri: format!("/api/works/{slug}/progress"),
+            if_match: None,
+            body: Some(r#"{"edition":"raw","slot":1}"#.to_string()),
+            seen: StatusCode::NO_CONTENT,
+        },
+        Asked {
+            handler: "get_progress",
+            method: Method::GET,
+            uri: format!("/api/works/{slug}/progress"),
+            if_match: None,
+            body: None,
+            seen: StatusCode::OK,
+        },
+        Asked {
+            handler: "get_notes",
+            method: Method::GET,
+            uri: format!("/api/works/{slug}/notes"),
+            if_match: None,
+            body: None,
+            seen: StatusCode::OK,
+        },
+        Asked {
+            handler: "put_notes",
+            method: Method::PUT,
+            uri: format!("/api/works/{slug}/notes"),
+            if_match: Some(notes_tag),
+            body: Some(note),
+            seen: StatusCode::OK,
+        },
+        Asked {
+            handler: "get_truth",
+            method: Method::GET,
+            uri: format!("/api/works/{slug}/truth"),
+            if_match: None,
+            body: None,
+            seen: StatusCode::OK,
+        },
+        Asked {
+            handler: "put_truth",
+            method: Method::PUT,
+            uri: format!("/api/works/{slug}/truth"),
+            if_match: Some(truth_tag),
+            body: Some(truth.to_string()),
+            seen: StatusCode::OK,
+        },
+    ]
+}
+
+/// **O60: a work outside the grant is a slug no work holds**, on the six
+/// handlers that read and write a work's progress, notes and truth.
+///
+/// Each request is sent twice by one account, granted `Shelf` alone: against
+/// the work under `Other`, and against a slug no work holds. The two answers
+/// are compared with each other, status and body, with the slug each names
+/// put aside. Neither is compared with a sentence written here.
+///
+/// **Then the grant is lifted and the same six are sent again**, against the
+/// same work, and each is carried out. That half is what shows the requests
+/// are ones this server accepts: six malformed requests would be refused
+/// alike for any slug. Between the two halves the three documents are read,
+/// and nothing a refused write carried is in them.
+#[tokio::test]
+async fn progress_notes_and_truth_answer_a_hidden_work_as_a_slug_no_work_holds() {
+    use axum::http::Method;
+
+    let tmp = crate::test_support::Fixture::new("o60-hidden-work");
+    let (router, state) = crate::test_support::router_over_a_granted_two_folder_library(&tmp);
+    let hidden: String = state
+        .library
+        .conn()
+        .query_row(
+            "SELECT slug FROM work WHERE title = 'Other Library Work'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("the slug of the work under `Other`");
+    let unknown = "no-work-is-called-this";
+
+    for (asked, nowhere) in the_six_requests(&hidden)
+        .into_iter()
+        .zip(the_six_requests(unknown))
+    {
+        let (status, body) = answered(
+            &router,
+            asked.method.clone(),
+            &asked.uri,
+            asked.if_match.as_deref(),
+            asked.body.as_deref(),
+        )
+        .await;
+        let (no_status, no_body) = answered(
+            &router,
+            nowhere.method.clone(),
+            &nowhere.uri,
+            nowhere.if_match.as_deref(),
+            nowhere.body.as_deref(),
+        )
+        .await;
+        assert_eq!(
+            (status, body.replace(&hidden, "{work}")),
+            (no_status, no_body.replace(unknown, "{work}")),
+            "{}: a work outside the grant, left, and a slug no work holds, right",
+            asked.handler
+        );
+        assert_eq!(status, StatusCode::NOT_FOUND, "{}: {body}", asked.handler);
+    }
+
+    let lifted = state
+        .library
+        .conn()
+        .execute("DELETE FROM user_library WHERE user_id = 1", [])
+        .expect("lifts the grant");
+    assert_eq!(
+        lifted, 1,
+        "the one grant, which leaves the account no limits"
+    );
+
+    let read = |document: &str| format!("/api/works/{hidden}/{document}");
+    let (status, body) = answered(&router, Method::GET, &read("progress"), None, None).await;
+    assert_eq!(
+        status,
+        StatusCode::NO_CONTENT,
+        "the refused position write reached the store: {body}"
+    );
+    let (status, notes) = answered(&router, Method::GET, &read("notes"), None, None).await;
+    assert_eq!(status, StatusCode::OK, "{notes}");
+    assert!(
+        !notes.contains("01J8"),
+        "the refused note reached the store: {notes}"
+    );
+    let (status, truth) = answered(&router, Method::GET, &read("truth"), None, None).await;
+    assert_eq!(status, StatusCode::OK, "{truth}");
+    assert!(
+        !truth.contains("labelled"),
+        "the refused truth document reached the store: {truth}"
+    );
+
+    for asked in the_six_requests(&hidden) {
+        let (status, body) = answered(
+            &router,
+            asked.method.clone(),
+            &asked.uri,
+            asked.if_match.as_deref(),
+            asked.body.as_deref(),
+        )
+        .await;
+        assert_eq!(
+            status, asked.seen,
+            "{}, for an account with no limits: {body}",
+            asked.handler
+        );
+    }
+    let (_, truth) = answered(&router, Method::GET, &read("truth"), None, None).await;
+    assert!(
+        truth.contains("labelled"),
+        "the truth write an account with no limits made did not land: {truth}"
+    );
+}
+
+/// **Every guarded route that names a work answers a hidden one as it answers
+/// a slug no work holds**, walked from `guarded_routes()` and not from a list
+/// of routes somebody remembered.
+///
+/// Five methods on every path, each with no body and with `{}`. A
+/// `MethodRouter` cannot be asked which methods it registers, and a method it
+/// does not is answered 405 for any slug, which the comparison finds equal.
+/// A body the handler will not parse is part of what O60 decided: it is
+/// answered alike for both.
+///
+/// **And on each path some request must tell a granted work from a hidden
+/// one.** Without that a path could pass by never reaching its handler, and
+/// the fixture would be one where right and wrong answer the same. The
+/// granted work is asked last, so nothing it does can change what the other
+/// two are answered.
+///
+/// The count is typed, as `auth::tests::every_route_refuses_an_anonymous_request`
+/// types its list. A route added later is walked without being named here;
+/// the count notices a path that stopped carrying `{work}`, and one that
+/// started.
+#[tokio::test]
+async fn every_route_naming_a_work_answers_a_hidden_one_as_a_slug_no_work_holds() {
+    use axum::http::Method;
+
+    let tmp = crate::test_support::Fixture::new("o60-walk");
+    let (router, state) = crate::test_support::router_over_a_granted_two_folder_library(&tmp);
+    let slug_of = |title: &str| -> String {
+        state
+            .library
+            .conn()
+            .query_row("SELECT slug FROM work WHERE title = ?1", [title], |row| {
+                row.get(0)
+            })
+            .expect("the work's slug")
+    };
+    let granted = slug_of("First Folder Work");
+    let hidden = slug_of("Other Library Work");
+    let unknown = "no-work-is-called-this".to_string();
+    let concrete = |pattern: &str, work: &str| -> String {
+        let path = pattern
+            .replace("{work}", work)
+            .replace("{edition}", "raw")
+            .replace("{index}", "0")
+            .replace("{ordinal}", "0")
+            .replace("{number}", "0");
+        assert!(
+            !path.contains('{'),
+            "{pattern} carries a placeholder this walk has no value for: {path}"
+        );
+        path
+    };
+
+    let mut walked = 0;
+    for (pattern, _) in guarded_routes() {
+        if !pattern.contains("{work}") {
+            continue;
+        }
+        walked += 1;
+        let mut told_apart = false;
+        for method in [
+            Method::GET,
+            Method::PUT,
+            Method::PATCH,
+            Method::POST,
+            Method::DELETE,
+        ] {
+            for body in [None, Some("{}")] {
+                let mut said = Vec::new();
+                for work in [&hidden, &unknown, &granted] {
+                    let (status, text) = answered(
+                        &router,
+                        method.clone(),
+                        &concrete(pattern, work),
+                        None,
+                        body,
+                    )
+                    .await;
+                    said.push((status, text.replace(work.as_str(), "{work}")));
+                }
+                assert_eq!(
+                    said[0], said[1],
+                    "{method} {pattern}, body {body:?}: a work outside the grant, left, and a \
+                     slug no work holds, right"
+                );
+                told_apart |= said[2] != said[0];
+            }
+        }
+        assert!(
+            told_apart,
+            "{pattern}: no request told a granted work from a hidden one, so this fixture \
+             cannot show the route asks the grant at all"
+        );
+    }
+    assert_eq!(
+        walked, 13,
+        "the guarded paths that carry `{{work}}`: a route that gains or loses one changes \
+         this count"
+    );
+}
+
+/// **Nothing stored is deleted** (spec 2026-10-11 §2.1). A position and a note
+/// written while the account could see the work are refused it once the grant
+/// is narrowed, are still in the store, and are served again when the grant
+/// is widened.
+///
+/// Narrowed means granted `Other` instead of `Shelf`. Deleting the grant
+/// outright would leave an account with no limits, which sees every work.
+#[tokio::test]
+async fn a_position_and_a_note_outlive_the_grant_and_come_back_with_it() {
+    use axum::http::Method;
+
+    let tmp = crate::test_support::Fixture::new("o60-outlives-the-grant");
+    let (router, state) = crate::test_support::router_over_a_granted_two_folder_library(&tmp);
+    let slug: String = state
+        .library
+        .conn()
+        .query_row(
+            "SELECT slug FROM work WHERE title = 'First Folder Work'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("the slug of a work under `Shelf`");
+    let progress = format!("/api/works/{slug}/progress");
+    let notes = format!("/api/works/{slug}/notes");
+    let held = |table: &str| -> i64 {
+        state
+            .library
+            .conn()
+            .query_row(
+                &format!("SELECT COUNT(*) FROM {table} WHERE user_id = 1"),
+                [],
+                |row| row.get(0),
+            )
+            .expect("counts the account's rows")
+    };
+
+    let (status, body) = answered(
+        &router,
+        Method::PUT,
+        &progress,
+        None,
+        Some(r#"{"edition":"raw","slot":1}"#),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+    let tag = etag_of(&router, &notes).await;
+    let note = format!(
+        r#"{{"work":"{slug}","notes":[{{"id":"01J8","edition":"raw","slot":1,"body":"kept",
+               "created":"2026-08-05T10:00:00Z","updated":"2026-08-05T10:00:00Z"}}]}}"#
+    );
+    let (status, body) = answered(&router, Method::PUT, &notes, Some(&tag), Some(&note)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    {
+        let conn = state.library.conn();
+        conn.execute("DELETE FROM user_library WHERE user_id = 1", [])
+            .expect("takes `Shelf` away");
+        crate::test_support::grant_root(&conn, 3);
+    }
+    for uri in [&progress, &notes] {
+        let (status, body) = answered(&router, Method::GET, uri, None, None).await;
+        assert_eq!(
+            (status, body),
+            (StatusCode::NOT_FOUND, format!("no work `{slug}`")),
+            "GET {uri} while the grant is narrowed"
+        );
+    }
+    assert_eq!(held("progress"), 1, "the position is still in the store");
+    assert_eq!(held("note"), 1, "the note is still in the store");
+
+    crate::test_support::grant_root(&state.library.conn(), 1);
+    let (status, body) = answered(&router, Method::GET, &progress, None, None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let doc: serde_json::Value = serde_json::from_str(&body).expect("a progress document");
+    assert_eq!(
+        doc["positions"][0]["edition"].as_str(),
+        Some("raw"),
+        "{body}"
+    );
+    assert_eq!(doc["positions"][0]["slot"].as_u64(), Some(1), "{body}");
+    let (status, body) = answered(&router, Method::GET, &notes, None, None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body.contains("kept"), "the note came back: {body}");
+}
+
+/// **A document that does not parse is refused as that, whatever work it
+/// names**: a granted work, a hidden one and a slug no work holds are all
+/// answered 400 in the same words.
+///
+/// The two document writes parse their body before they look the work up,
+/// and the grant is asked where the work is looked up. `patch_alignments`
+/// asks first, and its own test says why it must: a correction lends the
+/// grant the two editions it names. These two lend it nothing.
+#[tokio::test]
+async fn a_document_that_does_not_parse_is_refused_before_the_grant_is_asked() {
+    use axum::http::Method;
+
+    let tmp = crate::test_support::Fixture::new("o60-malformed");
+    let (router, state) = crate::test_support::router_over_a_granted_two_folder_library(&tmp);
+    let slug_of = |title: &str| -> String {
+        state
+            .library
+            .conn()
+            .query_row("SELECT slug FROM work WHERE title = ?1", [title], |row| {
+                row.get(0)
+            })
+            .expect("the work's slug")
+    };
+    let granted = slug_of("First Folder Work");
+    let hidden = slug_of("Other Library Work");
+
+    for document in ["notes", "truth"] {
+        let mut said = Vec::new();
+        for slug in [granted.as_str(), hidden.as_str(), "no-work-is-called-this"] {
+            let (status, body) = answered(
+                &router,
+                Method::PUT,
+                &format!("/api/works/{slug}/{document}"),
+                None,
+                Some("not a document"),
+            )
+            .await;
+            assert_eq!(
+                status,
+                StatusCode::BAD_REQUEST,
+                "PUT {document} on `{slug}`: {body}"
+            );
+            said.push(body);
+        }
+        assert!(
+            said.iter().all(|body| body == &said[0]),
+            "PUT {document}: the three refusals differ: {said:?}"
+        );
+    }
+}
+
+/// **A position on an edition outside the grant is refused as one on an
+/// edition the work does not have**: same status, same words, with the
+/// edition each names put aside. The work is O191's: the account sees its
+/// `en` and not its `raw`.
+///
+/// A position on `en` is stored, which shows the route is not refusing this
+/// reader the work, and `en`'s is the only one the store then holds.
+#[tokio::test]
+async fn a_position_on_an_edition_outside_the_grant_is_refused_as_one_the_work_does_not_have() {
+    use axum::http::Method;
+
+    let (router, state, _fixture, [old, _new]) =
+        crate::test_support::router_over_a_work_keeping_another_librarys_edition();
+    let uri = format!("/api/works/{old}/progress");
+    let position = |edition: &str| format!(r#"{{"edition":"{edition}","slot":0}}"#);
+
+    let (kept_status, kept) =
+        answered(&router, Method::PUT, &uri, None, Some(&position("raw"))).await;
+    let (absent_status, absent) =
+        answered(&router, Method::PUT, &uri, None, Some(&position("nope"))).await;
+    assert_eq!(
+        (kept_status, kept.replace("`raw`", "`{edition}`")),
+        (absent_status, absent.replace("`nope`", "`{edition}`")),
+        "an edition outside the grant, left, and one the work does not have, right"
+    );
+    assert_eq!(kept_status, StatusCode::NOT_FOUND, "{kept}");
+
+    let (status, body) = answered(&router, Method::PUT, &uri, None, Some(&position("en"))).await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+
+    let found = state.find_blocking(&old).expect("the old work");
+    let held = crate::progress::load(&state.library, &found, 1).expect("reads the positions");
+    let editions: Vec<&str> = held.iter().map(|p| p.edition.as_str()).collect();
+    assert_eq!(editions, ["en"], "the positions the store holds");
+}
+
+/// **A position read leaves out an edition outside the grant.** The position
+/// on `raw` is written straight into the store, as one held from before the
+/// grant was narrowed would be. Alone, it is answered 204, nothing recorded.
+/// Beside one on `en`, only `en`'s is named.
+#[tokio::test]
+async fn a_position_read_leaves_out_an_edition_outside_the_grant() {
+    use axum::http::Method;
+
+    let (router, state, _fixture, [old, _new]) =
+        crate::test_support::router_over_a_work_keeping_another_librarys_edition();
+    let uri = format!("/api/works/{old}/progress");
+    let found = state.find_blocking(&old).expect("the old work");
+    let hold = |edition: &str| {
+        crate::progress::store(
+            &state.library,
+            &found,
+            1,
+            &crate::Progress {
+                edition: edition.to_string(),
+                slot: 1,
+            },
+        )
+        .expect("stores a position");
+    };
+
+    hold("raw");
+    let (status, body) = answered(&router, Method::GET, &uri, None, None).await;
+    assert_eq!(
+        status,
+        StatusCode::NO_CONTENT,
+        "the one position held is on an edition outside the grant: {body}"
+    );
+
+    hold("en");
+    let (status, body) = answered(&router, Method::GET, &uri, None, None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let doc: serde_json::Value = serde_json::from_str(&body).expect("a progress document");
+    let editions: Vec<&str> = doc["positions"]
+        .as_array()
+        .expect("positions is an array")
+        .iter()
+        .map(|p| p["edition"].as_str().expect("an edition key"))
+        .collect();
+    assert_eq!(editions, ["en"], "{body}");
+}
+
+/// **A new note on an edition outside the grant is refused as one on an
+/// edition the work does not have**, and a note the reader already holds
+/// there is neither withheld from them nor in the way of their next write.
+///
+/// The held note is written straight into the store, as one made before the
+/// grant was narrowed would be. It comes back with the document, which is the
+/// reader's own and is sent whole. A write that keeps it where it is and adds
+/// a note on `en` is accepted: `notes::validate_against` does not re-check an
+/// anchor that has not moved.
+#[tokio::test]
+async fn a_new_note_on_an_edition_outside_the_grant_is_refused_and_a_held_one_is_kept() {
+    use axum::http::Method;
+
+    let (router, state, _fixture, [old, _new]) =
+        crate::test_support::router_over_a_work_keeping_another_librarys_edition();
+    let uri = format!("/api/works/{old}/notes");
+    let note = |id: &str, edition: &str| {
+        format!(
+            r#"{{"id":"{id}","edition":"{edition}","slot":0,"body":"b",
+                 "created":"2026-08-05T10:00:00Z","updated":"2026-08-05T10:00:00Z"}}"#
+        )
+    };
+    let doc = |notes: &[String]| format!(r#"{{"work":"{old}","notes":[{}]}}"#, notes.join(","));
+
+    let tag = etag_of(&router, &uri).await;
+    let (kept_status, kept) = answered(
+        &router,
+        Method::PUT,
+        &uri,
+        Some(&tag),
+        Some(&doc(&[note("01NEW", "raw")])),
+    )
+    .await;
+    let (absent_status, absent) = answered(
+        &router,
+        Method::PUT,
+        &uri,
+        Some(&tag),
+        Some(&doc(&[note("01NEW", "nope")])),
+    )
+    .await;
+    assert_eq!(
+        (kept_status, kept.replace("`raw`", "`{edition}`")),
+        (absent_status, absent.replace("`nope`", "`{edition}`")),
+        "an edition outside the grant, left, and one the work does not have, right"
+    );
+    assert_eq!(kept_status, StatusCode::NOT_FOUND, "{kept}");
+
+    let found = state.find_blocking(&old).expect("the old work");
+    crate::notes::store(
+        &state.library,
+        &found,
+        1,
+        &crate::notes::Notes {
+            work: old.clone(),
+            notes: vec![crate::notes::Note {
+                id: "01HELD".into(),
+                edition: "raw".into(),
+                slot: 0,
+                region: None,
+                color: None,
+                body: "b".into(),
+                created: "2026-08-05T10:00:00Z".into(),
+                updated: "2026-08-05T10:00:00Z".into(),
+            }],
+        },
+    )
+    .expect("stores the note held from before");
+
+    let (status, body) = answered(&router, Method::GET, &uri, None, None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(
+        body.contains("01HELD"),
+        "the reader's own note is sent: {body}"
+    );
+
+    let tag = etag_of(&router, &uri).await;
+    let (status, body) = answered(
+        &router,
+        Method::PUT,
+        &uri,
+        Some(&tag),
+        Some(&doc(&[note("01HELD", "raw"), note("01OWN", "en")])),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+/// **A position on an edition the work no longer has is sent only to an
+/// account with no limits.** A re-solve can rename an edition's key away and
+/// leave the reader's position under the old one.
+///
+/// Restricted, the read names `en` and not `gone`: the visible set holds only
+/// editions the work has now, so a key outside it is left out with the rest.
+/// Unrestricted, once the account's grant rows are deleted, the same read
+/// names `gone` as well, as it always has.
+#[tokio::test]
+async fn a_position_on_an_edition_the_work_no_longer_has_is_sent_only_to_an_account_with_no_limits()
+{
+    use axum::http::Method;
+
+    let (router, state, _fixture, [old, _new]) =
+        crate::test_support::router_over_a_work_keeping_another_librarys_edition();
+    let uri = format!("/api/works/{old}/progress");
+    let found = state.find_blocking(&old).expect("the old work");
+    for edition in ["gone", "en"] {
+        crate::progress::store(
+            &state.library,
+            &found,
+            1,
+            &crate::Progress {
+                edition: edition.to_string(),
+                slot: 0,
+            },
+        )
+        .expect("stores a position");
+    }
+    let named = |body: &str| -> Vec<String> {
+        let doc: serde_json::Value = serde_json::from_str(body).expect("a progress document");
+        let mut editions: Vec<String> = doc["positions"]
+            .as_array()
+            .expect("positions is an array")
+            .iter()
+            .map(|p| p["edition"].as_str().expect("an edition key").to_string())
+            .collect();
+        editions.sort();
+        editions
+    };
+
+    let (status, body) = answered(&router, Method::GET, &uri, None, None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(named(&body), ["en"], "restricted: {body}");
+
+    let removed = state
+        .library
+        .conn()
+        .execute("DELETE FROM user_library WHERE user_id = 1", [])
+        .expect("lifts the grant");
+    assert_eq!(removed, 1, "the account's grant rows");
+
+    let (status, body) = answered(&router, Method::GET, &uri, None, None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(named(&body), ["en", "gone"], "unrestricted: {body}");
+}
+
+/// One write whose own checks could answer before the grant does. `if_match`
+/// and `body` are built from the path's slug; `body` is also handed the slug of
+/// a work the account may see, for the request whose body names another work.
+struct OwnCheck {
+    label: &'static str,
+    document: &'static str,
+    if_match: fn(&str) -> Option<String>,
+    body: fn(&str, &str) -> String,
+    /// What a work the account may see answers it. Never `no work`.
+    on_a_granted_work: StatusCode,
+}
+
+/// The writes [`a_write_to_a_hidden_work_is_refused_before_its_own_checks_are_made`]
+/// sends: sent to the work outside the grant, each would fail one check the
+/// handler makes after the work is found.
+fn writes_that_fail_their_own_checks() -> Vec<OwnCheck> {
+    vec![
+        OwnCheck {
+            label: "progress, an edition the work lacks",
+            document: "progress",
+            if_match: |_| None,
+            body: |_, _| r#"{"edition":"nope","slot":0}"#.to_string(),
+            on_a_granted_work: StatusCode::NOT_FOUND,
+        },
+        OwnCheck {
+            label: "progress, a slot past the end",
+            document: "progress",
+            if_match: |_| None,
+            body: |_, _| r#"{"edition":"raw","slot":99}"#.to_string(),
+            on_a_granted_work: StatusCode::NOT_FOUND,
+        },
+        OwnCheck {
+            label: "notes, no If-Match",
+            document: "notes",
+            if_match: |_| None,
+            body: |slug, _| format!(r#"{{"work":"{slug}","notes":[]}}"#),
+            on_a_granted_work: StatusCode::PRECONDITION_REQUIRED,
+        },
+        OwnCheck {
+            label: "notes, a stale If-Match",
+            document: "notes",
+            if_match: |_| Some("\"stale\"".to_string()),
+            body: |slug, _| format!(r#"{{"work":"{slug}","notes":[]}}"#),
+            on_a_granted_work: StatusCode::PRECONDITION_FAILED,
+        },
+        OwnCheck {
+            label: "notes, a body that names the granted work",
+            document: "notes",
+            if_match: |slug| {
+                Some(notes_etag(
+                    &crate::notes::to_json(&crate::notes::empty(slug)).unwrap(),
+                ))
+            },
+            body: |_, granted| format!(r#"{{"work":"{granted}","notes":[]}}"#),
+            on_a_granted_work: StatusCode::OK,
+        },
+        OwnCheck {
+            label: "notes, the current tag and a note on an edition the work lacks",
+            document: "notes",
+            if_match: |slug| {
+                Some(notes_etag(
+                    &crate::notes::to_json(&crate::notes::empty(slug)).unwrap(),
+                ))
+            },
+            body: |slug, _| {
+                format!(
+                    r#"{{"work":"{slug}","notes":[{{"id":"01J8","edition":"nope","slot":1,
+                       "body":"kept","created":"2026-08-05T10:00:00Z",
+                       "updated":"2026-08-05T10:00:00Z"}}]}}"#
+                )
+            },
+            on_a_granted_work: StatusCode::NOT_FOUND,
+        },
+        OwnCheck {
+            label: "truth, no If-Match",
+            document: "truth",
+            if_match: |_| None,
+            body: |_, _| r#"{"taiyaku_truth":1,"editions":{}}"#.to_string(),
+            on_a_granted_work: StatusCode::PRECONDITION_REQUIRED,
+        },
+        OwnCheck {
+            label: "truth, a stale If-Match",
+            document: "truth",
+            if_match: |_| Some("\"stale\"".to_string()),
+            body: |_, _| r#"{"taiyaku_truth":1,"editions":{}}"#.to_string(),
+            on_a_granted_work: StatusCode::PRECONDITION_FAILED,
+        },
+    ]
+}
+
+/// **A write to a work outside the grant is refused before any check the
+/// handler makes once it has found the work** (O60): by the grant, and not by
+/// the edition, the slot, the precondition or the work the body names.
+///
+/// [`the_six_requests`] sends each write once, fully valid, so a grant check
+/// that slid later in a handler would still refuse it with the same 404. Here
+/// each write is one its own checks would answer, sent to a work outside the
+/// grant and to a slug no work holds, and the two answers are compared with
+/// each other, the slug put aside. A later grant check would tell the first
+/// something the second is never told: an edition's name, a slot count, the
+/// `ETag` of a document the caller may not see.
+///
+/// **Then each is sent to a work the account may see**, and answered on its
+/// merits and not as a missing work. That is what shows these are requests the
+/// server judges, rather than ones refused alike for any slug.
+#[tokio::test]
+async fn a_write_to_a_hidden_work_is_refused_before_its_own_checks_are_made() {
+    use axum::http::Method;
+
+    let tmp = crate::test_support::Fixture::new("o60-before-its-own-checks");
+    let (router, state) = crate::test_support::router_over_a_granted_two_folder_library(&tmp);
+    let slug_of = |title: &str| -> String {
+        state
+            .library
+            .conn()
+            .query_row("SELECT slug FROM work WHERE title = ?1", [title], |row| {
+                row.get(0)
+            })
+            .expect("the work's slug")
+    };
+    let granted = slug_of("First Folder Work");
+    let hidden = slug_of("Other Library Work");
+    let unknown = "no-work-is-called-this";
+
+    for case in writes_that_fail_their_own_checks() {
+        let mut said = Vec::new();
+        for slug in [hidden.as_str(), unknown] {
+            let (status, body) = answered(
+                &router,
+                Method::PUT,
+                &format!("/api/works/{slug}/{}", case.document),
+                (case.if_match)(slug).as_deref(),
+                Some(&(case.body)(slug, &granted)),
+            )
+            .await;
+            said.push((status, body.replace(slug, "{work}")));
+        }
+        assert_eq!(
+            said[0], said[1],
+            "PUT {}: a work outside the grant, left, and a slug no work holds, right",
+            case.label
+        );
+        assert_eq!(said[0].0, StatusCode::NOT_FOUND, "PUT {}", case.label);
+
+        let (status, body) = answered(
+            &router,
+            Method::PUT,
+            &format!("/api/works/{granted}/{}", case.document),
+            (case.if_match)(&granted).as_deref(),
+            Some(&(case.body)(&granted, &granted)),
+        )
+        .await;
+        assert_eq!(
+            status, case.on_a_granted_work,
+            "PUT {}, to a work the account may see: {body}",
+            case.label
+        );
+        assert!(
+            !body.starts_with("no work `"),
+            "PUT {}, to a work the account may see, was answered as a missing work: {body}",
+            case.label
+        );
+    }
+}
+
+/// **The work a notes body names is the work its path names** (O60). The
+/// grant is asked about the path's work, so a body that names a different one
+/// must not move the write there.
+///
+/// As the account granted `Shelf` alone, a well-formed document naming the
+/// work under `Other` is sent to a work under `Shelf`, with that work's current
+/// tag so the precondition is met. It is refused as a body that does not belong
+/// to the path. Then the grant is lifted and both works' notes are read: the
+/// note was stored under neither.
+#[tokio::test]
+async fn a_notes_body_naming_another_work_is_refused_and_stored_under_neither() {
+    use axum::http::Method;
+
+    let tmp = crate::test_support::Fixture::new("o60-body-names-another-work");
+    let (router, state) = crate::test_support::router_over_a_granted_two_folder_library(&tmp);
+    let slug_of = |title: &str| -> String {
+        state
+            .library
+            .conn()
+            .query_row("SELECT slug FROM work WHERE title = ?1", [title], |row| {
+                row.get(0)
+            })
+            .expect("the work's slug")
+    };
+    let granted = slug_of("First Folder Work");
+    let hidden = slug_of("Other Library Work");
+    let granted_notes = format!("/api/works/{granted}/notes");
+    let hidden_notes = format!("/api/works/{hidden}/notes");
+    let body = format!(
+        r#"{{"work":"{hidden}","notes":[{{"id":"01J8","edition":"raw","slot":1,"body":"misplaced",
+               "created":"2026-08-05T10:00:00Z","updated":"2026-08-05T10:00:00Z"}}]}}"#
+    );
+
+    let tag = etag_of(&router, &granted_notes).await;
+    let (status, text) = answered(
+        &router,
+        Method::PUT,
+        &granted_notes,
+        Some(&tag),
+        Some(&body),
+    )
+    .await;
+    assert_eq!(
+        (status, text),
+        (
+            StatusCode::BAD_REQUEST,
+            format!("these notes name the work `{hidden}`, but this is `{granted}`")
+        ),
+        "a body naming another work, sent to a work the account may see"
+    );
+
+    state
+        .library
+        .conn()
+        .execute("DELETE FROM user_library WHERE user_id = 1", [])
+        .expect("lifts the grant");
+    for uri in [&granted_notes, &hidden_notes] {
+        let (status, text) = answered(&router, Method::GET, uri, None, None).await;
+        assert_eq!(status, StatusCode::OK, "GET {uri}: {text}");
+        assert!(
+            !text.contains("misplaced"),
+            "the note a body sent to the wrong work carried reached the store: GET {uri}: {text}"
+        );
+    }
+}
+
+/// One `GET` carrying `If-None-Match`, answered as its status and its body.
+async fn answered_if_none_match(
+    router: &axum::Router,
+    uri: &str,
+    if_none_match: &str,
+) -> (StatusCode, String) {
+    let request = Request::builder()
+        .uri(uri)
+        .header(header::IF_NONE_MATCH, if_none_match)
+        .body(Body::empty())
+        .unwrap();
+    let response = router.clone().oneshot(request).await.unwrap();
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+        .await
+        .unwrap();
+    (status, String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// **A conditional read of a work outside the grant is refused as a read of a
+/// slug no work holds** (O60), before the tag is compared.
+///
+/// The tag an unwritten work answers with is one anyone can compute. Were the
+/// grant asked below the `If-None-Match` comparison, a hidden work would answer
+/// 304 to it where an unknown slug answers 404. Each read is sent to the hidden
+/// work and to an unknown slug and the two answers are compared, the slug put
+/// aside; then to a work the account may see, which answers 304, so the request
+/// is one the server answers on its merits.
+#[tokio::test]
+async fn a_conditional_read_of_a_hidden_work_is_refused_as_a_slug_no_work_holds() {
+    let tmp = crate::test_support::Fixture::new("o60-conditional-read");
+    let (router, state) = crate::test_support::router_over_a_granted_two_folder_library(&tmp);
+    let slug_of = |title: &str| -> String {
+        state
+            .library
+            .conn()
+            .query_row("SELECT slug FROM work WHERE title = ?1", [title], |row| {
+                row.get(0)
+            })
+            .expect("the work's slug")
+    };
+    let granted = slug_of("First Folder Work");
+    let hidden = slug_of("Other Library Work");
+    let unknown = "no-work-is-called-this";
+
+    // The tag a work nobody has written on answers with, for each document.
+    let tag = |document: &str, slug: &str| -> String {
+        if document == "notes" {
+            notes_etag(&crate::notes::to_json(&crate::notes::empty(slug)).unwrap())
+        } else {
+            notes_etag(&crate::truth::to_json(&taiyaku_core::TruthDoc::new()))
+        }
+    };
+    for document in ["notes", "truth"] {
+        let mut said = Vec::new();
+        for slug in [hidden.as_str(), unknown] {
+            let (status, body) = answered_if_none_match(
+                &router,
+                &format!("/api/works/{slug}/{document}"),
+                &tag(document, slug),
+            )
+            .await;
+            said.push((status, body.replace(slug, "{work}")));
+        }
+        assert_eq!(
+            said[0], said[1],
+            "conditional GET {document}: a work outside the grant, left, and a slug no work \
+             holds, right"
+        );
+        assert_eq!(
+            said[0].0,
+            StatusCode::NOT_FOUND,
+            "conditional GET {document}"
+        );
+
+        let (status, body) = answered_if_none_match(
+            &router,
+            &format!("/api/works/{granted}/{document}"),
+            &tag(document, &granted),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::NOT_MODIFIED,
+            "conditional GET {document}, of a work the account may see: {body}"
+        );
+    }
 }

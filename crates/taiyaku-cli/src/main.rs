@@ -1512,6 +1512,7 @@ fn serve_auth(
         secure_cookies: (secure || !trusted_proxies.is_empty()) && !insecure,
         allow_web_setup: flag_present(args, "--allow-web-setup"),
         trusted_proxies,
+        verifies: taiyaku_serve::session::VerifyLimit::default(),
     })
 }
 

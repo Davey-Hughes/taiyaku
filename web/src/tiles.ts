@@ -1,5 +1,6 @@
 import type { Group } from './pairing'
 import type { Position } from './resolver'
+import { wheelNotches } from './viewport'
 
 /** One tile's worth of pages, in reading order within the tile. */
 export interface Tile {
@@ -145,31 +146,6 @@ export function normalizedTileWidth(
  * see `reader.css`'s own comment on `--strip-unit` for why that figure is a
  * content width, not the tile's full outer width.
  *
- * **Why a runtime measurement at all, rather than a better constant.**
- * Because the width a tile draws at is not the same in every context, and
- * the difference is not this code's to predict. Measured at 390×844 on the
- * same machine and the same browser: under desktop emulation the rail
- * subtracts 15 px of its own height (`offsetHeight` 112, `clientHeight` 97),
- * the image draws 81 tall and a loaded one-unit tile 58.16 wide; under
- * mobile emulation it subtracts **nothing**, the image draws 96 tall and the
- * tile 68.19 — against a nominal of 58 either way. The spacers stay sized to
- * the constant, so on the second of those a loaded tile sits 10.19 px over
- * nominal, the mismatch grows and shrinks as tiles load and the window
- * re-anchors, and it shows up as scroll-position drift.
- *
- * **What subtracts those 15 px is a classic scrollbar on the rail itself**
- * (O145, 2026-10-04; `docs/notes.md`, "O145: what takes 15 px of the
- * rail"). Chromium draws one on the machine this was measured on unless it
- * was launched with `--hide-scrollbars` or the page is under mobile
- * emulation, and a plain `overflow: scroll` box loses the same 15 px in
- * exactly the contexts where the rail does. O138's 0 px at 1440×900 was a
- * headless launch with Playwright's defaults, which add that flag.
- *
- * The fix did not wait for that answer and does not depend on it: whatever
- * takes the height, a hardcoded number cannot be right in both conditions,
- * and measuring a tile that has actually drawn is correct without knowing
- * why the contexts differ.
- *
  * **The `tolerance` (0.5 px default) is what lets `Filmstrip`'s effect call
  * this at most once per mount and still converge.** Setting `--strip-unit`
  * changes every tile's width on the next paint, which could in principle
@@ -179,13 +155,8 @@ export function normalizedTileWidth(
  * before it ever reaches here), so there is nothing left to re-trigger
  * regardless of this function's answer. The tolerance instead absorbs
  * sub-pixel rounding: a measured value within half a pixel of the CSS
- * default means the constant already matches this context — which is what
- * desktop emulation at `dpr` 1 gives, 54.16 against 54 — and not a
- * difference worth a style write. **It is one case and not necessarily the
- * usual one** — mobile emulation at the same size gives 68.19 against the
- * same 58 nominal, where this function does write. At 1440×900 the split is
- * the same (O145): a loaded tile's image draws 96.97 px wide against the
- * constant's 97 where the scrollbar is drawn, and 107 where it is not.
+ * default means the constant already matches this context, and not a
+ * difference worth a style write.
  */
 export function refinedStripUnit(
   outerWidth: number,
@@ -383,4 +354,47 @@ export function focusAtFraction(units: number[], fraction: number): number {
     if (target < seen) return i
   }
   return units.length - 1
+}
+
+/**
+ * How far one notch of the wheel moves the rail, in CSS pixels: the size
+ * `viewport.ts` reads one detent at in pixel mode, so a pixel-mode wheel
+ * moves the rail by its own `deltaY`.
+ */
+const STRIP_PX_PER_NOTCH = 100
+
+/**
+ * How far one wheel event moves the rail **toward later pages**, in CSS
+ * pixels — negative toward earlier ones — or `undefined` for a wheel the rail
+ * leaves to the browser (O138).
+ *
+ * The rail draws no scrollbar for a mouse to drag. What this takes is a
+ * vertical wheel: down is later and up is earlier, whichever way the rail
+ * runs — `Filmstrip` is what turns "later" into left or right. What it
+ * leaves alone:
+ *
+ * - `ctrlKey`, the browser's zoom and a trackpad's pinch;
+ * - `shiftKey`;
+ * - a delta that is sideways as much as it is vertical, or more;
+ * - a wheel that cannot be read, or that carries nothing.
+ *
+ * The count is `viewport.ts`'s `wheelNotches`, so a wheel that reports lines
+ * and one that reports pixels move the rail alike, and one event is capped
+ * as it is for zoom.
+ *
+ * Takes the fields it reads rather than a `WheelEvent`, as `wheelBy` does, so
+ * a test can hand it a plain object.
+ */
+export function stripWheel(wheel: {
+  deltaX: number
+  deltaY: number
+  deltaMode: number
+  ctrlKey: boolean
+  shiftKey: boolean
+}): number | undefined {
+  if (wheel.ctrlKey || wheel.shiftKey) return undefined
+  if (Math.abs(wheel.deltaX) >= Math.abs(wheel.deltaY)) return undefined
+  const notches = wheelNotches(wheel)
+  if (notches === 0) return undefined
+  return (wheel.deltaY > 0 ? notches : -notches) * STRIP_PX_PER_NOTCH
 }
