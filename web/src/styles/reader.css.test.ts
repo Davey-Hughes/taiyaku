@@ -259,6 +259,9 @@ describe('the bars’ and the borrowed mark’s colours', () => {
     expect(
       declared(readerSource, '.reader-progress-fill', 'background'),
     ).toEqual(['var(--accent)'])
+    expect(
+      declared(readerSource, '.reader-progress-shown', 'background'),
+    ).toEqual(['var(--reader-mark)'])
     expect(declared(readerSource, '.reader-readout', 'color')).toEqual([
       'var(--muted)',
     ])
@@ -268,6 +271,34 @@ describe('the bars’ and the borrowed mark’s colours', () => {
     expect(declared(readerSource, '.borrowed-mark', 'color')).toEqual([
       'var(--bg)',
     ])
+  })
+
+  /**
+   * O216. The mark on the progress line is the line's child and stands a
+   * pixel proud of it above and below (`Chrome.tsx`'s `markStyle`). A line
+   * that clipped what overflows it would cut both rows off and leave a mark
+   * no taller than the line. The browser project reads the rows as they are
+   * drawn (`Chrome.browser.test.tsx`), and CI does not run it. What is held
+   * here is narrower: that the line's rule declares none of the properties
+   * listed below.
+   */
+  it('lets the mark stand proud of the progress line, whose rule declares no overflow, clip-path or contain', () => {
+    // THE CONTROL: the rule is found, so an empty answer below is its own.
+    expect(bodies(readerSource, '.reader-progress')).toHaveLength(1)
+    for (const property of [
+      'overflow',
+      'overflow-x',
+      'overflow-y',
+      'overflow-block',
+      'overflow-inline',
+      'clip-path',
+      'contain',
+    ]) {
+      expect(
+        declared(readerSource, '.reader-progress', property),
+        property,
+      ).toEqual([])
+    }
   })
 
   /**

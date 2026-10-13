@@ -271,6 +271,14 @@
   background: var(--accent);
 }
 
+/* How far along the volume the strip stands (O216). A colour of the reader's
+ * own and not `--text`, since the mark is drawn over the line and its fill
+ * and has to let both through. */
+.reader-progress-shown {
+  background: var(--reader-mark);
+  border-radius: 2px;
+}
+
 .reader-readout {
   color: var(--muted);
   font-size: var(--text-meta);

@@ -181,6 +181,10 @@
   --reader-ground: #000;
   --reader-panel: rgb(21 19 15 / 0.92);
   --reader-hair: rgb(236 228 212 / 0.14);
+  /* Beside those three, the mark on the progress line (O216): Ink `--text`
+   * again, part let through, so the line and its fill show under it. Held to
+   * the pair by the same test. */
+  --reader-mark: rgb(236 228 212 / 0.5);
 }
 
 /* What the notes overlay draws on artwork (spec 2026-09-17 §8.5): fixed, for

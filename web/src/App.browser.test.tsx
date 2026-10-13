@@ -7,6 +7,7 @@ import './index.css'
 import { paintedBox } from './notes'
 import { focused } from './testing/focused'
 import { mount } from './testing/mount'
+import { mouse } from './testing/mouse'
 
 /**
  * The reader's two bars and what docks between them, laid out in a real
@@ -1277,4 +1278,112 @@ describe('O176: a work that fails to load, in a browser', () => {
     expect(doc.scrollWidth).toBeLessThanOrEqual(doc.clientWidth)
     expect(main.scrollWidth).toBeLessThanOrEqual(main.clientWidth)
   })
+})
+
+/**
+ * O216: a drag of the strip in the whole reader, and then a key.
+ *
+ * `Filmstrip.browser.test.tsx` holds that the strip hands focus back when a
+ * press becomes a drag. What only the whole reader shows is what that is
+ * for. A mouse focuses the tile it presses, `keyplan.ts` leaves Space and
+ * Enter to a button that has focus, and a tile that is pressed turns the page
+ * to itself: so a key after a drag would turn to the page the drag began on.
+ *
+ * A real mouse and real keys, on a volume long enough for its strip to
+ * overflow, in both reading directions.
+ */
+describe('O216: a drag of the strip, then a key', () => {
+  const LONG = 60
+
+  /**
+   * The reader on slot 30 of a volume of `LONG` pages read `reading`, with
+   * the bars put up by a tap on the page, which leaves focus on the page.
+   */
+  async function readerOnALongVolume(reading: 'ltr' | 'rtl') {
+    ports.getSidecarWithEtag.mockResolvedValue({
+      json: JSON.stringify({
+        work: { reading },
+        editions: { en: {}, raw: {} },
+        hub: 'raw',
+        alignments: [{ from: 'raw', to: 'en', quality: { verdict: 'sound' } }],
+      }),
+      etag: 's1',
+    })
+    ports.getProgress.mockResolvedValue({ edition: 'raw', slot: 30 })
+    ports.workDetail.mockResolvedValue({
+      id: 1,
+      slug: WORK,
+      title: 'Volume One',
+      volume: 1,
+      aligned: true,
+      pages: LONG,
+      editions: [
+        { key: 'raw', label: 'Raw', members: 1, pages: LONG, missing: 0 },
+        { key: 'en', label: 'English', members: 1, pages: LONG, missing: 0 },
+      ],
+      opens: 'raw',
+      alignments: [],
+    })
+    const pairs: Record<string, number> = {}
+    for (let i = 0; i < LONG; i++) {
+      pairs[`raw|en|${i}`] = i
+      pairs[`en|raw|${i}`] = i
+    }
+    ports.wasmResolver.mockImplementation(async () =>
+      fakeResolver({ raw: whole(LONG), en: whole(LONG) }, pairs),
+    )
+    await readerFocused(1440, 900)
+    const area = box('.page-area')
+    tapAt({ x: area.left + area.width / 2, y: area.top + area.height / 2 })
+    await until(() => currentTile() !== undefined)
+  }
+
+  /** Which tile of the strip is the page the reader is on. */
+  const currentTile = () =>
+    document.querySelector<HTMLElement>(
+      '.reader-strip-rail [aria-current="true"]',
+    )?.dataset.group
+
+  for (const reading of ['ltr', 'rtl'] as const) {
+    it(`leaves the reader on its page, and Space and Enter the reader's own, ${reading}`, async () => {
+      await readerOnALongVolume(reading)
+      const rail = document.querySelector('.reader-strip-rail') as HTMLElement
+      const tile = rail.querySelector('[data-group="33"]') as HTMLElement
+      const stood = tile.getBoundingClientRect()
+      const x = Math.round(stood.left + stood.width / 2)
+      const y = Math.round(stood.top + stood.height / 2)
+      // THE STATE THIS TEST NAMES: page 31 is open, the tile that will be
+      // pressed is another page's, and focus is on the page.
+      expect(currentTile()).toBe('30')
+      expect(focused()).toBe('page')
+
+      await act(async () => {
+        await mouse.moveTo(x, y)
+        await mouse.press()
+        await mouse.along(x, y, 0, 150)
+        await mouse.release()
+        await new Promise((resolve) => requestAnimationFrame(resolve))
+      })
+      // The strip went with the pointer, and focus is back where it was.
+      expect(
+        Math.round(tile.getBoundingClientRect().left - stood.left),
+      ).toBeGreaterThan(148)
+      expect(focused()).toBe('page')
+
+      await act(async () => {
+        await userEvent.keyboard(' ')
+        await userEvent.keyboard('{Enter}')
+      })
+      expect(currentTile()).toBe('30')
+
+      // THE CONTROL: a key does reach the reader, and `→` turns one page from
+      // the page it was on. A key that had pressed the tile would have turned
+      // to page 34 first, and `→` would have turned from there.
+      await act(async () => {
+        await userEvent.keyboard('{ArrowRight}')
+      })
+      await until(() => currentTile() !== '30')
+      expect(currentTile()).toBe(reading === 'ltr' ? '31' : '29')
+    })
+  }
 })

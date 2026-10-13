@@ -398,3 +398,141 @@ export function stripWheel(wheel: {
   if (notches === 0) return undefined
   return (wheel.deltaY > 0 ? notches : -notches) * STRIP_PX_PER_NOTCH
 }
+
+/** A stretch of the rail's whole length, as fractions of it from the start of the volume. */
+export interface RailShare {
+  start: number
+  end: number
+}
+
+/**
+ * Which stretch of its whole length the rail is showing (O216).
+ *
+ * The rail draws no scrollbar, so nothing else says where in the volume the
+ * strip stands once it has been scrolled away from the page being read.
+ * `Chrome` draws this on the progress line.
+ *
+ * `Math.abs`, for the reason the scroll listener in `Filmstrip` gives: a
+ * reversed row scrolls negative, and the distance from the start of the
+ * volume is the same either way. So `start` is measured from page one in
+ * both reading directions, as the progress line's own fill is.
+ *
+ * The distance is held to the rail's travel, so a rail reported past its end
+ * shows a stretch that still ends at 1. A rail with nothing out of sight
+ * shows the whole, 0 to 1, wherever it is reported to stand: that takes in a
+ * rail not yet laid out, whose two widths are both 0.
+ *
+ * Takes the three fields it reads rather than an element, so a test can hand
+ * it a plain object.
+ */
+export function shownShare(rail: {
+  scrollLeft: number
+  clientWidth: number
+  scrollWidth: number
+}): RailShare {
+  const { clientWidth, scrollWidth } = rail
+  if (clientWidth >= scrollWidth) return { start: 0, end: 1 }
+  const from = Math.min(Math.abs(rail.scrollLeft), scrollWidth - clientWidth)
+  return { start: from / scrollWidth, end: (from + clientWidth) / scrollWidth }
+}
+
+/**
+ * How far a pressed mouse has to travel along the rail before the press is a
+ * drag of the rail and no longer a click on the tile under it, in CSS pixels.
+ */
+export const STRIP_DRAG_SLOP = 5
+
+/**
+ * The time constant of a glide's slow-down, in milliseconds (O216). A drag
+ * let go while the pointer is moving carries the rail on, slowing
+ * exponentially, and in all it carries the rail the pointer's speed times
+ * this.
+ */
+export const STRIP_GLIDE_MS = 325
+
+/** How far back from a drag's last move its speed is read, in milliseconds. */
+export const STRIP_GLIDE_SAMPLE_MS = 100
+
+/**
+ * How long a pointer that has stopped before it is let go has to have rested
+ * for the release to carry the rail nowhere, in milliseconds.
+ */
+export const STRIP_GLIDE_REST_MS = 60
+
+/**
+ * The slowest a release carries the rail on at, in CSS pixels a millisecond.
+ * And the slowest a glide can still be going for a mouse's press that stops
+ * it to be no click: under it the strip has all but stopped, and a press on
+ * a tile is the reader choosing that tile.
+ */
+export const STRIP_GLIDE_MIN_SPEED = 0.1
+
+/** Where a pressed pointer was along the rail and when: the `clientX` and `timeStamp` of its press, or of a move it made. */
+export interface GlideSample {
+  at: number
+  x: number
+}
+
+/**
+ * The pointer's speed as a drag is let go at `releasedAt`, in CSS pixels a
+ * millisecond, signed as `clientX` is: positive for a pointer moving right.
+ * Or 0, for a release that carries the rail nowhere.
+ *
+ * Read over the trail it is handed, where the pointer was from its press
+ * on: from the first place in it that is within `STRIP_GLIDE_SAMPLE_MS` of
+ * the last, to the last. So an older part of the drag, slower or the other
+ * way, does not count. 0 where:
+ *
+ * - the pointer had rested `STRIP_GLIDE_REST_MS` before it was let go;
+ * - there is one place in that time or none, or its first and last share a
+ *   time, which is no speed that can be read;
+ * - the speed is under `STRIP_GLIDE_MIN_SPEED`, either way.
+ *
+ * Takes the trail as plain numbers, so a test can hand it one.
+ */
+export function releaseSpeed(
+  trail: readonly GlideSample[],
+  releasedAt: number,
+): number {
+  const last = trail[trail.length - 1]
+  if (!last || releasedAt - last.at >= STRIP_GLIDE_REST_MS) return 0
+  // `last` itself is within the time, so a first is always found.
+  const first = trail.find(
+    (sample) => last.at - sample.at <= STRIP_GLIDE_SAMPLE_MS,
+  ) as GlideSample
+  const span = last.at - first.at
+  if (span <= 0) return 0
+  const speed = (last.x - first.x) / span
+  return Math.abs(speed) < STRIP_GLIDE_MIN_SPEED ? 0 : speed
+}
+
+/**
+ * How far a glide begun at `speed` has carried the rail's content `elapsed`
+ * milliseconds in, in CSS pixels, signed as `speed` is: the way the pointer
+ * was going.
+ *
+ * An exponential slow-down with `STRIP_GLIDE_MS` as its time constant. It
+ * comes as near as it likes to `speed * STRIP_GLIDE_MS` and never passes
+ * it, and it never goes back. Nothing for an `elapsed` under 0: a frame is
+ * stamped with the time it began and a glide is counted from when its
+ * release was heard, and should the frame's time be the earlier, the rail
+ * is not to step back from where it was let go.
+ */
+export function glideTravel(speed: number, elapsed: number): number {
+  const done = 1 - Math.exp(-Math.max(elapsed, 0) / STRIP_GLIDE_MS)
+  return speed * STRIP_GLIDE_MS * done
+}
+
+/**
+ * How fast a glide begun at `speed` is still carrying the rail's content
+ * `elapsed` milliseconds in, in CSS pixels a millisecond, signed as `speed`
+ * is.
+ *
+ * `speed` at the release, and falling by the exponential `glideTravel`
+ * slows by: from the release on it is that function's slope, and what is
+ * left of the glide's way is this times `STRIP_GLIDE_MS`. For an `elapsed`
+ * under 0 it is `speed`, as at the release.
+ */
+export function glideSpeed(speed: number, elapsed: number): number {
+  return speed * Math.exp(-Math.max(elapsed, 0) / STRIP_GLIDE_MS)
+}

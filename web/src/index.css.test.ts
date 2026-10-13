@@ -225,6 +225,15 @@ describe("the reader's tokens (spec §8.2)", () => {
     })
   })
 
+  // O216. The mark on the progress line is drawn over the line and its fill,
+  // and half of each has to come through it.
+  it("hold the progress line's mark to Ink's --text, half let through", () => {
+    expect(readerToken('reader-mark')).toEqual({
+      rgb: token('text', 'ink'),
+      alpha: 0.5,
+    })
+  })
+
   it('reproduce two ratios the spec computed outside this file', () => {
     const { rgb, alpha } = readerToken('reader-panel')
     expect(

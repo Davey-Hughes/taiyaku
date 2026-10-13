@@ -3,9 +3,14 @@ import { bSlots, whole } from './fixtures'
 import { correctionTiles, groups } from './pairing'
 import {
   focusAtFraction,
+  type GlideSample,
+  glideSpeed,
+  glideTravel,
   medianTileWidth,
   normalizedTileWidth,
   refinedStripUnit,
+  releaseSpeed,
+  shownShare,
   spacerWidth,
   stripWheel,
   stripWindow,
@@ -387,5 +392,244 @@ describe('stripWheel', () => {
   it('takes nothing from a wheel it cannot read', () => {
     expect(stripWheel(wheel())).toBeUndefined()
     expect(stripWheel(wheel({ deltaY: Number.NaN }))).toBeUndefined()
+  })
+})
+
+// Each share asked for below is a count of sixteenths, which a float holds
+// exactly, so `toEqual` asks for the number itself.
+describe('shownShare', () => {
+  /** A rail four times as long as it is wide, so it shows a quarter of itself. */
+  const rail = (scrollLeft: number) => ({
+    scrollLeft,
+    clientWidth: 400,
+    scrollWidth: 1600,
+  })
+
+  it('is the first quarter of the rail at its start', () => {
+    expect(shownShare(rail(0))).toEqual({ start: 0, end: 0.25 })
+  })
+
+  it('is the stretch the rail has been scrolled to, in the middle', () => {
+    expect(shownShare(rail(600))).toEqual({ start: 0.375, end: 0.625 })
+  })
+
+  it('reaches the end of the rail at the end of its travel', () => {
+    expect(shownShare(rail(1200))).toEqual({ start: 0.75, end: 1 })
+  })
+
+  // A reversed row scrolls negative, and its start is still the start of the
+  // volume: each reading is the one its positive twin gives.
+  it('reads a reversed row as it reads its twin', () => {
+    expect(shownShare(rail(-600))).toEqual(shownShare(rail(600)))
+    expect(shownShare(rail(-600))).toEqual({ start: 0.375, end: 0.625 })
+    expect(shownShare(rail(-1200))).toEqual({ start: 0.75, end: 1 })
+  })
+
+  it('stops at the end of the travel for a rail scrolled past it, either way round', () => {
+    expect(shownShare(rail(1300))).toEqual({ start: 0.75, end: 1 })
+    expect(shownShare(rail(-1300))).toEqual({ start: 0.75, end: 1 })
+  })
+
+  it('is the whole rail where nothing overflows', () => {
+    const whole = { start: 0, end: 1 }
+    expect(
+      shownShare({ scrollLeft: 0, clientWidth: 400, scrollWidth: 400 }),
+    ).toEqual(whole)
+    expect(
+      shownShare({ scrollLeft: 0, clientWidth: 400, scrollWidth: 300 }),
+    ).toEqual(whole)
+    // What jsdom reports for every element, and a browser for a rail that has
+    // not been laid out.
+    expect(
+      shownShare({ scrollLeft: 0, clientWidth: 0, scrollWidth: 0 }),
+    ).toEqual(whole)
+  })
+})
+
+// O216. In figures, and not in the constants' names: these are the numbers
+// the glide was tried and chosen at, and a case written in the constants'
+// own terms would pass whatever they were changed to.
+describe('releaseSpeed', () => {
+  /** `count` moves `step` px apart, one every `every` ms, from x 500 at 1000 ms. */
+  const steady = (count: number, every: number, step: number): GlideSample[] =>
+    Array.from({ length: count }, (_, i) => ({
+      at: 1000 + i * every,
+      x: 500 + i * step,
+    }))
+  /** When the last move of `trail` was made. */
+  const lastAt = (trail: GlideSample[]) => trail[trail.length - 1].at
+
+  it('is the speed of a steady drag let go as it moves, either way', () => {
+    const right = steady(11, 10, 10)
+    expect(releaseSpeed(right, lastAt(right))).toBe(1)
+    const left = steady(11, 10, -25)
+    expect(releaseSpeed(left, lastAt(left))).toBe(-2.5)
+  })
+
+  it('reads the moves of the last 100 ms before the last one, and none older', () => {
+    // Slow for most of a second, and then 100 px in the last 100 ms.
+    const trail = [
+      { at: 0, x: 300 },
+      { at: 899.5, x: 400 },
+      { at: 900, x: 400 },
+      { at: 1000, x: 500 },
+    ]
+    expect(releaseSpeed(trail, 1000)).toBe(1)
+  })
+
+  it('is 0 where the pointer had rested 60 ms when it was let go', () => {
+    const trail = steady(11, 10, 10)
+    const last = lastAt(trail)
+    expect(releaseSpeed(trail, last + 60)).toBe(0)
+    expect(releaseSpeed(trail, last + 500)).toBe(0)
+    // THE CONTROL: a rest short of it, and none.
+    expect(releaseSpeed(trail, last + 59.9)).toBe(1)
+    expect(releaseSpeed(trail, last)).toBe(1)
+  })
+
+  it('is 0 for a drag with one move or none in the time it is read over', () => {
+    expect(releaseSpeed([], 1000)).toBe(0)
+    expect(releaseSpeed([{ at: 1000, x: 600 }], 1000)).toBe(0)
+    // Three moves, and only the last of them is within 100 ms of the last.
+    const spaced = [
+      { at: 0, x: 0 },
+      { at: 500, x: 300 },
+      { at: 1000, x: 600 },
+    ]
+    expect(releaseSpeed(spaced, 1000)).toBe(0)
+  })
+
+  it('is 0 under 0.1 px a millisecond, either way, and the speed from 0.1 up', () => {
+    const over100ms = (step: number) => steady(11, 10, step)
+    expect(releaseSpeed(over100ms(0.99), 1100)).toBe(0)
+    expect(releaseSpeed(over100ms(-0.99), 1100)).toBe(0)
+    expect(releaseSpeed(over100ms(1), 1100)).toBe(0.1)
+    expect(releaseSpeed(over100ms(-1), 1100)).toBe(-0.1)
+  })
+
+  // A press that creeps 6 px in 202 ms, a pixel every 40 ms, its last two
+  // moves 2 ms apart. With the press in the trail, the 100 ms before the
+  // last move hold 3 px in 82 ms, which is under 0.1 px a millisecond.
+  it('is 0 for a creep read from its press on, whose last two moves alone would read as fast', () => {
+    const creep = [
+      { at: 0, x: 500 },
+      { at: 40, x: 501 },
+      { at: 80, x: 502 },
+      { at: 120, x: 503 },
+      { at: 160, x: 504 },
+      { at: 200, x: 505 },
+      { at: 202, x: 506 },
+    ]
+    expect(releaseSpeed(creep, 202)).toBe(0)
+    // THE CONTROL: what its last two moves read by themselves.
+    expect(releaseSpeed(creep.slice(-2), 202)).toBe(0.5)
+  })
+
+  // Two places are a speed: a press, and one move 6 px on 30 ms later.
+  it('reads a press and one move after it as the travel over the time between them', () => {
+    const nudge = [
+      { at: 1000, x: 500 },
+      { at: 1030, x: 506 },
+    ]
+    expect(releaseSpeed(nudge, 1030)).toBe(0.2)
+  })
+
+  it('is 0 where the first and the last move it reads share a time', () => {
+    const trail = [
+      { at: 1000, x: 500 },
+      { at: 1000, x: 560 },
+    ]
+    expect(releaseSpeed(trail, 1000)).toBe(0)
+  })
+})
+
+describe('glideTravel', () => {
+  it('has carried the rail nowhere at the release, nor for a frame stamped before it', () => {
+    expect(glideTravel(2, 0)).toBe(0)
+    expect(glideTravel(2, -16)).toBe(0)
+  })
+
+  it('slows exponentially, with a time constant of 325 ms', () => {
+    // At one time constant, all of the way but a share of 1/e; at two, all
+    // but 1/e².
+    expect(glideTravel(1, 325)).toBeCloseTo(325 * (1 - Math.exp(-1)), 9)
+    expect(glideTravel(1, 650)).toBeCloseTo(325 * (1 - Math.exp(-2)), 9)
+    expect(glideTravel(2, 16)).toBeCloseTo(650 * (1 - Math.exp(-16 / 325)), 9)
+  })
+
+  it('goes the way the pointer was going', () => {
+    for (const elapsed of [16, 325, 2000]) {
+      expect(glideTravel(-1.5, elapsed)).toBeLessThan(0)
+      expect(glideTravel(-1.5, elapsed)).toBe(-glideTravel(1.5, elapsed))
+    }
+  })
+
+  it('comes as near as it likes to the speed times 325 ms, and never passes it', () => {
+    expect(glideTravel(1, 5000)).toBeCloseTo(325, 3)
+    expect(glideTravel(1, 5000)).toBeLessThanOrEqual(325)
+    expect(glideTravel(-2, 5000)).toBeCloseTo(-650, 3)
+    expect(glideTravel(-2, 5000)).toBeGreaterThanOrEqual(-650)
+    expect(glideTravel(1, 1e9)).toBe(325)
+    expect(glideTravel(3, Number.POSITIVE_INFINITY)).toBe(975)
+  })
+
+  it('never goes back as time goes on', () => {
+    let before = glideTravel(1, -50)
+    for (let elapsed = -40; elapsed <= 3000; elapsed += 10) {
+      const now = glideTravel(1, elapsed)
+      expect(now).toBeGreaterThanOrEqual(before)
+      before = now
+    }
+  })
+})
+
+describe('glideSpeed', () => {
+  it('is the speed the glide began at as it begins, and for a time before it', () => {
+    expect(glideSpeed(2, 0)).toBe(2)
+    expect(glideSpeed(-0.5, 0)).toBe(-0.5)
+    expect(glideSpeed(2, -16)).toBe(2)
+  })
+
+  it('falls to 1/e of that in 325 ms, and to 1/e² in 650', () => {
+    expect(glideSpeed(2, 325)).toBeCloseTo(2 * Math.exp(-1), 12)
+    expect(glideSpeed(2, 650)).toBeCloseTo(2 * Math.exp(-2), 12)
+  })
+
+  it('goes the way the pointer was going, and never faster as time goes on', () => {
+    let before = glideSpeed(1.5, 0)
+    for (let elapsed = 10; elapsed <= 3000; elapsed += 10) {
+      const now = glideSpeed(1.5, elapsed)
+      expect(now).toBeGreaterThan(0)
+      expect(now).toBeLessThan(before)
+      expect(glideSpeed(-1.5, elapsed)).toBe(-now)
+      before = now
+    }
+  })
+
+  // The two functions are one glide. Its speed is how fast its travel is
+  // growing, read here from the travel a thousandth of a millisecond either
+  // side; and the travel so far and the travel still to come, which is the
+  // speed times 325 ms, make the whole of the glide's way.
+  it('is the slope of `glideTravel`, and what is left of the way over 325 ms', () => {
+    for (const speed of [1, -2.5, 0.1]) {
+      for (let elapsed = 1; elapsed <= 3000; elapsed += 37) {
+        const slope =
+          (glideTravel(speed, elapsed + 0.001) -
+            glideTravel(speed, elapsed - 0.001)) /
+          0.002
+        expect(glideSpeed(speed, elapsed)).toBeCloseTo(slope, 6)
+        expect(
+          glideTravel(speed, elapsed) + 325 * glideSpeed(speed, elapsed),
+        ).toBeCloseTo(325 * speed, 9)
+      }
+    }
+  })
+
+  // 325 × ln 10 is 748.3.
+  it('is under 0.1 px a millisecond from 749 ms into a glide begun at 1, and not at 748', () => {
+    expect(glideSpeed(1, 748)).toBeGreaterThan(0.1)
+    expect(glideSpeed(1, 749)).toBeLessThan(0.1)
+    expect(glideSpeed(-1, 748)).toBeLessThan(-0.1)
+    expect(glideSpeed(-1, 749)).toBeGreaterThan(-0.1)
   })
 })

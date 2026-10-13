@@ -6,16 +6,26 @@ import { stepFor, type Direction } from './modules/direction'
 import { stripTileEdge } from './tileSize'
 import {
   focusAtFraction,
+  type GlideSample,
+  glideSpeed,
+  glideTravel,
   medianTileWidth,
   normalizedTileWidth,
   refinedStripUnit,
+  releaseSpeed,
+  shownShare,
   spacerWidth,
+  STRIP_DRAG_SLOP,
+  STRIP_GLIDE_MIN_SPEED,
+  STRIP_GLIDE_MS,
+  STRIP_GLIDE_SAMPLE_MS,
   stripWheel,
   stripWindow,
   tileMinWidth,
   tilePages,
   tileUnits,
   unitsBetween,
+  type RailShare,
 } from './tiles'
 
 const railStyle: CSSProperties = {
@@ -251,6 +261,20 @@ export interface FilmstripProps {
    * same drawing — which is exactly what a correction asks.
    */
   onPreview?: (tile: { page: number; half?: 'L' | 'R' } | undefined) => void
+  /**
+   * Which stretch of the volume the rail is showing (O216): told once the
+   * strip has mounted, and after that whenever it has changed. `Chrome`
+   * draws it on the progress line, since the rail draws no scrollbar of its
+   * own.
+   */
+  onShown?: (shown: RailShare) => void
+  /**
+   * Whether a drag let go while the pointer is moving carries the rail on
+   * (O216). True where it is not given. `Chrome` passes the reader's own
+   * animation setting. Whether the system asks for reduced motion is not
+   * the caller's to say: the strip asks that itself, at each release.
+   */
+  glides?: boolean
 }
 
 /**
@@ -293,6 +317,8 @@ export function Filmstrip({
   correcting,
   onPickCounterpart,
   onPreview,
+  onShown,
+  glides = true,
 }: FilmstripProps) {
   const currentRef = useRef<HTMLButtonElement>(null)
   const pairedRef = useRef<HTMLButtonElement>(null)
@@ -384,13 +410,23 @@ export function Filmstrip({
   // attempt is not enough (C1, whole-branch review).
   const pendingRecentre = useRef(false)
 
+  // Stops a glide that a let-go drag has left carrying the rail on. The drag's
+  // effect further down puts its own in here.
+  const stopGlide = useRef(() => {})
+
+  // True while that effect hands focus back to a tile of the rail, for the
+  // `focusin` listener to read: see `giveFocusBack`.
+  const handingFocusBack = useRef(false)
+
   // `currentRef ?? pairedRef ?? anchorRef`, scrolled into view if one of
   // them is attached. Returns whether it found one, which is what lets the
   // effects below tell "nothing to scroll to yet" apart from "already
-  // done".
+  // done". A glide under way is stopped first: its next frame would write
+  // the rail back to where the glide had it going.
   const recenter = () => {
     const target = currentRef.current ?? pairedRef.current ?? anchorRef.current
     if (!target) return false
+    stopGlide.current()
     target.scrollIntoView({ inline: 'center', block: 'nearest' })
     return true
   }
@@ -676,6 +712,76 @@ export function Filmstrip({
     unitsRef.current = units
   })
 
+  // What the rail shows of its whole length, told to `onShown` when it has
+  // changed. Three things change it, and each has its own caller:
+  //
+  // - a scroll, told from the frame the scroll listener below already takes;
+  // - a render, told by the effect here, which runs after every one. A render
+  //   can change the rail's length under a `scrollLeft` that stays where it
+  //   was: other groups, or a window rebuilt so that a spacer at its nominal
+  //   width stands where loaded tiles stood wider;
+  // - neither of those, told by the effect after this one.
+  //
+  // Compared with what was last told, so a caller that found nothing moved
+  // tells nothing, and `Chrome` is not made to write the mark again on a
+  // render that was only the reading-time readout ticking. Compared exactly,
+  // with no allowance for a small difference: the mark is placed by how far
+  // the rail is along its travel, and on a volume a little longer than the
+  // strip is wide the travel is a small part of the rail's length, so a
+  // movement that is next to nothing against the length is a real part of
+  // the way along the line.
+  const onShownRef = useRef(onShown)
+  const toldShown = useRef<RailShare | undefined>(undefined)
+  const tellShown = useRef(() => {
+    const rail = railRef.current
+    if (!rail) return
+    const shown = shownShare(rail)
+    const told = toldShown.current
+    if (told && told.start === shown.start && told.end === shown.end) return
+    toldShown.current = shown
+    onShownRef.current?.(shown)
+  })
+  useEffect(() => {
+    onShownRef.current = onShown
+    tellShown.current()
+  })
+
+  // What changes the rail's share with no scroll and no render.
+  //
+  // A thumbnail that loads gives its tile its real width, and the rail grows
+  // by the difference. `load` does not bubble, so it is heard in the capture
+  // phase, as the listener that refines `--strip-unit` hears it. That one
+  // lets go once its measuring is done; this one stays for as long as the
+  // strip is mounted, since every window the reader scrolls to loads
+  // thumbnails of its own. Answered in the next frame and not in the event:
+  // a window's thumbnails arrive together, and each load leaves the rail to
+  // be laid out again before it can be read, so reading it at every one
+  // would do that work once for each image where a frame does it once.
+  //
+  // The rail's own width follows the window's. The observer is called after
+  // layout, when reading the rail costs nothing, so it tells there and then
+  // and takes no frame.
+  useEffect(() => {
+    const rail = railRef.current
+    if (!rail) return
+    let frame = 0
+    const onLoad = () => {
+      if (frame) return
+      frame = requestAnimationFrame(() => {
+        frame = 0
+        tellShown.current()
+      })
+    }
+    rail.addEventListener('load', onLoad, true)
+    const observer = new ResizeObserver(() => tellShown.current())
+    observer.observe(rail)
+    return () => {
+      rail.removeEventListener('load', onLoad, true)
+      observer.disconnect()
+      if (frame) cancelAnimationFrame(frame)
+    }
+  }, [])
+
   // Extending the window as the reader flicks along the rail. Throttled to
   // one frame: a scroll fires far more often than a window needs rebuilding,
   // and rebuilding it per event would put the very cost this windowing
@@ -774,6 +880,7 @@ export function Filmstrip({
         if (nearAGap) {
           setScrolledTo(focusAtFraction(unitsRef.current, fraction))
         }
+        tellShown.current()
       })
     }
     rail.addEventListener('scroll', onScroll, { passive: true })
@@ -783,9 +890,22 @@ export function Filmstrip({
     // rendered tile finds nothing to focus and leaves the rail entirely.
     // `focusin` bubbles (plain `focus` does not), so one listener on the rail
     // catches every tile taking focus.
+    //
+    // Not focus the drag's effect hands back to a tile, which is no reader
+    // reaching that tile. The rail may have been scrolled or carried on a
+    // long way since the tile had focus, and a window moved to the tile then
+    // ends short of what the rail shows: a spacer on show where tiles should
+    // be, and after a press that stopped a glide no scroll follows to move
+    // the window again.
+    //
+    // Any other focus that comes to a tile of the rail stops a glide. The
+    // browser scrolls a tile reached by `Tab` into view, and a glide's next
+    // frame would write the rail back to where the glide had it going.
     const onFocusIn = (event: FocusEvent) => {
+      if (handingFocusBack.current) return
       const tile = (event.target as HTMLElement | null)?.closest('button')
       if (!tile || !rail.contains(tile)) return
+      stopGlide.current()
       // The tile's own `data-group` (see the tile `<button>`'s own
       // attribute), not a position among the rendered buttons plus a
       // separately-synced `lo` — see the comment above `unitsRef` for why
@@ -830,6 +950,286 @@ export function Filmstrip({
     rail.addEventListener('wheel', onWheel, { passive: false })
     return () => rail.removeEventListener('wheel', onWheel)
   }, [reading])
+
+  // A change of reading direction stops a glide. The glide writes
+  // `scrollLeft`, and the rail turned round measures it from its other end: a
+  // reversed row's runs negative. The glide's next frame would send the rail
+  // to a place reckoned from the end it no longer starts at.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `reading` is the trigger, not a closure read: the body is what runs when it changes.
+  useEffect(() => {
+    stopGlide.current()
+  }, [reading])
+
+  // Read at each release by the drag's effect below, which is subscribed once
+  // and so cannot take it from a render.
+  const glidesRef = useRef(glides)
+  useEffect(() => {
+    glidesRef.current = glides
+  })
+
+  // A mouse drags the rail (O216). A press that travels `STRIP_DRAG_SLOP`
+  // along the rail becomes a drag. From then on the rail stands where the
+  // press found it, less the pointer's travel since. The pointer is captured,
+  // so the rail keeps following it outside the strip, and the click the
+  // release makes is swallowed, so a drag never turns the page. A press that
+  // travels less is a click on the tile under it.
+  //
+  // A mouse's primary button only. A finger scrolls the rail as the browser
+  // scrolls any box that overflows, and a pen is the browser's to answer too:
+  // neither is taken here.
+  //
+  // A drag let go while the pointer is still moving carries the rail on: a
+  // glide. `releaseSpeed` reads the pointer's speed from where it has been
+  // since the press, and `glideTravel` says how far on from where it was let
+  // go the rail has gone since, a frame at a time, slowing until it comes to
+  // rest or to an end of the rail. There is none after a `pointercancel`,
+  // which is no release, none where `glides` is false, and none where the
+  // system asks for reduced motion.
+  //
+  // A glide stops at any press on the rail, a finger's and a pen's as well
+  // as a mouse's, so the browser never scrolls the rail for a finger while a
+  // glide is still writing to it; at a wheel over the rail; at the strip's
+  // own scroll to a tile; where a tile of the rail takes focus, other than
+  // focus the rail hands back; at a change of reading direction; and when
+  // the strip is taken away.
+  //
+  // A mouse's press that stops a glide still carrying the rail at
+  // `STRIP_GLIDE_MIN_SPEED` or more is no click on the tile it lands on, as
+  // a drag is none: its click is swallowed and the focus it moved is handed
+  // back. A press that stops a slower one is an ordinary press, and a click
+  // where it goes nowhere. Either can still become a drag. For a finger's
+  // tap or a pen's that stops a glide, nothing is swallowed and no focus is
+  // handed back.
+  //
+  // Subscribed by hand, as the wheel above is. What a press has done so far,
+  // and a glide, are kept in this effect's own variables and in no state, so
+  // the moves and the release of a drag and the frames of a glide render
+  // nothing here. What does render is the press: a mouse focuses the tile it
+  // presses, and the `focusin` listener above moves the window to a tile that
+  // takes focus. Focus handed back to a tile moves no window.
+  //
+  // The click is stopped at the rail on its way down to the tile, so it never
+  // comes back up to the root, which is where React hears a click before it
+  // calls a tile's `onClick`.
+  useEffect(() => {
+    const rail = railRef.current
+    if (!rail) return
+    let held:
+      | {
+          pointer: number
+          x: number
+          scrollLeft: number
+          dragging: boolean
+          focused: Element | null
+          /** Whether this press stopped a glide that was still carrying the rail: see `onDown`. */
+          stopped: boolean
+        }
+      | undefined
+    let swallowClick = false
+    // Where the pointer has been since a mouse's primary button was last
+    // pressed on the rail: the press itself, then each move of that press.
+    // A drag's speed is read from it at the release. It begins at the press
+    // and not where the press becomes a drag, or a press that creeps to
+    // `STRIP_DRAG_SLOP` and is let go would be read from its last move or
+    // two alone, as going fast.
+    let trail: GlideSample[] = []
+    // The glide under way, where one is: the frame it has asked for, the
+    // speed it began at, which is the pointer's as it was let go, and when
+    // it began.
+    let glide: { frame: number; speed: number; began: number } | undefined
+    const endGlide = () => {
+      if (glide) cancelAnimationFrame(glide.frame)
+      glide = undefined
+    }
+    stopGlide.current = endGlide
+    const startGlide = (speed: number) => {
+      const from = rail.scrollLeft
+      const began = performance.now()
+      const whole = Math.abs(speed * STRIP_GLIDE_MS)
+      const step = (now: number) => {
+        // The content goes on the way the pointer was going, as it followed
+        // the pointer in the drag, so `scrollLeft` goes the other way.
+        const carried = glideTravel(speed, now - began)
+        const want = from - carried
+        rail.scrollLeft = want
+        // Within half a pixel of where the glide comes to rest; or the rail
+        // would not go where it was sent, which is an end of the rail.
+        if (
+          whole - Math.abs(carried) < 0.5 ||
+          Math.abs(rail.scrollLeft - want) > 1
+        ) {
+          glide = undefined
+          return
+        }
+        glide = { frame: requestAnimationFrame(step), speed, began }
+      }
+      glide = { frame: requestAnimationFrame(step), speed, began }
+    }
+    const onDown = (event: PointerEvent) => {
+      // Before the pointer and the button are asked about: any press on the
+      // rail stops a glide.
+      //
+      // The press counts as having stopped one only where the glide was
+      // still carrying the rail at `STRIP_GLIDE_MIN_SPEED` or more. A glide
+      // runs on until it is all but at rest, which is long after the strip
+      // has stopped to the eye, and a press on a tile then is the reader
+      // choosing that tile.
+      const stopped =
+        glide !== undefined &&
+        Math.abs(glideSpeed(glide.speed, performance.now() - glide.began)) >=
+          STRIP_GLIDE_MIN_SPEED
+      endGlide()
+      if (event.pointerType !== 'mouse' || event.button !== 0) return
+      trail = [{ at: event.timeStamp, x: event.clientX }]
+      held = {
+        stopped,
+        pointer: event.pointerId,
+        x: event.clientX,
+        scrollLeft: rail.scrollLeft,
+        dragging: false,
+        // What has focus as the press begins. The browser moves focus to the
+        // tile that was pressed only after this event.
+        focused: document.activeElement,
+      }
+    }
+    // A mouse focuses the tile it presses, and a focused tile is pressed
+    // again by Space and by Enter, which would turn the page to it. That is
+    // right after a click and wrong after a drag, which is not to turn the
+    // page at all. So when a press becomes a drag, focus that the press has
+    // moved onto a tile of this rail is handed back to whatever had it as the
+    // press began, and where that takes none, as the document's body does
+    // not, the tile is left without it. Focus the press did not move, or
+    // moved to nothing of the rail's, as a press between two tiles does, is
+    // left where it is.
+    //
+    // `handingFocusBack` is up for as long as `focus()` runs, which is when
+    // the `focusin` it sends is heard: the strip's window stays where it is.
+    const giveFocusBack = (to: Element | null) => {
+      const taken = document.activeElement
+      if (taken === to) return
+      if (!(taken instanceof HTMLElement) || !rail.contains(taken)) return
+      if (to instanceof HTMLElement) {
+        handingFocusBack.current = true
+        to.focus({ preventScroll: true })
+        handingFocusBack.current = false
+      }
+      if (document.activeElement === taken) taken.blur()
+    }
+    const onMove = (event: PointerEvent) => {
+      if (!held || held.pointer !== event.pointerId) return
+      // A move with the primary button up ends the press as a release does.
+      // A mouse whose primary button comes up while another is held sends a
+      // move, its click after it, and no release until the last button is up.
+      // And a press whose release was heard nowhere ends here: left standing,
+      // it would have the rail follow a mouse that nobody is holding.
+      if ((event.buttons & 1) === 0) {
+        onEnd(event)
+        return
+      }
+      // Every move of the press, those before it is a drag too. The loop
+      // bounds how many a long press keeps, and decides nothing:
+      // `releaseSpeed` reads the last `STRIP_GLIDE_SAMPLE_MS` of whatever
+      // trail it is handed.
+      trail.push({ at: event.timeStamp, x: event.clientX })
+      while (
+        trail.length > 1 &&
+        event.timeStamp - trail[0].at > STRIP_GLIDE_SAMPLE_MS
+      ) {
+        trail.shift()
+      }
+      const travelled = event.clientX - held.x
+      if (!held.dragging) {
+        if (Math.abs(travelled) < STRIP_DRAG_SLOP) return
+        held.dragging = true
+        rail.setPointerCapture(event.pointerId)
+        rail.style.cursor = 'grabbing'
+        giveFocusBack(held.focused)
+      }
+      // The rail's content goes where the pointer goes, whichever way the
+      // rail runs: a reversed row's `scrollLeft` runs negative, and it too
+      // grows as the content moves left.
+      rail.scrollLeft = held.scrollLeft - travelled
+    }
+    const onEnd = (event: PointerEvent) => {
+      if (!held || held.pointer !== event.pointerId) return
+      const { dragging, stopped, focused } = held
+      held = undefined
+      // A press that stopped a glide still carrying the rail, and went
+      // nowhere, is no click on the tile it landed on, which the glide
+      // carried under it. Its click is swallowed and the focus it moved is
+      // handed back, as a drag's are.
+      if (!dragging && !stopped) return
+      if (!dragging) giveFocusBack(focused)
+      rail.style.cursor = ''
+      if (rail.hasPointerCapture(event.pointerId)) {
+        rail.releasePointerCapture(event.pointerId)
+      }
+      // The click the release makes comes straight after it, before a timer
+      // set here lands. After a drag it comes to the rail and not to the tile
+      // under the pointer, since the pointer was captured; after a press that
+      // stopped a glide it comes to the tile, past the rail on its way down.
+      // It is swallowed wherever on the rail it lands. Where no click
+      // follows, as after a `pointercancel`, the timer is what keeps the flag
+      // from swallowing the reader's next one.
+      swallowClick = true
+      setTimeout(() => {
+        swallowClick = false
+      }, 0)
+      // Only a drag carries the rail on: a press that stopped a glide and
+      // was let go short of a drag has moves of its own in the trail, and
+      // they are not a flick. And only a `pointerup`: a `pointercancel` is no
+      // release, and a move with the button up can come long after the
+      // button did.
+      const speed =
+        dragging &&
+        event.type === 'pointerup' &&
+        glidesRef.current &&
+        !window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+          ? releaseSpeed(trail, event.timeStamp)
+          : 0
+      if (speed !== 0) startGlide(speed)
+    }
+    const onWheelStop = () => endGlide()
+    const onClick = (event: MouseEvent) => {
+      if (!swallowClick) return
+      swallowClick = false
+      event.preventDefault()
+      event.stopPropagation()
+    }
+    // A drag of the browser's own cancels the pointer, and the rail stops
+    // following. A press on a thumbnail starts none: the image takes no
+    // pointer events (`tileImgStyle`), so the press is its tile's. A press on
+    // a tile that is part of a selection does, in Chromium.
+    const onDragStart = (event: DragEvent) => event.preventDefault()
+    rail.addEventListener('pointerdown', onDown)
+    rail.addEventListener('pointermove', onMove)
+    rail.addEventListener('click', onClick, true)
+    rail.addEventListener('dragstart', onDragStart)
+    rail.addEventListener('wheel', onWheelStop, { passive: true })
+    // The end of a press is listened for on the window, and not on the rail.
+    // Before a press is a drag nothing has captured the pointer, so it can
+    // leave the rail with the button down and be let go out there, where the
+    // rail would not hear it: the press would stand, and another press made
+    // out there and carried back in with the button down would be taken for
+    // its moves. The pointer's leaving the rail ends nothing, since a hand
+    // that slips off the strip's edge and back is still pressing.
+    //
+    // Heard on the way down, before anything nearer to where it lands can
+    // stop it. A release on the rail itself passes the window first too, so
+    // the rail needs no listener of its own for it.
+    window.addEventListener('pointerup', onEnd, true)
+    window.addEventListener('pointercancel', onEnd, true)
+    return () => {
+      rail.removeEventListener('pointerdown', onDown)
+      rail.removeEventListener('pointermove', onMove)
+      rail.removeEventListener('click', onClick, true)
+      rail.removeEventListener('dragstart', onDragStart)
+      window.removeEventListener('pointerup', onEnd, true)
+      window.removeEventListener('pointercancel', onEnd, true)
+      rail.removeEventListener('wheel', onWheelStop)
+      endGlide()
+    }
+  }, [])
 
   return (
     <div

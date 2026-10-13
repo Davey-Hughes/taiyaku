@@ -1,4 +1,4 @@
-import { useEffect, useState, type CSSProperties } from 'react'
+import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import { pageUrl } from './api'
 import { Filmstrip, type FilmstripProps } from './Filmstrip'
 import {
@@ -8,7 +8,9 @@ import {
   type MotionPrefs,
 } from './modules/motion'
 import { readoutRow, type ReadoutsPrefs } from './modules/readouts'
+import { stepFor } from './modules/direction'
 import type { Mode } from './pairing'
+import type { RailShare } from './tiles'
 import { TopBar } from './TopBar'
 
 /// How large the hover preview may stand, as a fraction of the viewport.
@@ -19,10 +21,12 @@ import { TopBar } from './TopBar'
 /// the tile — at 160px a thumbnail cannot answer "is this the same drawing",
 /// which is the whole question a correction asks.
 ///
-/// One request per tile the pointer comes over, whether the pointer moved or
-/// the wheel carried the tile under it, and only while correcting. That is not
-/// the cold-strip burst O9 and O11 discuss: candidates come one at a time, at
-/// human speed.
+/// One request per tile the pointer comes over, and only while correcting. The
+/// pointer comes over a tile by moving onto it, and as well by keeping still
+/// while the strip moves under it: the wheel carries tiles under a still
+/// pointer, and so does a drag of the strip let go while it is moving, which
+/// glides on. Each tile that passes under the pointer that way is a request
+/// too.
 const previewMaxHeight = '55vh'
 
 // The bottom bar (spec 2026-09-17 §8.4): one full-width band docked to the
@@ -62,6 +66,55 @@ const stripStyle: CSSProperties = { height: 'var(--strip-height)' }
 const progressStyle: CSSProperties = {
   height: 'var(--progress-height)',
   margin: '0 var(--space-3)',
+  // So the mark is placed against the line and not against the bar: the
+  // percentages in its `left` and its width are of the line's own width.
+  position: 'relative',
+}
+
+// The mark on the progress line (O216): where along the volume the strip
+// stands. The rail draws no scrollbar, and without this nothing says where
+// the strip is once it is scrolled away from the page being read. Proud of
+// the line above and below, so it reads as a mark on the line and not as
+// part of the fill it may lie over.
+//
+// Not as wide as the share of the volume the strip shows: on a wide screen
+// that share is a long bar, and the question the mark answers is where, not
+// how much. `SHOWN_MARK_SHARE` of that share, so the mark still grows as a
+// volume gets shorter, and never narrower than `SHOWN_MARK_FLOOR` pixels, a
+// width that can be found at a glance.
+//
+// `markStyle` is all of the mark's style that React is given. Its width, its
+// `left` and whether it is hidden are written onto the element by `placeMark`
+// in the component, and React leaves alone what it was never handed, so a
+// render of `Chrome` does not move the mark.
+const SHOWN_MARK_SHARE = 1 / 8
+const SHOWN_MARK_FLOOR = 32
+const markStyle: CSSProperties = {
+  position: 'absolute',
+  top: -1,
+  bottom: -1,
+}
+
+/** The mark's width, as CSS: a share of the line, or the floor where that is wider. */
+function markWidth(share: RailShare): string {
+  const percent = (share.end - share.start) * SHOWN_MARK_SHARE * 100
+  return `max(${SHOWN_MARK_FLOOR}px, ${percent}%)`
+}
+
+/**
+ * How far along its travel the rail has been scrolled, 0 at the start of the
+ * volume and 1 at its end: the mark's place between the two ends of the line.
+ *
+ * Not `share.start`, which stops short of 1 by the share on show: the mark
+ * has to stand at the end of the line when the rail stands at the end of its
+ * travel. Held to 1, since the division can come out a hair past it at the
+ * end of the travel.
+ *
+ * Only for a share that is less than the whole. The whole has no travel to
+ * be along, and `Chrome` hides the mark for one without asking.
+ */
+function alongTheVolume(share: RailShare): number {
+  return Math.min(share.start / (1 - (share.end - share.start)), 1)
 }
 
 // The hover preview: a page-sized look at the tile under the pointer, while
@@ -221,6 +274,27 @@ export function Chrome({
   // the preview's JSX below.
   const [preview, setPreview] = useState<{ page: number; half?: 'L' | 'R' }>()
 
+  // Which stretch of the volume the strip shows goes from `Filmstrip` onto
+  // the mark's own element, and not through state. The strip tells on every
+  // frame of a scroll that moves its rail, and state here would render this
+  // component and the whole strip under it on each of them: the render a
+  // frame that the strip's scroll listener is throttled and windowed to stay
+  // clear of (`Filmstrip.tsx`, above that listener).
+  const markRef = useRef<HTMLDivElement>(null)
+  const placeMark = (share: RailShare) => {
+    // The mark is rendered beside the strip and in the same commit, so it is
+    // there whenever the strip has a rail to tell about.
+    const mark = markRef.current as HTMLDivElement
+    // Nothing to mark where the strip shows the whole volume, and no place
+    // along the line to work out for it.
+    const whole = share.end - share.start >= 1
+    mark.hidden = whole
+    if (whole) return
+    const width = markWidth(share)
+    mark.style.width = width
+    mark.style.left = `calc(${alongTheVolume(share)} * (100% - ${width}))`
+  }
+
   // Whether the fade has settled on fully shown. Starts at `!animating` so a
   // reader with animation off, or the duration zeroed, never sees even a
   // single-frame flash at `opacity: 0` — `isAnimating` treats both of those
@@ -299,17 +373,41 @@ export function Chrome({
           {/* `visible` is always true here — `Chrome` returns `null` above
               otherwise — but passed through explicitly anyway, since
               `Filmstrip`'s own scroll-into-view effect is keyed on it; see
-              `Filmstrip.tsx`'s doc for why. */}
-          <Filmstrip {...filmstrip} visible={visible} onPreview={setPreview} />
+              `Filmstrip.tsx`'s doc for why. A let-go drag of the strip
+              glides on only where the reader's animation setting is on, as
+              this component's own fade plays only then. */}
+          <Filmstrip
+            {...filmstrip}
+            visible={visible}
+            onPreview={setPreview}
+            onShown={placeMark}
+            glides={animating}
+          />
         </div>
         <div
           className="reader-progress"
-          style={progressStyle}
+          // The line runs the way the strip above it runs, so the mark sits
+          // under the tiles it stands for: mirrored whole for a work read
+          // right to left, the fill with it.
+          style={{
+            ...progressStyle,
+            transform:
+              stepFor(1, filmstrip.reading) === 1 ? undefined : 'scaleX(-1)',
+          }}
           aria-hidden="true"
         >
           <div
             className="reader-progress-fill"
             style={{ height: '100%', width: `${progress * 100}%` }}
+          />
+          {/* Always here while the bars are, with no width until the strip
+              first tells, which it does on mounting. `placeMark` writes the
+              rest of it. */}
+          <div
+            ref={markRef}
+            className="reader-progress-shown"
+            data-testid="strip-shown"
+            style={markStyle}
           />
         </div>
         {/* Not a live region since spec 2026-09-26 §3.5: `App.tsx`'s own

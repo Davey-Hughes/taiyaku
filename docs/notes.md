@@ -25715,3 +25715,213 @@ hook can, and two reviewers each showed it.
 
 **Not measured.** The NAS, for any of it. A flood through the proxy in
 front of the deployed server. What a wipe costs there.
+
+## O216: the strip under a hand, its mark and its drag (2026-10-12)
+
+**The hand check.** `main` at `1eb5723e`, a release build and a production
+build of the web app, served on this machine from a scratch copy of the test
+library's database, in the user's Firefox (asked later that day which
+browser it had been, the user said Firefox). A notch of the wheel over the
+strip moved it "just over 1 page", and "it feels fine". Those are the two
+readings O216 asked for. The user then said "there's no indication of how
+far along in the strip we are (no scroll bar)", and that "it would be nice
+if you could click+drag with a mouse to scroll the strip".
+
+**What the user chose, by trying it.** Of three forms for the indication (a
+thin thumb under the tiles, a mark on the progress line, the browser's own
+thin scrollbar) the user chose the mark on the line, to see it. On a
+prototype served the same way:
+
+| round | what the user said | what changed |
+|---|---|---|
+| 1 | "it works, though the scroll bar is quite huge", and to let the progress bar show underneath, "some amount of opacity" | the mark half transparent, its outline dropped |
+| 2 | "by size I meant that it was wide, not tall" | the mark no longer as wide as the share of the volume shown: 32 px, placed by how far the rail is scrolled |
+| 3 | "32 is ok for a volume this size- it should potentially be scaled larger for a short volume" | an eighth of the share shown, never under 32 px |
+| 4 | "ok the scroll bar width is great now" | nothing |
+
+**The prototype's widths, measured** in headless Chromium 151.0.7922.34 on
+that server, the mark's box read from the page:
+
+| volume | pages | window 1,440 px | window 2,560 px |
+|---|---|---|---|
+| `akame-ga-kill----v01--2015--cbz` | 237 slots | 32 px | 32 px |
+| `darling-in-the-franxx---v01--2022--cbz` | 71 | 32 px | 97.6 px |
+| `hunter---hunter--official-colored----v35-cbz` | 48 | 45.3 px | 144.2 px |
+| `yu-yu-hakusho-tales---two-shots-colored--colored-council--cbz` | 32 | 67.9 px | 216.2 px |
+
+The 97.6 px was stale: the rail's numbers at that moment gave 91 px. The
+prototype told the bar where the rail stood after a scroll and after a
+render, and a thumbnail that loads late changes the rail's length with
+neither.
+
+The same check, on the 237-slot volume, which is read right to left: a
+600 px drag moved the rail's `scrollLeft` from 0 to −600 and the mark with
+it, the page stayed where it was, and a press that moved 2 px turned the
+page (`prototype/selfcheck-widths-and-drag.log`). Of the copy's 1,896
+volumes, 1,723 are between 120 and 259 pages and 15 are under 120; those
+counts, the four volumes' pages and the browser's version are in
+`volume-lengths-and-browser.log`.
+
+Every log named here is in
+`.superpowers/sdd/strip-position-and-drag-evidence/`, which is not
+committed.
+
+**What building it found wrong in the prototype.** Four things, each now a
+rule in the spec's §7 and held by a test.
+
+- The mark went through React state, so a scroll rendered the bars and the
+  strip on each frame it moved the mark. It is written on its element now.
+  The whole-branch review, at `987c6492`, with a real mouse over a 1,300 px
+  drag in both directions: the press committed twice, through the strip's
+  own `focusin` listener, and the moves and the release committed nothing.
+  That was before a drag handed focus back. Since the glide's change, focus
+  the rail hands back leaves the strip's window where it is (`leaves the
+  strip's window where it is when it hands focus back to a tile`).
+- A movement under a two-thousandth of the rail's length was not told. On
+  21 pages at a 2,400 px window, where the rail's travel is 67 px of its
+  2,467, the task's review found the mark 31 px short of the line's end
+  with the rail at its end. `follows a rail that barely overflows to its
+  end a pixel at a time` is that case.
+- A press let go where the rail could not hear it was left standing. Task
+  2's implementer read it with a real mouse: press a tile, leave the strip
+  with under 5 px of travel along it, let go outside, come back with no
+  button down, and the rail followed the mouse, 122 px in Chromium and
+  121.25 and 122.5 px in Playwright's Firefox (`task-2/`).
+- A drag left focus on the tile it began on. The whole-branch review, in
+  the whole reader with a real mouse and key: page 30 current, a drag begun
+  on tile 33, Space, and tile 33 was current.
+
+**Where the click after a drag lands.** On the rail, since the pointer is
+captured, in Chromium and in Playwright's Firefox, in both reading
+directions, let go on the strip or 200 px below it. It arrives before a
+0 ms timer set as the release began. Chromium is held by the suite; the
+Firefox reading is a probe of Task 2's implementer, its source kept in
+`task-2/`.
+
+**The built app, with a real mouse.** The branch at `b882763a`, before the
+glide was built, built and served as the prototype was, in headless Chromium with Playwright's
+mouse, on the 237-slot volume, which is read right to left
+(`built-app-gestures-b882763a.log`). A press on a tile carried 300 px moved
+the rail's `scrollLeft` from 0 to −300 with the cursor `grabbing`, left the
+page where it was, and left focus on the `Library` button, which had it
+before the press. A press 2 px above a tile's lower edge, carried 3 px out
+of the rail and back, then 42 px along, dragged the rail 42 px and turned
+no page. A press let go above the strip with 2 px of travel, then another
+press out there carried in over the strip, moved the rail 0 px. A click
+turned to its tile.
+
+**The glide.** Asked of the built drag, the user said: "strip dragging
+works, but there's no momentum. is it possible to add this? and make sure it
+doesn't conflict with any mobile native scrolling for this". A prototype was
+served the same way, and of it the user said "yeah it feels good". Its
+numbers are the ones built: the speed over 100 ms, a travel of that speed
+times 325 ms, no glide after a rest of 60 ms or under 0.1 px a millisecond.
+On the prototype's build in headless Chromium (`momentum-prototype/glide.log`):
+a release while moving carried the rail on 536 px in the 800 ms after it; a release after a rest, 0; a glide into the start of the volume, 0; and
+a press during a glide stopped it and turned no page.
+
+A finger's press begins neither a drag nor a glide: both begin from a
+mouse's press alone. What a finger's press on the rail does is stop a glide
+that is under way. The glide's review sent a touch through the browser's
+own input protocol: a tap in mid-glide stopped it and turned the page, and
+a finger's pan was
+given a `pointercancel` and moved the rail by itself.
+
+**What building the glide found wrong in its prototype**, each fixed and
+held by a case:
+
+- A press that stopped a glide could leave part of the strip with no tiles.
+  Focus handed back to a tile moved the strip's window to it, which the
+  glide had carried the rail on from, and with the glide stopped no scroll
+  followed to move it again. Task 3's implementer measured 213 px bare read
+  left to right and 280 px right to left, still there a second later. Focus
+  the rail hands back moves no window now.
+- A click on a strip that looked at rest did nothing for about two seconds
+  after a flick, since every press during a glide was taken for one that
+  stopped it, to the glide's last half pixel. A press is taken so only while
+  the glide still carries the rail at 0.1 px a millisecond or more: from a
+  release at 1 px a millisecond that is the first 748 ms of a glide that
+  runs 2,105 ms (325 × ln 10; held in `tiles.test.ts` at 748 and 749 ms).
+- A press that had only just become a drag read its speed from too little.
+  The glide's review: 6 px crept in 202 ms, the last two moves 2 ms apart,
+  was carried 155 px on. The speed is read from the press on now, and the
+  same creep is carried nothing.
+- A frame stamped before the release moved the rail back; a rest of exactly
+  60 ms still carried; a change of reading direction did not stop a glide;
+  and `Tab` onto the strip in mid-glide was overridden by it.
+
+The glide's review, with a real mouse in both reading directions at
+`612e2f95`: glides from 2, 4, 8 and 16 px a millisecond came to rest within
+1 px of the speed times 325 ms with no part of the strip bare; a page turn
+in mid-glide centred the new tile to 0.5 px; a wheel moved the rail exactly
+100 px from where it stood; in the whole reader a flick carried 324 px with
+animation on and 0 with the reader's motion setting off; and the mark was
+0 px off the rail's numbers in 40 frames of a glide
+(`review-of-the-glide/`). The branch at `e1c918cb`, the last commit to
+change its code, was built and driven as before
+(`built-app-glide-and-gestures-e1c918cb.log`): a release while moving
+carried the rail on 539 px in the 800 ms after it; a release after a rest,
+0; a glide into the start of the volume, 0; a press during a glide stopped
+it and turned no page. Of the drag's gestures, a 300 px drag left the page
+and the focus where they were, the press that slips off the strip's edge
+and back read 54 px of the rail moved and turned no page, the press carried
+in from outside read 1 px, and a click turned to its tile.
+
+**A real flick in a test.** Chromium stamps a mouse event with the time it
+is sent with, so `web/src/testing/mouse.ts` can clock a flick: its moves are
+15 px each and stamped 15 ms apart whatever the machine does, the speed the
+page reads is 1 px a millisecond, and the cases hold 325 px on to 2 px. The same review
+put a 300 ms stall before the release and 80 ms between moves, and the
+reading did not change.
+
+**The built stylesheet.** `--reader-mark` ships as `#ece4d480`, and the mark
+computes to `rgba(236, 228, 212, 0.5)` under a light and a dark colour
+scheme alike (`final-review/`). The tokens around it do not, which is
+O218. Read on the prototype's build in headless Chromium, inside `.reader`,
+whose computed `color-scheme` was `dark` both times
+(`prototype/built-css-token-readings.log`):
+
+| colour scheme | the progress line | the bottom bar's text | the readout |
+|---|---|---|---|
+| light | `rgb(214, 204, 185)` | `rgb(35, 30, 23)` | `rgb(107, 97, 81)` |
+| dark | `rgb(53, 49, 42)` | `rgb(236, 228, 212)` | `rgb(166, 155, 135)` |
+
+The same log has what the build made of a token,
+`--line:var(--lightningcss-light,#d6ccb9)var(--lightningcss-dark,#35312a)`,
+and the rules it gave the two switch properties to.
+
+**Not held, and not measured.**
+
+- Three mutations the implementers and reviewers could not get any test to
+  catch, with Task 2's implementer's argument for each. The rail's capture
+  released without asking whether the rail holds it: the same thing for a
+  pointer that is active, by the Pointer Events specification as read, not
+  measured. The cleanup leaving the `pointerdown` listener behind once the
+  others are gone: it then sets a variable nothing reads. The rail keeping
+  listeners of its own for a release beside the window's: the window's
+  hears the release first and ends the press, so the rail's finds none.
+- One more, in the glide: the loop that trims the pointer's trail to the
+  last 100 ms may be taken out and nothing fails, since `releaseSpeed`
+  applies that window itself. It bounds how many moves a long drag keeps.
+- A release the window does not hear, outside the browser's window or over
+  another document, was not read. Such a press would stand until the rail
+  next hears a move, which ends it if the button is up.
+- Focus handed back after a drag is not drawn. The review of the fix read
+  `:focus-visible` true with a 2 px outline on `Library` after `Tab`, and
+  false with none after a drag had handed focus back to it. Recorded on
+  O168's row.
+- A rail pulled past its start reads as scrolled into the volume, since its
+  standing is read through `Math.abs`. By arithmetic only.
+- The whole-branch review saw that `d`, pressed while the mouse is down,
+  leaves the press holding the other direction's `scrollLeft`, and that
+  `main`'s strip mounted alone also puts its rail at the volume's start on
+  a flip. Not looked into further.
+- While correcting, a glide carries tiles under a still pointer, and each
+  one the pointer comes over is a request for its page: the glide's review
+  saw one flick tell the preview of 22 pages. Whether the preview should
+  wait for a glide to stop is not decided.
+- On a device with a mouse and a touch screen, a finger's tap that stops a
+  mouse's glide is a tap on the tile under it, and turns the page.
+- Firefox and Safari by any test; a physical finger or pen; the cursor a
+  browser draws while the pointer is captured over a tile; the cost on a
+  phone.
