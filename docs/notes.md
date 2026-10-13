@@ -25877,7 +25877,7 @@ reading did not change.
 **The built stylesheet.** `--reader-mark` ships as `#ece4d480`, and the mark
 computes to `rgba(236, 228, 212, 0.5)` under a light and a dark colour
 scheme alike (`final-review/`). The tokens around it do not, which is
-O218. Read on the prototype's build in headless Chromium, inside `.reader`,
+O218 *(closed since, on the same day: see "O218" below)*. Read on the prototype's build in headless Chromium, inside `.reader`,
 whose computed `color-scheme` was `dark` both times
 (`prototype/built-css-token-readings.log`):
 
@@ -25925,3 +25925,95 @@ and the rules it gave the two switch properties to.
 - Firefox and Safari by any test; a physical finger or pen; the cursor a
   browser draws while the pointer is captured over a tile; the cost on a
   phone.
+
+## O218: the built stylesheet's tokens (2026-10-12)
+
+**The cause.** Vite 8.2.1 minifies the build's stylesheet with Lightning CSS
+1.33.0 and hands it `build.cssTarget` as the browsers to write for. Unset,
+that option takes `build.target`'s value, and `main`'s resolved config printed
+`chrome111`, `edge111`, `firefox114`, `safari16.4` and `ios16.4` for both
+(`resolved-config.log`). Lightning CSS compiles `light-dark()` for a target
+that lacks it. Read by transforming `:root{--x:light-dark(red,blue)}` for one
+browser at a time (`lightningcss-thresholds.log`):
+
+| browser | compiled at | left as written at |
+|---|---|---|
+| Chrome | 122 | 123 |
+| Edge | 122 | 123 |
+| Firefox | 119 | 120 |
+| Safari | 17.4 | 17.5 |
+| Safari on iOS | 17.4 | 17.5 |
+
+**The change.** `web/vite.config.ts` sets `build.cssTarget` to the five
+versions in the right-hand column. `build.target` is not set, and the
+resolved config prints the same five for it as before. The first edit put the
+option in a `build` key of its own above `test`; the config already had a
+`build` key further down, which replaced it, and the new test stayed red until
+the option moved there.
+
+**The built stylesheet**, from `vite build` on `main` at 55eaac53 and on the
+branch:
+
+| | bytes | `--lightningcss-` | `light-dark(` |
+|---|---|---|---|
+| `main` | 603,334 | 36 | 0 |
+| the branch | 602,543 | 0 | 13 |
+
+`main`'s file with each compiled pair turned back into a `light-dark()`, and
+the switch properties and the one rule the compile added removed, is the
+branch's file byte for byte (`uncompile.sh`, which ends in `cmp`). The rules
+that differ are `:root`'s token rule, the two `data-theme` rules, `.reader`,
+and that added `@media (prefers-color-scheme:dark)` rule
+(`built-css-main-vs-fix.diff`).
+
+**A page of the bottom bar's markup, loading each build's stylesheet**
+(`probe.cjs`), in headless Chromium 151 and Firefox 153, under a light and a
+dark colour scheme with `data-theme` absent, `paper` and `ink`. `.reader`'s
+computed `color-scheme` was `dark` in all twenty-four readings, and the two
+browsers read the same colours. Inside `.reader`:
+
+| build | the progress line | the bottom bar's text | the readout |
+|---|---|---|---|
+| `main`, the page's scheme light | `rgb(214, 204, 185)` | `rgb(35, 30, 23)` | `rgb(107, 97, 81)` |
+| `main`, the page's scheme dark | `rgb(53, 49, 42)` | `rgb(236, 228, 212)` | `rgb(166, 155, 135)` |
+| the branch, all six | `rgb(53, 49, 42)` | `rgb(236, 228, 212)` | `rgb(166, 155, 135)` |
+
+The page's scheme is light in three of the six: a light colour scheme with no
+`data-theme`, and `paper` under either colour scheme. A paragraph outside
+`.reader` followed the page's scheme in both builds.
+
+**The app.** The branch's build served by `taiyaku serve`, `main`'s release
+binary, from a copy of the test library's database, with the reader open on a
+volume and its bars shown (`app-probe.cjs`, `app-fix/`). In the same six
+combinations and the same two browsers the progress line read
+`rgb(53, 49, 42)`, its fill `rgb(232, 113, 90)`, the mark
+`rgba(236, 228, 212, 0.5)`, the readout `rgb(166, 155, 135)`, and the bottom
+bar's text, the top bar's and the title's `rgb(236, 228, 212)`. The theme was
+set by writing `data-theme` on `<html>`, not through the app's own control. A
+screenshot of each was kept; the Chromium one with `paper` under a light
+colour scheme was looked at, and shows dark bars with light text.
+
+**The test.** `web/src/builtStylesheet.test.ts` builds `src/index.css` alone
+with the project's config and reads the one stylesheet that comes out: each of
+the thirteen tokens `tokens.css` writes as a pair is declared once, as a
+`light-dark()`, and the file names neither switch property. A plugin logging
+what that build loaded saw one module, `src/index.css`
+(`test-build-modules.log`), and its stylesheet carried the app build's content
+hash, `u1V7LL1n`. Hand mutations of the config, the test run after each
+(`mutations.log`): each of the five versions lowered by one, and the
+`cssTarget` line deleted, failed fourteen of the fifteen cases. Before the
+change fourteen failed too, the fifteenth being the one that counts the pairs
+in the source (`test-before-fix-55eaac53.log`). The `node` project went from
+1,510 tests to 1,525.
+
+**Not measured.**
+
+- Safari, on either build.
+- A browser older than the five versions. The build now gives it
+  `light-dark()` as written, where it gave it `var()` fallbacks before; "Safari
+  below 17.5" in the style pass's notes above says what such a browser draws
+  from the source. The user's iPhone reported Safari 26.6.1 in the device
+  passes recorded above.
+- The reader's panels and its note editor, which were not opened.
+
+The evidence is in `.superpowers/sdd/o218-evidence/`.

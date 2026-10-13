@@ -188,6 +188,24 @@ export default defineConfig({
     },
   },
   build: {
+    // **The stylesheet is built for the browsers the UI supports, so
+    // `light-dark()` ships as written (O218).** Left alone, `cssTarget`
+    // follows `build.target`, whose default in Vite 8 is Chrome and Edge 111,
+    // Firefox 114 and Safari 16.4 — all older than `light-dark()`. For those
+    // Lightning CSS compiles each paired token to
+    // `var(--lightningcss-light, <paper>) var(--lightningcss-dark, <ink>)`,
+    // and a `var()` is substituted where the token is declared, on `:root`.
+    // `.reader` then inherits tokens already resolved for the page's theme,
+    // whatever its own `color-scheme` says, and a reader in a light theme
+    // drew its bars from the Paper half.
+    //
+    // These five are the first versions Lightning CSS leaves the function
+    // alone for, read one version either side on 2026-10-12. The UI needs
+    // them already, since the themed colour tokens are `light-dark()` pairs:
+    // spec 2026-09-17 §3 gives the Safari figure. `build.target`, which the
+    // scripts are built for, is not set.
+    // `src/builtStylesheet.test.ts` builds the stylesheet and holds it.
+    cssTarget: ['chrome123', 'edge123', 'firefox120', 'safari17.5', 'ios17.5'],
     rollupOptions: {
       // Two entries. Without this Vite takes index.html alone and the
       // labeller silently does not ship -- there is no error, just a missing

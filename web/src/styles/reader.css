@@ -7,6 +7,9 @@
  * `--reader-panel` and `--reader-hair` (`tokens.css`) are the three values §2
  * gives the reader alone.
  *
+ * That holds only while the build ships `light-dark()` as written, which
+ * `vite.config.ts`'s `build.cssTarget` sees to (O218).
+ *
  * Geometry stays inline in the components, where their tests pin it (§4 rule
  * 3). What varies with the viewport — the strip's height, the safe areas,
  * where a panel docks — is a custom property here, which those inline styles
