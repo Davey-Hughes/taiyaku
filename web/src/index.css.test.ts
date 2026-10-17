@@ -488,9 +488,9 @@ describe('the disabled Accept is legible in both themes', () => {
 })
 
 /**
- * The sidebar's section headings — Roots, Library, Theme. They were faded with
- * `opacity: 0.65`, which has no floor anyone checks; spec 2026-09-17 §7.1
- * gives them `--muted` instead, on the page's own ground.
+ * The sidebar's section headings — Libraries, Library, Theme. They were faded
+ * with `opacity: 0.65`, which has no floor anyone checks; spec 2026-09-17
+ * §7.1 gives them `--muted` instead, on the page's own ground.
  */
 describe('the sidebar headings are legible in both themes', () => {
   const heading = ruleBody('.sidebar-heading')

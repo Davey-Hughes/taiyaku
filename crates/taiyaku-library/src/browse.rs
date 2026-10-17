@@ -8,24 +8,29 @@
 //! # The filter, which is the reason this module exists rather than a handful
 //! # of queries at the call sites
 //!
-//! Every function takes `roots: &[i64]`, the folders of the caller's granted
-//! libraries, and **an empty slice applies no filter at all**. That is spec C1 §5.1's rule and it
-//! is counter-intuitive on purpose: `user_root` had no writer before spec C1,
-//! so every account in every existing library holds an empty grant, and any
-//! other reading of empty would have emptied every library the day migration
-//! 6 applied.
+//! Every public function but [`filed_in`] takes `roots: &[i64]`, the folders of the
+//! caller's granted libraries, and **an empty slice applies no filter at all**.
+//! That is spec C1 §5.1's rule and it is counter-intuitive on purpose:
+//! `user_root` had no writer before spec C1, so every account in every
+//! existing library holds an empty grant, and any other reading of empty would
+//! have emptied every library the day migration 6 applied. `filed_in` reads no
+//! grant, and its doc says how its caller applies one.
 //!
 //! The filter is applied to **editions**: an edition survives if its members
 //! do, and a work is listed if it keeps at least one edition. A member under
 //! no root — every member of every imported work — has `root_id` NULL, and
 //! `IN (…)` excludes NULL by SQL's own rules, so that case needs no branch.
 //!
+//! A listing narrowed to one library reads the folders that library and the
+//! grant share in place of the grant, so a library's page lists what an
+//! account granted only that library would see.
+//!
 //! An **alignment** names two editions, so it survives only if *both* of them
-//! do — both inside the grant, and both under the `?root=` narrowing whenever
-//! one is in force. One clause says so — `pair_clause` — and `alignments_of`,
-//! `WorkCard::aligned` and `SeriesCard::aligned` all read it, because the two
-//! counts asked a weaker question until 2026-08-21 and a grid drawing `⇄ 1`
-//! beside a work page listing no pair is one screen contradicting itself.
+//! do — both inside the folders the listing reads. One clause says so —
+//! `pair_clause` — and `alignments_of`, `WorkCard::aligned` and
+//! `SeriesCard::aligned` all read it, because the two counts asked a weaker
+//! question until 2026-08-21 and a grid drawing `⇄ 1` beside a work page
+//! listing no pair is one screen contradicting itself.
 //!
 //! Filtering after the query was the alternative and is wrong twice over: it
 //! reads rows the caller may not see into memory before deciding, and it makes
@@ -44,24 +49,19 @@
 //!
 //! Four constant statements — the three FTS id lookups and `cover_work`'s
 //! `series` read — carried `?1` until 2026-08-21 and were converted rather
-//! than exempted. Nothing broke while each had a single parameter, but
-//! `matching_unfiled_works` is exactly where a search-by-root would one day
-//! add a generated `IN (?,?)` beside that `?1`, and a rule with four standing
-//! exceptions is one a later edit will mis-remember. (The hand-written
-//! `INSERT`s in the `tests` submodule are fixtures, not queries, and are
-//! outside this.)
+//! than exempted. Nothing broke while each had a single parameter, but a
+//! generated `IN (?,?)` spliced into any of them would put that `?1` and
+//! anonymous holes in one statement, the mix measured above, and a rule with
+//! four standing exceptions is one a later edit will mis-remember. (The
+//! hand-written `INSERT`s in the `tests` submodule are fixtures, not queries,
+//! and are outside this.)
 //!
 //! Anonymous-only means the binding order is the **text order of the
 //! statement**, and that is the whole rule: each function pushes its
 //! parameters in the order the fragments it splices appear in the SQL, reading
-//! left to right from the `SELECT` list. It is deliberately *not* "roots
-//! first, then the caller's own parameters" — that was true until 2026-08-21,
-//! when `?root=` was threaded through `pair_clause` and every restricted
-//! edition became roots-then-`only`, interleaving the two groups. `series` now
-//! binds `(roots…, only?)` three times over — the alignment's from side, its
-//! to side, then the edition join — and only then `user_id`. Every function
-//! that mixes groups states its own order in a comment above the `format!`;
-//! read that against the params vector directly below it.
+//! left to right from the `SELECT` list. Every group a filter contributes is
+//! the folder list, and a narrowing to one library swaps that list (see
+//! [`library_scope`]) rather than adding a parameter of its own.
 
 // **Imported rather than written `std::collections::HashMap` inline, and that
 // is load-bearing for the mutation harness.** `cargo-mutants` replaces a
@@ -269,9 +269,10 @@ const LIST_CAP: i64 = 20;
 ///
 /// Built as a string because the number of parameters varies with the grant,
 /// which a prepared statement cannot express otherwise. The values are `i64`
-/// read from the store by `account::roots_for`, never caller text, so there is nothing here to
-/// inject; the placeholders are still generated rather than the values
-/// interpolated, so that stays true if the source ever changes.
+/// folder ids read from the store, a grant's or a library's (see
+/// [`library_scope`]), never caller text, so there is nothing here to inject;
+/// the placeholders are still generated rather than the values interpolated,
+/// so that stays true if the source ever changes.
 ///
 /// `rm`, not `m`: two callers below already have a `member m` in scope, and an
 /// inner alias that shadows an outer one is legal SQL, correct here, and one
@@ -332,35 +333,70 @@ fn member_clause(roots: &[i64]) -> String {
     format!(" AND m.root_id IN ({holes})")
 }
 
-/// The `AND` restricting an edition to **one** root, on top of the grant.
-///
-/// Spec C1 §5.5's `?root=`. Intersected with [`root_clause`] rather than
-/// replacing it: a root the caller does not hold yields no rows, which is the
-/// same answer as a root that does not exist. Confirming which ids are real is
-/// the enumeration `one_series` already answers 404 rather than 403 to avoid.
-fn only_clause(only: Option<i64>) -> String {
-    only_clause_for("e", only)
+/// One library a listing is narrowed to: its name, and the folders of it the
+/// caller's grant allows.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LibraryScope {
+    pub name: String,
+    /// Never empty: see [`library_scope`].
+    pub folders: Vec<i64>,
 }
 
-/// [`only_clause`], against an edition alias the caller names.
+/// The folders of `library` this caller may read, with the library's name.
 ///
-/// **The alias is a parameter for [`root_clause_for`]'s reason**, and for the
-/// same clause: [`pair_clause`] narrows two *different* editions — an
-/// alignment's two sides — inside one subquery, and calling both of them `e`
-/// would compile, bind, run, and silently narrow whichever edition the inner
-/// scope happened to resolve.
-fn only_clause_for(alias: &str, only: Option<i64>) -> String {
-    if only.is_none() {
-        return String::new();
-    }
-    format!(
-        " AND EXISTS (SELECT 1 FROM member om WHERE om.edition_id = {alias}.id \
-         AND om.root_id = ?)"
+/// **`None` when there are none**, whether the library is outside the grant,
+/// holds no folder, or does not exist, and never a scope with no folders:
+/// every function here reads an empty folder list as no restriction at all,
+/// so a narrowing that matched nothing would list every library.
+///
+/// # Errors
+///
+/// Returns an error if the query fails.
+pub fn library_scope(
+    conn: &Connection,
+    roots: &[i64],
+    library: i64,
+) -> Result<Option<LibraryScope>, String> {
+    let mut stmt = prepare(
+        conn,
+        "SELECT r.id, l.name FROM root r JOIN library l ON l.id = r.library_id
+          WHERE r.library_id = ? ORDER BY r.id",
     )
+    .map_err(|e| format!("preparing the folders of library {library}: {e}"))?;
+    let rows = stmt
+        .query_map([library], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|e| format!("reading the folders of library {library}: {e}"))?
+        .collect::<rusqlite::Result<Vec<(i64, String)>>>()
+        .map_err(|e| format!("reading the folders of library {library}: {e}"))?;
+    let name = rows.first().map(|(_, name)| name.clone());
+    let folders: Vec<i64> = rows
+        .into_iter()
+        .map(|(id, _)| id)
+        .filter(|id| roots.is_empty() || roots.contains(id))
+        .collect();
+    Ok(match name {
+        Some(name) if !folders.is_empty() => Some(LibraryScope { name, folders }),
+        _ => None,
+    })
+}
+
+/// The folders a listing reads: the grant, or the grant's share of
+/// `library`'s folders. `None` means there is nothing to list.
+fn narrowed(
+    conn: &Connection,
+    roots: &[i64],
+    library: Option<i64>,
+) -> Result<Option<Vec<i64>>, String> {
+    match library {
+        None => Ok(Some(roots.to_vec())),
+        Some(id) => Ok(library_scope(conn, roots, id)?.map(|scope| scope.folders)),
+    }
 }
 
 /// The two `AND EXISTS` halves that keep an alignment row `a` only when
-/// **both** of the editions it names survive the grant.
+/// **both** of the editions it names survive the filter.
 ///
 /// **One definition, read by both questions the `alignment` table answers**,
 /// because the whole-branch review found them disagreeing: with an `en`↔`raw`
@@ -369,29 +405,21 @@ fn only_clause_for(alias: &str, only: Option<i64>) -> String {
 /// filter and the counts did not — was empty. The same screen contradicted
 /// itself, so [`aligned_clause`] and `alignments_of` now read one clause.
 ///
-/// **`only` restricts both sides too, and until 2026-08-21 it restricted
-/// neither.** `?root=` was spliced into `series`'s edition join alone, so
-/// `works`, `editions` and `unread` were narrowed and the `SELECT`-list
-/// `aligned` count was not: `series(&conn, &[], 1, Some(en_id))` over a
-/// two-root library with one `en`↔`raw` pair answered `editions: 1` beside
-/// `aligned: 1` — a tile claiming a pair while reporting the one edition that
-/// can hold half of it. The same self-contradiction the grant half had, in the
-/// half of the filter the grant fix did not reach.
+/// A listing narrowed to one library reaches both sides through `roots`
+/// itself, which is that library's folders (see [`library_scope`]), so a pair
+/// half of which is under another library's folder is counted by nobody.
 ///
 /// `fe` and `te` rather than `e` twice: see [`root_clause_for`]. Contributes
-/// **two** parameter groups, the from side first, each of them the grant's
-/// roots followed by `only` — see the module header on why the groups
-/// interleave rather than roots leading.
-fn pair_clause(roots: &[i64], only: Option<i64>) -> String {
+/// **two** parameter groups, the from side first, each of them the folder
+/// list.
+fn pair_clause(roots: &[i64]) -> String {
     let from = root_clause_for("fe", roots);
-    let from_only = only_clause_for("fe", only);
     let to = root_clause_for("te", roots);
-    let to_only = only_clause_for("te", only);
     format!(
         "EXISTS (SELECT 1 FROM edition fe \
-                  WHERE fe.work_id = a.work_id AND fe.key = a.from_key{from}{from_only}) \
+                  WHERE fe.work_id = a.work_id AND fe.key = a.from_key{from}) \
          AND EXISTS (SELECT 1 FROM edition te \
-                  WHERE te.work_id = a.work_id AND te.key = a.to_key{to}{to_only})"
+                  WHERE te.work_id = a.work_id AND te.key = a.to_key{to})"
     )
 }
 
@@ -408,8 +436,8 @@ fn pair_clause(roots: &[i64], only: Option<i64>) -> String {
 /// Requires `w` in scope, and contributes [`pair_clause`]'s two groups. The
 /// correlation `a.work_id = w.id` is written first so those groups still bind
 /// ahead of whatever the caller's own statement carries.
-fn aligned_clause(roots: &[i64], only: Option<i64>) -> String {
-    let pair = pair_clause(roots, only);
+fn aligned_clause(roots: &[i64]) -> String {
+    let pair = pair_clause(roots);
     format!("EXISTS (SELECT 1 FROM alignment a WHERE a.work_id = w.id AND {pair})")
 }
 
@@ -424,6 +452,10 @@ fn aligned_clause(roots: &[i64], only: Option<i64>) -> String {
 /// a correction no longer moves it, so a list sent with no primary would show
 /// text the correction may have removed.
 ///
+/// `library` narrows the listing to the folders of that library the grant
+/// allows ([`library_scope`]); a library the grant does not reach, one with no
+/// folder, or one that does not exist lists nothing.
+///
 /// # Errors
 ///
 /// Returns an error if the query fails.
@@ -431,27 +463,27 @@ pub fn series(
     conn: &Connection,
     roots: &[i64],
     user_id: i64,
-    only: Option<i64>,
+    library: Option<i64>,
 ) -> Result<Vec<SeriesCard>, String> {
-    let aligned = aligned_clause(roots, only);
+    let Some(roots) = narrowed(conn, roots, library)? else {
+        return Ok(Vec::new());
+    };
+    let roots = roots.as_slice();
+    let aligned = aligned_clause(roots);
     let clause = root_clause(roots);
-    let narrowed = only_clause(only);
-    // Placeholders bind in text order, all anonymous — three groups of
-    // `(roots…, only?)` and then `user_id`:
+    // Placeholders bind in text order, all anonymous — three groups of the
+    // folder list and then `user_id`:
     //
     //   1. the `aligned` count's from side (`fe`), in the `SELECT` list, which
     //      is the earliest text a parameter can appear in;
     //   2. its to side (`te`);
-    //   3. the edition join's `{clause}{narrowed}`;
+    //   3. the edition join's `{clause}`;
     //   4. `user_id`, in the progress join below.
     //
-    // See the module header: `only` rides *inside* each group rather than
-    // trailing all of them, which is why the old "roots first, then everything
-    // else" phrasing no longer describes this. The progress join still sits
-    // *after* the edition join: as a `SELECT`-list subquery its parameter
-    // would bind ahead of every group above, and the filter's own parameters
-    // are the only thing allowed in front of it — which is also why the
-    // `aligned` count may live where it does.
+    // The progress join sits *after* the edition join: as a `SELECT`-list
+    // subquery its parameter would bind ahead of every group above, and the
+    // filter's own parameters are the only thing allowed in front of it —
+    // which is also why the `aligned` count may live where it does.
     //
     // **`aligned` is an `EXISTS` rather than the `LEFT JOIN alignment a` it
     // was.** The join could carry the same restriction in its `ON`, but it
@@ -472,7 +504,7 @@ pub fn series(
                 COUNT(DISTINCT CASE WHEN p.work_id IS NULL THEN w.id END)
            FROM series s
            JOIN work w ON w.series_id = s.id
-           JOIN edition e ON e.work_id = w.id{clause}{narrowed}
+           JOIN edition e ON e.work_id = w.id{clause}
            LEFT JOIN progress p ON p.work_id = w.id AND p.user_id = ?
            LEFT JOIN series_title st ON st.series_id = s.id
           GROUP BY s.id
@@ -481,7 +513,6 @@ pub fn series(
     let mut params: Vec<i64> = Vec::new();
     for _ in 0..3 {
         params.extend(roots.iter().copied());
-        params.extend(only);
     }
     params.push(user_id);
 
@@ -680,17 +711,12 @@ pub fn missing_by_edition(
 /// That clause is shared with [`aligned_clause`] rather than written twice:
 /// this list and the `aligned` flag beside it are the same question, and they
 /// answered it differently for as long as they were two pieces of SQL.
-///
-/// **`None` for `only`, because no caller of this narrows.** `?root=` reaches
-/// `series` and `unfiled`; a work page addresses one work by slug and has no
-/// root to be scoped to. If one is ever given one, the narrowing belongs here
-/// and in [`works_of`] alongside it, not in a second clause.
 fn alignments_of(
     conn: &Connection,
     roots: &[i64],
     work_id: i64,
 ) -> Result<Vec<AlignmentCard>, String> {
-    let pair = pair_clause(roots, None);
+    let pair = pair_clause(roots);
     let sql = format!(
         "SELECT a.from_key, a.to_key, a.verdict, a.slots, a.paired
            FROM alignment a
@@ -729,17 +755,6 @@ fn alignments_of(
 /// `predicate` and `order` are SQL fragments over `w`, never caller text: every
 /// call site below passes a literal. Their parameters bind **after** the roots,
 /// in text order.
-///
-/// **`None` for [`aligned_clause`]'s `only`.** This takes no narrowing of its
-/// own: [`unfiled`] carries `?root=` in its `predicate` instead, because the
-/// predicate is the only fragment between the roots and the end of the
-/// statement. That is sound rather than lucky — `unfiled` selects
-/// `w.series_id IS NULL`, derivation gives every scanned work a series, so the
-/// works it returns are imported ones whose members carry `root_id` NULL, and
-/// `om.root_id = ?` is false for NULL: with a narrowing in force the list is
-/// empty and there is no `aligned` for it to have got wrong. Any future caller
-/// that does narrow a *filed* work needs `only` threaded here, exactly as
-/// `series` threads it.
 fn works_of(
     conn: &Connection,
     roots: &[i64],
@@ -748,12 +763,11 @@ fn works_of(
     extra: &[&dyn rusqlite::ToSql],
     order: &str,
 ) -> Result<Vec<WorkCard>, String> {
-    let aligned = aligned_clause(roots, None);
+    let aligned = aligned_clause(roots);
     let clause = root_clause(roots);
     // Placeholders bind in text order, all anonymous: `aligned`'s two root
     // groups in the `SELECT` list, then the edition join's roots, then
-    // `extra`. No `only` group interleaves here — see this function's doc.
-    // See the module header.
+    // `extra`. See the module header.
     let sql = format!(
         "SELECT DISTINCT w.id, w.slug, w.title, w.volume, w.hub, {aligned}
            FROM work w
@@ -944,14 +958,11 @@ pub fn work(
 /// imported member's `root_id` is NULL, and `IN (…)` excludes NULL. That is
 /// §5.1's rule applying unchanged, not a second one.
 ///
-/// **`only` empties this list, by that same rule rather than a new one.** The
-/// grid fetches series and unfiled works together, and until 2026-08-21 it
-/// passed `?root=` to the first and not the second — so
-/// `/api/library/series?root=5` answered a root-scoped grid beside a
-/// root-agnostic list of every imported work in the library. A member under no
-/// root belongs to no root, and asking for a root is asking for what is under
-/// it; [`only_clause`]'s `om.root_id = ?` is false for NULL, so the SQL says
-/// that without the handler having to.
+/// **A library narrowing leaves every imported work out of this, by that same
+/// rule rather than a new one.** An imported member's `root_id` is NULL, and the narrowed folder
+/// list is never empty ([`library_scope`]), so `IN (…)` excludes every
+/// imported work: an imported work is in no library, and asking for a library
+/// asks for what is in it.
 ///
 /// # Errors
 ///
@@ -960,23 +971,17 @@ pub fn unfiled(
     conn: &Connection,
     roots: &[i64],
     user_id: i64,
-    only: Option<i64>,
+    library: Option<i64>,
 ) -> Result<Vec<WorkCard>, String> {
-    // The narrowing rides in the predicate rather than in a parameter of its
-    // own: `works_of` binds `extra` in text order after its roots, and the
-    // predicate is the only fragment that sits between them and the end of
-    // the statement.
-    let narrowed = only_clause(only);
-    let mut extra: Vec<&dyn rusqlite::ToSql> = Vec::new();
-    if let Some(id) = only.as_ref() {
-        extra.push(id);
-    }
+    let Some(roots) = narrowed(conn, roots, library)? else {
+        return Ok(Vec::new());
+    };
     works_of(
         conn,
-        roots,
+        &roots,
         user_id,
-        &format!("w.series_id IS NULL{narrowed}"),
-        &extra,
+        "w.series_id IS NULL",
+        &[],
         "w.title COLLATE NOCASE, w.id",
     )
 }
@@ -1051,6 +1056,8 @@ fn escape_like(q: &str) -> String {
 /// reading it. Searching series alone leaves an imported work unfindable by its
 /// own title, which is spec C1 §5.4.
 ///
+/// `library` narrows the search as it narrows [`series`] and [`unfiled`].
+///
 /// # Errors
 ///
 /// Returns an error if a query fails.
@@ -1059,6 +1066,7 @@ pub fn search(
     roots: &[i64],
     user_id: i64,
     q: &str,
+    library: Option<i64>,
 ) -> Result<SearchResults, String> {
     let trimmed = q.trim();
     if trimmed.is_empty() {
@@ -1067,6 +1075,12 @@ pub fn search(
             unfiled: Vec::new(),
         });
     }
+    let Some(roots) = narrowed(conn, roots, library)? else {
+        return Ok(SearchResults {
+            series: Vec::new(),
+            unfiled: Vec::new(),
+        });
+    };
     let matcher = match_for(trimmed);
 
     let mut matched = matching_series(conn, &matcher, trimmed)?;
@@ -1076,14 +1090,14 @@ pub fn search(
     // queries, so a hit this caller may not see is dropped by exactly the same
     // code that decides every other screen — one filter, one place to read.
     let cap = usize::try_from(LIST_CAP).unwrap_or(usize::MAX);
-    let series_hits = series(conn, roots, user_id, None)?
+    let series_hits = series(conn, &roots, user_id, None)?
         .into_iter()
         .filter(|c| matched.contains(&c.id))
         .take(cap)
         .collect();
 
     let unfiled_ids = matching_unfiled_works(conn, &matcher, trimmed)?;
-    let unfiled_hits = unfiled(conn, roots, user_id, None)?
+    let unfiled_hits = unfiled(conn, &roots, user_id, None)?
         .into_iter()
         .filter(|w| unfiled_ids.contains(&w.id))
         .take(cap)
@@ -1192,7 +1206,7 @@ fn ids(conn: &Connection, sql: &str, needle: &str, doing: &str) -> Result<Vec<i6
 /// `continuing` is progress that is not finished, `read` is progress that is
 /// **and no sibling edition is still open** (see below), and `added` is the
 /// newest works — each capped at [`LIST_CAP`], each filtered by the same
-/// grant.
+/// grant, and each narrowed by `library` as [`series`] is.
 ///
 /// **Both orderings are `MAX(…)` over `progress`, not a scalar subquery.**
 /// Since migration 009 a reader holds a position per *edition* of a work, so
@@ -1220,7 +1234,20 @@ fn ids(conn: &Connection, sql: &str, needle: &str, doing: &str) -> Result<Vec<i6
 /// # Errors
 ///
 /// Returns an error if a query fails.
-pub fn home(conn: &Connection, roots: &[i64], user_id: i64) -> Result<Home, String> {
+pub fn home(
+    conn: &Connection,
+    roots: &[i64],
+    user_id: i64,
+    library: Option<i64>,
+) -> Result<Home, String> {
+    let Some(roots) = narrowed(conn, roots, library)? else {
+        return Ok(Home {
+            continuing: Vec::new(),
+            added: Vec::new(),
+            read: Vec::new(),
+        });
+    };
+    let roots = roots.as_slice();
     let continuing = works_of(
         conn,
         roots,
@@ -1428,7 +1455,7 @@ pub fn edition_visible(
 /// stays the right tool for a caller that already holds one slug —
 /// `get_sidecar` and `patch_alignments` need nothing else.
 ///
-/// This is [`root_clause`] alone — no `?root=`, no alignment, no
+/// This is [`root_clause`] alone — no library narrowing, no alignment, no
 /// `member_clause` — because the question is only "does this edition keep a
 /// member under one of these roots", which is the same question
 /// [`edition_visible`] answers one edition at a time. A work with zero
@@ -1471,11 +1498,35 @@ pub fn visible_editions(
     Ok(out)
 }
 
-/// One root, as §2's provisional `ROOTS` section lists it.
+/// The slugs of the works `work.library_id` files in `library`, which is the
+/// store's own answer to which library a work is in. A listing narrowed to a
+/// library reads its folders instead (see [`library_scope`]); this is for the
+/// one view that asks the column.
+///
+/// **It reads no grant**, so its caller intersects the answer with what
+/// [`visible_editions`] allows, as `opds::library_works_by_work` does.
+///
+/// # Errors
+///
+/// Returns an error if the query fails.
+pub fn filed_in(conn: &Connection, library: i64) -> Result<HashSet<String>, String> {
+    let mut stmt = prepare(conn, "SELECT slug FROM work WHERE library_id = ?")
+        .map_err(|e| format!("preparing the works filed in library {library}: {e}"))?;
+    stmt.query_map([library], |row| row.get::<_, String>(0))
+        .map_err(|e| format!("listing the works filed in library {library}: {e}"))?
+        .collect::<rusqlite::Result<HashSet<String>>>()
+        .map_err(|e| format!("reading the works filed in library {library}: {e}"))
+}
+
+/// One library as the sidebar lists it.
+///
+/// `scanned` is whether any of its folders has been walked, so a library page
+/// with nothing in it can say "not read yet" rather than "nothing here".
 #[derive(Debug, Clone, PartialEq)]
-pub struct RootCard {
+pub struct LibraryEntry {
     pub id: i64,
     pub name: String,
+    pub scanned: bool,
 }
 
 /// What a first-run screen needs to know, and the only thing that can tell it.
@@ -1483,76 +1534,52 @@ pub struct RootCard {
 /// **Spec C1 §5.5.** `/api/library/series` answers `{ series: [], unfiled: [] }`
 /// for "no roots configured" and for "roots configured, scan not yet run"
 /// alike, and §8 wants those to be different screens: the difference between
-/// "you have no library" and "your library has not been read yet".
+/// "you have no library" and "your library has not been read yet". The answer
+/// is per library: each entry says whether that library has been read.
 ///
-/// Read-only, with no writer and no screen of its own. C4 still builds roots
-/// administration.
+/// Read-only, with no writer and no screen of its own.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Status {
-    pub roots: Vec<RootCard>,
-    pub scanned: bool,
+    pub libraries: Vec<LibraryEntry>,
 }
 
-/// The last component of a path, or the whole thing if it has none.
-fn last_component(path: &str) -> String {
-    std::path::Path::new(path)
-        .file_name()
-        .map_or_else(|| path.to_string(), |n| n.to_string_lossy().into_owned())
-}
-
-/// Label each root, falling back to the whole path where two would collide.
+/// The libraries this caller may see, each with whether it has been scanned,
+/// ordered by name (`COLLATE NOCASE`) and then by id.
 ///
-/// A nav item reading `Manga` twice is worse than one reading
-/// `/media/a/Manga`, and a non-admin reader has no business being handed the
-/// server's filesystem layout to render a sidebar that does not collide.
-fn named(rows: Vec<(i64, String)>) -> Vec<RootCard> {
-    let mut counts: HashMap<String, usize> = HashMap::new();
-    for (_, path) in &rows {
-        *counts.entry(last_component(path)).or_default() += 1;
-    }
-    rows.into_iter()
-        .map(|(id, path)| {
-            let short = last_component(&path);
-            let name = if counts.get(&short).copied().unwrap_or(0) > 1 {
-                path
-            } else {
-                short
-            };
-            RootCard { id, name }
-        })
-        .collect()
-}
-
-/// The roots this caller may see, and whether anything has been scanned.
+/// A library is listed when one of its folders is in `roots`, or, for an
+/// empty grant, when it has a folder at all.
 ///
 /// # Errors
 ///
-/// Returns an error if either query fails.
+/// Returns an error if the query fails.
 pub fn status(conn: &Connection, roots: &[i64]) -> Result<Status, String> {
-    let clause = if roots.is_empty() {
+    let granted = if roots.is_empty() {
         String::new()
     } else {
-        format!(" WHERE id IN ({})", holes(roots.len()))
+        format!(" AND r.id IN ({})", holes(roots.len()))
     };
-    let sql = format!("SELECT id, path FROM root{clause} ORDER BY path");
-    let mut stmt = prepare(conn, &sql).map_err(|e| format!("preparing the root listing: {e}"))?;
-    let rows = stmt
+    let sql = format!(
+        "SELECT l.id, l.name,
+                EXISTS (SELECT 1 FROM dir_state d JOIN root dr ON dr.id = d.root_id
+                         WHERE dr.library_id = l.id)
+           FROM library l
+          WHERE EXISTS (SELECT 1 FROM root r WHERE r.library_id = l.id{granted})
+          ORDER BY l.name COLLATE NOCASE, l.id"
+    );
+    let mut stmt =
+        prepare(conn, &sql).map_err(|e| format!("preparing the library listing: {e}"))?;
+    let libraries = stmt
         .query_map(params_from_iter(roots), |row| {
-            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            Ok(LibraryEntry {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                scanned: row.get(2)?,
+            })
         })
-        .map_err(|e| format!("listing roots: {e}"))?
-        .collect::<rusqlite::Result<Vec<(i64, String)>>>()
-        .map_err(|e| format!("reading roots: {e}"))?;
-
-    let scanned: bool = query_row(conn, "SELECT EXISTS (SELECT 1 FROM dir_state)", [], |row| {
-        row.get(0)
-    })
-    .map_err(|e| format!("reading whether a scan has run: {e}"))?;
-
-    Ok(Status {
-        roots: named(rows),
-        scanned,
-    })
+        .map_err(|e| format!("listing libraries: {e}"))?
+        .collect::<rusqlite::Result<Vec<LibraryEntry>>>()
+        .map_err(|e| format!("reading libraries: {e}"))?;
+    Ok(Status { libraries })
 }
 
 #[cfg(test)]

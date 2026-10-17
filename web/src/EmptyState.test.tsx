@@ -3,15 +3,34 @@ import { EmptyState } from './EmptyState'
 import { mount } from './testing/mount'
 
 describe('the empty states', () => {
-  it('tells a new deployment how to add a root and what a scan will do', () => {
-    const host = mount(<EmptyState kind="no-roots" />)
-    expect(host.textContent).toContain('library scan --add')
+  it('tells a new deployment where a library is made, and what a scan will do', () => {
+    const host = mount(<EmptyState kind="no-libraries" />)
+    expect(host.querySelector('h2')?.textContent).toBe('No library yet')
+    expect(host.textContent).toContain('Configuration → Libraries')
+    expect(host.textContent).toContain(
+      'taiyaku library scan --add /path/to/manga --library Manga',
+    )
+    expect(host.textContent).toContain('without writing anything back')
   })
 
-  it('says a configured library has not been read yet, which is not the same thing', () => {
+  it('says a library with folders has not been read yet, which is not the same thing', () => {
     const host = mount(<EmptyState kind="not-scanned" />)
-    expect(host.textContent).toContain('library scan')
+    expect(host.querySelector('h2')?.textContent).toBe('Not read yet')
+    expect(host.textContent).toContain(
+      'This library has folders, and nothing has scanned them.',
+    )
+    expect(host.textContent).toContain(
+      'Scan library, on Configuration → Libraries, reads them',
+    )
+    expect(host.querySelector('pre')?.textContent).toBe('taiyaku library scan')
     expect(host.textContent).not.toContain('--add')
+  })
+
+  it('says a library it cannot show is no library here, and offers no scan', () => {
+    const host = mount(<EmptyState kind="no-library" />)
+    expect(host.querySelector('h2')?.textContent).toBe('No such library')
+    expect(host.textContent).toContain('this account may not see it')
+    expect(host.textContent).not.toContain('library scan')
   })
 
   it('names what was searched, since FTS5 on CJK can match nothing surprisingly', () => {
@@ -42,7 +61,7 @@ describe('the empty states', () => {
   })
 
   it('separates a cleared inbox from one whose weak proposals are hidden', () => {
-    // The same split `no-roots` and `not-scanned` are drawn on: the person
+    // The same split `no-libraries` and `not-scanned` are drawn on: the person
     // can act on exactly one of the two, and the acts are different. A
     // shared message would send somebody to a scan when the proposal they
     // want is already raised and merely below the threshold.
@@ -101,7 +120,8 @@ describe('the empty states', () => {
 
   it('renders something for every kind — none of them is a null return', () => {
     for (const kind of [
-      'no-roots',
+      'no-libraries',
+      'no-library',
       'not-scanned',
       'no-matches',
       'inbox-clear',

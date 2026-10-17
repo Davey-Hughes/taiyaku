@@ -8,8 +8,8 @@
 -- split and says why. Each library takes its root's id, so `root.library_id`
 -- is `root.id` and `user_root`'s rows move across unchanged.
 --
--- **A library is named by `browse::status`'s rule, stripped of spaces**: the
--- folder's last path component, or the whole path where two roots share one.
+-- **A library is named after its folder, stripped of spaces**: the folder's
+-- last path component, or the whole path where two roots share one.
 -- `rtrim(path, <every character of the path except '/'>)` leaves the path up to
 -- and including its last '/', and what follows is the component. Names go
 -- through the one-argument `trim`, which strips spaces from both ends and

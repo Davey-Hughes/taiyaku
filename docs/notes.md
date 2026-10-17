@@ -26017,3 +26017,136 @@ in the source (`test-before-fix-55eaac53.log`). The `node` project went from
 - The reader's panels and its note editor, which were not opened.
 
 The evidence is in `.superpowers/sdd/o218-evidence/`.
+
+## Libraries, F3 (2026-10-17)
+
+The branch `libraries-browse` builds F3, browsing by library
+(`docs/superpowers/plans/2026-10-17-libraries-f3-browse.md`): the sidebar
+lists the libraries an account may read, each library has a page of its own,
+search narrows to one, and OPDS lists them. This section records what was
+decided, what was built and what was measured. The logs it cites are in
+`.superpowers/sdd/libraries-browse-evidence/`, which is not committed.
+
+**Decided by the user, 2026-10-17**, on three of the plan's four spec
+corrections:
+
+- **OPDS narrows by folders by default, and a second view lists each library
+  by `work.library_id`** ("can we do by folder by default but also export an
+  opds thing that shows by work.library_id separately?"). The spec had the
+  library feed read `work.library_id`; the grid, search and home narrow by
+  folders, and the two disagree for a work that keeps an edition under
+  another library's folder (O191's shape).
+- **A status entry carries `scanned`, per library**, where the spec had a
+  folder count, and the top-level `scanned` goes: it was true when anything
+  at all had been scanned, so for a restricted account it reported on
+  libraries the account cannot see.
+- **Search has a "Search in" select**, drawn where the account can see two
+  or more libraries, kept in the URL as `?library=`.
+
+The third, that the library feeds are navigation feeds, as
+`/opds/v1.2/works` is, and that a library outside the grant answers 404 as
+one that does not exist does, was not put to the user separately; both views
+behave so.
+
+**What a narrowing is.** `browse::library_scope` answers the folders of a
+library that the caller's grant allows, with the library's name, or `None`
+where there are none: the library is outside the grant, holds no folder, or
+does not exist. A listing narrowed to a library (`series`, `unfiled`,
+`search`, `home`, each taking `library: Option<i64>`) reads those folders in
+place of the grant, so the narrowing is the grant's own SQL pointed at fewer
+folders, and a library's page lists what an account granted only that
+library sees. `None` is answered as nothing found, and never handed on as an
+empty list, which every function in `browse` reads as no restriction at all.
+The single-folder `?root=` narrowing it replaces (`only_clause`, and `only`
+through `pair_clause`) is deleted, so no parameter group interleaves with
+the folder list any more. Before the plan was written, a throwaway test built
+two libraries and called the old `series`, `home` and `search` with each
+library's folder ids as the grant: one library answered its one series with
+both its folders' editions, the other its two series, and the same title
+made a series in each (`plan-probe-15e03a9d.log`).
+
+**The routes.** `/api/library/series`, `/home` and `/search` take
+`?library=`. `/api/library/series?root=` answers 400, naming `library`.
+`/api/library/status` answers
+`{"libraries":[{"id","name","scanned"}]}`, listed by name (`COLLATE NOCASE`).
+OPDS adds `/opds/v1.2/libraries` and `/opds/v1.2/libraries/{library}/works`
+(by folder), and `/opds/v1.2/libraries/by-work` and
+`/opds/v1.2/libraries/{library}/works/by-work` (by `work.library_id`, with
+every edition the grant allows); the flat `/opds/v1.2/works` is unchanged.
+
+**The web app.** The sidebar lists the libraries for every account, each
+linking to `/?library=N`, and marks the one on screen; the `showRoots`
+preference is gone. A library's page narrows the grid and the continue
+strip, is titled with the library's name, and says "Not read yet" for a
+library none of whose folders has been walked and "No such library" for an
+id the status does not list. The sidebar is read again when
+Configuration → Libraries reads its list. Once the status has been read,
+search narrows only to a library the "Search in" select can show.
+
+**What the task reviews found.** A library id and a folder id are both
+`i64`, and on a store whose libraries each got one folder in turn, as
+migration 15 makes them, library N holds folder N: a test built that way
+passes against a query that reads one as the other. Task 1's review found
+two such tests; they, and Task 2's fixtures, number their libraries apart
+from their folders. Search's
+review found the screen naming one scope while searching another: a
+`?library=` the status does not list narrowed the search while the select
+read "Every library".
+
+**What the whole-branch reviews found.** The Rust half's reviewer ran the
+boundary from outside, sending unknown, ungranted, negative and zero
+library ids, folder ids as library ids, and a library with no folder to the
+browse routes and the OPDS views (not every value to every route): each
+answered 404 or an empty list, and an id past `i64` answered 400
+(`review-rust/probe1.log`). It
+found one gap: no server test pinned `scanned: true`, so a handler that
+always answered `false` passed every test; one does now. The web half's
+reviewer found that switching library left the old library's grid and
+continue strip on screen under the new library's name until the new load
+landed, and for good if it failed: the page now draws only what was loaded
+for the library it is asked for. `?library=` was read three ways (the
+library page as a number, the sidebar as text, search against the status);
+one parser now reads it for all three, and only a whole number with no
+leading zero names a library. Two smaller ones: nothing held the order of
+two status reads, and a failed read of Configuration → Libraries' list did
+not re-read the status. **Left as they are:** the "Not read yet" words on the
+page of every library, which speak of one library; the two `h2` headings
+"Libraries" on Configuration → Libraries, one in the sidebar; a status that
+goes stale outside Configuration → Libraries until the next read (a scan
+that finishes while the person is elsewhere), and a failed read of it, which
+stays on every screen until a read succeeds; and, for an account with no
+grant limits, a library's by-folder feed counting a divided work's editions
+under its folders while the work's own feed lists them all (O191's row).
+
+**On real material** (`drive.log`), with the build of `513d0b09`, before
+the whole-branch reviews' fixes: a copy of the test library's store,
+migrated, with its one folder as the library `Volumes`, and two libraries
+made on the copy from four volumes copied out of the real one: `Ecchi`, of
+two folders, scanned, and `Chapters`, of one, not scanned. As the
+administrator, the grid answered 134 series for `Volumes`, 2 for `Ecchi`
+(its own `Asobi Asobase` and `Akane-banashi`, apart from `Volumes`' series
+of those titles), none for `Chapters` or for a library that does not exist,
+and 136 unnarrowed; `?root=1` answered 400. An account granted `Ecchi` alone
+was shown `Ecchi` alone in the status, the grid, search and both OPDS views,
+and `Volumes`' id answered 404 as a missing one does. The two OPDS views
+listed the same works for each library (1896, 3 and 0, against 1899 in the
+flat feed), since every work on the copy is filed where its folders are. In
+a browser, removing `Chapters` took it out of the sidebar without a reload,
+and its page then read "No such library".
+
+**The user's try**, the same day, on that server: the sidebar, the empty
+states, search, the restricted account, and a library made and removed
+under the sidebar. They found Configuration → Libraries confusing,
+cluttered and long (O219), and asked that a library an
+account can see be removable even where it is the account's last (O220).
+
+**Counts against `main`:** Rust 2704 → 2720 tests; `web/` 1,525 → 1,529 in
+the `node` project, 1,679 → 1,713 in `jsdom`, and 327 → 331 in the browser
+project. The mutation sweep over the Rust the branch changed, at
+`38c7d2d9`, made 56 mutants: 40 caught, 16 unviable, none missed; `search`,
+`home` and `status` in `browse` had no viable mutant, and their evidence is
+the hand defects the tasks put back and watched fail.
+
+**Not measured:** the NAS; an OPDS client showing the Libraries level, which
+§13 of the spec names; a store whose `work.library_id` disagrees with its
+folders on real material.

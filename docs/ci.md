@@ -42,11 +42,11 @@ until it was written `[`fn@derive`]`.
 **`-D warnings` here would be wrong and would not survive.** The other rustdoc
 lint that fires in this workspace is `private_intra_doc_links`, and linking a
 public item's doc to the private helper it delegates to is this codebase's own
-convention: `browse::unfiled` names `only_clause`, `home` names `LIST_CAP`,
-`search` names `TRIGRAM_MIN`. There were **79** of those against the **4**
-genuine link errors when this was added, so denying warnings wholesale would
-have failed on the first run and been deleted by the end of the week. One rule,
-denied precisely.
+convention: `browse::missing_by_edition` names `member_clause`, `home` names
+`LIST_CAP`, `search` names `TRIGRAM_MIN`. There were **79** of those against
+the **4** genuine link errors when this was added, so denying warnings
+wholesale would have failed on the first run and been deleted by the end of the
+week. One rule, denied precisely.
 
 **It is cheap because `--no-deps` is doing the work**: documenting the
 workspace's own crates and nothing they depend on.

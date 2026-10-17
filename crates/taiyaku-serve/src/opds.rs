@@ -121,9 +121,191 @@ async fn catalog() -> Response {
     <content type="text">Every work this server holds, with its editions</content>
     <link rel="subsection" type="{ATOM};kind=navigation" href="/opds/v1.2/works"/>
   </entry>
+  <entry>
+    <id>taiyaku:libraries</id>
+    <title>Libraries</title>
+    <updated>1970-01-01T00:00:00Z</updated>
+    <content type="text">Each library, with the works under its folders</content>
+    <link rel="subsection" type="{ATOM};kind=navigation" href="/opds/v1.2/libraries"/>
+  </entry>
+  <entry>
+    <id>taiyaku:libraries:by-work</id>
+    <title>Libraries (by work)</title>
+    <updated>1970-01-01T00:00:00Z</updated>
+    <content type="text">Each library, with the works filed in it</content>
+    <link rel="subsection" type="{ATOM};kind=navigation" href="/opds/v1.2/libraries/by-work"/>
+  </entry>
 </feed>
 "#
     ))
+}
+
+/// The grant of the request, `[]` (no restriction) where no principal was
+/// put on it — this file's own tests build requests with none, and
+/// `routes::on_the_grant` reads that the same way.
+fn granted(extensions: &axum::http::Extensions) -> Vec<i64> {
+    extensions
+        .get::<crate::auth::Principal>()
+        .map(|p| p.roots.clone())
+        .unwrap_or_default()
+}
+
+/// Which of the two library views a feed belongs to.
+#[derive(Clone, Copy)]
+enum View {
+    /// A library's works are those with an edition under its folders.
+    Folders,
+    /// A library's works are those `work.library_id` files in it.
+    Filed,
+}
+
+/// The navigation feed of `libraries`, each entry linking to that library's
+/// works in `view`. A library's name is escaped wherever it is written.
+fn libraries_body(libraries: &[taiyaku_library::browse::LibraryEntry], view: View) -> String {
+    // The feed's id, its title, the words before a library's name in an
+    // entry, and what follows the library's own id and link in that view.
+    let (feed_id, title, content, suffix, href_suffix) = match view {
+        View::Folders => ("taiyaku:libraries", "Libraries", "The works in", "", ""),
+        View::Filed => (
+            "taiyaku:libraries:by-work",
+            "Libraries (by work)",
+            "The works filed in",
+            ":by-work",
+            "/by-work",
+        ),
+    };
+    let mut entries = String::new();
+    for library in libraries {
+        let id = library.id;
+        let name = escape(&library.name);
+        let _ = writeln!(
+            entries,
+            r#"  <entry>
+    <id>taiyaku:library:{id}{suffix}</id>
+    <title>{name}</title>
+    <updated>1970-01-01T00:00:00Z</updated>
+    <content type="text">{content} {name}</content>
+    <link rel="subsection" type="{ATOM};kind=navigation" href="/opds/v1.2/libraries/{id}/works{href_suffix}"/>
+  </entry>"#
+        );
+    }
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xmlns:opds="http://opds-spec.org/2010/catalog">
+  <id>{feed_id}</id>
+  <title>{title}</title>
+  <updated>1970-01-01T00:00:00Z</updated>
+  {AUTHOR}
+  <link rel="self"  type="{ATOM};kind=navigation" href="/opds/v1.2/libraries{href_suffix}"/>
+  <link rel="start" type="{ATOM};kind=navigation" href="/opds/v1.2/catalog"/>
+{entries}</feed>
+"#
+    )
+}
+
+/// Every library this caller may read, each linking to its works.
+pub(crate) async fn libraries(
+    State(state): State<Arc<ServeState>>,
+    extensions: axum::http::Extensions,
+) -> Response {
+    libraries_in(state, &extensions, View::Folders).await
+}
+
+/// Every library this caller may read, each linking to the works filed in it.
+pub(crate) async fn libraries_by_work(
+    State(state): State<Arc<ServeState>>,
+    extensions: axum::http::Extensions,
+) -> Response {
+    libraries_in(state, &extensions, View::Filed).await
+}
+
+/// The feed of libraries both views write, asked of `browse::status` on the
+/// blocking pool.
+async fn libraries_in(
+    state: Arc<ServeState>,
+    extensions: &axum::http::Extensions,
+    view: View,
+) -> Response {
+    let roots = granted(extensions);
+    crate::library_api::on_the_library(state, "the libraries", move |conn| {
+        match taiyaku_library::browse::status(conn, &roots) {
+            Ok(status) => feed(libraries_body(&status.libraries, view)),
+            Err(why) => crate::library_api::failed("the libraries", &why),
+        }
+    })
+    .await
+}
+
+/// One library's works, as `works` lists every work: the works with an
+/// edition under the library's folders, each counted by the editions there.
+///
+/// A library outside the grant answers 404 in the words one that does not
+/// exist does; `library_scope` answers `None` for both.
+pub(crate) async fn library_works(
+    State(state): State<Arc<ServeState>>,
+    AxPath(library): AxPath<i64>,
+    extensions: axum::http::Extensions,
+) -> Response {
+    let roots = granted(&extensions);
+    let feed_state = Arc::clone(&state);
+    crate::library_api::on_the_library(state, "the library's works", move |conn| {
+        let scope = match taiyaku_library::browse::library_scope(conn, &roots, library) {
+            Ok(Some(scope)) => scope,
+            Ok(None) => return missing(format!("no library {library}")),
+            Err(why) => return crate::library_api::failed("the library's works", &why),
+        };
+        match taiyaku_library::browse::visible_editions(conn, &scope.folders) {
+            Ok(visible) => works_feed(
+                &feed_state,
+                Some(&visible),
+                &format!("taiyaku:library:{library}:works"),
+                &escape(&scope.name),
+                &format!("/opds/v1.2/libraries/{library}/works"),
+            ),
+            Err(why) => crate::library_api::failed("the library's works", &why),
+        }
+    })
+    .await
+}
+
+/// One library's works as the store files them: `work.library_id`, with
+/// every edition the grant allows, wherever its files are.
+///
+/// `visible_editions(conn, &[])` answers every edition of every work, which
+/// is what an unrestricted caller is owed here. A library outside the grant
+/// answers 404 as [`library_works`] does.
+pub(crate) async fn library_works_by_work(
+    State(state): State<Arc<ServeState>>,
+    AxPath(library): AxPath<i64>,
+    extensions: axum::http::Extensions,
+) -> Response {
+    let roots = granted(&extensions);
+    let feed_state = Arc::clone(&state);
+    crate::library_api::on_the_library(state, "the library's filed works", move |conn| {
+        let scope = match taiyaku_library::browse::library_scope(conn, &roots, library) {
+            Ok(Some(scope)) => scope,
+            Ok(None) => return missing(format!("no library {library}")),
+            Err(why) => return crate::library_api::failed("the library's filed works", &why),
+        };
+        let filed = match taiyaku_library::browse::filed_in(conn, library) {
+            Ok(filed) => filed,
+            Err(why) => return crate::library_api::failed("the library's filed works", &why),
+        };
+        match taiyaku_library::browse::visible_editions(conn, &roots) {
+            Ok(mut visible) => {
+                visible.retain(|slug, _| filed.contains(slug));
+                works_feed(
+                    &feed_state,
+                    Some(&visible),
+                    &format!("taiyaku:library:{library}:works:by-work"),
+                    &format!("{} (by work)", escape(&scope.name)),
+                    &format!("/opds/v1.2/libraries/{library}/works/by-work"),
+                )
+            }
+            Err(why) => crate::library_api::failed("the library's filed works", &why),
+        }
+    })
+    .await
 }
 
 /// The visible editions a restricted principal's grant admits, keyed by
@@ -180,8 +362,8 @@ async fn visible_editions_by_work(
 /// rather than one series — so `browse::visible_editions` (the same bulk
 /// query `routes::list_works` already uses for the identical `/api/works`
 /// question) answers every work's visible edition set in one round trip, in
-/// [`visible_editions_by_work`] above, and this loop only ever does a
-/// `HashMap` lookup per work.
+/// [`visible_editions_by_work`] above, and [`works_feed`]'s loop only ever
+/// does a `HashMap` lookup per work.
 pub(crate) async fn works(
     State(state): State<Arc<ServeState>>,
     extensions: axum::http::Extensions,
@@ -190,12 +372,38 @@ pub(crate) async fn works(
         Ok(visible) => visible,
         Err(refusal) => return refusal,
     };
+    works_feed(
+        &state,
+        visible.as_ref(),
+        "taiyaku:works",
+        "Works",
+        "/opds/v1.2/works",
+    )
+}
+
+/// The feed `/opds/v1.2/works` writes, over `visible` (`None`: every edition
+/// of every work), under the feed id, title and self link given. `id` and
+/// `title` are written as given, so a caller escapes them.
+///
+/// It reads the registry and each work's document, and no library, so a
+/// caller already on the blocking pool with the library's connection held
+/// may call it there.
+fn works_feed(
+    state: &ServeState,
+    visible: Option<&HashMap<String, HashSet<String>>>,
+    id: &str,
+    title: &str,
+    href: &str,
+) -> Response {
+    // Named apart from the `id` and `title` each entry below writes.
+    let feed_id = id;
+    let feed_title = title;
     let mut entries = String::new();
     for work in state.works.snapshot().iter() {
         // A work absent from `visible`'s keys has no edition inside the
         // grant at all — `visible_editions`'s own contract — so it is
         // skipped entirely rather than named with a count of zero.
-        let editions = match &visible {
+        let editions = match visible {
             None => None,
             Some(map) => match map.get(&work.id) {
                 Some(keys) => Some(keys),
@@ -224,11 +432,11 @@ pub(crate) async fn works(
     feed(format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <feed xmlns="http://www.w3.org/2005/Atom" xmlns:opds="http://opds-spec.org/2010/catalog">
-  <id>taiyaku:works</id>
-  <title>Works</title>
+  <id>{feed_id}</id>
+  <title>{feed_title}</title>
   <updated>1970-01-01T00:00:00Z</updated>
   {AUTHOR}
-  <link rel="self"  type="{ATOM};kind=navigation" href="/opds/v1.2/works"/>
+  <link rel="self"  type="{ATOM};kind=navigation" href="{href}"/>
   <link rel="start" type="{ATOM};kind=navigation" href="/opds/v1.2/catalog"/>
 {entries}</feed>
 "#
@@ -655,7 +863,7 @@ pub(crate) async fn cover(
 /// an anonymous request, and it drives that off the same list `build_router`
 /// folds — so a route added here arrives guarded and covered on the commit that
 /// adds it, which a reviewer's checklist cannot promise. Returning a `Router`
-/// hid these five paths from that walk, and OPDS is the half of the surface
+/// hid these paths from that walk, and OPDS is the half of the surface
 /// reachable from outside the house.
 pub fn routes() -> Vec<(&'static str, axum::routing::MethodRouter<Arc<ServeState>>)> {
     vec![
@@ -684,6 +892,13 @@ pub fn routes() -> Vec<(&'static str, axum::routing::MethodRouter<Arc<ServeState
         (
             "/opds/v1.2/works/{work}/{edition}/download",
             get(crate::download::edition),
+        ),
+        ("/opds/v1.2/libraries", get(libraries)),
+        ("/opds/v1.2/libraries/{library}/works", get(library_works)),
+        ("/opds/v1.2/libraries/by-work", get(libraries_by_work)),
+        (
+            "/opds/v1.2/libraries/{library}/works/by-work",
+            get(library_works_by_work),
         ),
     ]
 }

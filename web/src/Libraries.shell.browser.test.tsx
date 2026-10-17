@@ -108,8 +108,7 @@ const who = {
 beforeEach(() => {
   vi.clearAllMocks()
   vi.mocked(library.status).mockResolvedValue({
-    roots: [{ id: 1, name: 'Volumes' }],
-    scanned: true,
+    libraries: [{ id: 1, name: 'Volumes', scanned: true }],
   })
   vi.mocked(curation.listProposals).mockResolvedValue({
     proposals: [],
@@ -523,6 +522,114 @@ describe('the Libraries screen in the real Shell', () => {
       expectInSight(alert as Element)
     })
   }
+
+  /**
+   * O200: the sidebar lists the libraries `/api/library/status` answers,
+   * which the shell reads when it mounts. Both reads here answer what the
+   * store holds, and the store has the library only once the form has made
+   * it, so the sidebar can learn of it only by asking again.
+   */
+  it('lists a library the form makes in the sidebar, with no reload', async () => {
+    const MADE: librariesApi.Library = {
+      id: 3,
+      name: 'Manga',
+      works: 0,
+      books: 0,
+      folders: [folder(9, '/srv/manga')],
+    }
+    let made = false
+    vi.mocked(librariesApi.createLibrary).mockImplementation(async () => {
+      made = true
+      return { library: MADE, added: [] }
+    })
+    vi.mocked(librariesApi.listLibraries).mockImplementation(async () => ({
+      libraries: made ? [MADE] : [],
+    }))
+    vi.mocked(library.status).mockImplementation(async () => ({
+      libraries: made ? [{ id: 3, name: 'Manga', scanned: false }] : [],
+    }))
+    const host = await shell(1280, 800)
+    expect(vi.mocked(library.status)).toHaveBeenCalled()
+    expect(host.querySelector('.sidebar-libraries')).toBeNull()
+
+    const form = host.querySelector('form.add-library') as HTMLFormElement
+    await fill(
+      form.querySelector('input[name="library-name"]') as Element,
+      'Manga',
+    )
+    await fill(
+      form.querySelector('input[name="path"]') as Element,
+      '/srv/manga',
+    )
+    await click(form.querySelector('button[name="pick"]') as Element)
+    await click(form.querySelector('button[type="submit"]') as Element)
+    await settle(200)
+
+    const links = [
+      ...host.querySelectorAll<HTMLAnchorElement>('.sidebar-libraries a'),
+    ]
+    expect(links.map((a) => a.textContent)).toEqual(['Manga'])
+    expect(links[0]?.getAttribute('href')).toBe('/?library=3')
+  })
+
+  /** The same, for a removal: the removed library leaves the sidebar. */
+  it('drops a removed library from the sidebar, with no reload', async () => {
+    // The store holds Manga until the removal is confirmed.
+    const removed = () =>
+      vi.mocked(librariesApi.removeLibrary).mock.calls.length > 0
+    vi.mocked(librariesApi.listLibraries).mockImplementation(async () => ({
+      libraries: removed() ? [NOVELS] : [NOVELS, MANGA],
+    }))
+    vi.mocked(library.status).mockImplementation(async () => ({
+      libraries: [
+        { id: 2, name: 'Light novels', scanned: true },
+        ...(removed() ? [] : [{ id: 1, name: 'Manga', scanned: true }]),
+      ],
+    }))
+    const host = await shell(1280, 800)
+    const names = () =>
+      [...host.querySelectorAll('.sidebar-libraries a')].map(
+        (a) => a.textContent,
+      )
+    expect(names()).toEqual(['Light novels', 'Manga'])
+
+    await removeManga(host)
+
+    expect(card(host, 'Manga')).toBeUndefined()
+    expect(names()).toEqual(['Light novels'])
+  })
+
+  /**
+   * The same, when the list cannot be read again after the removal: the
+   * library is gone all the same, so the sidebar still asks.
+   */
+  it('drops a removed library from the sidebar when the list cannot be read again', async () => {
+    const removed = () =>
+      vi.mocked(librariesApi.removeLibrary).mock.calls.length > 0
+    vi.mocked(librariesApi.listLibraries).mockImplementation(async () => {
+      if (removed()) throw STORE_LOCKED
+      return { libraries: [NOVELS, MANGA] }
+    })
+    vi.mocked(library.status).mockImplementation(async () => ({
+      libraries: [
+        { id: 2, name: 'Light novels', scanned: true },
+        ...(removed() ? [] : [{ id: 1, name: 'Manga', scanned: true }]),
+      ],
+    }))
+    const host = await shell(1280, 800)
+    const names = () =>
+      [...host.querySelectorAll('.sidebar-libraries a')].map(
+        (a) => a.textContent,
+      )
+    expect(names()).toEqual(['Light novels', 'Manga'])
+
+    await removeManga(host)
+
+    expect(
+      host.querySelector('.libraries > [role="alert"]')?.textContent,
+    ).toContain('the store is locked')
+    expect(names()).toEqual(['Light novels'])
+  })
 
   it('brings a failure into view again when the same sentence answers a second reload', async () => {
     vi.mocked(librariesApi.renameLibrary).mockResolvedValue({

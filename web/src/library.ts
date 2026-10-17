@@ -104,24 +104,52 @@ export interface HomeLists {
   read: WorkCard[]
 }
 
-export interface RootCard {
+/**
+ * One library, as `/api/library/status` lists it — spec F §3. `scanned` says
+ * whether any of its folders has been walked, so a library's page with
+ * nothing on it can say "not read yet" rather than "nothing here".
+ */
+export interface LibraryEntry {
   id: number
   name: string
-}
-
-export interface LibraryStatus {
-  roots: RootCard[]
   scanned: boolean
 }
 
-export const home = () => getJson<HomeLists>('/api/library/home')
+export interface LibraryStatus {
+  libraries: LibraryEntry[]
+}
 
-export const grid = (root?: number) =>
-  getJson<Grid>(
-    root === undefined
-      ? '/api/library/series'
-      : `/api/library/series?root=${root}`,
-  )
+/**
+ * The library a `?library=` value names: `undefined` where there is no
+ * value, and `'invalid'` where the value is no library id.
+ *
+ * **Every screen that reads the parameter reads it through this**, the
+ * library page, the sidebar's mark and Search's narrowing alike, so that no
+ * two of them take one URL to mean different things: the library page once
+ * read the value with `Number` while the sidebar compared its text, so `01`
+ * was library 1 on the page and no library in the sidebar. An id is a
+ * positive decimal integer with no leading zero, the form the sidebar's
+ * links write; `Number` would read `01` as 1, an empty value as 0 and `abc`
+ * as `NaN`.
+ */
+export function libraryParam(
+  raw: string | null,
+): number | undefined | 'invalid' {
+  if (raw === null) return undefined
+  return /^[1-9]\d*$/.test(raw) ? Number(raw) : 'invalid'
+}
+
+/** `path` narrowed to one library, or as it is for every library. */
+const narrowedTo = (path: string, library?: number) =>
+  library === undefined
+    ? path
+    : `${path}${path.includes('?') ? '&' : '?'}library=${library}`
+
+export const home = (library?: number) =>
+  getJson<HomeLists>(narrowedTo('/api/library/home', library))
+
+export const grid = (library?: number) =>
+  getJson<Grid>(narrowedTo('/api/library/series', library))
 
 export const oneSeries = (id: number) =>
   getJson<{ series: SeriesDetail; works: WorkCard[] }>(
@@ -188,8 +216,10 @@ export const editionDownload = (slug: string, edition: string) =>
 export const work = (slug: string) =>
   getJson<WorkDetail>(`/api/library/works/${encodeURIComponent(slug)}`)
 
-export const search = (q: string) =>
-  getJson<SearchHits>(`/api/library/search?q=${encodeURIComponent(q)}`)
+export const search = (q: string, library?: number) =>
+  getJson<SearchHits>(
+    narrowedTo(`/api/library/search?q=${encodeURIComponent(q)}`, library),
+  )
 
 export const status = () => getJson<LibraryStatus>('/api/library/status')
 

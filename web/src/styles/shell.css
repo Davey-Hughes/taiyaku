@@ -73,7 +73,7 @@
   gap: 0.5rem;
 }
 
-/* The section headings — Roots, Library, Theme — in the title face with a
+/* The section headings — Libraries, Library, Theme — in the title face with a
  * hairline running to the column's edge, as the mockup the user chose drew
  * them (spec 2026-09-17 §7.1). `--muted` rather than the `opacity: 0.65` they
  * had: a token has a floor `index.css.test.ts` checks, and an opacity has
@@ -97,7 +97,7 @@
   background: var(--line);
 }
 
-.sidebar-roots {
+.sidebar-libraries {
   list-style: none;
   margin: 0;
   padding: 0;
@@ -107,7 +107,7 @@
 }
 
 /* Navigation in the text colour, and the screen you are on in the accent —
- * `NavLink` marks it `aria-current="page"` (`Sidebar.tsx`). */
+ * `Sidebar.tsx` marks it `aria-current="page"`. */
 .sidebar a {
   color: var(--text);
   text-decoration: none;
@@ -418,7 +418,7 @@
 /* 44 px rows for a finger (spec 2026-09-17 §7.1). */
 @media (pointer: coarse) {
   .sidebar-primary a,
-  .sidebar-roots a {
+  .sidebar-libraries a {
     display: flex;
     align-items: center;
     min-height: 44px;

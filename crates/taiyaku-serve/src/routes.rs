@@ -2862,7 +2862,7 @@ pub(crate) fn grant_postures() -> Vec<(&'static str, GrantPosture)> {
         (
             "/opds/v1.2/catalog",
             GrantIndependent {
-                reason: "one static navigation entry naming no work at all",
+                reason: "static navigation entries naming no work and no library",
             },
         ),
         ("/opds/v1.2/works", Filters),
@@ -2882,6 +2882,19 @@ pub(crate) fn grant_postures() -> Vec<(&'static str, GrantPosture)> {
         // against both a wholly-hidden work and one split across roots with
         // no further work here.
         ("/opds/v1.2/works/{work}/{edition}/download", Refuses),
+        ("/opds/v1.2/libraries", Filters),
+        // A library outside the grant answers 404, as one that does not exist
+        // does, and a granted library's works are listed with only the
+        // editions under its folders, as `/opds/v1.2/works` lists them under
+        // the grant's.
+        ("/opds/v1.2/libraries/{library}/works", RefusesAndFilters),
+        ("/opds/v1.2/libraries/by-work", Filters),
+        // The same 404, and the works filed in the library listed with the
+        // editions the grant allows.
+        (
+            "/opds/v1.2/libraries/{library}/works/by-work",
+            RefusesAndFilters,
+        ),
     ]
 }
 

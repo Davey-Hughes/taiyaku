@@ -1330,11 +1330,59 @@ fn router_with_a_real_page_under_a_withheld_root(
     (router, state)
 }
 
+/// The folders `/held` (1) and `/withheld` (2), each the one folder of a
+/// library: `Manga & Comics` numbered 70 and `withheld` 80, apart from the
+/// folders, so a handler that read a library's id as a folder's finds no
+/// folder of that number rather than the one that happens to share it.
+///
+/// **The held folder's library has an `&` in its name**, so a feed that wrote
+/// a library's name unescaped would be one no client can parse; a feed must
+/// write it as [`HELD_LIBRARY`]. Listed by name, it still comes first.
+fn two_folders_numbered_apart_from_their_libraries(conn: &rusqlite::Connection) {
+    conn.execute_batch(
+        "INSERT INTO library (id, name) VALUES (70, 'Manga & Comics'), (80, 'withheld');
+         INSERT INTO root (id, path, library_id) VALUES (1, '/held', 70), (2, '/withheld', 80);",
+    )
+    .expect("two folders, each in a library of its own");
+}
+
+/// The held folder's library's name as a feed must write it: escaped.
+const HELD_LIBRARY: &str = "Manga &amp; Comics";
+
+/// The library `folder` is in, read from the store, and checked to be
+/// numbered apart from every folder: a handler that read a library's id as a
+/// folder's would otherwise find the folder of the same number and pass.
+fn library_of(state: &ServeState, folder: i64) -> i64 {
+    let conn = state.library.conn();
+    let library: i64 = conn
+        .query_row("SELECT library_id FROM root WHERE id = ?1", [folder], |r| {
+            r.get(0)
+        })
+        .expect("the folder's library");
+    let folders: Vec<i64> = conn
+        .prepare("SELECT id FROM root")
+        .expect("prepares")
+        .query_map([], |r| r.get(0))
+        .expect("reads")
+        .collect::<rusqlite::Result<_>>()
+        .expect("reads");
+    assert!(
+        !folders.contains(&library),
+        "library {library} shares a folder's id: {folders:?}"
+    );
+    library
+}
+
 /// A router over one work with **two** editions, each filed under a
 /// different root — `en` under the root the fixture account holds, `raw`
 /// under the one it does not. What `work_feed`'s partial-visibility test
 /// needs: a work that is itself visible, with exactly one of its editions
 /// outside the grant.
+///
+/// Each folder is a library of its own, `Manga & Comics` and `withheld`
+/// ([`two_folders_numbered_apart_from_their_libraries`]), so the work is
+/// O191's shape: one work, an edition under each library's folder. It is
+/// imported before the folders exist, so `work.library_id` is NULL.
 fn router_with_two_editions_split_across_roots(
     dir: &std::path::Path,
 ) -> (axum::Router, std::sync::Arc<ServeState>) {
@@ -1364,11 +1412,7 @@ fn router_with_two_editions_split_across_roots(
         let doc = taiyaku_core::Sidecar::from_json(&json).expect("fixture sidecar parses");
         let work_id =
             taiyaku_library::import::scanned(&conn, &doc, None).expect("import as a scan");
-        conn.execute(
-            "INSERT INTO root (id, path) VALUES (1, '/held'), (2, '/withheld')",
-            [],
-        )
-        .expect("two roots");
+        two_folders_numbered_apart_from_their_libraries(&conn);
         conn.execute(
             "UPDATE member SET root_id = 2 WHERE edition_id = \
              (SELECT id FROM edition WHERE work_id = ?1 AND key = 'raw')",
@@ -1402,6 +1446,10 @@ fn router_with_two_editions_split_across_roots(
 /// A router over **two** works, one filed under the root the fixture
 /// account holds and one under a root it does not. What the `works` list
 /// feed's test needs: a work it must keep naming beside one it must not.
+///
+/// Each folder is a library of its own, `Manga & Comics` and `withheld`
+/// ([`two_folders_numbered_apart_from_their_libraries`]). Both works are
+/// imported before the folders exist, so `work.library_id` is NULL.
 fn router_with_two_works_one_withheld(
     dir: &std::path::Path,
 ) -> (axum::Router, std::sync::Arc<ServeState>) {
@@ -1447,11 +1495,7 @@ fn router_with_two_works_one_withheld(
         let hidden_id = taiyaku_library::import::scanned(&conn, &hidden_doc, None)
             .expect("import the hidden work");
 
-        conn.execute(
-            "INSERT INTO root (id, path) VALUES (1, '/held'), (2, '/withheld')",
-            [],
-        )
-        .expect("two roots");
+        two_folders_numbered_apart_from_their_libraries(&conn);
         conn.execute(
             "UPDATE member SET root_id = 1 WHERE edition_id IN \
              (SELECT id FROM edition WHERE work_id = ?1)",
@@ -1671,6 +1715,450 @@ async fn the_works_feed_names_every_folder_of_a_granted_library() {
         !body.contains("Other Library Work"),
         "a work of a library that was not granted is named: {body}"
     );
+}
+
+// --- The Libraries level, by folder and by work. ---
+//
+// Every fixture here numbers its libraries apart from their folders (see
+// `two_folders_numbered_apart_from_their_libraries`) and reads them back
+// through `library_of`, which checks it.
+
+/// GET `uri`, its status and its body.
+async fn fetch(router: &axum::Router, uri: &str) -> (StatusCode, String) {
+    let response = crate::test_support::get(router, uri).await;
+    let status = response.status();
+    (status, crate::test_support::body_string(response).await)
+}
+
+/// The one `<entry>` of `body` whose `<id>` is `id`.
+fn entry<'a>(body: &'a str, id: &str) -> &'a str {
+    let wanted = format!("<id>{id}</id>");
+    let found: Vec<&str> = body
+        .split("<entry>")
+        .skip(1)
+        .filter(|entry| entry.contains(&wanted))
+        .collect();
+    assert_eq!(found.len(), 1, "one entry with the id {id}: {body}");
+    found[0]
+}
+
+/// What the feed at `uri` says of the work `slug`, its `<content>`, or `None`
+/// where the feed does not list it. The feed must answer 200.
+async fn listed_as(router: &axum::Router, uri: &str, slug: &str) -> Option<String> {
+    let (status, body) = fetch(router, uri).await;
+    assert_eq!(status, StatusCode::OK, "{uri}: {body}");
+    let wanted = format!("<id>taiyaku:work:{slug}</id>");
+    body.split("<entry>")
+        .skip(1)
+        .find(|entry| entry.contains(&wanted))
+        .map(|entry| {
+            entry
+                .split(r#"<content type="text">"#)
+                .nth(1)
+                .and_then(|rest| rest.split("</content>").next())
+                .unwrap_or_else(|| panic!("an entry with no content: {entry}"))
+                .to_string()
+        })
+}
+
+/// The link a navigation entry carries to the feed at `href`.
+fn subsection(href: &str) -> String {
+    format!(r#"<link rel="subsection" type="{ATOM};kind=navigation" href="{href}"/>"#)
+}
+
+/// The catalog leads to both library views, and still to every work.
+#[tokio::test]
+async fn the_catalog_links_to_the_libraries() {
+    let tmp = crate::test_support::Fixture::new("opds-catalog-libraries");
+    let app = feed_router().with_state(Arc::new(crate::test_support::state(&tmp)));
+
+    let (status, body) = fetch(&app, "/opds/v1.2/catalog").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    for href in [
+        "/opds/v1.2/libraries",
+        "/opds/v1.2/libraries/by-work",
+        "/opds/v1.2/works",
+    ] {
+        assert!(
+            body.contains(&subsection(href)),
+            "the catalog must lead to {href}: {body}"
+        );
+    }
+}
+
+/// Unrestricted: both libraries, each linking to its works, in
+/// `browse::status`'s order, the held folder's library before `withheld`.
+/// The held folder's library's name is written escaped, in its `<title>` and
+/// its `<content>`.
+#[tokio::test]
+async fn the_libraries_feed_lists_each_library_with_a_link_to_its_works() {
+    let tmp = crate::test_support::Fixture::new("opds-libraries");
+    let (_router, state) = router_with_two_works_one_withheld(&tmp);
+    let held = library_of(&state, 1);
+    let withheld = library_of(&state, 2);
+    let app = feed_router().with_state(state);
+
+    let (status, body) = fetch(&app, "/opds/v1.2/libraries").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body.contains("<id>taiyaku:libraries</id>"), "{body}");
+    assert!(body.contains("<title>Libraries</title>"), "{body}");
+    assert!(
+        body.contains(&format!(
+            r#"<link rel="self"  type="{ATOM};kind=navigation" href="/opds/v1.2/libraries"/>"#
+        )),
+        "{body}"
+    );
+    for (library, name) in [(held, HELD_LIBRARY), (withheld, "withheld")] {
+        let entry = entry(&body, &format!("taiyaku:library:{library}"));
+        assert!(entry.contains(&format!("<title>{name}</title>")), "{entry}");
+        assert!(
+            entry.contains(&format!(
+                r#"<content type="text">The works in {name}</content>"#
+            )),
+            "{entry}"
+        );
+        assert!(
+            entry.contains(&subsection(&format!(
+                "/opds/v1.2/libraries/{library}/works"
+            ))),
+            "{entry}"
+        );
+    }
+    let at = |library: i64| {
+        body.find(&format!("<id>taiyaku:library:{library}</id>"))
+            .expect("listed")
+    };
+    assert!(at(held) < at(withheld), "held before withheld: {body}");
+}
+
+/// The account is granted the held folder's library: it is fed that library
+/// and its link, and nothing of `withheld`.
+#[tokio::test]
+async fn a_restricted_reader_s_libraries_feed_names_only_its_libraries() {
+    let tmp = crate::test_support::Fixture::new("opds-libraries-restricted");
+    let (router, state) = router_with_two_works_one_withheld(&tmp);
+    let held = library_of(&state, 1);
+    let withheld = library_of(&state, 2);
+
+    let (status, body) = fetch(&router, "/opds/v1.2/libraries").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let granted = entry(&body, &format!("taiyaku:library:{held}"));
+    assert!(
+        granted.contains(&format!("<title>{HELD_LIBRARY}</title>")),
+        "{granted}"
+    );
+    assert!(
+        granted.contains(&subsection(&format!("/opds/v1.2/libraries/{held}/works"))),
+        "{granted}"
+    );
+    assert!(
+        !body.contains("withheld"),
+        "a library outside the grant is named: {body}"
+    );
+    assert!(
+        !body.contains(&format!("/opds/v1.2/libraries/{withheld}/")),
+        "a library outside the grant is linked: {body}"
+    );
+}
+
+/// Unrestricted: each library's feed lists the works under its own folders
+/// and no other's, under the library's name, escaped.
+#[tokio::test]
+async fn a_library_s_works_feed_lists_only_the_works_under_its_folders() {
+    let tmp = crate::test_support::Fixture::new("opds-library-works");
+    let (_router, state) = router_with_two_works_one_withheld(&tmp);
+    let held = library_of(&state, 1);
+    let withheld = library_of(&state, 2);
+    let app = feed_router().with_state(state);
+
+    for (library, name, names, omits) in [
+        (withheld, "withheld", "Hidden Work", "Visible Work"),
+        (held, HELD_LIBRARY, "Visible Work", "Hidden Work"),
+    ] {
+        let uri = format!("/opds/v1.2/libraries/{library}/works");
+        let (status, body) = fetch(&app, &uri).await;
+        assert_eq!(status, StatusCode::OK, "{uri}: {body}");
+        assert!(
+            body.contains(&format!("<id>taiyaku:library:{library}:works</id>")),
+            "{uri}: {body}"
+        );
+        assert!(
+            body.contains(&format!("<title>{name}</title>")),
+            "{uri}: {body}"
+        );
+        assert!(
+            body.contains(&format!(
+                r#"<link rel="self"  type="{ATOM};kind=navigation" href="{uri}"/>"#
+            )),
+            "{uri}: {body}"
+        );
+        assert!(body.contains(names), "{uri} must name {names}: {body}");
+        assert!(!body.contains(omits), "{uri} named {omits}: {body}");
+    }
+}
+
+/// A library outside the grant is answered as one that does not exist: the
+/// same status and the same words, but for the number. The held folder's
+/// library answers 200, so the 404 is the grant's and not the route's.
+#[tokio::test]
+async fn a_library_outside_the_grant_is_refused_as_one_that_does_not_exist() {
+    let tmp = crate::test_support::Fixture::new("opds-library-refused");
+    let (router, state) = router_with_two_works_one_withheld(&tmp);
+    let held = library_of(&state, 1);
+    let withheld = library_of(&state, 2);
+
+    let (status, body) = fetch(&router, &format!("/opds/v1.2/libraries/{held}/works")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body.contains("Visible Work"), "{body}");
+
+    let (outside_status, outside) =
+        fetch(&router, &format!("/opds/v1.2/libraries/{withheld}/works")).await;
+    let (unknown_status, unknown) = fetch(&router, "/opds/v1.2/libraries/999999/works").await;
+    assert_eq!(outside_status, StatusCode::NOT_FOUND, "{outside}");
+    assert_eq!(unknown_status, StatusCode::NOT_FOUND, "{unknown}");
+    assert_eq!(
+        outside.replace(&withheld.to_string(), "{library}"),
+        unknown.replace("999999", "{library}"),
+        "a library outside the grant must be refused in the words one that \
+         does not exist is"
+    );
+}
+
+/// O191's shape: one work, an edition under each library's folder. A
+/// library's feed counts the editions under its folders, `/opds/v1.2/works`
+/// every edition.
+#[tokio::test]
+async fn a_library_s_works_feed_counts_only_the_editions_under_its_folders() {
+    let tmp = crate::test_support::Fixture::new("opds-library-count");
+    let (_router, state) = router_with_two_editions_split_across_roots(&tmp);
+    let held = library_of(&state, 1);
+    let slug = state.works.snapshot()[0].id.clone();
+    let app = feed_router().with_state(state);
+
+    assert_eq!(
+        listed_as(&app, &format!("/opds/v1.2/libraries/{held}/works"), &slug)
+            .await
+            .as_deref(),
+        Some("1 editions"),
+        "the held library's feed counts the edition under its folder"
+    );
+    assert_eq!(
+        listed_as(&app, "/opds/v1.2/works", &slug).await.as_deref(),
+        Some("2 editions"),
+        "the works feed counts every edition"
+    );
+}
+
+/// Unrestricted: both libraries again, each linking to the works filed in it.
+#[tokio::test]
+async fn the_by_work_libraries_feed_links_each_library_to_its_filed_works() {
+    let tmp = crate::test_support::Fixture::new("opds-libraries-by-work");
+    let (_router, state) = router_with_two_works_one_withheld(&tmp);
+    let held = library_of(&state, 1);
+    let withheld = library_of(&state, 2);
+    let app = feed_router().with_state(state);
+
+    let (status, body) = fetch(&app, "/opds/v1.2/libraries/by-work").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(
+        body.contains("<id>taiyaku:libraries:by-work</id>"),
+        "{body}"
+    );
+    assert!(
+        body.contains("<title>Libraries (by work)</title>"),
+        "{body}"
+    );
+    assert!(
+        body.contains(&format!(
+            r#"<link rel="self"  type="{ATOM};kind=navigation" href="/opds/v1.2/libraries/by-work"/>"#
+        )),
+        "{body}"
+    );
+    for (library, name) in [(held, HELD_LIBRARY), (withheld, "withheld")] {
+        let entry = entry(&body, &format!("taiyaku:library:{library}:by-work"));
+        assert!(entry.contains(&format!("<title>{name}</title>")), "{entry}");
+        assert!(
+            entry.contains(&format!(
+                r#"<content type="text">The works filed in {name}</content>"#
+            )),
+            "{entry}"
+        );
+        assert!(
+            entry.contains(&subsection(&format!(
+                "/opds/v1.2/libraries/{library}/works/by-work"
+            ))),
+            "{entry}"
+        );
+    }
+    let at = |library: i64| {
+        body.find(&format!("<id>taiyaku:library:{library}:by-work</id>"))
+            .expect("listed")
+    };
+    assert!(at(held) < at(withheld), "held before withheld: {body}");
+}
+
+/// The four answers that tell the two views apart, over O191's shape with
+/// the work filed in the held folder's library. By work, the held library
+/// lists it with both editions and the withheld library lists nothing; by
+/// folder, each lists it with the edition under its own folder. The by-work
+/// feed names itself apart from the by-folder one: its id, its title, with
+/// the library's name escaped, and its `self` link.
+///
+/// The fixture imports its work before its folders exist, so derive never
+/// filed it: `work.library_id` is set here by hand.
+#[tokio::test]
+async fn the_by_work_feed_lists_a_work_under_the_library_it_is_filed_in_with_every_edition() {
+    let tmp = crate::test_support::Fixture::new("opds-by-work-filed");
+    let (_router, state) = router_with_two_editions_split_across_roots(&tmp);
+    let held = library_of(&state, 1);
+    let withheld = library_of(&state, 2);
+    let slug = state.works.snapshot()[0].id.clone();
+    state
+        .library
+        .conn()
+        .execute("UPDATE work SET library_id = ?1", [held])
+        .expect("files the work in the held folder's library");
+    let app = feed_router().with_state(state);
+    let by_work = |library: i64| format!("/opds/v1.2/libraries/{library}/works/by-work");
+    let by_folder = |library: i64| format!("/opds/v1.2/libraries/{library}/works");
+
+    let uri = by_work(held);
+    let (status, body) = fetch(&app, &uri).await;
+    assert_eq!(status, StatusCode::OK, "{uri}: {body}");
+    assert!(
+        body.contains(&format!("<id>taiyaku:library:{held}:works:by-work</id>")),
+        "{uri}: {body}"
+    );
+    assert!(
+        body.contains(&format!("<title>{HELD_LIBRARY} (by work)</title>")),
+        "{uri}: {body}"
+    );
+    assert!(
+        body.contains(&format!(
+            r#"<link rel="self"  type="{ATOM};kind=navigation" href="{uri}"/>"#
+        )),
+        "{uri}: {body}"
+    );
+    assert_eq!(
+        listed_as(&app, &by_work(held), &slug).await.as_deref(),
+        Some("2 editions"),
+        "the library the work is filed in lists it with every edition"
+    );
+    assert_eq!(
+        listed_as(&app, &by_folder(held), &slug).await.as_deref(),
+        Some("1 editions"),
+        "by folder, the same library counts the edition under its folder"
+    );
+    assert_eq!(
+        listed_as(&app, &by_work(withheld), &slug).await,
+        None,
+        "the work is not filed in the withheld folder's library"
+    );
+    let (_, withheld_by_work) = fetch(&app, &by_work(withheld)).await;
+    assert!(
+        !withheld_by_work.contains("<entry>"),
+        "the withheld folder's library has no work filed in it: {withheld_by_work}"
+    );
+    assert_eq!(
+        listed_as(&app, &by_folder(withheld), &slug)
+            .await
+            .as_deref(),
+        Some("1 editions"),
+        "by folder, the withheld folder's library lists the edition under it"
+    );
+}
+
+/// Granted the held folder's library, in which the work is filed: its
+/// by-work feed counts the one edition the grant allows, and the withheld
+/// folder's library is refused as by folder.
+///
+/// The fixture imports its work before its folders exist, so derive never
+/// filed it: `work.library_id` is set here by hand.
+#[tokio::test]
+async fn a_restricted_reader_s_by_work_feed_counts_only_the_editions_the_grant_allows() {
+    let tmp = crate::test_support::Fixture::new("opds-by-work-restricted");
+    let (router, state) = router_with_two_editions_split_across_roots(&tmp);
+    let held = library_of(&state, 1);
+    let withheld = library_of(&state, 2);
+    let slug = state.works.snapshot()[0].id.clone();
+    state
+        .library
+        .conn()
+        .execute("UPDATE work SET library_id = ?1", [held])
+        .expect("files the work in the held folder's library");
+
+    assert_eq!(
+        listed_as(
+            &router,
+            &format!("/opds/v1.2/libraries/{held}/works/by-work"),
+            &slug
+        )
+        .await
+        .as_deref(),
+        Some("1 editions"),
+        "the edition under the withheld folder is outside the grant"
+    );
+    let (status, body) = fetch(
+        &router,
+        &format!("/opds/v1.2/libraries/{withheld}/works/by-work"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    assert_eq!(body, format!("no library {withheld}"));
+}
+
+/// An imported work, its members under no folder and `work.library_id`
+/// NULL, is fed by `/opds/v1.2/works` and by no library's by-work feed. The
+/// other work is filed in the held folder's library by hand, so the held
+/// library's feed is not empty for want of anything to list.
+#[tokio::test]
+async fn an_imported_work_is_in_no_by_work_feed() {
+    let tmp = crate::test_support::Fixture::new("opds-by-work-imported");
+    let (_router, state) = router_with_two_works_one_withheld(&tmp);
+    let held = library_of(&state, 1);
+    let withheld = library_of(&state, 2);
+    {
+        let conn = state.library.conn();
+        conn.execute(
+            "UPDATE work SET library_id = ?1 WHERE title = 'Visible Work'",
+            [held],
+        )
+        .expect("files Visible Work in the held folder's library");
+        conn.execute(
+            "UPDATE member SET root_id = NULL WHERE edition_id IN \
+             (SELECT e.id FROM edition e JOIN work w ON w.id = e.work_id \
+               WHERE w.title = 'Hidden Work')",
+            [],
+        )
+        .expect("leaves Hidden Work's members under no folder");
+        let unfiled: Option<i64> = conn
+            .query_row(
+                "SELECT library_id FROM work WHERE title = 'Hidden Work'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("Hidden Work");
+        assert_eq!(unfiled, None, "Hidden Work is filed in no library");
+    }
+    let app = feed_router().with_state(state);
+
+    let (status, all) = fetch(&app, "/opds/v1.2/works").await;
+    assert_eq!(status, StatusCode::OK, "{all}");
+    assert!(all.contains("Hidden Work"), "{all}");
+    for library in [held, withheld] {
+        let uri = format!("/opds/v1.2/libraries/{library}/works/by-work");
+        let (status, body) = fetch(&app, &uri).await;
+        assert_eq!(status, StatusCode::OK, "{uri}: {body}");
+        assert!(
+            !body.contains("Hidden Work"),
+            "{uri} lists a work filed in no library: {body}"
+        );
+        assert_eq!(
+            body.contains("Visible Work"),
+            library == held,
+            "{uri}: Visible Work is filed in the held folder's library: {body}"
+        );
+    }
 }
 
 // --- Spec C2's second half: the OPDS-namespace download. ---

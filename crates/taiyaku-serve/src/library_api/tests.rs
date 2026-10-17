@@ -543,16 +543,44 @@ async fn the_grid_carries_the_two_fields_the_chips_sort_and_filter_on() {
     assert!(first["unread"].is_i64(), "unread is a number: {first}");
 }
 
-/// **Over a fixture that actually has a series**, which is the whole of what
-/// this test was missing: `router_over_a_library`'s grid holds zero series
-/// whatever the filter, so the assertion below was satisfied by the fixture
-/// rather than by the filter — replacing the handler's `query.root` with
-/// `None` left all 291 `taiyaku-serve` tests passing. Whole-branch review,
-/// mutation-checked 2026-08-21.
+/// The library a folder is in, read from the store rather than assumed.
+fn library_of(conn: &rusqlite::Connection, root: i64) -> i64 {
+    conn.query_row("SELECT library_id FROM root WHERE id = ?1", [root], |r| {
+        r.get(0)
+    })
+    .unwrap_or_else(|e| panic!("folder {root}'s library: {e}"))
+}
+
+/// Two folders, each a library of its own (`root_gets_a_library` makes one
+/// per folder inserted without one), with every member of the fixture's one
+/// work under the first. Answers the two libraries' ids, the material's first.
+///
+/// **Folder ids 5 and 6**, so neither library's id is a folder's: a narrowing
+/// that read a library id as a folder id would find nothing under either.
+fn two_libraries_one_holding_the_work(state: &crate::ServeState) -> (i64, i64) {
+    let conn = state.library.conn();
+    conn.execute(
+        "INSERT INTO root (id, path) VALUES (5, '/held'), (6, '/elsewhere')",
+        [],
+    )
+    .expect("two folders");
+    conn.execute("UPDATE member SET root_id = 5", [])
+        .expect("files every member under the first");
+    let (held, elsewhere) = (library_of(&conn, 5), library_of(&conn, 6));
+    assert!(
+        ![5, 6].contains(&held) && ![5, 6].contains(&elsewhere),
+        "the libraries {held} and {elsewhere} share a folder's id"
+    );
+    (held, elsewhere)
+}
+
+/// **Over a fixture that actually has a series**: a grid with no series in it
+/// answers no series whatever the narrowing, so this one could not tell the
+/// narrowing from a handler that dropped the parameter on the floor.
 #[tokio::test]
-async fn a_root_that_does_not_exist_answers_an_empty_grid_rather_than_an_error() {
+async fn a_library_that_does_not_exist_answers_an_empty_grid_rather_than_an_error() {
     let (router, _state, _fixture) = test_support::router_over_a_scanned_work_in_a_series();
-    let body = get_json(&router, "/api/library/series?root=999999").await;
+    let body = get_json(&router, "/api/library/series?library=999999").await;
     assert_eq!(
         body["series"].as_array().map(Vec::len),
         Some(0),
@@ -560,26 +588,17 @@ async fn a_root_that_does_not_exist_answers_an_empty_grid_rather_than_an_error()
     );
 }
 
-/// The other half: a root that *does* exist answers the material under it, and
-/// a second root answers none of it.
+/// The other half: a library that *does* exist answers the material in it,
+/// and a second library answers none of it.
 ///
-/// A root that does not exist and a root holding nothing are deliberately the
-/// same answer — `only_clause`'s doc says why — so a test that only ever asked
-/// for a missing one could not tell the filter from a handler that dropped the
-/// parameter on the floor.
+/// A library that does not exist and a library holding nothing are
+/// deliberately the same answer (`browse::library_scope`), so a test that only
+/// ever asked for a missing one could not tell the narrowing from a handler
+/// that dropped the parameter on the floor.
 #[tokio::test]
-async fn the_grid_narrows_to_the_root_the_query_names() {
+async fn the_grid_narrows_to_the_library_the_query_names() {
     let (router, state, _fixture) = test_support::router_over_a_scanned_work_in_a_series();
-    {
-        let conn = state.library.conn();
-        conn.execute(
-            "INSERT INTO root (id, path) VALUES (1, '/held'), (2, '/elsewhere')",
-            [],
-        )
-        .expect("two roots");
-        conn.execute("UPDATE member SET root_id = 1", [])
-            .expect("files every member under the first");
-    }
+    let (held, elsewhere) = two_libraries_one_holding_the_work(&state);
 
     let all = get_json(&router, "/api/library/series").await;
     assert_eq!(
@@ -588,43 +607,124 @@ async fn the_grid_narrows_to_the_root_the_query_names() {
         "unnarrowed, the series is listed: {all}"
     );
 
-    let held = get_json(&router, "/api/library/series?root=1").await;
+    let narrowed = get_json(&router, &format!("/api/library/series?library={held}")).await;
     assert_eq!(
-        held["series"].as_array().map(Vec::len),
+        narrowed["series"].as_array().map(Vec::len),
         Some(1),
-        "the root the material sits under: {held}"
+        "the library the material is in: {narrowed}"
     );
 
-    let elsewhere = get_json(&router, "/api/library/series?root=2").await;
+    let other = get_json(&router, &format!("/api/library/series?library={elsewhere}")).await;
     assert_eq!(
-        elsewhere["series"].as_array().map(Vec::len),
+        other["series"].as_array().map(Vec::len),
         Some(0),
-        "a root holding none of it: {elsewhere}"
+        "a library holding none of it: {other}"
     );
 }
 
-/// **`?root=` empties the unfiled bucket**, which it did not until 2026-08-21:
-/// `series` was fetched with the filter and `unfiled` without it, so
-/// `/api/library/series?root=5` answered a root-scoped grid beside every
-/// imported work in the library. An imported member sits under no root, and
-/// asking for a root asks for what is under it — spec C1 §5.1's existing
-/// NULL-excludes-itself rule, applied in SQL rather than special-cased here.
+/// **`?library=` leaves imported works out of the unfiled bucket.** `series` and `unfiled` are
+/// fetched together, and an imported member sits under no folder, so asking
+/// for a library asks for none of them — spec C1 §5.1's NULL-excludes-itself
+/// rule, applied in SQL rather than special-cased here. The library asked for
+/// exists, so the empty bucket is that rule and not an unknown id.
 #[tokio::test]
-async fn a_root_scoped_grid_carries_no_unfiled_work() {
-    let (router, _state, _fixture) = test_support::router_over_a_library().await;
+async fn a_library_scoped_grid_carries_no_unfiled_work() {
+    let (router, state, _fixture) = test_support::router_over_a_library().await;
+    let shelf = {
+        let conn = state.library.conn();
+        conn.execute("INSERT INTO root (id, path) VALUES (5, '/shelf')", [])
+            .expect("a folder, and so a library");
+        library_of(&conn, 5)
+    };
 
     let all = get_json(&router, "/api/library/series").await;
     assert_eq!(
         all["unfiled"].as_array().map(Vec::len),
         Some(1),
-        "the imported work is in the whole-library grid: {all}"
+        "the imported work is in the whole-store grid: {all}"
     );
 
-    let scoped = get_json(&router, "/api/library/series?root=1").await;
+    let scoped = get_json(&router, &format!("/api/library/series?library={shelf}")).await;
     assert_eq!(
         scoped["unfiled"].as_array().map(Vec::len),
         Some(0),
-        "and under no root at all: {scoped}"
+        "and in no library: {scoped}"
+    );
+}
+
+/// `?library=` reaches the home lists: a position on the fixture's work is
+/// continued in the library the work is in, and not in the other one.
+#[tokio::test]
+async fn the_home_lists_narrow_to_the_library_the_query_names() {
+    let (router, state, _fixture) = test_support::router_over_a_scanned_work_in_a_series();
+    let (held, elsewhere) = two_libraries_one_holding_the_work(&state);
+    {
+        let conn = state.library.conn();
+        conn.execute(
+            "INSERT INTO progress (user_id, work_id, edition, slot, updated)
+             SELECT 1, id, 'raw', 3, '2026-10-17T00:00:00Z' FROM work",
+            [],
+        )
+        .expect("records a position");
+    }
+
+    let narrowed = get_json(&router, &format!("/api/library/home?library={held}")).await;
+    assert_eq!(
+        titles_in(&narrowed["continuing"]),
+        ["Scanned"],
+        "continued in its own library: {narrowed}"
+    );
+
+    let other = get_json(&router, &format!("/api/library/home?library={elsewhere}")).await;
+    assert_eq!(
+        other["continuing"].as_array().map(Vec::len),
+        Some(0),
+        "and not in another: {other}"
+    );
+}
+
+/// `?library=` reaches search: the fixture's series is found in the library
+/// it is in, and not in the other one.
+#[tokio::test]
+async fn search_narrows_to_the_library_the_query_names() {
+    let (router, state, _fixture) = test_support::router_over_a_scanned_work_in_a_series();
+    let (held, elsewhere) = two_libraries_one_holding_the_work(&state);
+
+    let narrowed = get_json(
+        &router,
+        &format!("/api/library/search?q=Scanned&library={held}"),
+    )
+    .await;
+    assert_eq!(
+        narrowed["series"].as_array().map(Vec::len),
+        Some(1),
+        "found in its own library: {narrowed}"
+    );
+
+    let other = get_json(
+        &router,
+        &format!("/api/library/search?q=Scanned&library={elsewhere}"),
+    )
+    .await;
+    assert_eq!(
+        other["series"].as_array().map(Vec::len),
+        Some(0),
+        "and not in another: {other}"
+    );
+}
+
+/// **`?root=` is refused, naming `library`.** It narrowed the grid to one
+/// folder before libraries did.
+#[tokio::test]
+async fn a_grid_asked_for_a_root_is_refused_naming_library() {
+    let (router, _state, _fixture) = test_support::router_over_a_scanned_work_in_a_series();
+    let response = get(&router, "/api/library/series?root=1").await;
+    let status = response.status();
+    let body = test_support::body_string(response).await;
+    assert_eq!(status, axum::http::StatusCode::BAD_REQUEST, "{body}");
+    assert!(
+        body.contains("`library`") && body.contains("`root`"),
+        "the refusal names the parameter to send and the one it refused: {body}"
     );
 }
 
@@ -655,12 +755,68 @@ async fn the_work_route_carries_an_alignments_array_and_the_list_routes_do_not()
     );
 }
 
+/// The keys of a JSON object, sorted.
+fn keys_of(value: &serde_json::Value) -> Vec<String> {
+    let mut keys: Vec<String> = value
+        .as_object()
+        .unwrap_or_else(|| panic!("an object: {value}"))
+        .keys()
+        .cloned()
+        .collect();
+    keys.sort();
+    keys
+}
+
+/// `/api/library/status` lists libraries, each `{id, name, scanned}`, and
+/// carries nothing else at either level: the key lists are compared whole,
+/// because a substring check cannot see an added field.
+///
+/// **Two libraries, one walked and one not**, so `scanned` is read from each
+/// library's own folders: a constant either way fails one of them. Folder ids 5
+/// and 6, so neither library's id is a folder's, and a walk looked up by the
+/// library's id in place of its folders' would find nothing.
 #[tokio::test]
-async fn status_answers_the_two_facts_a_first_run_screen_needs() {
-    let (router, _state, _fixture) = test_support::router_over_a_library().await;
+async fn the_status_lists_libraries_and_nothing_else() {
+    let (router, state, _fixture) = test_support::router_over_a_library().await;
+    let (shelf, walked) = {
+        let conn = state.library.conn();
+        conn.execute(
+            "INSERT INTO root (id, path) VALUES (5, '/shelf'), (6, '/walked')",
+            [],
+        )
+        .expect("two folders, and so two libraries");
+        conn.execute(
+            "INSERT INTO dir_state (root_id, rel_path, mtime, entry_count) \
+             VALUES (6, '', 0, 0)",
+            [],
+        )
+        .expect("the second folder walked");
+        (library_of(&conn, 5), library_of(&conn, 6))
+    };
+    assert!(
+        ![5, 6].contains(&shelf) && ![5, 6].contains(&walked),
+        "the libraries {shelf} and {walked} share a folder's id"
+    );
+
     let body = get_json(&router, "/api/library/status").await;
-    assert!(body["roots"].is_array(), "roots is a list: {body}");
-    assert!(body["scanned"].is_boolean(), "scanned is a bool: {body}");
+    assert_eq!(keys_of(&body), ["libraries"], "{body}");
+    let libraries = body["libraries"].as_array().expect("a list of libraries");
+    assert_eq!(libraries.len(), 2, "the two libraries: {body}");
+    for entry in libraries {
+        assert_eq!(keys_of(entry), ["id", "name", "scanned"], "{entry}");
+    }
+    assert_eq!(libraries[0]["id"], shelf, "{body}");
+    assert_eq!(libraries[0]["name"], "shelf", "{body}");
+    assert_eq!(
+        libraries[0]["scanned"], false,
+        "nothing has walked it: {body}"
+    );
+    assert_eq!(libraries[1]["id"], walked, "{body}");
+    assert_eq!(libraries[1]["name"], "walked", "{body}");
+    assert_eq!(
+        libraries[1]["scanned"], true,
+        "its folder has been walked: {body}"
+    );
 }
 
 /// The three series [`test_support::router_over_three_unrelated_series`]
@@ -1011,7 +1167,7 @@ fn a_reader_granted(roots: Vec<i64>) -> crate::auth::Principal {
 /// would pass here; each asks both in one trip.
 #[tokio::test(flavor = "current_thread")]
 async fn no_browse_route_stalls_the_runtime() {
-    use crate::library_api::{GridQuery, SearchQuery};
+    use crate::library_api::{GridQuery, HomeQuery, SearchQuery};
     use axum::extract::{Extension, Path as AxPath, Query, State};
     use axum::http::StatusCode;
     use std::sync::Arc;
@@ -1038,7 +1194,11 @@ async fn no_browse_route_stalls_the_runtime() {
             (
                 "home",
                 StatusCode::OK,
-                Box::pin(crate::library_api::home(State(Arc::clone(&state)), who()))
+                Box::pin(crate::library_api::home(
+                    State(Arc::clone(&state)),
+                    who(),
+                    Query(HomeQuery { library: None }),
+                ))
                     as std::pin::Pin<Box<dyn std::future::Future<Output = _> + Send>>,
             ),
             (
@@ -1047,7 +1207,10 @@ async fn no_browse_route_stalls_the_runtime() {
                 Box::pin(crate::library_api::series(
                     State(Arc::clone(&state)),
                     who(),
-                    Query(GridQuery { root: None }),
+                    Query(GridQuery {
+                        library: None,
+                        root: None,
+                    }),
                 )),
             ),
             (
@@ -1076,6 +1239,7 @@ async fn no_browse_route_stalls_the_runtime() {
                     who(),
                     Query(SearchQuery {
                         q: "Scanned".to_string(),
+                        library: None,
                     }),
                 )),
             ),

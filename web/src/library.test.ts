@@ -5,6 +5,7 @@ import {
   type EditionCard,
   grid,
   home,
+  libraryParam,
   matchesChip,
   oneSeries,
   search,
@@ -57,7 +58,7 @@ const json = (body: unknown) =>
   })
 
 describe('the browse client', () => {
-  it('asks for the grid without a root, and with one', async () => {
+  it('asks for the grid without a library, and with one', async () => {
     // A fresh `Response` per call, not `mockResolvedValue` with one shared
     // instance: `Response.json()` consumes its body stream, so the same
     // instance returned to two `getJson` calls throws "Body is unusable" on
@@ -72,14 +73,14 @@ describe('the browse client', () => {
     await grid()
     expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/library/series')
     await grid(7)
-    expect(fetchMock.mock.calls[1]?.[0]).toBe('/api/library/series?root=7')
+    expect(fetchMock.mock.calls[1]?.[0]).toBe('/api/library/series?library=7')
   })
 
-  // `oneSeries` and `search` have no caller yet — Plan B's series and search
-  // screens are what will reach them — so this is the only place either is
-  // exercised at all. Same shape as `grid`'s own test above: the endpoint hit
-  // and, for `search`, the escaping `work`'s test already pins for its own
-  // path segment.
+  // `oneSeries` and `search` are mocked in the tests of their callers,
+  // `Series.test.tsx` and `Search.test.tsx`, so the requests they make are
+  // pinned here. Same shape as `grid`'s own test above: the endpoint hit and,
+  // for `search`, the escaping `work`'s test already pins for its own path
+  // segment.
   it('asks for one series by id', async () => {
     const fetchMock = vi
       .fn()
@@ -98,19 +99,38 @@ describe('the browse client', () => {
     expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/library/search?q=a%20b')
   })
 
+  // The search path already carries a query, so the library joins it with
+  // `&`: a second `?` would make it part of `q`.
+  it('narrows a search to a library, after the query', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockImplementation(() =>
+        Promise.resolve(json({ series: [], unfiled: [], query: 'a b' })),
+      )
+    vi.stubGlobal('fetch', fetchMock)
+    await search('a b', 7)
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      '/api/library/search?q=a%20b&library=7',
+    )
+  })
+
   // `home`'s one caller, `Library.tsx`, is exercised only through
   // `Library.test.tsx`'s mock of this whole module (`vi.mock('./library', …
   // home: vi.fn())`) — the real implementation below is never reached from
   // there, or from anywhere else, which left it the one function in this
   // file coverage-floor still flagged once `oneSeries` and `search` had
   // their own tests.
-  it('asks for the home lists', async () => {
+  it('asks for the home lists without a library, and with one', async () => {
     const fetchMock = vi
       .fn()
-      .mockResolvedValue(json({ continuing: [], added: [], read: [] }))
+      .mockImplementation(() =>
+        Promise.resolve(json({ continuing: [], added: [], read: [] })),
+      )
     vi.stubGlobal('fetch', fetchMock)
     await home()
     expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/library/home')
+    await home(7)
+    expect(fetchMock.mock.calls[1]?.[0]).toBe('/api/library/home?library=7')
   })
 
   it('escapes a slug rather than pasting it into the path', async () => {
@@ -240,6 +260,40 @@ describe('the browse client', () => {
       })
       expect(unreadable(w)).toBe(false)
     })
+  })
+})
+
+/**
+ * `?library=` as every screen reads it: an id is a positive decimal integer
+ * with no leading zero, the form the sidebar's links write, and anything else
+ * is no library rather than a number `Number` would make of it.
+ */
+describe('libraryParam', () => {
+  it('reads no value as no narrowing', () => {
+    expect(libraryParam(null)).toBeUndefined()
+  })
+
+  it('reads a positive integer with no leading zero as that library', () => {
+    expect(libraryParam('1')).toBe(1)
+    expect(libraryParam('12')).toBe(12)
+  })
+
+  it('reads anything else as no library id', () => {
+    expect(
+      ['abc', '', '0', '01', '-1', '1.5', ' 1', '1e2'].map((raw) => [
+        raw,
+        libraryParam(raw),
+      ]),
+    ).toEqual([
+      ['abc', 'invalid'],
+      ['', 'invalid'],
+      ['0', 'invalid'],
+      ['01', 'invalid'],
+      ['-1', 'invalid'],
+      ['1.5', 'invalid'],
+      [' 1', 'invalid'],
+      ['1e2', 'invalid'],
+    ])
   })
 })
 

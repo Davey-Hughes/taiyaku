@@ -1,8 +1,10 @@
 import { act } from 'react'
-import { MemoryRouter } from 'react-router'
+import { MemoryRouter, useLocation } from 'react-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import * as library from './library'
 import { Search } from './Search'
+import { StatusContext } from './shell'
+import { fields } from './testing/fields'
 import { mount, rerender } from './testing/mount'
 
 vi.mock('./library', async (importOriginal) => ({
@@ -22,18 +24,100 @@ const card = (over: Partial<library.SeriesCard> = {}): library.SeriesCard => ({
   ...over,
 })
 
-async function settle(entry = '/search'): Promise<HTMLElement> {
+/** Two libraries, in an order that is neither by id nor by name. */
+const twoLibraries: library.LibraryStatus = {
+  libraries: [
+    { id: 2, name: 'Manga', scanned: true },
+    { id: 1, name: 'Comics', scanned: true },
+  ],
+}
+
+/**
+ * A child that draws the router's query string, so a test can read what the
+ * screen put in the URL.
+ *
+ * Declared inside a function for the reason `Shell.test.tsx`'s `reporter()`
+ * gives: `style/useComponentExportOnlyModules` refuses an unexported
+ * component at module scope, and `suspicious/noExportsInTest` refuses the
+ * export.
+ */
+function locationProbe() {
+  function Probe() {
+    return <output data-testid="location">{useLocation().search}</output>
+  }
+  return <Probe />
+}
+
+/**
+ * Mount the screen at `entry`, under the status `Shell` would publish.
+ * `undefined` is what the screen reads with no shell above it, or before the
+ * shell's own fetch has landed.
+ */
+async function settle(
+  entry = '/search',
+  status?: library.LibraryStatus,
+): Promise<HTMLElement> {
   let host: HTMLElement | undefined
   await act(async () => {
-    host = mount(
-      <MemoryRouter initialEntries={[entry]}>
-        <Search />
-      </MemoryRouter>,
-    )
+    host = mount(screenAt(entry, status))
     await Promise.resolve()
     await Promise.resolve()
   })
   if (!host) throw new Error('nothing mounted')
+  return host
+}
+
+/**
+ * The tree `settle` mounts. A `rerender` of it with another status is the
+ * shell's fetch landing under a screen already drawn: `MemoryRouter` reads
+ * `initialEntries` once, so the URL stays where the screen has put it.
+ */
+const screenAt = (entry: string, status?: library.LibraryStatus) => (
+  <MemoryRouter initialEntries={[entry]}>
+    <StatusContext.Provider value={status}>
+      <Search />
+      {locationProbe()}
+    </StatusContext.Provider>
+  </MemoryRouter>
+)
+
+/** The query string the screen has put in the URL, as a plain object. */
+const urlOf = (host: HTMLElement) =>
+  Object.fromEntries(
+    new URLSearchParams(
+      host.querySelector('[data-testid="location"]')?.textContent ?? '',
+    ),
+  )
+
+/** The select its label calls "Search in", or `undefined` where none is drawn. */
+const scopeOf = (host: HTMLElement) =>
+  fields(host.querySelectorAll('label')).find((f) => f.written === 'Search in')
+    ?.control as HTMLSelectElement | undefined
+
+/** Choose `value` in a controlled select and let the debounce and the fetch settle. */
+async function choose(select: HTMLSelectElement, value: string) {
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(
+      HTMLSelectElement.prototype,
+      'value',
+    )?.set?.call(select, value)
+    select.dispatchEvent(new Event('change', { bubbles: true }))
+  })
+  await act(async () => {
+    vi.advanceTimersByTime(300)
+    await Promise.resolve()
+    await Promise.resolve()
+  })
+}
+
+/** Wait out the debounce on arrival, and let the fetch settle. */
+async function arrive(entry: string, status?: library.LibraryStatus) {
+  const host = await settle(entry, status)
+  await act(async () => {
+    vi.advanceTimersByTime(300)
+    await Promise.resolve()
+    await Promise.resolve()
+  })
   return host
 }
 
@@ -101,7 +185,7 @@ describe('Search', () => {
     const host = await settle()
     await type(host, '花嫁')
     expect(vi.mocked(library.search)).toHaveBeenCalledTimes(1)
-    expect(vi.mocked(library.search)).toHaveBeenCalledWith('花嫁')
+    expect(vi.mocked(library.search)).toHaveBeenCalledWith('花嫁', undefined)
     expect(host.querySelector('.grid .title')?.textContent).toBe('五等分の花嫁')
   })
 
@@ -112,7 +196,7 @@ describe('Search', () => {
       await Promise.resolve()
       await Promise.resolve()
     })
-    expect(vi.mocked(library.search)).toHaveBeenCalledWith('花嫁')
+    expect(vi.mocked(library.search)).toHaveBeenCalledWith('花嫁', undefined)
     expect(
       (host.querySelector('input[type="search"]') as HTMLInputElement).value,
     ).toBe('花嫁')
@@ -280,5 +364,135 @@ describe('Search', () => {
     expect(document.title).toBe('Search — taiyaku')
     await type(host, 'one')
     expect(document.title).toBe('Search — taiyaku')
+  })
+})
+
+describe('Search in one library — spec F §3', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.mocked(library.search).mockClear()
+    vi.mocked(library.search).mockResolvedValue({
+      series: [card()],
+      unfiled: [],
+      query: 'Series',
+    })
+  })
+
+  it('offers Every library, then each library by name in the status’s order', async () => {
+    const host = await settle('/search', twoLibraries)
+    const scope = scopeOf(host)
+    if (!scope) throw new Error('no select labelled Search in')
+    expect([...scope.options].map((o) => [o.value, o.textContent])).toEqual([
+      ['', 'Every library'],
+      ['2', 'Manga'],
+      ['1', 'Comics'],
+    ])
+    expect(scope.value).toBe('')
+  })
+
+  it('draws no select where the status lists one library', async () => {
+    const host = await settle('/search', {
+      libraries: [{ id: 2, name: 'Manga', scanned: true }],
+    })
+    // The box is drawn, so the screen is there to have drawn a select.
+    expect(host.querySelector('input[type="search"]')).not.toBeNull()
+    expect(host.querySelector('select')).toBeNull()
+  })
+
+  it('searches the library in the URL on arrival, and the select shows it', async () => {
+    const host = await arrive('/search?q=Series&library=2', twoLibraries)
+    // Every call, not the last: one search, narrowed, and none before it of
+    // another scope.
+    expect(vi.mocked(library.search).mock.calls).toEqual([['Series', 2]])
+    expect(scopeOf(host)?.value).toBe('2')
+  })
+
+  it('searches a link’s library once, when the status lands after the search has gone', async () => {
+    const host = await arrive('/search?q=Series&library=2')
+    expect(vi.mocked(library.search).mock.calls).toEqual([['Series', 2]])
+    rerender(screenAt('/search?q=Series&library=2', twoLibraries))
+    await act(async () => {
+      vi.advanceTimersByTime(300)
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(vi.mocked(library.search).mock.calls).toEqual([['Series', 2]])
+    expect(scopeOf(host)?.value).toBe('2')
+  })
+
+  it('searches every library, and says so, for a library the status does not list', async () => {
+    const host = await arrive('/search?q=Series&library=7', twoLibraries)
+    expect(vi.mocked(library.search).mock.calls).toEqual([
+      ['Series', undefined],
+    ])
+    const scope = scopeOf(host)
+    if (!scope) throw new Error('no select labelled Search in')
+    expect(scope.value).toBe('')
+    expect(scope.selectedOptions[0]?.textContent).toBe('Every library')
+    // The URL is the reader's, and is left as it was.
+    expect(urlOf(host)).toEqual({ q: 'Series', library: '7' })
+  })
+
+  it('searches every library, and draws no select, for a link to the one library there is', async () => {
+    const host = await arrive('/search?q=Series&library=2', {
+      libraries: [{ id: 2, name: 'Manga', scanned: true }],
+    })
+    expect(vi.mocked(library.search).mock.calls).toEqual([
+      ['Series', undefined],
+    ])
+    expect(host.querySelector('select')).toBeNull()
+  })
+
+  // `library.ts`'s `libraryParam` is the reading the library page and the
+  // sidebar give the value too, and what it reads as no library id narrows
+  // nothing, before the status lands as well as after.
+  for (const raw of ['abc', '', '0', '01', '-1']) {
+    const named = raw === '' ? ' (empty)' : raw
+    it(`searches every library for ?library=${named}, which is no library`, async () => {
+      const host = await arrive(`/search?q=Series&library=${raw}`, twoLibraries)
+      expect(vi.mocked(library.search).mock.calls).toEqual([
+        ['Series', undefined],
+      ])
+      expect(scopeOf(host)?.value).toBe('')
+    })
+
+    it(`searches every library for ?library=${named} while the status is in flight`, async () => {
+      await arrive(`/search?q=Series&library=${raw}`)
+      expect(vi.mocked(library.search).mock.calls).toEqual([
+        ['Series', undefined],
+      ])
+    })
+  }
+
+  it('choosing a library searches it and puts it in the URL beside q, and Every library takes it out', async () => {
+    const host = await arrive('/search?q=Series', twoLibraries)
+    expect(vi.mocked(library.search)).toHaveBeenLastCalledWith(
+      'Series',
+      undefined,
+    )
+    const scope = scopeOf(host)
+    if (!scope) throw new Error('no select labelled Search in')
+
+    await choose(scope, '2')
+    expect(vi.mocked(library.search)).toHaveBeenLastCalledWith('Series', 2)
+    expect(urlOf(host)).toEqual({ q: 'Series', library: '2' })
+    expect(scope.value).toBe('2')
+
+    await choose(scope, '')
+    expect(vi.mocked(library.search)).toHaveBeenLastCalledWith(
+      'Series',
+      undefined,
+    )
+    expect(urlOf(host)).toEqual({ q: 'Series' })
+    expect(scope.value).toBe('')
+    expect(vi.mocked(library.search)).toHaveBeenCalledTimes(3)
+  })
+
+  it('keeps the chosen library in the URL while the box is typed in', async () => {
+    const host = await arrive('/search?q=Ser&library=2', twoLibraries)
+    await type(host, 'Series')
+    expect(urlOf(host)).toEqual({ q: 'Series', library: '2' })
+    expect(vi.mocked(library.search)).toHaveBeenLastCalledWith('Series', 2)
+    expect(scopeOf(host)?.value).toBe('2')
   })
 })

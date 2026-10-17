@@ -1,34 +1,18 @@
 /**
  * The persistent navigation — spec C1 §2.
  *
- * **`ROOTS` is provisional and is marked as such here rather than discovered
- * later.** A root is a *storage* fact, and spec B's whole argument is that
- * where a file sits should stop being how you find it. So the rule that keeps
- * it harmless: **no navigation path may require it.** Everything reachable
- * through a root link is reachable from the grid without one. If it turns out
- * to be an administrative tool it moves to C4 and nothing breaks.
+ * **The LIBRARIES list is every account's** (spec F §3): the libraries
+ * `/api/library/status` answers for it, each linking to its own page,
+ * `/?library=N`. The server lists only the libraries an account may read, so
+ * this draws whatever it is handed and asks nothing about who is looking. With
+ * no library it draws no heading either.
  *
- * **`showRoots` is a prop, and `Sidebar`'s whole contract for it is to draw
- * the roots list when told to and stay silent about who does the telling.**
- * Who decides — an account's `admin` bit, a stored preference, some later mix
- * of both — is deliberately left undescribed here, because describing it here
- * is exactly what has gone stale twice on this branch. Task 3 rewrote this
- * paragraph when the account read moved from `Library` to `Shell`. It went
- * stale again one task later: Task 9's `browse` module (§11 step 8, no longer
- * future tense) replaced that account read with a persisted preference,
- * folding the account's `admin` bit in only as a first-load default that a
- * stored value overrides. Both times the paragraph broke for the same
- * reason — it was describing *another file's* behaviour instead of this
- * one's. The current answer is `browseModule.ts`'s and `Shell.tsx`'s to keep
- * correct; this file no longer tries to also keep it correct.
- *
- * **`admin` is a plain prop, unlike `showRoots`.** The proposals inbox is
- * spec C3's, and nothing yet gives an account a reason to hide it once they
- * can see it — no `browse`-module preference exists for it — so `Shell.tsx`
- * hands over the gate's own `admin` bit directly, the same value it computes
- * for `showRoots`'s default. `undefined` reads as "not an admin", the same
- * safe default `gate.ts`'s own doc comment gives for a screen mounted with no
- * gate above it at all.
+ * **`admin` is a plain prop.** The proposals inbox is spec C3's, and nothing
+ * yet gives an account a reason to hide it once they can see it — no
+ * `browse`-module preference exists for it — so `Shell.tsx` hands over the
+ * gate's own `admin` bit directly. `undefined` reads as "not an admin", the
+ * same safe default `gate.ts`'s own doc comment gives for a screen mounted
+ * with no gate above it at all.
  *
  * **`admin` now gates two entries, and the second is spec C4's.** The
  * settings area is admin-only for the same reason the proposals inbox is, and
@@ -65,30 +49,23 @@
  * first request, so the two cannot mean different things. This file does not
  * hold it, and draws the number it is handed.
  *
- * **The screen you are on is marked by `NavLink`'s `aria-current="page"`**,
- * which `shell.css` draws in the accent (spec 2026-09-17 §7.1). `/` needs no
- * `end`: React Router's `NavLink` counts a longer path as inside `to` only
- * where the next character is `/`, and after `/` it never is — read in
- * react-router 8.3.0 — so a series page marks nothing rather than the
- * library, which `Sidebar.test.tsx` holds. `/config` has no `end`, so every
- * configuration tab marks it. The root links stay plain `Link`s: `NavLink`
- * compares the path and not the query, so every `/?root=N` would read as
- * current on the library.
- *
- * **This paragraph once described behaviour that was not true, and that is
- * worth keeping on record rather than editing away.** `Library` passed a
- * hardcoded `false` from the day it was written until 2026-08-21, so no
- * deployment ever drew a root link and the four things behind one were
- * unreachable. Stating a caller's contract does not make the caller keep
- * it — which is also why this version states as little of that contract as
- * `Sidebar` itself needs.
+ * **The screen you are on is marked `aria-current="page"`**, which
+ * `shell.css` draws in the accent (spec 2026-09-17 §7.1). `NavLink` marks the
+ * entries a path alone names. `/config` has no `end`, so every configuration
+ * tab marks it. **The Library entry and the library entries are marked here,
+ * by path and query**, because `NavLink` compares the path and not the query:
+ * it would mark the Library entry on every library's page, and every library
+ * entry on the Library. So `/` marks the Library entry, `/?library=N` marks
+ * that library's entry and not the Library's, and a series page, whose path
+ * is not `/`, marks neither. Nor does a `?library=` that `library.ts`'s
+ * `libraryParam` reads as no library id, where the library page says there
+ * is no such library. A search narrowed to a library marks Search.
  */
-import { Link, NavLink } from 'react-router'
-import type { RootCard } from './library'
+import { Link, NavLink, useLocation, useSearchParams } from 'react-router'
+import { type LibraryEntry, libraryParam } from './library'
 
 export interface SidebarProps {
-  roots: RootCard[]
-  showRoots: boolean
+  libraries: LibraryEntry[]
   /** Admin-only: the proposals inbox and the settings area. See this file's own doc comment. */
   admin?: boolean
   /**
@@ -102,16 +79,28 @@ export interface SidebarProps {
 }
 
 export function Sidebar({
-  roots,
-  showRoots,
+  libraries,
   admin = false,
   openProposals,
 }: SidebarProps) {
+  const { pathname } = useLocation()
+  const [params] = useSearchParams()
+  // `/?library=N` is a library's page. `NavLink` compares the path and not the
+  // query, so it would mark the Library entry there too: both are marked here.
+  const shown =
+    pathname === '/' ? libraryParam(params.get('library')) : undefined
   return (
     <nav className="sidebar" aria-label="Library">
       <ul className="sidebar-primary">
         <li>
-          <NavLink to="/">Library</NavLink>
+          <Link
+            to="/"
+            aria-current={
+              pathname === '/' && shown === undefined ? 'page' : undefined
+            }
+          >
+            Library
+          </Link>
         </li>
         <li>
           <NavLink to="/search">Search</NavLink>
@@ -146,13 +135,18 @@ export function Sidebar({
           <NavLink to="/account">Account</NavLink>
         </li>
       </ul>
-      {showRoots && roots.length > 0 && (
+      {libraries.length > 0 && (
         <>
-          <h2 className="sidebar-heading">Roots</h2>
-          <ul className="sidebar-roots">
-            {roots.map((root) => (
-              <li key={root.id}>
-                <Link to={`/?root=${root.id}`}>{root.name}</Link>
+          <h2 className="sidebar-heading">Libraries</h2>
+          <ul className="sidebar-libraries">
+            {libraries.map((library) => (
+              <li key={library.id}>
+                <Link
+                  to={`/?library=${library.id}`}
+                  aria-current={shown === library.id ? 'page' : undefined}
+                >
+                  {library.name}
+                </Link>
               </li>
             ))}
           </ul>

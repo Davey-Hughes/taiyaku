@@ -759,7 +759,7 @@ describe('Proposals', () => {
   it('tells a cleared inbox apart from one whose weak proposals are hidden', async () => {
     // Two situations, and the person can act on exactly one of each: "there
     // is nothing to answer" and "there may be something and the threshold is
-    // holding it back". `EmptyState`'s own doc gives the rule — `no-roots`
+    // holding it back". `EmptyState`'s own doc gives the rule — `no-libraries`
     // and `not-scanned` are split on it too — and collapsing the second into
     // the first tells somebody their work is finished while the control that
     // would show them otherwise sits unpressed a few pixels above the

@@ -37,7 +37,7 @@ use taiyaku_library::browse::{self, CoverTarget};
 
 /// A `browse` failure, or a read that panicked, which is a 500 rather than
 /// anything a caller can fix.
-fn failed(what: &str, why: &str) -> Response {
+pub(crate) fn failed(what: &str, why: &str) -> Response {
     (
         StatusCode::INTERNAL_SERVER_ERROR,
         format!("reading {what}: {why}"),
@@ -54,7 +54,7 @@ fn failed(what: &str, why: &str) -> Response {
 /// the connection.
 ///
 /// A panic in `read` is a 500 naming `what`.
-async fn on_the_library(
+pub(crate) async fn on_the_library(
     state: Arc<ServeState>,
     what: &'static str,
     read: impl FnOnce(&rusqlite::Connection) -> Response + Send + 'static,
@@ -101,13 +101,20 @@ fn series_json(s: &browse::SeriesCard) -> serde_json::Value {
     })
 }
 
+/// The optional `?library=` the home lists carry.
+#[derive(serde::Deserialize)]
+pub(crate) struct HomeQuery {
+    library: Option<i64>,
+}
+
 /// `GET /api/library/home` — continue reading, recently added, recently read.
 pub(crate) async fn home(
     State(state): State<Arc<ServeState>>,
     Extension(principal): Extension<Principal>,
+    Query(query): Query<HomeQuery>,
 ) -> Response {
     on_the_library(state, "the home lists", move |conn| {
-        match browse::home(conn, &principal.roots, principal.user_id) {
+        match browse::home(conn, &principal.roots, principal.user_id, query.library) {
             Ok(home) => Json(serde_json::json!({
                 "continuing": home.continuing.iter().map(work_json).collect::<Vec<_>>(),
                 "added": home.added.iter().map(work_json).collect::<Vec<_>>(),
@@ -120,36 +127,52 @@ pub(crate) async fn home(
     .await
 }
 
-/// The optional `?root=` a grid carries — spec C1 §5.5.
+/// The grid's `?library=`, and the `?root=` it replaced, which is named here
+/// only to be refused.
 #[derive(serde::Deserialize)]
 pub(crate) struct GridQuery {
-    root: Option<i64>,
+    library: Option<i64>,
+    root: Option<String>,
 }
 
 /// `GET /api/library/series` — the grid.
 ///
 /// Returns `{ series, unfiled }`, per spec C1 §5.4: a hand-imported work has
 /// no series, and a grid that only listed series would never show one.
+///
+/// **`?root=` is refused, 400, naming `library`**, before the library is
+/// read. It narrowed the grid to one folder before libraries did, and an
+/// address that still carries it asks a question this route no longer
+/// answers.
 pub(crate) async fn series(
     State(state): State<Arc<ServeState>>,
     Extension(principal): Extension<Principal>,
     Query(query): Query<GridQuery>,
 ) -> Response {
+    if query.root.is_some() {
+        return (
+            StatusCode::BAD_REQUEST,
+            "the grid is narrowed by `library`, a library's id; `root` is no longer a parameter",
+        )
+            .into_response();
+    }
     on_the_library(state, "the series listing", move |conn| {
-        let series = match browse::series(conn, &principal.roots, principal.user_id, query.root) {
+        let series = match browse::series(conn, &principal.roots, principal.user_id, query.library)
+        {
             Ok(series) => series,
             Err(why) => return failed("the series listing", &why),
         };
-        // **`query.root` here too.** Fetched without it, this answered a
-        // root-agnostic list of every imported work in the library beside a
-        // root-scoped grid — one response, two different questions. `browse`
-        // empties it in SQL, from §5.1's own NULL-excludes-itself rule: an
-        // imported member sits under no root, and asking for a root asks for what
-        // is under it. Whole-branch review, 2026-08-21.
-        let unfiled = match browse::unfiled(conn, &principal.roots, principal.user_id, query.root) {
-            Ok(unfiled) => unfiled,
-            Err(why) => return failed("the unfiled works", &why),
-        };
+        // **`query.library` here too.** Fetched without it, this would answer
+        // a library-agnostic list beside a library-scoped grid — one response,
+        // two different questions.
+        // `browse` leaves every imported work out of it in SQL, from §5.1's
+        // own NULL-excludes-itself rule: an imported member sits under no
+        // folder, and asking for a library asks for what is in its folders.
+        let unfiled =
+            match browse::unfiled(conn, &principal.roots, principal.user_id, query.library) {
+                Ok(unfiled) => unfiled,
+                Err(why) => return failed("the unfiled works", &why),
+            };
         Json(serde_json::json!({
             "series": series.iter().map(series_json).collect::<Vec<_>>(),
             "unfiled": unfiled.iter().map(work_json).collect::<Vec<_>>(),
@@ -246,16 +269,18 @@ pub(crate) async fn work(
     .await
 }
 
-/// The `?q=` a search carries.
+/// The `?q=` a search carries, and its optional `?library=`.
 #[derive(serde::Deserialize)]
 pub(crate) struct SearchQuery {
     #[serde(default)]
     q: String,
+    library: Option<i64>,
 }
 
 /// `GET /api/library/search?q=` — trigram FTS5 over series titles and work
 /// titles, with a `LIKE` scan underneath for a query too short for trigram to
-/// answer at all. See `browse::search`.
+/// answer at all. See `browse::search`. `?library=` narrows it as it narrows
+/// the grid.
 ///
 /// **The query is echoed back**, because spec C1 §8 wants the empty state to
 /// name what was searched: a reader looking at zero results cannot tell "no
@@ -267,7 +292,13 @@ pub(crate) async fn search(
     Query(query): Query<SearchQuery>,
 ) -> Response {
     on_the_library(state, "the search", move |conn| {
-        match browse::search(conn, &principal.roots, principal.user_id, &query.q) {
+        match browse::search(
+            conn,
+            &principal.roots,
+            principal.user_id,
+            &query.q,
+            query.library,
+        ) {
             Ok(hits) => Json(serde_json::json!({
                 "query": query.q,
                 "series": hits.series.iter().map(series_json).collect::<Vec<_>>(),
@@ -340,7 +371,8 @@ pub(crate) async fn cover(
     .await
 }
 
-/// `GET /api/library/status` — spec C1 §5.5.
+/// `GET /api/library/status` — spec C1 §5.5: the libraries the caller may
+/// see, each with its id, its name and whether it has been scanned.
 ///
 /// Read-only. Two of spec C1 §8's first-run states are indistinguishable to
 /// every other route, and a first-run state nobody can render is one that
@@ -354,11 +386,11 @@ pub(crate) async fn status(
         "the library status",
         move |conn| match browse::status(conn, &principal.roots) {
             Ok(status) => Json(serde_json::json!({
-                "roots": status.roots.iter().map(|r| serde_json::json!({
-                    "id": r.id,
-                    "name": r.name,
+                "libraries": status.libraries.iter().map(|l| serde_json::json!({
+                    "id": l.id,
+                    "name": l.name,
+                    "scanned": l.scanned,
                 })).collect::<Vec<_>>(),
-                "scanned": status.scanned,
             }))
             .into_response(),
             Err(why) => failed("the library status", &why),

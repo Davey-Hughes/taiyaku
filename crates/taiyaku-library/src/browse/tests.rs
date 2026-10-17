@@ -7,7 +7,9 @@ use crate::{Library, Progress, derive, scan, state};
 ///
 /// Both roots are folders of one library: since Part F1 a work gathers its
 /// editions within a library, and a root of its own library would hold a
-/// work of its own.
+/// work of its own. **That library is numbered 70**, apart from the folders,
+/// so a narrowing that read a library id as a folder id finds nothing rather
+/// than the English folder that happens to share its number.
 fn two_root_library() -> (
     Library,
     i64,
@@ -23,6 +25,8 @@ fn two_root_library() -> (
     let library = Library::open_in_memory().expect("in-memory");
     let (en_id, raw_id) = {
         let conn = library.conn();
+        conn.execute("INSERT INTO library (id, name) VALUES (70, 'Manga')", [])
+            .expect("the library, numbered apart from its folders");
         let en_root =
             scan::add_root_in(&conn, en.path(), scan::InLibrary::Named("Manga")).expect("adds en");
         let raw_root = scan::add_root_in(&conn, raw.path(), scan::InLibrary::Named("Manga"))
@@ -57,6 +61,110 @@ fn two_root_library() -> (
         (en_root.id, raw_root.id)
     };
     (library, en_id, raw_id, en, raw)
+}
+
+/// Two libraries, scanned and derived.
+///
+/// - **Manga**: the English and raw folders of `two_root_library`, edition
+///   keys `en` and `raw`, one series `Series` whose one work holds both
+///   editions.
+/// - **comics**: one folder holding a `Series` of its own (the same title, so
+///   a second series row, and byte-identical pages, so a second work) and a
+///   series `Other`. Its edition key is the default, `raw`.
+///
+/// Lower-case `comics` on purpose: listed by name (`COLLATE NOCASE`) it comes
+/// first, by bytes or by id it comes second.
+///
+/// **The libraries are numbered 70 and 80**, apart from the folders, so a
+/// query that read a library id as a folder id finds nothing rather than the
+/// folder that happens to share its number.
+struct TwoLibraries {
+    library: Library,
+    manga: i64,
+    comics: i64,
+    en_root: i64,
+    raw_root: i64,
+    comics_root: i64,
+    _dirs: [crate::tests::TempDir; 3],
+}
+
+fn two_library_store() -> TwoLibraries {
+    let en = crate::tests::tempdir("browse-lib-en");
+    write_pages(&en.path().join("Series").join("Series - v01"), 2);
+    let raw = crate::tests::tempdir("browse-lib-raw");
+    write_pages(&raw.path().join("Series").join("Series - v01"), 2);
+    let comics = crate::tests::tempdir("browse-lib-comics");
+    write_pages(&comics.path().join("Series").join("Series - v01"), 2);
+    write_pages(&comics.path().join("Other").join("Other - v01"), 3);
+
+    let library = Library::open_in_memory().expect("in-memory");
+    let (manga, comics_id, en_root, raw_root, comics_root) = {
+        let conn = library.conn();
+        conn.execute(
+            "INSERT INTO library (id, name) VALUES (70, 'Manga'), (80, 'comics')",
+            [],
+        )
+        .expect("two libraries, numbered apart from their folders");
+        let en_root = scan::add_root_in(&conn, en.path(), scan::InLibrary::Named("Manga"))
+            .expect("adds en")
+            .id;
+        let raw_root = scan::add_root_in(&conn, raw.path(), scan::InLibrary::Named("Manga"))
+            .expect("adds raw")
+            .id;
+        let comics_root = scan::add_root_in(&conn, comics.path(), scan::InLibrary::Named("comics"))
+            .expect("adds comics")
+            .id;
+        conn.execute(
+            "UPDATE root SET edition_key = 'en' WHERE id = ?1",
+            [en_root],
+        )
+        .expect("names the English folder's edition");
+        conn.execute(
+            "UPDATE root SET edition_key = 'raw' WHERE id = ?1",
+            [raw_root],
+        )
+        .expect("names the raw folder's edition");
+        // Re-read, so each folder is walked carrying the key just set.
+        for root in scan::roots(&conn).expect("re-reads the roots") {
+            scan::scan_root(&conn, &root).expect("scans");
+        }
+        derive::derive(&conn).expect("derives");
+        let library_of = |root: i64| -> i64 {
+            conn.query_row("SELECT library_id FROM root WHERE id = ?1", [root], |r| {
+                r.get(0)
+            })
+            .expect("the folder's library")
+        };
+        (
+            library_of(en_root),
+            library_of(comics_root),
+            en_root,
+            raw_root,
+            comics_root,
+        )
+    };
+    TwoLibraries {
+        library,
+        manga,
+        comics: comics_id,
+        en_root,
+        raw_root,
+        comics_root,
+        _dirs: [en, raw, comics],
+    }
+}
+
+/// The ids of a library's series, by `series.library_id`: never by title,
+/// since both libraries hold a `Series`.
+fn series_of(library: &Library, library_id: i64) -> Vec<i64> {
+    let conn = library.conn();
+    let mut stmt = conn
+        .prepare("SELECT id FROM series WHERE library_id = ?1 ORDER BY id")
+        .expect("prepares");
+    stmt.query_map([library_id], |r| r.get(0))
+        .expect("reads")
+        .collect::<rusqlite::Result<Vec<i64>>>()
+        .expect("reads")
 }
 
 /// An imported work — one with a `sidecar_path` and no series.
@@ -253,7 +361,7 @@ fn a_work_entirely_outside_the_grant_is_none() {
 fn search_finds_a_series_by_its_title() {
     let (library, _, _, _en, _raw) = two_root_library();
     let conn = library.conn();
-    let hits = search(&conn, &[], 1, "Series").expect("searches");
+    let hits = search(&conn, &[], 1, "Series", None).expect("searches");
     assert_eq!(hits.series.len(), 1);
     assert!(hits.unfiled.is_empty());
 }
@@ -265,7 +373,7 @@ fn search_finds_an_unfiled_work_by_its_own_title() {
     let (library, _, _, _en, _raw) = two_root_library();
     import_a_work(&library, "Hanayome", "/x/taiyaku.json");
     let conn = library.conn();
-    let hits = search(&conn, &[], 1, "Hanayome").expect("searches");
+    let hits = search(&conn, &[], 1, "Hanayome", None).expect("searches");
     assert!(hits.series.is_empty(), "no series is named Hanayome");
     assert_eq!(hits.unfiled.len(), 1, "the work itself is the hit");
     assert_eq!(hits.unfiled[0].title, "Hanayome");
@@ -275,7 +383,7 @@ fn search_finds_an_unfiled_work_by_its_own_title() {
 fn an_empty_query_searches_for_nothing_rather_than_everything() {
     let (library, _, _, _en, _raw) = two_root_library();
     let conn = library.conn();
-    let hits = search(&conn, &[], 1, "   ").expect("searches");
+    let hits = search(&conn, &[], 1, "   ", None).expect("searches");
     assert!(hits.series.is_empty() && hits.unfiled.is_empty());
 }
 
@@ -351,7 +459,7 @@ fn continuing_is_ordered_by_when_each_work_was_last_read() {
     )
     .expect("newer position");
 
-    let home = home(&conn, &[], 1).expect("reads home");
+    let home = home(&conn, &[], 1, None).expect("reads home");
     assert_eq!(home.continuing.len(), 2);
     assert_eq!(home.continuing[0].id, ids[1], "most recently read first");
     assert!(
@@ -375,7 +483,7 @@ fn a_completed_position_is_read_rather_than_continuing() {
     )
     .expect("finished position");
 
-    let home = home(&conn, &[], 1).expect("reads home");
+    let home = home(&conn, &[], 1, None).expect("reads home");
     assert!(home.continuing.is_empty());
     assert_eq!(home.read.len(), 1);
     assert_eq!(home.added.len(), 1, "the work is still newly added");
@@ -458,7 +566,7 @@ fn continuing_sorts_on_the_newest_position_a_work_holds() {
     )
     .expect("a fresh raw position, newer than both of the above");
 
-    let home = home(&conn, &[], 1).expect("reads home");
+    let home = home(&conn, &[], 1, None).expect("reads home");
     let order: Vec<i64> = home.continuing.iter().map(|w| w.id).collect();
     assert_eq!(
         order,
@@ -502,7 +610,7 @@ fn a_work_finished_in_one_edition_and_open_in_another_is_still_continuing() {
     )
     .expect("an open en position");
 
-    let home = home(&conn, &[], 1).expect("reads home");
+    let home = home(&conn, &[], 1, None).expect("reads home");
     assert!(
         home.continuing.iter().any(|w| w.id == ids[0]),
         "an unfinished edition keeps the work continuing"
@@ -674,7 +782,7 @@ fn search_does_not_lose_a_visible_hit_to_the_cap() {
         );
     }
     let conn = library.conn();
-    let hits = search(&conn, &[], 1, "Volume05").expect("searches");
+    let hits = search(&conn, &[], 1, "Volume05", None).expect("searches");
     assert_eq!(hits.unfiled.len(), 1, "the one exact match is found");
     assert_eq!(hits.unfiled[0].title, "Volume05");
 }
@@ -769,14 +877,14 @@ fn each_search_index_is_load_bearing_on_its_own() {
     )
     .expect("gives the work a title the series does not carry");
 
-    let by_series = search(&conn, &[], 1, "Quintessential").expect("searches");
+    let by_series = search(&conn, &[], 1, "Quintessential", None).expect("searches");
     assert_eq!(
         by_series.series.len(),
         1,
         "a series alias is found through the series index"
     );
 
-    let by_work = search(&conn, &[], 1, "Nakano").expect("searches");
+    let by_work = search(&conn, &[], 1, "Nakano", None).expect("searches");
     assert_eq!(
         by_work.series.len(),
         1,
@@ -919,31 +1027,203 @@ fn a_restricted_grant_still_binds_user_id_after_its_own_roots() {
 }
 
 #[test]
-fn a_root_filter_keeps_only_that_roots_editions() {
-    let (library, en_id, _raw_id, _en, _raw) = two_root_library();
-    let conn = library.conn();
-    let all = series(&conn, &[], 1, None).expect("lists series");
-    assert_eq!(all.first().expect("one series").editions, 2);
+fn a_library_narrows_the_grid_to_its_own_series() {
+    let s = two_library_store();
+    let conn = s.library.conn();
 
-    let english = series(&conn, &[], 1, Some(en_id)).expect("lists series");
+    let all = series(&conn, &[], 1, None).expect("lists");
+    assert_eq!(all.len(), 3, "both libraries, unnarrowed");
+
+    let manga = series(&conn, &[], 1, Some(s.manga)).expect("lists");
+    let ids: Vec<i64> = manga.iter().map(|c| c.id).collect();
+    drop(conn);
+    assert_eq!(ids, series_of(&s.library, s.manga), "Manga's one series");
+    assert_eq!(manga[0].editions, 2, "with both its folders' editions");
+
+    let conn = s.library.conn();
+    let comics = series(&conn, &[], 1, Some(s.comics)).expect("lists");
+    let mut ids: Vec<i64> = comics.iter().map(|c| c.id).collect();
+    ids.sort_unstable();
+    drop(conn);
     assert_eq!(
-        english.first().expect("one series").editions,
-        1,
-        "only the English root's edition survives"
+        ids,
+        series_of(&s.library, s.comics),
+        "comics' two series, and not Manga's Series"
+    );
+    assert!(comics.iter().all(|c| c.editions == 1));
+}
+
+/// **The narrowing never widens the grant.** A caller granted Manga asking
+/// for comics is answered nothing, on every listing that narrows.
+#[test]
+fn a_library_outside_the_grant_answers_nothing() {
+    let s = two_library_store();
+    import_a_work(&s.library, "Imported", "/x/taiyaku.json");
+    let conn = s.library.conn();
+    let grant = [s.en_root, s.raw_root];
+    let narrowed = Some(s.comics);
+    assert!(
+        series(&conn, &grant, 1, narrowed)
+            .expect("lists")
+            .is_empty()
+    );
+    assert!(
+        unfiled(&conn, &grant, 1, narrowed)
+            .expect("lists")
+            .is_empty()
+    );
+    let hits = search(&conn, &grant, 1, "Series", narrowed).expect("searches");
+    assert!(hits.series.is_empty() && hits.unfiled.is_empty());
+    let home = home(&conn, &grant, 1, narrowed).expect("reads home");
+    assert!(home.added.is_empty() && home.continuing.is_empty() && home.read.is_empty());
+}
+
+/// **An empty folder list is "no restriction" to every function here**, so a
+/// library with no folder of its own must answer nothing rather than hand one
+/// on. Unrestricted caller, so a leak would be the whole store.
+#[test]
+fn a_library_that_does_not_exist_answers_nothing_rather_than_everything() {
+    let s = two_library_store();
+    let conn = s.library.conn();
+    assert!(
+        series(&conn, &[], 1, Some(9_999))
+            .expect("lists")
+            .is_empty()
+    );
+    assert!(
+        home(&conn, &[], 1, Some(9_999))
+            .expect("reads")
+            .added
+            .is_empty()
+    );
+    assert!(library_scope(&conn, &[], 9_999).expect("reads").is_none());
+
+    // A library with no folder, which nothing public makes (O205), written
+    // by hand: the same answer.
+    conn.execute("INSERT INTO library (name) VALUES ('Empty')", [])
+        .expect("a library with no folder");
+    let empty = conn.last_insert_rowid();
+    assert!(
+        series(&conn, &[], 1, Some(empty))
+            .expect("lists")
+            .is_empty()
+    );
+    assert!(library_scope(&conn, &[], empty).expect("reads").is_none());
+}
+
+/// **The grant's share, not the library's whole.** Grants are whole libraries
+/// through the API, but `browse` takes any folder list; this pins the
+/// intersection, which a narrowing to the library's folders alone would fail
+/// (Manga's series would show both editions).
+#[test]
+fn the_narrowing_reads_the_folders_the_library_and_the_grant_share() {
+    let s = two_library_store();
+    let conn = s.library.conn();
+    let cards = series(&conn, &[s.en_root, s.comics_root], 1, Some(s.manga)).expect("lists");
+    assert_eq!(cards.len(), 1);
+    assert_eq!(cards[0].editions, 1, "the English edition only");
+    let scope = library_scope(&conn, &[s.en_root, s.comics_root], s.manga)
+        .expect("reads")
+        .expect("Manga, through its English folder");
+    assert_eq!(scope.name, "Manga");
+    assert_eq!(scope.folders, vec![s.en_root]);
+}
+
+/// Each of home's three lists narrows. Positions: continuing on Manga's work
+/// and comics' `Other`; finished on comics' `Series`.
+#[test]
+fn every_home_list_narrows_to_the_library() {
+    let s = two_library_store();
+    let (manga_work, comics_series_work, other_work) = {
+        let conn = s.library.conn();
+        let one = |sql: &str, p: i64| -> i64 {
+            conn.query_row(sql, [p], |r| r.get(0)).expect("one work")
+        };
+        (
+            one("SELECT w.id FROM work w WHERE w.library_id = ?1", s.manga),
+            one(
+                "SELECT w.id FROM work w JOIN series x ON x.id = w.series_id
+                  WHERE w.library_id = ?1 AND x.sort_title = 'Series'",
+                s.comics,
+            ),
+            one(
+                "SELECT w.id FROM work w JOIN series x ON x.id = w.series_id
+                  WHERE w.library_id = ?1 AND x.sort_title = 'Other'",
+                s.comics,
+            ),
+        )
+    };
+    {
+        let conn = s.library.conn();
+        for (work, edition, done) in [
+            (manga_work, "en", None),
+            (other_work, "raw", None),
+            (comics_series_work, "raw", Some("2026-10-17T00:00:00Z")),
+        ] {
+            conn.execute(
+                "INSERT INTO progress (user_id, work_id, edition, slot, updated, completed_at)
+                 VALUES (1, ?1, ?2, 0, '2026-10-17T00:00:00Z', ?3)",
+                rusqlite::params![work, edition, done],
+            )
+            .expect("a position");
+        }
+    }
+    let conn = s.library.conn();
+    let ids = |works: &[WorkCard]| works.iter().map(|w| w.id).collect::<Vec<_>>();
+
+    let comics = home(&conn, &[], 1, Some(s.comics)).expect("reads home");
+    assert_eq!(ids(&comics.continuing), vec![other_work]);
+    assert_eq!(ids(&comics.read), vec![comics_series_work]);
+    let mut added = ids(&comics.added);
+    added.sort_unstable();
+    let mut want = vec![comics_series_work, other_work];
+    want.sort_unstable();
+    assert_eq!(added, want);
+
+    let manga = home(&conn, &[], 1, Some(s.manga)).expect("reads home");
+    assert_eq!(ids(&manga.continuing), vec![manga_work]);
+    assert_eq!(ids(&manga.added), vec![manga_work]);
+    assert!(
+        manga.read.is_empty(),
+        "the one finished work is comics', so Manga's read list is empty"
     );
 }
 
-/// **The filter narrows the grant; it never widens it.** A reader granted the
-/// English root alone, asking for the raw one, is answered nothing — not the
-/// raw edition, and not an error that would confirm the root exists.
+/// Both halves of a search narrow: the series to the library's own, and the
+/// unfiled works to none, since an imported work is in no library.
 #[test]
-fn a_root_filter_outside_the_grant_answers_nothing() {
-    let (library, en_id, raw_id, _en, _raw) = two_root_library();
-    let conn = library.conn();
-    let cards = series(&conn, &[en_id], 1, Some(raw_id)).expect("lists series");
+fn search_narrowed_to_a_library_finds_only_its_series() {
+    let s = two_library_store();
+    import_a_work(&s.library, "Imported Series", "/x/taiyaku.json");
+    let conn = s.library.conn();
+    let all = search(&conn, &[], 1, "Series", None).expect("searches");
+    assert_eq!(all.series.len(), 2, "a Series in each library");
+    assert_eq!(all.unfiled.len(), 1, "and the imported work, in neither");
+    let comics = search(&conn, &[], 1, "Series", Some(s.comics)).expect("searches");
     assert!(
-        cards.is_empty(),
-        "the grant and the filter do not intersect"
+        comics.unfiled.is_empty(),
+        "an imported work is in no library: {:?}",
+        comics.unfiled
+    );
+    let ids: Vec<i64> = comics.series.iter().map(|c| c.id).collect();
+    drop(conn);
+    let theirs = series_of(&s.library, s.comics);
+    assert_eq!(ids.len(), 1);
+    assert!(theirs.contains(&ids[0]), "comics' Series, not Manga's");
+}
+
+/// An imported work is in no library: asking for one leaves the unfiled
+/// bucket empty, by the grant's own rule (`IN (…)` is false for NULL).
+#[test]
+fn asking_for_a_library_leaves_the_unfiled_bucket_empty() {
+    let s = two_library_store();
+    import_a_work(&s.library, "Imported", "/x/taiyaku.json");
+    let conn = s.library.conn();
+    assert_eq!(unfiled(&conn, &[], 1, None).expect("lists").len(), 1);
+    assert!(
+        unfiled(&conn, &[], 1, Some(s.manga))
+            .expect("lists")
+            .is_empty()
     );
 }
 
@@ -1098,273 +1378,221 @@ fn an_empty_grant_counts_the_alignment_as_it_always_did() {
     assert_eq!(cards.first().expect("one series").aligned, 1);
 }
 
-/// **`?root=` narrows `aligned` too, and it was the one count it did not.**
+/// The raw folder moved to a library of its own by hand, not derived
+/// again: one work keeps an edition under each library (O191's shape).
+fn raw_in_a_library_of_its_own(library: &Library, raw_root: i64) -> i64 {
+    let conn = library.conn();
+    conn.execute("INSERT INTO library (name) VALUES ('Raws')", [])
+        .expect("a second library");
+    let raws = conn.last_insert_rowid();
+    conn.execute(
+        "UPDATE root SET library_id = ?1 WHERE id = ?2",
+        [raws, raw_root],
+    )
+    .expect("files the raw folder under it");
+    raws
+}
+
+/// **A library narrowing reaches the `aligned` count, not only `works`,
+/// `editions` and `unread`.**
 ///
-/// The grant half of this filter was rewritten on 2026-08-21 so that
-/// `pair_clause` is the single definition of "both editions survive"; the
-/// narrowing half was not threaded through it. `only_clause` reached `series`'s
-/// edition join alone, so `works`, `editions` and `unread` were computed after
-/// the narrowing and the `SELECT`-list `aligned` count was computed before it.
-/// This exact fixture answered `editions: 1` beside `aligned: 1` — a tile
-/// claiming a pair while reporting the single edition that can hold half of
-/// one. The same screen-contradicting-itself the rewrite existed to remove,
-/// surviving in the half the rewrite did not reach.
-///
-/// **No test passed a non-`None` `only` while asserting `aligned`**, which is
-/// exactly why two fixes in one commit both missed it. The `None` call here is
-/// the contrast: nothing changes between the two but that argument.
+/// With the raw folder in `Raws` ([`raw_in_a_library_of_its_own`]), the one
+/// work holds its `en` edition in the English folder's library and its `raw`
+/// edition in `Raws`. Narrowed to the English folder's library, the work
+/// survives on its English edition and the `en`↔`raw` pair, whose other side
+/// is in `Raws`, is counted by nobody: a tile drawing `⇄ 1` beside
+/// `editions: 1` would claim a pair it shows half of. The `None` call is the
+/// contrast: nothing changes between the two but that argument.
 #[test]
-fn a_root_filter_narrows_the_aligned_count_and_not_only_the_other_three() {
-    let (library, en_id, _raw_id, _en_dir, _raw_dir) = two_root_library();
+fn a_library_narrows_the_aligned_count_and_not_only_the_other_three() {
+    let (library, en_id, raw_id, _en_dir, _raw_dir) = two_root_library();
     let ids = work_ids(&library);
     align(&library, ids[0], "en", "raw");
+    raw_in_a_library_of_its_own(&library, raw_id);
 
     let conn = library.conn();
+    let english_library: i64 = conn
+        .query_row("SELECT library_id FROM root WHERE id = ?1", [en_id], |r| {
+            r.get(0)
+        })
+        .expect("the English folder's library");
+    assert!(
+        ![en_id, raw_id].contains(&english_library),
+        "library {english_library} shares a folder's id"
+    );
     let all = series(&conn, &[], 1, None).expect("lists series");
     let whole = all.first().expect("one series");
     assert_eq!(whole.editions, 2, "unnarrowed, both editions are visible");
     assert_eq!(whole.aligned, 1, "and the pair they form is counted");
 
-    let english = series(&conn, &[], 1, Some(en_id)).expect("lists series");
+    let english = series(&conn, &[], 1, Some(english_library)).expect("lists series");
     let card = english.first().expect("one series");
     assert_eq!(card.works, 1, "the work survives on its English edition");
-    assert_eq!(card.editions, 1, "which is the only one under this root");
+    assert_eq!(card.editions, 1, "which is the only one in this library");
     assert_eq!(
         card.aligned, 0,
-        "so the pair, whose other side is not under it, is counted by nobody"
+        "so the pair, whose other side is in another library, is counted by nobody"
     );
 }
 
-/// **The positive half**, without which the test above passes on a narrowing
-/// clause that answers false for every alignment there is — the hole
+/// **The positive half**, without which the test above passes on a filter
+/// that answers false for every alignment there is — the hole
 /// `an_alignment_wholly_inside_the_grant_is_counted_by_both` fills for the
 /// grant.
 ///
-/// It is also the only test that binds a **non-empty grant and a narrowing
-/// together on `series` while asserting a returned row**: ten placeholders in
-/// three interleaved `(roots, roots, only)` groups and then `user_id`, which is
-/// the order the module header describes. `a_root_filter_outside_the_grant_
-/// answers_nothing` binds the same ten and asserts only that nothing came back.
-///
-/// One root holding two edition keys is what a per-path rule's
-/// `set_edition_key` produces — see `derive.rs`'s `DEFAULT_EDITION_KEY`. The
-/// member is written by hand for the reason `align`'s is: every fixture here is
-/// scanned, and scanning two directories gives each root exactly one key.
+/// Both folders are in Manga and the grant names both, so the narrowing reads
+/// two folders and the pair survives with both its editions.
 #[test]
-fn a_root_filter_keeps_a_pair_whose_two_editions_are_both_under_it() {
+fn a_library_keeps_a_pair_whose_two_editions_are_both_in_it() {
     let (library, en_id, raw_id, _en_dir, _raw_dir) = two_root_library();
     let ids = work_ids(&library);
     align(&library, ids[0], "en", "raw");
 
     let conn = library.conn();
-    conn.execute(
-        "INSERT INTO member (edition_id, ordinal, path, sha256, pages, root_id)
-              SELECT e.id, 1, '/en/Series - v01 (raw).cbz', 'ff', 2, ?1
-                FROM edition e
-               WHERE e.work_id = ?2 AND e.key = 'raw'",
-        rusqlite::params![en_id, ids[0]],
-    )
-    .expect("the raw edition also held under the English root");
-
-    let english = series(&conn, &[en_id, raw_id], 1, Some(en_id)).expect("lists series");
-    let card = english.first().expect("one series");
+    let manga: i64 = conn
+        .query_row("SELECT library_id FROM root WHERE id = ?1", [en_id], |r| {
+            r.get(0)
+        })
+        .expect("the library both folders are in");
+    let cards = series(&conn, &[en_id, raw_id], 1, Some(manga)).expect("lists series");
+    let card = cards.first().expect("one series");
     assert_eq!(
         card.editions, 2,
-        "both editions hold a member under the root asked for"
+        "both editions are in the library asked for"
     );
     assert_eq!(
         card.aligned, 1,
         "so the pair they form survives the narrowing as well as the grant"
     );
+}
 
-    let raws = series(&conn, &[en_id, raw_id], 1, Some(raw_id)).expect("lists series");
-    let card = raws.first().expect("one series");
+#[test]
+fn status_lists_each_library_once_by_name_with_case_folded() {
+    let s = two_library_store();
+    let conn = s.library.conn();
+    let names: Vec<String> = status(&conn, &[])
+        .expect("reads")
+        .libraries
+        .into_iter()
+        .map(|l| l.name)
+        .collect();
     assert_eq!(
-        card.editions, 1,
-        "only the raw edition has a member under the raw root"
+        names,
+        vec!["comics".to_string(), "Manga".to_string()],
+        "two folders make one entry, and lower-case `comics` sorts first"
     );
-    assert_eq!(card.aligned, 0, "and half a pair is not one");
 }
 
-/// **Asking for a root answers what is under it, and no imported work is.**
-/// The grid fetches series and unfiled works together; passing `?root=` to the
-/// first alone answered a root-scoped grid beside every imported work in the
-/// library. No new rule: `only_clause`'s `om.root_id = ?` is false for the
-/// NULL an imported member carries, exactly as `IN (…)` is.
+/// The slugs `work.library_id` files in each library: Manga's one work and
+/// comics' two, told apart by the folders their members are under rather
+/// than by asking the column again.
 #[test]
-fn asking_for_a_root_leaves_the_unfiled_bucket_empty() {
-    let (library, en_id, _raw_id, _en, _raw) = two_root_library();
-    import_a_work(&library, "Imported", "/x/taiyaku.json");
-
-    let conn = library.conn();
-    assert_eq!(
-        unfiled(&conn, &[], 1, None).expect("lists").len(),
-        1,
-        "the whole library still carries it"
-    );
+fn filed_in_answers_the_slugs_of_the_works_filed_in_a_library() {
+    let s = two_library_store();
+    let conn = s.library.conn();
+    let folders = [s.en_root, s.raw_root, s.comics_root];
     assert!(
-        unfiled(&conn, &[], 1, Some(en_id))
-            .expect("lists")
-            .is_empty(),
-        "a work under no root is not under this one"
+        !folders.contains(&s.manga) && !folders.contains(&s.comics),
+        "libraries {} and {} share a folder's id: {folders:?}",
+        s.manga,
+        s.comics
     );
-    // A grant *and* a narrowing, which is the shape that binds every group
-    // this statement has: three of roots and then `only`. A miscount here is
-    // a hard refusal from `rusqlite` rather than a wrong answer.
-    assert!(
-        unfiled(&conn, &[en_id], 1, Some(en_id))
-            .expect("lists")
-            .is_empty(),
-        "and the same when the caller is restricted as well"
-    );
-}
-
-#[test]
-fn status_names_a_root_by_its_last_path_component() {
-    let (library, _root, _dir) = two_volume_library();
-    let conn = library.conn();
-    let status = status(&conn, &[]).expect("reads status");
-    assert_eq!(status.roots.len(), 1);
-    assert!(
-        !status.roots[0].name.contains('/'),
-        "a nav item, not a filesystem path: {}",
-        status.roots[0].name
-    );
-    assert!(status.scanned, "the fixture has been scanned");
-}
-
-#[test]
-fn status_lists_only_the_roots_the_grant_names() {
-    let (library, en_id, _raw_id, _en, _raw) = two_root_library();
-    let conn = library.conn();
-    assert_eq!(status(&conn, &[]).expect("reads").roots.len(), 2);
-    let restricted = status(&conn, &[en_id]).expect("reads");
-    assert_eq!(restricted.roots.len(), 1);
-    assert_eq!(restricted.roots[0].id, en_id);
-}
-
-#[test]
-fn two_roots_sharing_a_last_component_fall_back_to_their_paths() {
-    let outer = crate::tests::tempdir("browse-collide");
-    let library = Library::open_in_memory().expect("in-memory");
-    {
-        let conn = library.conn();
-        for parent in ["a", "b"] {
-            let path = outer.path().join(parent).join("Manga");
-            write_pages(&path.join("Series - v01"), 1);
-            scan::add_root(&conn, &path).expect("adds a root");
-        }
-    }
-    let conn = library.conn();
-    let status = status(&conn, &[]).expect("reads status");
-    assert_eq!(status.roots.len(), 2);
-    for root in &status.roots {
-        assert!(
-            root.name.contains('/'),
-            "a colliding name falls back to the whole path: {}",
-            root.name
-        );
-    }
-    assert!(!status.scanned, "nothing has been scanned");
-}
-
-/// **A partial collision only demotes the roots that actually collide.**
-/// `named()` decides each row independently against a count computed over
-/// *all* rows, so three roots where two share a last component and one does
-/// not should fall back for the colliding pair while the third keeps its
-/// short name. Nothing pinned that before this test: an implementation that
-/// fell back for every root as soon as *any* pair collided would still pass
-/// `two_roots_sharing_a_last_component_fall_back_to_their_paths` (both
-/// collide there) and `status_names_a_root_by_its_last_path_component` (none
-/// collide there) without ever being caught.
-#[test]
-fn a_partial_collision_falls_back_only_the_colliding_pair() {
-    let outer = crate::tests::tempdir("browse-partial-collide");
-    let library = Library::open_in_memory().expect("in-memory");
-    let (colliding, unique_id) = {
-        let conn = library.conn();
-        let mut colliding = Vec::new();
-        for parent in ["a", "b"] {
-            let path = outer.path().join(parent).join("Manga");
-            write_pages(&path.join("Series - v01"), 1);
-            colliding.push(
-                scan::add_root(&conn, &path)
-                    .expect("adds a colliding root")
-                    .id,
-            );
-        }
-        let unique = outer.path().join("c").join("Unique");
-        write_pages(&unique.join("Series - v01"), 1);
-        let unique_id = scan::add_root(&conn, &unique)
-            .expect("adds the non-colliding root")
-            .id;
-        (colliding, unique_id)
+    let under = |these: &[i64]| -> HashSet<String> {
+        let holes = holes(these.len());
+        conn.prepare(&format!(
+            "SELECT DISTINCT w.slug FROM work w
+               JOIN edition e ON e.work_id = w.id
+               JOIN member m ON m.edition_id = e.id
+              WHERE m.root_id IN ({holes})"
+        ))
+        .expect("prepares")
+        .query_map(params_from_iter(these), |r| r.get(0))
+        .expect("reads")
+        .collect::<rusqlite::Result<_>>()
+        .expect("reads")
     };
 
-    let conn = library.conn();
-    let status = status(&conn, &[]).expect("reads status");
-    assert_eq!(status.roots.len(), 3);
-
-    for root in &status.roots {
-        if colliding.contains(&root.id) {
-            assert!(
-                root.name.contains('/'),
-                "a colliding root falls back to its whole path: {}",
-                root.name
-            );
-        } else if root.id == unique_id {
-            assert_eq!(
-                root.name, "Unique",
-                "the non-colliding root keeps its short name even though another pair collided"
-            );
-        }
-    }
+    let manga = filed_in(&conn, s.manga).expect("reads Manga's");
+    let comics = filed_in(&conn, s.comics).expect("reads comics'");
+    assert_eq!(manga.len(), 1, "Manga's one work: {manga:?}");
+    assert_eq!(comics.len(), 2, "comics' Series and Other: {comics:?}");
+    assert_eq!(manga, under(&[s.en_root, s.raw_root]));
+    assert_eq!(comics, under(&[s.comics_root]));
+    assert!(
+        manga.is_disjoint(&comics),
+        "a work filed in both: {manga:?} {comics:?}"
+    );
 }
 
-/// **`scanned` pinned by one test rather than a pair.** `status_names_a_root
-/// _by_its_last_path_component` reads a fixture that has already been scanned
-/// and expects `true`; `two_roots_sharing_a_last_component_fall_back_to_their
-/// _paths` reads one that has not and expects `false`. Together they pin
-/// `scanned`, but neither does alone, and editing one fixture's scan step
-/// without noticing the other test carried half the assertion would still
-/// pass. This test reads `status` on the **same** library before and after
-/// the one scan that changes the answer, so it carries the whole claim by
-/// itself.
+#[test]
+fn status_lists_only_the_libraries_the_grant_names() {
+    let s = two_library_store();
+    let conn = s.library.conn();
+    let restricted = status(&conn, &[s.en_root, s.raw_root]).expect("reads");
+    let ids: Vec<i64> = restricted.libraries.iter().map(|l| l.id).collect();
+    assert_eq!(ids, vec![s.manga]);
+}
+
+/// Per library: a scan of one library's folder says nothing of another's.
 ///
-/// Built inline, not with `two_volume_library`, because that helper scans
-/// before returning — there would be no unscanned moment left to read.
+/// **The libraries are numbered 70 and 80**, apart from their folders, so a
+/// status that read a library id as a folder id (`d.root_id = l.id`, with no
+/// `JOIN root`) cannot find the walked folder's rows under a library of the
+/// same number and pass.
 #[test]
-fn scanned_turns_true_only_after_a_scan_of_this_library_runs() {
-    let dir = crate::tests::tempdir("browse-not-yet-scanned");
-    write_pages(&dir.path().join("Series").join("Series - v01"), 1);
-
+fn scanned_is_true_only_for_a_library_one_of_whose_folders_was_walked() {
+    let walked = crate::tests::tempdir("browse-walked");
+    write_pages(&walked.path().join("Series").join("Series - v01"), 1);
+    let unwalked = crate::tests::tempdir("browse-unwalked");
+    write_pages(&unwalked.path().join("Other").join("Other - v01"), 1);
     let library = Library::open_in_memory().expect("in-memory");
-    // A fresh block per connection: `Library::conn` locks a non-reentrant
-    // `Mutex<Connection>`, and holding a guard across a call that takes its
-    // own would deadlock the test rather than fail it.
-    let root = {
-        let conn = library.conn();
-        scan::add_root(&conn, dir.path()).expect("adds the root")
-    };
-
-    {
-        let conn = library.conn();
-        let status = status(&conn, &[]).expect("reads status");
-        assert!(
-            !status.scanned,
-            "the root is added but nothing has walked it yet"
-        );
-    }
-
-    {
-        let conn = library.conn();
-        scan::scan_root(&conn, &root).expect("scans");
-        derive::derive(&conn).expect("derives");
-    }
-
     let conn = library.conn();
-    let status = status(&conn, &[]).expect("reads status");
-    assert!(status.scanned, "the scan wrote a dir_state row");
+    conn.execute(
+        "INSERT INTO library (id, name) VALUES (70, 'Walked'), (80, 'Unwalked')",
+        [],
+    )
+    .expect("two libraries, numbered apart from their folders");
+    let a =
+        scan::add_root_in(&conn, walked.path(), scan::InLibrary::Named("Walked")).expect("adds");
+    let b = scan::add_root_in(&conn, unwalked.path(), scan::InLibrary::Named("Unwalked"))
+        .expect("adds");
+    let filed: Vec<(i64, i64)> = conn
+        .prepare("SELECT id, library_id FROM root ORDER BY id")
+        .expect("prepares")
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .expect("reads")
+        .collect::<rusqlite::Result<_>>()
+        .expect("reads");
+    assert_eq!(
+        filed,
+        vec![(a.id, 70), (b.id, 80)],
+        "each folder in its library"
+    );
+    assert!(
+        filed
+            .iter()
+            .all(|(_, library)| filed.iter().all(|(folder, _)| folder != library)),
+        "no library's id is a folder's: {filed:?}"
+    );
+    let before = status(&conn, &[]).expect("reads");
+    assert!(
+        before.libraries.iter().all(|l| !l.scanned),
+        "nothing walked yet"
+    );
+    scan::scan_root(&conn, &a).expect("scans one");
+    let after = status(&conn, &[]).expect("reads");
+    let flags: Vec<(String, bool)> = after
+        .libraries
+        .into_iter()
+        .map(|l| (l.name, l.scanned))
+        .collect();
+    assert_eq!(
+        flags,
+        vec![
+            ("Unwalked".to_string(), false),
+            ("Walked".to_string(), true)
+        ]
+    );
 }
 
 /// A two-character Japanese query is a real word, and trigram answers it with
@@ -1384,14 +1612,14 @@ fn a_query_too_short_for_trigram_is_answered_by_like() {
     )
     .expect("gives the series its native title");
 
-    let hits = search(&conn, &[], 1, "花嫁").expect("searches");
+    let hits = search(&conn, &[], 1, "花嫁", None).expect("searches");
     assert_eq!(
         hits.series.len(),
         1,
         "two characters must still find the shelf"
     );
 
-    let long = search(&conn, &[], 1, "分の花嫁").expect("searches");
+    let long = search(&conn, &[], 1, "分の花嫁", None).expect("searches");
     assert_eq!(
         long.series.len(),
         1,
@@ -1439,7 +1667,7 @@ fn a_wildcard_typed_into_the_search_box_is_a_literal() {
     let conn = library.conn();
 
     for wildcard in ["%", "_"] {
-        let hits = search(&conn, &[], 1, wildcard).expect("searches");
+        let hits = search(&conn, &[], 1, wildcard, None).expect("searches");
         assert!(
             hits.series.is_empty() && hits.unfiled.is_empty(),
             "`{wildcard}` is a character to look for, not an operator"
@@ -1473,7 +1701,7 @@ fn a_backslash_typed_into_the_search_box_is_a_literal() {
     )
     .expect("gives the unfiled work a title with a literal backslash");
 
-    let hits = search(&conn, &[], 1, "\\").expect("searches");
+    let hits = search(&conn, &[], 1, "\\", None).expect("searches");
     assert_eq!(
         hits.unfiled.len(),
         1,
@@ -1494,7 +1722,7 @@ fn a_short_query_finds_an_unfiled_work_by_its_own_title() {
     conn.execute("UPDATE work SET title = '花嫁' WHERE series_id IS NULL", [])
         .expect("renames the unfiled work");
 
-    let hits = search(&conn, &[], 1, "花嫁").expect("searches");
+    let hits = search(&conn, &[], 1, "花嫁", None).expect("searches");
     assert_eq!(
         hits.unfiled.len(),
         1,
@@ -1524,7 +1752,7 @@ fn a_short_query_matching_a_works_title_drags_its_series_in() {
     )
     .expect("gives the work a title its series does not carry");
 
-    let hits = search(&conn, &[], 1, "花嫁").expect("searches");
+    let hits = search(&conn, &[], 1, "花嫁", None).expect("searches");
     assert_eq!(
         hits.series.len(),
         1,
@@ -1549,36 +1777,32 @@ fn a_short_query_is_filtered_by_the_grant_like_a_long_one() {
     )
     .expect("native title");
 
-    let unrestricted = search(&conn, &[], 1, "花嫁").expect("searches");
+    let unrestricted = search(&conn, &[], 1, "花嫁", None).expect("searches");
     assert_eq!(unrestricted.series.len(), 1, "an empty grant sees it");
 
-    let granted = search(&conn, &[raw_root], 1, "花嫁").expect("searches");
+    let granted = search(&conn, &[raw_root], 1, "花嫁", None).expect("searches");
     assert_eq!(
         granted.series.len(),
         1,
         "a grant covering an edition of it still sees it"
     );
 
-    let elsewhere = search(&conn, &[9999], 1, "花嫁").expect("searches");
+    let elsewhere = search(&conn, &[9999], 1, "花嫁", None).expect("searches");
     assert!(
         elsewhere.series.is_empty(),
         "a grant covering nothing sees nothing, however the query was answered"
     );
 }
 
-/// `?root=` deliberately does not reach search, and this says so out loud.
-///
-/// `search` passes `None` for `only` to both `series` and `unfiled`. That is a
-/// decision rather than an omission — the sidebar's root links point at
-/// `/?root=`, not at `/search` — and it is pinned here so that changing it is
-/// a change to a test rather than a silent widening. See this plan's "What
-/// this plan deliberately does not do", and Plan A's ledger, which carried it.
+/// With no library asked for, search reads the whole grant: a series whose
+/// two editions are under two granted folders is found with both of them.
+/// `search_narrowed_to_a_library_finds_only_its_series` is the narrowed half.
 #[test]
-fn search_spans_the_whole_grant_rather_than_one_root() {
+fn search_with_no_library_spans_the_whole_grant() {
     let (library, en_root, raw_root, _en, _raw) = two_root_library();
     let conn = library.conn();
 
-    let both = search(&conn, &[en_root, raw_root], 1, "Series").expect("searches");
+    let both = search(&conn, &[en_root, raw_root], 1, "Series", None).expect("searches");
     assert_eq!(
         both.series.len(),
         1,
@@ -1587,7 +1811,7 @@ fn search_spans_the_whole_grant_rather_than_one_root() {
     let card = both.series.first().expect("one series");
     assert_eq!(
         card.editions, 2,
-        "and it carries both editions — search narrows to no single root"
+        "and it carries both editions, one under each granted folder"
     );
 }
 

@@ -7,7 +7,8 @@ import * as curation from './curation'
 import { GateContext } from './gate'
 import * as library from './library'
 import { Shell } from './Shell'
-import { useInboxRefresh, useLibraryStatus } from './shell'
+import { useInboxRefresh, useLibraryStatus, useStatusRefresh } from './shell'
+import { deferred, flush } from './testing/async'
 import { mount } from './testing/mount'
 import { fakeStorage } from './testing/storage'
 
@@ -66,13 +67,17 @@ async function settle(ui: React.ReactNode, me?: Me): Promise<HTMLElement> {
 function reporter() {
   function Reporter() {
     const status = useLibraryStatus()
-    return <p data-testid="roots">{status ? status.roots.length : 'pending'}</p>
+    return (
+      <p data-testid="libraries">
+        {status ? status.libraries.length : 'pending'}
+      </p>
+    )
   }
   return <Reporter />
 }
 
 /**
- * A child that reports `showRoots` from `BrowsePrefsContext` — the wire I2
+ * A child that reports `continueStrip` from `BrowsePrefsContext` — the wire I2
  * pins. Reading through `useBrowsePrefs()` rather than through
  * `BrowseSettings`' own `prefs` prop matters: `BrowseSettings` is handed
  * `prefs` directly by `Shell`, so its checkbox reflects a panel change
@@ -80,10 +85,10 @@ function reporter() {
  * below `Shell` can tell a live wire from one pinned at
  * `browseModule.defaults`.
  */
-function showRootsProbe() {
+function continueStripProbe() {
   function Probe() {
     const prefs = useBrowsePrefs()
-    return <p data-testid="show-roots">{String(prefs.showRoots)}</p>
+    return <p data-testid="continue-strip">{String(prefs.continueStrip)}</p>
   }
   return <Probe />
 }
@@ -106,6 +111,41 @@ function recountProbe() {
     )
   }
   return <Probe />
+}
+
+/**
+ * A child that asks the chrome to read the status again, on demand.
+ *
+ * Declared inside a function for `reporter()`'s reason. This stands in for
+ * `Libraries.tsx`, which calls the same hook from its `reload`;
+ * `Libraries.shell.browser.test.tsx` owns the half where a made or removed
+ * library makes the call.
+ */
+function rereadProbe() {
+  function Probe() {
+    const reread = useStatusRefresh()
+    return (
+      <button type="button" data-testid="reread" onClick={reread}>
+        reread
+      </button>
+    )
+  }
+  return <Probe />
+}
+
+/** The names the sidebar's libraries list draws, in its order. */
+const sidebarLibraries = (host: HTMLElement) =>
+  [...host.querySelectorAll('.sidebar-libraries a')].map((a) => a.textContent)
+
+/** Presses `rereadProbe()`'s button and lets the read it asks for land. */
+async function reread(host: HTMLElement) {
+  const button = host.querySelector<HTMLElement>('[data-testid="reread"]')
+  if (!button) throw new Error('no reread control rendered')
+  await act(async () => {
+    button.click()
+    await Promise.resolve()
+    await Promise.resolve()
+  })
 }
 
 /** The `<label>` whose own text is exactly `label`, and the checkbox inside it. */
@@ -173,8 +213,7 @@ describe('Shell', () => {
     // the admin mounts three tests above it.
     vi.clearAllMocks()
     vi.mocked(library.status).mockResolvedValue({
-      roots: [{ id: 1, name: 'Manga' }],
-      scanned: true,
+      libraries: [{ id: 1, name: 'Manga', scanned: true }],
     })
     vi.mocked(curation.listProposals).mockResolvedValue({
       proposals: [],
@@ -188,7 +227,9 @@ describe('Shell', () => {
 
   it('fetches the status once and offers it to what it renders', async () => {
     const host = await settle(<Shell>{reporter()}</Shell>)
-    expect(host.querySelector('[data-testid="roots"]')?.textContent).toBe('1')
+    expect(host.querySelector('[data-testid="libraries"]')?.textContent).toBe(
+      '1',
+    )
     expect(vi.mocked(library.status)).toHaveBeenCalledTimes(1)
   })
 
@@ -204,22 +245,38 @@ describe('Shell', () => {
     ).toHaveLength(3)
   })
 
-  it('draws the roots list for an admin and not for a reader', async () => {
-    const asAdmin = await settle(
-      <Shell>
-        <p>x</p>
-      </Shell>,
-      who({ admin: true }),
-    )
-    expect(asAdmin.querySelector('.sidebar-roots')).not.toBeNull()
+  /**
+   * Spec F §3: the libraries list is every account's, not an admin's
+   * preference. The status is what the server lets this account see, so the
+   * shell hands all of it on, to a reader as to an admin.
+   */
+  it('hands the sidebar every library the status lists, to any account', async () => {
+    vi.mocked(library.status).mockResolvedValue({
+      libraries: [
+        { id: 1, name: 'Manga', scanned: true },
+        { id: 2, name: 'Comics', scanned: false },
+      ],
+    })
+    const host = await settle(<Shell>x</Shell>, who({ admin: false }))
+    expect(
+      [...host.querySelectorAll('.sidebar-libraries a')].map(
+        (a) => a.textContent,
+      ),
+    ).toEqual(['Manga', 'Comics'])
+  })
 
-    const asReader = await settle(
-      <Shell>
-        <p>x</p>
-      </Shell>,
-      who({ admin: false }),
+  /**
+   * The list's switch went with the preference it set: a `browse`-module
+   * key is a control in this panel, so a key left behind would draw a box
+   * that switches nothing.
+   */
+  it('offers no switch for the libraries list in the settings', async () => {
+    const host = await settle(<Shell>x</Shell>, who({ admin: true }))
+    const labels = [...host.querySelectorAll('.browse-settings label')].map(
+      (l) => l.textContent?.trim(),
     )
-    expect(asReader.querySelector('.sidebar-roots')).toBeNull()
+    expect(labels).toContain('continue strip')
+    expect(labels).not.toContain('show roots')
   })
 
   /**
@@ -368,21 +425,25 @@ describe('Shell', () => {
    * seen: `useGate()`'s doc comment says "Getting `undefined` therefore has
    * to be safe, and the safe reading is 'no account known', never 'an
    * admin'." `Shell.tsx` reads that as `useGate()?.who.admin ?? false`, and
-   * this is the only test in this file — or, after Task 3, in this suite —
-   * that mounts with no gate above it *and* looks at `.sidebar-roots`: the
-   * "draws the roots list…" test above always mounts with a provider
-   * present, and this file's other no-provider tests assert on
-   * `[data-testid="roots"]` or `[role="alert"]`, never on the sidebar.
+   * this is the only test in this file that mounts with no gate above it
+   * *and* looks at the admin-only entries: the proposals tests above always
+   * mount with a provider present, and none of this file's other no-provider
+   * tests looks at an admin entry.
    *
-   * The roots list resolves to a non-empty array here (the `beforeEach`
-   * default), and the reporter child proves it landed before the sidebar
-   * assertion runs — so an absent `.sidebar-roots` below can only be the
-   * `?? false` default, not an accident of there being nothing to draw.
+   * The reporter child proves the status landed, and the sidebar draws its
+   * library, before the admin assertions run — so an absent entry below can
+   * only be the `?? false` default, not a sidebar that never drew.
    */
-  it('draws no roots list where no gate sits above it, even though roots are there to draw', async () => {
+  it('draws no admin entries where no gate sits above it', async () => {
     const host = await settle(<Shell>{reporter()}</Shell>)
-    expect(host.querySelector('[data-testid="roots"]')?.textContent).toBe('1')
-    expect(host.querySelector('.sidebar-roots')).toBeNull()
+    expect(host.querySelector('[data-testid="libraries"]')?.textContent).toBe(
+      '1',
+    )
+    expect(host.querySelector('.sidebar-libraries a')?.textContent).toBe(
+      'Manga',
+    )
+    expect(host.querySelector('a[href="/proposals"]')).toBeNull()
+    expect(host.querySelector('a[href="/config"]')).toBeNull()
   })
 
   it('says so when the status cannot be read, rather than drawing an empty sidebar in silence', async () => {
@@ -413,6 +474,101 @@ describe('Shell', () => {
       </Shell>,
     )
     expect(host.querySelector('[role="alert"]')?.textContent).toBe('offline')
+  })
+
+  /**
+   * O200: `Shell` reads the status once on mount, and Configuration →
+   * Libraries makes and removes libraries under the sidebar that lists them.
+   * The second answer differs from the first, so "it asked again" and "it
+   * drew the first answer twice" are told apart.
+   */
+  it('re-reads the status when a screen under it says a write moved the libraries', async () => {
+    vi.mocked(library.status)
+      .mockResolvedValueOnce({
+        libraries: [{ id: 1, name: 'Manga', scanned: true }],
+      })
+      .mockResolvedValue({
+        libraries: [{ id: 2, name: 'Comics', scanned: false }],
+      })
+    const host = await settle(<Shell>{rereadProbe()}</Shell>)
+    expect(sidebarLibraries(host)).toEqual(['Manga'])
+
+    await reread(host)
+
+    expect(vi.mocked(library.status)).toHaveBeenCalledTimes(2)
+    expect(sidebarLibraries(host)).toEqual(['Comics'])
+  })
+
+  /**
+   * Reads need not answer in order. A re-read asked for while the first read
+   * is still out answers for the store as it is since the write, so the first
+   * read's answer, landing after it, is the older one and is dropped.
+   */
+  it('keeps a re-read when the read before it answers after it', async () => {
+    const first = deferred<library.LibraryStatus>()
+    const second = deferred<library.LibraryStatus>()
+    vi.mocked(library.status)
+      .mockReturnValueOnce(first.promise)
+      .mockReturnValueOnce(second.promise)
+    const host = await settle(<Shell>{rereadProbe()}</Shell>)
+    await reread(host)
+    expect(vi.mocked(library.status)).toHaveBeenCalledTimes(2)
+
+    await flush(() =>
+      second.resolve({
+        libraries: [{ id: 2, name: 'Comics', scanned: true }],
+      }),
+    )
+    expect(sidebarLibraries(host)).toEqual(['Comics'])
+    await flush(() =>
+      first.resolve({
+        libraries: [{ id: 1, name: 'Manga', scanned: true }],
+      }),
+    )
+    expect(sidebarLibraries(host)).toEqual(['Comics'])
+  })
+
+  /** The same, for an older read that fails after the re-read has landed. */
+  it('keeps a re-read when the read before it fails after it', async () => {
+    const first = deferred<library.LibraryStatus>()
+    const second = deferred<library.LibraryStatus>()
+    vi.mocked(library.status)
+      .mockReturnValueOnce(first.promise)
+      .mockReturnValueOnce(second.promise)
+    const host = await settle(<Shell>{rereadProbe()}</Shell>)
+    await reread(host)
+    expect(vi.mocked(library.status)).toHaveBeenCalledTimes(2)
+
+    await flush(() =>
+      second.resolve({
+        libraries: [{ id: 2, name: 'Comics', scanned: true }],
+      }),
+    )
+    await flush(() => first.reject(new Error('/api/library/status: 500')))
+    expect(host.querySelector('[role="alert"]')).toBeNull()
+    expect(sidebarLibraries(host)).toEqual(['Comics'])
+  })
+
+  /**
+   * A re-read that fails says so as the first read's failure does. The
+   * libraries already drawn stay: the failure is drawn beside them, and the
+   * links still lead somewhere the server will answer for.
+   */
+  it('says so when a re-read fails, and keeps the libraries it last read', async () => {
+    vi.mocked(library.status)
+      .mockResolvedValueOnce({
+        libraries: [{ id: 1, name: 'Manga', scanned: true }],
+      })
+      .mockRejectedValue(new Error('/api/library/status: 500'))
+    const host = await settle(<Shell>{rereadProbe()}</Shell>)
+    expect(host.querySelector('[role="alert"]')).toBeNull()
+
+    await reread(host)
+
+    expect(host.querySelector('[role="alert"]')?.textContent).toBe(
+      '/api/library/status: 500',
+    )
+    expect(sidebarLibraries(host)).toEqual(['Manga'])
   })
 
   /**
@@ -456,12 +612,12 @@ describe('Shell', () => {
         <p>x</p>
       </Shell>,
     )
-    const showRootsBefore = checkboxLabelled(before, 'show roots')
-    expect(showRootsBefore.checked).toBe(false)
+    const stripBefore = checkboxLabelled(before, 'continue strip')
+    expect(stripBefore.checked).toBe(true)
     act(() => {
-      showRootsBefore.click()
+      stripBefore.click()
     })
-    expect(showRootsBefore.checked).toBe(true)
+    expect(stripBefore.checked).toBe(false)
 
     const resetButton = [
       ...before.querySelectorAll('.browse-settings button'),
@@ -482,62 +638,7 @@ describe('Shell', () => {
         <p>x</p>
       </Shell>,
     )
-    expect(checkboxLabelled(after, 'show roots').checked).toBe(false)
-  })
-
-  /**
-   * I4 + M12 of the whole-branch review: the comment above `reset` used to
-   * claim the admin fold is "a first-run default, not a floor" — but Reset
-   * did not survive a reload for an admin. `resetPrefs` clears storage, and
-   * the next mount's `admin` fold runs against that *absent* storage and puts
-   * `showRoots` right back to `true`, because the old `setMap` here persisted
-   * from inside its own updater rather than from an effect and so never
-   * re-persisted `sliceReset`'s result. `hooks.ts`'s `usePrefsMap` — the same
-   * hook `App.tsx` uses for the reader's own modules — persists from an
-   * effect instead, which re-runs after `sliceReset` and writes `showRoots:
-   * false` back to storage before any reload can see it. This is the case
-   * `checkboxLabelled` above only proves half of: that test never reloads as
-   * an admin, so it could not have caught the fold winning back.
-   */
-  it('as an admin, Reset survives a reload — show roots stays off', async () => {
-    vi.stubGlobal('localStorage', fakeStorage())
-
-    const before = await settle(
-      <Shell>
-        <p>x</p>
-      </Shell>,
-      who({ admin: true }),
-    )
-    expect(
-      before.querySelector('.sidebar-roots'),
-      'admin fold on first run',
-    ).not.toBeNull()
-
-    const resetButton = [
-      ...before.querySelectorAll('.browse-settings button'),
-    ].find((b) => b.textContent === 'Reset')
-    if (!(resetButton instanceof HTMLButtonElement)) {
-      throw new Error('the settings panel has no Reset button')
-    }
-    act(() => {
-      resetButton.click()
-    })
-    expect(
-      before.querySelector('.sidebar-roots'),
-      'in-app, right after Reset',
-    ).toBeNull()
-    before.remove()
-
-    // A fresh mount, standing in for a reload — still as an admin, which is
-    // exactly the case the in-app confirmation and the persisted result
-    // disagreed on.
-    const after = await settle(
-      <Shell>
-        <p>x</p>
-      </Shell>,
-      who({ admin: true }),
-    )
-    expect(after.querySelector('.sidebar-roots'), 'after the reload').toBeNull()
+    expect(checkboxLabelled(after, 'continue strip').checked).toBe(true)
   })
 
   /**
@@ -554,20 +655,20 @@ describe('Shell', () => {
    * context wire itself works.
    */
   it('threads a changed preference from the settings panel to whatever reads the context below it', async () => {
-    const host = await settle(<Shell>{showRootsProbe()}</Shell>)
-    expect(host.querySelector('[data-testid="show-roots"]')?.textContent).toBe(
-      'false',
-    )
+    const host = await settle(<Shell>{continueStripProbe()}</Shell>)
+    expect(
+      host.querySelector('[data-testid="continue-strip"]')?.textContent,
+    ).toBe('true')
 
-    const showRoots = checkboxLabelled(host, 'show roots')
-    expect(showRoots.checked).toBe(false)
+    const strip = checkboxLabelled(host, 'continue strip')
+    expect(strip.checked).toBe(true)
     act(() => {
-      showRoots.click()
+      strip.click()
     })
 
-    expect(host.querySelector('[data-testid="show-roots"]')?.textContent).toBe(
-      'true',
-    )
+    expect(
+      host.querySelector('[data-testid="continue-strip"]')?.textContent,
+    ).toBe('false')
   })
 
   /**
@@ -588,12 +689,12 @@ describe('Shell', () => {
         <p>x</p>
       </Shell>,
     )
-    const showRootsBefore = checkboxLabelled(before, 'show roots')
-    expect(showRootsBefore.checked).toBe(false)
+    const stripBefore = checkboxLabelled(before, 'continue strip')
+    expect(stripBefore.checked).toBe(true)
     act(() => {
-      showRootsBefore.click()
+      stripBefore.click()
     })
-    expect(showRootsBefore.checked).toBe(true)
+    expect(stripBefore.checked).toBe(false)
     before.remove()
 
     // A fresh mount, standing in for a reload: `loadPrefs` reads whatever
@@ -604,7 +705,7 @@ describe('Shell', () => {
         <p>x</p>
       </Shell>,
     )
-    expect(checkboxLabelled(after, 'show roots').checked).toBe(true)
+    expect(checkboxLabelled(after, 'continue strip').checked).toBe(false)
   })
 
   /**

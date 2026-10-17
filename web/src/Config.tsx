@@ -1,11 +1,12 @@
 /**
  * The settings area — spec C4, and the build design's §2.
  *
- * **One sidebar entry and a sub-nav, not four sidebar entries.** C4's opening
- * line settles the shape: configuration is "touched rarely and from a settings
- * area", so the always-visible chrome grows by one. Four entries would also
- * have put a second "Roots" in a sidebar that already has one meaning
- * something else — a browse filter, not an administrative screen.
+ * **One sidebar entry and a sub-nav, not a sidebar entry per tab.** C4's
+ * opening line settles the shape: configuration is "touched rarely and from a
+ * settings area", so the always-visible chrome grows by one. An entry per tab
+ * would also have put a second "Libraries" in a sidebar that already has one
+ * meaning something else — the libraries to browse, not an administrative
+ * screen.
  *
  * **No admin guard here, deliberately.** `Routes.tsx` puts none on
  * `/proposals` either, and `api.ts`'s `getJson` was changed during C3

@@ -2,7 +2,7 @@
  * The browse screens' settings, in the sidebar — spec C1 §4.
  *
  * **Generated, not written.** One control per key of `browseModule.defaults`,
- * inferred by `settingsPanel.ts` from each value's runtime type. A seventh
+ * inferred by `settingsPanel.ts` from each value's runtime type. Another
  * preference needs no edit here.
  *
  * **Not `Settings.tsx`.** That panel is the reader's: a centred modal on a

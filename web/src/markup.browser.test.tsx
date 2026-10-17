@@ -74,7 +74,7 @@ describe('names — §4.3 and §4.4', () => {
   it('names the Proposals link with what its count counts — O164', async () => {
     mount(
       <MemoryRouter>
-        <Sidebar roots={[]} showRoots={false} admin={true} openProposals={17} />
+        <Sidebar libraries={[]} admin={true} openProposals={17} />
       </MemoryRouter>,
     )
     await expect

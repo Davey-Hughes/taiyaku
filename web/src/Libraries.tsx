@@ -28,6 +28,12 @@
  *
  * **Reads carry a sequence number.** Several are routinely in flight, and
  * they need not answer in order.
+ *
+ * **A read of the list that is still the latest when it answers asks the
+ * shell to read the status again**, whether it lands or fails, so the
+ * sidebar's libraries follow every write: a removal whose re-read of the list
+ * fails has still removed the library. An older read, which the sequence
+ * guard drops, asks nothing.
  */
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import type { Added, Derived, Probe, RemovalAnswer } from './config'
@@ -45,6 +51,7 @@ import { sentenceOf } from './message'
 import { Refusal } from './Refusal'
 import { reveal } from './reveal'
 import { DeriveSection } from './ScanReport'
+import { useStatusRefresh } from './shell'
 
 export function Libraries() {
   const [libraries, setLibraries] = useState<Library[] | undefined>()
@@ -92,20 +99,27 @@ export function Libraries() {
   const inFlight = useRef(false)
   const latest = useRef(0)
 
+  const refreshStatus = useStatusRefresh()
+
   /** `quiet`: no press started this read, so its failure is not scrolled to. */
-  const reload = useCallback((quiet = false) => {
-    const seq = ++latest.current
-    listLibraries()
-      .then((body) => {
-        if (seq !== latest.current) return
-        setLibraries(body.libraries)
-        setFailure(undefined)
-      })
-      .catch((err: unknown) => {
-        if (seq !== latest.current) return
-        setFailure({ sentence: sentenceOf(err), reveal: !quiet })
-      })
-  }, [])
+  const reload = useCallback(
+    (quiet = false) => {
+      const seq = ++latest.current
+      listLibraries()
+        .then((body) => {
+          if (seq !== latest.current) return
+          setLibraries(body.libraries)
+          refreshStatus()
+          setFailure(undefined)
+        })
+        .catch((err: unknown) => {
+          if (seq !== latest.current) return
+          setFailure({ sentence: sentenceOf(err), reveal: !quiet })
+          refreshStatus()
+        })
+    },
+    [refreshStatus],
+  )
 
   useEffect(() => {
     reload()

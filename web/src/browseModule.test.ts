@@ -10,7 +10,6 @@ describe('the browse module', () => {
       panel: 'button',
       density: 'comfortable',
       continueStrip: true,
-      showRoots: false,
     })
   })
 
@@ -22,7 +21,6 @@ describe('the browse module', () => {
       ['panel', 'select'],
       ['density', 'select'],
       ['continueStrip', 'boolean'],
-      ['showRoots', 'boolean'],
     ])
   })
 

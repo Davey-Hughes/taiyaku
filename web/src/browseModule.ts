@@ -11,9 +11,9 @@
  *
  * **Nothing here is a settings screen.** `settingsPanel.ts`'s `fieldKind`
  * derives a control from a preference's runtime type — boolean to checkbox,
- * a string whose module declares `options` to a select — so the six values
- * below are the whole declaration and `BrowseSettings.tsx` renders whatever
- * they turn out to be.
+ * a string whose module declares `options` to a select — so the values below
+ * are the whole declaration and `BrowseSettings.tsx` renders whatever they
+ * turn out to be.
  *
  * **The honest cost**, recorded in §4 and not softened here: the reader's
  * module system works because each module is a small *behaviour*, and this is
@@ -39,16 +39,6 @@ export interface BrowsePrefs {
   density: 'compact' | 'comfortable'
   /** Whether the library screen opens on what you were reading. */
   continueStrip: boolean
-  /**
-   * Whether the sidebar lists roots.
-   *
-   * **Defaults to `false` here and to the account's `admin` bit in `Shell`.**
-   * §4 names `false`; an admin who has never opened settings should still see
-   * the list Plan A gave them, so the *stored* value wins over a default
-   * computed at load. A root is a storage fact and no navigation path may
-   * require one — see `Sidebar.tsx`.
-   */
-  showRoots: boolean
 }
 
 export const browseModule: ReaderModule<BrowsePrefs> = {
@@ -60,7 +50,6 @@ export const browseModule: ReaderModule<BrowsePrefs> = {
     panel: 'button',
     density: 'comfortable',
     continueStrip: true,
-    showRoots: false,
   },
   options: {
     layout: ['grid', 'table'],

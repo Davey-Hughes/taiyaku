@@ -4,10 +4,10 @@
  *
  * **The sidebar is `Shell`'s and the tiles are `SeriesGrid`'s.** This file drew
  * both until Plan B: the sidebar and the `/api/library/status` fetch moved to
- * `Shell` so three screens share one, and the tiles moved to `SeriesGrid` so
- * `/` and `/search` cannot disagree about them. What is left here is the part
- * that is only the library's — which chips exist, what they filter, and the
- * three-way empty state.
+ * `Shell` so every screen under it shares them, and the tiles moved to
+ * `SeriesGrid` so `/` and `/search` cannot disagree about them. What is left
+ * here is the part that is only the library's — which chips exist, what they
+ * filter, and which empty state an empty grid is.
  *
  * Spec C1 §2 and §11 step 6. **No virtualisation** — §7's measured numbers are
  * 127 series and 111 volumes in the largest series, and covers carry
@@ -16,20 +16,23 @@
  *
  * The chips filter and sort **client-side**, over data already held: §7's
  * numbers make a `?sort=` round trip a request for something the browser does
- * instantly. `?root=` is a query parameter for the opposite reason — it
- * changes which rows exist, and which rows exist is the grant's business.
+ * instantly. `?library=` is a query parameter for the opposite reason — it
+ * changes which rows exist, and which rows exist is the grant's business. It
+ * narrows the grid and the continue strip alike (spec F §3).
  */
 import { useEffect, useState } from 'react'
 import { Link, useSearchParams } from 'react-router'
 import { useBrowsePrefs } from './browseModule'
 import { Cover } from './Cover'
-import { EmptyState } from './EmptyState'
+import { type EmptyKind, EmptyState } from './EmptyState'
 import {
   type Chip,
   type Grid,
   grid as fetchGrid,
   home as fetchHome,
   type HomeLists,
+  type LibraryStatus,
+  libraryParam,
   matchesChip,
   type Sort,
   sorted,
@@ -65,42 +68,76 @@ function ContinueCard({ w }: { w: WorkCard }) {
   )
 }
 
+/**
+ * Which first-run screen an empty grid is (spec C1 §8). A library's page asks
+ * of its own library, and the page of every library of them all: one library
+ * read and another not is "nothing here" on the first and "not read yet" on
+ * the second.
+ */
+function emptyKind(
+  status: LibraryStatus,
+  library: number | undefined,
+): EmptyKind {
+  if (library !== undefined) {
+    const entry = status.libraries.find((l) => l.id === library)
+    if (entry === undefined) return 'no-library'
+    return entry.scanned ? 'no-matches' : 'not-scanned'
+  }
+  if (status.libraries.length === 0) return 'no-libraries'
+  return status.libraries.some((l) => l.scanned) ? 'no-matches' : 'not-scanned'
+}
+
+/**
+ * What the last load to land found, and for which library: the grid and the
+ * home lists, or why they could not be read. One value, so a failure takes
+ * the place of the rows drawn before it rather than standing beside them.
+ */
+type Loaded =
+  | { library: number | undefined; grid: Grid; home: HomeLists }
+  | { library: number | undefined; failure: string }
+
 export function Library() {
   const prefs = useBrowsePrefs()
   const [params] = useSearchParams()
-  const rootParam = params.get('root')
-  const root = rootParam === null ? undefined : Number(rootParam)
+  /** `'invalid'` is no library: the page says so, and asks the server nothing. */
+  const library = libraryParam(params.get('library'))
 
   const status = useLibraryStatus()
-  const [gridData, setGrid] = useState<Grid | undefined>()
-  const [home, setHome] = useState<HomeLists | undefined>()
-  const [failure, setFailure] = useState<string | undefined>()
+  /** The library this page is narrowed to, once the status names it. */
+  const entry =
+    typeof library === 'number'
+      ? status?.libraries.find((l) => l.id === library)
+      : undefined
+  const [loaded, setLoaded] = useState<Loaded | undefined>()
   const [chip, setChip] = useState<Chip>('all')
   const [sort, setSort] = useState<Sort>('title')
-  useDocumentTitle('Library')
+  useDocumentTitle(entry?.name ?? 'Library')
 
   useEffect(() => {
+    if (library === 'invalid') return
     let cancelled = false
-    Promise.all([fetchGrid(root), fetchHome()])
+    Promise.all([fetchGrid(library), fetchHome(library)])
       .then(([grid, home]) => {
         if (cancelled) return
-        setGrid(grid)
-        setHome(home)
-        // A retry that lands after an earlier failure must clear it — this
-        // effect re-fires on `root` alone, so a reader who failed once and
-        // then switched (or re-triggered) a load that succeeded would
-        // otherwise keep the banner on screen forever, beside the data that
-        // just proved it stale.
-        setFailure(undefined)
+        setLoaded({ library, grid, home })
       })
       .catch((err: unknown) => {
         if (cancelled) return
-        setFailure(messageOf(err))
+        setLoaded({ library, failure: messageOf(err) })
       })
     return () => {
       cancelled = true
     }
-  }, [root])
+  }, [library])
+
+  // **Only what was loaded for the library now asked for is drawn.** The
+  // effect's `cancelled` drops an answer that lands after its library was
+  // left; this keeps the last library's rows, and its failure, off the next
+  // library's page until that page's own load lands.
+  const current = loaded?.library === library ? loaded : undefined
+  const gridData = current && 'grid' in current ? current.grid : undefined
+  const home = current && 'home' in current ? current.home : undefined
+  const failure = current && 'failure' in current ? current.failure : undefined
 
   const visible = gridData
     ? sorted(
@@ -112,8 +149,9 @@ export function Library() {
   return (
     <>
       {/* O163: one h1 per screen, for a screen reader's heading list; the
-          library shows no title of its own, so it is hidden. */}
-      <h1 className="visually-hidden">Library</h1>
+          library shows no title of its own, so it is hidden. A library's
+          page is named for its library. */}
+      <h1 className="visually-hidden">{entry?.name ?? 'Library'}</h1>
       {failure !== undefined && <p role="alert">{failure}</p>}
       {prefs.continueStrip && home && home.continuing.length > 0 && (
         <section data-testid="continue" className="continue">
@@ -170,19 +208,13 @@ export function Library() {
           Added
         </button>
       </div>
-      {gridData &&
-      status &&
-      visible.length === 0 &&
-      gridData.unfiled.length === 0 ? (
-        <EmptyState
-          kind={
-            status.roots.length === 0
-              ? 'no-roots'
-              : status.scanned
-                ? 'no-matches'
-                : 'not-scanned'
-          }
-        />
+      {library === 'invalid' ? (
+        <EmptyState kind="no-library" />
+      ) : gridData &&
+        status &&
+        visible.length === 0 &&
+        gridData.unfiled.length === 0 ? (
+        <EmptyState kind={emptyKind(status, library)} />
       ) : (
         <SeriesGrid series={visible} unfiled={gridData?.unfiled ?? []} />
       )}

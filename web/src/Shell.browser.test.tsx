@@ -194,8 +194,7 @@ beforeEach(() => {
   localStorage.clear()
   window.scrollTo(0, 0)
   vi.mocked(library.status).mockResolvedValue({
-    roots: [{ id: 1, name: 'Volumes' }],
-    scanned: true,
+    libraries: [{ id: 1, name: 'Volumes', scanned: true }],
   })
   vi.mocked(library.home).mockResolvedValue({
     continuing: [],
@@ -414,6 +413,25 @@ describe('the series page and search at 390 px', () => {
 
   it('lays search out without sideways scroll', async () => {
     const host = await at('/search?q=go-toubun', 390)
+    expect(host.querySelector('.grid')).not.toBeNull()
+    expect(sideways()).toBe(0)
+  })
+
+  it('lays search out without sideways scroll, a long library name in Search in and all', async () => {
+    // Long enough that the select, as wide as its longest option, would
+    // widen the page past the phone without the rules that let it shrink.
+    vi.mocked(library.status).mockResolvedValue({
+      libraries: [
+        { id: 1, name: 'Volumes', scanned: true },
+        {
+          id: 2,
+          name: 'Go-Toubun no Hanayome - Full Color Edition [Digital] (Kodansha)',
+          scanned: true,
+        },
+      ],
+    })
+    const host = await at('/search?q=go-toubun&library=2', 390)
+    expect(host.querySelector('.search-scope select')).not.toBeNull()
     expect(host.querySelector('.grid')).not.toBeNull()
     expect(sideways()).toBe(0)
   })

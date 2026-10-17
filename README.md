@@ -159,7 +159,9 @@ TAIYAKU_STUMP_URL=https://stump.example TAIYAKU_STUMP_KEY=… \
 
 # point an OPDS reader at
 #   http://<host>:8484/opds/v1.2/catalog
-# with your account name as the username and an API key as the password —
+# which lists every work, and every library's works twice: by the folders
+# each library holds, and by the library each work is filed in.
+# use your account name as the username and an API key as the password —
 # a key is shown once, because only its hash is stored:
 taiyaku library key create davey --name ipad
 

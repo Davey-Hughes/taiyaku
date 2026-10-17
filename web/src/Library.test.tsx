@@ -7,6 +7,7 @@ import * as library from './library'
 import type { LibraryStatus } from './library'
 import { Library } from './Library'
 import { StatusContext } from './shell'
+import { Sidebar } from './Sidebar'
 import { deferred, flush } from './testing/async'
 import { mount } from './testing/mount'
 
@@ -42,10 +43,21 @@ const work = (over: Partial<library.WorkCard> = {}): library.WorkCard => ({
   ...over,
 })
 
-const defaultStatus: LibraryStatus = { roots: [], scanned: true }
+const defaultStatus: LibraryStatus = {
+  libraries: [{ id: 1, name: 'Manga', scanned: true }],
+}
+
+/** Two libraries, both read, for the tests that move from one to the other. */
+const twoLibraries: LibraryStatus = {
+  libraries: [
+    { id: 1, name: 'Manga', scanned: true },
+    { id: 2, name: 'Comics', scanned: true },
+  ],
+}
 
 /**
- * Mount and let the two loads settle.
+ * Mount at `path` and let the two loads settle. A library's page is
+ * `/?library=N`.
  *
  * Two flushes, not one: the effect fires a `Promise.all` over two mocked
  * promises and *then* sets state, so a single microtask turn lands between the
@@ -64,10 +76,14 @@ const defaultStatus: LibraryStatus = { roots: [], scanned: true }
  * `Shell` would have resolved to, synchronously, the way `Shell.test.tsx`
  * hands `Shell` itself a mocked fetch.
  */
-const show = async (who?: Me, status: LibraryStatus = defaultStatus) => {
+const showAt = async (
+  path: string,
+  status: LibraryStatus = defaultStatus,
+  who?: Me,
+) => {
   let host!: HTMLElement
   const screen = (
-    <MemoryRouter>
+    <MemoryRouter initialEntries={[path]}>
       <StatusContext.Provider value={status}>
         <Library />
       </StatusContext.Provider>
@@ -90,6 +106,10 @@ const show = async (who?: Me, status: LibraryStatus = defaultStatus) => {
   })
   return host
 }
+
+/** `showAt` the page of every library. */
+const show = (who?: Me, status: LibraryStatus = defaultStatus) =>
+  showAt('/', status, who)
 
 describe('the library screen', () => {
   beforeEach(() => {
@@ -297,55 +317,85 @@ describe('the library screen', () => {
     expect(host.querySelector('a[href="/read/half-read-v02"]')).not.toBeNull()
   })
 
-  it('a library with no roots is told so, rather than shown an empty grid', async () => {
-    const host = await show(undefined, { roots: [], scanned: false })
-    expect(host.textContent).toContain('library scan --add')
+  it('a server with no library is told so, rather than shown an empty grid', async () => {
+    const host = await show(undefined, { libraries: [] })
+    expect(host.textContent).toContain('No library yet')
+    expect(host.textContent).toContain('Configuration → Libraries')
   })
 
-  it('a configured but unscanned library is told the other thing', async () => {
-    const host = await show(undefined, {
-      roots: [{ id: 1, name: 'Manga' }],
-      scanned: false,
-    })
-    expect(host.textContent).not.toContain('--add')
-    expect(host.textContent).toContain('library scan')
+  it('a library page asks whether its own library has been read', async () => {
+    const status = {
+      libraries: [
+        { id: 1, name: 'Manga', scanned: true },
+        { id: 2, name: 'Comics', scanned: false },
+      ],
+    }
+    const comics = await showAt('/?library=2', status)
+    expect(comics.textContent).toContain('Not read yet')
+    const manga = await showAt('/?library=1', status)
+    expect(manga.textContent).toContain('No series match this filter.')
   })
 
-  it('a scanned library with no series says nothing matched, not that it is unconfigured', async () => {
-    const host = await show(undefined, {
-      roots: [{ id: 1, name: 'Manga' }],
-      scanned: true,
+  it('the page of every library is not read yet only while none is', async () => {
+    const one = await show(undefined, {
+      libraries: [
+        { id: 1, name: 'Manga', scanned: false },
+        { id: 2, name: 'Comics', scanned: true },
+      ],
     })
-    expect(host.textContent).not.toContain('library scan')
-    // Positive half: the no-matches empty state actually rendered, rather
-    // than nothing at all — the same shape `Routes.test.tsx`'s "does not
-    // mount the reader anywhere else" pins with `.library`/`.sidebar` beside
-    // its own negative assertion.
-    expect(host.textContent).toContain('No series match this filter.')
+    expect(one.textContent).toContain('No series match this filter.')
+    const none = await show(undefined, {
+      libraries: [{ id: 1, name: 'Manga', scanned: false }],
+    })
+    expect(none.textContent).toContain('Not read yet')
+  })
+
+  it('a library the status does not list is said to be no library here', async () => {
+    const host = await showAt('/?library=7', {
+      libraries: [{ id: 1, name: 'Manga', scanned: true }],
+    })
+    expect(host.textContent).toContain('No such library')
+  })
+
+  it('asks the server for the library in the URL, for the grid and for home', async () => {
+    await showAt('/?library=4', {
+      libraries: [{ id: 4, name: 'Manga', scanned: true }],
+    })
+    expect(vi.mocked(library.grid)).toHaveBeenLastCalledWith(4)
+    expect(vi.mocked(library.home)).toHaveBeenLastCalledWith(4)
+  })
+
+  it('titles a library page with the library', async () => {
+    document.title = 'stale'
+    const host = await showAt('/?library=4', {
+      libraries: [{ id: 4, name: 'Manga', scanned: true }],
+    })
+    expect(document.title).toContain('Manga')
+    expect(host.querySelector('h1')?.textContent).toBe('Manga')
   })
 
   it('a failed load followed by a successful retry clears the stale failure banner', async () => {
     // Only `grid` is made to fail — `Promise.all` rejects on the first
-    // rejection regardless of the other two, which is the same shape a real
+    // rejection regardless of the other, which is the same shape a real
     // failure takes. `mockRejectedValueOnce` overrides the `beforeEach`
     // default for exactly one call; the retry below falls through to that
     // default (`{ series: [], unfiled: [] }`), which is enough to prove the
     // *second* load succeeded — the failing banner's own text is the pin.
     vi.mocked(library.grid).mockRejectedValueOnce(new Error('offline'))
 
-    // The effect re-fires on `root` alone (`Library.tsx`'s own dependency
+    // The effect re-fires on `library` alone (`Library.tsx`'s own dependency
     // array), and nothing inside `Library` changes it here. A sibling link
-    // inside the same `MemoryRouter`, changing only the `?root=` query
+    // inside the same `MemoryRouter`, changing only the `?library=` query
     // parameter `Library` reads via `useSearchParams`, is what stands in for
     // "the reader retried" without inventing a retry control this task did
     // not ask for.
     let host!: HTMLElement
     await act(async () => {
       host = mount(
-        <MemoryRouter initialEntries={['/?root=1']}>
-          <StatusContext.Provider value={defaultStatus}>
+        <MemoryRouter initialEntries={['/?library=1']}>
+          <StatusContext.Provider value={twoLibraries}>
             <div>
-              <Link to="/?root=2">retry</Link>
+              <Link to="/?library=2">retry</Link>
               <Library />
             </div>
           </StatusContext.Provider>
@@ -359,7 +409,7 @@ describe('the library screen', () => {
     expect(host.querySelector('[role="alert"]')?.textContent).toBe('offline')
 
     await act(async () => {
-      host.querySelector<HTMLAnchorElement>('a[href="/?root=2"]')?.click()
+      host.querySelector<HTMLAnchorElement>('a[href="/?library=2"]')?.click()
     })
     await act(async () => {
       await Promise.resolve()
@@ -393,32 +443,30 @@ describe('the library screen', () => {
   })
 
   /**
-   * **The two `cancelled` guards, which no test had reached.**
+   * **What is drawn when the library changes under a load.**
    *
-   * The effect re-fires on `root`, so switching root while the first load is
-   * still in flight leaves two `Promise.all`s outstanding — and the store need
-   * not answer them in order. The cleanup's `cancelled = true` is what stops
-   * the *departed* root's answer from being drawn under the new root's
-   * heading, which is a grid of the wrong library showing rows the grant for
-   * this root may not include.
+   * The effect re-fires on `library`, so switching library while the first
+   * load is still in flight leaves two `Promise.all`s outstanding, and the
+   * store need not answer them in order. The cleanup's `cancelled = true`
+   * drops the *departed* library's answer when it lands late, which would
+   * otherwise replace the answer for the library on screen. While the next
+   * library's own load is in flight, and after it fails, the page draws only
+   * what was loaded for that library: nothing of the one it left.
    *
-   * Both tests hold the first load open with `deferred` rather than ordering
-   * two `mockResolvedValueOnce`s: mocked promises resolve in call order, so
-   * the guard is never true and the branch is never taken.
+   * The tests hold a load open with `deferred` rather than ordering two
+   * `mockResolvedValueOnce`s: mocked promises resolve in call order, so the
+   * guard is never true and the branch is never taken.
    */
-  describe('a load for a root that has since been left', () => {
-    const twoRoots = async (first: Promise<library.Grid>) => {
-      const second = deferred<library.Grid>()
-      vi.mocked(library.grid)
-        .mockReturnValueOnce(first)
-        .mockReturnValueOnce(second.promise)
+  describe('a load for a library that has since been left', () => {
+    /** Library 1's page, with a link to library 2's beside it. */
+    const mountAtOne = async () => {
       let host!: HTMLElement
       await act(async () => {
         host = mount(
-          <MemoryRouter initialEntries={['/?root=1']}>
-            <StatusContext.Provider value={defaultStatus}>
+          <MemoryRouter initialEntries={['/?library=1']}>
+            <StatusContext.Provider value={twoLibraries}>
               <div>
-                <Link to="/?root=2">the other root</Link>
+                <Link to="/?library=2">the other library</Link>
                 <Library />
               </div>
             </StatusContext.Provider>
@@ -426,9 +474,21 @@ describe('the library screen', () => {
         )
       })
       await flush()
-      await act(async () => {
-        host.querySelector<HTMLAnchorElement>('a[href="/?root=2"]')?.click()
+      return host
+    }
+
+    const followTheLink = (host: HTMLElement) =>
+      act(async () => {
+        host.querySelector<HTMLAnchorElement>('a[href="/?library=2"]')?.click()
       })
+
+    const switchLibraries = async (first: Promise<library.Grid>) => {
+      const second = deferred<library.Grid>()
+      vi.mocked(library.grid)
+        .mockReturnValueOnce(first)
+        .mockReturnValueOnce(second.promise)
+      const host = await mountAtOne()
+      await followTheLink(host)
       await flush(() =>
         second.resolve({
           series: [series({ id: 2, title: 'Two' })],
@@ -439,9 +499,9 @@ describe('the library screen', () => {
       return host
     }
 
-    it('is not drawn when it answers after the root was changed', async () => {
+    it('is not drawn when it answers after the library was changed', async () => {
       const first = deferred<library.Grid>()
-      const host = await twoRoots(first.promise)
+      const host = await switchLibraries(first.promise)
       await flush(() =>
         first.resolve({
           series: [series({ id: 1, title: 'One' })],
@@ -452,12 +512,114 @@ describe('the library screen', () => {
       expect(host.querySelector('ul.grid .title')?.textContent).toBe('Two')
     })
 
-    it('does not put its failure over the root that loaded', async () => {
+    it('does not put its failure over the library that loaded', async () => {
       const first = deferred<library.Grid>()
-      const host = await twoRoots(first.promise)
-      await flush(() => first.reject(new Error('root 1 is no longer mounted')))
+      const host = await switchLibraries(first.promise)
+      await flush(() => first.reject(new Error('library 1 is no longer there')))
       expect(host.querySelector('[role="alert"]')).toBeNull()
       expect(host.querySelector('ul.grid .title')?.textContent).toBe('Two')
+    })
+
+    /**
+     * Library 1 drawn, a series and a continue card, then library 2's page
+     * with its grid held open.
+     */
+    const leaveOne = async () => {
+      const second = deferred<library.Grid>()
+      vi.mocked(library.grid)
+        .mockResolvedValueOnce({
+          series: [series({ id: 1, title: 'One' })],
+          unfiled: [],
+        })
+        .mockReturnValueOnce(second.promise)
+      vi.mocked(library.home).mockResolvedValueOnce({
+        continuing: [work({ slug: 'one-v01', title: 'One v01' })],
+        added: [],
+        read: [],
+      })
+      const host = await mountAtOne()
+      expect(host.querySelector('ul.grid .title')?.textContent).toBe('One')
+      expect(
+        host.querySelector('[data-testid="continue"] .title')?.textContent,
+      ).toBe('One v01')
+      await followTheLink(host)
+      await flush()
+      expect(host.querySelector('h1')?.textContent).toBe('Comics')
+      return { host, second }
+    }
+
+    it('draws nothing of the library it left while the next one loads', async () => {
+      const { host } = await leaveOne()
+      expect(host.querySelector('ul.grid .title')).toBeNull()
+      expect(host.querySelector('[data-testid="continue"]')).toBeNull()
+    })
+
+    it('draws nothing of the library it left when the next one fails to load', async () => {
+      const { host, second } = await leaveOne()
+      await flush(() => second.reject(new Error('/api/library/series: 500')))
+      expect(host.querySelector('[role="alert"]')?.textContent).toBe(
+        '/api/library/series: 500',
+      )
+      expect(host.querySelector('ul.grid .title')).toBeNull()
+      expect(host.querySelector('[data-testid="continue"]')).toBeNull()
+    })
+  })
+
+  /**
+   * **One reading of `?library=` for the page and the sidebar beside it**:
+   * `library.ts`'s `libraryParam`, which Search reads the value through too.
+   * A value that is no library id is no library's page, so the page says so
+   * and asks the server nothing, and the sidebar marks neither a library nor
+   * the Library.
+   */
+  describe('a ?library= value, read alike by the page and the sidebar', () => {
+    beforeEach(() => {
+      vi.mocked(library.grid).mockClear()
+      vi.mocked(library.home).mockClear()
+    })
+
+    const at = async (path: string) => {
+      let host!: HTMLElement
+      await act(async () => {
+        host = mount(
+          <MemoryRouter initialEntries={[path]}>
+            <StatusContext.Provider value={twoLibraries}>
+              <div>
+                <Sidebar libraries={twoLibraries.libraries} />
+                <Library />
+              </div>
+            </StatusContext.Provider>
+          </MemoryRouter>,
+        )
+      })
+      await flush()
+      return host
+    }
+
+    const marked = (host: HTMLElement) =>
+      [...host.querySelectorAll('.sidebar [aria-current="page"]')].map((a) =>
+        a.getAttribute('href'),
+      )
+
+    for (const raw of ['abc', '', '0', '01', '-1']) {
+      it(`is no library for ?library=${raw === '' ? ' (empty)' : raw}: the page says so and asks nothing, and the sidebar marks nothing`, async () => {
+        const host = await at(`/?library=${raw}`)
+        expect(host.querySelector('section.empty h2')?.textContent).toBe(
+          'No such library',
+        )
+        expect(host.querySelector('h1')?.textContent).toBe('Library')
+        expect(vi.mocked(library.grid)).not.toHaveBeenCalled()
+        expect(vi.mocked(library.home)).not.toHaveBeenCalled()
+        expect(marked(host)).toEqual([])
+      })
+    }
+
+    it('is library 1 for ?library=1, on the page and in the sidebar', async () => {
+      const host = await at('/?library=1')
+      expect(host.querySelector('h1')?.textContent).toBe('Manga')
+      expect(vi.mocked(library.grid)).toHaveBeenLastCalledWith(1)
+      expect(vi.mocked(library.home)).toHaveBeenLastCalledWith(1)
+      expect(marked(host)).toEqual(['/?library=1'])
     })
   })
 

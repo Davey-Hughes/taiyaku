@@ -45,10 +45,14 @@ vi.mock('./App', () => ({
     )
   },
 }))
-vi.mock('./library', () => ({
+vi.mock('./library', async (importOriginal) => ({
+  // The real parser of `?library=`: it is a pure function over the URL, and
+  // the library page, the sidebar and Search all read the parameter through it.
+  libraryParam: (await importOriginal<typeof import('./library')>())
+    .libraryParam,
   home: vi.fn().mockResolvedValue({ continuing: [], added: [], read: [] }),
   grid: vi.fn().mockResolvedValue({ series: [], unfiled: [] }),
-  status: vi.fn().mockResolvedValue({ roots: [], scanned: true }),
+  status: vi.fn().mockResolvedValue({ libraries: [] }),
   matchesChip: () => true,
   sorted: (s: unknown[]) => s,
   // Task 4 wires `/series/:id` to `Series`, which fetches `oneSeries` on
@@ -203,7 +207,7 @@ describe('the routes', () => {
     expect(host.querySelector('[data-testid="reader"]')).toBeNull()
     expect(host.querySelector('.library')).not.toBeNull()
     expect(host.querySelector('.sidebar')).not.toBeNull()
-    expect(vi.mocked(library.search)).toHaveBeenCalledWith('hello')
+    expect(vi.mocked(library.search)).toHaveBeenCalledWith('hello', undefined)
   })
 
   /**

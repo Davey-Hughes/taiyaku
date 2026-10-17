@@ -11,12 +11,15 @@
  * wherever a `WorkCard` renders, rather than as a sixth `EmptyKind` in this
  * catalogue.
  *
- * **None of them is a `null` return.** "No roots configured" and "roots
- * configured, scan not yet run" are told apart by `/api/library/status` and by
+ * **None of them is a `null` return.** "No library" and "a library, its
+ * folders not yet scanned" are told apart by `/api/library/status` and by
  * nothing else: `/api/library/series` answers `{ series: [], unfiled: [] }` in
  * both states, which is correct of it and useless here. The difference is
  * between "you have no library" and "your library has not been read yet", and
- * the person seeing it can act on exactly one of those.
+ * the person seeing it can act on exactly one of those. A library's page asks
+ * the same of its own library, and a library the status does not list is a
+ * third thing again (`no-library`): there is nothing to scan, and nothing this
+ * account can do about it.
  *
  * **Three more for the proposals inbox — spec C3 §3 — split on that same
  * rule.** An inbox that draws nothing is three different situations, and the
@@ -41,11 +44,13 @@
  * name — `Show weak proposals`, the `All` tab — is already on screen above
  * the list, drawn by `Proposals.tsx`, so this names it in words rather than
  * offering a second button that does the same thing from a different place.
- * The two library states point at a shell command for the same reason: the
- * act that fixes them is not on the page at all.
+ * The library states that a scan fixes name the screen that does it,
+ * Configuration → Libraries, and the shell command beside it, for the same
+ * reason: neither act is on the page that shows them.
  */
 export type EmptyKind =
-  | 'no-roots'
+  | 'no-libraries'
+  | 'no-library'
   | 'not-scanned'
   | 'no-matches'
   | 'inbox-clear'
@@ -69,15 +74,16 @@ export interface EmptyStateProps {
 }
 
 export function EmptyState({ kind, query, label, decided }: EmptyStateProps) {
-  if (kind === 'no-roots') {
+  if (kind === 'no-libraries') {
     return (
       <section className="empty">
         <h2>No library yet</h2>
         <p>
-          Nothing has been added to this server. Point it at a directory of
-          archives:
+          Nothing has been added to this server. An administrator makes a
+          library from folders of archives on Configuration → Libraries, or from
+          the shell:
         </p>
-        <pre>taiyaku library scan --add /path/to/manga</pre>
+        <pre>taiyaku library scan --add /path/to/manga --library Manga</pre>
         <p>
           A scan reads what is on disk — series, volumes, editions and page
           counts — without writing anything back into the tree.
@@ -89,8 +95,22 @@ export function EmptyState({ kind, query, label, decided }: EmptyStateProps) {
     return (
       <section className="empty">
         <h2>Not read yet</h2>
-        <p>This library has roots, and nothing has scanned them.</p>
+        <p>
+          This library has folders, and nothing has scanned them. Scan library,
+          on Configuration → Libraries, reads them, and so does:
+        </p>
         <pre>taiyaku library scan</pre>
+      </section>
+    )
+  }
+  if (kind === 'no-library') {
+    return (
+      <section className="empty">
+        <h2>No such library</h2>
+        <p>
+          There is no library here to show: it may have been removed, or this
+          account may not see it.
+        </p>
       </section>
     )
   }
