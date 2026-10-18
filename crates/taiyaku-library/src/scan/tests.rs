@@ -2351,49 +2351,76 @@ fn what_a_removal_touches(conn: &Connection) -> Vec<String> {
     rows
 }
 
-/// Decision C of Part F1. `Solo` is the only grant of `alex`, of `sam` and of
-/// the administrator `zed`, so removing its one folder is refused, naming
-/// them in name order, and nothing goes. An account that also holds `Shelf`
-/// is not named, nor is one restricted to `Shelf`.
+/// `Solo` is the only grant of `alex` and of `sam`, so removing its one
+/// folder deletes it and leaves them seeing no library. The dry run names
+/// them, in name order, and the removal does what the dry run said.
+///
+/// No other account loses its last library, and none is named: `zed` is an
+/// administrator, which sees every library whatever its rows say; `kim` is
+/// set to every library, though it keeps a row of `Solo`; `both` keeps
+/// `Shelf`; `pat` never held `Solo`.
 #[test]
-fn removing_the_last_folder_of_an_accounts_only_library_is_refused_and_removes_nothing() {
+fn removing_the_last_folder_of_an_accounts_only_library_names_who_is_left_with_none() {
     let dir = crate::tests::tempdir("scan-removal-only-grant");
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let [_, _, solo, _] = three_libraries(dir.path(), &conn);
-    an_account_granted(&conn, "sam", "user", &["Solo"]);
-    an_account_granted(&conn, "alex", "user", &["Solo"]);
+    let [shelf_a, shelf_b, solo, _] = three_libraries(dir.path(), &conn);
+    let sam = an_account_granted(&conn, "sam", "user", &["Solo"]);
+    let alex = an_account_granted(&conn, "alex", "user", &["Solo"]);
     an_account_granted(&conn, "zed", "admin", &["Solo"]);
-    an_account_granted(&conn, "both", "user", &["Solo", "Shelf"]);
+    let kim = an_account_granted(&conn, "kim", "user", &["Solo"]);
+    conn.execute("UPDATE user SET every_library = 1 WHERE id = ?1", [kim])
+        .expect("kim sees every library and keeps its row of Solo");
+    let both = an_account_granted(&conn, "both", "user", &["Solo", "Shelf"]);
     an_account_granted(&conn, "pat", "user", &["Shelf"]);
     let before = what_a_removal_touches(&conn);
-    assert!(
-        before.iter().any(|row| row.starts_with("member "))
-            && before.iter().any(|row| row.starts_with("work ")),
-        "the fixture has works and members to lose: {before:?}"
-    );
 
-    let refused = remove_root(&conn, solo.id).expect_err("Solo is an only grant");
-
+    let (cost, _) = removal_cost(&conn, solo.id).expect("the dry run goes ahead");
+    assert_eq!(cost.left_with_no_library, vec!["alex", "sam"], "{cost:?}");
     assert_eq!(
         what_a_removal_touches(&conn),
         before,
-        "a refused removal removes nothing"
+        "the dry run removes nothing"
+    );
+
+    let (removal, _) = remove_root(&conn, solo.id).expect("the removal goes ahead");
+
+    assert_eq!(removal, cost, "the removal does what the dry run said");
+    assert_eq!(crate::libraries::id_of(&conn, "Solo").expect("reads"), None);
+    for account in [alex, sam] {
+        sees_no_library(&conn, account);
+    }
+    assert_eq!(
+        crate::account::access_for(&conn, both).expect("reads"),
+        crate::account::Access::Only(vec![shelf_a.id, shelf_b.id]),
+        "the account that held another library keeps it"
+    );
+}
+
+/// `account` is "only these" with no folder, and no series is listed to it,
+/// though the libraries left still hold series.
+fn sees_no_library(conn: &Connection, account: i64) {
+    let access = crate::account::access_for(conn, account).expect("reads");
+    assert_eq!(
+        access,
+        crate::account::Access::Only(Vec::new()),
+        "account {account} sees no library, not every library"
     );
     assert_eq!(
-        refused,
-        format!(
-            "{} is the last folder of the library `Solo`, which is the only library `alex`, \
-             `sam` and `zed` are granted. Removing it would delete those grants, and an account \
-             with no grant sees every library. First grant each another library, or revoke \
-             this one.",
-            solo.path.display()
-        )
+        crate::browse::series(conn, &access, account, None).expect("lists"),
+        Vec::new(),
+        "account {account} is listed nothing"
+    );
+    assert!(
+        !crate::browse::series(conn, &crate::account::Access::Every, account, None)
+            .expect("lists")
+            .is_empty(),
+        "the fixture: the libraries left hold series"
     );
 }
 
 /// The same removal once the account holds another library too: the folder
-/// goes, and its library and that grant with it.
+/// goes, and its library and that grant with it, and no one is named.
 #[test]
 fn removing_the_last_folder_of_a_library_is_allowed_when_its_accounts_hold_another() {
     let dir = crate::tests::tempdir("scan-removal-second-grant");
@@ -2405,10 +2432,11 @@ fn removing_the_last_folder_of_a_library_is_allowed_when_its_accounts_hold_anoth
     let (removal, _) = remove_root(&conn, solo.id).expect("alex keeps Shelf");
 
     assert_eq!(removal.works, 1, "Solo's one volume went with it");
+    assert_eq!(removal.left_with_no_library, Vec::<String>::new());
     assert_eq!(crate::libraries::id_of(&conn, "Solo").expect("reads"), None);
     assert_eq!(
-        crate::account::roots_for(&conn, alex).expect("reads"),
-        vec![shelf_a.id, shelf_b.id],
+        crate::account::access_for(&conn, alex).expect("reads"),
+        crate::account::Access::Only(vec![shelf_a.id, shelf_b.id]),
         "still restricted, to the library that is left"
     );
 }
@@ -2427,12 +2455,13 @@ fn removing_the_last_folder_of_a_library_is_allowed_when_its_accounts_hold_a_lat
     );
     let alex = an_account_granted(&conn, "alex", "user", &["Solo", "Lone"]);
 
-    remove_root(&conn, solo.id).expect("alex keeps Lone");
+    let (removal, _) = remove_root(&conn, solo.id).expect("alex keeps Lone");
 
+    assert_eq!(removal.left_with_no_library, Vec::<String>::new());
     assert_eq!(crate::libraries::id_of(&conn, "Solo").expect("reads"), None);
     assert_eq!(
-        crate::account::roots_for(&conn, alex).expect("reads"),
-        vec![lone.id],
+        crate::account::access_for(&conn, alex).expect("reads"),
+        crate::account::Access::Only(vec![lone.id]),
         "still restricted, to the library that is left"
     );
 }
@@ -2450,79 +2479,41 @@ fn removing_the_last_folder_of_a_library_nobody_is_restricted_to_is_allowed() {
     let (removal, _) = remove_root(&conn, solo.id).expect("nobody is restricted to Solo");
 
     assert_eq!(removal.works, 1);
+    assert_eq!(removal.left_with_no_library, Vec::<String>::new());
     assert_eq!(
-        crate::account::roots_for(&conn, pat).expect("reads"),
-        vec![lone.id],
+        crate::account::access_for(&conn, pat).expect("reads"),
+        crate::account::Access::Only(vec![lone.id]),
         "and the account restricted elsewhere is where it was"
     );
 }
 
 /// A folder that is not its library's last goes, though the library is an
-/// account's only grant: the library and the grant stay.
+/// account's only grant: the library and the grant stay, so neither the dry
+/// run nor the removal names the account.
 #[test]
-fn removing_one_folder_of_two_is_allowed_though_the_library_is_an_only_grant() {
+fn removing_one_folder_of_two_names_no_one_though_the_library_is_an_only_grant() {
     let dir = crate::tests::tempdir("scan-removal-not-last-folder");
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
     let [shelf_a, shelf_b, _, _] = three_libraries(dir.path(), &conn);
     let pat = an_account_granted(&conn, "pat", "user", &["Shelf"]);
 
-    remove_root(&conn, shelf_a.id).expect("Shelf keeps a folder");
+    let (cost, _) = removal_cost(&conn, shelf_a.id).expect("costs");
+    let (removal, _) = remove_root(&conn, shelf_a.id).expect("Shelf keeps a folder");
 
+    for (which, answer) in [("the dry run", cost), ("the removal", removal)] {
+        assert_eq!(answer.works, 1, "{which}: the folder's one volume");
+        assert_eq!(
+            answer.left_with_no_library,
+            Vec::<String>::new(),
+            "{which}: pat still sees Shelf"
+        );
+    }
     assert_eq!(
-        crate::account::roots_for(&conn, pat).expect("reads"),
-        vec![shelf_b.id],
+        crate::account::access_for(&conn, pat).expect("reads"),
+        crate::account::Access::Only(vec![shelf_b.id]),
         "the grant resolves to the folder that is left"
     );
-}
-
-/// The dry run answers the removal's refusal, in the same words, where it
-/// would have answered counts.
-#[test]
-fn the_cost_of_a_refused_removal_is_the_refusal() {
-    let dir = crate::tests::tempdir("scan-removal-cost-only-grant");
-    let library = Library::open_in_memory().expect("open");
-    let conn = library.conn();
-    let [_, _, solo, _] = three_libraries(dir.path(), &conn);
-    an_account_granted(&conn, "alex", "user", &["Solo"]);
-    let before = what_a_removal_touches(&conn);
-
-    let quoted = removal_cost(&conn, solo.id).expect_err("the dry run is refused too");
-
-    assert_eq!(
-        quoted,
-        format!(
-            "{} is the last folder of the library `Solo`, which is the only library `alex` is \
-             granted. Removing it would delete that grant, and an account with no grant sees \
-             every library. First grant it another library, or revoke this one.",
-            solo.path.display()
-        )
-    );
-    assert_eq!(
-        Some(&quoted),
-        removal_refusal(&conn, solo.id).expect("reads").as_ref(),
-        "which is the check's own answer"
-    );
-    assert_eq!(
-        remove_root(&conn, solo.id).expect_err("and the removal's"),
-        quoted
-    );
-    assert_eq!(what_a_removal_touches(&conn), before);
-}
-
-/// The check answers nothing for a removal that may go ahead, and for a root
-/// that is not there.
-#[test]
-fn a_removal_that_may_go_ahead_has_no_refusal() {
-    let dir = crate::tests::tempdir("scan-removal-no-refusal");
-    let library = Library::open_in_memory().expect("open");
-    let conn = library.conn();
-    let [shelf_a, _, solo, _] = three_libraries(dir.path(), &conn);
-    an_account_granted(&conn, "pat", "user", &["Shelf"]);
-
-    assert_eq!(removal_refusal(&conn, shelf_a.id), Ok(None));
-    assert_eq!(removal_refusal(&conn, solo.id), Ok(None));
-    assert_eq!(removal_refusal(&conn, 999), Ok(None));
 }
 
 fn library_called(conn: &Connection, name: &str) -> i64 {
@@ -2904,7 +2895,6 @@ fn a_library_id_that_names_no_library_removes_nothing() {
     };
     let before = stands(&conn);
 
-    assert_eq!(library_removal_refusal(&conn, 999), Ok(None));
     assert_eq!(
         library_removal_cost(&conn, 999).expect("costs").0,
         Removal::default()
@@ -2916,84 +2906,80 @@ fn a_library_id_that_names_no_library_removes_nothing() {
     assert_eq!(stands(&conn), before);
 }
 
-/// `Shelf` has two folders, so no single folder of it is "the last folder of
-/// a library" and the per-folder refusal is never asked. The library's own is.
+/// `Shelf`, of two folders, is the only grant of `alex` and of `bo`: removing
+/// it leaves them seeing no library, and the dry run names them, in name
+/// order. `both` keeps `Solo` and is not named.
 #[test]
-fn removing_a_library_that_is_an_accounts_only_grant_is_refused_by_name() {
-    let parent = crate::tests::tempdir("remove-library-refused");
+fn removing_a_library_that_is_an_accounts_only_grant_names_who_is_left_with_none() {
+    let parent = crate::tests::tempdir("remove-library-only-grant");
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    three_libraries(parent.path(), &conn);
-    an_account_granted(&conn, "bo", "user", &["Shelf"]);
-    an_account_granted(&conn, "alex", "user", &["Shelf"]);
-    an_account_granted(&conn, "both", "user", &["Shelf", "Solo"]);
+    let [_, _, solo, _] = three_libraries(parent.path(), &conn);
+    let bo = an_account_granted(&conn, "bo", "user", &["Shelf"]);
+    let alex = an_account_granted(&conn, "alex", "user", &["Shelf"]);
+    let both = an_account_granted(&conn, "both", "user", &["Shelf", "Solo"]);
     let shelf = library_called(&conn, "Shelf");
     let before = what_a_removal_touches(&conn);
 
-    let refusal = library_removal_refusal(&conn, shelf)
-        .expect("reads")
-        .expect("refuses");
+    let (cost, _) = library_removal_cost(&conn, shelf).expect("the dry run goes ahead");
+    assert_eq!(cost.left_with_no_library, vec!["alex", "bo"], "{cost:?}");
     assert_eq!(
-        refusal,
-        "`Shelf` is the only library `alex` and `bo` are granted. Removing it would delete \
-         those grants, and an account with no grant sees every library. First grant each \
-         another library, or revoke this one."
+        what_a_removal_touches(&conn),
+        before,
+        "the dry run removes nothing"
     );
 
-    for attempt in [
-        library_removal_cost(&conn, shelf),
-        remove_library(&conn, shelf),
-    ] {
-        assert_eq!(attempt.expect_err("refuses"), refusal);
-    }
-    assert_eq!(what_a_removal_touches(&conn), before);
+    let (removal, _) = remove_library(&conn, shelf).expect("the removal goes ahead");
+
+    assert_eq!(removal, cost, "the removal does what the dry run said");
     assert_eq!(
-        library_removal_refusal(&conn, library_called(&conn, "Lone")).expect("reads"),
+        crate::libraries::name_of(&conn, shelf).expect("reads"),
         None
+    );
+    for account in [alex, bo] {
+        sees_no_library(&conn, account);
+    }
+    assert_eq!(
+        crate::account::access_for(&conn, both).expect("reads"),
+        crate::account::Access::Only(vec![solo.id]),
+        "the account that held another library keeps it"
     );
 }
 
-/// An administrator's grant counts like anyone's, for the library's own
-/// refusal as for a folder's, and it is the sentence of the library's own
-/// removal whether the library has one folder or two.
+/// An administrator sees every library whatever its rows say, so removing
+/// the only library it is granted leaves it with nothing to lose: the dry
+/// run and the removal name no one, and the library goes.
 #[test]
-fn an_administrators_only_grant_refuses_a_library_removal() {
-    let parent = crate::tests::tempdir("remove-library-refused-admin");
+fn an_administrators_only_grant_is_not_named_and_the_library_goes() {
+    let parent = crate::tests::tempdir("remove-library-admin");
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
     three_libraries(parent.path(), &conn);
     an_account_granted(&conn, "ada", "admin", &["Shelf"]);
-    an_account_granted(&conn, "alex", "user", &["Solo"]);
-    let before = what_a_removal_touches(&conn);
+    let shelf = library_called(&conn, "Shelf");
 
-    for (library, account) in [("Shelf", "ada"), ("Solo", "alex")] {
-        let id = library_called(&conn, library);
-        let refusal = format!(
-            "`{library}` is the only library `{account}` is granted. Removing it would delete \
-             that grant, and an account with no grant sees every library. First grant it \
-             another library, or revoke this one."
-        );
+    let (cost, _) = library_removal_cost(&conn, shelf).expect("costs");
+    let (removal, _) = remove_library(&conn, shelf).expect("removes");
+
+    for (which, answer) in [("the dry run", cost), ("the removal", removal)] {
+        assert_eq!(answer.works, 2, "{which}: Shelf's two volumes");
         assert_eq!(
-            library_removal_refusal(&conn, id),
-            Ok(Some(refusal.clone()))
-        );
-        assert_eq!(
-            library_removal_cost(&conn, id).expect_err("the dry run is refused"),
-            refusal
-        );
-        assert_eq!(
-            remove_library(&conn, id).expect_err("the removal is refused"),
-            refusal
+            answer.left_with_no_library,
+            Vec::<String>::new(),
+            "{which}: an administrator is never left with no library"
         );
     }
-    assert_eq!(what_a_removal_touches(&conn), before);
+    assert_eq!(
+        crate::libraries::name_of(&conn, shelf).expect("reads"),
+        None
+    );
 }
 
 /// An account holding two libraries is left with one when either goes, so
-/// neither the earlier-made nor the later-made is refused, and removing one
-/// goes through.
+/// removing the later-made names no one. Its grant of the earlier-made is
+/// then its only one, and removing that names it.
 #[test]
-fn a_library_that_is_not_an_accounts_only_grant_may_be_removed_whichever_was_made_first() {
+fn a_library_that_is_not_an_accounts_only_grant_names_no_one_whichever_was_made_first() {
     let parent = crate::tests::tempdir("remove-library-not-only");
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
@@ -3005,20 +2991,65 @@ fn a_library_that_is_not_an_accounts_only_grant_may_be_removed_whichever_was_mad
     );
     assert!(shelf < solo, "the fixture: Shelf is the earlier-made");
 
-    assert_eq!(library_removal_refusal(&conn, shelf), Ok(None));
-    assert_eq!(library_removal_refusal(&conn, solo), Ok(None));
-    remove_library(&conn, solo).expect("the later-made goes");
+    for library in [shelf, solo] {
+        assert_eq!(
+            library_removal_cost(&conn, library)
+                .expect("costs")
+                .0
+                .left_with_no_library,
+            Vec::<String>::new(),
+            "library {library}"
+        );
+    }
+    let (removal, _) = remove_library(&conn, solo).expect("the later-made goes");
+    assert_eq!(removal.left_with_no_library, Vec::<String>::new());
 
-    assert_eq!(
-        crate::account::roots_for(&conn, dual).expect("reads").len(),
-        2,
+    assert!(
+        matches!(
+            crate::account::access_for(&conn, dual).expect("reads"),
+            crate::account::Access::Only(folders) if folders.len() == 2
+        ),
         "the account keeps Shelf's two folders"
     );
-    assert!(
-        library_removal_refusal(&conn, shelf)
-            .expect("reads")
-            .is_some(),
+    assert_eq!(
+        library_removal_cost(&conn, shelf)
+            .expect("costs")
+            .0
+            .left_with_no_library,
+        vec!["dual"],
         "and Shelf is now its only grant"
+    );
+}
+
+/// A library with no folder goes only with its last folder, so a removal of
+/// it deletes nothing and names no one, though it is an account's only
+/// grant. Written by hand: nothing public makes such a library.
+#[test]
+fn removing_a_library_with_no_folder_names_no_one() {
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    conn.execute(
+        "INSERT INTO library (id, name) VALUES (90, 'Folderless')",
+        [],
+    )
+    .expect("a library with no folder");
+    let alex = an_account_granted(&conn, "alex", "user", &["Folderless"]);
+
+    let (cost, _) = library_removal_cost(&conn, 90).expect("costs");
+    let (removal, _) = remove_library(&conn, 90).expect("removes");
+
+    for (which, answer) in [("the dry run", cost), ("the removal", removal)] {
+        assert_eq!(answer, Removal::default(), "{which}");
+    }
+    assert_eq!(
+        crate::libraries::name_of(&conn, 90).expect("reads"),
+        Some("Folderless".to_string()),
+        "the library stands"
+    );
+    assert_eq!(
+        crate::account::libraries_for(&conn, alex).expect("reads"),
+        vec![90],
+        "and so does alex's grant of it"
     );
 }
 
@@ -3114,24 +3145,23 @@ fn removing_a_library_repairs_a_surviving_documents_gap_and_its_cost_does_not() 
     );
 }
 
-/// With one account, the refusal says "is granted" and "it".
+/// A library of one folder, the only grant of one account: the library's
+/// removal names that account alone, and leaves it seeing no library.
 #[test]
-fn the_refusal_for_one_account_is_in_the_singular() {
-    let parent = crate::tests::tempdir("remove-library-refused-one");
+fn removing_a_one_folder_library_names_its_one_account() {
+    let parent = crate::tests::tempdir("remove-library-one-account");
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
     three_libraries(parent.path(), &conn);
-    an_account_granted(&conn, "alex", "user", &["Shelf"]);
+    let alex = an_account_granted(&conn, "alex", "user", &["Solo"]);
+    let solo = library_called(&conn, "Solo");
 
-    assert_eq!(
-        library_removal_refusal(&conn, library_called(&conn, "Shelf")),
-        Ok(Some(
-            "`Shelf` is the only library `alex` is granted. Removing it would delete that \
-             grant, and an account with no grant sees every library. First grant it another \
-             library, or revoke this one."
-                .to_string()
-        ))
-    );
+    let (cost, _) = library_removal_cost(&conn, solo).expect("costs");
+    let (removal, _) = remove_library(&conn, solo).expect("removes");
+
+    assert_eq!(cost.left_with_no_library, vec!["alex"]);
+    assert_eq!(removal, cost);
+    sees_no_library(&conn, alex);
 }
 
 /// The pattern language is gitignore's, taken from the crate rather than

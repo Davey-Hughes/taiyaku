@@ -27,6 +27,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::get,
 };
+use taiyaku_library::account::Access;
 
 use crate::ServeState;
 
@@ -140,14 +141,10 @@ async fn catalog() -> Response {
     ))
 }
 
-/// The grant of the request, `[]` (no restriction) where no principal was
-/// put on it — this file's own tests build requests with none, and
-/// `routes::on_the_grant` reads that the same way.
-fn granted(extensions: &axum::http::Extensions) -> Vec<i64> {
-    extensions
-        .get::<crate::auth::Principal>()
-        .map(|p| p.roots.clone())
-        .unwrap_or_default()
+/// The access of the request, which sees nothing where no principal was put
+/// on it ([`crate::auth::access_of`]).
+fn granted(extensions: &axum::http::Extensions) -> Access {
+    crate::auth::access_of(extensions)
 }
 
 /// Which of the two library views a feed belongs to.
@@ -226,9 +223,9 @@ async fn libraries_in(
     extensions: &axum::http::Extensions,
     view: View,
 ) -> Response {
-    let roots = granted(extensions);
+    let access = granted(extensions);
     crate::library_api::on_the_library(state, "the libraries", move |conn| {
-        match taiyaku_library::browse::status(conn, &roots) {
+        match taiyaku_library::browse::status(conn, &access) {
             Ok(status) => feed(libraries_body(&status.libraries, view)),
             Err(why) => crate::library_api::failed("the libraries", &why),
         }
@@ -246,15 +243,15 @@ pub(crate) async fn library_works(
     AxPath(library): AxPath<i64>,
     extensions: axum::http::Extensions,
 ) -> Response {
-    let roots = granted(&extensions);
+    let access = granted(&extensions);
     let feed_state = Arc::clone(&state);
     crate::library_api::on_the_library(state, "the library's works", move |conn| {
-        let scope = match taiyaku_library::browse::library_scope(conn, &roots, library) {
+        let scope = match taiyaku_library::browse::library_scope(conn, &access, library) {
             Ok(Some(scope)) => scope,
             Ok(None) => return missing(format!("no library {library}")),
             Err(why) => return crate::library_api::failed("the library's works", &why),
         };
-        match taiyaku_library::browse::visible_editions(conn, &scope.folders) {
+        match taiyaku_library::browse::visible_editions(conn, &Access::Only(scope.folders)) {
             Ok(visible) => works_feed(
                 &feed_state,
                 Some(&visible),
@@ -271,18 +268,19 @@ pub(crate) async fn library_works(
 /// One library's works as the store files them: `work.library_id`, with
 /// every edition the grant allows, wherever its files are.
 ///
-/// `visible_editions(conn, &[])` answers every edition of every work, which
-/// is what an unrestricted caller is owed here. A library outside the grant
-/// answers 404 as [`library_works`] does.
+/// `visible_editions` with the caller's own access answers every edition of
+/// every work for `Access::Every`, which is what an unrestricted caller is
+/// owed here. A library outside the grant answers 404 as [`library_works`]
+/// does.
 pub(crate) async fn library_works_by_work(
     State(state): State<Arc<ServeState>>,
     AxPath(library): AxPath<i64>,
     extensions: axum::http::Extensions,
 ) -> Response {
-    let roots = granted(&extensions);
+    let access = granted(&extensions);
     let feed_state = Arc::clone(&state);
     crate::library_api::on_the_library(state, "the library's filed works", move |conn| {
-        let scope = match taiyaku_library::browse::library_scope(conn, &roots, library) {
+        let scope = match taiyaku_library::browse::library_scope(conn, &access, library) {
             Ok(Some(scope)) => scope,
             Ok(None) => return missing(format!("no library {library}")),
             Err(why) => return crate::library_api::failed("the library's filed works", &why),
@@ -291,7 +289,7 @@ pub(crate) async fn library_works_by_work(
             Ok(filed) => filed,
             Err(why) => return crate::library_api::failed("the library's filed works", &why),
         };
-        match taiyaku_library::browse::visible_editions(conn, &roots) {
+        match taiyaku_library::browse::visible_editions(conn, &access) {
             Ok(mut visible) => {
                 visible.retain(|slug, _| filed.contains(slug));
                 works_feed(
@@ -309,15 +307,14 @@ pub(crate) async fn library_works_by_work(
 }
 
 /// The visible editions a restricted principal's grant admits, keyed by
-/// work slug, or `None` for an unrestricted caller (no `Principal` at all —
-/// this file's own tests build requests with none — or an empty grant,
-/// which spec C1 reads as "every root"). `Err` is the response to send
-/// instead, a 500 when the query fails.
+/// work slug, or `None` for a caller whose access is `Access::Every`. `Err`
+/// is the response to send instead: a 401 for a request with no principal
+/// ([`crate::routes::on_the_grant`]), a 500 when the query fails.
 ///
 /// `None` rather than "every edition of every work" so `works` can skip the
 /// lookup entirely for the ordinary, unrestricted case instead of filtering
-/// against a map built from every work — the same reason `refuse_if_hidden`
-/// short-circuits on `roots.is_empty()` before ever reaching SQL.
+/// against a map built from every work — the same reason `on_the_grant`
+/// answers `Every` before ever reaching SQL.
 ///
 /// **Asked on the blocking pool, through [`crate::routes::on_the_grant`] —
 /// O119.** This took `state.library.conn()` itself, on the async worker, so a
@@ -335,7 +332,7 @@ async fn visible_editions_by_work(
     extensions: &axum::http::Extensions,
 ) -> Result<Option<HashMap<String, HashSet<String>>>, Response> {
     crate::routes::on_the_grant(state, extensions, Ok(None), |conn, principal| {
-        taiyaku_library::browse::visible_editions(conn, &principal.roots)
+        taiyaku_library::browse::visible_editions(conn, &principal.access)
             .map(Some)
             .map_err(|why| (StatusCode::INTERNAL_SERVER_ERROR, why).into_response())
     })
@@ -520,10 +517,11 @@ pub(crate) async fn work_feed(
     // and cheap for the one work this route addresses: `works_of`'s row plus
     // one `editions_by_work` call, not one query per edition — and since O85
     // that call answers the whole set rather than one work at a time.
-    // **Absent means "may download"**, which is the same reading the grant
-    // filter just below gives an absent principal: `opds::tests`' own
-    // `feed_router` builds this feed without the guard, and a missing
-    // capability must not silently become a withheld one.
+    // **Absent means "may download"**, as `routes::refuse_if_cannot_download`
+    // reads it. `can_download` is a capability, not a grant: it narrows what a
+    // reader may do with what they can see, so reading it permissively widens
+    // nothing. What a request with no principal sees is the grant's to
+    // decide, and `visible_editions_or_refuse` below answers it 401.
     let may_download = extensions
         .get::<crate::auth::Principal>()
         .is_none_or(|principal| principal.can_download);

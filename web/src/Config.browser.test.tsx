@@ -138,6 +138,7 @@ const user = (over: Partial<usersApi.User> = {}): usersApi.User => ({
   can_log_in: true,
   sessions: [],
   keys: [],
+  every_library: true,
   libraries: [],
   ...over,
 })
@@ -345,7 +346,7 @@ describe('the Configuration screens at 390px', () => {
       holding(UNBROKEN_ROOT),
     )
     vi.mocked(config.removalCost).mockResolvedValue({
-      removed: { works: 1, positions: 0, notes: 0 },
+      removed: { works: 1, positions: 0, notes: 0, left_with_no_library: [] },
       derive: derived(),
       dry_run: true,
     })
@@ -466,6 +467,7 @@ describe('the Configuration screens at 390px', () => {
           alignments_dropped: 0,
           library_removed: null,
           grants_removed: 0,
+          left_with_no_library: [],
         },
         derive: derived(),
         dry_run: true,
@@ -494,6 +496,7 @@ describe('the Configuration screens at 390px', () => {
           alignments_dropped: 0,
           library_removed: null,
           grants_removed: 0,
+          left_with_no_library: [],
         },
         derive: derived(),
         dry_run: true,
@@ -1126,7 +1129,7 @@ describe('the Configuration screens at 390px', () => {
   it('keeps the library’s removal inside the window', async () => {
     await page.viewport(390, 844)
     vi.mocked(librariesApi.libraryRemovalCost).mockResolvedValue({
-      removed: { works: 1, positions: 0, notes: 0 },
+      removed: { works: 1, positions: 0, notes: 0, left_with_no_library: [] },
       derive: derived(),
       dry_run: true,
     })
@@ -1154,12 +1157,12 @@ describe('the Configuration screens at 390px', () => {
     // that was removed is no longer there to hold it.
     await page.viewport(390, 844)
     vi.mocked(librariesApi.libraryRemovalCost).mockResolvedValue({
-      removed: { works: 1, positions: 0, notes: 0 },
+      removed: { works: 1, positions: 0, notes: 0, left_with_no_library: [] },
       derive: derived(),
       dry_run: true,
     })
     vi.mocked(librariesApi.removeLibrary).mockResolvedValue({
-      removed: { works: 1, positions: 0, notes: 0 },
+      removed: { works: 1, positions: 0, notes: 0, left_with_no_library: [] },
       derive: derived({
         unreadable: {
           total: 1,
@@ -1217,12 +1220,12 @@ describe('the Configuration screens at 390px', () => {
       ],
     })
     vi.mocked(librariesApi.libraryRemovalCost).mockResolvedValue({
-      removed: { works: 0, positions: 0, notes: 0 },
+      removed: { works: 0, positions: 0, notes: 0, left_with_no_library: [] },
       derive: derived(),
       dry_run: true,
     })
     vi.mocked(librariesApi.removeLibrary).mockResolvedValue({
-      removed: { works: 0, positions: 0, notes: 0 },
+      removed: { works: 0, positions: 0, notes: 0, left_with_no_library: [] },
       derive: derived({ lost_positions: 4 }),
       dry_run: false,
     })
@@ -1267,7 +1270,9 @@ describe('the Configuration screens at 390px', () => {
       libraries: [libraryOf(UNBROKEN_ROOT)],
     })
     vi.mocked(usersApi.listUsers).mockResolvedValue({
-      users: [user({ libraries: [{ id: 70, name: 'Manga' }] })],
+      users: [
+        user({ every_library: false, libraries: [{ id: 70, name: 'Manga' }] }),
+      ],
     })
     const host = await act(async () => {
       const mounted = mount(
@@ -1313,6 +1318,7 @@ describe('the Configuration screens at 390px', () => {
         users: [
           user({
             role: 'user',
+            every_library: false,
             libraries: [{ id: 70, name: UNBROKEN_NAME }],
           }),
         ],
@@ -1367,7 +1373,9 @@ describe('the Configuration screens at desktop width', () => {
       libraries: [libraryOf(longPathRoot)],
     })
     vi.mocked(usersApi.listUsers).mockResolvedValue({
-      users: [user({ libraries: [{ id: 70, name: 'Manga' }] })],
+      users: [
+        user({ every_library: false, libraries: [{ id: 70, name: 'Manga' }] }),
+      ],
     })
     const host = await act(async () => {
       const mounted = mount(
@@ -1608,12 +1616,12 @@ describe('the libraries screen at desktop width', () => {
   it('puts the removal’s report on the measure, as a grid', async () => {
     const host = await shown()
     vi.mocked(librariesApi.libraryRemovalCost).mockResolvedValue({
-      removed: { works: 5, positions: 0, notes: 0 },
+      removed: { works: 5, positions: 0, notes: 0, left_with_no_library: [] },
       derive: derived(),
       dry_run: true,
     })
     vi.mocked(librariesApi.removeLibrary).mockResolvedValue({
-      removed: { works: 5, positions: 0, notes: 0 },
+      removed: { works: 5, positions: 0, notes: 0, left_with_no_library: [] },
       derive: derived({ lost_positions: 4 }),
       dry_run: false,
     })
@@ -1712,7 +1720,13 @@ describe('the libraries screen at desktop width', () => {
 
   it('draws the grants of an account as one group, with the ticks under their radio', async () => {
     vi.mocked(usersApi.listUsers).mockResolvedValue({
-      users: [user({ role: 'user', libraries: [{ id: 1, name: 'Manga' }] })],
+      users: [
+        user({
+          role: 'user',
+          every_library: false,
+          libraries: [{ id: 1, name: 'Manga' }],
+        }),
+      ],
     })
     const host = await shown(
       <MemoryRouter>

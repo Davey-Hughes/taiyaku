@@ -7,9 +7,8 @@
 //! the `root_gets_a_library` trigger (migration 16) files a root inserted
 //! without a library under one of its own, and migration 15's
 //! `library_emptied_by_delete` deletes a library whose last root goes. A grant
-//! names a library and `account::roots_for` resolves it to that library's
-//! folders, so an empty library would be a grant resolving to no folder, which
-//! `Principal.roots` reads as unrestricted.
+//! names a library and `account::access_for` resolves it to that library's
+//! folders, so a grant of an empty library would grant nothing.
 
 use std::path::PathBuf;
 

@@ -165,11 +165,14 @@ TAIYAKU_STUMP_URL=https://stump.example TAIYAKU_STUMP_KEY=… \
 # a key is shown once, because only its hash is stored:
 taiyaku library key create davey --name ipad
 
-# share some libraries rather than all of them. **a grant is a restriction**,
-# and an account holding none sees every library — so the FIRST grant is the
-# one that narrows an account, not the one that widens it:
+# share some libraries rather than all of them. **a grant is a restriction**:
+# a new account sees every library, so the FIRST grant is the one that narrows
+# it, not the one that widens it. revoking its last grant leaves it seeing no
+# library, never every library. `every-library` (or "Every library" on the
+# Users screen) lifts the limit:
 taiyaku library user grant-library alice Manga
 taiyaku library user revoke-library alice Manga
+taiyaku library user every-library alice
 #
 # a restricted account sees only the editions whose files sit under a folder of
 # a library it was granted, and cannot read their pages either. a work imported
@@ -257,8 +260,8 @@ the folders the server was started with (`--folders`, or `TAIYAKU_FOLDERS`). A
 refusal — a name already taken, a folder inside another, a path that cannot be
 read — is drawn as the server's own sentence. Removing a library or a folder
 states what it will take — works, reading positions, notes — and offers no
-confirm button at all until those counts have arrived; a library that is some
-account's only grant is refused instead, naming the accounts. A folder's row
+confirm button at all until those counts have arrived, and names any account
+the removal leaves seeing no library. A folder's row
 has **Move…**, to another library or a new one: it says what the move would do —
 how many works keep their address, how many join a work the library already
 holds, how many are split — before it offers the move, and refuses, naming what
@@ -287,9 +290,8 @@ it says which proposal that reopens before it does anything.
 **And the last two tabs are built**, at `/config/users` and `/config/backup`.
 One card per account: its role, whether it may download and stream, which
 libraries it may see — *Every library, including any added later*, or *Only
-these* with a tick per library, where the last tick cannot be cleared and
-lifting the limit is choosing *Every library* — and, when expanded, its open
-sessions and its API keys, each revocable one at a time for the device that was
+these* with a tick per library — and, when expanded, its open sessions and its
+API keys, each revocable one at a time for the device that was
 lost. The account this browser is signed in as is
 marked, and so is the session in front of you, so revoking one is not a guess.
 The two things that would lock a library out of its own administration are

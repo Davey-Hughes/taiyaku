@@ -45,6 +45,7 @@ const work = (over: Partial<library.WorkCard> = {}): library.WorkCard => ({
 
 const defaultStatus: LibraryStatus = {
   libraries: [{ id: 1, name: 'Manga', scanned: true }],
+  restricted: false,
 }
 
 /** Two libraries, both read, for the tests that move from one to the other. */
@@ -53,6 +54,7 @@ const twoLibraries: LibraryStatus = {
     { id: 1, name: 'Manga', scanned: true },
     { id: 2, name: 'Comics', scanned: true },
   ],
+  restricted: false,
 }
 
 /**
@@ -318,9 +320,27 @@ describe('the library screen', () => {
   })
 
   it('a server with no library is told so, rather than shown an empty grid', async () => {
-    const host = await show(undefined, { libraries: [] })
+    const host = await show(undefined, { libraries: [], restricted: false })
     expect(host.textContent).toContain('No library yet')
     expect(host.textContent).toContain('Configuration → Libraries')
+    expect(host.textContent).not.toContain('No library shared')
+  })
+
+  it('an account granted no library is told none is shared, not that the server has none', async () => {
+    const host = await show(undefined, { libraries: [], restricted: true })
+    expect(host.querySelector('.empty h2')?.textContent).toBe(
+      'No library shared',
+    )
+    expect(host.textContent).toContain('Configuration → Users')
+    expect(host.textContent).not.toContain('No library yet')
+  })
+
+  it('an account granted a library not yet read is told it is not read yet', async () => {
+    const host = await show(undefined, {
+      libraries: [{ id: 1, name: 'Manga', scanned: false }],
+      restricted: true,
+    })
+    expect(host.querySelector('.empty h2')?.textContent).toBe('Not read yet')
   })
 
   it('a library page asks whether its own library has been read', async () => {
@@ -329,6 +349,7 @@ describe('the library screen', () => {
         { id: 1, name: 'Manga', scanned: true },
         { id: 2, name: 'Comics', scanned: false },
       ],
+      restricted: false,
     }
     const comics = await showAt('/?library=2', status)
     expect(comics.textContent).toContain('Not read yet')
@@ -342,10 +363,12 @@ describe('the library screen', () => {
         { id: 1, name: 'Manga', scanned: false },
         { id: 2, name: 'Comics', scanned: true },
       ],
+      restricted: false,
     })
     expect(one.textContent).toContain('No series match this filter.')
     const none = await show(undefined, {
       libraries: [{ id: 1, name: 'Manga', scanned: false }],
+      restricted: false,
     })
     expect(none.textContent).toContain('Not read yet')
   })
@@ -353,13 +376,55 @@ describe('the library screen', () => {
   it('a library the status does not list is said to be no library here', async () => {
     const host = await showAt('/?library=7', {
       libraries: [{ id: 1, name: 'Manga', scanned: true }],
+      restricted: false,
     })
     expect(host.textContent).toContain('No such library')
+  })
+
+  it('a library page for an account granted no library says none is shared', async () => {
+    const host = await showAt('/?library=7', {
+      libraries: [],
+      restricted: true,
+    })
+    expect(host.querySelector('.empty h2')?.textContent).toBe(
+      'No library shared',
+    )
+    expect(host.textContent).not.toContain('No such library')
+  })
+
+  it('a library page is no library here on a server with none, or for an account granted another', async () => {
+    const none = await showAt('/?library=7', {
+      libraries: [],
+      restricted: false,
+    })
+    expect(none.querySelector('.empty h2')?.textContent).toBe('No such library')
+    const another = await showAt('/?library=7', {
+      libraries: [{ id: 1, name: 'Manga', scanned: true }],
+      restricted: true,
+    })
+    expect(another.querySelector('.empty h2')?.textContent).toBe(
+      'No such library',
+    )
+  })
+
+  it('a library page for an account granted that library asks whether it has been read', async () => {
+    const read = await showAt('/?library=1', {
+      libraries: [{ id: 1, name: 'Manga', scanned: true }],
+      restricted: true,
+    })
+    expect(read.querySelector('.empty h2')?.textContent).toBe('Nothing here')
+    expect(read.textContent).toContain('No series match this filter.')
+    const unread = await showAt('/?library=1', {
+      libraries: [{ id: 1, name: 'Manga', scanned: false }],
+      restricted: true,
+    })
+    expect(unread.querySelector('.empty h2')?.textContent).toBe('Not read yet')
   })
 
   it('asks the server for the library in the URL, for the grid and for home', async () => {
     await showAt('/?library=4', {
       libraries: [{ id: 4, name: 'Manga', scanned: true }],
+      restricted: false,
     })
     expect(vi.mocked(library.grid)).toHaveBeenLastCalledWith(4)
     expect(vi.mocked(library.home)).toHaveBeenLastCalledWith(4)
@@ -369,6 +434,7 @@ describe('the library screen', () => {
     document.title = 'stale'
     const host = await showAt('/?library=4', {
       libraries: [{ id: 4, name: 'Manga', scanned: true }],
+      restricted: false,
     })
     expect(document.title).toContain('Manga')
     expect(host.querySelector('h1')?.textContent).toBe('Manga')

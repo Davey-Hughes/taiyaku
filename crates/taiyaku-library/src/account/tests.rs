@@ -130,19 +130,34 @@ fn using_a_key_records_that_it_was_used() {
     );
 }
 
-/// §8: a grant written by hand is read back as the folders of the library
-/// granted, and an account with none reads as an empty list.
+/// §8: `every_library` decides, and the rows name what "only these" sees.
+/// A new account sees every library; set to "only these" with no row it sees
+/// nothing; a grant written by hand reads back as the folders of the library
+/// granted; and set back to every library it sees every library whatever
+/// rows it still holds.
+///
+/// **A grant whose library has no folder is still a grant**: it reads as
+/// `Only` with no folder, never as `Every`, which is the widening [`Access`]
+/// exists to make unwritable.
 #[test]
-fn roots_are_read_per_user() {
+fn access_is_read_per_user() {
     let library = library();
     let conn = library.conn();
     conn.execute("INSERT INTO root (id, path) VALUES (7, '/library')", [])
         .expect("root");
 
     assert_eq!(
-        roots_for(&conn, 1).expect("reads"),
-        Vec::<i64>::new(),
-        "a user granted nothing has no roots, which is not the same as every root"
+        access_for(&conn, 1).expect("reads"),
+        Access::Every,
+        "a new account sees every library"
+    );
+
+    conn.execute("UPDATE user SET every_library = 0 WHERE id = 1", [])
+        .expect("only these");
+    assert_eq!(
+        access_for(&conn, 1).expect("reads"),
+        Access::Only(Vec::new()),
+        "only these, with none named, sees nothing"
     );
 
     conn.execute(
@@ -150,7 +165,32 @@ fn roots_are_read_per_user() {
         [],
     )
     .expect("grant");
-    assert_eq!(roots_for(&conn, 1).expect("reads"), vec![7]);
+    assert_eq!(access_for(&conn, 1).expect("reads"), Access::Only(vec![7]));
+
+    conn.execute_batch(
+        "DELETE FROM user_library WHERE user_id = 1;
+         INSERT INTO library (id, name) VALUES (90, 'Folderless');
+         INSERT INTO user_library (user_id, library_id) VALUES (1, 90);",
+    )
+    .expect("a grant of a library with no folder, written by hand");
+    assert_eq!(
+        access_for(&conn, 1).expect("reads"),
+        Access::Only(Vec::new()),
+        "a grant that resolves to no folder sees nothing"
+    );
+
+    conn.execute("UPDATE user SET every_library = 1 WHERE id = 1", [])
+        .expect("every library");
+    assert_eq!(
+        access_for(&conn, 1).expect("reads"),
+        Access::Every,
+        "every library, whatever rows are left"
+    );
+    assert_eq!(
+        access_for(&conn, 999).expect("reads"),
+        Access::Only(Vec::new()),
+        "an id naming no account sees nothing"
+    );
 }
 
 /// §5's bootstrap turns on this answer: the claim route is open only while it
@@ -903,7 +943,7 @@ fn granting_a_library_is_idempotent_and_says_which_it_was() {
         !grant_library(&conn, 1, library_of(&conn, 7)).expect("grants again"),
         "granting twice is not an error and is not a second grant"
     );
-    assert_eq!(roots_for(&conn, 1).expect("reads"), vec![7]);
+    assert_eq!(access_for(&conn, 1).expect("reads"), Access::Only(vec![7]));
 }
 
 #[test]
@@ -921,18 +961,21 @@ fn revoking_a_library_says_whether_there_was_one() {
         !revoke_library(&conn, 1, library_of(&conn, 7)).expect("revokes again"),
         "revoking what is not granted is not an error"
     );
-    assert!(roots_for(&conn, 1).expect("reads").is_empty());
+    assert_eq!(
+        access_for(&conn, 1).expect("reads"),
+        Access::Only(Vec::new()),
+        "revoking the last grant leaves the account seeing no library, not every library"
+    );
 }
 
-/// **The grant is the restriction**, so an account with none is unrestricted
-/// and this is the state every existing library is in — nothing could write
-/// `user_root` before spec C1. Pinned here rather than only at the route,
-/// because it is the property the migration depends on.
+/// A new account sees every library until an administrator limits it.
+/// Pinned here rather than only at the route, because migration 17's
+/// backfill leaves each account without a grant at that default.
 #[test]
-fn an_account_with_no_grant_has_an_empty_list_rather_than_an_error() {
+fn an_account_with_no_grant_sees_every_library() {
     let library = library();
     let conn = library.conn();
-    assert!(roots_for(&conn, 1).expect("reads").is_empty());
+    assert_eq!(access_for(&conn, 1).expect("reads"), Access::Every);
 }
 
 /// Ids that differ between libraries and roots, so a join on the wrong pair
@@ -960,8 +1003,8 @@ fn a_granted_library_resolves_to_every_one_of_its_folders() {
     );
 
     assert_eq!(
-        roots_for(&conn, id).expect("reads"),
-        vec![7, 8],
+        access_for(&conn, id).expect("reads"),
+        Access::Only(vec![7, 8]),
         "both folders, not Other's"
     );
     assert_eq!(libraries_for(&conn, id).expect("reads"), vec![70]);
@@ -971,45 +1014,94 @@ fn a_granted_library_resolves_to_every_one_of_its_folders() {
     );
 }
 
-/// A library with no folder resolves to no folder, which the guard reads as
-/// unrestricted, so granting it is refused, by the patch and by the CLI's
-/// call alike, and nothing is granted.
+/// **Granting a library to an account that sees every library narrows it** to
+/// that library, since a grant is "only these". A new account starts at every
+/// library.
 #[test]
-fn a_library_with_no_folder_is_not_granted() {
+fn granting_a_library_to_an_account_seeing_every_library_narrows_it_to_that_one() {
     let library = claimed_library();
     let conn = library.conn();
     a_two_folder_library_and_another(&conn);
-    conn.execute("INSERT INTO library (id, name) VALUES (90, 'Empty')", [])
-        .expect("a library with no folder, as only a hand can make one");
     let id = add(&conn, "reader", "pw", "user").expect("adds an account");
+    assert_eq!(access_for(&conn, id).expect("reads"), Access::Every);
 
-    let refused = update(
-        &conn,
-        id,
-        &Patch {
-            libraries: Some(vec![70, 90]),
-            ..Patch::default()
-        },
-        None,
-    )
-    .expect_err("Empty has no folder");
+    assert!(grant_library(&conn, id, 80).expect("grants Other"));
+
     assert_eq!(
-        refused,
-        WriteError::Refused(
-            "the library `Empty` has no folder, so there is nothing in it to grant".to_string()
-        )
+        access_for(&conn, id).expect("reads"),
+        Access::Only(vec![9]),
+        "Other's one folder, and nothing of Shelf"
+    );
+}
+
+/// **A second library granted to an account already limited is a change**,
+/// though the limit itself does not move: only the row is new, and the answer
+/// has to count it alone, or the CLI says "nothing to do" over a grant it
+/// wrote.
+#[test]
+fn granting_another_library_to_a_limited_account_is_new_and_repeating_it_is_not() {
+    let library = claimed_library();
+    let conn = library.conn();
+    a_two_folder_library_and_another(&conn);
+    let id = add(&conn, "reader", "pw", "user").expect("adds an account");
+    assert!(grant_library(&conn, id, 70).expect("grants Shelf"));
+    assert_eq!(
+        access_for(&conn, id).expect("reads"),
+        Access::Only(vec![7, 8])
+    );
+
+    assert!(
+        grant_library(&conn, id, 80).expect("grants Other"),
+        "a different library is a new grant on an account already limited"
     );
     assert!(
-        libraries_for(&conn, id).expect("reads").is_empty(),
-        "Shelf was not granted either"
+        !grant_library(&conn, id, 80).expect("grants Other again"),
+        "the same library again is not"
+    );
+    assert_eq!(
+        access_for(&conn, id).expect("reads"),
+        Access::Only(vec![7, 8, 9]),
+        "both libraries' folders"
+    );
+}
+
+/// `set_every_library` lifts the limit: the rows go, the account sees every
+/// library, and the answer says whether anything changed. An account granted
+/// nothing holds no row to delete and still changes.
+#[test]
+fn setting_every_library_lifts_the_limit_and_says_whether_it_changed_anything() {
+    let library = claimed_library();
+    let conn = library.conn();
+    a_two_folder_library_and_another(&conn);
+    let granted = add(&conn, "reader", "pw", "user").expect("adds an account");
+    grant_library(&conn, granted, 70).expect("grants Shelf");
+    let blind = add(&conn, "blind", "pw", "user").expect("adds another");
+    grant_library(&conn, blind, 80).expect("grants Other");
+    revoke_library(&conn, blind, 80).expect("and takes it back");
+    assert_eq!(
+        access_for(&conn, blind).expect("reads"),
+        Access::Only(Vec::new())
     );
 
-    let why = grant_library(&conn, id, 90).expect_err("Empty has no folder");
-    assert!(why.contains("`Empty` has no folder"), "{why}");
-    assert!(libraries_for(&conn, id).expect("reads").is_empty());
-
-    let missing = grant_library(&conn, id, 999).expect_err("no such library");
-    assert_eq!(missing, "there is no library 999 to grant");
+    for id in [granted, blind] {
+        assert!(
+            set_every_library(&conn, id).expect("lifts"),
+            "account {id}: changed"
+        );
+        assert_eq!(
+            access_for(&conn, id).expect("reads"),
+            Access::Every,
+            "account {id}"
+        );
+        assert!(
+            libraries_for(&conn, id).expect("reads").is_empty(),
+            "account {id}: its rows went"
+        );
+        assert!(
+            !set_every_library(&conn, id).expect("lifts again"),
+            "account {id}: nothing left to change"
+        );
+    }
 }
 
 /// [`a_two_folder_library_and_another`], a library `Zines` whose name and
@@ -1041,8 +1133,8 @@ fn granted_folders_are_read_per_account_and_in_order() {
     let (reader, _other) = two_accounts_granted_libraries(&conn);
 
     assert_eq!(
-        roots_for(&conn, reader).expect("reads"),
-        vec![6, 9],
+        access_for(&conn, reader).expect("reads"),
+        Access::Only(vec![6, 9]),
         "ascending by id, and not the other account's"
     );
 }
@@ -1108,7 +1200,7 @@ fn a_libraries_list_names_libraries_and_never_a_folder() {
         &conn,
         id,
         &Patch {
-            libraries: Some(vec![70]),
+            grant: Some(Grant::Libraries(vec![70])),
             ..Patch::default()
         },
         None,
@@ -1116,8 +1208,8 @@ fn a_libraries_list_names_libraries_and_never_a_folder() {
     .expect("updates");
     assert_eq!(libraries_for(&conn, id).expect("reads"), vec![70]);
     assert_eq!(
-        roots_for(&conn, id).expect("reads"),
-        vec![7, 8],
+        access_for(&conn, id).expect("reads"),
+        Access::Only(vec![7, 8]),
         "the library, with both its folders"
     );
 
@@ -1125,7 +1217,7 @@ fn a_libraries_list_names_libraries_and_never_a_folder() {
         &conn,
         id,
         &Patch {
-            libraries: Some(vec![7]),
+            grant: Some(Grant::Libraries(vec![7])),
             ..Patch::default()
         },
         None,
@@ -1145,7 +1237,7 @@ fn a_libraries_list_names_libraries_and_never_a_folder() {
         &conn,
         id,
         &Patch {
-            libraries: Some(vec![80]),
+            grant: Some(Grant::Libraries(vec![80])),
             ..Patch::default()
         },
         None,
@@ -1176,7 +1268,7 @@ fn a_libraries_list_refused_part_way_writes_nothing_of_the_patch() {
         &Patch {
             name: Some("renamed".to_string()),
             can_stream: Some(false),
-            libraries: Some(vec![70, 999]),
+            grant: Some(Grant::Libraries(vec![70, 999])),
             ..Patch::default()
         },
         None,
@@ -1211,7 +1303,7 @@ fn a_libraries_list_naming_one_library_twice_grants_it_once() {
         &conn,
         id,
         &Patch {
-            libraries: Some(vec![70, 70]),
+            grant: Some(Grant::Libraries(vec![70, 70])),
             ..Patch::default()
         },
         None,
@@ -1386,7 +1478,7 @@ fn a_libraries_list_replaces_the_grants_rather_than_adding_to_them() {
         &conn,
         id,
         &Patch {
-            libraries: Some(vec![library_of(&conn, second)]),
+            grant: Some(Grant::Libraries(vec![library_of(&conn, second)])),
             ..Patch::default()
         },
         None,
@@ -1394,8 +1486,8 @@ fn a_libraries_list_replaces_the_grants_rather_than_adding_to_them() {
     .expect("updates");
 
     assert_eq!(
-        roots_for(&conn, id).expect("reads"),
-        vec![second],
+        access_for(&conn, id).expect("reads"),
+        Access::Only(vec![second]),
         "the list replaced the grants; it did not append to them"
     );
 }
@@ -1412,7 +1504,7 @@ fn a_libraries_list_across_several_libraries_revokes_and_grants_each() {
         &conn,
         reader,
         &Patch {
-            libraries: Some(vec![70]),
+            grant: Some(Grant::Libraries(vec![70])),
             ..Patch::default()
         },
         None,
@@ -1428,7 +1520,7 @@ fn a_libraries_list_across_several_libraries_revokes_and_grants_each() {
         &conn,
         reader,
         &Patch {
-            libraries: Some(vec![60, 80]),
+            grant: Some(Grant::Libraries(vec![60, 80])),
             ..Patch::default()
         },
         None,
@@ -1444,7 +1536,7 @@ fn a_libraries_list_across_several_libraries_revokes_and_grants_each() {
         &conn,
         reader,
         &Patch {
-            libraries: Some(vec![70, 80]),
+            grant: Some(Grant::Libraries(vec![70, 80])),
             ..Patch::default()
         },
         None,
@@ -1462,8 +1554,8 @@ fn a_libraries_list_across_several_libraries_revokes_and_grants_each() {
     );
 }
 
-/// An absent `libraries` key leaves the grants alone, which is the difference
-/// between `None` and `Some(vec![])` that makes the field an `Option<Vec<_>>`.
+/// An absent `grant` leaves the grants alone, which is the difference between
+/// `None` and `Some(Grant::Libraries(vec![]))`, no library.
 #[test]
 fn a_patch_without_a_libraries_key_leaves_the_grants_alone() {
     let library = claimed_library();
@@ -1483,35 +1575,73 @@ fn a_patch_without_a_libraries_key_leaves_the_grants_alone() {
     )
     .expect("updates");
 
-    assert_eq!(roots_for(&conn, id).expect("reads"), vec![first]);
+    assert_eq!(
+        access_for(&conn, id).expect("reads"),
+        Access::Only(vec![first])
+    );
 }
 
-/// **An empty list means unrestricted, not blind**, which is spec A2's
-/// sharpest edge and is stated on [`grant_library`]: every account in every
-/// existing library holds an empty grant, so any other reading would have
-/// emptied every library the day migration 6 applied.
+/// **An empty list is no library, never every library** (O220): emptying a
+/// grant must not widen it. Asked of an account holding a grant and of one
+/// that saw every library.
 #[test]
-fn an_empty_libraries_list_makes_an_account_unrestricted_rather_than_blind() {
+fn an_empty_libraries_list_leaves_an_account_seeing_no_library() {
     let library = claimed_library();
     let conn = library.conn();
     let (first, _second) = two_roots(&conn);
-    let id = add(&conn, "reader", "pw", "user").expect("adds an account");
-    grant_library(&conn, id, library_of(&conn, first)).expect("grants the first");
+    let granted = add(&conn, "reader", "pw", "user").expect("adds an account");
+    grant_library(&conn, granted, library_of(&conn, first)).expect("grants the first");
+    let open = add(&conn, "open", "pw", "user").expect("adds an account seeing every library");
+
+    for id in [granted, open] {
+        update(
+            &conn,
+            id,
+            &Patch {
+                grant: Some(Grant::Libraries(Vec::new())),
+                ..Patch::default()
+            },
+            None,
+        )
+        .expect("updates");
+
+        assert_eq!(
+            access_for(&conn, id).expect("reads"),
+            Access::Only(Vec::new()),
+            "account {id} sees no library"
+        );
+    }
+}
+
+/// `Grant::Every` deletes the account's rows and leaves it seeing every
+/// library, so a later "only these" starts from nothing rather than from rows
+/// left waiting.
+#[test]
+fn granting_every_library_deletes_the_grants_and_sees_every_library() {
+    let library = claimed_library();
+    let conn = library.conn();
+    let (reader, other) = two_accounts_granted_libraries(&conn);
 
     update(
         &conn,
-        id,
+        reader,
         &Patch {
-            libraries: Some(Vec::new()),
+            grant: Some(Grant::Every),
             ..Patch::default()
         },
         None,
     )
     .expect("updates");
 
+    assert_eq!(access_for(&conn, reader).expect("reads"), Access::Every);
     assert!(
-        roots_for(&conn, id).expect("reads").is_empty(),
-        "an empty grant is what `Principal::from_account` reads as unrestricted"
+        libraries_for(&conn, reader).expect("reads").is_empty(),
+        "its rows went"
+    );
+    assert_eq!(
+        libraries_for(&conn, other).expect("reads"),
+        vec![70, 80],
+        "and the other account's are where they were"
     );
 }
 
@@ -1529,7 +1659,7 @@ fn a_refused_role_change_writes_no_grants_either() {
         1,
         &Patch {
             role: Some("user".to_string()),
-            libraries: Some(vec![library_of(&conn, second)]),
+            grant: Some(Grant::Libraries(vec![library_of(&conn, second)])),
             ..Patch::default()
         },
         None,
@@ -1537,8 +1667,8 @@ fn a_refused_role_change_writes_no_grants_either() {
     .expect_err("the only administrator cannot be demoted");
 
     assert_eq!(
-        roots_for(&conn, 1).expect("reads"),
-        vec![first],
+        access_for(&conn, 1).expect("reads"),
+        Access::Only(vec![first]),
         "the refusal happened before anything was written"
     );
 }

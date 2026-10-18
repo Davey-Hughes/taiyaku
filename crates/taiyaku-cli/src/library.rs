@@ -544,8 +544,7 @@ fn library_line(listed: &taiyaku_library::libraries::Listed) -> String {
 }
 
 /// The works in no library, said only when there are some. Extracted for the
-/// reason `user::unrooted_note` was: a comparison inside a `println!`
-/// survives mutation.
+/// reason `user::unrooted_note` was.
 fn unfiled_line(works: usize) -> Option<String> {
     (works > 0).then(|| format!("{works} work(s) in no library"))
 }
@@ -677,9 +676,9 @@ fn root_named(
 
 /// What [`root_documents`] prints once the column is set — pulled into a
 /// pure function for the reason `crate::user::sessions_ended_note` and its
-/// siblings already established: a branch inside a `println!` is invisible
-/// to any test, and this codebase's mutation sweep has found exactly that
-/// shape survive more than once.
+/// siblings already established: a branch inside a `println!` is reachable
+/// only by running the command, and this codebase's mutation sweep has found
+/// exactly that shape survive more than once.
 ///
 /// **States what the flag means, not only what changed.** `on`/`off` alone
 /// tells a reader nothing unless they already know what `keeps_documents`

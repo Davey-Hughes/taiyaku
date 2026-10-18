@@ -50,6 +50,7 @@
 
 use crate::test_support::{self, send_json};
 use axum::http::{Method, StatusCode};
+use taiyaku_library::account::Access;
 
 /// The on-disk address of the fixture's one work's hand-fixed document,
 /// unwrapped. Every fixture this module drives is a **scanned** work, which
@@ -1552,16 +1553,16 @@ async fn a_closure_that_panicked_is_a_500_naming_what_was_running() {
 /// O86 made an administrator unrestricted, and these four resolvers are
 /// reachable only from admin-only routes. They are still *called* on every
 /// edit — a sweep catches every whole-body mutant of all four — but the
-/// `roots` slice they receive is now always empty, so **the clause's
+/// access they receive is now always `Every`, so **the clause's
 /// restrictive effect became untestable through any route**, and
 /// `root_grant_clause -> String::new()` survived a mutation sweep the day the
 /// rule landed. Deleting the entire grant filter passed every test.
 ///
-/// That survivor is what this test kills. The functions take `roots` and
+/// That survivor is what this test kills. The functions take the access and
 /// filter on it deliberately — it is correct for any caller holding a grant,
 /// and if the role rule is ever revisited it is the difference between a leak
-/// and none — so the contract is asserted directly, with a non-empty slice no
-/// route can currently supply. **A guard nothing exercises is a guard nobody
+/// and none — so the contract is asserted directly, with a restricted access
+/// no route can currently supply. **A guard nothing exercises is a guard nobody
 /// can trust**, and "kept for defence in depth" is a claim, not a property,
 /// until something proves it.
 #[test]
@@ -1580,37 +1581,80 @@ fn the_grant_clause_still_filters_even_though_no_route_can_supply_a_grant() {
     .expect("one work, wholly under the withheld root");
 
     assert_eq!(
-        super::work_by_slug(&conn, &[], "held-v01").expect("an empty grant is unrestricted"),
+        super::work_by_slug(&conn, &Access::Every, "held-v01").expect("`Every` is unrestricted"),
         1,
-        "an empty grant sees the work — the case every route now takes"
+        "`Every` sees the work — the case every route now takes"
     );
     assert!(
         matches!(
-            super::work_by_slug(&conn, &[1], "held-v01"),
+            super::work_by_slug(&conn, &Access::Only(vec![1]), "held-v01"),
             Err(super::NoAnswer::Missing)
         ),
         "a grant naming only the root this work is NOT under must answer \
          Missing, exactly as `browse::work` answers None (I8)"
     );
     assert_eq!(
-        super::work_by_slug(&conn, &[2], "held-v01").expect("the granting root resolves it"),
+        super::work_by_slug(&conn, &Access::Only(vec![2]), "held-v01")
+            .expect("the granting root resolves it"),
         1,
         "and a grant that does cover it still resolves"
     );
 
     assert_eq!(
-        super::works_in_series(&conn, &[], 1).expect("unrestricted"),
+        super::works_in_series(&conn, &Access::Every, 1).expect("unrestricted"),
         vec![1],
         "the same three answers for the series listing"
     );
     assert!(
-        super::works_in_series(&conn, &[1], 1)
+        super::works_in_series(&conn, &Access::Only(vec![1]), 1)
             .expect("a grant is not an error")
             .is_empty(),
         "a grant covering none of a series' works lists none of them"
     );
     assert_eq!(
-        super::works_in_series(&conn, &[2], 1).expect("the granting root"),
+        super::works_in_series(&conn, &Access::Only(vec![2]), 1).expect("the granting root"),
         vec![1]
+    );
+
+    assert_eq!(
+        super::edition_owner(&conn, &Access::Every, 1).expect("unrestricted"),
+        (1, "raw".to_string()),
+        "`Every` resolves the edition, so a Missing below is the access's"
+    );
+    assert_eq!(
+        super::member_owner(&conn, &Access::Every, 1).expect("unrestricted"),
+        (1, "a".to_string()),
+        "`Every` resolves the member, so a Missing below is the access's"
+    );
+
+    // Each resolver must read `Only` with no folder as seeing nothing: a
+    // clause left out for it would resolve everything, as `Every` does above.
+    let nothing = Access::Only(Vec::new());
+    assert!(
+        matches!(
+            super::work_by_slug(&conn, &nothing, "held-v01"),
+            Err(super::NoAnswer::Missing)
+        ),
+        "work_by_slug: `Only` with no folder sees nothing"
+    );
+    assert!(
+        super::works_in_series(&conn, &nothing, 1)
+            .expect("seeing nothing is not an error")
+            .is_empty(),
+        "works_in_series: `Only` with no folder sees nothing"
+    );
+    assert!(
+        matches!(
+            super::edition_owner(&conn, &nothing, 1),
+            Err(super::NoAnswer::Missing)
+        ),
+        "edition_owner: `Only` with no folder sees nothing"
+    );
+    assert!(
+        matches!(
+            super::member_owner(&conn, &nothing, 1),
+            Err(super::NoAnswer::Missing)
+        ),
+        "member_owner: `Only` with no folder sees nothing"
     );
 }

@@ -30,6 +30,7 @@ const twoLibraries: library.LibraryStatus = {
     { id: 2, name: 'Manga', scanned: true },
     { id: 1, name: 'Comics', scanned: true },
   ],
+  restricted: false,
 }
 
 /**
@@ -393,6 +394,7 @@ describe('Search in one library — spec F §3', () => {
   it('draws no select where the status lists one library', async () => {
     const host = await settle('/search', {
       libraries: [{ id: 2, name: 'Manga', scanned: true }],
+      restricted: false,
     })
     // The box is drawn, so the screen is there to have drawn a select.
     expect(host.querySelector('input[type="search"]')).not.toBeNull()
@@ -436,6 +438,7 @@ describe('Search in one library — spec F §3', () => {
   it('searches every library, and draws no select, for a link to the one library there is', async () => {
     const host = await arrive('/search?q=Series&library=2', {
       libraries: [{ id: 2, name: 'Manga', scanned: true }],
+      restricted: false,
     })
     expect(vi.mocked(library.search).mock.calls).toEqual([
       ['Series', undefined],

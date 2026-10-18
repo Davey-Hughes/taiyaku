@@ -9,12 +9,11 @@
 //! reader's own routes — the two share no state and have no reason to be read
 //! together.
 //!
-//! # Every handler takes the principal's roots and passes them straight down
+//! # Every handler takes the principal's access and passes it straight down
 //!
-//! `Principal.roots` is the caller's grant, and **empty means unrestricted**
-//! (spec C1 §5.1). Nothing here interprets it; it goes to `browse`, which
-//! applies it in SQL. This module is where spec A2's
-//! `#[expect(dead_code)]` on that field finally comes off.
+//! `Principal.access` is the caller's grant: every library, or only some
+//! folders, where only none sees nothing. Nothing here interprets it; it goes
+//! to `browse`, which applies it in SQL.
 //!
 //! # Every handler reads the library on the blocking pool
 //!
@@ -114,7 +113,7 @@ pub(crate) async fn home(
     Query(query): Query<HomeQuery>,
 ) -> Response {
     on_the_library(state, "the home lists", move |conn| {
-        match browse::home(conn, &principal.roots, principal.user_id, query.library) {
+        match browse::home(conn, &principal.access, principal.user_id, query.library) {
             Ok(home) => Json(serde_json::json!({
                 "continuing": home.continuing.iter().map(work_json).collect::<Vec<_>>(),
                 "added": home.added.iter().map(work_json).collect::<Vec<_>>(),
@@ -157,7 +156,7 @@ pub(crate) async fn series(
             .into_response();
     }
     on_the_library(state, "the series listing", move |conn| {
-        let series = match browse::series(conn, &principal.roots, principal.user_id, query.library)
+        let series = match browse::series(conn, &principal.access, principal.user_id, query.library)
         {
             Ok(series) => series,
             Err(why) => return failed("the series listing", &why),
@@ -169,7 +168,7 @@ pub(crate) async fn series(
         // own NULL-excludes-itself rule: an imported member sits under no
         // folder, and asking for a library asks for what is in its folders.
         let unfiled =
-            match browse::unfiled(conn, &principal.roots, principal.user_id, query.library) {
+            match browse::unfiled(conn, &principal.access, principal.user_id, query.library) {
                 Ok(unfiled) => unfiled,
                 Err(why) => return failed("the unfiled works", &why),
             };
@@ -203,7 +202,7 @@ pub(crate) async fn one_series(
     AxPath(id): AxPath<i64>,
 ) -> Response {
     on_the_library(state, "the series", move |conn| {
-        match browse::one_series(conn, &principal.roots, principal.user_id, id) {
+        match browse::one_series(conn, &principal.access, principal.user_id, id) {
             Ok(Some((card, works))) => {
                 let titles = match taiyaku_library::librarydoc::series_titles(conn, card.id) {
                     Ok(titles) => titles,
@@ -244,7 +243,7 @@ pub(crate) async fn work(
     AxPath(slug): AxPath<String>,
 ) -> Response {
     on_the_library(state, "the work", move |conn| {
-        match browse::work(conn, &principal.roots, principal.user_id, &slug) {
+        match browse::work(conn, &principal.access, principal.user_id, &slug) {
             Ok(Some(detail)) => {
                 let mut body = work_json(&detail.card);
                 body["alignments"] = serde_json::json!(
@@ -294,7 +293,7 @@ pub(crate) async fn search(
     on_the_library(state, "the search", move |conn| {
         match browse::search(
             conn,
-            &principal.roots,
+            &principal.access,
             principal.user_id,
             &query.q,
             query.library,
@@ -339,7 +338,7 @@ pub(crate) async fn cover(
     Query(query): Query<Vec<(String, String)>>,
 ) -> Response {
     on_the_library(state, "the series cover", move |conn| {
-        let target = match browse::cover_work(conn, &principal.roots, id) {
+        let target = match browse::cover_work(conn, &principal.access, id) {
             Ok(Some(target)) => target,
             Ok(None) => {
                 return (StatusCode::NOT_FOUND, format!("series {id} has no cover"))
@@ -372,7 +371,8 @@ pub(crate) async fn cover(
 }
 
 /// `GET /api/library/status` — spec C1 §5.5: the libraries the caller may
-/// see, each with its id, its name and whether it has been scanned.
+/// see, each with its id, its name and whether it has been scanned,
+/// and whether the caller sees only libraries granted to it (`restricted`).
 ///
 /// Read-only. Two of spec C1 §8's first-run states are indistinguishable to
 /// every other route, and a first-run state nobody can render is one that
@@ -384,13 +384,14 @@ pub(crate) async fn status(
     on_the_library(
         state,
         "the library status",
-        move |conn| match browse::status(conn, &principal.roots) {
+        move |conn| match browse::status(conn, &principal.access) {
             Ok(status) => Json(serde_json::json!({
                 "libraries": status.libraries.iter().map(|l| serde_json::json!({
                     "id": l.id,
                     "name": l.name,
                     "scanned": l.scanned,
                 })).collect::<Vec<_>>(),
+                "restricted": status.restricted,
             }))
             .into_response(),
             Err(why) => failed("the library status", &why),

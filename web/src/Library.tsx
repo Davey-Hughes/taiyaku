@@ -72,7 +72,10 @@ function ContinueCard({ w }: { w: WorkCard }) {
  * Which first-run screen an empty grid is (spec C1 §8). A library's page asks
  * of its own library, and the page of every library of them all: one library
  * read and another not is "nothing here" on the first and "not read yet" on
- * the second.
+ * the second. With no library listed, `restricted` says whose doing that is:
+ * an account granted none, or a server with none. A library's page asks it
+ * too: an account granted none is told so there as well, rather than that
+ * this one library is not to be seen.
  */
 function emptyKind(
   status: LibraryStatus,
@@ -80,10 +83,14 @@ function emptyKind(
 ): EmptyKind {
   if (library !== undefined) {
     const entry = status.libraries.find((l) => l.id === library)
-    if (entry === undefined) return 'no-library'
+    if (entry === undefined)
+      return status.libraries.length === 0 && status.restricted
+        ? 'no-grant'
+        : 'no-library'
     return entry.scanned ? 'no-matches' : 'not-scanned'
   }
-  if (status.libraries.length === 0) return 'no-libraries'
+  if (status.libraries.length === 0)
+    return status.restricted ? 'no-grant' : 'no-libraries'
   return status.libraries.some((l) => l.scanned) ? 'no-matches' : 'not-scanned'
 }
 

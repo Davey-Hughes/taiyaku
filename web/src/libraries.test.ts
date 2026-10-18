@@ -8,6 +8,7 @@ import {
   listLibraries,
   moveCost,
   moveFolder,
+  noLibrarySentence,
   removeLibrary,
   renameLibrary,
   startLibraryScan,
@@ -149,6 +150,28 @@ describe('the libraries client', () => {
     )
     await expect(renameLibrary(7, 'Comics')).rejects.toThrow(
       'expected a JSON body, got an empty 204',
+    )
+  })
+})
+
+describe('noLibrarySentence', () => {
+  it('names one account twice, and no pronoun stands for it', () => {
+    expect(noLibrarySentence(['alice'], 'this library')).toBe(
+      'alice can see only this library. After this, alice will see no library until an administrator grants one.',
+    )
+  })
+
+  it('joins two names with "and", and says "they" after', () => {
+    expect(noLibrarySentence(['alice', 'bob'], 'this library')).toBe(
+      'alice and bob can see only this library. After this, they will see no library until an administrator grants one.',
+    )
+  })
+
+  it('joins three names with commas and a last "and", and names the folder’s library', () => {
+    expect(
+      noLibrarySentence(['alice', 'bob', 'carol'], "this folder's library"),
+    ).toBe(
+      "alice, bob and carol can see only this folder's library. After this, they will see no library until an administrator grants one.",
     )
   })
 })

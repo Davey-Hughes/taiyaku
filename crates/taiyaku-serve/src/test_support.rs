@@ -1992,6 +1992,40 @@ pub(crate) async fn send_raw(
         .unwrap()
 }
 
+/// How many series and unfiled works `/api/library/series` lists to account
+/// `id`, asked through a session of that account's own.
+pub(crate) async fn seen_by(router: &axum::Router, state: &crate::ServeState, id: i64) -> usize {
+    use tower::ServiceExt as _;
+
+    let token = taiyaku_library::credential::mint_token();
+    {
+        let conn = state.library.conn();
+        taiyaku_library::account::open_session(&conn, id, &token, Some("the suite"), None)
+            .expect("opens the account's session");
+    }
+    let response = router
+        .clone()
+        .oneshot(
+            axum::http::Request::get("/api/library/series")
+                .header(
+                    axum::http::header::COOKIE,
+                    format!("{}={token}", crate::session::COOKIE_NAME),
+                )
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    let text = body_string(response).await;
+    assert_eq!(status, axum::http::StatusCode::OK, "{text}");
+    let body: serde_json::Value = serde_json::from_str(&text).expect("json");
+    ["series", "unfiled"]
+        .iter()
+        .map(|key| body[key].as_array().map_or(0, Vec::len))
+        .sum()
+}
+
 /// A response's body, decoded as UTF-8 text.
 pub(crate) async fn body_string(response: axum::http::Response<axum::body::Body>) -> String {
     let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
@@ -2312,9 +2346,17 @@ pub(crate) fn fixture_authorization() -> String {
 /// A root is a folder of a library, and a grant names the library. Every
 /// fixture root is a library of its own unless it was filed under a named
 /// one, so for those this grants exactly that root.
+///
+/// **The account is set to "only these" with the row**, as
+/// `account::grant_library` sets it: a row beside `every_library = 1` waits
+/// and restricts nothing, so a fixture leaving the column alone would see
+/// every library.
 pub(crate) fn grant_root(conn: &rusqlite::Connection, root_id: i64) {
-    conn.execute("UPDATE user SET role = 'user' WHERE id = 1", [])
-        .expect("a grant restricts a user, never an admin");
+    conn.execute(
+        "UPDATE user SET role = 'user', every_library = 0 WHERE id = 1",
+        [],
+    )
+    .expect("a grant restricts a user, never an admin");
     let granted = conn
         .execute(
             "INSERT INTO user_library (user_id, library_id)
@@ -2325,7 +2367,7 @@ pub(crate) fn grant_root(conn: &rusqlite::Connection, root_id: i64) {
     assert_eq!(
         granted, 1,
         "there is no root {root_id}, so nothing was granted and the account \
-         is unrestricted, which no grant test can mean"
+         sees no library, which no grant test can mean"
     );
 }
 

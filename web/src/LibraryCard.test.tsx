@@ -174,7 +174,7 @@ describe('LibraryCard', () => {
 
   it('tells a folder it is the last one, and no folder of two', async () => {
     vi.mocked(config.removalCost).mockResolvedValue({
-      removed: { works: 0, positions: 0, notes: 0 },
+      removed: { works: 0, positions: 0, notes: 0, left_with_no_library: [] },
       derive: emptyDerive,
       dry_run: true,
     })
@@ -398,7 +398,7 @@ describe('LibraryCard', () => {
 
   it('hands up the real answer of a removal, by name, and does not reload itself', async () => {
     const answer = (works: number, dry_run: boolean): config.RemovalAnswer => ({
-      removed: { works, positions: 0, notes: 0 },
+      removed: { works, positions: 0, notes: 0, left_with_no_library: [] },
       derive: emptyDerive,
       dry_run,
     })
@@ -555,7 +555,7 @@ const tick = () =>
   })
 
 const counted = (works = 5): config.RemovalAnswer => ({
-  removed: { works, positions: 2, notes: 0 },
+  removed: { works, positions: 2, notes: 0, left_with_no_library: [] },
   derive: emptyDerive,
   dry_run: true,
 })
@@ -950,6 +950,7 @@ describe('LibraryCard, moving a folder', () => {
         alignments_dropped: 0,
         library_removed: null,
         grants_removed: 0,
+        left_with_no_library: [],
       },
       derive: { ...emptyDerive, lost_positions: 6 },
       dry_run: false,

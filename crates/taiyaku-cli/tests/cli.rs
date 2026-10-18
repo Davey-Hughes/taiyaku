@@ -254,6 +254,12 @@ fn the_usage_lists_library_scan_and_rules() {
             .any(|l| l.contains("taiyaku library user grant-library|revoke-library")),
         "the usage lists the two grants: {stdout}"
     );
+    assert!(
+        stdout
+            .lines()
+            .any(|l| l.contains("taiyaku library user every-library <user>")),
+        "the usage lists the command that lifts a limit: {stdout}"
+    );
 }
 
 /// The folder `name` under `tree`, one file in it, added to the library at
@@ -614,10 +620,11 @@ fn library_user_grants_name_the_library_as_the_store_holds_it() {
 }
 
 /// What `grant-library` and `revoke-library` say under their first line. A
-/// reader's first grant says it narrows the account, and the same grant made
-/// again does not. Revoking it says the account sees every library again. An
-/// administrator saw every library throughout, so revoking its grant says
-/// that nothing changes, and revoking nothing says nothing more.
+/// grant to a reader that saw every library says it narrows the account, and
+/// the same grant made again does not. Revoking it says the account now sees
+/// no library, and names the command that lifts the limit. An administrator
+/// saw every library throughout, so revoking its grant says that nothing
+/// changes, and revoking nothing says nothing more.
 #[test]
 fn library_user_grant_notes_follow_the_role_and_whether_anything_changed() {
     let tree = TempDir::new("cli-grant-notes");
@@ -648,11 +655,11 @@ fn library_user_grant_notes_follow_the_role_and_whether_anything_changed() {
     assert_eq!(
         reader,
         [
-            "granted sight of Manga\n  That account is now restricted to that one library. An \
-             account with no grants at all sees every library.\n",
+            "granted sight of Manga\n  That account saw every library, and is now restricted \
+             to that one. `taiyaku library user every-library alex` lifts the limit.\n",
             "that account could already see Manga; nothing to do\n",
-            "revoked sight of Manga\n  That account now holds no grants, and so sees every \
-             library again.\n",
+            "revoked sight of Manga\n  `alex` now sees no library; `taiyaku library user \
+             every-library alex` lifts the limit.\n",
         ]
     );
     assert_eq!(
@@ -665,8 +672,11 @@ fn library_user_grant_notes_follow_the_role_and_whether_anything_changed() {
     );
 }
 
-/// `user list` shows what each account is granted, the libraries by name.
-/// An account holding no grant has nothing added to its line.
+/// `user list` shows what each account sees: the libraries it is granted, by
+/// name, every library, or no library once its last grant is revoked. An
+/// administrator holding no grant has nothing added to its line. A second
+/// library granted to an account already limited is reported as granted: the
+/// limit does not move, but the grant is new.
 #[test]
 fn library_user_list_shows_what_each_account_is_granted() {
     let tree = TempDir::new("cli-user-list-grants");
@@ -680,27 +690,106 @@ fn library_user_list_shows_what_each_account_is_granted() {
         taiyaku_library::account::promote(&conn, "davey", "a password", "admin").expect("promotes");
         taiyaku_library::account::add(&conn, "alex", "theirs", "user").expect("adds a reader");
         taiyaku_library::account::add(&conn, "sam", "theirs", "user").expect("adds another");
+        taiyaku_library::account::add(&conn, "kim", "theirs", "user").expect("adds a third");
+        taiyaku_library::account::add(&conn, "pat", "theirs", "user").expect("adds a fourth");
     }
-    for (user, library) in [("alex", "Other"), ("alex", "Manga"), ("sam", "Other")] {
-        taiyaku_stdout(&[
-            "library",
-            "user",
-            "grant-library",
-            user,
-            library,
-            "--db",
-            &db,
-        ]);
-    }
+    let said: Vec<String> = [
+        ("grant-library", "alex", "Other"),
+        ("grant-library", "alex", "Manga"),
+        ("grant-library", "sam", "Other"),
+        ("grant-library", "pat", "Manga"),
+        ("revoke-library", "pat", "Manga"),
+    ]
+    .into_iter()
+    .map(|(verb, user, library)| {
+        taiyaku_stdout(&["library", "user", verb, user, library, "--db", &db])
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .to_string()
+    })
+    .collect();
 
     let listed = taiyaku_stdout(&["library", "user", "list", "--db", &db]);
 
     assert_eq!(
+        said,
+        [
+            "granted sight of Other",
+            "granted sight of Manga",
+            "granted sight of Other",
+            "granted sight of Manga",
+            "revoked sight of Manga",
+        ]
+    );
+    assert_eq!(
         listed,
         "1 davey (admin)\n\
          2 alex (user) — granted: Manga, Other\n\
-         3 sam (user) — granted: Other\n"
+         3 sam (user) — granted: Other\n\
+         4 kim (user) — every library\n\
+         5 pat (user) — no library\n"
     );
+}
+
+/// `every-library` lifts an account's limit, deleting its grants, and says
+/// so; asked again it says nothing changed. An account left seeing no library
+/// by its last revocation is lifted the same way.
+#[test]
+fn library_user_every_library_lifts_the_limit_and_says_whether_it_did() {
+    let tree = TempDir::new("cli-every-library");
+    let db_dir = TempDir::new("cli-every-library-db");
+    let db = db_path(&db_dir);
+    add_folder(&tree, &db, "Volumes", Some("Manga"));
+    {
+        let library = taiyaku_library::Library::open(Path::new(&db)).expect("opens");
+        let conn = library.conn();
+        taiyaku_library::account::promote(&conn, "davey", "a password", "admin").expect("promotes");
+        taiyaku_library::account::add(&conn, "alex", "theirs", "user").expect("adds a reader");
+        taiyaku_library::account::add(&conn, "pat", "theirs", "user").expect("adds another");
+    }
+    let run = |args: &[&str]| {
+        let mut all = vec!["library", "user"];
+        all.extend_from_slice(args);
+        all.extend_from_slice(&["--db", &db]);
+        taiyaku_stdout(&all)
+    };
+    run(&["grant-library", "alex", "Manga"]);
+    run(&["grant-library", "pat", "Manga"]);
+    run(&["revoke-library", "pat", "Manga"]);
+
+    let said = [
+        run(&["every-library", "alex"]),
+        run(&["every-library", "alex"]),
+        run(&["every-library", "pat"]),
+    ];
+
+    assert_eq!(
+        said,
+        [
+            "`alex` now sees every library\n",
+            "`alex` already sees every library; nothing to do\n",
+            "`pat` now sees every library\n",
+        ]
+    );
+    let library = taiyaku_library::Library::open(Path::new(&db)).expect("opens");
+    let conn = library.conn();
+    for user in ["alex", "pat"] {
+        let id = taiyaku_library::account::id_of(&conn, user)
+            .expect("looks up")
+            .expect("the account");
+        assert_eq!(
+            taiyaku_library::account::access_for(&conn, id).expect("reads"),
+            taiyaku_library::account::Access::Every,
+            "{user}"
+        );
+        assert!(
+            taiyaku_library::account::libraries_for(&conn, id)
+                .expect("reads")
+                .is_empty(),
+            "{user}: its grants went"
+        );
+    }
 }
 
 /// `grant-library`, `revoke-library` and `scan --library` answer a library

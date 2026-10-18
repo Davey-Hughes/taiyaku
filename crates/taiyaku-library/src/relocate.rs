@@ -43,9 +43,9 @@ pub enum MoveError {
     /// The caller's own mistake: the folder's own library, or a name for a
     /// new one that is empty or taken.
     Unusable(String),
-    /// The move cannot keep every reader's place, or would delete an
-    /// account's only grant. `volumes` names what stands in the way, each as
-    /// `title (edition key)`; it is empty where no volume does.
+    /// The move cannot keep every reader's place. `volumes` names what
+    /// stands in the way, each as `title (edition key)`; it is empty where no
+    /// volume does.
     Refused { why: String, volumes: Vec<String> },
     /// A store fault.
     Failed(String),
@@ -150,57 +150,25 @@ fn volumes_of(
 /// Why `folder` may not be moved to `target_id`, as far as the store can say
 /// before anything is written.
 ///
-/// 1. **The folder is its library's last and that library is an account's
-///    only grant.** F1's rule for a removal, in a move's words. Migration
-///    15's `only_grant_refuses_move` stands behind it with a sentence that
-///    names no account.
-/// 2. **One edition has members under the folder and elsewhere.** The move
+/// 1. **One edition has members under the folder and elsewhere.** The move
 ///    would divide the edition itself, and no slot of it would name the page
 ///    it named.
-/// 3. **The target holds a volume of the folder's under the same edition
+/// 2. **The target holds a volume of the folder's under the same edition
 ///    key.** A volume is a series title and a number within a library, so
 ///    derived together the two are one edition of one work, holding both
 ///    sets of pages.
-///
-/// 4. **A work put in a series by hand moves, and works of that series stay.**
+/// 3. **A work put in a series by hand moves, and works of that series stay.**
 ///    The series row stays with them and the work would point at it from
 ///    another library.
 ///
-/// Each of 2, 3 and 4 names its volumes.
+/// Each names its volumes. The folder being its library's last is not a
+/// reason: the library goes with it, and [`Moved::left_with_no_library`]
+/// names whoever that leaves with none.
 fn refused_before(
     conn: &Connection,
     folder: &Folder,
     target_id: i64,
 ) -> Result<Option<MoveError>, String> {
-    let last = !conn
-        .query_row(
-            "SELECT EXISTS (SELECT 1 FROM root WHERE library_id = ?1 AND id <> ?2)",
-            [folder.library_id, folder.id],
-            |r| r.get::<_, bool>(0),
-        )
-        .map_err(|e| {
-            format!(
-                "checking whether folder {} is its library's last: {e}",
-                folder.id
-            )
-        })?;
-    if last {
-        let names = crate::scan::only_grant_holders(conn, folder.library_id)?;
-        if !names.is_empty() {
-            let (accounts, _) = crate::scan::only_grant_of(&names);
-            return Ok(Some(MoveError::Refused {
-                why: format!(
-                    "{} is the last folder of the library `{}`, which is the only library \
-                     {accounts}. Moving it away would delete that library and the grant with \
-                     it, and an account with no grant sees every library. First grant another \
-                     library, or revoke this one",
-                    folder.path, folder.library
-                ),
-                volumes: Vec::new(),
-            }));
-        }
-    }
-
     let spanning = volumes_of(
         conn,
         "SELECT w.title, e.key FROM edition e JOIN work w ON w.id = e.work_id
@@ -312,6 +280,10 @@ pub struct Moved {
     /// folder, and the grants that went with it.
     pub library_removed: Option<String>,
     pub grants_removed: usize,
+    /// The accounts, by name, whose only grant went with that library, and
+    /// who see no library afterwards: `scan::only_grant_holders`, asked
+    /// before the move. Empty where no library is removed.
+    pub left_with_no_library: Vec<String>,
 }
 
 /// A divided work, as it stood before the move.
@@ -344,9 +316,11 @@ struct Census {
     filed: BTreeSet<i64>,
     /// The series the target held before the move.
     target_series: BTreeSet<i64>,
-    /// The folder's library, where the folder is its last, and its grants.
+    /// The folder's library, where the folder is its last, its grants, and
+    /// the accounts it was the only grant of.
     library_removed: Option<String>,
     grants_removed: usize,
+    left_with_no_library: Vec<String>,
 }
 
 fn ids_and_titles(
@@ -466,6 +440,11 @@ impl Census {
                 .unwrap_or(usize::MAX)
             } else {
                 0
+            },
+            left_with_no_library: if last {
+                crate::scan::only_grant_holders(conn, folder.library_id)?
+            } else {
+                Vec::new()
             },
         })
     }
@@ -956,6 +935,7 @@ fn apply_move(
             alignments_dropped: carried.alignments_dropped,
             library_removed: census.library_removed,
             grants_removed: census.grants_removed,
+            left_with_no_library: census.left_with_no_library,
         },
         derived,
     ))

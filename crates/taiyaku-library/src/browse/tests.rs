@@ -225,20 +225,107 @@ fn work_ids(library: &Library) -> Vec<i64> {
 }
 
 #[test]
-fn an_empty_grant_sees_every_root() {
+fn access_every_sees_every_root() {
     let (library, _, _, _en, _raw) = two_root_library();
     let conn = library.conn();
-    let cards = series(&conn, &[], 1, None).expect("lists");
+    let cards = series(&conn, &Access::Every, 1, None).expect("lists");
     assert_eq!(cards.len(), 1, "one series");
     assert_eq!(cards[0].editions, 2, "both editions are visible");
     assert_eq!(cards[0].works, 1, "one volume, held in two roots");
+}
+
+/// **`Only` with no folder sees nothing, at every public function**: the
+/// access `account::access_for` reads for a grant whose library holds no
+/// folder, which a clause left out would read as every library.
+///
+/// The fixture holds what each function could leak: a series whose work has
+/// two editions, an alignment between them and a reader's open position, an
+/// imported (unfiled) work, and a member gone from disk. Each function is
+/// asked with `Every` first, so every empty answer below is the filter's and
+/// not the fixture's.
+#[test]
+fn only_with_no_folder_sees_nothing() {
+    let (library, en_id, _raw_id, _en, _raw) = two_root_library();
+    let scanned = work_ids(&library)[0];
+    align(&library, scanned, "en", "raw");
+    import_a_work(&library, "Imported", "/x/taiyaku.json");
+    let conn = library.conn();
+    conn.execute("DELETE FROM scan_entry WHERE root_id = ?1", [en_id])
+        .expect("the en member has left the disk");
+    state::put_progress(
+        &conn,
+        scanned,
+        1,
+        &Progress {
+            edition: "en".into(),
+            slot: 0,
+        },
+    )
+    .expect("reader 1 is partway through the work");
+    let series_id: i64 = conn
+        .query_row("SELECT id FROM series", [], |row| row.get(0))
+        .expect("the one series");
+    let editions: Vec<i64> = conn
+        .prepare("SELECT id FROM edition WHERE work_id = ?1")
+        .expect("prepares")
+        .query_map([scanned], |row| row.get(0))
+        .expect("reads")
+        .collect::<rusqlite::Result<_>>()
+        .expect("reads");
+    let library_id: i64 = conn
+        .query_row(
+            "SELECT library_id FROM root WHERE id = ?1",
+            [en_id],
+            |row| row.get(0),
+        )
+        .expect("the folders' library");
+    let slug = "series---v01";
+
+    for access in [Access::Every, Access::Only(Vec::new())] {
+        let sees = access == Access::Every;
+        let series = series(&conn, &access, 1, None).expect("lists series");
+        assert_eq!(!series.is_empty(), sees, "series, {access:?}");
+        let unfiled = unfiled(&conn, &access, 1, None).expect("lists unfiled");
+        assert_eq!(!unfiled.is_empty(), sees, "unfiled, {access:?}");
+        let hits = search(&conn, &access, 1, "Series", None).expect("searches");
+        assert_eq!(!hits.series.is_empty(), sees, "search, {access:?}");
+        let home = home(&conn, &access, 1, None).expect("reads home");
+        assert_eq!(!home.added.is_empty(), sees, "home's added, {access:?}");
+        assert_eq!(
+            !home.continuing.is_empty(),
+            sees,
+            "home's continuing, {access:?}"
+        );
+        assert!(home.read.is_empty(), "nothing is finished");
+        let one = one_series(&conn, &access, 1, series_id).expect("reads the series");
+        assert_eq!(one.is_some(), sees, "one_series, {access:?}");
+        let detail = work(&conn, &access, 1, slug).expect("reads the work");
+        assert_eq!(detail.is_some(), sees, "work, {access:?}");
+        let cover = cover_work(&conn, &access, series_id).expect("reads the cover");
+        assert_eq!(cover.is_some(), sees, "cover_work, {access:?}");
+        let scope = library_scope(&conn, &access, library_id).expect("reads the scope");
+        assert_eq!(scope.is_some(), sees, "library_scope, {access:?}");
+        let visible = edition_visible(&conn, &access, slug, "en").expect("checks");
+        assert_eq!(visible, sees, "edition_visible, {access:?}");
+        let all = visible_editions(&conn, &access).expect("lists editions");
+        assert_eq!(!all.is_empty(), sees, "visible_editions, {access:?}");
+        let missing = missing_by_edition(&conn, &access, &editions).expect("counts");
+        assert_eq!(!missing.is_empty(), sees, "missing_by_edition, {access:?}");
+        let libraries = status(&conn, &access).expect("lists libraries").libraries;
+        assert_eq!(!libraries.is_empty(), sees, "status, {access:?}");
+        // Every public path reaches the pair only through rows the edition
+        // clause already admitted, so the pair's own reading of this access
+        // is asked of the one function that reads it alone.
+        let pairs = alignments_of(&conn, &access, scanned).expect("lists pairs");
+        assert_eq!(!pairs.is_empty(), sees, "alignments_of, {access:?}");
+    }
 }
 
 #[test]
 fn a_grant_hides_the_editions_it_does_not_name_and_keeps_the_work() {
     let (library, en_id, _raw_id, _en, _raw) = two_root_library();
     let conn = library.conn();
-    let cards = series(&conn, &[en_id], 1, None).expect("lists");
+    let cards = series(&conn, &Access::Only(vec![en_id]), 1, None).expect("lists");
     assert_eq!(cards.len(), 1, "the work is still listed");
     assert_eq!(cards[0].editions, 1, "only the granted root's edition");
     assert_eq!(cards[0].works, 1, "the count is computed after the filter");
@@ -258,17 +345,21 @@ fn an_imported_work_is_unfiled_rather_than_a_series_of_its_own() {
 
     let conn = library.conn();
     assert_eq!(
-        series(&conn, &[], 1, None).expect("lists").len(),
+        series(&conn, &Access::Every, 1, None).expect("lists").len(),
         1,
         "an import creates no series, so the grid still holds one"
     );
     assert_eq!(
-        unfiled(&conn, &[], 1, None).expect("lists").len(),
+        unfiled(&conn, &Access::Every, 1, None)
+            .expect("lists")
+            .len(),
         1,
         "unrestricted sees the imported work in the unfiled bucket"
     );
     assert!(
-        unfiled(&conn, &[en_id], 1, None).expect("lists").is_empty(),
+        unfiled(&conn, &Access::Only(vec![en_id]), 1, None)
+            .expect("lists")
+            .is_empty(),
         "a restricted account sees no work that sits under no root"
     );
 }
@@ -300,11 +391,15 @@ fn a_reimport_over_a_scanned_work_keeps_its_roots_grant() {
     // The baseline this test's failure would otherwise be mistaken for: both
     // roots see the work before any reimport touches it.
     assert!(
-        work(&conn, &[en_id], 1, &slug).expect("reads").is_some(),
+        work(&conn, &Access::Only(vec![en_id]), 1, &slug)
+            .expect("reads")
+            .is_some(),
         "the en root sees the work before the reimport"
     );
     assert!(
-        work(&conn, &[raw_id], 1, &slug).expect("reads").is_some(),
+        work(&conn, &Access::Only(vec![raw_id]), 1, &slug)
+            .expect("reads")
+            .is_some(),
         "the raw root sees the work before the reimport"
     );
 
@@ -317,11 +412,15 @@ fn a_reimport_over_a_scanned_work_keeps_its_roots_grant() {
         .expect("reimports");
 
     assert!(
-        work(&conn, &[en_id], 1, &slug).expect("reads").is_some(),
+        work(&conn, &Access::Only(vec![en_id]), 1, &slug)
+            .expect("reads")
+            .is_some(),
         "the en root's grant must still see a work its own scan stamped"
     );
     assert!(
-        work(&conn, &[raw_id], 1, &slug).expect("reads").is_some(),
+        work(&conn, &Access::Only(vec![raw_id]), 1, &slug)
+            .expect("reads")
+            .is_some(),
         "the raw root's grant must still see a work its own scan stamped"
     );
 }
@@ -333,9 +432,21 @@ fn a_work_is_found_by_slug_within_the_grant() {
     let slug: String = conn
         .query_row("SELECT slug FROM work LIMIT 1", [], |row| row.get(0))
         .expect("reads a slug");
-    assert!(work(&conn, &[], 1, &slug).expect("reads").is_some());
-    assert!(work(&conn, &[en_id], 1, &slug).expect("reads").is_some());
-    assert!(work(&conn, &[raw_id], 1, &slug).expect("reads").is_some());
+    assert!(
+        work(&conn, &Access::Every, 1, &slug)
+            .expect("reads")
+            .is_some()
+    );
+    assert!(
+        work(&conn, &Access::Only(vec![en_id]), 1, &slug)
+            .expect("reads")
+            .is_some()
+    );
+    assert!(
+        work(&conn, &Access::Only(vec![raw_id]), 1, &slug)
+            .expect("reads")
+            .is_some()
+    );
 }
 
 /// A work whose every edition sits outside the grant is `None`, which is the
@@ -350,9 +461,15 @@ fn a_work_entirely_outside_the_grant_is_none() {
             row.get(0)
         })
         .expect("reads the imported slug");
-    assert!(work(&conn, &[], 1, &slug).expect("reads").is_some());
     assert!(
-        work(&conn, &[en_id], 1, &slug).expect("reads").is_none(),
+        work(&conn, &Access::Every, 1, &slug)
+            .expect("reads")
+            .is_some()
+    );
+    assert!(
+        work(&conn, &Access::Only(vec![en_id]), 1, &slug)
+            .expect("reads")
+            .is_none(),
         "a restricted account cannot reach a work under no root"
     );
 }
@@ -361,7 +478,7 @@ fn a_work_entirely_outside_the_grant_is_none() {
 fn search_finds_a_series_by_its_title() {
     let (library, _, _, _en, _raw) = two_root_library();
     let conn = library.conn();
-    let hits = search(&conn, &[], 1, "Series", None).expect("searches");
+    let hits = search(&conn, &Access::Every, 1, "Series", None).expect("searches");
     assert_eq!(hits.series.len(), 1);
     assert!(hits.unfiled.is_empty());
 }
@@ -373,7 +490,7 @@ fn search_finds_an_unfiled_work_by_its_own_title() {
     let (library, _, _, _en, _raw) = two_root_library();
     import_a_work(&library, "Hanayome", "/x/taiyaku.json");
     let conn = library.conn();
-    let hits = search(&conn, &[], 1, "Hanayome", None).expect("searches");
+    let hits = search(&conn, &Access::Every, 1, "Hanayome", None).expect("searches");
     assert!(hits.series.is_empty(), "no series is named Hanayome");
     assert_eq!(hits.unfiled.len(), 1, "the work itself is the hit");
     assert_eq!(hits.unfiled[0].title, "Hanayome");
@@ -383,7 +500,7 @@ fn search_finds_an_unfiled_work_by_its_own_title() {
 fn an_empty_query_searches_for_nothing_rather_than_everything() {
     let (library, _, _, _en, _raw) = two_root_library();
     let conn = library.conn();
-    let hits = search(&conn, &[], 1, "   ", None).expect("searches");
+    let hits = search(&conn, &Access::Every, 1, "   ", None).expect("searches");
     assert!(hits.series.is_empty() && hits.unfiled.is_empty());
 }
 
@@ -396,7 +513,11 @@ fn the_cover_falls_back_to_the_lowest_volume_when_none_is_set() {
     let series_id: i64 = conn
         .query_row("SELECT id FROM series LIMIT 1", [], |row| row.get(0))
         .expect("reads the series");
-    assert!(cover_work(&conn, &[], series_id).expect("reads").is_some());
+    assert!(
+        cover_work(&conn, &Access::Every, series_id)
+            .expect("reads")
+            .is_some()
+    );
 }
 
 /// A hand-set cover is honoured, and is the state C3 will produce.
@@ -417,7 +538,7 @@ fn a_hand_set_cover_wins_over_the_fallback() {
     )
     .expect("sets a cover");
     assert_eq!(
-        cover_work(&conn, &[], series_id)
+        cover_work(&conn, &Access::Every, series_id)
             .expect("reads")
             .expect("a cover")
             .work_id,
@@ -459,7 +580,7 @@ fn continuing_is_ordered_by_when_each_work_was_last_read() {
     )
     .expect("newer position");
 
-    let home = home(&conn, &[], 1, None).expect("reads home");
+    let home = home(&conn, &Access::Every, 1, None).expect("reads home");
     assert_eq!(home.continuing.len(), 2);
     assert_eq!(home.continuing[0].id, ids[1], "most recently read first");
     assert!(
@@ -483,7 +604,7 @@ fn a_completed_position_is_read_rather_than_continuing() {
     )
     .expect("finished position");
 
-    let home = home(&conn, &[], 1, None).expect("reads home");
+    let home = home(&conn, &Access::Every, 1, None).expect("reads home");
     assert!(home.continuing.is_empty());
     assert_eq!(home.read.len(), 1);
     assert_eq!(home.added.len(), 1, "the work is still newly added");
@@ -566,7 +687,7 @@ fn continuing_sorts_on_the_newest_position_a_work_holds() {
     )
     .expect("a fresh raw position, newer than both of the above");
 
-    let home = home(&conn, &[], 1, None).expect("reads home");
+    let home = home(&conn, &Access::Every, 1, None).expect("reads home");
     let order: Vec<i64> = home.continuing.iter().map(|w| w.id).collect();
     assert_eq!(
         order,
@@ -610,7 +731,7 @@ fn a_work_finished_in_one_edition_and_open_in_another_is_still_continuing() {
     )
     .expect("an open en position");
 
-    let home = home(&conn, &[], 1, None).expect("reads home");
+    let home = home(&conn, &Access::Every, 1, None).expect("reads home");
     assert!(
         home.continuing.iter().any(|w| w.id == ids[0]),
         "an unfinished edition keeps the work continuing"
@@ -662,7 +783,7 @@ fn a_merged_edition_counts_only_the_members_the_grant_allows() {
     let (library, a_id, b_id, _a, _b) = merged_edition_library();
     let conn = library.conn();
 
-    let all = series(&conn, &[], 1, None).expect("lists");
+    let all = series(&conn, &Access::Every, 1, None).expect("lists");
     assert_eq!(all.len(), 1);
     assert_eq!(
         all[0].editions, 1,
@@ -674,12 +795,14 @@ fn a_merged_edition_counts_only_the_members_the_grant_allows() {
         .query_row("SELECT slug FROM work LIMIT 1", [], |row| row.get(0))
         .expect("reads a slug");
 
-    let unrestricted = work(&conn, &[], 1, &slug).expect("reads").expect("visible");
+    let unrestricted = work(&conn, &Access::Every, 1, &slug)
+        .expect("reads")
+        .expect("visible");
     let total: i64 = unrestricted.card.editions.iter().map(|e| e.members).sum();
     assert_eq!(total, 2, "both roots' members");
 
     for (root, label) in [(a_id, "a"), (b_id, "b")] {
-        let seen = work(&conn, &[root], 1, &slug)
+        let seen = work(&conn, &Access::Only(vec![root]), 1, &slug)
             .expect("reads")
             .expect("visible");
         let members: i64 = seen.card.editions.iter().map(|e| e.members).sum();
@@ -705,14 +828,15 @@ fn a_merged_edition_is_visible_to_either_grant_and_an_unheld_root_sees_nothing()
         .query_row("SELECT key FROM edition LIMIT 1", [], |row| row.get(0))
         .expect("reads the edition key");
 
-    assert!(edition_visible(&conn, &[], &slug, &key).expect("reads"));
-    assert!(edition_visible(&conn, &[a_id], &slug, &key).expect("reads"));
+    assert!(edition_visible(&conn, &Access::Every, &slug, &key).expect("reads"));
+    assert!(edition_visible(&conn, &Access::Only(vec![a_id]), &slug, &key).expect("reads"));
     assert!(
-        !edition_visible(&conn, &[a_id], &slug, "no-such-edition").expect("reads"),
+        !edition_visible(&conn, &Access::Only(vec![a_id]), &slug, "no-such-edition")
+            .expect("reads"),
         "an edition that does not exist is not visible"
     );
     assert!(
-        !edition_visible(&conn, &[a_id], "no-such-work", &key).expect("reads"),
+        !edition_visible(&conn, &Access::Only(vec![a_id]), "no-such-work", &key).expect("reads"),
         "a work that does not exist is not visible"
     );
 }
@@ -728,12 +852,12 @@ fn a_work_outside_the_grant_is_invisible_to_the_page_check() {
         .query_row("SELECT slug FROM work LIMIT 1", [], |row| row.get(0))
         .expect("reads a slug");
 
-    assert!(edition_visible(&conn, &[en_id], &slug, "en").expect("reads"));
+    assert!(edition_visible(&conn, &Access::Only(vec![en_id]), &slug, "en").expect("reads"));
     assert!(
-        !edition_visible(&conn, &[en_id], &slug, "raw").expect("reads"),
+        !edition_visible(&conn, &Access::Only(vec![en_id]), &slug, "raw").expect("reads"),
         "the raw edition lives under a root this grant does not hold"
     );
-    assert!(edition_visible(&conn, &[raw_id], &slug, "raw").expect("reads"));
+    assert!(edition_visible(&conn, &Access::Only(vec![raw_id]), &slug, "raw").expect("reads"));
 }
 
 /// `cover_work` answers `None` for a series that does not exist rather than
@@ -742,7 +866,10 @@ fn a_work_outside_the_grant_is_invisible_to_the_page_check() {
 fn a_cover_for_a_series_that_does_not_exist_is_none_rather_than_an_error() {
     let (library, _, _, _en, _raw) = two_root_library();
     let conn = library.conn();
-    assert_eq!(cover_work(&conn, &[], 9999).expect("does not error"), None);
+    assert_eq!(
+        cover_work(&conn, &Access::Every, 9999).expect("does not error"),
+        None
+    );
 }
 
 /// The cover names an edition the grant allows, never `work.hub` when the
@@ -757,7 +884,7 @@ fn the_cover_names_a_visible_edition_rather_than_the_hub() {
         .query_row("SELECT id FROM series LIMIT 1", [], |row| row.get(0))
         .expect("reads the series");
 
-    let target = cover_work(&conn, &[en_id], series_id)
+    let target = cover_work(&conn, &Access::Only(vec![en_id]), series_id)
         .expect("reads")
         .expect("a cover");
     assert_eq!(
@@ -782,7 +909,7 @@ fn search_does_not_lose_a_visible_hit_to_the_cap() {
         );
     }
     let conn = library.conn();
-    let hits = search(&conn, &[], 1, "Volume05", None).expect("searches");
+    let hits = search(&conn, &Access::Every, 1, "Volume05", None).expect("searches");
     assert_eq!(hits.unfiled.len(), 1, "the one exact match is found");
     assert_eq!(hits.unfiled[0].title, "Volume05");
 }
@@ -810,7 +937,7 @@ fn one_series_returns_the_series_and_its_works() {
         .query_row("SELECT id FROM series LIMIT 1", [], |row| row.get(0))
         .expect("reads the series");
 
-    let (card, works) = one_series(&conn, &[], 1, series_id)
+    let (card, works) = one_series(&conn, &Access::Every, 1, series_id)
         .expect("reads")
         .expect("the series is visible");
     assert_eq!(card.id, series_id);
@@ -824,7 +951,7 @@ fn one_series_returns_the_series_and_its_works() {
     conn.execute("DELETE FROM scan_entry WHERE root_id = ?1", [en_id])
         .expect("simulates forget_unseen dropping the en root's scan_entry");
 
-    let (_card, works) = one_series(&conn, &[], 1, series_id)
+    let (_card, works) = one_series(&conn, &Access::Every, 1, series_id)
         .expect("reads")
         .expect("still visible — the member row, and so the work, survives");
     let en = works[0]
@@ -845,7 +972,9 @@ fn one_series_returns_the_series_and_its_works() {
     assert_eq!(raw.missing, 0, "the raw edition's file is still on disk");
 
     assert!(
-        one_series(&conn, &[], 1, 9999).expect("reads").is_none(),
+        one_series(&conn, &Access::Every, 1, 9999)
+            .expect("reads")
+            .is_none(),
         "a series that does not exist is None, and the id is what decides it"
     );
 }
@@ -877,14 +1006,14 @@ fn each_search_index_is_load_bearing_on_its_own() {
     )
     .expect("gives the work a title the series does not carry");
 
-    let by_series = search(&conn, &[], 1, "Quintessential", None).expect("searches");
+    let by_series = search(&conn, &Access::Every, 1, "Quintessential", None).expect("searches");
     assert_eq!(
         by_series.series.len(),
         1,
         "a series alias is found through the series index"
     );
 
-    let by_work = search(&conn, &[], 1, "Nakano", None).expect("searches");
+    let by_work = search(&conn, &Access::Every, 1, "Nakano", None).expect("searches");
     assert_eq!(
         by_work.series.len(),
         1,
@@ -896,7 +1025,7 @@ fn each_search_index_is_load_bearing_on_its_own() {
 fn a_series_nobody_has_opened_is_entirely_unread() {
     let (library, _root, _dir) = two_volume_library();
     let conn = library.conn();
-    let cards = series(&conn, &[], 1, None).expect("lists series");
+    let cards = series(&conn, &Access::Every, 1, None).expect("lists series");
     let card = cards.first().expect("one series");
     assert_eq!(card.works, 2, "the fixture has two volumes");
     assert_eq!(card.unread, 2, "neither has been opened");
@@ -919,7 +1048,7 @@ fn one_position_leaves_the_rest_of_the_series_unread() {
     )
     .expect("a position on volume 1");
 
-    let cards = series(&conn, &[], 1, None).expect("lists series");
+    let cards = series(&conn, &Access::Every, 1, None).expect("lists series");
     let card = cards.first().expect("one series");
     assert_eq!(card.unread, 1, "volume 2 is still unread");
     assert_ne!(card.unread, card.works, "the series is no longer untouched");
@@ -951,7 +1080,7 @@ fn another_readers_position_does_not_mark_this_one_read() {
     )
     .expect("reader 2's position");
 
-    let cards = series(&conn, &[], 1, None).expect("lists series");
+    let cards = series(&conn, &Access::Every, 1, None).expect("lists series");
     assert_eq!(
         cards.first().expect("one series").unread,
         2,
@@ -966,7 +1095,7 @@ fn added_is_the_highest_work_id_in_the_series() {
     // `one_position_leaves_the_rest_of_the_series_unread`.
     let ids = work_ids(&library);
     let conn = library.conn();
-    let cards = series(&conn, &[], 1, None).expect("lists series");
+    let cards = series(&conn, &Access::Every, 1, None).expect("lists series");
     assert_eq!(
         cards.first().expect("one series").added,
         *ids.iter().max().expect("two works"),
@@ -974,7 +1103,7 @@ fn added_is_the_highest_work_id_in_the_series() {
 }
 
 /// **The test that pins parameter order when the grant is non-empty.** Every
-/// test above calls `series` with `roots: &[]`, and `root_clause` contributes
+/// test above calls `series` with `Access::Every`, and `root_clause` contributes
 /// zero placeholders in that case — so the query carries exactly one `?`
 /// regardless of which order `series` pushes `roots` and `user_id` in, and a
 /// swap between them is invisible. `en_id` gives the query a second
@@ -1011,7 +1140,7 @@ fn a_restricted_grant_still_binds_user_id_after_its_own_roots() {
     )
     .expect("a position belonging to the root-id user, not reader 99");
 
-    let cards = series(&conn, &[en_id], 99, None).expect("lists series");
+    let cards = series(&conn, &Access::Only(vec![en_id]), 99, None).expect("lists series");
     let card = cards
         .first()
         .expect("the series, restricted to the en root");
@@ -1031,17 +1160,17 @@ fn a_library_narrows_the_grid_to_its_own_series() {
     let s = two_library_store();
     let conn = s.library.conn();
 
-    let all = series(&conn, &[], 1, None).expect("lists");
+    let all = series(&conn, &Access::Every, 1, None).expect("lists");
     assert_eq!(all.len(), 3, "both libraries, unnarrowed");
 
-    let manga = series(&conn, &[], 1, Some(s.manga)).expect("lists");
+    let manga = series(&conn, &Access::Every, 1, Some(s.manga)).expect("lists");
     let ids: Vec<i64> = manga.iter().map(|c| c.id).collect();
     drop(conn);
     assert_eq!(ids, series_of(&s.library, s.manga), "Manga's one series");
     assert_eq!(manga[0].editions, 2, "with both its folders' editions");
 
     let conn = s.library.conn();
-    let comics = series(&conn, &[], 1, Some(s.comics)).expect("lists");
+    let comics = series(&conn, &Access::Every, 1, Some(s.comics)).expect("lists");
     let mut ids: Vec<i64> = comics.iter().map(|c| c.id).collect();
     ids.sort_unstable();
     drop(conn);
@@ -1060,7 +1189,7 @@ fn a_library_outside_the_grant_answers_nothing() {
     let s = two_library_store();
     import_a_work(&s.library, "Imported", "/x/taiyaku.json");
     let conn = s.library.conn();
-    let grant = [s.en_root, s.raw_root];
+    let grant = Access::Only(vec![s.en_root, s.raw_root]);
     let narrowed = Some(s.comics);
     assert!(
         series(&conn, &grant, 1, narrowed)
@@ -1078,25 +1207,29 @@ fn a_library_outside_the_grant_answers_nothing() {
     assert!(home.added.is_empty() && home.continuing.is_empty() && home.read.is_empty());
 }
 
-/// **An empty folder list is "no restriction" to every function here**, so a
-/// library with no folder of its own must answer nothing rather than hand one
-/// on. Unrestricted caller, so a leak would be the whole store.
+/// **A library with no folder of its own answers nothing**, never the caller's
+/// whole access in its place ([`library_scope`]'s `None`). Unrestricted
+/// caller, so a leak would be the whole store.
 #[test]
 fn a_library_that_does_not_exist_answers_nothing_rather_than_everything() {
     let s = two_library_store();
     let conn = s.library.conn();
     assert!(
-        series(&conn, &[], 1, Some(9_999))
+        series(&conn, &Access::Every, 1, Some(9_999))
             .expect("lists")
             .is_empty()
     );
     assert!(
-        home(&conn, &[], 1, Some(9_999))
+        home(&conn, &Access::Every, 1, Some(9_999))
             .expect("reads")
             .added
             .is_empty()
     );
-    assert!(library_scope(&conn, &[], 9_999).expect("reads").is_none());
+    assert!(
+        library_scope(&conn, &Access::Every, 9_999)
+            .expect("reads")
+            .is_none()
+    );
 
     // A library with no folder, which nothing public makes (O205), written
     // by hand: the same answer.
@@ -1104,11 +1237,15 @@ fn a_library_that_does_not_exist_answers_nothing_rather_than_everything() {
         .expect("a library with no folder");
     let empty = conn.last_insert_rowid();
     assert!(
-        series(&conn, &[], 1, Some(empty))
+        series(&conn, &Access::Every, 1, Some(empty))
             .expect("lists")
             .is_empty()
     );
-    assert!(library_scope(&conn, &[], empty).expect("reads").is_none());
+    assert!(
+        library_scope(&conn, &Access::Every, empty)
+            .expect("reads")
+            .is_none()
+    );
 }
 
 /// **The grant's share, not the library's whole.** Grants are whole libraries
@@ -1119,12 +1256,22 @@ fn a_library_that_does_not_exist_answers_nothing_rather_than_everything() {
 fn the_narrowing_reads_the_folders_the_library_and_the_grant_share() {
     let s = two_library_store();
     let conn = s.library.conn();
-    let cards = series(&conn, &[s.en_root, s.comics_root], 1, Some(s.manga)).expect("lists");
+    let cards = series(
+        &conn,
+        &Access::Only(vec![s.en_root, s.comics_root]),
+        1,
+        Some(s.manga),
+    )
+    .expect("lists");
     assert_eq!(cards.len(), 1);
     assert_eq!(cards[0].editions, 1, "the English edition only");
-    let scope = library_scope(&conn, &[s.en_root, s.comics_root], s.manga)
-        .expect("reads")
-        .expect("Manga, through its English folder");
+    let scope = library_scope(
+        &conn,
+        &Access::Only(vec![s.en_root, s.comics_root]),
+        s.manga,
+    )
+    .expect("reads")
+    .expect("Manga, through its English folder");
     assert_eq!(scope.name, "Manga");
     assert_eq!(scope.folders, vec![s.en_root]);
 }
@@ -1171,7 +1318,7 @@ fn every_home_list_narrows_to_the_library() {
     let conn = s.library.conn();
     let ids = |works: &[WorkCard]| works.iter().map(|w| w.id).collect::<Vec<_>>();
 
-    let comics = home(&conn, &[], 1, Some(s.comics)).expect("reads home");
+    let comics = home(&conn, &Access::Every, 1, Some(s.comics)).expect("reads home");
     assert_eq!(ids(&comics.continuing), vec![other_work]);
     assert_eq!(ids(&comics.read), vec![comics_series_work]);
     let mut added = ids(&comics.added);
@@ -1180,7 +1327,7 @@ fn every_home_list_narrows_to_the_library() {
     want.sort_unstable();
     assert_eq!(added, want);
 
-    let manga = home(&conn, &[], 1, Some(s.manga)).expect("reads home");
+    let manga = home(&conn, &Access::Every, 1, Some(s.manga)).expect("reads home");
     assert_eq!(ids(&manga.continuing), vec![manga_work]);
     assert_eq!(ids(&manga.added), vec![manga_work]);
     assert!(
@@ -1196,10 +1343,10 @@ fn search_narrowed_to_a_library_finds_only_its_series() {
     let s = two_library_store();
     import_a_work(&s.library, "Imported Series", "/x/taiyaku.json");
     let conn = s.library.conn();
-    let all = search(&conn, &[], 1, "Series", None).expect("searches");
+    let all = search(&conn, &Access::Every, 1, "Series", None).expect("searches");
     assert_eq!(all.series.len(), 2, "a Series in each library");
     assert_eq!(all.unfiled.len(), 1, "and the imported work, in neither");
-    let comics = search(&conn, &[], 1, "Series", Some(s.comics)).expect("searches");
+    let comics = search(&conn, &Access::Every, 1, "Series", Some(s.comics)).expect("searches");
     assert!(
         comics.unfiled.is_empty(),
         "an imported work is in no library: {:?}",
@@ -1219,9 +1366,14 @@ fn asking_for_a_library_leaves_the_unfiled_bucket_empty() {
     let s = two_library_store();
     import_a_work(&s.library, "Imported", "/x/taiyaku.json");
     let conn = s.library.conn();
-    assert_eq!(unfiled(&conn, &[], 1, None).expect("lists").len(), 1);
+    assert_eq!(
+        unfiled(&conn, &Access::Every, 1, None)
+            .expect("lists")
+            .len(),
+        1
+    );
     assert!(
-        unfiled(&conn, &[], 1, Some(s.manga))
+        unfiled(&conn, &Access::Every, 1, Some(s.manga))
             .expect("lists")
             .is_empty()
     );
@@ -1246,7 +1398,7 @@ fn a_work_carries_the_verdict_and_paired_count_of_each_pair() {
     align(&library, ids[0], "en", "raw");
 
     let conn = library.conn();
-    let detail = work(&conn, &[], 1, "series---v01")
+    let detail = work(&conn, &Access::Every, 1, "series---v01")
         .expect("reads the work")
         .expect("a work with that slug");
     assert_eq!(detail.alignments.len(), 1);
@@ -1267,7 +1419,7 @@ fn an_alignment_naming_a_hidden_edition_is_not_listed() {
     align(&library, ids[0], "en", "raw");
 
     let conn = library.conn();
-    let detail = work(&conn, &[en_id], 1, "series---v01")
+    let detail = work(&conn, &Access::Only(vec![en_id]), 1, "series---v01")
         .expect("reads the work")
         .expect("the work survives on its English edition");
     assert_eq!(detail.card.editions.len(), 1, "only the English edition");
@@ -1290,7 +1442,7 @@ fn a_grant_naming_both_sides_of_a_pair_returns_the_alignment() {
     align(&library, ids[0], "en", "raw");
 
     let conn = library.conn();
-    let detail = work(&conn, &[en_id, raw_id], 1, "series---v01")
+    let detail = work(&conn, &Access::Only(vec![en_id, raw_id]), 1, "series---v01")
         .expect("reads the work")
         .expect("the work survives on both editions");
     assert_eq!(
@@ -1319,7 +1471,7 @@ fn an_alignment_naming_a_hidden_edition_is_counted_by_neither_the_work_nor_the_g
     align(&library, ids[0], "en", "raw");
 
     let conn = library.conn();
-    let detail = work(&conn, &[en_id], 1, "series---v01")
+    let detail = work(&conn, &Access::Only(vec![en_id]), 1, "series---v01")
         .expect("reads the work")
         .expect("the work survives on its English edition");
     assert!(
@@ -1331,7 +1483,7 @@ fn an_alignment_naming_a_hidden_edition_is_counted_by_neither_the_work_nor_the_g
         "and the flag agrees with the list beside it"
     );
 
-    let cards = series(&conn, &[en_id], 1, None).expect("lists series");
+    let cards = series(&conn, &Access::Only(vec![en_id]), 1, None).expect("lists series");
     assert_eq!(
         cards.first().expect("one series").aligned,
         0,
@@ -1348,33 +1500,33 @@ fn an_alignment_wholly_inside_the_grant_is_counted_by_both() {
     align(&library, ids[0], "en", "raw");
 
     let conn = library.conn();
-    let detail = work(&conn, &[en_id, raw_id], 1, "series---v01")
+    let detail = work(&conn, &Access::Only(vec![en_id, raw_id]), 1, "series---v01")
         .expect("reads the work")
         .expect("the work survives on both editions");
     assert!(detail.card.aligned, "both sides are held");
     assert_eq!(detail.alignments.len(), 1, "and the list says the same");
 
-    let cards = series(&conn, &[en_id, raw_id], 1, None).expect("lists series");
+    let cards = series(&conn, &Access::Only(vec![en_id, raw_id]), 1, None).expect("lists series");
     assert_eq!(cards.first().expect("one series").aligned, 1);
 }
 
-/// **An empty grant is unrestricted (§5.1), and this changed nothing for it.**
-/// Every existing account holds one, so a filter that tightened the count here
-/// would have taken the `⇄` mark off every library in the world.
+/// **`Every` counts the pair as it always did.** Every account without a grant
+/// reads as `Every`, so a filter that tightened the count here would take the
+/// `⇄` mark off every library in the world.
 #[test]
-fn an_empty_grant_counts_the_alignment_as_it_always_did() {
+fn access_every_counts_the_alignment_as_it_always_did() {
     let (library, _en_id, _raw_id, _en_dir, _raw_dir) = two_root_library();
     let ids = work_ids(&library);
     align(&library, ids[0], "en", "raw");
 
     let conn = library.conn();
-    let detail = work(&conn, &[], 1, "series---v01")
+    let detail = work(&conn, &Access::Every, 1, "series---v01")
         .expect("reads the work")
         .expect("the work");
     assert!(detail.card.aligned, "unrestricted sees both sides");
     assert_eq!(detail.alignments.len(), 1);
 
-    let cards = series(&conn, &[], 1, None).expect("lists series");
+    let cards = series(&conn, &Access::Every, 1, None).expect("lists series");
     assert_eq!(cards.first().expect("one series").aligned, 1);
 }
 
@@ -1420,12 +1572,12 @@ fn a_library_narrows_the_aligned_count_and_not_only_the_other_three() {
         ![en_id, raw_id].contains(&english_library),
         "library {english_library} shares a folder's id"
     );
-    let all = series(&conn, &[], 1, None).expect("lists series");
+    let all = series(&conn, &Access::Every, 1, None).expect("lists series");
     let whole = all.first().expect("one series");
     assert_eq!(whole.editions, 2, "unnarrowed, both editions are visible");
     assert_eq!(whole.aligned, 1, "and the pair they form is counted");
 
-    let english = series(&conn, &[], 1, Some(english_library)).expect("lists series");
+    let english = series(&conn, &Access::Every, 1, Some(english_library)).expect("lists series");
     let card = english.first().expect("one series");
     assert_eq!(card.works, 1, "the work survives on its English edition");
     assert_eq!(card.editions, 1, "which is the only one in this library");
@@ -1454,7 +1606,8 @@ fn a_library_keeps_a_pair_whose_two_editions_are_both_in_it() {
             r.get(0)
         })
         .expect("the library both folders are in");
-    let cards = series(&conn, &[en_id, raw_id], 1, Some(manga)).expect("lists series");
+    let cards =
+        series(&conn, &Access::Only(vec![en_id, raw_id]), 1, Some(manga)).expect("lists series");
     let card = cards.first().expect("one series");
     assert_eq!(
         card.editions, 2,
@@ -1470,7 +1623,7 @@ fn a_library_keeps_a_pair_whose_two_editions_are_both_in_it() {
 fn status_lists_each_library_once_by_name_with_case_folded() {
     let s = two_library_store();
     let conn = s.library.conn();
-    let names: Vec<String> = status(&conn, &[])
+    let names: Vec<String> = status(&conn, &Access::Every)
         .expect("reads")
         .libraries
         .into_iter()
@@ -1528,7 +1681,7 @@ fn filed_in_answers_the_slugs_of_the_works_filed_in_a_library() {
 fn status_lists_only_the_libraries_the_grant_names() {
     let s = two_library_store();
     let conn = s.library.conn();
-    let restricted = status(&conn, &[s.en_root, s.raw_root]).expect("reads");
+    let restricted = status(&conn, &Access::Only(vec![s.en_root, s.raw_root])).expect("reads");
     let ids: Vec<i64> = restricted.libraries.iter().map(|l| l.id).collect();
     assert_eq!(ids, vec![s.manga]);
 }
@@ -1574,13 +1727,13 @@ fn scanned_is_true_only_for_a_library_one_of_whose_folders_was_walked() {
             .all(|(_, library)| filed.iter().all(|(folder, _)| folder != library)),
         "no library's id is a folder's: {filed:?}"
     );
-    let before = status(&conn, &[]).expect("reads");
+    let before = status(&conn, &Access::Every).expect("reads");
     assert!(
         before.libraries.iter().all(|l| !l.scanned),
         "nothing walked yet"
     );
     scan::scan_root(&conn, &a).expect("scans one");
-    let after = status(&conn, &[]).expect("reads");
+    let after = status(&conn, &Access::Every).expect("reads");
     let flags: Vec<(String, bool)> = after
         .libraries
         .into_iter()
@@ -1612,14 +1765,14 @@ fn a_query_too_short_for_trigram_is_answered_by_like() {
     )
     .expect("gives the series its native title");
 
-    let hits = search(&conn, &[], 1, "花嫁", None).expect("searches");
+    let hits = search(&conn, &Access::Every, 1, "花嫁", None).expect("searches");
     assert_eq!(
         hits.series.len(),
         1,
         "two characters must still find the shelf"
     );
 
-    let long = search(&conn, &[], 1, "分の花嫁", None).expect("searches");
+    let long = search(&conn, &Access::Every, 1, "分の花嫁", None).expect("searches");
     assert_eq!(
         long.series.len(),
         1,
@@ -1667,7 +1820,7 @@ fn a_wildcard_typed_into_the_search_box_is_a_literal() {
     let conn = library.conn();
 
     for wildcard in ["%", "_"] {
-        let hits = search(&conn, &[], 1, wildcard, None).expect("searches");
+        let hits = search(&conn, &Access::Every, 1, wildcard, None).expect("searches");
         assert!(
             hits.series.is_empty() && hits.unfiled.is_empty(),
             "`{wildcard}` is a character to look for, not an operator"
@@ -1701,7 +1854,7 @@ fn a_backslash_typed_into_the_search_box_is_a_literal() {
     )
     .expect("gives the unfiled work a title with a literal backslash");
 
-    let hits = search(&conn, &[], 1, "\\", None).expect("searches");
+    let hits = search(&conn, &Access::Every, 1, "\\", None).expect("searches");
     assert_eq!(
         hits.unfiled.len(),
         1,
@@ -1722,7 +1875,7 @@ fn a_short_query_finds_an_unfiled_work_by_its_own_title() {
     conn.execute("UPDATE work SET title = '花嫁' WHERE series_id IS NULL", [])
         .expect("renames the unfiled work");
 
-    let hits = search(&conn, &[], 1, "花嫁", None).expect("searches");
+    let hits = search(&conn, &Access::Every, 1, "花嫁", None).expect("searches");
     assert_eq!(
         hits.unfiled.len(),
         1,
@@ -1752,7 +1905,7 @@ fn a_short_query_matching_a_works_title_drags_its_series_in() {
     )
     .expect("gives the work a title its series does not carry");
 
-    let hits = search(&conn, &[], 1, "花嫁", None).expect("searches");
+    let hits = search(&conn, &Access::Every, 1, "花嫁", None).expect("searches");
     assert_eq!(
         hits.series.len(),
         1,
@@ -1777,17 +1930,17 @@ fn a_short_query_is_filtered_by_the_grant_like_a_long_one() {
     )
     .expect("native title");
 
-    let unrestricted = search(&conn, &[], 1, "花嫁", None).expect("searches");
-    assert_eq!(unrestricted.series.len(), 1, "an empty grant sees it");
+    let unrestricted = search(&conn, &Access::Every, 1, "花嫁", None).expect("searches");
+    assert_eq!(unrestricted.series.len(), 1, "`Every` sees it");
 
-    let granted = search(&conn, &[raw_root], 1, "花嫁", None).expect("searches");
+    let granted = search(&conn, &Access::Only(vec![raw_root]), 1, "花嫁", None).expect("searches");
     assert_eq!(
         granted.series.len(),
         1,
         "a grant covering an edition of it still sees it"
     );
 
-    let elsewhere = search(&conn, &[9999], 1, "花嫁", None).expect("searches");
+    let elsewhere = search(&conn, &Access::Only(vec![9999]), 1, "花嫁", None).expect("searches");
     assert!(
         elsewhere.series.is_empty(),
         "a grant covering nothing sees nothing, however the query was answered"
@@ -1802,7 +1955,14 @@ fn search_with_no_library_spans_the_whole_grant() {
     let (library, en_root, raw_root, _en, _raw) = two_root_library();
     let conn = library.conn();
 
-    let both = search(&conn, &[en_root, raw_root], 1, "Series", None).expect("searches");
+    let both = search(
+        &conn,
+        &Access::Only(vec![en_root, raw_root]),
+        1,
+        "Series",
+        None,
+    )
+    .expect("searches");
     assert_eq!(
         both.series.len(),
         1,
@@ -1845,7 +2005,7 @@ fn an_edition_whose_file_has_left_the_disk_reports_it_missing() {
     )
     .expect("seeding");
 
-    let missing = missing_for(&conn, &[], 1);
+    let missing = missing_for(&conn, &Access::Every, 1);
 
     assert_eq!(
         missing, 1,
@@ -1867,8 +2027,8 @@ fn an_edition_whose_file_has_left_the_disk_reports_it_missing() {
 ///
 /// **A grant test, not a count test.** A caller granted only root `a` must be
 /// told about **one** missing file — its own — never root `b`'s, which it
-/// cannot see at all. An empty grant is unrestricted (§5.1) and must still
-/// see both: `member_clause` returns an empty string for that case, so the
+/// cannot see at all. `Every` is unrestricted and must still see both:
+/// `member_clause` returns an empty string for that case, so the
 /// query is unchanged, and asserting only the restricted half would not
 /// notice that path breaking.
 #[test]
@@ -1884,13 +2044,13 @@ fn a_restricted_grant_counts_only_the_missing_members_it_may_see() {
     conn.execute("DELETE FROM scan_entry WHERE root_id = ?1", [b_id])
         .expect("simulates forget_unseen dropping root b's file");
 
-    let unrestricted = missing_for(&conn, &[], edition_id);
+    let unrestricted = missing_for(&conn, &Access::Every, edition_id);
     assert_eq!(
         unrestricted, 2,
-        "an empty grant is unrestricted and still sees both roots' missing members"
+        "`Every` still sees both roots' missing members"
     );
 
-    let restricted = missing_for(&conn, &[a_id], edition_id);
+    let restricted = missing_for(&conn, &Access::Only(vec![a_id]), edition_id);
     assert_eq!(
         restricted, 1,
         "a grant naming only root a is told about its one missing member, \
@@ -1902,8 +2062,8 @@ fn a_restricted_grant_counts_only_the_missing_members_it_may_see() {
 ///
 /// A map since O85, where an edition with nothing missing has no row at all —
 /// so absence reads as zero here, at the one place these tests ask.
-fn missing_for(conn: &Connection, roots: &[i64], edition_id: i64) -> usize {
-    missing_by_edition(conn, roots, &[edition_id])
+fn missing_for(conn: &Connection, access: &Access, edition_id: i64) -> usize {
+    missing_by_edition(conn, access, &[edition_id])
         .expect("counts")
         .get(&edition_id)
         .copied()
@@ -1965,7 +2125,7 @@ fn statements_listing_series(library: &Library) -> (usize, usize) {
         .expect("reads the series");
 
     STATEMENTS.with(|c| c.set(0));
-    let (_card, works) = one_series(&conn, &[], 1, series_id)
+    let (_card, works) = one_series(&conn, &Access::Every, 1, series_id)
         .expect("reads")
         .expect("the series is visible");
     (STATEMENTS.with(std::cell::Cell::get), works.len())
@@ -2030,7 +2190,7 @@ fn a_restricted_grant_hides_its_edition_in_every_work_of_a_series() {
         .query_row("SELECT id FROM series LIMIT 1", [], |row| row.get(0))
         .expect("the series");
 
-    let (_card, unrestricted) = one_series(&conn, &[], 1, series_id)
+    let (_card, unrestricted) = one_series(&conn, &Access::Every, 1, series_id)
         .expect("reads")
         .expect("visible");
     assert_eq!(unrestricted.len(), 3, "three volumes");
@@ -2038,11 +2198,11 @@ fn a_restricted_grant_hides_its_edition_in_every_work_of_a_series() {
         assert_eq!(
             work.editions.len(),
             2,
-            "an empty grant is unrestricted, so every work keeps both editions"
+            "`Every` is unrestricted, so every work keeps both editions"
         );
     }
 
-    let (_card, restricted) = one_series(&conn, &[raw_id], 1, series_id)
+    let (_card, restricted) = one_series(&conn, &Access::Only(vec![raw_id]), 1, series_id)
         .expect("reads")
         .expect("visible");
     assert_eq!(restricted.len(), 3, "the works themselves all survive");
@@ -2083,8 +2243,8 @@ fn opens_names_the_stored_position_and_falls_back_to_the_hub() {
     let series_id: i64 = conn
         .query_row("SELECT id FROM series LIMIT 1", [], |row| row.get(0))
         .expect("the series");
-    let read = |roots: &[i64]| {
-        one_series(&conn, roots, 1, series_id)
+    let read = |access: &Access| {
+        one_series(&conn, access, 1, series_id)
             .expect("reads")
             .expect("visible")
             .1
@@ -2092,7 +2252,11 @@ fn opens_names_the_stored_position_and_falls_back_to_the_hub() {
             .opens
     };
 
-    assert_eq!(read(&[]), hub, "no position at all opens the hub");
+    assert_eq!(
+        read(&Access::Every),
+        hub,
+        "no position at all opens the hub"
+    );
 
     state::put_progress(
         &conn,
@@ -2105,7 +2269,7 @@ fn opens_names_the_stored_position_and_falls_back_to_the_hub() {
     )
     .expect("a position in the non-hub edition");
     assert_eq!(
-        read(&[]),
+        read(&Access::Every),
         other,
         "a stored position opens its own edition, not the hub — this is the \
          whole of O84, and the case a hub-only field cannot express"
@@ -2122,7 +2286,7 @@ fn opens_names_the_stored_position_and_falls_back_to_the_hub() {
         )
         .expect("the hub's root");
     assert_eq!(
-        read(&[hub_root]),
+        read(&Access::Only(vec![hub_root])),
         hub,
         "a position naming an edition this grant hides falls back to the hub, \
          exactly as `restore` does when the resolver does not know it"
@@ -2159,7 +2323,7 @@ fn opens_substitutes_the_first_visible_edition_when_the_grant_hides_the_hub() {
         .query_row("SELECT id FROM series LIMIT 1", [], |row| row.get(0))
         .expect("the series");
 
-    let card = one_series(&conn, &[other_root], 1, series_id)
+    let card = one_series(&conn, &Access::Only(vec![other_root]), 1, series_id)
         .expect("reads")
         .expect("visible")
         .1
@@ -2220,7 +2384,7 @@ fn a_series_with_no_primary_title_is_shown_by_its_first_title_not_its_scanned_na
     )
     .expect("corrects the titles");
 
-    let cards = series(&conn, &[], 1, None).expect("lists");
+    let cards = series(&conn, &Access::Every, 1, None).expect("lists");
     let card = cards
         .iter()
         .find(|card| card.id == series_id)

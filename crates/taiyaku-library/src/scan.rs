@@ -676,11 +676,16 @@ pub fn update_root(conn: &Connection, id: i64, patch: &RootPatch) -> Result<bool
 /// does not look like it," and requires the counts stated before it acts:
 /// "This removes 412 works, 3 in-progress positions and 27 notes." This
 /// struct is that sentence.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Removal {
     pub works: usize,
     pub positions: usize,
     pub notes: usize,
+    /// The accounts, by name, that see no library once this removal deletes
+    /// the only library they are granted: [`only_grant_holders`], asked
+    /// before anything is deleted. Empty where the library stays, as it does
+    /// when a folder that is not its library's last goes.
+    pub left_with_no_library: Vec<String>,
 }
 
 /// Every work whose *every* member sits under root `?1` — the works
@@ -728,88 +733,17 @@ const DOOMED_WORKS: &str = "
               AND (m2.root_id IS NULL OR m2.root_id != ?1)
            )";
 
-/// "`a` is granted" or "`a`, `b` and `c` are granted", with the advice that
-/// goes with one account or several. `names` is not empty.
-pub(crate) fn only_grant_of(names: &[String]) -> (String, &'static str) {
-    let (last, others) = names.split_last().expect("at least one account");
-    if others.is_empty() {
-        (
-            format!("`{last}` is granted"),
-            "Removing it would delete that grant, and an account with no grant sees every \
-             library. First grant it another library, or revoke this one.",
-        )
-    } else {
-        let others: Vec<String> = others
-            .iter()
-            .map(|account| format!("`{account}`"))
-            .collect();
-        (
-            format!("{} and `{last}` are granted", others.join(", ")),
-            "Removing it would delete those grants, and an account with no grant sees every \
-             library. First grant each another library, or revoke this one.",
-        )
-    }
-}
-
-/// Why root `id` may not be removed, if it may not: it is the last folder of
-/// a library, and that library is the only one some account is granted.
+/// The accounts, by name and in name order, that see no library once library
+/// `library_id` goes: those limited to the libraries they are granted, and
+/// granted this one alone. Empty where there are none, and where
+/// `library_id` names no library.
 ///
-/// **Decision C of Part F1.** A library goes with its last folder and its
-/// grants go with it (migration 15), and an account left holding no grant
-/// sees every library. This names each such account, so an administrator can
-/// grant it another library, or revoke this one on purpose, first. An
-/// administrator's own grant counts like anyone's: its row is kept so that a
-/// demotion restores it.
+/// **An administrator is never named**: it sees every library whatever its
+/// rows say. **Nor is an account set to every library** that still holds a
+/// row, since the row restricts nothing until the account is limited.
 ///
-/// [`remove_root`] and [`removal_cost`] ask this before they delete anything.
-/// Migration 15's `only_grant_refuses_delete` trigger asks it again of the
-/// `DELETE` itself, with a message that names no account.
-///
-/// # Errors
-///
-/// Returns an error if the read fails. An `id` naming no root is `Ok(None)`.
-pub fn removal_refusal(conn: &Connection, id: i64) -> Result<Option<String>, String> {
-    let Some((path, library_id, library, shared)) = conn
-        .query_row(
-            "SELECT r.path, l.id, l.name,
-                    EXISTS (SELECT 1 FROM root other
-                             WHERE other.library_id = r.library_id AND other.id <> r.id)
-               FROM root r JOIN library l ON l.id = r.library_id
-              WHERE r.id = ?1",
-            [id],
-            |r| {
-                Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, i64>(1)?,
-                    r.get::<_, String>(2)?,
-                    r.get::<_, bool>(3)?,
-                ))
-            },
-        )
-        .optional()
-        .map_err(|e| format!("checking whose only grant root {id} holds: {e}"))?
-    else {
-        return Ok(None);
-    };
-    if shared {
-        return Ok(None);
-    }
-    let names = only_grant_holders(conn, library_id)?;
-    if names.is_empty() {
-        return Ok(None);
-    }
-    let (accounts, advice) = only_grant_of(&names);
-    Ok(Some(format!(
-        "{path} is the last folder of the library `{library}`, which is the only library \
-         {accounts}. {advice}"
-    )))
-}
-
-/// The accounts, by name, whose only grant is library `library_id`. Empty
-/// where there are none, and where `library_id` names no library.
-///
-/// The one place Rust asks this: [`removal_refusal`], [`library_removal_refusal`]
-/// and a folder move's refusal are built on it.
+/// Asked before the library is deleted, because its grants go with it. A
+/// removal and a folder move both report what this answers.
 pub(crate) fn only_grant_holders(
     conn: &Connection,
     library_id: i64,
@@ -820,6 +754,8 @@ pub(crate) fn only_grant_holders(
                FROM user_library ul
                JOIN user u ON u.id = ul.user_id
               WHERE ul.library_id = ?1
+                AND u.role = 'user'
+                AND u.every_library = 0
                 AND NOT EXISTS (SELECT 1 FROM user_library held
                                  WHERE held.user_id = ul.user_id
                                    AND held.library_id <> ul.library_id)
@@ -834,8 +770,8 @@ pub(crate) fn only_grant_holders(
 }
 
 /// Count what root `id` alone accounts for, then delete it: its works, the
-/// members it supplied to works that survive it, and the root. No refusal is
-/// asked and nothing is derived; [`apply_removal`] and
+/// members it supplied to works that survive it, and the root. Nothing is
+/// derived and no account is named; [`apply_removal`] and
 /// [`apply_library_removal`] do both around it.
 ///
 /// **A member `DOOMED_WORKS` excluded, on a work that survives on some other
@@ -885,15 +821,34 @@ fn take_root(conn: &Connection, id: i64) -> Result<Removal, String> {
         works: usize::try_from(works).unwrap_or(usize::MAX),
         positions: usize::try_from(positions).unwrap_or(usize::MAX),
         notes: usize::try_from(notes).unwrap_or(usize::MAX),
+        left_with_no_library: Vec::new(),
     })
+}
+
+/// The library root `id` is the last folder of, which removing it deletes.
+/// `None` where the library keeps another folder, and where `id` names no
+/// root.
+fn emptied_by_removing(conn: &Connection, id: i64) -> Result<Option<i64>, String> {
+    conn.query_row(
+        "SELECT l.id FROM root r JOIN library l ON l.id = r.library_id
+          WHERE r.id = ?1
+            AND NOT EXISTS (SELECT 1 FROM root other
+                             WHERE other.library_id = r.library_id AND other.id <> r.id)",
+        [id],
+        |r| r.get::<_, i64>(0),
+    )
+    .optional()
+    .map_err(|e| format!("checking whether root {id} is its library's last folder: {e}"))
 }
 
 /// Delete root `id`, every work that lived entirely under it, and re-derive
 /// — the mechanism [`removal_cost`] runs and rolls back, and [`remove_root`]
 /// runs and commits.
 ///
-/// **Refused before anything is deleted** where [`removal_refusal`] says so:
-/// the refusal is this function's error, for the dry run as for the removal.
+/// **Whoever is left with no library is read before anything is deleted**,
+/// where `id` is its library's last folder: the library goes with that
+/// folder, and its grants with the library, so afterwards nothing records
+/// who held them.
 ///
 /// **Delete-plus-derive, not a bare `DELETE FROM root`.** `scan_entry`,
 /// `dir_state` and `rule` cascade with the root, and a library left with no
@@ -931,16 +886,17 @@ fn take_root(conn: &Connection, id: i64) -> Result<Removal, String> {
 ///
 /// # Errors
 ///
-/// Returns [`removal_refusal`]'s refusal where there is one, and an error if
-/// [`take_root`] or `derive_with` is refused.
+/// Returns an error if a read, [`take_root`] or `derive_with` is refused.
 fn apply_removal(
     conn: &Connection,
     id: i64,
 ) -> Result<(Removal, crate::derive::DeriveReport), String> {
-    if let Some(refusal) = removal_refusal(conn, id)? {
-        return Err(refusal);
-    }
-    let removal = take_root(conn, id)?;
+    let left_with_no_library = match emptied_by_removing(conn, id)? {
+        Some(library_id) => only_grant_holders(conn, library_id)?,
+        None => Vec::new(),
+    };
+    let mut removal = take_root(conn, id)?;
+    removal.left_with_no_library = left_with_no_library;
     let derived = crate::derive::derive_with(conn, crate::derive::Documents::Skip)?;
 
     Ok((removal, derived))
@@ -987,8 +943,7 @@ fn apply_removal(
 /// # Errors
 ///
 /// Returns an error if SQLite refuses the transaction or if [`apply_removal`]
-/// fails. A removal [`removal_refusal`] refuses is an error here too, in the
-/// refusal's words, so a dry run states it where it would have stated counts.
+/// fails.
 pub fn removal_cost(
     conn: &Connection,
     id: i64,
@@ -1051,9 +1006,7 @@ pub fn removal_cost(
 /// Returns an error if SQLite refuses the transaction, if [`apply_removal`]
 /// fails, if the commit itself is refused, or if the post-commit derive
 /// fails — in which case the removal itself has already committed and only
-/// the reconciliation pass over its aftermath did not complete. A removal
-/// [`removal_refusal`] refuses is an error in the refusal's words, and
-/// nothing is removed.
+/// the reconciliation pass over its aftermath did not complete.
 pub fn remove_root(
     conn: &Connection,
     id: i64,
@@ -1068,31 +1021,6 @@ pub fn remove_root(
     Ok((removal, derived))
 }
 
-/// Why library `library_id` may not be removed, if it may not: it is the only
-/// library some account is granted.
-///
-/// [`removal_refusal`]'s rule, asked of a whole library. A library of two
-/// folders is never refused by that one, which speaks only for a library's
-/// last folder, so this is asked before the first folder goes.
-///
-/// # Errors
-///
-/// Returns an error if the read fails. An id naming no library is `Ok(None)`.
-pub fn library_removal_refusal(
-    conn: &Connection,
-    library_id: i64,
-) -> Result<Option<String>, String> {
-    let names = only_grant_holders(conn, library_id)?;
-    if names.is_empty() {
-        return Ok(None);
-    }
-    let library = crate::libraries::name_of(conn, library_id)?.unwrap_or_default();
-    let (accounts, advice) = only_grant_of(&names);
-    Ok(Some(format!(
-        "`{library}` is the only library {accounts}. {advice}"
-    )))
-}
-
 /// Remove each folder of `library_id` in turn, summing what each takes, then
 /// derive once.
 ///
@@ -1101,13 +1029,14 @@ pub fn library_removal_refusal(
 /// every member of it is under that folder. A work with an edition under each
 /// of two folders is therefore named for neither while both stand, and for
 /// the second once [`take_root`] has deleted the first's members.
+///
+/// **Whoever is left with no library is read before the first folder goes**,
+/// for [`apply_removal`]'s reason. A library with no folder is not deleted
+/// here, since it goes only with its last folder, so it leaves no one.
 fn apply_library_removal(
     conn: &Connection,
     library_id: i64,
 ) -> Result<(Removal, crate::derive::DeriveReport), String> {
-    if let Some(refusal) = library_removal_refusal(conn, library_id)? {
-        return Err(refusal);
-    }
     let folders: Vec<i64> = conn
         .prepare("SELECT id FROM root WHERE library_id = ?1 ORDER BY id")
         .map_err(|e| format!("listing the folders of library {library_id}: {e}"))?
@@ -1115,7 +1044,14 @@ fn apply_library_removal(
         .map_err(|e| format!("listing the folders of library {library_id}: {e}"))?
         .collect::<Result<_, _>>()
         .map_err(|e| format!("listing the folders of library {library_id}: {e}"))?;
-    let mut total = Removal::default();
+    let mut total = Removal {
+        left_with_no_library: if folders.is_empty() {
+            Vec::new()
+        } else {
+            only_grant_holders(conn, library_id)?
+        },
+        ..Removal::default()
+    };
     for folder in folders {
         let taken = take_root(conn, folder)?;
         total.works += taken.works;
@@ -1131,8 +1067,7 @@ fn apply_library_removal(
 ///
 /// # Errors
 ///
-/// As [`removal_cost`]. A removal [`library_removal_refusal`] refuses is an
-/// error in the refusal's words.
+/// As [`removal_cost`].
 pub fn library_removal_cost(
     conn: &Connection,
     library_id: i64,
@@ -1152,8 +1087,7 @@ pub fn library_removal_cost(
 ///
 /// # Errors
 ///
-/// As [`remove_root`]. A removal [`library_removal_refusal`] refuses is an
-/// error in the refusal's words, and nothing is removed.
+/// As [`remove_root`].
 pub fn remove_library(
     conn: &Connection,
     library_id: i64,

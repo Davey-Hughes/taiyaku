@@ -195,6 +195,7 @@ beforeEach(() => {
   window.scrollTo(0, 0)
   vi.mocked(library.status).mockResolvedValue({
     libraries: [{ id: 1, name: 'Volumes', scanned: true }],
+    restricted: false,
   })
   vi.mocked(library.home).mockResolvedValue({
     continuing: [],
@@ -429,6 +430,7 @@ describe('the series page and search at 390 px', () => {
           scanned: true,
         },
       ],
+      restricted: false,
     })
     const host = await at('/search?q=go-toubun&library=2', 390)
     expect(host.querySelector('.search-scope select')).not.toBeNull()

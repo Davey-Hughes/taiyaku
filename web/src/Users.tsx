@@ -15,8 +15,8 @@
  * `libraries.ts` already has the client — one client and two screens rather
  * than a second fetch that could disagree (§6.2) — and a card fetching its
  * own would ask N times for one answer. **A failed read is drawn**, because
- * the grant editor's empty state and its failure look identical on screen and
- * mean opposite things: an empty grant is *unrestricted*.
+ * a grant editor with nothing to offer looks the same whether there are no
+ * libraries or the list could not be read, and only one of those is true.
  *
  * **The caller's own account comes from the gate, not from a second request.**
  * `useGate()` already holds `me()`'s answer for the page load. `undefined`

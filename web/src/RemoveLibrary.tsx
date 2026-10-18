@@ -12,12 +12,20 @@
  * an edition in each of two folders is in neither folder's own count, and
  * the server counts it once for the library.
  *
- * **A refusal is the sentence and nothing else.** A library that is some
- * account's only grant is not removed, and the server names the accounts.
+ * **An account whose only grant is this library is named under the counts,
+ * and the confirm is still offered.** The removal leaves it seeing no library
+ * until an administrator grants one, which the person removing may not know
+ * of; the server's dry run names it, and the real removal does what the dry
+ * run described.
  */
 import { useEffect, useRef, useState } from 'react'
 import type { RemovalAnswer } from './config'
-import { type Library, libraryRemovalCost, removeLibrary } from './libraries'
+import {
+  type Library,
+  libraryRemovalCost,
+  noLibrarySentence,
+  removeLibrary,
+} from './libraries'
 import { sentenceOf } from './message'
 import { DeriveSection } from './ScanReport'
 
@@ -128,6 +136,14 @@ export function RemoveLibrary({
             )}{' '}
             and {count(cost.removed.notes, 'note', 'notes')}.
           </p>
+          {cost.removed.left_with_no_library.length > 0 && (
+            <p className="left-with-no-library">
+              {noLibrarySentence(
+                cost.removed.left_with_no_library,
+                'this library',
+              )}
+            </p>
+          )}
           <p className="irreversible">
             Nothing here can be undone from this screen. The files on disk are
             untouched; what goes is everything this library derived from them,

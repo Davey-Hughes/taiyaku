@@ -129,6 +129,7 @@ use axum::{
 };
 use rusqlite::OptionalExtension;
 use taiyaku_library::{
+    account::Access,
     hand,
     librarydoc::{self, LibraryDoc},
 };
@@ -149,7 +150,7 @@ pub(crate) enum NoAnswer {
     /// Unlike `curation::NoAnswer::Missing`, this carries no id: the four
     /// resolvers below (`work_by_slug`, `edition_owner`, `member_owner`,
     /// `works_in_series`) return it for a slug or id naming nothing *and*
-    /// for one naming material the caller's own `principal.roots` does not
+    /// for one naming material the caller's own `principal.access` does not
     /// grant (I8) — a hidden work, edition, member or series answers exactly
     /// as one that does not exist, the same way `library_api::work` already
     /// answers a `GET` for either. [`patch_series`] also reaches it directly
@@ -392,44 +393,38 @@ fn merge_worst_case(
 }
 
 /// The `AND EXISTS (...)` fragment restricting `work_alias`'s own rows to
-/// ones with a member under one of `roots` — empty for an unrestricted
-/// grant, the same "an empty grant sees everything" rule every clause in
-/// `taiyaku_library::browse` holds itself to (`Principal::roots`'s own doc
-/// comment states it for the account side of that same rule).
+/// ones with a member under one of `access`'s folders
+/// ([`Access::grant_clause`]).
 ///
 /// **I8.** `library_api::work` already resolves a slug through
-/// `principal.roots` (`taiyaku_library::browse::work`), so a work outside an
+/// `principal.access` (`taiyaku_library::browse::work`), so a work outside an
 /// administrator's restricted grant is a 404 on GET. [`work_by_slug`] and
 /// [`works_in_series`] reach this the same way — never `edition_owner` or
 /// `member_owner`, whose own join targets are `edition`/`member` rather than
 /// `work`, and which build their own, narrower clause inline.
-fn root_grant_clause(work_alias: &str, roots: &[i64]) -> String {
-    if roots.is_empty() {
-        return String::new();
-    }
-    let holes = std::iter::repeat_n("?", roots.len())
-        .collect::<Vec<_>>()
-        .join(",");
-    format!(
-        " AND EXISTS (SELECT 1 FROM edition re JOIN member rm ON rm.edition_id = re.id \
-         WHERE re.work_id = {work_alias}.id AND rm.root_id IN ({holes}))"
-    )
+fn root_grant_clause(work_alias: &str, access: &Access) -> String {
+    access.grant_clause(|holes| {
+        format!(
+            "EXISTS (SELECT 1 FROM edition re JOIN member rm ON rm.edition_id = re.id \
+             WHERE re.work_id = {work_alias}.id AND rm.root_id IN ({holes}))"
+        )
+    })
 }
 
 /// The numeric `work.id` behind a slug, or [`NoAnswer::Missing`] — for a slug
-/// naming nothing, and for one naming a work `roots` does not grant, exactly
+/// naming nothing, and for one naming a work `access` does not grant, exactly
 /// as [`taiyaku_library::browse::work`] answers `None` for both (I8).
 pub(crate) fn work_by_slug(
     conn: &rusqlite::Connection,
-    roots: &[i64],
+    access: &Access,
     slug: &str,
 ) -> Result<i64, NoAnswer> {
     let sql = format!(
         "SELECT w.id FROM work w WHERE w.slug = ?1{}",
-        root_grant_clause("w", roots)
+        root_grant_clause("w", access)
     );
     let mut params: Vec<&dyn rusqlite::ToSql> = vec![&slug];
-    params.extend(roots.iter().map(|r| r as &dyn rusqlite::ToSql));
+    params.extend(access.bound().iter().map(|r| r as &dyn rusqlite::ToSql));
     conn.query_row(&sql, params.as_slice(), |row| row.get(0))
         .optional()
         .map_err(|e| NoAnswer::Failed(format!("looking up work `{slug}`: {e}")))?
@@ -444,23 +439,18 @@ pub(crate) fn work_by_slug(
 /// second lookup to translate one into the other.
 fn edition_owner(
     conn: &rusqlite::Connection,
-    roots: &[i64],
+    access: &Access,
     id: i64,
 ) -> Result<(i64, String), NoAnswer> {
-    let clause = if roots.is_empty() {
-        String::new()
-    } else {
-        let holes = std::iter::repeat_n("?", roots.len())
-            .collect::<Vec<_>>()
-            .join(",");
+    let clause = access.grant_clause(|holes| {
         format!(
-            " AND EXISTS (SELECT 1 FROM member m \
+            "EXISTS (SELECT 1 FROM member m \
              WHERE m.edition_id = edition.id AND m.root_id IN ({holes}))"
         )
-    };
+    });
     let sql = format!("SELECT work_id, key FROM edition WHERE id = ?1{clause}");
     let mut params: Vec<&dyn rusqlite::ToSql> = vec![&id];
-    params.extend(roots.iter().map(|r| r as &dyn rusqlite::ToSql));
+    params.extend(access.bound().iter().map(|r| r as &dyn rusqlite::ToSql));
     conn.query_row(&sql, params.as_slice(), |row| {
         Ok((row.get(0)?, row.get(1)?))
     })
@@ -471,30 +461,23 @@ fn edition_owner(
 
 /// The work and content hash a `member.id` belongs to, or
 /// [`NoAnswer::Missing`] — for an id naming nothing, and for a member whose
-/// own `root_id` is not one of `roots` (I8). An imported member's `root_id`
+/// own `root_id` is not one of `access`'s folders (I8). An imported member's `root_id`
 /// is NULL, and `IN (…)` excludes NULL — [`browse::unfiled`]'s own doc
 /// comment states the identical rule for the read side: a restricted grant
 /// sees none of them.
 fn member_owner(
     conn: &rusqlite::Connection,
-    roots: &[i64],
+    access: &Access,
     id: i64,
 ) -> Result<(i64, String), NoAnswer> {
-    let clause = if roots.is_empty() {
-        String::new()
-    } else {
-        let holes = std::iter::repeat_n("?", roots.len())
-            .collect::<Vec<_>>()
-            .join(",");
-        format!(" AND member.root_id IN ({holes})")
-    };
+    let clause = access.grant_clause(|holes| format!("member.root_id IN ({holes})"));
     let sql = format!(
         "SELECT edition.work_id, member.sha256
            FROM member JOIN edition ON edition.id = member.edition_id
           WHERE member.id = ?1{clause}"
     );
     let mut params: Vec<&dyn rusqlite::ToSql> = vec![&id];
-    params.extend(roots.iter().map(|r| r as &dyn rusqlite::ToSql));
+    params.extend(access.bound().iter().map(|r| r as &dyn rusqlite::ToSql));
     conn.query_row(&sql, params.as_slice(), |row| {
         Ok((row.get(0)?, row.get(1)?))
     })
@@ -503,7 +486,7 @@ fn member_owner(
     .ok_or(NoAnswer::Missing)
 }
 
-/// Every work under `series_id` that `roots` grants, in a stable order —
+/// Every work under `series_id` that `access` grants, in a stable order —
 /// empty, rather than [`NoAnswer::Missing`], for a `series_id` naming
 /// nothing: [`patch_series`] is what decides that, since an empty answer
 /// here is exactly what a series that once existed and lost its last work
@@ -511,18 +494,18 @@ fn member_owner(
 /// grant looks like too — the same 404 either way.
 fn works_in_series(
     conn: &rusqlite::Connection,
-    roots: &[i64],
+    access: &Access,
     series_id: i64,
 ) -> Result<Vec<i64>, NoAnswer> {
     let sql = format!(
         "SELECT w.id FROM work w WHERE w.series_id = ?1{} ORDER BY w.id",
-        root_grant_clause("w", roots)
+        root_grant_clause("w", access)
     );
     let mut stmt = conn
         .prepare(&sql)
         .map_err(|e| NoAnswer::Failed(format!("preparing to list series {series_id}: {e}")))?;
     let mut params: Vec<&dyn rusqlite::ToSql> = vec![&series_id];
-    params.extend(roots.iter().map(|r| r as &dyn rusqlite::ToSql));
+    params.extend(access.bound().iter().map(|r| r as &dyn rusqlite::ToSql));
     let rows = stmt
         .query_map(params.as_slice(), |row| row.get(0))
         .map_err(|e| NoAnswer::Failed(format!("listing series {series_id}: {e}")))?;
@@ -535,14 +518,14 @@ fn works_in_series(
 /// with no series has no siblings to protect.
 fn siblings(
     conn: &rusqlite::Connection,
-    roots: &[i64],
+    access: &Access,
     series_id: Option<i64>,
     excluding: i64,
 ) -> Result<Vec<i64>, NoAnswer> {
     let Some(series_id) = series_id else {
         return Ok(Vec::new());
     };
-    Ok(works_in_series(conn, roots, series_id)?
+    Ok(works_in_series(conn, access, series_id)?
         .into_iter()
         .filter(|&id| id != excluding)
         .collect())
@@ -609,7 +592,7 @@ pub(crate) async fn patch_work(
     }
     let edited = tokio::task::spawn_blocking(move || -> Result<serde_json::Value, NoAnswer> {
         let conn = state.library.conn();
-        let work_id = work_by_slug(&conn, &principal.roots, &slug)?;
+        let work_id = work_by_slug(&conn, &principal.access, &slug)?;
         let touches_series = edit.series.is_some();
         let previous_series_id = if touches_series {
             series_of_work(&conn, work_id)?
@@ -674,11 +657,11 @@ pub(crate) async fn patch_work(
         // of them, never a subset.
         let new_series_id = series_of_work(&conn, work_id)?;
         let mut saves = vec![saved];
-        for sibling in siblings(&conn, &principal.roots, new_series_id, work_id)? {
+        for sibling in siblings(&conn, &principal.access, new_series_id, work_id)? {
             saves.push(hand::save(&conn, sibling).map_err(NoAnswer::Refused)?);
         }
         if previous_series_id != new_series_id {
-            for sibling in siblings(&conn, &principal.roots, previous_series_id, work_id)? {
+            for sibling in siblings(&conn, &principal.access, previous_series_id, work_id)? {
                 saves.push(hand::save(&conn, sibling).map_err(NoAnswer::Refused)?);
             }
         }
@@ -723,7 +706,7 @@ pub(crate) async fn patch_edition(
     }
     let edited = tokio::task::spawn_blocking(move || {
         let conn = state.library.conn();
-        let (work_id, key) = edition_owner(&conn, &principal.roots, id)?;
+        let (work_id, key) = edition_owner(&conn, &principal.access, id)?;
         edit_work(&conn, work_id, |doc| {
             let meta = doc.editions.entry(key).or_default();
             if let Some(label) = edit.label {
@@ -804,7 +787,7 @@ pub(crate) async fn patch_member(
     }
     let edited = tokio::task::spawn_blocking(move || {
         let conn = state.library.conn();
-        let (work_id, sha256) = member_owner(&conn, &principal.roots, id)?;
+        let (work_id, sha256) = member_owner(&conn, &principal.access, id)?;
         edit_work(&conn, work_id, |doc| {
             // Absent `chapter` leaves this member's entry alone — see
             // `MemberEdit`'s own doc comment. Only a present value replaces
@@ -936,7 +919,7 @@ pub(crate) async fn patch_series(
     }
     let edited = tokio::task::spawn_blocking(move || {
         let conn = state.library.conn();
-        let works = works_in_series(&conn, &principal.roots, id)?;
+        let works = works_in_series(&conn, &principal.access, id)?;
         if works.is_empty() {
             return Err(NoAnswer::Missing);
         }
@@ -976,12 +959,12 @@ pub(crate) async fn patch_series(
         // reach.
         //
         // **"The current membership" is `works_in_series`'s own answer —
-        // `principal.roots`-filtered (I8) — not the series' true membership.
+        // `principal.access`-filtered (I8) — not the series' true membership.
         // O86 was the gap between those two, and it is closed by the
         // permission model rather than by anything here.**
         //
         // `set_series_titles` above writes `series_title` for the whole series
-        // regardless of `principal.roots`, since that table is keyed
+        // regardless of `principal.access`, since that table is keyed
         // `(series_id, title)` and has no per-work column a grant could filter
         // on; this loop then re-saves only the works `works_in_series`
         // returned. So an administrator who could see part of a series once
@@ -991,7 +974,7 @@ pub(crate) async fn patch_series(
         // request from that same principal reaches those works.
         //
         // **There is no such administrator now.** `auth::Principal::from_account`
-        // drops an admin's `roots` outright — role dominates the other three
+        // gives an admin `Access::Every` outright — role dominates the other three
         // permission columns, which spec A2 listed side by side without
         // deciding — and these routes admit nobody else. `works_in_series`
         // therefore always answers the series' true membership here, and the

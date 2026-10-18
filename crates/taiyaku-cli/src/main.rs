@@ -216,6 +216,7 @@ fn print_usage() {
     println!(
         "       taiyaku library user grant-library|revoke-library <user> <library> [--db PATH]"
     );
+    println!("       taiyaku library user every-library <user> [--db PATH]");
     println!("       taiyaku library rules [--export | --import FILE] [--db PATH]");
     println!(
         "       taiyaku library proposals [--min-score N] [--accept ID] [--dismiss ID] \

@@ -308,9 +308,9 @@ pub(crate) async fn add_folder(
 /// `?dry_run=true` answer what that would cost. The body is
 /// `config_api::delete_root`'s, so one dialog's types read both.
 ///
-/// **The refusal is asked here, before either store call**, and answered 409
-/// in its words. Both store calls refuse too, as an error with nothing to
-/// tell it from a store fault.
+/// **A scan reserved on any of its folders refuses it**, 409, for the dry run
+/// as for the removal. A removal that leaves an account with no library goes
+/// ahead, and the body names those accounts.
 pub(crate) async fn delete_library(
     State(state): State<Arc<ServeState>>,
     Extension(principal): Extension<Principal>,
@@ -347,11 +347,6 @@ pub(crate) async fn delete_library(
             )));
         }
         let folders: Vec<i64> = folders.iter().map(|root| root.id).collect();
-        if let Some(refusal) =
-            scan::library_removal_refusal(&working, id).map_err(AdminAnswer::Failed)?
-        {
-            return Err(AdminAnswer::Refused(refusal));
-        }
         let (removal, derived) = if dry_run {
             scan::library_removal_cost(&working, id)
         } else {
@@ -555,6 +550,7 @@ fn moved_json(moved: &relocate::Moved) -> serde_json::Value {
         alignments_dropped,
         library_removed,
         grants_removed,
+        left_with_no_library,
     } = moved;
     serde_json::json!({
         "library_id": library_id,
@@ -568,6 +564,7 @@ fn moved_json(moved: &relocate::Moved) -> serde_json::Value {
         "alignments_dropped": alignments_dropped,
         "library_removed": library_removed,
         "grants_removed": grants_removed,
+        "left_with_no_library": left_with_no_library,
     })
 }
 

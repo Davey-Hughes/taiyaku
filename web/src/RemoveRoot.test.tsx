@@ -73,7 +73,13 @@ const derived = (over: Partial<config.Derived> = {}): config.Derived => ({
 })
 
 const answer = (over: Partial<config.Removal> = {}): config.RemovalAnswer => ({
-  removed: { works: 412, positions: 3, notes: 27, ...over },
+  removed: {
+    works: 412,
+    positions: 3,
+    notes: 27,
+    left_with_no_library: [],
+    ...over,
+  },
   derive: derived(),
   dry_run: true,
 })
@@ -153,6 +159,39 @@ describe('RemoveRoot', () => {
   it('says nothing about a library where other folders stay', async () => {
     const host = await settle()
     expect(host.querySelector('.last-folder')).toBeNull()
+  })
+
+  it('names the accounts left with no library under the counts, and still offers the confirm', async () => {
+    vi.mocked(config.removalCost).mockResolvedValue(
+      answer({ left_with_no_library: ['alice', 'bob'] }),
+    )
+    const host = await settle(vi.fn(), 'Manga')
+    expect(host.querySelector('.left-with-no-library')?.textContent).toBe(
+      "alice and bob can see only this folder's library. After this, they will see no library until an administrator grants one.",
+    )
+    expect(
+      host.querySelector('.last-folder + .left-with-no-library'),
+    ).not.toBeNull()
+    expect(press(host, 'Remove /srv/manga').disabled).toBe(false)
+    expect(host.querySelector('[role="alert"]')).toBeNull()
+  })
+
+  it('names the accounts the server lists, though this dialog was told of no last folder', async () => {
+    vi.mocked(config.removalCost).mockResolvedValue(
+      answer({ left_with_no_library: ['alice'] }),
+    )
+    const host = await settle()
+    expect(host.querySelector('.last-folder')).toBeNull()
+    expect(host.querySelector('.left-with-no-library')?.textContent).toBe(
+      "alice can see only this folder's library. After this, alice will see no library until an administrator grants one.",
+    )
+  })
+
+  it('names nobody where no account is left with no library', async () => {
+    const host = await settle(vi.fn(), 'Manga')
+    expect(host.querySelector('.last-folder')).not.toBeNull()
+    expect(host.querySelector('.left-with-no-library')).toBeNull()
+    expect(host.textContent).not.toContain('will see no library')
   })
 
   it('draws a zero rather than saying nothing about it', async () => {
@@ -348,7 +387,12 @@ describe('RemoveRoot', () => {
     // only `removed` put it straight back — on the one screen built around
     // naming what a pass did not do.
     vi.mocked(config.removalCost).mockResolvedValue({
-      removed: { works: 412, positions: 3, notes: 27 },
+      removed: {
+        works: 412,
+        positions: 3,
+        notes: 27,
+        left_with_no_library: [],
+      },
       derive: derived({
         unwritable_documents: ['/srv/manga/.taiyaku/locked.json'],
         lost_positions: 4,
@@ -383,7 +427,7 @@ describe('RemoveRoot', () => {
     // is the most destructive action in the product; it should not read like
     // a debug print.
     vi.mocked(config.removalCost).mockResolvedValue({
-      removed: { works: 1, positions: 1, notes: 1 },
+      removed: { works: 1, positions: 1, notes: 1, left_with_no_library: [] },
       derive: derived(),
       dry_run: true,
     })
@@ -394,7 +438,7 @@ describe('RemoveRoot', () => {
 
   it('still says zero in the plural', async () => {
     vi.mocked(config.removalCost).mockResolvedValue({
-      removed: { works: 0, positions: 0, notes: 0 },
+      removed: { works: 0, positions: 0, notes: 0, left_with_no_library: [] },
       derive: derived(),
       dry_run: true,
     })

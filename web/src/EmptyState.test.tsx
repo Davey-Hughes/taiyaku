@@ -33,6 +33,15 @@ describe('the empty states', () => {
     expect(host.textContent).not.toContain('library scan')
   })
 
+  it('tells an account shown no library that nothing is shared with it, and who can share one', () => {
+    const host = mount(<EmptyState kind="no-grant" />)
+    expect(host.querySelector('h2')?.textContent).toBe('No library shared')
+    expect(host.querySelector('p')?.textContent).toBe(
+      'No library has been shared with this account. An administrator can grant one in Configuration → Users.',
+    )
+    expect(host.textContent).not.toContain('library scan')
+  })
+
   it('names what was searched, since FTS5 on CJK can match nothing surprisingly', () => {
     const host = mount(<EmptyState kind="no-matches" query="五等分の花嫁" />)
     expect(host.textContent).toContain('五等分の花嫁')
@@ -121,6 +130,7 @@ describe('the empty states', () => {
   it('renders something for every kind — none of them is a null return', () => {
     for (const kind of [
       'no-libraries',
+      'no-grant',
       'no-library',
       'not-scanned',
       'no-matches',

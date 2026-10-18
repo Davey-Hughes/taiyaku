@@ -8,13 +8,12 @@
 //! # The filter, which is the reason this module exists rather than a handful
 //! # of queries at the call sites
 //!
-//! Every public function but [`filed_in`] takes `roots: &[i64]`, the folders of the
-//! caller's granted libraries, and **an empty slice applies no filter at all**.
-//! That is spec C1 §5.1's rule and it is counter-intuitive on purpose:
-//! `user_root` had no writer before spec C1, so every account in every
-//! existing library holds an empty grant, and any other reading of empty would
-//! have emptied every library the day migration 6 applied. `filed_in` reads no
-//! grant, and its doc says how its caller applies one.
+//! Every public function but [`filed_in`] takes the caller's [`Access`]:
+//! `Every` applies no filter, `Only` keeps what lies under its folders, and
+//! **`Only` with no folder keeps nothing** — its clause is a false literal, never
+//! a clause left out, so a grant emptied by any path cannot read as every
+//! library ([`Access::grant_clause`]). `filed_in` reads no grant, and its doc
+//! says how its caller applies one.
 //!
 //! The filter is applied to **editions**: an edition survives if its members
 //! do, and a work is listed if it keeps at least one edition. A member under
@@ -60,8 +59,9 @@
 //! statement**, and that is the whole rule: each function pushes its
 //! parameters in the order the fragments it splices appear in the SQL, reading
 //! left to right from the `SELECT` list. Every group a filter contributes is
-//! the folder list, and a narrowing to one library swaps that list (see
-//! [`library_scope`]) rather than adding a parameter of its own.
+//! the grant's folders ([`Access::bound`]), and a narrowing to one library
+//! swaps the grant for its share of that library (see [`library_scope`])
+//! rather than adding a parameter of its own.
 
 // **Imported rather than written `std::collections::HashMap` inline, and that
 // is load-bearing for the mutation harness.** `cargo-mutants` replaces a
@@ -74,6 +74,8 @@
 use std::collections::{HashMap, HashSet};
 
 use rusqlite::{Connection, OptionalExtension as _, params_from_iter};
+
+use crate::account::Access;
 
 #[cfg(test)]
 thread_local! {
@@ -264,8 +266,8 @@ pub struct Home {
 /// — so this bounds the three *recency* lists rather than the grid.
 const LIST_CAP: i64 = 20;
 
-/// The `AND` clause that restricts an edition to the caller's roots — empty
-/// when the grant is empty.
+/// The `AND` clause that restricts an edition to the caller's access (see
+/// [`Access::grant_clause`]).
 ///
 /// Built as a string because the number of parameters varies with the grant,
 /// which a prepared statement cannot express otherwise. The values are `i64`
@@ -277,8 +279,8 @@ const LIST_CAP: i64 = 20;
 /// `rm`, not `m`: two callers below already have a `member m` in scope, and an
 /// inner alias that shadows an outer one is legal SQL, correct here, and one
 /// edit away from silently meaning the other thing.
-fn root_clause(roots: &[i64]) -> String {
-    root_clause_for("e", roots)
+fn root_clause(access: &Access) -> String {
+    root_clause_for("e", access)
 }
 
 /// [`root_clause`], against an edition alias the caller names.
@@ -292,15 +294,13 @@ fn root_clause(roots: &[i64]) -> String {
 ///
 /// `alias` is a literal at every call site, never caller text — the same rule
 /// the `predicate` and `order` fragments below follow.
-fn root_clause_for(alias: &str, roots: &[i64]) -> String {
-    if roots.is_empty() {
-        return String::new();
-    }
-    let holes = holes(roots.len());
-    format!(
-        " AND EXISTS (SELECT 1 FROM member rm WHERE rm.edition_id = {alias}.id \
-         AND rm.root_id IN ({holes}))"
-    )
+fn root_clause_for(alias: &str, access: &Access) -> String {
+    access.grant_clause(|holes| {
+        format!(
+            "EXISTS (SELECT 1 FROM member rm WHERE rm.edition_id = {alias}.id \
+             AND rm.root_id IN ({holes}))"
+        )
+    })
 }
 
 /// `?,?,?` for an `IN` list of `n` values.
@@ -308,7 +308,8 @@ fn root_clause_for(alias: &str, roots: &[i64]) -> String {
 /// Spelled out inline in [`root_clause_for`], [`member_clause`] and [`status`]
 /// before O85 added two more `IN` lists; one place to read the rule the module
 /// header states, that every placeholder here is anonymous.
-fn holes(n: usize) -> String {
+/// [`Access::grant_clause`] writes its holes here too, for the same reason.
+pub(crate) fn holes(n: usize) -> String {
     std::iter::repeat_n("?", n).collect::<Vec<_>>().join(",")
 }
 
@@ -325,12 +326,8 @@ fn holes(n: usize) -> String {
 /// Reachable in the *default* configuration rather than in a corner: two roots
 /// added with `library scan --add` carry no `edition_key`, both fall back to
 /// `raw`, and derivation merges their members into one edition.
-fn member_clause(roots: &[i64]) -> String {
-    if roots.is_empty() {
-        return String::new();
-    }
-    let holes = holes(roots.len());
-    format!(" AND m.root_id IN ({holes})")
+fn member_clause(access: &Access) -> String {
+    access.grant_clause(|holes| format!("m.root_id IN ({holes})"))
 }
 
 /// One library a listing is narrowed to: its name, and the folders of it the
@@ -345,16 +342,16 @@ pub struct LibraryScope {
 /// The folders of `library` this caller may read, with the library's name.
 ///
 /// **`None` when there are none**, whether the library is outside the grant,
-/// holds no folder, or does not exist, and never a scope with no folders:
-/// every function here reads an empty folder list as no restriction at all,
-/// so a narrowing that matched nothing would list every library.
+/// holds no folder, or does not exist, and never a scope with no folders, so
+/// "nothing to list" has one answer: the listings here return early on it,
+/// and the OPDS library feed answers it with a 404.
 ///
 /// # Errors
 ///
 /// Returns an error if the query fails.
 pub fn library_scope(
     conn: &Connection,
-    roots: &[i64],
+    access: &Access,
     library: i64,
 ) -> Result<Option<LibraryScope>, String> {
     let mut stmt = prepare(
@@ -374,7 +371,7 @@ pub fn library_scope(
     let folders: Vec<i64> = rows
         .into_iter()
         .map(|(id, _)| id)
-        .filter(|id| roots.is_empty() || roots.contains(id))
+        .filter(|id| access.allows(*id))
         .collect();
     Ok(match name {
         Some(name) if !folders.is_empty() => Some(LibraryScope { name, folders }),
@@ -382,16 +379,16 @@ pub fn library_scope(
     })
 }
 
-/// The folders a listing reads: the grant, or the grant's share of
+/// The access a listing reads: the caller's, or only the caller's share of
 /// `library`'s folders. `None` means there is nothing to list.
 fn narrowed(
     conn: &Connection,
-    roots: &[i64],
+    access: &Access,
     library: Option<i64>,
-) -> Result<Option<Vec<i64>>, String> {
+) -> Result<Option<Access>, String> {
     match library {
-        None => Ok(Some(roots.to_vec())),
-        Some(id) => Ok(library_scope(conn, roots, id)?.map(|scope| scope.folders)),
+        None => Ok(Some(access.clone())),
+        Some(id) => Ok(library_scope(conn, access, id)?.map(|scope| Access::Only(scope.folders))),
     }
 }
 
@@ -405,16 +402,16 @@ fn narrowed(
 /// filter and the counts did not — was empty. The same screen contradicted
 /// itself, so [`aligned_clause`] and `alignments_of` now read one clause.
 ///
-/// A listing narrowed to one library reaches both sides through `roots`
-/// itself, which is that library's folders (see [`library_scope`]), so a pair
-/// half of which is under another library's folder is counted by nobody.
+/// A listing narrowed to one library reaches both sides through `access`
+/// itself, which is only that library's folders (see [`library_scope`]), so a
+/// pair half of which is under another library's folder is counted by nobody.
 ///
 /// `fe` and `te` rather than `e` twice: see [`root_clause_for`]. Contributes
-/// **two** parameter groups, the from side first, each of them the folder
-/// list.
-fn pair_clause(roots: &[i64]) -> String {
-    let from = root_clause_for("fe", roots);
-    let to = root_clause_for("te", roots);
+/// **two** parameter groups, the from side first, each of them
+/// [`Access::bound`].
+fn pair_clause(access: &Access) -> String {
+    let from = root_clause_for("fe", access);
+    let to = root_clause_for("te", access);
     format!(
         "EXISTS (SELECT 1 FROM edition fe \
                   WHERE fe.work_id = a.work_id AND fe.key = a.from_key{from}) \
@@ -436,8 +433,8 @@ fn pair_clause(roots: &[i64]) -> String {
 /// Requires `w` in scope, and contributes [`pair_clause`]'s two groups. The
 /// correlation `a.work_id = w.id` is written first so those groups still bind
 /// ahead of whatever the caller's own statement carries.
-fn aligned_clause(roots: &[i64]) -> String {
-    let pair = pair_clause(roots);
+fn aligned_clause(access: &Access) -> String {
+    let pair = pair_clause(access);
     format!("EXISTS (SELECT 1 FROM alignment a WHERE a.work_id = w.id AND {pair})")
 }
 
@@ -461,16 +458,15 @@ fn aligned_clause(roots: &[i64]) -> String {
 /// Returns an error if the query fails.
 pub fn series(
     conn: &Connection,
-    roots: &[i64],
+    access: &Access,
     user_id: i64,
     library: Option<i64>,
 ) -> Result<Vec<SeriesCard>, String> {
-    let Some(roots) = narrowed(conn, roots, library)? else {
+    let Some(access) = narrowed(conn, access, library)? else {
         return Ok(Vec::new());
     };
-    let roots = roots.as_slice();
-    let aligned = aligned_clause(roots);
-    let clause = root_clause(roots);
+    let aligned = aligned_clause(&access);
+    let clause = root_clause(&access);
     // Placeholders bind in text order, all anonymous — three groups of the
     // folder list and then `user_id`:
     //
@@ -512,7 +508,7 @@ pub fn series(
     );
     let mut params: Vec<i64> = Vec::new();
     for _ in 0..3 {
-        params.extend(roots.iter().copied());
+        params.extend(access.bound().iter().copied());
     }
     params.push(user_id);
 
@@ -565,14 +561,14 @@ pub fn series(
 /// then the `EXISTS` clause's roots, then `work_ids`. See the module header.
 fn editions_by_work(
     conn: &Connection,
-    roots: &[i64],
+    access: &Access,
     work_ids: &[i64],
 ) -> Result<HashMap<i64, Vec<EditionCard>>, String> {
     if work_ids.is_empty() {
         return Ok(HashMap::new());
     }
-    let joined = member_clause(roots);
-    let clause = root_clause(roots);
+    let joined = member_clause(access);
+    let clause = root_clause(access);
     let wanted = holes(work_ids.len());
     let sql = format!(
         "SELECT e.work_id, e.id, e.key, e.label, COUNT(m.id), COALESCE(SUM(m.pages), 0)
@@ -582,9 +578,12 @@ fn editions_by_work(
           GROUP BY e.id
           ORDER BY e.work_id, e.key"
     );
-    let mut params: Vec<&dyn rusqlite::ToSql> =
-        roots.iter().map(|r| r as &dyn rusqlite::ToSql).collect();
-    params.extend(roots.iter().map(|r| r as &dyn rusqlite::ToSql));
+    let mut params: Vec<&dyn rusqlite::ToSql> = access
+        .bound()
+        .iter()
+        .map(|r| r as &dyn rusqlite::ToSql)
+        .collect();
+    params.extend(access.bound().iter().map(|r| r as &dyn rusqlite::ToSql));
     params.extend(work_ids.iter().map(|w| w as &dyn rusqlite::ToSql));
 
     let mut stmt =
@@ -608,7 +607,7 @@ fn editions_by_work(
         .map_err(|e| format!("reading editions: {e}"))?;
 
     let edition_ids: Vec<i64> = rows.iter().map(|(_, id, _)| *id).collect();
-    let missing = missing_by_edition(conn, roots, &edition_ids)?;
+    let missing = missing_by_edition(conn, access, &edition_ids)?;
 
     let mut by_work: HashMap<i64, Vec<EditionCard>> = HashMap::new();
     for (work_id, edition_id, card) in rows {
@@ -643,7 +642,8 @@ fn editions_by_work(
 /// missing: nothing was ever walked for it, so there is no scan fact to read,
 /// the same reasoning `edition_formats` states for reporting no format.
 ///
-/// **Task 7b: takes `roots` like every other function in this module.**
+/// **Task 7b: takes the caller's access like every other function in this
+/// module.**
 /// Shipped without it, which is a grant leak `member_clause`'s own doc calls
 /// out as reachable in the default configuration: two roots added the
 /// ordinary way merge into one edition, and a caller granted only one of them
@@ -662,7 +662,7 @@ fn editions_by_work(
 /// Returns an error if SQLite fails.
 pub fn missing_by_edition(
     conn: &Connection,
-    roots: &[i64],
+    access: &Access,
     edition_ids: &[i64],
 ) -> Result<HashMap<i64, usize>, String> {
     if edition_ids.is_empty() {
@@ -671,7 +671,7 @@ pub fn missing_by_edition(
     // Parameter order is text order (the module header, and `alignments_of`'s
     // doc): the `IN` list's `?`s precede `{members}`'s anonymous `?`s in the
     // SQL text, matching the order `params` below pushes them in.
-    let members = member_clause(roots);
+    let members = member_clause(access);
     let wanted = holes(edition_ids.len());
     let sql = format!(
         "SELECT m.edition_id, COUNT(*)
@@ -684,7 +684,7 @@ pub fn missing_by_edition(
           GROUP BY m.edition_id"
     );
     let mut params: Vec<i64> = edition_ids.to_vec();
-    params.extend(roots.iter().copied());
+    params.extend(access.bound().iter().copied());
 
     let mut stmt =
         prepare(conn, &sql).map_err(|e| format!("preparing the missing-member count: {e}"))?;
@@ -713,10 +713,10 @@ pub fn missing_by_edition(
 /// answered it differently for as long as they were two pieces of SQL.
 fn alignments_of(
     conn: &Connection,
-    roots: &[i64],
+    access: &Access,
     work_id: i64,
 ) -> Result<Vec<AlignmentCard>, String> {
-    let pair = pair_clause(roots);
+    let pair = pair_clause(access);
     let sql = format!(
         "SELECT a.from_key, a.to_key, a.verdict, a.slots, a.paired
            FROM alignment a
@@ -724,8 +724,8 @@ fn alignments_of(
             AND a.work_id = ?
           ORDER BY a.from_key, a.to_key"
     );
-    let mut params: Vec<i64> = roots.to_vec();
-    params.extend(roots.iter().copied());
+    let mut params: Vec<i64> = access.bound().to_vec();
+    params.extend(access.bound().iter().copied());
     params.push(work_id);
 
     let mut stmt =
@@ -757,14 +757,14 @@ fn alignments_of(
 /// in text order.
 fn works_of(
     conn: &Connection,
-    roots: &[i64],
+    access: &Access,
     user_id: i64,
     predicate: &str,
     extra: &[&dyn rusqlite::ToSql],
     order: &str,
 ) -> Result<Vec<WorkCard>, String> {
-    let aligned = aligned_clause(roots);
-    let clause = root_clause(roots);
+    let aligned = aligned_clause(access);
+    let clause = root_clause(access);
     // Placeholders bind in text order, all anonymous: `aligned`'s two root
     // groups in the `SELECT` list, then the edition join's roots, then
     // `extra`. See the module header.
@@ -775,10 +775,13 @@ fn works_of(
           WHERE {predicate}
           ORDER BY {order}"
     );
-    let mut params: Vec<&dyn rusqlite::ToSql> =
-        roots.iter().map(|r| r as &dyn rusqlite::ToSql).collect();
-    params.extend(roots.iter().map(|r| r as &dyn rusqlite::ToSql));
-    params.extend(roots.iter().map(|r| r as &dyn rusqlite::ToSql));
+    let mut params: Vec<&dyn rusqlite::ToSql> = access
+        .bound()
+        .iter()
+        .map(|r| r as &dyn rusqlite::ToSql)
+        .collect();
+    params.extend(access.bound().iter().map(|r| r as &dyn rusqlite::ToSql));
+    params.extend(access.bound().iter().map(|r| r as &dyn rusqlite::ToSql));
     params.extend_from_slice(extra);
 
     let mut stmt = prepare(conn, &sql).map_err(|e| format!("preparing the work listing: {e}"))?;
@@ -801,7 +804,7 @@ fn works_of(
     // statements for any number of works, where this was one per work and one
     // more per edition of each.
     let ids: Vec<i64> = rows.iter().map(|(id, ..)| *id).collect();
-    let mut editions = editions_by_work(conn, roots, &ids)?;
+    let mut editions = editions_by_work(conn, access, &ids)?;
     let positions = opens_by_work(conn, user_id, &ids)?;
 
     Ok(rows
@@ -901,11 +904,11 @@ fn opens_by_work(
 /// Returns an error if the query fails.
 pub fn one_series(
     conn: &Connection,
-    roots: &[i64],
+    access: &Access,
     user_id: i64,
     id: i64,
 ) -> Result<Option<(SeriesCard, Vec<WorkCard>)>, String> {
-    let Some(card) = series(conn, roots, user_id, None)?
+    let Some(card) = series(conn, access, user_id, None)?
         .into_iter()
         .find(|c| c.id == id)
     else {
@@ -913,7 +916,7 @@ pub fn one_series(
     };
     let works = works_of(
         conn,
-        roots,
+        access,
         user_id,
         "w.series_id = ?",
         &[&id],
@@ -933,17 +936,17 @@ pub fn one_series(
 /// Returns an error if the query fails.
 pub fn work(
     conn: &Connection,
-    roots: &[i64],
+    access: &Access,
     user_id: i64,
     slug: &str,
 ) -> Result<Option<WorkDetail>, String> {
-    let Some(card) = works_of(conn, roots, user_id, "w.slug = ?", &[&slug], "w.id")?
+    let Some(card) = works_of(conn, access, user_id, "w.slug = ?", &[&slug], "w.id")?
         .into_iter()
         .next()
     else {
         return Ok(None);
     };
-    let alignments = alignments_of(conn, roots, card.id)?;
+    let alignments = alignments_of(conn, access, card.id)?;
     Ok(Some(WorkDetail { card, alignments }))
 }
 
@@ -969,16 +972,16 @@ pub fn work(
 /// Returns an error if the query fails.
 pub fn unfiled(
     conn: &Connection,
-    roots: &[i64],
+    access: &Access,
     user_id: i64,
     library: Option<i64>,
 ) -> Result<Vec<WorkCard>, String> {
-    let Some(roots) = narrowed(conn, roots, library)? else {
+    let Some(access) = narrowed(conn, access, library)? else {
         return Ok(Vec::new());
     };
     works_of(
         conn,
-        &roots,
+        &access,
         user_id,
         "w.series_id IS NULL",
         &[],
@@ -1063,7 +1066,7 @@ fn escape_like(q: &str) -> String {
 /// Returns an error if a query fails.
 pub fn search(
     conn: &Connection,
-    roots: &[i64],
+    access: &Access,
     user_id: i64,
     q: &str,
     library: Option<i64>,
@@ -1075,7 +1078,7 @@ pub fn search(
             unfiled: Vec::new(),
         });
     }
-    let Some(roots) = narrowed(conn, roots, library)? else {
+    let Some(access) = narrowed(conn, access, library)? else {
         return Ok(SearchResults {
             series: Vec::new(),
             unfiled: Vec::new(),
@@ -1090,14 +1093,14 @@ pub fn search(
     // queries, so a hit this caller may not see is dropped by exactly the same
     // code that decides every other screen — one filter, one place to read.
     let cap = usize::try_from(LIST_CAP).unwrap_or(usize::MAX);
-    let series_hits = series(conn, &roots, user_id, None)?
+    let series_hits = series(conn, &access, user_id, None)?
         .into_iter()
         .filter(|c| matched.contains(&c.id))
         .take(cap)
         .collect();
 
     let unfiled_ids = matching_unfiled_works(conn, &matcher, trimmed)?;
-    let unfiled_hits = unfiled(conn, &roots, user_id, None)?
+    let unfiled_hits = unfiled(conn, &access, user_id, None)?
         .into_iter()
         .filter(|w| unfiled_ids.contains(&w.id))
         .take(cap)
@@ -1236,21 +1239,20 @@ fn ids(conn: &Connection, sql: &str, needle: &str, doing: &str) -> Result<Vec<i6
 /// Returns an error if a query fails.
 pub fn home(
     conn: &Connection,
-    roots: &[i64],
+    access: &Access,
     user_id: i64,
     library: Option<i64>,
 ) -> Result<Home, String> {
-    let Some(roots) = narrowed(conn, roots, library)? else {
+    let Some(access) = narrowed(conn, access, library)? else {
         return Ok(Home {
             continuing: Vec::new(),
             added: Vec::new(),
             read: Vec::new(),
         });
     };
-    let roots = roots.as_slice();
     let continuing = works_of(
         conn,
-        roots,
+        &access,
         user_id,
         "w.id IN (SELECT work_id FROM progress
                    WHERE user_id = ? AND completed_at IS NULL)",
@@ -1259,7 +1261,7 @@ pub fn home(
     )?;
     let read = works_of(
         conn,
-        roots,
+        &access,
         user_id,
         "w.id IN (SELECT work_id FROM progress
                    WHERE user_id = ? AND completed_at IS NOT NULL)
@@ -1276,7 +1278,7 @@ pub fn home(
     // one statement for the whole set, which removes the per-row cost but not
     // this bound's reason**: it keeps the rows read proportional to what the
     // route returns rather than to the size of the library.
-    let added = works_of(conn, roots, user_id, "1 = 1", &[], "w.id DESC LIMIT 20")?;
+    let added = works_of(conn, &access, user_id, "1 = 1", &[], "w.id DESC LIMIT 20")?;
 
     let cap = usize::try_from(LIST_CAP).unwrap_or(usize::MAX);
     Ok(Home {
@@ -1308,7 +1310,7 @@ pub fn home(
 /// Returns an error if the query fails.
 pub fn cover_work(
     conn: &Connection,
-    roots: &[i64],
+    access: &Access,
     series_id: i64,
 ) -> Result<Option<CoverTarget>, String> {
     // **`.optional()`, because a series id that does not exist is not an
@@ -1331,11 +1333,11 @@ pub fn cover_work(
     // root must not be handed a cover generated from a root they cannot see —
     // so it is probed through the same visibility query rather than trusted.
     if let Some(chosen) = set
-        && let Some(target) = cover_target(conn, roots, series_id, Some(chosen))?
+        && let Some(target) = cover_target(conn, access, series_id, Some(chosen))?
     {
         return Ok(Some(target));
     }
-    cover_target(conn, roots, series_id, None)
+    cover_target(conn, access, series_id, None)
 }
 
 /// Which work and which of its editions a cover comes from.
@@ -1368,11 +1370,11 @@ pub struct CoverTarget {
 /// volume-less works answers the same row every time.
 fn cover_target(
     conn: &Connection,
-    roots: &[i64],
+    access: &Access,
     series_id: i64,
     wanted: Option<i64>,
 ) -> Result<Option<CoverTarget>, String> {
-    let joined = member_clause(roots);
+    let joined = member_clause(access);
     let pin = if wanted.is_some() {
         " AND w.id = ?"
     } else {
@@ -1389,7 +1391,7 @@ fn cover_target(
           LIMIT 1"
     );
     let mut params: Vec<&dyn rusqlite::ToSql> = vec![&series_id];
-    params.extend(roots.iter().map(|r| r as &dyn rusqlite::ToSql));
+    params.extend(access.bound().iter().map(|r| r as &dyn rusqlite::ToSql));
     if let Some(id) = wanted.as_ref() {
         params.push(id);
     }
@@ -1412,21 +1414,21 @@ fn cover_target(
 /// every page of every root. Browse hid the work and the bytes were served
 /// anyway.
 ///
-/// Answers `true` for an empty grant, like every other query here.
+/// Answers `true` for [`Access::Every`] without asking the store.
 ///
 /// # Errors
 ///
 /// Returns an error if the query fails.
 pub fn edition_visible(
     conn: &Connection,
-    roots: &[i64],
+    access: &Access,
     slug: &str,
     edition: &str,
 ) -> Result<bool, String> {
-    if roots.is_empty() {
+    if *access == Access::Every {
         return Ok(true);
     }
-    let joined = member_clause(roots);
+    let joined = member_clause(access);
     let sql = format!(
         "SELECT 1 FROM work w
            JOIN edition e ON e.work_id = w.id
@@ -1436,7 +1438,7 @@ pub fn edition_visible(
           LIMIT 1"
     );
     let mut params: Vec<&dyn rusqlite::ToSql> = vec![&slug, &edition];
-    params.extend(roots.iter().map(|r| r as &dyn rusqlite::ToSql));
+    params.extend(access.bound().iter().map(|r| r as &dyn rusqlite::ToSql));
     let found: Option<i64> = query_row(conn, &sql, params.as_slice(), |row| row.get(0))
         .optional()
         .map_err(|e| format!("checking visibility of `{slug}`/`{edition}`: {e}"))?;
@@ -1463,25 +1465,28 @@ pub fn edition_visible(
 /// entry mapping to an empty set — a caller that iterates the map's keys
 /// never sees such a work named.
 ///
-/// Answers every edition of every work for an empty grant, like every other
-/// query here — though a caller checking `roots.is_empty()` first, the way
-/// `routes::refuse_if_hidden` does, never reaches this call at all.
+/// Answers every edition of every work for [`Access::Every`] — though a
+/// caller checking for `Every` first, the way `routes::list_works` does, never
+/// reaches this call at all.
 ///
 /// # Errors
 ///
 /// Returns an error if the query fails.
 pub fn visible_editions(
     conn: &Connection,
-    roots: &[i64],
+    access: &Access,
 ) -> Result<HashMap<String, HashSet<String>>, String> {
-    let clause = root_clause(roots);
+    let clause = root_clause(access);
     let sql = format!(
         "SELECT DISTINCT w.slug, e.key
            FROM work w
            JOIN edition e ON e.work_id = w.id{clause}"
     );
-    let params: Vec<&dyn rusqlite::ToSql> =
-        roots.iter().map(|r| r as &dyn rusqlite::ToSql).collect();
+    let params: Vec<&dyn rusqlite::ToSql> = access
+        .bound()
+        .iter()
+        .map(|r| r as &dyn rusqlite::ToSql)
+        .collect();
     let mut stmt =
         prepare(conn, &sql).map_err(|e| format!("preparing the visible edition listing: {e}"))?;
     let rows = stmt
@@ -1541,23 +1546,23 @@ pub struct LibraryEntry {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Status {
     pub libraries: Vec<LibraryEntry>,
+    /// Whether the caller sees only the libraries it was granted. With no
+    /// library listed, this tells "none is shared with this account" from
+    /// "this server has no library", which are different screens.
+    pub restricted: bool,
 }
 
 /// The libraries this caller may see, each with whether it has been scanned,
 /// ordered by name (`COLLATE NOCASE`) and then by id.
 ///
-/// A library is listed when one of its folders is in `roots`, or, for an
-/// empty grant, when it has a folder at all.
+/// A library is listed when one of its folders is inside `access`, which for
+/// [`Access::Every`] is when it has a folder at all.
 ///
 /// # Errors
 ///
 /// Returns an error if the query fails.
-pub fn status(conn: &Connection, roots: &[i64]) -> Result<Status, String> {
-    let granted = if roots.is_empty() {
-        String::new()
-    } else {
-        format!(" AND r.id IN ({})", holes(roots.len()))
-    };
+pub fn status(conn: &Connection, access: &Access) -> Result<Status, String> {
+    let granted = access.grant_clause(|holes| format!("r.id IN ({holes})"));
     let sql = format!(
         "SELECT l.id, l.name,
                 EXISTS (SELECT 1 FROM dir_state d JOIN root dr ON dr.id = d.root_id
@@ -1569,7 +1574,7 @@ pub fn status(conn: &Connection, roots: &[i64]) -> Result<Status, String> {
     let mut stmt =
         prepare(conn, &sql).map_err(|e| format!("preparing the library listing: {e}"))?;
     let libraries = stmt
-        .query_map(params_from_iter(roots), |row| {
+        .query_map(params_from_iter(access.bound()), |row| {
             Ok(LibraryEntry {
                 id: row.get(0)?,
                 name: row.get(1)?,
@@ -1579,7 +1584,10 @@ pub fn status(conn: &Connection, roots: &[i64]) -> Result<Status, String> {
         .map_err(|e| format!("listing libraries: {e}"))?
         .collect::<rusqlite::Result<Vec<LibraryEntry>>>()
         .map_err(|e| format!("reading libraries: {e}"))?;
-    Ok(Status { libraries })
+    Ok(Status {
+        libraries,
+        restricted: matches!(access, Access::Only(_)),
+    })
 }
 
 #[cfg(test)]

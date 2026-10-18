@@ -20,6 +20,7 @@ async fn the_user_list_carries_sessions_keys_and_grants() {
         "can_download",
         "can_stream",
         "can_log_in",
+        "every_library",
         "sessions",
         "keys",
         "libraries",
@@ -375,11 +376,12 @@ async fn a_libraries_list_in_the_patch_body_writes_the_grants() {
     );
 }
 
-/// `[]` takes every grant away, which is unrestricted, and the answer says so
-/// by carrying an empty list; an absent key, in the same route, leaves the
-/// grants as they were.
+/// `[]` is no library (O220): the account then sees nothing at all, and the
+/// answer says so with an empty list and `every_library` false.
+/// `{"every_library": true}` lifts the limit, `[]` from there narrows it to
+/// none again, and an absent key changes nothing.
 #[tokio::test]
-async fn an_empty_libraries_list_revokes_everything_and_an_absent_key_changes_nothing() {
+async fn an_empty_libraries_list_leaves_no_library_and_every_library_lifts_the_limit() {
     let (router, state, _fixture) = test_support::router_over_a_single_scanned_work();
     let (library, _name) = the_fixture_library(&state);
     let id = a_reader(&router, &state).await;
@@ -387,51 +389,136 @@ async fn an_empty_libraries_list_revokes_everything_and_an_absent_key_changes_no
         let conn = state.library.conn();
         taiyaku_library::account::grant_library(&conn, id, library).expect("grants");
     }
+    assert!(
+        test_support::seen_by(&router, &state, id).await > 0,
+        "granted the fixture's library, the reader sees its work"
+    );
+    let patched = |body: serde_json::Value| {
+        let router = router.clone();
+        async move {
+            let response = send_json(
+                &router,
+                Method::PATCH,
+                &format!("/api/library/users/{id}"),
+                &body,
+            )
+            .await;
+            let status = response.status();
+            let text = test_support::body_string(response).await;
+            assert_eq!(status, StatusCode::OK, "{body}: {text}");
+            serde_json::from_str::<serde_json::Value>(&text).expect("json")
+        }
+    };
 
-    let response = send_json(
-        &router,
-        Method::PATCH,
-        &format!("/api/library/users/{id}"),
-        &serde_json::json!({ "can_stream": false }),
-    )
-    .await;
-    assert_eq!(response.status(), StatusCode::OK);
-    let body: serde_json::Value =
-        serde_json::from_str(&test_support::body_string(response).await).expect("json");
+    let body = patched(serde_json::json!({ "can_stream": false })).await;
     assert_eq!(
         body["user"]["libraries"].as_array().map(Vec::len),
         Some(1),
         "an absent key left the grant: {body}"
     );
+    assert_eq!(body["user"]["every_library"], false, "{body}");
+
+    let body = patched(serde_json::json!({ "libraries": [] })).await;
+    assert_eq!(body["user"]["libraries"], serde_json::json!([]), "{body}");
+    assert_eq!(
+        body["user"]["every_library"], false,
+        "an empty list is no library: {body}"
+    );
+    assert_eq!(
+        test_support::seen_by(&router, &state, id).await,
+        0,
+        "the reader sees nothing, not everything"
+    );
+
+    let body = patched(serde_json::json!({ "every_library": true })).await;
+    assert_eq!(body["user"]["every_library"], true, "{body}");
+    assert_eq!(body["user"]["libraries"], serde_json::json!([]), "{body}");
+    assert!(
+        test_support::seen_by(&router, &state, id).await > 0,
+        "lifted, the reader sees the fixture's work again"
+    );
+
+    // The card's "Only these" on an "Every library" account saves `[]` at
+    // once, and that must narrow the account to none, not leave it lifted.
+    let body = patched(serde_json::json!({ "libraries": [] })).await;
+    assert_eq!(body["user"]["every_library"], false, "{body}");
+    assert_eq!(body["user"]["libraries"], serde_json::json!([]), "{body}");
+    assert_eq!(
+        test_support::seen_by(&router, &state, id).await,
+        0,
+        "from every library, `[]` leaves the reader seeing nothing"
+    );
+}
+
+/// `every_library` is only ever `true`, and never sent beside `libraries`.
+/// Each is 400 naming the keys, and writes nothing else the body carried.
+#[tokio::test]
+async fn every_library_other_than_true_or_beside_libraries_is_refused() {
+    let (router, state, _fixture) = test_support::router_over_a_single_scanned_work();
+    let (library, _name) = the_fixture_library(&state);
+    let id = a_reader(&router, &state).await;
     {
+        let conn = state.library.conn();
+        taiyaku_library::account::grant_library(&conn, id, library).expect("grants");
+    }
+    let only_true = "`every_library` can only be `true`: send `libraries`";
+    let not_both = "send `every_library` or `libraries`, not both";
+
+    for (body, says) in [
+        (
+            serde_json::json!({ "can_stream": false, "every_library": false }),
+            only_true,
+        ),
+        (
+            serde_json::json!({ "can_stream": false, "every_library": null }),
+            only_true,
+        ),
+        (
+            serde_json::json!({ "can_stream": false, "every_library": "yes" }),
+            only_true,
+        ),
+        (
+            serde_json::json!({ "can_stream": false, "every_library": true, "libraries": [library] }),
+            not_both,
+        ),
+        (
+            serde_json::json!({ "can_stream": false, "every_library": true, "libraries": [] }),
+            not_both,
+        ),
+    ] {
+        let response = send_json(
+            &router,
+            Method::PATCH,
+            &format!("/api/library/users/{id}"),
+            &body,
+        )
+        .await;
+        let status = response.status();
+        let text = test_support::body_string(response).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}: {text}");
+        assert!(text.contains(says), "{body}: {text}");
+
         let conn = state.library.conn();
         assert_eq!(
             taiyaku_library::account::libraries_for(&conn, id).expect("reads"),
-            vec![library]
+            vec![library],
+            "{body}: the grant did not move"
+        );
+        assert!(
+            matches!(
+                taiyaku_library::account::access_for(&conn, id).expect("reads"),
+                taiyaku_library::account::Access::Only(_)
+            ),
+            "{body}: and the limit stands"
+        );
+        assert!(
+            taiyaku_library::account::by_id(&conn, id)
+                .expect("reads")
+                .expect("the account")
+                .can_stream,
+            "nothing else in {body} was written"
         );
     }
-
-    let response = send_json(
-        &router,
-        Method::PATCH,
-        &format!("/api/library/users/{id}"),
-        &serde_json::json!({ "libraries": [] }),
-    )
-    .await;
-    assert_eq!(response.status(), StatusCode::OK);
-    let body: serde_json::Value =
-        serde_json::from_str(&test_support::body_string(response).await).expect("json");
-    assert_eq!(
-        body["user"]["libraries"],
-        serde_json::json!([]),
-        "an empty list is an empty answer: {body}"
-    );
-    let conn = state.library.conn();
-    assert!(
-        taiyaku_library::account::libraries_for(&conn, id)
-            .expect("reads")
-            .is_empty()
-    );
 }
 
 /// `libraries` is an array of numbers; anything else is the caller's mistake
@@ -1164,50 +1251,6 @@ async fn a_libraries_list_naming_a_library_that_does_not_exist_is_the_callers_mi
                 .await
                 .contains("there is no library 999"),
             "the refusal names the library that is not there: {listed}"
-        );
-    }
-
-    let conn = state.library.conn();
-    assert!(
-        taiyaku_library::account::libraries_for(&conn, id)
-            .expect("reads")
-            .is_empty(),
-        "and no grant was written"
-    );
-}
-
-/// **A library with no folder is 409.** Granted, it would resolve to no
-/// folder and the account would be unrestricted, so the patch is refused with
-/// the library named and nothing is written.
-#[tokio::test]
-async fn a_libraries_list_naming_a_library_with_no_folder_is_refused_409() {
-    let (router, state, _fixture) = test_support::router_over_a_single_scanned_work();
-    let (library, _name) = the_fixture_library(&state);
-    let id = a_reader(&router, &state).await;
-    let empty: i64 = {
-        let conn = state.library.conn();
-        conn.execute("INSERT INTO library (name) VALUES ('Empty')", [])
-            .expect("a library with no folder, as only a hand can make one");
-        conn.last_insert_rowid()
-    };
-
-    for listed in [
-        serde_json::json!([empty]),
-        serde_json::json!([library, empty]),
-    ] {
-        let response = send_json(
-            &router,
-            Method::PATCH,
-            &format!("/api/library/users/{id}"),
-            &serde_json::json!({ "libraries": listed }),
-        )
-        .await;
-        assert_eq!(response.status(), StatusCode::CONFLICT, "{listed}");
-        let body: serde_json::Value =
-            serde_json::from_str(&test_support::body_string(response).await).expect("json");
-        assert_eq!(
-            body["error"], "the library `Empty` has no folder, so there is nothing in it to grant",
-            "{body}"
         );
     }
 

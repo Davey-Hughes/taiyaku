@@ -58,17 +58,18 @@ const sam: usersApi.User = {
   can_log_in: true,
   sessions: [],
   keys: [],
+  every_library: false,
   libraries: [{ id: 70, name: 'Manga' }],
 }
 
-async function shown(): Promise<HTMLElement> {
+async function shown(who: usersApi.User = sam): Promise<HTMLElement> {
   let host: HTMLElement | undefined
   await act(async () => {
     host = mount(
       <MemoryRouter>
         <UserRow
-          user={sam}
-          users={[sam]}
+          user={who}
+          users={[who]}
           libraries={[MANGA, COMICS]}
           actingAs={1}
           onChanged={vi.fn()}
@@ -100,7 +101,11 @@ const keys = (text: string) =>
 
 beforeEach(() => {
   vi.clearAllMocks()
-  vi.mocked(usersApi.patchUser).mockResolvedValue({ ...sam, libraries: [] })
+  vi.mocked(usersApi.patchUser).mockResolvedValue({
+    ...sam,
+    every_library: true,
+    libraries: [],
+  })
 })
 
 describe('the Users card under real keys', () => {
@@ -117,6 +122,17 @@ describe('the Users card under real keys', () => {
     })
   }
 
+  it('asks before an arrow lifts an account limited to no library', async () => {
+    const host = await shown({ ...sam, libraries: [] })
+    const only = radio(host, 'only')
+    await click(only)
+    await keys('{ArrowUp}')
+
+    expect(usersApi.patchUser).not.toHaveBeenCalled()
+    expect(host.querySelector('.lift-limit')).not.toBeNull()
+    expect(only.checked).toBe(true)
+  })
+
   it('lifts the limit from the keyboard: an arrow, Shift+Tab, Enter', async () => {
     const host = await shown()
     await click(radio(host, 'only'))
@@ -128,7 +144,7 @@ describe('the Users card under real keys', () => {
     expect(document.activeElement?.getAttribute('name')).toBe('lift-limit')
     expect(document.activeElement?.textContent).toBe('See every library')
     await keys('{Enter}')
-    expect(usersApi.patchUser).toHaveBeenCalledWith(2, { libraries: [] })
+    expect(usersApi.patchUser).toHaveBeenCalledWith(2, { every_library: true })
     expect(host.querySelector('.lift-limit')).toBeNull()
     expect(radio(host, 'every').checked).toBe(true)
     expect(document.activeElement).toBe(radio(host, 'every'))

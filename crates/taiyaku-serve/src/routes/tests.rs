@@ -502,8 +502,8 @@ async fn the_last_slot_of_a_spread_carrying_edition_is_in_range() {
 /// The extensions `auth::guard` leaves on a request from the fixture's
 /// account, for a handler called directly.
 ///
-/// **An empty grant, and that is chosen.** For a principal carrying roots,
-/// a handler that asks a grant waits on the library's mutex first for that
+/// **`Access::Every`, and that is chosen.** For a restricted principal, a
+/// handler that asks a grant waits on the library's mutex first for that
 /// check, and the watchdog measures a call's first wait, so it would measure
 /// the check rather than the closures this test is for.
 /// The check has its own test, `no_grant_check_stalls_the_runtime`, since O115.
@@ -517,7 +517,7 @@ fn as_the_fixture_account() -> axum::http::Extensions {
         can_download: true,
         can_stream: true,
         can_stamp: false,
-        roots: Vec::new(),
+        access: Access::Every,
     });
     extensions
 }
@@ -792,7 +792,7 @@ async fn no_works_route_stalls_the_runtime() {
 /// The extensions `auth::guard` leaves on a request from a reader granted
 /// `roots`, for a handler called directly: the fixture account as
 /// [`crate::test_support::grant_root`] leaves it, demoted, because an
-/// administrator's grant is always empty (O86).
+/// administrator's access is always `Every` (O86).
 fn as_a_reader_granted(roots: Vec<i64>) -> axum::http::Extensions {
     let mut extensions = axum::http::Extensions::new();
     extensions.insert(crate::auth::Principal {
@@ -801,7 +801,7 @@ fn as_a_reader_granted(roots: Vec<i64>) -> axum::http::Extensions {
         can_download: true,
         can_stream: true,
         can_stamp: false,
-        roots,
+        access: Access::Only(roots),
     });
     extensions
 }
@@ -850,6 +850,12 @@ async fn assert_answered(handler: &str, response: Response, expected: StatusCode
 /// check reached the library would be free for the wrong reason. Root 1 holds
 /// every member of the fixture's work. The stalls are collected rather than
 /// asserted one at a time, so a failing run names every handler that stalled.
+///
+/// **Then every handler again for a reader granted nothing, each asserted to
+/// answer 404.** `Only` with no folder is asked of the library like any other
+/// restricted access, so the watchdog still measures the check, and the 404
+/// is what that check answers. The writes are here because no other test
+/// sends one with this access.
 #[tokio::test(flavor = "current_thread")]
 async fn no_grant_check_stalls_the_runtime() {
     use crate::test_support::the_runtime_stalls_on;
@@ -909,7 +915,7 @@ async fn no_grant_check_stalls_the_runtime() {
 
     // This watchdog sees a call's first wait, which for a reader with roots is
     // `refuse_if_hidden`'s, so this re-proves only the grant check on the sized
-    // branch; `no_works_route_stalls_the_runtime`, with an empty grant, is the
+    // branch; `no_works_route_stalls_the_runtime`, with `Access::Every`, is the
     // test that sees past it into `serve_page`.
     let (stalled, response) = the_runtime_stalls_on(
         &library,
@@ -1114,10 +1120,187 @@ async fn no_grant_check_stalls_the_runtime() {
     }
     assert_answered("put_truth", response, StatusCode::OK).await;
 
+    // Every handler again, for a reader granted nothing. Each request is the
+    // one granted root 1 just answered, with the validators it holds now, so
+    // the 404 is the access's: the hidden-work refusal comes before any
+    // precondition or body is read.
+    let nothing = || as_a_reader_granted(Vec::new());
+    let sidecar_tag = sidecar_etag(
+        &state
+            .find_blocking("w")
+            .expect("the fixture work")
+            .sidecar(),
+    );
+    let response = get_notes(State(Arc::clone(&state)), granted(), w(), HeaderMap::new()).await;
+    let notes_tag = tag_of(&response);
+    let notes = crate::test_support::body_string(response).await;
+    let response = get_truth(State(Arc::clone(&state)), granted(), w(), HeaderMap::new()).await;
+    let truth_tag = tag_of(&response);
+    let truth = crate::test_support::body_string(response).await;
+    let position: crate::Progress =
+        serde_json::from_str(r#"{"edition":"raw","slot":1}"#).expect("a position");
+    type Call = std::pin::Pin<Box<dyn std::future::Future<Output = Response> + Send>>;
+    let calls: Vec<(&str, Call)> = vec![
+        (
+            "get_sidecar, granted nothing",
+            Box::pin(get_sidecar(
+                State(Arc::clone(&state)),
+                w(),
+                HeaderMap::new(),
+                nothing(),
+            )),
+        ),
+        (
+            "get_page, granted nothing",
+            Box::pin(get_page(
+                State(Arc::clone(&state)),
+                page(),
+                Query(PageQuery { w: None }),
+                HeaderMap::new(),
+                nothing(),
+            )),
+        ),
+        (
+            "get_thumb, granted nothing",
+            Box::pin(get_thumb(
+                State(Arc::clone(&state)),
+                page(),
+                Query(Vec::new()),
+                HeaderMap::new(),
+                nothing(),
+            )),
+        ),
+        (
+            "get_thumb at a cover size, granted nothing",
+            Box::pin(get_thumb(
+                State(Arc::clone(&state)),
+                page(),
+                Query(vec![("w".to_string(), "256".to_string())]),
+                HeaderMap::new(),
+                nothing(),
+            )),
+        ),
+        (
+            "patch_alignments, granted nothing",
+            Box::pin(patch_alignments(
+                State(Arc::clone(&state)),
+                w(),
+                with_tag(&sidecar_tag),
+                nothing(),
+                Bytes::from_static(br#"{"from":"raw","to":"en","a":"2","b":"1","note":"checked"}"#),
+            )),
+        ),
+        (
+            "opds::stream_page, granted nothing",
+            Box::pin(crate::opds::stream_page(
+                State(Arc::clone(&state)),
+                page(),
+                HeaderMap::new(),
+                nothing(),
+            )),
+        ),
+        (
+            "opds::cover, granted nothing",
+            Box::pin(crate::opds::cover(
+                State(Arc::clone(&state)),
+                edition(),
+                nothing(),
+            )),
+        ),
+        (
+            "download::edition, granted nothing",
+            Box::pin(crate::download::edition(
+                State(Arc::clone(&state)),
+                edition(),
+                HeaderMap::new(),
+                nothing(),
+            )),
+        ),
+        (
+            "download::member, granted nothing",
+            Box::pin(crate::download::member(
+                State(Arc::clone(&state)),
+                page(),
+                HeaderMap::new(),
+                nothing(),
+            )),
+        ),
+        (
+            "put_progress, granted nothing",
+            Box::pin(put_progress(
+                State(Arc::clone(&state)),
+                nothing(),
+                w(),
+                axum::Json(position),
+            )),
+        ),
+        (
+            "get_progress, granted nothing",
+            Box::pin(get_progress(State(Arc::clone(&state)), nothing(), w())),
+        ),
+        (
+            "get_notes, granted nothing",
+            Box::pin(get_notes(
+                State(Arc::clone(&state)),
+                nothing(),
+                w(),
+                HeaderMap::new(),
+            )),
+        ),
+        (
+            "put_notes, granted nothing",
+            Box::pin(put_notes(
+                State(Arc::clone(&state)),
+                nothing(),
+                w(),
+                with_tag(&notes_tag),
+                Bytes::from(notes),
+            )),
+        ),
+        (
+            "get_truth, granted nothing",
+            Box::pin(get_truth(
+                State(Arc::clone(&state)),
+                nothing(),
+                w(),
+                HeaderMap::new(),
+            )),
+        ),
+        (
+            "put_truth, granted nothing",
+            Box::pin(put_truth(
+                State(Arc::clone(&state)),
+                nothing(),
+                w(),
+                with_tag(&truth_tag),
+                Bytes::from(truth),
+            )),
+        ),
+    ];
+    let mut wrong = Vec::new();
+    for (handler, call) in calls {
+        let (stalled, response) = the_runtime_stalls_on(&library, call).await;
+        if stalled {
+            stalled_on.push(handler);
+        }
+        let status = response.status();
+        if status != StatusCode::NOT_FOUND {
+            // Lossy, because a page or a tile is not text.
+            let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+                .await
+                .expect("reads the body");
+            wrong.push(format!(
+                "{handler}: answered {status}, not 404: {}",
+                String::from_utf8_lossy(&bytes)
+            ));
+        }
+    }
+
     assert!(
         stalled_on.is_empty(),
-        "for a reader whose grant names roots, these asked it on the async worker: {stalled_on:?}"
+        "these asked the library on the async worker: {stalled_on:?}"
     );
+    assert!(wrong.is_empty(), "{wrong:#?}");
 }
 
 /// **Neither OPDS feed asks a grant on the async worker** — O119: the property
@@ -1128,13 +1311,16 @@ async fn no_grant_check_stalls_the_runtime() {
 /// `opds::visible_editions_by_work`, and `opds::work_feed` through an inline
 /// `browse::work`, each taking `state.library.conn()` in the handler, on the
 /// async worker. `docs/notes.md`, "O115", "Found beside it, not changed",
-/// measured both stalling for a reader granted root 1 and neither for an empty
-/// grant.
+/// measured both stalling for a reader granted root 1 and neither for an
+/// unrestricted one.
 ///
-/// **Both grants, because they take different paths**: one that names roots is
-/// asked of the library, and an empty one is answered without it. Every call is
-/// asserted to answer 200, so neither feed is free for having been refused, and
-/// the stalls are collected so a failing run names every call that stalled.
+/// **Each access, because they take different paths**: one that names
+/// folders is asked of the library, and `Every` is answered without it.
+/// `Only` with no folder is asked of the library too, and must find nothing
+/// there: the works feed answers 200 listing no work, and the work's feed the
+/// 404 a work outside the grant gets. Every other call is asserted to answer
+/// 200, so neither feed is free for having been refused, and the stalls are
+/// collected so a failing run names every call that stalled.
 /// The watchdog sees a call's first wait on the library's mutex, and in both
 /// feeds that wait is the grant check: nothing after it takes the library.
 #[tokio::test(flavor = "current_thread")]
@@ -1146,20 +1332,24 @@ async fn neither_opds_feed_asks_a_grant_on_the_async_worker() {
     let library = Arc::clone(&state.library);
     let mut stalled_on = Vec::new();
 
-    for (grant, roots) in [("granted root 1", vec![1]), ("an empty grant", Vec::new())] {
+    for (grant, principal, sees) in [
+        ("granted root 1", as_a_reader_granted(vec![1]), true),
+        ("every library", as_the_fixture_account(), true),
+        ("granted nothing", as_a_reader_granted(Vec::new()), false),
+    ] {
         let call = format!("opds::works, {grant}");
         let (stalled, response) = the_runtime_stalls_on(
             &library,
-            crate::opds::works(
-                State(Arc::clone(&state)),
-                as_a_reader_granted(roots.clone()),
-            ),
+            crate::opds::works(State(Arc::clone(&state)), principal.clone()),
         )
         .await;
         if stalled {
             stalled_on.push(call.clone());
         }
-        assert_answered(&call, response, StatusCode::OK).await;
+        let status = response.status();
+        let body = crate::test_support::body_string(response).await;
+        assert_eq!(status, StatusCode::OK, "{call}: {body}");
+        assert_eq!(body.contains("<entry>"), sees, "{call}: {body}");
 
         let call = format!("opds::work_feed, {grant}");
         let (stalled, response) = the_runtime_stalls_on(
@@ -1167,14 +1357,19 @@ async fn neither_opds_feed_asks_a_grant_on_the_async_worker() {
             crate::opds::work_feed(
                 State(Arc::clone(&state)),
                 AxPath("w".to_string()),
-                as_a_reader_granted(roots),
+                principal,
             ),
         )
         .await;
         if stalled {
             stalled_on.push(call.clone());
         }
-        assert_answered(&call, response, StatusCode::OK).await;
+        let expected = if sees {
+            StatusCode::OK
+        } else {
+            StatusCode::NOT_FOUND
+        };
+        assert_answered(&call, response, expected).await;
     }
 
     assert!(
@@ -3871,7 +4066,7 @@ async fn correcting_a_work_with_no_document_writes_rows_and_no_file() {
 // ---------------------------------------------------------------------------
 // The grant gap: `list_works` (`GET /api/works`) applied none of spec C1's
 // per-root visibility — it iterates `state.works` and returns every work the
-// server holds, with no reference to `Principal.roots` at all. The
+// server holds, with no reference to `Principal.access` at all. The
 // whole-branch review closed the equivalent hole on the page routes
 // (`refuse_if_hidden`) and commit 5d41bd6 closed it on the OPDS mirror
 // (`opds::visible_slugs`); this is the last route in that class.
@@ -3987,6 +4182,245 @@ async fn the_work_list_does_not_name_a_work_outside_the_grant() {
         !body.contains("Hidden Work"),
         "a work outside the grant must not be named in the work list: {body}"
     );
+}
+
+/// How [`an_account_granted_only_a_library_with_no_folder_sees_nothing`]
+/// counts what a route's answer shows.
+enum Shows {
+    /// The elements of a JSON body's lists: the body itself when it is one,
+    /// or every list among an object's fields.
+    Lists,
+    /// An OPDS feed's entries.
+    Entries,
+    /// One thing: a page, a tile, a document, a download, a redirect, or the
+    /// 204 that says the work is there and holds no position.
+    Itself,
+}
+
+/// What `response` shows of the library, counted as `shows` says. The 404 a
+/// work outside the grant gets shows nothing. Any other status panics, so a
+/// refusal for some other reason cannot pass as seeing nothing.
+async fn what_it_shows(call: &str, response: Response, shows: &Shows) -> usize {
+    let status = response.status();
+    // Lossy, because a page or a tile is not text.
+    let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+        .await
+        .expect("reads the body");
+    let body = String::from_utf8_lossy(&bytes);
+    match status {
+        StatusCode::NOT_FOUND => 0,
+        StatusCode::OK | StatusCode::NO_CONTENT | StatusCode::TEMPORARY_REDIRECT => match shows {
+            Shows::Itself => 1,
+            Shows::Entries => body.matches("<entry>").count(),
+            Shows::Lists => {
+                let json: serde_json::Value =
+                    serde_json::from_str(&body).unwrap_or_else(|e| panic!("{call}: {e}: {body}"));
+                let length = |value: &serde_json::Value| value.as_array().map_or(0, Vec::len);
+                match &json {
+                    serde_json::Value::Object(fields) => fields.values().map(length).sum(),
+                    list => length(list),
+                }
+            }
+        },
+        other => panic!("{call} answered {other}: {body}"),
+    }
+}
+
+/// The `GET` [`an_account_granted_only_a_library_with_no_folder_sees_nothing`]
+/// sends for a route [`grant_postures`] says reads the grant, and how it counts
+/// the answer, or `None` for the one such route a `GET` cannot ask.
+///
+/// **Classified by the path's shape rather than listed**, so a route added to
+/// the table is driven with no edit here: an `/api/` path with no parameter is
+/// a listing, an OPDS path below no edition is a feed, and any other path
+/// names one thing. A route the shape misreads fails one of the test's two
+/// passes, a route a `GET` cannot ask answers 405 and fails both, and a path
+/// parameter this does not fill panics, naming the route.
+fn get_for(pattern: &str, held_library: i64) -> Option<(String, Shows)> {
+    // `PATCH` alone. `no_grant_check_stalls_the_runtime` sends it for a
+    // reader granted nothing.
+    if pattern == "/api/works/{work}/alignments" {
+        return None;
+    }
+    let shows = if pattern.starts_with("/opds/") && !pattern.contains("{edition}") {
+        Shows::Entries
+    } else if pattern.starts_with("/api/") && !pattern.contains('{') {
+        Shows::Lists
+    } else {
+        Shows::Itself
+    };
+    let uri = pattern
+        .replace("{work}", "w")
+        .replace("{slug}", "w")
+        .replace("{edition}", "raw")
+        .replace("{index}", "0")
+        .replace("{ordinal}", "0")
+        .replace("{number}", "1")
+        .replace("{id}", "1")
+        .replace("{library}", &held_library.to_string());
+    assert!(
+        !uri.contains('{'),
+        "{pattern}: a path parameter this test does not fill"
+    );
+    // The search answers a query, and `W` is the fixture work's title.
+    let uri = if pattern == "/api/library/search" {
+        format!("{uri}?q=W")
+    } else {
+        uri
+    };
+    Some((uri, shows))
+}
+
+/// **An account granted only a library with no folder sees nothing**, through
+/// the real guard, on every `GET` route [`grant_postures`] says reads the
+/// grant (spec §3), each asked as [`get_for`] says. The grant is written by
+/// hand, as `account::tests` writes it, and `access_for` reads it as
+/// `Access::Only` with no folder, which the guard puts on every request.
+///
+/// **The same requests from the same account granted the work's own library
+/// show the work.** That pass is what shows each empty answer is the access's,
+/// not a fixture holding nothing or a broken route, and it takes the same
+/// restricted path, so neither pass is answered by `Every`'s shortcut in
+/// `on_the_grant`.
+#[tokio::test]
+async fn an_account_granted_only_a_library_with_no_folder_sees_nothing() {
+    let (state, _fixture) = crate::test_support::state_whose_grant_waits_on_the_library();
+    let held_library: i64 = {
+        let conn = state.library.conn();
+        conn.execute_batch(
+            "INSERT INTO series (id, sort_title) VALUES (1, 'W');
+             INSERT INTO series_title (series_id, title, kind, is_primary)
+             VALUES (1, 'W', 'english', 1);
+             UPDATE work SET series_id = 1, volume = 1.0,
+                             library_id = (SELECT library_id FROM root WHERE id = 1);
+             INSERT INTO library (id, name) VALUES (90, 'Folderless');",
+        )
+        .expect("files the work under a series and a library, beside one with no folder");
+        crate::test_support::grant_root(&conn, 1);
+        conn.query_row("SELECT library_id FROM root WHERE id = 1", [], |r| r.get(0))
+            .expect("the held folder's library")
+    };
+    let router =
+        crate::test_support::authenticating(build_router(Arc::clone(&state)), &state.library);
+    let routes: Vec<(String, Shows)> = grant_postures()
+        .into_iter()
+        .filter(|(_, posture)| !matches!(posture, GrantPosture::GrantIndependent { .. }))
+        .filter_map(|(pattern, _)| get_for(pattern, held_library))
+        .collect();
+
+    let mut wrong = Vec::new();
+    for (grant, sees) in [
+        ("granted the work's library", true),
+        ("granted only a library with no folder", false),
+    ] {
+        if !sees {
+            state
+                .library
+                .conn()
+                .execute_batch(
+                    "INSERT INTO user_library (user_id, library_id) VALUES (1, 90);
+                     DELETE FROM user_library WHERE user_id = 1 AND library_id <> 90;",
+                )
+                .expect("leaves the account granted the folderless library alone");
+        }
+        for (uri, shows) in &routes {
+            let response = crate::test_support::get(&router, uri).await;
+            let shown = what_it_shows(uri, response, shows).await;
+            if (shown > 0) != sees {
+                wrong.push(format!("GET {uri}, {grant}: shows {shown}"));
+            }
+        }
+    }
+    // Collected, so a failing run names every route that answered wrongly.
+    assert!(wrong.is_empty(), "{wrong:#?}");
+}
+
+/// **A request with no principal sees nothing.** The guard puts a principal on
+/// every guarded route or refuses the request, so a handler without one was
+/// reached some other way, a direct call or a routing mistake, and must see
+/// nothing rather than everything. The handlers that read the access list
+/// nothing, one library's feed answers the 404 an ungranted library gets, and
+/// a handler that asks the grant answers 401.
+///
+/// **The same calls as the fixture's administrator show the work**, so each
+/// empty answer is the missing principal's.
+#[tokio::test]
+async fn a_request_with_no_principal_sees_nothing() {
+    use axum::extract::{Path as AxPath, State};
+    use axum::http::HeaderMap;
+
+    let (state, _fixture) = crate::test_support::state_whose_grant_waits_on_the_library();
+    let held_library: i64 = state
+        .library
+        .conn()
+        .query_row("SELECT library_id FROM root WHERE id = 1", [], |r| r.get(0))
+        .expect("the held folder's library");
+
+    let mut wrong = Vec::new();
+    for (who, extensions, sees) in [
+        ("as the administrator", as_the_fixture_account(), true),
+        ("with no principal", axum::http::Extensions::new(), false),
+    ] {
+        let shown = [
+            (
+                "list_works",
+                what_it_shows(
+                    "list_works",
+                    list_works(State(Arc::clone(&state)), extensions.clone()).await,
+                    &Shows::Lists,
+                )
+                .await,
+            ),
+            (
+                "opds::libraries",
+                what_it_shows(
+                    "opds::libraries",
+                    crate::opds::libraries(State(Arc::clone(&state)), extensions.clone()).await,
+                    &Shows::Entries,
+                )
+                .await,
+            ),
+            (
+                "opds::library_works",
+                what_it_shows(
+                    "opds::library_works",
+                    crate::opds::library_works(
+                        State(Arc::clone(&state)),
+                        AxPath(held_library),
+                        extensions.clone(),
+                    )
+                    .await,
+                    &Shows::Entries,
+                )
+                .await,
+            ),
+        ];
+        for (handler, shown) in shown {
+            if (shown > 0) != sees {
+                wrong.push(format!("{handler}, {who}: shows {shown}"));
+            }
+        }
+
+        let response = get_sidecar(
+            State(Arc::clone(&state)),
+            AxPath("w".to_string()),
+            HeaderMap::new(),
+            extensions,
+        )
+        .await;
+        let expected = if sees {
+            StatusCode::OK
+        } else {
+            StatusCode::UNAUTHORIZED
+        };
+        if response.status() != expected {
+            wrong.push(format!(
+                "get_sidecar, {who}: answered {}, not {expected}",
+                response.status()
+            ));
+        }
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
 }
 
 /// What migration 15 leaves where a work spanned two folders, read by a
@@ -4295,7 +4729,7 @@ fn can_stream_is_true_when_no_principal_is_present_and_follows_the_flag_when_one
         can_download: true,
         can_stream: true,
         can_stamp: false,
-        roots: Vec::new(),
+        access: Access::Every,
     });
     assert!(can_stream(&may));
 
@@ -4306,7 +4740,7 @@ fn can_stream_is_true_when_no_principal_is_present_and_follows_the_flag_when_one
         can_download: true,
         can_stream: false,
         can_stamp: false,
-        roots: Vec::new(),
+        access: Access::Every,
     });
     assert!(!can_stream(&may_not));
     assert!(
@@ -4739,15 +5173,9 @@ async fn progress_notes_and_truth_answer_a_hidden_work_as_a_slug_no_work_holds()
         assert_eq!(status, StatusCode::NOT_FOUND, "{}: {body}", asked.handler);
     }
 
-    let lifted = state
-        .library
-        .conn()
-        .execute("DELETE FROM user_library WHERE user_id = 1", [])
+    let lifted = taiyaku_library::account::set_every_library(&state.library.conn(), 1)
         .expect("lifts the grant");
-    assert_eq!(
-        lifted, 1,
-        "the one grant, which leaves the account no limits"
-    );
+    assert!(lifted, "the account sees every library from here");
 
     let read = |document: &str| format!("/api/works/{hidden}/{document}");
     let (status, body) = answered(&router, Method::GET, &read("progress"), None, None).await;
@@ -4896,8 +5324,8 @@ async fn every_route_naming_a_work_answers_a_hidden_one_as_a_slug_no_work_holds(
 /// is narrowed, are still in the store, and are served again when the grant
 /// is widened.
 ///
-/// Narrowed means granted `Other` instead of `Shelf`. Deleting the grant
-/// outright would leave an account with no limits, which sees every work.
+/// Narrowed means granted `Other` instead of `Shelf`, so the account still
+/// sees a library and is refused only what the grant leaves out.
 #[tokio::test]
 async fn a_position_and_a_note_outlive_the_grant_and_come_back_with_it() {
     use axum::http::Method;
@@ -5001,6 +5429,19 @@ async fn a_document_that_does_not_parse_is_refused_before_the_grant_is_asked() {
     };
     let granted = slug_of("First Folder Work");
     let hidden = slug_of("Other Library Work");
+    let (status, body) = answered(
+        &router,
+        Method::GET,
+        &format!("/api/works/{hidden}/notes"),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "the fixture: `{hidden}` is hidden from the account: {body}"
+    );
 
     for document in ["notes", "truth"] {
         let mut said = Vec::new();
@@ -5203,7 +5644,7 @@ async fn a_new_note_on_an_edition_outside_the_grant_is_refused_and_a_held_one_is
 ///
 /// Restricted, the read names `en` and not `gone`: the visible set holds only
 /// editions the work has now, so a key outside it is left out with the rest.
-/// Unrestricted, once the account's grant rows are deleted, the same read
+/// Unrestricted, once the account is set to every library, the same read
 /// names `gone` as well, as it always has.
 #[tokio::test]
 async fn a_position_on_an_edition_the_work_no_longer_has_is_sent_only_to_an_account_with_no_limits()
@@ -5242,12 +5683,9 @@ async fn a_position_on_an_edition_the_work_no_longer_has_is_sent_only_to_an_acco
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(named(&body), ["en"], "restricted: {body}");
 
-    let removed = state
-        .library
-        .conn()
-        .execute("DELETE FROM user_library WHERE user_id = 1", [])
+    let lifted = taiyaku_library::account::set_every_library(&state.library.conn(), 1)
         .expect("lifts the grant");
-    assert_eq!(removed, 1, "the account's grant rows");
+    assert!(lifted, "the account sees every library from here");
 
     let (status, body) = answered(&router, Method::GET, &uri, None, None).await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -5470,11 +5908,7 @@ async fn a_notes_body_naming_another_work_is_refused_and_stored_under_neither() 
         "a body naming another work, sent to a work the account may see"
     );
 
-    state
-        .library
-        .conn()
-        .execute("DELETE FROM user_library WHERE user_id = 1", [])
-        .expect("lifts the grant");
+    taiyaku_library::account::set_every_library(&state.library.conn(), 1).expect("lifts the grant");
     for uri in [&granted_notes, &hidden_notes] {
         let (status, text) = answered(&router, Method::GET, uri, None, None).await;
         assert_eq!(status, StatusCode::OK, "GET {uri}: {text}");

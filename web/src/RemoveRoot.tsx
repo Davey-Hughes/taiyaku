@@ -18,6 +18,11 @@
  * component exists to prevent, and "the dry run failed" is exactly when a
  * person is most likely to press on regardless.
  *
+ * **An account whose only grant is the folder's library is named beneath
+ * the counts**, where removing the folder removes the library: it will see no
+ * library afterwards, which nothing else here says. The confirm is still
+ * offered.
+ *
  * **Zero is drawn.** "This removes 0 works, 0 in-progress positions and 0
  * notes" is a different sentence from a dialog that mentions no counts, and
  * the second reads as "counts unavailable" to whoever is about to press the
@@ -39,6 +44,7 @@ import {
   removeRoot,
   type Root,
 } from './config'
+import { noLibrarySentence } from './libraries'
 import { DeriveSection } from './ScanReport'
 import { sentenceOf } from './message'
 
@@ -166,6 +172,14 @@ export function RemoveRoot({
             <p className="last-folder">
               This is the only folder of the library {lastOf}, so removing it
               removes the library too.
+            </p>
+          )}
+          {cost.removed.left_with_no_library.length > 0 && (
+            <p className="left-with-no-library">
+              {noLibrarySentence(
+                cost.removed.left_with_no_library,
+                "this folder's library",
+              )}
             </p>
           )}
           <p className="irreversible">

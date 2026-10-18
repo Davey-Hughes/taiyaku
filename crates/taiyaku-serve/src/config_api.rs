@@ -1183,10 +1183,9 @@ pub(crate) enum AdminAnswer {
     /// asked for wrongly.
     Unusable(String),
     /// Well-formed, names a real folder or library, and still not allowed —
-    /// 409: in [`scan::removal_refusal`]'s words, the folder is the last of a
-    /// library that is some account's only grant; in
-    /// [`crate::scan_jobs::removal_waits_for`]'s, a scan of it is reserved; in
-    /// [`crate::scan_jobs::reserve`]'s, a scan would be a second.
+    /// 409: in [`crate::scan_jobs::removal_waits_for`]'s words, a scan of it
+    /// is reserved; in [`crate::scan_jobs::reserve`]'s, a scan would be a
+    /// second.
     Refused(String),
     /// A store failure — 500: one inside [`scan::update_root`] or
     /// [`scan::remove_root`], say.
@@ -1313,11 +1312,24 @@ fn root_patch_from_json(body: &serde_json::Value) -> Result<scan::RootPatch, Str
 
 /// What one [`scan::Removal`] costs, over the wire — [`delete_root`]'s body,
 /// whether `dry_run` asked for a rehearsal or the real thing.
+///
+/// `left_with_no_library` is sent in the rehearsal as in the removal, empty
+/// or not, so the dialog names those accounts before anything is removed.
+///
+/// Destructured with no `..`, so that a field added to it is a compile error
+/// here and not a count the dialog never draws.
 pub(crate) fn removal_json(removal: &scan::Removal) -> serde_json::Value {
+    let scan::Removal {
+        works,
+        positions,
+        notes,
+        left_with_no_library,
+    } = removal;
     serde_json::json!({
-        "works": removal.works,
-        "positions": removal.positions,
-        "notes": removal.notes,
+        "works": works,
+        "positions": positions,
+        "notes": notes,
+        "left_with_no_library": left_with_no_library,
     })
 }
 
@@ -1878,12 +1890,11 @@ pub(crate) struct DryRunQuery {
 /// [`root_exists`]'s own doc comment says why: neither `removal_cost` nor
 /// `remove_root` reports "no such root" on its own.
 ///
-/// **A removal [`scan::removal_refusal`] refuses is a 409 in its words, for
-/// the dry run and the removal alike**, asked here before either store call.
-/// Both store calls refuse it too, as an error with nothing to tell it from
-/// a store fault, which this route would answer 500.
+/// **A removal that leaves an account with no library goes ahead**, and its
+/// body names those accounts (`left_with_no_library`), for the dry run as for
+/// the removal.
 ///
-/// **A removal is also refused, 409, while a scan of the folder is reserved**,
+/// **A removal is refused, 409, while a scan of the folder is reserved**,
 /// for the dry run and the removal alike, in
 /// [`crate::scan_jobs::removal_waits_for`]'s words. The registry is asked when
 /// the request arrives, and a scan can be reserved after that and before the
@@ -1939,9 +1950,6 @@ pub(crate) async fn delete_root(
                 &root,
                 "the folder",
             )));
-        }
-        if let Some(refusal) = scan::removal_refusal(&working, id).map_err(AdminAnswer::Failed)? {
-            return Err(AdminAnswer::Refused(refusal));
         }
         if dry_run {
             scan::removal_cost(&working, id).map_err(AdminAnswer::Failed)

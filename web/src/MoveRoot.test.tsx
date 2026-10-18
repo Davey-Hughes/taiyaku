@@ -43,6 +43,7 @@ const answer = (
     alignments_dropped: 0,
     library_removed: null,
     grants_removed: 0,
+    left_with_no_library: [],
     ...over,
   },
   // The rehearsal and the move find different things: a report kept from
@@ -157,6 +158,43 @@ describe('MoveRoot', () => {
       'Chapters has no other folder, so it is removed, with 2 grants.',
     )
     expect(said).not.toContain('gain volumes')
+  })
+
+  it('names the accounts left with no library under the counts, and still offers the confirm', async () => {
+    vi.mocked(api.moveCost).mockResolvedValue(
+      answer({
+        library_removed: 'Chapters',
+        grants_removed: 3,
+        left_with_no_library: ['alice', 'bob', 'carol'],
+      }),
+    )
+    const { host } = shown()
+    await choose(host, '7')
+    await press(see(host))
+    expect(host.querySelector('.left-with-no-library')?.textContent).toBe(
+      "alice, bob and carol can see only this folder's library. After this, they will see no library until an administrator grants one.",
+    )
+    expect(
+      host.querySelector('.move-counts + .left-with-no-library'),
+    ).not.toBeNull()
+    expect(confirm(host)?.textContent).toBe(
+      'Move /media/Manga/Chapters to Manga',
+    )
+    expect(confirm(host)?.disabled).toBe(false)
+  })
+
+  it('names nobody where no account is left with no library', async () => {
+    vi.mocked(api.moveCost).mockResolvedValue(
+      answer({ library_removed: 'Chapters', grants_removed: 2 }),
+    )
+    const { host } = shown()
+    await choose(host, '7')
+    await press(see(host))
+    expect(host.querySelector('.move-counts')?.textContent).toContain(
+      'Chapters has no other folder, so it is removed, with 2 grants.',
+    )
+    expect(host.querySelector('.left-with-no-library')).toBeNull()
+    expect(host.textContent).not.toContain('will see no library')
   })
 
   it('says one series gains, and leaves out the grants there are none of', async () => {

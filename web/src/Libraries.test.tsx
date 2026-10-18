@@ -401,12 +401,12 @@ describe('Libraries', () => {
     const manga = library(1, 'Manga', ['/media/Manga'])
     vi.mocked(api.listLibraries).mockResolvedValue({ libraries: [manga] })
     vi.mocked(api.libraryRemovalCost).mockResolvedValue({
-      removed: { works: 0, positions: 0, notes: 0 },
+      removed: { works: 0, positions: 0, notes: 0, left_with_no_library: [] },
       derive: emptyDerive,
       dry_run: true,
     })
     vi.mocked(api.removeLibrary).mockResolvedValue({
-      removed: { works: 0, positions: 0, notes: 0 },
+      removed: { works: 0, positions: 0, notes: 0, left_with_no_library: [] },
       derive: { ...emptyDerive, lost_positions: 4 },
       dry_run: false,
     })
@@ -447,12 +447,12 @@ describe('Libraries', () => {
       ],
     })
     vi.mocked(api.libraryRemovalCost).mockResolvedValue({
-      removed: { works: 0, positions: 0, notes: 0 },
+      removed: { works: 0, positions: 0, notes: 0, left_with_no_library: [] },
       derive: emptyDerive,
       dry_run: true,
     })
     vi.mocked(api.removeLibrary).mockResolvedValue({
-      removed: { works: 0, positions: 0, notes: 0 },
+      removed: { works: 0, positions: 0, notes: 0, left_with_no_library: [] },
       derive: { ...emptyDerive, lost_positions: 4 },
       dry_run: false,
     })
@@ -625,7 +625,7 @@ describe('Libraries', () => {
 
 describe('Libraries, focus and the two slots', () => {
   const answerOf = (lost = 0): config.RemovalAnswer => ({
-    removed: { works: 0, positions: 0, notes: 0 },
+    removed: { works: 0, positions: 0, notes: 0, left_with_no_library: [] },
     derive: { ...emptyDerive, lost_positions: lost },
     dry_run: false,
   })
@@ -934,6 +934,7 @@ describe('Libraries, a folder’s move', () => {
         alignments_dropped: 0,
         library_removed: null,
         grants_removed: 0,
+        left_with_no_library: [],
       },
       derive: { ...emptyDerive, lost_positions: dry_run ? 2 : 6 },
       dry_run,
@@ -1119,6 +1120,7 @@ describe('Libraries, a folder’s move', () => {
       alignments_dropped: 0,
       library_removed,
       grants_removed: 0,
+      left_with_no_library: [],
     },
     derive: emptyDerive,
     dry_run: false,
@@ -1204,12 +1206,12 @@ describe('Libraries, a folder’s removal', () => {
 
   beforeEach(() => {
     vi.mocked(config.removalCost).mockResolvedValue({
-      removed: { works: 5, positions: 2, notes: 0 },
+      removed: { works: 5, positions: 2, notes: 0, left_with_no_library: [] },
       derive: emptyDerive,
       dry_run: true,
     })
     vi.mocked(config.removeRoot).mockResolvedValue({
-      removed: { works: 5, positions: 2, notes: 0 },
+      removed: { works: 5, positions: 2, notes: 0, left_with_no_library: [] },
       derive: { ...emptyDerive, lost_positions: 4 },
       dry_run: false,
     })
@@ -1289,12 +1291,12 @@ describe('Libraries, a folder’s removal', () => {
     vi.mocked(api.listLibraries).mockResolvedValue({ libraries: [two] })
     vi.mocked(config.removeRoot)
       .mockResolvedValueOnce({
-        removed: { works: 5, positions: 2, notes: 0 },
+        removed: { works: 5, positions: 2, notes: 0, left_with_no_library: [] },
         derive: { ...emptyDerive, lost_positions: 4 },
         dry_run: false,
       })
       .mockResolvedValueOnce({
-        removed: { works: 5, positions: 2, notes: 0 },
+        removed: { works: 5, positions: 2, notes: 0, left_with_no_library: [] },
         derive: { ...emptyDerive, lost_positions: 7 },
         dry_run: false,
       })

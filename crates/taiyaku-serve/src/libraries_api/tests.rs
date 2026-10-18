@@ -81,7 +81,7 @@ fn an_administrator() -> crate::auth::Principal {
         can_download: true,
         can_stream: true,
         can_stamp: false,
-        roots: Vec::new(),
+        access: taiyaku_library::account::Access::Every,
     }
 }
 
@@ -800,7 +800,7 @@ async fn a_librarys_dry_run_counts_and_removes_nothing_and_the_removal_removes()
     );
     assert_eq!(
         keys_of(&rehearsed["removed"]),
-        vec!["notes", "positions", "works"]
+        vec!["left_with_no_library", "notes", "positions", "works"]
     );
     assert_eq!(rehearsed["dry_run"], true);
     assert_eq!(rehearsed["removed"]["works"], 1, "{rehearsed}");
@@ -871,56 +871,57 @@ async fn a_librarys_dry_run_counts_and_removes_nothing_and_the_removal_removes()
     assert_eq!(status, StatusCode::NOT_FOUND, "{missing}");
 }
 
+/// Removing the library that is a reader's only grant goes ahead: the dry run
+/// names the reader under `left_with_no_library` and removes nothing, the
+/// removal answers the same, and the reader is then listed nothing. The
+/// other library still holds a series, so a reader widened to every library
+/// would be listed one.
 #[tokio::test]
-async fn removing_an_accounts_only_library_is_a_409_in_the_stores_words() {
+async fn removing_an_accounts_only_library_names_the_reader_who_then_sees_nothing() {
     let (router, state, _fixture) = test_support::state_with_two_scanned_roots();
     let listed = get_json(&router, "/api/library/libraries").await;
     let id = the_library(&listed, "root-b")["id"]
         .as_i64()
         .expect("an id");
-    {
+    let reader = {
         let conn = state.library.conn();
         let reader = taiyaku_library::account::add(&conn, "reader", "pw", "user").expect("adds");
         taiyaku_library::account::grant_library(&conn, reader, id).expect("grants");
-    }
-    let slot = the_library(&listed, "root-b")["folders"][0]["id"]
-        .as_i64()
-        .expect("an id");
-    state.scans.lock().unwrap().insert(
-        slot,
-        crate::ScanProgress {
-            started: std::time::Instant::now(),
-            done: true,
-            report: Some(serde_json::json!({})),
-        },
+        reader
+    };
+    assert_eq!(
+        test_support::seen_by(&router, &state, reader).await,
+        1,
+        "the fixture: the reader sees root-b's series"
     );
     let stored = the_store(&state);
-    let sentence = taiyaku_library::scan::library_removal_refusal(&state.library.conn(), id)
-        .expect("asks")
-        .expect("is refused");
+    let path = format!("/api/library/libraries/{id}");
 
-    for path in [
-        format!("/api/library/libraries/{id}?dry_run=true"),
-        format!("/api/library/libraries/{id}"),
-    ] {
-        let (status, refused) =
-            answered(&router, Method::DELETE, &path, &serde_json::json!({})).await;
-        assert_eq!(status, StatusCode::CONFLICT, "{path}: {refused}");
-        assert_eq!(the_sentence(&refused), sentence, "{path}");
-        assert!(
-            sentence.contains("`root-b`") && sentence.contains("`reader`"),
-            "{sentence}"
-        );
-    }
-    assert_eq!(get_json(&router, "/api/library/libraries").await, listed);
+    let (status, rehearsed) = answered(
+        &router,
+        Method::DELETE,
+        &format!("{path}?dry_run=true"),
+        &serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{rehearsed}");
     assert_eq!(
-        the_store(&state),
-        stored,
-        "a refused removal removes nothing"
+        rehearsed["removed"]["left_with_no_library"],
+        serde_json::json!(["reader"]),
+        "{rehearsed}"
     );
-    assert!(
-        state.scans.lock().unwrap().contains_key(&slot),
-        "and clears no slot"
+    assert_eq!(the_store(&state), stored, "a rehearsal removes nothing");
+
+    let (status, removed) = answered(&router, Method::DELETE, &path, &serde_json::json!({})).await;
+    assert_eq!(status, StatusCode::OK, "{removed}");
+    assert_eq!(
+        removed["removed"], rehearsed["removed"],
+        "the removal does what the rehearsal said"
+    );
+    assert_eq!(
+        test_support::seen_by(&router, &state, reader).await,
+        0,
+        "the reader sees no library, not every library"
     );
 }
 
@@ -1904,7 +1905,12 @@ async fn a_removal_reports_its_works_positions_and_notes_each_by_its_own_count()
     assert_eq!(status, StatusCode::OK, "{rehearsed}");
     assert_eq!(
         rehearsed["removed"],
-        serde_json::json!({ "works": 2, "positions": 3, "notes": 5 }),
+        serde_json::json!({
+            "works": 2,
+            "positions": 3,
+            "notes": 5,
+            "left_with_no_library": [],
+        }),
         "{rehearsed}"
     );
     assert_eq!(the_store(&state), stored, "a rehearsal writes nothing");
@@ -1913,7 +1919,12 @@ async fn a_removal_reports_its_works_positions_and_notes_each_by_its_own_count()
     assert_eq!(status, StatusCode::OK, "{removed}");
     assert_eq!(
         removed["removed"],
-        serde_json::json!({ "works": 2, "positions": 3, "notes": 5 }),
+        serde_json::json!({
+            "works": 2,
+            "positions": 3,
+            "notes": 5,
+            "left_with_no_library": [],
+        }),
         "{removed}"
     );
     let conn = state.library.conn();
@@ -2608,7 +2619,12 @@ async fn the_whole_flow_over_a_file_backed_store() {
     assert_eq!(rehearsed["dry_run"], true, "{rehearsed}");
     assert_eq!(
         rehearsed["removed"],
-        serde_json::json!({ "notes": 0, "positions": 0, "works": 3 }),
+        serde_json::json!({
+            "notes": 0,
+            "positions": 0,
+            "works": 3,
+            "left_with_no_library": [],
+        }),
         "{rehearsed}"
     );
     let after_rehearsal = get_json(&router, "/api/library/libraries").await;
@@ -2816,6 +2832,7 @@ async fn a_folder_is_rehearsed_and_then_moved_to_another_library() {
         [
             "alignments_dropped",
             "grants_removed",
+            "left_with_no_library",
             "library",
             "library_id",
             "library_removed",
@@ -2843,6 +2860,70 @@ async fn a_folder_is_rehearsed_and_then_moved_to_another_library() {
         2
     );
     assert_eq!(libraries[0]["works"], 2, "{after}");
+}
+
+/// Moving away the one folder of a reader's only library goes ahead: the
+/// rehearsal names the reader under `left_with_no_library`, the move answers
+/// the same, and the reader is then listed nothing.
+#[tokio::test]
+async fn moving_an_accounts_only_library_away_names_the_reader_who_then_sees_nothing() {
+    let (router, state, fixture) = test_support::state_with_two_scanned_roots();
+    // root-a gains a second folder before `solo` is made, so the moved
+    // folder's id is not its library's, and a holder lookup keyed on the
+    // folder's id finds no one.
+    let (folder, reader) = {
+        use taiyaku_library::scan::InLibrary;
+        let conn = state.library.conn();
+        let mut added = Vec::new();
+        for (dir, library, series) in [
+            ("root-a-more", InLibrary::Named("root-a"), "Series C"),
+            ("solo", InLibrary::Own, "Series D"),
+        ] {
+            let dir = fixture.path().join(dir);
+            test_support::write_pages(&dir.join(series).join(format!("{series} - v01")), 2);
+            let root = taiyaku_library::scan::add_root_in(&conn, &dir, library).expect("adds");
+            taiyaku_library::scan::scan_root(&conn, &root).expect("scans");
+            added.push(root);
+        }
+        taiyaku_library::derive::derive(&conn).expect("derives");
+        let solo = added.pop().expect("solo");
+        assert_ne!(
+            solo.id, solo.library_id,
+            "the fixture must tell a folder's id from its library's: {solo:?}"
+        );
+        let reader = taiyaku_library::account::add(&conn, "reader", "pw", "user").expect("adds");
+        taiyaku_library::account::grant_library(&conn, reader, solo.library_id).expect("grants");
+        (solo.id, reader)
+    };
+    let listed = get_json(&router, "/api/library/libraries").await;
+    let a = the_library(&listed, "root-a")["id"]
+        .as_i64()
+        .expect("an id");
+    assert_eq!(
+        test_support::seen_by(&router, &state, reader).await,
+        1,
+        "the fixture: the reader sees solo's series"
+    );
+    let to = serde_json::json!({ "library": a });
+    let stored = the_store(&state);
+
+    let (status, rehearsed) = moved(&router, folder, true, &to).await;
+    assert_eq!(status, StatusCode::OK, "{rehearsed}");
+    assert_eq!(
+        rehearsed["moved"]["left_with_no_library"],
+        serde_json::json!(["reader"]),
+        "{rehearsed}"
+    );
+    assert_eq!(the_store(&state), stored, "the rehearsal changed the store");
+
+    let (status, done) = moved(&router, folder, false, &to).await;
+    assert_eq!(status, StatusCode::OK, "{done}");
+    assert_eq!(done["moved"], rehearsed["moved"]);
+    assert_eq!(
+        test_support::seen_by(&router, &state, reader).await,
+        0,
+        "the reader sees no library, not every library"
+    );
 }
 
 #[tokio::test]
@@ -3262,6 +3343,7 @@ fn moved_is_written_with_each_value_under_its_own_key() {
         alignments_dropped: 88,
         library_removed: Some("Left".to_string()),
         grants_removed: 99,
+        left_with_no_library: vec!["ann".to_string(), "bo".to_string()],
     };
     let expected = serde_json::json!({
         "library_id": 11,
@@ -3275,14 +3357,17 @@ fn moved_is_written_with_each_value_under_its_own_key() {
         "alignments_dropped": 88,
         "library_removed": "Left",
         "grants_removed": 99,
+        "left_with_no_library": ["ann", "bo"],
     });
     assert_eq!(super::moved_json(&moved), expected);
 
     let kept = taiyaku_library::relocate::Moved {
         library_removed: None,
+        left_with_no_library: Vec::new(),
         ..moved
     };
     let mut expected = expected;
     expected["library_removed"] = serde_json::Value::Null;
+    expected["left_with_no_library"] = serde_json::json!([]);
     assert_eq!(super::moved_json(&kept), expected);
 }

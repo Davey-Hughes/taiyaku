@@ -11,11 +11,14 @@ fn a_missing_subcommand_names_the_ones_that_exist() {
     assert!(err.contains("password"), "{err}");
     assert!(err.contains("grant-library"), "{err}");
     assert!(err.contains("revoke-library"), "{err}");
+    assert!(err.contains("every-library"), "{err}");
 
     let err = command(&argv(&["bogus"])).unwrap_err();
     assert!(err.contains("`bogus`"), "{err}");
     assert!(
-        err.contains("promote, add, password, list, grant-library and revoke-library"),
+        err.contains(
+            "promote, add, password, list, grant-library, revoke-library and every-library"
+        ),
         "{err}"
     );
 
@@ -115,7 +118,15 @@ fn a_command_without_its_argument_answers_with_usage() {
 /// who typed one wrong is told the whole set rather than a corrected guess.
 #[test]
 fn the_usage_covers_every_subcommand() {
-    for expected in ["promote", "add", "password", "list"] {
+    for expected in [
+        "promote",
+        "add",
+        "password",
+        "list",
+        "grant-library",
+        "revoke-library",
+        "every-library",
+    ] {
         assert!(USER_USAGE.contains(expected), "USER_USAGE lacks {expected}");
     }
     for expected in ["create", "list", "revoke"] {
@@ -417,7 +428,7 @@ fn a_folder_in(
 }
 
 /// `davey`'s id, and the libraries and folders that account is granted.
-fn grants_of_davey(db: &std::path::Path) -> (Vec<i64>, Vec<i64>) {
+fn grants_of_davey(db: &std::path::Path) -> (Vec<i64>, account::Access) {
     let library = Library::open(db).expect("reopens");
     let conn = library.conn();
     let davey = account::id_of(&conn, "davey")
@@ -425,7 +436,7 @@ fn grants_of_davey(db: &std::path::Path) -> (Vec<i64>, Vec<i64>) {
         .expect("davey exists");
     (
         account::libraries_for(&conn, davey).expect("reads"),
-        account::roots_for(&conn, davey).expect("reads"),
+        account::access_for(&conn, davey).expect("reads"),
     )
 }
 
@@ -443,7 +454,7 @@ fn granting_a_library_by_name_resolves_it_to_the_row() {
 
     assert_eq!(
         grants_of_davey(&db),
-        (vec![a.library_id], vec![a.id, b.id]),
+        (vec![a.library_id], account::Access::Only(vec![a.id, b.id])),
         "the library named, and so each of its folders"
     );
 }
@@ -459,8 +470,8 @@ fn revoking_a_library_takes_the_grant_back() {
 
     assert_eq!(
         grants_of_davey(&db),
-        (Vec::new(), Vec::new()),
-        "the grant is gone, so the account sees every library again"
+        (Vec::new(), account::Access::Only(Vec::new())),
+        "the grant is gone, and the account sees no library rather than every library"
     );
 }
 
@@ -514,15 +525,22 @@ fn revoking_a_library_that_was_never_granted_is_not_an_error() {
         .expect("revoking what is not granted succeeds");
 }
 
-/// Both subcommands refuse a wrong number of positionals with the usage text.
+/// The three subcommands refuse a wrong number of positionals with the usage
+/// text, which names all three.
 #[test]
 fn the_library_subcommands_state_their_usage() {
     let (_dir, _db, flags) = a_library("library-usage");
-    for verb in ["grant-library", "revoke-library"] {
-        let err = command(&with(&flags, &[verb, "only-one-argument"])).unwrap_err();
-        assert!(err.contains("grant-library"), "{verb}: {err}");
-        assert!(err.contains("revoke-library"), "{verb}: {err}");
-        assert!(err.contains("<library>"), "{verb}: {err}");
+    for given in [
+        &["grant-library", "only-one-argument"][..],
+        &["revoke-library", "only-one-argument"][..],
+        &["every-library"][..],
+        &["every-library", "one", "two"][..],
+    ] {
+        let err = command(&with(&flags, given)).unwrap_err();
+        assert!(err.contains("grant-library"), "{given:?}: {err}");
+        assert!(err.contains("revoke-library"), "{given:?}: {err}");
+        assert!(err.contains("every-library <user>"), "{given:?}: {err}");
+        assert!(err.contains("<library>"), "{given:?}: {err}");
     }
 }
 
@@ -561,7 +579,10 @@ fn granting_names_the_library_it_was_given_and_not_another() {
 
     assert_eq!(
         grants_of_davey(&db),
-        (vec![wanted.library_id], vec![wanted.id]),
+        (
+            vec![wanted.library_id],
+            account::Access::Only(vec![wanted.id])
+        ),
         "the named library, not {}",
         other.library_id
     );
@@ -582,7 +603,10 @@ fn revoking_names_the_library_it_was_given_and_not_another() {
 
     assert_eq!(
         grants_of_davey(&db),
-        (vec![other.library_id], vec![other.id]),
+        (
+            vec![other.library_id],
+            account::Access::Only(vec![other.id])
+        ),
         "the library that was not named is still granted"
     );
 }
@@ -607,87 +631,70 @@ fn the_unrooted_note_appears_only_when_members_carry_no_root() {
     assert!(note.contains("library scan"), "and what fixes it: {note}");
 }
 
-/// `!= 1` survived inside the `println!`, which would have warned about being
-/// "restricted to that one library" on the *second* grant and stayed silent
-/// on the first — the one that actually narrows the account.
-///
-/// **It also takes the role since O86**, because an administrator is not
-/// narrowed by anything: printing both notes told the operator the grant
-/// "does nothing while it stays one" and that the account "is now restricted
-/// to that one library", in that order, which is a direct contradiction. The
-/// role is decided inside this function rather than by an `if` around the
-/// `println!`, for the same reason the count is.
-///
-/// **And whether the grant was new**, for that reason again: a grant the
-/// account already held is not its first, though it holds one library after
-/// it.
+/// A grant narrows an account only where it saw every library, so only then
+/// does it say so, and how to lift the limit again. An account already
+/// limited is widened by a grant, and an administrator is narrowed by
+/// nothing (O86): `admin_note` says the grant is inert, and saying it also
+/// restricts them would contradict that in the very next line.
 #[test]
-fn the_narrowing_note_appears_only_on_a_users_first_grant() {
+fn the_narrowing_note_appears_only_where_the_account_saw_every_library() {
     assert_eq!(
-        narrowed_note("user", true, 0),
-        None,
-        "`!=` warns about a restriction on an account that holds no grant at all"
-    );
-    let first = narrowed_note("user", true, 1).expect("the first grant narrows the account");
-    assert!(first.contains("restricted to that one library"), "{first}");
-    assert!(
-        first.contains("no grants at all sees every library"),
-        "it states the rule that makes this counter-intuitive: {first}"
+        narrowed_note("user", true, "alex").as_deref(),
+        Some(
+            "That account saw every library, and is now restricted to that one. \
+             `taiyaku library user every-library alex` lifts the limit."
+        )
     );
     assert_eq!(
-        narrowed_note("user", true, 2),
+        narrowed_note("user", false, "alex"),
         None,
-        "`!=` warns on every later grant, which widen rather than narrow"
+        "an account already limited is widened, not narrowed"
     );
-    assert_eq!(
-        narrowed_note("admin", true, 1),
-        None,
-        "an administrator is narrowed by nothing — `admin_note` says the grant \
-         is inert, and saying it also restricts them contradicts that in the \
-         very next line"
-    );
-    assert_eq!(
-        narrowed_note("user", false, 1),
-        None,
-        "granting again the one library an account holds narrows nothing"
-    );
+    assert_eq!(narrowed_note("admin", true, "davey"), None);
+    assert_eq!(narrowed_note("admin", false, "davey"), None);
 }
 
-/// A revocation leaves an administrator seeing what it saw, so it is not told
-/// it sees every library "again". It is told the revocation changes nothing
-/// while it stays one, and only where a grant was revoked. Any other account
-/// is told when its last grant was revoked.
+/// A revocation leaves an administrator seeing what it saw, so it is told
+/// the revocation changes nothing while it stays one, and only where a grant
+/// was revoked. Any other account whose last grant was revoked is told it now
+/// sees no library, never every library, and how to lift the limit.
 #[test]
 fn the_revoked_note_follows_the_role_and_the_grants_left() {
-    let again = "That account now holds no grants, and so sees every library again.";
-    assert_eq!(revoked_note("user", true, 0).as_deref(), Some(again));
     assert_eq!(
-        revoked_note("user", false, 0),
-        None,
-        "an account with no grant to revoke saw every library before as well"
+        revoked_note("user", true, 0, "alex").as_deref(),
+        Some(
+            "`alex` now sees no library; `taiyaku library user every-library alex` lifts \
+             the limit."
+        )
     );
     assert_eq!(
-        revoked_note("user", true, 1),
+        revoked_note("user", false, 0, "alex"),
         None,
-        "an account still holding a grant is still restricted"
+        "where nothing was revoked nothing changed"
+    );
+    assert_eq!(
+        revoked_note("user", true, 1, "alex"),
+        None,
+        "an account still holding a grant still sees it"
     );
 
-    let inert = revoked_note("admin", true, 0).expect("an administrator's revocation says so");
+    let inert =
+        revoked_note("admin", true, 0, "davey").expect("an administrator's revocation says so");
     assert!(
         inert.contains("administrator") && inert.contains("changes nothing"),
         "{inert}"
     );
     assert!(
-        inert.contains("always sees every library") && !inert.contains("again"),
+        inert.contains("always sees every library") && !inert.contains("no library"),
         "an administrator saw every library throughout: {inert}"
     );
     assert_eq!(
-        revoked_note("admin", true, 1).as_deref(),
+        revoked_note("admin", true, 1, "davey").as_deref(),
         Some(inert.as_str()),
         "and the same whatever grants it has left"
     );
     assert_eq!(
-        revoked_note("admin", false, 0),
+        revoked_note("admin", false, 0, "davey"),
         None,
         "where nothing was revoked there is nothing to qualify"
     );
@@ -704,28 +711,42 @@ fn an_account(id: i64, name: &str, role: &str) -> account::Account {
     }
 }
 
-/// `user list` names the libraries an account is granted after its role, in
-/// the order it is handed them. An account holding none is its id, name and
-/// role, and the note where it has no password.
+/// `user list` says what an account other than an administrator sees after
+/// its role: every library, the libraries it is granted in the order it is
+/// handed them, or no library. An administrator's line names only the grants
+/// it holds, and nothing where it holds none, whatever its setting says. The
+/// note where it has no password comes last.
 #[test]
-fn the_account_line_lists_the_libraries_an_account_is_granted() {
+fn the_account_line_says_what_an_account_sees() {
     let none: [String; 0] = [];
     let two = ["Manga".to_string(), "Other".to_string()];
+    let admin = an_account(1, "davey", "admin");
+    assert_eq!(account_line(&admin, true, true, &none), "1 davey (admin)");
+    assert_eq!(account_line(&admin, true, false, &none), "1 davey (admin)");
     assert_eq!(
-        account_line(&an_account(1, "davey", "admin"), true, &none),
-        "1 davey (admin)"
+        account_line(&admin, true, false, &two[..1]),
+        "1 davey (admin) — granted: Manga"
     );
     assert_eq!(
-        account_line(&an_account(1, "local", "admin"), false, &none),
+        account_line(&an_account(1, "local", "admin"), false, true, &none),
         "1 local (admin)  (no password set)"
     );
+    let alex = an_account(2, "alex", "user");
     assert_eq!(
-        account_line(&an_account(2, "alex", "user"), true, &two),
+        account_line(&alex, true, true, &none),
+        "2 alex (user) — every library"
+    );
+    assert_eq!(
+        account_line(&alex, true, false, &two),
         "2 alex (user) — granted: Manga, Other"
     );
     assert_eq!(
-        account_line(&an_account(2, "alex", "user"), false, &two[1..]),
+        account_line(&alex, false, false, &two[1..]),
         "2 alex (user) — granted: Other  (no password set)"
+    );
+    assert_eq!(
+        account_line(&alex, true, false, &none),
+        "2 alex (user) — no library"
     );
 }
 
@@ -740,8 +761,8 @@ fn the_account_line_lists_the_libraries_an_account_is_granted() {
 /// result indistinguishable from a working grant.
 ///
 /// Extracted as a pure function for the same reason `narrowed_note` and
-/// `unrooted_note` were: a comparison inside a `println!` survives mutation,
-/// because nothing can see what a command printed.
+/// `unrooted_note` were: this test reads the decision without running the
+/// command.
 #[test]
 fn the_admin_note_appears_only_for_an_administrator() {
     assert_eq!(

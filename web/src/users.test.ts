@@ -22,6 +22,7 @@ const user = (over: Partial<User> = {}): User => ({
   can_log_in: true,
   sessions: [],
   keys: [],
+  every_library: true,
   libraries: [],
   ...over,
 })
@@ -110,8 +111,7 @@ describe('the users client', () => {
   })
 
   it('patches with only the keys it was handed', async () => {
-    // An absent key leaves the column alone and `libraries: []` grants nothing —
-    // which spec A2 defines as unrestricted. Sending a whole row would rewrite
+    // An absent key leaves the column alone. Sending a whole row would rewrite
     // five columns to answer a question about one.
     const fetchMock = vi.fn().mockImplementation(() => json({ user: user() }))
     vi.stubGlobal('fetch', fetchMock)

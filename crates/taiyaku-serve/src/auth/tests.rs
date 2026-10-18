@@ -3,6 +3,7 @@ use std::sync::Arc;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use base64::Engine as _;
+use taiyaku_library::account::Access;
 use taiyaku_library::credential;
 use tower::ServiceExt as _;
 
@@ -1098,7 +1099,7 @@ async fn a_password_change_the_database_refuses_is_not_answered_as_success() {
 // authentication already has: "that is exactly the failure a reviewer's
 // checklist has: it goes stale the first time someone adds a route and does
 // not think about auth." Six routes proved the identical failure for
-// `Principal.roots` — `stream_page`, `cover`, `work_feed` and `works` in
+// `Principal.access` — `stream_page`, `cover`, `work_feed` and `works` in
 // `opds.rs`, `list_works` in `routes.rs`, and `patch_alignments` — drifting
 // out of the grant one at a time, over more than one spec, before anything
 // caught it. `routes::grant_postures` and the test below are what stops a
@@ -1278,10 +1279,10 @@ fn router_with_material_under_a_withheld_root(
         // had been deleted.
         conn.execute("UPDATE user SET role = 'user' WHERE id = 1", [])
             .expect("a grant restricts a user, never an admin");
-        conn.execute(
+        conn.execute_batch(
             "INSERT INTO user_library (user_id, library_id)
-             SELECT 1, library_id FROM root WHERE id = 1",
-            [],
+             SELECT 1, library_id FROM root WHERE id = 1;
+             UPDATE user SET every_library = 0 WHERE id = 1;",
         )
         .expect("grants the fixture account the other root");
 
@@ -1394,10 +1395,10 @@ fn two_works_one_withheld(dir: &std::path::Path) -> (axum::Router, Arc<ServeStat
         // had been deleted.
         conn.execute("UPDATE user SET role = 'user' WHERE id = 1", [])
             .expect("a grant restricts a user, never an admin");
-        conn.execute(
+        conn.execute_batch(
             "INSERT INTO user_library (user_id, library_id)
-             SELECT 1, library_id FROM root WHERE id = 1",
-            [],
+             SELECT 1, library_id FROM root WHERE id = 1;
+             UPDATE user SET every_library = 0 WHERE id = 1;",
         )
         .expect("grants only the visible root");
     }
@@ -1511,10 +1512,10 @@ fn one_work_two_editions_split_across_roots(
         // had been deleted.
         conn.execute("UPDATE user SET role = 'user' WHERE id = 1", [])
             .expect("a grant restricts a user, never an admin");
-        conn.execute(
+        conn.execute_batch(
             "INSERT INTO user_library (user_id, library_id)
-             SELECT 1, library_id FROM root WHERE id = 1",
-            [],
+             SELECT 1, library_id FROM root WHERE id = 1;
+             UPDATE user SET every_library = 0 WHERE id = 1;",
         )
         .expect("grants only the visible root");
 
@@ -1656,10 +1657,10 @@ fn one_work_three_editions_hub_withheld(dir: &std::path::Path) -> (axum::Router,
         // had been deleted.
         conn.execute("UPDATE user SET role = 'user' WHERE id = 1", [])
             .expect("a grant restricts a user, never an admin");
-        conn.execute(
+        conn.execute_batch(
             "INSERT INTO user_library (user_id, library_id)
-             SELECT 1, library_id FROM root WHERE id = 1",
-            [],
+             SELECT 1, library_id FROM root WHERE id = 1;
+             UPDATE user SET every_library = 0 WHERE id = 1;",
         )
         .expect("grants only the visible root");
     }
@@ -3301,13 +3302,14 @@ fn an_administrator_is_unrestricted_whatever_the_row_says() {
         can_stream: false,
         can_stamp: false,
     };
-    let principal = Principal::from_account(&granted, vec![1, 2]);
+    let principal = Principal::from_account(&granted, Access::Only(vec![1, 2]));
 
     assert_eq!(principal.role, Role::Admin);
-    assert!(
-        principal.roots.is_empty(),
-        "an admin's root grant is dropped — empty is what `browse` reads as \
-         unrestricted, so this is the existing meaning rather than a new one"
+    assert_eq!(
+        principal.access,
+        Access::Every,
+        "an admin's grant is dropped for `Every`, the one access `browse` \
+         applies no filter for"
     );
     assert!(principal.can_download, "and the capability flags follow it");
     assert!(principal.can_stream, "and the capability flags follow it");
@@ -3331,12 +3333,12 @@ fn a_users_grant_and_capabilities_are_left_exactly_as_the_row_holds_them() {
         can_stream: true,
         can_stamp: false,
     };
-    let principal = Principal::from_account(&granted, vec![1, 2]);
+    let principal = Principal::from_account(&granted, Access::Only(vec![1, 2]));
 
     assert_eq!(principal.role, Role::User);
     assert_eq!(
-        principal.roots,
-        vec![1, 2],
+        principal.access,
+        Access::Only(vec![1, 2]),
         "a user's grant still restricts"
     );
     assert!(
@@ -3362,7 +3364,7 @@ fn a_principal_holds_every_folder_of_a_granted_library() {
     ) else {
         panic!("the fixture's key resolves to its account");
     };
-    assert_eq!(by_key.roots, vec![1, 2], "by key");
+    assert_eq!(by_key.access, Access::Only(vec![1, 2]), "by key");
 
     let password = basic(
         crate::test_support::FIXTURE_NAME,
@@ -3373,7 +3375,7 @@ fn a_principal_holds_every_folder_of_a_granted_library() {
     else {
         panic!("the fixture's password resolves to its account");
     };
-    assert_eq!(by_password.roots, vec![1, 2], "by password");
+    assert_eq!(by_password.access, Access::Only(vec![1, 2]), "by password");
 
     let cookie = crate::test_support::fixture_session_cookie(&state.library);
     let token = cookie
@@ -3386,7 +3388,11 @@ fn a_principal_holds_every_folder_of_a_granted_library() {
     else {
         panic!("the fixture's session resolves to its account");
     };
-    assert_eq!(by_cookie.roots, vec![1, 2], "by session cookie");
+    assert_eq!(
+        by_cookie.access,
+        Access::Only(vec![1, 2]),
+        "by session cookie"
+    );
 }
 
 /// **No module answers the role question alone — O93.**
@@ -3617,7 +3623,7 @@ fn an_administrator_does_not_inherit_can_stamp() {
         can_stamp: false,
     };
 
-    let principal = Principal::from_account(&account, vec![]);
+    let principal = Principal::from_account(&account, Access::Every);
 
     assert!(principal.can_download, "O86: role dominates can_download");
     assert!(principal.can_stream, "O86: role dominates can_stream");
@@ -3639,7 +3645,7 @@ fn a_granted_administrator_may_stamp() {
         can_stamp: true,
     };
 
-    assert!(Principal::from_account(&account, vec![]).can_stamp);
+    assert!(Principal::from_account(&account, Access::Every).can_stamp);
 }
 
 /// And for a reader, where nothing was ever folded in.
@@ -3653,10 +3659,10 @@ fn a_reader_may_stamp_only_when_the_column_says_so() {
         can_stream: true,
         can_stamp: false,
     };
-    assert!(!Principal::from_account(&account, vec![]).can_stamp);
+    assert!(!Principal::from_account(&account, Access::Every).can_stamp);
 
     account.can_stamp = true;
-    assert!(Principal::from_account(&account, vec![]).can_stamp);
+    assert!(Principal::from_account(&account, Access::Every).can_stamp);
 }
 
 /// **`auth::guard` resolves a request behind `spawn_blocking`, not on the async

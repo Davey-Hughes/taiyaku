@@ -16,6 +16,7 @@ use axum::extract::{Request, State};
 use axum::http::{StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse as _, Response};
+use taiyaku_library::account::Access;
 
 use crate::ServeState;
 
@@ -315,47 +316,35 @@ pub enum Role {
 /// able to see its shelf. Both default to 1 (`schema/004_auth.sql:18`), so
 /// nothing changed for any existing account the day this shipped, and nothing
 /// can set either to 0 outside a fixture until spec C4's user administration.
-/// O54 is closed: this pair was its open half, `roots` the half C1 closed
-/// first.
+/// O54 is closed: this pair was its open half, and the grant was the half C1
+/// closed first.
 #[derive(Debug, Clone)]
 pub struct Principal {
     pub user_id: i64,
     pub role: Role,
     pub can_download: bool,
     pub can_stream: bool,
-    /// The folders of the libraries this account was granted, and **the
-    /// restriction**.
+    /// What this account may see, and **the restriction**: every library, or
+    /// only the folders of the libraries it was granted, where `Only` with no
+    /// folder sees nothing.
     ///
-    /// An empty grant sees *every* root, which is counter-intuitive and
-    /// deliberate: `user_root` had no writer before spec C1, so every account
-    /// in every existing library holds an empty grant, and any other reading
-    /// would have emptied every library the day migration 6 applied. The first
-    /// grant a **non-admin** account receives is the moment it stops seeing
-    /// everything.
-    ///
-    /// **Always empty for an administrator, whatever `user_library` holds —
-    /// O86.** [`Principal::from_account`] drops the grant there rather than
-    /// here, so nothing downstream has to ask about the role: this field alone
-    /// is the answer, and it already means "unrestricted" when empty. The row
-    /// is untouched and becomes live on demotion. Before that rule, an admin
-    /// could hold a grant and see half a series while editing shared rows for
-    /// all of it, which is what O86 was.
+    /// **Always [`Access::Every`] for an administrator, whatever
+    /// `user_library` holds — O86.** [`Principal::from_account`] decides that
+    /// rather than each reader, so nothing downstream has to ask about the
+    /// role: this field alone is the answer. The rows are untouched and become
+    /// live on demotion. An admin who held a grant would see half a series
+    /// while editing shared rows for all of it, which is what O86 was.
     ///
     /// Read by `library_api`, which passes it to every
     /// `taiyaku_library::browse` query so the filter is applied in SQL rather
-    /// than after it. Spec C1 §5.1.
-    ///
-    /// **The `#[expect(dead_code)]` spec A2 put here came off in the same
-    /// commit that first read this field**, which is what that attribute was
-    /// for: `#[expect]` fails the build when the lint does not fire, so it
-    /// could not linger. This field closed O54's first half, under C1;
-    /// `can_download` and `can_stream` above closed the rest, under C2.
-    pub roots: Vec<i64>,
+    /// than after it. Spec C1 §5.1. A handler that may run without a principal
+    /// reads it through [`access_of`].
+    pub access: Access,
 
     /// **Not dominated by `role`, and the only field here that is not.**
     ///
     /// [`Principal::from_account`] folds `can_download`, `can_stream` and
-    /// `roots` into the admin role per O86 — an administrator is unrestricted
+    /// `access` into the admin role per O86 — an administrator is unrestricted
     /// in every dimension the schema has. This column is the exception, and
     /// the reason comes out of O86's own argument rather than against it.
     ///
@@ -410,12 +399,12 @@ impl Principal {
     /// an account promoted to admin after it was granted. The row is kept
     /// rather than deleted, so a demotion restores the grant it always held.
     ///
-    /// An empty `roots` is what `taiyaku_library::browse` already reads as
-    /// unrestricted (see [`Principal::roots`]), so this reuses the existing
-    /// meaning instead of introducing a second one.
+    /// An administrator's access is [`Access::Every`], the one case
+    /// `taiyaku_library::browse` applies no filter for (see
+    /// [`Principal::access`]).
     pub(crate) fn from_account(
         account: &taiyaku_library::account::Account,
-        roots: Vec<i64>,
+        access: Access,
     ) -> Self {
         let role = if account.role == "admin" {
             Role::Admin
@@ -430,9 +419,23 @@ impl Principal {
             can_stream: admin || account.can_stream,
             // No `admin ||`, deliberately — see the field's doc comment.
             can_stamp: account.can_stamp,
-            roots: if admin { Vec::new() } else { roots },
+            access: if admin { Access::Every } else { access },
         }
     }
+}
+
+/// The access of the request's principal, or **`Only` with no folder when
+/// there is none**.
+///
+/// [`guard`] inserts a principal on every guarded route or refuses the
+/// request, so a missing one is a handler reached some other way — a test
+/// calling it directly, or a routing mistake — and either must see nothing
+/// rather than everything.
+pub(crate) fn access_of(extensions: &axum::http::Extensions) -> Access {
+    extensions.get::<Principal>().map_or_else(
+        || Access::Only(Vec::new()),
+        |principal| principal.access.clone(),
+    )
 }
 
 /// The 401 an OPDS client needs and the 401 the reader needs, which are not the
@@ -725,10 +728,10 @@ fn from_basic(state: &ServeState, header: &str, client: std::net::IpAddr) -> Res
         let Ok(Some(found)) = account::by_api_key(&conn, &secret) else {
             return Resolved::No;
         };
-        let Ok(roots) = account::roots_for(&conn, found.id) else {
+        let Ok(access) = account::access_for(&conn, found.id) else {
             return Resolved::No;
         };
-        return Resolved::Yes(Principal::from_account(&found, roots), By::Key);
+        return Resolved::Yes(Principal::from_account(&found, access), By::Key);
     }
 
     // **§7 applies here and not only to the login route**, which is what the
@@ -835,10 +838,10 @@ fn from_basic(state: &ServeState, header: &str, client: std::net::IpAddr) -> Res
     // correct credential from a shared address cannot reset a guesser's wide
     // budget. See the same split in `session::login`.
     let _ = account::clear_failures(&conn, &key);
-    let Ok(roots) = account::roots_for(&conn, found.id) else {
+    let Ok(access) = account::access_for(&conn, found.id) else {
         return Resolved::No;
     };
-    Resolved::Yes(Principal::from_account(&found, roots), By::Password)
+    Resolved::Yes(Principal::from_account(&found, access), By::Password)
 }
 
 /// The name and secret inside an `Authorization: Basic` header.

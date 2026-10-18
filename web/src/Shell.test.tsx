@@ -214,6 +214,7 @@ describe('Shell', () => {
     vi.clearAllMocks()
     vi.mocked(library.status).mockResolvedValue({
       libraries: [{ id: 1, name: 'Manga', scanned: true }],
+      restricted: false,
     })
     vi.mocked(curation.listProposals).mockResolvedValue({
       proposals: [],
@@ -256,6 +257,7 @@ describe('Shell', () => {
         { id: 1, name: 'Manga', scanned: true },
         { id: 2, name: 'Comics', scanned: false },
       ],
+      restricted: false,
     })
     const host = await settle(<Shell>x</Shell>, who({ admin: false }))
     expect(
@@ -486,9 +488,11 @@ describe('Shell', () => {
     vi.mocked(library.status)
       .mockResolvedValueOnce({
         libraries: [{ id: 1, name: 'Manga', scanned: true }],
+        restricted: false,
       })
       .mockResolvedValue({
         libraries: [{ id: 2, name: 'Comics', scanned: false }],
+        restricted: false,
       })
     const host = await settle(<Shell>{rereadProbe()}</Shell>)
     expect(sidebarLibraries(host)).toEqual(['Manga'])
@@ -517,12 +521,14 @@ describe('Shell', () => {
     await flush(() =>
       second.resolve({
         libraries: [{ id: 2, name: 'Comics', scanned: true }],
+        restricted: false,
       }),
     )
     expect(sidebarLibraries(host)).toEqual(['Comics'])
     await flush(() =>
       first.resolve({
         libraries: [{ id: 1, name: 'Manga', scanned: true }],
+        restricted: false,
       }),
     )
     expect(sidebarLibraries(host)).toEqual(['Comics'])
@@ -542,6 +548,7 @@ describe('Shell', () => {
     await flush(() =>
       second.resolve({
         libraries: [{ id: 2, name: 'Comics', scanned: true }],
+        restricted: false,
       }),
     )
     await flush(() => first.reject(new Error('/api/library/status: 500')))
@@ -558,6 +565,7 @@ describe('Shell', () => {
     vi.mocked(library.status)
       .mockResolvedValueOnce({
         libraries: [{ id: 1, name: 'Manga', scanned: true }],
+        restricted: false,
       })
       .mockRejectedValue(new Error('/api/library/status: 500'))
     const host = await settle(<Shell>{rereadProbe()}</Shell>)

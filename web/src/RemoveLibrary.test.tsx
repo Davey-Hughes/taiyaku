@@ -39,7 +39,13 @@ const library: api.Library = {
 }
 
 const answer = (over: Partial<config.Removal> = {}): config.RemovalAnswer => ({
-  removed: { works: 12, positions: 1, notes: 0, ...over },
+  removed: {
+    works: 12,
+    positions: 1,
+    notes: 0,
+    left_with_no_library: [],
+    ...over,
+  },
   derive: emptyDerive,
   dry_run: true,
 })
@@ -95,18 +101,46 @@ describe('RemoveLibrary', () => {
     expect(headings.map((h) => h.tagName)).toEqual(['H4'])
   })
 
-  it("draws the refusal's sentence and offers no confirm", async () => {
+  it('names the accounts left with no library under the counts, and still offers the confirm', async () => {
+    vi.mocked(api.libraryRemovalCost).mockResolvedValue(
+      answer({ left_with_no_library: ['sam'] }),
+    )
+    const host = await shown()
+    expect(host.querySelector('.left-with-no-library')?.textContent).toBe(
+      'sam can see only this library. After this, sam will see no library until an administrator grants one.',
+    )
+    expect(host.querySelector('.counts + .left-with-no-library')).not.toBeNull()
+    expect(host.querySelector('.confirm')?.textContent).toBe('Remove Manga')
+    expect((host.querySelector('.confirm') as HTMLButtonElement).disabled).toBe(
+      false,
+    )
+    expect(host.querySelector('[role="alert"]')).toBeNull()
+  })
+
+  it('names nobody where no account is left with no library', async () => {
+    const host = await shown()
+    expect(host.querySelector('.counts')).not.toBeNull()
+    expect(host.querySelector('.left-with-no-library')).toBeNull()
+    expect(host.textContent).not.toContain('will see no library')
+  })
+
+  it('draws a refused dry run as the server’s sentence and offers no confirm', async () => {
     vi.mocked(api.libraryRemovalCost).mockRejectedValue(
       new Error(
-        '/api/library/libraries/7?dry_run=true: 409 {"error":"`Manga` is the only library `sam` is granted."}',
+        '/api/library/libraries/7?dry_run=true: 409 {"error":"a scan of /media/Manga/Volumes is running; remove the library once it has finished"}',
       ),
     )
     const host = await shown()
     expect(host.querySelector('[role="alert"]')?.textContent).toBe(
-      '`Manga` is the only library `sam` is granted.',
+      'a scan of /media/Manga/Volumes is running; remove the library once it has finished',
     )
+    expect(host.querySelector('.counts')).toBeNull()
     expect(host.querySelector('.confirm')).toBeNull()
     expect(host.textContent).not.toContain('Working out')
+    const cancel = [...host.querySelectorAll('button')].find(
+      (b) => b.textContent === 'Cancel',
+    ) as HTMLButtonElement
+    expect(cancel.disabled).toBe(false)
   })
 
   it('sends one removal for two presses, and hands back what it did', async () => {

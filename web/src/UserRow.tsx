@@ -26,16 +26,16 @@
  * `A` — and this card said "open any work and press A", which an administrator
  * of a library with no readable work could not do.
  *
- * **Grants are libraries, sent whole, and the unrestricted state has a
- * name.** `account::Patch::libraries` replaces the list, an absent key
- * leaves it alone, and `[]` means unrestricted, not blind. The card draws
- * that as a choice between "Every library" and "Only these", and will not
- * clear the last tick: each tick is saved at once, so an account moved from
- * one library to another by unticking first would see every library in
- * between. The server would accept that request, and the card refuses it
- * anyway: "the server is the authority" lets the card be stricter than the
- * server, never looser. Choosing "Every library" on an account that holds
- * grants asks first, since an arrow key chooses on the radios as a click does.
+ * **Grants are libraries, sent whole, and "every library" is a fact of its
+ * own.** `user.every_library` alone says whether the account sees every
+ * library; `libraries` is its limit, and an empty limit sees nothing. A patch
+ * sends `{every_library: true}` to lift the limit or the whole list to set
+ * it, `[]` included. The card draws that as a choice between "Every library"
+ * and "Only these". Each tick and each cleared box saves at once, the last
+ * one too, and so does choosing "Only these", which saves as no library.
+ * Lifting the limit to every library, "Every library" on an account with a
+ * limit, asks first (O195), since an arrow key chooses on the radios as a
+ * click does.
  *
  * **The confirm does not exist until the counts do**, and the real `DELETE` is
  * sent from here and nowhere else. `RemoveRoot`'s reasoning, on the route
@@ -71,11 +71,11 @@ export interface UserRowProps {
    *
    * **Three states rather than two.** Reading an unread list as `[]` would
    * draw "there are no libraries yet" while the read was still in flight and
-   * for ever after one that failed: a positive false claim, on the one
-   * control whose *empty* state means unrestricted. What the card can always
-   * say is which libraries the account is granted, because `user.libraries`
-   * carries their names; what it cannot do without the list is offer a
-   * library nobody granted yet.
+   * for ever after one that failed: a positive false claim, on the control
+   * that decides what an account sees. What the card can always say is what
+   * the account sees, because `user.every_library` says so and
+   * `user.libraries` carries the names; what it cannot do without the list is
+   * offer a library nobody granted yet.
    */
   libraries?: Library[]
   /**
@@ -159,8 +159,6 @@ export function UserRow({
    * when that read fails instead. Third review pass.
    */
   const [removed, setRemoved] = useState(false)
-  /** Names the sentence that says why the last tick will not clear. */
-  const lastTickId = useId()
   /**
    * Whether the real `DELETE` is already on its way.
    *
@@ -258,26 +256,23 @@ export function UserRow({
 
   const granted = shown.libraries.map((g) => g.id)
   /**
-   * "Only these" was chosen on an account that holds no grant yet.
-   *
-   * Local, because there is nothing to save: an empty list is unrestricted,
-   * so the choice is not a fact about the account until a library is ticked.
-   * Choosing "Every library" again puts it back, and sends nothing either.
+   * Whether the account has a limit, read from `every_library` alone. The
+   * list's length cannot say it: an empty list is a limit to no library.
    */
-  const [choosing, setChoosing] = useState(false)
-  const restricted = granted.length > 0 || choosing
+  const restricted = !shown.every_library
   /**
-   * "Every library" was chosen on an account that holds grants, and the card
-   * is asking before it lifts the limit.
+   * "Every library" was chosen on an account with a limit, and the card is
+   * asking before it lifts it.
    *
    * **Asked, not saved at once (O195).** An arrow key on the radios chooses
-   * as a click does, so one key pressed on "Only these" sent the empty list,
-   * and the account saw every library with its ticks gone and nothing asked.
+   * as a click does, so one key pressed on "Only these" would lift the limit
+   * with nothing asked — on an account limited to no library as much as on
+   * one with ticks.
    */
   const [lifting, setLifting] = useState(false)
   // Retired during render, as `applied` is: a list read that brings the account
-  // lifted elsewhere must not leave the question waiting for its next grant.
-  if (lifting && granted.length === 0) setLifting(false)
+  // lifted elsewhere must not leave the question waiting for its next limit.
+  if (lifting && !restricted) setLifting(false)
   const everyRadio = useRef<HTMLInputElement>(null)
   const onlyRadio = useRef<HTMLInputElement>(null)
   const keepButton = useRef<HTMLButtonElement>(null)
@@ -292,7 +287,7 @@ export function UserRow({
   /**
    * Grants whose library the list does not hold, as when the list was read
    * before the library was made. No box is drawn for them, so they are named:
-   * the sentence about the last tick would otherwise stand over no tick.
+   * an account holding only these would otherwise look as if it saw nothing.
    */
   const unlisted =
     libraries === undefined
@@ -308,6 +303,22 @@ export function UserRow({
     called.length < 2
       ? called.join('')
       : `${called.slice(0, -1).join(', ')} and ${called[called.length - 1]}`
+  /**
+   * Whether the account is left seeing no library: limited, holding no grant
+   * at all, and not an administrator, who sees every library whatever its
+   * rows say. `granted` rather than the boxes ticked, because a grant the
+   * list does not hold is drawn by no box and is still a library it sees.
+   * One condition for every branch of the fieldset, so none can say it of
+   * an account another branch would not.
+   */
+  const seesNothing =
+    restricted && granted.length === 0 && shown.role !== 'admin'
+  const noLibraryLine = seesNothing ? (
+    <p className="why" data-field="no-library">
+      This account sees no library.
+    </p>
+  ) : null
+
   const unlistedLine =
     unlisted.length === 0 ? null : (
       <p className="why" data-field="unlisted-grants">
@@ -319,38 +330,31 @@ export function UserRow({
       </p>
     )
 
+  // The last tick clears like any other: an empty list limits the account to
+  // no library, which narrows it and widens nothing.
   const toggleGrant = (id: number, on: boolean) => {
     const next = on ? [...granted, id] : granted.filter((held) => held !== id)
-    // **The last tick is not cleared here.** An empty list is unrestricted,
-    // and each tick is saved at once: unticking the last library on the way
-    // to ticking another would leave the account seeing every library until
-    // the second click, and for good if that click never came. "Every
-    // library" is the control that says so.
-    if (next.length === 0) return
     save({ libraries: next })
   }
 
   /**
-   * **Neither radio acts while a write is in flight**, for the reason the
-   * boxes do not: `begin` refuses a second write through `inFlight`, and a
-   * radio that only changes local state would still redraw the card — "Every
-   * library" pressed while a tick is being saved would draw the account
-   * unrestricted before the tick landed.
+   * **Neither radio acts while a write is in flight.** "Only these" saves, so
+   * `begin` refuses it through `inFlight`. "Every library" only opens the
+   * question, which changes local state and so would redraw the card mid-save
+   * — it reads the ref itself.
    */
   const seeEvery = () => {
     if (inFlight.current) return
-    if (granted.length === 0) {
-      setChoosing(false)
-      return
-    }
     setLifting(true)
   }
 
+  /** Saved at once as no library, for the reason the last tick clears. */
+  const seeOnly = () => save({ libraries: [] })
+
+  // `every_library` rather than an empty list, which would limit the account
+  // to no library instead.
   const lift = () => {
-    save({ libraries: [] }, () => {
-      setChoosing(false)
-      everyRadio.current?.focus()
-    })
+    save({ every_library: true }, () => everyRadio.current?.focus())
   }
 
   /** The question goes, and focus goes back to the choice that stands. */
@@ -561,17 +565,20 @@ export function UserRow({
         {libraries === undefined ? (
           <p className="unknown">
             The libraries list has not been read, so there is nothing to offer
-            here.{' '}
-            {shown.libraries.length === 0
-              ? 'This account is granted none, which is unrestricted.'
-              : `This account is granted ${shown.libraries
-                  .map((g) => g.name)
-                  .join(', ')}.`}
+            here.
+            {shown.every_library
+              ? ' This account sees every library.'
+              : shown.libraries.length > 0
+                ? ` This account is granted ${shown.libraries
+                    .map((g) => g.name)
+                    .join(', ')}.`
+                : seesNothing && ' This account sees no library.'}
           </p>
         ) : libraries.length === 0 ? (
           <>
             <p className="empty">There are no libraries yet.</p>
             {unlistedLine}
+            {noLibraryLine}
           </>
         ) : (
           <>
@@ -595,10 +602,7 @@ export function UserRow({
                 value="only"
                 checked={restricted}
                 aria-disabled={saving}
-                onChange={() => {
-                  if (inFlight.current) return
-                  setChoosing(true)
-                }}
+                onChange={seeOnly}
                 // A radio already chosen fires no change, and "Only these"
                 // stands while the question is up, so choosing it again by
                 // click or by an arrow key is heard here.
@@ -616,9 +620,14 @@ export function UserRow({
                 aria-label="Lift the limit"
                 aria-describedby={liftId}
               >
+                {/* No ticks are named where there are none to clear. */}
                 <p id={liftId}>
                   {shown.name} would see every library, including any added
-                  later, and the ticks below would be cleared.
+                  later
+                  {granted.length === 0
+                    ? ''
+                    : ', and the ticks below would be cleared'}
+                  .
                 </p>
                 <button
                   type="button"
@@ -641,45 +650,33 @@ export function UserRow({
             )}
             {restricted && (
               <ul className="grant-list">
-                {libraries.map((library) => {
-                  const last = granted.length === 1 && granted[0] === library.id
-                  return (
-                    <li key={library.id}>
-                      <label>
-                        <input
-                          type="checkbox"
-                          name={`library-${library.id}`}
-                          checked={granted.includes(library.id)}
-                          aria-disabled={saving || last}
-                          aria-describedby={last ? lastTickId : undefined}
-                          onChange={(e) =>
-                            toggleGrant(library.id, e.target.checked)
-                          }
-                        />
-                        <span>{library.name}</span>
-                      </label>
-                      <ul className="grant-folders">
-                        {library.folders.map((folder) => (
-                          <li key={folder.path}>
-                            <code>{folder.path}</code>
-                          </li>
-                        ))}
-                      </ul>
-                    </li>
-                  )
-                })}
+                {libraries.map((library) => (
+                  <li key={library.id}>
+                    <label>
+                      <input
+                        type="checkbox"
+                        name={`library-${library.id}`}
+                        checked={granted.includes(library.id)}
+                        aria-disabled={saving}
+                        onChange={(e) =>
+                          toggleGrant(library.id, e.target.checked)
+                        }
+                      />
+                      <span>{library.name}</span>
+                    </label>
+                    <ul className="grant-folders">
+                      {library.folders.map((folder) => (
+                        <li key={folder.path}>
+                          <code>{folder.path}</code>
+                        </li>
+                      ))}
+                    </ul>
+                  </li>
+                ))}
               </ul>
             )}
             {unlistedLine}
-            {restricted && granted.length === 0 && (
-              <p className="why">Nothing is saved until a library is ticked.</p>
-            )}
-            {granted.length === 1 && unlisted.length === 0 && (
-              <p className="why" id={lastTickId}>
-                The last tick cannot be cleared here. Choose “Every library” to
-                lift the limit.
-              </p>
-            )}
+            {noLibraryLine}
             {shown.role === 'admin' && (
               <p className="why">
                 An administrator sees every library whatever is chosen here. The

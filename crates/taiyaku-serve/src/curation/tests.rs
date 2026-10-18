@@ -1408,7 +1408,7 @@ fn an_administrator() -> crate::auth::Principal {
         // it after all — the thing `auth::tests::an_administrator_does_not
         // _inherit_can_stamp` exists to refuse.
         can_stamp: false,
-        roots: Vec::new(),
+        access: taiyaku_library::account::Access::Every,
     }
 }
 

@@ -248,6 +248,13 @@ export interface Removal {
   works: number
   positions: number
   notes: number
+  /**
+   * The accounts, by name, whose only grant is the library this removal
+   * deletes, and who will see no library after it. Empty where the library
+   * stays. An administrator is never named: it sees every library whatever
+   * its grants say.
+   */
+  left_with_no_library: string[]
 }
 
 /**

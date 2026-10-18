@@ -117,6 +117,13 @@ export interface LibraryEntry {
 
 export interface LibraryStatus {
   libraries: LibraryEntry[]
+  /**
+   * The account sees only the libraries granted to it. With no library
+   * listed, this is what tells an account granted none from a server that
+   * has none: the first waits on a grant, the second on a library being
+   * made.
+   */
+  restricted: boolean
 }
 
 /**

@@ -48,7 +48,16 @@ export interface User {
   can_log_in: boolean
   sessions: SessionRow[]
   keys: ApiKey[]
-  /** **Empty means unrestricted, not blind** — spec A2, O54. */
+  /**
+   * Whether this account sees every library, including any added later.
+   * **The only field that says so**: `libraries` is never read for it, so
+   * an account limited to no library is not mistaken for an unlimited one.
+   */
+  every_library: boolean
+  /**
+   * The libraries this account is limited to when `every_library` is false.
+   * Empty then means it sees no library.
+   */
   libraries: Grant[]
   /**
    * **The one capability `role` does not imply.** Every other capability on
@@ -66,8 +75,8 @@ export interface User {
  *
  * **Absent and present mean different things**, which is why every field is
  * optional: the server reads an absent key as "leave this column alone".
- * `libraries: []` is the one that reads oddly and is deliberate — it grants
- * nothing, which spec A2 defines as *unrestricted*.
+ * `every_library` and `libraries` are never sent together; the server refuses
+ * a body holding both.
  */
 export interface UserPatch {
   name?: string
@@ -76,9 +85,14 @@ export interface UserPatch {
   can_stream?: boolean
   can_stamp?: boolean
   /**
-   * The whole list of granted libraries, by id, replacing what is there.
-   * `[]` grants nothing, which is unrestricted; the card sends it only for
-   * its "Every library" choice.
+   * Lift the limit: the account sees every library, including any added
+   * later, and its grants are deleted. Only `true` is sent — `false` has no
+   * meaning `libraries` does not already carry, and the server refuses it.
+   */
+  every_library?: true
+  /**
+   * Limit the account to these libraries, by id, replacing what is there.
+   * `[]` limits it to no library: it sees nothing until one is granted.
    */
   libraries?: number[]
   /**

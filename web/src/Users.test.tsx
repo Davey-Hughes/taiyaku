@@ -34,6 +34,7 @@ const user = (over: Partial<usersApi.User> = {}): usersApi.User => ({
   can_log_in: true,
   sessions: [],
   keys: [],
+  every_library: true,
   libraries: [],
   ...over,
 })
@@ -220,6 +221,7 @@ describe('Users', () => {
           id: 2,
           name: 'sam',
           role: 'user',
+          every_library: false,
           libraries: [{ id: 70, name: 'Manga' }],
         }),
       ],
@@ -242,7 +244,8 @@ describe('Users', () => {
     ])
   })
 
-  it('gives each card its own last-tick sentence, and each box points at its own', async () => {
+  it('gives each card its own question, each described by its own sentence', async () => {
+    // kim is limited to no library, and lifting that is asked as well.
     vi.mocked(librariesApi.listLibraries).mockResolvedValue({
       libraries: [
         { id: 70, name: 'Manga', works: 0, books: 0, folders: [] },
@@ -255,33 +258,41 @@ describe('Users', () => {
           id: 2,
           name: 'sam',
           role: 'user',
+          every_library: false,
           libraries: [{ id: 70, name: 'Manga' }],
         }),
         user({
           id: 3,
           name: 'kim',
           role: 'user',
-          libraries: [{ id: 80, name: 'Comics' }],
+          every_library: false,
         }),
       ],
     })
     const host = await settle()
     const [sam, kim] = [...host.querySelectorAll('li.user-row')]
-    const sentence = (card: Element) =>
-      [...card.querySelectorAll('.grants .why')].find((p) =>
-        p.textContent?.includes('The last tick cannot be cleared'),
-      )
-    const described = (card: Element, box: string) =>
-      card
-        .querySelector(`input[name="${box}"]`)
+    const every = (card: Element | undefined) =>
+      card?.querySelector<HTMLInputElement>('.grants input[value="every"]')
+    await act(async () => {
+      every(sam)?.click()
+      every(kim)?.click()
+      await Promise.resolve()
+    })
+    expect(usersApi.patchUser).not.toHaveBeenCalled()
+    const sentence = (card: Element | undefined) => {
+      const id = card
+        ?.querySelector('.lift-limit')
         ?.getAttribute('aria-describedby')
-    const samId = sentence(sam)?.id
-    const kimId = sentence(kim)?.id
-    expect(samId).toBeTruthy()
-    expect(kimId).toBeTruthy()
-    expect(samId).not.toBe(kimId)
-    expect(described(sam, 'library-70')).toBe(samId)
-    expect(described(kim, 'library-80')).toBe(kimId)
+      return id ? document.getElementById(id) : null
+    }
+    expect(sentence(sam)?.textContent).toBe(
+      'sam would see every library, including any added later, and the ticks below would be cleared.',
+    )
+    expect(sentence(kim)?.textContent).toBe(
+      'kim would see every library, including any added later.',
+    )
+    expect(sam?.contains(sentence(sam) ?? null)).toBe(true)
+    expect(kim?.contains(sentence(kim) ?? null)).toBe(true)
   })
 
   it('sends one POST for two submits dispatched before the first answers', async () => {
@@ -374,8 +385,8 @@ describe('Users', () => {
 
   it('says so when the libraries list could not be read, rather than drawing an empty one', async () => {
     // The grant editor draws "There are no libraries yet" for an empty
-    // array, and a failed read would make that sentence a lie about the one
-    // control whose empty state means *unrestricted*.
+    // array, and a failed read would make that sentence a lie about the
+    // server, told on the control that decides what an account sees.
     vi.mocked(librariesApi.listLibraries).mockRejectedValue(
       new Error(
         '/api/library/libraries: 500 {"error":"the store is unavailable"}',
@@ -387,8 +398,8 @@ describe('Users', () => {
       'The libraries list could not be read (the store is unavailable), so the grant editors below show nothing rather than what there is.',
     )
     // And the card says the same thing where the editor would be, rather than
-    // claiming there are no libraries — the two look identical and mean
-    // opposite things, since an empty grant is *unrestricted*.
+    // claiming there are no libraries — an empty editor and an unread one
+    // look identical, and only one of them is true.
     expect(host.querySelector('.grants')?.textContent).toContain(
       'has not been read',
     )

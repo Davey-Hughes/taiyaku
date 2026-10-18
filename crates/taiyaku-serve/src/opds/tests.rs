@@ -8,12 +8,36 @@ use super::*;
 /// over in `auth::tests::every_route_refuses_an_anonymous_request`, which walks
 /// this very list. Building the guarded router here would test the guard
 /// twenty-one more times and the feed no better.
+///
+/// Each request carries [`as_an_administrator`]'s principal in the guard's
+/// place, because a request with none sees nothing (`auth::access_of`).
 fn feed_router() -> axum::Router<std::sync::Arc<ServeState>> {
     super::routes()
         .into_iter()
         .fold(axum::Router::new(), |router, (path, handler)| {
             router.route(path, handler)
         })
+        .layer(axum::Extension(an_administrator()))
+}
+
+/// The principal `auth::guard` leaves for an administrator, who sees every
+/// library.
+fn an_administrator() -> crate::auth::Principal {
+    crate::auth::Principal {
+        user_id: 1,
+        role: crate::auth::Role::Admin,
+        can_download: true,
+        can_stream: true,
+        can_stamp: false,
+        access: Access::Every,
+    }
+}
+
+/// [`an_administrator`], as the extensions of a handler called directly.
+fn as_an_administrator() -> axum::http::Extensions {
+    let mut extensions = axum::http::Extensions::new();
+    extensions.insert(an_administrator());
+    extensions
 }
 
 use axum::body::Body;
@@ -945,12 +969,9 @@ fn feed_on_a_current_thread_runtime(dir: &std::path::Path, members: &[(&str, &st
 
     let async_worker = this_thread();
     let body = runtime.block_on(async {
-        let response = crate::opds::work_feed(
-            State(state),
-            AxPath("t".to_string()),
-            axum::http::Extensions::new(),
-        )
-        .await;
+        let response =
+            crate::opds::work_feed(State(state), AxPath("t".to_string()), as_an_administrator())
+                .await;
         assert_eq!(response.status(), StatusCode::OK);
         body_of(response).await
     });

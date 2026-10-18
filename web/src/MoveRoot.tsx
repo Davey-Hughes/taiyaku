@@ -14,6 +14,11 @@
  * **A refusal is the sentence and the list.** The server refuses a move
  * that cannot keep every reader's place, names the first few volumes in its
  * sentence and lists them all beside it.
+ *
+ * **An account whose only grant is the library the move empties is named
+ * under the counts, and the confirm is still offered.** The move leaves it
+ * seeing no library until an administrator grants one; the rehearsal names
+ * it, and the move does what the rehearsal described.
  */
 import { useEffect, useRef, useState } from 'react'
 import type { Root } from './config'
@@ -22,6 +27,7 @@ import {
   type MoveTarget,
   moveCost,
   moveFolder,
+  noLibrarySentence,
 } from './libraries'
 import { sentenceOf, volumesOf } from './message'
 import { MoveCounts } from './MoveCounts'
@@ -239,6 +245,17 @@ export function MoveRoot({
             from={from.name}
             newLibrary={choice === 'new'}
           />
+          {/* Here and not in `MoveCounts`, which the kept report shares:
+              this says what the move will do, and that report says what it
+              did. */}
+          {moved.left_with_no_library.length > 0 && (
+            <p className="left-with-no-library">
+              {noLibrarySentence(
+                moved.left_with_no_library,
+                "this folder's library",
+              )}
+            </p>
+          )}
           <button
             type="button"
             className="confirm"

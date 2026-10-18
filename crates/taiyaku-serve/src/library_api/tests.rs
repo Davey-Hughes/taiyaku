@@ -1,4 +1,5 @@
 use crate::test_support;
+use taiyaku_library::account::Access;
 // `get` and `get_json` were private here until C3's `curation` module needed
 // the same two. Promoted rather than copied: `get_json`'s panic is
 // load-bearing (see its own doc comment), and two copies would be two places
@@ -767,9 +768,9 @@ fn keys_of(value: &serde_json::Value) -> Vec<String> {
     keys
 }
 
-/// `/api/library/status` lists libraries, each `{id, name, scanned}`, and
-/// carries nothing else at either level: the key lists are compared whole,
-/// because a substring check cannot see an added field.
+/// `/api/library/status` lists libraries, each `{id, name, scanned}`, beside
+/// `restricted`, and carries nothing else at either level: the key lists are
+/// compared whole, because a substring check cannot see an added field.
 ///
 /// **Two libraries, one walked and one not**, so `scanned` is read from each
 /// library's own folders: a constant either way fails one of them. Folder ids 5
@@ -799,7 +800,7 @@ async fn the_status_lists_libraries_and_nothing_else() {
     );
 
     let body = get_json(&router, "/api/library/status").await;
-    assert_eq!(keys_of(&body), ["libraries"], "{body}");
+    assert_eq!(keys_of(&body), ["libraries", "restricted"], "{body}");
     let libraries = body["libraries"].as_array().expect("a list of libraries");
     assert_eq!(libraries.len(), 2, "the two libraries: {body}");
     for entry in libraries {
@@ -816,6 +817,68 @@ async fn the_status_lists_libraries_and_nothing_else() {
     assert_eq!(
         libraries[1]["scanned"], true,
         "its folder has been walked: {body}"
+    );
+}
+
+/// `restricted` says whether the caller sees only the libraries granted to
+/// it, read through the guard as each request rebuilds the principal. False
+/// for an administrator, even one holding a grant (O86), and for a reader
+/// seeing every library; true for a reader granted a library, and for one
+/// granted none, who is listed no library.
+#[tokio::test]
+async fn the_status_says_whether_the_caller_sees_only_granted_libraries() {
+    let (router, state, _fixture) = test_support::router_over_a_single_scanned_work();
+    let library: i64 = {
+        let conn = state.library.conn();
+        conn.query_row("SELECT library_id FROM root", [], |r| r.get(0))
+            .expect("the fixture's one library")
+    };
+    let status = || async { get_json(&router, "/api/library/status").await };
+    let write = |sql: &str| {
+        let conn = state.library.conn();
+        conn.execute_batch(sql).expect(sql);
+    };
+
+    let body = status().await;
+    assert_eq!(body["restricted"], false, "an administrator: {body}");
+
+    {
+        let conn = state.library.conn();
+        taiyaku_library::account::grant_library(&conn, 1, library).expect("grants");
+    }
+    let body = status().await;
+    assert_eq!(
+        body["restricted"], false,
+        "an administrator holding a grant: {body}"
+    );
+
+    write("UPDATE user SET role = 'user' WHERE id = 1");
+    let body = status().await;
+    assert_eq!(
+        body["restricted"], true,
+        "a reader granted a library: {body}"
+    );
+    assert_eq!(
+        body["libraries"].as_array().map(Vec::len),
+        Some(1),
+        "{body}"
+    );
+
+    write("DELETE FROM user_library WHERE user_id = 1");
+    let body = status().await;
+    assert_eq!(body["restricted"], true, "a reader granted none: {body}");
+    assert_eq!(body["libraries"], serde_json::json!([]), "{body}");
+
+    write("UPDATE user SET every_library = 1 WHERE id = 1");
+    let body = status().await;
+    assert_eq!(
+        body["restricted"], false,
+        "a reader seeing every library: {body}"
+    );
+    assert_eq!(
+        body["libraries"].as_array().map(Vec::len),
+        Some(1),
+        "{body}"
     );
 }
 
@@ -1128,17 +1191,17 @@ async fn a_rescan_after_a_series_titles_correction_keeps_the_series_its_work_and
 }
 
 /// The principal `auth::guard` leaves for the fixture account demoted to a
-/// reader and granted `roots`, for a handler called directly. An
-/// administrator's grant is always empty (O86), so a reader is what makes
-/// `roots: vec![1]` a restriction.
-fn a_reader_granted(roots: Vec<i64>) -> crate::auth::Principal {
+/// reader with `access`, for a handler called directly. An administrator's
+/// access is always `Every` (O86), so a reader is what makes
+/// `Access::Only(vec![1])` a restriction.
+fn a_reader_with(access: Access) -> crate::auth::Principal {
     crate::auth::Principal {
         user_id: 1,
         role: crate::auth::Role::User,
         can_download: true,
         can_stream: true,
         can_stamp: false,
-        roots,
+        access,
     }
 }
 
@@ -1150,16 +1213,18 @@ fn a_reader_granted(roots: Vec<i64>) -> crate::auth::Principal {
 /// Each of the seven handlers took `state.library.conn()` in its own body, on
 /// the async worker, for every request. `docs/notes.md`, "O115", "Found beside
 /// it, not changed", measured `work` stalling for a reader granted root 1 and
-/// for an empty grant alike; the other six were read, not measured.
+/// for an unrestricted one alike; the other six were read, not measured.
 ///
-/// **Both grants, because neither is spared here.** An empty grant is answered
+/// **Each access, because none is spared here.** `Every` is answered
 /// without the library by `routes::on_the_grant`, but `browse` applies a grant
 /// in SQL, so every browse request reads the library whatever the caller
 /// holds.
 ///
 /// **Every call is asserted to answer as it does for a reader who can see the
-/// series**, so none is free for having been refused. Every member of the
-/// series' one work is under root 1.
+/// series**, so none is free for having been refused, except under `Only`
+/// with no folder: there the series, the work and the cover each answer the
+/// 404 one outside the grant gets, after asking the library. Every member of
+/// the series' one work is under root 1.
 ///
 /// **The watchdog measures each call's first wait on the library's mutex**
 /// ([`test_support::the_runtime_stalls_on`]). `series` and `one_series` each
@@ -1188,8 +1253,19 @@ async fn no_browse_route_stalls_the_runtime() {
     let library = Arc::clone(&state.library);
     let mut stalled_on = Vec::new();
 
-    for (grant, roots) in [("granted root 1", vec![1]), ("an empty grant", Vec::new())] {
-        let who = || Extension(a_reader_granted(roots.clone()));
+    for (grant, access) in [
+        ("granted root 1", Access::Only(vec![1])),
+        ("every library", Access::Every),
+        ("granted nothing", Access::Only(Vec::new())),
+    ] {
+        let who = || Extension(a_reader_with(access.clone()));
+        let found = |status| {
+            if access == Access::Only(Vec::new()) {
+                StatusCode::NOT_FOUND
+            } else {
+                status
+            }
+        };
         let calls: Vec<(&str, StatusCode, _)> = vec![
             (
                 "home",
@@ -1215,7 +1291,7 @@ async fn no_browse_route_stalls_the_runtime() {
             ),
             (
                 "one_series",
-                StatusCode::OK,
+                found(StatusCode::OK),
                 Box::pin(crate::library_api::one_series(
                     State(Arc::clone(&state)),
                     who(),
@@ -1224,7 +1300,7 @@ async fn no_browse_route_stalls_the_runtime() {
             ),
             (
                 "work",
-                StatusCode::OK,
+                found(StatusCode::OK),
                 Box::pin(crate::library_api::work(
                     State(Arc::clone(&state)),
                     who(),
@@ -1245,7 +1321,7 @@ async fn no_browse_route_stalls_the_runtime() {
             ),
             (
                 "cover",
-                StatusCode::TEMPORARY_REDIRECT,
+                found(StatusCode::TEMPORARY_REDIRECT),
                 Box::pin(crate::library_api::cover(
                     State(Arc::clone(&state)),
                     who(),

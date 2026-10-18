@@ -1745,6 +1745,16 @@
   max-width: 60ch;
 }
 
+/* An account left seeing no library is a cost the counts do not show, and
+   the one a person removing may know least about, so it is drawn as strongly
+   as they are. */
+.remove-root .left-with-no-library,
+.move-root .left-with-no-library,
+.remove-library .left-with-no-library {
+  font-weight: 600;
+  max-width: 60ch;
+}
+
 .remove-root .irreversible,
 .remove-user .irreversible,
 .remove-library .irreversible {

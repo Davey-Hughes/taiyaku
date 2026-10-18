@@ -109,6 +109,7 @@ beforeEach(() => {
   vi.clearAllMocks()
   vi.mocked(library.status).mockResolvedValue({
     libraries: [{ id: 1, name: 'Volumes', scanned: true }],
+    restricted: false,
   })
   vi.mocked(curation.listProposals).mockResolvedValue({
     proposals: [],
@@ -211,12 +212,12 @@ const card = (host: HTMLElement, name: string) =>
 /** Removes the Manga library from the foot of the page. */
 async function removeManga(host: HTMLElement) {
   vi.mocked(librariesApi.libraryRemovalCost).mockResolvedValue({
-    removed: { works: 0, positions: 0, notes: 0 },
+    removed: { works: 0, positions: 0, notes: 0, left_with_no_library: [] },
     derive: emptyDerive,
     dry_run: true,
   })
   vi.mocked(librariesApi.removeLibrary).mockResolvedValue({
-    removed: { works: 0, positions: 0, notes: 0 },
+    removed: { works: 0, positions: 0, notes: 0, left_with_no_library: [] },
     derive: { ...emptyDerive, lost_positions: 4 },
     dry_run: false,
   })
@@ -282,12 +283,12 @@ describe('the Libraries screen in the real Shell', () => {
     })
     // At the top of a page that fits, the report is in view as it lands.
     vi.mocked(librariesApi.libraryRemovalCost).mockResolvedValue({
-      removed: { works: 0, positions: 0, notes: 0 },
+      removed: { works: 0, positions: 0, notes: 0, left_with_no_library: [] },
       derive: emptyDerive,
       dry_run: true,
     })
     vi.mocked(librariesApi.removeLibrary).mockResolvedValue({
-      removed: { works: 0, positions: 0, notes: 0 },
+      removed: { works: 0, positions: 0, notes: 0, left_with_no_library: [] },
       derive: emptyDerive,
       dry_run: false,
     })
@@ -547,6 +548,7 @@ describe('the Libraries screen in the real Shell', () => {
     }))
     vi.mocked(library.status).mockImplementation(async () => ({
       libraries: made ? [{ id: 3, name: 'Manga', scanned: false }] : [],
+      restricted: false,
     }))
     const host = await shell(1280, 800)
     expect(vi.mocked(library.status)).toHaveBeenCalled()
@@ -585,6 +587,7 @@ describe('the Libraries screen in the real Shell', () => {
         { id: 2, name: 'Light novels', scanned: true },
         ...(removed() ? [] : [{ id: 1, name: 'Manga', scanned: true }]),
       ],
+      restricted: false,
     }))
     const host = await shell(1280, 800)
     const names = () =>
@@ -615,6 +618,7 @@ describe('the Libraries screen in the real Shell', () => {
         { id: 2, name: 'Light novels', scanned: true },
         ...(removed() ? [] : [{ id: 1, name: 'Manga', scanned: true }]),
       ],
+      restricted: false,
     }))
     const host = await shell(1280, 800)
     const names = () =>

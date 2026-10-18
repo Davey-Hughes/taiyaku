@@ -18,6 +18,8 @@ use axum::{
     routing::get,
 };
 
+use taiyaku_library::account::Access;
+
 use crate::{ServeState, Work};
 
 /// An error a client can act on, rather than a bare status.
@@ -350,7 +352,7 @@ impl IntoResponse for NoProgress {
 /// of them are `null` today.
 ///
 /// **Applied no grant at all until this route joined the other four.** This
-/// list answered every work the server held regardless of `Principal.roots`,
+/// list answered every work the server held regardless of the caller's grant,
 /// which handed a restricted account the id, title, series and volume of
 /// every work outside every root it was granted — the same shape of gap the
 /// whole-branch review closed on the page routes (`refuse_if_hidden`) and
@@ -383,8 +385,8 @@ impl IntoResponse for NoProgress {
 /// on the largest series, reopened at the edition level this time:
 /// `browse::visible_editions` answers every work's visible edition set in one
 /// round trip, and this filter is then only a `HashSet` lookup per edition.
-/// An empty grant is unrestricted and skips that query entirely, the same
-/// short-circuit `refuse_if_hidden` applies.
+/// `Access::Every` skips that query entirely, the same short-circuit
+/// `refuse_if_hidden` applies.
 ///
 /// **Not a home screen.** Spec C1 is the browse UI this payload exists to
 /// eventually feed; nothing here builds one, and `openFirstWork`
@@ -398,18 +400,16 @@ async fn list_works(
     State(state): State<Arc<ServeState>>,
     request_extensions: axum::http::Extensions,
 ) -> Response {
-    let roots = request_extensions
-        .get::<crate::auth::Principal>()
-        .map_or_else(Vec::new, |principal| principal.roots.clone());
+    let access = crate::auth::access_of(&request_extensions);
 
     // A SELECT per work against `state.library` — `get_page`'s reasoning
     // about the async worker applies unchanged.
     let built = tokio::task::spawn_blocking(move || {
         let conn = state.library.conn();
-        let visible = if roots.is_empty() {
+        let visible = if access == Access::Every {
             None
         } else {
-            Some(taiyaku_library::browse::visible_editions(&conn, &roots)?)
+            Some(taiyaku_library::browse::visible_editions(&conn, &access)?)
         };
         let held = state.works.snapshot();
         held.iter()
@@ -451,10 +451,9 @@ async fn list_works(
 /// unauthorised caller which slugs are real is the enumeration this project
 /// refuses elsewhere.
 ///
-/// An empty grant is unrestricted and short-circuits inside
-/// `browse::edition_visible` without touching the database, so the ordinary
-/// single-reader deployment pays nothing for this. A grant that names roots
-/// is asked on the blocking pool, through [`on_the_grant`] (O115).
+/// [`on_the_grant`] answers `Access::Every` without touching the database, so
+/// the ordinary single-reader deployment pays nothing for this. Any other
+/// access is asked on the blocking pool, through it (O115).
 ///
 /// **Progress, notes and truth name a work and no edition, so they ask
 /// [`visible_editions_or_refuse`] instead** (O60): a work the grant hides
@@ -467,30 +466,33 @@ pub(crate) async fn refuse_if_hidden(
 ) -> Option<Response> {
     let (slug, edition) = (slug.to_string(), edition.to_string());
     on_the_grant(state, extensions, None, move |conn, principal| {
-        edition_refusal(conn, &principal.roots, &slug, &edition)
+        edition_refusal(conn, &principal.access, &slug, &edition)
     })
     .await
     .unwrap_or_else(Some)
 }
 
 /// [`refuse_if_hidden`]'s question, asked on a connection the caller already
-/// holds: the refusal to send when `slug`'s `edition` keeps no member under
-/// `roots`.
+/// holds: the refusal to send when `slug`'s `edition` keeps no member inside
+/// `access`.
 fn edition_refusal(
     conn: &rusqlite::Connection,
-    roots: &[i64],
+    access: &Access,
     slug: &str,
     edition: &str,
 ) -> Option<Response> {
-    match taiyaku_library::browse::edition_visible(conn, roots, slug, edition) {
+    match taiyaku_library::browse::edition_visible(conn, access, slug, edition) {
         Ok(true) => None,
         Ok(false) => Some(not_found(format!("no work `{slug}`"))),
         Err(why) => Some((StatusCode::INTERNAL_SERVER_ERROR, why).into_response()),
     }
 }
 
-/// `check`, asked of the library for a reader whose grant names roots, on the
-/// blocking pool; `unrestricted` for anyone else, without asking.
+/// `check`, asked of the library on the blocking pool for a reader whose
+/// access is not `Every`; `unrestricted` for `Every`, without asking; and a
+/// 401 for a request with no principal, which must see nothing rather than
+/// everything (the guard inserts one on every guarded route, so this is a
+/// routing mistake).
 ///
 /// **Off the async worker, because the library is a mutex — O115.** A grant is
 /// answered in SQL, and until O115 closed [`refuse_if_hidden`] and
@@ -503,11 +505,11 @@ fn edition_refusal(
 /// [`visible_editions_or_refuse`]: each had asked the library itself, on the
 /// async worker, through code of its own.
 ///
-/// **An empty grant never leaves the async worker**: it is answered without
-/// the library, so the unrestricted reader pays for neither the query nor the
-/// trip to the pool.
+/// **`Every` never leaves the async worker**: it is answered without the
+/// library, so the unrestricted reader pays for neither the query nor the trip
+/// to the pool.
 ///
-/// `Err` is the refusal to send when `check` panicked.
+/// `Err` is the refusal to send: the 401, or a 500 when `check` panicked.
 #[expect(
     clippy::result_large_err,
     reason = "the `Err` carries a `Response`, for `visible_editions_or_refuse`'s reason: a \
@@ -520,9 +522,9 @@ pub(crate) async fn on_the_grant<T: Send + 'static>(
     check: impl FnOnce(&rusqlite::Connection, &crate::auth::Principal) -> T + Send + 'static,
 ) -> Result<T, Response> {
     let Some(principal) = extensions.get::<crate::auth::Principal>() else {
-        return Ok(unrestricted);
+        return Err((StatusCode::UNAUTHORIZED, "unauthorized").into_response());
     };
-    if principal.roots.is_empty() {
+    if principal.access == Access::Every {
         return Ok(unrestricted);
     }
     let state = Arc::clone(state);
@@ -639,11 +641,10 @@ pub(crate) fn refuse_if_cannot_stamp(extensions: &axum::http::Extensions) -> Opt
 /// it, and the two callers filter with it via [`filter_sidecar_editions`]
 /// rather than reinventing the rule a third time.
 ///
-/// `Ok(None)`: an unrestricted caller — no [`crate::auth::Principal`] at
-/// all, or an empty grant (every account in an un-migrated library holds
-/// one, spec C1 §5.1) — and the database is never touched, the same
-/// short-circuit `refuse_if_hidden` applies. A restricted caller is asked on
-/// the blocking pool, through [`on_the_grant`] (O115).
+/// `Ok(None)`: a caller whose access is `Access::Every`, and the database is
+/// never touched, the same short-circuit `refuse_if_hidden` applies. A
+/// restricted caller is asked on the blocking pool, through [`on_the_grant`]
+/// (O115), which refuses a request with no principal.
 /// `Ok(Some(keys))`: a restricted caller; `keys` is `slug`'s visible
 /// edition set, and a caller with nothing to filter still gets a real
 /// (possibly full) set rather than `None`, so it cannot be mistaken for
@@ -678,7 +679,7 @@ pub(crate) async fn visible_editions_or_refuse(
 }
 
 /// [`visible_editions_or_refuse`]'s question, asked on a connection the caller
-/// already holds, for a caller whose grant names roots.
+/// already holds, for a caller whose access is not `Every`.
 #[expect(
     clippy::result_large_err,
     reason = "the `Err` carries a `Response`, for `visible_editions_or_refuse`'s reason"
@@ -688,7 +689,7 @@ fn visible_editions(
     principal: &crate::auth::Principal,
     slug: &str,
 ) -> Result<HashSet<String>, Response> {
-    match taiyaku_library::browse::work(conn, &principal.roots, principal.user_id, slug) {
+    match taiyaku_library::browse::work(conn, &principal.access, principal.user_id, slug) {
         Ok(Some(detail)) => Ok(detail.card.editions.into_iter().map(|e| e.key).collect()),
         Ok(None) => Err(not_found(format!("no work `{slug}`"))),
         Err(why) => Err((StatusCode::INTERNAL_SERVER_ERROR, why).into_response()),
@@ -722,7 +723,7 @@ async fn visible_editions_for_a_correction(
     on_the_grant(state, extensions, Ok(None), move |conn, principal| {
         let visible = visible_editions(conn, principal, &slug)?;
         for side in sides.iter().flat_map(|(from, to)| [from, to]) {
-            if let Some(refusal) = edition_refusal(conn, &principal.roots, &slug, side) {
+            if let Some(refusal) = edition_refusal(conn, &principal.access, &slug, side) {
                 return Err(refusal);
             }
         }
@@ -771,7 +772,7 @@ fn filter_sidecar_editions(
 
 /// The sidecar a write is validated against for this caller: `found`'s own
 /// for a caller with no grant limits, and [`filter_sidecar_editions`]'s copy
-/// for one whose grant names roots.
+/// for one whose access is not `Every`.
 ///
 /// **So an edition outside the grant is refused in the words an edition the
 /// work does not have is refused in**, by the check that already refuses the
@@ -2319,10 +2320,13 @@ pub(crate) fn guarded_routes() -> Vec<(&'static str, axum::routing::MethodRouter
             get(crate::folders_api::list_folders),
         ),
         // **Spec C4 §4's user-administration routes, PR 2.** Admin-gated for
-        // the reason every route in this block is, with one of its own: this
-        // is the only writer of `role`, `can_download`, `can_stream` and
-        // `user_library` in the product, so a route here that landed in
-        // `open_routes` would let anybody grant themselves anything.
+        // the reason every route in this block is, with one of its own: these
+        // routes write `role`, `can_download`, `can_stream` and
+        // `every_library`, and add `user_library` rows (removing a library
+        // only drops its rows), so a route here that landed in `open_routes`
+        // would let anybody grant themselves anything. Outside this block,
+        // `/api/claim` also writes `role`, and only to promote the seeded
+        // account while the server is unclaimed (`account::promote`).
         // `users_api::tests::every_users_route_refuses_a_reader` drives them
         // all for a 403.
         (
@@ -2360,7 +2364,7 @@ pub(crate) fn guarded_routes() -> Vec<(&'static str, axum::routing::MethodRouter
     routes
 }
 
-/// Why a guarded route may or may not read [`crate::auth::Principal::roots`],
+/// Why a guarded route may or may not read [`crate::auth::Principal::access`],
 /// and how that claim can be told apart from a hope.
 ///
 /// **Beside [`guarded_routes`] rather than in a test file**, for the reason
@@ -2600,35 +2604,35 @@ pub(crate) fn grant_postures() -> Vec<(&'static str, GrantPosture)> {
         // *who may act on the answer* (still admin-only, unconditionally),
         // false of *which rows an administrator's own restricted grant
         // resolves through*. `library_api::work`/`one_series` already
-        // resolve their slug/id through `principal.roots`, so a hidden work
+        // resolve their slug/id through `principal.access`, so a hidden work
         // was a 404 on `GET` and 200 — with the full re-projected document,
         // series titles, tags, external ids, credits, chapter numbers
         // included — on `PATCH` of the identical id. `metadata::work_by_slug`,
         // `edition_owner`, `member_owner` and `works_in_series` now take
-        // `roots` and answer the same 404 a `GET` already does; membership
+        // the access and answer the same 404 a `GET` already does; membership
         // in an administrator's *account* (`Role::Admin`) is unconditional
-        // and orthogonal to `Principal.roots`, which is why "admin-only" and
+        // and orthogonal to `Principal.access`, which is why "admin-only" and
         // "resolves through the grant" are not in tension.
         //
         // **That last sentence stopped being true with O86, and these four
         // entries moved from `Refuses` to `GrantIndependent` because of it.**
         // The two are no longer orthogonal: `Principal::from_account` drops an
         // administrator's grant outright, so every caller these routes admit
-        // holds an empty — unrestricted — one, and there is no hidden work for
-        // them to refuse. The 404 the entries used to assert was driven by a
+        // holds `Access::Every`, and there is no hidden work for them to
+        // refuse. The 404 the entries used to assert was driven by a
         // fixture that granted a root to the seeded *admin*, which is exactly
         // the combination O86 made unrepresentable. **The check is void rather
         // than lost**: it proved the answer for a state the model no longer
         // has.
         //
         // `work_by_slug`, `edition_owner`, `member_owner` and `works_in_series`
-        // still take `roots` and still filter on it, kept deliberately: it is
-        // correct for any caller with a non-empty grant, and the day the role
-        // rule changes it is the difference between a leak and none.
+        // still take the access and still filter on it, kept deliberately: it
+        // is correct for any restricted caller, and the day the role rule
+        // changes it is the difference between a leak and none.
         //
         // **Not "unreachable" — they run on every edit.** What no longer
-        // reaches them through these routes is a *non-empty* `roots`, so the
-        // clause is always a no-op here. The distinction is not pedantry: a
+        // reaches them through these routes is an access other than `Every`,
+        // so the clause is always a no-op here. The distinction is not pedantry: a
         // sweep the day this landed reported `metadata::root_grant_clause ->
         // String::new()` as a **survivor**, because deleting the entire grant
         // filter passed every test. `metadata::tests::

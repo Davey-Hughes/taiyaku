@@ -166,12 +166,12 @@ beforeEach(() => {
   // not stubbed in this suite, and the dialog renders its failure state with
   // no confirm button at all.
   vi.mocked(config.removalCost).mockResolvedValue({
-    removed: { works: 412, positions: 3, notes: 27 },
+    removed: { works: 412, positions: 3, notes: 27, left_with_no_library: [] },
     derive: emptyDerive,
     dry_run: true,
   })
   vi.mocked(config.removeRoot).mockResolvedValue({
-    removed: { works: 412, positions: 3, notes: 27 },
+    removed: { works: 412, positions: 3, notes: 27, left_with_no_library: [] },
     derive: emptyDerive,
     dry_run: false,
   })
@@ -477,6 +477,7 @@ describe('RootRow', () => {
         alignments_dropped: 0,
         library_removed: null,
         grants_removed: 0,
+        left_with_no_library: [],
       },
       derive: { ...emptyDerive, lost_positions: dry_run ? 2 : 6 },
       dry_run,

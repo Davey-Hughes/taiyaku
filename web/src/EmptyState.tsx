@@ -21,6 +21,12 @@
  * third thing again (`no-library`): there is nothing to scan, and nothing this
  * account can do about it.
  *
+ * **An account granted no library is a fourth (`no-grant`).** The status lists
+ * no library for it either, and says `restricted`. It is not told "No library
+ * yet", which sends someone to make a library on a server that may hold
+ * several: what it lacks is a grant, which an administrator makes in
+ * Configuration → Users.
+ *
  * **Three more for the proposals inbox — spec C3 §3 — split on that same
  * rule.** An inbox that draws nothing is three different situations, and the
  * person seeing it can act on exactly one of each: `inbox-clear` is "there is
@@ -45,11 +51,13 @@
  * the list, drawn by `Proposals.tsx`, so this names it in words rather than
  * offering a second button that does the same thing from a different place.
  * The library states that a scan fixes name the screen that does it,
- * Configuration → Libraries, and the shell command beside it, for the same
- * reason: neither act is on the page that shows them.
+ * Configuration → Libraries, and the shell command beside it, and `no-grant`
+ * names Configuration → Users, for the same reason: none of those acts is on
+ * the page that shows them.
  */
 export type EmptyKind =
   | 'no-libraries'
+  | 'no-grant'
   | 'no-library'
   | 'not-scanned'
   | 'no-matches'
@@ -87,6 +95,17 @@ export function EmptyState({ kind, query, label, decided }: EmptyStateProps) {
         <p>
           A scan reads what is on disk — series, volumes, editions and page
           counts — without writing anything back into the tree.
+        </p>
+      </section>
+    )
+  }
+  if (kind === 'no-grant') {
+    return (
+      <section className="empty">
+        <h2>No library shared</h2>
+        <p>
+          No library has been shared with this account. An administrator can
+          grant one in Configuration → Users.
         </p>
       </section>
     )

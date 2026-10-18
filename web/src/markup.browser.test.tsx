@@ -62,6 +62,7 @@ const user = (over: Partial<usersApi.User> = {}): usersApi.User => ({
   can_log_in: true,
   sessions: [],
   keys: [],
+  every_library: true,
   libraries: [],
   ...over,
 })
@@ -114,7 +115,10 @@ describe('names — §4.3 and §4.4', () => {
       mount(
         <MemoryRouter>
           <UserRow
-            user={user({ libraries: [{ id: 70, name: 'Manga' }] })}
+            user={user({
+              every_library: false,
+              libraries: [{ id: 70, name: 'Manga' }],
+            })}
             users={[user()]}
             libraries={[
               {

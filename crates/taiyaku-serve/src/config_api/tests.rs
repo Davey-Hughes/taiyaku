@@ -105,7 +105,7 @@ fn an_administrator() -> crate::auth::Principal {
         // it after all — the thing `auth::tests::an_administrator_does_not
         // _inherit_can_stamp` exists to refuse.
         can_stamp: false,
-        roots: Vec::new(),
+        access: taiyaku_library::account::Access::Every,
     }
 }
 
@@ -1816,21 +1816,22 @@ async fn a_dry_run_delete_costs_without_removing_and_a_real_one_then_still_can()
     );
 }
 
-/// Removing the one folder of a library that is a reader's only grant is a
-/// 409 naming the reader, for the dry run and for the removal, and removes
-/// nothing. Once the reader holds another library the same dry run answers
-/// its counts.
+/// Removing the one folder of a library that is a reader's only grant goes
+/// ahead: the dry run names the reader under `left_with_no_library` and
+/// removes nothing, the removal answers the same, and the reader is then
+/// listed nothing. The first root's series stands, so a reader widened to
+/// every library would be listed it.
 #[tokio::test]
-async fn removing_a_readers_only_library_is_a_conflict_naming_the_reader() {
+async fn removing_a_readers_only_library_names_the_reader_who_then_sees_nothing() {
     let (router, state, _fixture) = test_support::state_with_two_scanned_roots();
     let id = test_support::second_root_id(&state);
     let reader = {
         let conn = state.library.conn();
         conn.execute(
-            "INSERT INTO user (name, password_hash) VALUES ('reader', 'x')",
+            "INSERT INTO user (name, password_hash, every_library) VALUES ('reader', 'x', 0)",
             [],
         )
-        .expect("adds a reader");
+        .expect("adds a reader seeing only what it is granted");
         let reader = conn.last_insert_rowid();
         conn.execute(
             "INSERT INTO user_library (user_id, library_id)
@@ -1840,6 +1841,11 @@ async fn removing_a_readers_only_library_is_a_conflict_naming_the_reader() {
         .expect("grants the reader the second root's library and no other");
         reader
     };
+    assert_eq!(
+        test_support::seen_by(&router, &state, reader).await,
+        1,
+        "the fixture: the reader sees the second root's series"
+    );
     let roots_and_works = |state: &crate::ServeState| -> i64 {
         state
             .library
@@ -1853,6 +1859,7 @@ async fn removing_a_readers_only_library_is_a_conflict_naming_the_reader() {
     };
     let before = roots_and_works(&state);
 
+    let mut answers = Vec::new();
     for query in ["?dry_run=true", ""] {
         let response = send_json(
             &router,
@@ -1863,37 +1870,29 @@ async fn removing_a_readers_only_library_is_a_conflict_naming_the_reader() {
         .await;
         let status = response.status();
         let text = test_support::body_string(response).await;
-        assert_eq!(status, StatusCode::CONFLICT, "`{query}`: {text}");
+        assert_eq!(status, StatusCode::OK, "`{query}`: {text}");
         let body: serde_json::Value = serde_json::from_str(&text).expect("a JSON body");
-        let error = body["error"].as_str().expect("an error");
-        assert!(
-            error.contains("the only library `reader` is granted"),
-            "`{query}`: {error}"
-        );
         assert_eq!(
-            roots_and_works(&state),
-            before,
-            "`{query}` removed something"
+            body["removed"]["left_with_no_library"],
+            serde_json::json!(["reader"]),
+            "`{query}`: {text}"
         );
+        if query.is_empty() {
+            assert_ne!(roots_and_works(&state), before, "the removal removed");
+        } else {
+            assert_eq!(roots_and_works(&state), before, "the dry run removed");
+        }
+        answers.push(body["removed"].clone());
     }
-
-    {
-        let conn = state.library.conn();
-        conn.execute(
-            "INSERT INTO user_library (user_id, library_id)
-             SELECT ?1, library_id FROM root WHERE id <> ?2",
-            [reader, id],
-        )
-        .expect("grants the reader the first root's library too");
-    }
-    let response = send_json(
-        &router,
-        Method::DELETE,
-        &format!("/api/library/roots/{id}?dry_run=true"),
-        &serde_json::json!({}),
-    )
-    .await;
-    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        answers[0], answers[1],
+        "the removal does what the dry run said"
+    );
+    assert_eq!(
+        test_support::seen_by(&router, &state, reader).await,
+        0,
+        "the reader sees no library, not every library"
+    );
 }
 
 /// **Whole-branch review, Critical 2.** `DryRunQuery` had no

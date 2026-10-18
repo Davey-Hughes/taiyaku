@@ -27,6 +27,7 @@ const user = (over: Partial<usersApi.User> = {}): usersApi.User => ({
   can_log_in: true,
   sessions: [],
   keys: [],
+  every_library: true,
   libraries: [],
   ...over,
 })
@@ -126,6 +127,9 @@ const radio = (host: HTMLElement, value: 'every' | 'only') =>
 /** The sentence naming grants whose library the list does not hold. */
 const unlisted = (host: HTMLElement) =>
   host.querySelector('.grants [data-field="unlisted-grants"]')
+/** The sentence saying a limited account holds no grant at all. */
+const seesNone = (host: HTMLElement) =>
+  host.querySelector('.grants [data-field="no-library"]')
 const tick = (host: HTMLElement, id: number) =>
   control<HTMLInputElement>(host, `input[name="library-${id}"]`)
 
@@ -151,9 +155,15 @@ beforeEach(() => {
         id,
         name: id === 1 ? 'davey' : 'sam',
         role: id === 1 ? 'admin' : 'user',
+        // The server's two answers to a grant write: lifting deletes the
+        // rows, and a list, empty or not, is a limit.
+        ...(patch.every_library === true
+          ? { every_library: true, libraries: [] }
+          : {}),
         ...(patch.libraries === undefined
           ? {}
           : {
+              every_library: false,
               libraries: patch.libraries.map((l) => ({
                 id: l,
                 name: `library ${l}`,
@@ -306,6 +316,7 @@ describe('the fields', () => {
       id: 2,
       name: 'sam',
       role: 'user',
+      every_library: false,
       libraries: [{ id: 70, name: 'Manga' }],
     })
     vi.mocked(usersApi.patchUser).mockResolvedValue({
@@ -338,6 +349,7 @@ describe('the fields', () => {
       id: 2,
       name: 'sam',
       role: 'user',
+      every_library: false,
       libraries: [{ id: 70, name: 'Manga' }],
     })
     const { host } = await show(other, [me, other], {
@@ -425,6 +437,7 @@ describe('the fields', () => {
       id: 2,
       name: 'sam',
       role: 'user',
+      every_library: false,
       libraries: [{ id: 70, name: 'Manga' }],
     })
     vi.mocked(usersApi.patchUser).mockResolvedValue(
@@ -432,6 +445,7 @@ describe('the fields', () => {
         id: 2,
         name: 'sam',
         role: 'user',
+        every_library: false,
         libraries: [
           { id: 70, name: 'Manga' },
           { id: 80, name: 'Comics' },
@@ -460,13 +474,13 @@ describe('the fields', () => {
 
   it('says the libraries list has not been read, and names what is granted', async () => {
     // An unread list must not be drawn as an empty one: "there are no
-    // libraries yet" would be a positive false claim, on the control whose
-    // empty state means unrestricted.
+    // libraries yet" would be a positive false claim about the server.
     const me = user()
     const other = user({
       id: 2,
       name: 'sam',
       role: 'user',
+      every_library: false,
       libraries: [{ id: 70, name: 'Manga' }],
     })
     const { host } = await show(other, [me, other], {
@@ -480,20 +494,33 @@ describe('the fields', () => {
     expect(host.querySelector('.grants input')).toBeNull()
   })
 
-  it('says an unread list leaves an account with no grant unrestricted', async () => {
-    // With the list unread this sentence is the only place the card says so.
-    const me = user()
-    const other = user({ id: 2, name: 'sam', role: 'user' })
-    const { host } = await show(other, [me, other], {
-      actingAs: 1,
-      libraries: null,
-    })
-    expect(control(host, '.grants p.unknown').textContent).toBe(
-      'The libraries list has not been read, so there is nothing to offer here. This account is granted none, which is unrestricted.',
-    )
-  })
+  // With the list unread this sentence is the only place the card says what
+  // an account without a grant sees, and the two such accounts see opposite
+  // things.
+  it.each([
+    [true, 'This account sees every library.'],
+    [false, 'This account sees no library.'],
+  ])(
+    'says what an unread list leaves an account with no grant seeing, every_library %s',
+    async (every, sees) => {
+      const me = user()
+      const other = user({
+        id: 2,
+        name: 'sam',
+        role: 'user',
+        every_library: every,
+      })
+      const { host } = await show(other, [me, other], {
+        actingAs: 1,
+        libraries: null,
+      })
+      expect(control(host, '.grants p.unknown').textContent).toBe(
+        `The libraries list has not been read, so there is nothing to offer here. ${sees}`,
+      )
+    },
+  )
 
-  it('draws an account with no grant as seeing every library, with no boxes', async () => {
+  it('draws an account that sees every library as Every library, with no boxes', async () => {
     const me = user()
     const other = user({ id: 2, name: 'sam', role: 'user' })
     const { host } = await show(other, [me, other], { actingAs: 1 })
@@ -503,10 +530,77 @@ describe('the fields', () => {
     expect(radio(host, 'every').checked).toBe(true)
     expect(radio(host, 'only').checked).toBe(false)
     expect(host.querySelector('.grant-list')).toBeNull()
-    // Neither hint is drawn for an account that has not chosen to restrict.
-    const grants = control(host, '.grants').textContent ?? ''
-    expect(grants).not.toContain('Nothing is saved')
-    expect(grants).not.toContain('The last tick')
+    expect(seesNone(host)).toBeNull()
+  })
+
+  it('draws an account limited to no library as Only these, every box clear, and says it sees none', async () => {
+    // The radio follows `every_library`, never the list's length: the two
+    // accounts hold the same empty list and see opposite things.
+    const me = user()
+    const other = user({
+      id: 2,
+      name: 'sam',
+      role: 'user',
+      every_library: false,
+    })
+    const { host } = await show(other, [me, other], { actingAs: 1 })
+    expect(radio(host, 'only').checked).toBe(true)
+    expect(radio(host, 'every').checked).toBe(false)
+    expect(tick(host, 70).checked).toBe(false)
+    expect(tick(host, 80).checked).toBe(false)
+    expect(seesNone(host)?.textContent).toBe('This account sees no library.')
+  })
+
+  // An administrator sees every library whatever its rows say, so it is
+  // never the account left with none — read, unread or empty list alike.
+  it.each([
+    ['read', [MANGA, COMICS]],
+    ['unread', null],
+    ['empty', []],
+  ] as const)(
+    'never says an administrator limited to no library sees none, with the list %s',
+    async (_, libraries) => {
+      const me = user()
+      const admin = user({
+        id: 2,
+        name: 'sam',
+        role: 'admin',
+        every_library: false,
+      })
+      const { host } = await show(admin, [me, admin], {
+        actingAs: 1,
+        libraries: libraries === null ? null : [...libraries],
+      })
+      expect(control(host, '.grants').textContent).not.toContain(
+        'sees no library',
+      )
+    },
+  )
+
+  it('tells a no-library account from an every-library one on a server with no library', async () => {
+    // Removing the server's only library leaves the accounts limited to it
+    // seeing nothing, while an every-library account will see the next one.
+    const me = user()
+    const none = user({
+      id: 2,
+      name: 'sam',
+      role: 'user',
+      every_library: false,
+    })
+    const limited = await show(none, [me, none], {
+      actingAs: 1,
+      libraries: [],
+    })
+    expect(control(limited.host, '.grants .empty').textContent).toBe(
+      'There are no libraries yet.',
+    )
+    expect(seesNone(limited.host)?.textContent).toBe(
+      'This account sees no library.',
+    )
+
+    const every = user({ id: 3, name: 'kim', role: 'user' })
+    const open = await show(every, [me, every], { actingAs: 1, libraries: [] })
+    expect(seesNone(open.host)).toBeNull()
   })
 
   it('words its two choices, and names them for this account alone', async () => {
@@ -528,6 +622,7 @@ describe('the fields', () => {
       id: 2,
       name: 'sam',
       role: 'user',
+      every_library: false,
       libraries: [{ id: 70, name: 'Manga' }],
     })
     const { host } = await show(other, [me, other], { actingAs: 1 })
@@ -557,72 +652,78 @@ describe('the fields', () => {
       id: 2,
       name: 'sam',
       role: 'user',
+      every_library: false,
       libraries: [
         { id: 70, name: 'Manga' },
         { id: 80, name: 'Comics' },
       ],
     })
     const { host } = await show(other, [me, other], { actingAs: 1 })
-    // Two grants held: the last-tick sentence is not drawn, and no box is held.
-    expect(control(host, '.grants').textContent).not.toContain('The last tick')
-    expect(tick(host, 70).getAttribute('aria-disabled')).toBe('false')
     await click(tick(host, 70))
     expect(usersApi.patchUser).toHaveBeenCalledWith(2, { libraries: [80] })
   })
 
-  it('will not clear the last tick, and says what lifts the limit', async () => {
+  it('clears the last tick, and the account then sees no library', async () => {
+    // Clearing it narrows the account to nothing, which is the safe
+    // direction: it widens nothing, so no tick is held back.
     const me = user()
     const other = user({
       id: 2,
       name: 'sam',
       role: 'user',
+      every_library: false,
       libraries: [{ id: 70, name: 'Manga' }],
     })
     const { host } = await show(other, [me, other], { actingAs: 1 })
-    expect(tick(host, 70).getAttribute('aria-disabled')).toBe('true')
-    // Only the last tick is held: the other box is live.
-    expect(tick(host, 80).getAttribute('aria-disabled')).toBe('false')
-    expect(control(host, '.grants').textContent).toContain(
-      'The last tick cannot be cleared here. Choose “Every library” to lift the limit.',
-    )
+    expect(tick(host, 70).getAttribute('aria-disabled')).toBe('false')
+    expect(tick(host, 70).hasAttribute('aria-describedby')).toBe(false)
+    expect(seesNone(host)).toBeNull()
 
     await click(tick(host, 70))
 
-    expect(usersApi.patchUser).not.toHaveBeenCalled()
-    expect(tick(host, 70).checked).toBe(true)
+    expect(usersApi.patchUser).toHaveBeenCalledWith(2, { libraries: [] })
+    expect(tick(host, 70).checked).toBe(false)
+    expect(radio(host, 'only').checked).toBe(true)
+    expect(seesNone(host)?.textContent).toBe('This account sees no library.')
   })
 
-  it('pairs the last tick with the sentence that says why it will not clear', async () => {
+  it('takes the no-library sentence away when a library is ticked', async () => {
     const me = user()
     const other = user({
       id: 2,
       name: 'sam',
       role: 'user',
-      libraries: [{ id: 70, name: 'Manga' }],
+      every_library: false,
     })
     const { host } = await show(other, [me, other], { actingAs: 1 })
-    const why = [...host.querySelectorAll('.grants .why')].find((p) =>
-      p.textContent?.includes('The last tick cannot be cleared'),
-    )
-    const id = why?.getAttribute('id')
-    expect(id).toBeTruthy()
-    expect(tick(host, 70).getAttribute('aria-describedby')).toBe(id)
-    // A box that can be cleared points at nothing.
-    expect(tick(host, 80).hasAttribute('aria-describedby')).toBe(false)
+    expect(seesNone(host)).not.toBeNull()
+
+    await click(tick(host, 80))
+
+    expect(usersApi.patchUser).toHaveBeenCalledWith(2, { libraries: [80] })
+    expect(tick(host, 80).checked).toBe(true)
+    expect(seesNone(host)).toBeNull()
   })
 
-  it('names a grant whose library the list does not hold, and says it is the only one, with no last tick to point at', async () => {
+  it('names a grant whose library the list does not hold, and says it is the only one, without saying the account sees none', async () => {
     const me = user()
     const ghost = { id: 99, name: 'Gone' }
-    const alone = user({ id: 2, name: 'sam', role: 'user', libraries: [ghost] })
+    const alone = user({
+      id: 2,
+      name: 'sam',
+      role: 'user',
+      every_library: false,
+      libraries: [ghost],
+    })
     const { host } = await show(alone, [me, alone], { actingAs: 1 })
     // No box is drawn for it, so it is named where it can be read.
     expect(host.querySelector('input[name="library-99"]')).toBeNull()
     expect(unlisted(host)?.textContent).toBe(
       'This account is granted Gone, which the list does not hold.',
     )
-    // The sentence about the last tick would name a tick that is not drawn.
-    expect(control(host, '.grants').textContent).not.toContain('last tick')
+    // Nothing is ticked, yet the account sees Gone: the sentence follows the
+    // grants, not the boxes drawn.
+    expect(seesNone(host)).toBeNull()
     expect(radio(host, 'only').checked).toBe(true)
   })
 
@@ -632,6 +733,7 @@ describe('the fields', () => {
       id: 2,
       name: 'sam',
       role: 'user',
+      every_library: false,
       libraries: [
         { id: 70, name: 'Manga' },
         { id: 98, name: 'Gone' },
@@ -656,6 +758,7 @@ describe('the fields', () => {
         id: 2,
         name: 'sam',
         role: 'user',
+        every_library: false,
         libraries: names.map((name, i) => ({ id: 90 + i, name })),
       })
       const { host } = await show(sam, [me, sam], { actingAs: 1 })
@@ -671,6 +774,7 @@ describe('the fields', () => {
       id: 2,
       name: 'sam',
       role: 'user',
+      every_library: false,
       libraries: [{ id: 99, name: 'Gone' }],
     })
     const { host } = await show(alone, [me, alone], {
@@ -691,6 +795,7 @@ describe('the fields', () => {
       id: 2,
       name: 'sam',
       role: 'user',
+      every_library: false,
       libraries: [{ id: 70, name: 'Manga' }],
     })
     const { host } = await show(held, [me, held], { actingAs: 1 })
@@ -703,6 +808,7 @@ describe('the fields', () => {
       id: 2,
       name: 'sam',
       role: 'user',
+      every_library: false,
       libraries: [{ id: 70, name: 'Manga, before it was renamed' }],
     })
     const { host } = await show(renamed, [me, renamed], { actingAs: 1 })
@@ -716,6 +822,7 @@ describe('the fields', () => {
       id: 2,
       name: 'sam',
       role: 'user',
+      every_library: false,
       libraries: [
         { id: 99, name: 'Gone' },
         { id: 70, name: 'Manga' },
@@ -734,9 +841,9 @@ describe('the fields', () => {
       id: 2,
       name: 'sam',
       role: 'user',
+      every_library: false,
       libraries: [{ id: 70, name: 'Manga' }],
     })
-    vi.mocked(usersApi.patchUser).mockResolvedValue({ ...other, libraries: [] })
     const { host } = await show(other, [me, other], { actingAs: 1 })
 
     await click(radio(host, 'every'))
@@ -749,7 +856,9 @@ describe('the fields', () => {
     )
 
     await click(control(host, 'button[name="lift-limit"]'))
-    expect(usersApi.patchUser).toHaveBeenCalledWith(2, { libraries: [] })
+    // An empty list is a limit to no library, so lifting says so in a key of
+    // its own.
+    expect(usersApi.patchUser).toHaveBeenCalledWith(2, { every_library: true })
     expect(radio(host, 'every').checked).toBe(true)
     expect(host.querySelector('.grant-list')).toBeNull()
     expect(host.querySelector('.lift-limit')).toBeNull()
@@ -762,6 +871,7 @@ describe('the fields', () => {
       id: 2,
       name: 'sam',
       role: 'user',
+      every_library: false,
       libraries: [{ id: 70, name: 'Manga' }],
     })
     const { host } = await show(other, [me, other], { actingAs: 1 })
@@ -786,6 +896,7 @@ describe('the fields', () => {
       id: 2,
       name: 'sam',
       role: 'user',
+      every_library: false,
       libraries: [{ id: 70, name: 'Manga' }],
     })
     const { host } = await show(other, [me, other], { actingAs: 1 })
@@ -798,12 +909,13 @@ describe('the fields', () => {
     expect(radio(host, 'only').checked).toBe(true)
   })
 
-  it('retires the question when the account holds no grant, and does not bring it back', async () => {
+  it('retires the question when the account is lifted elsewhere, and does not bring it back', async () => {
     const me = user()
     const other = user({
       id: 2,
       name: 'sam',
       role: 'user',
+      every_library: false,
       libraries: [{ id: 70, name: 'Manga' }],
     })
     const { host } = await show(other, [me, other], { actingAs: 1 })
@@ -825,12 +937,45 @@ describe('the fields', () => {
         )
         await Promise.resolve()
       })
-    // Lifted elsewhere: the list brings the account with no grant.
+    // Its grants revoked elsewhere: still limited, so lifting is still a
+    // change, and the question stands.
     await again({ ...other, libraries: [] })
+    expect(host.querySelector('.lift-limit')).not.toBeNull()
+    // Lifted elsewhere: nothing is left to ask.
+    await again({ ...other, every_library: true, libraries: [] })
     expect(host.querySelector('.lift-limit')).toBeNull()
-    // A grant again: the question was answered by the account, not re-asked.
-    await again({ ...other, libraries: [{ id: 80, name: 'Comics' }] })
+    // A limit again: the question was answered by the account, not re-asked.
+    await again({
+      ...other,
+      every_library: false,
+      libraries: [{ id: 80, name: 'Comics' }],
+    })
     expect(host.querySelector('.lift-limit')).toBeNull()
+  })
+
+  it('asks before lifting an account that sees no library, and names no ticks', async () => {
+    // A limit to nothing is still a limit: lifting it widens the account to
+    // every library, the one widening that is always asked.
+    const me = user()
+    const other = user({
+      id: 2,
+      name: 'sam',
+      role: 'user',
+      every_library: false,
+    })
+    const { host } = await show(other, [me, other], { actingAs: 1 })
+
+    await click(radio(host, 'every'))
+    expect(usersApi.patchUser).not.toHaveBeenCalled()
+    expect(radio(host, 'only').checked).toBe(true)
+    expect(control(host, '.grants .lift-limit p').textContent).toBe(
+      'sam would see every library, including any added later.',
+    )
+
+    await click(control(host, 'button[name="lift-limit"]'))
+    expect(usersApi.patchUser).toHaveBeenCalledWith(2, { every_library: true })
+    expect(radio(host, 'every').checked).toBe(true)
+    expect(seesNone(host)).toBeNull()
   })
 
   it('holds both answers while a write is in flight', async () => {
@@ -839,6 +984,7 @@ describe('the fields', () => {
       id: 2,
       name: 'sam',
       role: 'user',
+      every_library: false,
       libraries: [{ id: 70, name: 'Manga' }],
     })
     vi.mocked(usersApi.patchUser).mockImplementation(
@@ -862,6 +1008,7 @@ describe('the fields', () => {
       id: 2,
       name: 'sam',
       role: 'user',
+      every_library: false,
       libraries: [{ id: 70, name: 'Manga' }],
     })
     const { host } = await show(other, [me, other], { actingAs: 1 })
@@ -876,43 +1023,29 @@ describe('the fields', () => {
     expect(document.activeElement).toBe(radio(host, 'only'))
   })
 
-  it('sends nothing for Only these until a library is ticked', async () => {
+  it('saves Only these at once as no library', async () => {
+    // Narrowing to nothing is the safe direction, and every tick after it
+    // saves at once as well, so there is no unsaved choice to keep.
     const me = user()
     const other = user({ id: 2, name: 'sam', role: 'user' })
-    vi.mocked(usersApi.patchUser).mockResolvedValue({
-      ...other,
-      libraries: [{ id: 80, name: 'Comics' }],
-    })
     const { host } = await show(other, [me, other], { actingAs: 1 })
 
     await click(radio(host, 'only'))
-    expect(usersApi.patchUser).not.toHaveBeenCalled()
-    expect(radio(host, 'only').checked).toBe(true)
-    expect(control(host, '.grants').textContent).toContain(
-      'Nothing is saved until a library is ticked',
-    )
-
-    await click(radio(host, 'every'))
-    expect(usersApi.patchUser).not.toHaveBeenCalled()
-    expect(host.querySelector('.grant-list')).toBeNull()
-    expect(host.querySelector('.lift-limit')).toBeNull()
-
-    await click(radio(host, 'only'))
-    await click(tick(host, 80))
     expect(usersApi.patchUser).toHaveBeenCalledTimes(1)
-    expect(usersApi.patchUser).toHaveBeenCalledWith(2, { libraries: [80] })
+    expect(usersApi.patchUser).toHaveBeenCalledWith(2, { libraries: [] })
+    expect(radio(host, 'only').checked).toBe(true)
+    expect(host.querySelector('.grant-list')).not.toBeNull()
+    expect(seesNone(host)?.textContent).toBe('This account sees no library.')
+
+    await click(tick(host, 80))
+    expect(usersApi.patchUser).toHaveBeenCalledTimes(2)
+    expect(usersApi.patchUser).toHaveBeenLastCalledWith(2, { libraries: [80] })
   })
 
   it('puts an account back to Every library after Only these and a tick', async () => {
     // A reload that brings nothing, so the card runs on the answers it kept.
     const me = user()
     const other = user({ id: 2, name: 'sam', role: 'user' })
-    vi.mocked(usersApi.patchUser)
-      .mockResolvedValueOnce({
-        ...other,
-        libraries: [{ id: 80, name: 'Comics' }],
-      })
-      .mockResolvedValueOnce({ ...other, libraries: [] })
     const changed = vi.fn(() => Promise.resolve())
     const { host } = await show(other, [me, other], {
       actingAs: 1,
@@ -925,25 +1058,32 @@ describe('the fields', () => {
     await click(control(host, 'button[name="lift-limit"]'))
 
     expect(usersApi.patchUser).toHaveBeenNthCalledWith(1, 2, {
+      libraries: [],
+    })
+    expect(usersApi.patchUser).toHaveBeenNthCalledWith(2, 2, {
       libraries: [80],
     })
-    expect(usersApi.patchUser).toHaveBeenNthCalledWith(2, 2, { libraries: [] })
+    expect(usersApi.patchUser).toHaveBeenNthCalledWith(3, 2, {
+      every_library: true,
+    })
     expect(radio(host, 'every').checked).toBe(true)
     expect(radio(host, 'only').checked).toBe(false)
     expect(host.querySelector('.grant-list')).toBeNull()
-    expect(control(host, '.grants').textContent).not.toContain(
-      'Nothing is saved',
-    )
+    expect(seesNone(host)).toBeNull()
   })
 
   it('keeps drawing Only these when Every library is pressed while a tick is being saved', async () => {
     const me = user()
-    const other = user({ id: 2, name: 'sam', role: 'user' })
+    const other = user({
+      id: 2,
+      name: 'sam',
+      role: 'user',
+      every_library: false,
+    })
     vi.mocked(usersApi.patchUser).mockImplementation(
       () => new Promise(() => undefined),
     )
     const { host } = await show(other, [me, other], { actingAs: 1 })
-    await click(radio(host, 'only'))
     await click(tick(host, 80))
     expect(usersApi.patchUser).toHaveBeenCalledTimes(1)
 
@@ -968,6 +1108,7 @@ describe('the fields', () => {
 
     await click(radio(host, 'only'))
 
+    expect(usersApi.patchUser).toHaveBeenCalledTimes(1)
     expect(radio(host, 'every').checked).toBe(true)
     expect(radio(host, 'only').checked).toBe(false)
     expect(host.querySelector('.grant-list')).toBeNull()
@@ -1006,18 +1147,23 @@ describe('the fields', () => {
     expect(host.querySelector('.grant-list')).toBeNull()
   })
 
-  it('does not switch back to Every library in the same act as a write that has just begun', async () => {
+  it('does not ask to lift the limit in the same act as a write that has just begun', async () => {
     const me = user()
-    const other = user({ id: 2, name: 'sam', role: 'user' })
+    const other = user({
+      id: 2,
+      name: 'sam',
+      role: 'user',
+      every_library: false,
+    })
     vi.mocked(usersApi.patchUser).mockImplementation(
       () => new Promise(() => undefined),
     )
     const { host } = await show(other, [me, other], { actingAs: 1 })
-    await click(radio(host, 'only'))
     expect(host.querySelector('.grant-list')).not.toBeNull()
     await resetThen(host, radio(host, 'every'))
     expect(radio(host, 'only').checked).toBe(true)
     expect(host.querySelector('.grant-list')).not.toBeNull()
+    expect(host.querySelector('.lift-limit')).toBeNull()
   })
 
   it('says an administrator sees everything whatever is chosen', async () => {
@@ -1026,6 +1172,7 @@ describe('the fields', () => {
       id: 2,
       name: 'sam',
       role: 'admin',
+      every_library: false,
       libraries: [{ id: 70, name: 'Manga' }],
     })
     const { host } = await show(admin, [me, admin], { actingAs: 1 })

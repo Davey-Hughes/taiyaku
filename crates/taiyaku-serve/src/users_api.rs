@@ -102,14 +102,20 @@ fn user_panicked(what: &str, why: &tokio::task::JoinError) -> Response {
 }
 
 /// One account, whole, as C4 §4's screen shows it: the row, whether anybody
-/// can log in as it, its sessions, its keys and the libraries it is granted.
+/// can log in as it, whether it sees every library, its sessions, its keys and
+/// the libraries it is granted.
 ///
-/// **All five together rather than a row plus three more requests.** The
+/// **`every_library` beside `libraries`**, because an empty list is no
+/// library and cannot also say "every library". An administrator's is sent
+/// as stored, though the role sees every library whatever it says.
+///
+/// **All of it together rather than a row plus three more requests.** The
 /// screen shows them beside the account, and a list that answered the row
 /// alone would render in stages.
 fn user_json(
     account: &Account,
     can_log_in: bool,
+    every_library: bool,
     sessions: &[SessionSummary],
     keys: &[KeySummary],
     libraries: &[(i64, String)],
@@ -139,6 +145,7 @@ fn user_json(
             "created": k.created,
             "last_used": k.last_used,
         })).collect::<Vec<_>>(),
+        "every_library": every_library,
         "libraries": libraries.iter().map(|(id, name)| serde_json::json!({
             "id": id,
             "name": name,
@@ -166,8 +173,18 @@ fn assembled(
 ) -> Result<serde_json::Value, String> {
     let sessions = account::sessions_of(conn, account.id, current_token)?;
     let keys = account::keys_of(conn, account.id)?;
+    let every_library = account::access_for(conn, account.id)
+        .map_err(|e| format!("reading which libraries account {} sees: {e}", account.id))?
+        == account::Access::Every;
     let libraries = account::granted_libraries(conn, account.id)?;
-    Ok(user_json(account, can_log_in, &sessions, &keys, &libraries))
+    Ok(user_json(
+        account,
+        can_log_in,
+        every_library,
+        &sessions,
+        &keys,
+        &libraries,
+    ))
 }
 
 /// `GET /api/library/users` — every account, with what C4 §4's screen shows
@@ -279,12 +296,12 @@ fn can_log_in(conn: &rusqlite::Connection, id: i64) -> Result<bool, String> {
 
 /// A patch, as [`patch_user`]'s body is read.
 ///
-/// **`libraries` is `Option<Vec<i64>>` and the two `None`s mean different
-/// things**: an absent key leaves the grants alone, and `[]` grants nothing —
-/// which spec A2 defines as *unrestricted*, not blind. `account::Patch`'s own
-/// doc comment carries the argument; this function is where JSON's
-/// absent/present distinction is turned into it, the same three-way read
-/// `config_api::rule_patch_from_json` makes for a nullable column.
+/// **Which libraries the account sees is two keys, and at most one is
+/// sent.** `{"every_library": true}` lifts the limit, and `{"libraries":
+/// [ids]}` sets "only these", where `[]` is no library. With neither, the
+/// grants are left alone. `every_library` other than `true` is refused: "not
+/// every library" says nothing `libraries` does not, and guessing which list
+/// it meant would be guessing what an account may see.
 ///
 /// **`password` rides on the patch**, so the store applies it in the same
 /// transaction as the columns — `account::Patch`'s own doc carries what the
@@ -331,7 +348,22 @@ fn user_patch_from_json(body: &serde_json::Value) -> Result<account::Patch, Stri
             "`roots` is no longer accepted: send `libraries`, a list of library ids".to_string(),
         );
     }
-    if let Some(v) = body.get("libraries") {
+    let every_library = body.get("every_library");
+    let libraries = body.get("libraries");
+    if every_library.is_some() && libraries.is_some() {
+        return Err("send `every_library` or `libraries`, not both".to_string());
+    }
+    if let Some(v) = every_library {
+        if v.as_bool() != Some(true) {
+            return Err(
+                "`every_library` can only be `true`: send `libraries`, a list of library ids, \
+                 to limit the account"
+                    .to_string(),
+            );
+        }
+        patch.grant = Some(account::Grant::Every);
+    }
+    if let Some(v) = libraries {
         let listed = v
             .as_array()
             .ok_or_else(|| "`libraries` must be an array of library ids".to_string())?;
@@ -343,7 +375,7 @@ fn user_patch_from_json(body: &serde_json::Value) -> Result<account::Patch, Stri
                     .ok_or_else(|| "`libraries` must be an array of library ids".to_string())?,
             );
         }
-        patch.libraries = Some(ids);
+        patch.grant = Some(account::Grant::Libraries(ids));
     }
     if let Some(v) = body.get("password") {
         patch.password = Some(

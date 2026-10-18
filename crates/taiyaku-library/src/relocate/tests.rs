@@ -271,20 +271,16 @@ fn an_edition_with_members_on_both_sides_refuses_the_move() {
     assert_eq!(volumes.len(), 1, "{volumes:?}");
 }
 
-/// F1's decision, asked of a move: the folder is its library's last and the
-/// library is an account's only grant.
+/// The folder is its library's last and the library is `sam`'s only grant:
+/// the move goes ahead, the rehearsal names `sam`, and `sam` then sees no
+/// library. Moving a folder its library keeps another of names no one.
 #[test]
-fn moving_the_last_folder_of_an_accounts_only_library_is_refused_by_name() {
+fn moving_the_last_folder_of_an_accounts_only_library_names_who_is_left_with_none() {
     let dir = tempdir("relocate-only-grant");
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let solo = a_folder(
-        &conn,
-        &dir.path().join("a"),
-        "Solo",
-        None,
-        &[("S", "v01", 2)],
-    );
+    // Shelf's two folders come first, so the moved folder's id is not its
+    // library's, and a holder lookup keyed on the folder's id finds no one.
     let shelf_a = a_folder(
         &conn,
         &dir.path().join("b"),
@@ -299,6 +295,17 @@ fn moving_the_last_folder_of_an_accounts_only_library_is_refused_by_name() {
         None,
         &[("U", "v01", 2)],
     );
+    let solo = a_folder(
+        &conn,
+        &dir.path().join("a"),
+        "Solo",
+        None,
+        &[("S", "v01", 2)],
+    );
+    assert_ne!(
+        solo.id, solo.library_id,
+        "the fixture must tell a folder's id from its library's: {solo:?}"
+    );
     scanned(&conn);
     conn.execute(
         "INSERT INTO user (name, password_hash, role) VALUES ('sam', 'x', 'user')",
@@ -307,20 +314,37 @@ fn moving_the_last_folder_of_an_accounts_only_library_is_refused_by_name() {
     .expect("an account");
     let sam = conn.last_insert_rowid();
     crate::account::grant_library(&conn, sam, solo.library_id).expect("grants");
+    let before = dump(&conn);
 
-    let (why, volumes) = refusal(&conn, &solo, shelf_a.library_id);
-    assert!(why.contains("`Solo`") && why.contains("`sam`"), "{why}");
-    assert!(why.contains("Moving it"), "{why}");
-    assert!(volumes.is_empty());
+    let (rehearsed, _) =
+        move_cost(&conn, solo.id, Target::Library(shelf_a.library_id)).expect("rehearses");
+    assert_eq!(rehearsed.left_with_no_library, vec!["sam"], "{rehearsed:?}");
+    assert_eq!(rehearsed.library_removed.as_deref(), Some("Solo"));
+    assert_eq!(dump(&conn), before, "the rehearsal changes nothing");
 
-    crate::account::grant_library(&conn, sam, shelf_a.library_id).expect("grants Shelf too");
-    crate::account::revoke_library(&conn, sam, solo.library_id).expect("revokes Solo");
-    let held = folder(&conn, shelf_a.id).expect("the folder");
+    let done = moved(&conn, &solo, Target::Library(shelf_a.library_id));
+    assert_eq!(done, rehearsed, "the move does what the rehearsal said");
+    let access = crate::account::access_for(&conn, sam).expect("reads");
     assert_eq!(
-        refused_before(&conn, &held, solo.library_id).expect("reads"),
-        None,
-        "Shelf keeps another folder, so the grant stands"
+        access,
+        crate::account::Access::Only(Vec::new()),
+        "sam sees no library, not every library"
     );
+    assert_eq!(
+        crate::browse::series(&conn, &access, sam, None).expect("lists"),
+        Vec::new()
+    );
+    assert!(
+        !crate::browse::series(&conn, &crate::account::Access::Every, sam, None)
+            .expect("lists")
+            .is_empty(),
+        "the fixture: Shelf holds series, the moved folder's among them"
+    );
+
+    crate::account::grant_library(&conn, sam, shelf_a.library_id).expect("grants Shelf");
+    let kept = moved(&conn, &shelf_a, Target::New("Fresh"));
+    assert_eq!(kept.library_removed, None, "Shelf keeps another folder");
+    assert_eq!(kept.left_with_no_library, Vec::<String>::new());
 }
 
 fn a_position_and_a_note(conn: &Connection, work: i64, edition: &str) {
@@ -511,6 +535,11 @@ fn a_folder_alone_in_its_library_takes_its_works_and_the_library_goes() {
     );
     assert_eq!(report.library_removed.as_deref(), Some("Solo"));
     assert_eq!(report.grants_removed, 1);
+    assert_eq!(
+        report.left_with_no_library,
+        Vec::<String>::new(),
+        "sam keeps B"
+    );
     assert_eq!(report.works_kept, 1);
     assert_eq!(
         crate::libraries::name_of(&conn, moving.library_id).expect("reads"),

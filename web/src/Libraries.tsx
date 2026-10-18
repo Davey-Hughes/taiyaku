@@ -4,10 +4,10 @@
  * **The list owns which libraries there are; each card owns what it is
  * doing**, as `Users` and `UserRow` split it.
  *
- * **A library is made with its folders.** There is no empty library: a grant
- * names a library and resolves to its folders, and one with none would read
- * as a grant on everything. So the form collects a name and one or more
- * folders and sends them together, and the server makes all of it or none.
+ * **A library is made with its folders.** There is no empty library: the
+ * server refuses a library with no folder. So the form collects a name and
+ * one or more folders and sends them together, and the server makes all of
+ * it or none.
  *
  * **Two failure slots.** `reload` is every card's `onChanged`, so one slot
  * would let a card's rename erase the form's refusal, which is the one

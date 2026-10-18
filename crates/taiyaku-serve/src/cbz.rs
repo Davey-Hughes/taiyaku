@@ -42,7 +42,7 @@
 //! `#[cfg_attr(not(test), expect(dead_code, reason = …))]` — still scoped
 //! to `not(test)`, since `cbz::tests` is what makes each reachable at all
 //! — `#[expect]`, not `#[allow]`, the same choice spec A2 made for
-//! `Principal.roots` in `auth.rs` ahead of C1 — and each comes off the day
+//! the grant field of `auth::Principal` ahead of C1 — and each comes off the day
 //! its own caller lands rather than the day any part of this module gets
 //! used.
 

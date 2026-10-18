@@ -149,6 +149,28 @@ export interface Moved {
   library_removed: string | null
   /** Grants that went with that library. */
   grants_removed: number
+  /**
+   * The accounts, by name, whose only grant was that library, and who see no
+   * library after the move. Empty where no library is removed.
+   */
+  left_with_no_library: string[]
+}
+
+/**
+ * What a removal's or a move's rehearsal says of the accounts it leaves
+ * seeing no library, under its counts. `what` is the library as the dialog
+ * names it, `"this library"` or `"this folder's library"`.
+ *
+ * One account is named again in the second sentence rather than given a
+ * pronoun, so nothing is assumed of whoever holds it.
+ */
+export function noLibrarySentence(names: string[], what: string): string {
+  const who =
+    names.length < 2
+      ? names.join('')
+      : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`
+  const after = names.length < 2 ? who : 'they'
+  return `${who} can see only ${what}. After this, ${after} will see no library until an administrator grants one.`
 }
 
 /** `POST /api/library/roots/{id}/move`'s answer, a rehearsal's or a move's. */

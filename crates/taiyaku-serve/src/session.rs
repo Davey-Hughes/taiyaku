@@ -405,10 +405,10 @@ pub(crate) fn from_cookie(
     if !origin_is_acceptable(method, origin, host) {
         return FromCookie::CrossSite;
     }
-    let Ok(roots) = taiyaku_library::account::roots_for(&conn, found.id) else {
+    let Ok(access) = taiyaku_library::account::access_for(&conn, found.id) else {
         return FromCookie::Unknown;
     };
-    FromCookie::Resolved(Principal::from_account(&found, roots))
+    FromCookie::Resolved(Principal::from_account(&found, access))
 }
 
 /// The origin check, for the two routes that sit **outside** the guard.

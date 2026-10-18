@@ -115,7 +115,7 @@ pub(crate) async fn plan(
             // that stalls every other request, which is the reasoning
             // `config_api`'s own scan and save already act on.
             let conn = state.library.working().map_err(NoAnswer::Failed)?;
-            let work_id = crate::metadata::work_by_slug(&conn, &principal.roots, &slug)?;
+            let work_id = crate::metadata::work_by_slug(&conn, &principal.access, &slug)?;
             let planned =
                 taiyaku_library::stamp::plan(&conn, work_id).map_err(NoAnswer::Refused)?;
             let paths =
@@ -180,7 +180,7 @@ pub(crate) async fn perform(
             // A second connection for the same reason the `GET` takes one, and
             // more so: this one copies and renames every planned archive.
             let conn = state.library.working().map_err(NoAnswer::Failed)?;
-            let work_id = crate::metadata::work_by_slug(&conn, &principal.roots, &slug)?;
+            let work_id = crate::metadata::work_by_slug(&conn, &principal.access, &slug)?;
             let expected: Vec<taiyaku_library::stamp::Planned> = confirmation
                 .archives
                 .iter()

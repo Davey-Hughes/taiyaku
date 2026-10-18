@@ -116,30 +116,96 @@ pub fn by_api_key(conn: &Connection, secret: &str) -> Result<Option<Account>, St
     Ok(found)
 }
 
-/// The ids of every folder of every library this account was granted,
-/// ascending.
+/// What an account may see, as the folders that hold it.
 ///
-/// **Every folder of every library this account was granted — Part F1.** A
-/// grant names a library, and the guard filters on folders, so this is where
-/// one becomes the other. An empty answer means granted nothing, and so
-/// unrestricted: a granted library always has a folder, which [`ungrantable`]
-/// holds where a grant is written.
+/// Two cases rather than a list where empty means "everything": a list that
+/// can stand for every library turns any path that empties it (a revoke, a
+/// removal, a folderless library) into a silent widening. `Only` with no
+/// folders sees nothing. No `Default`, so each place that builds one says
+/// which case it means.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Access {
+    /// An administrator, or an account set to "Every library", including any
+    /// added later.
+    Every,
+    /// Only these folders (root ids).
+    Only(Vec<i64>),
+}
+
+impl Access {
+    /// Whether a folder is inside this access.
+    pub fn allows(&self, root_id: i64) -> bool {
+        match self {
+            Access::Every => true,
+            Access::Only(roots) => roots.contains(&root_id),
+        }
+    }
+
+    /// The `AND` clause this access adds to a query, with `in_folders` writing
+    /// the test over one `?` per folder: the one place the cases of `Access`
+    /// become SQL, for `browse` and for the server's own queries alike.
+    ///
+    /// **`Only` with no folder is a false literal, never a clause left out**,
+    /// because an account granted nothing must match nothing and a missing
+    /// clause matches everything. It binds no parameter, as `Every`'s missing
+    /// clause binds none, which is why [`Access::bound`] answers both with no
+    /// values and every statement's count still agrees with its holes.
+    pub fn grant_clause(&self, in_folders: impl FnOnce(&str) -> String) -> String {
+        match self {
+            Access::Every => String::new(),
+            Access::Only(roots) if roots.is_empty() => " AND 0".to_owned(),
+            Access::Only(roots) => {
+                format!(" AND {}", in_folders(&crate::browse::holes(roots.len())))
+            }
+        }
+    }
+
+    /// The values one [`Access::grant_clause`] binds, in hole order.
+    pub fn bound(&self) -> &[i64] {
+        match self {
+            Access::Every => &[],
+            Access::Only(roots) => roots,
+        }
+    }
+}
+
+/// What this account may see: every library when its `every_library` is set,
+/// and otherwise the folders of the libraries it was granted, ascending.
+///
+/// **"Only these" with no grant sees nothing**, never every library, so that
+/// revoking an account's last grant or removing its only library leaves it
+/// blind rather than widened. An id naming no account reads the same way.
+///
+/// A grant names a library and the guard filters on folders, so this is where
+/// one becomes the other. **A grant counts whether or not its library still
+/// has a folder** (the `LEFT JOIN`): an account whose grants resolve to no
+/// folder is `Only` with none and sees nothing, never `Every`.
+///
+/// The role is not read here: `taiyaku-serve`'s `Principal::from_account`
+/// gives an administrator `Every` whatever this answers.
 ///
 /// # Errors
 ///
 /// Returns an error if the query fails.
-pub fn roots_for(conn: &Connection, user_id: i64) -> Result<Vec<i64>, String> {
-    let mut statement = conn
-        .prepare(
-            "SELECT r.id FROM user_library ul JOIN root r ON r.library_id = ul.library_id
-              WHERE ul.user_id = ?1 ORDER BY r.id",
+pub fn access_for(conn: &Connection, user_id: i64) -> rusqlite::Result<Access> {
+    let every = conn
+        .query_row(
+            "SELECT every_library FROM user WHERE id = ?1",
+            params![user_id],
+            |row| row.get::<_, bool>(0),
         )
-        .map_err(|e| format!("preparing the granted-roots lookup: {e}"))?;
-    let rows = statement
-        .query_map(params![user_id], |row| row.get(0))
-        .map_err(|e| format!("reading granted roots: {e}"))?;
-    rows.collect::<rusqlite::Result<Vec<i64>>>()
-        .map_err(|e| format!("reading granted roots: {e}"))
+        .optional()?;
+    if every == Some(true) {
+        return Ok(Access::Every);
+    }
+    let mut statement = conn.prepare(
+        "SELECT r.id FROM user_library ul LEFT JOIN root r ON r.library_id = ul.library_id
+          WHERE ul.user_id = ?1 ORDER BY r.id",
+    )?;
+    let granted = statement
+        .query_map(params![user_id], |row| row.get::<_, Option<i64>>(0))?
+        .collect::<rusqlite::Result<Vec<Option<i64>>>>()?;
+    Ok(Access::Only(granted.into_iter().flatten().collect()))
 }
 
 /// The libraries this account was granted, ascending.
@@ -158,85 +224,63 @@ pub fn libraries_for(conn: &Connection, user_id: i64) -> Result<Vec<i64>, String
         .map_err(|e| format!("reading granted libraries: {e}"))
 }
 
-/// Why a library cannot be granted.
-enum Ungrantable {
-    /// No library has the id.
-    Missing,
-    /// The library, by name, has no folder.
-    NoFolder(String),
-}
-
-/// Why library `library_id` may not be granted, if it may not.
+/// Whether a library has the id.
 ///
-/// **A library with no folder is refused**: [`roots_for`] resolves a grant to
-/// its library's folders, and an account whose grants resolve to none is
-/// unrestricted, so as an account's only grant it would lift the limit it was
-/// meant to set. No public path makes such a library (`crate::libraries`), and
-/// this holds the line where a grant is written, not only where libraries are
-/// made.
-fn ungrantable(conn: &Connection, library_id: i64) -> Result<Option<Ungrantable>, String> {
+/// **A library with no folder may be granted**: it resolves to no folder, so
+/// granting it to an account seeing only some libraries adds nothing, and on
+/// one seeing every library it narrows to nothing. Neither widens.
+fn library_exists(conn: &Connection, library_id: i64) -> Result<bool, String> {
     conn.query_row(
-        "SELECT name, EXISTS (SELECT 1 FROM root WHERE library_id = ?1)
-           FROM library WHERE id = ?1",
+        "SELECT EXISTS (SELECT 1 FROM library WHERE id = ?1)",
         params![library_id],
-        |row| Ok((row.get::<_, String>(0)?, row.get::<_, bool>(1)?)),
+        |row| row.get::<_, bool>(0),
     )
-    .optional()
-    .map(|found| match found {
-        None => Some(Ungrantable::Missing),
-        Some((name, false)) => Some(Ungrantable::NoFolder(name)),
-        Some((_, true)) => None,
-    })
     .map_err(|e| format!("checking whether library {library_id} can be granted: {e}"))
-}
-
-fn no_folder(name: &str) -> String {
-    format!("the library `{name}` has no folder, so there is nothing in it to grant")
 }
 
 /// Grant `user_id` sight of `library_id`: every folder filed under it.
 ///
-/// **Granting is restricting**, which is the counter-intuitive half of spec
-/// C1 §5.1 and is worth stating where the writer lives: an account with *no*
-/// grants sees every library, because that is the state every account in
-/// every existing library is in, and any other reading would empty every
-/// library the day migration 6 applied. The first grant an account receives
-/// is therefore the moment it stops seeing everything.
+/// **Granting is restricting**: the account is set to "only these" and the
+/// library is added to them, so an account that saw every library sees only
+/// this one afterwards. The answer is `true` when either changed, so a CLI can
+/// print the truth rather than a cheerful lie.
 ///
 /// `INSERT OR IGNORE` rather than a probe and an insert: `user_library` is
 /// `WITHOUT ROWID` with `(user_id, library_id)` as its key, so the conflict is
-/// exactly the case that means "already granted". The return says which
-/// happened, so a CLI can print the truth rather than a cheerful lie.
+/// exactly the case that means "already granted".
 ///
 /// # Errors
 ///
-/// Returns an error if no library has `library_id`, if the library has no
-/// folder (the grant would resolve to none and so lift the limit it sets), or
-/// if the insert fails.
+/// Returns an error if no library has `library_id`, or if a write fails.
 pub fn grant_library(conn: &Connection, user_id: i64, library_id: i64) -> Result<bool, String> {
-    match ungrantable(conn, library_id)? {
-        Some(Ungrantable::Missing) => {
-            return Err(format!("there is no library {library_id} to grant"));
-        }
-        Some(Ungrantable::NoFolder(name)) => return Err(no_folder(&name)),
-        None => {}
+    if !library_exists(conn, library_id)? {
+        return Err(format!("there is no library {library_id} to grant"));
     }
-    let changed = conn
+    let failed =
+        |e: rusqlite::Error| format!("granting library {library_id} to user {user_id}: {e}");
+    // One scope, so the account is never left narrowed with the row unwritten.
+    let scope = crate::Nested::open(conn, "grant_library").map_err(failed)?;
+    let narrowed = conn
+        .execute(
+            "UPDATE user SET every_library = 0 WHERE id = ?1 AND every_library = 1",
+            params![user_id],
+        )
+        .map_err(failed)?;
+    let added = conn
         .execute(
             "INSERT OR IGNORE INTO user_library (user_id, library_id) VALUES (?1, ?2)",
             params![user_id, library_id],
         )
-        .map_err(|e| format!("granting library {library_id} to user {user_id}: {e}"))?;
-    Ok(changed == 1)
+        .map_err(failed)?;
+    scope.commit().map_err(failed)?;
+    Ok(narrowed + added > 0)
 }
 
 /// Take back a grant, reporting whether there was one.
 ///
-/// **Revoking the last grant makes the account unrestricted again**, not
-/// blind — see [`grant_library`]. Here that edge is taken on purpose. From
-/// the other direction it is closed: removing the last folder of a library
-/// that is an account's only grant would take the grant with it, and
-/// [`crate::scan::removal_refusal`] refuses that removal.
+/// **`every_library` is left alone**, so revoking an account's last grant
+/// leaves it seeing no library. Only [`set_every_library`], or a patch of
+/// [`Grant::Every`], lifts the limit.
 ///
 /// # Errors
 ///
@@ -249,6 +293,28 @@ pub fn revoke_library(conn: &Connection, user_id: i64, library_id: i64) -> Resul
         )
         .map_err(|e| format!("revoking library {library_id} from user {user_id}: {e}"))?;
     Ok(changed == 1)
+}
+
+/// Let `user_id` see every library, including any added later: the setting
+/// is raised and the account's grants are deleted, so a later "only these"
+/// starts from none rather than from rows left waiting. `true` when either
+/// changed.
+///
+/// # Errors
+///
+/// Returns an error if a write fails.
+pub fn set_every_library(conn: &Connection, user_id: i64) -> rusqlite::Result<bool> {
+    let scope = crate::Nested::open(conn, "set_every_library")?;
+    let raised = conn.execute(
+        "UPDATE user SET every_library = 1 WHERE id = ?1 AND every_library = 0",
+        params![user_id],
+    )?;
+    let deleted = conn.execute(
+        "DELETE FROM user_library WHERE user_id = ?1",
+        params![user_id],
+    )?;
+    scope.commit()?;
+    Ok(raised + deleted > 0)
 }
 
 /// The libraries granted to `user_id`, as `(id, name)`, by name.
@@ -749,13 +815,22 @@ pub fn by_id(conn: &Connection, id: i64) -> Result<Option<Account>, String> {
     .map_err(|e| format!("looking up account {id}: {e}"))
 }
 
+/// Which libraries an account sees, as [`update`] sets it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Grant {
+    /// Every library, including any added later. The account's grants are
+    /// deleted.
+    Every,
+    /// Only these libraries, by id, replacing the account's grants. **An
+    /// empty list is no library**, never every library.
+    Libraries(Vec<i64>),
+}
+
 /// What [`update`] may change about one account.
 ///
-/// **Every field is "leave it alone" when `None`**, including `libraries`: the
-/// difference between `None` (do not touch the grants) and `Some(vec![])`
-/// (grant nothing, which spec A2 defines as *unrestricted* — see
-/// [`grant_library`]) is the whole reason that field is an `Option<Vec<_>>`
-/// rather than a `Vec<_>`.
+/// **Every field is "leave it alone" when `None`**, including `grant`: `None`
+/// does not touch the grants, where `Some(Grant::Libraries(vec![]))` leaves
+/// the account seeing no library.
 ///
 /// **`password` is an administrator resetting somebody else's**, and it is
 /// here rather than left to [`set_password`] because the two have to succeed
@@ -779,9 +854,8 @@ pub struct Patch {
     pub can_download: Option<bool>,
     pub can_stream: Option<bool>,
     pub can_stamp: Option<bool>,
-    /// Library ids. Replaces the account's grants: `Some(vec![])` takes them
-    /// all, which is unrestricted, and `None` leaves them alone.
-    pub libraries: Option<Vec<i64>>,
+    /// What the account sees, replacing what it saw; `None` leaves it alone.
+    pub grant: Option<Grant>,
     pub password: Option<String>,
 }
 
@@ -978,43 +1052,48 @@ pub fn update(
     // that way, a diff is the same size of code and cannot acquire that class
     // of bug later.
     //
-    // **`Some(vec![])` is not the same instruction as `None`.** An absent list
-    // leaves the grants alone; an empty one takes them all away, which spec A2
-    // defines as *unrestricted* rather than blind — see [`grant_library`].
-    if let Some(wanted) = &patch.libraries {
-        let mut wanted_libraries = std::collections::BTreeSet::new();
-        for library_id in wanted {
-            // **An id no library holds is the caller's mistake, not a
-            // fault.** `INSERT OR IGNORE` does not suppress a foreign-key
-            // violation (SQLite's `ON CONFLICT` covers UNIQUE, NOT NULL,
-            // CHECK and PRIMARY KEY, and FK is not among them), so left to
-            // `grant_library` this reaches the client as a 500 carrying
-            // SQLite's own text. **A library with no folder is refused too**
-            // ([`ungrantable`]). The list is checked whole before a grant is
-            // written, and a refusal rolls back whatever the same patch wrote
-            // before it, since the scope is never committed.
-            match ungrantable(conn, *library_id).map_err(WriteError::Failed)? {
-                Some(Ungrantable::Missing) => {
+    // **An empty list sets "only these" and names none**, so the account sees
+    // no library: emptying a grant must never widen it to every library.
+    match &patch.grant {
+        None => {}
+        Some(Grant::Every) => {
+            set_every_library(conn, id)
+                .map_err(|e| WriteError::Failed(format!("updating account {id}: {e}")))?;
+        }
+        Some(Grant::Libraries(wanted)) => {
+            let mut wanted_libraries = std::collections::BTreeSet::new();
+            for library_id in wanted {
+                // **An id no library holds is the caller's mistake, not a
+                // fault.** `INSERT OR IGNORE` does not suppress a foreign-key
+                // violation (SQLite's `ON CONFLICT` covers UNIQUE, NOT NULL,
+                // CHECK and PRIMARY KEY, and FK is not among them), so left
+                // to `grant_library` this reaches the client as a 500
+                // carrying SQLite's own text. The list is checked whole
+                // before a grant is written, and a refusal rolls back
+                // whatever the same patch wrote before it, since the scope is
+                // never committed.
+                if !library_exists(conn, *library_id).map_err(WriteError::Failed)? {
                     return Err(WriteError::Unusable(format!(
                         "there is no library {library_id} to grant"
                     )));
                 }
-                Some(Ungrantable::NoFolder(name)) => {
-                    return Err(WriteError::Refused(no_folder(&name)));
-                }
-                None => {}
+                wanted_libraries.insert(*library_id);
             }
-            wanted_libraries.insert(*library_id);
-        }
-        let held: std::collections::BTreeSet<i64> = libraries_for(conn, id)
-            .map_err(WriteError::Failed)?
-            .into_iter()
-            .collect();
-        for library in held.difference(&wanted_libraries) {
-            revoke_library(conn, id, *library).map_err(WriteError::Failed)?;
-        }
-        for library in wanted_libraries.difference(&held) {
-            grant_library(conn, id, *library).map_err(WriteError::Failed)?;
+            conn.execute(
+                "UPDATE user SET every_library = 0 WHERE id = ?1",
+                params![id],
+            )
+            .map_err(|e| WriteError::Failed(format!("updating account {id}: {e}")))?;
+            let held: std::collections::BTreeSet<i64> = libraries_for(conn, id)
+                .map_err(WriteError::Failed)?
+                .into_iter()
+                .collect();
+            for library in held.difference(&wanted_libraries) {
+                revoke_library(conn, id, *library).map_err(WriteError::Failed)?;
+            }
+            for library in wanted_libraries.difference(&held) {
+                grant_library(conn, id, *library).map_err(WriteError::Failed)?;
+            }
         }
     }
 

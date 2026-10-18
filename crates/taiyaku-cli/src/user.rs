@@ -15,7 +15,10 @@ const USER_USAGE: &str = "usage: taiyaku library user promote <name> [--role ROL
                           taiyaku library user add <name> [--role admin|user] [--db PATH]  \
                           (adds a reader; promote makes the administrator)\n \
                           taiyaku library user password <name> [--db PATH]\n \
-                          taiyaku library user list [--db PATH]";
+                          taiyaku library user list [--db PATH]\n \
+                          taiyaku library user grant-library|revoke-library <user> <library> \
+                          [--db PATH]\n \
+                          taiyaku library user every-library <user> [--db PATH]";
 
 const KEY_USAGE: &str = "usage: taiyaku library key create <user> --name DEVICE [--db PATH]\n \
                          taiyaku library key list <user> [--db PATH]\n \
@@ -35,14 +38,15 @@ pub(crate) fn command(args: &[String]) -> Result<(), String> {
         Some("list") => list(&args[1..]),
         Some("grant-library") => grant_library(&args[1..]),
         Some("revoke-library") => revoke_library(&args[1..]),
+        Some("every-library") => every_library(&args[1..]),
         Some(verb @ ("grant-root" | "revoke-root")) => Err(renamed(verb)),
         Some(other) => Err(format!(
             "library user has no subcommand `{other}`; it has promote, add, password, list, \
-             grant-library and revoke-library"
+             grant-library, revoke-library and every-library"
         )),
         None => Err(
-            "library user needs a subcommand: promote, add, password, list, grant-library \
-                     or revoke-library"
+            "library user needs a subcommand: promote, add, password, list, grant-library, \
+                     revoke-library or every-library"
                 .to_string(),
         ),
     }
@@ -297,23 +301,50 @@ fn list(args: &[String]) -> Result<(), String> {
     let library = open(args)?;
     let conn = library.conn();
     for (account, can_log_in) in account::list(&conn)? {
+        let every_library = sees_every_library(&conn, account.id)?;
         let granted: Vec<String> = account::granted_libraries(&conn, account.id)?
             .into_iter()
             .map(|(_, name)| name)
             .collect();
-        println!("{}", account_line(&account, can_log_in, &granted));
+        println!(
+            "{}",
+            account_line(&account, can_log_in, every_library, &granted)
+        );
     }
     Ok(())
 }
 
-/// One account's line in `user list`: its id, name and role, then the
-/// libraries it is granted where it holds any, in the order given, then a
-/// note where it cannot be logged in as.
-fn account_line(account: &account::Account, can_log_in: bool, granted: &[String]) -> String {
-    let grants = if granted.is_empty() {
-        String::new()
-    } else {
+/// Whether the account `user_id` is set to see every library, as stored: an
+/// administrator sees every library whatever this answers.
+fn sees_every_library(conn: &rusqlite::Connection, user_id: i64) -> Result<bool, String> {
+    account::access_for(conn, user_id)
+        .map(|access| access == account::Access::Every)
+        .map_err(|e| format!("reading which libraries account {user_id} sees: {e}"))
+}
+
+/// One account's line in `user list`: its id, name and role, then what it
+/// sees, then a note where it cannot be logged in as.
+///
+/// **What an account other than an administrator sees is one of three**:
+/// every library, the libraries it is granted in the order given, or no
+/// library. "No library" is said rather than left blank, so the line is
+/// never read as every library. An administrator sees every library whatever
+/// is stored, so its line names only the grants it holds for a demotion.
+fn account_line(
+    account: &account::Account,
+    can_log_in: bool,
+    every_library: bool,
+    granted: &[String],
+) -> String {
+    let admin = account.role == "admin";
+    let grants = if every_library && !admin {
+        " — every library".to_string()
+    } else if !granted.is_empty() {
         format!(" — granted: {}", granted.join(", "))
+    } else if !admin {
+        " — no library".to_string()
+    } else {
+        String::new()
     };
     // "no password set" rather than nothing, because a row that cannot be
     // logged in as looks identical to one that can in every other column,
@@ -398,15 +429,17 @@ fn key_revoke(args: &[String]) -> Result<(), String> {
 }
 
 const LIBRARY_USAGE: &str = "usage: taiyaku library user grant-library <user> <library> [--db PATH]\n \
-                             taiyaku library user revoke-library <user> <library> [--db PATH]";
+                             taiyaku library user revoke-library <user> <library> [--db PATH]\n \
+                             taiyaku library user every-library <user> [--db PATH]";
 
-/// `user` and `library`, resolved to the two ids both subcommands need, and
-/// the library's name as the store holds it, which is the name both print.
+/// `user` and `library`, resolved to the two ids both subcommands need, with
+/// the account's name as given and the library's name as the store holds it,
+/// which are the names both print.
 ///
 /// **The library is named, not given by a folder's path**, so nothing here
 /// is canonicalised and a library is found whether or not its folders can be
 /// reached. [`taiyaku_library::libraries::id_of`] looks the name up.
-fn grant_target(args: &[String]) -> Result<(Library, i64, i64, String), String> {
+fn grant_target(args: &[String]) -> Result<(Library, String, i64, i64, String), String> {
     let given = positional(args);
     let [user, name] = given.as_slice() else {
         return Err(LIBRARY_USAGE.to_string());
@@ -422,15 +455,15 @@ fn grant_target(args: &[String]) -> Result<(Library, i64, i64, String), String> 
         let stored = crate::library::stored_name(&conn, library_id)?;
         (user_id, library_id, stored)
     };
-    Ok((library, user_id, library_id, stored))
+    Ok((library, (*user).clone(), user_id, library_id, stored))
 }
 
 fn grant_library(args: &[String]) -> Result<(), String> {
     reject_unknown_flags("library user grant-library", args, &["--db"])?;
-    let (library, user_id, library_id, name) = grant_target(args)?;
+    let (library, user, user_id, library_id, name) = grant_target(args)?;
     let conn = library.conn();
+    let was_every = sees_every_library(&conn, user_id)?;
     let was_new = account::grant_library(&conn, user_id, library_id)?;
-    let held = account::granted_libraries(&conn, user_id)?;
     if was_new {
         println!("granted sight of {name}");
     } else {
@@ -440,7 +473,7 @@ fn grant_library(args: &[String]) -> Result<(), String> {
     if let Some(note) = admin_note(&role) {
         println!("  {note}");
     }
-    if let Some(note) = narrowed_note(&role, was_new, held.len()) {
+    if let Some(note) = narrowed_note(&role, was_every, &user) {
         println!("  {note}");
     }
     // **A grant over a library nothing has re-derived shows an empty shelf**,
@@ -471,32 +504,29 @@ fn role_of_account(conn: &rusqlite::Connection, user_id: i64) -> Result<String, 
     .map_err(|e| format!("reading the account's role: {e}"))
 }
 
-/// What a grant says the first time it narrows an account.
+/// What a grant says when it narrows an account that saw every library.
 ///
-/// **Said only on the first grant, because that is the one that changes what
-/// the account can see.** An account with no grants sees every library, so
-/// the first one *narrows* it — an operator who grants a library expecting to
-/// widen access has done the opposite, and this is the only moment anything
-/// says so. The second and later grants widen a restriction that already
-/// exists and need no warning. Nor does a grant the account already held:
-/// `was_new` is whether this command's grant was made, and a repeated grant
-/// of the one library an account holds narrows nothing.
+/// **Said only then, because that is the grant that changes what the account
+/// can see the other way.** A grant is "only these", so on an account that
+/// saw every library it *narrows* to that one library: an operator who grants
+/// a library expecting to widen access has done the opposite, and this is the
+/// only moment anything says so. On an account already limited, a grant
+/// widens the limit and needs no warning.
 ///
 /// Extracted for the same reason as [`unrooted_note`] and
-/// [`sessions_ended_note`]: `== 1` inside a `println!` survives as `!= 1`,
-/// because nothing can see what a command printed.
+/// [`sessions_ended_note`]: a unit test reads the decision without running
+/// the command.
 ///
 /// **Takes the role since O86.** An administrator is narrowed by nothing —
 /// their grant is dropped where the principal is built — so printing this
-/// beside [`admin_note`] told the operator the grant "does nothing while it
-/// stays one" and that the account "is now restricted to that one library",
-/// one line apart. The role is decided here rather than by an `if` around the
-/// `println!`, for the same reason the count is.
-fn narrowed_note(role: &str, was_new: bool, held: usize) -> Option<String> {
-    (role != "admin" && was_new && held == 1).then(|| {
-        "That account is now restricted to that one library. \
-         An account with no grants at all sees every library."
-            .to_string()
+/// beside [`admin_note`] would tell the operator the grant "does nothing while
+/// it stays one" and that the account "is now restricted", one line apart.
+fn narrowed_note(role: &str, was_every: bool, user: &str) -> Option<String> {
+    (role != "admin" && was_every).then(|| {
+        format!(
+            "That account saw every library, and is now restricted to that one. \
+             `taiyaku library user every-library {user}` lifts the limit."
+        )
     })
 }
 
@@ -516,8 +546,7 @@ fn narrowed_note(role: &str, was_new: bool, held: usize) -> Option<String> {
 /// working grant.
 ///
 /// Extracted for the same reason as [`narrowed_note`] and [`unrooted_note`]: a
-/// comparison inside a `println!` survives mutation, because nothing can see
-/// what a command printed.
+/// unit test reads the decision without running the command.
 fn admin_note(role: &str) -> Option<String> {
     (role == "admin").then(|| {
         "That account is an administrator, so this grant does nothing while it \
@@ -531,8 +560,7 @@ fn admin_note(role: &str) -> Option<String> {
 ///
 /// **Extracted for the same reason [`sessions_ended_note`] was**, and after
 /// the same three mutants: `> 0` inside a `println!` survived as `==`, `<` and
-/// `>=`, because nothing can see what a command printed. Each is now a
-/// different answer.
+/// `>=`. Each is now a different answer.
 ///
 /// The warning matters because the rule it qualifies is already
 /// counter-intuitive: a grant restricts, and a restricted account cannot see a
@@ -550,7 +578,7 @@ fn unrooted_note(unrooted: i64) -> Option<String> {
 
 fn revoke_library(args: &[String]) -> Result<(), String> {
     reject_unknown_flags("library user revoke-library", args, &["--db"])?;
-    let (library, user_id, library_id, name) = grant_target(args)?;
+    let (library, user, user_id, library_id, name) = grant_target(args)?;
     let conn = library.conn();
     let revoked = account::revoke_library(&conn, user_id, library_id)?;
     if revoked {
@@ -560,7 +588,7 @@ fn revoke_library(args: &[String]) -> Result<(), String> {
     }
     let role = role_of_account(&conn, user_id)?;
     let held = account::granted_libraries(&conn, user_id)?;
-    if let Some(note) = revoked_note(&role, revoked, held.len()) {
+    if let Some(note) = revoked_note(&role, revoked, held.len(), &user) {
         println!("  {note}");
     }
     Ok(())
@@ -571,12 +599,12 @@ fn revoke_library(args: &[String]) -> Result<(), String> {
 /// An administrator saw every library before and sees every library after,
 /// so where a grant was `revoked` the note says the revocation changes
 /// nothing while the account stays one, as [`admin_note`] says of a grant.
-/// Any other account whose last grant was `revoked` is told it sees every
-/// library again.
+/// Any other account whose last grant was `revoked` is told it now sees no
+/// library, and how to lift the limit, since revoking never does.
 ///
 /// Extracted for the same reason as [`narrowed_note`]: the role and the count
 /// are decided here, where a test can see the answer.
-fn revoked_note(role: &str, revoked: bool, held: usize) -> Option<String> {
+fn revoked_note(role: &str, revoked: bool, held: usize, user: &str) -> Option<String> {
     if role == "admin" {
         revoked.then(|| {
             "That account is an administrator, so this revocation changes nothing while it \
@@ -585,9 +613,35 @@ fn revoked_note(role: &str, revoked: bool, held: usize) -> Option<String> {
         })
     } else {
         (revoked && held == 0).then(|| {
-            "That account now holds no grants, and so sees every library again.".to_string()
+            format!(
+                "`{user}` now sees no library; `taiyaku library user every-library {user}` \
+                 lifts the limit."
+            )
         })
     }
+}
+
+/// `every-library`: let an account see every library, including any added
+/// later. Revoking an account's last grant leaves it seeing none, so this is
+/// the one command that lifts a limit.
+fn every_library(args: &[String]) -> Result<(), String> {
+    reject_unknown_flags("library user every-library", args, &["--db"])?;
+    let given = positional(args);
+    let [user] = given.as_slice() else {
+        return Err(LIBRARY_USAGE.to_string());
+    };
+    let library = open(args)?;
+    let conn = library.conn();
+    let user_id =
+        account::id_of(&conn, user)?.ok_or_else(|| format!("no account named `{user}`"))?;
+    let changed = account::set_every_library(&conn, user_id)
+        .map_err(|e| format!("letting `{user}` see every library: {e}"))?;
+    if changed {
+        println!("`{user}` now sees every library");
+    } else {
+        println!("`{user}` already sees every library; nothing to do");
+    }
+    Ok(())
 }
 
 #[cfg(test)]

@@ -90,7 +90,9 @@ eight spec corrections, which are adopted): a library is deleted when its last
 folder goes; `scan --add PATH` without `--library` always makes a new library;
 and removing or moving away a library's last folder is refused while some
 account's grants consist of that library alone, naming those accounts, so that
-no account silently widens to every library.
+no account silently widens to every library. *O220 has since reversed this:
+the removal and the move go through, and leave such an account seeing no
+library. See `2026-10-17-o220-no-library-design.md`.*
 
 ## Decisions the user made, 2026-10-06, for F2
 
@@ -109,7 +111,9 @@ both, and on how F2 ships.
    place is refused.** §6.2 has both. Offered against refusing both, and
    against moving regardless and listing what was left over.
 3. **The Users card names the unrestricted state**: "Every library" or "Only
-   these" (§5). Offered against library checkboxes alone.
+   these" (§5). Offered against library checkboxes alone. *O220 has since
+   made that state a setting of its own rather than an empty grant: see
+   `2026-10-17-o220-no-library-design.md`.*
 4. **F2 is two PRs.** F2a is everything but Move, and F2b is Move (§11). The
    first scans on the NAS wait on F2a only.
 
@@ -150,6 +154,8 @@ All of it at `main` 953b2486 unless a branch is named.
   unrestricted** (`browse`'s module doc, spec C1 §5.1). `browse` applies the
   grant in SQL, to editions through `root_clause`/`root_clause_for` and to
   members through `member_clause`, on `member.root_id` (migration 6).
+  *O220 has since changed this: no list of folders stands for every library,
+  and an empty one sees nothing. See `2026-10-17-o220-no-library-design.md`.*
 - **Derivation is one pass over every root.**
   - `derive_with` reads every root's `scan_entry` rows and gathers them into
     groups keyed on `GroupKey = (series title, volume bits, rel_path when there
@@ -323,6 +329,9 @@ carry a library, and does not need to.
   resolves it as the union of the granted libraries' roots, so every SQL filter
   in `browse` and every `edition_visible` check is unchanged.
 - **An empty grant is still unrestricted, and an admin is still unrestricted.**
+  *O220 has since changed the first half: "every library" is a setting of its
+  own, and an account limited to libraries and granted none sees nothing. See
+  `2026-10-17-o220-no-library-design.md`.*
 - **CLI:** `library user grant-root`/`revoke-root` become
   `grant-library`/`revoke-library`, naming a library by name.
 - **The Users screen grants libraries** (F2a; closes O193). `Patch::roots`
@@ -345,6 +354,12 @@ carry a library, and does not need to.
   - Why: each tick is saved at once. With boxes alone, moving an account from
     one library to another by unticking first leaves it unrestricted until the
     second click, and for good if that click never comes.
+  - *O220 has since changed this: the last tick clears and leaves the account
+    seeing no library, "Only these" on an account that sees every library
+    saves at once as no library, "Every library" sends
+    `every_library: true`, and an account limited to libraries and granted
+    none sees nothing. See
+    `2026-10-17-o220-no-library-design.md`.*
 - A library added later is invisible to a restricted account until granted,
   which is what a grant has always meant here.
 
@@ -388,6 +403,8 @@ library card.
   `scan::remove_root` for each folder and the library row. The refusal for a
   library that is an account's only grant is asked of the library before
   anything is counted or removed, for the dry run and the removal alike.
+  *O220 has since removed that refusal: the dry run names the accounts the
+  removal leaves with no library instead. See `2026-10-17-o220-no-library-design.md`.*
 - **A refusal is drawn as the server's sentence**, on this screen and in its
   dialogs: the `error` of the response, not its path, status and body.
 - **The API:**
@@ -508,7 +525,9 @@ library a work that was in one.
 **It is refused, too, where F1's decision already refuses**: the folder is its
 library's last and that library is the only grant of some account. The
 sentence names the accounts, as a removal's does. Migration 15's
-`only_grant_refuses_move` trigger stands behind it.
+`only_grant_refuses_move` trigger stands behind it. *O220 has since removed
+this refusal and the trigger: the move goes through and names the accounts
+it leaves with no library. See `2026-10-17-o220-no-library-design.md`.*
 
 **It does not run beside a scan.** Move asks for `library_job` as a rule save
 does, and answers 409 while a scan holds it.
@@ -631,7 +650,8 @@ rescan.
   - collision naming (two folders called `Volumes`).
 - **Access:** an account granted one library sees only that library's works on
   the grid, in search, on home, in OPDS, and on page and download routes. An
-  empty grant sees all.
+  empty grant sees all. *O220 has since changed that last sentence: see
+  `2026-10-17-o220-no-library-design.md`.*
 - **Browsing:** `?library=` narrows grid, search and home, and keeps
   `pair_clause`'s both-sides rule.
 - **The folder browser:**
@@ -652,7 +672,8 @@ rescan.
   - the web tests for the Libraries screen and the Users grants.
 - **The Users grants (F2a):**
   - a library of two folders is one box, and unticking it revokes it;
-  - the last tick cannot be cleared, and "Every library" sends the empty list;
+  - the last tick cannot be cleared, and "Every library" sends the empty list
+    *(O220 has since changed this and the next: see `2026-10-17-o220-no-library-design.md`)*;
   - "Only these" on an unrestricted account sends nothing until a tick;
   - a `PATCH` carrying `roots` is refused, naming `libraries`.
 - **Move (F2b)**, each test watched failing against the defect it names:
@@ -667,7 +688,8 @@ rescan.
   - the dry run leaves the database and each folder's `.taiyaku/` as they
     were;
   - a library's last folder moved: the library goes, the grants are counted,
-    and an account's only grant refuses it by name;
+    and an account's only grant refuses it by name *(O220 has since changed
+    this: the move goes through and names the account; see `2026-10-17-o220-no-library-design.md`)*;
   - 409 while a scan runs;
   - on a scratch copy of the real library, a second folder moved in and out
     again, with the dump of the works it does not touch unchanged.

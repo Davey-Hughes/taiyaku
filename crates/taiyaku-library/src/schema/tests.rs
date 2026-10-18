@@ -759,8 +759,8 @@ fn migration_6_adds_member_root_id_leaving_existing_members_null() {
 /// The version and the migration count are one fact, and this is the refusal
 /// that depends on it staying true.
 #[test]
-fn the_schema_version_is_sixteen() {
-    assert_eq!(SCHEMA_VERSION, 16);
+fn the_schema_version_is_seventeen() {
+    assert_eq!(SCHEMA_VERSION, 17);
     assert_eq!(
         MIGRATIONS.len(),
         SCHEMA_VERSION as usize,
@@ -1658,16 +1658,66 @@ fn migration_16_strips_names_and_keeps_an_id_beside_a_name_another_holds() {
     assert!(refused.to_string().contains("UNIQUE"), "{refused}");
 }
 
+/// **Migration 17 changes no account's view.** An account holding a grant
+/// row is set to "only these" and still sees its folders; one holding none
+/// stays "every library". An administrator's rows count like anyone's, so a
+/// demotion still restores them.
+#[test]
+fn migration_17_restricts_exactly_the_accounts_that_hold_a_grant() {
+    let conn = Connection::open_in_memory().expect("in-memory connection");
+    conn.pragma_update(None, "foreign_keys", "ON")
+        .expect("foreign keys on, as `Library::open` sets them");
+    migrate_with(&conn, &MIGRATIONS[..16]).expect("migrates to 16");
+    conn.execute_batch(TWO_FOLDER_LIBRARY).expect("seeds");
+    conn.execute_batch(
+        "INSERT INTO user (id, name, password_hash, role) VALUES
+           (2, 'granted', 'x', 'user'), (3, 'open', 'x', 'user'), (4, 'boss', 'x', 'admin');
+         INSERT INTO user_library (user_id, library_id) VALUES (2, 70), (4, 80);",
+    )
+    .expect("an account with a grant, one without, and an administrator with one");
+
+    migrate(&conn).expect("migrates to 17");
+
+    assert_eq!(
+        rows_of(
+            &conn,
+            "SELECT id, every_library FROM user WHERE id IN (2, 3, 4) ORDER BY id"
+        ),
+        vec![
+            vec!["Integer(2)".to_string(), "Integer(0)".to_string()],
+            vec!["Integer(3)".to_string(), "Integer(1)".to_string()],
+            vec!["Integer(4)".to_string(), "Integer(0)".to_string()],
+        ]
+    );
+    assert_eq!(
+        crate::account::access_for(&conn, 2).expect("reads"),
+        crate::account::Access::Only(vec![7, 8]),
+        "the granted account still sees Shelf's two folders"
+    );
+    assert_eq!(
+        crate::account::access_for(&conn, 3).expect("reads"),
+        crate::account::Access::Every,
+        "the account with no grant still sees every library"
+    );
+    let widened = conn
+        .execute("UPDATE user SET every_library = 2 WHERE id = 3", [])
+        .expect_err("the column holds 0 or 1 and nothing else");
+    assert!(
+        widened.to_string().contains("CHECK constraint failed"),
+        "{widened}"
+    );
+}
+
 #[test]
 fn a_library_goes_with_its_last_root_and_takes_its_grants_with_it() {
     let library = crate::Library::open_in_memory().expect("library");
     let conn = library.conn();
     conn.execute_batch(TWO_FOLDER_LIBRARY).expect("seeds");
     conn.execute(
-        "INSERT INTO user_library (user_id, library_id) VALUES (1, 70), (1, 80)",
+        "INSERT INTO user_library (user_id, library_id) VALUES (1, 70)",
         [],
     )
-    .expect("grants Shelf, and Other beside it: an only grant would keep its last folder");
+    .expect("grants Shelf");
 
     conn.execute("DELETE FROM root WHERE id = 7", [])
         .expect("removes one folder");
@@ -1728,193 +1778,67 @@ fn a_library_goes_when_its_last_root_moves_away_and_its_works_stay() {
     );
 }
 
-/// [`TWO_FOLDER_LIBRARY`], a third library `Lone` of one folder, two accounts
-/// to grant, and `grants` as `(user_id, library_id)` rows.
+/// [`TWO_FOLDER_LIBRARY`], two accounts, and `grants` as `(user_id,
+/// library_id)` rows. Each granted account is set to "only these", as
+/// [`crate::account::grant_library`] sets it.
 fn libraries_granted(grants: &str) -> crate::Library {
     let library = crate::Library::open_in_memory().expect("library");
     {
         let conn = library.conn();
         conn.execute_batch(TWO_FOLDER_LIBRARY).expect("seeds");
         conn.execute_batch(&format!(
-            "INSERT INTO library (id, name) VALUES (90, 'Lone');
-             INSERT INTO root (id, path, library_id) VALUES (5, '/srv/lone', 90);
-             INSERT INTO user (id, name, password_hash) VALUES (2, 'a', 'x'), (3, 'b', 'x');
-             INSERT INTO user_library (user_id, library_id) VALUES {grants};"
+            "INSERT INTO user (id, name, password_hash) VALUES (2, 'a', 'x'), (3, 'b', 'x');
+             INSERT INTO user_library (user_id, library_id) VALUES {grants};
+             UPDATE user SET every_library = 0 WHERE id IN (SELECT user_id FROM user_library);"
         ))
         .expect("seeds the grants");
     }
     library
 }
 
-/// The roots, libraries and grants, as text.
-fn roots_libraries_and_grants(conn: &Connection) -> Vec<Vec<String>> {
-    rows_of(
-        conn,
-        "SELECT 'root', id, library_id FROM root
-         UNION ALL SELECT 'library', id, NULL FROM library
-         UNION ALL SELECT 'grant', user_id, library_id FROM user_library
-         ORDER BY 1, 2, 3",
-    )
-}
-
-/// The triggers alone, with no Rust check before them, refuse deleting or
-/// moving away `Other`'s one folder while account 2 is granted `Other` and
-/// nothing else, and leave every row as it was. Account 3 holds `Shelf`.
+/// **Nothing in the store keeps an only grant's last folder.** Deleting or
+/// moving away `Other`'s one folder succeeds while account 2 is granted
+/// `Other` and nothing else, administrator or not: the library and its grant
+/// go, and the account is left seeing no library, never every library.
+/// Account 3 keeps its grant of `Shelf`.
 #[test]
-fn the_last_root_of_an_accounts_only_library_cannot_be_deleted_or_moved_away() {
-    for statement in [
-        "DELETE FROM root WHERE id = 9",
-        "UPDATE root SET library_id = 70 WHERE id = 9",
-        "UPDATE root SET library_id = NULL WHERE id = 9",
-    ] {
-        let library = libraries_granted("(2, 80), (3, 70)");
-        let conn = library.conn();
-        let before = roots_libraries_and_grants(&conn);
+fn the_last_root_of_an_accounts_only_library_can_be_deleted_or_moved_away() {
+    for role in ["user", "admin"] {
+        for statement in [
+            "DELETE FROM root WHERE id = 9",
+            "UPDATE root SET library_id = 70 WHERE id = 9",
+            "UPDATE root SET library_id = NULL WHERE id = 9",
+        ] {
+            let library = libraries_granted("(2, 80), (3, 70)");
+            let conn = library.conn();
+            conn.execute("UPDATE user SET role = ?1 WHERE id = 2", [role])
+                .expect("sets account 2's role");
 
-        let refused = conn
-            .execute(statement, [])
-            .expect_err("Other is account 2's only grant");
+            let changed = conn
+                .execute(statement, [])
+                .unwrap_or_else(|e| panic!("{role}, {statement}: {e}"));
 
-        assert!(
-            refused
-                .to_string()
-                .contains("the only library an account is granted"),
-            "{statement}: {refused}"
-        );
-        assert_eq!(roots_libraries_and_grants(&conn), before, "{statement}");
-    }
-}
-
-/// The same refusals with the `library_emptied_*` triggers dropped and
-/// created again, so that they are the newest triggers on `root`. Those two
-/// delete the library and, through it, the grants the refusal reads.
-#[test]
-fn the_refusal_holds_whichever_trigger_on_root_was_created_last() {
-    for statement in [
-        "DELETE FROM root WHERE id = 9",
-        "UPDATE root SET library_id = 70 WHERE id = 9",
-    ] {
-        let library = libraries_granted("(2, 80), (3, 70)");
-        let conn = library.conn();
-        for trigger in ["library_emptied_by_delete", "library_emptied_by_move"] {
-            let sql: String = conn
-                .query_row(
-                    "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = ?1",
-                    [trigger],
-                    |r| r.get(0),
-                )
-                .expect("the trigger as migration 15 wrote it");
-            conn.execute_batch(&format!("DROP TRIGGER {trigger}; {sql};"))
-                .expect("creates it again");
+            assert_eq!(changed, 1, "{role}, {statement}");
+            assert_eq!(
+                rows_of(
+                    &conn,
+                    "SELECT (SELECT count(*) FROM library WHERE id = 80),
+                            (SELECT count(*) FROM user_library WHERE user_id = 2)"
+                ),
+                vec![vec!["Integer(0)".to_string(), "Integer(0)".to_string()]],
+                "{role}, {statement}: Other and its grant went with its last folder"
+            );
+            assert_eq!(
+                crate::account::access_for(&conn, 2).expect("reads"),
+                crate::account::Access::Only(Vec::new()),
+                "{role}, {statement}: the account sees no library"
+            );
+            assert_eq!(
+                crate::account::libraries_for(&conn, 3).expect("reads"),
+                vec![70],
+                "{role}, {statement}: account 3 keeps its grant of Shelf"
+            );
         }
-        let before = roots_libraries_and_grants(&conn);
-
-        let refused = conn
-            .execute(statement, [])
-            .expect_err("Other is account 2's only grant");
-
-        assert!(
-            refused
-                .to_string()
-                .contains("the only library an account is granted"),
-            "{statement}: {refused}"
-        );
-        assert_eq!(roots_libraries_and_grants(&conn), before, "{statement}");
-    }
-}
-
-/// An administrator's only grant is kept the same way. The grant does nothing
-/// while the account administers, and its row is what a demotion restores.
-#[test]
-fn the_last_root_of_an_administrators_only_library_cannot_be_deleted_or_moved_away() {
-    for statement in [
-        "DELETE FROM root WHERE id = 9",
-        "UPDATE root SET library_id = 70 WHERE id = 9",
-    ] {
-        let library = libraries_granted("(2, 80)");
-        let conn = library.conn();
-        conn.execute("UPDATE user SET role = 'admin' WHERE id = 2", [])
-            .expect("account 2 administers");
-        let before = roots_libraries_and_grants(&conn);
-
-        let refused = conn
-            .execute(statement, [])
-            .expect_err("Other is account 2's only grant");
-
-        assert!(
-            refused
-                .to_string()
-                .contains("the only library an account is granted"),
-            "{statement}: {refused}"
-        );
-        assert_eq!(roots_libraries_and_grants(&conn), before, "{statement}");
-    }
-}
-
-/// What the same triggers let through. Each statement runs against a fresh
-/// library holding the grants beside it.
-#[test]
-fn a_root_goes_or_moves_where_no_account_is_left_without_a_grant() {
-    for (grants, statement, why) in [
-        (
-            "(2, 80), (2, 70)",
-            "DELETE FROM root WHERE id = 9",
-            "the account holds another library",
-        ),
-        (
-            "(2, 80), (2, 70)",
-            "UPDATE root SET library_id = 70 WHERE id = 9",
-            "the account holds another library",
-        ),
-        (
-            "(2, 80), (2, 90)",
-            "DELETE FROM root WHERE id = 9",
-            "the account holds another library, a later one",
-        ),
-        (
-            "(2, 80), (2, 90)",
-            "UPDATE root SET library_id = 70 WHERE id = 9",
-            "the account holds another library, a later one",
-        ),
-        (
-            "(2, 90)",
-            "DELETE FROM root WHERE id = 9",
-            "the only grant is on another library",
-        ),
-        (
-            "(2, 90)",
-            "UPDATE root SET library_id = 70 WHERE id = 9",
-            "the only grant is on another library",
-        ),
-        (
-            "(2, 70)",
-            "DELETE FROM root WHERE id = 7",
-            "the library keeps a folder",
-        ),
-        (
-            "(2, 70)",
-            "UPDATE root SET library_id = 80 WHERE id = 7",
-            "the library keeps a folder",
-        ),
-        (
-            "(2, 80)",
-            "UPDATE root SET library_id = 80 WHERE id = 9",
-            "the folder moves nowhere",
-        ),
-        (
-            "(2, 80)",
-            "INSERT INTO root (path) VALUES ('/srv/new')",
-            "a new folder being filed under its own library leaves none",
-        ),
-    ] {
-        let library = libraries_granted(grants);
-        let conn = library.conn();
-
-        let changed = conn
-            .execute(statement, [])
-            .unwrap_or_else(|e| panic!("{statement}, where {why}: {e}"));
-
-        assert_eq!(changed, 1, "{statement}");
     }
 }
 
