@@ -1,15 +1,14 @@
 /**
  * One root: what it is, what it defaults to, and what its last scan did —
- * spec C4 §2 and §3.
+ * spec C4 §2 and §3. It is the body of the folder's own page.
  *
- * **The card owns its own scan poll**, the way `ProposalRow` owns its own
+ * **The row owns its own scan poll**, the way `ProposalRow` owns its own
  * evidence fetch: a scan belongs to the root being scanned rather than to the
- * page, and hoisting the poll to the list would make a page with six roots
- * poll six times whether or not any of them is scanning.
+ * page that draws it.
  *
  * **It asks the status route once on mount, and that is not optional.** The
  * server keeps `ServeState.scans` precisely so a client can poll a scan across
- * requests; a card that only ever polled after pressing its own button showed
+ * requests; a row that only ever polled after pressing its own button showed
  * nothing at all to an admin who navigated away during a scan and came back —
  * no progress, no eventual report, and an enabled "Scan folder" whose only
  * answer was a 409 about the scan they had started themselves. Whole-branch
@@ -29,7 +28,7 @@
  * differs from what the row holds — could not work for `exclude_globs`, whose
  * value the row did not report, so `from` answered `''` forever and an admin
  * who set a pattern then emptied the box hit `'' === ''` and wrote nothing
- * (pass 1). Comparing against the last value *this card* had sent fixed that
+ * (pass 1). Comparing against the last value *this row* had sent fixed that
  * only within a single mount, since that state starts empty on every load
  * (pass 3). Treating the column's value as *unknown* instead removed the
  * guard altogether, so a bare focus-and-tab-away sent `{exclude_globs: null}`
@@ -58,6 +57,7 @@
  * whose own discipline is that a report names what it did not do.
  */
 import {
+  type ChangeEvent,
   type FocusEvent,
   useCallback,
   useEffect,
@@ -67,6 +67,7 @@ import {
 } from 'react'
 import {
   patchRoot,
+  POLL_MISSES_ALLOWED,
   type Probe,
   regimeFacts,
   type Root,
@@ -78,6 +79,7 @@ import {
   startScan,
   statusOf,
 } from './config'
+import { useDrawn } from './hooks'
 import type { MoveAnswer } from './libraries'
 import { MoveRoot, type NamedLibrary } from './MoveRoot'
 import { RemoveRoot } from './RemoveRoot'
@@ -88,27 +90,19 @@ export interface RootRowProps {
   root: Root
   /** Only a root added in this session has one. See `config.ts`'s `Probe`. */
   probe?: Probe
-  /** Bumped by the library's card when it starts a scan of the library. */
-  adopt?: number
   /** The library's name, where this is its only folder. */
   lastOf?: string
   /**
-   * Something else in the library is going on: a scan of the library, a
-   * removal of it, or another folder's scan, removal dialog or move dialog.
+   * Something else in the library is going on: another folder's scan.
    * Scan folder, Move… and Remove… do nothing then and are drawn disabled,
    * and an open removal or move dialog is closed.
    */
   held?: boolean
   /**
-   * Where this folder could be moved. A library's card always gives it; a
+   * Where this folder could be moved. The folder's page always gives it; a
    * row drawn without it has no Move….
    */
   moveTo?: { from: NamedLibrary; targets: NamedLibrary[] }
-  /**
-   * Says whether this row is scanning, starting a scan, or has a removal or a
-   * move dialog open.
-   */
-  onBusy?: (busy: boolean) => void
   /**
    * The folder is gone, with what its re-derive found. The row is not drawn
    * once the list reloads, so the screen keeps the report.
@@ -125,10 +119,18 @@ export interface RootRowProps {
    * scan that ended by itself: no press started that read.
    */
   onChanged: (quiet?: boolean) => void
+  /** Scan folder was pressed and a scan of this folder is being asked for. */
+  onScan?: () => void
+  /**
+   * A write sent from this row was refused after the row had gone, with the
+   * sentence that says so and names the folder: nothing of the row is left
+   * to draw it on. An edit sent as the row went is one.
+   */
+  onLateRefusal?: (sentence: string) => void
 }
 
 /**
- * The four text columns this card edits.
+ * The four text columns this row edits.
  *
  * **Each carries its own `patch` builder rather than a `keyof RootPatch` and a
  * computed key.** `save({ [field.name]: value })` types as
@@ -217,31 +219,73 @@ const TEXT_FIELDS: TextField[] = [
   },
 ]
 
-/** How many consecutive failed polls a running scan survives. See `misses`. */
-const POLL_MISSES_ALLOWED = 3
-
 /** The one sentence a bad scan interval gets, in both of its shapes. */
 const BAD_INTERVAL =
   'A scan interval has to be a whole number of seconds, at least one. ' +
   'Leave it empty to set no interval at all.'
 
+/**
+ * What a text box holding `value` asks of `row`: nothing where the row
+ * already holds it, and `null` for an emptied box.
+ */
+function textPatch(
+  field: TextField,
+  row: Root,
+  value: string,
+): RootPatch | undefined {
+  if (value === field.from(row)) return undefined
+  return field.patch(value === '' ? null : value)
+}
+
+/**
+ * What the interval box asks of `row`: nothing where the row already holds
+ * it, `null` for an emptied box, and `BAD_INTERVAL` for an entry that is not
+ * a whole number of seconds, at least one.
+ */
+function intervalPatch(
+  row: Root,
+  box: HTMLInputElement,
+): RootPatch | typeof BAD_INTERVAL | undefined {
+  // `<input type=number>` reads an unparseable entry such as `12e` as `''`,
+  // the same as an emptied box, and an emptied box clears the column.
+  // `badInput` is the only thing that tells them apart.
+  if (box.validity.badInput) return BAD_INTERVAL
+  const next = box.value === '' ? null : Number(box.value)
+  if (next === row.scan_interval_secs) return undefined
+  if (next !== null && (!Number.isInteger(next) || next < 1)) {
+    return BAD_INTERVAL
+  }
+  return { scan_interval_secs: next }
+}
+
+/** What a box left holding its entry asks of `row`, refusals sending nothing. */
+function leftPatch(
+  row: Root,
+  box: HTMLInputElement | HTMLTextAreaElement,
+): RootPatch | undefined {
+  const field = TEXT_FIELDS.find((one) => one.name === box.name)
+  if (field !== undefined) return textPatch(field, row, box.value)
+  const patch = intervalPatch(row, box as HTMLInputElement)
+  return typeof patch === 'string' ? undefined : patch
+}
+
 export function RootRow({
   root,
   probe,
-  adopt,
   lastOf,
   held = false,
   moveTo,
-  onBusy,
   onRemoved,
   onMoved,
   onChanged,
+  onScan,
+  onLateRefusal,
 }: RootRowProps) {
   /**
    * O165: each text box is named by its label's own words and described by
    * its hint, rather than through the `<label>` around both — which named
    * Exclude globs with the hint's whole sentence. The hint is reached by an
-   * id, per instance, because the libraries screen draws a card per folder.
+   * id, per instance, so that two rows drawn at once cannot share one.
    *
    * O175: the name is an `aria-label` holding those words, where it was an
    * `aria-labelledby` naming the label's `<span>`. `.field` draws the span
@@ -269,7 +313,9 @@ export function RootRow({
   const [elapsed, setElapsed] = useState<number | undefined>()
   const [report, setReport] = useState<ScanOutcome | null>(null)
   /**
-   * Which text boxes the admin has actually typed in since focusing them.
+   * Each box the admin has typed in since focusing it, by its name. The
+   * interval box is in it too, for the row's going; its blur compares the
+   * entry with the row instead.
    *
    * **A write happens because somebody edited a box, never because its value
    * differs from something.** Two rounds of C4 PR A tried to decide it by
@@ -283,7 +329,12 @@ export function RootRow({
    * half) and the rule is unchanged: this guard still runs first, and the
    * equality check against the row is still the second.
    */
-  const edited = useRef<Set<string>>(new Set())
+  const edited = useRef<Map<string, HTMLInputElement | HTMLTextAreaElement>>(
+    new Map(),
+  )
+  /** The row as last drawn, for an edit sent once the row has gone. */
+  const latest = useRef(root)
+  latest.current = root
   /**
    * The checkbox's own value, because it has to be able to go back.
    *
@@ -297,7 +348,7 @@ export function RootRow({
   const [keepsDocuments, setKeepsDocuments] = useState(root.keeps_documents)
 
   // **Follow the row when it changes underneath.** The state is seeded once,
-  // so a value changed from anywhere but this card — another admin, another
+  // so a value changed from anywhere but this row — another admin, another
   // tab — left the tick asserting the opposite of what migration 012 holds,
   // and the next click then sent the value the server already had, taking two
   // clicks to get back. That is the same shape pass 2 fixed for the refused-
@@ -313,17 +364,10 @@ export function RootRow({
   // fires at its own cadence.
   const changed = useRef(onChanged)
   changed.current = onChanged
-
-  // The card holds this row's sibling rows, and its own Scan library and
-  // Remove library…, while this row is doing something, so it is told. Held in
-  // a ref for the reason above, and told "not busy" when the row goes.
-  const busyNow = running || starting || confirming || moving
-  const told = useRef(onBusy)
-  told.current = onBusy
-  useEffect(() => {
-    told.current?.(busyNow)
-    return () => told.current?.(false)
-  }, [busyNow])
+  // Read by the edits sent as the row goes, which answer after it has.
+  const late = useRef(onLateRefusal)
+  late.current = onLateRefusal
+  const drawn = useDrawn()
 
   /**
    * Whether a `POST` is already on its way.
@@ -352,30 +396,25 @@ export function RootRow({
    */
   const misses = useRef(0)
 
-  const save = (field: TextField, next: string) => {
-    patchRoot(root.id, field.patch(next === '' ? null : next))
-      .then(() => {
-        setFailure(undefined)
-        onChanged()
-      })
-      .catch((err: unknown) => {
-        setFailure(sentenceOf(err))
-      })
-  }
-
-  const savePatch = (patch: RootPatch) => {
+  /** `label` names the setting in a refusal that comes once the row has gone. */
+  const savePatch = (patch: RootPatch, label: string) => {
     patchRoot(root.id, patch)
       .then(() => {
         setFailure(undefined)
         onChanged()
       })
       .catch((err: unknown) => {
-        setFailure(sentenceOf(err))
+        const sentence = sentenceOf(err)
+        if (drawn.current) setFailure(sentence)
+        else
+          onLateRefusal?.(
+            `${label} for ${root.path} was not saved (${sentence}).`,
+          )
       })
   }
 
   /**
-   * Fold one status answer into this card's state.
+   * Fold one status answer into this row's state.
    *
    * Shared by the mount read and the poll so the two cannot disagree about
    * what a given answer means.
@@ -403,7 +442,7 @@ export function RootRow({
 
   // **The mount read.** See this file's own doc comment. It runs once per
   // mount and seeds `running`, so a scan already in flight is drawn and then
-  // polled by the effect below exactly as one this card started would be.
+  // polled by the effect below exactly as one this row started would be.
   useEffect(() => {
     let cancelled = false
     scanStatus(root.id)
@@ -411,11 +450,11 @@ export function RootRow({
         if (cancelled) return
         // Only a *running* scan is adopted on mount. A finished one belongs to
         // whatever session started it, and drawing its report unasked would
-        // put a stale wall of counts under every card on every page load.
+        // put a stale wall of counts on the page each time it is opened.
         if (status.running) absorb(status)
       })
       .catch(() => {
-        // Deliberately silent. A status read this card did not ask for must
+        // Deliberately silent. A status read this row did not ask for must
         // not put a red alert over a screen the admin has only just opened;
         // pressing "Scan folder" is what surfaces a real fault.
       })
@@ -424,25 +463,32 @@ export function RootRow({
     }
   }, [root.id, absorb])
 
-  // **A scan this row did not start.** The library's Scan library holds this
-  // folder's registry slot, and its card bumps `adopt` when one starts. The
-  // row then polls as it does after its own button. The value it was mounted
-  // with is not a start: a card mounted mid-scan is adopted by the mount read
-  // above.
-  const adopted = useRef(adopt)
+  // A box still being typed in when the row goes holds an edit nothing has
+  // sent, since the browser's Back, among other routes, leaves it no blur.
+  // It is sent as its blur would have sent it, against the row as last
+  // drawn. Only a box typed in is in `edited`, so a mount and unmount with
+  // nothing typed, as StrictMode stages in development, sends nothing. A
+  // refusal is handed up, named for the box and the folder, since the page
+  // it would be drawn on is gone.
   useEffect(() => {
-    if (adopt === adopted.current) return
-    adopted.current = adopt
-    setFailure(undefined)
-    setConflict(undefined)
-    setScanNotice(undefined)
-    setConfirming(false)
-    setMoving(false)
-    setReport(null)
-    setElapsed(undefined)
-    misses.current = 0
-    setRunning(true)
-  }, [adopt])
+    const typed = edited.current
+    return () => {
+      const row = latest.current
+      for (const box of typed.values()) {
+        const patch = leftPatch(row, box)
+        if (patch === undefined) continue
+        const label = box.getAttribute('aria-label') ?? box.name
+        patchRoot(row.id, patch).then(
+          () => changed.current(),
+          (err: unknown) => {
+            late.current?.(
+              `${label} for ${row.path} was not saved (${sentenceOf(err)}).`,
+            )
+          },
+        )
+      }
+    }
+  }, [])
 
   const begin = useCallback(() => {
     // Guarded synchronously, not by `disabled` alone: that left two rapid
@@ -450,6 +496,7 @@ export function RootRow({
     // — landed in the alert slot while that scan ran fine.
     if (inFlight.current) return
     inFlight.current = true
+    onScan?.()
     setStarting(true)
     setFailure(undefined)
     setConflict(undefined)
@@ -466,11 +513,17 @@ export function RootRow({
       .catch((err: unknown) => {
         inFlight.current = false
         setStarting(false)
+        if (!drawn.current) {
+          onLateRefusal?.(
+            `A scan of ${root.path} did not start (${sentenceOf(err)}).`,
+          )
+          return
+        }
         const why = messageOf(err)
         if (statusOf(why) === 409) setConflict(sentenceOf(err))
         else setFailure(sentenceOf(err))
         // **A 409 is positive proof a scan is in flight**, so it starts the
-        // poll rather than only complaining. Without this the card stayed
+        // poll rather than only complaining. Without this the row stayed
         // blind after any route back to a re-enabled button — three failed
         // polls, say — showing no progress, no report and no reload when the
         // scan finished, and answering every retry with the same 409: exactly
@@ -480,7 +533,7 @@ export function RootRow({
           setRunning(true)
         }
       })
-  }, [root.id])
+  }, [root.id, root.path, onScan, onLateRefusal, drawn])
 
   useEffect(() => {
     if (!running) return
@@ -524,10 +577,10 @@ export function RootRow({
   }, [running, root.id, absorb])
 
   return (
-    <li className="root-row">
-      <h4>
+    <section className="root-row">
+      <h2>
         <code>{root.path}</code>
-      </h4>
+      </h2>
       <dl className="regime">
         {regimeFacts(root, probe).map(({ label, value }) => (
           <div key={label}>
@@ -552,21 +605,19 @@ export function RootRow({
             onFocus: () => {
               edited.current.delete(field.name)
             },
-            onChange: () => {
-              edited.current.add(field.name)
+            onChange: (
+              e: ChangeEvent<HTMLInputElement | HTMLTextAreaElement>,
+            ) => {
+              edited.current.set(field.name, e.target)
             },
             onBlur: (e: FocusEvent<HTMLInputElement | HTMLTextAreaElement>) => {
-              const next = e.target.value
               // Nothing typed since this box was focused: nothing to write,
               // whatever the box happens to show.
               if (!edited.current.has(field.name)) return
               edited.current.delete(field.name)
-              // Edited back to what the row already holds: a no-op. Every
-              // column can be compared this way since O92's readable half
-              // landed; `exclude_globs` was the one that could not, and the
-              // `undefined` arm that carried it is gone with it.
-              if (next === field.from(root)) return
-              save(field, next)
+              // Edited back to what the row already holds: a no-op.
+              const patch = textPatch(field, root, e.target.value)
+              if (patch !== undefined) savePatch(patch, field.label)
             },
             'aria-label': field.label,
             'aria-describedby':
@@ -605,26 +656,19 @@ export function RootRow({
             min="1"
             step="1"
             defaultValue={root.scan_interval_secs ?? ''}
+            onChange={(e) => {
+              edited.current.set('scan_interval_secs', e.target)
+            }}
             onBlur={(e) => {
-              const box = e.target
-              // **An unparseable entry reads as `''`**, not as the text typed:
-              // that is what `<input type=number>` reports. So `12e` blurred
-              // looked identical to an emptied box and cleared a column nobody
-              // meant to touch. `badInput` is the only thing that tells them
-              // apart. Whole-branch review, 2026-09-04.
-              if (box.validity.badInput) {
-                setFailure(BAD_INTERVAL)
+              edited.current.delete('scan_interval_secs')
+              const patch = intervalPatch(root, e.target)
+              if (typeof patch === 'string') {
+                setFailure(patch)
                 return
               }
-              const raw = box.value
-              const next = raw === '' ? null : Number(raw)
-              if (next === root.scan_interval_secs) return
-              if (next !== null && (!Number.isInteger(next) || next < 1)) {
-                setFailure(BAD_INTERVAL)
-                return
-              }
+              if (patch === undefined) return
               setFailure(undefined)
-              savePatch({ scan_interval_secs: next })
+              savePatch(patch, 'Scan interval (seconds)')
             }}
           />
         </label>
@@ -649,7 +693,12 @@ export function RootRow({
                   // doc comment for why this box is controlled and the text
                   // ones are not.
                   setKeepsDocuments(!next)
-                  setFailure(sentenceOf(err))
+                  const sentence = sentenceOf(err)
+                  if (drawn.current) setFailure(sentence)
+                  else
+                    onLateRefusal?.(
+                      `Keeps documents under .taiyaku/ for ${root.path} was not saved (${sentence}).`,
+                    )
                 })
             }}
           />
@@ -696,7 +745,7 @@ export function RootRow({
           Scanning…{elapsed === undefined ? '' : ` ${Math.round(elapsed)}s`}
         </p>
       )}
-      {report !== null && <ScanReport outcome={report} level={5} />}
+      {report !== null && <ScanReport outcome={report} level={3} />}
       {moving && moveTo !== undefined && (
         <MoveRoot
           root={root}
@@ -709,6 +758,7 @@ export function RootRow({
             onMoved?.(answer)
             onChanged()
           }}
+          onLateRefusal={onLateRefusal}
         />
       )}
       {confirming && (
@@ -719,11 +769,16 @@ export function RootRow({
           onCancel={() => setConfirming(false)}
           onRemoved={(answer) => {
             setConfirming(false)
+            // The folder is gone, so an edit still in its box has nowhere
+            // to go when the row does. A move keeps its edits: the folder
+            // is still there, in another library.
+            edited.current.clear()
             onRemoved?.(answer)
             onChanged()
           }}
+          onLateRefusal={onLateRefusal}
         />
       )}
-    </li>
+    </section>
   )
 }

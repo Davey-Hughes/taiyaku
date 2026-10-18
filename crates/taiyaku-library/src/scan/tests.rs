@@ -845,7 +845,7 @@ fn a_root_inside_an_existing_root_is_refused() {
     assert_eq!(
         refused,
         format!(
-            "{} is inside {}, a folder of the library `{library}`",
+            "{} is inside {}, which is already a folder of the library `{library}`",
             nested.canonicalize().unwrap().display(),
             outer.root.path.display()
         ),
@@ -872,7 +872,7 @@ fn a_root_containing_an_existing_root_is_refused() {
     let refused = refused.to_string();
 
     assert!(
-        refused.contains("contains"),
+        refused.contains("holds"),
         "the refusal must name the overlap: {refused}"
     );
     let library = crate::libraries::name_of(&conn, inner_root.root.library_id)
@@ -881,11 +881,63 @@ fn a_root_containing_an_existing_root_is_refused() {
     assert_eq!(
         refused,
         format!(
-            "{} contains {}, a folder of the library `{library}`",
+            "{} holds `inner`, which is already a folder of the library `{library}`",
             dir.path().canonicalize().unwrap().display(),
-            inner_root.root.path.display()
         ),
-        "the refusal names the folder and its library, not an id"
+        "the refusal names the held folder from inside the chosen one, and its library, not an id"
+    );
+}
+
+/// The held folder is named by its path from the chosen one, every component
+/// of it: a last component alone would not say where under the chosen folder
+/// it is.
+#[test]
+fn a_containing_roots_refusal_names_a_deeper_held_folder_by_its_whole_relative_path() {
+    let dir = crate::tests::tempdir("scan-add-root-checked-nested-deeper");
+    let inner = dir.path().join("a").join("b");
+    std::fs::create_dir_all(&inner).expect("mkdir");
+    let library = crate::Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let inner_root = super::add_root_checked(&conn, &inner).expect("adding the inner root");
+    let library = crate::libraries::name_of(&conn, inner_root.root.library_id)
+        .expect("reads the name")
+        .expect("the inner folder's library has a name");
+
+    let refused = super::add_root_checked(&conn, dir.path()).expect_err("containing root");
+
+    assert_eq!(
+        refused.to_string(),
+        format!(
+            "{} holds `a/b`, which is already a folder of the library `{library}`",
+            dir.path().canonicalize().unwrap().display(),
+        ),
+    );
+}
+
+/// A folder picked again is refused as already held, not as inside itself,
+/// which is what the nesting check alone would say of an equal path.
+#[test]
+fn a_root_already_held_is_refused_as_already_a_folder_of_its_library() {
+    let dir = crate::tests::tempdir("scan-add-root-checked-again");
+    let library = crate::Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let held = super::add_root_checked(&conn, dir.path()).expect("adding the root");
+    let library = crate::libraries::name_of(&conn, held.root.library_id)
+        .expect("reads the name")
+        .expect("the folder's library has a name");
+
+    let refused = super::add_root_checked(&conn, dir.path()).expect_err("the same root again");
+    assert!(
+        matches!(refused, AddRootError::Unusable(_)),
+        "a folder picked twice is this caller's own mistake, not a store fault: {refused:?}"
+    );
+
+    assert_eq!(
+        refused.to_string(),
+        format!(
+            "{} is already a folder of the library `{library}`",
+            dir.path().canonicalize().unwrap().display(),
+        ),
     );
 }
 
@@ -4123,7 +4175,8 @@ fn a_library_is_not_made_under_a_name_already_taken() {
     let why = create_library(&conn, "Other", std::slice::from_ref(&inside)).expect_err("refuses");
     assert!(
         matches!(&why, AddRootError::Unusable(text)
-            if text.contains(" is inside ") && text.contains("a folder of the library")),
+            if text.contains(" is inside ")
+                && text.contains(", which is already a folder of the library `Manga`")),
         "{why:?}"
     );
     assert_eq!(libraries_and_roots(&conn), (1, 1));

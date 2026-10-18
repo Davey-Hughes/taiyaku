@@ -20,6 +20,7 @@
  */
 import { useEffect, useRef, useState } from 'react'
 import type { RemovalAnswer } from './config'
+import { useDrawn } from './hooks'
 import {
   type Library,
   libraryRemovalCost,
@@ -45,6 +46,8 @@ export interface RemoveLibraryProps {
   onCancel: () => void
   /** Called once the library is gone, with what the removal did. */
   onRemoved: (answer: RemovalAnswer) => void
+  /** The removal was refused once this dialog had gone, with why. */
+  onLateRefusal?: (sentence: string) => void
 }
 
 export function RemoveLibrary({
@@ -52,7 +55,9 @@ export function RemoveLibrary({
   blocked = false,
   onCancel,
   onRemoved,
+  onLateRefusal,
 }: RemoveLibraryProps) {
+  const drawn = useDrawn()
   /** What was asked, and what it was asked about. */
   const [asked, setAsked] = useState<
     { about: string; answer: RemovalAnswer } | undefined
@@ -110,7 +115,9 @@ export function RemoveLibrary({
       .catch((err: unknown) => {
         inFlight.current = false
         setRemoving(false)
-        setFailure(sentenceOf(err))
+        const sentence = sentenceOf(err)
+        if (drawn.current) setFailure(sentence)
+        else onLateRefusal?.(`${library.name} was not removed (${sentence}).`)
       })
   }
 

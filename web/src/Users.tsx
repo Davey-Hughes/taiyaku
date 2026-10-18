@@ -2,7 +2,7 @@
  * The users screen — spec C4 §4 and the build design's §6.2.
  *
  * **The list owns who exists; each card owns what it is doing.**
- * `Libraries`/`LibraryCard`'s split, and the same reason: a patch, a revocation and a
+ * `Libraries`/`LibraryPage`'s split, and the same reason: a patch, a revocation and a
  * dry run belong to the account being administered.
  *
  * **Two failure slots, not one.** `reload` is handed to every card as
@@ -28,7 +28,7 @@
  * and React matching on `key` would hand a recycled id the removed account's
  * card instance, with its open removal dialog and typed password. `user.name`
  * is `UNIQUE`; a rename remounts the card, which is the right thing to lose.
- * `LibraryCard.tsx` carries the same note about a folder's id.
+ * `LibraryPage.tsx` carries the same note about a folder's id.
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useGate } from './gate'

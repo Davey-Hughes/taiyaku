@@ -1,6 +1,6 @@
 /// <reference types="@vitest/browser-playwright" />
 import { act } from 'react'
-import { MemoryRouter } from 'react-router'
+import { MemoryRouter, Route, Routes } from 'react-router'
 import { describe, expect, it, vi } from 'vitest'
 import { cdp } from 'vitest/browser'
 import { Account } from './Account'
@@ -90,6 +90,27 @@ const root: config.Root = {
   last_scan_at: null,
   last_scan_status: null,
 }
+
+/** The one library the Libraries screen's cases list, holding `root`. */
+const MANGA: librariesApi.Library = {
+  id: 1,
+  name: 'Manga',
+  works: 0,
+  books: 0,
+  folders: [root],
+}
+
+/**
+ * The Libraries screen at `entry`, as Configuration routes it, without
+ * Configuration's own heading and tabs: what is read is the page's.
+ */
+const librariesAt = (entry: string) => (
+  <MemoryRouter initialEntries={[entry]}>
+    <Routes>
+      <Route path="/config/libraries/*" element={<Libraries />} />
+    </Routes>
+  </MemoryRouter>
+)
 
 const user = (over: Partial<usersApi.User> = {}): usersApi.User => ({
   id: 1,
@@ -327,9 +348,9 @@ describe('the name Chromium gives a control under a field label — O175', () =>
   })
 
   it('names the make-a-library form’s boxes as written', async () => {
-    // No libraries, so the form's two boxes are the only ones on the screen.
+    // The make page, whose form's two boxes are the only ones on it.
     vi.mocked(librariesApi.listLibraries).mockResolvedValue({ libraries: [] })
-    const host = await shown(<Libraries />)
+    const host = await shown(librariesAt('/config/libraries/new'))
     expect(drawn(host)).toEqual([
       ['Name', 'uppercase'],
       ['Folder path', 'uppercase'],
@@ -340,7 +361,7 @@ describe('the name Chromium gives a control under a field label — O175', () =>
     ])
   })
 
-  it('names a root card’s controls as written', async () => {
+  it('names a folder page’s controls as written', async () => {
     vi.mocked(config.scanStatus).mockResolvedValue({
       root_id: 3,
       running: false,
@@ -477,44 +498,53 @@ describe('the name Chromium gives a heading or a group drawn in capitals — O18
 })
 
 /**
- * A library's card has two headings: its name, and each folder's path a level
+ * Each page of the libraries screen heads itself with one h2 — the screen's
+ * name, the library's name or the folder's path — and its sections a level
  * below. What the tree makes of them is held beside the capitals cases
- * because the make-a-library form's own heading is drawn by the same sheet.
+ * because the same sheet draws those headings.
  */
 describe('the headings of the libraries screen, in Chromium’s own tree', () => {
-  it('reads the screen, the library, its folder and the form in order', async () => {
-    vi.mocked(config.scanStatus).mockResolvedValue({
-      root_id: 3,
-      running: false,
-      report: null,
-      last_scan_at: null,
-      last_scan_status: null,
-    })
-    vi.mocked(librariesApi.libraryScanStatus).mockResolvedValue({
-      library_id: 1,
-      running: false,
-      elapsed_secs: null,
-      folders: [],
-    })
-    vi.mocked(librariesApi.listLibraries).mockResolvedValue({
-      libraries: [
-        { id: 1, name: 'Manga', works: 0, books: 0, folders: [root] },
+  it.each([
+    ['/config/libraries', [['Libraries', 2]]],
+    ['/config/libraries/new', [['New library', 2]]],
+    [
+      '/config/libraries/1',
+      [
+        ['Manga', 2],
+        ['Folders', 3],
       ],
-    })
-    const host = await shown(<Libraries />)
-    expect(
-      [...host.querySelectorAll('h1, h2, h3, h4, h5, h6')].map(
-        (h) => h.tagName,
-      ),
-    ).toEqual(['H2', 'H3', 'H4', 'H3'])
-    const tree = await named(['heading'])
-    expect(tree).toEqual([
-      ['heading', 'Libraries'],
-      ['heading', 'Manga'],
-      ['heading', root.path],
-      ['heading', 'Make a library'],
-    ])
-  })
+    ],
+    ['/config/libraries/1/folders/3', [[root.path, 2]]],
+  ])(
+    'reads %s as one page: its own heading, and its sections beneath it',
+    async (entry, headings) => {
+      vi.mocked(config.scanStatus).mockResolvedValue({
+        root_id: 3,
+        running: false,
+        report: null,
+        last_scan_at: null,
+        last_scan_status: null,
+      })
+      vi.mocked(librariesApi.libraryScanStatus).mockResolvedValue({
+        library_id: 1,
+        running: false,
+        elapsed_secs: null,
+        folders: [],
+      })
+      vi.mocked(librariesApi.listLibraries).mockResolvedValue({
+        libraries: [MANGA],
+      })
+      const host = await shown(librariesAt(entry))
+      expect(
+        [...host.querySelectorAll('h1, h2, h3, h4, h5, h6')].map(
+          (h) => h.tagName,
+        ),
+      ).toEqual(headings.map(([, level]) => `H${level}`))
+      expect(await treeOf(['heading'])).toEqual(
+        headings.map(([name, level]) => ({ role: 'heading', name, level })),
+      )
+    },
+  )
 
   it('reads a folder’s scan report one level beneath the folder’s path', async () => {
     // A report's two headings are named by their words and sit under the
@@ -536,8 +566,8 @@ describe('the headings of the libraries screen, in Chromium’s own tree', () =>
       },
       derive: emptyDerive,
     }
-    // Running when the card is drawn, so it adopts the scan and polls; the
-    // poll then finds it finished, with its report.
+    // Running when the folder's page is drawn, so it adopts the scan and
+    // polls; the poll then finds it finished, with its report.
     vi.mocked(config.scanStatus)
       .mockResolvedValueOnce({
         root_id: 3,
@@ -561,31 +591,26 @@ describe('the headings of the libraries screen, in Chromium’s own tree', () =>
       folders: [],
     })
     vi.mocked(librariesApi.listLibraries).mockResolvedValue({
-      libraries: [
-        { id: 1, name: 'Manga', works: 0, books: 0, folders: [root] },
-      ],
+      libraries: [MANGA],
     })
-    await shown(<Libraries />)
+    await shown(librariesAt('/config/libraries/1/folders/3'))
     await act(async () => {
       await new Promise((resolve) => {
         setTimeout(resolve, config.SCAN_POLL_MS + 400)
       })
     })
     expect(await treeOf(['heading'])).toEqual([
-      { role: 'heading', name: 'Libraries', level: 2 },
-      { role: 'heading', name: 'Manga', level: 3 },
-      { role: 'heading', name: root.path, level: 4 },
-      { role: 'heading', name: 'What the walk found', level: 5 },
+      { role: 'heading', name: root.path, level: 2 },
+      { role: 'heading', name: 'What the walk found', level: 3 },
       {
         role: 'heading',
         name: 'What derivation made of every library',
-        level: 5,
+        level: 3,
       },
-      { role: 'heading', name: 'Make a library', level: 3 },
     ])
   })
 
-  it('reads a removal’s report one level beneath the screen', async () => {
+  it('reads a removal’s report one level beneath the table’s heading', async () => {
     vi.mocked(librariesApi.libraryScanStatus).mockResolvedValue({
       library_id: 1,
       running: false,
@@ -600,9 +625,7 @@ describe('the headings of the libraries screen, in Chromium’s own tree', () =>
       last_scan_status: null,
     })
     vi.mocked(librariesApi.listLibraries).mockResolvedValue({
-      libraries: [
-        { id: 1, name: 'Manga', works: 0, books: 0, folders: [root] },
-      ],
+      libraries: [MANGA],
     })
     vi.mocked(librariesApi.libraryRemovalCost).mockResolvedValue({
       removed: { works: 0, positions: 0, notes: 0, left_with_no_library: [] },
@@ -614,7 +637,8 @@ describe('the headings of the libraries screen, in Chromium’s own tree', () =>
       derive: emptyDerive,
       dry_run: false,
     })
-    const host = await shown(<Libraries />)
+    // Removed from its page, whose report is drawn on the table.
+    const host = await shown(librariesAt('/config/libraries/1'))
     await press(host.querySelector('button[name="remove-library"]') as Element)
     vi.mocked(librariesApi.listLibraries).mockResolvedValue({ libraries: [] })
     await press(host.querySelector('.remove-library .confirm') as Element)
@@ -625,7 +649,6 @@ describe('the headings of the libraries screen, in Chromium’s own tree', () =>
         name: 'What derivation made of every library',
         level: 3,
       },
-      { role: 'heading', name: 'Make a library', level: 3 },
     ])
   })
 })

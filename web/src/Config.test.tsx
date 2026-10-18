@@ -89,13 +89,29 @@ describe('Config', () => {
     )
   })
 
-  it('sends a bare /config to the leading tab', async () => {
+  it('sends a bare /config to the leading tab, Libraries — O219 §1.4', async () => {
     // The index redirect reads `TABS[0]`, so it cannot drift from the sub-nav
-    // — one list, read twice. The build design's §2. PR B prepends the rule
-    // editor, which is what makes it the landing screen.
+    // — one list, read twice.
     const host = await at('/config')
-    expect(host.textContent).toContain('Rules')
-    expect(host.querySelector('.rule-editor')).not.toBeNull()
+    expect(host.querySelector('.library-table')).not.toBeNull()
+    expect(
+      host.querySelector('.config-nav a[aria-current="page"]')?.textContent,
+    ).toBe('Libraries')
+  })
+
+  it('draws the tabs in the order Libraries, Users, Rules, Backup — O219 §1.4', async () => {
+    const host = await at('/config/libraries')
+    expect(
+      [...host.querySelectorAll('.config-nav a')].map((a) => [
+        a.textContent,
+        a.getAttribute('href'),
+      ]),
+    ).toEqual([
+      ['Libraries', '/config/libraries'],
+      ['Users', '/config/users'],
+      ['Rules', '/config/rules'],
+      ['Backup', '/config/backup'],
+    ])
   })
 
   it('marks the current tab', async () => {
@@ -120,7 +136,7 @@ describe('Config', () => {
 
   it('sends the old roots tab to the libraries screen', async () => {
     const host = await at('/config/roots')
-    expect(host.querySelector('.libraries')).not.toBeNull()
+    expect(host.querySelector('.libraries .library-table')).not.toBeNull()
     expect(document.title).toBe('Libraries — taiyaku')
   })
 
@@ -130,7 +146,7 @@ describe('Config', () => {
     // drew the sub-nav over a blank pane with nothing said. PR B adding that
     // tab is exactly when somebody types it.
     const host = await at('/config/nonsense')
-    expect(host.querySelector('.rule-editor')).not.toBeNull()
+    expect(host.querySelector('.library-table')).not.toBeNull()
   })
 
   it('opens every tab with one h1, Configuration, above the nav — O163', async () => {

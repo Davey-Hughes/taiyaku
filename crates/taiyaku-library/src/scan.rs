@@ -372,9 +372,9 @@ pub fn add_root_checked(conn: &Connection, path: &Path) -> Result<Added, AddRoot
 /// is inside or contains a root already held, or if the library it would
 /// join cannot be named (an [`InLibrary::Id`] no library holds is one) —
 /// every one of those is this caller's own mistake,
-/// an `error` a person can act on. The exact-duplicate case is intercepted
-/// by the nesting check (a path trivially contains itself) and produces an
-/// "is inside" message, not a separate duplicate-path error.
+/// an `error` a person can act on. A path already held is refused as one,
+/// `<path> is already a folder of the library `<name>``, and not as inside
+/// itself, which is what the nesting check alone would say of an equal path.
 ///
 /// Returns [`AddRootError::Failed`] if the store itself refuses along the
 /// way — the overlap check's own read ([`roots`]), the library-name lookup,
@@ -431,10 +431,25 @@ fn vetted(conn: &Connection, path: &Path) -> Result<PathBuf, AddRootError> {
     })?;
 
     for existing in roots(conn).map_err(AddRootError::Failed)? {
-        let relation = if canonical.starts_with(&existing.path) {
-            "is inside"
-        } else if existing.path.starts_with(&canonical) {
-            "contains"
+        let chosen = canonical.display();
+        // Equal paths first: each starts with the other, so the nesting check
+        // would call a folder picked again inside itself. A held folder
+        // inside the chosen one is named from the chosen one, so the reader is
+        // told where it is rather than left to compare two full paths for the
+        // part that differs. A chosen folder inside a held one keeps both full
+        // paths: the held one is the shorter.
+        let said = if canonical == existing.path {
+            format!("{chosen} is already a folder")
+        } else if canonical.starts_with(&existing.path) {
+            format!(
+                "{chosen} is inside {}, which is already a folder",
+                existing.path.display()
+            )
+        } else if let Ok(inner) = existing.path.strip_prefix(&canonical) {
+            format!(
+                "{chosen} holds `{}`, which is already a folder",
+                inner.display()
+            )
         } else {
             continue;
         };
@@ -442,14 +457,8 @@ fn vetted(conn: &Connection, path: &Path) -> Result<PathBuf, AddRootError> {
         // folders, and not by its id, which no screen shows.
         let library = crate::libraries::name_of(conn, existing.library_id)
             .map_err(AddRootError::Failed)?
-            .map_or_else(String::new, |name| {
-                format!(", a folder of the library `{name}`")
-            });
-        return Err(AddRootError::Unusable(format!(
-            "{} {relation} {}{library}",
-            canonical.display(),
-            existing.path.display()
-        )));
+            .map_or_else(String::new, |name| format!(" of the library `{name}`"));
+        return Err(AddRootError::Unusable(format!("{said}{library}")));
     }
     Ok(canonical)
 }

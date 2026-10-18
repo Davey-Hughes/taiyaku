@@ -77,6 +77,22 @@ export function useConstant<T>(create: () => T): T {
 }
 
 /**
+ * True while the component that calls it is drawn. A write's answer that
+ * comes once it is not has no form left to be drawn in, so the component
+ * hands a refusal up instead of drawing it.
+ */
+export function useDrawn(): { readonly current: boolean } {
+  const drawn = useRef(false)
+  useEffect(() => {
+    drawn.current = true
+    return () => {
+      drawn.current = false
+    }
+  }, [])
+  return drawn
+}
+
+/**
  * A decode queue, rebuilt whenever its concurrency cap changes.
  *
  * The settings panel can tune `maxConcurrent` live, and a queue whose cap was

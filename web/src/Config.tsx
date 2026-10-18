@@ -71,7 +71,11 @@ export function Config() {
           element={<Navigate to={`/config/${TABS[0].path}`} replace />}
         />
         {TABS.map((tab) => (
-          <Route key={tab.path} path={tab.path} element={SCREENS[tab.path]} />
+          <Route
+            key={tab.path}
+            path={tab.pages ? `${tab.path}/*` : tab.path}
+            element={SCREENS[tab.path]}
+          />
         ))}
         {/* A bookmark to the old Roots tab goes to the Libraries screen, not
             to the leading tab. */}

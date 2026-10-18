@@ -122,6 +122,14 @@ export const listFolders = (path?: string) =>
       : `/api/library/folders?path=${encodeURIComponent(path)}`,
   )
 
+/**
+ * How long a listing is read before the folder browser says so. A listing
+ * answered sooner is itself the answer to the press, and a line drawn and
+ * taken away faster than it can be read is a flicker; 400 ms is inside the
+ * span where a reply still reads as the press's own.
+ */
+export const READING_DELAY_MS = 400
+
 /** Where a folder moves to: a library that exists, or one made by the move. */
 export type MoveTarget = { library: number } | { new_library: string }
 

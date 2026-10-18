@@ -728,20 +728,44 @@ async fn a_folder_is_added_to_a_library_by_the_librarys_id() {
     assert_eq!(listed["libraries"].as_array().expect("libraries").len(), 2);
 
     let stored = the_store(&state);
+    let held = the_library(&listed, "root-a")["folders"][0]["path"]
+        .as_str()
+        .expect("root-a's folder")
+        .to_owned();
+    let inside = test_support::a_path_inside_the_first_root(&state);
+    let canonical = |p: &str| std::path::Path::new(p).canonicalize().expect("exists");
     for (body, says) in [
         (
-            serde_json::json!({ "path": test_support::a_path_inside_the_first_root(&state) }),
-            "inside",
+            serde_json::json!({ "path": inside }),
+            format!(
+                "{} is inside {held}, which is already a folder of the library `root-a`",
+                canonical(&inside).display()
+            ),
         ),
         (
-            serde_json::json!({ "path": "/no/such/taiyaku-test-folder" }),
-            "taiyaku-test-folder",
+            serde_json::json!({ "path": held }),
+            format!(
+                "{} is already a folder of the library `root-a`",
+                canonical(&held).display()
+            ),
         ),
     ] {
         let (got, refused) = answered(&router, Method::POST, &path, &body).await;
         assert_eq!(got, StatusCode::BAD_REQUEST, "{body}: {refused}");
-        assert!(the_sentence(&refused).contains(says), "{refused}");
+        assert_eq!(the_sentence(&refused), says, "{body}");
     }
+    let (got, refused) = answered(
+        &router,
+        Method::POST,
+        &path,
+        &serde_json::json!({ "path": "/no/such/taiyaku-test-folder" }),
+    )
+    .await;
+    assert_eq!(got, StatusCode::BAD_REQUEST, "{refused}");
+    assert!(
+        the_sentence(&refused).contains("taiyaku-test-folder"),
+        "{refused}"
+    );
     assert_eq!(the_store(&state), stored);
 }
 

@@ -29,6 +29,7 @@ import {
   moveFolder,
   noLibrarySentence,
 } from './libraries'
+import { useDrawn } from './hooks'
 import { sentenceOf, volumesOf } from './message'
 import { MoveCounts } from './MoveCounts'
 import { Refusal } from './Refusal'
@@ -55,6 +56,8 @@ export interface MoveRootProps {
   onCancel: () => void
   /** Called once the folder has moved, with what the move did. */
   onMoved: (answer: MoveAnswer) => void
+  /** The move was refused once this dialog had gone, with why. */
+  onLateRefusal?: (sentence: string) => void
 }
 
 /** `n` of a thing, in the number the count is. */
@@ -69,7 +72,9 @@ export function MoveRoot({
   held = false,
   onCancel,
   onMoved,
+  onLateRefusal,
 }: MoveRootProps) {
+  const drawn = useDrawn()
   /** `''`, a library's id as text, or `'new'`. */
   const [choice, setChoice] = useState('')
   const [name, setName] = useState('')
@@ -90,8 +95,8 @@ export function MoveRoot({
     if (held && !state.current.moving) state.current.onCancel()
   }, [held])
 
-  // A library chosen and then gone from `targets` (removed from another
-  // card, or emptied by a move) is no choice: the select shows none.
+  // A library chosen and then gone from `targets` (removed elsewhere, or
+  // emptied by a move) is no choice: the select shows none.
   const gone =
     choice !== '' &&
     choice !== 'new' &&
@@ -158,6 +163,12 @@ export function MoveRoot({
       .catch((err: unknown) => {
         inFlight.current = false
         setMoving(false)
+        if (!drawn.current) {
+          onLateRefusal?.(
+            `${root.path} was not moved from ${from.name} (${sentenceOf(err)}).`,
+          )
+          return
+        }
         // A refused move leaves what was rehearsed behind it: the store is
         // not as the counts said, so they and the confirm go, and the
         // person asks again.

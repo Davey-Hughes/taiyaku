@@ -1,9 +1,10 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { act } from 'react'
+import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import { FolderPicker } from './FolderPicker'
 import * as api from './libraries'
 import { deferred, flush } from './testing/async'
 import { press, typeInto } from './testing/input'
-import { mount } from './testing/mount'
+import { mount, rerender } from './testing/mount'
 
 vi.mock('./libraries', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./libraries')>()),
@@ -261,6 +262,43 @@ describe('FolderPicker, browsing', () => {
     expect(box(host).value).toBe('/media')
   })
 
+  /**
+   * No testing-library here, so the name is computed as it comes out for this
+   * markup: the button's text, less every `aria-hidden` descendant, with no
+   * `aria-label` standing in for the text. Not trimmed: Chromium's tree keeps
+   * a space left outside the arrow at the front of the name.
+   */
+  const nameOf = (button: HTMLElement) => {
+    expect(button.hasAttribute('aria-label')).toBe(false)
+    expect(button.hasAttribute('aria-labelledby')).toBe(false)
+    const named = button.cloneNode(true) as HTMLElement
+    for (const hidden of named.querySelectorAll('[aria-hidden="true"]')) {
+      hidden.remove()
+    }
+    return named.textContent
+  }
+
+  it.each([
+    ['/srv/manga/extra/Trial-a', '/srv/manga/extra', 'Up to extra'],
+    ['/srv/manga/extra/Trial-a', '/srv/manga/extra/', 'Up to extra'],
+    ['/srv', '/', 'Up to /'],
+  ])('at %s names Up for the last part of %s', async (path, parent, name) => {
+    vi.mocked(api.listFolders).mockResolvedValue({ path, parent, folders: [] })
+    const host = mount(<FolderPicker action="Add folder" onPick={vi.fn()} />)
+    await press(browse(host))
+    expect(up(host).textContent).toBe(`↑ ${name}`)
+    expect(nameOf(up(host))).toBe(name)
+  })
+
+  it('names Up from a top folder for the list of browsable folders', async () => {
+    const host = mount(<FolderPicker action="Add folder" onPick={vi.fn()} />)
+    await press(browse(host))
+    await press(entries(host)[0])
+    expect(host.querySelector('.where')?.textContent).toBe('/media')
+    expect(up(host).textContent).toBe('↑ Back to all browsable folders')
+    expect(nameOf(up(host))).toBe('Back to all browsable folders')
+  })
+
   it('says to type the path when the server may browse nothing', async () => {
     vi.mocked(api.listFolders).mockResolvedValue({
       path: null,
@@ -353,6 +391,45 @@ describe('FolderPicker, browsing', () => {
     expect(host.querySelector('.where')?.textContent).toBe('/media')
   })
 
+  it('keeps a refusal drawn above the listing until the next answer lands, so the listing holds still', async () => {
+    const host = mount(<FolderPicker action="Add folder" onPick={vi.fn()} />)
+    await press(browse(host))
+    vi.mocked(api.listFolders).mockRejectedValueOnce(
+      new Error('/x: 403 {"error":"refused"}'),
+    )
+    await press(entries(host)[0])
+    const browser = host.querySelector('.folder-browser') as HTMLElement
+    expect(browser.firstElementChild?.getAttribute('role')).toBe('alert')
+
+    const next = deferred<api.FolderListing>()
+    vi.mocked(api.listFolders).mockReturnValueOnce(next.promise)
+    await press(entries(host)[0])
+    expect(browser.firstElementChild?.textContent).toBe('refused')
+    expect(entries(host).map((b) => b.textContent)).toEqual(['/media'])
+
+    await flush(() => next.resolve(MEDIA))
+    expect(host.querySelector('[role="alert"]')).toBeNull()
+    expect(browser.firstElementChild).toBe(host.querySelector('.where'))
+  })
+
+  it('draws a newer refusal in the place of the one it replaces', async () => {
+    const host = mount(<FolderPicker action="Add folder" onPick={vi.fn()} />)
+    await press(browse(host))
+    vi.mocked(api.listFolders).mockRejectedValueOnce(
+      new Error('/x: 403 {"error":"refused first"}'),
+    )
+    await press(entries(host)[0])
+    const next = deferred<api.FolderListing>()
+    vi.mocked(api.listFolders).mockReturnValueOnce(next.promise)
+    await press(entries(host)[0])
+
+    await flush(() =>
+      next.reject(new Error('/x: 403 {"error":"refused again"}')),
+    )
+    const alerts = [...host.querySelectorAll('[role="alert"]')]
+    expect(alerts.map((a) => a.textContent)).toEqual(['refused again'])
+  })
+
   it('keeps where it was when closed and opened again, asking nothing more', async () => {
     const host = mount(<FolderPicker action="Add folder" onPick={vi.fn()} />)
     await press(browse(host))
@@ -432,22 +509,140 @@ describe('FolderPicker, browsing', () => {
     )
   })
 
-  it('draws a reading line for every listing in flight, and keeps the one it had', async () => {
+  /** Moves the clock on, and lets React draw what its timers set. */
+  const wait = (ms: number) => act(async () => vi.advanceTimersByTime(ms))
+  const group = (host: HTMLElement) =>
+    host.querySelector('.folder-browser') as HTMLElement
+
+  it('keeps the listing it had drawn, and nothing above it, while the next is read', async () => {
+    vi.useFakeTimers()
+    onTestFinished(() => {
+      vi.useRealTimers()
+    })
     const host = mount(<FolderPicker action="Add folder" onPick={vi.fn()} />)
     await press(browse(host))
+    expect(group(host).getAttribute('aria-busy')).toBe('false')
     const slow = deferred<api.FolderListing>()
     vi.mocked(api.listFolders).mockReturnValueOnce(slow.promise)
     await press(entries(host)[0])
-    expect(host.querySelector('.folder-browser')?.textContent).toContain(
-      'Reading folders…',
-    )
-    // The listing it had is still there to be read.
+
+    expect(group(host).getAttribute('aria-busy')).toBe('true')
+    expect(group(host).firstElementChild).toBe(host.querySelector('.where'))
+    expect(entries(host).map((b) => b.textContent)).toEqual(['/media'])
+    expect(group(host).textContent).not.toContain('Reading folders')
+
+    await wait(api.READING_DELAY_MS - 1)
+    expect(group(host).textContent).not.toContain('Reading folders')
+
+    // Slow now: said, after the listing, which stays where it was.
+    await wait(1)
+    expect(group(host).lastElementChild?.textContent).toBe('Reading folders…')
+    expect(group(host).firstElementChild).toBe(host.querySelector('.where'))
     expect(entries(host).map((b) => b.textContent)).toEqual(['/media'])
 
     await flush(() => slow.resolve(MEDIA))
-    expect(host.querySelector('.folder-browser')?.textContent).not.toContain(
-      'Reading folders…',
+    expect(group(host).textContent).not.toContain('Reading folders')
+    expect(group(host).getAttribute('aria-busy')).toBe('false')
+    expect(entries(host).map((b) => b.textContent)).toEqual(['Comics', 'Manga'])
+  })
+
+  it('never says it is reading for a listing answered before the delay', async () => {
+    vi.useFakeTimers()
+    onTestFinished(() => {
+      vi.useRealTimers()
+    })
+    const host = mount(<FolderPicker action="Add folder" onPick={vi.fn()} />)
+    await press(browse(host))
+    const quick = deferred<api.FolderListing>()
+    vi.mocked(api.listFolders).mockReturnValueOnce(quick.promise)
+    await press(entries(host)[0])
+    await wait(api.READING_DELAY_MS - 1)
+    await flush(() => quick.resolve(MEDIA))
+
+    await wait(api.READING_DELAY_MS)
+    expect(group(host).textContent).not.toContain('Reading folders')
+    expect(group(host).getAttribute('aria-busy')).toBe('false')
+  })
+
+  it('never says it is reading once the newest read is answered, on an older read’s clock', async () => {
+    vi.useFakeTimers()
+    onTestFinished(() => {
+      vi.useRealTimers()
+    })
+    const host = mount(<FolderPicker action="Add folder" onPick={vi.fn()} />)
+    await press(browse(host))
+    const older = deferred<api.FolderListing>()
+    const newer = deferred<api.FolderListing>()
+    vi.mocked(api.listFolders)
+      .mockReturnValueOnce(older.promise)
+      .mockReturnValueOnce(newer.promise)
+    await press(entries(host)[0])
+    await wait(api.READING_DELAY_MS / 2)
+    await press(entries(host)[0])
+    await flush(() => newer.resolve(MEDIA))
+
+    await wait(api.READING_DELAY_MS)
+    expect(group(host).textContent).not.toContain('Reading folders')
+  })
+
+  it('stops saying it is reading when a slow listing is refused', async () => {
+    vi.useFakeTimers()
+    onTestFinished(() => {
+      vi.useRealTimers()
+    })
+    const host = mount(<FolderPicker action="Add folder" onPick={vi.fn()} />)
+    await press(browse(host))
+    const refused = deferred<api.FolderListing>()
+    vi.mocked(api.listFolders).mockReturnValueOnce(refused.promise)
+    await press(entries(host)[0])
+    await wait(api.READING_DELAY_MS)
+    expect(group(host).textContent).toContain('Reading folders…')
+
+    await flush(() =>
+      refused.reject(new Error('/x: 403 {"error":"not browsable"}')),
     )
+    expect(group(host).textContent).not.toContain('Reading folders')
+    expect(group(host).getAttribute('aria-busy')).toBe('false')
+    expect(host.querySelector('[role="alert"]')?.textContent).toBe(
+      'not browsable',
+    )
+    expect(entries(host).map((b) => b.textContent)).toEqual(['/media'])
+  })
+
+  it('leaves no timer running once it is gone in the middle of a read', async () => {
+    vi.useFakeTimers()
+    onTestFinished(() => {
+      vi.useRealTimers()
+    })
+    vi.mocked(api.listFolders).mockReturnValueOnce(
+      deferred<api.FolderListing>().promise,
+    )
+    const host = mount(<FolderPicker action="Add folder" onPick={vi.fn()} />)
+    await press(browse(host))
+    expect(vi.getTimerCount()).toBe(1)
+
+    rerender(null)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('draws nothing in the browser while the first listing is read, until it is slow', async () => {
+    vi.useFakeTimers()
+    onTestFinished(() => {
+      vi.useRealTimers()
+    })
+    const first = deferred<api.FolderListing>()
+    vi.mocked(api.listFolders).mockReturnValueOnce(first.promise)
+    const host = mount(<FolderPicker action="Add folder" onPick={vi.fn()} />)
+    await press(browse(host))
+    expect(group(host).childElementCount).toBe(0)
+    expect(group(host).getAttribute('aria-busy')).toBe('true')
+
+    await wait(api.READING_DELAY_MS)
+    expect(group(host).textContent).toBe('Reading folders…')
+
+    await flush(() => first.resolve(PREFIXES))
+    expect(group(host).textContent).not.toContain('Reading folders')
+    expect(entries(host).map((b) => b.textContent)).toEqual(['/media'])
   })
 
   it('does not overwrite a path that was edited while the listing was being read', async () => {

@@ -1,4 +1,4 @@
-import { act } from 'react'
+import { act, StrictMode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as config from './config'
 import * as api from './libraries'
@@ -256,44 +256,6 @@ describe('RootRow', () => {
     )
   })
 
-  it('polls its own status when the library starts a scan of it', async () => {
-    vi.mocked(config.scanStatus).mockResolvedValue({
-      root_id: 3,
-      running: false,
-      report: null,
-      last_scan_at: null,
-      last_scan_status: null,
-    })
-    const changed = vi.fn()
-    const host = await settle({}, changed)
-    expect(host.querySelector('.scanning')).toBeNull()
-    vi.mocked(config.scanStatus).mockClear()
-
-    await act(async () => {
-      rerender(<RootRow root={root()} adopt={1} onChanged={changed} />)
-      await Promise.resolve()
-    })
-    expect(host.querySelector('.scanning')).not.toBeNull()
-    expect(config.startScan).not.toHaveBeenCalled()
-
-    await act(async () => {
-      vi.advanceTimersByTime(config.SCAN_POLL_MS)
-      await Promise.resolve()
-      await Promise.resolve()
-    })
-    expect(config.scanStatus).toHaveBeenCalledWith(3)
-  })
-
-  it('does not start polling for an adopt it was mounted with', async () => {
-    let host: HTMLElement | undefined
-    await act(async () => {
-      host = mount(<RootRow root={root()} adopt={4} onChanged={vi.fn()} />)
-      await Promise.resolve()
-      await Promise.resolve()
-    })
-    expect(host?.querySelector('.scanning')).toBeNull()
-  })
-
   it('draws the library name in the removal dialog where it is handed one', async () => {
     const host = await settle({}, vi.fn(), 'Manga')
     await act(async () => {
@@ -315,104 +277,6 @@ describe('RootRow', () => {
     })
     expect(host.querySelector('.remove-root')).not.toBeNull()
     expect(host.querySelector('.last-folder')).toBeNull()
-  })
-
-  it('clears a stale failure and a stale report when it adopts a scan', async () => {
-    vi.mocked(config.scanStatus).mockResolvedValue({
-      root_id: 3,
-      running: false,
-      report: { error: 'the scan panicked' },
-      last_scan_at: '2026-09-04T12:00:00Z',
-      last_scan_status: 'failed',
-    })
-    vi.mocked(config.patchRoot).mockRejectedValue(new Error('500 disk full'))
-    const changed = vi.fn()
-    const host = await settle({}, changed)
-    await act(async () => {
-      press(host, 'Scan folder').click()
-      await Promise.resolve()
-      await Promise.resolve()
-    })
-    await act(async () => {
-      vi.advanceTimersByTime(config.SCAN_POLL_MS)
-      await Promise.resolve()
-      await Promise.resolve()
-    })
-    await edit(host, 'default_language', 'ja')
-    expect(host.textContent).toContain('the scan panicked')
-    expect(host.textContent).toContain('disk full')
-
-    await act(async () => {
-      rerender(<RootRow root={root()} adopt={1} onChanged={changed} />)
-      await Promise.resolve()
-    })
-    expect(host.textContent).not.toContain('the scan panicked')
-    expect(host.textContent).not.toContain('disk full')
-    expect(host.querySelector('.scanning')).not.toBeNull()
-  })
-
-  it('clears a stale notice when it adopts a scan', async () => {
-    const host = await settle()
-    await act(async () => {
-      press(host, 'Scan folder').click()
-      await Promise.resolve()
-      await Promise.resolve()
-    })
-    await act(async () => {
-      vi.advanceTimersByTime(config.SCAN_POLL_MS)
-      await Promise.resolve()
-      await Promise.resolve()
-    })
-    expect(host.querySelector('.scan-notice')?.textContent).toContain(
-      'no record of that scan',
-    )
-
-    await act(async () => {
-      rerender(<RootRow root={root()} adopt={1} onChanged={vi.fn()} />)
-      await Promise.resolve()
-    })
-    expect(host.querySelector('.scan-notice')).toBeNull()
-  })
-
-  it('forgets the last scan’s elapsed time when it adopts a scan', async () => {
-    // Running with a figure already, as a scan found on mount is.
-    vi.mocked(config.scanStatus).mockResolvedValue({
-      root_id: 3,
-      running: true,
-      elapsed_secs: 12,
-      report: null,
-      last_scan_at: null,
-      last_scan_status: null,
-    })
-    const host = await settle()
-    expect(host.querySelector('.scanning')?.textContent).toBe('Scanning… 12s')
-
-    await act(async () => {
-      rerender(<RootRow root={root()} adopt={1} onChanged={vi.fn()} />)
-      await Promise.resolve()
-    })
-    // A new scan has run for no time yet, whatever the last one reached.
-    expect(host.querySelector('.scanning')?.textContent).toBe('Scanning…')
-  })
-
-  it('closes an open removal dialog when it adopts a scan, and sends nothing', async () => {
-    // The dialog quotes counts from before the scan, over a live confirm.
-    const onChanged = vi.fn()
-    const host = await settle({}, onChanged)
-    await act(async () => {
-      press(host, 'Remove…').click()
-      await Promise.resolve()
-      await Promise.resolve()
-    })
-    expect(host.querySelector('.remove-root .confirm')).not.toBeNull()
-
-    await act(async () => {
-      rerender(<RootRow root={root()} adopt={1} onChanged={onChanged} />)
-      await Promise.resolve()
-    })
-    expect(host.querySelector('.remove-root')).toBeNull()
-    expect(config.removeRoot).not.toHaveBeenCalled()
-    expect(host.querySelector('.scanning')).not.toBeNull()
   })
 
   it('closes an open removal dialog when its own mount read finds a scan running', async () => {
@@ -445,7 +309,7 @@ describe('RootRow', () => {
     expect(config.removeRoot).not.toHaveBeenCalled()
   })
 
-  it('is held while the library’s removal is open: Scan folder and Remove… are disabled and send nothing', async () => {
+  it('is held while another folder of its library is scanning: Scan folder and Remove… are disabled and send nothing', async () => {
     const host = await settle()
     await act(async () => {
       rerender(<RootRow root={root()} held onChanged={vi.fn()} />)
@@ -566,43 +430,6 @@ describe('RootRow', () => {
       expect(host.querySelector('.move-root')).toBeNull()
     })
 
-    it('closes its dialog when the library’s scan is adopted', async () => {
-      const host = await mounted()
-      await act(async () => {
-        press(host, 'Move…').click()
-        await Promise.resolve()
-      })
-      expect(host.querySelector('.move-root')).not.toBeNull()
-      await act(async () => {
-        rerender(
-          <RootRow
-            root={root()}
-            moveTo={moveTo}
-            adopt={1}
-            onChanged={vi.fn()}
-          />,
-        )
-        await Promise.resolve()
-      })
-      expect(host.querySelector('.move-root')).toBeNull()
-    })
-
-    it('reports the row busy while its dialog is open, and not once it is closed', async () => {
-      const onBusy = vi.fn()
-      const host = await mounted({ onBusy })
-      expect(onBusy).toHaveBeenLastCalledWith(false)
-      await act(async () => {
-        press(host, 'Move…').click()
-        await Promise.resolve()
-      })
-      expect(onBusy).toHaveBeenLastCalledWith(true)
-      await act(async () => {
-        press(host, 'Cancel').click()
-        await Promise.resolve()
-      })
-      expect(onBusy).toHaveBeenLastCalledWith(false)
-    })
-
     it('closes its dialog when the row becomes held', async () => {
       const host = await mounted()
       await act(async () => {
@@ -645,38 +472,6 @@ describe('RootRow', () => {
       expect(onMoved).toHaveBeenCalledWith(answered(false))
       expect(host.querySelector('.move-root')).toBeNull()
     })
-  })
-
-  it('tells its card when it is scanning or confirming a removal, and when it is not', async () => {
-    const onBusy = vi.fn()
-    let host: HTMLElement | undefined
-    await act(async () => {
-      host = mount(
-        <RootRow root={root()} onBusy={onBusy} onChanged={vi.fn()} />,
-      )
-      await Promise.resolve()
-      await Promise.resolve()
-    })
-    if (!host) throw new Error('nothing mounted')
-    expect(onBusy).toHaveBeenLastCalledWith(false)
-
-    await act(async () => {
-      press(host as HTMLElement, 'Remove…').click()
-      await Promise.resolve()
-    })
-    expect(onBusy).toHaveBeenLastCalledWith(true)
-    await act(async () => {
-      press(host as HTMLElement, 'Cancel').click()
-      await Promise.resolve()
-    })
-    expect(onBusy).toHaveBeenLastCalledWith(false)
-
-    await act(async () => {
-      press(host as HTMLElement, 'Scan folder').click()
-      await Promise.resolve()
-      await Promise.resolve()
-    })
-    expect(onBusy).toHaveBeenLastCalledWith(true)
   })
 
   it('hands its removal’s answer up, and draws no report of its own', async () => {
@@ -821,40 +616,6 @@ describe('RootRow', () => {
       [...host.querySelectorAll('[role="alert"]')].map((a) => a.textContent),
     ).toEqual(['bad gateway'])
     expect(press(host, 'Scan folder').disabled).toBe(false)
-  })
-
-  it('counts missed polls afresh when it adopts a scan', async () => {
-    vi.mocked(config.scanStatus)
-      .mockResolvedValueOnce({
-        root_id: 3,
-        running: false,
-        report: null,
-        last_scan_at: null,
-        last_scan_status: null,
-      })
-      .mockRejectedValue(new Error('502'))
-    const changed = vi.fn()
-    const host = await settle({}, changed)
-    await act(async () => {
-      press(host, 'Scan folder').click()
-      await Promise.resolve()
-      await Promise.resolve()
-    })
-    const poll = async () => {
-      await act(async () => {
-        vi.advanceTimersByTime(config.SCAN_POLL_MS)
-        await Promise.resolve()
-        await Promise.resolve()
-      })
-    }
-    await poll()
-    await poll()
-    await act(async () => {
-      rerender(<RootRow root={root()} adopt={1} onChanged={changed} />)
-      await Promise.resolve()
-    })
-    await poll()
-    expect(host.querySelector('.scanning')).not.toBeNull()
   })
 
   it('draws the sentence of the refusal that ends a run of failed polls', async () => {
@@ -1235,12 +996,12 @@ describe('RootRow', () => {
     })
     expect(host.querySelector('.scan-report')).not.toBeNull()
     expect(host.textContent).toContain('What derivation made of every library')
-    // The report's two headings sit one level beneath the card's h4.
+    // The report's two headings sit one level beneath the folder's h2.
     expect(
       [...host.querySelectorAll('.scan-report .report-heading')].map(
         (h) => h.tagName,
       ),
-    ).toEqual(['H5', 'H5'])
+    ).toEqual(['H3', 'H3'])
   })
 
   it('opens the removal dialog and closes it again without removing', async () => {
@@ -1865,5 +1626,293 @@ describe('RootRow', () => {
     for (const { written, control } of labelled) {
       expect(control.getAttribute('aria-label'), written).toBe(written)
     }
+  })
+})
+
+/**
+ * Type into a box and stay in it: the page then goes by a route that blurs
+ * nothing, as the browser's Back does.
+ */
+async function typeAndStay(host: HTMLElement, name: string, value: string) {
+  const box = host.querySelector(`[name="${name}"]`) as HTMLInputElement
+  await act(async () => {
+    box.dispatchEvent(new FocusEvent('focusin', { bubbles: true }))
+    Object.getOwnPropertyDescriptor(
+      HTMLInputElement.prototype,
+      'value',
+    )?.set?.call(box, value)
+    box.dispatchEvent(new Event('input', { bubbles: true }))
+    await Promise.resolve()
+  })
+}
+
+/** The row goes, as its page does, and what it sent on going settles. */
+async function unmountRow() {
+  await act(async () => {
+    rerender(<div />)
+    await Promise.resolve()
+    await Promise.resolve()
+  })
+}
+
+describe('RootRow, an edit still in its box when the row goes', () => {
+  it('sends each box typed in and not left, emptied as null, and asks for the list again', async () => {
+    const onChanged = vi.fn()
+    const host = await settle({}, onChanged)
+    await typeAndStay(host, 'default_language', 'ja')
+    await typeAndStay(host, 'edition_key', '')
+    await typeAndStay(host, 'scan_interval_secs', '900')
+    expect(config.patchRoot).not.toHaveBeenCalled()
+
+    await unmountRow()
+    expect(vi.mocked(config.patchRoot).mock.calls).toEqual([
+      [3, { default_language: 'ja' }],
+      [3, { edition_key: null }],
+      [3, { scan_interval_secs: 900 }],
+    ])
+    expect(onChanged).toHaveBeenCalledTimes(3)
+  })
+
+  it('sends an emptied interval as null', async () => {
+    const host = await settle()
+    await typeAndStay(host, 'scan_interval_secs', '')
+    await unmountRow()
+    expect(config.patchRoot).toHaveBeenCalledWith(3, {
+      scan_interval_secs: null,
+    })
+  })
+
+  it('sends an edit once when its box was left before the row went', async () => {
+    const host = await settle()
+    await edit(host, 'default_language', 'ja')
+    await edit(host, 'scan_interval_secs', '900')
+    expect(config.patchRoot).toHaveBeenCalledTimes(2)
+    await unmountRow()
+    expect(config.patchRoot).toHaveBeenCalledTimes(2)
+  })
+
+  it('sends nothing for a box focused again and not typed in, though it holds a refused edit', async () => {
+    const host = await settle({ exclude_globs: '**/extras/**' })
+    vi.mocked(config.patchRoot).mockRejectedValue(new Error('502 Bad Gateway'))
+    await edit(host, 'exclude_globs', '**/tmp/**')
+    expect(config.patchRoot).toHaveBeenCalledTimes(1)
+    await act(async () => {
+      host
+        .querySelector('[name="exclude_globs"]')
+        ?.dispatchEvent(new FocusEvent('focusin', { bubbles: true }))
+    })
+    await unmountRow()
+    expect(config.patchRoot).toHaveBeenCalledTimes(1)
+  })
+
+  it('sends nothing for a box typed back to what the row holds', async () => {
+    const host = await settle()
+    await typeAndStay(host, 'edition_key', 'enx')
+    await typeAndStay(host, 'edition_key', 'en')
+    await typeAndStay(host, 'scan_interval_secs', '900')
+    await typeAndStay(host, 'scan_interval_secs', '86400')
+    await unmountRow()
+    expect(config.patchRoot).not.toHaveBeenCalled()
+  })
+
+  it('compares an edit with the row as last drawn, not as first drawn', async () => {
+    const host = await settle()
+    await typeAndStay(host, 'default_language', 'ja')
+    await act(async () => {
+      rerender(
+        <RootRow root={root({ default_language: 'ja' })} onChanged={vi.fn()} />,
+      )
+      await Promise.resolve()
+    })
+    await unmountRow()
+    expect(config.patchRoot).not.toHaveBeenCalled()
+  })
+
+  it('sends no interval that is not a whole number of seconds, at least one', async () => {
+    const host = await settle()
+    await typeAndStay(host, 'scan_interval_secs', '0')
+    await unmountRow()
+    expect(config.patchRoot).not.toHaveBeenCalled()
+  })
+
+  it('sends no interval the box could not read', async () => {
+    const host = await settle()
+    const box = host.querySelector(
+      'input[name="scan_interval_secs"]',
+    ) as HTMLInputElement
+    Object.defineProperty(box, 'validity', {
+      configurable: true,
+      value: { badInput: true },
+    })
+    await typeAndStay(host, 'scan_interval_secs', '')
+    await unmountRow()
+    expect(config.patchRoot).not.toHaveBeenCalled()
+  })
+
+  it('sends nothing when nothing was typed, though StrictMode mounts it twice', async () => {
+    await act(async () => {
+      mount(
+        <StrictMode>
+          <RootRow root={root()} onChanged={vi.fn()} />
+        </StrictMode>,
+      )
+      await Promise.resolve()
+    })
+    await unmountRow()
+    expect(config.patchRoot).not.toHaveBeenCalled()
+  })
+
+  it('sends a typed edit once under StrictMode', async () => {
+    let host: HTMLElement | undefined
+    await act(async () => {
+      host = mount(
+        <StrictMode>
+          <RootRow root={root()} onChanged={vi.fn()} />
+        </StrictMode>,
+      )
+      await Promise.resolve()
+    })
+    await typeAndStay(host as HTMLElement, 'default_language', 'ja')
+    await unmountRow()
+    expect(vi.mocked(config.patchRoot).mock.calls).toEqual([
+      [3, { default_language: 'ja' }],
+    ])
+  })
+
+  it('sends nothing to a folder its own removal took, though a box was typed in while the removal was out', async () => {
+    const removed = deferred<config.RemovalAnswer>()
+    vi.mocked(config.removeRoot).mockReturnValue(removed.promise)
+    const onRemoved = vi.fn()
+    let host: HTMLElement | undefined
+    await act(async () => {
+      host = mount(
+        <RootRow root={root()} onRemoved={onRemoved} onChanged={vi.fn()} />,
+      )
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    const row = host as HTMLElement
+    await act(async () => {
+      press(row, 'Remove…').click()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    await act(async () => {
+      row.querySelector<HTMLElement>('.remove-root .confirm')?.click()
+      await Promise.resolve()
+    })
+    await typeAndStay(row, 'default_language', 'ja')
+    await flush(() =>
+      removed.resolve({
+        removed: { works: 1, positions: 0, notes: 0, left_with_no_library: [] },
+        derive: emptyDerive,
+        dry_run: false,
+      }),
+    )
+    expect(onRemoved).toHaveBeenCalledTimes(1)
+    await unmountRow()
+    expect(config.patchRoot).not.toHaveBeenCalled()
+  })
+
+  it('still sends an edit typed while a move was out, since the folder is still there', async () => {
+    const answer = (dry_run: boolean): api.MoveAnswer => ({
+      moved: {
+        library_id: 7,
+        library: 'Manga',
+        works_kept: 1,
+        works_joined: 0,
+        works_split: 0,
+        series_joined: 0,
+        positions: 0,
+        notes: 0,
+        alignments_dropped: 0,
+        library_removed: null,
+        grants_removed: 0,
+        left_with_no_library: [],
+      },
+      derive: emptyDerive,
+      dry_run,
+    })
+    vi.mocked(api.moveCost).mockResolvedValue(answer(true))
+    const moved = deferred<api.MoveAnswer>()
+    vi.mocked(api.moveFolder).mockReturnValue(moved.promise)
+    const onMoved = vi.fn()
+    let host: HTMLElement | undefined
+    await act(async () => {
+      host = mount(
+        <RootRow
+          root={root()}
+          moveTo={{
+            from: { id: 5, name: 'Chapters' },
+            targets: [{ id: 7, name: 'Manga' }],
+          }}
+          onMoved={onMoved}
+          onChanged={vi.fn()}
+        />,
+      )
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    const row = host as HTMLElement
+    await act(async () => {
+      press(row, 'Move…').click()
+      await Promise.resolve()
+    })
+    await act(async () => {
+      const target = row.querySelector(
+        'select[name="move-target"]',
+      ) as HTMLSelectElement
+      Object.getOwnPropertyDescriptor(
+        HTMLSelectElement.prototype,
+        'value',
+      )?.set?.call(target, '7')
+      target.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+    await act(async () => {
+      press(row, 'See what this would do').click()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    await act(async () => {
+      press(row, 'Move /srv/manga to Manga').click()
+      await Promise.resolve()
+    })
+    await typeAndStay(row, 'default_language', 'ja')
+    await flush(() => moved.resolve(answer(false)))
+    expect(onMoved).toHaveBeenCalledTimes(1)
+    await unmountRow()
+    expect(vi.mocked(config.patchRoot).mock.calls).toEqual([
+      [3, { default_language: 'ja' }],
+    ])
+  })
+
+  it('hands up the sentence of each edit it sent that is refused, named for its box and the folder, and asks for no list', async () => {
+    vi.mocked(config.patchRoot).mockRejectedValue(
+      new Error('/api/library/roots/3: 500 {"error":"the store is locked"}'),
+    )
+    const onChanged = vi.fn()
+    const onLateRefusal = vi.fn()
+    let host: HTMLElement | undefined
+    await act(async () => {
+      host = mount(
+        <RootRow
+          root={root()}
+          onChanged={onChanged}
+          onLateRefusal={onLateRefusal}
+        />,
+      )
+      await Promise.resolve()
+    })
+    await typeAndStay(host as HTMLElement, 'default_language', 'ja')
+    await typeAndStay(host as HTMLElement, 'scan_interval_secs', '900')
+    await unmountRow()
+    expect(config.patchRoot).toHaveBeenCalledTimes(2)
+    expect(onChanged).not.toHaveBeenCalled()
+    expect(onLateRefusal.mock.calls).toEqual([
+      ['Default language for /srv/manga was not saved (the store is locked).'],
+      [
+        'Scan interval (seconds) for /srv/manga was not saved (the store is locked).',
+      ],
+    ])
   })
 })

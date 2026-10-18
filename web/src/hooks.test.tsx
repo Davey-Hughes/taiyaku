@@ -1,8 +1,9 @@
-import { act, useEffect } from 'react'
+import { act, StrictMode, useEffect } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 import {
   useConstant,
   useDecodeQueue,
+  useDrawn,
   useDrawnSrcs,
   useFlushOnHide,
   useLatest,
@@ -96,6 +97,33 @@ describe('useLatest', () => {
     const first = p.last()
     p.render(2)
     expect(p.last()).toBe(first)
+  })
+})
+
+describe('useDrawn', () => {
+  it('is false during the first render, true once drawn, and false once gone, StrictMode or not', () => {
+    for (const strict of [false, true]) {
+      let held: { readonly current: boolean } | undefined
+      const during: boolean[] = []
+      function Drawn() {
+        held = useDrawn()
+        during.push(held.current)
+        return null
+      }
+      mount(
+        strict ? (
+          <StrictMode>
+            <Drawn />
+          </StrictMode>
+        ) : (
+          <Drawn />
+        ),
+      )
+      expect(during[0]).toBe(false)
+      expect(held?.current).toBe(true)
+      rerender(<div />)
+      expect(held?.current).toBe(false)
+    }
   })
 })
 

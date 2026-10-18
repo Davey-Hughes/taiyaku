@@ -116,7 +116,7 @@ describe('admin.css sets the settings-area measure once', () => {
   it('sets the measure once rather than per control', () => {
     const widths = rules(adminSource)
       .filter(({ prelude }) =>
-        /\.(root-row|user-row|add-user|add-root|library-card|add-library|rename-library|folder-picker|move-root)\b/.test(
+        /\.(root-row|user-row|add-user|add-root|library-table|new-library|library-page|folder-page|add-library|rename-library|folder-picker|move-root)\b/.test(
           prelude,
         ),
       )
@@ -182,13 +182,14 @@ describe("admin.css makes a grid of the scan report's top-level lists only", () 
 })
 
 /**
- * O178 and O180: the rules that keep a path inside its card on the libraries
- * screen. `Config.browser.test.tsx` measures each of them at 390px — a
- * report naming a path longer than its row, a removal report, the card's own
- * heading and its `watch` fact, the removal's confirm button and the
- * sentences the screen says in a paragraph — in the browser project, which
- * CI does not run. This holds that the declarations are there, where CI
- * does; what they do is the browser cases' to say.
+ * O178 and O180: the rules that keep a path or a name inside its page on the
+ * libraries screen. `Config.browser.test.tsx` measures each of them at
+ * 390px — a report naming a path longer than its row, a removal report, a
+ * page's heading, a table row's name or path, a folder's `watch` fact, the
+ * removal's confirm button and the sentences the screen says in a
+ * paragraph — in the browser project, which CI does not run. This holds that
+ * the declarations are there, where CI does; what they do is the browser
+ * cases' to say.
  */
 describe('admin.css lets a path break and its list drop under its label', () => {
   const declares = (selector: string, declaration: RegExp) =>
@@ -200,15 +201,16 @@ describe('admin.css lets a path break and its list drop under its label', () => 
   it.each([
     '.scan-report .paths li',
     '.derived .paths li',
-    '.root-row > h4',
-    '.library-card > h3',
+    '.root-row > h2',
+    '.libraries h2',
+    '.config-table td.lead',
     '.remove-root .confirm',
     '.remove-library .confirm',
     '.move-root .confirm',
     '.move-volumes li',
     '.libraries p',
-    '.add-library .chosen-folders code',
     '.folder-browser .where',
+    '.folder-browser button[name="up"]',
     '.folder-list button',
     '.user-row .grant-folders code',
     '.root-row .regime dd',
@@ -251,4 +253,27 @@ describe('admin.css styles the field labels of the libraries screen', () => {
       expect(preludes).toContain(`${container} .field input`)
     },
   )
+})
+
+/**
+ * The folder browser while a listing is read. `Config.browser.test.tsx`
+ * measures that the list holds still, in the browser project, which CI does
+ * not run; this holds the two rules for what is drawn meanwhile.
+ */
+describe('admin.css draws the folder browser while a listing is read', () => {
+  const bodyOf = (selector: string) =>
+    rules(adminSource)
+      .filter(({ prelude }) => selectors(prelude).includes(selector))
+      .map(({ body }) => body)
+      .join(';')
+
+  it('hides the browser while it has nothing to draw', () => {
+    expect(bodyOf('.folder-browser:empty')).toMatch(/(?:^|;)\s*display:\s*none/)
+  })
+
+  it('dims the listing being left once the read is slow', () => {
+    expect(bodyOf('.folder-browser:has(> .reading) > :not(.reading)')).toMatch(
+      /(?:^|;)\s*color:\s*var\(--muted\)/,
+    )
+  })
 })

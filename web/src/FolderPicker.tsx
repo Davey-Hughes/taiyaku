@@ -1,14 +1,20 @@
 /**
  * Choosing one folder by its path.
  *
- * **A field and a button, not a form.** It is drawn inside the form that
- * makes a library, and a form inside a form is not one. Enter in the box
- * picks, and is kept from submitting whatever form is around it.
+ * **A field and a button, not a form.** It may be drawn inside another
+ * form, and a form inside a form is not one. Enter in the box picks, and is
+ * kept from submitting whatever form is around it.
  *
- * **The box empties when the pick was taken, and not before.** A caller that
- * adds the folder at once answers a promise; a refusal rejects it, and the
- * typed path stays for the correction. A caller that only collects paths
- * answers nothing, and the box empties at once.
+ * **Without an `action` it is a field and no button.** The form that makes a
+ * library takes one folder, so its own submit is what sends the path, read
+ * from the box, and Enter submits that form. `onPath` reports what the box
+ * holds a render after it changes, which is soon enough to hold a button and
+ * too late for an Enter pressed straight after a keystroke.
+ *
+ * **The box empties when the pick was taken, and not before.** The caller
+ * adds the folder and answers a promise; a refusal rejects it, and the typed
+ * path stays for the correction. An answer that is not a promise is taken at
+ * once.
  *
  * **Browse… is a way to find a path, not a second way to choose one.** It
  * lists directories beneath the prefixes the server was started with, and
@@ -23,13 +29,13 @@
  * a browser cannot ask, and the refusal's own sentence says which check
  * failed.
  */
-import { useEffect, useRef, useState } from 'react'
-import { type FolderListing, listFolders } from './libraries'
+import { type ReactNode, useEffect, useRef, useState } from 'react'
+import { type FolderListing, listFolders, READING_DELAY_MS } from './libraries'
 import { sentenceOf } from './message'
 
 export interface FolderPickerProps {
-  /** What the button says. */
-  action: string
+  /** What the button says. Without one there is no button, and no pick. */
+  action?: string
   /**
    * The picked path. A rejected promise keeps the typed path for a retry.
    *
@@ -37,7 +43,7 @@ export interface FolderPickerProps {
    * refuses: what matters here is that a returned promise is awaited, not
    * what a caller that returns nothing is called.
    */
-  onPick: (path: string) => unknown
+  onPick?: (path: string) => unknown
   /**
    * Nothing is picked while held, by the button or by Enter. The box can still
    * be typed in and the folders browsed, which only reads listings.
@@ -50,10 +56,16 @@ export interface FolderPickerProps {
   onEdit?: () => void
   /**
    * The text in the box, each time it changes: typed, browsed to, or emptied
-   * once a pick was taken. A caller that holds a button until something is
-   * picked says why from this.
+   * once a pick was taken. A caller with a button of its own holds it from
+   * this while the box is empty.
    */
   onPath?: (path: string) => void
+  /**
+   * The caller's own controls, drawn after Browse… on the buttons' line and
+   * before the browser, so a Cancel stays with the buttons it belongs to
+   * whether or not the browser is open, and is reached in that order.
+   */
+  children?: ReactNode
 }
 
 export function FolderPicker({
@@ -62,6 +74,7 @@ export function FolderPicker({
   disabled = false,
   onEdit,
   onPath,
+  children,
 }: FolderPickerProps) {
   const [path, setPath] = useState('')
   // In a ref, so a caller's new closure on each render does not count as a
@@ -77,7 +90,8 @@ export function FolderPicker({
 
   // Checked here as well as on the button, since Enter in the box picks too.
   const pick = () => {
-    if (path === '' || disabled || inFlight.current) return
+    if (onPick === undefined || path === '' || disabled || inFlight.current)
+      return
     inFlight.current = true
     setPicking(true)
     const picked = path
@@ -107,8 +121,16 @@ export function FolderPicker({
   /** The newest listing asked for. Answers need not arrive in order. */
   const latest = useRef(0)
 
-  /** Whether a listing is being read, so the person is told while it is. */
+  /**
+   * A listing is being read. The group says it is busy, and the listing it
+   * had stays drawn as it was, so nothing moves under the pointer that
+   * pressed.
+   */
   const [reading, setReading] = useState(false)
+  /** The read has outlasted `READING_DELAY_MS`, so the person is told. */
+  const [slow, setSlow] = useState(false)
+  const slowTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
+  useEffect(() => () => clearTimeout(slowTimer.current), [])
   /** The box was typed in since the listing in flight was asked for. */
   const typed = useRef(false)
   /** The next listing was entered or climbed to, so focus follows it. */
@@ -117,13 +139,23 @@ export function FolderPicker({
 
   const go = (to?: string, entering = false) => {
     const seq = ++latest.current
-    setBrowseFailure(undefined)
     setReading(true)
+    // One timer, the newest read's: an older read cannot say a newer is slow.
+    clearTimeout(slowTimer.current)
+    slowTimer.current = setTimeout(() => setSlow(true), READING_DELAY_MS)
+    const settle = () => {
+      clearTimeout(slowTimer.current)
+      setReading(false)
+      setSlow(false)
+    }
     typed.current = false
     listFolders(to)
       .then((answer) => {
         if (seq !== latest.current) return
-        setReading(false)
+        settle()
+        // Cleared here and not at the press: the refusal is drawn above the
+        // listing, and taking it away while the next is read moves the list.
+        setBrowseFailure(undefined)
         moved.current = entering
         setListing(answer)
         // A path typed while the listing was being read is the person's.
@@ -134,7 +166,7 @@ export function FolderPicker({
       })
       .catch((err: unknown) => {
         if (seq !== latest.current) return
-        setReading(false)
+        settle()
         setBrowseFailure(sentenceOf(err))
       })
   }
@@ -179,32 +211,35 @@ export function FolderPicker({
             setPath(e.target.value)
           }}
           onKeyDown={(e) => {
-            if (e.key !== 'Enter') return
+            if (e.key !== 'Enter' || action === undefined) return
             e.preventDefault()
             pick()
           }}
         />
       </label>
-      <button
-        type="button"
-        name="pick"
-        onClick={pick}
-        disabled={path === '' || disabled || picking}
-      >
-        {action}
-      </button>
+      {action !== undefined && (
+        <button
+          type="button"
+          name="pick"
+          onClick={pick}
+          disabled={path === '' || disabled || picking}
+        >
+          {action}
+        </button>
+      )}
       <button type="button" name="browse" aria-expanded={open} onClick={toggle}>
         Browse…
       </button>
+      {children}
       {open && (
         <div
           ref={browser}
           className="folder-browser"
           role="group"
           aria-label="Browse for a folder"
+          aria-busy={reading}
         >
           {browseFailure !== undefined && <p role="alert">{browseFailure}</p>}
-          {reading && <p>Reading folders…</p>}
           {listing === undefined ? null : (
             <>
               <p className="where" ref={where} tabIndex={-1}>
@@ -215,12 +250,19 @@ export function FolderPicker({
                 )}
               </p>
               {listing.path !== null && (
+                // O207: where Up goes is the server's answer, the canonical
+                // path's parent while that is inside a browsable folder and
+                // none once it is not, so it is read and never cut from the
+                // path. The arrow is for the eye; the name is where it goes.
                 <button
                   type="button"
                   name="up"
                   onClick={() => go(listing.parent ?? undefined, true)}
                 >
-                  Up
+                  <span aria-hidden="true">↑ </span>
+                  {listing.parent === null
+                    ? 'Back to all browsable folders'
+                    : `Up to ${lastPart(listing.parent)}`}
                 </button>
               )}
               {listing.folders.length === 0 ? (
@@ -249,8 +291,18 @@ export function FolderPicker({
               )}
             </>
           )}
+          {/* After the listing, so saying it moves nothing above. */}
+          {slow && <p className="reading">Reading folders…</p>}
         </div>
       )}
     </div>
   )
+}
+
+/**
+ * The folder Up names, by its last part: the line above it holds the whole
+ * path. A trailing slash is not a part, and the root has none but `/`.
+ */
+function lastPart(path: string): string {
+  return path.split('/').findLast((part) => part !== '') ?? '/'
 }

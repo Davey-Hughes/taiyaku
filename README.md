@@ -254,14 +254,16 @@ carried in from another library and wrong for a save.
 **The Libraries screen is built**, at `/config/libraries` — an admin-only
 settings area beside the library, where a library is made, renamed, scanned and
 removed from the browser rather than a terminal, and so is each folder in it;
-`/config/roots` lands there. A library is made from a name and one or more
-folders, each typed or found with the folder browser, which lists only beneath
-the folders the server was started with (`--folders`, or `TAIYAKU_FOLDERS`). A
-refusal — a name already taken, a folder inside another, a path that cannot be
+`/config/roots` lands there, and so does a bare `/config`. It is a table of the
+libraries, where a row opens that library's page, and a folder of a library has
+a page of its own beneath it. A library is made from a name and one folder,
+typed or found with the folder browser, which lists only beneath the folders
+the server was started with (`--folders`, or `TAIYAKU_FOLDERS`); more folders
+are added on the library's page. A refusal — a name already taken, a folder inside another, a path that cannot be
 read — is drawn as the server's own sentence. Removing a library or a folder
 states what it will take — works, reading positions, notes — and offers no
 confirm button at all until those counts have arrived, and names any account
-the removal leaves seeing no library. A folder's row
+the removal leaves seeing no library. A folder's page
 has **Move…**, to another library or a new one: it says what the move would do —
 how many works keep their address, how many join a work the library already
 holds, how many are split — before it offers the move, and refuses, naming what
@@ -273,7 +275,7 @@ and an empty list drawn as `0` rather than left out — so "nothing was unreadab
 this time" cannot be mistaken for "this version does not say".
 
 **The rule editor is built too**, at `/config/rules` — the screen the whole
-preview mechanism exists for, and the settings area's landing tab. An ordered
+preview mechanism exists for. An ordered
 list on the left, the rule being edited and its preview on the right. Nothing
 is written until Save, and the button says what saving will do — *apply to 71
 works* — from a preview that is never stale, because the preview re-runs on
@@ -287,7 +289,7 @@ last carrying its count on the tab strip, so a conflict is never hidden behind
 a tab nobody clicked. A rule an accepted proposal wrote is marked, and deleting
 it says which proposal that reopens before it does anything.
 
-**And the last two tabs are built**, at `/config/users` and `/config/backup`.
+**And the other two tabs are built**, at `/config/users` and `/config/backup`.
 One card per account: its role, whether it may download and stream, which
 libraries it may see — *Every library, including any added later*, or *Only
 these* with a tick per library — and, when expanded, its open sessions and its
@@ -447,12 +449,13 @@ Give the first account a password from the host:
 docker exec -it taiyaku taiyaku library user promote davey
 ```
 
-Then sign in and make the libraries on Configuration → Libraries. Each is a
-name and one or more folders, picked in a browser that starts at `/media`:
+Then sign in and make the libraries on Configuration → Libraries. Each is
+made from a name and one folder, picked in a browser that starts at `/media`:
 the image sets `TAIYAKU_FOLDERS=/media`, and the browser lists nothing
-outside it. Two folders in one library, `/media/Manga/Volumes` and
+outside it. More folders are added on the library's page with Add folder….
+Two folders in one library, `/media/Manga/Volumes` and
 `/media/Manga/Chapters` say, are derived together, so a chapter release
-joins its volume as another edition. Scan library on a library's card walks its
+joins its volume as another edition. Scan library on a library's page walks its
 folders and derives once.
 
 `TAIYAKU_FOLDERS` is a `:`-separated list, because a folder's path can hold a

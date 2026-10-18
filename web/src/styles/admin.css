@@ -1333,7 +1333,10 @@
 .user-row,
 .add-root,
 .add-user,
-.library-card,
+.library-table,
+.new-library,
+.library-page,
+.folder-page,
 .add-library {
   max-width: var(--config-measure);
 }
@@ -1355,7 +1358,7 @@
 
    `.libraries .why` is the one beneath the make-a-library form: it
    explains the control above it as the users screen's do, and `RootRow` and
-   `LibraryCard` draw none. */
+   `LibraryPage` draw none. */
 .users .why,
 .libraries .why,
 .account .why,
@@ -1363,49 +1366,37 @@
   max-width: 60ch;
 }
 
-.libraries .library-list,
-.library-card .root-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-}
-
 /* O180: the sentences this screen says name a path as plain text, and a
-   path does not break at a slash. Outside any card that is a list that
-   could not be read and a library that was not made, and the sentence over
-   a removal's report; inside one, a scan that was turned down, was refused,
-   or ran and failed. A paragraph that is a flex or grid item breaks its
-   words but keeps the width its track gives it, so a sentence that must not
-   widen its box is measured, not assumed. */
+   path does not break at a slash. On any of its pages that is a list that
+   could not be read, a refusal, in its form or said once its page has gone,
+   and the sentence over a removal's report; on a folder's page, a scan that
+   was turned down, was refused, or ran and failed as well. A paragraph that
+   is a flex or grid item breaks its words but keeps the width its track
+   gives it, so a sentence that must not widen its box is measured, not
+   assumed. */
 .libraries p {
   overflow-wrap: anywhere;
 }
 
-.root-row {
-  border: 1px solid var(--line);
-  border-radius: var(--radius-control);
-  margin-bottom: var(--space-4);
-  padding: var(--space-4);
-}
-
-.root-row h4 {
-  margin: 0;
-}
-
-/* O180: the card's own heading is the folder's path, and a path does not
-   break at a slash — so one with a longer run than the card is wide took
-   the heading, and the document, out of the card. */
-.root-row > h4 {
+/* O180: the page's heading is the folder's path, and a path does not
+   break at a slash. A path runs long, so it is drawn at a heading's weight
+   and not at its size. */
+.root-row > h2 {
   overflow-wrap: anywhere;
+  font-size: var(--text-body);
+}
+
+.root-row .fields {
+  margin-top: var(--space-4);
 }
 
 /* A report's two section headings, drawn at whatever level its caller says
    is beneath the heading that holds it. Styled by class and not by tag, so
    they draw alike at any level and never as a library's name or a folder's
    path; the size is the body's, so a heading in a report is never louder
-   than the one above it. Inside a folder's card, which packs its facts
-   close, a heading takes a step off the facts above and sits near the ones
-   it heads. */
+   than the one above it. Among a folder's facts, which are packed close, a
+   heading takes a step off the facts above and sits near the ones it
+   heads. */
 .report-heading {
   margin: 1.25rem 0;
   font-family: var(--font-title);
@@ -1502,35 +1493,15 @@
   font-size: var(--text-ui);
 }
 
-/* A library is a heading and what is done to it whole, over its folders'
-   cards. It draws no box of its own: the folder rows inside it already do,
-   and a box in a box costs each row the width of two paddings at 390px. A
-   rule above each library after the first is what tells one from the
-   next. */
-.library-card {
-  margin-bottom: var(--space-5);
-}
-
-.library-card + .library-card {
-  border-top: 1px solid var(--line);
-  padding-top: var(--space-4);
-}
-
-/* A library is named by a person, and a name need not hold a space. */
-.library-card > h3 {
-  margin: 0;
-  overflow-wrap: anywhere;
-}
-
-.library-card .holds,
-.library-card .no-readable {
+.library-page .holds,
+.library-page .no-readable {
   color: var(--muted);
   font-size: var(--text-meta);
   margin: var(--space-1) 0 0;
   max-width: 60ch;
 }
 
-.library-card > .actions,
+.library-page > .actions,
 .rename-library {
   display: flex;
   flex-wrap: wrap;
@@ -1539,53 +1510,18 @@
   margin: var(--space-3) 0;
 }
 
-/* The form is the same heading level as a library's name and sits where the
-   next library would. A library is unboxed and parted from the next by a
-   rule; a form is boxed, as a folder's card is, and that is what says it is
-   the screen's and not another library. */
+/* The form is the page, so it draws no box of its own. */
 .add-library {
-  box-sizing: border-box;
   display: grid;
   gap: var(--space-3);
-  margin-top: var(--space-5);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-control);
-  padding: var(--space-4);
 }
 
-.add-library h3 {
-  margin: 0;
-}
-
-.chosen-folders {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-}
-
-.chosen-folders li {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2);
-  margin-bottom: var(--space-2);
-}
-
-.add-library .chosen-folders code {
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-
-/* The path gives way and the button does not: a two-word button broken over
-   two lines, and a different width on each row, reads as two controls. */
-.chosen-folders button {
-  flex: none;
-}
-
-/* The submit is the form's one action, not a field to stretch across the
+/* The form's two buttons on one line, not fields stretched across the
    grid. */
-.add-library > button[type="submit"] {
-  justify-self: start;
+.add-library > .actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
 }
 
 /* The refusal answers the button above it, so it keeps the form's own gap
@@ -1611,9 +1547,12 @@
   scroll-margin-bottom: 0.5rem;
 }
 
-/* The box and its two buttons on one line where they fit, wrapping where
-   they do not. */
-.folder-picker {
+/* The box and its buttons on one line where they fit, wrapping where they
+   do not. `.add-root` lays the picker's own controls out with these same
+   declarations (below), so the picker's line is the same there as on the
+   make page. */
+.folder-picker,
+.add-root {
   display: flex;
   flex-wrap: wrap;
   align-items: flex-end;
@@ -1635,6 +1574,31 @@
 .folder-browser .where {
   min-width: 0;
   margin: 0 0 var(--space-2);
+  overflow-wrap: anywhere;
+}
+
+/* Nothing to draw yet: the first listing is being read and is not yet slow
+   enough to say so. An empty box drawn for that while is a flicker of its
+   own. */
+.folder-browser:empty {
+  display: none;
+}
+
+/* A slow read: what is still drawn is the listing being left, and the line
+   that says so may be below the window on a long one. */
+.folder-browser:has(> .reading) > :not(.reading) {
+  color: var(--muted);
+}
+
+.folder-browser .reading {
+  margin: var(--space-2) 0 0;
+}
+
+/* Up names the folder it goes to, and a folder's name may have nowhere to
+   break. Broken over lines, it starts at the edge the path above and the
+   folders below start at. */
+.folder-browser button[name="up"] {
+  text-align: left;
   overflow-wrap: anywhere;
 }
 
@@ -1699,18 +1663,12 @@
   padding: var(--space-4);
 }
 
-/* A library's dialog sits above that library's folder cards, which a
-   folder's own never does: it is followed by the card it would remove. */
-.remove-library {
-  margin-bottom: var(--space-4);
-}
-
 /* What the re-derive after a removal found, drawn by the screen above the
-   list. Boxed on the settings area's
-   measure, border box and all, so it ends where a library card does, and so
-   a report of a few dozen rows reads as one notice and not as the screen's
-   own content; its opening sentence says whose it is. */
-.libraries > .removal-report {
+   page. Boxed on the pages' measure, border box and all, so it ends where
+   the page's own content does, and so a report of a few dozen rows reads as
+   one notice and not as the page's own content; its opening sentence says
+   whose it is. */
+.libraries .removal-report {
   box-sizing: border-box;
   border: 1px solid var(--line);
   border-radius: var(--radius-control);
@@ -1721,12 +1679,12 @@
 
 /* What is scrolled to the top of the view lands beneath the phone bar's
    edge, and a half-line of air keeps a focus ring whole. */
-.libraries > .removal-report,
-.libraries > [role="alert"] {
+.libraries .removal-report,
+.libraries [role="alert"] {
   scroll-margin-top: calc(var(--sticky-top, 0px) + 0.5rem);
 }
 
-.libraries > .removal-report > p:first-child {
+.libraries .removal-report > p:first-child {
   font-weight: 600;
   margin-top: 0;
 }
@@ -1800,34 +1758,218 @@
   overflow-wrap: anywhere;
 }
 
-/* The folder picker under a library's rows. It lays out its own line, so
-   this is a block, not a flex row around it. */
+/* The folder picker under a library's table. Its own box gives way, so its
+   box, its buttons, the Cancel it draws after them and the browser wrap in
+   `.add-root`'s row, and a refusal joins that row at its gap. */
 .add-root {
-  margin-top: 1rem;
+  margin-top: var(--space-3);
+}
+
+.add-root > .folder-picker {
+  display: contents;
+}
+
+/* A refusal answers the buttons, on a line of its own beneath them at the
+   row's gap, as the rename's does. */
+.add-root > [role="alert"] {
+  flex-basis: 100%;
+  margin: 0;
+}
+
+/* Configuration's tables: a row per library or folder, each a way to that
+   one's page. The UI face, not `base.css`'s figures face: these
+   cells are names and paths more than numbers. */
+.config-table {
+  width: 100%;
+  max-width: var(--config-measure);
+  border-collapse: collapse;
+  font-family: var(--font-ui);
+}
+
+.config-table th,
+.config-table td {
+  border-bottom: 1px solid var(--line);
+  padding: var(--space-2) var(--space-3);
+  text-align: left;
+  font-size: var(--text-ui);
+  vertical-align: baseline;
+}
+
+/* A heading or a figure on one line; a name, a path or a list of names is
+   what gives way. */
+.config-table th,
+.config-table td:not(.lead, .wraps) {
+  white-space: nowrap;
+}
+
+/* The row is the link: the name's link is stretched over the whole row, so
+   the row is positioned for it, and shows where the pointer or focus is. A
+   row whose link is withdrawn, as a library's Folders table draws while its
+   removal is open, goes nowhere and does not light. */
+.config-table tbody tr {
+  position: relative;
+}
+
+.config-table tbody tr:has(.row-link):hover,
+.config-table tbody tr:has(.row-link:focus-visible) {
+  background: var(--surface);
+}
+
+.row-link {
+  color: var(--accent);
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.row-link::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+}
+
+/* The ring is drawn on the row the link covers, not on the name alone. */
+.row-link:focus-visible {
+  outline: none;
+}
+
+.config-table tbody tr:has(.row-link:focus-visible) {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* A name need not hold a space and a path does not break at a slash, and a
+   row's own name or path must not widen the table past the page. */
+.config-table td.lead {
+  overflow-wrap: anywhere;
+}
+
+.config-table td.lead code {
+  font-family: ui-monospace, monospace;
+  font-weight: 400;
+}
+
+.config-table .mark {
+  color: var(--muted);
+  font-size: var(--text-meta);
+  font-weight: 400;
+}
+
+/* The words a column's heading says, which a cell says for itself only
+   where the headings are not drawn. */
+.config-table .cell-unit,
+.config-table .cell-label {
+  display: none;
+}
+
+/* At a phone's width a row is a block of two lines: the name, and the rest
+   after it, so the table never scrolls sideways. */
+@media (width < 36rem) {
+  .config-table thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  .config-table,
+  .config-table tbody {
+    display: block;
+  }
+
+  .config-table tbody tr {
+    display: flex;
+    flex-wrap: wrap;
+    padding: var(--space-2) var(--space-1);
+    border-bottom: 1px solid var(--line);
+  }
+
+  .config-table td {
+    display: block;
+    min-width: 0;
+    padding: 0;
+    border: 0;
+  }
+
+  .config-table td:not(.lead, .wraps) {
+    white-space: normal;
+  }
+
+  .config-table td.lead {
+    flex-basis: 100%;
+    min-width: 0;
+  }
+
+  .config-table td:not(.lead) {
+    color: var(--muted);
+    font-size: var(--text-meta);
+  }
+
+  .config-table td:not(.lead) + td:not(.lead)::before {
+    content: "·";
+    margin: 0 var(--space-2);
+  }
+
+  .config-table .cell-unit,
+  .config-table .cell-label {
+    display: inline;
+  }
+}
+
+/* The way up from a page beneath a table. */
+.config .back {
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-ui);
+}
+
+.config .back a {
+  text-decoration: none;
+}
+
+.libraries h2 {
+  margin: 0 0 var(--space-3);
+  overflow-wrap: anywhere;
+}
+
+/* "New library" goes to a page, so it is a link, drawn as the buttons on
+   these pages are, since it starts something as they do. */
+.config .new-item a {
+  display: inline-block;
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-control);
+  background: var(--surface);
+  color: var(--text);
+  text-decoration: none;
+}
+
+.config .missing {
+  color: var(--muted);
+}
+
+.library-page > h3 {
+  margin: var(--space-5) 0 var(--space-2);
+}
+
+.library-scan-reports .folder-report > h4 {
+  margin: var(--space-4) 0 0;
+  overflow-wrap: anywhere;
 }
 
 /* Scoped to the two top-level lists — one per direct `<section>` — rather
-   than to every `<dl>` under `.scan-report`. As a descendant selector this
-   also matched `UnreadableCauses`'s own nested `<dl>` of causes, five levels
-   deep inside a `<dd>`, and gave it the same `minmax(16rem, 1fr)` floor: in
-   a root's card at 390px that nested grid computed one hard 256px column,
-   which became the `<dd>`'s automatic minimum width in a row with 237px
-   left for it. The list ended 19px past its row and 2px past the card's
-   border.
-
-   **That does not scroll the document where all 390px are the client's**:
-   the card sits 16px inside `main`. An earlier version of this comment said
-   it put the document 2px into sideways scroll at 390px, and gave its
-   figures for a 309px row. A 309px row is what a 375px client width leaves
-   — a 390px window less a 15px scrollbar, say — and measured for O177 at a
-   375px viewport with the defect put back and the fonts in, under a report
-   that names no path, the document is 1px wider than its client.
+   than to every `<dl>` under `.scan-report`. A descendant selector would
+   also match `UnreadableCauses`'s own nested `<dl>` of causes, inside a
+   `<dd>`, and give it the same `minmax(16rem, 1fr)` floor: at a phone's
+   width that nested grid is one column wider than its row has room for,
+   which becomes the `<dd>`'s automatic minimum width, and the list ends past
+   its row and past the page.
 
    `Config.browser.test.tsx`'s "keeps the scan report's list of causes
    inside its row" holds this, on the list rather than on the document.
 
    **This rule is not what keeps a report that names paths inside its
-   card**: the two rules under `.scan-report .paths` below are (O178). */
+   page**: the two rules under `.scan-report .paths` below are (O178). */
 .scan-report > section > dl {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
@@ -1847,9 +1989,9 @@
 }
 
 /* O178: a row that holds a list lets the list drop under its label when the
-   two do not fit on one line. Without this the label and the list shared one
-   line whatever the list held, and a path — which does not break at a slash
-   — took the width it needed out of the card.
+   two do not fit on one line. Without this the label and the list share one
+   line whatever the list holds, and a path — which does not break at a slash
+   — takes the width it needs out of the page.
 
    `:not([data-zero])` is "holds a list": a `.paths` row carries `data-zero`
    when it has nothing to list, and such a row is a label and a `0`, which

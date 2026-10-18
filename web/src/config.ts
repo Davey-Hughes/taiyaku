@@ -23,20 +23,25 @@ export interface Tab {
   /** The path segment under `/config`. */
   path: string
   label: string
+  /**
+   * The tab has pages beneath its path, which its screen routes itself. A
+   * tab without them sends a path beneath it to the leading tab, as any
+   * other path that names nothing.
+   */
+  pages?: true
 }
 
 /**
- * The settings area's tabs, in spec C4's own section order.
+ * The settings area's tabs, in the order the sub-nav draws them.
  *
  * **Read twice** — by `Config.tsx`'s sub-nav, and by its index redirect, which
  * sends a bare `/config` to `TABS[0]`. So the landing screen is whichever tab
- * leads this list, and PR B prepending the rule editor is what makes the
- * flagship the landing screen rather than a separate decision somewhere else.
+ * leads this list, not a separate decision somewhere else.
  */
 export const TABS: Tab[] = [
-  { path: 'rules', label: 'Rules' },
-  { path: 'libraries', label: 'Libraries' },
+  { path: 'libraries', label: 'Libraries', pages: true },
   { path: 'users', label: 'Users' },
+  { path: 'rules', label: 'Rules' },
   { path: 'backup', label: 'Backup' },
 ]
 
@@ -335,6 +340,13 @@ export const scanStatus = (id: number) =>
  */
 export const SCAN_POLL_MS = 1000
 
+/**
+ * How many consecutive failed polls of a running scan are survived before
+ * the screen stops watching it. One blip must not drop a scan that is still
+ * running; see `RootRow`'s `misses` for why three.
+ */
+export const POLL_MISSES_ALLOWED = 3
+
 // --- pure helpers ---------------------------------------------------------
 
 /**
@@ -348,6 +360,19 @@ export function humanInterval(secs: number): string {
   if (secs >= 3600) return `${Math.floor(secs / 3600)}h`
   if (secs >= 60) return `${Math.floor(secs / 60)}m`
   return `${secs}s`
+}
+
+/**
+ * When a folder was last scanned, for a table cell: the time alone where the
+ * scan went well, and its outcome after it where it did not.
+ */
+export function lastScan(
+  root: Pick<Root, 'last_scan_at' | 'last_scan_status'>,
+) {
+  if (root.last_scan_at === null) return 'Never'
+  return root.last_scan_status === 'ok'
+    ? root.last_scan_at
+    : `${root.last_scan_at} · ${root.last_scan_status ?? 'outcome unrecorded'}`
 }
 
 /**

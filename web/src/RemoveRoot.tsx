@@ -7,11 +7,10 @@
  * states its counts before it acts, and the real `DELETE` is sent from here
  * and nowhere else.
  *
- * **The dry run is fetched when this mounts, not when the card renders.** A
- * count per folder per page load is a derivation-shaped question asked about
- * folders nobody is removing — `removal_cost` runs the same apply-read-rollback
- * machinery the rule preview does, measured at a median of 281 ms on a real
- * library.
+ * **The dry run is fetched when this mounts, not when the folder's page is
+ * drawn.** A count per folder per page load is a derivation-shaped question
+ * asked about folders nobody is removing: `removal_cost` runs the same
+ * apply-read-rollback machinery the rule preview does.
  *
  * **The confirm does not exist until the counts do.** A button that removes a
  * folder while the sentence above it says nothing is the failure this whole
@@ -46,6 +45,7 @@ import {
 } from './config'
 import { noLibrarySentence } from './libraries'
 import { DeriveSection } from './ScanReport'
+import { useDrawn } from './hooks'
 import { sentenceOf } from './message'
 
 /**
@@ -87,6 +87,8 @@ export interface RemoveRootProps {
    * prevent, one step later in the flow.
    */
   onRemoved: (answer: RemovalAnswer) => void
+  /** The removal was refused once this dialog had gone, with why. */
+  onLateRefusal?: (sentence: string) => void
 }
 
 export function RemoveRoot({
@@ -95,7 +97,9 @@ export function RemoveRoot({
   held = false,
   onCancel,
   onRemoved,
+  onLateRefusal,
 }: RemoveRootProps) {
+  const drawn = useDrawn()
   const [cost, setCost] = useState<RemovalAnswer | undefined>()
   const [failure, setFailure] = useState<string | undefined>()
   const [removing, setRemoving] = useState(false)
@@ -144,7 +148,9 @@ export function RemoveRoot({
       .catch((err: unknown) => {
         inFlight.current = false
         setRemoving(false)
-        setFailure(sentenceOf(err))
+        const sentence = sentenceOf(err)
+        if (drawn.current) setFailure(sentence)
+        else onLateRefusal?.(`${root.path} was not removed (${sentence}).`)
       })
   }
 
