@@ -290,20 +290,22 @@ a tab nobody clicked. A rule an accepted proposal wrote is marked, and deleting
 it says which proposal that reopens before it does anything.
 
 **And the other two tabs are built**, at `/config/users` and `/config/backup`.
-One card per account: its role, whether it may download and stream, which
-libraries it may see — *Every library, including any added later*, or *Only
-these* with a tick per library — and, when expanded, its open sessions and its
-API keys, each revocable one at a time for the device that was
-lost. The account this browser is signed in as is
-marked, and so is the session in front of you, so revoking one is not a guess.
-The two things that would lock a library out of its own administration are
-refused by the server and drawn as one reason over both controls: the last
+Users is a table of the accounts — Name, Role, Libraries, Last seen — where a
+row opens that account's page, and an account is made on a page of its own
+from a name, a password and a role. An account's page holds its role, whether
+it may download, stream and write ComicInfo.xml into archives, which libraries
+it may see — *Every library, including any added later*, or *Only these* with a
+tick per library — and its open sessions and its API keys, each revocable one
+at a time for the device that was lost. The account this browser is signed in
+as is marked, and so is the session in front of you, so revoking one is not a
+guess. The two things that would lock a library out of its own administration
+are refused by the server and drawn as one reason over both controls: the last
 administrator who can log in can be neither removed nor demoted, and nobody may
 demote themselves. Resetting somebody's password ends every session they have
 and leaves their API keys alone; resetting your own is refused here and belongs
-to the account panel, which is still reachable only from inside the reader by
-pressing `A`. Removing an account states five counts and the name first, and
-takes no work, edition or member with it.
+to your account screen at `/account`, which the refusal links to. Removing an
+account states five counts and the name first, takes no work, edition or member
+with it, and goes back to the table, which says the account was removed.
 
 The backup tab takes one now, lists what exists with a download link each, and
 says the four things a button cannot: restore is out of band, a backup is the

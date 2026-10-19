@@ -15,10 +15,9 @@ import { Backup } from './Backup'
 import * as librariesApi from './libraries'
 import * as backupApi from './backup'
 import { FolderPicker } from './FolderPicker'
-import { Users } from './Users'
 import * as usersApi from './users'
 import { DeriveSection, ScanReport } from './ScanReport'
-import { deferred } from './testing/async'
+import { deferred, flush } from './testing/async'
 import { press, submit, typeInto } from './testing/input'
 import { mount } from './testing/mount'
 
@@ -239,6 +238,15 @@ const LIBRARY = `${TABLE}/1`
 /** The page of `root()`'s folder, in `holding(…)`'s library. */
 const FOLDER = `${LIBRARY}/folders/3`
 
+// --- the Users screen's three pages ------------------------------------------
+
+/** The table of accounts. */
+const USERS = '/config/users'
+/** The page that makes an account. */
+const NEW_ACCOUNT = `${USERS}/new`
+/** The page of `user()`'s account, the one signed in. */
+const ACCOUNT = `${USERS}/1`
+
 /**
  * Configuration at `entry`, its tabs above the page: each page is a route of
  * its own, and `.config`'s rules draw the back link and New library.
@@ -285,6 +293,11 @@ beforeEach(() => {
   vi.mocked(librariesApi.listLibraries).mockResolvedValue({ libraries: [] })
   vi.mocked(usersApi.listUsers).mockResolvedValue({ users: [] })
   vi.mocked(backupApi.listBackups).mockResolvedValue({ backups: [] })
+  // `clearAllMocks` keeps an implementation, so a removal one case held, or
+  // a write it answered, would answer the next case's too.
+  vi.mocked(usersApi.removeUser).mockReset()
+  vi.mocked(usersApi.patchUser).mockReset()
+  vi.mocked(usersApi.removalCost).mockReset()
 })
 
 /**
@@ -317,6 +330,17 @@ function assertNoSidewaysScroll(host: HTMLElement) {
 
 /** Configuration at `entry`, in the shell, once what it reads has landed. */
 const opened = (entry: string) => settled(inShell(routed(entry)))
+
+/**
+ * The window at `width` × `height` for this test, and back at the size it
+ * had once the test is done, so the cases after it start where they would
+ * have without it.
+ */
+async function sized(width: number, height: number) {
+  const was = [window.innerWidth, window.innerHeight] as const
+  onTestFinished(() => page.viewport(...was))
+  await page.viewport(width, height)
+}
 
 describe('the Libraries screen, with real keys and a real pointer', () => {
   it('makes a library when Enter is pressed in the make page’s path box straight after typing', async () => {
@@ -389,6 +413,54 @@ describe('the Libraries screen, with real keys and a real pointer', () => {
     },
   )
 })
+
+/**
+ * `table` at a phone's width: `rows` as drawn, each row a block of its name
+ * and then its values, every value's label its column heading's words, and
+ * the row whose name is `short` on two lines.
+ */
+function expectStacked(table: HTMLElement, rows: string[][], short: string) {
+  // What is drawn: `innerText` leaves out what the stylesheet hides.
+  expect(
+    [...table.querySelectorAll('tbody tr')].map((tr) =>
+      [...tr.querySelectorAll('td')].map((td) => td.innerText),
+    ),
+  ).toEqual(rows)
+  // The headings are not drawn at this width, so a label says the
+  // heading's own words.
+  expect(
+    (table.querySelector('thead') as HTMLElement).getBoundingClientRect().width,
+  ).toBeLessThanOrEqual(1)
+  const headings = [...table.querySelectorAll('thead th')].map(
+    (th) => th.textContent,
+  )
+  for (const tr of table.querySelectorAll('tbody tr')) {
+    const [lead, ...values] = [...tr.querySelectorAll('td')]
+    values.forEach((td, i) => {
+      const label = td.querySelector('.cell-label')
+      if (label !== null) expect(label.textContent).toBe(`${headings[i + 1]}: `)
+    })
+    // A block: the name on its own line, and its values beneath it.
+    expect(getComputedStyle(tr).display).not.toBe('table-row')
+    const foot = lead.getBoundingClientRect().bottom
+    for (const td of values) {
+      expect(td.getBoundingClientRect().top).toBeGreaterThanOrEqual(foot - 0.5)
+    }
+    // Two lines: values short enough to share the line beneath the name do
+    // share it. A long one may wrap; this row's are short.
+    if (lead.innerText === short) {
+      const top = values[0].getBoundingClientRect().top
+      for (const td of values) {
+        expect(td.getBoundingClientRect().top, td.innerText).toBeCloseTo(top, 0)
+      }
+    }
+  }
+  expect(
+    [...table.querySelectorAll<HTMLElement>('td.lead')].map(
+      (td) => td.innerText,
+    ),
+  ).toContain(short)
+}
 
 describe('the Libraries pages at a phone’s width', () => {
   /**
@@ -495,54 +567,7 @@ describe('the Libraries pages at a phone’s width', () => {
       vi.mocked(librariesApi.listLibraries).mockResolvedValue(SCANNED)
       const host = await opened(entry)
       await document.fonts.ready
-      const table = host.querySelector(selector) as HTMLElement
-      // What is drawn: `innerText` leaves out what the stylesheet hides.
-      expect(
-        [...table.querySelectorAll('tbody tr')].map((tr) =>
-          [...tr.querySelectorAll('td')].map((td) => td.innerText),
-        ),
-      ).toEqual(rows)
-      // The headings are not drawn at this width, so a label says the
-      // heading's own words.
-      expect(
-        (table.querySelector('thead') as HTMLElement).getBoundingClientRect()
-          .width,
-      ).toBeLessThanOrEqual(1)
-      const headings = [...table.querySelectorAll('thead th')].map(
-        (th) => th.textContent,
-      )
-      for (const tr of table.querySelectorAll('tbody tr')) {
-        const [lead, ...values] = [...tr.querySelectorAll('td')]
-        values.forEach((td, i) => {
-          const label = td.querySelector('.cell-label')
-          if (label !== null)
-            expect(label.textContent).toBe(`${headings[i + 1]}: `)
-        })
-        // A block: the name on its own line, and its values beneath it.
-        expect(getComputedStyle(tr).display).not.toBe('table-row')
-        const foot = lead.getBoundingClientRect().bottom
-        for (const td of values) {
-          expect(td.getBoundingClientRect().top).toBeGreaterThanOrEqual(
-            foot - 0.5,
-          )
-        }
-        // Two lines: values short enough to share the line beneath the
-        // name do share it. A long one may wrap; this row's are short.
-        if (lead.innerText === short) {
-          const top = values[0].getBoundingClientRect().top
-          for (const td of values) {
-            expect(td.getBoundingClientRect().top, td.innerText).toBeCloseTo(
-              top,
-              0,
-            )
-          }
-        }
-      }
-      expect(
-        [...table.querySelectorAll<HTMLElement>('td.lead')].map(
-          (td) => td.innerText,
-        ),
-      ).toContain(short)
+      expectStacked(host.querySelector(selector) as HTMLElement, rows, short)
     },
   )
 
@@ -620,6 +645,122 @@ describe('the Libraries pages at a phone’s width', () => {
     expect(alert.getBoundingClientRect().left).toBeCloseTo(
       add.getBoundingClientRect().left,
       0,
+    )
+  })
+})
+
+describe('the Users pages at a phone’s width', () => {
+  /**
+   * An account whose name has nowhere to break, limited to the one library,
+   * whose name and folder have nowhere to break either: the longest words
+   * the table and the account's page draw. The make page draws none of them,
+   * and is held as it is drawn.
+   */
+  const UNBROKEN_ACCOUNT = user({
+    id: 2,
+    name: UNBROKEN_NAME,
+    role: 'user',
+    every_library: false,
+    libraries: [{ id: 70, name: UNBROKEN_NAME }],
+  })
+
+  it.each([
+    [USERS, '.user-table .config-table'],
+    [NEW_ACCOUNT, '.new-account form.add-user'],
+    [`${USERS}/2`, '.user-row .grant-list'],
+  ])(
+    'does not scroll sideways on %s, whose names and path have nowhere to break',
+    async (entry, drawn) => {
+      await sized(390, 844)
+      vi.mocked(librariesApi.listLibraries).mockResolvedValue({
+        libraries: [{ ...libraryOf(UNBROKEN_ROOT), name: UNBROKEN_NAME }],
+      })
+      vi.mocked(usersApi.listUsers).mockResolvedValue({
+        users: [user(), UNBROKEN_ACCOUNT],
+      })
+      const host = await opened(entry)
+      await document.fonts.ready
+      // The page asked for, and not the table an unknown address goes to.
+      expect(host.querySelector(drawn), drawn).not.toBeNull()
+      assertNoSidewaysScroll(host)
+    },
+  )
+
+  it('keeps the removal’s confirm button inside the page for the same name', async () => {
+    await sized(390, 844)
+    vi.mocked(usersApi.listUsers).mockResolvedValue({
+      users: [user(), UNBROKEN_ACCOUNT],
+    })
+    vi.mocked(usersApi.removalCost).mockResolvedValue({
+      removed: {
+        name: UNBROKEN_NAME,
+        positions: 0,
+        notes: 0,
+        sessions: 0,
+        keys: 0,
+        grants: 1,
+      },
+      dry_run: true,
+    })
+    const host = await opened(`${USERS}/2`)
+    await press(host.querySelector('button[name="remove"]') as Element)
+    await document.fonts.ready
+    expect(host.querySelector('.remove-user .confirm')?.textContent).toBe(
+      `Remove ${UNBROKEN_NAME}`,
+    )
+    assertNoSidewaysScroll(host)
+  })
+
+  it('stacks each row of the table into a block of two lines, each value after its label', async () => {
+    await sized(390, 844)
+    vi.mocked(usersApi.listUsers).mockResolvedValue({
+      users: [
+        user({
+          sessions: [
+            {
+              id: 'aaa',
+              created: '2026-09-01 10:00:00',
+              last_seen: '2026-10-01 10:00:00',
+              user_agent: 'Firefox',
+              ip: '10.0.0.2',
+              current: true,
+            },
+          ],
+        }),
+        user({
+          id: 2,
+          name: 'sam',
+          role: 'user',
+          every_library: false,
+          libraries: [
+            { id: 70, name: 'Manga' },
+            { id: 80, name: 'Comics' },
+          ],
+        }),
+        user({
+          id: 3,
+          name: 'kim',
+          role: 'user',
+          can_log_in: false,
+          every_library: false,
+        }),
+      ],
+    })
+    const host = await opened(USERS)
+    await document.fonts.ready
+    expectStacked(
+      host.querySelector('.user-table .config-table') as HTMLElement,
+      [
+        [
+          'davey · this is you',
+          'Role: admin',
+          'Libraries: Every library',
+          'Last seen: 2026-10-01 10:00:00',
+        ],
+        ['sam', 'Role: user', 'Libraries: Manga, Comics', 'Last seen: —'],
+        ['kim · locked', 'Role: user', 'Libraries: None', 'Last seen: —'],
+      ],
+      'kim · locked',
     )
   })
 })
@@ -1631,7 +1772,7 @@ describe('the Configuration screens at 390px', () => {
   })
 
   it('does not scroll sideways on the users screen', async () => {
-    await page.viewport(390, 844)
+    await sized(390, 844)
     // The grant editor draws a library's folders, so the path that must wrap
     // is the one that is on screen.
     vi.mocked(librariesApi.listLibraries).mockResolvedValue({
@@ -1642,20 +1783,12 @@ describe('the Configuration screens at 390px', () => {
         user({ every_library: false, libraries: [{ id: 70, name: 'Manga' }] }),
       ],
     })
-    const host = await act(async () => {
-      const mounted = mount(
-        inShell(
-          <MemoryRouter>
-            <GateContext value={{ who, signOut: () => undefined }}>
-              <Users />
-            </GateContext>
-          </MemoryRouter>,
-        ),
-      )
-      await Promise.resolve()
-      await Promise.resolve()
-      return mounted
-    })
+    const host = await opened(ACCOUNT)
+    await document.fonts.ready
+    // The account's page, whose grant editor is what draws the path.
+    expect(
+      host.querySelector('.user-row .grant-folders code')?.textContent,
+    ).toBe(UNBROKEN_ROOT.path)
     assertNoSidewaysScroll(host)
   })
 
@@ -1667,7 +1800,7 @@ describe('the Configuration screens at 390px', () => {
     async (_state, read) => {
       // The grant editor draws a library's name beside its tick, and in the
       // sentence that stands in for the list when the list was not read.
-      await page.viewport(390, 844)
+      await sized(390, 844)
       if (read) {
         vi.mocked(librariesApi.listLibraries).mockResolvedValue({
           libraries: [
@@ -1691,20 +1824,7 @@ describe('the Configuration screens at 390px', () => {
           }),
         ],
       })
-      const host = await act(async () => {
-        const mounted = mount(
-          inShell(
-            <MemoryRouter>
-              <GateContext value={{ who, signOut: () => undefined }}>
-                <Users />
-              </GateContext>
-            </MemoryRouter>,
-          ),
-        )
-        await Promise.resolve()
-        await Promise.resolve()
-        return mounted
-      })
+      const host = await opened(ACCOUNT)
       await document.fonts.ready
       expect(host.querySelector('.grants')?.textContent).toContain(
         UNBROKEN_NAME,
@@ -1735,8 +1855,8 @@ describe('the Configuration screens at 390px', () => {
 })
 
 describe('the Configuration screens at desktop width', () => {
-  it('keeps every control inside the card that holds it', async () => {
-    await page.viewport(1280, 900)
+  it('keeps every control inside the account page that holds it', async () => {
+    await sized(1280, 900)
     vi.mocked(librariesApi.listLibraries).mockResolvedValue({
       libraries: [libraryOf(longPathRoot)],
     })
@@ -1745,86 +1865,47 @@ describe('the Configuration screens at desktop width', () => {
         user({ every_library: false, libraries: [{ id: 70, name: 'Manga' }] }),
       ],
     })
-    const host = await act(async () => {
-      const mounted = mount(
-        <MemoryRouter>
-          <GateContext value={{ who, signOut: () => undefined }}>
-            <Users />
-          </GateContext>
-        </MemoryRouter>,
-      )
-      await Promise.resolve()
-      await Promise.resolve()
-      return mounted
-    })
-    const card = host.querySelector('.user-row') as HTMLElement
-    expect(card).not.toBeNull()
-    const cardBox = card.getBoundingClientRect()
-    // **The card's own *border box* is not 640px, and must not be asserted
-    // as one.** There is no global `border-box` reset in this app (the
-    // Ground Truth this task started from names it explicitly), so
-    // `max-width: var(--config-measure)` constrains `.user-row`'s *content*
-    // box — the border box measures content(640) plus its own padding and
-    // border on top, 674px here (640 + 2×16px `--space-4` + 2×1px border).
-    // Measured first as `cardBox.width <= 640`, which failed at 674 — the
-    // wrong axis, not a CSS defect; fixed to compare against the content
-    // box a control actually sits inside, which is what the controls below
-    // are checked against.
-    const cardStyle = getComputedStyle(card)
-    const cardContentWidth =
-      cardBox.width -
-      Number.parseFloat(cardStyle.paddingLeft) -
-      Number.parseFloat(cardStyle.paddingRight) -
-      Number.parseFloat(cardStyle.borderLeftWidth) -
-      Number.parseFloat(cardStyle.borderRightWidth)
-    // The measure itself: this is what removing `.user-row`'s `max-width`
-    // actually breaks — see this file's own mutation notes.
-    expect(cardContentWidth).toBeLessThanOrEqual(40 * 16)
-    const controls = card.querySelectorAll('input, select, textarea')
+    const host = await settled(routed(ACCOUNT))
+    const account = host.querySelector('.user-row') as HTMLElement
+    expect(account).not.toBeNull()
+    // The content box, not the border box: there is no global `border-box`
+    // reset, so `max-width` caps the content, and the content box is what a
+    // control sits inside.
+    const accountStyle = getComputedStyle(account)
+    const contentWidth =
+      account.getBoundingClientRect().width -
+      Number.parseFloat(accountStyle.paddingLeft) -
+      Number.parseFloat(accountStyle.paddingRight) -
+      Number.parseFloat(accountStyle.borderLeftWidth) -
+      Number.parseFloat(accountStyle.borderRightWidth)
+    // The measure itself, which `.user-row`'s place in the measure list is.
+    expect(contentWidth).toBeLessThanOrEqual(40 * 16)
+    const controls = account.querySelectorAll('input, select, textarea')
     expect(controls.length).toBeGreaterThan(0)
     for (const control of controls) {
-      // `.field`, `.checks` and the role `<select>` all stretch to fill
-      // whatever content box the card gives them — Task 2's whole point is
-      // that only the card carries a figure, and no control carries one of
-      // its own (`admin-config.css.test.ts`'s "sets the measure once"
-      // pins the CSS side of that same rule).
+      // `.field`, `.checks` and the role `<select>` stretch to the box they
+      // are in, and only the page carries a figure:
+      // `admin-config.css.test.ts`'s "sets the measure once" holds the CSS
+      // side of that.
       expect(control.getBoundingClientRect().width).toBeLessThanOrEqual(
-        cardContentWidth + 0.5,
+        contentWidth + 0.5,
       )
     }
   })
 
   it('keeps the add-user form inside its own measure', async () => {
-    await page.viewport(1280, 900)
-    const host = await act(async () => {
-      const mounted = mount(
-        <MemoryRouter>
-          <GateContext value={{ who, signOut: () => undefined }}>
-            <Users />
-          </GateContext>
-        </MemoryRouter>,
-      )
-      await Promise.resolve()
-      await Promise.resolve()
-      return mounted
-    })
-    const form = host.querySelector('.add-user') as HTMLElement
+    await sized(1280, 900)
+    const host = await settled(routed(NEW_ACCOUNT))
+    const form = host.querySelector('.new-account .add-user') as HTMLElement
     expect(form).not.toBeNull()
-    const formBox = form.getBoundingClientRect()
-    // Same content-box arithmetic as `.user-row`'s assertion above, and the
-    // same reason: no global `border-box` reset, so the border box is the
-    // wrong axis to check.
+    // Content box, for the reason the account page's case gives.
     const formStyle = getComputedStyle(form)
     const formContentWidth =
-      formBox.width -
+      form.getBoundingClientRect().width -
       Number.parseFloat(formStyle.paddingLeft) -
       Number.parseFloat(formStyle.paddingRight) -
       Number.parseFloat(formStyle.borderLeftWidth) -
       Number.parseFloat(formStyle.borderRightWidth)
-    // `.add-user` shares admin.css's "one measure for the settings area"
-    // selector list with `.user-row`, so the assertion above — which only
-    // ever queries `.user-row` — passes whether or not `.add-user` is still
-    // in that list. This is the separate guard the shared selector needs.
     expect(formContentWidth).toBeLessThanOrEqual(40 * 16)
   })
 
@@ -1885,6 +1966,150 @@ describe('the Configuration screens at desktop width', () => {
   })
 })
 
+describe('the Users pages’ own lines', () => {
+  const sam = user({ id: 2, name: 'sam', role: 'user' })
+  const removal = {
+    removed: {
+      name: 'sam',
+      positions: 0,
+      notes: 0,
+      sessions: 0,
+      keys: 0,
+      grants: 0,
+    },
+  }
+
+  /** `colour` as the browser resolves it, for an element inside `within`. */
+  function resolved(within: Element, colour: string) {
+    const probe = document.createElement('span')
+    probe.style.color = colour
+    within.append(probe)
+    const { color } = getComputedStyle(probe)
+    probe.remove()
+    return color
+  }
+
+  it('puts the role’s hint a step under the fields it explains', async () => {
+    await sized(1280, 900)
+    vi.mocked(usersApi.listUsers).mockResolvedValue({ users: [user()] })
+    const host = await opened(ACCOUNT)
+    const hint = host.querySelector('.user-row .fields + .why') as HTMLElement
+    expect(hint?.textContent).toContain('cannot take their own admin role')
+    expect(getComputedStyle(hint).marginTop).toBe('8px')
+    expect(getComputedStyle(hint).marginBottom).toBe('0px')
+  })
+
+  it('says an account was removed quietly, on the table it goes back to', async () => {
+    await sized(1280, 900)
+    vi.mocked(usersApi.listUsers).mockResolvedValue({ users: [user(), sam] })
+    vi.mocked(usersApi.removalCost).mockResolvedValue({
+      ...removal,
+      dry_run: true,
+    })
+    vi.mocked(usersApi.removeUser).mockResolvedValue({
+      ...removal,
+      dry_run: false,
+    })
+    const host = await opened(`${USERS}/2`)
+    await press(host.querySelector('button[name="remove"]') as Element)
+    vi.mocked(usersApi.listUsers).mockResolvedValue({ users: [user()] })
+    await press(host.querySelector('.remove-user .confirm') as Element)
+    await flush()
+    const line = host.querySelector('.user-table > p.gone-line') as HTMLElement
+    expect(line?.textContent).toBe('Removed sam.')
+    expect(getComputedStyle(line).color).toBe(
+      resolved(line.parentElement as Element, 'var(--muted)'),
+    )
+  })
+
+  it('says a password was set in the page’s own colour', async () => {
+    await sized(1280, 900)
+    vi.mocked(usersApi.listUsers).mockResolvedValue({ users: [user(), sam] })
+    vi.mocked(usersApi.patchUser).mockResolvedValue(sam)
+    const host = await opened(`${USERS}/2`)
+    await typeInto(
+      host.querySelector('input[name="password"]') as HTMLInputElement,
+      'hunter22',
+    )
+    await submit(host.querySelector('form.reset') as Element)
+    await flush()
+    const line = host.querySelector('.reset .done') as HTMLElement
+    expect(line?.textContent).toBe(
+      'Password set. sam is signed out everywhere.',
+    )
+    expect(getComputedStyle(line).color).toBe(
+      resolved(line.parentElement as Element, 'var(--text)'),
+    )
+  })
+
+  it('says a removal that answers on another account’s page there, leaving focus and the view where they were', async () => {
+    await sized(390, 844)
+    // Kim's page is longer than the window, so there is a view to move.
+    const kim = user({
+      id: 3,
+      name: 'kim',
+      role: 'user',
+      sessions: Array.from({ length: 30 }, (_, i) => ({
+        id: `s${i}`,
+        created: '2026-09-01 10:00:00',
+        last_seen: '2026-09-06 09:00:00',
+        user_agent: 'Firefox',
+        ip: '10.0.0.2',
+        current: false,
+      })),
+    })
+    vi.mocked(usersApi.listUsers).mockResolvedValue({
+      users: [user(), sam, kim],
+    })
+    vi.mocked(usersApi.removalCost).mockResolvedValue({
+      ...removal,
+      dry_run: true,
+    })
+    const remove = deferred<usersApi.RemovalAnswer>()
+    vi.mocked(usersApi.removeUser).mockReturnValue(remove.promise)
+    const host = await opened(`${USERS}/2`)
+    await press(host.querySelector('button[name="remove"]') as Element)
+    await press(host.querySelector('.remove-user .confirm') as Element)
+    // Away by the page's own links, while the removal has not answered.
+    await press(host.querySelector('.user-row .back a') as Element)
+    await press(
+      [...host.querySelectorAll('.user-table .row-link')].find(
+        (a) => a.textContent === 'kim',
+      ) as Element,
+    )
+    await flush()
+    await document.fonts.ready
+    const doc = document.documentElement
+    expect(doc.scrollHeight).toBeGreaterThan(doc.clientHeight * 1.5)
+    // The person is at the foot of the page, on its last Revoke.
+    const revoke = [
+      ...host.querySelectorAll<HTMLElement>('.session-list button'),
+    ].at(-1) as HTMLElement
+    revoke.focus()
+    expect(window.scrollY).toBeGreaterThan(0)
+    const from = revoke.getBoundingClientRect().top
+
+    vi.mocked(usersApi.listUsers).mockResolvedValue({ users: [user(), kim] })
+    await flush(() => remove.resolve({ ...removal, dry_run: false }))
+    await flush()
+    const line = host.querySelector('.user-row p.gone-line') as HTMLElement
+    expect(line?.textContent).toBe('Removed sam.')
+    expect(document.activeElement).toBe(revoke)
+    // Where the person is looking has not moved. The line is drawn above
+    // the view, and the browser's scroll anchoring moves the scroll by its
+    // height to keep it so: the scroll offset is not what is held.
+    expect(revoke.getBoundingClientRect().top).toBeCloseTo(from, 0)
+    // Announced instead, from the region drawn with the page.
+    expect(
+      line.parentElement?.matches('.user-row > [aria-live="polite"]'),
+    ).toBe(true)
+    // Quiet wherever it is drawn, as on the table.
+    expect(getComputedStyle(line).color).toBe(
+      resolved(line.parentElement as Element, 'var(--muted)'),
+    )
+  })
+})
+
 describe('the libraries screen at desktop width', () => {
   /** Two libraries, the second holding only entries nothing reads yet. */
   const TWO = {
@@ -1907,7 +2132,7 @@ describe('the libraries screen at desktop width', () => {
   }
 
   async function shown(ui: React.ReactNode) {
-    await page.viewport(1280, 900)
+    await sized(1280, 900)
     vi.mocked(librariesApi.listLibraries).mockResolvedValue(TWO)
     const host = await settled(ui)
     await document.fonts.ready
@@ -2112,20 +2337,21 @@ describe('the libraries screen at desktop width', () => {
         }),
       ],
     })
-    const host = await shown(
-      <MemoryRouter>
-        <GateContext value={{ who, signOut: () => undefined }}>
-          <Users />
-        </GateContext>
-      </MemoryRouter>,
-    )
+    const host = await shown(routed(ACCOUNT))
     const group = host.querySelector('.user-row .grants') as HTMLElement
     expect(getComputedStyle(group).borderTopWidth).toBe('1px')
     expect(getComputedStyle(group).borderTopStyle).toBe('solid')
-    expect(getComputedStyle(group).borderTopColor).toBe(
-      getComputedStyle(host.querySelector('.user-row') as Element)
-        .borderTopColor,
-    )
+    // The hairline the removal's box and the table's rules are drawn in, as
+    // the browser resolves it: the page's sections draw no box, so the token
+    // is what the group is held to. A border left to `currentColor` is the
+    // text's colour and fails here.
+    const probe = document.createElement('div')
+    probe.style.borderTop = '1px solid var(--line)'
+    group.append(probe)
+    const line = getComputedStyle(probe).borderTopColor
+    probe.remove()
+    expect(getComputedStyle(group).borderTopColor).toBe(line)
+    expect(line).not.toBe(getComputedStyle(group).color)
     // A box, then a gap, then its words: for both radios and each tick.
     for (const label of group.querySelectorAll(
       ':scope > label, .grant-list label',
@@ -2137,17 +2363,13 @@ describe('the libraries screen at desktop width', () => {
     const tick = group.querySelector('.grant-list input') as Element
     expect(box(tick).left).toBeGreaterThan(box(radio).left + 16)
 
-    // The group stands a step below the boxes above it, and its legend is a
-    // quiet label on the border: smaller than the words beneath it and not
-    // in their colour.
+    // The group stands a step below the boxes above it.
     expect(getComputedStyle(group).marginTop).toBe('12px')
+    // Its legend names it for a screen reader alone: the section's heading
+    // is its name on screen, so the legend is clipped to nothing there.
     const legend = group.querySelector(':scope > legend') as HTMLElement
-    const words = group.querySelector(':scope > label') as HTMLElement
-    expect(getComputedStyle(legend).fontSize).toBe('12px')
-    expect(getComputedStyle(legend).paddingLeft).toBe('4px')
-    expect(getComputedStyle(legend).color).not.toBe(
-      getComputedStyle(words).color,
-    )
+    expect(legend.textContent).toBe('Libraries this account may see')
+    expect(getComputedStyle(legend).clipPath).toBe('inset(50%)')
   })
 })
 

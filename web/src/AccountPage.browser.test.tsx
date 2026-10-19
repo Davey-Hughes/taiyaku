@@ -2,15 +2,15 @@ import { act } from 'react'
 import { MemoryRouter } from 'react-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { userEvent } from 'vitest/browser'
+import { AccountPage } from './AccountPage'
 // **Required**, the same reason `Config.browser.test.tsx` gives.
 import './index.css'
 import type { Library } from './libraries'
 import { mount } from './testing/mount'
-import { UserRow } from './UserRow'
 import * as usersApi from './users'
 
 /**
- * The Users card under real keys. A radio group chooses on an arrow key as it
+ * The account page under real keys. A radio group chooses on an arrow key as it
  * does on a click, so a key pressed on "Only these" reached "Every library"
  * and, until O195, lifted the account's limit unasked.
  */
@@ -67,7 +67,7 @@ async function shown(who: usersApi.User = sam): Promise<HTMLElement> {
   await act(async () => {
     host = mount(
       <MemoryRouter>
-        <UserRow
+        <AccountPage
           user={who}
           users={[who]}
           libraries={[MANGA, COMICS]}
@@ -108,7 +108,7 @@ beforeEach(() => {
   })
 })
 
-describe('the Users card under real keys', () => {
+describe('the account page under real keys', () => {
   for (const key of ['ArrowUp', 'ArrowLeft', 'ArrowDown', 'ArrowRight']) {
     it(`asks before ${key} on the radios lifts a limit`, async () => {
       const host = await shown()

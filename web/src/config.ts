@@ -40,7 +40,7 @@ export interface Tab {
  */
 export const TABS: Tab[] = [
   { path: 'libraries', label: 'Libraries', pages: true },
-  { path: 'users', label: 'Users' },
+  { path: 'users', label: 'Users', pages: true },
   { path: 'rules', label: 'Rules' },
   { path: 'backup', label: 'Backup' },
 ]

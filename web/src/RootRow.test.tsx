@@ -1529,8 +1529,8 @@ describe('RootRow', () => {
 
   it('groups the keeps-documents checkbox outside the field grid', async () => {
     // A checkbox's label is a sentence, not a field name: it takes a row of
-    // its own rather than a track in the `.fields` grid. The user row's
-    // equivalent is pinned in UserRow.test.tsx; this is the root row's.
+    // its own rather than a track in the `.fields` grid. The account page's
+    // equivalent is pinned in AccountPage.test.tsx; this is the root row's.
     const host = await settle()
     expect(
       host.querySelector('.root-row .fields input[type="checkbox"]'),

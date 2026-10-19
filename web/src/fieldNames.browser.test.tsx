@@ -21,7 +21,6 @@ import { emptyDerive } from './testing/derive'
 import { fields } from './testing/fields'
 import { press } from './testing/input'
 import { mount } from './testing/mount'
-import { UserRow } from './UserRow'
 import * as usersApi from './users'
 import { Users } from './Users'
 
@@ -108,6 +107,15 @@ const librariesAt = (entry: string) => (
   <MemoryRouter initialEntries={[entry]}>
     <Routes>
       <Route path="/config/libraries/*" element={<Libraries />} />
+    </Routes>
+  </MemoryRouter>
+)
+
+/** The Users screen at `entry`, as Configuration routes it. */
+const usersAt = (entry: string) => (
+  <MemoryRouter initialEntries={[entry]}>
+    <Routes>
+      <Route path="/config/users/*" element={<Users />} />
     </Routes>
   </MemoryRouter>
 )
@@ -308,10 +316,9 @@ async function expandedProposal(): Promise<HTMLElement> {
 
 describe('the name Chromium gives a control under a field label — O175', () => {
   it('names the add-account form’s controls as written', async () => {
-    // No accounts, so the form's controls are the only ones on the screen.
     vi.mocked(usersApi.listUsers).mockResolvedValue({ users: [] })
     vi.mocked(librariesApi.listLibraries).mockResolvedValue({ libraries: [] })
-    const host = await shown(<Users />)
+    const host = await shown(usersAt('/config/users/new'))
     expect(drawn(host)).toEqual([
       ['Name', 'uppercase'],
       ['Password', 'uppercase'],
@@ -324,19 +331,11 @@ describe('the name Chromium gives a control under a field label — O175', () =>
     ])
   })
 
-  it('names an account card’s controls as written', async () => {
+  it('names an account page’s controls as written', async () => {
     const sam = user({ id: 2, name: 'sam', role: 'user' })
-    const host = await shown(
-      // A router because the card can link to `/account` (O94).
-      <MemoryRouter>
-        <UserRow
-          user={sam}
-          users={[user(), sam]}
-          libraries={[]}
-          onChanged={() => {}}
-        />
-      </MemoryRouter>,
-    )
+    vi.mocked(usersApi.listUsers).mockResolvedValue({ users: [user(), sam] })
+    vi.mocked(librariesApi.listLibraries).mockResolvedValue({ libraries: [] })
+    const host = await shown(usersAt('/config/users/2'))
     expect(drawn(host)).toEqual([
       ['Role', 'uppercase'],
       ['Set a new password', 'uppercase'],

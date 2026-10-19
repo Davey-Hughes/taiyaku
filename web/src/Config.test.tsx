@@ -134,6 +134,36 @@ describe('Config', () => {
     }
   })
 
+  it.each([
+    ['/config/users/new', '.new-account form.add-user'],
+    ['/config/users/1', '.user-row > h2'],
+  ])('draws the users tab’s page at %s', async (entry, drawn) => {
+    // Only a tab with `pages` is routed with the paths beneath its own; any
+    // other sends them back to the leading tab.
+    vi.mocked(usersApi.listUsers).mockResolvedValue({
+      users: [
+        {
+          id: 1,
+          name: 'davey',
+          role: 'admin',
+          can_download: true,
+          can_stream: true,
+          can_stamp: false,
+          can_log_in: true,
+          sessions: [],
+          keys: [],
+          every_library: true,
+          libraries: [],
+        },
+      ],
+    })
+    const host = await at(entry)
+    expect(host.querySelector(`.users ${drawn}`)).not.toBeNull()
+    expect(
+      host.querySelector('.config-nav a[aria-current="page"]')?.textContent,
+    ).toBe('Users')
+  })
+
   it('sends the old roots tab to the libraries screen', async () => {
     const host = await at('/config/roots')
     expect(host.querySelector('.libraries .library-table')).not.toBeNull()

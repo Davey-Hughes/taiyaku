@@ -1,14 +1,14 @@
 /**
- * One account: what it is, what it may do, what is signed in as it, and what
- * removing it would cost — spec C4 §4 and the build design's §6.2.
+ * One account's page: what it is, what it may do, what is signed in as it,
+ * and what removing it would cost — spec C4 §4 and the build design's §6.2.
  *
- * **The card owns its own writes, the list owns who exists.** `RootRow`'s
+ * **The page owns its own writes, the list owns who exists.** `RootRow`'s
  * split and its stated reason: a patch, a revocation and a dry run all belong
  * to the account being administered, and the list reloads on `onChanged`.
  *
  * **The server is the authority; this disables and explains.** Every refusal
  * here is enforced in `taiyaku-library` and answered as a 409 with a sentence,
- * which this card renders when it arrives. Where it can tell in advance it
+ * which this page renders when it arrives. Where it can tell in advance it
  * *also* disables the control and says why — and the duplication is
  * one-directional: this may refuse what the server would refuse, and may never
  * permit what the server would not. That is why `onlyAdminWhoCanLogIn` mirrors
@@ -16,21 +16,20 @@
  *
  * **One reason covers two controls.** The last-administrator rule reaches the
  * role dropdown and Remove through different routes and is one invariant; a
- * card that disabled only Remove leaves the identical accident one dropdown
- * away.
+ * page that disabled only Remove would leave the identical accident one
+ * dropdown away.
  *
  * **The self-password refusal links to the screen that gets it right.**
  * `/api/password` is the route that keeps the session making the change, and
- * the screen that calls it is `Account.tsx`, at `/account`. Until O94 closed
- * that screen had no URL — it mounted from `App.tsx` on `/read/:work`, behind
- * `A` — and this card said "open any work and press A", which an administrator
- * of a library with no readable work could not do.
+ * the screen that calls it is `Account.tsx`, at `/account`. A link, because
+ * any account can follow one, where directions through a work would fail an
+ * administrator of a library with no readable work (O94).
  *
  * **Grants are libraries, sent whole, and "every library" is a fact of its
  * own.** `user.every_library` alone says whether the account sees every
  * library; `libraries` is its limit, and an empty limit sees nothing. A patch
  * sends `{every_library: true}` to lift the limit or the whole list to set
- * it, `[]` included. The card draws that as a choice between "Every library"
+ * it, `[]` included. The page draws that as a choice between "Every library"
  * and "Only these". Each tick and each cleared box saves at once, the last
  * one too, and so does choosing "Only these", which saves as no library.
  * Lifting the limit to every library, "Every library" on an account with a
@@ -41,8 +40,9 @@
  * sent from here and nowhere else. `RemoveRoot`'s reasoning, on the route
  * `users_api` calls the second-most destructive in the product.
  */
-import { useEffect, useId, useRef, useState } from 'react'
+import { type ReactNode, useEffect, useId, useRef, useState } from 'react'
 import { Link } from 'react-router'
+import { useDrawn } from './hooks'
 import type { Library } from './libraries'
 import { sentenceOf } from './message'
 import {
@@ -58,11 +58,11 @@ import {
   type UserPatch,
 } from './users'
 
-export interface UserRowProps {
+export interface AccountPageProps {
   user: User
   /**
    * Every account, so the last-administrator rule is answered from the list
-   * the screen already holds rather than by a second request per card.
+   * the screen already holds rather than by a request of its own.
    */
   users: User[]
   /**
@@ -72,7 +72,7 @@ export interface UserRowProps {
    * **Three states rather than two.** Reading an unread list as `[]` would
    * draw "there are no libraries yet" while the read was still in flight and
    * for ever after one that failed: a positive false claim, on the control
-   * that decides what an account sees. What the card can always say is what
+   * that decides what an account sees. What the page can always say is what
    * the account sees, because `user.every_library` says so and
    * `user.libraries` carries the names; what it cannot do without the list is
    * offer a library nobody granted yet.
@@ -85,10 +85,10 @@ export interface UserRowProps {
    */
   actingAs?: number
   /**
-   * Re-read the list this card is one of.
+   * Re-read the screen's list of accounts.
    *
    * **Its answer is awaited when it gives one.** `Users.reload` returns the
-   * `listUsers` promise, and this card holds its controls until that settles
+   * `listUsers` promise, and this page holds its controls until that settles
    * — see `settled`. A caller that returns nothing is not wrong, only
    * unheld.
    *
@@ -97,6 +97,28 @@ export interface UserRowProps {
    * what a caller that returns nothing is called.
    */
   onChanged: () => unknown
+  /**
+   * The account is gone, and nothing is left here to edit. The screen drops
+   * it, and goes back to its table while the person is still on the page
+   * that asked.
+   */
+  onRemoved?: (name: string) => void
+  /**
+   * A write sent from this page was refused after the page had gone, with
+   * the sentence that says so and names the account.
+   */
+  onLateRefusal?: (sentence: string) => void
+  /**
+   * The person was sent here by an action whose button went with the page
+   * it was on, so the heading takes focus.
+   */
+  arrived?: boolean
+  /**
+   * What the screen says above the page: a list that could not be read, a
+   * removal's line, or an answer that came once the page it was asked from
+   * had gone.
+   */
+  notices?: ReactNode
 }
 
 /**
@@ -110,26 +132,33 @@ function count(n: number, one: string, many: string): string {
   return `${n} ${n === 1 ? one : many}`
 }
 
-export function UserRow({
+export function AccountPage({
   user,
   users,
   libraries,
   actingAs,
   onChanged,
-}: UserRowProps) {
+  onRemoved,
+  onLateRefusal,
+  arrived = false,
+  notices,
+}: AccountPageProps) {
+  const heading = useRef<HTMLHeadingElement>(null)
+  useEffect(() => {
+    if (arrived) heading.current?.focus()
+  }, [arrived])
   const [failure, setFailure] = useState<string | undefined>()
   /**
-   * What the last write on this card was answered with.
+   * What the last write on this page was answered with.
    *
    * **The hold alone was not enough, and this is the half that closes it.**
    * `settled` waits for the list read a write triggers, but that read can fail
-   * or be superseded by another card's — and either way it resolves without
+   * or be superseded by a later one — and either way it resolves without
    * bringing fresh props, so the controls came back live over pre-write
-   * values. `patchUser` answers the account whole, so the card can keep that
+   * values. `patchUser` answers the account whole, so the page can keep that
    * answer and stop guessing: it is what is drawn, and what `toggleGrant`
    * computes the next grant list from. Retired the moment a new `user` prop
-   * arrives, because the list is the truth as soon as it catches up. Found by
-   * the second whole-branch review pass, in the fix the first one produced.
+   * arrives, because the list is the truth as soon as it catches up.
    */
   const [applied, setApplied] = useState<User | undefined>()
   const [saving, setSaving] = useState(false)
@@ -142,21 +171,23 @@ export function UserRow({
    * dialog reads it: "working out what this would remove…" is drawn while
    * there is neither a cost nor a reason, and `begin()` clears the shared slot
    * on *every* write — so ticking a capability box after a failed dry run put
-   * the dialog back to "working out" for ever, with nothing in flight. Third
-   * review pass; `Users.tsx` and `Backup.tsx` each reached the same two-slot
-   * answer for their own pair.
+   * the dialog back to "working out" for ever, with nothing in flight.
+   * `Backup.tsx` keeps the same two slots for its own pair, and the users
+   * screen keeps the list's failure in `Users.tsx` apart from the add's
+   * refusal in `NewAccount.tsx`.
    */
   const [costFailure, setCostFailure] = useState<string | undefined>()
   const [removing, setRemoving] = useState(false)
   /**
    * Whether this account is gone and the list has not caught up.
    *
-   * **A terminal state rather than a closed dialog.** Closing the dialog put
-   * the plain *Remove…* back over a deleted account, and left the role
-   * dropdown, all three capability boxes, the grants, the password form and
-   * every Revoke live against an id that answers "no account with id 2". The
-   * card normally unmounts the moment the reload lands; this is what it draws
-   * when that read fails instead. Third review pass.
+   * **A terminal state rather than a closed dialog.** A closed dialog alone
+   * would put the plain *Remove…* back over a deleted account, and leave the
+   * role dropdown, all three capability boxes, the grants, the password form
+   * and every Revoke live against an id that answers "no account with id 2".
+   * It is the page's own guard, for a caller that leaves the page drawn once
+   * its account is gone. No production caller does: `Users` passes
+   * `onRemoved`, and takes the page away in the removal's own answer.
    */
   const [removed, setRemoved] = useState(false)
   /**
@@ -167,7 +198,9 @@ export function UserRow({
    * before the next render both send.
    */
   const inFlight = useRef(false)
-  /** The `user` prop this card last drew — see `applied`. */
+  /** False once the page has gone, and a refusal has no page here to say it. */
+  const onScreen = useDrawn()
+  /** The `user` prop this page last drew — see `applied`. */
   const drawn = useRef(user)
   /** The newest dry run — see `askCost`. */
   const latestCost = useRef(0)
@@ -177,24 +210,23 @@ export function UserRow({
   if (drawn.current !== user) {
     drawn.current = user
     if (applied !== undefined) setApplied(undefined)
-    // **The tombstone goes with it.** A prop arriving for this card means an
-    // account of this name exists, and `Users` keys cards by name — so a
-    // removal whose reload failed, followed by re-creating the same name,
-    // handed the new account the old card's instance and drew it as removed,
-    // with no controls, until a page reload. That is the recycled-id hazard
-    // `Users.tsx`'s own doc comment describes, reached through the name
-    // instead. Fourth review pass.
+    // **The tombstone goes with it.** A prop arriving for this page means an
+    // account of this name exists, and `Users` keys the page by name — so
+    // where the page outlives a removal, an account re-created under that
+    // name is handed this instance, and must not be drawn as removed, with no
+    // controls. That is the recycled-id hazard `Users.tsx`'s own doc comment
+    // describes, reached through the name instead.
     if (removed) setRemoved(false)
   }
 
-  /** The account as this card knows it: the last answer, else the list's row. */
+  /** The account as this page knows it: the last answer, else the list's row. */
   const shown = applied ?? user
 
   const isSelf = actingAs === user.id
   const lastAdmin = onlyAdminWhoCanLogIn(users, shown)
 
   /**
-   * Claim the card for one write, or refuse because it is already claimed.
+   * Claim the page for one write, or refuse because it is already claimed.
    *
    * **A ref as well as `saving`, for the reason every other guarded press in
    * this codebase carries one**: React batches state, so two presses
@@ -206,7 +238,7 @@ export function UserRow({
     setSaving(true)
     setFailure(undefined)
     // **Cleared here rather than left to fade.** "Password set" is a notice
-    // about one write, and nothing else on this card was clearing it — so it
+    // about one write, and nothing else on this page was clearing it — so it
     // stood over every later toggle, grant and refusal, still saying somebody
     // had just been signed out everywhere. O96's `heldNotice` finding, which
     // `RuleList` closed the same way: the mutation that follows a notice is
@@ -216,15 +248,15 @@ export function UserRow({
   }
 
   /**
-   * Release the card once the list this write triggered has come back.
+   * Release the page once the list this write triggered has come back.
    *
    * **Not when the write answers — when the *reload* does.** `user` is a prop,
-   * so between a 200 and the list landing this card is still drawing what it
+   * so between a 200 and the list landing this page is still drawing what it
    * held before the write, with its controls live again. That window is a
    * defect rather than a cosmetic lag on the one control that sends a *whole
    * list*: ticking a second library inside it computes the new grants from
    * the pre-patch `user.libraries` and so silently revokes the first. Holding
-   * until `onChanged` settles keeps this card's props and its controls in
+   * until `onChanged` settles keeps this page's props and its controls in
    * step, and costs the reload's few hundred milliseconds on a screen touched
    * rarely.
    */
@@ -237,22 +269,33 @@ export function UserRow({
     })
   }
 
-  const failed = (err: unknown) => {
+  /**
+   * A write was refused. `late` says what was not done, for a refusal that
+   * comes once this page has gone: the screen says it on the page the person
+   * is on, where nothing else names the account.
+   */
+  const failed = (late: string) => (err: unknown) => {
     inFlight.current = false
     setSaving(false)
     setRemoving(false)
-    setFailure(sentenceOf(err))
+    const sentence = sentenceOf(err)
+    if (onScreen.current) setFailure(sentence)
+    else onLateRefusal?.(`${late} (${sentence}).`)
   }
 
-  const save = (patch: UserPatch, after?: () => void) => {
+  const save = (patch: UserPatch, late: string, after?: () => void) => {
     if (!begin()) return
     patchUser(user.id, patch)
       .then((answer) => {
         setApplied(answer)
         settled(after)
       })
-      .catch(failed)
+      .catch(failed(late))
   }
+
+  /** What a refused setting says once its page has gone. */
+  const notSaved = (what: string) => `${what} for ${shown.name} was not saved`
+  const grantsNotSaved = `Libraries for ${shown.name} were not saved`
 
   const granted = shown.libraries.map((g) => g.id)
   /**
@@ -261,7 +304,7 @@ export function UserRow({
    */
   const restricted = !shown.every_library
   /**
-   * "Every library" was chosen on an account with a limit, and the card is
+   * "Every library" was chosen on an account with a limit, and the page is
    * asking before it lifts it.
    *
    * **Asked, not saved at once (O195).** An arrow key on the radios chooses
@@ -334,13 +377,13 @@ export function UserRow({
   // no library, which narrows it and widens nothing.
   const toggleGrant = (id: number, on: boolean) => {
     const next = on ? [...granted, id] : granted.filter((held) => held !== id)
-    save({ libraries: next })
+    save({ libraries: next }, grantsNotSaved)
   }
 
   /**
    * **Neither radio acts while a write is in flight.** "Only these" saves, so
    * `begin` refuses it through `inFlight`. "Every library" only opens the
-   * question, which changes local state and so would redraw the card mid-save
+   * question, which changes local state and so would redraw the page mid-save
    * — it reads the ref itself.
    */
   const seeEvery = () => {
@@ -349,12 +392,14 @@ export function UserRow({
   }
 
   /** Saved at once as no library, for the reason the last tick clears. */
-  const seeOnly = () => save({ libraries: [] })
+  const seeOnly = () => save({ libraries: [] }, grantsNotSaved)
 
   // `every_library` rather than an empty list, which would limit the account
   // to no library instead.
   const lift = () => {
-    save({ every_library: true }, () => everyRadio.current?.focus())
+    save({ every_library: true }, grantsNotSaved, () =>
+      everyRadio.current?.focus(),
+    )
   }
 
   /** The question goes, and focus goes back to the choice that stands. */
@@ -366,7 +411,7 @@ export function UserRow({
   const submitPassword = (e: React.FormEvent) => {
     e.preventDefault()
     if (password === '') return
-    save({ password }, () => {
+    save({ password }, `A new password for ${shown.name} was not set`, () => {
       setPassword('')
       setWasReset(true)
     })
@@ -375,13 +420,17 @@ export function UserRow({
   /**
    * Revoking a session or a key, on the same guarded path as a patch.
    *
-   * **Two clicks used to draw a 404 over a revocation that had worked.** The
+   * **Two clicks must not draw a 404 over a revocation that worked.** The
    * first `DELETE` answers 204 and the second finds no row — and
    * `revoke_session` answers 404 for a session that is not there, the same
-   * answer as for one that never existed — so the card reported a failure for
-   * the thing it had just done.
+   * answer as for one that never existed — so an unguarded second press
+   * would report a failure for the thing the first had just done.
    */
-  const revoke = (send: () => Promise<void>, without: (held: User) => User) => {
+  const revoke = (
+    send: () => Promise<void>,
+    without: (held: User) => User,
+    late: string,
+  ) => {
     if (!begin()) return
     send()
       // **The row goes locally too, for `save`'s reason one path over.**
@@ -391,15 +440,15 @@ export function UserRow({
       // that is already gone. Third review pass, in the fix the second one
       // produced for exactly this shape.
       .then(() => {
-        // **Applied to whatever the card holds *now*, not to the snapshot the
+        // **Applied to whatever the page holds *now*, not to the snapshot the
         // click was made from.** A list read landing during the `DELETE`
         // clears `applied` and brings a newer row; writing back a click-time
         // copy would drop whatever that read brought — a session opened since,
-        // or a role another administrator changed. Fourth review pass.
+        // or a role another administrator changed.
         setApplied((held) => without(held ?? drawn.current))
         settled()
       })
-      .catch(failed)
+      .catch(failed(late))
   }
 
   const askCost = () => {
@@ -428,21 +477,23 @@ export function UserRow({
     if (!begin()) return
     setRemoving(true)
     removeUser(user.id)
-      // **The dialog closes itself rather than trusting the unmount.** The
-      // card goes away when the reload drops the account — unless that read
-      // fails, and then a live *Remove sam* button and five counts stood over
-      // an account that no longer existed, whose next press answers "no
-      // account with id 2". That is the double-click 404 this branch fixed for
-      // the revocations, one route along. Second review pass.
-      .then(() =>
+      // **The dialog closes itself rather than trusting the page to go.**
+      // While `removed` holds, the tombstone draws no dialog. But where the
+      // page outlives the removal (no `onRemoved` takes it away), a prop of
+      // the same name drops the tombstone — an account re-created under the
+      // removed one's name — and a dialog left open would come back over
+      // that account, "working out what this would remove…" with nothing in
+      // flight and no *Remove…* button.
+      .then(() => {
         settled(() => {
           setRemoved(true)
           setConfirming(false)
           setCost(undefined)
           setCostFailure(undefined)
-        }),
-      )
-      .catch(failed)
+        })
+        onRemoved?.(shown.name)
+      })
+      .catch(failed(`${shown.name} was not removed`))
   }
 
   const roleWhy = isSelf
@@ -451,24 +502,33 @@ export function UserRow({
       ? `${shown.name} is the only administrator who can log in, so neither the role nor Remove can change that. Give another account the admin role first.`
       : undefined
 
+  const back = (
+    <p className="back">
+      <Link to="/config/users">‹ Users</Link>
+    </p>
+  )
+
   if (removed) {
     return (
-      <li className="user-row removed">
-        <h3>{shown.name}</h3>
+      <div className="user-row removed">
+        {back}
+        <h2>{shown.name}</h2>
         <p className="gone">
-          Removed. The list has not caught up — this card is what is left of it,
+          Removed. The list has not caught up — this page is what is left of it,
           and nothing here can be edited.
         </p>
-      </li>
+      </div>
     )
   }
 
   return (
-    <li className="user-row">
-      <h3>
+    <div className="user-row">
+      {back}
+      <h2 ref={heading} tabIndex={-1}>
         {shown.name}
         {isSelf && <span className="you"> — this is you</span>}
-      </h3>
+      </h2>
+      {notices}
       {failure !== undefined && <p role="alert">{failure}</p>}
 
       {!shown.can_log_in && (
@@ -478,260 +538,287 @@ export function UserRow({
         </p>
       )}
 
-      <div className="fields">
-        {/* O175: the `aria-label` repeats the label's words because `.field`
+      <section className="account-section">
+        <h3>Role &amp; permissions</h3>
+        <div className="fields">
+          {/* O175: the `aria-label` repeats the label's words because `.field`
             draws them in capitals, and Chromium's accessibility tree named
             the control in those capitals. The password box below carries one
             for the same reason. */}
-        <label className="field">
-          <span>Role</span>
-          <select
-            name="role"
-            aria-label="Role"
-            value={shown.role}
-            disabled={saving || isSelf || lastAdmin}
-            onChange={(e) => save({ role: e.target.value })}
-          >
-            {ROLES.map((role) => (
-              <option key={role} value={role}>
-                {role}
-              </option>
-            ))}
-          </select>
-        </label>
-      </div>
-      {roleWhy !== undefined && <p className="why">{roleWhy}</p>}
+          <label className="field">
+            <span>Role</span>
+            <select
+              name="role"
+              aria-label="Role"
+              value={shown.role}
+              disabled={saving || isSelf || lastAdmin}
+              onChange={(e) =>
+                save(
+                  { role: e.target.value },
+                  `The role for ${shown.name} was not changed to ${e.target.value}`,
+                )
+              }
+            >
+              {ROLES.map((role) => (
+                <option key={role} value={role}>
+                  {role}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+        {roleWhy !== undefined && <p className="why">{roleWhy}</p>}
 
-      {/* **`aria-disabled`, not `disabled`, on every checkbox on this card —
+        {/* **`aria-disabled`, not `disabled`, on every checkbox on this page —
           here and in the grant list below. O159.** `disabled` draws a
           checked box in the UA's grey and takes its `accent-color` fill
-          with it, so one tick flashed every box on the card. `accent-color`,
-          `opacity` and `filter` on `:disabled` did not bring the fill back
-          in Chromium on 2026-09-25; only redrawing the box with
-          `appearance: none` could, which is a redesign of every checkbox.
+          with it, so one tick would flash every box on the page.
+          `accent-color`, `opacity` and `filter` on `:disabled` do not bring
+          the fill back in Chromium; only redrawing the box with
+          `appearance: none` can, which is a redesign of every checkbox.
           The lock never lived in the attribute: `begin` refuses a second
           write through `inFlight`, and each box is controlled, so React
           puts a refused tick back. The role select, the password field
           and the buttons keep `disabled`.
           With `aria-disabled`, a tick refused mid-save does nothing and
-          shows no cue: the box keeps its real value. The controls beside
-          it say little more.
-          Measured in Chromium 151.0.7922.34 on 2026-09-26, in the light
-          scheme: of the role select, the password field, Set password and
-          a Revoke button, only the select drew differently held than
-          live, at an opacity of 0.7 that no stylesheet here sets. In that
-          Chromium, `aria-disabled` also kept keyboard focus on the box,
-          where `disabled` sent it to BODY the moment it was set
-          (`docs/notes.md`, "Admin follow-ups"). */}
-      {/* O154: one named group, as the grants below are one named group.
+          shows no cue: the box keeps its real value. `aria-disabled` also
+          leaves keyboard focus on the box, where in Chromium a control
+          that becomes `disabled` loses it (`docs/notes.md`, "Admin
+          follow-ups"). */}
+        {/* O154: one named group, as the grants below are one named group.
           A `role` and a name rather than a `<fieldset>`: nothing on screen
           changes, and a fieldset's box model has cost these screens width
           before (`admin.css`, above `.rule-form .rule-sets`). */}
-      <div className="checks" role="group" aria-label="Permissions">
-        <label>
-          <input
-            type="checkbox"
-            name="can_download"
-            checked={shown.can_download}
-            aria-disabled={saving}
-            onChange={(e) => save({ can_download: e.target.checked })}
-          />
-          <span>May download whole editions</span>
-        </label>
-        <label>
-          <input
-            type="checkbox"
-            name="can_stream"
-            checked={shown.can_stream}
-            aria-disabled={saving}
-            onChange={(e) => save({ can_stream: e.target.checked })}
-          />
-          <span>May stream pages</span>
-        </label>
-        <label>
-          <input
-            type="checkbox"
-            name="can_stamp"
-            checked={shown.can_stamp}
-            aria-disabled={saving}
-            onChange={(e) => save({ can_stamp: e.target.checked })}
-          />
-          <span>May write ComicInfo.xml into archives</span>
-        </label>
-      </div>
+        <div className="checks" role="group" aria-label="Permissions">
+          <label>
+            <input
+              type="checkbox"
+              name="can_download"
+              checked={shown.can_download}
+              aria-disabled={saving}
+              onChange={(e) =>
+                save(
+                  { can_download: e.target.checked },
+                  notSaved('May download whole editions'),
+                )
+              }
+            />
+            <span>May download whole editions</span>
+          </label>
+          <label>
+            <input
+              type="checkbox"
+              name="can_stream"
+              checked={shown.can_stream}
+              aria-disabled={saving}
+              onChange={(e) =>
+                save(
+                  { can_stream: e.target.checked },
+                  notSaved('May stream pages'),
+                )
+              }
+            />
+            <span>May stream pages</span>
+          </label>
+          <label>
+            <input
+              type="checkbox"
+              name="can_stamp"
+              checked={shown.can_stamp}
+              aria-disabled={saving}
+              onChange={(e) =>
+                save(
+                  { can_stamp: e.target.checked },
+                  notSaved('May write ComicInfo.xml into archives'),
+                )
+              }
+            />
+            <span>May write ComicInfo.xml into archives</span>
+          </label>
+        </div>
+      </section>
 
-      <fieldset className="grants">
-        <legend>Libraries this account may see</legend>
-        {libraries === undefined ? (
-          <p className="unknown">
-            The libraries list has not been read, so there is nothing to offer
-            here.
-            {shown.every_library
-              ? ' This account sees every library.'
-              : shown.libraries.length > 0
-                ? ` This account is granted ${shown.libraries
-                    .map((g) => g.name)
-                    .join(', ')}.`
-                : seesNothing && ' This account sees no library.'}
-          </p>
-        ) : libraries.length === 0 ? (
-          <>
-            <p className="empty">There are no libraries yet.</p>
-            {unlistedLine}
-            {noLibraryLine}
-          </>
-        ) : (
-          <>
-            <label>
-              <input
-                type="radio"
-                name={`sees-${user.id}`}
-                ref={everyRadio}
-                value="every"
-                checked={!restricted}
-                aria-disabled={saving}
-                onChange={seeEvery}
-              />
-              <span>Every library, including any added later</span>
-            </label>
-            <label>
-              <input
-                type="radio"
-                name={`sees-${user.id}`}
-                ref={onlyRadio}
-                value="only"
-                checked={restricted}
-                aria-disabled={saving}
-                onChange={seeOnly}
-                // A radio already chosen fires no change, and "Only these"
-                // stands while the question is up, so choosing it again by
-                // click or by an arrow key is heard here.
-                onClick={() => {
-                  if (inFlight.current) return
-                  setLifting(false)
-                }}
-              />
-              <span>Only these</span>
-            </label>
-            {lifting && (
-              <div
-                className="lift-limit"
-                role="group"
-                aria-label="Lift the limit"
-                aria-describedby={liftId}
-              >
-                {/* No ticks are named where there are none to clear. */}
-                <p id={liftId}>
-                  {shown.name} would see every library, including any added
-                  later
-                  {granted.length === 0
-                    ? ''
-                    : ', and the ticks below would be cleared'}
-                  .
+      <section className="account-section">
+        <h3>Libraries</h3>
+        <fieldset className="grants">
+          <legend className="visually-hidden">
+            Libraries this account may see
+          </legend>
+          {libraries === undefined ? (
+            <p className="unknown">
+              The libraries list has not been read, so there is nothing to offer
+              here.
+              {shown.every_library
+                ? ' This account sees every library.'
+                : shown.libraries.length > 0
+                  ? ` This account is granted ${shown.libraries
+                      .map((g) => g.name)
+                      .join(', ')}.`
+                  : seesNothing && ' This account sees no library.'}
+            </p>
+          ) : libraries.length === 0 ? (
+            <>
+              <p className="empty">There are no libraries yet.</p>
+              {unlistedLine}
+              {noLibraryLine}
+            </>
+          ) : (
+            <>
+              <label>
+                <input
+                  type="radio"
+                  name={`sees-${user.id}`}
+                  ref={everyRadio}
+                  value="every"
+                  checked={!restricted}
+                  aria-disabled={saving}
+                  onChange={seeEvery}
+                />
+                <span>Every library, including any added later</span>
+              </label>
+              <label>
+                <input
+                  type="radio"
+                  name={`sees-${user.id}`}
+                  ref={onlyRadio}
+                  value="only"
+                  checked={restricted}
+                  aria-disabled={saving}
+                  onChange={seeOnly}
+                  // A radio already chosen fires no change, and "Only these"
+                  // stands while the question is up, so choosing it again by
+                  // click or by an arrow key is heard here.
+                  onClick={() => {
+                    if (inFlight.current) return
+                    setLifting(false)
+                  }}
+                />
+                <span>Only these</span>
+              </label>
+              {lifting && (
+                <div
+                  className="lift-limit"
+                  role="group"
+                  aria-label="Lift the limit"
+                  aria-describedby={liftId}
+                >
+                  {/* No ticks are named where there are none to clear. */}
+                  <p id={liftId}>
+                    {shown.name} would see every library, including any added
+                    later
+                    {granted.length === 0
+                      ? ''
+                      : ', and the ticks below would be cleared'}
+                    .
+                  </p>
+                  <button
+                    type="button"
+                    name="lift-limit"
+                    disabled={saving}
+                    onClick={lift}
+                  >
+                    See every library
+                  </button>
+                  <button
+                    type="button"
+                    name="keep-limit"
+                    ref={keepButton}
+                    disabled={saving}
+                    onClick={keepLimit}
+                  >
+                    Keep the limit
+                  </button>
+                </div>
+              )}
+              {restricted && (
+                <ul className="grant-list">
+                  {libraries.map((library) => (
+                    <li key={library.id}>
+                      <label>
+                        <input
+                          type="checkbox"
+                          name={`library-${library.id}`}
+                          checked={granted.includes(library.id)}
+                          aria-disabled={saving}
+                          onChange={(e) =>
+                            toggleGrant(library.id, e.target.checked)
+                          }
+                        />
+                        <span>{library.name}</span>
+                      </label>
+                      <ul className="grant-folders">
+                        {library.folders.map((folder) => (
+                          <li key={folder.path}>
+                            <code>{folder.path}</code>
+                          </li>
+                        ))}
+                      </ul>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {unlistedLine}
+              {noLibraryLine}
+              {shown.role === 'admin' && (
+                <p className="why">
+                  An administrator sees every library whatever is chosen here.
+                  The choice takes effect if the role becomes user.
                 </p>
-                <button
-                  type="button"
-                  name="lift-limit"
-                  disabled={saving}
-                  onClick={lift}
-                >
-                  See every library
-                </button>
-                <button
-                  type="button"
-                  name="keep-limit"
-                  ref={keepButton}
-                  disabled={saving}
-                  onClick={keepLimit}
-                >
-                  Keep the limit
-                </button>
-              </div>
-            )}
-            {restricted && (
-              <ul className="grant-list">
-                {libraries.map((library) => (
-                  <li key={library.id}>
-                    <label>
-                      <input
-                        type="checkbox"
-                        name={`library-${library.id}`}
-                        checked={granted.includes(library.id)}
-                        aria-disabled={saving}
-                        onChange={(e) =>
-                          toggleGrant(library.id, e.target.checked)
-                        }
-                      />
-                      <span>{library.name}</span>
-                    </label>
-                    <ul className="grant-folders">
-                      {library.folders.map((folder) => (
-                        <li key={folder.path}>
-                          <code>{folder.path}</code>
-                        </li>
-                      ))}
-                    </ul>
-                  </li>
-                ))}
-              </ul>
-            )}
-            {unlistedLine}
-            {noLibraryLine}
-            {shown.role === 'admin' && (
-              <p className="why">
-                An administrator sees every library whatever is chosen here. The
-                choice takes effect if the role becomes user.
-              </p>
-            )}
-          </>
-        )}
-      </fieldset>
+              )}
+            </>
+          )}
+        </fieldset>
+      </section>
 
-      <form className="reset" onSubmit={submitPassword}>
-        <label className="field">
-          <span>Set a new password</span>
-          <input
-            type="password"
-            name="password"
-            aria-label="Set a new password"
-            value={password}
-            disabled={isSelf || saving}
-            onChange={(e) => setPassword(e.target.value)}
-          />
-        </label>
-        <button
-          type="submit"
-          name="reset"
-          disabled={isSelf || saving || password === ''}
-        >
-          Set password
-        </button>
-        {isSelf ? (
-          <p className="why">
-            You cannot reset your own password here: this ends every session the
-            account has, and yours is the session making the change. The server
-            refuses it and names <code>/api/password</code>, which keeps the
-            session making the change. Change your own on{' '}
-            <Link to="/account">your account screen</Link>.
-          </p>
-        ) : (
-          <p className="why">
-            This ends every session {shown.name} has open. Their API keys are
-            untouched — independent credentials with their own revocation.
-          </p>
-        )}
-        {wasReset && (
-          <p className="done">
-            Password set. {shown.name} is signed out everywhere.
-          </p>
-        )}
-      </form>
+      <section className="account-section">
+        <h3>Password</h3>
+        <form className="reset" onSubmit={submitPassword}>
+          <label className="field">
+            <span>Set a new password</span>
+            <input
+              type="password"
+              name="password"
+              aria-label="Set a new password"
+              value={password}
+              disabled={isSelf || saving}
+              onChange={(e) => setPassword(e.target.value)}
+            />
+          </label>
+          <button
+            type="submit"
+            name="reset"
+            disabled={isSelf || saving || password === ''}
+          >
+            Set password
+          </button>
+          {isSelf ? (
+            <p className="why">
+              You cannot reset your own password here: this ends every session
+              the account has, and yours is the session making the change. The
+              server refuses it and names <code>/api/password</code>, which
+              keeps the session making the change. Change your own on{' '}
+              <Link to="/account">your account screen</Link>.
+            </p>
+          ) : (
+            <p className="why">
+              This ends every session {shown.name} has open. Their API keys are
+              untouched — independent credentials with their own revocation.
+            </p>
+          )}
+          {wasReset && (
+            <p className="done">
+              Password set. {shown.name} is signed out everywhere.
+            </p>
+          )}
+        </form>
+      </section>
 
-      <details className="credentials">
-        <summary>
+      <section className="account-section credentials">
+        <h3>Sessions &amp; keys</h3>
+        <p className="tally">
           {count(shown.sessions.length, 'session', 'sessions')} ·{' '}
           {count(shown.keys.length, 'API key', 'API keys')}
-        </summary>
+        </p>
         {shown.sessions.length === 0 ? (
           <p className="empty">No sessions open.</p>
         ) : (
@@ -761,6 +848,7 @@ export function UserRow({
                           (s) => s.id !== session.id,
                         ),
                       }),
+                      `A session for ${shown.name} was not revoked`,
                     )
                   }
                 >
@@ -792,6 +880,7 @@ export function UserRow({
                         ...held,
                         keys: held.keys.filter((k) => k.id !== key.id),
                       }),
+                      `The API key ${key.name} for ${shown.name} was not revoked`,
                     )
                   }
                 >
@@ -801,7 +890,7 @@ export function UserRow({
             ))}
           </ul>
         )}
-      </details>
+      </section>
 
       <div className="actions">
         {!confirming && (
@@ -880,6 +969,6 @@ export function UserRow({
           </div>
         )}
       </div>
-    </li>
+    </div>
   )
 }

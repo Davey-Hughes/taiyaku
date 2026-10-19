@@ -106,7 +106,7 @@ describe('admin.css marks the move confirm as the action', () => {
 })
 
 /**
- * Task 2's own rule: one `--config-measure` on the card, not a width on each
+ * Task 2's own rule: one `--config-measure` on the page, not a width on each
  * control inside it. Static rather than measured — the browser pass
  * (`Config.browser.test.tsx`) is what proves the measure actually reaches
  * 640px in a real layout; this is what stops a later edit from adding a
@@ -116,13 +116,13 @@ describe('admin.css sets the settings-area measure once', () => {
   it('sets the measure once rather than per control', () => {
     const widths = rules(adminSource)
       .filter(({ prelude }) =>
-        /\.(root-row|user-row|add-user|add-root|library-table|new-library|library-page|folder-page|add-library|rename-library|folder-picker|move-root)\b/.test(
+        /\.(root-row|user-row|add-user|add-root|library-table|new-library|user-table|new-account|library-page|folder-page|add-library|rename-library|folder-picker|move-root)\b/.test(
           prelude,
         ),
       )
       .filter(({ body }) => /(?:^|;)\s*width:/.test(body))
       .map(({ prelude }) => prelude)
-    // A `width` on a control inside these cards is the drift §11.4 refuses:
+    // A `width` on a control in the settings area is the drift §11.4 refuses:
     // a figure per control is a figure to re-measure per review round.
     expect(widths).toEqual([])
   })
@@ -183,13 +183,13 @@ describe("admin.css makes a grid of the scan report's top-level lists only", () 
 
 /**
  * O178 and O180: the rules that keep a path or a name inside its page on the
- * libraries screen. `Config.browser.test.tsx` measures each of them at
- * 390px — a report naming a path longer than its row, a removal report, a
- * page's heading, a table row's name or path, a folder's `watch` fact, the
- * removal's confirm button and the sentences the screen says in a
- * paragraph — in the browser project, which CI does not run. This holds that
- * the declarations are there, where CI does; what they do is the browser
- * cases' to say.
+ * libraries and users screens. `Config.browser.test.tsx` measures each of
+ * them at 390px — a report naming a path longer than its row, a removal
+ * report, a page's heading, a table row's name, path or list of libraries, a
+ * folder's `watch` fact, the removal's confirm button and the sentences the
+ * screen says in a paragraph — in the browser project, which CI does not
+ * run. This holds that the declarations are there, where CI does; what they
+ * do is the browser cases' to say.
  */
 describe('admin.css lets a path break and its list drop under its label', () => {
   const declares = (selector: string, declaration: RegExp) =>
@@ -209,6 +209,9 @@ describe('admin.css lets a path break and its list drop under its label', () => 
     '.move-root .confirm',
     '.move-volumes li',
     '.libraries p',
+    '.users p',
+    '.config-table td.wraps',
+    '.remove-user .confirm',
     '.folder-browser .where',
     '.folder-browser button[name="up"]',
     '.folder-list button',

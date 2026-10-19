@@ -25,13 +25,9 @@
  * lost position or an unwritable document is said.
  *
  * **An answer that comes once the person has gone to another page of the
- * screen is said on the page they are on**, and leaves focus where it is,
- * since nothing they were doing there went with it: a removal's or a move's
- * report, or the refusal of any write whose page or form went before its
- * answer came. A report said so lands in a polite live region drawn with the
- * page, since nothing takes focus to have it read. Whatever is said goes when
- * the person leaves the page it is drawn on. Once another tab has replaced the screen it is said
- * nowhere.
+ * screen is said on the page they are on**, as `configPages.tsx` says for
+ * both screens: a removal's or a move's report, or the refusal of any write
+ * whose page or form went before its answer came.
  *
  * **Reads carry a sequence number.** Several are routinely in flight, and
  * they need not answer in order.
@@ -65,6 +61,7 @@ import {
   useParams,
 } from 'react-router'
 import type { Added, Derived, Probe, RemovalAnswer } from './config'
+import { useLateAnswers } from './configPages'
 import { FolderPage } from './FolderPage'
 import {
   type Created,
@@ -75,6 +72,7 @@ import {
 } from './libraries'
 import { LibraryPage } from './LibraryPage'
 import { LibraryTable } from './LibraryTable'
+import { Missing } from './Missing'
 import { MoveCounts } from './MoveCounts'
 import { sentenceOf } from './message'
 import { NewLibrary } from './NewLibrary'
@@ -107,21 +105,6 @@ export function Libraries() {
     { sentence: string; reveal: boolean } | undefined
   >()
   const failureEl = useRef<HTMLParagraphElement>(null)
-  const [report, setReport] = useState<Report | undefined>()
-  /**
-   * The refusals whose form went before they came, each with the page it is
-   * drawn on, and a number to tell two in the same words apart.
-   */
-  const [late, setLate] = useState<
-    { at: string; sentence: string; n: number }[]
-  >([])
-  const lateCount = useRef(0)
-  /**
-   * The page a make or the make form's Cancel sent the person to. Its
-   * heading takes focus once, since the button that had it went with the
-   * form.
-   */
-  const [arrival, setArrival] = useState<string | undefined>()
   const [probes, setProbes] = useState<Record<string, Probe>>({})
   const latest = useRef(0)
   const { pathname } = useLocation()
@@ -154,17 +137,17 @@ export function Libraries() {
     reload()
   }, [reload, pathname])
 
-  /** The page drawn now, for an answer that arrives after a page change. */
-  const here = useRef(pathname)
-  here.current = pathname
-  /** False once another Configuration tab has replaced this screen. */
-  const mounted = useRef(false)
-  useEffect(() => {
-    mounted.current = true
-    return () => {
-      mounted.current = false
-    }
-  }, [])
+  const reportEl = useRef<HTMLDivElement>(null)
+  const {
+    place,
+    shown,
+    setLine: setReport,
+    say,
+    arrived,
+    setArrival,
+    cancel,
+    drawNotices,
+  } = useLateAnswers<Report>(TABLE, reportEl)
 
   /**
    * True while a removal's or a move's answer is being taken. `RootRow` calls
@@ -197,43 +180,16 @@ export function Libraries() {
       queueMicrotask(() => {
         answering.current = false
       })
-      const sent = mounted.current && here.current === from
+      const { sent, line } = place(from, next)
       startTransition(() => {
-        setReport(
-          sent
-            ? { ...next, focus: true }
-            : { ...next, at: here.current, focus: false },
-        )
+        setReport(line)
         setLibraries((held) => held && drop(held))
         if (sent) navigate(next.at)
       })
       if (!sent) reload(true)
     },
-    [navigate, reload],
+    [place, setReport, navigate, reload],
   )
-
-  /**
-   * A refusal whose form is gone, said on the page the person is on. Once
-   * another tab has replaced the screen there is no page to say it on.
-   */
-  const say = useCallback((sentence: string) => {
-    const n = ++lateCount.current
-    setLate((held) => [...held, { at: here.current, sentence, n }])
-  }, [])
-
-  // What is said belongs to the page it was drawn on, and so does an
-  // arrival: a page opened again later is opened by the person.
-  useEffect(() => {
-    setReport((held) =>
-      held !== undefined && held.at !== pathname ? undefined : held,
-    )
-    setLate((held) =>
-      held.every((one) => one.at === pathname)
-        ? held
-        : held.filter((one) => one.at === pathname),
-    )
-    setArrival((held) => (held === pathname ? held : undefined))
-  }, [pathname])
 
   const remember = useCallback((added: Added[]) => {
     setProbes((held) => {
@@ -282,15 +238,8 @@ export function Libraries() {
       })
       if (!sent) reload(true)
     },
-    [remember, navigate, reload],
+    [remember, setReport, setArrival, navigate, reload],
   )
-
-  const cancel = useCallback(() => {
-    startTransition(() => {
-      setArrival(TABLE)
-      navigate(TABLE)
-    })
-  }, [navigate])
 
   const libraryRemoved = useCallback(
     (from: string, id: number, name: string, answer: RemovalAnswer) => {
@@ -368,25 +317,7 @@ export function Libraries() {
     [answered],
   )
 
-  const reportEl = useRef<HTMLDivElement>(null)
   const reportLabel = useId()
-  const shown = report?.at === pathname ? report : undefined
-  const lateShown = late.filter((one) => one.at === pathname)
-  // A report the answer moved the person to replaces the page they were
-  // acting on, and focus was on a button that no longer exists. Focusing the
-  // report has its name read. Focus alone scrolls only as far as the nearest
-  // edge, which for a report taller than the window is its foot, so its head
-  // is put at the top of the view, clear of the phone bar, as well, when it
-  // is not already in view. Taken once per report: the list reading again
-  // leaves focus where it is. A report drawn on a page the person went to
-  // themselves is neither focused nor scrolled to: they are doing something
-  // else there.
-  useEffect(() => {
-    const el = reportEl.current
-    if (shown?.focus !== true || el === null) return
-    el.focus({ preventScroll: true })
-    reveal(el)
-  }, [shown])
   // The list's failure is drawn at the head of the page, and a person acting
   // further down it is not looking there. A failed read is brought into view,
   // which does nothing where it already is, except the read at the end of any
@@ -426,28 +357,15 @@ export function Libraries() {
     </div>
   )
 
-  const notices: ReactNode = (
-    <>
-      {failure !== undefined && (
-        <p role="alert" ref={failureEl}>
-          {libraries === undefined
-            ? failure.sentence
-            : `The libraries list could not be read again (${failure.sentence}), so what is drawn may be out of date.`}
-        </p>
-      )}
-      {lateShown.map((one) => (
-        <p key={one.n} role="alert">
-          {one.sentence}
-        </p>
-      ))}
-      {shown?.focus === true && reportNode}
-      {/* A report that takes focus is read as it does, and is kept out of
-          this region so it is not read twice. One that does not is read only
-          by landing in a live region, and a region drawn together with what
-          it says is often not read at all, so this one is drawn with the
-          page, empty, before any answer can come. */}
-      <div aria-live="polite">{shown?.focus !== true && reportNode}</div>
-    </>
+  const notices = drawNotices(
+    failure !== undefined && (
+      <p role="alert" ref={failureEl}>
+        {libraries === undefined
+          ? failure.sentence
+          : `The libraries list could not be read again (${failure.sentence}), so what is drawn may be out of date.`}
+      </p>
+    ),
+    reportNode,
   )
 
   return (
@@ -459,7 +377,7 @@ export function Libraries() {
             <LibraryTable
               libraries={libraries}
               notices={notices}
-              arrived={arrival === pathname}
+              arrived={arrived}
             />
           }
         />
@@ -484,7 +402,7 @@ export function Libraries() {
                   key={library.id}
                   library={library}
                   notices={notices}
-                  arrived={arrival === pathname}
+                  arrived={arrived}
                   onAdded={remember}
                   onChanged={reload}
                   onLateRefusal={say}
@@ -587,22 +505,4 @@ function FolderAt({
     )
   }
   return children(root)
-}
-
-/**
- * The line that says the page asked for is not there. It takes focus when it
- * is drawn: whatever had focus went with the page it was on, or the person
- * came by an address. Its caller keys it by the id asked for, so a second
- * unknown id is a line drawn anew and takes focus again.
- */
-function Missing({ children }: { children: string }) {
-  const line = useRef<HTMLParagraphElement>(null)
-  useEffect(() => {
-    line.current?.focus()
-  }, [])
-  return (
-    <p className="missing" ref={line} tabIndex={-1}>
-      {children}
-    </p>
-  )
 }

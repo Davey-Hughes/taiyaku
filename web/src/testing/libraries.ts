@@ -66,13 +66,6 @@ export const counted = (works = 5): RemovalAnswer => ({
   dry_run: true,
 })
 
-/** What a table cell says, without the label only the narrow layout shows. */
-export const cellValue = (cell: Element) =>
-  [...cell.childNodes]
-    .filter((node) => !(node instanceof Element && node.matches('.cell-label')))
-    .map((node) => node.textContent)
-    .join('')
-
 /** One poll's interval, under fake timers, and what it started settles. */
 export const tick = () =>
   act(async () => {

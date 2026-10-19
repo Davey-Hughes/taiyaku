@@ -319,8 +319,8 @@ export function MetadataEditor({
    */
   const planInFlight = useRef(false)
   /**
-   * The newest plan read, the same counter as `UserRow.askCost`'s, and for its
-   * reason: whichever read was asked for last is the one whose answer may
+   * The newest plan read, the same counter as `AccountPage.askCost`'s and for
+   * its reason: whichever read was asked for last is the one whose answer may
    * draw, so a slow earlier answer cannot land on top of a newer one.
    *
    * **It is load-bearing now, which it was not when it was written.** Its own
@@ -373,11 +373,8 @@ export function MetadataEditor({
     // **The ref, paired with the `disabled` the control carries.** The
     // attribute is what a person sees and what stops the second press of a
     // slow double-click; the ref is what stops two presses dispatched inside
-    // one React batch, before that attribute reaches the DOM. Every other
-    // ref-guarded control in this tree carries both — `RemoveRoot`,
-    // `UserRow`, `Users`, `Libraries`, `RootRow`, `Backup`, `RuleEditor` — and
-    // this control and the confirm below were the two exceptions until pass 3
-    // swept for the shape.
+    // one React batch, before that attribute reaches the DOM. This control
+    // and the confirm below carry both.
     //
     // **A running POST refuses a plan read as firmly as a running GET does.**
     // The confirm and this control are on screen together in the `ready` and

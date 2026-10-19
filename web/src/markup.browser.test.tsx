@@ -3,6 +3,7 @@ import { MemoryRouter } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { page } from 'vitest/browser'
 import { Account } from './Account'
+import { AccountPage } from './AccountPage'
 import * as config from './config'
 import * as curation from './curation'
 import './index.css'
@@ -13,7 +14,6 @@ import { RuleList } from './RuleList'
 import type { Rule } from './rules'
 import { Sidebar } from './Sidebar'
 import { mount } from './testing/mount'
-import { UserRow } from './UserRow'
 import type * as usersApi from './users'
 
 /**
@@ -114,7 +114,7 @@ describe('names — §4.3 and §4.4', () => {
     await act(async () => {
       mount(
         <MemoryRouter>
-          <UserRow
+          <AccountPage
             user={user({
               every_library: false,
               libraries: [{ id: 70, name: 'Manga' }],

@@ -116,6 +116,9 @@ const HOOKS: Record<string, string[]> = {
     'language',
     'match-kind',
   ],
+  // The password form and its "Password set." are drawn as the page is, so
+  // no rule names them.
+  './AccountPage.test.tsx': ['done', 'reset'],
   './App.browser.test.tsx': ['reader-turn'],
   './App.test.tsx': ['page-area'],
   './Labeller.test.tsx': ['region-overlay'],
@@ -166,7 +169,6 @@ const HOOKS: Record<string, string[]> = {
     'delete',
     'override-badge',
   ],
-  './UserRow.test.tsx': ['done', 'reset'],
 }
 
 /**
@@ -174,7 +176,8 @@ const HOOKS: Record<string, string[]> = {
  * else draws — and what that is.
  */
 const ELSEWHERE: Record<string, string> = {
-  credentials: "admin.css's `summary` rule, whose comment names it",
+  credentials:
+    "`.account-section`'s rules, as one of the account page's sections",
   labeller: 'its own `style` prop',
   'labeller-controls': 'its own `style` prop',
   'labeller-legend-row': "`.labeller-legend`'s rules, as that element's child",

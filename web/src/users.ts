@@ -221,3 +221,22 @@ export function onlyAdminWhoCanLogIn(users: User[], user: User): boolean {
     !users.some((u) => u.id !== user.id && u.role === 'admin' && u.can_log_in)
   )
 }
+
+/** What `user` sees, in a word or the names it is granted. */
+export function seesLine(user: User): string {
+  if (user.every_library) return 'Every library'
+  if (user.role === 'admin') return 'Every library, as an administrator'
+  if (user.libraries.length === 0) return 'None'
+  return user.libraries.map((g) => g.name).join(', ')
+}
+
+/** The latest of `user`'s sessions' last-seen times, or `undefined`. */
+export function lastSeen(user: User): string | undefined {
+  let latest: string | undefined
+  // The server writes these as `YYYY-MM-DD HH:MM:SS`, which sort as text.
+  for (const session of user.sessions) {
+    if (latest === undefined || session.last_seen > latest)
+      latest = session.last_seen
+  }
+  return latest
+}

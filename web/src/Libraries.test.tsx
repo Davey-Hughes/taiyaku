@@ -15,8 +15,9 @@ import * as api from './libraries'
 import { deferred, flush } from './testing/async'
 import { press, submit, typeInto } from './testing/input'
 import { fields } from './testing/fields'
-import { cellValue, folder, idle, scanningIn } from './testing/libraries'
+import { folder, idle, scanningIn } from './testing/libraries'
 import { mount } from './testing/mount'
+import { cellValue } from './testing/table'
 import { StatusRefreshContext } from './shell'
 
 vi.mock('./config', async (importOriginal) => ({
@@ -1193,6 +1194,24 @@ describe('Libraries, making one', () => {
     const heading = host.querySelector('.library-table > h2')
     expect(heading?.textContent).toBe('Libraries')
     expect(document.activeElement).toBe(heading)
+  })
+
+  it('leaves focus alone on the table the person goes back to from the made library’s page', async () => {
+    // The arrival belongs to the page it sent the person to, so the table
+    // opened from there is opened by the person.
+    const made = library(1, 'Manga', ['/media/Manga'])
+    vi.mocked(api.createLibrary).mockResolvedValue({ library: made, added: [] })
+    const host = await at('/config/libraries/new')
+    vi.mocked(api.listLibraries).mockResolvedValue({ libraries: [made] })
+    await makeOne(host, 'Manga', '/media/Manga')
+    expect(document.activeElement).toBe(
+      host.querySelector('.library-page > h2'),
+    )
+    const back = link(host, '‹ Libraries')
+    act(() => back.focus())
+    await follow(host, '‹ Libraries')
+    expect(here()).toBe(TABLE)
+    expect(document.activeElement).toBe(document.body)
   })
 
   it('leaves the made library’s heading alone when the make answered after the person left its form', async () => {

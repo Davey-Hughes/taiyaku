@@ -332,8 +332,7 @@ describe('admin.css carries a coarse-pointer floor', () => {
     // per-row action.
     '.editor-actions .export',
     '.backup .backup-list a',
-    // The three `<summary>` toggles, the only `<details>` in the app and
-    // unstyled by any stylesheet before this rule.
+    // The `<details>` toggles, which no other rule styles.
     ':where(.proposals, .account, .config) summary',
     // The checkbox rows. Named at (0, 2, 1) rather than scoped with
     // `:where()`, because they carry `align-items` as well and the rule they
@@ -345,9 +344,10 @@ describe('admin.css carries a coarse-pointer floor', () => {
     '.root-row .checks label',
     '.user-row .checks label',
     '.proposals .checks label',
-    // The user row's per-root grant rows, which none of the `.checks` lines
-    // can reach: `UserRow` draws one `<li><label>` per root inside a
-    // `.grant-list`, and none of the `.checks` lines names that label.
+    // The account page's per-library grant rows, which none of the
+    // `.checks` lines can reach: `AccountPage` draws one `<li><label>` per
+    // library inside a `.grant-list`, and none of the `.checks` lines names
+    // that label.
     '.user-row .grant-list label',
     // The two radios above them, a box and its words as well.
     '.user-row .grants > label',
@@ -551,11 +551,9 @@ describe('admin.css carries a coarse-pointer floor', () => {
   })
 
   it('gives the disclosure toggles a 44px row without taking their marker', () => {
-    // The three `<details>` in the app — `UserRow`'s credentials,
-    // `RuleEditor`'s save-derive, `RemoveRoot`'s removal-derive — and no
-    // stylesheet styled `summary` anywhere before this rule. Two of the
-    // three measured 24px at 390px; the third wraps to two lines and already
-    // measured 48.
+    // The `<details>` toggles — `RuleEditor`'s save-derive, the
+    // removal-derives of `RemoveRoot`, `RemoveLibrary` and `MoveRoot`, and
+    // `MoveRoot`'s move-volumes — which no other rule styles.
     const summary = ':where(.proposals, .account, .config) summary'
     expect(coarse).toMatch(inRule(summary, 'min-height:\\s*44px'))
     // **`align-content`, not `align-items`, and that is the whole finding.**

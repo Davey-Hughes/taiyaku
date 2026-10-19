@@ -8,7 +8,6 @@ import { deferred, flush } from './testing/async'
 import { emptyDerive } from './testing/derive'
 import { press, submit, typeInto } from './testing/input'
 import {
-  cellValue,
   counted,
   folder,
   idle,
@@ -17,6 +16,7 @@ import {
   tick,
 } from './testing/libraries'
 import { mount, rerender } from './testing/mount'
+import { cellValue } from './testing/table'
 
 vi.mock('./config', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./config')>()),

@@ -51,7 +51,7 @@ function Reader() {
  * From spec A2 until this route, `Account` mounted only inside `App`, behind
  * `A`: the one screen where an account changes its own password could be
  * reached only by opening a work, and not at all in a library with no work to
- * open — while `UserRow` refuses an administrator's reset of their own
+ * open — while `AccountPage` refuses an administrator's reset of their own
  * password and has to send them somewhere. One component draws both; here it
  * is a page in `Shell`'s `<main>` rather than an overlay over a reader.
  *

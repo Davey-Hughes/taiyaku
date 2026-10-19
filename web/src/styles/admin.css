@@ -1335,26 +1335,23 @@
 .add-user,
 .library-table,
 .new-library,
+.user-table,
+.new-account,
 .library-page,
 .folder-page,
 .add-library {
   max-width: var(--config-measure);
 }
 
-/* Prose keeps a narrower measure than the card: 60ch, `.what-a-backup-is`'s
+/* Prose keeps a narrower measure than the page: 60ch, `.what-a-backup-is`'s
    own precedent, set once here rather than on each selector below.
 
-   **Every `.why` on these screens, not only the one at `.user-row`'s top
-   level.** Measured in Chromium: the role hint capped while the two inside
-   `.user-row .reset` and the one inside `.add-user` ran to the card's full
-   640px with `max-width: none`. They are the same kind of sentence, so they
-   take the same measure — `ch`, so each is sixty characters of its own size
-   rather than one shared pixel width. An earlier version of this comment
-   said the three render at three different widths; they do not. The quiet
-   rule further down (`.users .why, .user-row .locked`) is a descendant
-   selector, so the two in `.reset` take `--text-meta` exactly like the
-   role hint and match it. The one in `.add-user` was larger until O153
-   widened that rule to `.users .why`.
+   **Every `.why` on these screens**: the role hint, those in the grant
+   editor, the one inside an account's `.reset` and the one inside
+   `.add-user` are the same kind of sentence, so they take the same measure —
+   `ch`, so each is sixty characters of its own size rather than one shared
+   pixel width. The quiet rule further down (`.users .why`) is a descendant
+   selector, so all of them take `--text-meta` alike.
 
    `.libraries .why` is the one beneath the make-a-library form: it
    explains the control above it as the users screen's do, and `RootRow` and
@@ -1375,6 +1372,13 @@
    gives it, so a sentence that must not widen its box is measured, not
    assumed. */
 .libraries p {
+  overflow-wrap: anywhere;
+}
+
+/* An account's name need not hold a space, and the users pages' sentences
+   name it: what a new password ends, a removal, a refusal said once its page
+   has gone. */
+.users p {
   overflow-wrap: anywhere;
 }
 
@@ -1510,15 +1514,17 @@
   margin: var(--space-3) 0;
 }
 
-/* The form is the page, so it draws no box of its own. */
+/* The form is the page, so it draws no box of its own, as the form that
+   makes an account draws none. */
 .add-library {
   display: grid;
   gap: var(--space-3);
 }
 
-/* The form's two buttons on one line, not fields stretched across the
-   grid. */
-.add-library > .actions {
+/* The form's two buttons on one line, with a gap between them, rather than
+   stretched across `.add-library`'s grid as its fields are. */
+.add-library > .actions,
+.add-user > .actions {
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-2);
@@ -1733,6 +1739,7 @@
 
 /* O180 again: this button says "Remove " and then the whole path or name. */
 .remove-root .confirm,
+.remove-user .confirm,
 .remove-library .confirm {
   overflow-wrap: anywhere;
 }
@@ -1776,8 +1783,8 @@
   margin: 0;
 }
 
-/* Configuration's tables: a row per library or folder, each a way to that
-   one's page. The UI face, not `base.css`'s figures face: these
+/* Configuration's tables: a row per library, folder or account, each a way
+   to that one's page. The UI face, not `base.css`'s figures face: these
    cells are names and paths more than numbers. */
 .config-table {
   width: 100%;
@@ -1838,8 +1845,10 @@
 }
 
 /* A name need not hold a space and a path does not break at a slash, and a
-   row's own name or path must not widen the table past the page. */
-.config-table td.lead {
+   row's own name or path, or the list of names an account sees, must not
+   widen the table past the page. */
+.config-table td.lead,
+.config-table td.wraps {
   overflow-wrap: anywhere;
 }
 
@@ -1927,13 +1936,14 @@
   text-decoration: none;
 }
 
-.libraries h2 {
+.libraries h2,
+.users h2 {
   margin: 0 0 var(--space-3);
   overflow-wrap: anywhere;
 }
 
-/* "New library" goes to a page, so it is a link, drawn as the buttons on
-   these pages are, since it starts something as they do. */
+/* "New library" and "New account" go to a page, so they are links, drawn as
+   the buttons on these pages are, since they start something as they do. */
 .config .new-item a {
   display: inline-block;
   padding: var(--space-1) var(--space-3);
@@ -1944,7 +1954,12 @@
   text-decoration: none;
 }
 
-.config .missing {
+/* Quieter than the page: "No such …" where a page was asked for, and the
+   line saying an account was removed, on whichever page it lands. "Password
+   set." is not one of them: it is the password form's own answer, drawn as
+   the form's text is. */
+.config .missing,
+.users .gone-line {
   color: var(--muted);
 }
 
@@ -2084,42 +2099,35 @@
 
 /* Spec C4 §4's users screen and §5's backup screen. Tokens, as the
    settings-area comment above requires and `index.css.test.ts` checks. */
-.users .user-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
+
+/* An account's page is its sections, one under another, each under its
+   own heading. */
+.account-section {
+  margin-top: var(--space-5);
 }
 
-.user-row {
-  border: 1px solid var(--line);
-  border-radius: var(--radius-control);
-  margin-bottom: var(--space-4);
-  padding: var(--space-4);
+.account-section > h3 {
+  margin: 0 0 var(--space-2);
 }
 
-.user-row h3 {
-  margin: 0;
+.account-section .tally {
+  margin: 0 0 var(--space-2);
+  color: var(--muted);
+  font-size: var(--text-meta);
 }
 
-/* Descendant, not child: this also reaches the two `.why` paragraphs inside
-   `.reset`, which `.user-row > .why` below does not. Splitting `.locked` out
-   and leaving this selector without a colour — which an earlier draft of the
-   plan called for — would have left those two at full `--text`.
+/* Descendant, not child, and on the whole screen: this reaches the role
+   hint, the `.why` inside `.reset`, those in the grant editor and the one
+   under the make form alike.
 
    **A link inside keeps `--accent` and that is deliberate.** `color` reaches
-   text and `currentColor`, not an anchor that has its own; the `opacity: 0.8`
-   this replaced dimmed the whole subtree, so the "your account screen" link
-   in the `isSelf` paragraph used to render as a *dimmed* accent matching
-   nothing else in the app. It is now the same accent as every other link —
-   measured `rgb(176, 54, 29)` against the paragraph's `rgb(107, 97, 81)` —
-   and `index.css.test.ts` puts that at 6.13:1 on `--bg`, which the 80 % blend
-   was under.
+   text and `currentColor`, not an anchor that has its own, so the "your
+   account screen" link in the `isSelf` paragraph is the accent every other
+   link is, and not a dimmed one matching nothing; `index.css.test.ts` holds
+   that accent's contrast on `--bg`.
 
-   **`.users`, not `.user-row`, since O153 (2026-09-25).** The add-account
-   form's `.why` sits outside every card, so `.user-row .why` never reached
-   it, and it was the one `.why` on this screen drawn at 16px in
-   `--text`. `.locked` stays scoped to the card because nothing outside one
-   carries it. */
+   `.locked` is the account page's line saying nobody can sign in. The
+   table's mark of the same name is drawn by `.config-table .mark`. */
 .users .why,
 .libraries .why,
 .user-row .locked {
@@ -2140,12 +2148,12 @@
   margin-top: 0.5rem;
 }
 
-/* Prose leaves the grid and sits under the group it explains. Placement only:
-   the measure lives with the settings area's `.why` rule and the colour and
-   size with `.users .why` above, which already reaches this paragraph as
-   a descendant. Only what is true of *this* `.why` and not the others —
-   that it sits under a group rather than beside a control — belongs here. */
-.user-row > .why {
+/* The role's hint leaves the grid and sits under the fields it explains.
+   Placement only: the measure lives with the settings area's `.why` rule and
+   the colour and size with `.users .why` above. A child, not a descendant:
+   every other `.why` on the page is inside a group of its own, the grants or
+   the password form. */
+.account-section > .why {
   margin: var(--space-2) 0 0;
 }
 
@@ -2179,19 +2187,14 @@
   overflow-wrap: anywhere;
 }
 
-/* The grants are one group inside the card, boxed as the rule form's `sets`
-   group is and in the card's own line colour. */
+/* The grants are one group under the section's heading, boxed as the rule
+   form's `sets` group is, in the hairline the removal's box and the table's
+   rules are drawn in. */
 .user-row .grants {
   margin: var(--space-3) 0 0;
   padding: var(--space-3);
   border: 1px solid var(--line);
   border-radius: var(--radius-control);
-}
-
-.user-row .grants legend {
-  padding: 0 var(--space-1);
-  color: var(--muted);
-  font-size: var(--text-meta);
 }
 
 /* The ticks belong to "Only these", so they sit under its words and not at
@@ -2240,8 +2243,9 @@
   font-weight: 600;
 }
 
-/* What is left of an account whose removal worked and whose list read did
-   not: no controls, and a line saying so. */
+/* The page's own guard, drawn where a caller leaves the page up once its
+   account is removed: no controls, and a line saying so. No production
+   caller does: `Users` takes the page away in the removal's own answer. */
 .user-row.removed .gone {
   color: var(--muted);
 }
@@ -2424,12 +2428,6 @@
    five, and the screen it dropped was backup, whose only per-row action is
    the download link named below. The miscount and the gap were one mistake.
 
-   Measured at 390 px on 2026-09-24: the inbox's filter pills 37.2, its
-   Dismiss buttons 27.6, `/account`'s inputs 35.6, `/config/users`'s selects
-   32 and its permission checkboxes 13×13, `/config/rules`'s Export link
-   47×24 beside an Import button already at 72×44, `/config/backup`'s
-   download link 196×24, and two of the three `<summary>` toggles 24.
-
    **Scoped to the three roots that hold those screens**, not to `.library`.
    Every one of them sits inside `.library`, but so do the library home,
    search, the series page and the sidebar, which `library.css` and
@@ -2483,20 +2481,18 @@
    clause while both of them sat at 24.
 
    **The `<summary>` toggles get the floor, and cannot get it the way
-   everything else here does.** `UserRow`'s credentials, `RuleEditor`'s
-   save-derive and `RemoveRoot`'s removal-derive are the only three
-   `<details>` in the app, and no stylesheet styled `summary` anywhere. A
-   `<summary>` is `display: list-item`, so unlike a link it takes
+   everything else here does.** `RuleEditor`'s save-derive, the
+   removal-derives of `RemoveRoot`, `RemoveLibrary` and `MoveRoot`, and
+   `MoveRoot`'s move-volumes are the app's `<details>`, and no other rule
+   styles `summary`.
+   A `<summary>` is `display: list-item`, so unlike a link it takes
    `min-height` as it stands — but the text then sits at the top of the box,
    0 px above and 20 below. `display: flex` with `align-items: center` does
    centre it and **deletes the disclosure triangle**: measured in Chromium at
    390 px, the content's inline-start offset drops from 16.94 px to 0 and the
    marker is gone. So this rule keeps `display: list-item` and centres with
    `align-content`, which a block container honours — 44 px, 10 above and 10
-   below, marker still at 16.94. Two of the three were 24 px before, the
-   credentials and save-derive ones; `RemoveRoot`'s already measured 48,
-   because its sentence wraps to two lines at 390 px. That is a floor doing
-   nothing rather than a screen that did not need one.
+   below, marker still at 16.94.
    **`align-content` in block layout is Safari 17.4 and later, and this
    project's own baseline already clears it.** The web UI requires Safari
    17.5 / iOS 17.5 for `light-dark()`, which every colour token needs — spec
@@ -2532,7 +2528,7 @@
    row, a different question in that same section — which ARIA attribute
    marks a chosen one-of-N, and it says in as many words that `ConfigNav` is
    *not* part of that disagreement.
-   `UserRow`'s one sentence link to `/account` is left alone for its own
+   `AccountPage`'s one sentence link to `/account` is left alone for its own
    reason — it is prose rather than a control.
 
    `.account .account-row input` is here for the reason it is in the shared

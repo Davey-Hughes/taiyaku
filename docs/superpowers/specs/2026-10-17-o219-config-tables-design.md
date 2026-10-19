@@ -105,7 +105,7 @@ they approved it ("it looks good", "ok it works").
 - **Focus:** an action that changes page puts focus on the line that says what
   happened (a removal's or move's report, "Removed <name>.") or else on the
   new page's heading. An unknown or stale id draws "No such library.", "No
-  such folder in this library." or "No such account" with the back link, and focus goes there.
+  such folder in this library." or "No such account." with the back link, and focus goes there.
 - **Leaving a page keeps an edit:** a folder setting edited and not yet saved
   is saved when its page goes, by any route: a link, a tab, or the browser's
   Back. A form with its own button (Rename…, a password, the make forms) is

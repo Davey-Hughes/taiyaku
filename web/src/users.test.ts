@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import type { SessionRow } from './api'
 import {
   addUser,
+  lastSeen,
   listUsers,
   onlyAdminWhoCanLogIn,
   patchUser,
@@ -9,6 +11,7 @@ import {
   revokeUserKey,
   revokeUserSession,
   ROLES,
+  seesLine,
   type User,
 } from './users'
 
@@ -85,6 +88,78 @@ describe('onlyAdminWhoCanLogIn', () => {
   it('is false for a reader, even the only account in the library', () => {
     const reader = user({ id: 1, role: 'user' })
     expect(onlyAdminWhoCanLogIn([reader], reader)).toBe(false)
+  })
+})
+
+describe('seesLine', () => {
+  const manga = { id: 70, name: 'Manga' }
+  const comics = { id: 80, name: 'Comics' }
+
+  it('says Every library for an account that sees every library, an administrator’s too', () => {
+    expect(seesLine(user({ role: 'user', every_library: true }))).toBe(
+      'Every library',
+    )
+    expect(seesLine(user({ role: 'admin', every_library: true }))).toBe(
+      'Every library',
+    )
+  })
+
+  it('names the libraries a limited account is granted, in the order sent', () => {
+    expect(
+      seesLine(
+        user({
+          role: 'user',
+          every_library: false,
+          libraries: [manga, comics],
+        }),
+      ),
+    ).toBe('Manga, Comics')
+  })
+
+  it('says None for an account limited to no library', () => {
+    expect(
+      seesLine(user({ role: 'user', every_library: false, libraries: [] })),
+    ).toBe('None')
+  })
+
+  it('says an administrator whose grants are limited sees every library, as an administrator', () => {
+    // An administrator sees every library whatever its grants say, so the
+    // grants are not what it sees.
+    for (const libraries of [[manga], []]) {
+      expect(
+        seesLine(user({ role: 'admin', every_library: false, libraries })),
+        `${libraries.length} granted`,
+      ).toBe('Every library, as an administrator')
+    }
+  })
+})
+
+describe('lastSeen', () => {
+  const session = (id: string, last_seen: string): SessionRow => ({
+    id,
+    created: '2026-09-01 10:00:00',
+    last_seen,
+    user_agent: 'Firefox',
+    ip: '10.0.0.2',
+    current: false,
+  })
+
+  it('is the latest of the account’s sessions’ last-seen times, wherever it is in the list', () => {
+    expect(
+      lastSeen(
+        user({
+          sessions: [
+            session('a', '2026-09-05 10:00:00'),
+            session('b', '2026-09-07 08:00:00'),
+            session('c', '2026-09-06 23:59:59'),
+          ],
+        }),
+      ),
+    ).toBe('2026-09-07 08:00:00')
+  })
+
+  it('is nothing for an account with no session', () => {
+    expect(lastSeen(user({ sessions: [] }))).toBeUndefined()
   })
 })
 

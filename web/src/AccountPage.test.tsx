@@ -1,11 +1,11 @@
 import { act } from 'react'
 import { MemoryRouter } from 'react-router'
 import { beforeEach, describe, expect, it, type Mock, vi } from 'vitest'
+import { AccountPage } from './AccountPage'
 import type { Library } from './libraries'
 import { fields } from './testing/fields'
 import { typeInto } from './testing/input'
 import { mount, rerender } from './testing/mount'
-import { UserRow } from './UserRow'
 import * as usersApi from './users'
 
 vi.mock('./users', async (importOriginal) => ({
@@ -79,7 +79,7 @@ async function show(
     // A router because the self-reset refusal links to `/account` (O94).
     host = mount(
       <MemoryRouter>
-        <UserRow
+        <AccountPage
           user={who}
           users={everyone}
           // `null` asks for the unread state; absent means the two libraries.
@@ -144,9 +144,9 @@ async function click(el: Element) {
 beforeEach(() => {
   vi.clearAllMocks()
   // **Answers for the account it was asked about.** A flat `user()` here is
-  // davey, so since `applied` shipped every patch on sam's card turned it into
+  // davey, so since `applied` shipped every patch on sam's page turned it into
   // davey's — the name, the role, and with it the last-administrator sentence
-  // — and every assertion was a whole-card `toContain` with no name in it, so
+  // — and every assertion was a whole-page `toContain` with no name in it, so
   // they all passed anyway. Third review pass; the repo's own rule is to
   // assert per element rather than per page.
   vi.mocked(usersApi.patchUser).mockImplementation((id, patch) =>
@@ -198,7 +198,7 @@ describe('the two invariants on the last administrator', () => {
   })
 
   it('leaves both live beside a second administrator who can log in', async () => {
-    // The negative case, so the assertions above cannot pass against a card
+    // The negative case, so the assertions above cannot pass against a page
     // that disables everything.
     const first = user()
     const { host } = await show(first, [first, sam()], { actingAs: 99 })
@@ -228,7 +228,7 @@ describe('the two invariants on the last administrator', () => {
 describe('the actor rule', () => {
   it('will not let an administrator demote themselves, even beside another', async () => {
     // Fires about the actor rather than about the population — `acting_as` is
-    // what carries it in the store, and this card is where a person meets it.
+    // what carries it in the store, and this page is where a person meets it.
     const me = user()
     const { host } = await show(me, [me, sam()], { actingAs: 1 })
     expect(
@@ -272,8 +272,8 @@ describe('the actor rule', () => {
     expect(usersApi.patchUser).toHaveBeenCalledWith(2, { password: 'hunter2' })
     expect(changed).toHaveBeenCalled()
     expect(host.textContent).toContain('API keys are untouched')
-    // Per element: the card is still sam's after the answer it applied.
-    expect(control(host, 'h3').textContent).toBe('sam')
+    // Per element: the page is still sam's after the answer it applied.
+    expect(control(host, 'h2').textContent).toBe('sam')
   })
 })
 
@@ -333,7 +333,7 @@ describe('the fields', () => {
 
   it('holds every control until the reload it triggered has landed', async () => {
     // **The window between a 200 and the list coming back.** `user` is a
-    // prop, so inside it the card still draws its pre-patch grants with the
+    // prop, so inside it the page still draws its pre-patch grants with the
     // boxes live — and `toggleGrant` computes a *whole list* from those, so a
     // second tick there sends the new library alone and silently revokes the
     // first. Held until `onChanged` settles.
@@ -361,9 +361,9 @@ describe('the fields', () => {
     await click(tick(host, 80))
     expect(usersApi.patchUser).toHaveBeenCalledWith(2, { libraries: [70, 80] })
 
-    // **Held, but not greyed — O159.** Every checkbox on the card says it is
-    // held to a screen reader and keeps its fill. `disabled` took the fill
-    // away, so one tick flashed every box on the card.
+    // **Held, but not greyed — O159.** Every checkbox on the page says it is
+    // held to a screen reader and keeps its fill. `disabled` would take the
+    // fill away, so one tick would flash every box on the page.
     const boxes = [
       ...host.querySelectorAll<HTMLInputElement>('input[type="checkbox"]'),
     ]
@@ -379,7 +379,7 @@ describe('the fields', () => {
       expect(box.disabled, box.name).toBe(false)
       expect(box.getAttribute('aria-disabled'), box.name).toBe('true')
     }
-    // The rest of the card keeps `disabled`. Its greying is not what O159
+    // The rest of the page keeps `disabled`. Its greying is not what O159
     // was about.
     expect(
       control<HTMLSelectElement>(host, 'select[name="role"]').disabled,
@@ -388,7 +388,7 @@ describe('the fields', () => {
     // **The lock is `begin`'s guard, and nothing stands in front of it
     // now.** A tick lands on a live box, reaches `save`, and `begin`
     // refuses it. This case alone cannot say the guard is the ref: by now
-    // the card has rendered `saving`, so a guard reading that would pass
+    // the page has rendered `saving`, so a guard reading that would pass
     // here too. The double-press DELETE cases below are what prove the ref.
     const second = tick(host, 90)
     const stream = control<HTMLInputElement>(host, 'input[name="can_stream"]')
@@ -398,7 +398,7 @@ describe('the fields', () => {
       await Promise.resolve()
     })
     expect(usersApi.patchUser).toHaveBeenCalledTimes(1)
-    // And each box shows what the card holds, not the refused tick.
+    // And each box shows what the page holds, not the refused tick.
     expect(second.checked).toBe(false)
     expect(stream.checked).toBe(true)
 
@@ -429,7 +429,7 @@ describe('the fields', () => {
   it('computes the next grant list from the answer when the reload brings nothing', async () => {
     // **The hold's own hole, found by the second review pass.** `settled`
     // waits for the reload — but a reload that fails, or one superseded by
-    // another card's, resolves without fresh props, so the card came back
+    // a later one, resolves without fresh props, so the page came back
     // live over pre-write values and the next tick computed a whole grant
     // list from them, silently revoking the first.
     const me = user()
@@ -494,7 +494,7 @@ describe('the fields', () => {
     expect(host.querySelector('.grants input')).toBeNull()
   })
 
-  // With the list unread this sentence is the only place the card says what
+  // With the list unread this sentence is the only place the page says what
   // an account without a grant sees, and the two such accounts see opposite
   // things.
   it.each([
@@ -611,7 +611,8 @@ describe('the fields', () => {
       'Every library, including any added later',
     )
     expect(radio(host, 'only').closest('label')?.textContent).toBe('Only these')
-    // Two cards sharing one name would be one radio group to a browser.
+    // The account's id keeps the group's name unique. One account is drawn
+    // to a page, so no other group there shares it.
     expect(radio(host, 'every').name).toBe('sees-2')
     expect(radio(host, 'only').name).toBe('sees-2')
   })
@@ -926,7 +927,7 @@ describe('the fields', () => {
       act(async () => {
         rerender(
           <MemoryRouter>
-            <UserRow
+            <AccountPage
               user={who}
               users={[me, who]}
               libraries={[MANGA, COMICS]}
@@ -1043,7 +1044,7 @@ describe('the fields', () => {
   })
 
   it('puts an account back to Every library after Only these and a tick', async () => {
-    // A reload that brings nothing, so the card runs on the answers it kept.
+    // A reload that brings nothing, so the page runs on the answers it kept.
     const me = user()
     const other = user({ id: 2, name: 'sam', role: 'user' })
     const changed = vi.fn(() => Promise.resolve())
@@ -1119,7 +1120,7 @@ describe('the fields', () => {
    * reading the `saving` state still sees false after a write has begun. Only
    * a handler that reads the ref sees the write. A reset click and a radio
    * click in one `act` is how the two are told apart: by the time the other
-   * tests press the radio, the card has rendered `saving`.
+   * tests press the radio, the page has rendered `saving`.
    */
   async function resetThen(host: HTMLElement, second: Element) {
     await typeInto(
@@ -1225,7 +1226,7 @@ describe('the fields', () => {
   it('draws can_stamp unticked for an administrator who does not hold it', async () => {
     // **The one capability `role` does not dominate** — the documented O86
     // exception, because it decides whether an account may rewrite archives
-    // taiyaku does not own rather than widening what it may read. A card that
+    // taiyaku does not own rather than widening what it may read. A page that
     // drew this ticked because the account is an admin would state a
     // permission the server answers 403 to.
     const me = user()
@@ -1252,7 +1253,7 @@ describe('the fields', () => {
 
   it('draws the server sentence when a patch is refused', async () => {
     // The other half of §6.1: what the client could not tell in advance
-    // arrives as a 409 with a sentence, and the card renders that.
+    // arrives as a 409 with a sentence, and the page renders that.
     const me = user()
     const other = user({ id: 2, name: 'sam', role: 'admin' })
     vi.mocked(usersApi.patchUser).mockRejectedValue(
@@ -1349,7 +1350,7 @@ describe('sessions and keys', () => {
       actingAs: 1,
     })
 
-    // Asserted per element, not by `toContain` over the whole card: a
+    // Asserted per element, not by `toContain` over the whole page: a
     // whole-page match cannot see which session carries the marker.
     const rows = [...host.querySelectorAll('.session-list > li')]
     expect(rows).toHaveLength(2)
@@ -1462,7 +1463,7 @@ describe('a revocation whose reload brings nothing back', () => {
 })
 
 describe('a revocation answering after a fresher list', () => {
-  it('drops its row from what the card holds now, not from the click-time copy', async () => {
+  it('drops its row from what the page holds now, not from the click-time copy', async () => {
     // A list read landing during the `DELETE` brings a newer row; writing back
     // the snapshot the click was made from would drop whatever it brought —
     // a session opened since, or a role another administrator changed. Fourth
@@ -1501,7 +1502,7 @@ describe('a revocation answering after a fresher list', () => {
     await act(async () => {
       rerender(
         <MemoryRouter>
-          <UserRow
+          <AccountPage
             user={fresher}
             users={[user(), fresher]}
             libraries={[MANGA]}
@@ -1529,8 +1530,8 @@ describe('a double-clicked revocation', () => {
   it('sends one DELETE, so no 404 lands over a revocation that worked', async () => {
     // The second `DELETE` finds no row, and `revoke_session` answers 404 for a
     // session that is not there — the same answer as for one that never
-    // existed — so an unguarded card reported a failure for the thing it had
-    // just done.
+    // existed — so an unguarded page would report a failure for the thing it
+    // had just done.
     const other = user({
       id: 2,
       name: 'sam',
@@ -1565,7 +1566,7 @@ describe('a double-clicked revocation', () => {
 })
 
 describe('removal', () => {
-  it('keeps a failed dry run visible when another write clears the card', async () => {
+  it('keeps a failed dry run visible when another write clears the page', async () => {
     // `begin()` clears the shared failure slot on every write, and the dialog
     // draws "working out…" while there is neither a cost nor a reason — so a
     // capability toggle after a failed dry run put the dialog back to
@@ -1585,10 +1586,11 @@ describe('removal', () => {
   })
 
   it('drops the tombstone when an account of that name exists again', async () => {
-    // `Users` keys cards by name, so re-creating a removed name reuses this
-    // card instance — and a tombstone that outlived its account drew the new
-    // one as removed, with no controls, until a page reload. The recycled-id
-    // hazard `Users.tsx` describes, reached through the name. Fourth pass.
+    // `Users` keys the page by name, so where the page outlives a removal,
+    // re-creating the removed name reuses this instance — and a tombstone
+    // that outlived its account would draw the new one as removed, with no
+    // controls. The recycled-id hazard `Users.tsx` describes, reached
+    // through the name.
     const me = user()
     const other = user({ id: 2, name: 'sam', role: 'user' })
     const cost = {
@@ -1617,7 +1619,7 @@ describe('removal', () => {
     await act(async () => {
       rerender(
         <MemoryRouter>
-          <UserRow
+          <AccountPage
             user={remade}
             users={[me, remade]}
             libraries={[MANGA]}
@@ -1677,7 +1679,7 @@ describe('removal', () => {
   })
 
   it('deadens the confirm while another write is in flight', async () => {
-    // Every other control on the card is held while a write is in flight;
+    // Every other control on the page is held while a write is in flight;
     // this one did not, so a press during a live patch was swallowed by the
     // ref guard with nothing on screen saying why — an enabled destructive
     // button that does nothing. Third review pass.
@@ -1706,10 +1708,11 @@ describe('removal', () => {
     ).toBe(true)
   })
 
-  it('draws a removed account as gone rather than as an editable card', async () => {
-    // The account is deleted and the reload that would drop the card failed.
-    // Closing the dialog alone put the plain Remove… back over an id that
-    // answers "no account with id 2", with every other control live beside it.
+  it('draws a removed account as gone rather than as an editable page', async () => {
+    // The account is deleted and nothing takes the page away: no `onRemoved`
+    // here. Closing the dialog alone would put the plain Remove… back over an
+    // id that answers "no account with id 2", with every other control live
+    // beside it.
     const me = user()
     const other = user({ id: 2, name: 'sam', role: 'user' })
     vi.mocked(usersApi.removalCost).mockResolvedValue({
@@ -1905,7 +1908,7 @@ describe('removal', () => {
     // **Both presses inside one `act`, before React re-renders.** That is the
     // window the ref guards and `disabled={removing}` does not: a second press
     // *after* a render lands on a disabled button and would pass against a
-    // card with no guard at all. Checked by hand-applying that defect.
+    // page with no guard at all. Checked by hand-applying that defect.
     await act(async () => {
       confirm.click()
       confirm.click()
@@ -1963,10 +1966,12 @@ describe('removal', () => {
     ).toBe(false)
   })
 
-  it('closes its own dialog rather than trusting the card to be unmounted', async () => {
-    // If the `DELETE` works and the reload that follows it fails, the account
-    // is gone and the card is still on screen — with a live *Remove sam* over
-    // it, whose next press answers "no account with id 2". Second review pass.
+  it('closes its own dialog rather than trusting the page to be unmounted', async () => {
+    // Nothing takes the page away here (no `onRemoved`), and the tombstone
+    // draws no dialog while it stands, so the case is the one after it: an
+    // account re-created under the name drops the tombstone, and a dialog
+    // left open would come back over it, working out a removal nothing asked
+    // for, with no *Remove…* button.
     const me = user()
     const other = user({ id: 2, name: 'sam', role: 'user' })
     vi.mocked(usersApi.removalCost).mockResolvedValue({
@@ -1994,8 +1999,27 @@ describe('removal', () => {
     const { host } = await show(other, [me, other], { actingAs: 1 })
     await click(control(host, 'button[name="remove"]'))
     await click(control(host, 'button[name="confirm-remove"]'))
+    expect(host.querySelector('.gone')).not.toBeNull()
+
+    const remade = user({ id: 7, name: 'sam', role: 'user' })
+    await act(async () => {
+      rerender(
+        <MemoryRouter>
+          <AccountPage
+            user={remade}
+            users={[me, remade]}
+            libraries={[MANGA]}
+            actingAs={1}
+            onChanged={vi.fn()}
+          />
+        </MemoryRouter>,
+      )
+      await Promise.resolve()
+    })
+    expect(host.querySelector('.gone')).toBeNull()
     expect(host.querySelector('.remove-user')).toBeNull()
     expect(host.querySelector('button[name="confirm-remove"]')).toBeNull()
+    expect(host.querySelector('button[name="remove"]')).not.toBeNull()
   })
 
   it('offers no confirm button while the counts are unknown', async () => {
