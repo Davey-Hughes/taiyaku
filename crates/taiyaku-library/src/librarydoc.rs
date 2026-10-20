@@ -190,8 +190,8 @@ pub enum CreditRole {
     Publisher,
 }
 
-/// One member's hand-set chapter number, addressed by content rather than
-/// position — see this module's doc comment.
+/// One member's chapter number and where it came from, addressed by content
+/// rather than position — see this module's doc comment.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MemberMeta {
     pub sha256: String,
@@ -258,7 +258,7 @@ impl LibraryDoc {
     }
 }
 
-/// Project one work's hand-fixed metadata out of the database.
+/// Project one work's library document out of the database.
 ///
 /// `updated` is not a stored value — nothing in the schema holds a
 /// last-edited timestamp for this document, the same reason `taiyaku_truth`
@@ -266,20 +266,15 @@ impl LibraryDoc {
 /// something read back (`state.rs`'s `truth`): this is a fresh projection,
 /// stamped with the time it was taken.
 ///
-/// An edition appears in `editions` only if `label_hand`, `language`, `kind`
-/// or at least one credit is non-empty — an edition nobody has touched at all
-/// is omitted rather than written out as `{}`.
+/// An edition appears in `editions` only if `label_hand`, `language_hand`,
+/// `kind_hand` or at least one credit is non-empty — an edition nobody has
+/// touched at all is omitted rather than written out as `{}`.
 ///
-/// **Only `label` is genuinely hand-set here — `language` and `kind` are not.**
-/// `label` is read from `edition.label_hand`, which is NULL until a person sets
-/// one. `language` and `kind` have no `_hand` counterpart (migration 010 only
-/// split `title`/`label`): they are read from the plain columns
-/// `derive::write_edition_metadata` also writes, under the same
-/// `migrate::absorbed(…, LIBRARY)` guard `librarydoc::apply` writes them
-/// behind. So a purely-derived edition — one a rule's `set_kind`/`set_language`
-/// classified and nobody has ever hand-corrected — still has a non-NULL `kind`
-/// or `language`, and this function cannot tell that apart from a hand
-/// correction: it appears in the document either way.
+/// An edition's `label`, `language` and `kind` are read from those `_hand`
+/// columns, never from the effective ones `derive` writes, so a `kind` or
+/// `language` a rule's `set_kind`/`set_language` gave it stays out of the
+/// document until a person sets one (O80). Members are not hand-only:
+/// `members_meta_of` says what they carry.
 ///
 /// # Errors
 ///
@@ -508,9 +503,10 @@ fn credits_of(conn: &Connection, edition_id: i64) -> Result<Vec<Credit>, String>
         .collect()
 }
 
-/// Only members carrying hand-set chapter data — most of a work's members
-/// have neither, and listing every one of them would make this document as
-/// large as the archive list itself.
+/// Only members with a chapter on record — listing every member would make
+/// this document as large as the archive list itself. The chapter is not
+/// always a person's: its `chapter_source`, written out with it, says whether
+/// it was set by hand or read from ComicInfo or the filename.
 fn members_meta_of(conn: &Connection, work_id: i64) -> Result<Vec<MemberMeta>, String> {
     let mut stmt = conn
         .prepare(
