@@ -10,6 +10,8 @@ import {
   type ApiKey,
   type SessionRow,
 } from './api'
+import { about } from './about'
+import { CatalogAddress } from './CatalogAddress'
 import { usePanelFocus } from './focus'
 import { messageOf } from './message'
 
@@ -152,6 +154,8 @@ export function Account(props: AccountProps) {
   /// keys and guessing which of two identically-named rows it was. Found by the
    second whole-branch review. */
   const [busy, setBusy] = useState(false)
+  /** The OPDS catalog's path, once `/api/about` has answered with it. */
+  const [catalog, setCatalog] = useState<string | undefined>()
 
   /**
    * Re-read both lists.
@@ -191,6 +195,22 @@ export function Account(props: AccountProps) {
     setNote(null)
     setFailure(null)
   }, [visible, refresh])
+
+  useEffect(() => {
+    if (!visible) return
+    let cancelled = false
+    // A failure draws the OPDS line without the address rather than an
+    // alert: the address helps beside that line, and this screen's alerts
+    // are for what the reader did.
+    about()
+      .then((answer) => {
+        if (!cancelled) setCatalog(answer.catalog)
+      })
+      .catch(() => undefined)
+    return () => {
+      cancelled = true
+    }
+  }, [visible])
 
   if (!visible) return null
 
@@ -296,6 +316,9 @@ export function Account(props: AccountProps) {
           For OPDS readers like Panels or Chunky: give the key as the password,
           with your account name as the username.
         </p>
+        {catalog === undefined ? null : (
+          <CatalogAddress catalog={catalog} className={look.button} />
+        )}
         <form onSubmit={create} className={look.row}>
           <input
             className={look.field}

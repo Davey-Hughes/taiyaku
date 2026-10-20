@@ -250,6 +250,13 @@ jobs:
         # two would need different numbers for no gain.
         # Keep this in step with scripts/check-all.sh, which runs the same
         # invocation.
+        #
+        # `TAIYAKU_COMMIT` is the commit under test, so `about`'s route test
+        # compares `/api/about`'s `commit` with a real 40-character hash on
+        # every pull request; unset, both sides of that comparison are `null`,
+        # and a server that never reported its commit would pass.
+        env:
+          TAIYAKU_COMMIT: ${{ github.sha }}
         run: |
           cargo llvm-cov nextest --workspace --all-features \
             --ignore-filename-regex '(band_sweep|borrow_frequency|geometry_experiment|model_experiment|region_experiment|truth_population|score_corpus|/corpus|test_support)\.rs$' \
@@ -555,18 +562,30 @@ jobs:
         env:
           SHA: ${{ github.sha }}
         run: echo "short=$(echo "$SHA" | cut -c1-7)" >> "$GITHUB_OUTPUT"
+      # `TAIYAKU_COMMIT` is the commit the server reports at `/api/about`,
+      # compiled in by the Dockerfile's server stage. The push below passes
+      # the same value: it rebuilds, and without the argument it would publish
+      # a server that is not the one probed here.
       - name: Build, and load it under a throwaway tag
         env:
           SHORT: ${{ steps.t.outputs.short }}
+          SHA: ${{ github.sha }}
         run: |
           docker buildx build --builder taiyaku-builder --load \
-            --provenance=false --sbom=false -t "taiyaku-ci:$SHORT" .
+            --provenance=false --sbom=false --build-arg "TAIYAKU_COMMIT=$SHA" \
+            -t "taiyaku-ci:$SHORT" .
       # The image is started here because nothing else ever starts it before
       # it is deployed: a health check that cannot pass would otherwise ship
       # on a green pipeline, which is what redextape's own Dockerfile records.
+      # The `grep` of `/usr/local/bin/taiyaku` checks the binary holds the full
+      # commit. A build that lost the argument still compiles, starts and
+      # passes every probe, and its label reads "unknown build", so nothing
+      # else here would fail. `${SHA:?}` aborts on an empty value, which as a
+      # pattern would match any file.
       - name: Run it until it is healthy, and probe it
         env:
           SHORT: ${{ steps.t.outputs.short }}
+          SHA: ${{ github.sha }}
         run: |
           name="taiyaku-ci-$SHORT"
           docker run -d --name "$name" "taiyaku-ci:$SHORT"
@@ -582,6 +601,7 @@ jobs:
           timeout 10 docker exec "$name" taiyaku-probe /read/anything 200
           timeout 10 docker exec "$name" taiyaku-probe /api/me 401
           timeout 10 docker exec "$name" taiyaku-probe /api/nothing-here 404
+          docker run --rm --entrypoint grep "taiyaku-ci:$SHORT" -qaF "${SHA:?}" /usr/local/bin/taiyaku
       - name: Remove the probe container and image
         if: always()
         env:
@@ -619,4 +639,4 @@ jobs:
             echo "main has moved on (tip: $tip); pushing sha-$SHORT only, not :latest"
           fi
           docker buildx build --builder taiyaku-builder --push \
-            --provenance=false --sbom=false "$@" .
+            --provenance=false --sbom=false --build-arg "TAIYAKU_COMMIT=$SHA" "$@" .

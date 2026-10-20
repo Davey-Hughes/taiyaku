@@ -34,6 +34,7 @@ import {
 import { SEARCH_BOX_ID } from './searchHits'
 import { Sidebar } from './Sidebar'
 import { ThemeControl } from './ThemeControl'
+import { VersionLabel } from './VersionLabel'
 import { Wordmark } from './Wordmark'
 import { messageOf } from './message'
 
@@ -359,6 +360,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
                   <div className="sidebar-foot">
                     <ThemeControl />
                     <AccountMenu admin={admin} openProposals={openProposals} />
+                    <VersionLabel />
                   </div>
                 </div>
                 {menuOpen && (

@@ -422,12 +422,13 @@
  *
  * **Applied at each site rather than written as `+ .reader-section-head`.**
  * A stacked row is not always preceded by another row: the create form
- * follows the OPDS paragraph and the first session row follows its `<h3>`,
- * and `+` reaches neither. That `<h3>`'s bottom margin is 0, so its session
- * row would stay welded to it; the paragraph's is 12 px, which this 8
- * collapses into rather than adds to — so the create form measures the same
- * either way and carries the class because the separation is the row's to
- * declare, not the paragraph's to supply. */
+ * follows the catalog's address, or the OPDS paragraph while `/api/about`
+ * has not answered, and the first session row follows its `<h3>`, and `+`
+ * reaches none of them. The address and that `<h3>` have no bottom margin,
+ * so the row under either would stay welded to it; the paragraph's is
+ * 12 px, which this 8 collapses into rather than adds to — so there the
+ * create form measures the same either way and carries the class because
+ * the separation is the row's to declare, not the paragraph's to supply. */
 .reader-section-head-stacked {
   margin-top: var(--space-2);
 }

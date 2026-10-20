@@ -20,6 +20,13 @@ import { DeriveSection, ScanReport } from './ScanReport'
 import { deferred, flush } from './testing/async'
 import { press, submit, typeInto } from './testing/input'
 import { mount } from './testing/mount'
+import {
+  coarseRulesOn,
+  fingerArea,
+  near,
+  overlapOf,
+  pressArea,
+} from './testing/pointer'
 
 /**
  * The browser pass over all four Configuration screens — Task 7 of style
@@ -2401,4 +2408,57 @@ describe('the scan report', () => {
     expect(getComputedStyle(zero).color).toBe('rgb(107, 97, 81)')
     expect(getComputedStyle(value).color).toBe('rgb(35, 30, 23)')
   })
+})
+
+/**
+ * **The way up from a page beneath a table is a finger's 44 px under a
+ * coarse pointer** (spec 2026-09-17 §7.1), on a new library's page, a
+ * library's, a folder's, a new account's and an account's, and its target
+ * stays clear of the tabs' above it, which O157 grows to 44 the same way.
+ * Each target, measured by hit testing along its middle row and
+ * column (`pressArea`), is its box grown about its middle to 44 px
+ * (`fingerArea`), so nothing is drawn over any of it on those lines; and
+ * the way up's grown box shares nothing with any tab's, corners included.
+ * The fine case shows it is the coarse rules that reach 44.
+ */
+describe('the way up from a page beneath a table', () => {
+  // Coarse first: the fine case after it is what shows the coarse rules
+  // were switched back.
+  it.each([
+    [NEW_LIBRARY, 390, 'coarse', '‹ Libraries'],
+    [LIBRARY, 390, 'coarse', '‹ Libraries'],
+    [FOLDER, 390, 'coarse', '‹ Manga'],
+    [NEW_ACCOUNT, 390, 'coarse', '‹ Users'],
+    [ACCOUNT, 390, 'coarse', '‹ Users'],
+    [LIBRARY, 1280, 'coarse', '‹ Libraries'],
+    [ACCOUNT, 1280, 'coarse', '‹ Users'],
+    [LIBRARY, 390, 'fine', '‹ Libraries'],
+  ] as const)(
+    'on %s at %i px with a %s pointer',
+    async (entry, width, pointer, words) => {
+      if (pointer === 'coarse') onTestFinished(coarseRulesOn())
+      await sized(width, 844)
+      vi.mocked(librariesApi.listLibraries).mockResolvedValue(holding(root()))
+      vi.mocked(usersApi.listUsers).mockResolvedValue({ users: [user()] })
+      const host = await opened(entry)
+      await document.fonts.ready
+      const backs = [...host.querySelectorAll('.config .back a')]
+      expect(backs.map((link) => link.textContent)).toEqual([words])
+      const back = backs[0] as Element
+      const tabs = [...host.querySelectorAll('.config-nav a')]
+      expect(tabs).toHaveLength(4)
+      if (pointer === 'fine') {
+        expect(pressArea(back).height).toBeLessThan(44)
+        return
+      }
+      expect.soft(pressArea(back), words).toEqual(near(fingerArea(back)))
+      for (const tab of tabs) {
+        const name = tab.textContent ?? ''
+        expect.soft(pressArea(tab), name).toEqual(near(fingerArea(tab)))
+        expect
+          .soft(overlapOf(fingerArea(back), fingerArea(tab)), `with ${name}`)
+          .toBe(0)
+      }
+    },
+  )
 })

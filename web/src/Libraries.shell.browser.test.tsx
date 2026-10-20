@@ -59,6 +59,15 @@ vi.mock('./users', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./users')>()),
   listUsers: vi.fn(),
 }))
+// The build's label at the sidebar's foot asks for the build; answered here,
+// so the request never leaves the test.
+vi.mock('./about', async (importOriginal) => {
+  const { ABOUT } = await import('./testing/about')
+  return {
+    ...(await importOriginal<typeof import('./about')>()),
+    about: vi.fn().mockResolvedValue(ABOUT),
+  }
+})
 
 const TABLE = '/config/libraries'
 /** The page that makes a library. */

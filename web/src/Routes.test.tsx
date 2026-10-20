@@ -6,6 +6,7 @@ import { GateContext } from './gate'
 import * as library from './library'
 import { AppRoutes } from './Routes'
 import { flush } from './testing/async'
+import { licenceTextsLanded } from './testing/licence'
 import { mount } from './testing/mount'
 
 // Populated by the mocked `App` below, from a `useEffect` with an empty
@@ -107,6 +108,17 @@ vi.mock('./api', async (importOriginal) => ({
   listSessions: vi.fn().mockResolvedValue([]),
   logout: vi.fn().mockResolvedValue(undefined),
 }))
+
+// `/about` draws `About`, which asks for the build on mount, as the label at
+// every shell's foot does. What both draw is `About.test.tsx`'s and
+// `VersionLabel.test.tsx`'s; this only has to resolve.
+vi.mock('./about', async (importOriginal) => {
+  const { ABOUT } = await import('./testing/about')
+  return {
+    ...(await importOriginal<typeof import('./about')>()),
+    about: vi.fn().mockResolvedValue(ABOUT),
+  }
+})
 
 // `Shell` and `Library` both fetch on mount, and every mock above resolves at
 // once — so a test that lands on the library and asserts straight after `at()`
@@ -336,6 +348,48 @@ describe('the routes', () => {
     at('/account')
     await flush()
     expect(document.title).toBe('Account — taiyaku')
+  })
+
+  it('routes /about into the about screen inside the shell', async () => {
+    const host = at('/about')
+    await flush()
+    expect(host.querySelector('[data-testid="reader"]')).toBeNull()
+    expect(host.querySelector('.sidebar')).not.toBeNull()
+    const screen = host.querySelector(
+      '.library > main > section[aria-label="About"]',
+    )
+    expect(screen?.querySelector('h1')?.textContent).toBe('About')
+    expect(screen?.querySelector('.about-facts')).not.toBeNull()
+  })
+
+  it('names the about screen’s tab About', async () => {
+    document.title = 'stale'
+    at('/about')
+    await flush()
+    expect(document.title).toBe('About — taiyaku')
+  })
+
+  /** The licence page, its texts landed. What it draws is `Licence.test.tsx`'s. */
+  const licenceAt = async () => {
+    const host = at('/about/licence')
+    await licenceTextsLanded()
+    return host
+  }
+
+  it('routes /about/licence into the licence screen inside the shell', async () => {
+    const host = await licenceAt()
+    expect(host.querySelector('[data-testid="reader"]')).toBeNull()
+    expect(host.querySelector('.sidebar')).not.toBeNull()
+    const screen = host.querySelector(
+      '.library > main > section[aria-label="Licence"]',
+    )
+    expect(screen?.querySelector('h1')?.textContent).toBe('Licence')
+  })
+
+  it('names the licence screen’s tab Licence', async () => {
+    document.title = 'stale'
+    await licenceAt()
+    expect(document.title).toBe('Licence — taiyaku')
   })
 
   it('signs out from /account through the gate above the routes', async () => {

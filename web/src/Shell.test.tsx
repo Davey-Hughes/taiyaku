@@ -1,6 +1,7 @@
 import { act } from 'react'
 import { MemoryRouter, Route, Routes } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import * as aboutApi from './about'
 import type { Me } from './api'
 import { useBrowsePrefs } from './browseModule'
 import * as curation from './curation'
@@ -10,6 +11,7 @@ import { Library } from './Library'
 import { Series } from './Series'
 import { Shell } from './Shell'
 import { useInboxRefresh, useLibraryStatus, useStatusRefresh } from './shell'
+import { ABOUT } from './testing/about'
 import { deferred, flush } from './testing/async'
 import { mount } from './testing/mount'
 import { fakeStorage } from './testing/storage'
@@ -31,6 +33,13 @@ vi.mock('./library', async (importOriginal) => ({
 vi.mock('./curation', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./curation')>()),
   listProposals: vi.fn(),
+}))
+
+// The build's label at the sidebar's foot asks for the build;
+// `VersionLabel.test.tsx` owns what it draws.
+vi.mock('./about', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./about')>()),
+  about: vi.fn(),
 }))
 
 const who = (over: Partial<Me> = {}): Me => ({
@@ -272,6 +281,7 @@ describe('Shell', () => {
     // reader` asserts on *not* having been called, and without this it reads
     // the admin mounts three tests above it.
     vi.clearAllMocks()
+    vi.mocked(aboutApi.about).mockResolvedValue(ABOUT)
     vi.mocked(library.status).mockResolvedValue({
       libraries: [{ id: 1, name: 'Manga', scanned: true }],
       restricted: false,
@@ -310,7 +320,7 @@ describe('Shell', () => {
     expect(vi.mocked(library.status)).toHaveBeenCalledTimes(1)
   })
 
-  it('offers the theme switch at the foot of the sidebar, directly above More', async () => {
+  it('offers the theme switch at the foot of the sidebar, directly above More, and the build’s label under More', async () => {
     vi.stubGlobal('localStorage', fakeStorage())
     const host = await settle(<Shell>{null}</Shell>)
     const column = host.querySelector('.sidebar-column')
@@ -319,6 +329,7 @@ describe('Shell', () => {
     expect([...(foot?.children ?? [])].map((el) => el.className)).toEqual([
       'theme-control',
       'account-menu',
+      'version-label',
     ])
     // More is a navigation landmark of its own; Theme is a setting, in none.
     expect(foot?.querySelector('.theme-control')?.closest('nav')).toBeNull()

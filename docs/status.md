@@ -146,8 +146,8 @@ library the store files each work in (Part F3). Spec
 
 ## What is built
 
-Six crates, 2728 tests, plus 3,483 in `web/`'s TypeScript — 1,554 in the `node`
-project and 1,929 in the `jsdom` one — and four hundred and one more in a
+Six crates, 2737 tests, plus 3,561 in `web/`'s TypeScript — 1,559 in the `node`
+project and 2,002 in the `jsdom` one — and four hundred and sixty-two more in a
 **browser** project of its own, no dependencies beyond
 `image`, `zip`, `sha2`, `rayon`, `base64` and `serde`, plus `axum`, `tokio`,
 `tower`, `tower-http` (feature `fs`, for `--web`) and `ureq` in the server, `rusqlite` (features `["backup"]`, against
@@ -223,7 +223,7 @@ unmeasured when the browser is absent. That adds `@vitest/browser`,
 `@vitest/browser-playwright` and `playwright` to `web/`'s dev dependencies;
 the runtime list above is unchanged. That list did not grow for L1: zoom is a CSS transform and
 a page of arithmetic, and its corpus experiment fingerprints with `image` and
-`rayon` exactly as `align` already did. Twenty-four of the 2728 are standing checks gated on
+`rayon` exactly as `align` already did. Twenty-four of the 2737 are standing checks gated on
 `TAIYAKU_CORPUS` — seventeen in `crates/taiyaku-cli/src/corpus.rs`, five in
 `crates/taiyaku-serve/src/corpus.rs`, two in
 `crates/taiyaku-library/src/corpus.rs` (this read "nineteen … ten … five"
@@ -5542,22 +5542,58 @@ transform is stored, in the sidecar or beside it. §5 above is what shipped.
   and there isn't enough visual separation between sections". They like
   Stump's configuration UI and want its motifs carried over, not copied.
 
-- **Next: a version label, an About page and a licence page.** The same
-  spec's second PR (§4): the short commit as the
-  version, built in through `TAIYAKU_COMMIT`; `GET /api/about`; `/about`,
-  with the format versions and the OPDS catalog address; and
-  `/about/licence`.
+- **A version label, an About page and a licence page. The sidebar and
+  readability spec's second PR shipped on 2026-10-20** on `about-licence`;
+  the spec's §4 is the record, and this entry now says what shipped.
+  **`GET /api/about`** is one of `routes::guarded_routes`, so a request to
+  it needs a session cookie, or a password or an API key over HTTP Basic.
+  It answers the build's commit, the repository, the OPDS catalog's path and
+  each format taiyaku writes, the five `<stem>` files next to each other,
+  each with its version and a sentence saying what it is;
+  `<stem>.notes.json`, the HTTP API and the wasm module are unversioned
+  (`about.rs`). **The commit**
+  is compiled in from `TAIYAKU_COMMIT` through `option_env!`, and only a
+  full 40-character lowercase hash counts: any other value, or none, is no
+  commit. The Dockerfile's server stage takes it as a build argument, and
+  CI's docker job passes the full commit to both its builds and checks the
+  image's binary holds it (`docs/ci.md`, "The image job"). **The
+  repository** is now `https://github.com/Davey-Hughes/taiyaku`, in
+  `Cargo.toml`'s `repository`, which the route reads as
+  `CARGO_PKG_REPOSITORY`; it named the forge before. The GitHub URL
+  answered 404 to an anonymous request on 2026-10-18, so About's source
+  link works once the GitHub repository is public, and its commit link
+  once that repository also holds the commit.
+  **The label** at the sidebar's foot, under More, in the column and the
+  drawer, is the short commit or "unknown build", a link to `/about` for
+  every account (`VersionLabel.tsx`). **`/about`** shows the commit, linked
+  to `<repository>/commit/<hash>` when there is one, the source link, the
+  OPDS catalog's address, the format table, with each format's sentence
+  under its name, and a link to the licence page (`About.tsx`).
+  **The catalog's address** is the page's origin before the path the route
+  answers, on About and beside the OPDS
+  line on Account, with a Copy address button, described by the address,
+  only in a secure context that has `navigator.clipboard`; elsewhere it is
+  text to select (`CatalogAddress.tsx`). **`/about/licence`** says taiyaku is
+  GPL-3.0-or-later and that Shippori Mincho B1, Zen Kaku Gothic New and the
+  marks subset are OFL-1.1, each above its full text, which
+  `licenceTexts.ts` bundles from its file and the app imports only from
+  that page (`Licence.tsx`); the Dockerfile's web stage copies `LICENSE` in
+  for it. A list of contents at its top links to each card by a fragment,
+  and a load of the page with one lands on that card. *As filed:* the
+  same spec's second PR (§4): the short commit as the version, built in
+  through `TAIYAKU_COMMIT`; `GET /api/about`; `/about`, with the format
+  versions and the OPDS catalog address; and `/about/licence`.
 
 - **More in the sidebar.** Items the user adds to it, or more quick items
   in it: the user noted that the trimmed sidebar leaves room for both. Left
   out of the sidebar and readability spec (§0).
 
-- **A version field for `taiyaku.notes.json`**, the one sidecar file
-  without one. Left out of the same spec (§0), whose About page is to list
-  the file as unversioned.
+- **A version field for `<stem>.notes.json`**, the one sidecar file
+  without one. Left out of the same spec (§0); its About page lists the file
+  as unversioned.
 
 - **Licence notices for every Rust and npm dependency, generated at build.**
-  Left out of the same spec (§0), whose licence page is to name taiyaku's own
+  Left out of the same spec (§0), whose licence page names taiyaku's own
   licence and the fonts'.
 
 - **Semantic versioning.** The short commit is the version "for now", in the

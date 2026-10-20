@@ -1,0 +1,333 @@
+import { act } from 'react'
+import { MemoryRouter } from 'react-router'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { About } from './About'
+import * as aboutApi from './about'
+import { ABOUT, UNKNOWN_BUILD } from './testing/about'
+import { clipboardContext } from './testing/clipboard'
+import { mount } from './testing/mount'
+import { cellValue } from './testing/table'
+
+// `shortCommit` stays real: the commit link's text is checked against it.
+vi.mock('./about', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./about')>()),
+  about: vi.fn(),
+}))
+
+async function settle(): Promise<HTMLElement> {
+  let host: HTMLElement | undefined
+  await act(async () => {
+    host = mount(
+      <MemoryRouter>
+        <About />
+      </MemoryRouter>,
+    )
+    await Promise.resolve()
+    await Promise.resolve()
+  })
+  if (!host) throw new Error('nothing mounted')
+  return host
+}
+
+/** The value beside the term `term` in the build's facts. */
+function fact(host: HTMLElement, term: string): HTMLElement {
+  const dt = [...host.querySelectorAll('.about-facts dt')].find(
+    (el) => el.textContent === term,
+  )
+  const dd = dt?.nextElementSibling
+  if (!(dd instanceof HTMLElement) || dd.tagName !== 'DD') {
+    throw new Error(`no fact named "${term}"`)
+  }
+  return dd
+}
+
+/** The one link inside `el`. */
+function linkIn(el: HTMLElement): HTMLAnchorElement {
+  const links = el.querySelectorAll('a')
+  if (links.length !== 1) throw new Error(`${links.length} links, not one`)
+  return links[0] as HTMLAnchorElement
+}
+
+beforeEach(() => {
+  vi.clearAllMocks()
+  vi.mocked(aboutApi.about).mockResolvedValue(ABOUT)
+})
+
+describe('About', () => {
+  it('links the short commit to the repository’s page for the full hash', async () => {
+    const host = await settle()
+    const commit = linkIn(fact(host, 'Commit'))
+    expect(commit.textContent).toBe('5ee5159')
+    expect(commit.getAttribute('href')).toBe(
+      'https://github.com/Davey-Hughes/taiyaku/commit/5ee51597e6269deff221b5954e72296b697d71b2',
+    )
+  })
+
+  it('says "unknown build" as plain text, and links no commit, when the build carries none', async () => {
+    vi.mocked(aboutApi.about).mockResolvedValue(UNKNOWN_BUILD)
+    const host = await settle()
+    const commit = fact(host, 'Commit')
+    expect(commit.textContent).toBe('unknown build')
+    expect(commit.querySelector('a')).toBeNull()
+    expect(host.querySelector('a[href*="/commit"]')).toBeNull()
+  })
+
+  it('links Source to the repository', async () => {
+    const host = await settle()
+    expect(linkIn(fact(host, 'Source')).getAttribute('href')).toBe(
+      'https://github.com/Davey-Hughes/taiyaku',
+    )
+  })
+
+  /**
+   * **The build's facts are the commit, the source and the catalog**, and
+   * no issues link of their own: the repository's page, which Source links
+   * to, leads to its issues. A build with no commit keeps its Commit row,
+   * which says "unknown build".
+   */
+  it.each([
+    ['a commit', ABOUT],
+    ['no commit', UNKNOWN_BUILD],
+  ])(
+    'names the build’s facts Commit, Source and OPDS catalog, with %s',
+    async (_, build) => {
+      vi.mocked(aboutApi.about).mockResolvedValue(build)
+      const host = await settle()
+      const card = host.querySelector('.about-facts')
+      if (!card) throw new Error('no facts')
+      expect(
+        [...card.querySelectorAll('dt')].map((dt) => [
+          dt.textContent,
+          dt.nextElementSibling?.tagName,
+        ]),
+      ).toEqual([
+        ['Commit', 'DD'],
+        ['Source', 'DD'],
+        ['OPDS catalog', 'DD'],
+      ])
+      expect(
+        [...card.querySelectorAll('a')].map((a) => a.getAttribute('href')),
+      ).toEqual([
+        ...(build.commit === null
+          ? []
+          : [`https://github.com/Davey-Hughes/taiyaku/commit/${build.commit}`]),
+        'https://github.com/Davey-Hughes/taiyaku',
+      ])
+    },
+  )
+
+  /**
+   * **The licence's card is drawn once the route has settled, last, either
+   * way.** It uses nothing the route answers, so a failure keeps it, beside
+   * the failure said; and it waits for the answer so that it never stands
+   * alone at the top of the page to be pushed down by the cards an answer
+   * brings.
+   */
+  it.each([
+    [
+      'answers',
+      () => vi.mocked(aboutApi.about).mockResolvedValue(ABOUT),
+      ['This build', 'Formats', 'Licence'],
+      [],
+    ],
+    [
+      'fails',
+      () =>
+        vi
+          .mocked(aboutApi.about)
+          .mockRejectedValue(new Error('/api/about: 503 down')),
+      ['Licence'],
+      ['/api/about: 503 down'],
+    ],
+  ])(
+    'links to the licence page, naming taiyaku’s licence, in the last card, when the route %s',
+    async (_, answer, cards, alerts) => {
+      answer()
+      const host = await settle()
+      const drawn = [...host.querySelectorAll('.about-card')]
+      expect(drawn.map((el) => el.querySelector('h2')?.textContent)).toEqual(
+        cards,
+      )
+      expect(
+        [...host.querySelectorAll('[role="alert"]')].map(
+          (alert) => alert.textContent,
+        ),
+      ).toEqual(alerts)
+      const card = drawn.at(-1)
+      if (!(card instanceof HTMLElement)) throw new Error('no Licence card')
+      const licence = linkIn(card)
+      expect(licence.textContent).toBe('GPL-3.0-or-later')
+      expect(licence.getAttribute('href')).toBe('/about/licence')
+      expect(card.textContent).toBe(
+        'Licencetaiyaku is GPL-3.0-or-later, and its fonts are OFL-1.1.',
+      )
+    },
+  )
+
+  it('draws nothing under its title while the route has not answered', async () => {
+    vi.mocked(aboutApi.about).mockReturnValue(new Promise(() => {}))
+    const host = await settle()
+    const page = host.querySelector('section.about')
+    expect([...(page?.children ?? [])].map((el) => el.outerHTML)).toEqual([
+      '<h1>About</h1>',
+    ])
+  })
+
+  it('shows the catalog’s address as this page’s origin before the path the route answers', async () => {
+    // Another version than today's, so an address the page wrote for itself
+    // cannot pass for the one it was handed.
+    vi.mocked(aboutApi.about).mockResolvedValue({
+      ...ABOUT,
+      catalog: '/opds/v1.3/catalog',
+    })
+    const host = await settle()
+    const address = fact(host, 'OPDS catalog')
+    expect(address.querySelector('code')?.textContent).toBe(
+      `${location.origin}/opds/v1.3/catalog`,
+    )
+  })
+
+  it('offers the catalog’s address to copy where the browser can write it', async () => {
+    clipboardContext(true, { writeText: vi.fn() })
+    const host = await settle()
+    const buttons = fact(host, 'OPDS catalog').querySelectorAll('button')
+    expect([...buttons].map((button) => button.textContent)).toEqual([
+      'Copy address',
+    ])
+  })
+
+  /**
+   * **Each row is a format's name, the sentence under it and its version**,
+   * read row by row, so a sentence drawn under another format's name fails
+   * where a whole-table read would not. The name and the sentence are the
+   * name cell's only parts, in that order.
+   */
+  it('lists every format in the order the route sends, each with its sentence, a null version reading "unversioned"', async () => {
+    const host = await settle()
+    const rows = [...host.querySelectorAll('.about table tbody tr')].map(
+      (row) => {
+        const cells = [...row.querySelectorAll('td')]
+        const [format, version] = cells
+        if (cells.length !== 2 || !format || !version) {
+          throw new Error(`${cells.length} cells, not two`)
+        }
+        return {
+          parts: [...format.childNodes].map((part) => part.textContent),
+          name: format.querySelector('.about-format-name')?.textContent,
+          sentence: format.querySelector('.about-format-description')
+            ?.textContent,
+          version: cellValue(version),
+        }
+      },
+    )
+    const row = (name: string, sentence: string, version: string) => ({
+      parts: [name, sentence],
+      name,
+      sentence,
+      version,
+    })
+    expect(rows).toEqual([
+      row(
+        'taiyaku.json',
+        'Sits beside a work’s archives and records how its editions correspond to each other.',
+        '1',
+      ),
+      row(
+        '<stem>.library.json',
+        'A work’s metadata, kept in a file so fixes made by hand outlive the database.',
+        '1',
+      ),
+      row(
+        '<stem>.progress.json',
+        'One reader’s place in a work, edition by edition.',
+        '1',
+      ),
+      row(
+        '<stem>.truth.json',
+        'Boxes a person drew around the text on pages, to score text detection against.',
+        '1',
+      ),
+      row(
+        '<stem>.regions.json',
+        'Where the text is on each page, as the regions command found it.',
+        '1',
+      ),
+      row(
+        '<stem>.notes.json',
+        'Notes one reader left on a work’s pages.',
+        'unversioned',
+      ),
+      row(
+        'Database schema',
+        'The layout of the SQLite database taiyaku keeps its library in.',
+        '17',
+      ),
+      row(
+        'OPDS, with the Page Streaming Extension',
+        'The catalog that reading apps browse and stream pages from.',
+        '1.2',
+      ),
+      row(
+        'HTTP API',
+        'The /api routes this web app uses to talk to the server.',
+        'unversioned',
+      ),
+      row(
+        'wasm module',
+        'taiyaku’s core built for the browser, which the reader uses to match pages between editions.',
+        'unversioned',
+      ),
+    ])
+    expect(
+      [...host.querySelectorAll('.about table thead th')].map(
+        (th) => th.textContent,
+      ),
+    ).toEqual(['Format', 'Version'])
+  })
+
+  /**
+   * The narrow layout hides the headings (`admin.css`, `.config-table`), so
+   * a versioned row's cell says "Version" itself, in its `.cell-label`. An
+   * unversioned row says "unversioned", which needs no label.
+   */
+  it('labels a versioned row’s version for the narrow layout, and no unversioned one', async () => {
+    const host = await settle()
+    const cells = [...host.querySelectorAll('.about table tbody tr')].map(
+      (row) => {
+        const version = row.querySelectorAll('td')[1]
+        return [
+          [...(version?.querySelectorAll('.cell-label') ?? [])].map(
+            (label) => label.textContent,
+          ),
+          version?.textContent,
+        ]
+      },
+    )
+    const versioned = (v: string) => [['Version '], `Version ${v}`]
+    const unversioned = [[], 'unversioned']
+    expect(cells).toEqual([
+      versioned('1'),
+      versioned('1'),
+      versioned('1'),
+      versioned('1'),
+      versioned('1'),
+      unversioned,
+      versioned('17'),
+      versioned('1.2'),
+      unversioned,
+      unversioned,
+    ])
+  })
+
+  it('shows a failed answer the way other pages do, and draws none of the facts', async () => {
+    vi.mocked(aboutApi.about).mockRejectedValue(
+      new Error('/api/about: 503 down'),
+    )
+    const host = await settle()
+    const alerts = host.querySelectorAll('[role="alert"]')
+    expect(alerts).toHaveLength(1)
+    expect(alerts[0]?.textContent).toBe('/api/about: 503 down')
+    expect(host.querySelector('.about-facts')).toBeNull()
+    expect(host.querySelector('table')).toBeNull()
+  })
+})

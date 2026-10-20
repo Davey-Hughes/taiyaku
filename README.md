@@ -160,7 +160,10 @@ TAIYAKU_STUMP_URL=https://stump.example TAIYAKU_STUMP_KEY=… \
 # point an OPDS reader at
 #   http://<host>:8484/opds/v1.2/catalog
 # which lists every work, and every library's works twice: by the folders
-# each library holds, and by the library each work is filed in.
+# each library holds, and by the library each work is filed in. in the
+# browser, About and the account screen show this address, built from the
+# origin the page was loaded from, with a Copy address button only in a
+# secure context (https, or localhost) that has the Clipboard API.
 # use your account name as the username and an API key as the password —
 # a key is shown once, because only its hash is stored:
 taiyaku library key create davey --name ipad
@@ -323,7 +326,14 @@ on `/`, and replaces the grid with its hits while the box holds a query; an
 old `/search?q=` link lands there with its query. The sidebar lists the
 libraries under a **Libraries** heading that leads to all of them, and keeps
 the theme and **More** at its foot: Proposals, Configuration and Account for
-an administrator, and for anyone else the account screen itself. A page's
+an administrator, and for anyone else the account screen itself. Under More
+is the build's label, its short commit or "unknown build", a link for every
+account to `/about`. That page shows the commit (linked into the repository
+when the build has one), the source link, the OPDS catalog's
+address and each format taiyaku writes, with its version and a line saying
+what it is, and links on to
+`/about/licence`, which gives taiyaku's licence and the fonts', each above
+its full text, under a list of contents linking to each. A page's
 **View** button holds the browse preferences that act there — layout, edition
 selector, panel and density on a series page, the continue strip and density
 on the library. The reader's own chrome has a `Library` button for the way
@@ -566,6 +576,22 @@ taiyaku") and, under Docker, restarts in a loop. Go back across a migration by
 restoring a backup taken before it, so before merging a change that migrates
 (WUD redeploys on every merge), run `docker exec taiyaku taiyaku library backup`.
 
+The label at the sidebar's foot names the build that is running: the first
+seven characters of its commit, the same seven CI tags the image with as
+`:sha-<7>`. CI builds the image with the commit passed in. Nothing in a build
+runs git, so a build of your own passes it the same way, as the full hash;
+without it, or with anything but a full 40-character lowercase hash, the
+label reads "unknown build":
+
+```sh
+docker buildx build --build-arg TAIYAKU_COMMIT=$(git rev-parse HEAD) -t taiyaku .
+TAIYAKU_COMMIT=$(git rev-parse HEAD) cargo build --release -p taiyaku-cli
+```
+
+On a buildx builder with the `docker-container` driver, give the first
+command `--load` too, or its result stays in the builder's cache and never
+reaches the local image store.
+
 ## Design principles
 
 **The sidecar is the product.** The alignment format is meant to be readable by
@@ -649,4 +675,8 @@ is the real constraint.
 
 ## Licence
 
-GPLv3. See [LICENSE](LICENSE).
+taiyaku is GPL-3.0-or-later. See [LICENSE](LICENSE).
+
+The fonts it ships are OFL-1.1: Shippori Mincho B1, Zen Kaku Gothic New, and
+the marks subset cut from Zen Kaku Gothic New. The app's `/about/licence`
+shows each licence with its full text.

@@ -31,6 +31,21 @@ use taiyaku_library::account::Access;
 
 use crate::ServeState;
 
+/// The OPDS version this feed claims, and the one `/api/about` reports.
+///
+/// The paths in [`routes`] repeat it as literals, and nothing in the compiler
+/// ties them to it: `tests::every_route_is_under_the_version_the_feed_claims`
+/// is what keeps the two in step.
+pub(crate) const VERSION: &str = "1.2";
+
+/// The catalog's path, as `/api/about` serves it.
+///
+/// One copy, so the OPDS test that asserts the path is routed checks the path
+/// About hands a client rather than its own rebuilding of it.
+pub(crate) fn catalog_path() -> String {
+    format!("/opds/v{VERSION}/catalog")
+}
+
 const ATOM: &str = "application/atom+xml;profile=opds-catalog";
 const PSE_NS: &str = "http://vaemendis.net/opds-pse/ns";
 const SIDECAR_REL: &str = "https://taiyaku.dev/rel/sidecar";

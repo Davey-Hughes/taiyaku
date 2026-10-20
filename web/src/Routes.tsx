@@ -19,11 +19,13 @@
  * *page* and a remount costs a sidecar fetch and a resolver construction.
  */
 import { Navigate, Route, Routes, useNavigate, useParams } from 'react-router'
+import { About } from './About'
 import { Account } from './Account'
 import App from './App'
 import { Config } from './Config'
 import { useGate } from './gate'
 import { Library } from './Library'
+import { Licence } from './Licence'
 import { Proposals } from './Proposals'
 import { Search } from './Search'
 import { Series } from './Series'
@@ -62,6 +64,18 @@ function AccountScreen() {
   const gate = useGate()
   useDocumentTitle('Account')
   return <Account placement="page" onSignedOut={() => gate?.signOut()} />
+}
+
+/** About at a URL of its own, reached from the build's label under More. */
+function AboutScreen() {
+  useDocumentTitle('About')
+  return <About />
+}
+
+/** The licence page, beneath About. */
+function LicenceScreen() {
+  useDocumentTitle('Licence')
+  return <Licence />
 }
 
 export function AppRoutes() {
@@ -121,6 +135,24 @@ export function AppRoutes() {
         element={
           <Shell>
             <AccountScreen />
+          </Shell>
+        }
+      />
+      {/* Every account's, like `/account`: the label that leads here is drawn
+        for everyone. */}
+      <Route
+        path="/about"
+        element={
+          <Shell>
+            <AboutScreen />
+          </Shell>
+        }
+      />
+      <Route
+        path="/about/licence"
+        element={
+          <Shell>
+            <LicenceScreen />
           </Shell>
         }
       />

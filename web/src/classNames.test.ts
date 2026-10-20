@@ -93,6 +93,8 @@ const TESTS = import.meta.glob<string>('./**/*.test.{ts,tsx}', {
  */
 const NAMED: Record<string, Record<string, string | null>> = {
   './Account.tsx': { look: 'LOOKS' },
+  // A prop: each caller's class is read where the caller writes it.
+  './CatalogAddress.tsx': { className: null },
   // `note-list-${placement}`: composed, so there is no table to read.
   './NoteList.tsx': { placement: null },
   // Defined in `curation.ts`, which this does not read.

@@ -2258,3 +2258,21 @@ async fn the_opds_download_serves_the_same_bytes_as_the_api_route() {
          implementation"
     );
 }
+
+/// Every route sits under the version the feed claims, and the catalog path
+/// `/api/about` serves is one of them. A bump to [`VERSION`] that left the
+/// route literals behind would send a client following About's catalog
+/// address to a 404.
+#[test]
+fn every_route_is_under_the_version_the_feed_claims() {
+    let prefix = format!("/opds/v{VERSION}/");
+    let paths: Vec<&str> = routes().into_iter().map(|(path, _)| path).collect();
+    for path in &paths {
+        assert!(path.starts_with(&prefix), "{path} is not under {prefix}");
+    }
+    let catalog = catalog_path();
+    assert!(
+        paths.contains(&catalog.as_str()),
+        "{catalog} is not one of the routes: {paths:?}"
+    );
+}

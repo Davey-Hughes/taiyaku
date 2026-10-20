@@ -16,6 +16,17 @@ import { stripWoff } from './src/stripWoff.ts'
 // checked out at different paths on different machines.
 const wasmPkgDir = fileURLToPath(new URL('../crates/taiyaku-wasm/pkg', import.meta.url))
 
+// The repository's own licence, which `src/licenceTexts.ts` bundles for the
+// licence page with `?raw`, is outside `web/` too, and is allowed as the one
+// file so the allowlist reaches nothing else at the repository's root. **It
+// is named twice, with and without the query**: Vite's check on a `?raw` id
+// passes only when both the file and the id with its query are allowed, and
+// an entry matches only its exact spelling, where a directory's matches
+// everything beneath it, query and all. Without the second name the `jsdom`
+// project refuses the import ("Denied ID").
+const licenceFile = fileURLToPath(new URL('../LICENSE', import.meta.url))
+const licenceAllow = [licenceFile, `${licenceFile}?raw`]
+
 // The reader is served from Vite in development and talks to `taiyaku serve`
 // on another port. Proxying rather than enabling CORS on the server: CORS
 // would be a production-facing change made for a development convenience, and
@@ -228,7 +239,7 @@ export default defineConfig({
   },
   server: {
     fs: {
-      allow: ['.', wasmPkgDir],
+      allow: ['.', wasmPkgDir, ...licenceAllow],
     },
     // **`changeOrigin: false`, and that is a decision measured rather than a
     // default left alone.** With it `true`, the proxy rewrites `Host` to the

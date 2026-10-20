@@ -1926,13 +1926,16 @@
   }
 }
 
-/* The way up from a page beneath a table. */
-.config .back {
+/* The way up from a page beneath a table, and from the licence page to
+   About. */
+.config .back,
+.licence .back {
   margin: 0 0 var(--space-2);
   font-size: var(--text-ui);
 }
 
-.config .back a {
+.config .back a,
+.licence .back a {
   text-decoration: none;
 }
 
@@ -2301,18 +2304,23 @@
    padding**, beside password boxes at 14px and `4px 8px`, and a 399px hole
    between it and the Create button. Measured in Chromium at 1280px,
    2026-09-24. */
-.account {
+/* About (`About.tsx`) is drawn as the account page is: the same measure,
+   the same title and a card per section. */
+.account,
+.about {
   --config-measure: 40rem;
 }
 
 /* An h1 since O163, held at the h2 size it was drawn at: `base.css` sizes
  * an h1 a step up. */
-.account > h1 {
+.account > h1,
+.about > h1 {
   margin: 0;
   font-size: var(--text-h2);
 }
 
-.account-card {
+.account-card,
+.about-card {
   max-width: var(--config-measure);
   margin-top: var(--space-4);
   padding: var(--space-4);
@@ -2320,11 +2328,191 @@
   border-radius: var(--radius-control);
 }
 
-.account-heading {
+.account-heading,
+.about-heading {
   margin: 0 0 var(--space-3);
   font-family: var(--font-title);
   font-size: var(--text-body);
   font-weight: 600;
+}
+
+/* The build's facts, each beside the word that names it and on its
+   baseline: the catalog's address shares its line with Copy address where
+   the line has room, and the button is taller than the address, and under
+   a coarse pointer a link's box is taller than its word, so a label at the
+   top of its row would sit above its value. A repository's address does
+   not break at a slash, and must not widen the card. The parts are scoped by `.about` too, which puts
+   them at the specificity of the `dt` and `dd` rules above them in this
+   file: a weaker selector after a stronger one is what
+   `noDescendingSpecificity` refuses. */
+.about-facts {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: baseline;
+  gap: var(--space-2) var(--space-4);
+  margin: 0;
+}
+
+.about .about-facts > div {
+  display: contents;
+}
+
+.about .about-facts dt {
+  color: var(--muted);
+}
+
+.about .about-facts dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+/* About's licence card holds one sentence, and the card's padding is the
+   space under it. */
+.about-licence {
+  margin: 0;
+}
+
+/* A format's sentence, on a line of its own under the name in the name's
+   cell. Quiet by colour and not by size: it is read, so it keeps the 14px
+   floor, and `--muted` holds the same contrast floors as `--text` on every
+   ground (`index.css.test.ts`). It wraps as the cell does (`td.lead`), so
+   at a phone's width it takes more lines rather than widening the table. */
+.about-format-description {
+  display: block;
+  color: var(--muted);
+  font-size: var(--text-meta);
+}
+
+/* A format's name, heavier than the sentence under it, which keeps the
+   weight it inherits. Set on the name itself because Ink's 500 is set on
+   `.library` and inherited (`base.css`), and a weight an element sets wins
+   over one it would inherit, so the name is 600 in both themes. */
+.about-format-name {
+  font-weight: 600;
+}
+
+/* The licence page's texts (`Licence.tsx`), in cards of About's width, the
+   measure `.about` sets, so the way down from About and back keeps one
+   width. Each text keeps its line breaks and indents, and wraps where the
+   card is narrower than its lines; anywhere if it must, since a font
+   licence's first line runs its copyright notices and their addresses
+   together. A `pre` that did not wrap would widen the page.
+   `Licence.browser.test.tsx` holds a phone's width and a desktop's. */
+.licence-text {
+  margin: 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  font-family: ui-monospace, monospace;
+  font-size: var(--text-ui);
+}
+
+/* The licence page's contents: a line per card under the title, in the
+   cards' order. The gap keeps each link's target apart from the next one's,
+   which under a coarse pointer are boxes a finger's height tall that would
+   otherwise meet. */
+.licence .licence-contents ul {
+  display: grid;
+  gap: var(--space-1);
+  margin: var(--space-3) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* Where Back to the page's own address puts the view: the page's top, with
+   `<main>`'s padding above it, as at the top of the scroll, and the phone
+   bar, which covers the top of the view at a phone's width
+   (`--sticky-top`). */
+.licence {
+  scroll-margin-top: calc(var(--sticky-top, 0px) + var(--space-4));
+}
+
+/* Where a contents link lands. The heading is what is scrolled to, so its
+   margin holds the card's border and padding above it and a little air,
+   which keeps the card's top edge in view, and the phone bar, which covers
+   the top of the view at a phone's width (`--sticky-top`). */
+.licence .about-heading {
+  scroll-margin-top: calc(
+    var(--sticky-top, 0px) +
+    1px +
+    var(--space-4) +
+    var(--space-2)
+  );
+}
+
+/* The OPDS catalog's address (`CatalogAddress.tsx`), on `/about` and in
+   both of the account screen's placements, the reader's panel among them,
+   so it sets no colour: each placement's own resolves it. The address wraps
+   anywhere for the reason the facts above do, and its Copy address button
+   sits beside it, or under it where the line is too short. The live region
+   that says what a press did is `.visually-hidden`, out of this row's flow,
+   so it never takes a place on the line or a line of its own. The row is
+   positioned so that region is placed in the row's box and scrolls with
+   it: placed in the window's, as it is with no positioned ancestor, a row
+   lower in `<main>`'s content than the window is tall would make the
+   document scroll at a desktop width, where only `<main>` should.
+
+   **The address is reached by its own class, not as `.catalog-address
+   code`**: `code` rules earlier in this file are two classes deep, and a
+   later one at one class is the descending specificity biome refuses. */
+.catalog-address {
+  position: relative;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-1) var(--space-3);
+}
+
+.catalog-address-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-family: ui-monospace, monospace;
+}
+
+/* Copy address's three words, "Copy address", "Copied" and "Not copied",
+   drawn one over another in one grid cell, so the button is as wide as the
+   widest of them in whatever font draws them, whichever one shows, and a
+   press moves nothing beside it or under it. The cell's baseline is
+   "Copy address"'s, the first item's, so the button sits on the address's
+   line as plain text would.
+
+   **The results are generated content of a box hidden from assistive
+   technology**, so they are not the button's text and not its name, which
+   stays "Copy address" while a result shows. For the same reason "Copy
+   address" is clipped out of sight then rather than hidden: `visibility:
+   hidden` would take it out of the name too, and a clip, as
+   `.visually-hidden` uses, keeps both its name and the box that holds the
+   width. */
+.catalog-address-words,
+.catalog-address-results {
+  display: inline-grid;
+}
+
+.catalog-address-word,
+.catalog-address-results,
+.catalog-address-results::before,
+.catalog-address-results::after {
+  grid-area: 1 / 1;
+}
+
+.catalog-address-results::before {
+  content: attr(data-copied);
+  visibility: hidden;
+}
+
+.catalog-address-results::after {
+  content: attr(data-not-copied);
+  visibility: hidden;
+}
+
+.catalog-address-words[data-shows="copied"] .catalog-address-results::before,
+.catalog-address-words[data-shows="not-copied"]
+  .catalog-address-results::after {
+  visibility: visible;
+}
+
+.catalog-address-words[data-shows] .catalog-address-word {
+  clip-path: inset(50%);
 }
 
 /* **The separation no container on this page gives.** The password form
@@ -2432,7 +2620,10 @@
    Every one of them sits inside `.library`, but so do the library home,
    search, the series page and the sidebar, which `library.css` and
    `shell.css` already answer for — and a second floor over the same controls
-   is the drift this pass keeps recording.
+   is the drift this pass keeps recording. `/about` is drawn here too, and
+   its root joins the `button` line alone, for the catalog's Copy address
+   button; its links and the licence page's are named in the link rules
+   below.
 
    **The inbox's own controls are covered by the `button` line rather than
    named beside it, and that is forced rather than chosen.** The pills, the
@@ -2614,7 +2805,7 @@
    coarse)` and reports no `(pointer: fine)` at all, so this block was live
    while they were read. The project's vitest browser project is not that
    context; a test there can still switch this block on in place, as
-   `Shell.browser.test.tsx`'s `coarseRulesOn` does, to measure it. */
+   `testing/pointer.ts`'s `coarseRulesOn` does, to measure it. */
 @media (pointer: coarse) {
   /* **This block carried the repo's only CSS `biome-ignore` until ⑤c's
      whole-branch review, and the review removed the need for it.** The
@@ -2626,7 +2817,8 @@
      `button:not(…)` instead, so the two rules no longer group and the
      warning is gone rather than silenced. Worth the note because a
      suppression removed by accident is a suppression that comes back. */
-  /* Every button on the three roots **except the two underlined tab rows**.
+  /* Every button on the three roots and `/about` **except the two
+     underlined tab rows**.
      Spec §12.8 excludes `.config-nav` from this floor on a measurement —
      44px puts the underline 12.5px below the word and takes the strip from
      29 to 49 — and `.proposal-tabs` and `.preview-tabs` wear the same
@@ -2643,7 +2835,7 @@
      block's gate is documented as unable to see. The inner `:where()` keeps
      the negation at (0,0,1), so this prelude is (0,0,2) and still loses to
      anything that wants to floor a tab deliberately. */
-  :where(.proposals, .account, .config)
+  :where(.proposals, .account, .config, .about)
   button:not(:where(.proposal-tabs, .preview-tabs) > button),
   :where(.proposals, .account, .config) .field :where(input, select, textarea),
   .account .account-row input,
@@ -2676,8 +2868,16 @@
     min-height: 44px;
   }
 
+  /* About's commit and Source, and the licence page's contents, grow their
+     boxes, as these two actions do, rather than a target around them:
+     their rows sit closer than a finger's height, so a target grown around
+     each would cover its neighbours'. The grown boxes move the rows apart
+     instead, and each of About's labels stays on its value's line because
+     `.about-facts` sets the two on one baseline. */
   .editor-actions .export,
-  .backup .backup-list a {
+  .backup .backup-list a,
+  .about .about-facts a,
+  .licence .licence-contents a {
     display: inline-flex;
     align-items: center;
     min-height: 44px;
@@ -2758,18 +2958,45 @@
      a box with no paint centred on each item. A press on a pseudo-element
      is a press on its element, so nothing else needs to know. Nothing it
      covers is drawn differently. What it must not cover is a neighbour's
-     own target, and that was measured in a touch context at 390px
-     (`docs/notes.md`, O157) because no test here can match
-     `(pointer: coarse)`. */
+     drawn box. `docs/notes.md` (O157) measured each grown box against the
+     other controls' drawn boxes for all three rows in a touch context at
+     390px, and `Config.browser.test.tsx` switches this block on in place
+     (`testing/pointer.ts`'s `coarseRulesOn`) and measures the
+     configuration tabs' targets against the way up beneath them.
+
+     **The way up from a page beneath a table or from the licence page, and
+     the link in About's licence card, take the same target**, because a
+     grown box would move what is drawn around them: the way up would push
+     its page down, and the licence link would open a gap in its sentence.
+     The browser tests measure these targets against what can be pressed
+     above them: the way up on the five pages `Config.browser.test.tsx`
+     draws against the tabs, the licence page's against the phone bar
+     (`Shell.browser.test.tsx`), and the licence link against About's other
+     links and Copy address (`About.browser.test.tsx`). The way up on the
+     not-found pages sits under the same tabs and is not measured. That
+     nothing that can be pressed lies under the part of each target outside
+     its link's box, so the target covers nobody's, holds by reading. */
   .config-nav a,
   .proposal-tabs > button,
-  .preview-tabs > button {
+  .preview-tabs > button,
+  .config .back a,
+  .licence .back a,
+  .about-licence a {
     position: relative;
+  }
+
+  /* On one line, because the target is centred on the link's box, and a
+     link broken across two lines has no one box to centre it on. */
+  .about-licence a {
+    white-space: nowrap;
   }
 
   .config-nav a::after,
   .proposal-tabs > button::after,
-  .preview-tabs > button::after {
+  .preview-tabs > button::after,
+  .config .back a::after,
+  .licence .back a::after,
+  .about-licence a::after {
     content: "";
     position: absolute;
     inset-block-start: 50%;

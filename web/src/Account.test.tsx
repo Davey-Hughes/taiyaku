@@ -1,6 +1,9 @@
 import { act } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { forgetAbout } from './about'
 import { Account } from './Account'
+import { ABOUT } from './testing/about'
+import { clipboardContext } from './testing/clipboard'
 import { fields } from './testing/fields'
 import { mount, rerender } from './testing/mount'
 
@@ -54,6 +57,9 @@ const buttonSaying = (host: HTMLElement, text: string) =>
 describe('Account', () => {
   afterEach(() => {
     vi.restoreAllMocks()
+    // `about()` holds an answer for the page's life, and the servers here
+    // that answer every GET with a list would hand the next test that.
+    forgetAbout()
   })
 
   it('renders nothing when not visible, and asks for nothing', () => {
@@ -1198,6 +1204,87 @@ describe('Account', () => {
       }
     })
   }
+
+  /**
+   * **The catalog's address, beside the OPDS line, in both placements**, as
+   * `/api/about` answers it. Another version than today's, so an address the
+   * screen wrote for itself cannot pass for the one it was handed.
+   */
+  describe('the catalog’s address', () => {
+    const CATALOG = '/opds/v1.3/catalog'
+    const lists = {
+      '/api/keys': () => json([]),
+      '/api/sessions': () => json([]),
+    }
+    const answered = () =>
+      server({
+        ...lists,
+        '/api/about': () => json({ ...ABOUT, catalog: CATALOG }),
+      })
+
+    const placed = (placement: 'page' | 'panel') =>
+      mount(
+        placement === 'page' ? (
+          <Account placement="page" onSignedOut={noop} />
+        ) : (
+          <Account visible onClose={noop} onSignedOut={noop} />
+        ),
+      )
+
+    /** The OPDS line: the paragraph under "API keys" that starts so. */
+    const opdsLine = (host: HTMLElement) => {
+      const section = [...host.querySelectorAll('section')].find(
+        (el) => el.querySelector('h2, h3')?.textContent === 'API keys',
+      )
+      const line = [...(section?.querySelectorAll('p') ?? [])].find((p) =>
+        (p.textContent ?? '').startsWith('For OPDS readers'),
+      )
+      if (!line) throw new Error('no OPDS line under "API keys"')
+      return line
+    }
+
+    // One `it()` per placement: `testing/mount.ts` holds one root.
+    for (const placement of ['page', 'panel'] as const) {
+      it(`draws it straight after the OPDS line, as a ${placement}`, async () => {
+        vi.stubGlobal('fetch', answered())
+        const host = placed(placement)
+        await settle()
+        const next = opdsLine(host).nextElementSibling
+        expect(next?.className).toBe('catalog-address')
+        expect(next?.querySelector('code')?.textContent).toBe(
+          `${location.origin}${CATALOG}`,
+        )
+        expect(host.querySelectorAll('code')).toHaveLength(1)
+      })
+
+      it(`draws Copy address as it draws the row’s own buttons, as a ${placement}`, async () => {
+        clipboardContext(true, { writeText: vi.fn() })
+        vi.stubGlobal('fetch', answered())
+        const host = placed(placement)
+        await settle()
+        const copy = buttonSaying(host, 'Copy address')
+        expect(copy?.className).toBe(
+          placement === 'panel' ? 'reader-button' : '',
+        )
+        expect(copy?.className).toBe(buttonSaying(host, 'Create')?.className)
+      })
+
+      it(`draws the OPDS line with no address when /api/about does not answer, as a ${placement}`, async () => {
+        clipboardContext(true, { writeText: vi.fn() })
+        const fetchMock = server(lists)
+        vi.stubGlobal('fetch', fetchMock)
+        const host = placed(placement)
+        await settle()
+        // Asked, and answered 404: not a screen that never asked.
+        expect(fetchMock).toHaveBeenCalledWith('/api/about')
+        expect(opdsLine(host).nextElementSibling?.tagName).toBe('FORM')
+        expect(host.querySelector('.catalog-address')).toBeNull()
+        expect(host.querySelector('code')).toBeNull()
+        expect(buttonSaying(host, 'Copy address')).toBeUndefined()
+        expect(host.querySelector('[role="alert"]')).toBeNull()
+      })
+    }
+  })
 })
 
 /**

@@ -243,7 +243,8 @@ describe('the inbox tile height follows the stylesheet', () => {
  * `(pointer: coarse)`, and this floor's later figures were read in one. The
  * `browser` project's instance is not that context, but a browser test can
  * still switch the coarse-pointer blocks on in place and measure a height
- * (`Shell.browser.test.tsx`'s `coarseRulesOn`); none measures this floor.
+ * (`testing/pointer.ts`'s `coarseRulesOn`). `About.browser.test.tsx` does
+ * so for this floor, on About's Copy address button.
  */
 describe('admin.css carries a coarse-pointer floor', () => {
   /**
@@ -316,9 +317,9 @@ describe('admin.css carries a coarse-pointer floor', () => {
   })
 
   for (const subject of [
-    // Every button on the six screens, which is how the inbox's pills, its
-    // kind tabs and its Dismiss/Reopen are reached.
-    ':where(.proposals, .account, .config) button:not(:where(.proposal-tabs, .preview-tabs) > button)',
+    // Every button on the six screens and `/about`, which is how the inbox's
+    // pills, its kind tabs and its Dismiss/Reopen are reached.
+    ':where(.proposals, .account, .config, .about) button:not(:where(.proposal-tabs, .preview-tabs) > button)',
     // Every labelled control on them.
     ':where(.proposals, .account, .config) .field :where(input, select, textarea)',
     // And the one that no label wraps: `/account`'s key-name box, which the
@@ -371,7 +372,7 @@ describe('admin.css carries a coarse-pointer floor', () => {
     // *different* rule's if one of them is ever split out, which is how a
     // split that drops the declaration is caught.
     for (const subject of [
-      ':where(.proposals, .account, .config) button:not(:where(.proposal-tabs, .preview-tabs) > button)',
+      ':where(.proposals, .account, .config, .about) button:not(:where(.proposal-tabs, .preview-tabs) > button)',
       ':where(.proposals, .account, .config) .field :where(input, select, textarea)',
       '.account .account-row input',
       '.account-wide',
@@ -457,7 +458,7 @@ describe('admin.css carries a coarse-pointer floor', () => {
    */
   it('measures that 44 on the rendered box rather than on its content', () => {
     for (const subject of [
-      ':where(.proposals, .account, .config) button:not(:where(.proposal-tabs, .preview-tabs) > button)',
+      ':where(.proposals, .account, .config, .about) button:not(:where(.proposal-tabs, .preview-tabs) > button)',
       ':where(.proposals, .account, .config) .field :where(input, select, textarea)',
       '.account .account-row input',
       '.account-wide',
@@ -501,7 +502,7 @@ describe('admin.css carries a coarse-pointer floor', () => {
     }
   })
 
-  it('is scoped to the three admin roots, not to .library', () => {
+  it('is scoped to the admin roots, not to .library', () => {
     // The defect is a second floor over the library home, search, the series
     // page and the sidebar, which `library.css` and `shell.css` already
     // answer for — whether it arrives as `:where(.library) button`, as a
@@ -509,7 +510,7 @@ describe('admin.css carries a coarse-pointer floor', () => {
     // first version of this asserted `/:where\(\.library[,)]/`, which is one
     // spelling of it: `.library button { min-height: 44px }` added inside
     // the block left it green, watched. **Any** mention of `.library` in
-    // this block is the defect, and none of the three roots contains the
+    // this block is the defect, and none of the roots contains the
     // substring, so the whole class is one match. The positive half — that
     // the scoped text is still there — is the `names` cases above, not
     // repeated here.

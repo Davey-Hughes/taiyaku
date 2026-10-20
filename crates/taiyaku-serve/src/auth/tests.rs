@@ -70,6 +70,7 @@ async fn every_route_refuses_an_anonymous_request() {
         "/api/works/{work}/truth",
         "/api/works/{work}/alignments",
         "/api/me",
+        "/api/about",
         "/api/keys",
         "/api/keys/{id}",
         "/api/sessions",
@@ -1772,7 +1773,7 @@ async fn every_route_declares_its_grant_posture() {
     );
     assert_eq!(
         table.len() - driven,
-        36,
+        37,
         "the remaining guarded routes must be GrantIndependent — \
          see the `driven` assertion just above, which this one is the other \
          half of. A new admin-only route is GrantIndependent: it changes who \

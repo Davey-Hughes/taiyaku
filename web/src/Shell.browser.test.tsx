@@ -1,17 +1,38 @@
 import { act } from 'react'
-import { MemoryRouter, Route, Routes } from 'react-router'
+import {
+  BrowserRouter,
+  MemoryRouter,
+  Route,
+  Routes,
+  useLocation,
+} from 'react-router'
 import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import { page, userEvent } from 'vitest/browser'
+import * as aboutApi from './about'
+import { Account } from './Account'
 import type { Me } from './api'
 import { GateContext } from './gate'
 import './index.css'
 import * as library from './library'
 import { Library } from './Library'
+import { Licence } from './Licence'
 import { SEARCH_BOX_ID } from './searchHits'
 import { Series } from './Series'
 import { Shell } from './Shell'
+import { ABOUT } from './testing/about'
+import { deferred } from './testing/async'
+import { licenceTextsLanded } from './testing/licence'
+import { focused } from './testing/focused'
 import { mount } from './testing/mount'
 import { mouse } from './testing/mouse'
+import {
+  areaOf,
+  coarseRulesOn,
+  fingerArea,
+  near,
+  overlapOf,
+  pressArea,
+} from './testing/pointer'
 
 /**
  * The shell and the library's screens at a phone's width and a desktop's —
@@ -35,6 +56,13 @@ vi.mock('./curation', async (importOriginal) => ({
     proposals: [],
     counts: { 'edition-of': 3 },
   })),
+}))
+
+// The build's label at the sidebar's foot asks for the build; answered here,
+// so the request never leaves the test.
+vi.mock('./about', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./about')>()),
+  about: vi.fn(),
 }))
 
 vi.mock('./library', async (importOriginal) => ({
@@ -199,6 +227,7 @@ const sideways = () =>
 beforeEach(() => {
   localStorage.clear()
   window.scrollTo(0, 0)
+  vi.mocked(aboutApi.about).mockResolvedValue(ABOUT)
   vi.mocked(library.status).mockResolvedValue({
     libraries: [{ id: 1, name: 'Volumes', scanned: true }],
     restricted: false,
@@ -566,51 +595,6 @@ describe('the skip link — O174', () => {
 })
 
 /**
- * Every `@media (pointer: coarse)` block in the page's stylesheets, switched
- * on in place, so the cascade keeps its order; the function returned puts
- * each block's condition back as it was written. This project's Chromium has
- * a fine pointer, and its touch emulation, once turned off again, leaves the
- * page reporting no pointer at all to every file that runs after.
- *
- * Any other condition that asks about the pointer or hover — a coarse
- * pointer joined to a width, a fine pointer, a hover — cannot be switched
- * on or off whole the way a coarse device would decide it, so it throws
- * before anything is switched: left alone, it would draw as a fine pointer
- * does while the case says coarse.
- */
-function coarseRulesOn(): () => void {
-  const found: CSSMediaRule[] = []
-  const walk = (list: CSSRuleList) => {
-    for (const rule of list) {
-      if (
-        rule instanceof CSSMediaRule &&
-        /pointer|hover/.test(rule.media.mediaText)
-      ) {
-        found.push(rule)
-      }
-      if (rule instanceof CSSGroupingRule) walk(rule.cssRules)
-    }
-  }
-  for (const sheet of document.styleSheets) walk(sheet.cssRules)
-  const other = found
-    .map((rule) => rule.media.mediaText)
-    .filter((text) => text.replace(/\s/g, '') !== '(pointer:coarse)')
-  if (other.length > 0) {
-    throw new Error(
-      `cannot switch on as a coarse pointer: @media ${other.join('; @media ')}`,
-    )
-  }
-  const switched = found.map(({ media }) => ({
-    media,
-    written: media.mediaText,
-  }))
-  for (const { media } of switched) media.mediaText = 'all'
-  return () => {
-    for (const { media, written } of switched) media.mediaText = written
-  }
-}
-
-/**
  * The Library view's heading row as the search box arrives. The box is drawn
  * once the status lands (`Library.tsx`'s `offered`), after the first paint,
  * so a row that grew to take it would move View and push everything under
@@ -669,14 +653,18 @@ describe('the Library view’s heading row as the search box arrives', () => {
 })
 
 /**
- * The shell alone, signed in, on a route that matches every path: a link
+ * The shell, signed in, on a route that matches every path: a link
  * followed inside it lands on a screen that still has the shell, so what
- * the shell does on arrival can be read.
+ * the shell does on arrival can be read. `screen` is what it draws in its
+ * `<main>`, a line with nothing to press unless a case names a screen.
  */
 async function shellAt(
   path: string,
   width: number,
   admin: boolean,
+  screen: React.ReactNode = (
+    <p className="plain">Nothing here can be pressed.</p>
+  ),
 ): Promise<HTMLElement> {
   await page.viewport(width, 844)
   const who: Me = {
@@ -692,14 +680,7 @@ async function shellAt(
       <MemoryRouter initialEntries={[path]}>
         <GateContext.Provider value={{ who, signOut: () => {} }}>
           <Routes>
-            <Route
-              path="*"
-              element={
-                <Shell>
-                  <p className="plain">Nothing here can be pressed.</p>
-                </Shell>
-              }
-            />
+            <Route path="*" element={<Shell>{screen}</Shell>} />
           </Routes>
         </GateContext.Provider>
       </MemoryRouter>,
@@ -728,14 +709,14 @@ async function clickWithMouse(el: Element) {
   })
 }
 
-/** The accent as the browser resolves it, whichever scheme is in force. */
-function accentIn(host: HTMLElement): string {
+/** A colour token as the browser resolves it, whichever scheme is in force. */
+function tokenIn(host: HTMLElement, token: string): string {
   const probe = document.createElement('span')
-  probe.style.color = 'var(--accent)'
+  probe.style.color = `var(${token})`
   host.append(probe)
-  const accent = getComputedStyle(probe).color
+  const colour = getComputedStyle(probe).color
   probe.remove()
-  return accent
+  return colour
 }
 
 describe('More, with a real mouse and real keys — spec §1', () => {
@@ -779,7 +760,7 @@ describe('More, with a real mouse and real keys — spec §1', () => {
     expect(panelOf(host).checkVisibility()).toBe(false)
     expect(button.hasAttribute('data-here')).toBe(true)
     expect(getComputedStyle(need(button, '.account-name')).color).toBe(
-      accentIn(host),
+      tokenIn(host, '--accent'),
     )
   })
 
@@ -914,7 +895,7 @@ describe('More, with a real mouse and real keys — spec §1', () => {
       const name = getComputedStyle(
         need(host, 'button.account-button .account-name'),
       )
-      expect(name.color === accentIn(host)).toBe(accent)
+      expect(name.color === tokenIn(host, '--accent')).toBe(accent)
     },
   )
 
@@ -930,7 +911,7 @@ describe('More, with a real mouse and real keys — spec §1', () => {
       const name = getComputedStyle(
         need(host, 'a.account-button .account-name'),
       )
-      expect(name.color === accentIn(host)).toBe(accent)
+      expect(name.color === tokenIn(host, '--accent')).toBe(accent)
     },
   )
 })
@@ -1004,5 +985,451 @@ describe('View, with a real mouse and real keys — spec §2', () => {
     await clickWithMouse(need(host, '.page-head h1'))
     expect(button.getAttribute('aria-expanded')).toBe('false')
     expect(panelOf(host).checkVisibility()).toBe(false)
+  })
+})
+
+/**
+ * The build's label under More — spec §4. `VersionLabel.test.tsx` pins what
+ * it says and where it is current; this is what a browser draws of that:
+ * its colour, the line it holds before the answer, and a real press on it
+ * inside the drawer.
+ */
+describe('the build’s label', () => {
+  it('is followed from the drawer with a real press, which closes it as a library link does', async () => {
+    const host = await shellAt('/', 390, false)
+    const menu = need<HTMLButtonElement>(host, 'button.menu-button')
+    await clickWithMouse(menu)
+    // Past the slide, so the press lands on the link and not where it was.
+    const column = need(host, '#library-menu')
+    await act(async () => {
+      await Promise.all(column.getAnimations().map((a) => a.finished))
+    })
+    const label = need<HTMLAnchorElement>(column, '.version-label a')
+    expect(label.checkVisibility()).toBe(true)
+    await clickWithMouse(label)
+    expect(label.getAttribute('aria-current')).toBe('page')
+    expect(menu.getAttribute('aria-expanded')).toBe('false')
+  })
+
+  it.each([
+    ['/about', true],
+    ['/about/licence', true],
+    ['/', false],
+    ['/account', false],
+  ])('draws the label in the accent on %s: %s', async (path, accent) => {
+    const host = await shellAt(path, 1440, false)
+    const label = getComputedStyle(need(host, '.version-label a'))
+    expect(label.color === tokenIn(host, '--accent')).toBe(accent)
+  })
+
+  it('is muted text at the 14px floor where it is not current', async () => {
+    const host = await shellAt('/', 1440, false)
+    const label = getComputedStyle(need(host, '.version-label a'))
+    expect(label.color).toBe(tokenIn(host, '--muted'))
+    expect(label.fontSize).toBe('14px')
+  })
+
+  // Coarse first at each width: the fine case's pointer check after it is
+  // what shows the coarse rules were switched back.
+  it.each([
+    [1440, 'coarse'],
+    [1440, 'fine'],
+    [390, 'coarse'],
+  ] as const)(
+    'holds its line at %i px with a %s pointer, so the foot does not move as the answer lands',
+    async (width, pointer) => {
+      if (pointer === 'coarse') onTestFinished(coarseRulesOn())
+      const answer = deferred<aboutApi.About>()
+      vi.mocked(aboutApi.about).mockReturnValue(answer.promise)
+      const host = await shellAt('/', width, false)
+      // THE POINTER THIS CASE NAMES, read from a coarse-pointer rule that is
+      // not the label's: More's 44 px floor.
+      expect(getComputedStyle(need(host, '.account-button')).minHeight).toBe(
+        pointer === 'coarse' ? '44px' : '0px',
+      )
+      if (width < 900) {
+        await clickWithMouse(need(host, 'button.menu-button'))
+        const column = need(host, '#library-menu')
+        await act(async () => {
+          await Promise.all(column.getAnimations().map((a) => a.finished))
+        })
+      }
+      const measure = () => ({
+        foot: need(host, '.sidebar-foot').getBoundingClientRect().height,
+        more: need(host, '.account-button').getBoundingClientRect().top,
+      })
+      expect(host.querySelector('.version-label a')).toBeNull()
+      const before = measure()
+      await act(async () => {
+        answer.resolve(ABOUT)
+      })
+      const link = need(host, '.version-label a')
+      expect(measure()).toEqual(before)
+      // A finger's row under a coarse pointer (spec 2026-09-17 §7.1).
+      if (pointer === 'coarse') {
+        expect(link.getBoundingClientRect().height).toBeGreaterThanOrEqual(44)
+      }
+    },
+  )
+})
+
+/**
+ * **A screen with the catalog's address does not scroll the document at a
+ * desktop width**, where `<main>` is what scrolls. The address's live region
+ * is out of the flow, so it is placed in the box of its nearest positioned
+ * ancestor, and where no ancestor is positioned that is the window's: a row
+ * lower in `<main>`'s content than the window is tall then stretches the
+ * document past the window. The account screen draws its row lower than
+ * About does, under the password form, and the window here is shorter than
+ * that, which the case checks first.
+ */
+describe('a screen with the catalog’s address, at a desktop width', () => {
+  it('leaves the document unscrolled on the account screen in a short window', async () => {
+    // The account screen's lists, answered empty.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => Response.json([])),
+    )
+    onTestFinished(() => {
+      vi.unstubAllGlobals()
+    })
+    const host = await shellAt(
+      '/account',
+      1280,
+      false,
+      <Account placement="page" onSignedOut={() => {}} />,
+    )
+    await page.viewport(1280, 400)
+    await act(async () => {
+      await new Promise((resolve) => {
+        setTimeout(resolve, 0)
+      })
+    })
+    const row = need(host, '.catalog-address')
+    const main = need(host, 'main')
+    expect(need(row, '[role="status"]').className).toBe('visually-hidden')
+    expect(
+      row.getBoundingClientRect().top -
+        main.getBoundingClientRect().top +
+        main.scrollTop,
+    ).toBeGreaterThan(innerHeight)
+    expect(document.documentElement.scrollHeight).toBeLessThanOrEqual(
+      innerHeight,
+    )
+  })
+})
+
+/**
+ * **The licence page's way up to About is a finger's 44 px under a coarse
+ * pointer in the shell itself** (spec 2026-09-17 §7.1), where it sits just
+ * under the phone bar. The bar is drawn over `<main>`, so where the two
+ * meet the bar takes the press. Its target is its box grown about its
+ * middle to 44 px (`fingerArea`), and that area shares nothing with the
+ * bar's box, so none of it is under the bar; hit testing along its middle
+ * row and column (`pressArea`) finds that whole area pressable.
+ */
+describe('the licence page’s way up, under the phone bar', () => {
+  it('is a finger’s 44 px with a coarse pointer, none of it under the bar', async () => {
+    onTestFinished(coarseRulesOn())
+    const host = await shellAt('/about/licence', 390, false, <Licence />)
+    await licenceTextsLanded()
+    await document.fonts.ready
+    const back = need(host, '.back a')
+    const target = fingerArea(back)
+    const bar = areaOf(need(host, '.phone-bar').getBoundingClientRect())
+    expect(overlapOf(target, bar)).toBe(0)
+    expect(pressArea(back)).toEqual(near(target))
+  })
+})
+
+/**
+ * The fragment the router holds, drawn where a test can read it. Declared
+ * inside a function, for the reason `Gate.test.tsx`'s `probe` gives.
+ */
+function routerFragment() {
+  function RouterFragment() {
+    return <output data-fragment={useLocation().hash} />
+  }
+  return <RouterFragment />
+}
+
+/**
+ * The licence page in the shell, signed in, under the router the app runs,
+ * `BrowserRouter`, at this frame's own address with no fragment, which
+ * `path="*"` matches and which is put back when the test ends. The texts
+ * and the faces have landed, and focus is on the way up, so a click that
+ * follows is not the frame's first input. `routerFragment()` draws the
+ * router's fragment beside the page.
+ */
+async function licenceInShell(width: number): Promise<HTMLElement> {
+  const before = location.href
+  onTestFinished(() => {
+    history.replaceState(null, '', before)
+  })
+  history.replaceState(null, '', `${location.pathname}${location.search}`)
+  await page.viewport(width, 844)
+  const who: Me = {
+    user_id: 1,
+    admin: false,
+    can_download: false,
+    can_stream: false,
+    can_stamp: false,
+  }
+  const host = mount(
+    <BrowserRouter>
+      <GateContext.Provider value={{ who, signOut: () => {} }}>
+        <Routes>
+          <Route
+            path="*"
+            element={
+              <Shell>
+                <Licence />
+                {routerFragment()}
+              </Shell>
+            }
+          />
+        </Routes>
+      </GateContext.Provider>
+    </BrowserRouter>,
+  )
+  host.style.height = '100%'
+  await licenceTextsLanded()
+  await document.fonts.ready
+  act(() => {
+    need(host, '.back a').focus()
+  })
+  return host
+}
+
+/** A frame, inside `act`, for whatever the router's render of a new location runs. */
+async function aFrame() {
+  await act(async () => {
+    await new Promise((resolve) => requestAnimationFrame(resolve))
+  })
+}
+
+/** A real click on the contents link to `fragment`, once its heading has focus. */
+async function follow(host: HTMLElement, fragment: string) {
+  const link = need(host, `nav[aria-label="Contents"] a[href="${fragment}"]`)
+  await act(async () => {
+    await userEvent.click(link)
+  })
+  await expect.poll(() => document.activeElement).toBe(need(host, fragment))
+  await aFrame()
+}
+
+/**
+ * Back `entries` entries, one as the browser's own button goes and more as
+ * its history menu jumps, with the router's render of it held a task so it
+ * runs after the browser has put back the scroll it keeps for the entry. In
+ * the app that order is the scheduler's to choose; this forces the order in
+ * which the browser's restore would undo the page's landing.
+ */
+async function back(entries = 1) {
+  await act(async () => {
+    const popped = new Promise((resolve) => {
+      window.addEventListener('popstate', resolve, { once: true })
+    })
+    history.go(-entries)
+    await popped
+    await new Promise((resolve) => setTimeout(resolve, 0))
+  })
+  await aFrame()
+}
+
+/**
+ * The part of the window the page is seen through: `<main>`, which scrolls
+ * at a desktop width, below the phone bar, which covers the window's top at
+ * a phone's width, where the document scrolls instead.
+ */
+function viewOf(host: HTMLElement) {
+  const main = need(host, 'main').getBoundingClientRect()
+  return {
+    top: Math.max(
+      main.top,
+      need(host, '.phone-bar').getBoundingClientRect().bottom,
+    ),
+    bottom: Math.min(main.bottom, innerHeight),
+  }
+}
+
+/** Whether all of `el` is in the view. */
+function inView(host: HTMLElement, el: Element) {
+  const view = viewOf(host)
+  const box = el.getBoundingClientRect()
+  return box.top >= view.top && box.bottom <= view.bottom
+}
+
+/** How far each of the two scrollers is scrolled: `<main>`, and the document. */
+const scrolled = (host: HTMLElement) => [
+  need(host, 'main').scrollTop,
+  Math.round(scrollY),
+]
+
+/**
+ * **A contents link followed at a phone's width lands its card below the
+ * phone bar**, which covers the top of the view there: the card's top edge
+ * is not under the bar, and a press at the middle of its heading lands on
+ * the heading, so the bar is not drawn over it. The router hears the
+ * fragment change, and focus is on the heading a frame after it has drawn
+ * the new location. Each link is clicked from wherever the last one left
+ * the view.
+ */
+describe('the licence page’s contents, under the phone bar', () => {
+  it('land each card below the bar, focus on its heading', async () => {
+    const host = await licenceInShell(390)
+    const landed = []
+    for (const link of host.querySelectorAll('nav[aria-label="Contents"] a')) {
+      await act(async () => {
+        await userEvent.click(link)
+      })
+      const heading = need(host, link.getAttribute('href') ?? '')
+      await expect.poll(() => document.activeElement).toBe(heading)
+      await aFrame()
+      const bar = need(host, '.phone-bar').getBoundingClientRect()
+      const card = heading.closest('.about-card')?.getBoundingClientRect()
+      const middle = heading.getBoundingClientRect()
+      const hit = document.elementFromPoint(
+        middle.left + middle.width / 2,
+        middle.top + middle.height / 2,
+      )
+      landed.push([
+        heading.textContent,
+        need(host, '[data-fragment]').dataset.fragment,
+        document.activeElement === heading,
+        card !== undefined && card.top >= bar.bottom,
+        hit !== null && heading.contains(hit),
+      ])
+    }
+    expect(landed).toEqual([
+      ['taiyaku', '#taiyaku', true, true, true],
+      ['Shippori Mincho B1', '#shippori-mincho-b1', true, true, true],
+      ['Zen Kaku Gothic New', '#zen-kaku-gothic-new', true, true, true],
+      ['taiyaku marks', '#taiyaku-marks', true, true, true],
+    ])
+  })
+})
+
+/**
+ * **Back puts the view where the address it goes back to says**, at a
+ * desktop width, where `<main>` scrolls and the browser keeps no scroll of
+ * its own for it, and at a phone's, where the document scrolls. To the
+ * page's own address, with no fragment: the page's top, the contents in
+ * view, focus left where the link put it. To another card's fragment: that
+ * card, landed as following its link lands it, focus on its heading.
+ */
+describe('the licence page’s contents, and Back', () => {
+  it.each([1280, 390])(
+    'at %i px, Back from a card to the page’s own address puts the page’s top in view',
+    async (width) => {
+      const host = await licenceInShell(width)
+      await follow(host, '#zen-kaku-gothic-new')
+      expect(scrolled(host)).not.toEqual([0, 0])
+      await back()
+      expect({
+        fragment: need(host, '[data-fragment]').dataset.fragment,
+        scrolled: scrolled(host),
+        contents: inView(host, need(host, 'nav[aria-label="Contents"]')),
+        focus: focused(),
+      }).toEqual({
+        fragment: '',
+        scrolled: [0, 0],
+        contents: true,
+        focus: 'Zen Kaku Gothic New',
+      })
+    },
+  )
+
+  it.each([1280, 390])(
+    'at %i px, Back from one card to another lands on that card, focus on its heading',
+    async (width) => {
+      const host = await licenceInShell(width)
+      await follow(host, '#shippori-mincho-b1')
+      await follow(host, '#zen-kaku-gothic-new')
+      await back()
+      const heading = need(host, '#shippori-mincho-b1')
+      const card = heading.closest('.about-card')
+      if (!card) throw new Error('no card')
+      expect({
+        fragment: need(host, '[data-fragment]').dataset.fragment,
+        focus: focused(),
+        heading: Math.round(
+          heading.getBoundingClientRect().top -
+            Number.parseFloat(getComputedStyle(heading).scrollMarginTop),
+        ),
+        card: card.getBoundingClientRect().top >= viewOf(host).top,
+      }).toEqual({
+        fragment: '#shippori-mincho-b1',
+        focus: 'Shippori Mincho B1',
+        heading: 0,
+        card: true,
+      })
+    },
+  )
+
+  // Two entries of one address, two apart: the router hands back the
+  // location it already had, so only the browser's `popstate` says the
+  // history moved. The reader has scrolled on into the GPL's text first,
+  // and focus is moved off the heading, so a landing has to put it back.
+  it.each([1280, 390])(
+    'at %i px, Back two entries from one card’s fragment to the same fragment lands on that card again',
+    async (width) => {
+      const host = await licenceInShell(width)
+      await follow(host, '#taiyaku')
+      await follow(host, '#shippori-mincho-b1')
+      await follow(host, '#taiyaku')
+      const heading = need(host, '#taiyaku')
+      act(() => {
+        need(host, '.back a').focus({ preventScroll: true })
+        heading.closest('.about-card')?.scrollIntoView({ block: 'end' })
+      })
+      expect({ focus: focused(), heading: inView(host, heading) }).toEqual({
+        focus: '‹ About',
+        heading: false,
+      })
+      await back(2)
+      expect({
+        fragment: need(host, '[data-fragment]').dataset.fragment,
+        focus: focused(),
+        heading: Math.round(
+          heading.getBoundingClientRect().top -
+            Number.parseFloat(getComputedStyle(heading).scrollMarginTop),
+        ),
+      }).toEqual({
+        fragment: '#taiyaku',
+        focus: 'taiyaku',
+        heading: 0,
+      })
+    },
+  )
+
+  // Under React's own scheduler rather than `act`, which draws every update
+  // it holds at once: the page's count of the history's moves is never drawn
+  // beside the location the history has left, so Back lands on the card it
+  // goes to and never first on the card it leaves. Focus is moved off that
+  // card's heading first, so a landing on it would be heard.
+  it('at 1280 px, Back under React’s own scheduler lands only on the card it goes to', async () => {
+    const host = await licenceInShell(1280)
+    await follow(host, '#shippori-mincho-b1')
+    await follow(host, '#zen-kaku-gothic-new')
+    act(() => {
+      need(host, '.back a').focus()
+    })
+    const landed: string[] = []
+    host.addEventListener('focusin', (event) => {
+      if (event.target instanceof HTMLElement) landed.push(event.target.id)
+    })
+    globalThis.IS_REACT_ACT_ENVIRONMENT = false
+    try {
+      const popped = new Promise((resolve) => {
+        window.addEventListener('popstate', resolve, { once: true })
+      })
+      history.back()
+      await popped
+      await new Promise((resolve) => requestAnimationFrame(resolve))
+    } finally {
+      globalThis.IS_REACT_ACT_ENVIRONMENT = true
+    }
+    expect(landed).toEqual(['shippori-mincho-b1'])
   })
 })

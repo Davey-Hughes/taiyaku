@@ -42,6 +42,10 @@ WORKDIR /src/web
 COPY web/package.json web/pnpm-lock.yaml ./
 RUN pnpm install --frozen-lockfile
 COPY web/ ./
+# The licence page bundles the repository's licence from `../LICENSE`
+# (`web/src/licenceTexts.ts`), which from this WORKDIR is this path: without
+# it the build below fails to resolve the import.
+COPY LICENSE /src/LICENSE
 COPY --from=wasm /src/crates/taiyaku-wasm/pkg /src/crates/taiyaku-wasm/pkg
 RUN pnpm run build
 
@@ -52,6 +56,13 @@ COPY rust-toolchain.toml ./
 RUN rustup toolchain install
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
+# The commit `/api/about` reports, which `taiyaku-serve` reads at compile time
+# through `option_env!`: nothing in the build runs git, and `.git` is not in
+# the context. A `RUN` after an `ARG` misses the cache whenever its value
+# changes, so it is declared here and not higher, where every commit would
+# reinstall the toolchain. Unset, or anything but a full 40-character
+# lowercase hash, and the server reports no commit.
+ARG TAIYAKU_COMMIT
 # `rusqlite` links the system SQLite (`libsqlite3-dev` ships in this image),
 # so this stage and the runtime one below must be the same distribution.
 RUN --mount=type=cache,id=taiyaku-cargo-registry,sharing=locked,target=/usr/local/cargo/registry \

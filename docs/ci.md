@@ -11,7 +11,12 @@ to `.github/workflows/`; using the Forgejo path keeps the intent unambiguous.
 | `test` | `cargo llvm-cov nextest --workspace` — runs the tests under nextest's per-test timeout *and* gates their aggregate coverage — then installs node and runs `scripts/coverage-floor.mjs` over a re-rendered JSON report for the per-file half |
 | `wasm` | builds `taiyaku-core` and `taiyaku-wasm` for `wasm32-unknown-unknown`, builds the browser package with `wasm-pack`, and runs `scripts/smoke-wasm.mjs` against the compiled module |
 | `web` | `pnpm install --frozen-lockfile`, `biome check` (formatting **and** lint), `tsc -b` typecheck, `vitest run --coverage` in `web/`, then `scripts/coverage-floor.mjs` for the per-file half |
-| `docker` | **on pushes to `main` only, after the four above pass**: builds the image in an isolated buildx builder, runs it until its health check passes and probes three paths, then pushes `forge.daveynet.xyz/davey/taiyaku:sha-<7>`, and `:latest` when its commit is main's tip — see "The image job" |
+| `docker` | **on pushes to `main` only, after the four above pass**: builds the image in an isolated buildx builder, runs it until its health check passes, probes three paths and checks its binary holds the commit, then pushes `forge.daveynet.xyz/davey/taiyaku:sha-<7>`, and `:latest` when its commit is main's tip — see "The image job" |
+
+The `test` job's tests run with `TAIYAKU_COMMIT` set to the commit under test,
+so `about`'s route test compares the commit `/api/about` reports with a real
+40-character hash. `check-all.sh` leaves the variable unset, and there that
+comparison is `null` with `null` unless one is exported before the script runs.
 
 The `test` job installs node for one step and one step only. `rust:1-bookworm`
 carries none, and the per-file floor is a node script because it is the *same*
@@ -1695,6 +1700,17 @@ report `healthy`, and probes `/read/anything` for 200, `/api/me` for 401 and
 container and the image, and pushes. No other job starts the image, and a
 health check that cannot pass would otherwise reach the NAS on a green
 pipeline.
+
+**It compiles the commit in, and checks it is there.** Both builds pass
+`--build-arg TAIYAKU_COMMIT=` the full commit, which the server stage's
+`cargo build` reads through `option_env!` for `/api/about`; nothing in the
+build runs git. The push passes it too because it rebuilds, and without it
+would publish a server other than the one probed. Before the image is removed,
+`grep -qaF` over `/usr/local/bin/taiyaku` must find the full commit: a build
+that lost the argument still starts and passes every probe. Because the
+argument changes with every commit, the server stage's `cargo build` runs on
+every push to `main`, a docs-only or web-only one included, rather than being
+taken from the layer cache.
 
 **Each probe runs under `timeout 10`**, so a server that accepts a connection
 and never answers fails the job quickly instead of holding it until the job's

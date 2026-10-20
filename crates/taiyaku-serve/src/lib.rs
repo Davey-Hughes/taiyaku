@@ -4,6 +4,7 @@
 //! is what lets taiyaku run beside Stump now and replace it later without a
 //! redesign. See `docs/superpowers/specs/2026-07-30-reader-design.md`.
 
+mod about;
 mod alignments;
 mod auth;
 mod backup_api;

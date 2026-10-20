@@ -40,10 +40,11 @@ function rulesWithSelector(
  * what separates "the rule is gone" from "the file never arrived".
  */
 it('reads admin.css at all', () => {
-  // `'.account-card {'` and not `'.account-card'`: the bare name is also a
+  // `'.account-row {'` and not `'.account-row'`: the bare name is also a
   // prefix of every other class that starts with it, so a renamed rule left
-  // this green. The brace makes it a rule.
-  expect(adminSource).toContain('.account-card {')
+  // this green. The brace makes it a rule, and one only this page's: the
+  // card and heading rules list About's classes beside the account's.
+  expect(adminSource).toContain('.account-row {')
 })
 
 /**

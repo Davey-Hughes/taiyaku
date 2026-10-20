@@ -41,7 +41,7 @@
 }
 
 /* The column's foot: the theme switch, then the account menu
- * (`AccountMenu.tsx`) under it. */
+ * (`AccountMenu.tsx`) under it, then the build's label (`VersionLabel.tsx`). */
 .sidebar-foot {
   position: sticky;
   bottom: 0;
@@ -51,6 +51,30 @@
   padding: var(--space-3) var(--space-4) var(--space-4);
   border-top: 1px solid var(--line);
   background: var(--bg);
+}
+
+/* The build's label, muted until it is the screen you are on. Its line is
+ * held before `/api/about` answers, which is after the first paint, so the
+ * foot does not grow under the pointer when the link is drawn: one line at
+ * the 1.5 set here, and a finger's 44 px in the coarse-pointer block below. */
+.version-label {
+  margin: 0;
+  min-block-size: calc(var(--text-meta) * 1.5);
+  font-size: var(--text-meta);
+  line-height: 1.5;
+}
+
+.version-label a {
+  color: var(--muted);
+  text-decoration: none;
+}
+
+.version-label a[aria-current="page"] {
+  color: var(--accent);
+}
+
+.version-label a:hover {
+  text-decoration: underline;
 }
 
 /* The panel opens upward from the button and is positioned against this
@@ -601,6 +625,16 @@ a.account-button {
     display: flex;
     align-items: center;
     justify-content: center;
+    min-height: 44px;
+  }
+
+  .version-label {
+    min-block-size: 44px;
+  }
+
+  .version-label a {
+    display: flex;
+    align-items: center;
     min-height: 44px;
   }
 }

@@ -1,8 +1,10 @@
 import { act } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { page } from 'vitest/browser'
+import { forgetAbout } from './about'
 import { Account } from './Account'
 import './index.css'
+import { ABOUT } from './testing/about'
 import { mount } from './testing/mount'
 
 const json = (body: unknown) =>
@@ -27,6 +29,10 @@ const json = (body: unknown) =>
  * boundaries on screen are the create form above the first key row and the
  * `<h3>` above the first session row, and a separation reaching the first
  * item of each list and nothing after it would measure exactly the same.
+ *
+ * **And `/api/about`**, so the catalog's address the screen draws beside the
+ * OPDS line is on screen for the sweep and the checks below as well. Left
+ * unanswered, the panel draws the OPDS line alone.
  */
 const server = () =>
   vi.fn((input: string, init?: RequestInit) => {
@@ -45,6 +51,7 @@ const server = () =>
         ]),
       )
     }
+    if (input === '/api/about') return Promise.resolve(json(ABOUT))
     if (input === '/api/sessions') {
       return Promise.resolve(
         json([
@@ -126,6 +133,7 @@ describe('the account panel', () => {
 
   afterEach(() => {
     vi.unstubAllGlobals()
+    forgetAbout()
     // Beside the global cleanup rather than at the end of the one case that
     // sets it: removed after the assertion, a failed assertion left `paper`
     // on the document for every case after it, and each of those resolves
@@ -178,6 +186,11 @@ describe('the account panel', () => {
     document.documentElement.setAttribute('data-theme', 'paper')
     const el = await panel()
     expect(getComputedStyle(el).color).toBe('rgb(236, 228, 212)')
+    // The catalog's address sets no colour of its own (`admin.css`), so it
+    // takes the panel's.
+    const address = el.querySelector('.catalog-address-text')
+    expect(address).not.toBeNull()
+    expect(getComputedStyle(address!).color).toBe('rgb(236, 228, 212)')
     // The attribute comes off in `afterEach`, not here: this line is not
     // reached when the assertion above fails.
   })
@@ -214,7 +227,7 @@ describe('the account panel', () => {
    * `.reader-section-head` is ③'s row and carries no margin, because
    * `Settings.tsx` draws one per section under the section's own rule.
    * Here they stack — the create form and a row per key; a row per session —
-   * and taking that class alone closed every gap between them: the four
+   * and taking that class alone closed every gap between them: four of the
    * boundaries measured below all read 0 px at this viewport, each row's top
    * exactly on the previous row's bottom, where each had 8 px above it
    * before ⑤c.
@@ -227,11 +240,12 @@ describe('the account panel', () => {
 
     // **The gap, read where a gap can be read.** A row's top margin
     // collapses with the bottom margin of whatever precedes it, so this
-    // measures the four boundaries where the element above contributes
-    // none: the create form above the first key row, one key row above the
-    // next, `.reader-panel-heading` (`margin: … 0 0`) above the first
-    // session row, one session row above the next. All four measured 0 with
-    // the margin gone.
+    // measures the five boundaries where the element above contributes
+    // none: the catalog's address above the create form, the create form
+    // above the first key row, one key row above the next,
+    // `.reader-panel-heading` (`margin: … 0 0`) above the first session row,
+    // one session row above the next. All five measured 0 with the margin
+    // gone.
     const gapAbove = (row: Element) => {
       const above = row.previousElementSibling
       if (!above) throw new Error('a stacked row with nothing above it')
@@ -239,16 +253,14 @@ describe('the account panel', () => {
         row.getBoundingClientRect().top - above.getBoundingClientRect().bottom,
       )
     }
-    expect(rows.slice(1).map(gapAbove)).toEqual([8, 8, 8, 8])
+    expect(rows.map(gapAbove)).toEqual([8, 8, 8, 8, 8])
 
-    // **And the margin itself, which is the only thing that reaches the
-    // create form.** The OPDS paragraph above it has a 12 px bottom margin,
-    // and a top margin collapses into that rather than adding to it — the
-    // gap there measures 12 with this class and 12 without, so the four
-    // above cannot see that site at all. Giving the create form alone the
-    // unstacked class leaves the four gaps green and this red — dropping the
-    // modifier from `look.row`, which all three sites share, reddens the gap
-    // assertion above first and proves nothing about this one.
+    // **And the margin itself, which is what reaches the create form when
+    // the address is not drawn.** Then the OPDS paragraph is above it, with
+    // a 12 px bottom margin a top margin collapses into rather than adds
+    // to, so the gap there measures 12 with this class and 12 without and
+    // the gaps above cannot see that site. This reads the class itself,
+    // whatever is above the row.
     expect(rows.map((row) => getComputedStyle(row).marginTop)).toEqual([
       '8px',
       '8px',
@@ -330,6 +342,7 @@ describe('the account page', () => {
 
   afterEach(() => {
     vi.unstubAllGlobals()
+    forgetAbout()
   })
 
   it('gives the key-name box the screen’s own control treatment, filling its row', async () => {

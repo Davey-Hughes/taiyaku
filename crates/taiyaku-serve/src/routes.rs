@@ -2124,6 +2124,7 @@ pub(crate) fn guarded_routes() -> Vec<(&'static str, axum::routing::MethodRouter
         ),
     ];
     routes.push(("/api/me", get(crate::session::whoami)));
+    routes.push(("/api/about", get(crate::about::about)));
     routes.push((
         "/api/keys",
         get(crate::session::list_keys).post(crate::session::create_key),
@@ -2490,6 +2491,12 @@ pub(crate) fn grant_postures() -> Vec<(&'static str, GrantPosture)> {
             "/api/me",
             GrantIndependent {
                 reason: "who the caller is, not what they may see",
+            },
+        ),
+        (
+            "/api/about",
+            GrantIndependent {
+                reason: "the build and the formats it writes, the same for every caller",
             },
         ),
         (

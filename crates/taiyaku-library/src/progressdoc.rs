@@ -41,7 +41,7 @@ pub struct Recorded {
 }
 
 /// The version this build writes and is the only one it reads.
-const VERSION: u32 = 1;
+pub const VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProgressDoc {
