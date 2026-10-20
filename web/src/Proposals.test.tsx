@@ -572,7 +572,7 @@ describe('Proposals', () => {
   })
 
   it('discards a stale response that lands after a newer filter change', async () => {
-    // `Library.tsx`, `Shell.tsx`, `Series.tsx` and `Search.tsx` all guard
+    // `Library.tsx`, `Shell.tsx` and `Series.tsx` all guard
     // their own fetch effects with a `cancelled` flag for exactly this: a
     // request that is no longer the current one must not overwrite what a
     // later one already set. Every other test here awaits two microtask
@@ -735,7 +735,7 @@ describe('Proposals', () => {
     // "nothing has come back *yet*", which an `[]`/`{}` initial state cannot
     // do — it reads identically to an inbox that answered with nothing in
     // it, so the message below would flash on every mount before the first
-    // response. `Library.tsx`'s `gridData` and `Search.tsx`'s `hits` hold
+    // response. `Library.tsx`'s `gridData` and `searchHits.ts`'s `hits` hold
     // the same `undefined` for the same reason.
     let finish: (inbox: curation.Inbox) => void = () => {}
     vi.mocked(curation.listProposals).mockImplementation(

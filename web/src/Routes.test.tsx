@@ -1,5 +1,5 @@
 import { act, useEffect } from 'react'
-import { MemoryRouter, useNavigate, useParams } from 'react-router'
+import { MemoryRouter, useLocation, useNavigate, useParams } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as api from './api'
 import { GateContext } from './gate'
@@ -47,9 +47,13 @@ vi.mock('./App', () => ({
 }))
 vi.mock('./library', async (importOriginal) => ({
   // The real parser of `?library=`: it is a pure function over the URL, and
-  // the library page, the sidebar and Search all read the parameter through it.
+  // the library page and the sidebar both read the parameter through it.
   libraryParam: (await importOriginal<typeof import('./library')>())
     .libraryParam,
+  // The real cover URLs, a pure function too, for the tile a search's hit
+  // draws (`a link to /search`, below).
+  coverSources: (await importOriginal<typeof import('./library')>())
+    .coverSources,
   home: vi.fn().mockResolvedValue({ continuing: [], added: [], read: [] }),
   grid: vi.fn().mockResolvedValue({ series: [], unfiled: [] }),
   status: vi.fn().mockResolvedValue({ libraries: [] }),
@@ -72,12 +76,12 @@ vi.mock('./library', async (importOriginal) => ({
     },
     works: [],
   }),
-  // Task 10 wires `/search` to `Search`, which calls `search` once the
-  // debounce settles on the `?q=` value carried in from the URL — a route
-  // this file exercises (`/search?q=hello`, below). Its own behaviour is
-  // `Search.test.tsx`'s job; this fixture only has to resolve so the route
-  // mounts without an unhandled rejection, the same reason `oneSeries` above
-  // exists.
+  // `/search` lands on the Library view, whose search bar calls `search`
+  // once the debounce settles on the `?q=` carried in from the URL — a route
+  // this file exercises (`/search?q=hello`, below). The bar's own behaviour
+  // is `Library.test.tsx`'s and `searchHits.test.tsx`'s; this fixture only
+  // has to resolve so the route mounts without an unhandled rejection, the
+  // same reason `oneSeries` above exists.
   search: vi
     .fn()
     .mockResolvedValue({ series: [], unfiled: [], query: 'hello' }),
@@ -122,10 +126,10 @@ describe('the routes', () => {
     mounts.length = 0
   })
 
-  // Only the search route below turns fake timers on — `Search`'s debounce
-  // needs them to settle deterministically. Every other test here runs on
-  // real timers, so this has to come back off after, not just get left on
-  // for whichever test happens to run next in the file.
+  // Only the search routes below turn fake timers on — the search bar's
+  // debounce needs them to settle deterministically. Every other test here
+  // runs on real timers, so this has to come back off after, not just get
+  // left on for whichever test happens to run next in the file.
   afterEach(() => {
     vi.useRealTimers()
   })
@@ -186,28 +190,102 @@ describe('the routes', () => {
   })
 
   /**
-   * The same trap "routes a series id into the series page inside the shell"
-   * above already had to avoid: `.library`/`.sidebar` alone come from `Shell`,
-   * which wraps every route in this file, so they would still be present if
-   * `/search` rendered `<Shell><Library /></Shell>` by mistake. A search box
-   * is something only `Search` renders, and `library.search` having been
-   * called with the `?q=` value parsed out of the URL is something only its
-   * own effect produces; `Search.test.tsx` owns the rest of that component's
-   * content.
+   * `/search` redirects to the Library view with its query and its library,
+   * so a search link keeps working (spec §2). The hits are what show the
+   * view took the query from the URL: the box is the view's own, so its
+   * presence alone says nothing of the redirect.
    */
-  it('routes a search into the search screen inside the shell', async () => {
-    vi.useFakeTimers()
-    const host = at('/search?q=hello')
-    expect(host.querySelector('input[type="search"]')).not.toBeNull()
-    await act(async () => {
-      vi.advanceTimersByTime(300)
-      await Promise.resolve()
-      await Promise.resolve()
+  describe('a link to /search', () => {
+    beforeEach(() => {
+      vi.useFakeTimers()
+      vi.mocked(library.search).mockClear()
     })
-    expect(host.querySelector('[data-testid="reader"]')).toBeNull()
-    expect(host.querySelector('.library')).not.toBeNull()
-    expect(host.querySelector('.sidebar')).not.toBeNull()
-    expect(vi.mocked(library.search)).toHaveBeenCalledWith('hello', undefined)
+
+    /** The routes at `path`, with the location they settle on beside them. */
+    const settledAt = async (path: string) => {
+      // Declared here for the reason `Shell.test.tsx`'s `reporter()` gives.
+      function Probe() {
+        const { pathname, search } = useLocation()
+        return <output data-testid="location">{pathname + search}</output>
+      }
+      const host = mount(
+        <MemoryRouter initialEntries={[path]}>
+          <AppRoutes />
+          <Probe />
+        </MemoryRouter>,
+      )
+      // The shell's status first: the view runs a query only once it knows
+      // there is a library to search. Then the debounce.
+      await flush()
+      await act(async () => {
+        vi.advanceTimersByTime(300)
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+      return host
+    }
+
+    const locationOf = (host: HTMLElement) =>
+      host.querySelector('[data-testid="location"]')?.textContent
+
+    it('lands on the Library view with its query and its library, and shows the hits', async () => {
+      vi.mocked(library.search).mockResolvedValueOnce({
+        series: [
+          {
+            id: 3,
+            title: 'Hello Series',
+            works: 1,
+            editions: 1,
+            aligned: 0,
+            added: 0,
+            unread: 1,
+            cover: '',
+          },
+        ],
+        unfiled: [],
+        query: 'hello',
+      })
+      // A library this account sees: the view searches only a library its
+      // grid can show.
+      vi.mocked(library.status).mockResolvedValueOnce({
+        libraries: [{ id: 2, name: 'Comics', scanned: true }],
+        restricted: false,
+      })
+      const host = await settledAt('/search?q=hello&library=2')
+      expect(locationOf(host)).toBe('/?q=hello&library=2')
+      expect(host.querySelector('.library')).not.toBeNull()
+      expect(host.querySelector('.sidebar')).not.toBeNull()
+      expect(
+        host.querySelector<HTMLInputElement>('input[type="search"]')?.value,
+      ).toBe('hello')
+      expect(vi.mocked(library.search).mock.calls).toEqual([['hello', 2]])
+      expect(host.querySelector('.search-hits .grid .title')?.textContent).toBe(
+        'Hello Series',
+      )
+    })
+
+    it('leaves an empty library behind, so the search is of every library', async () => {
+      // A server with a library: on one with none the view runs no query.
+      vi.mocked(library.status).mockResolvedValueOnce({
+        libraries: [{ id: 1, name: 'Manga', scanned: true }],
+        restricted: false,
+      })
+      const host = await settledAt('/search?q=hello&library=')
+      expect(locationOf(host)).toBe('/?q=hello')
+      expect(vi.mocked(library.search).mock.calls).toEqual([
+        ['hello', undefined],
+      ])
+    })
+
+    it('lands a link with no library on every library', async () => {
+      const host = await settledAt('/search?q=hello')
+      expect(locationOf(host)).toBe('/?q=hello')
+    })
+
+    it('lands a bare link on the Library view', async () => {
+      const host = await settledAt('/search')
+      expect(locationOf(host)).toBe('/')
+    })
   })
 
   /**

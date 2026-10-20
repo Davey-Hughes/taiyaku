@@ -146,3 +146,22 @@ body {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
+
+/* Ink's body text one step heavier. Light text on a dark ground reads
+   thinner than the same face dark on light, so the UI face takes 500 wherever
+   Ink is in force: chosen outright, or System on a device that prefers dark.
+   On the library and sign-in screens only, like every rule above; the
+   reader keeps its own weights. A rule that sets a weight of its own — the
+   headings' 600, a table mark's 400 — keeps it, and the title face is drawn
+   at 600 whatever is asked below that, because 600 is its lightest file.
+   That holds because the weight is set on the scope element and inherited,
+   not on each element inside it; `base.css.test.ts` allows this shape. */
+:root[data-theme="ink"] :where(.library, .login) {
+  font-weight: 500;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="paper"]) :where(.library, .login) {
+    font-weight: 500;
+  }
+}

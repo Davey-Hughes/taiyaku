@@ -1,7 +1,8 @@
 import { act } from 'react'
-import { Link, MemoryRouter } from 'react-router'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { Link, MemoryRouter, useLocation, useNavigate } from 'react-router'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Me } from './api'
+import { BrowseControlsContext } from './browseModule'
 import { GateContext } from './gate'
 import * as library from './library'
 import type { LibraryStatus } from './library'
@@ -9,12 +10,13 @@ import { Library } from './Library'
 import { StatusContext } from './shell'
 import { Sidebar } from './Sidebar'
 import { deferred, flush } from './testing/async'
-import { mount } from './testing/mount'
+import { mount, rerender } from './testing/mount'
 
 vi.mock('./library', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./library')>()),
   home: vi.fn(),
   grid: vi.fn(),
+  search: vi.fn(),
 }))
 
 const series = (
@@ -849,12 +851,591 @@ describe('the library screen', () => {
     expect(h1s.map((h) => [h.textContent, h.className])).toEqual([
       ['Library', 'visually-hidden'],
     ])
-    expect(host.firstElementChild).toBe(h1s[0])
   })
 
   it('names its tab Library — O173', async () => {
     document.title = 'stale'
     await show()
     expect(document.title).toBe('Library — taiyaku')
+  })
+})
+
+describe('the library page’s View panel — spec §2', () => {
+  beforeEach(() => {
+    vi.mocked(library.home).mockResolvedValue({
+      continuing: [],
+      added: [],
+      read: [],
+    })
+    vi.mocked(library.grid).mockResolvedValue({ series: [], unfiled: [] })
+  })
+
+  /** Library 1's page with a shell's controls, and a link to library 2's. */
+  const mountWithView = async () => {
+    let host!: HTMLElement
+    await act(async () => {
+      host = mount(
+        <MemoryRouter initialEntries={['/?library=1']}>
+          <StatusContext.Provider value={twoLibraries}>
+            <BrowseControlsContext.Provider
+              value={{ change: () => {}, reset: () => {} }}
+            >
+              <Link to="/?library=2">the other library</Link>
+              <Library />
+            </BrowseControlsContext.Provider>
+          </StatusContext.Provider>
+        </MemoryRouter>,
+      )
+    })
+    await flush()
+    return host
+  }
+
+  const viewButton = (host: HTMLElement) => {
+    const button = host.querySelector<HTMLButtonElement>(
+      '.page-head .view-button',
+    )
+    if (!button) throw new Error('no View button in the top row')
+    return button
+  }
+
+  const openView = (host: HTMLElement) => {
+    act(() => {
+      viewButton(host).click()
+    })
+    const panel = document.getElementById(
+      viewButton(host).getAttribute('aria-controls') ?? '',
+    )
+    if (!panel || panel.hidden) throw new Error('View opened nothing')
+    return panel
+  }
+
+  it('draws the search box, then View, in the top row — spec §2', async () => {
+    const host = await mountWithView()
+    expect(
+      [...(host.querySelector('.page-head')?.children ?? [])].map(
+        (child) => child.className,
+      ),
+    ).toEqual(['visually-hidden', 'search-box', 'view-menu'])
+  })
+
+  it('holds Continue strip, Density and Reset, in sentence case', async () => {
+    const panel = openView(await mountWithView())
+    expect(
+      [...panel.querySelectorAll('label')].map((label) => {
+        const control = label.querySelector('input, select')
+        return [
+          label.querySelector('span')?.textContent,
+          control instanceof HTMLInputElement ? control.type : control?.tagName,
+          [...label.querySelectorAll('option')].map((o) => o.textContent),
+        ]
+      }),
+    ).toEqual([
+      ['Continue strip', 'checkbox', []],
+      ['Density', 'SELECT', ['Compact', 'Comfortable']],
+    ])
+    expect(
+      [...panel.querySelectorAll('button')].map((b) => b.textContent),
+    ).toEqual(['Reset'])
+  })
+
+  it('closes when the page navigates, the page staying', async () => {
+    // `click()` sends no pointer press and moves no focus, so only the
+    // navigation itself can close the panel here.
+    const host = await mountWithView()
+    const panel = openView(host)
+    const button = viewButton(host)
+    await act(async () => {
+      host.querySelector<HTMLAnchorElement>('a[href="/?library=2"]')?.click()
+    })
+    // The same button: the page did not remount, which would have closed
+    // the panel whatever the hook did.
+    expect(viewButton(host)).toBe(button)
+    expect(button.getAttribute('aria-expanded')).toBe('false')
+    expect(panel.hidden).toBe(true)
+  })
+})
+
+/**
+ * A child that draws the router's query string, so a test can read what the
+ * box put in the URL. Declared inside a function for the reason
+ * `Shell.test.tsx`'s `reporter()` gives: `style/useComponentExportOnlyModules`
+ * refuses an unexported component at module scope, and
+ * `suspicious/noExportsInTest` refuses the export.
+ */
+function locationProbe() {
+  function Probe() {
+    return <output data-testid="location">{useLocation().search}</output>
+  }
+  return <Probe />
+}
+
+describe('the search bar — spec §2', () => {
+  const hit = (over: Partial<library.SeriesCard> = {}) =>
+    series({ id: 7, title: '五等分の花嫁', ...over })
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+    // Call history, not just the resolved value: each test counts its own
+    // searches.
+    vi.mocked(library.search).mockClear()
+    vi.mocked(library.search).mockResolvedValue({
+      series: [hit()],
+      unfiled: [],
+      query: '花嫁',
+    })
+    vi.mocked(library.home).mockResolvedValue({
+      continuing: [work()],
+      added: [],
+      read: [],
+    })
+    vi.mocked(library.grid).mockResolvedValue({
+      series: [series()],
+      unfiled: [],
+    })
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  /**
+   * The view at `path` under `status`, with the URL drawn beside it. A
+   * `rerender` of it with another status is the shell's fetch landing under
+   * a view already drawn: `MemoryRouter` reads `initialEntries` once, so the
+   * URL stays where the box put it.
+   */
+  const tree = (path: string, status: LibraryStatus | undefined) => (
+    <MemoryRouter initialEntries={[path]}>
+      <StatusContext.Provider value={status}>
+        <Library />
+        {locationProbe()}
+      </StatusContext.Provider>
+    </MemoryRouter>
+  )
+
+  /** Wait out the debounce, and let the loads and the search settle. */
+  const settle = () =>
+    act(async () => {
+      vi.advanceTimersByTime(300)
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+  /** Mount at `path`; `'in flight'` is the shell's status not yet landed. */
+  const viewAt = async (
+    path: string,
+    status: LibraryStatus | 'in flight' = twoLibraries,
+  ) => {
+    let host!: HTMLElement
+    await act(async () => {
+      host = mount(tree(path, status === 'in flight' ? undefined : status))
+    })
+    await settle()
+    return host
+  }
+
+  const boxOf = (host: HTMLElement) =>
+    host.querySelector<HTMLInputElement>('input[type="search"]')
+
+  /**
+   * Set the box's value and fire `input`, without waiting out the debounce.
+   * The native setter, not `box.value = q`: React tracks the value of a
+   * controlled input, so a plain assignment leaves the `input` event finding
+   * nothing changed and `onChange` never runs.
+   */
+  async function setValue(host: HTMLElement, q: string) {
+    const box = boxOf(host)
+    if (!box) throw new Error('no search box')
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype,
+        'value',
+      )?.set?.call(box, q)
+      box.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+  }
+
+  /** Type into the box and let the debounce and the search settle. */
+  async function type(host: HTMLElement, q: string) {
+    await setValue(host, q)
+    await settle()
+  }
+
+  /** The query string the box has put in the URL, as a plain object. */
+  const urlOf = (host: HTMLElement) =>
+    Object.fromEntries(
+      new URLSearchParams(
+        host.querySelector('[data-testid="location"]')?.textContent ?? '',
+      ),
+    )
+
+  it('searches what was typed, once the typing stops', async () => {
+    const host = await viewAt('/')
+    await type(host, '花嫁')
+    expect(vi.mocked(library.search)).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(library.search)).toHaveBeenCalledWith('花嫁', undefined)
+    expect(host.querySelector('.search-hits .grid .title')?.textContent).toBe(
+      '五等分の花嫁',
+    )
+  })
+
+  it('runs the query in the URL on arrival, so a search can be a link', async () => {
+    const host = await viewAt('/?q=%E8%8A%B1%E5%AB%81')
+    expect(vi.mocked(library.search)).toHaveBeenCalledWith('花嫁', undefined)
+    expect(boxOf(host)?.value).toBe('花嫁')
+  })
+
+  it('names what was searched when nothing matched', async () => {
+    vi.mocked(library.search).mockResolvedValue({
+      series: [],
+      unfiled: [],
+      query: '花婿',
+    })
+    const host = await viewAt('/')
+    await type(host, '花婿')
+    expect(host.querySelector('.search-hits .empty')?.textContent).toContain(
+      '花婿',
+    )
+  })
+
+  it('says so when the search fails', async () => {
+    vi.mocked(library.search).mockRejectedValue(
+      new Error('/api/library/search: 500'),
+    )
+    const host = await viewAt('/')
+    await type(host, '花嫁')
+    expect(
+      host.querySelector('.search-hits [role="alert"]')?.textContent,
+    ).toContain('500')
+  })
+
+  it('draws no answer that lands after the box was cleared, not even under the next query', async () => {
+    const stale = deferred<library.SearchHits>()
+    const next = deferred<library.SearchHits>()
+    vi.mocked(library.search)
+      .mockReturnValueOnce(stale.promise)
+      .mockReturnValueOnce(next.promise)
+    const host = await viewAt('/')
+    await type(host, '花嫁')
+    expect(vi.mocked(library.search)).toHaveBeenCalledTimes(1)
+    await setValue(host, '')
+    await flush(() =>
+      stale.resolve({ series: [hit()], unfiled: [], query: '花嫁' }),
+    )
+    expect(host.querySelector('.search-hits')).toBeNull()
+    expect(boxOf(host)?.value).toBe('')
+    // A new query whose own answer is still out: with the box empty the
+    // hits are not drawn at all, so only here could the stale answer show.
+    await type(host, '花')
+    expect(vi.mocked(library.search)).toHaveBeenCalledTimes(2)
+    expect(host.querySelector('.search-hits')).not.toBeNull()
+    expect(
+      [...host.querySelectorAll('.search-hits .title')].map(
+        (title) => title.textContent,
+      ),
+    ).toEqual([])
+  })
+
+  it('shows what ?q= holds when something other than the box changes it: Back, or a link', async () => {
+    // Declared here for the reason `locationProbe` gives.
+    function Back() {
+      const navigate = useNavigate()
+      return (
+        <button type="button" onClick={() => void navigate(-1)}>
+          Back
+        </button>
+      )
+    }
+    let host!: HTMLElement
+    await act(async () => {
+      host = mount(
+        <MemoryRouter initialEntries={['/?q=old', '/?q=new']} initialIndex={1}>
+          <StatusContext.Provider value={twoLibraries}>
+            <Back />
+            <Link to="/">every library</Link>
+            <Library />
+          </StatusContext.Provider>
+        </MemoryRouter>,
+      )
+    })
+    await settle()
+    const box = boxOf(host)
+    expect(box?.value).toBe('new')
+    await act(async () => {
+      host.querySelector<HTMLButtonElement>('button')?.click()
+    })
+    await settle()
+    // The same box: the view did not remount, which would have drawn the
+    // URL's value whatever the box did with it.
+    expect(boxOf(host)).toBe(box)
+    expect(box?.value).toBe('old')
+    await act(async () => {
+      host.querySelector<HTMLAnchorElement>('a[href="/"]')?.click()
+    })
+    await settle()
+    expect(boxOf(host)).toBe(box)
+    expect(box?.value).toBe('')
+  })
+
+  it('searches the library in the URL on arrival', async () => {
+    await viewAt('/?q=Series&library=2')
+    // Every call, not the last: one search, narrowed, and none before it of
+    // another scope.
+    expect(vi.mocked(library.search).mock.calls).toEqual([['Series', 2]])
+  })
+
+  it('searches a link’s library once, when the status lands after the search has gone', async () => {
+    const host = await viewAt('/?q=Series&library=2', 'in flight')
+    expect(vi.mocked(library.search).mock.calls).toEqual([['Series', 2]])
+    await act(async () => {
+      rerender(tree('/?q=Series&library=2', twoLibraries))
+    })
+    await settle()
+    expect(vi.mocked(library.search).mock.calls).toEqual([['Series', 2]])
+    expect(urlOf(host)).toEqual({ q: 'Series', library: '2' })
+  })
+
+  it('keeps the library in the URL while the box is typed in', async () => {
+    const host = await viewAt('/?q=Ser&library=2')
+    await type(host, 'Series')
+    expect(urlOf(host)).toEqual({ q: 'Series', library: '2' })
+    expect(vi.mocked(library.search)).toHaveBeenLastCalledWith('Series', 2)
+  })
+
+  it('keeps its tab’s name while the box is typed in — O173', async () => {
+    document.title = 'stale'
+    const host = await viewAt('/')
+    expect(document.title).toBe('Library — taiyaku')
+    await type(host, 'one')
+    expect(document.title).toBe('Library — taiyaku')
+  })
+
+  it('puts the hits in place of the grid and hides the tabs, the sort and the continue strip, and clearing the box brings them back', async () => {
+    const host = await viewAt('/')
+    const drawn = () => ({
+      continue: host.querySelector('[data-testid="continue"]') !== null,
+      tabs: host.querySelector('[role="group"][aria-label="Show"]') !== null,
+      sort: host.querySelector('button.sort') !== null,
+      grid: [...host.querySelectorAll('.grid .title')].map(
+        (title) => title.textContent,
+      ),
+    })
+    const browsing = {
+      continue: true,
+      tabs: true,
+      sort: true,
+      grid: ['A Series'],
+    }
+    expect(drawn()).toEqual(browsing)
+    await type(host, '花嫁')
+    expect(drawn()).toEqual({
+      continue: false,
+      tabs: false,
+      sort: false,
+      grid: ['五等分の花嫁'],
+    })
+    await type(host, '')
+    expect(drawn()).toEqual(browsing)
+  })
+
+  for (const [path, status, placeholder, scope] of [
+    ['/', twoLibraries, 'Search every library', undefined],
+    ['/?library=2', twoLibraries, 'Search Comics', 2],
+    ['/?library=2', 'in flight', 'Search this library', 2],
+  ] as const) {
+    it(`searches the library ${path} shows, and its placeholder says “${placeholder}”`, async () => {
+      const host = await viewAt(path, status)
+      expect(boxOf(host)?.placeholder).toBe(placeholder)
+      await type(host, 'Series')
+      expect(vi.mocked(library.search).mock.calls).toEqual([['Series', scope]])
+    })
+  }
+
+  // The box follows what the grid shows: where the grid says there is no
+  // such library, there is no scope to search and the empty state says why.
+  // A value that is no id says so before the status lands, so it is held
+  // with the status in flight as well.
+  for (const [path, status] of [
+    ['/?library=7', twoLibraries],
+    ['/?q=Series&library=7', twoLibraries],
+    ['/?library=abc', twoLibraries],
+    ['/?q=Series&library=abc', twoLibraries],
+    ['/?q=Series&library=abc', 'in flight'],
+  ] as const) {
+    const when = status === 'in flight' ? ', the status in flight' : ''
+    it(`offers no box at ${path}${when}, and says there is no such library`, async () => {
+      // What the server answers for a library outside the grant: nothing.
+      vi.mocked(library.grid).mockResolvedValue({ series: [], unfiled: [] })
+      vi.mocked(library.home).mockResolvedValue({
+        continuing: [],
+        added: [],
+        read: [],
+      })
+      const host = await viewAt(path, status)
+      expect(boxOf(host)).toBeNull()
+      expect(host.querySelector('.empty h2')?.textContent).toBe(
+        'No such library',
+      )
+      expect(vi.mocked(library.search)).not.toHaveBeenCalled()
+    })
+  }
+
+  // While the status is loading the grid names no empty state and draws
+  // only the rows it has, so the box comes with the rows or with the
+  // status: never drawn and then taken away.
+  const loads: [
+    string,
+    string,
+    LibraryStatus,
+    library.SeriesCard[],
+    boolean,
+  ][] = [
+    ['an id the status does not list', '/?library=7', twoLibraries, [], false],
+    [
+      'every library, for an account that sees none',
+      '/',
+      { libraries: [], restricted: true },
+      [],
+      false,
+    ],
+    [
+      'a library the status lists',
+      '/?library=2',
+      twoLibraries,
+      [series()],
+      true,
+    ],
+  ]
+  for (const [what, path, status, rows, offered] of loads) {
+    it(`draws the box for ${what} only once it stays, as the grid and then the status land`, async () => {
+      const grid = deferred<library.Grid>()
+      vi.mocked(library.grid).mockReturnValue(grid.promise)
+      vi.mocked(library.home).mockResolvedValue({
+        continuing: [],
+        added: [],
+        read: [],
+      })
+      const host = await viewAt(path, 'in flight')
+      const drawn = [boxOf(host) !== null]
+      await flush(() => grid.resolve({ series: rows, unfiled: [] }))
+      drawn.push(boxOf(host) !== null)
+      await act(async () => {
+        rerender(tree(path, status))
+      })
+      await settle()
+      drawn.push(boxOf(host) !== null)
+      expect(drawn).toEqual(
+        offered ? [false, true, true] : [false, false, false],
+      )
+    })
+  }
+
+  it('offers an account that sees no library no box, and says none is shared — O221', async () => {
+    // What the server answers such an account: nothing.
+    vi.mocked(library.grid).mockResolvedValue({ series: [], unfiled: [] })
+    vi.mocked(library.home).mockResolvedValue({
+      continuing: [],
+      added: [],
+      read: [],
+    })
+    const host = await viewAt('/?q=Series', { libraries: [], restricted: true })
+    expect(boxOf(host)).toBeNull()
+    expect(host.querySelector('.empty h2')?.textContent).toBe(
+      'No library shared',
+    )
+    expect(vi.mocked(library.search)).not.toHaveBeenCalled()
+  })
+
+  it('offers no box on a server with no library, where the grid says none is made yet', async () => {
+    vi.mocked(library.grid).mockResolvedValue({ series: [], unfiled: [] })
+    vi.mocked(library.home).mockResolvedValue({
+      continuing: [],
+      added: [],
+      read: [],
+    })
+    const host = await viewAt('/?q=Series', {
+      libraries: [],
+      restricted: false,
+    })
+    expect(boxOf(host)).toBeNull()
+    expect(host.querySelector('.empty h2')?.textContent).toBe('No library yet')
+    expect(vi.mocked(library.search)).not.toHaveBeenCalled()
+  })
+
+  // The query runs only where the box is offered, so a status still out
+  // past the debounce sends nothing that its answer could then contradict.
+  for (const [what, path, status, state] of [
+    [
+      'an id the status does not list',
+      '/?q=Series&library=7',
+      twoLibraries,
+      'No such library',
+    ],
+    [
+      'an account that sees no library',
+      '/?q=Series',
+      { libraries: [], restricted: true },
+      'No library shared',
+    ],
+  ] as [string, string, LibraryStatus, string][]) {
+    it(`asks nothing for ${what} while the status is out, and then says ${state}`, async () => {
+      vi.mocked(library.search).mockResolvedValue({
+        series: [],
+        unfiled: [],
+        query: 'Series',
+      })
+      vi.mocked(library.grid).mockResolvedValue({ series: [], unfiled: [] })
+      vi.mocked(library.home).mockResolvedValue({
+        continuing: [],
+        added: [],
+        read: [],
+      })
+      const host = await viewAt(path, 'in flight')
+      await settle()
+      expect(vi.mocked(library.search)).not.toHaveBeenCalled()
+      // No empty state of any kind yet: neither "Nothing matched" nor the
+      // one the status will name.
+      expect(host.querySelector('.empty')).toBeNull()
+      await act(async () => {
+        rerender(tree(path, status))
+      })
+      await settle()
+      expect(vi.mocked(library.search)).not.toHaveBeenCalled()
+      expect(host.querySelector('.empty h2')?.textContent).toBe(state)
+    })
+  }
+
+  it('stays in search mode while the status is out, and sends the query once it lands', async () => {
+    // A grid with no rows, so only the status can offer the box.
+    vi.mocked(library.grid).mockResolvedValue({ series: [], unfiled: [] })
+    let host!: HTMLElement
+    await act(async () => {
+      host = mount(tree('/?q=Series', undefined))
+    })
+    const drawn = () => ({
+      continue: host.querySelector('[data-testid="continue"]') !== null,
+      tabs: host.querySelector('[role="group"][aria-label="Show"]') !== null,
+      sort: host.querySelector('button.sort') !== null,
+      hits: [...host.querySelectorAll('.search-hits .title')].map(
+        (title) => title.textContent,
+      ),
+      searches: vi.mocked(library.search).mock.calls.length,
+    })
+    const seen = [drawn()]
+    await settle()
+    seen.push(drawn())
+    await act(async () => {
+      rerender(tree('/?q=Series', twoLibraries))
+    })
+    await settle()
+    seen.push(drawn())
+    const waiting = { continue: false, tabs: false, sort: false, hits: [] }
+    expect(seen).toEqual([
+      { ...waiting, searches: 0 },
+      { ...waiting, searches: 0 },
+      { ...waiting, hits: ['五等分の花嫁'], searches: 1 },
+    ])
+    expect(host.querySelector('.search-hits')).not.toBeNull()
   })
 })

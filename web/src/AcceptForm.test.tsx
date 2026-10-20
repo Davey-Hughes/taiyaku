@@ -118,8 +118,8 @@ const refusalLines = (host: HTMLElement) =>
  *
  * Through the prototype's own setter, not the element's: React installs a
  * value tracker on the instance and skips an event whose value it believes it
- * already has, so assigning `el.value` directly fires nothing. `Search.test.tsx`
- * carries the same helper for the same reason.
+ * already has, so assigning `el.value` directly fires nothing.
+ * `Library.test.tsx` carries the same helper for the same reason.
  */
 async function typeInto(el: HTMLInputElement, value: string) {
   await act(async () => {

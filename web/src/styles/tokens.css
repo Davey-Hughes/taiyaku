@@ -5,8 +5,9 @@
  * `color-scheme` picks the half: the OS's preference by default, or the
  * reader's choice through `data-theme` on `<html>` (`theme.ts`). Every text
  * colour clears 4.5:1 on `--bg`, `--surface` and `--field` in its theme, and
- * `--line-strong` clears 3:1 on all three; `index.css.test.ts` recomputes both
- * from this file, so a value changed here is checked where it is changed.
+ * `--line-strong` clears 3:1 on all three; Ink's text colours also reach APCA
+ * |Lc| 60 on all three (spec 2026-10-18 §3). `index.css.test.ts` recomputes
+ * each from this file, so a value changed here is checked where it is changed.
  *
  * **Reading older comments in `styles/`.** Until 2026-09-17 these rules used
  * CSS system colours, and a comment written before then names the keyword its
@@ -87,16 +88,16 @@
   color-scheme: light dark;
 
   --bg: light-dark(#f3eee3, #15130f);
-  --surface: light-dark(#e9e2d2, #211e18);
+  --surface: light-dark(#e9e2d2, #2b2821);
   --field: light-dark(#fbf8f2, #1b1914);
-  --line: light-dark(#d6ccb9, #35312a);
-  --line-strong: light-dark(#897d68, #746c60);
+  --line: light-dark(#d6ccb9, #3e3932);
+  --line-strong: light-dark(#897d68, #787064);
   --text: light-dark(#231e17, #ece4d4);
-  --muted: light-dark(#6b6151, #a69b87);
-  --accent: light-dark(#b0361d, #e8715a);
+  --muted: light-dark(#6b6151, #c1b6a2);
+  --accent: light-dark(#b0361d, #ff9d88);
   --on-accent: light-dark(#fbf8f2, #15130f);
-  --danger: light-dark(#9e1b32, #f28b9a);
-  --success: light-dark(#3f6b2f, #95c283);
+  --danger: light-dark(#9e1b32, #ff9aa8);
+  --success: light-dark(#3f6b2f, #97c485);
   --warning: light-dark(#7d5500, #e2b55c);
 
   /* The drawer's scrim (spec 2026-09-17 §7.1): the page behind it dimmed
@@ -115,7 +116,11 @@
   --text-h3: 1.25rem;
   --text-body: 1rem;
   --text-ui: 0.875rem;
-  --text-meta: 0.75rem;
+  --text-meta: 0.875rem;
+  /* Count badges, kind and state pills, the chips on a cover: a word or a
+   * number inside a drawn box, which the box makes legible below the 14px
+   * every line of reading text holds to. */
+  --text-badge: 0.75rem;
 
   --space-1: 4px;
   --space-2: 8px;
@@ -126,6 +131,27 @@
   --space-7: 48px;
 
   --radius-control: 2px;
+}
+
+/* The reader keeps the palette and sizes it was designed with. It is dark in
+ * both themes and draws over artwork, and the Ink lift above was made for the
+ * library's grounds (`--bg`, `--surface`, `--field`), not for a panel over a
+ * page. Each pair here is the Paper half unchanged and the Ink half as it was
+ * before the lift. Written as `rgb()`, not hex: `index.css.test.ts` and
+ * `AcceptForm.browser.test.tsx` take every `light-dark(#…, #…)` in this file
+ * for the theme's own pair, and `index.css.test.ts` reads these as the
+ * reader's. `builtStylesheet.test.ts` allows this rule, and no other, to
+ * declare a token `:root` pairs. */
+.reader-route,
+.reader {
+  --surface: light-dark(rgb(233 226 210), rgb(33 30 24));
+  --line: light-dark(rgb(214 204 185), rgb(53 49 42));
+  --line-strong: light-dark(rgb(137 125 104), rgb(116 108 96));
+  --muted: light-dark(rgb(107 97 81), rgb(166 155 135));
+  --accent: light-dark(rgb(176 54 29), rgb(232 113 90));
+  --danger: light-dark(rgb(158 27 50), rgb(242 139 154));
+  --success: light-dark(rgb(63 107 47), rgb(149 194 131));
+  --text-meta: 0.75rem;
 }
 
 :root[data-theme="paper"] {

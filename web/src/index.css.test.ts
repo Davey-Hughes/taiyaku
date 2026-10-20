@@ -137,6 +137,38 @@ function opacityOf(body: string): number {
   return Number(m[1])
 }
 
+/**
+ * Every paired token as it was before spec 2026-10-18 §3 lifted Ink's: the
+ * palette the reader was designed with, which it still draws (its own block
+ * below), the hairline §3 holds the lifted `--line` to, and the values the
+ * style pass's spec computed its ratios from. Written out rather than read
+ * from `tokens.css`, so a change to either half there fails against it.
+ */
+const BEFORE_LIFT: Record<string, Record<Scheme, string>> = {
+  bg: { paper: '#f3eee3', ink: '#15130f' },
+  surface: { paper: '#e9e2d2', ink: '#211e18' },
+  field: { paper: '#fbf8f2', ink: '#1b1914' },
+  line: { paper: '#d6ccb9', ink: '#35312a' },
+  'line-strong': { paper: '#897d68', ink: '#746c60' },
+  text: { paper: '#231e17', ink: '#ece4d4' },
+  muted: { paper: '#6b6151', ink: '#a69b87' },
+  accent: { paper: '#b0361d', ink: '#e8715a' },
+  'on-accent': { paper: '#fbf8f2', ink: '#15130f' },
+  danger: { paper: '#9e1b32', ink: '#f28b9a' },
+  success: { paper: '#3f6b2f', ink: '#95c283' },
+  warning: { paper: '#7d5500', ink: '#e2b55c' },
+  scrim: { paper: '#231e1759', ink: '#0000008c' },
+}
+
+/** An opaque colour from `BEFORE_LIFT`, for a contrast ratio. */
+function beforeLift(name: string, scheme: Scheme): Rgb {
+  const value = BEFORE_LIFT[name]?.[scheme]
+  if (!value || !/^#[0-9a-fA-F]{6}$/.test(value)) {
+    throw new Error(`no opaque pair before the lift for --${name}`)
+  }
+  return hex(value)
+}
+
 describe('the token model', () => {
   it('reproduces four ratios the spec computed outside this file', () => {
     expect(contrast(token('text', 'paper'), token('bg', 'paper'))).toBeCloseTo(
@@ -146,13 +178,15 @@ describe('the token model', () => {
     expect(
       contrast(token('muted', 'paper'), token('surface', 'paper')),
     ).toBeCloseTo(4.71, 2)
+    // Ink's two from the values the style pass's spec measured, which the
+    // lift has since moved on `:root`; `:root`'s own are held to spec
+    // 2026-10-18 §3's figures below.
     expect(
-      contrast(token('line-strong', 'ink'), token('bg', 'ink')),
+      contrast(beforeLift('line-strong', 'ink'), beforeLift('bg', 'ink')),
     ).toBeCloseTo(3.58, 2)
-    expect(contrast(token('accent', 'ink'), token('bg', 'ink'))).toBeCloseTo(
-      6.13,
-      2,
-    )
+    expect(
+      contrast(beforeLift('accent', 'ink'), beforeLift('bg', 'ink')),
+    ).toBeCloseTo(6.13, 2)
   })
 })
 
@@ -197,6 +231,133 @@ describe("spec §2's floors hold in both themes", () => {
   }
 })
 
+/**
+ * APCA-W3 0.0.98G's lightness contrast, Lc, of `text` drawn on `ground`:
+ * positive for dark text on a light ground, negative for light on dark. Spec
+ * 2026-10-18 §3 measures with it beside WCAG 2 because WCAG 2 passed Ink's
+ * muted and accent at 4.5:1 and more while the user could not read them; its
+ * luminance is a plain 2.4 power, with no linear toe, and near-black is
+ * lifted by a soft clamp before the two are compared.
+ */
+function apcaLc(text: Rgb, ground: Rgb): number {
+  const luminance = ([r, g, b]: Rgb) => {
+    const y =
+      0.2126729 * (r / 255) ** 2.4 +
+      0.7151522 * (g / 255) ** 2.4 +
+      0.072175 * (b / 255) ** 2.4
+    // biome-ignore lint/suspicious/noApproximativeNumericConstant: APCA's soft-clamp exponent is 1.414 as published, not √2
+    return y < 0.022 ? y + (0.022 - y) ** 1.414 : y
+  }
+  const yt = luminance(text)
+  const yb = luminance(ground)
+  if (Math.abs(yb - yt) < 0.0005) return 0
+  if (yb > yt) {
+    const s = (yb ** 0.56 - yt ** 0.57) * 1.14
+    return s < 0.1 ? 0 : (s - 0.027) * 100
+  }
+  const s = (yb ** 0.65 - yt ** 0.62) * 1.14
+  return s > -0.1 ? 0 : (s + 0.027) * 100
+}
+
+/**
+ * Paper's Lc for each text token on each ground, recorded rather than held
+ * to a floor: spec §3 leaves Paper's colours as they are, and this is what
+ * they score. Literal figures, so a Paper colour changed here moves one and
+ * fails; a table computed from `tokens.css` could not.
+ */
+const PAPER_LC: Record<
+  (typeof TEXT_TOKENS)[number],
+  Record<(typeof GROUNDS)[number], number>
+> = {
+  text: { bg: 93.6, surface: 86.7, field: 99.4 },
+  muted: { bg: 70.5, surface: 63.5, field: 76.3 },
+  accent: { bg: 69.8, surface: 62.9, field: 75.7 },
+  danger: { bg: 75.9, surface: 69.0, field: 81.8 },
+  success: { bg: 71.1, surface: 64.2, field: 77.0 },
+  warning: { bg: 72.6, surface: 65.6, field: 78.4 },
+}
+
+describe('APCA beside WCAG (spec 2026-10-18 §3)', () => {
+  it('reproduces two Lc figures the spec computed outside this file', () => {
+    // Ink's muted before the lift on Ink's page, and Paper's muted on Paper's:
+    // the asymmetry §3 opens with. The sign is the polarity, light on dark.
+    expect(Math.round(apcaLc(hex('#a69b87'), hex('#15130f')))).toBe(-48)
+    expect(Math.round(apcaLc(hex('#6b6151'), hex('#f3eee3')))).toBe(70)
+  })
+
+  it('holds every Ink text colour to |Lc| 60 on bg, surface and field', () => {
+    const failures: string[] = []
+    for (const ground of GROUNDS) {
+      for (const text of TEXT_TOKENS) {
+        const lc = apcaLc(token(text, 'ink'), token(ground, 'ink'))
+        if (Math.abs(lc) < 60) {
+          failures.push(`--${text} on --${ground}: ${lc.toFixed(1)}`)
+        }
+      }
+    }
+    expect(failures).toEqual([])
+  })
+
+  it("records Paper's Lc for every text colour on bg, surface and field", () => {
+    const moved: string[] = []
+    for (const ground of GROUNDS) {
+      for (const text of TEXT_TOKENS) {
+        const lc = apcaLc(token(text, 'paper'), token(ground, 'paper'))
+        const recorded = PAPER_LC[text][ground]
+        if (Math.abs(lc - recorded) >= 0.05) {
+          moved.push(
+            `--${text} on --${ground}: ${lc.toFixed(2)}, recorded ${recorded}`,
+          )
+        }
+      }
+    }
+    expect(moved).toEqual([])
+  })
+})
+
+/**
+ * Spec 2026-10-18 §3's After column: the seven Ink halves the lift set,
+ * as the spec gives them. Literal, so a pair written the wrong way round,
+ * whose Paper half then stands in for Ink's, fails here where a floor it
+ * still clears would not.
+ */
+const LIFTED_INK: Record<string, string> = {
+  surface: '#2b2821',
+  muted: '#c1b6a2',
+  accent: '#ff9d88',
+  danger: '#ff9aa8',
+  success: '#97c485',
+  line: '#3e3932',
+  'line-strong': '#787064',
+}
+
+describe("spec 2026-10-18 §3's other rules for Ink", () => {
+  it("writes Ink's seven lifted halves at the spec's values", () => {
+    const moved = Object.entries(LIFTED_INK)
+      .filter(
+        ([name, value]) => token(name, 'ink').join() !== hex(value).join(),
+      )
+      .map(([name, value]) => `--${name}: ${token(name, 'ink')} for ${value}`)
+    expect(moved).toEqual([])
+  })
+
+  it('steps the surface away from the page, to 1.25:1 or more', () => {
+    expect(
+      contrast(token('surface', 'ink'), token('bg', 'ink')),
+    ).toBeGreaterThanOrEqual(1.25)
+  })
+
+  it('keeps a hairline on the surface at least as visible as before the lift', () => {
+    expect(
+      contrast(token('line', 'ink'), token('surface', 'ink')),
+    ).toBeGreaterThanOrEqual(
+      contrast(beforeLift('line', 'ink'), beforeLift('surface', 'ink')),
+    )
+  })
+
+  // Ink's control border and its text on the accent: §2's floors, above.
+})
+
 /** `--name: rgb(r g b / a)` in `tokens.css`, as its channels and its alpha. */
 function readerToken(name: string): { rgb: Rgb; alpha: number } {
   const m = tokensSource.match(
@@ -209,9 +370,133 @@ function readerToken(name: string): { rgb: Rgb; alpha: number } {
   }
 }
 
+/** The rule under which `tokens.css` pins the reader's own pairs. */
+const READER_PIN_BODY =
+  rules(tokensSource).find(
+    ({ prelude }) => prelude === '.reader-route, .reader',
+  )?.body ?? ''
+
+/**
+ * The `light-dark(rgb(…), rgb(…))` pairs in that rule, by name: the tokens
+ * the Ink lift changed, held for the reader at the pairs it was designed
+ * with. `TOKENS` above reads only hex pairs, so it never takes these for
+ * the theme's own.
+ */
+const READER_PIN = new Map<string, Record<Scheme, Rgb>>(
+  [
+    ...READER_PIN_BODY.matchAll(
+      /--([a-z-]+):\s*light-dark\(\s*rgb\((\d+) (\d+) (\d+)\)\s*,\s*rgb\((\d+) (\d+) (\d+)\)\s*\)/g,
+    ),
+  ].map((m): [string, Record<Scheme, Rgb>] => [
+    m[1],
+    {
+      paper: [Number(m[2]), Number(m[3]), Number(m[4])],
+      ink: [Number(m[5]), Number(m[6]), Number(m[7])],
+    },
+  ]),
+)
+
+/**
+ * The colour `--name` paints inside the reader in `scheme`: the reader's own
+ * pair where it pins one, `:root`'s where it does not.
+ */
+function inReader(name: string, scheme: Scheme): Rgb {
+  return READER_PIN.get(name)?.[scheme] ?? token(name, scheme)
+}
+
+/** The `:root` rules' bodies, where `tokens.css` declares the palette. */
+const ROOT_BODY = rules(tokensSource)
+  .filter(({ prelude }) => prelude === ':root')
+  .map(({ body }) => body)
+  .join(';')
+
+/**
+ * Every token `:root` writes as a `light-dark()` pair, whatever the halves
+ * are written as: the list a check of the whole palette walks, so a token
+ * added to `tokens.css` is walked too.
+ */
+const PAIRED = [
+  ...ROOT_BODY.matchAll(/(?:^|;)\s*--([\w-]+):\s*light-dark\(/g),
+].map((m) => m[1] ?? '')
+
+const COLOUR = String.raw`#[0-9a-fA-F]{8}|#[0-9a-fA-F]{6}|rgb\(\d+ \d+ \d+\)`
+
+/** Each `--name: light-dark(<paper>, <ink>)` in `body`, halves as written. */
+function pairsIn(body: string): Map<string, Record<Scheme, string>> {
+  const pair = new RegExp(
+    String.raw`--([\w-]+):\s*light-dark\(\s*(${COLOUR})\s*,\s*(${COLOUR})\s*\)`,
+    'g',
+  )
+  return new Map(
+    [...body.matchAll(pair)].map((m): [string, Record<Scheme, string>] => [
+      m[1] ?? '',
+      { paper: m[2] ?? '', ink: m[3] ?? '' },
+    ]),
+  )
+}
+
+/** A colour as written, as its red, green, blue and alpha bytes. */
+function channels(value: string): string {
+  const rgb = value.match(/^rgb\((\d+) (\d+) (\d+)\)$/)
+  if (rgb) return [rgb[1], rgb[2], rgb[3], 255].join()
+  const digits = value.slice(1)
+  const bytes = (digits.length === 6 ? `${digits}ff` : digits).match(/../g)
+  if (!value.startsWith('#') || !bytes || bytes.length !== 4) {
+    throw new Error(`not a colour this reads: ${value}`)
+  }
+  return bytes.map((byte) => Number.parseInt(byte, 16)).join()
+}
+
+describe("the reader's own palette (spec 2026-10-18 §3)", () => {
+  // The reader is dark in both themes and the user called it "quite good",
+  // so the lift was made for the library's grounds and not for it.
+  it("draws every paired token at the pair it was designed with, and leaves Paper's halves on :root as they were", () => {
+    // The table is held to the source's list both ways: a token missing
+    // from it fails below, and one the source no longer pairs fails here.
+    expect(Object.keys(BEFORE_LIFT).filter((n) => !PAIRED.includes(n))).toEqual(
+      [],
+    )
+    const root = pairsIn(ROOT_BODY)
+    const pinned = pairsIn(READER_PIN_BODY)
+    const moved: string[] = []
+    for (const name of PAIRED) {
+      const designed = BEFORE_LIFT[name]
+      const drawn = pinned.get(name) ?? root.get(name)
+      const own = root.get(name)
+      if (!designed || !drawn || !own) {
+        moved.push(
+          `--${name}: ${designed ? 'no pair read' : 'not in the table'}`,
+        )
+        continue
+      }
+      for (const scheme of SCHEMES) {
+        if (channels(drawn[scheme]) !== channels(designed[scheme])) {
+          moved.push(
+            `${scheme} --${name}: ${drawn[scheme]} for ${designed[scheme]}`,
+          )
+        }
+      }
+      // The lift was Ink's alone, so Paper's colours are unchanged on
+      // `:root` too, where the reader's pin would otherwise hide a change.
+      if (channels(own.paper) !== channels(designed.paper)) {
+        moved.push(`:root paper --${name}: ${own.paper} for ${designed.paper}`)
+      }
+    }
+    expect(moved).toEqual([])
+  })
+
+  it('keeps its metadata at 12px', () => {
+    expect(declared(READER_PIN_BODY, '--text-meta')).toBe('0.75rem')
+  })
+})
+
 const BLACK: Rgb = [0, 0, 0]
 const WHITE: Rgb = [255, 255, 255]
 
+/**
+ * Computed from what the reader draws (`inReader`), not from `:root`'s
+ * lifted pairs, which the reader never paints.
+ */
 describe("the reader's tokens (spec §8.2)", () => {
   it("are Ink's --bg and --text at §2's opacities, over a black ground", () => {
     expect(tokensSource).toMatch(/--reader-ground:\s*#000;/)
@@ -237,10 +522,10 @@ describe("the reader's tokens (spec §8.2)", () => {
   it('reproduce two ratios the spec computed outside this file', () => {
     const { rgb, alpha } = readerToken('reader-panel')
     expect(
-      contrast(token('text', 'ink'), composite(rgb, BLACK, alpha)),
+      contrast(inReader('text', 'ink'), composite(rgb, BLACK, alpha)),
     ).toBeCloseTo(14.86, 2)
     expect(
-      contrast(token('muted', 'ink'), composite(rgb, WHITE, alpha)),
+      contrast(inReader('muted', 'ink'), composite(rgb, WHITE, alpha)),
     ).toBeCloseTo(5.52, 2)
   })
 
@@ -252,7 +537,7 @@ describe("the reader's tokens (spec §8.2)", () => {
       const { rgb, alpha } = readerToken('reader-panel')
       const panel = composite(rgb, ground, alpha)
       const failures = TEXT_TOKENS.map(
-        (text) => [text, contrast(token(text, 'ink'), panel)] as const,
+        (text) => [text, contrast(inReader(text, 'ink'), panel)] as const,
       )
         .filter(([, ratio]) => ratio < 4.5)
         .map(([text, ratio]) => `--${text}: ${ratio.toFixed(2)}`)

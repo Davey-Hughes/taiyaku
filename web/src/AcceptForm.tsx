@@ -66,7 +66,7 @@
  * button reads as a suggestion rather than as a refusal.
  *
  * **It is disabled while the answer in hand is not this rule's, too.** Each
- * edit does two things, and `Search.tsx`'s own comment is where both are
+ * edit does two things, and `searchHits.ts`'s own comment is where both are
  * written down: it clears the resolution on screen, *and* it bumps the
  * sequence number so a sweep already in flight for the rule being replaced is
  * discarded rather than rendered. This file shipped only the first of the two,
@@ -228,7 +228,7 @@ export function AcceptForm({
   )
 
   useEffect(() => {
-    // **Two acts, not one** — `Search.tsx`'s `q === ''` branch is where the
+    // **Two acts, not one** — `searchHits.ts`'s `q === ''` branch is where the
     // pair is written down, and this file originally copied half of it.
     // Bumping the sequence invalidates the sweep *already sent* for the rule
     // being replaced: without it that sweep still satisfied

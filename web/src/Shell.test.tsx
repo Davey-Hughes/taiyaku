@@ -1,20 +1,27 @@
 import { act } from 'react'
-import { MemoryRouter } from 'react-router'
+import { MemoryRouter, Route, Routes } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Me } from './api'
 import { useBrowsePrefs } from './browseModule'
 import * as curation from './curation'
 import { GateContext } from './gate'
 import * as library from './library'
+import { Library } from './Library'
+import { Series } from './Series'
 import { Shell } from './Shell'
 import { useInboxRefresh, useLibraryStatus, useStatusRefresh } from './shell'
 import { deferred, flush } from './testing/async'
 import { mount } from './testing/mount'
 import { fakeStorage } from './testing/storage'
 
+// `home`, `grid` and `oneSeries` for the tests that mount a page under the
+// shell, so its View panel is the one a reader uses.
 vi.mock('./library', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./library')>()),
   status: vi.fn(),
+  home: vi.fn(),
+  grid: vi.fn(),
+  oneSeries: vi.fn(),
 }))
 
 // Only the one call. `INBOX_MIN_SCORE` and `inboxTotal` are pure and are what
@@ -78,12 +85,8 @@ function reporter() {
 
 /**
  * A child that reports `continueStrip` from `BrowsePrefsContext` — the wire I2
- * pins. Reading through `useBrowsePrefs()` rather than through
- * `BrowseSettings`' own `prefs` prop matters: `BrowseSettings` is handed
- * `prefs` directly by `Shell`, so its checkbox reflects a panel change
- * regardless of what the *context* carries. Only a reader of the context
- * below `Shell` can tell a live wire from one pinned at
- * `browseModule.defaults`.
+ * pins — as a reader that is neither the View panel nor the page, so the
+ * assertion reads the provider's value directly.
  */
 function continueStripProbe() {
   function Probe() {
@@ -133,6 +136,18 @@ function rereadProbe() {
   return <Probe />
 }
 
+/** The one series the library page lists, and the series page draws. */
+const ONE_SERIES: library.SeriesCard = {
+  id: 7,
+  title: 'A Series',
+  works: 3,
+  editions: 3,
+  aligned: 1,
+  added: 10,
+  unread: 3,
+  cover: '/api/library/series/7/cover',
+}
+
 /** The names the sidebar's libraries list draws, in its order. */
 const sidebarLibraries = (host: HTMLElement) =>
   [...host.querySelectorAll('.sidebar-libraries a')].map((a) => a.textContent)
@@ -148,16 +163,61 @@ async function reread(host: HTMLElement) {
   })
 }
 
-/** The `<label>` whose own text is exactly `label`, and the checkbox inside it. */
-function checkboxLabelled(host: HTMLElement, label: string): HTMLInputElement {
-  const row = [...host.querySelectorAll('.browse-settings label')].find(
-    (l) => l.textContent?.trim() === label,
+/** The page's View panel, opened, failing if it did not open. */
+function openView(host: HTMLElement): HTMLElement {
+  const button = host.querySelector<HTMLButtonElement>(
+    'main button.view-button',
   )
-  const box = row?.querySelector('input[type="checkbox"]')
-  if (!(box instanceof HTMLInputElement)) {
+  const id = button?.getAttribute('aria-controls')
+  const panel = id ? document.getElementById(id) : null
+  if (!button || !panel) throw new Error('the page draws no View panel')
+  if (panel.hidden) {
+    act(() => {
+      button.click()
+    })
+  }
+  expect(button.getAttribute('aria-expanded')).toBe('true')
+  expect(panel.hidden).toBe(false)
+  return panel
+}
+
+/** The control inside the View panel's `<label>` whose own text is `label`. */
+function controlLabelled(panel: HTMLElement, label: string): HTMLElement {
+  const row = [...panel.querySelectorAll('label')].find(
+    (l) => l.querySelector('span')?.textContent === label,
+  )
+  const control = row?.querySelector<HTMLElement>('input, select')
+  if (!control) throw new Error(`no control labelled "${label}"`)
+  return control
+}
+
+/** The checkbox in the open View panel labelled `label`. */
+function checkboxLabelled(host: HTMLElement, label: string): HTMLInputElement {
+  const box = controlLabelled(openView(host), label)
+  if (!(box instanceof HTMLInputElement) || box.type !== 'checkbox') {
     throw new Error(`no checkbox labelled "${label}"`)
   }
   return box
+}
+
+/** The View panel's Reset. */
+function resetIn(host: HTMLElement): HTMLButtonElement {
+  const reset = [...openView(host).querySelectorAll('button')].find(
+    (b) => b.textContent === 'Reset',
+  )
+  if (!reset) throw new Error('the View panel has no Reset button')
+  return reset
+}
+
+/** Follows a link with `click()`: no pointer press and no focus move. */
+async function follow(host: HTMLElement, selector: string) {
+  const link = host.querySelector<HTMLAnchorElement>(selector)
+  if (!link) throw new Error(`no ${selector}`)
+  await act(async () => {
+    link.click()
+    await Promise.resolve()
+    await Promise.resolve()
+  })
 }
 
 /** ☰, found by the column it controls rather than by its icon. */
@@ -220,6 +280,22 @@ describe('Shell', () => {
       proposals: [],
       counts: { 'edition-of': 5, 'same-series': 2 },
     })
+    vi.mocked(library.home).mockResolvedValue({
+      continuing: [],
+      added: [],
+      read: [],
+    })
+    vi.mocked(library.grid).mockResolvedValue({
+      series: [ONE_SERIES],
+      unfiled: [],
+    })
+    vi.mocked(library.oneSeries).mockResolvedValue({
+      series: {
+        ...ONE_SERIES,
+        titles: [{ title: ONE_SERIES.title, kind: 'romaji', primary: true }],
+      },
+      works: [],
+    })
   })
 
   afterEach(() => {
@@ -234,13 +310,18 @@ describe('Shell', () => {
     expect(vi.mocked(library.status)).toHaveBeenCalledTimes(1)
   })
 
-  it('offers the theme switch at the foot of the sidebar', async () => {
+  it('offers the theme switch at the foot of the sidebar, directly above More', async () => {
     vi.stubGlobal('localStorage', fakeStorage())
     const host = await settle(<Shell>{null}</Shell>)
     const column = host.querySelector('.sidebar-column')
-    expect(column?.lastElementChild?.classList.contains('theme-control')).toBe(
-      true,
-    )
+    const foot = column?.lastElementChild
+    expect(foot?.classList.contains('sidebar-foot')).toBe(true)
+    expect([...(foot?.children ?? [])].map((el) => el.className)).toEqual([
+      'theme-control',
+      'account-menu',
+    ])
+    // More is a navigation landmark of its own; Theme is a setting, in none.
+    expect(foot?.querySelector('.theme-control')?.closest('nav')).toBeNull()
     expect(
       column?.querySelectorAll('.theme-control input[type="radio"]'),
     ).toHaveLength(3)
@@ -268,29 +349,13 @@ describe('Shell', () => {
   })
 
   /**
-   * The list's switch went with the preference it set: a `browse`-module
-   * key is a control in this panel, so a key left behind would draw a box
-   * that switches nothing.
+   * More's proposals link is admin-only, and `AccountMenu` only knows that
+   * from its `admin` prop — `Sidebar.test.tsx` constructs `<AccountMenu>`
+   * directly, so nothing there can pin that `Shell` threads the gate's
+   * `admin` bit into it. Without this, a wrong value in that line would
+   * leave every admin account seeing no link, silently.
    */
-  it('offers no switch for the libraries list in the settings', async () => {
-    const host = await settle(<Shell>x</Shell>, who({ admin: true }))
-    const labels = [...host.querySelectorAll('.browse-settings label')].map(
-      (l) => l.textContent?.trim(),
-    )
-    expect(labels).toContain('continue strip')
-    expect(labels).not.toContain('show roots')
-  })
-
-  /**
-   * `Sidebar.tsx`'s proposals link is admin-only, and `Sidebar` itself only
-   * knows that from its `admin` prop — nothing about the sidebar's own tests
-   * can pin that `Shell` actually threads the gate's `admin` bit into that
-   * prop, since `Sidebar.test.tsx` constructs `<Sidebar>` directly. Without
-   * this, deleting the `admin={admin}` line `Shell.tsx` passes down would
-   * leave every admin account seeing no link, silently, and no test in this
-   * suite or `Sidebar.test.tsx` would fail.
-   */
-  it('gives the sidebar the account’s admin bit, so the proposals link follows it too', async () => {
+  it('gives More the account’s admin bit, so the proposals link follows it too', async () => {
     const asAdmin = await settle(
       <Shell>
         <p>x</p>
@@ -309,27 +374,27 @@ describe('Shell', () => {
   })
 
   /**
-   * O94: the account link is the one sidebar entry that follows no account's
-   * role. `Sidebar.test.tsx` pins it against the prop; this pins it through
-   * the chrome a signed-in reader actually gets, with the gate's `admin` bit
-   * false — so a later change that gated it on anything `Shell` knows about
-   * the account is red here as well as there.
+   * O94: the account screen is the one entry that follows no account's role,
+   * and for anyone but an administrator More is the link to it (spec §1).
+   * `Sidebar.test.tsx` pins it against the prop; this pins it through the
+   * chrome a signed-in reader actually gets, with the gate's `admin` bit
+   * false.
    */
-  it('offers a signed-in reader the account screen', async () => {
+  it('offers a signed-in reader the account screen, as More', async () => {
     const asReader = await settle(
       <Shell>
         <p>x</p>
       </Shell>,
       who({ admin: false }),
     )
-    expect(
-      asReader.querySelector('.sidebar a[href="/account"]')?.textContent,
-    ).toBe('Account')
+    const more = asReader.querySelector('.sidebar-foot a[href="/account"]')
+    expect(more?.textContent).toBe('More')
+    expect(more?.hasAttribute('aria-expanded')).toBe(false)
   })
 
   /**
    * The count itself. `Sidebar.test.tsx` pins that a number handed to
-   * `Sidebar` is drawn; nothing there can pin that `Shell` fetches one, or
+   * `AccountMenu` is drawn; nothing there can pin that `Shell` fetches one, or
    * *which* one — deleting this effect leaves every sidebar test green and
    * every deployment back to a bare `Proposals` entry, which is exactly how
    * the entry shipped without a count in the first place.
@@ -353,6 +418,7 @@ describe('Shell', () => {
     expect(host.querySelector('a[href="/proposals"] .count')?.textContent).toBe(
       '7',
     )
+    expect(host.querySelector('.account-button .count')?.textContent).toBe('7')
   })
 
   it('re-reads the count when a screen under it says a write moved the inbox', async () => {
@@ -434,7 +500,8 @@ describe('Shell', () => {
    *
    * The reporter child proves the status landed, and the sidebar draws its
    * library, before the admin assertions run — so an absent entry below can
-   * only be the `?? false` default, not a sidebar that never drew.
+   * only be the `?? false` default, not a sidebar that never drew. More is
+   * then the plain link to the account screen, which every account gets.
    */
   it('draws no admin entries where no gate sits above it', async () => {
     const host = await settle(<Shell>{reporter()}</Shell>)
@@ -446,6 +513,10 @@ describe('Shell', () => {
     )
     expect(host.querySelector('a[href="/proposals"]')).toBeNull()
     expect(host.querySelector('a[href="/config"]')).toBeNull()
+    expect(host.querySelector('button.account-button')).toBeNull()
+    expect(
+      host.querySelector('.sidebar-foot a[href="/account"]')?.textContent,
+    ).toBe('More')
   })
 
   it('says so when the status cannot be read, rather than drawing an empty sidebar in silence', async () => {
@@ -582,8 +653,8 @@ describe('Shell', () => {
   /**
    * `density` decides the one class name `Shell` puts on its own root —
    * `'comfortable'`, every other test's default, never reaches the ternary's
-   * `'compact'` branch. Seeded through storage rather than through
-   * `BrowseSettings`' own control, because this is about what `Shell` draws
+   * `'compact'` branch. Seeded through storage rather than through a View
+   * panel's control, because this is about what `Shell` draws
    * from a stored preference on first mount, not about the panel that writes
    * one.
    */
@@ -604,9 +675,10 @@ describe('Shell', () => {
    * confirm it persisted" and silently fails "change a setting, confirm it
    * takes effect" — the in-memory half alone is the mirror failure, a reload
    * resurrecting the old value. Neither half proves the other, so this pins
-   * the one `BrowseSettings.test.tsx` cannot: `resetPrefs(browseModule.id)`
+   * the one `ViewMenu.test.tsx` cannot: `resetPrefs(browseModule.id)`
    * actually clearing `localStorage`, not just `reset()`'s in-memory
-   * `sliceReset` making the panel agree with itself.
+   * `sliceReset` making the panel agree with itself. The strip is the
+   * library page's, so it is that page's View that changes and resets it.
    *
    * A fresh `mount()` is what stands in for a reload — a second render of the
    * same instance would only re-read the state already in memory, which is
@@ -617,22 +689,17 @@ describe('Shell', () => {
 
     const before = await settle(
       <Shell>
-        <p>x</p>
+        <Library />
       </Shell>,
     )
-    const stripBefore = checkboxLabelled(before, 'continue strip')
+    const stripBefore = checkboxLabelled(before, 'Continue strip')
     expect(stripBefore.checked).toBe(true)
     act(() => {
       stripBefore.click()
     })
     expect(stripBefore.checked).toBe(false)
 
-    const resetButton = [
-      ...before.querySelectorAll('.browse-settings button'),
-    ].find((b) => b.textContent === 'Reset')
-    if (!(resetButton instanceof HTMLButtonElement)) {
-      throw new Error('the settings panel has no Reset button')
-    }
+    const resetButton = resetIn(before)
     act(() => {
       resetButton.click()
     })
@@ -643,10 +710,10 @@ describe('Shell', () => {
     // instance's memory.
     const after = await settle(
       <Shell>
-        <p>x</p>
+        <Library />
       </Shell>,
     )
-    expect(checkboxLabelled(after, 'continue strip').checked).toBe(true)
+    expect(checkboxLabelled(after, 'Continue strip').checked).toBe(true)
   })
 
   /**
@@ -657,18 +724,21 @@ describe('Shell', () => {
    * shape. `module.ts`'s `sliceReset` doc names the missing test outright:
    * "change a setting, confirm it takes effect" — written here at the
    * `Shell` level, through a probe that reads the context the way a real
-   * screen (`Series`, `SeriesGrid`'s caller) would, rather than through
-   * `BrowseSettings`' own `prefs` prop, which `Shell` still hands the panel
-   * directly and so would reflect the change regardless of whether the
-   * context wire itself works.
+   * screen (`Series`, `SeriesGrid`'s caller) would, beside the library page
+   * whose View makes the change.
    */
-  it('threads a changed preference from the settings panel to whatever reads the context below it', async () => {
-    const host = await settle(<Shell>{continueStripProbe()}</Shell>)
+  it('threads a changed preference from the library page’s View to whatever reads the context below it', async () => {
+    const host = await settle(
+      <Shell>
+        <Library />
+        {continueStripProbe()}
+      </Shell>,
+    )
     expect(
       host.querySelector('[data-testid="continue-strip"]')?.textContent,
     ).toBe('true')
 
-    const strip = checkboxLabelled(host, 'continue strip')
+    const strip = checkboxLabelled(host, 'Continue strip')
     expect(strip.checked).toBe(true)
     act(() => {
       strip.click()
@@ -694,10 +764,10 @@ describe('Shell', () => {
 
     const before = await settle(
       <Shell>
-        <p>x</p>
+        <Library />
       </Shell>,
     )
-    const stripBefore = checkboxLabelled(before, 'continue strip')
+    const stripBefore = checkboxLabelled(before, 'Continue strip')
     expect(stripBefore.checked).toBe(true)
     act(() => {
       stripBefore.click()
@@ -710,10 +780,83 @@ describe('Shell', () => {
     // sitting in the first instance's memory.
     const after = await settle(
       <Shell>
-        <p>x</p>
+        <Library />
       </Shell>,
     )
-    expect(checkboxLabelled(after, 'continue strip').checked).toBe(false)
+    expect(checkboxLabelled(after, 'Continue strip').checked).toBe(false)
+  })
+
+  /**
+   * Spec §2: Reset restores all five preferences from either page. The
+   * library page's View shows two of them, so a Reset that restored only
+   * what its panel shows would leave the series page's three as they were.
+   */
+  it('restores the series page’s three as well on a Reset from the library page', async () => {
+    const s = fakeStorage()
+    s.setItem(
+      'taiyaku.prefs.browse',
+      JSON.stringify({
+        layout: 'table',
+        editionSelector: false,
+        panel: 'off',
+        density: 'compact',
+        continueStrip: false,
+      }),
+    )
+    vi.stubGlobal('localStorage', s)
+    let host: HTMLElement | undefined
+    await act(async () => {
+      host = mount(
+        <MemoryRouter initialEntries={['/series/7']}>
+          <Shell>
+            <Routes>
+              <Route path="/" element={<Library />} />
+              <Route path="/series/:id" element={<Series />} />
+            </Routes>
+          </Shell>
+        </MemoryRouter>,
+      )
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    if (!host) throw new Error('nothing mounted')
+    const seriesView = (at: HTMLElement) => {
+      const panel = openView(at)
+      return {
+        layout: (controlLabelled(panel, 'Layout') as HTMLSelectElement).value,
+        editionSelector: (
+          controlLabelled(panel, 'Edition selector') as HTMLInputElement
+        ).checked,
+        panel: (controlLabelled(panel, 'Panel') as HTMLSelectElement).value,
+      }
+    }
+    expect(seriesView(host)).toEqual({
+      layout: 'table',
+      editionSelector: false,
+      panel: 'off',
+    })
+
+    await follow(host, '.sidebar-heading a[href="/"]')
+    expect(checkboxLabelled(host, 'Continue strip').checked).toBe(false)
+    const reset = resetIn(host)
+    act(() => {
+      reset.click()
+    })
+    const libraryView = openView(host)
+    expect(
+      (controlLabelled(libraryView, 'Continue strip') as HTMLInputElement)
+        .checked,
+    ).toBe(true)
+    expect(
+      (controlLabelled(libraryView, 'Density') as HTMLSelectElement).value,
+    ).toBe('comfortable')
+
+    await follow(host, 'main a[href="/series/7"]')
+    expect(seriesView(host)).toEqual({
+      layout: 'grid',
+      editionSelector: true,
+      panel: 'button',
+    })
   })
 
   /**
@@ -821,11 +964,12 @@ describe('Shell', () => {
         </Shell>,
       )
       openMenu(host)
-      const search =
-        menu(host).querySelector<HTMLAnchorElement>('a[href="/search"]')
-      if (!search) throw new Error('no search link in the menu')
+      const manga = menu(host).querySelector<HTMLAnchorElement>(
+        'a[href="/?library=1"]',
+      )
+      if (!manga) throw new Error('no library link in the menu')
       await act(async () => {
-        search.click()
+        manga.click()
       })
       expect(menuButton(host).getAttribute('aria-expanded')).toBe('false')
     })
@@ -858,11 +1002,12 @@ describe('Shell', () => {
       expect(
         host.querySelector('.phone-bar a[href="/"] .wordmark'),
       ).not.toBeNull()
+      // Search is the Library view's bar (spec §2), so its icon goes there.
       expect(
         host
-          .querySelector('.phone-bar a[href="/search"]')
-          ?.getAttribute('aria-label'),
-      ).toBe('Search')
+          .querySelector('.phone-bar a[aria-label="Search"]')
+          ?.getAttribute('href'),
+      ).toBe('/')
     })
   })
 

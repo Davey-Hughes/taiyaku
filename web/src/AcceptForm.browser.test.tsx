@@ -238,21 +238,30 @@ describe('the accept form, in a browser', () => {
     // The root-scope line takes the row directly under the box it is about,
     // rather than becoming a sixth item on the row of fields — where it would
     // read as another thing to fill in, and would push a field off the line.
-    // It is quiet by size and not by colour: smaller than the sentence over
-    // the button, at the same full-contrast `--text` as everything else
-    // on this panel.
+    // It is read, so it keeps the 14px floor every line of reading text
+    // holds to (spec 2026-10-18 §3), and is quiet by colour instead: `--muted`
+    // where the sentence over the button is `--text`.
     const scope = box(host, '.accept-form .scope')
     expect(scope.top).toBeGreaterThan(box(host, '.field.pattern').top)
     expect(scope.width).toBeGreaterThan(form.width * 0.9)
     const scopeText = host.querySelector('.accept-form .scope')
     const sentence = host.querySelector('.consequence')
     if (!scopeText || !sentence) throw new Error('no scope line on the panel')
-    expect(parseFloat(getComputedStyle(scopeText).fontSize)).toBeLessThan(
-      parseFloat(getComputedStyle(sentence).fontSize),
-    )
-    expect(getComputedStyle(scopeText).color).toBe(
-      getComputedStyle(document.body).color,
-    )
+    expect(
+      parseFloat(getComputedStyle(scopeText).fontSize),
+    ).toBeGreaterThanOrEqual(14)
+    const painted = (value: string) => {
+      const probe = document.createElement('span')
+      probe.style.color = value
+      host.append(probe)
+      const colour = getComputedStyle(probe).color
+      probe.remove()
+      return colour
+    }
+    // The two tokens differ, or the two lines below could not tell them apart.
+    expect(painted('var(--muted)')).not.toBe(painted('var(--text)'))
+    expect(getComputedStyle(scopeText).color).toBe(painted('var(--muted)'))
+    expect(getComputedStyle(sentence).color).toBe(painted('var(--text)'))
 
     // And the four short fields share the line under it, so what the rule
     // sets is read as one row rather than as a column of boxes.
@@ -375,11 +384,9 @@ describe('the accept form, in a browser', () => {
     // stylesheet redefining a token, and Chromium disagreeing with the model
     // about which half `color-scheme` picks. A pair written the wrong way
     // round does *not* fail here — this reads the same pair the model does
-    // and expects the same half — and `index.css.test.ts`'s floors catch it
-    // instead, for ten of the twelve (measured by reversing each in turn).
-    // `--line-strong`'s reversal passes the floors in both schemes and is
-    // caught only by the token model's "reproduces four ratios" test (4.59
-    // against 3.58); nothing catches a reversed `--line`, which has no floor.
+    // and expects the same half — and `index.css.test.ts` catches it instead:
+    // its floors for most pairs, and for `--line` and `--line-strong`, whose
+    // reversals clear every floor, its literal table of Ink's lifted halves.
     //
     // Every mismatch is collected before the assertion, as that file's floors
     // test does, so a token redefined for both schemes is named in both.

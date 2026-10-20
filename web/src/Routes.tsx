@@ -83,14 +83,8 @@ export function AppRoutes() {
           </Shell>
         }
       />
-      <Route
-        path="/search"
-        element={
-          <Shell>
-            <Search />
-          </Shell>
-        }
-      />
+      {/* A redirect to the Library view's search bar, so no shell of its own. */}
+      <Route path="/search" element={<Search />} />
       <Route
         path="/proposals"
         element={

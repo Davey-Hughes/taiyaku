@@ -3,6 +3,7 @@ import { MemoryRouter } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { page } from 'vitest/browser'
 import { Account } from './Account'
+import { AccountMenu } from './AccountMenu'
 import { AccountPage } from './AccountPage'
 import * as config from './config'
 import * as curation from './curation'
@@ -12,7 +13,6 @@ import { Proposals } from './Proposals'
 import { RootRow } from './RootRow'
 import { RuleList } from './RuleList'
 import type { Rule } from './rules'
-import { Sidebar } from './Sidebar'
 import { mount } from './testing/mount'
 import type * as usersApi from './users'
 
@@ -75,14 +75,31 @@ describe('names — §4.3 and §4.4', () => {
   it('names the Proposals link with what its count counts — O164', async () => {
     mount(
       <MemoryRouter>
-        <Sidebar libraries={[]} admin={true} openProposals={17} />
+        <AccountMenu admin={true} openProposals={17} />
+      </MemoryRouter>,
+    )
+    const link = page.getByRole('link', {
+      name: 'Proposals, 17 open',
+      exact: true,
+    })
+    // Inside More's panel, which keeps its links out of the tree until it is
+    // opened.
+    expect(link.query()).toBeNull()
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>('.account-button')?.click()
+    })
+    await expect.element(link).toBeInTheDocument()
+  })
+
+  it('names More with the count it carries — O164', async () => {
+    mount(
+      <MemoryRouter>
+        <AccountMenu admin={true} openProposals={17} />
       </MemoryRouter>,
     )
     await expect
-      .element(
-        page.getByRole('link', { name: 'Proposals, 17 open', exact: true }),
-      )
-      .toBeInTheDocument()
+      .element(page.getByRole('button', { expanded: false }))
+      .toHaveAccessibleName('More, 17 open proposals')
   })
 
   it('names Exclude globs by its label and describes it by its hint — O165', async () => {

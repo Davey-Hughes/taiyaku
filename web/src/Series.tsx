@@ -20,7 +20,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router'
 import { MetadataEditor } from './MetadataEditor'
 import { patchWork } from './metadata'
-import { useBrowsePrefs } from './browseModule'
+import { type BrowsePrefs, useBrowsePrefs } from './browseModule'
 import { useGate } from './gate'
 import { Cover } from './Cover'
 import {
@@ -36,6 +36,15 @@ import {
 } from './library'
 import { messageOf } from './message'
 import { useDocumentTitle } from './title'
+import { ViewMenu } from './ViewMenu'
+
+/** What this page's View panel offers: the four preferences that act here. */
+const SERIES_VIEW: readonly (keyof BrowsePrefs)[] = [
+  'layout',
+  'editionSelector',
+  'panel',
+  'density',
+]
 
 interface Loaded {
   series: SeriesCard
@@ -497,7 +506,10 @@ export function Series() {
       {failure !== undefined && <p role="alert">{failure}</p>}
       {loaded && (
         <>
-          <h1>{loaded.series.title}</h1>
+          <div className="page-head">
+            <h1>{loaded.series.title}</h1>
+            <ViewMenu keys={SERIES_VIEW} />
+          </div>
           {showEditionSelector && (
             <label className="edition-selector">
               <span>Edition</span>

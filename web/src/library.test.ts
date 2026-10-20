@@ -77,10 +77,10 @@ describe('the browse client', () => {
   })
 
   // `oneSeries` and `search` are mocked in the tests of their callers,
-  // `Series.test.tsx` and `Search.test.tsx`, so the requests they make are
-  // pinned here. Same shape as `grid`'s own test above: the endpoint hit and,
-  // for `search`, the escaping `work`'s test already pins for its own path
-  // segment.
+  // `Series.test.tsx`, `searchHits.test.tsx` and `Library.test.tsx`, so the
+  // requests they make are pinned here. Same shape as `grid`'s own test
+  // above: the endpoint hit and, for `search`, the escaping `work`'s test
+  // already pins for its own path segment.
   it('asks for one series by id', async () => {
     const fetchMock = vi
       .fn()

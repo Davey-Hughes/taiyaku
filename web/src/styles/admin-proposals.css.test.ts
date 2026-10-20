@@ -240,9 +240,10 @@ describe('the inbox tile height follows the stylesheet', () => {
  * never engages there — the blind spot O151 hid in, and the reason §12.4a's
  * figures were taken with a fine pointer, where an absent rule makes the two
  * identical. A Chromium *context* with `hasTouch` and `isMobile` does match
- * `(pointer: coarse)`, and this floor's later figures were read in one; the
- * `browser` project's instance is not configured that way, so none of it is
- * assertable here.
+ * `(pointer: coarse)`, and this floor's later figures were read in one. The
+ * `browser` project's instance is not that context, but a browser test can
+ * still switch the coarse-pointer blocks on in place and measure a height
+ * (`Shell.browser.test.tsx`'s `coarseRulesOn`); none measures this floor.
  */
 describe('admin.css carries a coarse-pointer floor', () => {
   /**

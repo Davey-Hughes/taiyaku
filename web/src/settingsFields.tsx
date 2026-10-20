@@ -11,27 +11,38 @@ import {
  * `settingsPanel.ts`'s `fieldKind` already derived from the preference's own
  * runtime type. Nothing here branches on which module or which key this is.
  *
- * **Its own file because two panels render it and they disagree about exactly
- * one thing.** The reader's `Settings.tsx` is a centred modal over artwork and
- * is dark on purpose; the browse screens are UI chrome and follow
- * `color-scheme`. `rowStyle` is that disagreement: the reader's panel passes
- * its own, and the browse panel passes none and draws its rows from
- * `shell.css`. Everything else —
- * the inference §4 calls "generated rather than hoped" — is shared, which is
- * the only way that claim stays true when one of the two changes.
+ * **Its own file because two panels render it and they disagree about two
+ * things.** The reader's `Settings.tsx` is a centred modal over artwork and
+ * is dark on purpose; a browse page's View panel (`ViewMenu.tsx`) is UI
+ * chrome and follows `color-scheme`. `rowStyle` is the first disagreement:
+ * the reader's panel passes its own, and View passes none and draws its rows
+ * from `shell.css`. `sentenceCase` is the second. Everything else — the
+ * inference §4 calls "generated rather than hoped" — is shared, which is the
+ * only way that claim stays true when one of the two changes.
  */
 export function FieldControl({
   field,
   value,
   onChange,
   rowStyle,
+  sentenceCase = false,
 }: {
   field: Field
   value: unknown
   onChange: (raw: unknown) => void
   rowStyle?: CSSProperties
+  /**
+   * "Edition selector" and "On-select" rather than "edition selector" and
+   * "on-select": the library's View panels write their words as sentences.
+   * The reader's panel passes nothing and keeps the lowercase it has.
+   */
+  sentenceCase?: boolean
 }) {
-  const label = humanize(field.key)
+  const word = (key: string) => {
+    const text = humanize(key)
+    return sentenceCase ? text.charAt(0).toUpperCase() + text.slice(1) : text
+  }
+  const label = word(field.key)
   if (field.kind === 'boolean') {
     return (
       <label style={rowStyle}>
@@ -67,7 +78,7 @@ export function FieldControl({
         >
           {(field.options ?? []).map((option) => (
             <option key={option} value={option}>
-              {humanize(option)}
+              {word(option)}
             </option>
           ))}
         </select>

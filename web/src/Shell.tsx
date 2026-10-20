@@ -2,19 +2,20 @@
  * The library's chrome: the sidebar, and the `<main>` a screen draws into.
  *
  * **The status fetch lives here rather than in each screen**, because the
- * sidebar, the library page and Search all draw the same libraries list, and
- * a fetch apiece is a chance for them to disagree. `Library` reads it for its
- * library's name and §8's empty states, and `Search` for its "Search in"
- * select, through `shell.ts`'s context rather than through a prop, so a
+ * sidebar and the library page draw the same libraries list, and a fetch
+ * apiece is a chance for them to disagree. `Library` reads it for its
+ * library's name, §8's empty states and whether there is anything to
+ * search, through `shell.ts`'s context rather than through a prop, so a
  * screen that does not care about it says nothing about it.
  *
  * The theme's tokens throughout — see `styles/tokens.css`, and `Login.tsx`,
  * which once shipped a hardcoded `#111` on this app's front door.
  */
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useLocation } from 'react-router'
-import { BrowseSettings } from './BrowseSettings'
+import { AccountMenu } from './AccountMenu'
 import {
+  BrowseControlsContext,
   BrowsePrefsContext,
   browseModule,
   browseRegistry,
@@ -30,6 +31,7 @@ import {
   StatusContext,
   StatusRefreshContext,
 } from './shell'
+import { SEARCH_BOX_ID } from './searchHits'
 import { Sidebar } from './Sidebar'
 import { ThemeControl } from './ThemeControl'
 import { Wordmark } from './Wordmark'
@@ -61,7 +63,7 @@ const AS_DIALOG = {
 } as const
 
 export function Shell({ children }: { children: React.ReactNode }) {
-  // **`admin` gates the sidebar's proposals and settings entries, and only the
+  // **`admin` gates More's proposals and settings entries, and only the
   // gate knows who is asking.** `undefined` — no gate above, which means a test
   // mounting one screen — reads as "no account known" and so as not an admin:
   // what an account may *see* is the server's to enforce, and this chooses
@@ -83,20 +85,24 @@ export function Shell({ children }: { children: React.ReactNode }) {
   const [map, setMap] = usePrefsMap(BROWSE_MODULES, loadPrefs, savePrefs)
   const prefs = sliceFor(map, browseModule)
 
-  const change = (key: string, raw: unknown) => {
-    setMap((prev) =>
-      fieldChanged(prev, browseRegistry, browseModule.id, key, raw),
-    )
-  }
+  const change = useCallback(
+    (key: string, raw: unknown) => {
+      setMap((prev) =>
+        fieldChanged(prev, browseRegistry, browseModule.id, key, raw),
+      )
+    },
+    [setMap],
+  )
 
   // **Both halves of the reset are needed and neither is enough** —
   // `module.ts`'s `sliceReset` says so: `resetPrefs` alone satisfies "reload,
   // confirm it persisted" and silently fails "change a setting, confirm it
   // takes effect".
-  const reset = () => {
+  const reset = useCallback(() => {
     resetPrefs(browseModule.id)
     setMap((prev) => sliceReset(prev, browseRegistry, browseModule.id))
-  }
+  }, [setMap])
+  const controls = useMemo(() => ({ change, reset }), [change, reset])
 
   // **Read on mount, and again whenever a screen under it asks** —
   // `shell.ts`'s `useStatusRefresh`, which Configuration → Libraries calls
@@ -128,7 +134,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
     }
   }, [statusReads])
 
-  // **The open count on the sidebar's Proposals entry — C3 §6, and the build
+  // **The open count on More and its Proposals entry — C3 §6, and the build
   // design's file-structure table.** The entry shipped without it, on the
   // ground that this component mounts around every screen and so a count is a
   // request on every page load. Measured, that request is the cheap one:
@@ -247,11 +253,12 @@ export function Shell({ children }: { children: React.ReactNode }) {
 
   return (
     <BrowsePrefsContext.Provider value={prefs}>
-      <InboxRefreshContext.Provider value={refreshInbox}>
-        <StatusRefreshContext.Provider value={refreshStatus}>
-          <StatusContext.Provider value={status}>
-            <div className={classes}>
-              {/* O174: a sighted keyboard user's way past the sidebar. Focus
+      <BrowseControlsContext.Provider value={controls}>
+        <InboxRefreshContext.Provider value={refreshInbox}>
+          <StatusRefreshContext.Provider value={refreshStatus}>
+            <StatusContext.Provider value={status}>
+              <div className={classes}>
+                {/* O174: a sighted keyboard user's way past the sidebar. Focus
                   moves by hand rather than by following `#content`, which
                   would put a fragment in the URL and a history entry for Back
                   to walk through. `preventScroll`, because at phone width the
@@ -265,104 +272,115 @@ export function Shell({ children }: { children: React.ReactNode }) {
                   here and comes off when focus leaves. While `main` holds that
                   focus a click on plain text inside it still lands on `main`,
                   until focus next moves. */}
-              {/* biome-ignore lint/a11y/useValidAnchor: a link and not a button — it has a destination, `#content`, and the handler goes there without leaving the fragment in the URL. */}
-              <a
-                className="skip-link"
-                href="#content"
-                inert={menuOpen}
-                onClick={(event) => {
-                  event.preventDefault()
-                  const main = mainRef.current
-                  if (!main) return
-                  main.tabIndex = -1
-                  main.addEventListener(
-                    'blur',
-                    () => {
-                      main.removeAttribute('tabindex')
-                    },
-                    { once: true },
-                  )
-                  main.focus({ preventScroll: true })
-                }}
-              >
-                Skip to content
-              </a>
-              <header className="phone-bar" inert={menuOpen}>
-                <button
-                  ref={menuButton}
-                  type="button"
-                  className="menu-button"
-                  aria-label="Menu"
-                  aria-expanded={menuOpen}
-                  aria-controls="library-menu"
-                  onClick={() => {
-                    setMenuOpen(true)
+                {/* biome-ignore lint/a11y/useValidAnchor: a link and not a button — it has a destination, `#content`, and the handler goes there without leaving the fragment in the URL. */}
+                <a
+                  className="skip-link"
+                  href="#content"
+                  inert={menuOpen}
+                  onClick={(event) => {
+                    event.preventDefault()
+                    const main = mainRef.current
+                    if (!main) return
+                    main.tabIndex = -1
+                    main.addEventListener(
+                      'blur',
+                      () => {
+                        main.removeAttribute('tabindex')
+                      },
+                      { once: true },
+                    )
+                    main.focus({ preventScroll: true })
                   }}
                 >
-                  <svg viewBox="0 0 24 24" aria-hidden="true">
-                    <path d="M4 7h16M4 12h16M4 17h16" />
-                  </svg>
-                </button>
-                <Link to="/" className="home">
+                  Skip to content
+                </a>
+                <header className="phone-bar" inert={menuOpen}>
+                  <button
+                    ref={menuButton}
+                    type="button"
+                    className="menu-button"
+                    aria-label="Menu"
+                    aria-expanded={menuOpen}
+                    aria-controls="library-menu"
+                    onClick={() => {
+                      setMenuOpen(true)
+                    }}
+                  >
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <path d="M4 7h16M4 12h16M4 17h16" />
+                    </svg>
+                  </button>
+                  <Link to="/" className="home">
+                    <Wordmark />
+                  </Link>
+                  {/* Search is the Library view's bar: this goes there, keeping
+                    the library and the query when it is already on that
+                    view, and the view focuses the box. Already there, the
+                    box is focused here, inside the tap, so iOS raises its
+                    keyboard. */}
+                  <Link
+                    to={{
+                      pathname: '/',
+                      search: location.pathname === '/' ? location.search : '',
+                    }}
+                    state={{ focusSearch: true }}
+                    className="search"
+                    aria-label="Search"
+                    onClick={() => {
+                      document.getElementById(SEARCH_BOX_ID)?.focus()
+                    }}
+                  >
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <circle cx="11" cy="11" r="6" />
+                      <path d="M16 16l4 4" />
+                    </svg>
+                  </Link>
+                </header>
+                <div
+                  id="library-menu"
+                  ref={column}
+                  className="sidebar-column"
+                  {...(menuOpen ? AS_DIALOG : {})}
+                >
                   <Wordmark />
-                </Link>
-                <Link to="/search" className="search" aria-label="Search">
-                  <svg viewBox="0 0 24 24" aria-hidden="true">
-                    <circle cx="11" cy="11" r="6" />
-                    <path d="M16 16l4 4" />
-                  </svg>
-                </Link>
-              </header>
-              <div
-                id="library-menu"
-                ref={column}
-                className="sidebar-column"
-                {...(menuOpen ? AS_DIALOG : {})}
-              >
-                <Wordmark />
-                <button
-                  type="button"
-                  className="menu-close"
-                  aria-label="Close menu"
-                  onClick={() => {
-                    setMenuOpen(false)
-                  }}
-                >
-                  <svg viewBox="0 0 24 24" aria-hidden="true">
-                    <path d="M6 6l12 12M18 6L6 18" />
-                  </svg>
-                </button>
-                <Sidebar
-                  libraries={status?.libraries ?? []}
-                  admin={admin}
-                  openProposals={openProposals}
-                />
-                <BrowseSettings
-                  prefs={prefs}
-                  onChange={change}
-                  onReset={reset}
-                />
-                <ThemeControl />
+                  <button
+                    type="button"
+                    className="menu-close"
+                    aria-label="Close menu"
+                    onClick={() => {
+                      setMenuOpen(false)
+                    }}
+                  >
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <path d="M6 6l12 12M18 6L6 18" />
+                    </svg>
+                  </button>
+                  <Sidebar libraries={status?.libraries ?? []} />
+                  <div className="sidebar-foot">
+                    <ThemeControl />
+                    <AccountMenu admin={admin} openProposals={openProposals} />
+                  </div>
+                </div>
+                {menuOpen && (
+                  <button
+                    type="button"
+                    className="scrim"
+                    aria-label="Close menu"
+                    tabIndex={-1}
+                    onClick={() => {
+                      setMenuOpen(false)
+                    }}
+                  />
+                )}
+                <main id="content" ref={mainRef} inert={menuOpen}>
+                  {failure !== undefined && <p role="alert">{failure}</p>}
+                  {children}
+                </main>
               </div>
-              {menuOpen && (
-                <button
-                  type="button"
-                  className="scrim"
-                  aria-label="Close menu"
-                  tabIndex={-1}
-                  onClick={() => {
-                    setMenuOpen(false)
-                  }}
-                />
-              )}
-              <main id="content" ref={mainRef} inert={menuOpen}>
-                {failure !== undefined && <p role="alert">{failure}</p>}
-                {children}
-              </main>
-            </div>
-          </StatusContext.Provider>
-        </StatusRefreshContext.Provider>
-      </InboxRefreshContext.Provider>
+            </StatusContext.Provider>
+          </StatusRefreshContext.Provider>
+        </InboxRefreshContext.Provider>
+      </BrowseControlsContext.Provider>
     </BrowsePrefsContext.Provider>
   )
 }

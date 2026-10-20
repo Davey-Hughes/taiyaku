@@ -234,7 +234,7 @@
   border: 1px solid var(--line-strong);
   border-radius: 999px;
   padding: 0 var(--space-2);
-  font-size: var(--text-meta);
+  font-size: var(--text-badge);
   line-height: 1.5;
 }
 
@@ -344,7 +344,7 @@
  * again over the columns, where the two are drawn side by side and the
  * sentence is no longer on screen. */
 .proposal-detail .side-role {
-  font-size: 0.7rem;
+  font-size: var(--text-meta);
   letter-spacing: 0.06em;
   text-transform: uppercase;
 }
@@ -446,12 +446,12 @@
   border: 1px solid var(--line-strong);
   border-radius: var(--radius-control);
   padding: 0 var(--space-1);
-  font-size: var(--text-meta);
+  font-size: var(--text-badge);
 }
 
 .proposal-detail .lab {
   margin: 0 0 var(--space-1);
-  font-size: 0.7rem;
+  font-size: var(--text-meta);
   letter-spacing: 0.06em;
   text-transform: uppercase;
 }
@@ -592,7 +592,7 @@
    * `box-sizing` below, added in the same change, takes 10px off each text
    * box, so every field ends up shorter than it was. */
   gap: var(--space-1);
-  font-size: 0.7rem;
+  font-size: var(--text-meta);
   letter-spacing: 0.06em;
   text-transform: uppercase;
 }
@@ -733,12 +733,12 @@
 /* A fact about the box above it rather than a sixth field, so it takes the
  * row under the pattern instead of a slot beside the four short ones: what it
  * says is a limit on how far a widened pattern can reach, and widening
- * happens in that box. Quiet by size and not by colour — this panel buys
- * quiet with size and border, and a dimmed line here would be one more thing
- * to read at reduced contrast on the screen `index.css.test.ts` exists
- * because of. */
+ * happens in that box. Quiet by colour and not by size: it is read, so it
+ * keeps the 14px floor, and `--muted` holds the same contrast floors as
+ * `--text` on every ground (`index.css.test.ts`). */
 .proposal-detail .accept-form .scope {
   flex: 1 0 100%;
+  color: var(--muted);
   font-size: var(--text-meta);
 }
 
@@ -923,7 +923,7 @@
   border-radius: 999px;
   background: var(--accent);
   color: var(--on-accent);
-  font-size: var(--text-meta);
+  font-size: var(--text-badge);
 }
 
 /* The rule editor — spec 2026-09-17 §10.3.
@@ -1095,7 +1095,7 @@
   border: 1px solid var(--line-strong);
   border-radius: 999px;
   color: var(--muted);
-  font-size: var(--text-meta);
+  font-size: var(--text-badge);
   white-space: nowrap;
 }
 
@@ -2461,11 +2461,11 @@
    `min-height` alone did reach 44 — measured — but left the word at the top
    of the box, 0 px above it and 20 below. `inline-flex` with `align-items:
    center` reaches the same 44 without depending on a parent staying flex,
-   and centres the word: 10 and 10, measured. `shell.css`'s `.sidebar-primary
-   a` floor is the same three properties, with `flex` where this one has
-   `inline-flex`: those are rows filling a column and want the whole width,
-   these are actions sitting in a row, so the target is the width of the word
-   and not of the screen.
+   and centres the word: 10 and 10, measured. `shell.css`'s
+   `.sidebar-heading a, .sidebar-libraries a` floor is the same three
+   properties, with `flex` where this one has `inline-flex`: those are rows
+   filling a column and want the whole width, these are actions sitting in a
+   row, so the target is the width of the word and not of the screen.
    The `.backup-list` row grows from 68 px to 88 as a result, its filename
    and its date already being on two lines at 390 px.
 
@@ -2613,7 +2613,8 @@
    `isMobile` set at 390 px matches `(pointer: coarse)` and `(any-pointer:
    coarse)` and reports no `(pointer: fine)` at all, so this block was live
    while they were read. The project's vitest browser project is not that
-   context, which is why none of this is assertable there. */
+   context; a test there can still switch this block on in place, as
+   `Shell.browser.test.tsx`'s `coarseRulesOn` does, to measure it. */
 @media (pointer: coarse) {
   /* **This block carried the repo's only CSS `biome-ignore` until ⑤c's
      whole-branch review, and the review removed the need for it.** The

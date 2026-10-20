@@ -1,14 +1,17 @@
 import { act } from 'react'
 import { MemoryRouter, Route, Routes } from 'react-router'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import { page, userEvent } from 'vitest/browser'
+import type { Me } from './api'
+import { GateContext } from './gate'
 import './index.css'
 import * as library from './library'
 import { Library } from './Library'
-import { Search } from './Search'
+import { SEARCH_BOX_ID } from './searchHits'
 import { Series } from './Series'
 import { Shell } from './Shell'
 import { mount } from './testing/mount'
+import { mouse } from './testing/mouse'
 
 /**
  * The shell and the library's screens at a phone's width and a desktop's —
@@ -23,6 +26,16 @@ import { mount } from './testing/mount'
  * CI does not run this project (see `vite.config.ts`: no Chromium);
  * `scripts/check-all.sh` does.
  */
+
+// An administrator's shell reads the open count; answered here, so the
+// request never leaves the test.
+vi.mock('./curation', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./curation')>()),
+  listProposals: vi.fn(async () => ({
+    proposals: [],
+    counts: { 'edition-of': 3 },
+  })),
+}))
 
 vi.mock('./library', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./library')>()),
@@ -150,14 +163,6 @@ async function at(path: string, width: number): Promise<HTMLElement> {
               </Shell>
             }
           />
-          <Route
-            path="/search"
-            element={
-              <Shell>
-                <Search />
-              </Shell>
-            }
-          />
         </Routes>
       </MemoryRouter>,
     )
@@ -169,7 +174,8 @@ async function at(path: string, width: number): Promise<HTMLElement> {
     await Promise.resolve()
     await Promise.resolve()
   })
-  // `Search.tsx` debounces its request by 250 ms; wait it out with real timers.
+  // The search bar debounces its request by 250 ms (`searchHits.ts`); wait
+  // it out with real timers.
   await act(async () => {
     await new Promise((resolve) => setTimeout(resolve, 300))
   })
@@ -413,28 +419,42 @@ describe('the series page and search at 390 px', () => {
   })
 
   it('lays search out without sideways scroll', async () => {
-    const host = await at('/search?q=go-toubun', 390)
-    expect(host.querySelector('.grid')).not.toBeNull()
+    const host = await at('/?q=go-toubun', 390)
+    expect(host.querySelector('.search-hits .grid')).not.toBeNull()
     expect(sideways()).toBe(0)
   })
 
-  it('lays search out without sideways scroll, a long library name in Search in and all', async () => {
-    // Long enough that the select, as wide as its longest option, would
-    // widen the page past the phone without the rules that let it shrink.
+  it('lays search out without sideways scroll, in a long-named library chosen in the sidebar', async () => {
+    // The sidebar is what narrows a search (spec §2): its library's page is
+    // the scope, and the box's placeholder carries the library's whole name.
+    const name =
+      'Go-Toubun no Hanayome - Full Color Edition [Digital] (Kodansha)'
     vi.mocked(library.status).mockResolvedValue({
       libraries: [
         { id: 1, name: 'Volumes', scanned: true },
-        {
-          id: 2,
-          name: 'Go-Toubun no Hanayome - Full Color Edition [Digital] (Kodansha)',
-          scanned: true,
-        },
+        { id: 2, name, scanned: true },
       ],
       restricted: false,
     })
-    const host = await at('/search?q=go-toubun&library=2', 390)
-    expect(host.querySelector('.search-scope select')).not.toBeNull()
-    expect(host.querySelector('.grid')).not.toBeNull()
+    const host = await at('/', 390)
+    await clickWithMouse(need(host, 'button.menu-button'))
+    // Past the slide, so the press lands on the link and not where it was.
+    const column = need(host, '#library-menu')
+    await act(async () => {
+      await Promise.all(column.getAnimations().map((a) => a.finished))
+    })
+    await clickWithMouse(need(column, 'a[href="/?library=2"]'))
+    const box = need<HTMLInputElement>(host, 'input[type="search"]')
+    expect(box.placeholder).toBe(`Search ${name}`)
+    expect(sideways()).toBe(0)
+    await act(async () => {
+      await userEvent.fill(box, 'go-toubun')
+    })
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 300))
+    })
+    expect(vi.mocked(library.search)).toHaveBeenLastCalledWith('go-toubun', 2)
+    expect(host.querySelector('.search-hits .grid')).not.toBeNull()
     expect(sideways()).toBe(0)
   })
 })
@@ -542,5 +562,447 @@ describe('the skip link — O174', () => {
     const box = need(host, '.skip-link').getBoundingClientRect()
     expect(box.width).toBeLessThanOrEqual(1)
     expect(box.height).toBeLessThanOrEqual(1)
+  })
+})
+
+/**
+ * Every `@media (pointer: coarse)` block in the page's stylesheets, switched
+ * on in place, so the cascade keeps its order; the function returned puts
+ * each block's condition back as it was written. This project's Chromium has
+ * a fine pointer, and its touch emulation, once turned off again, leaves the
+ * page reporting no pointer at all to every file that runs after.
+ *
+ * Any other condition that asks about the pointer or hover — a coarse
+ * pointer joined to a width, a fine pointer, a hover — cannot be switched
+ * on or off whole the way a coarse device would decide it, so it throws
+ * before anything is switched: left alone, it would draw as a fine pointer
+ * does while the case says coarse.
+ */
+function coarseRulesOn(): () => void {
+  const found: CSSMediaRule[] = []
+  const walk = (list: CSSRuleList) => {
+    for (const rule of list) {
+      if (
+        rule instanceof CSSMediaRule &&
+        /pointer|hover/.test(rule.media.mediaText)
+      ) {
+        found.push(rule)
+      }
+      if (rule instanceof CSSGroupingRule) walk(rule.cssRules)
+    }
+  }
+  for (const sheet of document.styleSheets) walk(sheet.cssRules)
+  const other = found
+    .map((rule) => rule.media.mediaText)
+    .filter((text) => text.replace(/\s/g, '') !== '(pointer:coarse)')
+  if (other.length > 0) {
+    throw new Error(
+      `cannot switch on as a coarse pointer: @media ${other.join('; @media ')}`,
+    )
+  }
+  const switched = found.map(({ media }) => ({
+    media,
+    written: media.mediaText,
+  }))
+  for (const { media } of switched) media.mediaText = 'all'
+  return () => {
+    for (const { media, written } of switched) media.mediaText = written
+  }
+}
+
+/**
+ * The Library view's heading row as the search box arrives. The box is drawn
+ * once the status lands (`Library.tsx`'s `offered`), after the first paint,
+ * so a row that grew to take it would move View and push everything under
+ * it down on every cold load. A coarse pointer sizes both the box and View
+ * differently (`base.css`, `shell.css`), so the row is measured under each.
+ */
+describe('the Library view’s heading row as the search box arrives', () => {
+  // Coarse first at each width: the fine case's pointer check after it is
+  // what shows the coarse rules were switched back.
+  it.each([
+    [1440, 'coarse'],
+    [1440, 'fine'],
+    [390, 'coarse'],
+    [390, 'fine'],
+  ] as const)(
+    'stays put at %i px with a %s pointer',
+    async (width, pointer) => {
+      if (pointer === 'coarse') onTestFinished(coarseRulesOn())
+      let land: (status: library.LibraryStatus) => void = () => {}
+      vi.mocked(library.status).mockReturnValue(
+        new Promise((resolve) => {
+          land = resolve
+        }),
+      )
+      // The grid never answers: with rows it would bring the box on its own.
+      vi.mocked(library.grid).mockReturnValue(new Promise(() => {}))
+      const host = await at('/', width)
+      // THE POINTER THIS CASE NAMES, read from a coarse-pointer rule that is
+      // not View's or the row's: More's 44 px floor.
+      expect(getComputedStyle(need(host, '.account-button')).minHeight).toBe(
+        pointer === 'coarse' ? '44px' : '0px',
+      )
+      const measure = () => ({
+        head: need(host, '.page-head').getBoundingClientRect().height,
+        view: need(host, '.view-button').getBoundingClientRect().top,
+        chips: need(host, '.library-chips').getBoundingClientRect().top,
+      })
+      expect(host.querySelector(`#${SEARCH_BOX_ID}`)).toBeNull()
+      // View is a finger's 44 px under a coarse pointer (spec 2026-09-17 §7.1).
+      if (pointer === 'coarse') {
+        expect(
+          need(host, '.view-button').getBoundingClientRect().height,
+        ).toBeGreaterThanOrEqual(44)
+      }
+      const before = measure()
+      await act(async () => {
+        land({
+          libraries: [{ id: 1, name: 'Volumes', scanned: true }],
+          restricted: false,
+        })
+      })
+      need(host, `#${SEARCH_BOX_ID}`)
+      expect(measure()).toEqual(before)
+    },
+  )
+})
+
+/**
+ * The shell alone, signed in, on a route that matches every path: a link
+ * followed inside it lands on a screen that still has the shell, so what
+ * the shell does on arrival can be read.
+ */
+async function shellAt(
+  path: string,
+  width: number,
+  admin: boolean,
+): Promise<HTMLElement> {
+  await page.viewport(width, 844)
+  const who: Me = {
+    user_id: 1,
+    admin,
+    can_download: false,
+    can_stream: false,
+    can_stamp: false,
+  }
+  let host: HTMLElement | undefined
+  await act(async () => {
+    host = mount(
+      <MemoryRouter initialEntries={[path]}>
+        <GateContext.Provider value={{ who, signOut: () => {} }}>
+          <Routes>
+            <Route
+              path="*"
+              element={
+                <Shell>
+                  <p className="plain">Nothing here can be pressed.</p>
+                </Shell>
+              }
+            />
+          </Routes>
+        </GateContext.Provider>
+      </MemoryRouter>,
+    )
+    host.style.height = '100%'
+    await Promise.resolve()
+    await Promise.resolve()
+  })
+  if (!host) throw new Error('nothing mounted')
+  return host
+}
+
+/**
+ * A real press and release at the middle of `el`. Each is its own `act`, so
+ * whatever the press changes is drawn before the release lands, as it is
+ * for a hand: a panel the press closed is gone from under the click.
+ */
+async function clickWithMouse(el: Element) {
+  const box = el.getBoundingClientRect()
+  await mouse.moveTo(box.left + box.width / 2, box.top + box.height / 2)
+  await act(async () => {
+    await mouse.press()
+  })
+  await act(async () => {
+    await mouse.release()
+  })
+}
+
+/** The accent as the browser resolves it, whichever scheme is in force. */
+function accentIn(host: HTMLElement): string {
+  const probe = document.createElement('span')
+  probe.style.color = 'var(--accent)'
+  host.append(probe)
+  const accent = getComputedStyle(probe).color
+  probe.remove()
+  return accent
+}
+
+describe('More, with a real mouse and real keys — spec §1', () => {
+  const panelOf = (host: HTMLElement) =>
+    need(
+      host,
+      `[id="${need(host, 'button.account-button').getAttribute('aria-controls')}"]`,
+    )
+
+  it('opens on a click, and a second click on the button closes it', async () => {
+    const host = await shellAt('/', 1440, true)
+    const button = need<HTMLButtonElement>(host, 'button.account-button')
+    await clickWithMouse(button)
+    expect(button.getAttribute('aria-expanded')).toBe('true')
+    expect(panelOf(host).checkVisibility()).toBe(true)
+    // The press lands on the button, which is outside the panel and inside
+    // what the panel belongs to: it must not close the panel only for the
+    // click to open it again.
+    await clickWithMouse(button)
+    expect(button.getAttribute('aria-expanded')).toBe('false')
+    expect(panelOf(host).checkVisibility()).toBe(false)
+  })
+
+  it('closes on a click outside it, on text nothing can focus', async () => {
+    const host = await shellAt('/', 1440, true)
+    const button = need<HTMLButtonElement>(host, 'button.account-button')
+    await clickWithMouse(button)
+    expect(button.getAttribute('aria-expanded')).toBe('true')
+    // Plain text, so no focus moves: only the press can close it.
+    await clickWithMouse(need(host, 'main .plain'))
+    expect(button.getAttribute('aria-expanded')).toBe('false')
+    expect(panelOf(host).checkVisibility()).toBe(false)
+  })
+
+  it('follows a click on a link inside it, closes, and marks More there', async () => {
+    const host = await shellAt('/', 1440, true)
+    const button = need<HTMLButtonElement>(host, 'button.account-button')
+    await clickWithMouse(button)
+    await clickWithMouse(need(panelOf(host), 'a[href="/config"]'))
+    expect(button.getAttribute('aria-expanded')).toBe('false')
+    expect(panelOf(host).checkVisibility()).toBe(false)
+    expect(button.hasAttribute('data-here')).toBe(true)
+    expect(getComputedStyle(need(button, '.account-name')).color).toBe(
+      accentIn(host),
+    )
+  })
+
+  it('opens on Enter with focus left on the button, Tab enters the panel, and Escape there closes it', async () => {
+    const host = await shellAt('/', 1440, true)
+    const button = need<HTMLButtonElement>(host, 'button.account-button')
+    // Inside the frame first: a key pressed before anything here has focus
+    // goes to the frame around the test.
+    await act(async () => button.focus())
+    await act(async () => {
+      await userEvent.keyboard('{Enter}')
+    })
+    expect(button.getAttribute('aria-expanded')).toBe('true')
+    expect(document.activeElement).toBe(button)
+    // The panel is drawn above the button and follows it in the document,
+    // so the next stop is its first link.
+    expect(panelOf(host).getBoundingClientRect().bottom).toBeLessThanOrEqual(
+      button.getBoundingClientRect().top,
+    )
+    await act(async () => {
+      await userEvent.keyboard('{Tab}')
+    })
+    expect(document.activeElement).toBe(
+      need(panelOf(host), 'a[href="/proposals"]'),
+    )
+    await act(async () => {
+      await userEvent.keyboard('{Escape}')
+    })
+    expect(button.getAttribute('aria-expanded')).toBe('false')
+    expect(panelOf(host).checkVisibility()).toBe(false)
+    expect(document.activeElement).toBe(button)
+  })
+
+  // Following a link closes the panel, which hides the link that had focus:
+  // left there, the next Tab would start again from the top of the document.
+  it('gives focus back to the button after Enter on a link inside it', async () => {
+    const host = await shellAt('/', 1440, true)
+    const button = need<HTMLButtonElement>(host, 'button.account-button')
+    // Inside the frame first: a key pressed before anything here has focus
+    // goes to the frame around the test.
+    await act(async () => button.focus())
+    await act(async () => {
+      await userEvent.keyboard('{Enter}')
+    })
+    await act(async () => {
+      await userEvent.keyboard('{Tab}')
+    })
+    await act(async () => {
+      await userEvent.keyboard('{Tab}')
+    })
+    expect(document.activeElement).toBe(
+      need(panelOf(host), 'a[href="/config"]'),
+    )
+    await act(async () => {
+      await userEvent.keyboard('{Enter}')
+    })
+    expect(button.hasAttribute('data-here')).toBe(true)
+    expect(button.getAttribute('aria-expanded')).toBe('false')
+    expect(document.activeElement).toBe(button)
+  })
+
+  // Inside the phone drawer the navigation closes the drawer too, and the
+  // drawer's own close sends focus to ☰, which is what opened it.
+  it('leaves focus on ☰ after Enter on one of its links inside the drawer', async () => {
+    const host = await shellAt('/', 390, true)
+    const menu = need<HTMLButtonElement>(
+      host,
+      'button[aria-controls="library-menu"]',
+    )
+    await act(async () => menu.click())
+    const button = need<HTMLButtonElement>(host, 'button.account-button')
+    await act(async () => button.focus())
+    await act(async () => {
+      await userEvent.keyboard('{Enter}')
+    })
+    await act(async () => {
+      await userEvent.keyboard('{Tab}')
+    })
+    await act(async () => {
+      await userEvent.keyboard('{Tab}')
+    })
+    expect(document.activeElement).toBe(
+      need(panelOf(host), 'a[href="/config"]'),
+    )
+    await act(async () => {
+      await userEvent.keyboard('{Enter}')
+    })
+    expect(button.hasAttribute('data-here')).toBe(true)
+    expect(menu.getAttribute('aria-expanded')).toBe('false')
+    expect(document.activeElement).toBe(menu)
+  })
+
+  it('closes More and not the drawer on one Escape, and the drawer on the next', async () => {
+    // `popover.ts`: one Escape closes the innermost thing open.
+    const host = await shellAt('/', 390, true)
+    const menu = need<HTMLButtonElement>(
+      host,
+      'button[aria-controls="library-menu"]',
+    )
+    await act(async () => menu.click())
+    const button = need<HTMLButtonElement>(host, 'button.account-button')
+    await act(async () => button.focus())
+    await act(async () => {
+      await userEvent.keyboard('{Enter}')
+    })
+    expect(button.getAttribute('aria-expanded')).toBe('true')
+    await act(async () => {
+      await userEvent.keyboard('{Escape}')
+    })
+    expect(button.getAttribute('aria-expanded')).toBe('false')
+    expect(menu.getAttribute('aria-expanded')).toBe('true')
+    expect(document.activeElement).toBe(button)
+    await act(async () => {
+      await userEvent.keyboard('{Escape}')
+    })
+    expect(menu.getAttribute('aria-expanded')).toBe('false')
+    expect(document.activeElement).toBe(menu)
+  })
+
+  it.each([
+    ['/proposals', true],
+    ['/config', true],
+    ['/config/libraries', true],
+    ['/account', true],
+    ['/', false],
+    ['/?library=1', false],
+    ['/series/3', false],
+  ])(
+    'draws an administrator’s More in the accent on %s: %s',
+    async (path, accent) => {
+      const host = await shellAt(path, 1440, true)
+      const name = getComputedStyle(
+        need(host, 'button.account-button .account-name'),
+      )
+      expect(name.color === accentIn(host)).toBe(accent)
+    },
+  )
+
+  it.each([
+    ['/account', true],
+    ['/', false],
+    ['/proposals', true],
+    ['/config', true],
+  ])(
+    'draws anyone else’s More in the accent on %s: %s',
+    async (path, accent) => {
+      const host = await shellAt(path, 1440, false)
+      const name = getComputedStyle(
+        need(host, 'a.account-button .account-name'),
+      )
+      expect(name.color === accentIn(host)).toBe(accent)
+    },
+  )
+})
+
+describe('View, with a real mouse and real keys — spec §2', () => {
+  beforeEach(() => {
+    vi.mocked(library.oneSeries).mockResolvedValue(SERIES_PAGE)
+  })
+
+  const panelOf = (host: HTMLElement) =>
+    need(
+      host,
+      `[id="${need(host, 'button.view-button').getAttribute('aria-controls')}"]`,
+    )
+
+  it('opens on Enter with focus left on the button, Tab enters the panel, and Escape closes it from there or from the button', async () => {
+    const host = await at('/series/7', 1440)
+    const button = need<HTMLButtonElement>(host, 'button.view-button')
+    // Inside the frame first: a key pressed before anything here has focus
+    // goes to the frame around the test.
+    await act(async () => button.focus())
+    await act(async () => {
+      await userEvent.keyboard('{Enter}')
+    })
+    expect(button.getAttribute('aria-expanded')).toBe('true')
+    expect(document.activeElement).toBe(button)
+    // The panel is drawn below the button and follows it in the document,
+    // so the next stop is its first control, Layout.
+    expect(panelOf(host).getBoundingClientRect().top).toBeGreaterThanOrEqual(
+      button.getBoundingClientRect().bottom,
+    )
+    await act(async () => {
+      await userEvent.keyboard('{Tab}')
+    })
+    expect(document.activeElement).toBe(need(panelOf(host), 'select'))
+    await act(async () => {
+      await userEvent.keyboard('{Escape}')
+    })
+    expect(button.getAttribute('aria-expanded')).toBe('false')
+    expect(panelOf(host).checkVisibility()).toBe(false)
+    expect(document.activeElement).toBe(button)
+    await act(async () => {
+      await userEvent.keyboard('{Enter}')
+    })
+    expect(button.getAttribute('aria-expanded')).toBe('true')
+    await act(async () => {
+      await userEvent.keyboard('{Escape}')
+    })
+    expect(button.getAttribute('aria-expanded')).toBe('false')
+    expect(document.activeElement).toBe(button)
+  })
+
+  it('closes on a click outside it, on text nothing can focus, and not on one inside it', async () => {
+    const host = await at('/series/7', 1440)
+    const button = need<HTMLButtonElement>(host, 'button.view-button')
+    await clickWithMouse(button)
+    expect(button.getAttribute('aria-expanded')).toBe('true')
+    // The panel's own padding, where no control is: inside, so it stays.
+    const box = panelOf(host).getBoundingClientRect()
+    await mouse.moveTo(box.left + 4, box.top + 4)
+    await act(async () => {
+      await mouse.press()
+    })
+    await act(async () => {
+      await mouse.release()
+    })
+    expect(button.getAttribute('aria-expanded')).toBe('true')
+    expect(panelOf(host).checkVisibility()).toBe(true)
+    // The series title, plain text, so no focus moves: only the press can
+    // close it.
+    await clickWithMouse(need(host, '.page-head h1'))
+    expect(button.getAttribute('aria-expanded')).toBe('false')
+    expect(panelOf(host).checkVisibility()).toBe(false)
   })
 })

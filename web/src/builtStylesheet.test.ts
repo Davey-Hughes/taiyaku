@@ -3,7 +3,7 @@ import type { Rolldown } from 'vite'
 import { build } from 'vite'
 import { beforeAll, describe, expect, it } from 'vitest'
 import tokensSource from './styles/tokens.css?raw'
-import { withoutComments } from './testing/css'
+import { rules, selectors } from './testing/css'
 
 /**
  * **The stylesheet as the build ships it, not as it is written (O218).**
@@ -48,30 +48,74 @@ beforeAll(async () => {
   built = String(sheets[0]?.source)
 }, 60_000)
 
-/** Every token `tokens.css` writes as a `light-dark()` pair. */
-const PAIRED = [
-  ...withoutComments(tokensSource).matchAll(/(--[\w-]+):\s*light-dark\(/g),
-].map((m) => m[1] ?? '')
+/**
+ * Every rule `tokens.css` writes `light-dark()` pairs in, by its selector
+ * list, with the tokens it pairs: `:root`, which declares the palette, and
+ * the reader's roots, which pin the tokens the Ink lift changed back to the
+ * pairs the reader was designed with (spec 2026-10-18 §3).
+ */
+const PAIRING_RULES = new Map(
+  rules(tokensSource)
+    .map(({ prelude, body }): [string, string[]] => [
+      selectors(prelude).join(', '),
+      [...body.matchAll(/(?:^|;)\s*(--[\w-]+):\s*light-dark\(/g)].map(
+        (m) => m[1] ?? '',
+      ),
+    ])
+    .filter(([, tokens]) => tokens.length > 0),
+)
+
+const ROOT = ':root'
+const READER = '.reader-route, .reader'
+
+/** Every token `:root` writes as a `light-dark()` pair. */
+const PAIRED = PAIRING_RULES.get(ROOT) ?? []
+
+/**
+ * Every declaration of `token` in a rule of the built stylesheet that
+ * `rules()` reads, as the selector list of the rule holding it and the value
+ * it is given; the case below counts the rest. `:` after the name, so
+ * `--line` does not match `--line-strong`.
+ */
+function declarations(token: string): Array<{ where: string; value: string }> {
+  return rules(built).flatMap(({ prelude, body }) =>
+    [...body.matchAll(new RegExp(`(?:^|;)\\s*${token}:([^;]*)`, 'g'))].map(
+      (m) => ({ where: selectors(prelude).join(', '), value: m[1] ?? '' }),
+    ),
+  )
+}
 
 describe('the built stylesheet', () => {
-  it('reads the thirteen paired tokens from tokens.css', () => {
-    // A guard on the list the next test walks: a pattern that matched
+  it('reads the paired tokens from tokens.css, by the rule that pairs them', () => {
+    // A guard on the lists the next test walks: a pattern that matched
     // nothing would leave it passing over no tokens at all.
+    expect([...PAIRING_RULES.keys()]).toEqual([ROOT, READER])
     expect(PAIRED).toHaveLength(13)
     expect(PAIRED).toContain('--line')
     expect(PAIRED).toContain('--text')
+    const pinned = PAIRING_RULES.get(READER) ?? []
+    expect(pinned).toHaveLength(7)
+    expect(pinned.filter((token) => !PAIRED.includes(token))).toEqual([])
   })
 
   it.each(PAIRED)(
-    'declares %s as the light-dark() pair it is written as',
+    'declares %s as the light-dark() pair it is written as, once in each rule that writes it',
     (token) => {
-      // Every declaration of the token, wherever the build put it. `:` after
-      // the name, so `--line` does not match `--line-strong`.
-      const values = [
-        ...built.matchAll(new RegExp(`(?:^|[{;])${token}:([^;}]*)`, 'g')),
-      ].map((m) => m[1])
-      expect(values).toHaveLength(1)
-      expect(values[0]).toMatch(/^light-dark\(/)
+      // Where the build put each declaration, against where the source
+      // wrote one: a second declaration in one rule, or one in a rule the
+      // source does not pair it in, changes this list. The reader's pin is
+      // the one second rule allowed, and only for the tokens it writes.
+      const found = declarations(token)
+      // `rules()` reads only a block with no block inside it, so a
+      // declaration in a rule that nests another is not in `found`. Every
+      // `<token>:` in the whole text is, wherever the build put it.
+      const everywhere = built.match(new RegExp(`(?:^|[{;\\s])${token}:`, 'g'))
+      expect(found).toHaveLength(everywhere?.length ?? 0)
+      const written = [...PAIRING_RULES]
+        .filter(([, tokens]) => tokens.includes(token))
+        .map(([where]) => where)
+      expect(found.map(({ where }) => where)).toEqual(written)
+      for (const { value } of found) expect(value).toMatch(/^light-dark\(/)
     },
   )
 

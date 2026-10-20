@@ -12,8 +12,8 @@
  * **Nothing here is a settings screen.** `settingsPanel.ts`'s `fieldKind`
  * derives a control from a preference's runtime type — boolean to checkbox,
  * a string whose module declares `options` to a select — so the values below
- * are the whole declaration and `BrowseSettings.tsx` renders whatever they
- * turn out to be.
+ * are the whole declaration and `ViewMenu.tsx` renders whatever they turn
+ * out to be.
  *
  * **The honest cost**, recorded in §4 and not softened here: the reader's
  * module system works because each module is a small *behaviour*, and this is
@@ -77,3 +77,27 @@ export const BrowsePrefsContext = createContext<BrowsePrefs>(
 export function useBrowsePrefs(): BrowsePrefs {
   return useContext(BrowsePrefsContext)
 }
+
+/**
+ * How a screen changes the browse preferences: `Shell.tsx` owns the state and
+ * its persistence, and a page's View panel draws the controls. `undefined`
+ * where no shell sits above — a test mounting one screen — and a View button
+ * draws nothing then.
+ */
+export interface BrowseControls {
+  /**
+   * One preference changed, **uncoerced** — `raw` is whatever the control's
+   * own change event handed back, which for a number input is a string.
+   * `module.ts`'s `fieldChanged` is what coerces it, through
+   * `settingsPanel.ts`'s `withFieldValue`. This is `Settings.tsx`'s contract
+   * verbatim; see its own `onChange` doc and the test named "reports a number
+   * field change as the raw string, uncoerced".
+   */
+  change: (key: string, raw: unknown) => void
+  /** Restores the whole slice, every key and not only the ones a panel shows. */
+  reset: () => void
+}
+
+export const BrowseControlsContext = createContext<BrowseControls | undefined>(
+  undefined,
+)

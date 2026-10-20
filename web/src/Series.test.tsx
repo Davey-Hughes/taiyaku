@@ -2,7 +2,11 @@ import { act } from 'react'
 import { MemoryRouter, Route, Routes, useNavigate } from 'react-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Me } from './api'
-import { BrowsePrefsContext, browseModule } from './browseModule'
+import {
+  BrowseControlsContext,
+  BrowsePrefsContext,
+  browseModule,
+} from './browseModule'
 import { GateContext } from './gate'
 import * as library from './library'
 import { Series } from './Series'
@@ -1308,5 +1312,63 @@ describe('Series, a load for a series the reader has already left', () => {
     await flush(() => first.reject(new Error('/api/library/series/7: 500')))
     expect(host.querySelector('[role="alert"]')).toBeNull()
     expect(host.querySelector('h1')?.textContent).toBe('A Different Series')
+  })
+})
+
+describe('Series, its View panel — spec §2', () => {
+  beforeEach(() => {
+    vi.mocked(library.oneSeries).mockResolvedValue({
+      series: card(),
+      works: [work()],
+    })
+  })
+
+  /** Each row of the open panel: its words, its kind and its choices. */
+  const rows = (panel: HTMLElement) =>
+    [...panel.querySelectorAll('label')].map((label) => {
+      const control = label.querySelector('input, select')
+      return [
+        label.querySelector('span')?.textContent,
+        control instanceof HTMLInputElement ? control.type : control?.tagName,
+        [...label.querySelectorAll('option')].map((o) => o.textContent),
+      ]
+    })
+
+  it('holds Layout, Edition selector, Panel, Density and Reset, in sentence case', async () => {
+    let host!: HTMLElement
+    await act(async () => {
+      host = mount(
+        <BrowseControlsContext.Provider
+          value={{ change: () => {}, reset: () => {} }}
+        >
+          <MemoryRouter initialEntries={['/series/7']}>
+            <Routes>
+              <Route path="/series/:id" element={<Series />} />
+            </Routes>
+          </MemoryRouter>
+        </BrowseControlsContext.Provider>,
+      )
+    })
+    await flush()
+    const button = host.querySelector<HTMLButtonElement>(
+      '.page-head .view-button',
+    )
+    if (!button) throw new Error('no View button beside the title')
+    act(() => {
+      button.click()
+    })
+    const panel = document.getElementById(
+      button.getAttribute('aria-controls') ?? '',
+    )
+    if (!panel || panel.hidden) throw new Error('View opened nothing')
+    expect(rows(panel)).toEqual([
+      ['Layout', 'SELECT', ['Grid', 'Table']],
+      ['Edition selector', 'checkbox', []],
+      ['Panel', 'SELECT', ['Off', 'Button', 'On-select']],
+      ['Density', 'SELECT', ['Compact', 'Comfortable']],
+    ])
+    expect(
+      [...panel.querySelectorAll('button')].map((b) => b.textContent),
+    ).toEqual(['Reset'])
   })
 })

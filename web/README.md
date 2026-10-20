@@ -28,16 +28,16 @@ beyond React since the project began, spec C1 §1:
 
 | Route | Renders |
 | ----- | ------- |
-| `/` | the library grid — `Library.tsx`: a continue strip, three filter chips and an `added` sort, all client-side over `library.ts`'s `/api/library/*` client. `?root=N` narrows the grid to one root. Its tiles are `SeriesGrid.tsx`, shared with `/search` |
+| `/` | the library grid — `Library.tsx`: a continue strip, three filter chips and an `added` sort, all client-side over `library.ts`'s `/api/library/*` client, under a search bar. `?library=N` narrows the grid and the search to one library. The search bar is `SearchBar.tsx` over `searchHits.ts`: `?q=` in the URL, debounced through `debounce.ts` at the reader's own 250 ms, and while it holds a query its hits replace the grid and the chips, the sort and the continue strip go. Migration 8 tokenises both FTS5 indexes `trigram`, answering any query of three characters or more in either script; `browse::search`'s `LIKE` path answers the two `trigram` cannot. The grid and the hits are both `SeriesGrid.tsx` |
 | `/series/:id` | one series and its volumes — `Series.tsx`: a grid or a table layout, an edition selector that dims a volume rather than removing it, and an optional `i` panel naming a verdict and a paired count from `/api/library/works/{slug}` |
-| `/search` | search — `Search.tsx`: `?q=` in the URL, debounced through `debounce.ts` at the reader's own 250 ms. Migration 8 tokenises both FTS5 indexes `trigram`, answering any query of three characters or more in either script; `browse::search`'s `LIKE` path answers the two `trigram` cannot |
+| `/search` | a redirect — `Search.tsx`: to `/` with its `q` and `library`, so an old search link lands on the search bar with its hits |
 | `/read/:work` | the reader (`App.tsx`), keyed by the slug in the URL so a swap between works remounts rather than trying to stay one component |
 
-The sidebar and its settings panel (`BrowseSettings.tsx`, generated from `browseModule.ts` exactly as `Settings.tsx` is generated from the reader's module registry) live in `Shell.tsx`, which wraps the three library screens above — not the reader — and owns the one status fetch all three need.
+`Sidebar.tsx` draws the Libraries heading and list; `Shell.tsx` puts the theme switch and More (`AccountMenu.tsx`) at its foot, wraps every screen but the reader and the `/search` redirect, and owns the one status fetch they need. The browse preferences are behind the View button on the Library view and on a series page (`ViewMenu.tsx`), generated from `browseModule.ts` exactly as `Settings.tsx` is generated from the reader's module registry.
 
-Any other path redirects to `/`.
+`/proposals`, `/config/*` and `/account` are the proposals inbox, the configuration screens and the account screen (`Proposals.tsx`, `Config.tsx`, `Account.tsx`), each in the shell. Any other path redirects to `/`.
 
-**All four sit under one sign-in gate**, `Gate.tsx`, which `main.tsx` wraps
+**Every route sits under one sign-in gate**, `Gate.tsx`, which `main.tsx` wraps
 around `AppRoutes`. It asks `/api/me` once per page load, draws nothing until
 the answer arrives, and renders `Login.tsx` instead of the routes when the
 answer is a 401 — spec C1 §5. It is also the single registration of `api.ts`'s

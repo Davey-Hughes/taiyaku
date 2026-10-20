@@ -237,7 +237,7 @@
   border-radius: var(--radius-control);
   background: var(--bg);
   color: var(--text);
-  font-size: var(--text-meta);
+  font-size: var(--text-badge);
   line-height: 1.4;
 }
 
@@ -391,7 +391,7 @@
   border-radius: var(--radius-control);
   background: var(--surface);
   color: var(--text);
-  font-size: var(--text-meta);
+  font-size: var(--text-badge);
   line-height: 1.5;
   text-decoration: none;
 }
@@ -405,7 +405,7 @@
   border-radius: var(--radius-control);
   background: var(--surface);
   color: var(--text);
-  font-size: var(--text-meta);
+  font-size: var(--text-badge);
   line-height: 1.5;
   cursor: pointer;
 }
@@ -462,22 +462,21 @@
   background: var(--field);
 }
 
-/* "Search in", under the box, laid out as `.edition-selector` is and for its
- * reason: a `<select>` is as wide as its longest option, and nothing limits
- * how long a library's name is, so the control may shrink and the page never
- * widens for it. Its border, corners and ground are `base.css`'s. */
-.search-scope {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-  max-width: 100%;
-  margin: 0 0 var(--space-4);
-  font-size: var(--text-ui);
+/* The hits stand where the tabs would, at their distance from the box. */
+.search-hits {
+  margin-top: var(--space-5);
 }
 
-.search-scope select {
+/* In the Library view's heading row the box takes the room View leaves. */
+.page-head .search-box {
+  flex: 1 1 auto;
   min-width: 0;
-  max-width: 100%;
+  max-width: 32rem;
+  margin: 0;
+}
+
+.page-head .search-box input {
+  max-width: none;
 }
 
 /* A series title breaks rather than widening the page. */

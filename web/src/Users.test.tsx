@@ -73,8 +73,9 @@ const here = () => where
  */
 async function at(entry = TABLE, signedInAs: Me = who) {
   // Hands the router to the test, which is outside it. Declared here for the
-  // reason `Search.test.tsx`'s `Probe` gives: `useComponentExportOnlyModules`
-  // refuses an unexported component at module scope.
+  // reason `Library.test.tsx`'s `locationProbe` gives:
+  // `useComponentExportOnlyModules` refuses an unexported component at module
+  // scope.
   function Steering() {
     steer = useNavigate()
     where = useLocation().pathname

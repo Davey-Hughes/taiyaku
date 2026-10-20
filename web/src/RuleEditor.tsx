@@ -45,7 +45,7 @@
  * order.** Several commits can be in flight — a blur that starts a preview,
  * then a click on another rule before it lands — and without this an earlier
  * response arriving later would write a stale impact under a Save button that
- * states a number from it. `Libraries.tsx` and `Search.tsx` carry the same
+ * states a number from it. `Libraries.tsx` and `searchHits.ts` carry the same
  * counter for the same reason.
  *
  * **A successful save re-previews the list it just saved, and Save stays

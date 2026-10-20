@@ -1,15 +1,26 @@
+import { act } from 'react'
 import { MemoryRouter } from 'react-router'
 import { describe, expect, it } from 'vitest'
+import { AccountMenu } from './AccountMenu'
 import { Sidebar } from './Sidebar'
 import { mount } from './testing/mount'
 
-const at = (ui: React.ReactNode) => mount(<MemoryRouter>{ui}</MemoryRouter>)
+const at = (ui: React.ReactNode, path = '/') =>
+  mount(<MemoryRouter initialEntries={[path]}>{ui}</MemoryRouter>)
 
 describe('the sidebar', () => {
-  it('always offers a way to the library and to search', () => {
+  it('draws the Libraries heading as the link to every library, with no library to list too', () => {
+    // O220: `/` is where an account with no library is told it has none, so
+    // the heading that leads there is drawn for that account as well. The
+    // column has no other link.
     const host = at(<Sidebar libraries={[]} />)
-    expect(host.querySelector('a[href="/"]')).not.toBeNull()
-    expect(host.querySelector('a[href="/search"]')).not.toBeNull()
+    const heading = host.querySelector('h2.sidebar-heading')
+    expect(heading?.textContent).toBe('Libraries')
+    expect(heading?.querySelector('a')?.getAttribute('href')).toBe('/')
+    expect(
+      [...host.querySelectorAll('a')].map((a) => a.getAttribute('href')),
+    ).toEqual(['/'])
+    expect(host.querySelector('.sidebar-libraries')).toBeNull()
   })
 
   it('lists every library it is given, each linking to its own page', () => {
@@ -29,150 +40,356 @@ describe('the sidebar', () => {
     expect(host.querySelector('h2')?.textContent).toBe('Libraries')
   })
 
-  it('draws no libraries heading when there is no library', () => {
-    const host = at(<Sidebar libraries={[]} />)
-    expect(host.textContent).not.toContain('Libraries')
-  })
-
-  it('shows a reader no proposals link', () => {
-    // This must fail if `Sidebar.tsx`'s `admin &&` guard is ever removed —
-    // an unconditional render would put the link here regardless of `admin`.
-    const host = at(<Sidebar libraries={[]} admin={false} />)
-    expect(host.querySelector('a[href="/proposals"]')).toBeNull()
-  })
-
-  it('shows an admin the proposals link', () => {
-    // The other half of the guard: a mutation that always hid the link (for
-    // instance replacing the condition with `false &&`) would still pass the
-    // test above, and only fails here.
-    const host = at(<Sidebar libraries={[]} admin={true} />)
-    expect(host.querySelector('a[href="/proposals"]')?.textContent).toBe(
-      'Proposals',
-    )
-  })
-
-  it('carries the open count when it has been read', () => {
-    // C3 §6 and the build design's file-structure table both ask for the
-    // count; the entry shipped without one. The number is asserted through
-    // its own element rather than through the link's `textContent`, so a
-    // count rendered in the wrong place — or the label rendered twice —
-    // cannot pass as `'Proposals7'`.
-    const host = at(<Sidebar libraries={[]} admin={true} openProposals={7} />)
-    expect(host.querySelector('a[href="/proposals"] .count')?.textContent).toBe(
-      '7',
-    )
-  })
-
-  it('draws a zero rather than hiding an inbox somebody has emptied', () => {
-    // `0` and "not read yet" are different facts and the falsy test that
-    // conflates them is the easy mistake here: an emptied inbox is worth
-    // saying, and a badge that vanished at zero would read as a failed fetch.
-    const host = at(<Sidebar libraries={[]} admin={true} openProposals={0} />)
-    expect(host.querySelector('a[href="/proposals"] .count')?.textContent).toBe(
-      '0',
-    )
-  })
-
-  it('draws no count at all until one has been read', () => {
-    // Never fetched, still in flight and failed are one value, as
-    // `StatusContext`'s own doc explains for the same three states — and
-    // none of them is a number this sidebar may invent.
-    const host = at(<Sidebar libraries={[]} admin={true} />)
-    expect(host.querySelector('a[href="/proposals"] .count')).toBeNull()
-    expect(host.querySelector('a[href="/proposals"]')?.textContent).toBe(
-      'Proposals',
-    )
-  })
-
-  it('hides the proposals link when no admin bit is given at all', () => {
-    // The prop is optional (`gate.ts`'s "no gate above" reading), so the
-    // default itself — not just an explicit `admin={false}` — must be the
-    // safe one.
-    const host = at(<Sidebar libraries={[]} />)
-    expect(host.querySelector('a[href="/proposals"]')).toBeNull()
-  })
-
-  it('draws the configuration link for an admin and not for a reader', () => {
-    // Spec C4 is admin-gated throughout, and the link takes the same `admin`
-    // prop the proposals entry does rather than a second one. What an account
-    // may *see* is the server's to enforce; this chooses only what to draw.
-    const withAdmin = at(<Sidebar libraries={[]} admin />)
-    expect(withAdmin.querySelector('a[href="/config"]')).not.toBeNull()
-
-    const withoutAdmin = at(<Sidebar libraries={[]} />)
-    expect(withoutAdmin.querySelector('a[href="/config"]')).toBeNull()
-  })
-
-  it('offers a reader the account screen, which the two entries above do not', () => {
-    // O94. The account screen is where every account changes its own
-    // password, so this link takes no `admin &&` — and copying the guard the
-    // configuration link sits behind is the easy mistake, since the two are
-    // neighbours. Both non-admin shapes: `admin={false}`, and the prop absent,
-    // which is `gate.ts`'s "no account known".
-    const asReader = at(<Sidebar libraries={[]} admin={false} />)
-    expect(asReader.querySelector('a[href="/account"]')?.textContent).toBe(
-      'Account',
-    )
-
-    const unstated = at(<Sidebar libraries={[]} />)
-    expect(unstated.querySelector('a[href="/account"]')?.textContent).toBe(
-      'Account',
-    )
-  })
-
-  it('offers an admin the account screen too', () => {
-    // The other half: a guard inverted to `!admin &&` passes the test above.
-    const host = at(<Sidebar libraries={[]} admin />)
-    expect(host.querySelector('a[href="/account"]')?.textContent).toBe(
-      'Account',
-    )
-  })
-
-  it('marks the screen it is on, and a library page its own library and not the library', () => {
+  it('marks the Libraries heading only on / with no library, and a library page its own library', () => {
     const on = (path: string) =>
-      mount(
-        <MemoryRouter initialEntries={[path]}>
-          <Sidebar
-            libraries={[
-              { id: 4, name: 'Manga', scanned: true },
-              { id: 9, name: 'Comics', scanned: true },
-            ]}
-            admin={true}
-          />
-        </MemoryRouter>,
+      at(
+        <Sidebar
+          libraries={[
+            { id: 4, name: 'Manga', scanned: true },
+            { id: 9, name: 'Comics', scanned: true },
+          ]}
+        />,
+        path,
       )
     const current = (host: HTMLElement) =>
       [...host.querySelectorAll('[aria-current="page"]')].map((a) =>
         a.getAttribute('href'),
       )
     expect(current(on('/'))).toEqual(['/'])
+    expect(current(on('/?q=oshi'))).toEqual(['/'])
     expect(current(on('/?library=9'))).toEqual(['/?library=9'])
-    expect(current(on('/search'))).toEqual(['/search'])
-    expect(current(on('/search?library=9'))).toEqual(['/search'])
-    expect(current(on('/config/libraries'))).toEqual(['/config'])
+    // A `?library=` that names no library is the library page's "no such
+    // library", which is neither every library nor one of these.
+    expect(current(on('/?library=abc'))).toEqual([])
+    // More stands in for the screens behind it (`AccountMenu.tsx`).
+    expect(current(on('/config/libraries'))).toEqual([])
     expect(current(on('/series/3'))).toEqual([])
   })
+})
 
-  it('names the link with what its count counts — O164', () => {
-    // The number alone ran into the word: Chromium named the link
-    // "Proposals17". The label uses the inbox heading's own words.
-    const host = at(<Sidebar libraries={[]} admin={true} openProposals={17} />)
-    expect(
-      host.querySelector('a[href="/proposals"]')?.getAttribute('aria-label'),
-    ).toBe('Proposals, 17 open')
+/** The panel More controls, found by the id its button names. */
+function panelOf(host: HTMLElement): HTMLElement {
+  const id = host
+    .querySelector('button.account-button')
+    ?.getAttribute('aria-controls')
+  const panel = id ? document.getElementById(id) : null
+  if (!panel || !host.contains(panel)) throw new Error('More controls nothing')
+  return panel
+}
+
+function moreButton(host: HTMLElement): HTMLButtonElement {
+  const button = host.querySelector<HTMLButtonElement>('button.account-button')
+  if (!button) throw new Error('More is not a button')
+  return button
+}
+
+/** Opens More and hands back its panel, failing if it did not open. */
+function openMore(host: HTMLElement): HTMLElement {
+  const panel = panelOf(host)
+  expect(panel.hidden).toBe(true)
+  act(() => {
+    moreButton(host).click()
+  })
+  expect(moreButton(host).getAttribute('aria-expanded')).toBe('true')
+  expect(panel.hidden).toBe(false)
+  return panel
+}
+
+/** Each link in `root`, as its text and where it goes. */
+const links = (root: ParentNode) =>
+  [...root.querySelectorAll('a')].map((a) => [
+    a.textContent,
+    a.getAttribute('href'),
+  ])
+
+describe('More, at the sidebar’s foot', () => {
+  it('opens an administrator’s Proposals, Configuration and Account', () => {
+    const host = at(<AccountMenu admin={true} />)
+    expect(links(openMore(host))).toEqual([
+      ['Proposals', '/proposals'],
+      ['Configuration', '/config'],
+      ['Account', '/account'],
+    ])
   })
 
-  it('names an emptied inbox the same way — O164', () => {
-    const host = at(<Sidebar libraries={[]} admin={true} openProposals={0} />)
+  it('is a disclosure: a button naming its panel, and a panel of links that is no dialog', () => {
+    // Spec §1: the panel holds only links, so neither a menu's arrow keys
+    // nor a dialog's semantics are owed. `aria-haspopup` would announce one.
+    const host = at(<AccountMenu admin={true} />)
+    const button = moreButton(host)
+    expect(button.getAttribute('aria-expanded')).toBe('false')
+    expect(button.hasAttribute('aria-haspopup')).toBe(false)
+    const panel = openMore(host)
+    expect(panel.hasAttribute('role')).toBe(false)
+    expect(panel.hasAttribute('aria-label')).toBe(false)
     expect(
-      host.querySelector('a[href="/proposals"]')?.getAttribute('aria-label'),
-    ).toBe('Proposals, 0 open')
+      [...panel.querySelectorAll('li > *')].map((el) => el.tagName),
+    ).toEqual(['A', 'A', 'A'])
   })
 
-  it('leaves the link named by its text until a count is read — O164', () => {
-    const host = at(<Sidebar libraries={[]} admin={true} />)
+  it('gives anyone else More as a plain link to the account screen', () => {
+    // O94: every account has a password to change, so this is the one entry
+    // that follows no role. A menu of that one entry would be a click for
+    // nothing, so there is no button, no panel and no badge.
+    const host = at(<AccountMenu admin={false} openProposals={7} />)
+    const more = host.querySelector('.account-button')
+    expect(more?.tagName).toBe('A')
+    expect(more?.getAttribute('href')).toBe('/account')
+    expect(more?.textContent).toBe('More')
+    expect(more?.hasAttribute('aria-expanded')).toBe(false)
+    expect(more?.hasAttribute('aria-haspopup')).toBe(false)
+    expect(links(host)).toEqual([['More', '/account']])
+    expect(host.querySelector('button')).toBeNull()
+    expect(host.querySelector('.count')).toBeNull()
+  })
+
+  it('carries the open count on the button and on the Proposals link once read', () => {
+    // C3 §3: somebody learns the inbox is non-empty without going to look,
+    // so the count is on the button the closed panel leaves showing. Each
+    // number is read through its own element, so a count drawn in the wrong
+    // place, or the label drawn twice, cannot pass as `'Proposals7'`.
+    const host = at(<AccountMenu admin={true} openProposals={7} />)
+    expect(moreButton(host).querySelector('.count')?.textContent).toBe('7')
     expect(
-      host.querySelector('a[href="/proposals"]')?.hasAttribute('aria-label'),
+      openMore(host).querySelector('a[href="/proposals"] .count')?.textContent,
+    ).toBe('7')
+  })
+
+  it('draws a zero rather than hiding an inbox somebody has emptied', () => {
+    // `0` and "not read yet" are different facts, and the falsy test that
+    // conflates them is the easy mistake: a badge that vanished at zero
+    // would read as a failed fetch.
+    const host = at(<AccountMenu admin={true} openProposals={0} />)
+    expect(moreButton(host).querySelector('.count')?.textContent).toBe('0')
+    expect(
+      openMore(host).querySelector('a[href="/proposals"] .count')?.textContent,
+    ).toBe('0')
+  })
+
+  it('draws no count at all until one has been read', () => {
+    // Never fetched, still in flight and failed are one value, as
+    // `StatusContext`'s doc explains for the same three states.
+    const host = at(<AccountMenu admin={true} />)
+    expect(moreButton(host).querySelector('.count')).toBeNull()
+    const proposals = openMore(host).querySelector('a[href="/proposals"]')
+    expect(proposals?.querySelector('.count')).toBeNull()
+    expect(proposals?.textContent).toBe('Proposals')
+  })
+
+  it.each([
+    [17, 'Proposals, 17 open', 'More, 17 open proposals'],
+    [0, 'Proposals, 0 open', 'More, 0 open proposals'],
+  ])(
+    'names the link and the button with what the count %i counts — O164',
+    (count, link, button) => {
+      // The number alone ran into the word: Chromium named the link
+      // "Proposals17". The labels say what it counts.
+      const host = at(<AccountMenu admin={true} openProposals={count} />)
+      expect(moreButton(host).getAttribute('aria-label')).toBe(button)
+      expect(
+        openMore(host)
+          .querySelector('a[href="/proposals"]')
+          ?.getAttribute('aria-label'),
+      ).toBe(link)
+    },
+  )
+
+  it('leaves the link and the button named by their text until a count is read — O164', () => {
+    const host = at(<AccountMenu admin={true} />)
+    expect(moreButton(host).getAttribute('aria-label') ?? 'More').toBe('More')
+    expect(
+      openMore(host)
+        .querySelector('a[href="/proposals"]')
+        ?.hasAttribute('aria-label'),
     ).toBe(false)
   })
+
+  it.each([
+    ['/proposals', true],
+    ['/config', true],
+    ['/config/libraries', true],
+    ['/account', true],
+    ['/', false],
+    ['/?library=1', false],
+    ['/series/3', false],
+    ['/configure', false],
+  ])('marks an administrator’s More on %s: %s', (path, here) => {
+    // Spec §1: the screens behind More are marked on More, standing in for
+    // the current mark their links carried in the column.
+    const host = at(<AccountMenu admin={true} />, path)
+    expect(moreButton(host).hasAttribute('data-here')).toBe(here)
+  })
+
+  it.each([
+    ['/account', true],
+    ['/proposals', true],
+    ['/config', true],
+    ['/config/libraries', true],
+    ['/', false],
+    ['/configure', false],
+  ])('marks anyone else’s More on %s: %s', (path, here) => {
+    // The same screens as an administrator's: a non-admin can reach
+    // `/proposals` and `/config` too, and is shown the server's refusal
+    // there. `aria-current` stays the link's own, true only where it leads.
+    const host = at(<AccountMenu admin={false} />, path)
+    const more = host.querySelector('a.account-button')
+    expect(more?.hasAttribute('data-here')).toBe(here)
+    expect(more?.getAttribute('aria-current')).toBe(
+      path === '/account' ? 'page' : null,
+    )
+  })
+
+  it.each([
+    ['/config/libraries', ['/config']],
+    ['/proposals', ['/proposals']],
+    ['/account', ['/account']],
+  ])(
+    'marks the screen it is on inside the open panel, on %s',
+    (path, marked) => {
+      // Every configuration tab marks Configuration, so its link takes no
+      // `end`.
+      const host = at(<AccountMenu admin={true} />, path)
+      const panel = openMore(host)
+      expect(
+        [...panel.querySelectorAll('[aria-current="page"]')].map((a) =>
+          a.getAttribute('href'),
+        ),
+      ).toEqual(marked)
+    },
+  )
+
+  it('puts every link More holds inside a navigation landmark of its own', () => {
+    const navOf = (root: ParentNode) =>
+      [...root.querySelectorAll('a')].map((a) =>
+        a.closest('nav')?.getAttribute('aria-label'),
+      )
+    const admin = at(<AccountMenu admin={true} />)
+    expect(navOf(openMore(admin))).toEqual(['More', 'More', 'More'])
+    const reader = at(<AccountMenu admin={false} />)
+    expect(navOf(reader)).toEqual(['More'])
+  })
+
+  it('closes when a link in it is followed', async () => {
+    // `click()` sends no pointer press and moves no focus, so only the
+    // navigation itself can close the panel here.
+    const host = at(<AccountMenu admin={true} />)
+    const panel = openMore(host)
+    const config = panel.querySelector<HTMLAnchorElement>('a[href="/config"]')
+    if (!config) throw new Error('no Configuration link')
+    await act(async () => {
+      config.click()
+    })
+    expect(moreButton(host).getAttribute('aria-expanded')).toBe('false')
+    expect(panel.hidden).toBe(true)
+    expect(moreButton(host).hasAttribute('data-here')).toBe(true)
+  })
+
+  it('leaves focus on the button when it opens', () => {
+    // The disclosure pattern: the panel follows the button, and Tab from the
+    // button enters it (`Shell.browser.test.tsx` presses the real key).
+    const host = at(<AccountMenu admin={true} />)
+    act(() => {
+      moreButton(host).focus()
+    })
+    openMore(host)
+    expect(document.activeElement).toBe(moreButton(host))
+  })
+
+  it('closes on Escape from inside the panel and gives focus back to the button', () => {
+    const host = at(<AccountMenu admin={true} />)
+    const panel = openMore(host)
+    const config = need<HTMLElement>(panel, 'a[href="/config"]')
+    act(() => {
+      config.focus()
+    })
+    act(() => {
+      config.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }),
+      )
+    })
+    expect(moreButton(host).getAttribute('aria-expanded')).toBe('false')
+    expect(panel.hidden).toBe(true)
+    expect(document.activeElement).toBe(moreButton(host))
+  })
+
+  it('closes on Escape from the button', () => {
+    const host = at(<AccountMenu admin={true} />)
+    act(() => {
+      moreButton(host).focus()
+    })
+    const panel = openMore(host)
+    act(() => {
+      moreButton(host).dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }),
+      )
+    })
+    expect(moreButton(host).getAttribute('aria-expanded')).toBe('false')
+    expect(panel.hidden).toBe(true)
+    expect(document.activeElement).toBe(moreButton(host))
+  })
+
+  it('stays open for any key but Escape', () => {
+    const host = at(<AccountMenu admin={true} />)
+    openMore(host)
+    act(() => {
+      document.activeElement?.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }),
+      )
+    })
+    expect(moreButton(host).getAttribute('aria-expanded')).toBe('true')
+  })
+
+  /**
+   * jsdom has no pointer to press with, so the press is dispatched where it
+   * would land. `Shell.browser.test.tsx` presses with a real mouse; this
+   * half is the one CI runs.
+   */
+  it('closes on a press outside it, and not on one inside it or on its button', () => {
+    const host = at(<AccountMenu admin={true} />)
+    const panel = openMore(host)
+    const press = (target: Element) => {
+      act(() => {
+        target.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
+      })
+    }
+    press(need(panel, 'a[href="/config"]'))
+    expect(panel.hidden).toBe(false)
+    press(moreButton(host))
+    expect(panel.hidden).toBe(false)
+    press(document.body)
+    expect(panel.hidden).toBe(true)
+    expect(moreButton(host).getAttribute('aria-expanded')).toBe('false')
+  })
+
+  it('closes when focus moves outside it, and not while it moves inside', () => {
+    const host = at(<AccountMenu admin={true} />)
+    const panel = openMore(host)
+    const outside = document.createElement('button')
+    document.body.append(outside)
+    try {
+      act(() => {
+        need<HTMLElement>(panel, 'a[href="/account"]').focus()
+      })
+      expect(panel.hidden).toBe(false)
+      act(() => {
+        moreButton(host).focus()
+      })
+      expect(panel.hidden).toBe(false)
+      act(() => {
+        outside.focus()
+      })
+      expect(panel.hidden).toBe(true)
+    } finally {
+      outside.remove()
+    }
+  })
 })
+
+function need<T extends Element = Element>(
+  root: ParentNode,
+  selector: string,
+): T {
+  const found = root.querySelector<T>(selector)
+  if (!found) throw new Error(`no ${selector}`)
+  return found
+}

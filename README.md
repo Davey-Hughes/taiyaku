@@ -315,10 +315,19 @@ server.
 
 To read in the browser, build the WebAssembly binding first, then run the reader
 against `serve --db`. The browser opens on a **library** now, not a single work —
-a grid of series with a continue strip above it, `react-router` resolving four
-routes between the grid, a series page, search and the reader itself — five
-with the settings area above — and a `Library` button in the reader's own
-chrome for the way back out. The binding is
+a grid of series with a search bar and a continue strip above it, and
+`react-router` resolving the routes between the grid, a series page and the
+reader itself, besides the settings area above, the proposals inbox and the
+account screen. A search runs over the library the page shows, every library
+on `/`, and replaces the grid with its hits while the box holds a query; an
+old `/search?q=` link lands there with its query. The sidebar lists the
+libraries under a **Libraries** heading that leads to all of them, and keeps
+the theme and **More** at its foot: Proposals, Configuration and Account for
+an administrator, and for anyone else the account screen itself. A page's
+**View** button holds the browse preferences that act there — layout, edition
+selector, panel and density on a series page, the continue strip and density
+on the library. The reader's own chrome has a `Library` button for the way
+back out. The binding is
 generated and gitignored, but install order does
 not decide whether `taiyaku-wasm` resolves: `taiyaku-wasm` is a `link:` symlink,
 and pnpm creates it whether or not `pkg/` exists yet, dangling until it does. The

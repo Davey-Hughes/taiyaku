@@ -53,7 +53,7 @@ function press(host: HTMLElement, label: string) {
  * detail: the "sends nothing when a field is blurred unchanged" test below
  * asserts a *negative*, so it passed against a helper that fired nothing,
  * which is a green test that checked nothing. The native value setter is the
- * same fix `Search.test.tsx` and `Account.test.tsx` already carry, and for
+ * same fix `Library.test.tsx` and `Account.test.tsx` already carry, and for
  * the same reason: React's per-instance value tracker swallows a plain
  * assignment.
  */

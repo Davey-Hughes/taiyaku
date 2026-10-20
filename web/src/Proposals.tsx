@@ -77,7 +77,7 @@
  * response and describe one moment, so holding them apart let them be set
  * apart; and an `[]`/`{}` pair cannot
  * be told from an inbox that answered with nothing in it, which is exactly
- * the distinction the empty state below rests on. `Search.tsx`'s `hits` and
+ * the distinction the empty state below rests on. `searchHits.ts`'s `hits` and
  * `Library.tsx`'s `gridData` are the same shape for the same reason: neither
  * draws an empty state until it has heard back.
  *

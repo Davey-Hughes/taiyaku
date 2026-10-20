@@ -40,6 +40,20 @@ const DOCUMENT_WIDE = [
 ].flatMap(selectors)
 
 /**
+ * `.library` or `.login` itself, under a theme read from `data-theme` on the
+ * root: Ink's weight rule (spec 2026-10-18 §3). It sets `font-weight` on the
+ * scope element so that everything inside inherits it. Written under
+ * `SCOPE`, it would set the weight on every element inside instead, at the
+ * same zero specificity as the headings' 600, which it would override by
+ * coming later, and as an author rule over every `<b>`'s and `<strong>`'s
+ * bolder. So the guard allows the scope element and nothing else under a
+ * theme: not the root alone, which the reader inherits from, and not an
+ * element below it.
+ */
+const THEMED_SCOPE =
+  /^:root(?:\[data-theme="[a-z]+"\]|:not\(\[data-theme="[a-z]+"\]\)) :where\(\.library, \.login\)$/
+
+/**
  * Every selector this CSS text styles that is neither one of the
  * document-wide selectors nor scoped to `.library`/`.login`.
  */
@@ -48,7 +62,9 @@ function strays(css: string): string[] {
     .flatMap(selectors)
     .filter(
       (selector) =>
-        !DOCUMENT_WIDE.includes(selector) && !selector.startsWith(SCOPE),
+        !DOCUMENT_WIDE.includes(selector) &&
+        !selector.startsWith(SCOPE) &&
+        !THEMED_SCOPE.test(selector),
     )
 }
 
@@ -68,6 +84,26 @@ describe('base.css', () => {
     expect(
       strays(':where(.library, .login) :where(h1, h2, h3) { margin: 0; }'),
     ).toEqual([])
+  })
+
+  it('lets a theme on the root qualify the scope element itself, and nothing else', () => {
+    expect(
+      strays(`
+        :root[data-theme="ink"] :where(.library, .login) { font-weight: 500; }
+        :root:not([data-theme="paper"]) :where(.library, .login) { font-weight: 500; }
+      `),
+    ).toEqual([])
+    expect(
+      strays(`
+        :root[data-theme="ink"] { font-weight: 500; }
+        :root[data-theme="ink"] button { font-weight: 500; }
+        :root[data-theme="ink"] .reader { font-weight: 500; }
+      `),
+    ).toEqual([
+      ':root[data-theme="ink"]',
+      ':root[data-theme="ink"] button',
+      ':root[data-theme="ink"] .reader',
+    ])
   })
 })
 
