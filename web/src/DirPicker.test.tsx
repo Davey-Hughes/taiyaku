@@ -1,6 +1,6 @@
 import { act } from 'react'
 import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
-import { FolderPicker } from './FolderPicker'
+import { DirPicker } from './DirPicker'
 import * as api from './libraries'
 import { deferred, flush } from './testing/async'
 import { press, typeInto } from './testing/input'
@@ -8,7 +8,7 @@ import { mount, rerender } from './testing/mount'
 
 vi.mock('./libraries', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./libraries')>()),
-  listFolders: vi.fn(),
+  listDirs: vi.fn(),
 }))
 
 const box = (host: HTMLElement) =>
@@ -16,11 +16,11 @@ const box = (host: HTMLElement) =>
 const pick = (host: HTMLElement) =>
   host.querySelector('button[name="pick"]') as HTMLButtonElement
 
-describe('FolderPicker', () => {
+describe('DirPicker', () => {
   it('hands over the typed path and empties the box once it was taken', async () => {
     const onPick = vi.fn()
-    const host = mount(<FolderPicker action="Add folder" onPick={onPick} />)
-    expect(pick(host).textContent).toBe('Add folder')
+    const host = mount(<DirPicker action="Add directory" onPick={onPick} />)
+    expect(pick(host).textContent).toBe('Add directory')
     expect(pick(host).disabled).toBe(true)
 
     await typeInto(box(host), '/media/Manga/Volumes')
@@ -31,14 +31,14 @@ describe('FolderPicker', () => {
   })
 
   it('sends nothing while held, by its button or by Enter, and lets the box be typed in and browsed', async () => {
-    vi.mocked(api.listFolders).mockResolvedValue({
+    vi.mocked(api.listDirs).mockResolvedValue({
       path: null,
       parent: null,
-      folders: [],
+      dirs: [],
     })
     const onPick = vi.fn()
     const host = mount(
-      <FolderPicker action="Add folder" onPick={onPick} disabled />,
+      <DirPicker action="Add directory" onPick={onPick} disabled />,
     )
     await typeInto(box(host), '/media/a')
     expect(box(host).value).toBe('/media/a')
@@ -57,12 +57,12 @@ describe('FolderPicker', () => {
     expect(box(host).value).toBe('/media/a')
 
     await press(host.querySelector('button[name="browse"]') as Element)
-    expect(api.listFolders).toHaveBeenCalledTimes(1)
+    expect(api.listDirs).toHaveBeenCalledTimes(1)
   })
 
   it('keeps the typed path when the pick was refused', async () => {
     const onPick = vi.fn().mockRejectedValue(new Error('refused'))
-    const host = mount(<FolderPicker action="Add folder" onPick={onPick} />)
+    const host = mount(<DirPicker action="Add directory" onPick={onPick} />)
     await typeInto(box(host), '/media/typo')
     await press(pick(host))
     expect(box(host).value).toBe('/media/typo')
@@ -76,7 +76,7 @@ describe('FolderPicker', () => {
     const onPick = vi.fn().mockImplementation(() => {
       throw new Error('threw')
     })
-    const host = mount(<FolderPicker action="Add folder" onPick={onPick} />)
+    const host = mount(<DirPicker action="Add directory" onPick={onPick} />)
     await typeInto(box(host), '/media/typo')
     await press(pick(host))
     expect(box(host).value).toBe('/media/typo')
@@ -90,9 +90,7 @@ describe('FolderPicker', () => {
 
   it('picks on Enter, and keeps Enter from the form around it', async () => {
     const onPick = vi.fn()
-    const host = mount(
-      <FolderPicker action="Add to the list" onPick={onPick} />,
-    )
+    const host = mount(<DirPicker action="Add to the list" onPick={onPick} />)
     await typeInto(box(host), '/media/a')
     // jsdom submits no form for a key event, so what is asserted is the
     // event's own default being prevented, which is what stops a browser.
@@ -122,7 +120,7 @@ describe('FolderPicker', () => {
   it('sends one pick for two presses and an Enter, and is live again after', async () => {
     const held = deferred<void>()
     const onPick = vi.fn().mockReturnValue(held.promise)
-    const host = mount(<FolderPicker action="Add folder" onPick={onPick} />)
+    const host = mount(<DirPicker action="Add directory" onPick={onPick} />)
     await typeInto(box(host), '/media/a')
 
     await flush(() => {
@@ -147,7 +145,7 @@ describe('FolderPicker', () => {
   it('keeps a path typed while a pick was pending', async () => {
     const held = deferred<void>()
     const onPick = vi.fn().mockReturnValue(held.promise)
-    const host = mount(<FolderPicker action="Add folder" onPick={onPick} />)
+    const host = mount(<DirPicker action="Add directory" onPick={onPick} />)
     await typeInto(box(host), '/media/a')
     await press(pick(host))
     await typeInto(box(host), '/media/b')
@@ -157,36 +155,36 @@ describe('FolderPicker', () => {
   })
 })
 
-const PREFIXES: api.FolderListing = {
+const PREFIXES: api.DirListing = {
   path: null,
   parent: null,
-  folders: [{ name: '/media', path: '/media' }],
+  dirs: [{ name: '/media', path: '/media' }],
 }
-const MEDIA: api.FolderListing = {
+const MEDIA: api.DirListing = {
   path: '/media',
   parent: null,
-  folders: [
+  dirs: [
     { name: 'Comics', path: '/media/Comics' },
     { name: 'Manga', path: '/media/Manga' },
   ],
 }
-const MANGA: api.FolderListing = {
+const MANGA: api.DirListing = {
   path: '/media/Manga',
   parent: '/media',
-  folders: [{ name: 'Volumes', path: '/media/Manga/Volumes' }],
+  dirs: [{ name: 'Volumes', path: '/media/Manga/Volumes' }],
 }
 
 const browse = (host: HTMLElement) =>
   host.querySelector('button[name="browse"]') as HTMLButtonElement
 const entries = (host: HTMLElement) =>
-  [...host.querySelectorAll('.folder-list button')] as HTMLButtonElement[]
+  [...host.querySelectorAll('.dir-list button')] as HTMLButtonElement[]
 const up = (host: HTMLElement) =>
   host.querySelector('button[name="up"]') as HTMLButtonElement
 
-describe('FolderPicker, browsing', () => {
+describe('DirPicker, browsing', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    vi.mocked(api.listFolders).mockImplementation((path) =>
+    vi.mocked(api.listDirs).mockImplementation((path) =>
       Promise.resolve(
         path === undefined ? PREFIXES : path === '/media' ? MEDIA : MANGA,
       ),
@@ -194,24 +192,24 @@ describe('FolderPicker, browsing', () => {
   })
 
   it('asks for nothing until it is opened, then lists the prefixes', async () => {
-    const host = mount(<FolderPicker action="Add folder" onPick={vi.fn()} />)
+    const host = mount(<DirPicker action="Add directory" onPick={vi.fn()} />)
     await flush(() => {})
-    expect(api.listFolders).not.toHaveBeenCalled()
-    expect(host.querySelector('.folder-browser')).toBeNull()
+    expect(api.listDirs).not.toHaveBeenCalled()
+    expect(host.querySelector('.dir-browser')).toBeNull()
 
     await press(browse(host))
 
-    expect(api.listFolders).toHaveBeenCalledTimes(1)
-    expect(api.listFolders).toHaveBeenCalledWith(undefined)
+    expect(api.listDirs).toHaveBeenCalledTimes(1)
+    expect(api.listDirs).toHaveBeenCalledWith(undefined)
     expect(browse(host).getAttribute('aria-expanded')).toBe('true')
     expect(entries(host).map((b) => b.textContent)).toEqual(['/media'])
     expect(up(host)).toBeNull()
     expect(box(host).value).toBe('')
   })
 
-  it('enters a folder, puts its path in the box, and still picks by the button', async () => {
+  it('enters a directory, puts its path in the box, and still picks by the button', async () => {
     const onPick = vi.fn()
-    const host = mount(<FolderPicker action="Add folder" onPick={onPick} />)
+    const host = mount(<DirPicker action="Add directory" onPick={onPick} />)
     await press(browse(host))
     await press(entries(host)[0])
     expect(host.querySelector('.where')?.textContent).toBe('/media')
@@ -219,8 +217,8 @@ describe('FolderPicker, browsing', () => {
     expect(entries(host).map((b) => b.textContent)).toEqual(['Comics', 'Manga'])
 
     await press(entries(host)[1])
-    expect(api.listFolders).toHaveBeenLastCalledWith('/media/Manga')
-    expect(api.listFolders).toHaveBeenCalledTimes(3)
+    expect(api.listDirs).toHaveBeenLastCalledWith('/media/Manga')
+    expect(api.listDirs).toHaveBeenCalledTimes(3)
     expect(box(host).value).toBe('/media/Manga')
     expect(onPick).not.toHaveBeenCalled()
 
@@ -231,7 +229,7 @@ describe('FolderPicker, browsing', () => {
   it('tells onPath each text the box holds: typed, browsed to, and emptied by a pick', async () => {
     const onPath = vi.fn()
     const host = mount(
-      <FolderPicker action="Add folder" onPick={vi.fn()} onPath={onPath} />,
+      <DirPicker action="Add directory" onPick={vi.fn()} onPath={onPath} />,
     )
     expect(onPath).toHaveBeenLastCalledWith('')
 
@@ -247,17 +245,17 @@ describe('FolderPicker, browsing', () => {
   })
 
   it('goes up to the parent, and from a prefix to the prefixes', async () => {
-    const host = mount(<FolderPicker action="Add folder" onPick={vi.fn()} />)
+    const host = mount(<DirPicker action="Add directory" onPick={vi.fn()} />)
     await press(browse(host))
     await press(entries(host)[0])
     await press(entries(host)[1])
 
     await press(up(host))
-    expect(api.listFolders).toHaveBeenLastCalledWith('/media')
+    expect(api.listDirs).toHaveBeenLastCalledWith('/media')
     expect(box(host).value).toBe('/media')
 
     await press(up(host))
-    expect(api.listFolders).toHaveBeenLastCalledWith(undefined)
+    expect(api.listDirs).toHaveBeenLastCalledWith(undefined)
     expect(entries(host).map((b) => b.textContent)).toEqual(['/media'])
     expect(box(host).value).toBe('/media')
   })
@@ -283,104 +281,104 @@ describe('FolderPicker, browsing', () => {
     ['/srv/manga/extra/Trial-a', '/srv/manga/extra/', 'Up to extra'],
     ['/srv', '/', 'Up to /'],
   ])('at %s names Up for the last part of %s', async (path, parent, name) => {
-    vi.mocked(api.listFolders).mockResolvedValue({ path, parent, folders: [] })
-    const host = mount(<FolderPicker action="Add folder" onPick={vi.fn()} />)
+    vi.mocked(api.listDirs).mockResolvedValue({ path, parent, dirs: [] })
+    const host = mount(<DirPicker action="Add directory" onPick={vi.fn()} />)
     await press(browse(host))
     expect(up(host).textContent).toBe(`↑ ${name}`)
     expect(nameOf(up(host))).toBe(name)
   })
 
-  it('names Up from a top folder for the list of browsable folders', async () => {
-    const host = mount(<FolderPicker action="Add folder" onPick={vi.fn()} />)
+  it('names Up from a top directory for the list of browsable directories', async () => {
+    const host = mount(<DirPicker action="Add directory" onPick={vi.fn()} />)
     await press(browse(host))
     await press(entries(host)[0])
     expect(host.querySelector('.where')?.textContent).toBe('/media')
-    expect(up(host).textContent).toBe('↑ Back to all browsable folders')
-    expect(nameOf(up(host))).toBe('Back to all browsable folders')
+    expect(up(host).textContent).toBe('↑ Back to all browsable directories')
+    expect(nameOf(up(host))).toBe('Back to all browsable directories')
   })
 
   it('says to type the path when the server may browse nothing', async () => {
-    vi.mocked(api.listFolders).mockResolvedValue({
+    vi.mocked(api.listDirs).mockResolvedValue({
       path: null,
       parent: null,
-      folders: [],
+      dirs: [],
     })
-    const host = mount(<FolderPicker action="Add folder" onPick={vi.fn()} />)
+    const host = mount(<DirPicker action="Add directory" onPick={vi.fn()} />)
     await press(browse(host))
     // The server answers this for two different reasons, and the sentence
     // names both.
-    expect(host.querySelector('.folder-browser .empty')?.textContent).toBe(
-      'No folders to browse: either the server was not told which it may ' +
-        'browse (--folders, or TAIYAKU_FOLDERS), or none of the folders it ' +
+    expect(host.querySelector('.dir-browser .empty')?.textContent).toBe(
+      'No directories to browse: either the server was not told which it may ' +
+        'browse (--dirs, or TAIYAKU_DIRS), or none of the directories it ' +
         'was told about exist. Type the path instead.',
     )
   })
 
-  it('says a folder holds none, without that sentence', async () => {
-    vi.mocked(api.listFolders).mockResolvedValue({
+  it('says a directory holds none, without that sentence', async () => {
+    vi.mocked(api.listDirs).mockResolvedValue({
       path: '/media/Empty',
       parent: '/media',
-      folders: [],
+      dirs: [],
     })
-    const host = mount(<FolderPicker action="Add folder" onPick={vi.fn()} />)
+    const host = mount(<DirPicker action="Add directory" onPick={vi.fn()} />)
     await press(browse(host))
-    expect(host.querySelector('.folder-browser .empty')?.textContent).toBe(
-      'No folders in here.',
+    expect(host.querySelector('.dir-browser .empty')?.textContent).toBe(
+      'No directories in here.',
     )
   })
 
   it("draws a refusal's sentence and keeps the list it had", async () => {
-    const host = mount(<FolderPicker action="Add folder" onPick={vi.fn()} />)
+    const host = mount(<DirPicker action="Add directory" onPick={vi.fn()} />)
     await press(browse(host))
-    vi.mocked(api.listFolders).mockRejectedValue(
+    vi.mocked(api.listDirs).mockRejectedValue(
       new Error(
-        '/api/library/folders?path=%2Fmedia: 403 {"error":"/elsewhere is not inside a folder this server may browse"}',
+        '/api/library/dirs?path=%2Fmedia: 403 {"error":"/elsewhere is not inside a directory this server may browse"}',
       ),
     )
     await press(entries(host)[0])
-    expect(
-      host.querySelector('.folder-browser [role="alert"]')?.textContent,
-    ).toBe('/elsewhere is not inside a folder this server may browse')
+    expect(host.querySelector('.dir-browser [role="alert"]')?.textContent).toBe(
+      '/elsewhere is not inside a directory this server may browse',
+    )
     expect(entries(host).map((b) => b.textContent)).toEqual(['/media'])
     expect(box(host).value).toBe('')
   })
 
-  it('draws the folder asked for last when two answers cross', async () => {
-    const slow = deferred<api.FolderListing>()
-    const host = mount(<FolderPicker action="Add folder" onPick={vi.fn()} />)
+  it('draws the directory asked for last when two answers cross', async () => {
+    const slow = deferred<api.DirListing>()
+    const host = mount(<DirPicker action="Add directory" onPick={vi.fn()} />)
     await press(browse(host))
     await press(entries(host)[0])
-    vi.mocked(api.listFolders).mockReturnValueOnce(slow.promise)
+    vi.mocked(api.listDirs).mockReturnValueOnce(slow.promise)
     await press(entries(host)[0])
     await press(up(host))
     expect(host.querySelector('.where')?.textContent).toBe(
-      'Folders this server may browse',
+      'Directories this server may browse',
     )
 
     await flush(() => slow.resolve(MANGA))
     expect(host.querySelector('.where')?.textContent).toBe(
-      'Folders this server may browse',
+      'Directories this server may browse',
     )
     expect(box(host).value).toBe('/media')
   })
 
   it('draws no refusal for a listing that was asked for before the last', async () => {
-    const slow = deferred<api.FolderListing>()
-    const host = mount(<FolderPicker action="Add folder" onPick={vi.fn()} />)
+    const slow = deferred<api.DirListing>()
+    const host = mount(<DirPicker action="Add directory" onPick={vi.fn()} />)
     await press(browse(host))
     await press(entries(host)[0])
-    vi.mocked(api.listFolders).mockReturnValueOnce(slow.promise)
+    vi.mocked(api.listDirs).mockReturnValueOnce(slow.promise)
     await press(entries(host)[0])
     await press(up(host))
 
     await flush(() => slow.reject(new Error('/x: 403 {"error":"too late"}')))
-    expect(host.querySelector('.folder-browser [role="alert"]')).toBeNull()
+    expect(host.querySelector('.dir-browser [role="alert"]')).toBeNull()
   })
 
   it('stops drawing a refusal once a later listing is read', async () => {
-    const host = mount(<FolderPicker action="Add folder" onPick={vi.fn()} />)
+    const host = mount(<DirPicker action="Add directory" onPick={vi.fn()} />)
     await press(browse(host))
-    vi.mocked(api.listFolders).mockRejectedValueOnce(
+    vi.mocked(api.listDirs).mockRejectedValueOnce(
       new Error('/x: 403 {"error":"refused"}'),
     )
     await press(entries(host)[0])
@@ -392,17 +390,17 @@ describe('FolderPicker, browsing', () => {
   })
 
   it('keeps a refusal drawn above the listing until the next answer lands, so the listing holds still', async () => {
-    const host = mount(<FolderPicker action="Add folder" onPick={vi.fn()} />)
+    const host = mount(<DirPicker action="Add directory" onPick={vi.fn()} />)
     await press(browse(host))
-    vi.mocked(api.listFolders).mockRejectedValueOnce(
+    vi.mocked(api.listDirs).mockRejectedValueOnce(
       new Error('/x: 403 {"error":"refused"}'),
     )
     await press(entries(host)[0])
-    const browser = host.querySelector('.folder-browser') as HTMLElement
+    const browser = host.querySelector('.dir-browser') as HTMLElement
     expect(browser.firstElementChild?.getAttribute('role')).toBe('alert')
 
-    const next = deferred<api.FolderListing>()
-    vi.mocked(api.listFolders).mockReturnValueOnce(next.promise)
+    const next = deferred<api.DirListing>()
+    vi.mocked(api.listDirs).mockReturnValueOnce(next.promise)
     await press(entries(host)[0])
     expect(browser.firstElementChild?.textContent).toBe('refused')
     expect(entries(host).map((b) => b.textContent)).toEqual(['/media'])
@@ -413,14 +411,14 @@ describe('FolderPicker, browsing', () => {
   })
 
   it('draws a newer refusal in the place of the one it replaces', async () => {
-    const host = mount(<FolderPicker action="Add folder" onPick={vi.fn()} />)
+    const host = mount(<DirPicker action="Add directory" onPick={vi.fn()} />)
     await press(browse(host))
-    vi.mocked(api.listFolders).mockRejectedValueOnce(
+    vi.mocked(api.listDirs).mockRejectedValueOnce(
       new Error('/x: 403 {"error":"refused first"}'),
     )
     await press(entries(host)[0])
-    const next = deferred<api.FolderListing>()
-    vi.mocked(api.listFolders).mockReturnValueOnce(next.promise)
+    const next = deferred<api.DirListing>()
+    vi.mocked(api.listDirs).mockReturnValueOnce(next.promise)
     await press(entries(host)[0])
 
     await flush(() =>
@@ -431,54 +429,54 @@ describe('FolderPicker, browsing', () => {
   })
 
   it('keeps where it was when closed and opened again, asking nothing more', async () => {
-    const host = mount(<FolderPicker action="Add folder" onPick={vi.fn()} />)
+    const host = mount(<DirPicker action="Add directory" onPick={vi.fn()} />)
     await press(browse(host))
     await press(entries(host)[0])
-    expect(api.listFolders).toHaveBeenCalledTimes(2)
+    expect(api.listDirs).toHaveBeenCalledTimes(2)
 
     await press(browse(host))
-    expect(host.querySelector('.folder-browser')).toBeNull()
+    expect(host.querySelector('.dir-browser')).toBeNull()
     expect(browse(host).getAttribute('aria-expanded')).toBe('false')
 
     await press(browse(host))
     expect(host.querySelector('.where')?.textContent).toBe('/media')
-    expect(api.listFolders).toHaveBeenCalledTimes(2)
+    expect(api.listDirs).toHaveBeenCalledTimes(2)
   })
 
   it('asks for nothing more when closed while the first listing is still loading', async () => {
-    const first = deferred<api.FolderListing>()
-    vi.mocked(api.listFolders).mockReturnValue(first.promise)
-    const host = mount(<FolderPicker action="Add folder" onPick={vi.fn()} />)
+    const first = deferred<api.DirListing>()
+    vi.mocked(api.listDirs).mockReturnValue(first.promise)
+    const host = mount(<DirPicker action="Add directory" onPick={vi.fn()} />)
     await press(browse(host))
     await press(browse(host))
-    expect(host.querySelector('.folder-browser')).toBeNull()
-    expect(api.listFolders).toHaveBeenCalledTimes(1)
+    expect(host.querySelector('.dir-browser')).toBeNull()
+    expect(api.listDirs).toHaveBeenCalledTimes(1)
 
     await flush(() => first.resolve(PREFIXES))
     await press(browse(host))
     expect(entries(host).map((b) => b.textContent)).toEqual(['/media'])
-    expect(api.listFolders).toHaveBeenCalledTimes(1)
+    expect(api.listDirs).toHaveBeenCalledTimes(1)
   })
 
   it('asks again when opened after a refused first listing, and draws it', async () => {
-    vi.mocked(api.listFolders).mockRejectedValueOnce(
-      new Error('/api/library/folders: 500 {"error":"unreadable"}'),
+    vi.mocked(api.listDirs).mockRejectedValueOnce(
+      new Error('/api/library/dirs: 500 {"error":"unreadable"}'),
     )
-    const host = mount(<FolderPicker action="Add folder" onPick={vi.fn()} />)
+    const host = mount(<DirPicker action="Add directory" onPick={vi.fn()} />)
     await press(browse(host))
     expect(host.querySelector('[role="alert"]')?.textContent).toBe('unreadable')
 
     await press(browse(host))
     await press(browse(host))
-    expect(api.listFolders).toHaveBeenCalledTimes(2)
+    expect(api.listDirs).toHaveBeenCalledTimes(2)
     expect(host.querySelector('[role="alert"]')).toBeNull()
     expect(entries(host).map((b) => b.textContent)).toEqual(['/media'])
   })
 
-  it('keeps a pick that is pending when a folder is entered', async () => {
+  it('keeps a pick that is pending when a directory is entered', async () => {
     const held = deferred<void>()
     const onPick = vi.fn().mockReturnValue(held.promise)
-    const host = mount(<FolderPicker action="Add folder" onPick={onPick} />)
+    const host = mount(<DirPicker action="Add directory" onPick={onPick} />)
     await typeInto(box(host), '/media/a')
     await press(browse(host))
     await press(pick(host))
@@ -496,52 +494,54 @@ describe('FolderPicker, browsing', () => {
   })
 
   it('draws a failure of the first listing, and not the placeholder with it', async () => {
-    vi.mocked(api.listFolders).mockRejectedValue(
-      new Error('/api/library/folders: 500 {"error":"unreadable"}'),
+    vi.mocked(api.listDirs).mockRejectedValue(
+      new Error('/api/library/dirs: 500 {"error":"unreadable"}'),
     )
-    const host = mount(<FolderPicker action="Add folder" onPick={vi.fn()} />)
+    const host = mount(<DirPicker action="Add directory" onPick={vi.fn()} />)
     await press(browse(host))
-    expect(
-      host.querySelector('.folder-browser [role="alert"]')?.textContent,
-    ).toBe('unreadable')
-    expect(host.querySelector('.folder-browser')?.textContent).not.toContain(
-      'Reading folders',
+    expect(host.querySelector('.dir-browser [role="alert"]')?.textContent).toBe(
+      'unreadable',
+    )
+    expect(host.querySelector('.dir-browser')?.textContent).not.toContain(
+      'Reading directories',
     )
   })
 
   /** Moves the clock on, and lets React draw what its timers set. */
   const wait = (ms: number) => act(async () => vi.advanceTimersByTime(ms))
   const group = (host: HTMLElement) =>
-    host.querySelector('.folder-browser') as HTMLElement
+    host.querySelector('.dir-browser') as HTMLElement
 
   it('keeps the listing it had drawn, and nothing above it, while the next is read', async () => {
     vi.useFakeTimers()
     onTestFinished(() => {
       vi.useRealTimers()
     })
-    const host = mount(<FolderPicker action="Add folder" onPick={vi.fn()} />)
+    const host = mount(<DirPicker action="Add directory" onPick={vi.fn()} />)
     await press(browse(host))
     expect(group(host).getAttribute('aria-busy')).toBe('false')
-    const slow = deferred<api.FolderListing>()
-    vi.mocked(api.listFolders).mockReturnValueOnce(slow.promise)
+    const slow = deferred<api.DirListing>()
+    vi.mocked(api.listDirs).mockReturnValueOnce(slow.promise)
     await press(entries(host)[0])
 
     expect(group(host).getAttribute('aria-busy')).toBe('true')
     expect(group(host).firstElementChild).toBe(host.querySelector('.where'))
     expect(entries(host).map((b) => b.textContent)).toEqual(['/media'])
-    expect(group(host).textContent).not.toContain('Reading folders')
+    expect(group(host).textContent).not.toContain('Reading directories')
 
     await wait(api.READING_DELAY_MS - 1)
-    expect(group(host).textContent).not.toContain('Reading folders')
+    expect(group(host).textContent).not.toContain('Reading directories')
 
     // Slow now: said, after the listing, which stays where it was.
     await wait(1)
-    expect(group(host).lastElementChild?.textContent).toBe('Reading folders…')
+    expect(group(host).lastElementChild?.textContent).toBe(
+      'Reading directories…',
+    )
     expect(group(host).firstElementChild).toBe(host.querySelector('.where'))
     expect(entries(host).map((b) => b.textContent)).toEqual(['/media'])
 
     await flush(() => slow.resolve(MEDIA))
-    expect(group(host).textContent).not.toContain('Reading folders')
+    expect(group(host).textContent).not.toContain('Reading directories')
     expect(group(host).getAttribute('aria-busy')).toBe('false')
     expect(entries(host).map((b) => b.textContent)).toEqual(['Comics', 'Manga'])
   })
@@ -551,16 +551,16 @@ describe('FolderPicker, browsing', () => {
     onTestFinished(() => {
       vi.useRealTimers()
     })
-    const host = mount(<FolderPicker action="Add folder" onPick={vi.fn()} />)
+    const host = mount(<DirPicker action="Add directory" onPick={vi.fn()} />)
     await press(browse(host))
-    const quick = deferred<api.FolderListing>()
-    vi.mocked(api.listFolders).mockReturnValueOnce(quick.promise)
+    const quick = deferred<api.DirListing>()
+    vi.mocked(api.listDirs).mockReturnValueOnce(quick.promise)
     await press(entries(host)[0])
     await wait(api.READING_DELAY_MS - 1)
     await flush(() => quick.resolve(MEDIA))
 
     await wait(api.READING_DELAY_MS)
-    expect(group(host).textContent).not.toContain('Reading folders')
+    expect(group(host).textContent).not.toContain('Reading directories')
     expect(group(host).getAttribute('aria-busy')).toBe('false')
   })
 
@@ -569,11 +569,11 @@ describe('FolderPicker, browsing', () => {
     onTestFinished(() => {
       vi.useRealTimers()
     })
-    const host = mount(<FolderPicker action="Add folder" onPick={vi.fn()} />)
+    const host = mount(<DirPicker action="Add directory" onPick={vi.fn()} />)
     await press(browse(host))
-    const older = deferred<api.FolderListing>()
-    const newer = deferred<api.FolderListing>()
-    vi.mocked(api.listFolders)
+    const older = deferred<api.DirListing>()
+    const newer = deferred<api.DirListing>()
+    vi.mocked(api.listDirs)
       .mockReturnValueOnce(older.promise)
       .mockReturnValueOnce(newer.promise)
     await press(entries(host)[0])
@@ -582,7 +582,7 @@ describe('FolderPicker, browsing', () => {
     await flush(() => newer.resolve(MEDIA))
 
     await wait(api.READING_DELAY_MS)
-    expect(group(host).textContent).not.toContain('Reading folders')
+    expect(group(host).textContent).not.toContain('Reading directories')
   })
 
   it('stops saying it is reading when a slow listing is refused', async () => {
@@ -590,18 +590,18 @@ describe('FolderPicker, browsing', () => {
     onTestFinished(() => {
       vi.useRealTimers()
     })
-    const host = mount(<FolderPicker action="Add folder" onPick={vi.fn()} />)
+    const host = mount(<DirPicker action="Add directory" onPick={vi.fn()} />)
     await press(browse(host))
-    const refused = deferred<api.FolderListing>()
-    vi.mocked(api.listFolders).mockReturnValueOnce(refused.promise)
+    const refused = deferred<api.DirListing>()
+    vi.mocked(api.listDirs).mockReturnValueOnce(refused.promise)
     await press(entries(host)[0])
     await wait(api.READING_DELAY_MS)
-    expect(group(host).textContent).toContain('Reading folders…')
+    expect(group(host).textContent).toContain('Reading directories…')
 
     await flush(() =>
       refused.reject(new Error('/x: 403 {"error":"not browsable"}')),
     )
-    expect(group(host).textContent).not.toContain('Reading folders')
+    expect(group(host).textContent).not.toContain('Reading directories')
     expect(group(host).getAttribute('aria-busy')).toBe('false')
     expect(host.querySelector('[role="alert"]')?.textContent).toBe(
       'not browsable',
@@ -614,10 +614,10 @@ describe('FolderPicker, browsing', () => {
     onTestFinished(() => {
       vi.useRealTimers()
     })
-    vi.mocked(api.listFolders).mockReturnValueOnce(
-      deferred<api.FolderListing>().promise,
+    vi.mocked(api.listDirs).mockReturnValueOnce(
+      deferred<api.DirListing>().promise,
     )
-    const host = mount(<FolderPicker action="Add folder" onPick={vi.fn()} />)
+    const host = mount(<DirPicker action="Add directory" onPick={vi.fn()} />)
     await press(browse(host))
     expect(vi.getTimerCount()).toBe(1)
 
@@ -630,26 +630,26 @@ describe('FolderPicker, browsing', () => {
     onTestFinished(() => {
       vi.useRealTimers()
     })
-    const first = deferred<api.FolderListing>()
-    vi.mocked(api.listFolders).mockReturnValueOnce(first.promise)
-    const host = mount(<FolderPicker action="Add folder" onPick={vi.fn()} />)
+    const first = deferred<api.DirListing>()
+    vi.mocked(api.listDirs).mockReturnValueOnce(first.promise)
+    const host = mount(<DirPicker action="Add directory" onPick={vi.fn()} />)
     await press(browse(host))
     expect(group(host).childElementCount).toBe(0)
     expect(group(host).getAttribute('aria-busy')).toBe('true')
 
     await wait(api.READING_DELAY_MS)
-    expect(group(host).textContent).toBe('Reading folders…')
+    expect(group(host).textContent).toBe('Reading directories…')
 
     await flush(() => first.resolve(PREFIXES))
-    expect(group(host).textContent).not.toContain('Reading folders')
+    expect(group(host).textContent).not.toContain('Reading directories')
     expect(entries(host).map((b) => b.textContent)).toEqual(['/media'])
   })
 
   it('does not overwrite a path that was edited while the listing was being read', async () => {
-    const host = mount(<FolderPicker action="Add folder" onPick={vi.fn()} />)
+    const host = mount(<DirPicker action="Add directory" onPick={vi.fn()} />)
     await press(browse(host))
-    const slow = deferred<api.FolderListing>()
-    vi.mocked(api.listFolders).mockReturnValueOnce(slow.promise)
+    const slow = deferred<api.DirListing>()
+    vi.mocked(api.listDirs).mockReturnValueOnce(slow.promise)
     await press(entries(host)[0])
     await typeInto(box(host), '/media/Manga/Typed')
     await flush(() => slow.resolve(MEDIA))
@@ -659,15 +659,15 @@ describe('FolderPicker, browsing', () => {
   })
 
   it('writes a path in again when the box has not been touched since the request', async () => {
-    const host = mount(<FolderPicker action="Add folder" onPick={vi.fn()} />)
+    const host = mount(<DirPicker action="Add directory" onPick={vi.fn()} />)
     await typeInto(box(host), '/before')
     await press(browse(host))
     await press(entries(host)[0])
     expect(box(host).value).toBe('/media')
   })
 
-  it('moves focus to the line that says where it is, after entering a folder and after Up, and not on opening', async () => {
-    const host = mount(<FolderPicker action="Add folder" onPick={vi.fn()} />)
+  it('moves focus to the line that says where it is, after entering a directory and after Up, and not on opening', async () => {
+    const host = mount(<DirPicker action="Add directory" onPick={vi.fn()} />)
     host.querySelector<HTMLElement>('input[name="path"]')?.focus()
     await press(browse(host))
     expect(document.activeElement).not.toBe(host.querySelector('.where'))
@@ -692,9 +692,9 @@ describe('FolderPicker, browsing', () => {
   it('tells its owner each time the path in the box changes, by hand or by browsing', async () => {
     const onEdit = vi.fn()
     const host = mount(
-      <FolderPicker action="Add folder" onPick={vi.fn()} onEdit={onEdit} />,
+      <DirPicker action="Add directory" onPick={vi.fn()} onEdit={onEdit} />,
     )
-    // The prefixes name no folder, so the box is not written.
+    // The prefixes name no directory, so the box is not written.
     await press(browse(host))
     expect(onEdit).not.toHaveBeenCalled()
 
@@ -712,10 +712,10 @@ describe('FolderPicker, browsing', () => {
   })
 
   it('leaves focus in the path box when a listing arrives while a person is typing there', async () => {
-    const host = mount(<FolderPicker action="Add folder" onPick={vi.fn()} />)
+    const host = mount(<DirPicker action="Add directory" onPick={vi.fn()} />)
     await press(browse(host))
-    const slow = deferred<api.FolderListing>()
-    vi.mocked(api.listFolders).mockReturnValueOnce(slow.promise)
+    const slow = deferred<api.DirListing>()
+    vi.mocked(api.listDirs).mockReturnValueOnce(slow.promise)
     entries(host)[0].focus()
     await press(entries(host)[0])
     box(host).focus()
@@ -732,12 +732,12 @@ describe('FolderPicker, browsing', () => {
         <button type="button" name="elsewhere">
           Elsewhere
         </button>
-        <FolderPicker action="Add folder" onPick={vi.fn()} />
+        <DirPicker action="Add directory" onPick={vi.fn()} />
       </div>,
     )
     await press(browse(host))
-    const slow = deferred<api.FolderListing>()
-    vi.mocked(api.listFolders).mockReturnValueOnce(slow.promise)
+    const slow = deferred<api.DirListing>()
+    vi.mocked(api.listDirs).mockReturnValueOnce(slow.promise)
     await press(entries(host)[0])
     const elsewhere = host.querySelector<HTMLElement>(
       'button[name="elsewhere"]',
@@ -748,9 +748,9 @@ describe('FolderPicker, browsing', () => {
   })
 
   it('leaves focus where it is when a listing is refused', async () => {
-    const host = mount(<FolderPicker action="Add folder" onPick={vi.fn()} />)
+    const host = mount(<DirPicker action="Add directory" onPick={vi.fn()} />)
     await press(browse(host))
-    vi.mocked(api.listFolders).mockRejectedValueOnce(
+    vi.mocked(api.listDirs).mockRejectedValueOnce(
       new Error('/x: 403 {"error":"refused"}'),
     )
     const first = entries(host)[0]

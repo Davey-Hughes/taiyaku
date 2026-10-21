@@ -124,7 +124,7 @@ beforeEach(() => {
 })
 
 describe('RemoveRoot', () => {
-  it('draws the rehearsal’s report headings one level beneath the folder’s path', async () => {
+  it('draws the rehearsal’s report headings one level beneath the directory’s path', async () => {
     // The dialog sits in a card whose heading is an h4.
     const host = await settle()
     const headings = [
@@ -138,27 +138,27 @@ describe('RemoveRoot', () => {
 
   it('states all three counts before it acts', async () => {
     // The whole sentence, not three loose digits: `toContain('3')` is
-    // satisfied by any string holding a 3 anywhere, including the folder's own
-    // id in the aria-label, so it would pass against a dialog that never
+    // satisfied by any string holding a 3 anywhere, including the directory's
+    // own id in the aria-label, so it would pass against a dialog that never
     // drew the positions count at all.
     expect((await settle()).textContent).toContain(
       'This removes 412 works, 3 in-progress positions and 27 notes.',
     )
   })
 
-  it('says the library goes too where this is its only folder', async () => {
+  it('says the library goes too where this is its only directory', async () => {
     const host = await settle(vi.fn(), 'Manga')
-    expect(host.querySelector('.last-folder')?.textContent).toBe(
-      'This is the only folder of the library Manga, so removing it removes the library too.',
+    expect(host.querySelector('.last-dir')?.textContent).toBe(
+      'This is the only directory of the library Manga, so removing it removes the library too.',
     )
     expect(
       host.querySelector('[role="group"]')?.getAttribute('aria-label'),
-    ).toBe('Remove the folder at /srv/manga')
+    ).toBe('Remove the directory at /srv/manga')
   })
 
-  it('says nothing about a library where other folders stay', async () => {
+  it('says nothing about a library where other directories stay', async () => {
     const host = await settle()
-    expect(host.querySelector('.last-folder')).toBeNull()
+    expect(host.querySelector('.last-dir')).toBeNull()
   })
 
   it('names the accounts left with no library under the counts, and still offers the confirm', async () => {
@@ -167,29 +167,29 @@ describe('RemoveRoot', () => {
     )
     const host = await settle(vi.fn(), 'Manga')
     expect(host.querySelector('.left-with-no-library')?.textContent).toBe(
-      "alice and bob can see only this folder's library. After this, they will see no library until an administrator grants one.",
+      "alice and bob can see only this directory's library. After this, they will see no library until an administrator grants one.",
     )
     expect(
-      host.querySelector('.last-folder + .left-with-no-library'),
+      host.querySelector('.last-dir + .left-with-no-library'),
     ).not.toBeNull()
     expect(press(host, 'Remove /srv/manga').disabled).toBe(false)
     expect(host.querySelector('[role="alert"]')).toBeNull()
   })
 
-  it('names the accounts the server lists, though this dialog was told of no last folder', async () => {
+  it('names the accounts the server lists, though this dialog was told of no last directory', async () => {
     vi.mocked(config.removalCost).mockResolvedValue(
       answer({ left_with_no_library: ['alice'] }),
     )
     const host = await settle()
-    expect(host.querySelector('.last-folder')).toBeNull()
+    expect(host.querySelector('.last-dir')).toBeNull()
     expect(host.querySelector('.left-with-no-library')?.textContent).toBe(
-      "alice can see only this folder's library. After this, alice will see no library until an administrator grants one.",
+      "alice can see only this directory's library. After this, alice will see no library until an administrator grants one.",
     )
   })
 
   it('names nobody where no account is left with no library', async () => {
     const host = await settle(vi.fn(), 'Manga')
-    expect(host.querySelector('.last-folder')).not.toBeNull()
+    expect(host.querySelector('.last-dir')).not.toBeNull()
     expect(host.querySelector('.left-with-no-library')).toBeNull()
     expect(host.textContent).not.toContain('will see no library')
   })
@@ -303,7 +303,7 @@ describe('RemoveRoot', () => {
 
   it('re-offers the confirm when the removal itself fails', async () => {
     // A removal that failed must not leave the button stuck at "Removing…"
-    // with nothing said: the folder is still there and the person needs both
+    // with nothing said: the directory is still there and the person needs both
     // the reason and a way to try again.
     vi.mocked(config.removeRoot).mockRejectedValue(
       new Error('/api/library/roots/3: 500 deriving after the removal failed'),

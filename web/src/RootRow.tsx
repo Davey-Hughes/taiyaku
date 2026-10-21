@@ -1,6 +1,6 @@
 /**
  * One root: what it is, what it defaults to, and what its last scan did —
- * spec C4 §2 and §3. It is the body of the folder's own page.
+ * spec C4 §2 and §3. It is the body of the directory's own page.
  *
  * **The row owns its own scan poll**, the way `ProposalRow` owns its own
  * evidence fetch: a scan belongs to the root being scanned rather than to the
@@ -10,7 +10,7 @@
  * server keeps `ServeState.scans` precisely so a client can poll a scan across
  * requests; a row that only ever polled after pressing its own button showed
  * nothing at all to an admin who navigated away during a scan and came back —
- * no progress, no eventual report, and an enabled "Scan folder" whose only
+ * no progress, no eventual report, and an enabled "Scan directory" whose only
  * answer was a 409 about the scan they had started themselves. Whole-branch
  * review, 2026-09-04. The cost is one request per root per mount, against an
  * in-memory registry lookup plus one indexed row — far below the dry-run
@@ -90,26 +90,26 @@ export interface RootRowProps {
   root: Root
   /** Only a root added in this session has one. See `config.ts`'s `Probe`. */
   probe?: Probe
-  /** The library's name, where this is its only folder. */
+  /** The library's name, where this is its only directory. */
   lastOf?: string
   /**
-   * Something else in the library is going on: another folder's scan.
-   * Scan folder, Move… and Remove… do nothing then and are drawn disabled,
+   * Something else in the library is going on: another directory's scan.
+   * Scan directory, Move… and Remove… do nothing then and are drawn disabled,
    * and an open removal or move dialog is closed.
    */
   held?: boolean
   /**
-   * Where this folder could be moved. The folder's page always gives it; a
-   * row drawn without it has no Move….
+   * Where this directory could be moved. The directory's page always gives it;
+   * a row drawn without it has no Move….
    */
   moveTo?: { from: NamedLibrary; targets: NamedLibrary[] }
   /**
-   * The folder is gone, with what its re-derive found. The row is not drawn
+   * The directory is gone, with what its re-derive found. The row is not drawn
    * once the list reloads, so the screen keeps the report.
    */
   onRemoved?: (answer: RemovalAnswer) => void
   /**
-   * The folder has moved, with what the move did and what deriving after it
+   * The directory has moved, with what the move did and what deriving after it
    * found. The row is not drawn once the list reloads, so the screen keeps
    * the report.
    */
@@ -119,11 +119,11 @@ export interface RootRowProps {
    * scan that ended by itself: no press started that read.
    */
   onChanged: (quiet?: boolean) => void
-  /** Scan folder was pressed and a scan of this folder is being asked for. */
+  /** Scan directory was pressed and a scan of this directory is being asked for. */
   onScan?: () => void
   /**
    * A write sent from this row was refused after the row had gone, with the
-   * sentence that says so and names the folder: nothing of the row is left
+   * sentence that says so and names the directory: nothing of the row is left
    * to draw it on. An edit sent as the row went is one.
    */
   onLateRefusal?: (sentence: string) => void
@@ -387,7 +387,7 @@ export function RootRow({
    * **A single failure must not abandon a live scan.** The `.catch` used to
    * `setRunning(false)`, which tore the interval down for good — so one blip
    * (a proxy 502, a `SQLITE_BUSY` while the scan's own writes hold the file)
-   * produced no progress, no eventual report, and a re-enabled "Scan folder"
+   * produced no progress, no eventual report, and a re-enabled "Scan directory"
    * whose only answer is a 409 about the scan still running: exactly the state
    * the mount read above exists to prevent, reached by another door. Review
    * pass 2, 2026-09-04. Three is chosen, not measured — long enough to ride
@@ -456,7 +456,7 @@ export function RootRow({
       .catch(() => {
         // Deliberately silent. A status read this row did not ask for must
         // not put a red alert over a screen the admin has only just opened;
-        // pressing "Scan folder" is what surfaces a real fault.
+        // pressing "Scan directory" is what surfaces a real fault.
       })
     return () => {
       cancelled = true
@@ -468,7 +468,7 @@ export function RootRow({
   // It is sent as its blur would have sent it, against the row as last
   // drawn. Only a box typed in is in `edited`, so a mount and unmount with
   // nothing typed, as StrictMode stages in development, sends nothing. A
-  // refusal is handed up, named for the box and the folder, since the page
+  // refusal is handed up, named for the box and the directory, since the page
   // it would be drawn on is gone.
   useEffect(() => {
     const typed = edited.current
@@ -720,7 +720,7 @@ export function RootRow({
           onClick={begin}
           disabled={running || starting || confirming || moving || held}
         >
-          Scan folder
+          Scan directory
         </button>
         {moveTo !== undefined && (
           <button
@@ -769,8 +769,8 @@ export function RootRow({
           onCancel={() => setConfirming(false)}
           onRemoved={(answer) => {
             setConfirming(false)
-            // The folder is gone, so an edit still in its box has nowhere
-            // to go when the row does. A move keeps its edits: the folder
+            // The directory is gone, so an edit still in its box has nowhere
+            // to go when the row does. A move keeps its edits: the directory
             // is still there, in another library.
             edited.current.clear()
             onRemoved?.(answer)

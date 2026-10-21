@@ -1,8 +1,8 @@
-//! Moving a folder from one library to another: §6.2 of
+//! Moving a directory from one library to another: §6.2 of
 //! `docs/superpowers/specs/2026-10-05-libraries-design.md`.
 //!
 //! **A move is a writer in front of the derive, and the derive does not
-//! change.** Left to the derive alone, a folder whose library changed has its
+//! change.** Left to the derive alone, a directory whose library changed has its
 //! works written again under the new library and the old ones folded into
 //! them, so each has a new id and slug, and a work with an edition on each
 //! side is not divided at all. So the move files the works itself first, and
@@ -10,7 +10,7 @@
 //!
 //! **A work goes where its hub edition goes.** Its content key is a hash of
 //! the hub's members and its hand document is addressed off the hub's
-//! folder, so the row that keeps both is the one that stays with the hub.
+//! directory, so the row that keeps both is the one that stays with the hub.
 //!
 //! **It is refused where a reader's place cannot be kept exactly**, and
 //! refused whole: nothing changes.
@@ -25,22 +25,22 @@ use rusqlite::{Connection, OptionalExtension as _};
 
 use crate::derive::{DeriveReport, Documents, derive_with};
 
-/// Where a folder is moved to.
+/// Where a directory is moved to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Target<'a> {
     /// A library that exists, by its id.
     Library(i64),
-    /// A library made for the folder. A library is born with a folder, so
-    /// this is the only way to give a folder one of its own again.
+    /// A library made for the directory. A library is born with a directory, so
+    /// this is the only way to give a directory one of its own again.
     New(&'a str),
 }
 
 /// Why a move was not made. Nothing was changed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MoveError {
-    /// No such folder, or no such library.
+    /// No such directory, or no such library.
     Missing(String),
-    /// The caller's own mistake: the folder's own library, or a name for a
+    /// The caller's own mistake: the directory's own library, or a name for a
     /// new one that is empty or taken.
     Unusable(String),
     /// The move cannot keep every reader's place. `volumes` names what
@@ -51,21 +51,22 @@ pub enum MoveError {
     Failed(String),
 }
 
-/// The folder being moved, as it stands before the move.
-struct Folder {
+/// The library directory (a `root` row) being moved, as it stands before the
+/// move.
+struct Dir {
     id: i64,
     path: String,
     library_id: i64,
     library: String,
 }
 
-fn folder(conn: &Connection, root_id: i64) -> Result<Folder, MoveError> {
+fn dir(conn: &Connection, root_id: i64) -> Result<Dir, MoveError> {
     conn.query_row(
         "SELECT r.id, r.path, l.id, l.name FROM root r JOIN library l ON l.id = r.library_id
           WHERE r.id = ?1",
         [root_id],
         |r| {
-            Ok(Folder {
+            Ok(Dir {
                 id: r.get(0)?,
                 path: r.get(1)?,
                 library_id: r.get(2)?,
@@ -74,23 +75,23 @@ fn folder(conn: &Connection, root_id: i64) -> Result<Folder, MoveError> {
         },
     )
     .optional()
-    .map_err(|e| MoveError::Failed(format!("reading folder {root_id}: {e}")))?
-    .ok_or_else(|| MoveError::Missing(format!("there is no folder {root_id}")))
+    .map_err(|e| MoveError::Failed(format!("reading directory {root_id}: {e}")))?
+    .ok_or_else(|| MoveError::Missing(format!("there is no directory {root_id}")))
 }
 
 /// The id of the library `target` names, making it where a new one is named.
 /// Made inside the caller's transaction, so a refused or rehearsed move
 /// leaves no library behind.
-fn resolve(conn: &Connection, folder: &Folder, target: Target<'_>) -> Result<i64, MoveError> {
+fn resolve(conn: &Connection, dir: &Dir, target: Target<'_>) -> Result<i64, MoveError> {
     match target {
         Target::Library(id) => {
             let name = crate::libraries::name_of(conn, id)
                 .map_err(MoveError::Failed)?
                 .ok_or_else(|| MoveError::Missing(format!("there is no library {id}")))?;
-            if id == folder.library_id {
+            if id == dir.library_id {
                 return Err(MoveError::Unusable(format!(
                     "{} is already in `{name}`",
-                    folder.path
+                    dir.path
                 )));
             }
             Ok(id)
@@ -104,7 +105,7 @@ fn resolve(conn: &Connection, folder: &Folder, target: Target<'_>) -> Result<i64
                     .map_err(MoveError::Failed)?
                     .unwrap_or_default();
                 return Err(MoveError::Unusable(format!(
-                    "a library is already called `{stored}`; move the folder to it instead"
+                    "a library is already called `{stored}`; move the directory to it instead"
                 )));
             }
             crate::libraries::create(conn, name).map_err(MoveError::Failed)
@@ -147,13 +148,13 @@ fn volumes_of(
         .map_err(|e| format!("reading what stands in a move's way: {e}"))
 }
 
-/// Why `folder` may not be moved to `target_id`, as far as the store can say
+/// Why `dir` may not be moved to `target_id`, as far as the store can say
 /// before anything is written.
 ///
-/// 1. **One edition has members under the folder and elsewhere.** The move
+/// 1. **One edition has members under the directory and elsewhere.** The move
 ///    would divide the edition itself, and no slot of it would name the page
 ///    it named.
-/// 2. **The target holds a volume of the folder's under the same edition
+/// 2. **The target holds a volume of the directory's under the same edition
 ///    key.** A volume is a series title and a number within a library, so
 ///    derived together the two are one edition of one work, holding both
 ///    sets of pages.
@@ -161,12 +162,12 @@ fn volumes_of(
 ///    The series row stays with them and the work would point at it from
 ///    another library.
 ///
-/// Each names its volumes. The folder being its library's last is not a
+/// Each names its volumes. The directory being its library's last is not a
 /// reason: the library goes with it, and [`Moved::left_with_no_library`]
 /// names whoever that leaves with none.
 fn refused_before(
     conn: &Connection,
-    folder: &Folder,
+    dir: &Dir,
     target_id: i64,
 ) -> Result<Option<MoveError>, String> {
     let spanning = volumes_of(
@@ -176,14 +177,14 @@ fn refused_before(
             AND EXISTS (SELECT 1 FROM member m
                          WHERE m.edition_id = e.id AND m.root_id IS NOT ?1)
           ORDER BY w.title, e.key",
-        &[&folder.id],
+        &[&dir.id],
     )?;
     if !spanning.is_empty() {
         return Ok(Some(MoveError::Refused {
             why: format!(
                 "{} holds part of one edition whose other files are elsewhere, and a move \
                  would divide it: {}. Nothing was changed",
-                folder.path,
+                dir.path,
                 first_few(&spanning)
             ),
             volumes: spanning,
@@ -206,14 +207,14 @@ fn refused_before(
                            AND ts.sort_title = s.sort_title AND tw.volume = w.volume
                            AND te.key = e.key)
           ORDER BY w.title, e.key",
-        &[&folder.id, &target_id],
+        &[&dir.id, &target_id],
     )?;
     if !doubled.is_empty() {
         return Ok(Some(MoveError::Refused {
             why: format!(
                 "`{target}` already holds volumes of {} under the same edition key: {}. \
                  Nothing was changed",
-                folder.path,
+                dir.path,
                 first_few(&doubled)
             ),
             volumes: doubled,
@@ -237,14 +238,14 @@ fn refused_before(
                                             WHERE oe.work_id = other.id AND oe.key = other.hub
                                               AND om.root_id = ?1))
           ORDER BY w.title, w.hub",
-        &[&folder.id],
+        &[&dir.id],
     )?;
     if !placed.is_empty() {
         return Ok(Some(MoveError::Refused {
             why: format!(
                 "{} holds works that were put in a series by hand, and the series keeps other \
                  works behind: {}. Nothing was changed",
-                folder.path,
+                dir.path,
                 first_few(&placed)
             ),
             volumes: placed,
@@ -256,28 +257,28 @@ fn refused_before(
 /// What a move did, or in a rehearsal would do.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Moved {
-    /// The library the folder is in afterwards, and its name.
+    /// The library the directory is in afterwards, and its name.
     pub library_id: i64,
     pub library: String,
-    /// Works wholly under the folder that kept their row.
+    /// Works wholly under the directory that kept their row.
     pub works_kept: usize,
-    /// Works wholly under the folder that were folded into a work the
+    /// Works wholly under the directory that were folded into a work the
     /// target already held, as another edition of it.
     pub works_joined: usize,
     /// Divided works an edition was carried out of.
     pub works_split: usize,
-    /// Series the target already held that gained a volume from the folder.
+    /// Series the target already held that gained a volume from the directory.
     pub series_joined: usize,
     /// Reading positions and notes on the editions that change library: all
-    /// those of a work wholly under the folder, and those of a divided
+    /// those of a work wholly under the directory, and those of a divided
     /// work's editions that are under it. They all go with them, or the move
     /// is refused. What a divided work's staying editions hold is not counted.
     pub positions: usize,
     pub notes: usize,
     /// Alignments between two editions the move separated.
     pub alignments_dropped: usize,
-    /// The library the folder left, where it was that library's last
-    /// folder, and the grants that went with it.
+    /// The library the directory left, where it was that library's last
+    /// directory, and the grants that went with it.
     pub library_removed: Option<String>,
     pub grants_removed: usize,
     /// The accounts, by name, whose only grant went with that library, and
@@ -290,8 +291,8 @@ pub struct Moved {
 struct Home {
     /// `title (hub key)`.
     named: String,
-    /// Whether its hub edition is under the folder, so that the work's row
-    /// goes with the folder.
+    /// Whether its hub edition is under the directory, so that the work's row
+    /// goes with the directory.
     hub_moves: bool,
     /// The library it was filed under.
     library: Option<i64>,
@@ -299,9 +300,9 @@ struct Home {
 
 /// What the store held before a move, for the verdict after it.
 struct Census {
-    /// Works every member of which is under the folder, with their titles.
+    /// Works every member of which is under the directory, with their titles.
     whole: BTreeMap<i64, String>,
-    /// Works with a member under the folder and a member elsewhere.
+    /// Works with a member under the directory and a member elsewhere.
     divided: BTreeMap<i64, String>,
     /// Where each divided work must stand afterwards, and how to name it.
     homes: BTreeMap<i64, Home>,
@@ -316,7 +317,7 @@ struct Census {
     filed: BTreeSet<i64>,
     /// The series the target held before the move.
     target_series: BTreeSet<i64>,
-    /// The folder's library, where the folder is its last, its grants, and
+    /// The directory's library, where the directory is its last, its grants, and
     /// the accounts it was the only grant of.
     library_removed: Option<String>,
     grants_removed: usize,
@@ -344,7 +345,7 @@ fn count(conn: &Connection, sql: &str, params: &[&dyn rusqlite::ToSql]) -> Resul
 }
 
 impl Census {
-    fn take(conn: &Connection, folder: &Folder, target_id: i64) -> Result<Self, String> {
+    fn take(conn: &Connection, dir: &Dir, target_id: i64) -> Result<Self, String> {
         let under = "EXISTS (SELECT 1 FROM edition e JOIN member m ON m.edition_id = e.id
                               WHERE e.work_id = w.id AND m.root_id = ?1)";
         let elsewhere = "EXISTS (SELECT 1 FROM edition e JOIN member m ON m.edition_id = e.id
@@ -352,12 +353,12 @@ impl Census {
         let whole = ids_and_titles(
             conn,
             &format!("SELECT w.id, w.title FROM work w WHERE {under} AND NOT {elsewhere}"),
-            folder.id,
+            dir.id,
         )?;
         let divided = ids_and_titles(
             conn,
             &format!("SELECT w.id, w.title FROM work w WHERE {under} AND {elsewhere}"),
-            folder.id,
+            dir.id,
         )?;
         let homes = {
             let mut statement = conn
@@ -367,9 +368,9 @@ impl Census {
                                      WHERE e.work_id = w.id AND e.key = w.hub AND m.root_id = ?1)
                        FROM work w WHERE {under} AND {elsewhere}"
                 ))
-                .map_err(|e| format!("reading the divided works under root {}: {e}", folder.id))?;
+                .map_err(|e| format!("reading the divided works under root {}: {e}", dir.id))?;
             let rows = statement
-                .query_map([folder.id], |r| {
+                .query_map([dir.id], |r| {
                     Ok((
                         r.get::<_, i64>(0)?,
                         Home {
@@ -383,9 +384,9 @@ impl Census {
                         },
                     ))
                 })
-                .map_err(|e| format!("reading the divided works under root {}: {e}", folder.id))?;
+                .map_err(|e| format!("reading the divided works under root {}: {e}", dir.id))?;
             rows.collect::<Result<BTreeMap<_, _>, _>>()
-                .map_err(|e| format!("reading the divided works under root {}: {e}", folder.id))?
+                .map_err(|e| format!("reading the divided works under root {}: {e}", dir.id))?
         };
         let on_them = |table: &str| {
             count(
@@ -397,13 +398,13 @@ impl Census {
                                      WHERE e.work_id = w.id AND e.key = t.edition
                                        AND m.root_id = ?1)"
                 ),
-                &[&folder.id],
+                &[&dir.id],
             )
         };
         let last = count(
             conn,
             "SELECT count(*) FROM root WHERE library_id = ?1 AND id <> ?2",
-            &[&folder.library_id, &folder.id],
+            &[&dir.library_id, &dir.id],
         )? == 0;
         let filed = conn
             .prepare("SELECT id FROM work WHERE library_id IS NOT NULL")
@@ -430,19 +431,19 @@ impl Census {
             all_truth_pages: count(conn, "SELECT count(*) FROM truth_page", &[])?,
             filed,
             target_series,
-            library_removed: last.then(|| folder.library.clone()),
+            library_removed: last.then(|| dir.library.clone()),
             grants_removed: if last {
                 usize::try_from(count(
                     conn,
                     "SELECT count(*) FROM user_library WHERE library_id = ?1",
-                    &[&folder.library_id],
+                    &[&dir.library_id],
                 )?)
                 .unwrap_or(usize::MAX)
             } else {
                 0
             },
             left_with_no_library: if last {
-                crate::scan::only_grant_holders(conn, folder.library_id)?
+                crate::scan::only_grant_holders(conn, dir.library_id)?
             } else {
                 Vec::new()
             },
@@ -450,34 +451,34 @@ impl Census {
     }
 }
 
-/// File under `target_id` each work whose hub edition is under the folder,
+/// File under `target_id` each work whose hub edition is under the directory,
 /// and each series all of whose works were so filed, unless the target holds
 /// a series of its title: the works then join that one at the derive.
 ///
-/// **Before the folder's own library changes**, so that a library migration
-/// 15 deletes with its last folder takes no row's `library_id` with it.
+/// **Before the directory's own library changes**, so that a library migration
+/// 15 deletes with its last directory takes no row's `library_id` with it.
 ///
 /// **A work the target already holds is left where it is.** One of the same
 /// content key cannot be filed there: `work` is unique on its content key
 /// within a library. One at the same address, its series' `sort_title` and
 /// its volume, is the volume the target already has: the derive writes the
-/// folder's files onto the target's row as another edition, and folds this
+/// directory's files onto the target's row as another edition, and folds this
 /// one into it.
 ///
 /// **What the address clause decides is a divided work's row.** A work whose
-/// hub is under the folder and whose other editions stay, filed to a library
+/// hub is under the directory and whose other editions stay, filed to a library
 /// that holds its volume, would go to the target and be folded away there at
 /// once, and its staying editions would have no row to stay on. Left where it
 /// is, the move is refused by the verdict
 /// (`a_divided_work_whose_hub_moves_to_a_library_holding_its_volume_is_refused`
-/// is its guard). For a work wholly under the folder the end state is the
+/// is its guard). For a work wholly under the directory the end state is the
 /// same with or without it, which is why the join cases do not decide it.
 ///
 /// **Why filing is enough.** A derive finds the row a group of files belongs
 /// on by content key within the group's library (`import::scanned_in`)
 /// before it asks for the address, and the key is a hash of the hub
 /// edition's members, which a move does not touch.
-fn refile(conn: &Connection, folder: &Folder, target_id: i64) -> Result<(), String> {
+fn refile(conn: &Connection, dir: &Dir, target_id: i64) -> Result<(), String> {
     let moving: Vec<(i64, Option<i64>)> = conn
         .prepare(
             "SELECT w.id, w.series_id
@@ -496,7 +497,7 @@ fn refile(conn: &Connection, folder: &Folder, target_id: i64) -> Result<(), Stri
               ORDER BY w.id",
         )
         .map_err(|e| format!("reading the works to file under library {target_id}: {e}"))?
-        .query_map([folder.id, target_id], |r| Ok((r.get(0)?, r.get(1)?)))
+        .query_map([dir.id, target_id], |r| Ok((r.get(0)?, r.get(1)?)))
         .map_err(|e| format!("reading the works to file under library {target_id}: {e}"))?
         .collect::<Result<_, _>>()
         .map_err(|e| format!("reading the works to file under library {target_id}: {e}"))?;
@@ -546,20 +547,20 @@ fn refile(conn: &Connection, folder: &Folder, target_id: i64) -> Result<(), Stri
 /// edition of the same key over the same members.
 ///
 /// **Misfiled by this move, and only so.** Where the work's hub stays, an
-/// edition with a member under the moved folder; where the hub went with the
-/// folder, an edition whose files are left in the folder's old library. An
+/// edition with a member under the moved directory; where the hub went with the
+/// directory, an edition whose files are left in the directory's old library. An
 /// edition an earlier change (migration 15's split) left in a library other
 /// than its work's is not this move's to give away.
-fn split(conn: &Connection, folder: &Folder, census: &Census) -> Result<Split, String> {
+fn split(conn: &Connection, dir: &Dir, census: &Census) -> Result<Split, String> {
     let mut carried = crate::fold::Rehomed::default();
     let mut unplaced = Vec::new();
     let mut reasons = Vec::new();
     let mut works = 0;
     for (&work, title) in &census.divided {
         let hub_moves = census.homes.get(&work).is_some_and(|home| home.hub_moves);
-        // An edition whose members are all under folders of one library,
+        // An edition whose members are all under directories of one library,
         // which is not this work's, with the work of that library that
-        // holds the same key over a member of the same folder, path and
+        // holds the same key over a member of the same directory, path and
         // digest.
         let misfiled: Vec<(String, Option<i64>)> = conn
             .prepare(
@@ -598,7 +599,7 @@ fn split(conn: &Connection, folder: &Folder, census: &Census) -> Result<Split, S
             )
             .map_err(|e| format!("reading the misfiled editions of work {work}: {e}"))?
             .query_map(
-                rusqlite::params![work, folder.id, folder.library_id, hub_moves],
+                rusqlite::params![work, dir.id, dir.library_id, hub_moves],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .map_err(|e| format!("reading the misfiled editions of work {work}: {e}"))?
@@ -654,7 +655,7 @@ fn said(why: &str) -> &str {
     why.trim_end_matches("; nothing was moved and nothing was deleted")
 }
 
-fn refused(folder: &Folder, library: &str, why: &str, volumes: Vec<String>) -> MoveError {
+fn refused(dir: &Dir, library: &str, why: &str, volumes: Vec<String>) -> MoveError {
     let named = if volumes.is_empty() {
         String::new()
     } else {
@@ -664,7 +665,7 @@ fn refused(folder: &Folder, library: &str, why: &str, volumes: Vec<String>) -> M
         why: format!(
             "{} cannot be moved to `{library}` and keep every reader's place: {why}{named}. \
              Nothing was changed",
-            folder.path
+            dir.path
         ),
         volumes,
     }
@@ -676,9 +677,9 @@ fn apply_move(
     root_id: i64,
     target: Target<'_>,
 ) -> Result<(Moved, DeriveReport), MoveError> {
-    let folder = folder(conn, root_id)?;
-    let target_id = resolve(conn, &folder, target)?;
-    if let Some(refusal) = refused_before(conn, &folder, target_id).map_err(MoveError::Failed)? {
+    let dir = dir(conn, root_id)?;
+    let target_id = resolve(conn, &dir, target)?;
+    if let Some(refusal) = refused_before(conn, &dir, target_id).map_err(MoveError::Failed)? {
         return Err(refusal);
     }
     let library = crate::libraries::name_of(conn, target_id)
@@ -693,7 +694,7 @@ fn apply_move(
         || baseline.uncarried_alignments > 0
     {
         return Err(refused(
-            &folder,
+            &dir,
             &library,
             "the store holds changes not yet derived, and deriving them would lose a position, a \
              note, an alignment or another row a reader made. Scan the libraries before moving \
@@ -701,12 +702,12 @@ fn apply_move(
             Vec::new(),
         ));
     }
-    let census = Census::take(conn, &folder, target_id).map_err(MoveError::Failed)?;
+    let census = Census::take(conn, &dir, target_id).map_err(MoveError::Failed)?;
 
-    refile(conn, &folder, target_id).map_err(MoveError::Failed)?;
+    refile(conn, &dir, target_id).map_err(MoveError::Failed)?;
     conn.execute(
         "UPDATE root SET library_id = ?2 WHERE id = ?1",
-        [folder.id, target_id],
+        [dir.id, target_id],
     )
     .map_err(|e| MoveError::Failed(format!("moving root {root_id}: {e}")))?;
     let derived = derive_with(conn, Documents::Skip).map_err(MoveError::Failed)?;
@@ -715,7 +716,7 @@ fn apply_move(
         unplaced,
         reasons,
         works: works_split,
-    } = split(conn, &folder, &census).map_err(MoveError::Failed)?;
+    } = split(conn, &dir, &census).map_err(MoveError::Failed)?;
 
     // The verdict. Each arm is a refusal of the whole move.
     if !unplaced.is_empty() {
@@ -732,7 +733,7 @@ fn apply_move(
                     .join("; ")
             )
         };
-        return Err(refused(&folder, &library, &why, unplaced));
+        return Err(refused(&dir, &library, &why, unplaced));
     }
     // A sentence that occurs more often after than before is new, so this is
     // a multiset difference and not a `contains`.
@@ -773,7 +774,7 @@ fn apply_move(
             named
         };
         return Err(refused(
-            &folder,
+            &dir,
             &library,
             &format!(
                 "a work could not be joined to the one that holds its volume ({})",
@@ -804,7 +805,7 @@ fn apply_move(
     }
     if !gone.is_empty() {
         return Err(refused(
-            &folder,
+            &dir,
             &library,
             "a work with files on both sides would not stand where its first edition goes",
             gone,
@@ -829,9 +830,9 @@ fn apply_move(
         .collect();
     if !outside.is_empty() {
         return Err(refused(
-            &folder,
+            &dir,
             &library,
-            "works of the folder would be left outside it",
+            "works of the directory would be left outside it",
             outside,
         ));
     }
@@ -843,7 +844,7 @@ fn apply_move(
             .collect();
     if !unfiled.is_empty() {
         return Err(refused(
-            &folder,
+            &dir,
             &library,
             "works would be left in no library",
             unfiled,
@@ -869,7 +870,7 @@ fn apply_move(
             .map(|(_, title)| title.clone())
             .collect();
         return Err(refused(
-            &folder,
+            &dir,
             &library,
             "joining a work to the one that holds its volume would lose a position, a note, an \
              alignment or another row a reader made",
@@ -894,7 +895,7 @@ fn apply_move(
         let lost = before - after(table)?;
         if lost > 0 {
             return Err(refused(
-                &folder,
+                &dir,
                 &library,
                 &format!("{lost} {what}(s) would stop existing"),
                 Vec::new(),
@@ -907,7 +908,7 @@ fn apply_move(
         .collect();
     let works_kept = census.whole.keys().filter(|id| still.contains(id)).count();
     // Each series the target held before that now holds a work with a file
-    // under the folder.
+    // under the directory.
     let gained: BTreeSet<i64> = conn
         .prepare(
             "SELECT DISTINCT w.series_id FROM work w
@@ -917,7 +918,7 @@ fn apply_move(
         )
         .and_then(|mut statement| {
             statement
-                .query_map([folder.id], |r| r.get(0))?
+                .query_map([dir.id], |r| r.get(0))?
                 .collect::<Result<BTreeSet<i64>, _>>()
         })
         .map_err(|e| MoveError::Failed(format!("reading a move's outcome: {e}")))?;

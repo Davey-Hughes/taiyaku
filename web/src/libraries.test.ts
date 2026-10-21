@@ -1,13 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
-  addFolder,
+  addDir,
   createLibrary,
   libraryRemovalCost,
   libraryScanStatus,
-  listFolders,
+  listDirs,
   listLibraries,
   moveCost,
-  moveFolder,
+  moveDir,
   noLibrarySentence,
   removeLibrary,
   renameLibrary,
@@ -58,7 +58,7 @@ describe('the libraries client', () => {
       () => createLibrary('Manga', ['/media/a', '/media/b']),
       'POST',
       '/api/library/libraries',
-      { name: 'Manga', folders: ['/media/a', '/media/b'] },
+      { name: 'Manga', dirs: ['/media/a', '/media/b'] },
     ],
     [
       'renameLibrary',
@@ -68,10 +68,10 @@ describe('the libraries client', () => {
       { name: 'Comics' },
     ],
     [
-      'addFolder',
-      () => addFolder(7, '/media/c'),
+      'addDir',
+      () => addDir(7, '/media/c'),
       'POST',
-      '/api/library/libraries/7/folders',
+      '/api/library/libraries/7/dirs',
       { path: '/media/c' },
     ],
     [
@@ -96,8 +96,8 @@ describe('the libraries client', () => {
       { library: 7 },
     ],
     [
-      'moveFolder',
-      () => moveFolder(3, { new_library: 'Extras' }),
+      'moveDir',
+      () => moveDir(3, { new_library: 'Extras' }),
       'POST',
       '/api/library/roots/3/move',
       { new_library: 'Extras' },
@@ -117,17 +117,17 @@ describe('the libraries client', () => {
       undefined,
     ],
     [
-      'listFolders, at the prefixes',
-      () => listFolders(),
+      'listDirs, at the prefixes',
+      () => listDirs(),
       'GET',
-      '/api/library/folders',
+      '/api/library/dirs',
       undefined,
     ],
     [
-      'listFolders, at a path',
-      () => listFolders('/mnt/user/media 1/Manga & more'),
+      'listDirs, at a path',
+      () => listDirs('/mnt/user/media 1/Manga & more'),
       'GET',
-      '/api/library/folders?path=%2Fmnt%2Fuser%2Fmedia%201%2FManga%20%26%20more',
+      '/api/library/dirs?path=%2Fmnt%2Fuser%2Fmedia%201%2FManga%20%26%20more',
       undefined,
     ],
   ])(
@@ -167,11 +167,11 @@ describe('noLibrarySentence', () => {
     )
   })
 
-  it('joins three names with commas and a last "and", and names the folder’s library', () => {
+  it('joins three names with commas and a last "and", and names the directory’s library', () => {
     expect(
-      noLibrarySentence(['alice', 'bob', 'carol'], "this folder's library"),
+      noLibrarySentence(['alice', 'bob', 'carol'], "this directory's library"),
     ).toBe(
-      "alice, bob and carol can see only this folder's library. After this, they will see no library until an administrator grants one.",
+      "alice, bob and carol can see only this directory's library. After this, they will see no library until an administrator grants one.",
     )
   })
 })

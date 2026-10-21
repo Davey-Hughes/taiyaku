@@ -436,8 +436,8 @@ const LIBRARY_USAGE: &str = "usage: taiyaku library user grant-library <user> <l
 /// the account's name as given and the library's name as the store holds it,
 /// which are the names both print.
 ///
-/// **The library is named, not given by a folder's path**, so nothing here
-/// is canonicalised and a library is found whether or not its folders can be
+/// **The library is named, not given by a directory's path**, so nothing here
+/// is canonicalised and a library is found whether or not its directories can be
 /// reached. [`taiyaku_library::libraries::id_of`] looks the name up.
 fn grant_target(args: &[String]) -> Result<(Library, String, i64, i64, String), String> {
     let given = positional(args);

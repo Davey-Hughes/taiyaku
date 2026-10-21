@@ -9,7 +9,7 @@ import { emptyDerive } from './testing/derive'
 import { press, submit, typeInto } from './testing/input'
 import {
   counted,
-  folder,
+  dir,
   idle,
   manga,
   scanningIn,
@@ -25,10 +25,10 @@ vi.mock('./config', async (importOriginal) => ({
 }))
 vi.mock('./libraries', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./libraries')>()),
-  addFolder: vi.fn(),
+  addDir: vi.fn(),
   libraryRemovalCost: vi.fn(),
   libraryScanStatus: vi.fn(),
-  listFolders: vi.fn(),
+  listDirs: vi.fn(),
   removeLibrary: vi.fn(),
   renameLibrary: vi.fn(),
   startLibraryScan: vi.fn(),
@@ -68,9 +68,9 @@ async function shown(library = manga()) {
 const button = (host: HTMLElement, name: string) =>
   host.querySelector(`button[name="${name}"]`) as HTMLButtonElement
 
-/** Press Add folder… and hand back what holds the picker and its refusal. */
+/** Press Add directory… and hand back what holds the picker and its refusal. */
 async function openPicker(host: HTMLElement) {
-  await press(button(host, 'add-folder'))
+  await press(button(host, 'add-dir'))
   return host.querySelector('.library-page > .add-root') as HTMLElement
 }
 
@@ -94,17 +94,17 @@ afterEach(() => {
 })
 
 describe('LibraryPage', () => {
-  it('words the library’s button Scan library, and leaves Scan folder to each folder’s page', async () => {
+  it('words the library’s button Scan library, and leaves Scan directory to each directory’s page', async () => {
     const { host } = await shown()
     expect(button(host, 'scan-library').textContent).toBe('Scan library')
     expect(
       [...host.querySelectorAll('button')].filter((b) =>
-        b.textContent?.startsWith('Scan folder'),
+        b.textContent?.startsWith('Scan directory'),
       ),
     ).toEqual([])
   })
 
-  it('says a scan is running in the library, not that it is scanning the library’s folders', async () => {
+  it('says a scan is running in the library, not that it is scanning the library’s directories', async () => {
     vi.mocked(api.libraryScanStatus).mockResolvedValue({
       ...idle(7),
       running: true,
@@ -116,14 +116,14 @@ describe('LibraryPage', () => {
     ).toMatch(/^A scan is running in this library… 9s$/)
   })
 
-  it('names the library, what it holds, and a row per folder', async () => {
+  it('names the library, what it holds, and a row per directory', async () => {
     const { host } = await shown()
     expect(host.querySelector('.library-page > h2')?.textContent).toBe('Manga')
     expect(host.querySelector('.holds')?.textContent).toBe(
-      '12 works in 2 folders',
+      '12 works in 2 directories',
     )
     expect(
-      [...host.querySelectorAll('.folder-table tbody code')].map(
+      [...host.querySelectorAll('.dir-table tbody code')].map(
         (c) => c.textContent,
       ),
     ).toEqual(['/media/Manga/Volumes', '/media/Manga/Chapters'])
@@ -132,10 +132,10 @@ describe('LibraryPage', () => {
 
   it('says so when it holds books and no work, and only then', async () => {
     const books = await shown(
-      manga({ works: 0, books: 3, folders: [folder(1, '/media/Books')] }),
+      manga({ works: 0, books: 3, dirs: [dir(1, '/media/Books')] }),
     )
     expect(books.host.querySelector('.holds')?.textContent).toBe(
-      '0 works in 1 folder',
+      '0 works in 1 directory',
     )
     expect(books.host.querySelector('.no-readable')?.textContent).toContain(
       'No readable files yet: its scans found 3 EPUB or PDF files',
@@ -185,14 +185,14 @@ describe('LibraryPage', () => {
     expect(onChanged).not.toHaveBeenCalled()
   })
 
-  it('adds a folder to this library, hands its probe up, and reloads', async () => {
+  it('adds a directory to this library, hands its probe up, and reloads', async () => {
     const added: config.Added = {
-      root: folder(3, '/media/Manga/Extras'),
+      root: dir(3, '/media/Manga/Extras'),
       watching: true,
       watch_reason: null,
       interval_secs: 86400,
     }
-    vi.mocked(api.addFolder).mockResolvedValue(added)
+    vi.mocked(api.addDir).mockResolvedValue(added)
     const { host, onAdded, onChanged } = await shown()
     const picker = await openPicker(host)
 
@@ -202,15 +202,15 @@ describe('LibraryPage', () => {
     )
     await press(picker.querySelector('button[name="pick"]') as Element)
 
-    expect(api.addFolder).toHaveBeenCalledWith(7, '/media/Manga/Extras')
+    expect(api.addDir).toHaveBeenCalledWith(7, '/media/Manga/Extras')
     expect(onAdded).toHaveBeenCalledWith([added])
     expect(onChanged).toHaveBeenCalled()
   })
 
-  it("draws a refused folder's sentence and keeps what was typed", async () => {
-    vi.mocked(api.addFolder).mockRejectedValue(
+  it("draws a refused directory's sentence and keeps what was typed", async () => {
+    vi.mocked(api.addDir).mockRejectedValue(
       new Error(
-        '/api/library/libraries/7/folders: 400 {"error":"/media/Manga/Volumes/x is inside /media/Manga/Volumes, which is already a folder of the library `Manga`"}',
+        '/api/library/libraries/7/dirs: 400 {"error":"/media/Manga/Volumes/x is inside /media/Manga/Volumes, which is already a directory of the library `Manga`"}',
       ),
     )
     const { host, onChanged } = await shown()
@@ -221,7 +221,7 @@ describe('LibraryPage', () => {
     await press(picker.querySelector('button[name="pick"]') as Element)
 
     expect(picker.querySelector('[role="alert"]')?.textContent).toBe(
-      '/media/Manga/Volumes/x is inside /media/Manga/Volumes, which is already a folder of the library `Manga`',
+      '/media/Manga/Volumes/x is inside /media/Manga/Volumes, which is already a directory of the library `Manga`',
     )
     expect(host.querySelector('.library-page > [role="alert"]')).toBeNull()
     expect(box.value).toBe('/media/Manga/Volumes/x')
@@ -385,16 +385,16 @@ describe('LibraryPage', () => {
     expect(onChanged).toHaveBeenCalled()
   })
 
-  it('clears an earlier refusal once a folder is added', async () => {
+  it('clears an earlier refusal once a directory is added', async () => {
     const added: config.Added = {
-      root: folder(3, '/media/Manga/Extras'),
+      root: dir(3, '/media/Manga/Extras'),
       watching: true,
       watch_reason: null,
       interval_secs: 86400,
     }
-    vi.mocked(api.addFolder)
+    vi.mocked(api.addDir)
       .mockRejectedValueOnce(
-        new Error('/api/library/libraries/7/folders: 400 {"error":"refused"}'),
+        new Error('/api/library/libraries/7/dirs: 400 {"error":"refused"}'),
       )
       .mockResolvedValueOnce(added)
     const { host } = await shown()
@@ -442,14 +442,14 @@ const pageAlert = (host: HTMLElement) =>
 
 const held = (...buttons: HTMLButtonElement[]) => buttons.map((b) => b.disabled)
 
-/** What each row of the Folders table says under Last scan. */
+/** What each row of the Directories table says under Last scan. */
 const lastScans = (host: HTMLElement) =>
-  [...host.querySelectorAll('.folder-table tbody tr')].map((row) =>
+  [...host.querySelectorAll('.dir-table tbody tr')].map((row) =>
     cellValue(row.querySelectorAll('td')[2]),
   )
 
-describe('LibraryPage, a library and its folders', () => {
-  it('holds the library’s Scan library and Remove while a folder is scanning from its own page, and sends nothing from them', async () => {
+describe('LibraryPage, a library and its directories', () => {
+  it('holds the library’s Scan library and Remove while a directory is scanning from its own page, and sends nothing from them', async () => {
     vi.mocked(api.libraryScanStatus).mockResolvedValue(scanningIn(manga(), 2))
     const { host } = await shown()
 
@@ -476,7 +476,7 @@ describe('LibraryPage, a library and its folders', () => {
     expect(onChanged).toHaveBeenCalledWith(true)
   })
 
-  it('frees the library once the folder’s scan has ended', async () => {
+  it('frees the library once the directory’s scan has ended', async () => {
     vi.mocked(api.libraryScanStatus).mockResolvedValue(scanningIn(manga(), 2))
     const { host } = await shown()
     expect(button(host, 'scan-library').disabled).toBe(true)
@@ -486,13 +486,13 @@ describe('LibraryPage, a library and its folders', () => {
     expect(button(host, 'remove-library').disabled).toBe(false)
   })
 
-  it('draws a Folders table: a row per folder, its path a link to the folder’s page, how often it is scanned and when it last was', async () => {
+  it('draws a Directories table: a row per directory, its path a link to the directory’s page, how often it is scanned and when it last was', async () => {
     const { host } = await shown(
       manga({
-        folders: [
-          folder(1, '/media/Manga/Volumes'),
+        dirs: [
+          dir(1, '/media/Manga/Volumes'),
           {
-            ...folder(4, '/media/Manga/Chapters'),
+            ...dir(4, '/media/Manga/Chapters'),
             scan_interval_secs: null,
             last_scan_at: '2026-10-01 10:00:00',
             last_scan_status: 'failed',
@@ -500,8 +500,8 @@ describe('LibraryPage, a library and its folders', () => {
         ],
       }),
     )
-    const table = host.querySelector('table.folder-table') as HTMLElement
-    expect(table.previousElementSibling?.textContent).toBe('Folders')
+    const table = host.querySelector('table.dir-table') as HTMLElement
+    expect(table.previousElementSibling?.textContent).toBe('Directories')
     expect(
       [...table.querySelectorAll('thead th')].map((th) => th.textContent),
     ).toEqual(['Path', 'Scan every', 'Last scan'])
@@ -517,11 +517,11 @@ describe('LibraryPage, a library and its folders', () => {
       })),
     ).toEqual([
       {
-        links: [['/media/Manga/Volumes', '/config/libraries/7/folders/1']],
+        links: [['/media/Manga/Volumes', '/config/libraries/7/dirs/1']],
         cells: ['/media/Manga/Volumes', '24h', 'Never'],
       },
       {
-        links: [['/media/Manga/Chapters', '/config/libraries/7/folders/4']],
+        links: [['/media/Manga/Chapters', '/config/libraries/7/dirs/4']],
         cells: [
           '/media/Manga/Chapters',
           'not set',
@@ -531,15 +531,15 @@ describe('LibraryPage, a library and its folders', () => {
     ])
   })
 
-  it('says Scanning… in the table for each folder being scanned, and its last scan once that ends', async () => {
+  it('says Scanning… in the table for each directory being scanned, and its last scan once that ends', async () => {
     vi.mocked(api.startLibraryScan).mockResolvedValue(started)
     vi.mocked(api.libraryScanStatus).mockResolvedValue(scanningIn(manga(), 2))
     const { host } = await shown(
       manga({
-        folders: [
-          folder(1, '/media/Manga/Volumes'),
+        dirs: [
+          dir(1, '/media/Manga/Volumes'),
           {
-            ...folder(2, '/media/Manga/Chapters'),
+            ...dir(2, '/media/Manga/Chapters'),
             last_scan_at: '2026-10-01 10:00:00',
             last_scan_status: 'ok',
           },
@@ -552,7 +552,7 @@ describe('LibraryPage, a library and its folders', () => {
     await tick()
     expect(lastScans(host)).toEqual(['Never', '2026-10-01 10:00:00'])
 
-    // A scan of the library is a scan of every folder in it.
+    // A scan of the library is a scan of every directory in it.
     vi.mocked(api.libraryScanStatus).mockResolvedValue(
       scanningIn(manga(), 1, 2),
     )
@@ -560,37 +560,37 @@ describe('LibraryPage, a library and its folders', () => {
     expect(lastScans(host)).toEqual(['Scanning…', 'Scanning…'])
   })
 
-  it('draws one Add folder…, and the picker only once it is pressed', async () => {
+  it('draws one Add directory…, and the picker only once it is pressed', async () => {
     const { host } = await shown()
-    expect(host.querySelectorAll('button[name="add-folder"]')).toHaveLength(1)
-    expect(button(host, 'add-folder').textContent).toBe('Add folder…')
+    expect(host.querySelectorAll('button[name="add-dir"]')).toHaveLength(1)
+    expect(button(host, 'add-dir').textContent).toBe('Add directory…')
     expect(host.querySelector('input[name="path"]')).toBeNull()
 
     const picker = await openPicker(host)
     expect(picker.querySelectorAll('input[name="path"]')).toHaveLength(1)
     expect(picker.querySelector('button[name="pick"]')?.textContent).toBe(
-      'Add folder',
+      'Add directory',
     )
-    expect(button(host, 'add-folder')).toBeNull()
+    expect(button(host, 'add-dir')).toBeNull()
     expect(document.activeElement).toBe(
       picker.querySelector('input[name="path"]'),
     )
 
     await press(button(host, 'cancel-add'))
     expect(host.querySelector('input[name="path"]')).toBeNull()
-    expect(document.activeElement).toBe(button(host, 'add-folder'))
+    expect(document.activeElement).toBe(button(host, 'add-dir'))
   })
 
-  it('closes the picker once a folder is added, and the folder joins the table when the list is read again', async () => {
+  it('closes the picker once a directory is added, and the directory joins the table when the list is read again', async () => {
     const added: config.Added = {
-      root: folder(3, '/media/Manga/Extras'),
+      root: dir(3, '/media/Manga/Extras'),
       watching: true,
       watch_reason: null,
       interval_secs: 86400,
     }
-    vi.mocked(api.addFolder).mockResolvedValue(added)
+    vi.mocked(api.addDir).mockResolvedValue(added)
     const before = manga()
-    const after = manga({ folders: [...before.folders, added.root] })
+    const after = manga({ dirs: [...before.dirs, added.root] })
     // The screen's reload, which hands the page the list read again.
     function Reloading() {
       const [library, setLibrary] = useState(before)
@@ -619,20 +619,20 @@ describe('LibraryPage, a library and its folders', () => {
     await press(picker.querySelector('button[name="pick"]') as Element)
 
     expect(host.querySelector('input[name="path"]')).toBeNull()
-    expect(button(host, 'add-folder')).not.toBeNull()
+    expect(button(host, 'add-dir')).not.toBeNull()
     expect(
-      [...host.querySelectorAll('.folder-table tbody a')].map((a) => [
+      [...host.querySelectorAll('.dir-table tbody a')].map((a) => [
         a.textContent,
         a.getAttribute('href'),
       ]),
     ).toEqual([
-      ['/media/Manga/Volumes', '/config/libraries/7/folders/1'],
-      ['/media/Manga/Chapters', '/config/libraries/7/folders/2'],
-      ['/media/Manga/Extras', '/config/libraries/7/folders/3'],
+      ['/media/Manga/Volumes', '/config/libraries/7/dirs/1'],
+      ['/media/Manga/Chapters', '/config/libraries/7/dirs/2'],
+      ['/media/Manga/Extras', '/config/libraries/7/dirs/3'],
     ])
   })
 
-  it('draws each folder’s report under “What the scan found” once a scan it watched ends', async () => {
+  it('draws each directory’s report under “What the scan found” once a scan it watched ends', async () => {
     vi.mocked(api.startLibraryScan).mockResolvedValue(started)
     const finished: config.ScanOutcome = {
       scan: {
@@ -651,7 +651,7 @@ describe('LibraryPage, a library and its folders', () => {
       },
       derive: emptyDerive,
     }
-    // Each folder's status holds a report from the start: none is drawn
+    // Each directory's status holds a report from the start: none is drawn
     // until a scan this page watched has ended.
     vi.mocked(config.scanStatus).mockImplementation((id) =>
       Promise.resolve({
@@ -680,8 +680,8 @@ describe('LibraryPage, a library and its folders', () => {
     const section = host.querySelector('.library-scan-reports') as HTMLElement
     expect(section).not.toBeNull()
     expect(section.querySelector('h3')?.textContent).toBe('What the scan found')
-    const reports = [...section.querySelectorAll('.folder-report')]
-    // Per report, so a report drawn under the wrong folder is seen.
+    const reports = [...section.querySelectorAll('.dir-report')]
+    // Per report, so a report drawn under the wrong directory is seen.
     expect(
       reports.map((one) => ({
         path: one.querySelector('h4')?.textContent,
@@ -708,7 +708,7 @@ describe('LibraryPage, a library and its folders', () => {
   })
 })
 
-/** Each folder's own status, holding a report that walked its folder. */
+/** Each directory's own status, holding a report that walked its directory. */
 const reporting = () =>
   vi.mocked(config.scanStatus).mockImplementation((id) =>
     Promise.resolve({
@@ -716,7 +716,7 @@ const reporting = () =>
       running: false,
       report: {
         scan: {
-          root: `/folder/${id}`,
+          root: `/dir/${id}`,
           dirs: 1,
           files: 1,
           added: 1,
@@ -738,12 +738,12 @@ const reporting = () =>
 
 /** The paths the reports of the last scan are drawn under, in order. */
 const reportedPaths = (host: HTMLElement) =>
-  [...host.querySelectorAll('.library-scan-reports .folder-report h4')].map(
+  [...host.querySelectorAll('.library-scan-reports .dir-report h4')].map(
     (h) => h.textContent,
   )
 
 describe('LibraryPage, whose reports a scan draws', () => {
-  it('draws no report for a folder that joined the library while the scan ran, though its status holds one', async () => {
+  it('draws no report for a directory that joined the library while the scan ran, though its status holds one', async () => {
     vi.mocked(api.startLibraryScan).mockResolvedValue(started)
     reporting()
     const { host, redraw } = await shown()
@@ -754,10 +754,10 @@ describe('LibraryPage, whose reports a scan draws', () => {
     await tick()
     await redraw(
       manga({
-        folders: [
-          folder(1, '/media/Manga/Volumes'),
-          folder(2, '/media/Manga/Chapters'),
-          folder(3, '/media/Manga/Extras'),
+        dirs: [
+          dir(1, '/media/Manga/Volumes'),
+          dir(2, '/media/Manga/Chapters'),
+          dir(3, '/media/Manga/Extras'),
         ],
       }),
     )
@@ -770,7 +770,7 @@ describe('LibraryPage, whose reports a scan draws', () => {
     ])
   })
 
-  it('draws only the report of the folder whose own scan it took up on being drawn', async () => {
+  it('draws only the report of the directory whose own scan it took up on being drawn', async () => {
     reporting()
     vi.mocked(api.libraryScanStatus).mockResolvedValue(scanningIn(manga(), 1))
     const { host } = await shown()
@@ -781,7 +781,7 @@ describe('LibraryPage, whose reports a scan draws', () => {
     expect(reportedPaths(host)).toEqual(['/media/Manga/Volumes'])
   })
 
-  it('draws the reports of the folders a poll named scanning after a 409', async () => {
+  it('draws the reports of the directories a poll named scanning after a 409', async () => {
     vi.mocked(api.startLibraryScan).mockRejectedValue(
       new Error(
         '/api/library/libraries/7/scan: 409 {"error":"a scan of /media/Manga/Chapters is already running"}',
@@ -798,7 +798,7 @@ describe('LibraryPage, whose reports a scan draws', () => {
     expect(reportedPaths(host)).toEqual(['/media/Manga/Chapters'])
   })
 
-  it('forgets the folders an earlier scan held when the next is pressed', async () => {
+  it('forgets the directories an earlier scan held when the next is pressed', async () => {
     vi.mocked(api.startLibraryScan).mockResolvedValueOnce(started)
     reporting()
     const { host } = await shown()
@@ -948,9 +948,9 @@ describe('LibraryPage, what it says went wrong', () => {
   })
 
   it('draws an add refusal beside the picker, and holds none while the next attempt is in flight', async () => {
-    vi.mocked(api.addFolder)
+    vi.mocked(api.addDir)
       .mockRejectedValueOnce(
-        new Error('/api/library/libraries/7/folders: 400 {"error":"nope"}'),
+        new Error('/api/library/libraries/7/dirs: 400 {"error":"nope"}'),
       )
       .mockReturnValueOnce(new Promise(() => {}))
     const { host } = await shown()
@@ -968,8 +968,8 @@ describe('LibraryPage, what it says went wrong', () => {
   })
 
   it('clears an add refusal when the path is edited', async () => {
-    vi.mocked(api.addFolder).mockRejectedValue(
-      new Error('/api/library/libraries/7/folders: 400 {"error":"nope"}'),
+    vi.mocked(api.addDir).mockRejectedValue(
+      new Error('/api/library/libraries/7/dirs: 400 {"error":"nope"}'),
     )
     const { host } = await shown()
     const picker = await openPicker(host)
@@ -1069,8 +1069,8 @@ describe('LibraryPage, what it says went wrong', () => {
   })
 })
 
-describe('LibraryPage, scans and removals of a library and its folders exclude each other', () => {
-  it('holds the library’s removal when a folder is found scanning under its open dialog, and asks its cost again when that ends', async () => {
+describe('LibraryPage, scans and removals of a library and its directories exclude each other', () => {
+  it('holds the library’s removal when a directory is found scanning under its open dialog, and asks its cost again when that ends', async () => {
     const late = deferred<api.LibraryScanStatus>()
     vi.mocked(api.libraryScanStatus).mockReturnValueOnce(late.promise)
     vi.mocked(api.libraryRemovalCost).mockResolvedValue(counted(12))
@@ -1123,7 +1123,7 @@ describe('LibraryPage, scans and removals of a library and its folders exclude e
     expect(api.removeLibrary).not.toHaveBeenCalled()
   })
 
-  it('holds Rename… and Add folder while the library’s removal is being decided, and sends nothing from them', async () => {
+  it('holds Rename… and Add directory while the library’s removal is being decided, and sends nothing from them', async () => {
     vi.mocked(api.libraryRemovalCost).mockResolvedValue(counted(12))
     const { host } = await shown()
     const picker = await openPicker(host)
@@ -1149,7 +1149,7 @@ describe('LibraryPage, scans and removals of a library and its folders exclude e
       )
     })
     expect(api.renameLibrary).not.toHaveBeenCalled()
-    expect(api.addFolder).not.toHaveBeenCalled()
+    expect(api.addDir).not.toHaveBeenCalled()
 
     // Cancelled, both are live again.
     await press(
@@ -1160,7 +1160,7 @@ describe('LibraryPage, scans and removals of a library and its folders exclude e
     expect(held(save, add)).toEqual([false, false])
   })
 
-  it('holds Rename… and Add folder while the library’s removal is on its way', async () => {
+  it('holds Rename… and Add directory while the library’s removal is on its way', async () => {
     vi.mocked(api.libraryRemovalCost).mockResolvedValue(counted(12))
     vi.mocked(api.removeLibrary).mockReturnValue(new Promise(() => {}))
     const { host } = await shown()
@@ -1172,28 +1172,28 @@ describe('LibraryPage, scans and removals of a library and its folders exclude e
     await press(host.querySelector('.remove-library .confirm') as Element)
     expect(api.removeLibrary).toHaveBeenCalledWith(7)
     expect(button(host, 'rename-library').disabled).toBe(true)
-    expect(button(host, 'add-folder').disabled).toBe(true)
-    await press(button(host, 'add-folder'))
+    expect(button(host, 'add-dir').disabled).toBe(true)
+    await press(button(host, 'add-dir'))
     expect(host.querySelector('input[name="path"]')).toBeNull()
-    expect(api.addFolder).not.toHaveBeenCalled()
+    expect(api.addDir).not.toHaveBeenCalled()
   })
 
-  it('draws the Folders table’s paths without links while the library’s removal is open or on its way, and with them once it is cancelled', async () => {
+  it('draws the Directories table’s paths without links while the library’s removal is open or on its way, and with them once it is cancelled', async () => {
     vi.mocked(api.libraryRemovalCost).mockResolvedValue(counted(12))
     const removal = deferred<config.RemovalAnswer>()
     vi.mocked(api.removeLibrary).mockReturnValue(removal.promise)
     const { host } = await shown()
     const links = () =>
-      [...host.querySelectorAll('.folder-table tbody a')].map((a) =>
+      [...host.querySelectorAll('.dir-table tbody a')].map((a) =>
         a.getAttribute('href'),
       )
     const paths = () =>
-      [...host.querySelectorAll('.folder-table tbody code')].map(
+      [...host.querySelectorAll('.dir-table tbody code')].map(
         (c) => c.textContent,
       )
     expect(links()).toEqual([
-      '/config/libraries/7/folders/1',
-      '/config/libraries/7/folders/2',
+      '/config/libraries/7/dirs/1',
+      '/config/libraries/7/dirs/2',
     ])
 
     await press(button(host, 'remove-library'))
@@ -1215,16 +1215,16 @@ describe('LibraryPage, scans and removals of a library and its folders exclude e
       ) as Element,
     )
     expect(links()).toEqual([
-      '/config/libraries/7/folders/1',
-      '/config/libraries/7/folders/2',
+      '/config/libraries/7/dirs/1',
+      '/config/libraries/7/dirs/2',
     ])
   })
 
-  it('does not hold Rename, Save or Add folder for a scan', async () => {
+  it('does not hold Rename, Save or Add directory for a scan', async () => {
     vi.mocked(api.libraryScanStatus).mockResolvedValue(scanningIn(manga(), 1))
     vi.mocked(api.renameLibrary).mockResolvedValue({ id: 7, name: 'Comics' })
-    vi.mocked(api.addFolder).mockResolvedValue({
-      root: folder(3, '/media/Manga/Extras'),
+    vi.mocked(api.addDir).mockResolvedValue({
+      root: dir(3, '/media/Manga/Extras'),
       watching: true,
       watch_reason: null,
       interval_secs: 86400,
@@ -1244,21 +1244,21 @@ describe('LibraryPage, scans and removals of a library and its folders exclude e
     await press(save)
     expect(api.renameLibrary).toHaveBeenCalledWith(7, 'Comics')
 
-    expect(button(host, 'add-folder').disabled).toBe(false)
+    expect(button(host, 'add-dir').disabled).toBe(false)
     const picker = await openPicker(host)
     await typeInto(
       picker.querySelector('input[name="path"]') as HTMLInputElement,
       '/media/Manga/Extras',
     )
     await press(picker.querySelector('button[name="pick"]') as Element)
-    expect(api.addFolder).toHaveBeenCalledWith(7, '/media/Manga/Extras')
+    expect(api.addDir).toHaveBeenCalledWith(7, '/media/Manga/Extras')
   })
 })
 
 describe('LibraryPage, what a refusal outlasts', () => {
   const refusedAdd = async (host: HTMLElement) => {
-    vi.mocked(api.addFolder).mockRejectedValue(
-      new Error('/api/library/libraries/7/folders: 400 {"error":"nope"}'),
+    vi.mocked(api.addDir).mockRejectedValue(
+      new Error('/api/library/libraries/7/dirs: 400 {"error":"nope"}'),
     )
     const picker = await openPicker(host)
     await typeInto(
@@ -1311,15 +1311,15 @@ describe('LibraryPage, what a refusal outlasts', () => {
   })
 
   it('clears an add’s refusal when browsing writes another path into the box', async () => {
-    vi.mocked(api.listFolders).mockImplementation((path) =>
+    vi.mocked(api.listDirs).mockImplementation((path) =>
       Promise.resolve(
         path === undefined
           ? {
               path: null,
               parent: null,
-              folders: [{ name: '/media', path: '/media' }],
+              dirs: [{ name: '/media', path: '/media' }],
             }
-          : { path, parent: null, folders: [] },
+          : { path, parent: null, dirs: [] },
       ),
     )
     const { host } = await shown()
@@ -1328,7 +1328,7 @@ describe('LibraryPage, what a refusal outlasts', () => {
 
     await press(picker.querySelector('button[name="browse"]') as Element)
     expect(picker.querySelector('[role="alert"]')?.textContent).toBe('nope')
-    await press(picker.querySelector('.folder-list button') as Element)
+    await press(picker.querySelector('.dir-list button') as Element)
     expect(
       (picker.querySelector('input[name="path"]') as HTMLInputElement).value,
     ).toBe('/media')

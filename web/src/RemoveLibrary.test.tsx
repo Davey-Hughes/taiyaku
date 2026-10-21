@@ -14,7 +14,7 @@ vi.mock('./libraries', async (importOriginal) => ({
   removeLibrary: vi.fn(),
 }))
 
-const folder = (id: number, path: string): config.Root => ({
+const dir = (id: number, path: string): config.Root => ({
   id,
   path,
   edition_key: null,
@@ -32,10 +32,7 @@ const library: api.Library = {
   name: 'Manga',
   works: 12,
   books: 0,
-  folders: [
-    folder(1, '/media/Manga/Volumes'),
-    folder(2, '/media/Manga/Chapters'),
-  ],
+  dirs: [dir(1, '/media/Manga/Volumes'), dir(2, '/media/Manga/Chapters')],
 }
 
 const answer = (over: Partial<config.Removal> = {}): config.RemovalAnswer => ({
@@ -83,7 +80,7 @@ describe('RemoveLibrary', () => {
     await flush(() => held.resolve(answer()))
 
     expect(host.querySelector('.counts')?.textContent).toBe(
-      'Removing Manga removes its 2 folders, 12 works, 1 in-progress position and 0 notes.',
+      'Removing Manga removes its 2 directories, 12 works, 1 in-progress position and 0 notes.',
     )
     expect(host.querySelector('.confirm')?.textContent).toBe('Remove Manga')
     expect(api.libraryRemovalCost).toHaveBeenCalledWith(7)
@@ -212,7 +209,7 @@ describe('RemoveLibrary', () => {
     expect(host.querySelector('[role="alert"]')).toBeNull()
   })
 
-  it('holds its confirm and sends nothing while a folder is busy', async () => {
+  it('holds its confirm and sends nothing while a directory is busy', async () => {
     const host = await shown()
     await act(async () => {
       rerender(
@@ -345,17 +342,17 @@ describe('RemoveLibrary', () => {
     })
   })
 
-  it('asks again when the library’s folders change, and draws no count beside another asking’s', async () => {
+  it('asks again when the library’s directories change, and draws no count beside another asking’s', async () => {
     const second = deferred<config.RemovalAnswer>()
     const host = await shown()
     expect(host.querySelector('.counts')?.textContent).toContain(
-      '2 folders, 12 works',
+      '2 directories, 12 works',
     )
     vi.mocked(api.libraryRemovalCost).mockReturnValueOnce(second.promise)
     await act(async () => {
       rerender(
         <RemoveLibrary
-          library={{ ...library, folders: [library.folders[1]] }}
+          library={{ ...library, dirs: [library.dirs[1]] }}
           onCancel={vi.fn()}
           onRemoved={vi.fn()}
         />,
@@ -370,11 +367,11 @@ describe('RemoveLibrary', () => {
 
     await flush(() => second.resolve(answer({ works: 4 })))
     expect(host.querySelector('.counts')?.textContent).toBe(
-      'Removing Manga removes its 1 folder, 4 works, 1 in-progress position and 0 notes.',
+      'Removing Manga removes its 1 directory, 4 works, 1 in-progress position and 0 notes.',
     )
   })
 
-  it('draws no count from an asking that was answered after the folders changed again', async () => {
+  it('draws no count from an asking that was answered after the directories changed again', async () => {
     const first = deferred<config.RemovalAnswer>()
     vi.mocked(api.libraryRemovalCost).mockReturnValueOnce(first.promise)
     const host = await shown()
@@ -382,7 +379,7 @@ describe('RemoveLibrary', () => {
     await act(async () => {
       rerender(
         <RemoveLibrary
-          library={{ ...library, folders: [library.folders[1]] }}
+          library={{ ...library, dirs: [library.dirs[1]] }}
           onCancel={vi.fn()}
           onRemoved={vi.fn()}
         />,

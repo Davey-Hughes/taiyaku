@@ -1,18 +1,18 @@
 /**
- * Choosing one folder by its path.
+ * Choosing one directory by its path.
  *
  * **A field and a button, not a form.** It may be drawn inside another
  * form, and a form inside a form is not one. Enter in the box picks, and is
  * kept from submitting whatever form is around it.
  *
  * **Without an `action` it is a field and no button.** The form that makes a
- * library takes one folder, so its own submit is what sends the path, read
+ * library takes one directory, so its own submit is what sends the path, read
  * from the box, and Enter submits that form. `onPath` reports what the box
  * holds a render after it changes, which is soon enough to hold a button and
  * too late for an Enter pressed straight after a keystroke.
  *
  * **The box empties when the pick was taken, and not before.** The caller
- * adds the folder and answers a promise; a refusal rejects it, and the typed
+ * adds the directory and answers a promise; a refusal rejects it, and the typed
  * path stays for the correction. An answer that is not a promise is taken at
  * once.
  *
@@ -25,15 +25,15 @@
  * what is left; the server sends the same empty listing when it was told and
  * none of what it was told exists, so the sentence names both.
  *
- * No path is checked here. Whether the server can read a folder is a question
- * a browser cannot ask, and the refusal's own sentence says which check
- * failed.
+ * No path is checked here. Whether the server can read a directory is a
+ * question a browser cannot ask, and the refusal's own sentence says which
+ * check failed.
  */
 import { type ReactNode, useEffect, useRef, useState } from 'react'
-import { type FolderListing, listFolders, READING_DELAY_MS } from './libraries'
+import { type DirListing, listDirs, READING_DELAY_MS } from './libraries'
 import { sentenceOf } from './message'
 
-export interface FolderPickerProps {
+export interface DirPickerProps {
   /** What the button says. Without one there is no button, and no pick. */
   action?: string
   /**
@@ -46,7 +46,7 @@ export interface FolderPickerProps {
   onPick?: (path: string) => unknown
   /**
    * Nothing is picked while held, by the button or by Enter. The box can still
-   * be typed in and the folders browsed, which only reads listings.
+   * be typed in and the directories browsed, which only reads listings.
    */
   disabled?: boolean
   /**
@@ -68,14 +68,14 @@ export interface FolderPickerProps {
   children?: ReactNode
 }
 
-export function FolderPicker({
+export function DirPicker({
   action,
   onPick,
   disabled = false,
   onEdit,
   onPath,
   children,
-}: FolderPickerProps) {
+}: DirPickerProps) {
   const [path, setPath] = useState('')
   // In a ref, so a caller's new closure on each render does not count as a
   // change of path.
@@ -116,7 +116,7 @@ export function FolderPicker({
   }
 
   const [open, setOpen] = useState(false)
-  const [listing, setListing] = useState<FolderListing | undefined>()
+  const [listing, setListing] = useState<DirListing | undefined>()
   const [browseFailure, setBrowseFailure] = useState<string | undefined>()
   /** The newest listing asked for. Answers need not arrive in order. */
   const latest = useRef(0)
@@ -149,7 +149,7 @@ export function FolderPicker({
       setSlow(false)
     }
     typed.current = false
-    listFolders(to)
+    listDirs(to)
       .then((answer) => {
         if (seq !== latest.current) return
         settle()
@@ -173,7 +173,7 @@ export function FolderPicker({
 
   const browser = useRef<HTMLDivElement>(null)
 
-  // Entering a folder or going up replaces what the person was looking at,
+  // Entering a directory or going up replaces what the person was looking at,
   // and the button they pressed may be gone with it: focus goes to the line
   // that says where they now are, which also has it read. Only when focus is
   // still in the browser or has fallen to the page: a listing can take
@@ -194,15 +194,15 @@ export function FolderPicker({
   }
 
   return (
-    <div className="folder-picker">
+    <div className="dir-picker">
       {/* O175: the `aria-label` repeats the label's words, which `.field`
           draws in capitals. */}
       <label className="field">
-        <span>Folder path</span>
+        <span>Directory path</span>
         <input
           type="text"
           name="path"
-          aria-label="Folder path"
+          aria-label="Directory path"
           value={path}
           placeholder="/media/Manga/Volumes"
           onChange={(e) => {
@@ -234,9 +234,9 @@ export function FolderPicker({
       {open && (
         <div
           ref={browser}
-          className="folder-browser"
+          className="dir-browser"
           role="group"
-          aria-label="Browse for a folder"
+          aria-label="Browse for a directory"
           aria-busy={reading}
         >
           {browseFailure !== undefined && <p role="alert">{browseFailure}</p>}
@@ -244,14 +244,14 @@ export function FolderPicker({
             <>
               <p className="where" ref={where} tabIndex={-1}>
                 {listing.path === null ? (
-                  'Folders this server may browse'
+                  'Directories this server may browse'
                 ) : (
                   <code>{listing.path}</code>
                 )}
               </p>
               {listing.path !== null && (
                 // O207: where Up goes is the server's answer, the canonical
-                // path's parent while that is inside a browsable folder and
+                // path's parent while that is inside a browsable directory and
                 // none once it is not, so it is read and never cut from the
                 // path. The arrow is for the eye; the name is where it goes.
                 <button
@@ -261,29 +261,29 @@ export function FolderPicker({
                 >
                   <span aria-hidden="true">↑ </span>
                   {listing.parent === null
-                    ? 'Back to all browsable folders'
+                    ? 'Back to all browsable directories'
                     : `Up to ${lastPart(listing.parent)}`}
                 </button>
               )}
-              {listing.folders.length === 0 ? (
+              {listing.dirs.length === 0 ? (
                 <p className="empty">
                   {listing.path === null
-                    ? 'No folders to browse: either the server was not told ' +
-                      'which it may browse (--folders, or TAIYAKU_FOLDERS), ' +
-                      'or none of the folders it was told about exist. ' +
+                    ? 'No directories to browse: either the server was not told ' +
+                      'which it may browse (--dirs, or TAIYAKU_DIRS), ' +
+                      'or none of the directories it was told about exist. ' +
                       'Type the path instead.'
-                    : 'No folders in here.'}
+                    : 'No directories in here.'}
                 </p>
               ) : (
-                <ul className="folder-list">
-                  {listing.folders.map((folder) => (
-                    <li key={folder.path}>
+                <ul className="dir-list">
+                  {listing.dirs.map((dir) => (
+                    <li key={dir.path}>
                       <button
                         type="button"
                         name="enter"
-                        onClick={() => go(folder.path, true)}
+                        onClick={() => go(dir.path, true)}
                       >
-                        {folder.name}
+                        {dir.name}
                       </button>
                     </li>
                   ))}
@@ -292,7 +292,7 @@ export function FolderPicker({
             </>
           )}
           {/* After the listing, so saying it moves nothing above. */}
-          {slow && <p className="reading">Reading folders…</p>}
+          {slow && <p className="reading">Reading directories…</p>}
         </div>
       )}
     </div>
@@ -300,7 +300,7 @@ export function FolderPicker({
 }
 
 /**
- * The folder Up names, by its last part: the line above it holds the whole
+ * The directory Up names, by its last part: the line above it holds the whole
  * path. A trailing slash is not a part, and the root has none but `/`.
  */
 function lastPart(path: string): string {

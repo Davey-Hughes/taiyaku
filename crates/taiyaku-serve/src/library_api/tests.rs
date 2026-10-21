@@ -489,15 +489,15 @@ fn titles_in(listed: &serde_json::Value) -> Vec<String> {
 }
 
 /// A reader granted the library `Shelf` browses the work under each of its
-/// two folders, and not the work under `Other`: in the grid, in a search, on
+/// two directories, and not the work under `Other`: in the grid, in a search, on
 /// the home lists and at each work's own address.
 #[tokio::test]
-async fn the_grid_shows_every_folder_of_a_granted_library() {
+async fn the_grid_shows_every_dir_of_a_granted_library() {
     let tmp = test_support::Fixture::new("library-api-granted-library");
-    let (router, state) = test_support::router_over_a_granted_two_folder_library(&tmp);
+    let (router, state) = test_support::router_over_a_granted_two_dir_library(&tmp);
     let shelf = vec![
-        "First Folder Work".to_string(),
-        "Second Folder Work".to_string(),
+        "First Directory Work".to_string(),
+        "Second Directory Work".to_string(),
     ];
 
     let grid = get_json(&router, "/api/library/series").await;
@@ -510,8 +510,8 @@ async fn the_grid_shows_every_folder_of_a_granted_library() {
     assert_eq!(titles_in(&home["added"]), shelf, "recently added: {home}");
 
     for (title, expected) in [
-        ("First Folder Work", axum::http::StatusCode::OK),
-        ("Second Folder Work", axum::http::StatusCode::OK),
+        ("First Directory Work", axum::http::StatusCode::OK),
+        ("Second Directory Work", axum::http::StatusCode::OK),
         ("Other Library Work", axum::http::StatusCode::NOT_FOUND),
     ] {
         let slug: String = state
@@ -544,33 +544,33 @@ async fn the_grid_carries_the_two_fields_the_chips_sort_and_filter_on() {
     assert!(first["unread"].is_i64(), "unread is a number: {first}");
 }
 
-/// The library a folder is in, read from the store rather than assumed.
+/// The library a directory is in, read from the store rather than assumed.
 fn library_of(conn: &rusqlite::Connection, root: i64) -> i64 {
     conn.query_row("SELECT library_id FROM root WHERE id = ?1", [root], |r| {
         r.get(0)
     })
-    .unwrap_or_else(|e| panic!("folder {root}'s library: {e}"))
+    .unwrap_or_else(|e| panic!("directory {root}'s library: {e}"))
 }
 
-/// Two folders, each a library of its own (`root_gets_a_library` makes one
-/// per folder inserted without one), with every member of the fixture's one
+/// Two directories, each a library of its own (`root_gets_a_library` makes one
+/// per directory inserted without one), with every member of the fixture's one
 /// work under the first. Answers the two libraries' ids, the material's first.
 ///
-/// **Folder ids 5 and 6**, so neither library's id is a folder's: a narrowing
-/// that read a library id as a folder id would find nothing under either.
+/// **Directory ids 5 and 6**, so neither library's id is a directory's: a narrowing
+/// that read a library id as a directory id would find nothing under either.
 fn two_libraries_one_holding_the_work(state: &crate::ServeState) -> (i64, i64) {
     let conn = state.library.conn();
     conn.execute(
         "INSERT INTO root (id, path) VALUES (5, '/held'), (6, '/elsewhere')",
         [],
     )
-    .expect("two folders");
+    .expect("two directories");
     conn.execute("UPDATE member SET root_id = 5", [])
         .expect("files every member under the first");
     let (held, elsewhere) = (library_of(&conn, 5), library_of(&conn, 6));
     assert!(
         ![5, 6].contains(&held) && ![5, 6].contains(&elsewhere),
-        "the libraries {held} and {elsewhere} share a folder's id"
+        "the libraries {held} and {elsewhere} share a directory's id"
     );
     (held, elsewhere)
 }
@@ -624,7 +624,7 @@ async fn the_grid_narrows_to_the_library_the_query_names() {
 }
 
 /// **`?library=` leaves imported works out of the unfiled bucket.** `series` and `unfiled` are
-/// fetched together, and an imported member sits under no folder, so asking
+/// fetched together, and an imported member sits under no directory, so asking
 /// for a library asks for none of them — spec C1 §5.1's NULL-excludes-itself
 /// rule, applied in SQL rather than special-cased here. The library asked for
 /// exists, so the empty bucket is that rule and not an unknown id.
@@ -634,7 +634,7 @@ async fn a_library_scoped_grid_carries_no_unfiled_work() {
     let shelf = {
         let conn = state.library.conn();
         conn.execute("INSERT INTO root (id, path) VALUES (5, '/shelf')", [])
-            .expect("a folder, and so a library");
+            .expect("a directory, and so a library");
         library_of(&conn, 5)
     };
 
@@ -715,7 +715,7 @@ async fn search_narrows_to_the_library_the_query_names() {
 }
 
 /// **`?root=` is refused, naming `library`.** It narrowed the grid to one
-/// folder before libraries did.
+/// directory before libraries did.
 #[tokio::test]
 async fn a_grid_asked_for_a_root_is_refused_naming_library() {
     let (router, _state, _fixture) = test_support::router_over_a_scanned_work_in_a_series();
@@ -773,9 +773,9 @@ fn keys_of(value: &serde_json::Value) -> Vec<String> {
 /// compared whole, because a substring check cannot see an added field.
 ///
 /// **Two libraries, one walked and one not**, so `scanned` is read from each
-/// library's own folders: a constant either way fails one of them. Folder ids 5
-/// and 6, so neither library's id is a folder's, and a walk looked up by the
-/// library's id in place of its folders' would find nothing.
+/// library's own directories: a constant either way fails one of them. Directory ids 5
+/// and 6, so neither library's id is a directory's, and a walk looked up by the
+/// library's id in place of its directories' would find nothing.
 #[tokio::test]
 async fn the_status_lists_libraries_and_nothing_else() {
     let (router, state, _fixture) = test_support::router_over_a_library().await;
@@ -785,18 +785,18 @@ async fn the_status_lists_libraries_and_nothing_else() {
             "INSERT INTO root (id, path) VALUES (5, '/shelf'), (6, '/walked')",
             [],
         )
-        .expect("two folders, and so two libraries");
+        .expect("two directories, and so two libraries");
         conn.execute(
             "INSERT INTO dir_state (root_id, rel_path, mtime, entry_count) \
              VALUES (6, '', 0, 0)",
             [],
         )
-        .expect("the second folder walked");
+        .expect("the second directory walked");
         (library_of(&conn, 5), library_of(&conn, 6))
     };
     assert!(
         ![5, 6].contains(&shelf) && ![5, 6].contains(&walked),
-        "the libraries {shelf} and {walked} share a folder's id"
+        "the libraries {shelf} and {walked} share a directory's id"
     );
 
     let body = get_json(&router, "/api/library/status").await;
@@ -816,7 +816,7 @@ async fn the_status_lists_libraries_and_nothing_else() {
     assert_eq!(libraries[1]["name"], "walked", "{body}");
     assert_eq!(
         libraries[1]["scanned"], true,
-        "its folder has been walked: {body}"
+        "its directory has been walked: {body}"
     );
 }
 
@@ -1222,7 +1222,7 @@ fn a_reader_with(access: Access) -> crate::auth::Principal {
 ///
 /// **Every call is asserted to answer as it does for a reader who can see the
 /// series**, so none is free for having been refused, except under `Only`
-/// with no folder: there the series, the work and the cover each answer the
+/// with no directory: there the series, the work and the cover each answer the
 /// 404 one outside the grant gets, after asking the library. Every member of
 /// the series' one work is under root 1.
 ///

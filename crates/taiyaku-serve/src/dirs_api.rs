@@ -1,8 +1,8 @@
-//! `GET /api/library/folders`: the folder browser behind "add a folder", §6.1
+//! `GET /api/library/dirs`: the directory browser behind "add a directory", §6.1
 //! of `docs/superpowers/specs/2026-10-05-libraries-design.md`.
 //!
 //! **It answers only beneath the prefixes the server was started with**
-//! (`--folders`, `TAIYAKU_FOLDERS`), and names directories only: no file, no
+//! (`--dirs`, `TAIYAKU_DIRS`), and names directories only: no file, no
 //! size, no dot-entry. With no prefix it lists nothing, and the screen falls
 //! back to a typed path.
 //!
@@ -83,7 +83,7 @@ pub(crate) struct Listing {
     /// order of their names, so a capital sorts before a lower-case letter. A
     /// prefix is named by its whole path, and the prefixes are in the order
     /// their paths sort.
-    pub folders: Vec<(String, PathBuf)>,
+    pub dirs: Vec<(String, PathBuf)>,
 }
 
 /// Why a path was not listed.
@@ -96,7 +96,7 @@ pub(crate) enum Refusal {
     Unreadable(String),
 }
 
-/// Where the folders the server may browse are, once read: each as the
+/// Where the directories the server may browse are, once read: each as the
 /// operator wrote it and in canonical form.
 struct Prefixes {
     /// Every spelling a request may begin with, and the canonical prefix it
@@ -269,7 +269,7 @@ pub(crate) fn list(prefixes: &[PathBuf], path: Option<&Path>) -> Result<Listing,
         return Ok(Listing {
             path: None,
             parent: None,
-            folders: prefixes
+            dirs: prefixes
                 .canonical
                 .iter()
                 .map(|prefix| (prefix.to_string_lossy().into_owned(), prefix.clone()))
@@ -289,7 +289,7 @@ pub(crate) fn list(prefixes: &[PathBuf], path: Option<&Path>) -> Result<Listing,
             // Said of the path as it was sent and of nothing the file system
             // holds, so it is the same however the path came to be outside.
             Stop::Outside => Refusal::Outside(format!(
-                "{} is not inside a folder this server may browse",
+                "{} is not inside a directory this server may browse",
                 path.display()
             )),
             Stop::Inside(why) => Refusal::Unreadable(format!("{}: {why}", path.display())),
@@ -298,7 +298,7 @@ pub(crate) fn list(prefixes: &[PathBuf], path: Option<&Path>) -> Result<Listing,
         Refusal::Unreadable(format!("{}: cannot be read: {e}", canonical.display()))
     })?;
 
-    let mut folders = Vec::new();
+    let mut dirs = Vec::new();
     for entry in entries {
         // An error from the iterator itself means the listing so far is not the
         // directory, and a short list must not be presented as a whole one.
@@ -306,7 +306,7 @@ pub(crate) fn list(prefixes: &[PathBuf], path: Option<&Path>) -> Result<Listing,
             Refusal::Unreadable(format!("{}: cannot be read: {e}", canonical.display()))
         })?;
         // A name that is not UTF-8 cannot be sent as JSON without being
-        // changed into a path that is not the folder's.
+        // changed into a path that is not the directory's.
         let Ok(name) = entry.file_name().into_string() else {
             continue;
         };
@@ -323,21 +323,21 @@ pub(crate) fn list(prefixes: &[PathBuf], path: Option<&Path>) -> Result<Listing,
         // directory, so what is offered and what can be entered cannot
         // disagree. One it cannot follow, for any reason, is left out like a
         // dangling one.
-        let is_folder = if kind.is_symlink() {
+        let is_dir = if kind.is_symlink() {
             prefixes
                 .follow(&child, &canonical, &std::cell::Cell::new(MOST_LINKS))
                 .is_ok_and(|(_, is_dir)| is_dir)
         } else {
             kind.is_dir()
         };
-        if is_folder {
-            folders.push((name, child));
+        if is_dir {
+            dirs.push((name, child));
         }
     }
-    folders.sort();
+    dirs.sort();
 
-    // Up goes to the folder above while that folder is inside a prefix: from
-    // a prefix that sits inside another, to the outer one's folder, and from
+    // Up goes to the directory above while that directory is inside a prefix: from
+    // a prefix that sits inside another, to the outer one's directory, and from
     // any other prefix nowhere.
     let parent = canonical
         .parent()
@@ -346,13 +346,13 @@ pub(crate) fn list(prefixes: &[PathBuf], path: Option<&Path>) -> Result<Listing,
     Ok(Listing {
         path: Some(canonical),
         parent,
-        folders,
+        dirs,
     })
 }
 
-/// What `serve` prints at startup for each folder that lists nothing, so a
+/// What `serve` prints at startup for each directory that lists nothing, so a
 /// deployer whose share is not mapped sees why the browser is empty. It names
-/// the folder and not the flag, which may have come from `TAIYAKU_FOLDERS`.
+/// the directory and not the flag, which may have come from `TAIYAKU_DIRS`.
 pub(crate) fn notices(prefixes: &[PathBuf]) -> Vec<String> {
     prefixes
         .iter()
@@ -363,29 +363,29 @@ pub(crate) fn notices(prefixes: &[PathBuf]) -> Vec<String> {
         })
         .map(|prefix| {
             format!(
-                "folder browser: {} is not a directory here, or its name is not UTF-8, so it lists nothing",
+                "directory browser: {} is not a directory here, or its name is not UTF-8, so it lists nothing",
                 prefix.display()
             )
         })
         .collect()
 }
 
-/// The one query parameter [`list_folders`] reads. `deny_unknown_fields`, so
+/// The one query parameter [`list_dirs`] reads. `deny_unknown_fields`, so
 /// a misspelt `path` is refused and not answered as a list of the prefixes.
 #[derive(Debug, Default, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct FoldersQuery {
+pub(crate) struct DirsQuery {
     #[serde(default)]
     path: Option<String>,
 }
 
-/// `GET /api/library/folders[?path=…]`. The read runs on the blocking pool: a
+/// `GET /api/library/dirs[?path=…]`. The read runs on the blocking pool: a
 /// sleeping disk can take seconds to list a directory.
-pub(crate) async fn list_folders(
+pub(crate) async fn list_dirs(
     State(state): State<Arc<ServeState>>,
     Extension(principal): Extension<Principal>,
     extensions: axum::http::Extensions,
-    query: Result<Query<FoldersQuery>, QueryRejection>,
+    query: Result<Query<DirsQuery>, QueryRejection>,
 ) -> Response {
     if let Some(refusal) = crate::session::administering_or_forbidden(&principal, &extensions) {
         return refusal;
@@ -404,7 +404,7 @@ pub(crate) async fn list_folders(
     };
 
     let listed = tokio::task::spawn_blocking(move || {
-        list(&state.folders, query.path.as_deref().map(Path::new))
+        list(&state.dirs, query.path.as_deref().map(Path::new))
     })
     .await;
 
@@ -412,8 +412,8 @@ pub(crate) async fn list_folders(
         Ok(Ok(listing)) => Json(serde_json::json!({
             "path": listing.path.map(|p| p.to_string_lossy().into_owned()),
             "parent": listing.parent.map(|p| p.to_string_lossy().into_owned()),
-            "folders": listing
-                .folders
+            "dirs": listing
+                .dirs
                 .iter()
                 .map(|(name, path)| serde_json::json!({
                     "name": name,
@@ -426,7 +426,7 @@ pub(crate) async fn list_folders(
         Ok(Err(Refusal::Unreadable(why))) => refused(StatusCode::BAD_REQUEST, why),
         Err(why) => refused(
             StatusCode::INTERNAL_SERVER_ERROR,
-            format!("listing folders panicked: {why}"),
+            format!("listing directories panicked: {why}"),
         ),
     }
 }

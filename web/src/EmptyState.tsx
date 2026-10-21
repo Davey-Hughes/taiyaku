@@ -12,7 +12,7 @@
  * catalogue.
  *
  * **None of them is a `null` return.** "No library" and "a library, its
- * folders not yet scanned" are told apart by `/api/library/status` and by
+ * directories not yet scanned" are told apart by `/api/library/status` and by
  * nothing else: `/api/library/series` answers `{ series: [], unfiled: [] }` in
  * both states, which is correct of it and useless here. The difference is
  * between "you have no library" and "your library has not been read yet", and
@@ -88,8 +88,8 @@ export function EmptyState({ kind, query, label, decided }: EmptyStateProps) {
         <h2>No library yet</h2>
         <p>
           Nothing has been added to this server. An administrator makes a
-          library from folders of archives on Configuration → Libraries, or from
-          the shell:
+          library from directories of archives on Configuration → Libraries, or
+          from the shell:
         </p>
         <pre>taiyaku library scan --add /path/to/manga --library Manga</pre>
         <p>
@@ -115,8 +115,8 @@ export function EmptyState({ kind, query, label, decided }: EmptyStateProps) {
       <section className="empty">
         <h2>Not read yet</h2>
         <p>
-          This library has folders, and nothing has scanned them. Scan library,
-          on Configuration → Libraries, reads them, and so does:
+          This library has directories, and nothing has scanned them. Scan
+          library, on Configuration → Libraries, reads them, and so does:
         </p>
         <pre>taiyaku library scan</pre>
       </section>

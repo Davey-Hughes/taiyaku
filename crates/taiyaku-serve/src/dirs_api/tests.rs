@@ -32,20 +32,16 @@ fn a_share(fixture: &test_support::Fixture) -> (PathBuf, PathBuf) {
 /// The one sentence a path outside every prefix is refused with: built from
 /// the path as it was sent, whatever is or is not there.
 fn outside_sentence(sent: &str) -> String {
-    format!("{sent} is not inside a folder this server may browse")
+    format!("{sent} is not inside a directory this server may browse")
 }
 
 fn names(listing: &Listing) -> Vec<&str> {
-    listing
-        .folders
-        .iter()
-        .map(|(name, _)| name.as_str())
-        .collect()
+    listing.dirs.iter().map(|(name, _)| name.as_str()).collect()
 }
 
 #[test]
 fn with_no_path_it_lists_the_prefixes_that_exist_and_nothing_with_none() {
-    let fixture = test_support::Fixture::new("folders-prefixes");
+    let fixture = test_support::Fixture::new("dirs-prefixes");
     let (media, _elsewhere) = a_share(&fixture);
 
     assert_eq!(
@@ -53,7 +49,7 @@ fn with_no_path_it_lists_the_prefixes_that_exist_and_nothing_with_none() {
         Ok(Listing {
             path: None,
             parent: None,
-            folders: Vec::new()
+            dirs: Vec::new()
         })
     );
     let listed = list(&[media.clone(), fixture.path().join("not-mounted")], None).expect("lists");
@@ -62,14 +58,14 @@ fn with_no_path_it_lists_the_prefixes_that_exist_and_nothing_with_none() {
         Listing {
             path: None,
             parent: None,
-            folders: vec![(media.to_string_lossy().into_owned(), media)],
+            dirs: vec![(media.to_string_lossy().into_owned(), media)],
         }
     );
 }
 
 #[test]
 fn it_lists_subdirectories_by_name_and_nothing_else() {
-    let fixture = test_support::Fixture::new("folders-list");
+    let fixture = test_support::Fixture::new("dirs-list");
     let (media, _elsewhere) = a_share(&fixture);
     let manga = media.join("Manga");
 
@@ -80,7 +76,7 @@ fn it_lists_subdirectories_by_name_and_nothing_else() {
         vec!["Chapters", "Volumes"],
         "no file, no dot-entry"
     );
-    assert_eq!(listed.folders[0].1, manga.join("Chapters"));
+    assert_eq!(listed.dirs[0].1, manga.join("Chapters"));
     assert_eq!(listed.path.as_deref(), Some(manga.as_path()));
     assert_eq!(listed.parent.as_deref(), Some(media.as_path()));
     assert_eq!(
@@ -94,7 +90,7 @@ fn it_lists_subdirectories_by_name_and_nothing_else() {
 
 #[test]
 fn a_path_that_leaves_every_prefix_is_refused_however_it_is_spelt() {
-    let fixture = test_support::Fixture::new("folders-outside");
+    let fixture = test_support::Fixture::new("dirs-outside");
     let (media, elsewhere) = a_share(&fixture);
     let prefixes = [media.clone()];
 
@@ -122,7 +118,7 @@ fn a_path_that_leaves_every_prefix_is_refused_however_it_is_spelt() {
 #[cfg(unix)]
 #[test]
 fn a_symlink_out_of_the_prefix_is_neither_listed_nor_followed() {
-    let fixture = test_support::Fixture::new("folders-symlink");
+    let fixture = test_support::Fixture::new("dirs-symlink");
     let (media, elsewhere) = a_share(&fixture);
     std::os::unix::fs::symlink(&elsewhere, media.join("Manga/Escape")).expect("a link out");
     std::os::unix::fs::symlink(media.join("Manga/Volumes"), media.join("Manga/Alias"))
@@ -142,7 +138,7 @@ fn a_symlink_out_of_the_prefix_is_neither_listed_nor_followed() {
 /// lands and says so in `path`.
 #[test]
 fn dot_dot_is_resolved_before_the_comparison() {
-    let fixture = test_support::Fixture::new("folders-dotdot");
+    let fixture = test_support::Fixture::new("dirs-dotdot");
     let (media, _elsewhere) = a_share(&fixture);
     std::fs::create_dir_all(media.join("a")).expect("mkdir");
     std::fs::create_dir_all(media.join("b/Inner")).expect("mkdir");
@@ -164,7 +160,7 @@ fn dot_dot_is_resolved_before_the_comparison() {
 /// `/media`, and neither is anything beneath it.
 #[test]
 fn a_path_that_merely_begins_with_a_prefixs_characters_is_refused() {
-    let fixture = test_support::Fixture::new("folders-lookalike");
+    let fixture = test_support::Fixture::new("dirs-lookalike");
     let (media, _elsewhere) = a_share(&fixture);
     let lookalike = fixture.path().join("media2");
     std::fs::create_dir_all(lookalike.join("y")).expect("mkdir");
@@ -185,7 +181,7 @@ fn a_path_that_merely_begins_with_a_prefixs_characters_is_refused() {
 /// the operator's own word and is made absolute when it is read.
 #[test]
 fn a_relative_request_path_is_refused_and_a_relative_prefix_is_made_absolute() {
-    let fixture = test_support::Fixture::new("folders-relative");
+    let fixture = test_support::Fixture::new("dirs-relative");
     let (media, _elsewhere) = a_share(&fixture);
     let here = std::env::current_dir()
         .expect("a working directory")
@@ -203,7 +199,7 @@ fn a_relative_request_path_is_refused_and_a_relative_prefix_is_made_absolute() {
     }
     let listed = list(&[PathBuf::from(".")], None).expect("lists");
     assert_eq!(
-        listed.folders,
+        listed.dirs,
         vec![(here.to_string_lossy().into_owned(), here.clone())]
     );
     assert!(list(&[PathBuf::from(".")], Some(&here)).is_ok());
@@ -218,7 +214,7 @@ fn a_relative_request_path_is_refused_and_a_relative_prefix_is_made_absolute() {
 #[cfg(unix)]
 #[test]
 fn the_prefixes_are_canonical_once_each_and_by_name() {
-    let fixture = test_support::Fixture::new("folders-prefix-forms");
+    let fixture = test_support::Fixture::new("dirs-prefix-forms");
     let (media, elsewhere) = a_share(&fixture);
     let link = fixture.path().join("link-to-elsewhere");
     std::os::unix::fs::symlink(&elsewhere, &link).expect("a link");
@@ -245,7 +241,7 @@ fn the_prefixes_are_canonical_once_each_and_by_name() {
     let mut expected = vec![media.clone(), media.join("Manga"), elsewhere.clone()];
     expected.sort();
     assert_eq!(
-        listed.folders,
+        listed.dirs,
         expected
             .into_iter()
             .map(|p| (p.to_string_lossy().into_owned(), p))
@@ -265,7 +261,7 @@ fn the_prefixes_are_canonical_once_each_and_by_name() {
 #[cfg(unix)]
 #[test]
 fn a_prefix_that_is_a_symlink_is_its_target() {
-    let fixture = test_support::Fixture::new("folders-prefix-link");
+    let fixture = test_support::Fixture::new("dirs-prefix-link");
     let (media, elsewhere) = a_share(&fixture);
     let link = fixture.path().join("share");
     std::os::unix::fs::symlink(&media, &link).expect("a link");
@@ -285,12 +281,12 @@ fn a_prefix_that_is_a_symlink_is_its_target() {
     ));
 }
 
-/// Nothing leads above a prefix that no other prefix holds, and a folder one
+/// Nothing leads above a prefix that no other prefix holds, and a directory one
 /// level down leads to the one above it. Where one prefix lies inside
-/// another, Up from the inner one leads to the outer one's folder above it.
+/// another, Up from the inner one leads to the outer one's directory above it.
 #[test]
 fn the_parent_stops_at_a_prefix_no_other_holds() {
-    let fixture = test_support::Fixture::new("folders-parent");
+    let fixture = test_support::Fixture::new("dirs-parent");
     let (media, _elsewhere) = a_share(&fixture);
     let manga = media.join("Manga");
     let prefixes = [media.clone(), manga.clone()];
@@ -325,7 +321,7 @@ fn the_parent_stops_at_a_prefix_no_other_holds() {
 /// prefix that sits inside another.
 #[test]
 fn a_nested_prefix_is_browsable_through_either() {
-    let fixture = test_support::Fixture::new("folders-nested");
+    let fixture = test_support::Fixture::new("dirs-nested");
     let (media, _elsewhere) = a_share(&fixture);
     let manga = media.join("Manga");
 
@@ -334,16 +330,16 @@ fn a_nested_prefix_is_browsable_through_either() {
     let inner_only = list(std::slice::from_ref(&manga), Some(&media));
     assert!(
         matches!(inner_only, Err(Refusal::Outside(_))),
-        "the outer folder is not beneath the inner prefix"
+        "the outer directory is not beneath the inner prefix"
     );
 }
 
 /// A link that stays inside the prefixes is listed and can be entered; what it
-/// names is what is listed, and its parent is that folder's.
+/// names is what is listed, and its parent is that directory's.
 #[cfg(unix)]
 #[test]
 fn a_symlink_inside_the_prefixes_is_entered_as_its_target() {
-    let fixture = test_support::Fixture::new("folders-inside-link");
+    let fixture = test_support::Fixture::new("dirs-inside-link");
     let (media, elsewhere) = a_share(&fixture);
     std::fs::create_dir_all(media.join("Manga/Volumes/Vol1")).expect("mkdir");
     std::os::unix::fs::symlink(media.join("Manga/Volumes"), media.join("Alias")).expect("a link");
@@ -381,11 +377,11 @@ fn a_symlink_inside_the_prefixes_is_entered_as_its_target() {
     ));
 }
 
-/// A link that loops or dangles is not a folder.
+/// A link that loops or dangles is not a directory.
 #[cfg(unix)]
 #[test]
 fn a_dangling_or_looping_symlink_is_not_listed() {
-    let fixture = test_support::Fixture::new("folders-bad-links");
+    let fixture = test_support::Fixture::new("dirs-bad-links");
     let (media, _elsewhere) = a_share(&fixture);
     std::os::unix::fs::symlink(media.join("gone"), media.join("Dangling")).expect("a link");
     std::os::unix::fs::symlink(media.join("Loop"), media.join("Loop")).expect("a loop");
@@ -402,7 +398,7 @@ fn a_dangling_or_looping_symlink_is_not_listed() {
 #[test]
 fn names_are_in_byte_order_and_a_name_that_is_not_utf8_is_left_out() {
     use std::os::unix::ffi::OsStrExt as _;
-    let fixture = test_support::Fixture::new("folders-order");
+    let fixture = test_support::Fixture::new("dirs-order");
     let (media, _elsewhere) = a_share(&fixture);
     let dir = media.join("Mixed");
     for name in ["beta", "Zeta", "alpha", "10", "9", "_under"] {
@@ -427,7 +423,7 @@ fn names_are_in_byte_order_and_a_name_that_is_not_utf8_is_left_out() {
 #[test]
 fn a_directory_that_cannot_be_read_and_a_file_are_unreadable() {
     use std::os::unix::fs::PermissionsExt as _;
-    let fixture = test_support::Fixture::new("folders-unreadable");
+    let fixture = test_support::Fixture::new("dirs-unreadable");
     let (media, _elsewhere) = a_share(&fixture);
     let prefixes = [media.clone()];
     let locked = media.join("Locked");
@@ -445,7 +441,7 @@ fn a_directory_that_cannot_be_read_and_a_file_are_unreadable() {
 
     let file = media.join("Manga/notes.txt");
     let Err(Refusal::Unreadable(why)) = list(&prefixes, Some(&file)) else {
-        panic!("a file is not a folder");
+        panic!("a file is not a directory");
     };
     assert!(why.contains("notes.txt"), "{why}");
 }
@@ -454,7 +450,7 @@ fn a_directory_that_cannot_be_read_and_a_file_are_unreadable() {
 /// path is.
 #[test]
 fn with_no_prefix_every_path_is_refused() {
-    let fixture = test_support::Fixture::new("folders-no-prefix");
+    let fixture = test_support::Fixture::new("dirs-no-prefix");
     let (media, _elsewhere) = a_share(&fixture);
     let missing = [fixture.path().join("not-mounted")];
 
@@ -470,10 +466,10 @@ fn with_no_prefix_every_path_is_refused() {
 }
 
 /// A signed-in administrator's router over an empty library whose server was
-/// started with `folders`, and the state behind it.
+/// started with `dirs`, and the state behind it.
 fn a_router_browsing(
     fixture: &test_support::Fixture,
-    folders: Vec<PathBuf>,
+    dirs: Vec<PathBuf>,
 ) -> (axum::Router, Arc<ServeState>) {
     let state = Arc::new(ServeState {
         library: test_support::library(),
@@ -484,7 +480,7 @@ fn a_router_browsing(
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
         library_job: Default::default(),
-        folders,
+        dirs,
     });
     let router = test_support::authenticating(crate::build_router(state.clone()), &state.library);
     (router, state)
@@ -493,7 +489,7 @@ fn a_router_browsing(
 /// The query for `path`, with its slashes encoded.
 fn at(path: &Path) -> String {
     format!(
-        "/api/library/folders?path={}",
+        "/api/library/dirs?path={}",
         path.to_string_lossy().replace('/', "%2F")
     )
 }
@@ -525,17 +521,17 @@ fn the_sentence(refused: &serde_json::Value) -> &str {
 
 #[tokio::test]
 async fn the_route_lists_beneath_a_prefix_and_refuses_outside_it() {
-    let fixture = test_support::Fixture::new("folders-route");
+    let fixture = test_support::Fixture::new("dirs-route");
     let (media, elsewhere) = a_share(&fixture);
     let (router, _state) = a_router_browsing(&fixture, vec![media.clone()]);
 
-    let prefixes = test_support::get_json(&router, "/api/library/folders").await;
+    let prefixes = test_support::get_json(&router, "/api/library/dirs").await;
     assert_eq!(
         prefixes,
         serde_json::json!({
             "path": null,
             "parent": null,
-            "folders": [{ "name": media.to_string_lossy(), "path": media.to_string_lossy() }],
+            "dirs": [{ "name": media.to_string_lossy(), "path": media.to_string_lossy() }],
         })
     );
 
@@ -545,7 +541,7 @@ async fn the_route_lists_beneath_a_prefix_and_refuses_outside_it() {
         serde_json::json!({
             "path": media.join("Manga").to_string_lossy(),
             "parent": media.to_string_lossy(),
-            "folders": [
+            "dirs": [
                 { "name": "Chapters", "path": media.join("Manga/Chapters").to_string_lossy() },
                 { "name": "Volumes", "path": media.join("Manga/Volumes").to_string_lossy() },
             ],
@@ -566,7 +562,7 @@ async fn the_route_lists_beneath_a_prefix_and_refuses_outside_it() {
         ),
         (at(&media.join("Missing")), StatusCode::BAD_REQUEST),
         (
-            "/api/library/folders?paht=%2F".to_string(),
+            "/api/library/dirs?paht=%2F".to_string(),
             StatusCode::BAD_REQUEST,
         ),
     ] {
@@ -581,14 +577,14 @@ async fn the_route_lists_beneath_a_prefix_and_refuses_outside_it() {
 #[cfg(unix)]
 #[tokio::test]
 async fn the_route_resolves_dot_dot_and_links_before_it_compares() {
-    let fixture = test_support::Fixture::new("folders-route-escape");
+    let fixture = test_support::Fixture::new("dirs-route-escape");
     let (media, elsewhere) = a_share(&fixture);
     std::os::unix::fs::symlink(&elsewhere, media.join("Escape")).expect("a link out");
     let (router, _state) = a_router_browsing(&fixture, vec![media.clone()]);
 
     let top = test_support::get_json(&router, &at(&media)).await;
     assert_eq!(
-        top["folders"].as_array().expect("folders").len(),
+        top["dirs"].as_array().expect("dirs").len(),
         1,
         "the link out is not offered: {top}"
     );
@@ -601,14 +597,14 @@ async fn the_route_resolves_dot_dot_and_links_before_it_compares() {
         ),
         (
             format!(
-                "/api/library/folders?path={}%2F..%2Felsewhere",
+                "/api/library/dirs?path={}%2F..%2Felsewhere",
                 at(&media).split_once('=').unwrap().1
             ),
             sent_through_dots,
         ),
         (
             format!(
-                "/api/library/folders?path={}%2F..%2F..%2Felsewhere",
+                "/api/library/dirs?path={}%2F..%2F..%2Felsewhere",
                 at(&media.join("Manga")).split_once('=').unwrap().1
             ),
             sent_through_more,
@@ -628,7 +624,7 @@ async fn the_route_resolves_dot_dot_and_links_before_it_compares() {
 /// caller's mistake and answers 400 in JSON, as the neighbouring routes' do.
 #[tokio::test]
 async fn a_query_that_is_not_one_path_is_a_400_in_json() {
-    let fixture = test_support::Fixture::new("folders-route-queries");
+    let fixture = test_support::Fixture::new("dirs-route-queries");
     let (media, _elsewhere) = a_share(&fixture);
     let (router, _state) = a_router_browsing(&fixture, vec![media.clone()]);
     let one = at(&media);
@@ -642,7 +638,7 @@ async fn a_query_that_is_not_one_path_is_a_400_in_json() {
         "?other=1".to_string(),
         "?path=relative%2Fmedia".to_string(),
     ] {
-        let uri = format!("/api/library/folders{query}");
+        let uri = format!("/api/library/dirs{query}");
         let (status, body) = answered(&router, &uri).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{uri}: {body}");
         the_sentence(&body);
@@ -651,14 +647,14 @@ async fn a_query_that_is_not_one_path_is_a_400_in_json() {
 
 #[tokio::test]
 async fn with_no_prefix_the_route_lists_nothing_and_refuses_every_path() {
-    let fixture = test_support::Fixture::new("folders-route-none");
+    let fixture = test_support::Fixture::new("dirs-route-none");
     let (media, _elsewhere) = a_share(&fixture);
     let (router, _state) = a_router_browsing(&fixture, Vec::new());
 
-    let top = test_support::get_json(&router, "/api/library/folders").await;
+    let top = test_support::get_json(&router, "/api/library/dirs").await;
     assert_eq!(
         top,
-        serde_json::json!({ "path": null, "parent": null, "folders": [] })
+        serde_json::json!({ "path": null, "parent": null, "dirs": [] })
     );
     let (status, body) = answered(&router, &at(&media)).await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
@@ -669,9 +665,9 @@ async fn with_no_prefix_the_route_lists_nothing_and_refuses_every_path() {
 /// a request with no sign-in, are each refused with the status the
 /// neighbouring routes give, and are told nothing about the directory.
 #[tokio::test]
-async fn the_folders_route_refuses_a_reader_a_key_and_nobody() {
+async fn the_dirs_route_refuses_a_reader_a_key_and_nobody() {
     use tower::ServiceExt as _;
-    let fixture = test_support::Fixture::new("folders-route-refused");
+    let fixture = test_support::Fixture::new("dirs-route-refused");
     let (media, _elsewhere) = a_share(&fixture);
     let (router, state) = a_router_browsing(&fixture, vec![media.clone()]);
     let uri = at(&media.join("Manga"));
@@ -690,7 +686,7 @@ async fn the_folders_route_refuses_a_reader_a_key_and_nobody() {
             .expect("demotes the fixture account");
         assert_eq!(demoted, 1);
     }
-    for path in [uri.as_str(), "/api/library/folders"] {
+    for path in [uri.as_str(), "/api/library/dirs"] {
         let response = send_json(&router, Method::GET, path, &serde_json::json!({})).await;
         assert_eq!(response.status(), StatusCode::FORBIDDEN, "a reader: {path}");
         let body = test_support::body_string(response).await;
@@ -742,7 +738,7 @@ fn refused_outside(prefixes: &[PathBuf], sent: &Path) -> String {
 /// but the one sent.
 #[test]
 fn outside_an_existing_a_file_and_a_missing_path_are_refused_alike() {
-    let fixture = test_support::Fixture::new("folders-outside-alike");
+    let fixture = test_support::Fixture::new("dirs-outside-alike");
     let (media, elsewhere) = a_share(&fixture);
     std::fs::write(elsewhere.join("secret.txt"), b"x").expect("a file");
     let prefixes = [media];
@@ -766,7 +762,7 @@ fn outside_an_existing_a_file_and_a_missing_path_are_refused_alike() {
 #[cfg(unix)]
 #[test]
 fn beneath_a_link_out_the_refusal_names_only_what_was_sent() {
-    let fixture = test_support::Fixture::new("folders-link-out-refusal");
+    let fixture = test_support::Fixture::new("dirs-link-out-refusal");
     let (media, elsewhere) = a_share(&fixture);
     std::os::unix::fs::symlink(&elsewhere, media.join("Escape")).expect("a link out");
     let prefixes = [media.clone()];
@@ -790,7 +786,7 @@ fn beneath_a_link_out_the_refusal_names_only_what_was_sent() {
 #[cfg(target_os = "linux")]
 #[test]
 fn a_proc_link_is_refused_without_naming_where_it_points() {
-    let fixture = test_support::Fixture::new("folders-proc");
+    let fixture = test_support::Fixture::new("dirs-proc");
     let (media, _elsewhere) = a_share(&fixture);
     let prefixes = [media];
     let cwd = std::env::current_dir().expect("a working directory");
@@ -817,7 +813,7 @@ fn a_proc_link_is_refused_without_naming_where_it_points() {
 #[test]
 fn beneath_a_file_or_a_locked_directory_outside_there_is_no_os_error() {
     use std::os::unix::fs::PermissionsExt as _;
-    let fixture = test_support::Fixture::new("folders-outside-os");
+    let fixture = test_support::Fixture::new("dirs-outside-os");
     let (media, elsewhere) = a_share(&fixture);
     std::fs::write(elsewhere.join("f.txt"), b"x").expect("a file");
     let locked = elsewhere.join("Locked");
@@ -846,13 +842,13 @@ fn beneath_a_file_or_a_locked_directory_outside_there_is_no_os_error() {
     }
 }
 
-/// Inside the prefixes a missing folder is still the caller's typo, a 400 with
+/// Inside the prefixes a missing directory is still the caller's typo, a 400 with
 /// the operating system's words: directly, beneath a link that stays inside,
 /// and beneath a file.
 #[cfg(unix)]
 #[test]
-fn inside_a_missing_folder_is_still_a_400_with_a_sentence() {
-    let fixture = test_support::Fixture::new("folders-inside-missing");
+fn inside_a_missing_dir_is_still_a_400_with_a_sentence() {
+    let fixture = test_support::Fixture::new("dirs-inside-missing");
     let (media, _elsewhere) = a_share(&fixture);
     std::os::unix::fs::symlink(media.join("Manga/Volumes"), media.join("Alias")).expect("a link");
     let prefixes = [media.clone()];
@@ -874,7 +870,7 @@ fn inside_a_missing_folder_is_still_a_400_with_a_sentence() {
 /// The route answers an outside path as one JSON sentence, existing or not.
 #[tokio::test]
 async fn the_route_refuses_outside_paths_with_one_body() {
-    let fixture = test_support::Fixture::new("folders-route-alike");
+    let fixture = test_support::Fixture::new("dirs-route-alike");
     let (media, elsewhere) = a_share(&fixture);
     let (router, _state) = a_router_browsing(&fixture, vec![media]);
 
@@ -893,7 +889,7 @@ async fn the_route_refuses_outside_paths_with_one_body() {
 #[cfg(unix)]
 #[test]
 fn a_chain_of_links_and_a_relative_link_are_judged_by_where_they_end() {
-    let fixture = test_support::Fixture::new("folders-chains");
+    let fixture = test_support::Fixture::new("dirs-chains");
     let (media, elsewhere) = a_share(&fixture);
     let manga = media.join("Manga");
     std::os::unix::fs::symlink(&elsewhere, manga.join("Inner")).expect("a link out");
@@ -920,7 +916,7 @@ fn a_chain_of_links_and_a_relative_link_are_judged_by_where_they_end() {
 #[cfg(unix)]
 #[test]
 fn entries_are_named_beneath_the_canonical_path() {
-    let fixture = test_support::Fixture::new("folders-entry-paths");
+    let fixture = test_support::Fixture::new("dirs-entry-paths");
     let (media, _elsewhere) = a_share(&fixture);
     std::fs::create_dir_all(media.join("Manga/Volumes/Vol1")).expect("mkdir");
     std::os::unix::fs::symlink(media.join("Manga/Volumes"), media.join("Alias")).expect("a link");
@@ -930,7 +926,7 @@ fn entries_are_named_beneath_the_canonical_path() {
     for sent in [media.join("Alias"), media.join("Manga/Chapters/../Volumes")] {
         let listed = list(&prefixes, Some(&sent)).expect("lists");
         assert_eq!(
-            listed.folders,
+            listed.dirs,
             vec![("Vol1".to_string(), real.clone())],
             "{}",
             sent.display()
@@ -944,7 +940,7 @@ fn entries_are_named_beneath_the_canonical_path() {
 #[test]
 fn a_prefix_that_is_not_utf8_is_left_out_of_the_top_listing() {
     use std::os::unix::ffi::OsStrExt as _;
-    let fixture = test_support::Fixture::new("folders-prefix-utf8");
+    let fixture = test_support::Fixture::new("dirs-prefix-utf8");
     let (media, _elsewhere) = a_share(&fixture);
     let odd = fixture
         .path()
@@ -954,25 +950,25 @@ fn a_prefix_that_is_not_utf8_is_left_out_of_the_top_listing() {
 
     let listed = list(&[odd, media.clone()], None).expect("lists");
     assert_eq!(
-        listed.folders,
+        listed.dirs,
         vec![(media.to_string_lossy().into_owned(), media)]
     );
 }
 
-/// What a deployer reads on the console when a folder is not usable: one line
-/// for each, naming the path whichever way it was given, and one for a folder
+/// What a deployer reads on the console when a directory is not usable: one line
+/// for each, naming the path whichever way it was given, and one for a directory
 /// that is there but whose name is not UTF-8 (it would be an empty browser
 /// with no reason).
 #[test]
 fn a_prefix_that_is_not_there_is_named_at_startup() {
-    let fixture = test_support::Fixture::new("folders-notice");
+    let fixture = test_support::Fixture::new("dirs-notice");
     let (media, _elsewhere) = a_share(&fixture);
     let gone = fixture.path().join("not-mounted");
     let file = fixture.path().join("a-file");
     std::fs::write(&file, b"x").expect("a file");
     let line = |path: &Path| {
         format!(
-            "folder browser: {} is not a directory here, or its name is not UTF-8, so it lists nothing",
+            "directory browser: {} is not a directory here, or its name is not UTF-8, so it lists nothing",
             path.display()
         )
     };
@@ -993,16 +989,16 @@ fn a_prefix_that_is_not_there_is_named_at_startup() {
     }
 }
 
-/// The lines are what `announce_folders` says, once each. That `serve` calls it
-/// is held by the CLI crate's `serve_says_which_folders_it_cannot_browse`,
+/// The lines are what `announce_dirs` says, once each. That `serve` calls it
+/// is held by the CLI crate's `serve_says_which_dirs_it_cannot_browse`,
 /// which reads a spawned server's console: a call dropped from `serve` passes
 /// here.
 #[test]
 fn the_startup_lines_are_what_serve_prints() {
-    let fixture = test_support::Fixture::new("folders-startup");
+    let fixture = test_support::Fixture::new("dirs-startup");
     let gone = fixture.path().join("not-mounted");
     let mut printed = Vec::new();
-    crate::announce_folders(std::slice::from_ref(&gone), &mut |line| {
+    crate::announce_dirs(std::slice::from_ref(&gone), &mut |line| {
         printed.push(line.to_string());
     });
     assert_eq!(printed, notices(std::slice::from_ref(&gone)));
@@ -1031,7 +1027,7 @@ fn a_share_with_locked_ground(fixture: &test_support::Fixture) -> (PathBuf, Path
 #[test]
 fn a_path_that_goes_out_and_comes_back_is_refused_however_it_passes() {
     use std::os::unix::fs::PermissionsExt as _;
-    let fixture = test_support::Fixture::new("folders-out-and-back");
+    let fixture = test_support::Fixture::new("dirs-out-and-back");
     let (media, elsewhere) = a_share_with_locked_ground(&fixture);
     let locked = elsewhere.join("Locked");
     std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).expect("chmod");
@@ -1074,7 +1070,7 @@ fn a_path_that_goes_out_and_comes_back_is_refused_however_it_passes() {
 /// The same through the route: one status, one whole body.
 #[tokio::test]
 async fn the_route_answers_out_and_back_paths_with_one_body() {
-    let fixture = test_support::Fixture::new("folders-route-out-and-back");
+    let fixture = test_support::Fixture::new("dirs-route-out-and-back");
     let (media, elsewhere) = a_share(&fixture);
     let (router, _state) = a_router_browsing(&fixture, vec![media]);
 
@@ -1104,7 +1100,7 @@ async fn the_route_answers_out_and_back_paths_with_one_body() {
 #[test]
 fn a_link_inside_that_points_out_is_refused_whatever_it_points_at() {
     use std::os::unix::fs::{PermissionsExt as _, symlink};
-    let fixture = test_support::Fixture::new("folders-link-targets");
+    let fixture = test_support::Fixture::new("dirs-link-targets");
     let (media, elsewhere) = a_share_with_locked_ground(&fixture);
     symlink(elsewhere.join("L2"), elsewhere.join("L1")).expect("a loop");
     symlink(elsewhere.join("L1"), elsewhere.join("L2")).expect("a loop");
@@ -1158,7 +1154,7 @@ fn a_link_inside_that_points_out_is_refused_whatever_it_points_at() {
 #[test]
 fn a_chain_that_leaves_and_returns_is_not_followed() {
     use std::os::unix::fs::symlink;
-    let fixture = test_support::Fixture::new("folders-chain-returns");
+    let fixture = test_support::Fixture::new("dirs-chain-returns");
     let (media, elsewhere) = a_share(&fixture);
     symlink(media.join("Manga"), elsewhere.join("Back")).expect("a link back in");
     symlink(elsewhere.join("Back"), media.join("Via")).expect("a link out and back");
@@ -1193,7 +1189,7 @@ fn a_chain_that_leaves_and_returns_is_not_followed() {
 #[test]
 fn links_and_dot_dot_that_stay_inside_are_still_followed() {
     use std::os::unix::fs::symlink;
-    let fixture = test_support::Fixture::new("folders-stay-inside");
+    let fixture = test_support::Fixture::new("dirs-stay-inside");
     let (media, _elsewhere) = a_share(&fixture);
     let manga = media.join("Manga");
     std::fs::create_dir_all(manga.join("Volumes/Vol1")).expect("mkdir");
@@ -1223,14 +1219,14 @@ fn links_and_dot_dot_that_stay_inside_are_still_followed() {
     }
 }
 
-/// A missing folder inside is still the 400 in the system's words, by its plain
+/// A missing directory inside is still the 400 in the system's words, by its plain
 /// spelling and beneath a link that stays inside; it is the only answer that
 /// carries them.
 #[cfg(unix)]
 #[test]
-fn a_missing_folder_inside_is_still_a_400_in_the_systems_words() {
+fn a_missing_dir_inside_is_still_a_400_in_the_systems_words() {
     use std::os::unix::fs::symlink;
-    let fixture = test_support::Fixture::new("folders-missing-inside");
+    let fixture = test_support::Fixture::new("dirs-missing-inside");
     let (media, _elsewhere) = a_share(&fixture);
     symlink(media.join("Manga/Volumes"), media.join("Alias")).expect("a link");
     symlink("Volumes", media.join("Manga/Rel")).expect("a relative link");
@@ -1259,7 +1255,7 @@ fn a_missing_folder_inside_is_still_a_400_in_the_systems_words() {
 fn a_link_to_a_directory_whose_name_is_not_utf8_is_neither_offered_nor_entered() {
     use std::os::unix::ffi::OsStrExt as _;
     use std::os::unix::fs::symlink;
-    let fixture = test_support::Fixture::new("folders-link-not-utf8");
+    let fixture = test_support::Fixture::new("dirs-link-not-utf8");
     let (media, _elsewhere) = a_share(&fixture);
     let odd = media.join(std::ffi::OsStr::from_bytes(b"odd-\xff"));
     std::fs::create_dir_all(odd.join("Inner")).expect("mkdir");
@@ -1279,15 +1275,15 @@ fn a_link_to_a_directory_whose_name_is_not_utf8_is_neither_offered_nor_entered()
     );
 }
 
-/// The folders `serve` is started with reach the handler: through a socket, an
+/// The directories `serve` is started with reach the handler: through a socket, an
 /// administrator's session lists what is beneath them. Every other test here
 /// builds its state by hand, so none can see `serve` drop the option.
 ///
 /// `multi_thread` and the poll are `serve_binds_the_address_and_answers_on_it`'s,
 /// for its reasons.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn serve_gives_the_browser_the_folders_it_was_started_with() {
-    let fixture = test_support::Fixture::new("folders-serve");
+async fn serve_gives_the_browser_the_dirs_it_was_started_with() {
+    let fixture = test_support::Fixture::new("dirs-serve");
     let (media, _elsewhere) = a_share(&fixture);
     let library = test_support::library();
     let token = taiyaku_library::credential::mint_token();
@@ -1303,7 +1299,7 @@ async fn serve_gives_the_browser_the_folders_it_was_started_with() {
     let cache = fixture.join("cache");
     let serving = tokio::spawn({
         let addr = addr.clone();
-        let folders = vec![media.clone()];
+        let dirs = vec![media.clone()];
         async move {
             crate::serve(
                 library,
@@ -1311,7 +1307,7 @@ async fn serve_gives_the_browser_the_folders_it_was_started_with() {
                 crate::ServeOptions {
                     addr,
                     cache: Some(cache),
-                    folders,
+                    dirs,
                     ..crate::ServeOptions::default()
                 },
             )
@@ -1319,7 +1315,7 @@ async fn serve_gives_the_browser_the_folders_it_was_started_with() {
         }
     });
 
-    let url = format!("http://{addr}/api/library/folders");
+    let url = format!("http://{addr}/api/library/dirs");
     let mut answered = None;
     for _ in 0..100 {
         if serving.is_finished() {
@@ -1343,19 +1339,19 @@ async fn serve_gives_the_browser_the_folders_it_was_started_with() {
         serde_json::json!({
             "path": null,
             "parent": null,
-            "folders": [{ "name": media.to_string_lossy(), "path": media.to_string_lossy() }],
+            "dirs": [{ "name": media.to_string_lossy(), "path": media.to_string_lossy() }],
         })
     );
 }
 
 /// Each linked entry of a listing gets a budget of links of its own: links that
-/// loop, and so spend all of theirs, do not take the folders listed after them
+/// loop, and so spend all of theirs, do not take the directories listed after them
 /// out of the listing.
 #[cfg(unix)]
 #[test]
 fn a_looping_link_does_not_spend_the_budget_of_the_entries_beside_it() {
     use std::os::unix::fs::symlink;
-    let fixture = test_support::Fixture::new("folders-budget-per-entry");
+    let fixture = test_support::Fixture::new("dirs-budget-per-entry");
     let (media, _elsewhere) = a_share(&fixture);
     let many = media.join("Many");
     std::fs::create_dir_all(&many).expect("mkdir");
@@ -1371,7 +1367,7 @@ fn a_looping_link_does_not_spend_the_budget_of_the_entries_beside_it() {
     }
 
     let listed = list(&[media], Some(&many)).expect("lists");
-    assert_eq!(listed.folders.len(), 60, "{:?}", names(&listed));
+    assert_eq!(listed.dirs.len(), 60, "{:?}", names(&listed));
     assert!(names(&listed).iter().all(|name| name.starts_with("Good")));
 }
 
@@ -1383,7 +1379,7 @@ fn a_looping_link_does_not_spend_the_budget_of_the_entries_beside_it() {
 #[test]
 fn a_chain_of_forty_links_is_followed_and_forty_one_is_not() {
     use std::os::unix::fs::symlink;
-    let fixture = test_support::Fixture::new("folders-chain-bound");
+    let fixture = test_support::Fixture::new("dirs-chain-bound");
     let (media, _elsewhere) = a_share(&fixture);
     let chain = media.join("Chain");
     std::fs::create_dir_all(chain.join("target/Inner")).expect("mkdir");
@@ -1421,7 +1417,7 @@ fn a_chain_of_forty_links_is_followed_and_forty_one_is_not() {
 #[cfg(unix)]
 #[test]
 fn dot_dot_beneath_a_file_is_in_the_systems_words() {
-    let fixture = test_support::Fixture::new("folders-dotdot-file");
+    let fixture = test_support::Fixture::new("dirs-dotdot-file");
     let (media, _elsewhere) = a_share(&fixture);
     let sent = media.join("Manga/notes.txt/..");
 

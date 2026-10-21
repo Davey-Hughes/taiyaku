@@ -20,7 +20,7 @@ function count(n: number, one: string, many: string): string {
 export interface MoveCountsProps {
   moved: Moved
   /**
-   * The name of the library the folder was in. The rehearsal opens with it;
+   * The name of the library the directory was in. The rehearsal opens with it;
    * the kept report, whose heading says it, passes none.
    */
   from?: string
@@ -51,7 +51,7 @@ export function MoveCounts({
     <div className="move-counts">
       <p className="counts">
         {from !== undefined &&
-          `Moving this folder from ${from} to ${moved.library}: `}
+          `Moving this directory from ${from} to ${moved.library}: `}
         {keeps} address
         {newLibrary && moved.works_joined === 0
           ? ' and '
@@ -87,8 +87,8 @@ export function MoveCounts({
       )}
       {moved.library_removed !== null && (
         <p>
-          {moved.library_removed} {past ? 'had' : 'has'} no other folder, so it{' '}
-          {past ? 'was' : 'is'} removed
+          {moved.library_removed} {past ? 'had' : 'has'} no other directory, so
+          it {past ? 'was' : 'is'} removed
           {moved.grants_removed > 0 && `, with ${grants}`}.
         </p>
       )}

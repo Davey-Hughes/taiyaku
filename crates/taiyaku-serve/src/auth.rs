@@ -325,8 +325,8 @@ pub struct Principal {
     pub can_download: bool,
     pub can_stream: bool,
     /// What this account may see, and **the restriction**: every library, or
-    /// only the folders of the libraries it was granted, where `Only` with no
-    /// folder sees nothing.
+    /// only the directories of the libraries it was granted, where `Only` with no
+    /// directory sees nothing.
     ///
     /// **Always [`Access::Every`] for an administrator, whatever
     /// `user_library` holds — O86.** [`Principal::from_account`] decides that
@@ -424,7 +424,7 @@ impl Principal {
     }
 }
 
-/// The access of the request's principal, or **`Only` with no folder when
+/// The access of the request's principal, or **`Only` with no directory when
 /// there is none**.
 ///
 /// [`guard`] inserts a principal on every guarded route or refuses the

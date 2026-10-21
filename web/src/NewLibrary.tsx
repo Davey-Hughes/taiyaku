@@ -1,9 +1,9 @@
 /**
- * Making a library: a name and one folder.
+ * Making a library: a name and one directory.
  *
- * **One folder, sent with the name.** The server refuses a library with no
- * folder, so the two go together and the server makes both or neither. More
- * folders are added on the library's own page, one at a time, each meeting
+ * **One directory, sent with the name.** The server refuses a library with no
+ * directory, so the two go together and the server makes both or neither. More
+ * directories are added on the library's own page, one at a time, each meeting
  * the same refusals.
  *
  * **The refusal is drawn in the form**, beside the button that was pressed,
@@ -13,13 +13,13 @@
  */
 import { type ReactNode, useRef, useState } from 'react'
 import { Link } from 'react-router'
-import { FolderPicker } from './FolderPicker'
+import { DirPicker } from './DirPicker'
 import { useDrawn } from './hooks'
 import { type Created, createLibrary } from './libraries'
 import { sentenceOf } from './message'
 import { Refusal } from './Refusal'
 
-/** The name `FolderPicker` gives its path box, which the submit reads. */
+/** The name `DirPicker` gives its path box, which the submit reads. */
 const PICKER_BOX = 'path'
 
 export interface NewLibraryProps {
@@ -68,15 +68,15 @@ export function NewLibrary({
     // after it draws it, so an Enter pressed at once would send the path as
     // it stood before that keystroke. Without one box of that name nothing
     // is sent: `path` could be that stale value, and a library made at the
-    // wrong folder is worse than a press that does nothing.
+    // wrong directory is worse than a press that does nothing.
     const box = e.currentTarget.elements.namedItem(PICKER_BOX)
     if (!(box instanceof HTMLInputElement)) return
-    const folder = box.value.trim()
-    if (name === '' || folder === '' || inFlight.current) return
+    const dir = box.value.trim()
+    if (name === '' || dir === '' || inFlight.current) return
     inFlight.current = true
     setCreating(true)
     setFailure(undefined)
-    createLibrary(name, [folder])
+    createLibrary(name, [dir])
       .then((made) => {
         inFlight.current = false
         setCreating(false)
@@ -113,7 +113,7 @@ export function NewLibrary({
             }}
           />
         </label>
-        <FolderPicker
+        <DirPicker
           onPath={(typed) => {
             setFailure(undefined)
             setPath(typed)
@@ -134,10 +134,10 @@ export function NewLibrary({
         </div>
         {failure !== undefined && <Refusal>{failure}</Refusal>}
         <p className="why">
-          The server checks that it can read the folder and that it overlaps no
-          other folder. More folders can be added on the library's page: folders
-          in one library are derived together, so a chapter release in one joins
-          its volume in another as a second edition.
+          The server checks that it can read the directory and that it overlaps
+          no other directory. More directories can be added on the library's
+          page: directories in one library are derived together, so a chapter
+          release in one joins its volume in another as a second edition.
         </p>
       </form>
     </div>

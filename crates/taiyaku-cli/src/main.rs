@@ -186,7 +186,7 @@ fn print_usage() {
         "       taiyaku serve  <taiyaku.json>... [--addr HOST:PORT] [--db PATH] \
          [--stump-url URL] [--stump-key KEY] [--log-requests FILE] [--refresh-stump] \
          [--cache DIR] [--trusted-proxy CIDR]... [--secure-cookies] \
-         [--insecure-cookies] [--allow-web-setup] [--web DIR] [--folders DIR]..."
+         [--insecure-cookies] [--allow-web-setup] [--web DIR] [--dirs DIR]..."
     );
     println!("       taiyaku library import <taiyaku.json> [--db PATH]");
     println!(
@@ -210,7 +210,7 @@ fn print_usage() {
     println!("       taiyaku library libraries [--db PATH]");
     println!(
         "       taiyaku library scan  [--add PATH] [--library NAME | --root PATH] [--no-derive] \
-         [--db PATH]  (--add files a folder under --library, creating it; alone, as a \
+         [--db PATH]  (--add files a directory under --library, creating it; alone, as a \
          library of its own)"
     );
     println!(
@@ -1248,7 +1248,7 @@ fn serve(args: &[String]) -> Result<(), String> {
             "--allow-web-setup",
             "--cache",
             "--db",
-            "--folders",
+            "--dirs",
             "--insecure-cookies",
             "--log-requests",
             "--refresh-stump",
@@ -1363,7 +1363,16 @@ fn serve_options(
         (None, None) => None,
     };
     let auth = serve_auth(args, environment("TAIYAKU_TRUSTED_PROXY").as_deref())?;
-    let folders = serve_folders(args, environment("TAIYAKU_FOLDERS").as_deref())?;
+    // Refused rather than ignored: a deployment that set the old name had its
+    // directories listed, and ignoring it would empty the browser without
+    // saying why.
+    if environment("TAIYAKU_FOLDERS").is_some() {
+        return Err(
+            "TAIYAKU_FOLDERS was renamed TAIYAKU_DIRS; rename it where the server is configured"
+                .into(),
+        );
+    }
+    let dirs = serve_dirs(args, environment("TAIYAKU_DIRS").as_deref())?;
     let log = option_value(args, "--log-requests", "a path")?.map(PathBuf::from);
     // Read before `load_works` so `serve x.json --cache` with nothing after
     // it is refused for the reason that is actually wrong, rather than for a
@@ -1389,16 +1398,16 @@ fn serve_options(
         cache,
         auth,
         web,
-        folders,
+        dirs,
     })
 }
 
-/// `--folders DIR`, repeatable, or `TAIYAKU_FOLDERS`: the directories the
-/// Libraries screen's folder browser may list beneath.
+/// `--dirs DIR`, repeatable, or `TAIYAKU_DIRS`: the directories the
+/// Libraries screen's directory browser may list beneath.
 ///
-/// `from_environment` is `TAIYAKU_FOLDERS`, read by the caller as
+/// `from_environment` is `TAIYAKU_DIRS`, read by the caller as
 /// `serve_auth`'s is. It is a `:`-separated list, as `PATH` is, because a
-/// path can hold a space or a comma. Any `--folders` replaces it, the
+/// path can hold a space or a comma. Any `--dirs` replaces it, the
 /// precedence `--trusted-proxy` holds over its variable.
 ///
 /// Nothing is checked here. A prefix that does not exist when a request
@@ -1406,30 +1415,30 @@ fn serve_options(
 ///
 /// # Errors
 ///
-/// Returns an error if a `--folders` has no value.
-fn serve_folders(args: &[String], from_environment: Option<&str>) -> Result<Vec<PathBuf>, String> {
-    let mut folders = Vec::new();
+/// Returns an error if a `--dirs` has no value.
+fn serve_dirs(args: &[String], from_environment: Option<&str>) -> Result<Vec<PathBuf>, String> {
+    let mut dirs = Vec::new();
     for (index, arg) in args.iter().enumerate() {
-        if arg != "--folders" {
+        if arg != "--dirs" {
             continue;
         }
         let value = args
             .get(index + 1)
             .filter(|next| !next.starts_with("--"))
-            .ok_or("--folders needs a directory")?;
-        folders.push(PathBuf::from(value));
+            .ok_or("--dirs needs a directory")?;
+        dirs.push(PathBuf::from(value));
     }
-    if folders.is_empty()
+    if dirs.is_empty()
         && let Some(listed) = from_environment
     {
-        folders.extend(
+        dirs.extend(
             listed
                 .split(':')
                 .filter(|value| !value.is_empty())
                 .map(PathBuf::from),
         );
     }
-    Ok(folders)
+    Ok(dirs)
 }
 
 /// `--trusted-proxy`, `--insecure-cookies` and `--allow-web-setup`, read into

@@ -132,12 +132,12 @@ fn using_a_key_records_that_it_was_used() {
 
 /// §8: `every_library` decides, and the rows name what "only these" sees.
 /// A new account sees every library; set to "only these" with no row it sees
-/// nothing; a grant written by hand reads back as the folders of the library
+/// nothing; a grant written by hand reads back as the directories of the library
 /// granted; and set back to every library it sees every library whatever
 /// rows it still holds.
 ///
-/// **A grant whose library has no folder is still a grant**: it reads as
-/// `Only` with no folder, never as `Every`, which is the widening [`Access`]
+/// **A grant whose library has no directory is still a grant**: it reads as
+/// `Only` with no directory, never as `Every`, which is the widening [`Access`]
 /// exists to make unwritable.
 #[test]
 fn access_is_read_per_user() {
@@ -169,14 +169,14 @@ fn access_is_read_per_user() {
 
     conn.execute_batch(
         "DELETE FROM user_library WHERE user_id = 1;
-         INSERT INTO library (id, name) VALUES (90, 'Folderless');
+         INSERT INTO library (id, name) VALUES (90, 'Directoryless');
          INSERT INTO user_library (user_id, library_id) VALUES (1, 90);",
     )
-    .expect("a grant of a library with no folder, written by hand");
+    .expect("a grant of a library with no directory, written by hand");
     assert_eq!(
         access_for(&conn, 1).expect("reads"),
         Access::Only(Vec::new()),
-        "a grant that resolves to no folder sees nothing"
+        "a grant that resolves to no directory sees nothing"
     );
 
     conn.execute("UPDATE user SET every_library = 1 WHERE id = 1", [])
@@ -980,20 +980,20 @@ fn an_account_with_no_grant_sees_every_library() {
 
 /// Ids that differ between libraries and roots, so a join on the wrong pair
 /// cannot pass by coincidence.
-fn a_two_folder_library_and_another(conn: &rusqlite::Connection) {
+fn a_two_dir_library_and_another(conn: &rusqlite::Connection) {
     conn.execute_batch(
         "INSERT INTO library (id, name) VALUES (70, 'Shelf'), (80, 'Other');
          INSERT INTO root (id, path, library_id) VALUES
            (7, '/srv/manga', 70), (8, '/srv/raw', 70), (9, '/srv/other', 80);",
     )
-    .expect("a library of two folders and one of one");
+    .expect("a library of two directories and one of one");
 }
 
 #[test]
-fn a_granted_library_resolves_to_every_one_of_its_folders() {
+fn a_granted_library_resolves_to_every_one_of_its_dirs() {
     let library = claimed_library();
     let conn = library.conn();
-    a_two_folder_library_and_another(&conn);
+    a_two_dir_library_and_another(&conn);
     let id = add(&conn, "reader", "pw", "user").expect("adds an account");
 
     assert!(grant_library(&conn, id, 70).expect("grants"), "a new grant");
@@ -1005,7 +1005,7 @@ fn a_granted_library_resolves_to_every_one_of_its_folders() {
     assert_eq!(
         access_for(&conn, id).expect("reads"),
         Access::Only(vec![7, 8]),
-        "both folders, not Other's"
+        "both directories, not Other's"
     );
     assert_eq!(libraries_for(&conn, id).expect("reads"), vec![70]);
     assert_eq!(
@@ -1021,7 +1021,7 @@ fn a_granted_library_resolves_to_every_one_of_its_folders() {
 fn granting_a_library_to_an_account_seeing_every_library_narrows_it_to_that_one() {
     let library = claimed_library();
     let conn = library.conn();
-    a_two_folder_library_and_another(&conn);
+    a_two_dir_library_and_another(&conn);
     let id = add(&conn, "reader", "pw", "user").expect("adds an account");
     assert_eq!(access_for(&conn, id).expect("reads"), Access::Every);
 
@@ -1030,7 +1030,7 @@ fn granting_a_library_to_an_account_seeing_every_library_narrows_it_to_that_one(
     assert_eq!(
         access_for(&conn, id).expect("reads"),
         Access::Only(vec![9]),
-        "Other's one folder, and nothing of Shelf"
+        "Other's one directory, and nothing of Shelf"
     );
 }
 
@@ -1042,7 +1042,7 @@ fn granting_a_library_to_an_account_seeing_every_library_narrows_it_to_that_one(
 fn granting_another_library_to_a_limited_account_is_new_and_repeating_it_is_not() {
     let library = claimed_library();
     let conn = library.conn();
-    a_two_folder_library_and_another(&conn);
+    a_two_dir_library_and_another(&conn);
     let id = add(&conn, "reader", "pw", "user").expect("adds an account");
     assert!(grant_library(&conn, id, 70).expect("grants Shelf"));
     assert_eq!(
@@ -1061,7 +1061,7 @@ fn granting_another_library_to_a_limited_account_is_new_and_repeating_it_is_not(
     assert_eq!(
         access_for(&conn, id).expect("reads"),
         Access::Only(vec![7, 8, 9]),
-        "both libraries' folders"
+        "both libraries' directories"
     );
 }
 
@@ -1072,7 +1072,7 @@ fn granting_another_library_to_a_limited_account_is_new_and_repeating_it_is_not(
 fn setting_every_library_lifts_the_limit_and_says_whether_it_changed_anything() {
     let library = claimed_library();
     let conn = library.conn();
-    a_two_folder_library_and_another(&conn);
+    a_two_dir_library_and_another(&conn);
     let granted = add(&conn, "reader", "pw", "user").expect("adds an account");
     grant_library(&conn, granted, 70).expect("grants Shelf");
     let blind = add(&conn, "blind", "pw", "user").expect("adds another");
@@ -1104,17 +1104,17 @@ fn setting_every_library_lifts_the_limit_and_says_whether_it_changed_anything() 
     }
 }
 
-/// [`a_two_folder_library_and_another`], a library `Zines` whose name and
-/// folder's path sort after `Other`'s though its ids sort before, and two
+/// [`a_two_dir_library_and_another`], a library `Zines` whose name and
+/// directory's path sort after `Other`'s though its ids sort before, and two
 /// accounts: `reader` granted `Other` and `Zines`, `other` granted `Shelf`
 /// and `Other`. Answers the two accounts in that order.
 fn two_accounts_granted_libraries(conn: &rusqlite::Connection) -> (i64, i64) {
-    a_two_folder_library_and_another(conn);
+    a_two_dir_library_and_another(conn);
     conn.execute_batch(
         "INSERT INTO library (id, name) VALUES (60, 'Zines');
          INSERT INTO root (id, path, library_id) VALUES (6, '/srv/zines', 60);",
     )
-    .expect("a library of one folder");
+    .expect("a library of one directory");
     let reader = add(conn, "reader", "pw", "user").expect("adds an account");
     let other = add(conn, "other", "pw", "user").expect("adds another");
     grant_library(conn, reader, 80).expect("grants Other");
@@ -1124,10 +1124,10 @@ fn two_accounts_granted_libraries(conn: &rusqlite::Connection) -> (i64, i64) {
     (reader, other)
 }
 
-/// The folders a grant resolves to are those of the account's own libraries,
+/// The directories a grant resolves to are those of the account's own libraries,
 /// by id for the guard.
 #[test]
-fn granted_folders_are_read_per_account_and_in_order() {
+fn granted_dirs_are_read_per_account_and_in_order() {
     let library = claimed_library();
     let conn = library.conn();
     let (reader, _other) = two_accounts_granted_libraries(&conn);
@@ -1187,13 +1187,13 @@ fn granting_a_library_that_does_not_exist_is_an_error() {
     assert!(libraries_for(&conn, id).expect("reads").is_empty());
 }
 
-/// A list names libraries. `7` is a folder of library 70 and no library's id,
-/// so a writer that still read the list as folders would grant 70 for it.
+/// A list names libraries. `7` is a directory of library 70 and no library's id,
+/// so a writer that still read the list as directories would grant 70 for it.
 #[test]
-fn a_libraries_list_names_libraries_and_never_a_folder() {
+fn a_libraries_list_names_libraries_and_never_a_dir() {
     let library = claimed_library();
     let conn = library.conn();
-    a_two_folder_library_and_another(&conn);
+    a_two_dir_library_and_another(&conn);
     let id = add(&conn, "reader", "pw", "user").expect("adds an account");
 
     update(
@@ -1210,7 +1210,7 @@ fn a_libraries_list_names_libraries_and_never_a_folder() {
     assert_eq!(
         access_for(&conn, id).expect("reads"),
         Access::Only(vec![7, 8]),
-        "the library, with both its folders"
+        "the library, with both its directories"
     );
 
     let why = update(
@@ -1258,7 +1258,7 @@ fn a_libraries_list_names_libraries_and_never_a_folder() {
 fn a_libraries_list_refused_part_way_writes_nothing_of_the_patch() {
     let library = claimed_library();
     let conn = library.conn();
-    a_two_folder_library_and_another(&conn);
+    a_two_dir_library_and_another(&conn);
     let id = add(&conn, "reader", "pw", "user").expect("adds an account");
     grant_library(&conn, id, 80).expect("grants Other");
 
@@ -1296,7 +1296,7 @@ fn a_libraries_list_refused_part_way_writes_nothing_of_the_patch() {
 fn a_libraries_list_naming_one_library_twice_grants_it_once() {
     let library = claimed_library();
     let conn = library.conn();
-    a_two_folder_library_and_another(&conn);
+    a_two_dir_library_and_another(&conn);
     let id = add(&conn, "reader", "pw", "user").expect("adds an account");
 
     update(
@@ -1455,7 +1455,7 @@ fn patching_an_account_that_does_not_exist_names_the_id() {
     assert!(why.to_string().contains("4242"), "{why}");
 }
 
-/// Two folders, each a library of its own, to grant: a test about *replacing* a
+/// Two directories, each a library of its own, to grant: a test about *replacing* a
 /// grant list needs more
 /// than one id to tell "replaced" from "appended".
 fn two_roots(conn: &rusqlite::Connection) -> (i64, i64) {

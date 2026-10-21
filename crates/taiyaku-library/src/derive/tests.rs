@@ -267,8 +267,8 @@ fn a_works_hub_survives_a_second_edition_arriving_in_another_root() {
     // The identity hazard, from the side that would bite: adding an edition
     // whose key sorts BEFORE the hub must not change what the work is.
     //
-    // Both roots are folders of one library: an edition arriving in another
-    // library's folder is another work since Part F1, and no hazard to this
+    // Both roots are directories of one library: an edition arriving in another
+    // library's directory is another work since Part F1, and no hazard to this
     // one.
     let tree = fixture();
     let library = Library::open_in_memory().expect("open");
@@ -1585,8 +1585,8 @@ fn a_volume_less_work_still_matches_itself_on_the_next_derive() {
     // first takes it, `content_key` moves with it, and `import` inserts a
     // second work — leaving the reader's progress and notes on the first.
     //
-    // Both roots are folders of one library, where one one-shot in two
-    // folders is one work.
+    // Both roots are directories of one library, where one one-shot in two
+    // directories is one work.
     let first = oneshot("derive-oneshot-a", 3);
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
@@ -1905,7 +1905,7 @@ fn only_a_directory_resolving_a_chapter_and_no_volume_is_asked_about() {
 #[test]
 fn a_chapter_two_levels_below_a_volume_is_still_inside_it() {
     // Every ancestor is tested, not just the immediate parent. A volume whose
-    // chapters sit in a `Chapters/` subfolder puts one directory the rules
+    // chapters sit in a `Chapters/` subdirectory puts one directory the rules
     // give neither a volume nor a chapter between the two, so a check that
     // looked only one level up would let all three chapter directories back
     // in as members of the very work their grandparent forms.
@@ -1928,8 +1928,8 @@ fn a_chapter_two_levels_below_a_volume_is_still_inside_it() {
     assert_eq!(report.members, 1, "the volume, two levels above them");
     assert_eq!(
         report.suppressed, 3,
-        "the two chapter directories and the `Chapters` folder holding them — \
-         that folder is no candidate, but it would have become a volume-less \
+        "the two chapter directories and the `Chapters` directory holding them — \
+         that directory is no candidate, but it would have become a volume-less \
          work of its own, so leaving it out would under-report the drop"
     );
     let (path, pages): (String, i64) = conn
@@ -5072,7 +5072,7 @@ fn the_same_title_in_two_libraries_makes_two_series_and_two_works() {
 }
 
 #[test]
-fn two_folders_of_one_library_still_make_one_work_of_a_volume_and_its_other_release() {
+fn two_dirs_of_one_library_still_make_one_work_of_a_volume_and_its_other_release() {
     let volumes = crate::tests::tempdir("derive-lib-one-volumes");
     write_pages(&volumes.path().join("Series").join("Series - v01"), 2);
     let chapters = crate::tests::tempdir("derive-lib-one-chapters");
@@ -5091,7 +5091,7 @@ fn two_folders_of_one_library_still_make_one_work_of_a_volume_and_its_other_rele
             ..Default::default()
         },
     )
-    .expect("the second folder is another edition");
+    .expect("the second directory is another edition");
     scan::scan_root(&conn, &v).expect("scans");
     scan::scan_root(&conn, &scan::roots(&conn).expect("lists")[1]).expect("scans");
 
@@ -5100,12 +5100,12 @@ fn two_folders_of_one_library_still_make_one_work_of_a_volume_and_its_other_rele
     assert_eq!(
         scalar(&conn, "SELECT count(*) FROM work"),
         1,
-        "one work across both folders"
+        "one work across both directories"
     );
     assert_eq!(
         edition_keys(&conn),
         vec!["en", "raw"],
-        "with each folder's edition"
+        "with each directory's edition"
     );
     assert_eq!(report.works, 1, "written once, from one group");
     let again = derive::derive(&conn).expect("derives again");
@@ -5158,11 +5158,11 @@ fn byte_identical_volumes_in_two_libraries_are_two_works_with_two_slugs() {
     );
 }
 
-/// Spec decision 5: a folder moved into another library takes its reading
-/// history with it. Its library keeps another folder, so the old works stay
+/// Spec decision 5: a directory moved into another library takes its reading
+/// history with it. Its library keeps another directory, so the old works stay
 /// in it until the fold carries them across.
 #[test]
-fn a_folder_moved_to_another_library_carries_positions_and_notes_through_the_fold() {
+fn a_dir_moved_to_another_library_carries_positions_and_notes_through_the_fold() {
     let kept = crate::tests::tempdir("derive-lib-move-kept");
     write_pages(&kept.path().join("Kept").join("Kept - v01"), 2);
     let moved = crate::tests::tempdir("derive-lib-move-moved");
@@ -5182,7 +5182,7 @@ fn a_folder_moved_to_another_library_carries_positions_and_notes_through_the_fol
         .query_row("SELECT id FROM work WHERE title LIKE 'Moved%'", [], |r| {
             r.get(0)
         })
-        .expect("the moved folder's work");
+        .expect("the moved directory's work");
     conn.execute(
         "INSERT INTO progress (user_id, work_id, edition, slot) VALUES (1, ?1, 'raw', 2)",
         [before],
@@ -5199,7 +5199,7 @@ fn a_folder_moved_to_another_library_carries_positions_and_notes_through_the_fol
         "UPDATE root SET library_id = ?1 WHERE id = ?2",
         [e.library_id, m.id],
     )
-    .expect("moves the folder into B");
+    .expect("moves the directory into B");
     let report = derive::derive(&conn).expect("re-derives");
 
     let (after, library_id): (i64, i64) = conn
@@ -5210,7 +5210,7 @@ fn a_folder_moved_to_another_library_carries_positions_and_notes_through_the_fol
             [m.id],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
-        .expect("the moved folder's material has one work");
+        .expect("the moved directory's material has one work");
     assert_eq!(library_id, e.library_id, "filed under B");
     assert_eq!(
         report.emptied_works, 1,
@@ -5241,11 +5241,11 @@ fn a_folder_moved_to_another_library_carries_positions_and_notes_through_the_fol
     );
 }
 
-/// The other half of a move: a folder alone in its library empties it, the
+/// The other half of a move: a directory alone in its library empties it, the
 /// library goes (migration 15's trigger) and its works are left in none. The
 /// next derive adopts them, so nothing is minted and nothing folded.
 #[test]
-fn a_folder_moved_out_of_a_library_it_was_alone_in_keeps_its_works() {
+fn a_dir_moved_out_of_a_library_it_was_alone_in_keeps_its_works() {
     let moved = crate::tests::tempdir("derive-lib-alone-moved");
     write_pages(&moved.path().join("Moved").join("Moved - v01"), 3);
     let elsewhere = crate::tests::tempdir("derive-lib-alone-elsewhere");
@@ -5270,7 +5270,7 @@ fn a_folder_moved_out_of_a_library_it_was_alone_in_keeps_its_works() {
         "UPDATE root SET library_id = ?1 WHERE id = ?2",
         [e.library_id, m.id],
     )
-    .expect("moves the folder");
+    .expect("moves the directory");
     let report = derive::derive(&conn).expect("re-derives");
 
     let after: (i64, String, i64) = conn
@@ -5390,13 +5390,13 @@ fn a_series_and_a_work_in_no_library_are_adopted_by_the_next_derive() {
 
 /// `work`'s `UNIQUE (content_key, library_id)` does not compare NULLs, so two
 /// works in no library can hold one key: here two libraries each held a copy
-/// of a volume, and each lost its folder to a move. Each work goes to the
-/// library its own folder moved to, and the series go the same way.
+/// of a volume, and each lost its directory to a move. Each work goes to the
+/// library its own directory moved to, and the series go the same way.
 ///
-/// The older folder goes to the higher library, so taking the older row for
-/// the lower library would give each library the other's folder's work.
+/// The older directory goes to the higher library, so taking the older row for
+/// the lower library would give each library the other's directory's work.
 #[test]
-fn two_works_in_no_library_sharing_a_key_each_go_with_their_own_folder() {
+fn two_works_in_no_library_sharing_a_key_each_go_with_their_own_dir() {
     let ecchi = crate::tests::tempdir("derive-lib-two-unfiled-a");
     let first = ecchi.path().join("Series").join("Series - v01");
     write_pages(&first, 3);
@@ -5419,15 +5419,15 @@ fn two_works_in_no_library_sharing_a_key_each_go_with_their_own_folder() {
     assert_eq!(
         members_before,
         vec![(works[0], a.id), (works[1], b.id)],
-        "the fixture: the older work holds the first folder's copy"
+        "the fixture: the older work holds the first directory's copy"
     );
 
     conn.execute_batch("INSERT INTO library (id, name) VALUES (70, 'C'), (80, 'D');")
         .expect("two more libraries");
     conn.execute("UPDATE root SET library_id = 80 WHERE id = ?1", [a.id])
-        .expect("moves the first folder to the higher library");
+        .expect("moves the first directory to the higher library");
     conn.execute("UPDATE root SET library_id = 70 WHERE id = ?1", [b.id])
-        .expect("moves the second folder to the lower");
+        .expect("moves the second directory to the lower");
     assert_eq!(
         (
             scalar(&conn, "SELECT count(*) FROM work WHERE library_id IS NULL"),
@@ -5442,7 +5442,7 @@ fn two_works_in_no_library_sharing_a_key_each_go_with_their_own_folder() {
     assert_eq!(
         filed(&conn, "work"),
         vec![(works[0], Some(80)), (works[1], Some(70))],
-        "the same two rows, each under the library its folder moved to"
+        "the same two rows, each under the library its directory moved to"
     );
     assert_eq!(
         filed(&conn, "series"),
@@ -5453,7 +5453,7 @@ fn two_works_in_no_library_sharing_a_key_each_go_with_their_own_folder() {
     assert_eq!(
         member_roots(&conn),
         members_before,
-        "each work still holds its own folder's copy"
+        "each work still holds its own directory's copy"
     );
 }
 
@@ -5475,7 +5475,7 @@ fn a_series_in_no_library_goes_to_the_first_library_whose_files_name_it() {
     let b = scan::add_root(&conn, two.path()).expect("adds");
     assert!(
         a.library_id < b.library_id,
-        "the fixture: the first folder's library is the lower"
+        "the fixture: the first directory's library is the lower"
     );
     for root in [&a, &b] {
         scan::scan_root(&conn, root).expect("scans");
@@ -5598,7 +5598,7 @@ fn the_librarys_own_work_follows_its_files(
     );
     if let Some(other) = older_in {
         // A row is enough to file a work under. The crate makes no library
-        // without a folder, and this one's folders are not the subject.
+        // without a directory, and this one's directories are not the subject.
         conn.execute(
             "INSERT INTO library (id, name) VALUES (?1, 'Other')",
             [other],
@@ -5669,7 +5669,7 @@ fn the_librarys_own_work_follows_its_files(
 /// What migration 15 leaves where one work gathered editions from two roots:
 /// the work filed under its hub edition's library, and the other root in a
 /// library of its own. The next derive gives that library a work of its own.
-/// The old work keeps the edition it held from that folder, as a scan keeps
+/// The old work keeps the edition it held from that directory, as a scan keeps
 /// any edition it did not name, and the derive counts it.
 #[test]
 fn a_work_left_spanning_two_libraries_is_split_and_keeps_the_other_librarys_edition() {
@@ -5689,7 +5689,7 @@ fn a_work_left_spanning_two_libraries_is_split_and_keeps_the_other_librarys_edit
             ..Default::default()
         },
     )
-    .expect("the hub folder's edition sorts first, so it is the hub");
+    .expect("the hub directory's edition sorts first, so it is the hub");
     for root in scan::roots(&conn).expect("lists") {
         scan::scan_root(&conn, &root).expect("scans");
     }
@@ -5698,7 +5698,7 @@ fn a_work_left_spanning_two_libraries_is_split_and_keeps_the_other_librarys_edit
     assert_eq!(
         scalar(&conn, "SELECT count(*) FROM work WHERE hub = 'en'"),
         1,
-        "the fixture: one work, its hub the first folder's edition"
+        "the fixture: one work, its hub the first directory's edition"
     );
     conn.execute(
         "INSERT INTO progress (user_id, work_id, edition, slot) VALUES (1, ?1, 'raw', 2)",
@@ -5707,7 +5707,7 @@ fn a_work_left_spanning_two_libraries_is_split_and_keeps_the_other_librarys_edit
     .expect("a position on the edition about to be split off");
 
     conn.execute("INSERT INTO library (id, name) VALUES (90, 'Other')", [])
-        .expect("a library for the other folder");
+        .expect("a library for the other directory");
     conn.execute("UPDATE root SET library_id = 90 WHERE id = ?1", [o.id])
         .expect("as migration 15 files each root under a library of its own");
     let report = derive::derive(&conn).expect("the first derive within libraries");
@@ -5731,7 +5731,7 @@ fn a_work_left_spanning_two_libraries_is_split_and_keeps_the_other_librarys_edit
             (spanning, "raw".to_string()),
             (split, "raw".to_string()),
         ],
-        "the old work still holds the other folder's edition"
+        "the old work still holds the other directory's edition"
     );
     assert_eq!(report.kept_editions, 1, "which the derive counts");
     assert_eq!(
@@ -5752,7 +5752,7 @@ fn a_work_left_spanning_two_libraries_is_split_and_keeps_the_other_librarys_edit
 
 /// A library with a series of its own keeps it, though an older series of
 /// the same title sits in no library: here another library's, left there
-/// when its folder was removed.
+/// when its directory was removed.
 #[test]
 fn a_library_keeps_its_own_series_before_an_older_one_in_no_library() {
     let gone = crate::tests::tempdir("derive-lib-own-series-gone");
@@ -5775,7 +5775,7 @@ fn a_library_keeps_its_own_series_before_an_older_one_in_no_library() {
     );
     let (older, own) = (series[0].0, series[1].0);
     conn.execute("DELETE FROM root WHERE id = ?1", [g.id])
-        .expect("the first folder goes, and its library with it");
+        .expect("the first directory goes, and its library with it");
     assert_eq!(
         filed(&conn, "series"),
         vec![(older, None), (own, Some(k.library_id))],
@@ -5926,7 +5926,7 @@ fn a_hand_document_resolves_one_title_by_the_works_library() {
     );
 }
 
-// --- Part F1: a row in no library goes with its folders ----------------------
+// --- Part F1: a row in no library goes with its directories ----------------------
 
 /// The work holding a member under `root`, as `(id, slug, library_id,
 /// series_id, content_key)`.
@@ -5941,14 +5941,14 @@ fn work_under(conn: &Connection, root: &scan::Root) -> (i64, String, Option<i64>
     .expect("the root's one work")
 }
 
-/// A folder alone in its library is moved to another library, which leaves
+/// A directory alone in its library is moved to another library, which leaves
 /// its work and series in none. Before the next derive a third library, with
-/// a lower id, scans for the first time a folder holding `Series/Series -
+/// a lower id, scans for the first time a directory holding `Series/Series -
 /// v01` too: a byte-for-byte copy, or the same volume with other bytes.
 ///
-/// The moved folder's work goes with its folder, and so does its series. The
+/// The moved directory's work goes with its directory, and so does its series. The
 /// lower library gets a series and a work of its own.
-fn a_moved_folders_work_goes_with_its_folder(label: &str, copy: bool) {
+fn a_moved_dirs_work_goes_with_its_dir(label: &str, copy: bool) {
     let other = crate::tests::tempdir(&format!("{label}-other"));
     let read = crate::tests::tempdir(&format!("{label}-read"));
     let first = read.path().join("Series").join("Series - v01");
@@ -5979,13 +5979,13 @@ fn a_moved_folders_work_goes_with_its_folder(label: &str, copy: bool) {
         "INSERT INTO progress (user_id, work_id, edition, slot) VALUES (1, ?1, 'raw', 2)",
         [before.0],
     )
-    .expect("a position on the folder about to move");
+    .expect("a position on the directory about to move");
 
     conn.execute(
         "UPDATE root SET library_id = ?1 WHERE id = ?2",
         [b.library_id, a.id],
     )
-    .expect("moves the read folder, alone in its library, into the destination");
+    .expect("moves the read directory, alone in its library, into the destination");
     assert_eq!(
         (
             scalar(&conn, "SELECT count(*) FROM work WHERE library_id IS NULL"),
@@ -5997,7 +5997,7 @@ fn a_moved_folders_work_goes_with_its_folder(label: &str, copy: bool) {
         (1, 1),
         "the fixture: the move left the work and its series in no library"
     );
-    scan::scan_root(&conn, &c).expect("the other folder is scanned for the first time");
+    scan::scan_root(&conn, &c).expect("the other directory is scanned for the first time");
     let report = derive::derive(&conn).expect("re-derives");
 
     assert_eq!(
@@ -6009,7 +6009,7 @@ fn a_moved_folders_work_goes_with_its_folder(label: &str, copy: bool) {
             before.3,
             before.4.clone()
         ),
-        "the same row, slug, series and key, filed under the library its folder moved to"
+        "the same row, slug, series and key, filed under the library its directory moved to"
     );
     assert_eq!(report.rekeyed, 0, "nothing's files changed");
     assert_eq!(
@@ -6052,19 +6052,19 @@ fn a_moved_folders_work_goes_with_its_folder(label: &str, copy: bool) {
 }
 
 #[test]
-fn a_moved_folders_work_is_not_taken_by_a_lower_library_scanning_a_copy_of_it() {
-    a_moved_folders_work_goes_with_its_folder("derive-lib-held-copy", true);
+fn a_moved_dirs_work_is_not_taken_by_a_lower_library_scanning_a_copy_of_it() {
+    a_moved_dirs_work_goes_with_its_dir("derive-lib-held-copy", true);
 }
 
 #[test]
-fn a_moved_folders_work_is_not_taken_by_a_lower_library_scanning_the_same_volume() {
-    a_moved_folders_work_goes_with_its_folder("derive-lib-held-volume", false);
+fn a_moved_dirs_work_is_not_taken_by_a_lower_library_scanning_the_same_volume() {
+    a_moved_dirs_work_goes_with_its_dir("derive-lib-held-volume", false);
 }
 
 /// The series alone: the lower library names the title with another volume,
 /// so no work of the two is at one address or holds one key.
 #[test]
-fn a_series_in_no_library_goes_with_its_works_folder_and_not_to_a_library_naming_its_title() {
+fn a_series_in_no_library_goes_with_its_works_dir_and_not_to_a_library_naming_its_title() {
     let named = crate::tests::tempdir("derive-lib-series-held-named");
     write_pages(&named.path().join("Series").join("Series - v02"), 2);
     let held = crate::tests::tempdir("derive-lib-series-held-held");
@@ -6089,7 +6089,7 @@ fn a_series_in_no_library_goes_with_its_works_folder_and_not_to_a_library_naming
         "UPDATE root SET library_id = ?1 WHERE id = ?2",
         [d.library_id, h.id],
     )
-    .expect("moves the folder, alone in its library");
+    .expect("moves the directory, alone in its library");
     assert_eq!(
         scalar(
             &conn,
@@ -6101,7 +6101,7 @@ fn a_series_in_no_library_goes_with_its_works_folder_and_not_to_a_library_naming
         1,
         "the fixture: its series is in no library"
     );
-    scan::scan_root(&conn, &n).expect("the naming folder is scanned for the first time");
+    scan::scan_root(&conn, &n).expect("the naming directory is scanned for the first time");
 
     derive::derive(&conn).expect("re-derives");
 
@@ -6116,7 +6116,7 @@ fn a_series_in_no_library_goes_with_its_works_folder_and_not_to_a_library_naming
     assert_eq!(
         series[0],
         (before.3, Some(d.library_id)),
-        "the old series went to the library its work's folder is in"
+        "the old series went to the library its work's directory is in"
     );
     assert_eq!(
         series[1].1,
@@ -6190,10 +6190,10 @@ fn an_imported_work_is_taken_by_the_library_whose_files_match_it() {
 }
 
 /// A hand document on a work of one library does not find a series in no
-/// library whose work is under another library's folder, though it holds the
+/// library whose work is under another library's directory, though it holds the
 /// title. It mints one in the work's own library.
 #[test]
-fn a_hand_document_does_not_find_a_series_in_no_library_that_another_librarys_folder_holds() {
+fn a_hand_document_does_not_find_a_series_in_no_library_that_another_librarys_dir_holds() {
     let held = crate::tests::tempdir("derive-lib-doc-held-held");
     write_pages(&held.path().join("Series").join("Series - v01"), 3);
     let dest = crate::tests::tempdir("derive-lib-doc-held-dest");
@@ -6215,7 +6215,7 @@ fn a_hand_document_does_not_find_a_series_in_no_library_that_another_librarys_fo
         "UPDATE root SET library_id = ?1 WHERE id = ?2",
         [d.library_id, h.id],
     )
-    .expect("moves the folder, alone in its library, and nothing derives yet");
+    .expect("moves the directory, alone in its library, and nothing derives yet");
     assert_eq!(
         scalar(
             &conn,
@@ -6236,7 +6236,7 @@ fn a_hand_document_does_not_find_a_series_in_no_library_that_another_librarys_fo
         &conn,
         &format!("SELECT series_id FROM work WHERE id = {work}"),
     );
-    assert_ne!(found, held_series, "not the moved folder's series");
+    assert_ne!(found, held_series, "not the moved directory's series");
     assert_eq!(
         scalar(
             &conn,
@@ -6251,17 +6251,17 @@ fn a_hand_document_does_not_find_a_series_in_no_library_that_another_librarys_fo
             &format!("SELECT count(*) FROM series WHERE id = {held_series} AND library_id IS NULL")
         ),
         1,
-        "and the other is left for its folder's library"
+        "and the other is left for its directory's library"
     );
 }
 
-/// A work in no library, held by another library's folder, can sit at this
+/// A work in no library, held by another library's directory, can sit at this
 /// library's address: a person set its series and volume by hand, and then
-/// its folder was moved. When this library gains a volume at that address,
-/// the work is not taken for it. It goes with its own folder, unchanged.
+/// its directory was moved. When this library gains a volume at that address,
+/// the work is not taken for it. It goes with its own directory, unchanged.
 #[test]
-fn a_work_another_librarys_folder_holds_is_not_taken_at_this_librarys_address() {
-    a_work_another_librarys_folder_holds_stays_its_own(
+fn a_work_another_librarys_dir_holds_is_not_taken_at_this_librarys_address() {
+    a_work_another_librarys_dir_holds_stays_its_own(
         "derive-lib-held-address",
         "Zeta - v01",
         "Series - v01",
@@ -6271,8 +6271,8 @@ fn a_work_another_librarys_folder_holds_is_not_taken_at_this_librarys_address() 
 
 /// The same for a work with no volume, whose address is a member's path.
 #[test]
-fn a_volume_less_work_another_librarys_folder_holds_is_not_taken_at_this_librarys_path() {
-    a_work_another_librarys_folder_holds_stays_its_own(
+fn a_volume_less_work_another_librarys_dir_holds_is_not_taken_at_this_librarys_path() {
+    a_work_another_librarys_dir_holds_stays_its_own(
         "derive-lib-held-path",
         "Zeta Oneshot",
         "Some Oneshot",
@@ -6282,11 +6282,11 @@ fn a_volume_less_work_another_librarys_folder_holds_is_not_taken_at_this_library
 
 /// `Zeta/<held>` alone in a library, and `Series/Series - v02` in another.
 /// The held work is placed by hand in `Series` at `volume`, naming the path
-/// `Series/<gained>` will have, and its folder is moved to a third library.
+/// `Series/<gained>` will have, and its directory is moved to a third library.
 /// Then `Series/<gained>` appears and everything is derived. `Series` sorts
 /// before `Zeta`, so the gaining library's group is written while the held
 /// work is still in no library.
-fn a_work_another_librarys_folder_holds_stays_its_own(
+fn a_work_another_librarys_dir_holds_stays_its_own(
     label: &str,
     held: &str,
     gained: &str,
@@ -6336,7 +6336,7 @@ fn a_work_another_librarys_folder_holds_stays_its_own(
         "UPDATE root SET library_id = ?1 WHERE id = ?2",
         [d.library_id, h.id],
     )
-    .expect("moves the held folder, alone in its library");
+    .expect("moves the held directory, alone in its library");
     assert_eq!(
         scalar(
             &conn,
@@ -6362,7 +6362,7 @@ fn a_work_another_librarys_folder_holds_stays_its_own(
             Some(d.library_id),
             before.4.clone()
         ),
-        "the same row, slug and key, filed under the library its folder moved to"
+        "the same row, slug and key, filed under the library its directory moved to"
     );
     assert_eq!(report.rekeyed, 0, "it was not taken for other files");
     assert_eq!(
@@ -6527,11 +6527,11 @@ fn the_older_of_two_works_at_one_address_is_taken(
     );
 }
 
-/// The legitimate adoption at an address: a folder alone in its library is
+/// The legitimate adoption at an address: a directory alone in its library is
 /// moved, and its volume's bytes change before the next derive, so content
 /// finds nothing and only the address does.
 #[test]
-fn a_folder_moved_out_of_its_library_and_then_changed_keeps_its_work() {
+fn a_dir_moved_out_of_its_library_and_then_changed_keeps_its_work() {
     let moved = crate::tests::tempdir("derive-lib-moved-changed");
     let volume_dir = moved.path().join("Moved").join("Moved - v01");
     write_pages(&volume_dir, 3);
@@ -6556,7 +6556,7 @@ fn a_folder_moved_out_of_its_library_and_then_changed_keeps_its_work() {
         "UPDATE root SET library_id = ?1 WHERE id = ?2",
         [e.library_id, m.id],
     )
-    .expect("moves the folder");
+    .expect("moves the directory");
     std::fs::write(volume_dir.join("003.jpg"), b"one more page").expect("write");
     // A directory member is re-hashed only when its `mtime` moves; see
     // `a_volume_whose_files_change_stays_the_same_work_and_keeps_its_progress`.
@@ -6594,11 +6594,11 @@ fn a_folder_moved_out_of_its_library_and_then_changed_keeps_its_work() {
     );
 }
 
-/// A folder holding only chapters makes no work, and still names a series:
-/// its library's. The chapter folder's root id is another library's id here,
+/// A directory holding only chapters makes no work, and still names a series:
+/// its library's. The chapter directory's root id is another library's id here,
 /// which is what tells the two apart.
 #[test]
-fn a_chapter_only_folder_names_its_librarys_series() {
+fn a_chapter_only_dir_names_its_librarys_series() {
     let volumes = crate::tests::tempdir("derive-lib-chapters-volumes");
     write_pages(&volumes.path().join("Series").join("Series - v01"), 2);
     let chapters = crate::tests::tempdir("derive-lib-chapters-chapters");
@@ -6616,7 +6616,7 @@ fn a_chapter_only_folder_names_its_librarys_series() {
     assert_eq!(
         (c.library_id, c.id),
         (v.library_id, o.library_id),
-        "the fixture: the chapter folder is in `Manga`, and its root id is the other library's id"
+        "the fixture: the chapter directory is in `Manga`, and its root id is the other library's id"
     );
     for root in [&v, &c, &o] {
         scan::scan_root(&conn, root).expect("scans");
@@ -6638,7 +6638,7 @@ fn a_chapter_only_folder_names_its_librarys_series() {
             ("Else".to_string(), Some(o.library_id)),
             ("Series".to_string(), Some(v.library_id)),
         ],
-        "one `Series`, filed under the library both of its folders are in"
+        "one `Series`, filed under the library both of its directories are in"
     );
 }
 

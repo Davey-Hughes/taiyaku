@@ -20,7 +20,7 @@ vi.mock('./users', async (importOriginal) => ({
   patchUser: vi.fn(),
 }))
 
-const folder = (id: number, path: string): Library['folders'][number] => ({
+const dir = (id: number, path: string): Library['dirs'][number] => ({
   id,
   path,
   edition_key: null,
@@ -38,14 +38,14 @@ const MANGA: Library = {
   name: 'Manga',
   works: 0,
   books: 0,
-  folders: [folder(700, '/media/Manga')],
+  dirs: [dir(700, '/media/Manga')],
 }
 const COMICS: Library = {
   id: 80,
   name: 'Comics',
   works: 0,
   books: 0,
-  folders: [folder(800, '/media/Comics')],
+  dirs: [dir(800, '/media/Comics')],
 }
 
 const sam: usersApi.User = {

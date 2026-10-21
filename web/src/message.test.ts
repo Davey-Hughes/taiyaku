@@ -106,7 +106,8 @@ describe('sentenceOf', () => {
   })
 
   it('keeps the whole message for a text that begins with a number', () => {
-    const message = '/api/library/libraries: 500 3 folders could not be read'
+    const message =
+      '/api/library/libraries: 500 3 directories could not be read'
     expect(sentenceOf(new Error(message))).toBe(message)
   })
 

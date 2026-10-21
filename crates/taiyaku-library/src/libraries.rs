@@ -1,14 +1,14 @@
-//! Libraries: a name and the folders filed under it. Migration 15, and Part F
+//! Libraries: a name and the directories filed under it. Migration 15, and Part F
 //! of `docs/superpowers/specs/2026-10-05-libraries-design.md`.
 //!
-//! **A library is born with a folder and goes with its last one.** There is no
+//! **A library is born with a directory and goes with its last one.** There is no
 //! public way to make an empty one: [`crate::scan::add_root_in`] creates a
-//! named library in the same transaction as the folder it is created for, and
+//! named library in the same transaction as the directory it is created for, and
 //! the `root_gets_a_library` trigger (migration 16) files a root inserted
 //! without a library under one of its own, and migration 15's
 //! `library_emptied_by_delete` deletes a library whose last root goes. A grant
 //! names a library and `account::access_for` resolves it to that library's
-//! folders, so a grant of an empty library would grant nothing.
+//! directories, so a grant of an empty library would grant nothing.
 
 use std::path::PathBuf;
 
@@ -19,8 +19,8 @@ use rusqlite::{Connection, OptionalExtension as _};
 pub struct Listed {
     pub id: i64,
     pub name: String,
-    /// Its folders' paths, oldest first.
-    pub folders: Vec<PathBuf>,
+    /// Its directories' paths, oldest first.
+    pub dirs: Vec<PathBuf>,
     /// The works filed under it.
     pub works: usize,
 }
@@ -48,21 +48,21 @@ pub fn list(conn: &Connection) -> Result<Vec<Listed>, String> {
         .map_err(|e| format!("listing libraries: {e}"))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| format!("listing libraries: {e}"))?;
-    let mut folders = conn
+    let mut dirs = conn
         .prepare("SELECT path FROM root WHERE library_id = ?1 ORDER BY id")
-        .map_err(|e| format!("listing a library's folders: {e}"))?;
+        .map_err(|e| format!("listing a library's directories: {e}"))?;
     let mut listed = Vec::with_capacity(rows.len());
     for (id, name, works) in rows {
-        let paths = folders
+        let paths = dirs
             .query_map([id], |r| r.get::<_, String>(0))
-            .map_err(|e| format!("listing the folders of `{name}`: {e}"))?
+            .map_err(|e| format!("listing the directories of `{name}`: {e}"))?
             .map(|row| row.map(PathBuf::from))
             .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| format!("listing the folders of `{name}`: {e}"))?;
+            .map_err(|e| format!("listing the directories of `{name}`: {e}"))?;
         listed.push(Listed {
             id,
             name,
-            folders: paths,
+            dirs: paths,
             works: usize::try_from(works).unwrap_or(usize::MAX),
         });
     }
@@ -102,7 +102,7 @@ pub fn id_of(conn: &Connection, name: &str) -> Result<Option<i64>, String> {
 
 /// A new library called `name`, stripped by [`trim_name`].
 /// **Crate-only**, so a library is only ever made together with its first
-/// folder; see this module's doc.
+/// directory; see this module's doc.
 ///
 /// # Errors
 ///
@@ -183,7 +183,7 @@ pub fn rename(conn: &Connection, id: i64, name: &str) -> Result<String, RenameEr
     }
 }
 
-/// How many entries the scans of library `id`'s folders recorded as an EPUB
+/// How many entries the scans of library `id`'s directories recorded as an EPUB
 /// (fixed-layout or reflowable) or a PDF, which derivation does not admit.
 /// Entries in other formats it does not admit, such as rar, 7z and tar, are not
 /// counted.
@@ -214,7 +214,7 @@ pub fn books(conn: &Connection, id: i64) -> Result<usize, String> {
 /// SQL that is true of a `work` row library `library` may derive onto: a work
 /// filed under it, or a work in no library that it may take.
 ///
-/// **A work in no library is taken only by a library whose folders hold
+/// **A work in no library is taken only by a library whose directories hold
 /// it**: one with a member under a root of `library`. A work with no member
 /// under any root, an imported one for instance, may be taken by any library.
 /// A work whose members are under roots of other libraries alone is not this
@@ -241,7 +241,7 @@ pub(crate) fn own_or_adoptable_work(work: &str, library: &str) -> String {
 /// [`own_or_adoptable_work`] for a `series` row: a series filed under
 /// `library`, or a series in no library that it may take.
 ///
-/// **A series in no library goes with its works' folders**: `library` may
+/// **A series in no library goes with its works' directories**: `library` may
 /// take one where a work of the series has a member under a root of
 /// `library`, or where no work of the series has a member under any root,
 /// which includes a series holding no work.

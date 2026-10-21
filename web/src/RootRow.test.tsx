@@ -11,7 +11,7 @@ import { mount, rerender } from './testing/mount'
 vi.mock('./libraries', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./libraries')>()),
   moveCost: vi.fn(),
-  moveFolder: vi.fn(),
+  moveDir: vi.fn(),
 }))
 vi.mock('./config', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./config')>()),
@@ -209,7 +209,7 @@ describe('RootRow', () => {
     // one this card was not handed a probe for (drawn as `unknown`, not
     // defaulted to a claim either way).
     expect(pairs).toEqual([
-      ['watch', 'unknown — probed when a folder is added'],
+      ['watch', 'unknown — probed when a directory is added'],
       ['scan every', '24h'],
       ['last scan', 'never'],
     ])
@@ -247,7 +247,7 @@ describe('RootRow', () => {
     )
     const host = await settle()
     await act(async () => {
-      press(host, 'Scan folder').click()
+      press(host, 'Scan directory').click()
       await Promise.resolve()
       await Promise.resolve()
     })
@@ -263,8 +263,8 @@ describe('RootRow', () => {
       await Promise.resolve()
       await Promise.resolve()
     })
-    expect(host.querySelector('.last-folder')?.textContent).toBe(
-      'This is the only folder of the library Manga, so removing it removes the library too.',
+    expect(host.querySelector('.last-dir')?.textContent).toBe(
+      'This is the only directory of the library Manga, so removing it removes the library too.',
     )
   })
 
@@ -276,7 +276,7 @@ describe('RootRow', () => {
       await Promise.resolve()
     })
     expect(host.querySelector('.remove-root')).not.toBeNull()
-    expect(host.querySelector('.last-folder')).toBeNull()
+    expect(host.querySelector('.last-dir')).toBeNull()
   })
 
   it('closes an open removal dialog when its own mount read finds a scan running', async () => {
@@ -309,13 +309,13 @@ describe('RootRow', () => {
     expect(config.removeRoot).not.toHaveBeenCalled()
   })
 
-  it('is held while another folder of its library is scanning: Scan folder and Remove… are disabled and send nothing', async () => {
+  it('is held while another directory of its library is scanning: Scan directory and Remove… are disabled and send nothing', async () => {
     const host = await settle()
     await act(async () => {
       rerender(<RootRow root={root()} held onChanged={vi.fn()} />)
       await Promise.resolve()
     })
-    for (const label of ['Scan folder', 'Remove…']) {
+    for (const label of ['Scan directory', 'Remove…']) {
       expect(press(host, label).disabled, label).toBe(true)
       press(host, label).click()
     }
@@ -378,7 +378,7 @@ describe('RootRow', () => {
       })
     }
 
-    it('is offered only where the row was told where to, and holds Scan folder and Remove… while open', async () => {
+    it('is offered only where the row was told where to, and holds Scan directory and Remove… while open', async () => {
       const bare = await settle()
       expect(
         [...bare.querySelectorAll('button')].some(
@@ -392,9 +392,9 @@ describe('RootRow', () => {
         await Promise.resolve()
       })
       expect(
-        host.querySelector('[aria-label="Move the folder at /srv/manga"]'),
+        host.querySelector('[aria-label="Move the directory at /srv/manga"]'),
       ).not.toBeNull()
-      for (const label of ['Scan folder', 'Remove…', 'Move…']) {
+      for (const label of ['Scan directory', 'Remove…', 'Move…']) {
         expect(press(host, label).disabled, label).toBe(true)
       }
     })
@@ -446,9 +446,9 @@ describe('RootRow', () => {
       expect(host.querySelector('.move-root')).toBeNull()
     })
 
-    it('reloads once the folder has moved', async () => {
+    it('reloads once the directory has moved', async () => {
       vi.mocked(api.moveCost).mockResolvedValue(answered(true))
-      vi.mocked(api.moveFolder).mockResolvedValue(answered(false))
+      vi.mocked(api.moveDir).mockResolvedValue(answered(false))
       const onChanged = vi.fn()
       const onMoved = vi.fn()
       const host = await mounted({ onChanged, onMoved })
@@ -467,7 +467,7 @@ describe('RootRow', () => {
         await Promise.resolve()
         await Promise.resolve()
       })
-      expect(api.moveFolder).toHaveBeenCalledWith(3, { library: 7 })
+      expect(api.moveDir).toHaveBeenCalledWith(3, { library: 7 })
       expect(onChanged).toHaveBeenCalledTimes(1)
       expect(onMoved).toHaveBeenCalledWith(answered(false))
       expect(host.querySelector('.move-root')).toBeNull()
@@ -509,7 +509,7 @@ describe('RootRow', () => {
     )
     const host = await settle()
     await act(async () => {
-      press(host, 'Scan folder').click()
+      press(host, 'Scan directory').click()
       await Promise.resolve()
       await Promise.resolve()
     })
@@ -538,7 +538,7 @@ describe('RootRow', () => {
     const changed = vi.fn()
     const host = await settle({}, changed)
     await act(async () => {
-      press(host, 'Scan folder').click()
+      press(host, 'Scan directory').click()
       await Promise.resolve()
       await Promise.resolve()
     })
@@ -560,7 +560,7 @@ describe('RootRow', () => {
     )
     const host = await settle()
     await act(async () => {
-      press(host, 'Scan folder').click()
+      press(host, 'Scan directory').click()
       await Promise.resolve()
       await Promise.resolve()
     })
@@ -601,7 +601,7 @@ describe('RootRow', () => {
       new Error('/api/library/roots/3/scan: 502 bad gateway'),
     )
     await act(async () => {
-      press(host, 'Scan folder').click()
+      press(host, 'Scan directory').click()
       await Promise.resolve()
       await Promise.resolve()
     })
@@ -615,7 +615,7 @@ describe('RootRow', () => {
     expect(
       [...host.querySelectorAll('[role="alert"]')].map((a) => a.textContent),
     ).toEqual(['bad gateway'])
-    expect(press(host, 'Scan folder').disabled).toBe(false)
+    expect(press(host, 'Scan directory').disabled).toBe(false)
   })
 
   it('draws the sentence of the refusal that ends a run of failed polls', async () => {
@@ -634,7 +634,7 @@ describe('RootRow', () => {
       )
     const host = await settle()
     await act(async () => {
-      press(host, 'Scan folder').click()
+      press(host, 'Scan directory').click()
       await Promise.resolve()
       await Promise.resolve()
     })
@@ -658,7 +658,7 @@ describe('RootRow', () => {
     )
     const host = await settle()
     await act(async () => {
-      press(host, 'Scan folder').click()
+      press(host, 'Scan directory').click()
       await Promise.resolve()
       await Promise.resolve()
     })
@@ -703,7 +703,7 @@ describe('RootRow', () => {
 
     const host = await settle()
     await act(async () => {
-      press(host, 'Scan folder').click()
+      press(host, 'Scan directory').click()
       await Promise.resolve()
       await Promise.resolve()
     })
@@ -742,7 +742,7 @@ describe('RootRow', () => {
     })
     const host = await settle({}, onChanged)
     await act(async () => {
-      press(host, 'Scan folder').click()
+      press(host, 'Scan directory').click()
       await Promise.resolve()
       await Promise.resolve()
     })
@@ -757,7 +757,7 @@ describe('RootRow', () => {
   it('draws the failure when a patch is refused', async () => {
     vi.mocked(config.patchRoot).mockRejectedValue(
       new Error(
-        "/api/library/roots/3: 400 the folder's `edition_key` must be a string or null",
+        "/api/library/roots/3: 400 the directory's `edition_key` must be a string or null",
       ),
     )
     const host = await settle()
@@ -805,9 +805,9 @@ describe('RootRow', () => {
     // defect.** The `.catch` used to `setRunning(false)`, so one blip — a
     // proxy 502, a `SQLITE_BUSY` while the scan's own writes hold the file —
     // tore the interval down for good: no progress, no eventual report, and a
-    // re-enabled "Scan folder" whose only answer is a 409 about the scan still
-    // running. That is precisely the state this file's mount-read exists to
-    // prevent, reached by a different door. The old test pinned it as
+    // re-enabled "Scan directory" whose only answer is a 409 about the scan
+    // still running. That is precisely the state this file's mount-read exists
+    // to prevent, reached by a different door. The old test pinned it as
     // intended behaviour, which is worse than not having tested it.
     vi.mocked(config.scanStatus)
       .mockResolvedValueOnce({
@@ -829,7 +829,7 @@ describe('RootRow', () => {
 
     const host = await settle()
     await act(async () => {
-      press(host, 'Scan folder').click()
+      press(host, 'Scan directory').click()
       await Promise.resolve()
       await Promise.resolve()
     })
@@ -860,7 +860,7 @@ describe('RootRow', () => {
       .mockRejectedValue(new Error('500 reading the registry'))
     const host = await settle()
     await act(async () => {
-      press(host, 'Scan folder').click()
+      press(host, 'Scan directory').click()
       await Promise.resolve()
       await Promise.resolve()
     })
@@ -894,7 +894,7 @@ describe('RootRow', () => {
       await Promise.resolve()
       await Promise.resolve()
     })
-    expect(press(host, 'Scan folder').disabled).toBe(true)
+    expect(press(host, 'Scan directory').disabled).toBe(true)
   })
 
   it('puts the checkbox back when its save is refused', async () => {
@@ -985,7 +985,7 @@ describe('RootRow', () => {
     })
     const host = await settle()
     await act(async () => {
-      press(host, 'Scan folder').click()
+      press(host, 'Scan directory').click()
       await Promise.resolve()
       await Promise.resolve()
     })
@@ -996,7 +996,7 @@ describe('RootRow', () => {
     })
     expect(host.querySelector('.scan-report')).not.toBeNull()
     expect(host.textContent).toContain('What derivation made of every library')
-    // The report's two headings sit one level beneath the folder's h2.
+    // The report's two headings sit one level beneath the directory's h2.
     expect(
       [...host.querySelectorAll('.scan-report .report-heading')].map(
         (h) => h.tagName,
@@ -1099,8 +1099,8 @@ describe('RootRow', () => {
     // **Review finding 2.** `scanStatus` was reached only from the interval,
     // and the interval only existed once `begin()` had run — so an admin who
     // navigated away during a scan and came back saw no progress, no eventual
-    // report, and an enabled "Scan folder" that answers 409. The server keeps
-    // its registry precisely so a client can poll across requests.
+    // report, and an enabled "Scan directory" that answers 409. The server
+    // keeps its registry precisely so a client can poll across requests.
     vi.mocked(config.scanStatus).mockResolvedValue({
       root_id: 3,
       running: true,
@@ -1139,7 +1139,7 @@ describe('RootRow', () => {
       })
     const host = await settle()
     await act(async () => {
-      press(host, 'Scan folder').click()
+      press(host, 'Scan directory').click()
       await Promise.resolve()
       await Promise.resolve()
     })
@@ -1165,7 +1165,7 @@ describe('RootRow', () => {
     })
     const host = await settle()
     await act(async () => {
-      press(host, 'Scan folder').click()
+      press(host, 'Scan directory').click()
       await Promise.resolve()
       await Promise.resolve()
     })
@@ -1183,21 +1183,21 @@ describe('RootRow', () => {
       last_scan_status: null,
     })
     await act(async () => {
-      press(host, 'Scan folder').click()
+      press(host, 'Scan directory').click()
       await Promise.resolve()
       await Promise.resolve()
     })
     expect(host.textContent).not.toContain('47s')
   })
 
-  it('sends one POST for a double-pressed Scan folder', async () => {
+  it('sends one POST for a double-pressed Scan directory', async () => {
     // **Review finding 5.** `disabled={running}` and `running` was set in the
     // `.then`, so two rapid presses both sent — and the second's 409, about
     // the admin's own scan, landed in the alert slot while that scan ran fine.
     const host = await settle()
     await act(async () => {
-      press(host, 'Scan folder').click()
-      press(host, 'Scan folder').click()
+      press(host, 'Scan directory').click()
+      press(host, 'Scan directory').click()
       await Promise.resolve()
       await Promise.resolve()
     })
@@ -1265,7 +1265,7 @@ describe('RootRow', () => {
       })
     const host = await settle()
     await act(async () => {
-      press(host, 'Scan folder').click()
+      press(host, 'Scan directory').click()
       await Promise.resolve()
       await Promise.resolve()
     })
@@ -1314,7 +1314,7 @@ describe('RootRow', () => {
     const host = await settle()
     expect(host.textContent).not.toContain('Scanning')
     await act(async () => {
-      press(host, 'Scan folder').click()
+      press(host, 'Scan directory').click()
       await Promise.resolve()
       await Promise.resolve()
     })
@@ -1324,7 +1324,7 @@ describe('RootRow', () => {
       await Promise.resolve()
     })
     expect(host.textContent).toContain('Scanning')
-    expect(press(host, 'Scan folder').disabled).toBe(true)
+    expect(press(host, 'Scan directory').disabled).toBe(true)
   })
 
   // --- whole-branch review pass 4, 2026-09-04 ----------------------------
@@ -1439,21 +1439,22 @@ describe('RootRow', () => {
 
   it('reads the status from the error, not from a 409 anywhere in the text', async () => {
     // **Pass 4, finding 5.** `why.includes('409')` matched the substring
-    // anywhere — so removing root 409 from another tab and pressing Scan folder
-    // gave a 404 whose body reads "no root with id 409", and the card entered
-    // a fake running state and settled on a message about a restart.
+    // anywhere — so removing root 409 from another tab and pressing
+    // Scan directory gave a 404 whose body reads "no root with id 409",
+    // and the card entered a fake running state and settled on a message
+    // about a restart.
     vi.mocked(config.startScan).mockRejectedValue(
-      new Error('/api/library/roots/409/scan: 404 there is no folder 409'),
+      new Error('/api/library/roots/409/scan: 404 there is no directory 409'),
     )
     const host = await settle()
     await act(async () => {
-      press(host, 'Scan folder').click()
+      press(host, 'Scan directory').click()
       await Promise.resolve()
       await Promise.resolve()
     })
     expect(host.textContent).not.toContain('Scanning')
     expect(host.querySelector('[role="alert"]')?.textContent).toContain(
-      'there is no folder 409',
+      'there is no directory 409',
     )
   })
 
@@ -1779,7 +1780,7 @@ describe('RootRow, an edit still in its box when the row goes', () => {
     ])
   })
 
-  it('sends nothing to a folder its own removal took, though a box was typed in while the removal was out', async () => {
+  it('sends nothing to a directory its own removal took, though a box was typed in while the removal was out', async () => {
     const removed = deferred<config.RemovalAnswer>()
     vi.mocked(config.removeRoot).mockReturnValue(removed.promise)
     const onRemoved = vi.fn()
@@ -1814,7 +1815,7 @@ describe('RootRow, an edit still in its box when the row goes', () => {
     expect(config.patchRoot).not.toHaveBeenCalled()
   })
 
-  it('still sends an edit typed while a move was out, since the folder is still there', async () => {
+  it('still sends an edit typed while a move was out, since the directory is still there', async () => {
     const answer = (dry_run: boolean): api.MoveAnswer => ({
       moved: {
         library_id: 7,
@@ -1835,7 +1836,7 @@ describe('RootRow, an edit still in its box when the row goes', () => {
     })
     vi.mocked(api.moveCost).mockResolvedValue(answer(true))
     const moved = deferred<api.MoveAnswer>()
-    vi.mocked(api.moveFolder).mockReturnValue(moved.promise)
+    vi.mocked(api.moveDir).mockReturnValue(moved.promise)
     const onMoved = vi.fn()
     let host: HTMLElement | undefined
     await act(async () => {
@@ -1886,7 +1887,7 @@ describe('RootRow, an edit still in its box when the row goes', () => {
     ])
   })
 
-  it('hands up the sentence of each edit it sent that is refused, named for its box and the folder, and asks for no list', async () => {
+  it('hands up the sentence of each edit it sent that is refused, named for its box and the directory, and asks for no list', async () => {
     vi.mocked(config.patchRoot).mockRejectedValue(
       new Error('/api/library/roots/3: 500 {"error":"the store is locked"}'),
     )

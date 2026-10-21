@@ -70,9 +70,9 @@ export interface Root {
 /**
  * What `watch::probe` found — an *experiment*, per spec B §8, not a lookup.
  *
- * **Only the two routes that add a folder carry this**:
- * `POST /api/library/libraries` and `POST /api/library/libraries/{id}/folders`.
- * The list route does not, and re-probing every folder on every page load
+ * **Only the two routes that add a directory carry this**:
+ * `POST /api/library/libraries` and `POST /api/library/libraries/{id}/dirs`.
+ * The list route does not, and re-probing every directory on every page load
  * would turn a page load into N filesystem experiments. Spec §3.1: a stated gap beats an invented number.
  */
 export interface Probe {
@@ -81,8 +81,8 @@ export interface Probe {
 }
 
 /**
- * The row a folder's adding minted and the probe it ran. A library's make
- * route answers a list of these, and a folder's own add route answers one.
+ * The row a directory's adding minted and the probe it ran. A library's make
+ * route answers a list of these, and a directory's own add route answers one.
  */
 export interface Added extends Probe {
   root: Root
@@ -363,7 +363,7 @@ export function humanInterval(secs: number): string {
 }
 
 /**
- * When a folder was last scanned, for a table cell: the time alone where the
+ * When a directory was last scanned, for a table cell: the time alone where the
  * scan went well, and its outcome after it where it did not.
  */
 export function lastScan(
@@ -388,15 +388,15 @@ export function lastScan(
  * **A sentence was the wrong shape for them.** Joining the three with `·`
  * put four `·`-separated pieces on one line — the third fact appending its
  * own outcome — and a bare value does not say what it is:
- * `unknown — probed when a folder is added` is only legible beside the word
+ * `unknown — probed when a directory is added` is only legible beside the word
  * `watch`, and `never` beside `last scan`. Nothing here is ever absent; each
  * arm has a fallback, which is why labels rather than omission are what make
  * a missing fact readable (spec §11.6).
  *
  * **`probe` is optional and its absence is stated, not defaulted.** Only
- * the two routes that add a folder run the probe, so a folder loaded from the
- * list has no watch state at all — and "watching" would be a claim, while "not
- * watching" would be a different one.
+ * the two routes that add a directory run the probe, so a directory loaded from
+ * the list has no watch state at all — and "watching" would be a claim, while
+ * "not watching" would be a different one.
  *
  * **Replaces the former `regimeLine`, not beside it.** That function's only
  * production caller was the `<p className="regime">` this function's caller
@@ -410,7 +410,7 @@ export function regimeFacts(
 ): Array<{ label: string; value: string }> {
   const watch =
     probe === undefined
-      ? 'unknown — probed when a folder is added'
+      ? 'unknown — probed when a directory is added'
       : probe.watching
         ? 'watching'
         : probe.watch_reason === null
@@ -439,10 +439,10 @@ export function regimeFacts(
  * one.
  *
  * `api.ts` throws `` `${path}: ${status} ${body}` ``, and a caller that needs
- * to act on the status — a folder's row treats a 409 from `startScan` as
+ * to act on the status — a directory's row treats a 409 from `startScan` as
  * proof a scan is running — was matching `message.includes('409')`, which is
  * satisfied by a 409 *anywhere*: removing root 409 from another tab produced
- * a 404 whose body reads `there is no folder 409`, and the screen entered a
+ * a 404 whose body reads `there is no directory 409`, and the screen entered a
  * fake running state on the strength of the id. Anchored to the start, where
  * the path (which never contains a space) is followed by `: ` and the status.
  * Whole-branch review pass 4, 2026-09-04.

@@ -163,7 +163,7 @@ fn router_over(
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
         library_job: Default::default(),
-        folders: Vec::new(),
+        dirs: Vec::new(),
     });
     let router = authenticating(crate::build_router(state.clone()), &state.library);
     (router, state)
@@ -322,7 +322,7 @@ pub(crate) fn state(root: &std::path::Path) -> ServeState {
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
         library_job: Default::default(),
-        folders: Vec::new(),
+        dirs: Vec::new(),
     }
 }
 
@@ -545,7 +545,7 @@ fn state_over(
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
         library_job: Default::default(),
-        folders: Vec::new(),
+        dirs: Vec::new(),
     })
 }
 
@@ -850,7 +850,7 @@ pub(crate) async fn router_over_a_library() -> (axum::Router, std::sync::Arc<Ser
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
         library_job: Default::default(),
-        folders: Vec::new(),
+        dirs: Vec::new(),
     });
     let router = authenticating(crate::build_router(state.clone()), &state.library);
     (router, state, fixture)
@@ -936,7 +936,7 @@ fn two_editions_in_a_library(
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
         library_job: Default::default(),
-        folders: Vec::new(),
+        dirs: Vec::new(),
     });
     (state, work_id)
 }
@@ -1121,7 +1121,7 @@ pub(crate) fn router_over_a_scanned_work() -> (axum::Router, std::sync::Arc<Serv
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
         library_job: Default::default(),
-        folders: Vec::new(),
+        dirs: Vec::new(),
     });
     // `authenticating`, because `library()` seeds a claimed account and every
     // route is behind the guard since spec A2 — the same wrapper
@@ -1294,7 +1294,7 @@ fn router_over_a_written_tree(
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
         library_job: Default::default(),
-        folders: Vec::new(),
+        dirs: Vec::new(),
     });
     let router = authenticating(crate::build_router(state.clone()), &state.library);
     (router, state, fixture)
@@ -1372,7 +1372,7 @@ pub(crate) fn router_over_a_scanned_cbz() -> (axum::Router, std::sync::Arc<Serve
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
         library_job: Default::default(),
-        folders: Vec::new(),
+        dirs: Vec::new(),
     });
     let router = authenticating(crate::build_router(state.clone()), &state.library);
     (router, state, fixture)
@@ -1563,7 +1563,7 @@ pub(crate) fn state_with_two_scanned_roots() -> (axum::Router, std::sync::Arc<Se
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
         library_job: Default::default(),
-        folders: Vec::new(),
+        dirs: Vec::new(),
     });
     let router = authenticating(crate::build_router(state.clone()), &state.library);
     (router, state, fixture)
@@ -1684,7 +1684,7 @@ pub(crate) fn router_over_two_scanned_volumes_of_one_series()
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
         library_job: Default::default(),
-        folders: Vec::new(),
+        dirs: Vec::new(),
     });
     let router = authenticating(crate::build_router(state.clone()), &state.library);
     (router, state, fixture)
@@ -1732,7 +1732,7 @@ pub(crate) fn router_over_two_scanned_volumes_of_one_series_across_two_roots() -
     let library = library();
     {
         let conn = library.conn();
-        // **Both roots are folders of one library.** Since Part F1 a series
+        // **Both roots are directories of one library.** Since Part F1 a series
         // is one library's, so two roots in libraries of their own would hold
         // two series of this title, one volume in each.
         let one_library = taiyaku_library::scan::InLibrary::Named("Manga");
@@ -1770,7 +1770,7 @@ pub(crate) fn router_over_two_scanned_volumes_of_one_series_across_two_roots() -
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
         library_job: Default::default(),
-        folders: Vec::new(),
+        dirs: Vec::new(),
     });
     let router = authenticating(crate::build_router(state.clone()), &state.library);
     (router, state, fixture, root_a)
@@ -1831,7 +1831,7 @@ pub(crate) fn router_over_two_scanned_volumes_of_one_series_across_two_roots_and
         // `BTreeMap<GroupKey, _>`, not from scan order, and proving that is
         // the point of scanning it out of title order here.
         //
-        // **All three roots are folders of one library.** `root_a` and
+        // **All three roots are directories of one library.** `root_a` and
         // `root_b` for the plain fixture's reason, and the unrelated root so
         // that its series is one a document on the shared series' works could
         // resolve onto: `librarydoc::find_series_by_title` looks within the
@@ -1880,7 +1880,7 @@ pub(crate) fn router_over_two_scanned_volumes_of_one_series_across_two_roots_and
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
         library_job: Default::default(),
-        folders: Vec::new(),
+        dirs: Vec::new(),
     });
     let router = authenticating(crate::build_router(state.clone()), &state.library);
     (router, state, fixture, root_a)
@@ -2343,7 +2343,7 @@ pub(crate) fn fixture_authorization() -> String {
 /// The demotion is the *point* of the helper, not an incidental step, which is
 /// why granting and demoting are not offered separately.
 ///
-/// A root is a folder of a library, and a grant names the library. Every
+/// A root is a directory of a library, and a grant names the library. Every
 /// fixture root is a library of its own unless it was filed under a named
 /// one, so for those this grants exactly that root.
 ///
@@ -2371,9 +2371,9 @@ pub(crate) fn grant_root(conn: &rusqlite::Connection, root_id: i64) {
     );
 }
 
-/// Three works: one under each folder of the two-folder library `Shelf`, and
+/// Three works: one under each directory of the two-directory library `Shelf`, and
 /// one under `Other`. The fixture account is granted `Shelf` through
-/// [`grant_root`] on its first folder, so a test reads both of Shelf's works
+/// [`grant_root`] on its first directory, so a test reads both of Shelf's works
 /// and neither of Other's.
 ///
 /// **Library ids differ from root ids** (70 and 80 against 1, 2 and 3), so a
@@ -2383,7 +2383,7 @@ pub(crate) fn grant_root(conn: &rusqlite::Connection, root_id: i64) {
 /// # Panics
 ///
 /// Panics if a work cannot be imported or filed, or the grant cannot be made.
-pub(crate) fn router_over_a_granted_two_folder_library(
+pub(crate) fn router_over_a_granted_two_dir_library(
     dir: &std::path::Path,
 ) -> (axum::Router, std::sync::Arc<ServeState>) {
     let shelf = dir.to_string_lossy().into_owned();
@@ -2395,10 +2395,10 @@ pub(crate) fn router_over_a_granted_two_folder_library(
              INSERT INTO root (id, path, library_id) VALUES
                (1, '/shelf-a', 70), (2, '/shelf-b', 70), (3, '/other', 80);",
         )
-        .expect("a library of two folders and one of one");
+        .expect("a library of two directories and one of one");
         for (root, title, file) in [
-            (1, "First Folder Work", "first"),
-            (2, "Second Folder Work", "second"),
+            (1, "First Directory Work", "first"),
+            (2, "Second Directory Work", "second"),
             (3, "Other Library Work", "other"),
         ] {
             let json = format!(
@@ -2421,7 +2421,7 @@ pub(crate) fn router_over_a_granted_two_folder_library(
                  (SELECT id FROM edition WHERE work_id = ?2)",
                 [root, work],
             )
-            .expect("files the work under its folder");
+            .expect("files the work under its directory");
         }
         grant_root(&conn, 1);
     }
@@ -2435,17 +2435,17 @@ pub(crate) fn router_over_a_granted_two_folder_library(
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
         library_job: Default::default(),
-        folders: Vec::new(),
+        dirs: Vec::new(),
     });
     let router = authenticating(crate::build_router(state.clone()), &state.library);
     (router, state)
 }
 
 /// What migration 15 leaves where one work gathered an edition from each of
-/// two folders, once the next derive has run: the folders are libraries of
+/// two directories, once the next derive has run: the directories are libraries of
 /// their own, `Manga` and `Other`. The work is filed under `Manga`, its hub
 /// edition `en`'s library, and still holds the edition `raw`, whose member is
-/// under `Other`'s folder. `Other` has a work of its own over the same folder.
+/// under `Other`'s directory. `Other` has a work of its own over the same directory.
 ///
 /// The fixture account is granted `Manga` alone. Answers the old work's slug
 /// and the new one's, in that order.
@@ -2480,14 +2480,14 @@ pub(crate) fn router_over_a_work_keeping_another_librarys_edition() -> (
                 ..Default::default()
             },
         )
-        .expect("the hub folder's edition sorts first, so it is the hub");
+        .expect("the hub directory's edition sorts first, so it is the hub");
         for root in taiyaku_library::scan::roots(&conn).expect("lists the roots") {
             taiyaku_library::scan::scan_root(&conn, &root).expect("scans");
         }
         taiyaku_library::derive::derive(&conn).expect("derives one work of two editions");
 
         conn.execute("INSERT INTO library (id, name) VALUES (90, 'Other')", [])
-            .expect("a library for the other folder");
+            .expect("a library for the other directory");
         conn.execute("UPDATE root SET library_id = 90 WHERE id = ?1", [o.id])
             .expect("as migration 15 files each root under a library of its own");
         taiyaku_library::derive::derive(&conn).expect("the first derive within libraries");
@@ -2512,7 +2512,7 @@ pub(crate) fn router_over_a_work_keeping_another_librarys_edition() -> (
             .expect("counts the kept edition's members");
         assert_eq!(
             kept, 1,
-            "the fixture: Manga's work keeps `raw`, its member under Other's folder"
+            "the fixture: Manga's work keeps `raw`, its member under Other's directory"
         );
         grant_root(&conn, h.id);
         slugs
@@ -2527,7 +2527,7 @@ pub(crate) fn router_over_a_work_keeping_another_librarys_edition() -> (
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
         library_job: Default::default(),
-        folders: Vec::new(),
+        dirs: Vec::new(),
     });
     let router = authenticating(crate::build_router(state.clone()), &state.library);
     (router, state, fixture, slugs)

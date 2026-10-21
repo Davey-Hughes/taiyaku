@@ -393,7 +393,7 @@ fn merge_worst_case(
 }
 
 /// The `AND EXISTS (...)` fragment restricting `work_alias`'s own rows to
-/// ones with a member under one of `access`'s folders
+/// ones with a member under one of `access`'s directories
 /// ([`Access::grant_clause`]).
 ///
 /// **I8.** `library_api::work` already resolves a slug through
@@ -461,7 +461,7 @@ fn edition_owner(
 
 /// The work and content hash a `member.id` belongs to, or
 /// [`NoAnswer::Missing`] — for an id naming nothing, and for a member whose
-/// own `root_id` is not one of `access`'s folders (I8). An imported member's `root_id`
+/// own `root_id` is not one of `access`'s directories (I8). An imported member's `root_id`
 /// is NULL, and `IN (…)` excludes NULL — [`browse::unfiled`]'s own doc
 /// comment states the identical rule for the read side: a restricted grant
 /// sees none of them.

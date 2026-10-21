@@ -12,7 +12,7 @@
 //! # Every handler takes the principal's access and passes it straight down
 //!
 //! `Principal.access` is the caller's grant: every library, or only some
-//! folders, where only none sees nothing. Nothing here interprets it; it goes
+//! directories, where only none sees nothing. Nothing here interprets it; it goes
 //! to `browse`, which applies it in SQL.
 //!
 //! # Every handler reads the library on the blocking pool
@@ -140,7 +140,7 @@ pub(crate) struct GridQuery {
 /// no series, and a grid that only listed series would never show one.
 ///
 /// **`?root=` is refused, 400, naming `library`**, before the library is
-/// read. It narrowed the grid to one folder before libraries did, and an
+/// read. It narrowed the grid to one directory before libraries did, and an
 /// address that still carries it asks a question this route no longer
 /// answers.
 pub(crate) async fn series(
@@ -166,7 +166,7 @@ pub(crate) async fn series(
         // two different questions.
         // `browse` leaves every imported work out of it in SQL, from §5.1's
         // own NULL-excludes-itself rule: an imported member sits under no
-        // folder, and asking for a library asks for what is in its folders.
+        // directory, and asking for a library asks for what is in its directories.
         let unfiled =
             match browse::unfiled(conn, &principal.access, principal.user_id, query.library) {
                 Ok(unfiled) => unfiled,

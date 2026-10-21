@@ -1,14 +1,14 @@
 /**
- * The `/api/library/libraries*` and folder-browser client: Configuration →
+ * The `/api/library/libraries*` and directory-browser client: Configuration →
  * Libraries.
  *
  * **A library that exists is addressed by its id.** A name is sent only to
  * make one or to rename one.
  *
- * **A folder's own routes are still `config.ts`'s.** A library's card holds a
- * `RootRow` per folder, and that row patches, scans and removes its folder
- * through `/api/library/roots/{id}`. What a library does whole is here, and
- * so is moving a folder from one library to another.
+ * **A directory's own routes are still `config.ts`'s.** A library's card holds
+ * a `RootRow` per directory, and that row patches, scans and removes its
+ * directory through `/api/library/roots/{id}`. What a library does whole is
+ * here, and so is moving a directory from one library to another.
  */
 import { getJson, sendJson } from './api'
 import type { Added, Derived, RemovalAnswer, Root } from './config'
@@ -21,11 +21,11 @@ export interface Library {
   works: number
   /** EPUB and PDF entries its scans recorded, which nothing reads yet. */
   books: number
-  /** Its folders, oldest first. */
-  folders: Root[]
+  /** Its directories, oldest first. */
+  dirs: Root[]
 }
 
-/** `POST /api/library/libraries`'s answer: the library, and each folder's probe. */
+/** `POST /api/library/libraries`'s answer: the library, and each directory's probe. */
 export interface Created {
   library: Library
   added: Added[]
@@ -34,20 +34,20 @@ export interface Created {
 /** `GET /api/library/libraries/{id}/scan`. */
 export interface LibraryScanStatus {
   library_id: number
-  /** Whether a scan of any of its folders is running. */
+  /** Whether a scan of any of its directories is running. */
   running: boolean
   /** `null` when nothing is running. */
   elapsed_secs: number | null
-  folders: { root_id: number; running: boolean }[]
+  dirs: { root_id: number; running: boolean }[]
 }
 
-/** `GET /api/library/folders`: one directory's subdirectories, or the prefixes. */
-export interface FolderListing {
+/** `GET /api/library/dirs`: one directory's subdirectories, or the prefixes. */
+export interface DirListing {
   /** `null` where the prefixes themselves were listed. */
   path: string | null
   /** Where "up" goes. `null` at a prefix. */
   parent: string | null
-  folders: { name: string; path: string }[]
+  dirs: { name: string; path: string }[]
 }
 
 /** `sendJson` resolves `undefined` for a 204, which no route here answers. */
@@ -61,13 +61,10 @@ async function expectBody<T>(sent: Promise<T | undefined>): Promise<T> {
 export const listLibraries = () =>
   getJson<{ libraries: Library[] }>('/api/library/libraries')
 
-/** A library and its folders: all of them, or a refusal and nothing made. */
-export const createLibrary = (
-  name: string,
-  folders: string[],
-): Promise<Created> =>
+/** A library and its directories: all of them, or a refusal and nothing made. */
+export const createLibrary = (name: string, dirs: string[]): Promise<Created> =>
   expectBody(
-    sendJson<Created>('/api/library/libraries', 'POST', { name, folders }),
+    sendJson<Created>('/api/library/libraries', 'POST', { name, dirs }),
   )
 
 /** Answers the name as stored, which is the name sent with its spaces stripped. */
@@ -80,9 +77,9 @@ export const renameLibrary = (id: number, name: string) =>
     ),
   )
 
-export const addFolder = (id: number, path: string): Promise<Added> =>
+export const addDir = (id: number, path: string): Promise<Added> =>
   expectBody(
-    sendJson<Added>(`/api/library/libraries/${id}/folders`, 'POST', { path }),
+    sendJson<Added>(`/api/library/libraries/${id}/dirs`, 'POST', { path }),
   )
 
 /** What removing library `id` would cost. `?dry_run=true`, spelt exactly. */
@@ -98,7 +95,7 @@ export const removeLibrary = (id: number): Promise<RemovalAnswer> =>
   expectBody(sendJson<RemovalAnswer>(`/api/library/libraries/${id}`, 'DELETE'))
 
 /**
- * Start a scan of every folder of library `id`. Answers 409 while a scan of
+ * Start a scan of every directory of library `id`. Answers 409 while a scan of
  * any one of them is running.
  */
 export const startLibraryScan = (
@@ -115,27 +112,27 @@ export const libraryScanStatus = (id: number) =>
   getJson<LibraryScanStatus>(`/api/library/libraries/${id}/scan`)
 
 /** The subdirectories of `path`, or the prefixes when it is left out. */
-export const listFolders = (path?: string) =>
-  getJson<FolderListing>(
+export const listDirs = (path?: string) =>
+  getJson<DirListing>(
     path === undefined
-      ? '/api/library/folders'
-      : `/api/library/folders?path=${encodeURIComponent(path)}`,
+      ? '/api/library/dirs'
+      : `/api/library/dirs?path=${encodeURIComponent(path)}`,
   )
 
 /**
- * How long a listing is read before the folder browser says so. A listing
+ * How long a listing is read before the directory browser says so. A listing
  * answered sooner is itself the answer to the press, and a line drawn and
  * taken away faster than it can be read is a flicker; 400 ms is inside the
  * span where a reply still reads as the press's own.
  */
 export const READING_DELAY_MS = 400
 
-/** Where a folder moves to: a library that exists, or one made by the move. */
+/** Where a directory moves to: a library that exists, or one made by the move. */
 export type MoveTarget = { library: number } | { new_library: string }
 
 /** What a move did or, rehearsed, would do. */
 export interface Moved {
-  /** The library the folder is in after the move. */
+  /** The library the directory is in after the move. */
   library_id: number
   /** That library's name. */
   library: string
@@ -145,15 +142,15 @@ export interface Moved {
   works_joined: number
   /** Works whose editions end up in two libraries. */
   works_split: number
-  /** Series the target already holds that gain volumes from the folder. */
+  /** Series the target already holds that gain volumes from the directory. */
   series_joined: number
-  /** Reading positions that go with the folder's editions. */
+  /** Reading positions that go with the directory's editions. */
   positions: number
-  /** Notes that go with the folder's editions. */
+  /** Notes that go with the directory's editions. */
   notes: number
   /** Alignments between editions that the move separates, which are dropped. */
   alignments_dropped: number
-  /** The name of the folder's old library, where the move empties and removes it. */
+  /** The name of the directory's old library, where the move empties and removes it. */
   library_removed: string | null
   /** Grants that went with that library. */
   grants_removed: number
@@ -167,7 +164,7 @@ export interface Moved {
 /**
  * What a removal's or a move's rehearsal says of the accounts it leaves
  * seeing no library, under its counts. `what` is the library as the dialog
- * names it, `"this library"` or `"this folder's library"`.
+ * names it, `"this library"` or `"this directory's library"`.
  *
  * One account is named again in the second sentence rather than given a
  * pronoun, so nothing is assumed of whoever holds it.
@@ -190,7 +187,7 @@ export interface MoveAnswer {
 }
 
 /**
- * What moving folder `rootId` to `to` would do, without doing it. A move
+ * What moving directory `rootId` to `to` would do, without doing it. A move
  * that would be refused is refused here in the same words, with the volumes
  * that stand in its way.
  */
@@ -203,11 +200,8 @@ export const moveCost = (rootId: number, to: MoveTarget): Promise<MoveAnswer> =>
     ),
   )
 
-/** Moves folder `rootId` to `to`. */
-export const moveFolder = (
-  rootId: number,
-  to: MoveTarget,
-): Promise<MoveAnswer> =>
+/** Moves directory `rootId` to `to`. */
+export const moveDir = (rootId: number, to: MoveTarget): Promise<MoveAnswer> =>
   expectBody(
     sendJson<MoveAnswer>(`/api/library/roots/${rootId}/move`, 'POST', to),
   )

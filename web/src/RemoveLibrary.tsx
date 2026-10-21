@@ -8,9 +8,9 @@
  * handed up with the answer: this dialog is gone by then, and the screen
  * draws it.
  *
- * **The counts are the library's, not its folders' added up.** A work with
- * an edition in each of two folders is in neither folder's own count, and
- * the server counts it once for the library.
+ * **The counts are the library's, not its directories' added up.** A work with
+ * an edition in each of two directories is in neither directory's own count,
+ * and the server counts it once for the library.
  *
  * **An account whose only grant is this library is named under the counts,
  * and the confirm is still offered.** The removal leaves it seeing no library
@@ -38,7 +38,7 @@ function count(n: number, one: string, many: string): string {
 export interface RemoveLibraryProps {
   library: Library
   /**
-   * A scan of the library is known, or one of its folders is scanning or
+   * A scan of the library is known, or one of its directories is scanning or
    * confirming a removal of its own. The confirm is held and sends nothing
    * until none is.
    */
@@ -78,11 +78,11 @@ export function RemoveLibrary({
     if (!blocked && !removing) setEpoch((n) => n + 1)
   }
   /**
-   * The counts are asked again when the library's folders change, and one is
-   * never drawn beside the folder count of another asking.
+   * The counts are asked again when the library's directories change, and one
+   * is never drawn beside the directory count of another asking.
    */
-  const folders = library.folders.map((f) => f.path).join('\n')
-  const about = `${epoch}:${folders}`
+  const dirs = library.dirs.map((f) => f.path).join('\n')
+  const about = `${epoch}:${dirs}`
   const cost = asked?.about === about ? asked.answer : undefined
   /** A ref as well as `removing`: two presses before a render both read false. */
   const inFlight = useRef(false)
@@ -134,7 +134,7 @@ export function RemoveLibrary({
         <>
           <p className="counts">
             Removing {library.name} removes its{' '}
-            {count(library.folders.length, 'folder', 'folders')},{' '}
+            {count(library.dirs.length, 'directory', 'directories')},{' '}
             {count(cost.removed.works, 'work', 'works')},{' '}
             {count(
               cost.removed.positions,

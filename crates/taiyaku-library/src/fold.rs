@@ -1644,7 +1644,7 @@ pub enum Rehoming {
 /// Give `into_work` the edition rows `keys` of `from_work`, in place of its
 /// own editions of those keys, with everything a reader put on them.
 ///
-/// **For a work a folder move divides** (`crate::relocate`). The derive that
+/// **For a work a directory move divides** (`crate::relocate`). The derive that
 /// follows the move leaves `from_work` holding editions whose archives now
 /// belong to another library, and makes `into_work` there with fresh
 /// editions over the same archives. [`absorb`] cannot carry them: it moves a

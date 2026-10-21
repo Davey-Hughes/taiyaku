@@ -116,7 +116,7 @@ fn every_page_the_server_serves_is_the_page_the_aligner_sequenced() {
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
         library_job: Default::default(),
-        folders: Vec::new(),
+        dirs: Vec::new(),
     };
     let held = state.works.snapshot();
     let work = &held[0];
@@ -348,7 +348,7 @@ fn a_note_can_be_anchored_to_every_slot_of_every_real_edition() {
 // The fixtures `download/tests.rs` otherwise runs against are two `Stored`
 // entries of six bytes apiece, written by the `zip` crate with default
 // options; this corpus is 11,431 `DEFLATE` entries out of 11,681, with pages
-// nested in per-chapter folders and archives up to 1.49 GB. Only a check
+// nested in per-chapter directories and archives up to 1.49 GB. Only a check
 // that actually walks the HTTP route over that material can say the rebuild
 // survives it.
 
@@ -413,7 +413,7 @@ fn a_corpus_edition_with_members(
                 auth: crate::session::AuthConfig::default(),
                 scans: Default::default(),
                 library_job: Default::default(),
-                folders: Vec::new(),
+                dirs: Vec::new(),
             });
             let router = crate::test_support::authenticating(
                 crate::build_router(state.clone()),
@@ -466,7 +466,7 @@ fn a_corpus_edition_of_one_file(root: &Path) -> (axum::Router, String, String, P
                 auth: crate::session::AuthConfig::default(),
                 scans: Default::default(),
                 library_job: Default::default(),
-                folders: Vec::new(),
+                dirs: Vec::new(),
             });
             let router = crate::test_support::authenticating(
                 crate::build_router(state.clone()),

@@ -386,7 +386,7 @@ async fn a_single_member_edition_is_served_byte_for_byte() {
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
         library_job: Default::default(),
-        folders: Vec::new(),
+        dirs: Vec::new(),
     });
     let router =
         crate::test_support::authenticating(crate::build_router(state.clone()), &state.library);
@@ -660,7 +660,7 @@ async fn a_member_range_is_that_slice_of_the_file() {
 /// with its actionable message rather than streamed as though it were a file.
 ///
 /// `prepare_member`'s `path.is_dir()` check exists for exactly the shape
-/// `taiyaku_read` supports beside a zip: an edition scanned from a folder of
+/// `taiyaku_read` supports beside a zip: an edition scanned from a directory of
 /// image files rather than packed into one. Task 8 review, carried over —
 /// verified live but never pinned by a test until now.
 #[tokio::test]
@@ -697,7 +697,7 @@ async fn a_directory_member_is_refused_not_streamed() {
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
         library_job: Default::default(),
-        folders: Vec::new(),
+        dirs: Vec::new(),
     });
     let router =
         crate::test_support::authenticating(crate::build_router(state.clone()), &state.library);
@@ -984,7 +984,7 @@ async fn a_size_lying_archive_aborts_the_download_instead_of_streaming_a_lie() {
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
         library_job: Default::default(),
-        folders: Vec::new(),
+        dirs: Vec::new(),
     });
     let router =
         crate::test_support::authenticating(crate::build_router(state.clone()), &state.library);
@@ -1189,7 +1189,7 @@ async fn a_single_member_directory_edition_is_generated_not_passed_through() {
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
         library_job: Default::default(),
-        folders: Vec::new(),
+        dirs: Vec::new(),
     });
     let router =
         crate::test_support::authenticating(crate::build_router(state.clone()), &state.library);

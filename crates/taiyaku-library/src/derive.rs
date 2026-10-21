@@ -911,8 +911,8 @@ pub fn derive_with(conn: &Connection, documents: Documents) -> Result<DeriveRepo
 ///
 /// **The fourth element is the library — Part F1.** Last, so a library's
 /// groups sort by title, volume and path as a store's did, and the rows a pass
-/// mints come out in the order they always have. Two folders of one library
-/// group together exactly as two roots did before F1; a folder of another
+/// mints come out in the order they always have. Two directories of one library
+/// group together exactly as two roots did before F1; a directory of another
 /// library never joins them.
 type GroupKey = (String, Option<u64>, Option<String>, i64);
 
@@ -2635,9 +2635,9 @@ pub(crate) fn unattached_chapter_dirs(
 /// `accept` needs is "where does this series' material live", not "which of
 /// it is a member".
 ///
-/// **Within `library` — Part F1.** Only that library's folders answer, so the
+/// **Within `library` — Part F1.** Only that library's directories answer, so the
 /// same title in another library contributes nothing. A `library` of `None`
-/// has no folder and answers empty.
+/// has no directory and answers empty.
 ///
 /// # Errors
 ///
@@ -2686,10 +2686,10 @@ pub(crate) type RelPathsBySeries = BTreeMap<(Option<i64>, String), Vec<(i64, Str
 /// [`rel_paths_for_series`] for several series in **one** pass.
 ///
 /// Each series is asked about as `(library, title)`, and is answered from
-/// that library's folders only. Every pair asked about is a key of the
+/// that library's directories only. Every pair asked about is a key of the
 /// answer, holding an empty `Vec` where nothing resolved to it — "no
 /// entries" is an answer here, not an absence — which is what a pair whose
-/// library is `None` always holds, since no folder is in no library.
+/// library is `None` always holds, since no directory is in no library.
 ///
 /// **The pass is what costs, not the filter.** Each call compiles every rule
 /// in the library ([`Engine::load`]), reads every root, `SELECT`s every

@@ -165,7 +165,7 @@ pub fn scanned(conn: &Connection, doc: &Sidecar, known: Option<i64>) -> Result<i
     import_with(conn, doc, None, Scope::Scan, None, known)
 }
 
-/// [`scanned`] for a work derived from a library's folders, which is every
+/// [`scanned`] for a work derived from a library's directories, which is every
 /// work `derive` writes.
 ///
 /// **Content decides within `library` — Part F1.** A byte-identical volume

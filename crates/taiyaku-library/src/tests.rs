@@ -180,7 +180,7 @@ pub(crate) fn library_with_two_roots() -> FixtureLibrary {
         crate::scan::add_root(&conn, &dir.path().join("_unused_c"))
             .expect("adding the third placeholder root");
 
-        // **The three real roots are folders of one library.** The widening
+        // **The three real roots are directories of one library.** The widening
         // rule this fixture's tests append merges their series into one, and
         // since Part F1 a series is one library's: three libraries would
         // each keep a series called `Alpha`. The placeholders stay libraries

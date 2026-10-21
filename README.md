@@ -64,9 +64,9 @@ and reading logic runs in the browser and, later, inside a native shell.
 # volumes, chapters — without touching any of it; --add remembers the root so
 # a later run needs no flag. The commands below still take real file paths,
 # not names
-# --library NAME files the folder under that library, creating it, so two
-# folders (Volumes and Chapters, say) derive as one shelf; without it, a
-# folder is a library of its own. `taiyaku library libraries` lists them
+# --library NAME files the directory under that library, creating it, so two
+# directories (Volumes and Chapters, say) derive as one shelf; without it, a
+# directory is a library of its own. `taiyaku library libraries` lists them
 taiyaku library scan --add /srv/manga
 
 # pair a Japanese raw against an English release and write the sidecar
@@ -159,7 +159,7 @@ TAIYAKU_STUMP_URL=https://stump.example TAIYAKU_STUMP_KEY=… \
 
 # point an OPDS reader at
 #   http://<host>:8484/opds/v1.2/catalog
-# which lists every work, and every library's works twice: by the folders
+# which lists every work, and every library's works twice: by the directories
 # each library holds, and by the library each work is filed in. in the
 # browser, About and the account screen show this address, built from the
 # origin the page was loaded from, with a Copy address button only in a
@@ -177,13 +177,13 @@ taiyaku library user grant-library alice Manga
 taiyaku library user revoke-library alice Manga
 taiyaku library user every-library alice
 #
-# a restricted account sees only the editions whose files sit under a folder of
-# a library it was granted, and cannot read their pages either. a work imported
-# from a `taiyaku.json` sits under no root at all, so it is visible only to an
-# unrestricted account. members scanned before this feature existed carry no
-# root until the schema migration recovers it from their paths; anything it
-# cannot recover stays unrooted and invisible to a restricted account, and
-# `grant-library` says so when it finds any.
+# a restricted account sees only the editions whose files sit under a directory
+# of a library it was granted, and cannot read their pages either. a work
+# imported from a `taiyaku.json` sits under no root at all, so it is visible
+# only to an unrestricted account. members scanned before this feature existed
+# carry no root until the schema migration recovers it from their paths;
+# anything it cannot recover stays unrooted and invisible to a restricted
+# account, and `grant-library` says so when it finds any.
 
 # take a backup. the database is the only copy of notes, collections, tags,
 # external ids, users and read history — a sidecar export carries none of
@@ -256,26 +256,27 @@ carried in from another library and wrong for a save.
 
 **The Libraries screen is built**, at `/config/libraries` — an admin-only
 settings area beside the library, where a library is made, renamed, scanned and
-removed from the browser rather than a terminal, and so is each folder in it;
+removed from the browser rather than a terminal, and so is each directory in it;
 `/config/roots` lands there, and so does a bare `/config`. It is a table of the
-libraries, where a row opens that library's page, and a folder of a library has
-a page of its own beneath it. A library is made from a name and one folder,
-typed or found with the folder browser, which lists only beneath the folders
-the server was started with (`--folders`, or `TAIYAKU_FOLDERS`); more folders
-are added on the library's page. A refusal — a name already taken, a folder inside another, a path that cannot be
-read — is drawn as the server's own sentence. Removing a library or a folder
-states what it will take — works, reading positions, notes — and offers no
-confirm button at all until those counts have arrived, and names any account
-the removal leaves seeing no library. A folder's page
-has **Move…**, to another library or a new one: it says what the move would do —
-how many works keep their address, how many join a work the library already
-holds, how many are split — before it offers the move, and refuses, naming what
-stands in the way, a move that cannot keep every reader's place. **Scan library**
-on a library walks each of its folders in turn and derives once. A scan started
-from the screen reports both halves of what it did in full: the walk and the
-derivation, every field, with what it *could not* do listed before what it did,
-and an empty list drawn as `0` rather than left out — so "nothing was unreadable
-this time" cannot be mistaken for "this version does not say".
+libraries, where a row opens that library's page, and a directory of a library
+has a page of its own beneath it. A library is made from a name and one
+directory, typed or found with the directory browser, which lists only beneath
+the directories the server was started with (`--dirs`, or `TAIYAKU_DIRS`); more
+directories are added on the library's page. A refusal — a name already taken, a
+directory inside another, a path that cannot be read — is drawn as the server's
+own sentence. Removing a library or a directory states what it will take —
+works, reading positions, notes — and offers no confirm button at all until
+those counts have arrived, and names any account the removal leaves seeing no
+library. A directory's page has **Move…**, to another library or a new one: it
+says what the move would do — how many works keep their address, how many join a
+work the library already holds, how many are split — before it offers the move,
+and refuses, naming what stands in the way, a move that cannot keep every
+reader's place. **Scan library** on a library walks each of its directories in
+turn and derives once. A scan started from the screen reports both halves of
+what it did in full: the walk and the derivation, every field, with what it
+*could not* do listed before what it did, and an empty list drawn as `0` rather
+than left out — so "nothing was unreadable this time" cannot be mistaken for
+"this version does not say".
 
 **The rule editor is built too**, at `/config/rules` — the screen the whole
 preview mechanism exists for. An ordered
@@ -428,7 +429,7 @@ and runs as uid 99, gid 100 (Unraid's `nobody:users`). It needs three mappings:
 | --- | --- | --- |
 | `/config` | `taiyaku/library.db` and `taiyaku/backups/`: accounts, reading positions, notes, corrections | yes — it is the only copy |
 | `/cache` | covers, tiles and reading-size pages | no — all of it regenerates |
-| `/media` | the share your libraries' folders are in | it is your library |
+| `/media` | the share your libraries' directories are in | it is your library |
 
 A compose file in the shape this repository is meant to be deployed with:
 
@@ -470,25 +471,25 @@ Give the first account a password from the host:
 docker exec -it taiyaku taiyaku library user promote davey
 ```
 
-Then sign in and make the libraries on Configuration → Libraries. Each is
-made from a name and one folder, picked in a browser that starts at `/media`:
-the image sets `TAIYAKU_FOLDERS=/media`, and the browser lists nothing
-outside it. More folders are added on the library's page with Add folder….
-Two folders in one library, `/media/Manga/Volumes` and
-`/media/Manga/Chapters` say, are derived together, so a chapter release
-joins its volume as another edition. Scan library on a library's page walks its
-folders and derives once.
+Then sign in and make the libraries on Configuration → Libraries. Each is made
+from a name and one directory, picked in a browser that starts at `/media`: the
+image sets `TAIYAKU_DIRS=/media`, and the browser lists nothing outside it. More
+directories are added on the library's page with Add directory…. Two directories
+in one library, `/media/Manga/Volumes` and `/media/Manga/Chapters` say, are
+derived together, so a chapter release joins its volume as another edition. Scan
+library on a library's page walks its directories and derives once.
 
-`TAIYAKU_FOLDERS` is a `:`-separated list, because a folder's path can hold a
-space or a comma. `taiyaku serve --folders DIR`, repeatable, sets the same
-list on the command line and wins over the variable.
+`TAIYAKU_DIRS` is a `:`-separated list, because a directory's path can hold a
+space or a comma. `taiyaku serve --dirs DIR`, repeatable, sets the same
+list on the command line and wins over the variable. `serve` refuses to start
+while `TAIYAKU_FOLDERS`, the variable's old name, is set.
 
 The image does not create `/media`, so a container that maps nothing there
-browses nothing, and `serve` prints each folder it was given that is not a
-directory. A `TAIYAKU_FOLDERS` that is set and empty replaces the image's
+browses nothing, and `serve` prints each path it was given that is not a
+directory. A `TAIYAKU_DIRS` that is set and empty replaces the image's
 default and lists nothing. A deployment that mapped its share at `/library`
-before sees an empty browser until it maps `/media` or sets `TAIYAKU_FOLDERS`
-to where the share is. A relative folder is taken from the directory the
+before sees an empty browser until it maps `/media` or sets `TAIYAKU_DIRS`
+to where the share is. A relative directory is taken from the one the
 server runs in.
 
 The same from the host, for a script:
@@ -497,10 +498,10 @@ The same from the host, for a script:
 docker exec taiyaku taiyaku library scan --add /media/Manga/Volumes --library Manga
 ```
 
-`--library` names the library the folder is filed under, and creates it.
+`--library` names the library the directory is filed under, and creates it.
 A name is read without its surrounding white space and without regard to ASCII
-case, so `--library manga` files a folder under the library `Manga`.
-Left out, the folder becomes a library named for the folder, `Volumes` here.
+case, so `--library manga` files a directory under the library `Manga`. Left
+out, the directory becomes a library named for the directory, `Volumes` here.
 
 The first scan reads every archive once to hash it, so on a large library it
 takes as long as reading the whole share.

@@ -1,25 +1,25 @@
 /**
- * Removing a folder, and what it costs — spec C4 §2.
+ * Removing a directory, and what it costs — spec C4 §2.
  *
  * **The most destructive action in the product, and it does not look like
- * one.** Works derive from `scan_entry` + `rule`; dropping a folder drops its
- * entries, and progress, notes and read history all hang off works. So this
+ * one.** Works derive from `scan_entry` + `rule`; dropping a directory drops
+ * its entries, and progress, notes and read history all hang off works. So this
  * states its counts before it acts, and the real `DELETE` is sent from here
  * and nowhere else.
  *
- * **The dry run is fetched when this mounts, not when the folder's page is
- * drawn.** A count per folder per page load is a derivation-shaped question
- * asked about folders nobody is removing: `removal_cost` runs the same
+ * **The dry run is fetched when this mounts, not when the directory's page is
+ * drawn.** A count per directory per page load is a derivation-shaped question
+ * asked about directories nobody is removing: `removal_cost` runs the same
  * apply-read-rollback machinery the rule preview does.
  *
  * **The confirm does not exist until the counts do.** A button that removes a
- * folder while the sentence above it says nothing is the failure this whole
+ * directory while the sentence above it says nothing is the failure this whole
  * component exists to prevent, and "the dry run failed" is exactly when a
  * person is most likely to press on regardless.
  *
- * **An account whose only grant is the folder's library is named beneath
- * the counts**, where removing the folder removes the library: it will see no
- * library afterwards, which nothing else here says. The confirm is still
+ * **An account whose only grant is the directory's library is named beneath
+ * the counts**, where removing the directory removes the library: it will see
+ * no library afterwards, which nothing else here says. The confirm is still
  * offered.
  *
  * **Zero is drawn.** "This removes 0 works, 0 in-progress positions and 0
@@ -63,19 +63,19 @@ function count(n: number, one: string, many: string): string {
 export interface RemoveRootProps {
   root: Root
   /**
-   * The library's name, where this is its only folder: the library goes with
+   * The library's name, where this is its only directory: the library goes with
    * it, and the dialog says so.
    */
   lastOf?: string
   /**
-   * Something else in the folder's library has begun, so the counts quoted
+   * Something else in the directory's library has begun, so the counts quoted
    * here are from before it. The dialog cancels itself when this becomes
    * true, as its Cancel does, and so not while its removal is out.
    */
   held?: boolean
   onCancel: () => void
   /**
-   * Called once the folder is actually gone, with what the removal actually
+   * Called once the directory is actually gone, with what the removal actually
    * did.
    *
    * **The real answer, not the rehearsal's.** This used to be `() => void`
@@ -158,7 +158,7 @@ export function RemoveRoot({
     <div
       className="remove-root"
       role="group"
-      aria-label={`Remove the folder at ${root.path}`}
+      aria-label={`Remove the directory at ${root.path}`}
     >
       {failure !== undefined && <p role="alert">{failure}</p>}
       {cost === undefined ? (
@@ -175,8 +175,8 @@ export function RemoveRoot({
             and {count(cost.removed.notes, 'note', 'notes')}.
           </p>
           {lastOf !== undefined && (
-            <p className="last-folder">
-              This is the only folder of the library {lastOf}, so removing it
+            <p className="last-dir">
+              This is the only directory of the library {lastOf}, so removing it
               removes the library too.
             </p>
           )}
@@ -184,7 +184,7 @@ export function RemoveRoot({
             <p className="left-with-no-library">
               {noLibrarySentence(
                 cost.removed.left_with_no_library,
-                "this folder's library",
+                "this directory's library",
               )}
             </p>
           )}
@@ -202,7 +202,9 @@ export function RemoveRoot({
             {removing ? 'Removing…' : `Remove ${root.path}`}
           </button>
           <details className="removal-derive">
-            <summary>What re-deriving without this folder would find</summary>
+            <summary>
+              What re-deriving without this directory would find
+            </summary>
             <DeriveSection derive={cost.derive} level={5} />
           </details>
         </>

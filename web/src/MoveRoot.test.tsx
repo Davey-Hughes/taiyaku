@@ -11,7 +11,7 @@ import { mount, rerender } from './testing/mount'
 vi.mock('./libraries', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./libraries')>()),
   moveCost: vi.fn(),
-  moveFolder: vi.fn(),
+  moveDir: vi.fn(),
 }))
 
 const root: config.Root = {
@@ -96,7 +96,7 @@ describe('MoveRoot', () => {
     const { host } = shown()
     expect(
       host.querySelector('[role="group"]')?.getAttribute('aria-label'),
-    ).toBe('Move the folder at /media/Manga/Chapters')
+    ).toBe('Move the directory at /media/Manga/Chapters')
     expect([...target(host).options].map((o) => o.textContent)).toEqual([
       'Choose a library…',
       'Manga',
@@ -130,7 +130,7 @@ describe('MoveRoot', () => {
     )
   })
 
-  it('says what is dropped and what goes with the folder’s last library', async () => {
+  it('says what is dropped and what goes with the directory’s last library', async () => {
     vi.mocked(api.moveCost).mockResolvedValue(
       answer({
         works_kept: 1,
@@ -155,7 +155,7 @@ describe('MoveRoot', () => {
       '1 alignment between editions the move separates is dropped',
     )
     expect(said).toContain(
-      'Chapters has no other folder, so it is removed, with 2 grants.',
+      'Chapters has no other directory, so it is removed, with 2 grants.',
     )
     expect(said).not.toContain('gain volumes')
   })
@@ -172,7 +172,7 @@ describe('MoveRoot', () => {
     await choose(host, '7')
     await press(see(host))
     expect(host.querySelector('.left-with-no-library')?.textContent).toBe(
-      "alice, bob and carol can see only this folder's library. After this, they will see no library until an administrator grants one.",
+      "alice, bob and carol can see only this directory's library. After this, they will see no library until an administrator grants one.",
     )
     expect(
       host.querySelector('.move-counts + .left-with-no-library'),
@@ -191,7 +191,7 @@ describe('MoveRoot', () => {
     await choose(host, '7')
     await press(see(host))
     expect(host.querySelector('.move-counts')?.textContent).toContain(
-      'Chapters has no other folder, so it is removed, with 2 grants.',
+      'Chapters has no other directory, so it is removed, with 2 grants.',
     )
     expect(host.querySelector('.left-with-no-library')).toBeNull()
     expect(host.textContent).not.toContain('will see no library')
@@ -210,7 +210,7 @@ describe('MoveRoot', () => {
     await press(see(host))
     const said = host.querySelector('.move-counts')?.textContent ?? ''
     expect(said).toContain('1 series already in Manga gains volumes.')
-    expect(said).toContain('Chapters has no other folder, so it is removed.')
+    expect(said).toContain('Chapters has no other directory, so it is removed.')
     expect(said).not.toContain('grant')
   })
 
@@ -243,7 +243,7 @@ describe('MoveRoot', () => {
     await press(see(host))
     const said = host.querySelector('.move-counts')?.textContent ?? ''
     expect(said).toContain(
-      'Moving this folder from Chapters to Extras: 12 works keep their address and 0 works are split between the two libraries.',
+      'Moving this directory from Chapters to Extras: 12 works keep their address and 0 works are split between the two libraries.',
     )
     expect(said).not.toContain('join')
   })
@@ -252,7 +252,7 @@ describe('MoveRoot', () => {
     // Counts that differ from the rehearsal's: the move's own are the ones kept.
     const done = answer({ positions: 9, notes: 4 }, false)
     const held = deferred<api.MoveAnswer>()
-    vi.mocked(api.moveFolder).mockReturnValue(held.promise)
+    vi.mocked(api.moveDir).mockReturnValue(held.promise)
     const { host, onMoved } = shown()
     await choose(host, '7')
     await press(see(host))
@@ -263,8 +263,8 @@ describe('MoveRoot', () => {
     })
     await flush(() => held.resolve(done))
 
-    expect(api.moveFolder).toHaveBeenCalledTimes(1)
-    expect(api.moveFolder).toHaveBeenCalledWith(3, { library: 7 })
+    expect(api.moveDir).toHaveBeenCalledTimes(1)
+    expect(api.moveDir).toHaveBeenCalledWith(3, { library: 7 })
     expect(onMoved).toHaveBeenCalledWith(done)
   })
 
@@ -340,7 +340,7 @@ describe('MoveRoot', () => {
   })
 
   it('drops the rehearsal when the move itself is refused, and keeps the refusal', async () => {
-    vi.mocked(api.moveFolder).mockRejectedValue(
+    vi.mocked(api.moveDir).mockRejectedValue(
       new Error(
         '/api/library/roots/3/move: 409 {"error":"`Manga` already holds volumes of /media/Manga/Chapters","volumes":["A v01 (raw)"]}',
       ),
@@ -451,9 +451,9 @@ describe('MoveRoot', () => {
   })
 
   it('keeps the dialog and says why when the move itself fails', async () => {
-    vi.mocked(api.moveFolder).mockRejectedValue(
+    vi.mocked(api.moveDir).mockRejectedValue(
       new Error(
-        '/api/library/roots/3/move: 409 {"error":"a scan or a rule save is running; move the folder when it has finished","volumes":[]}',
+        '/api/library/roots/3/move: 409 {"error":"a scan or a rule save is running; move the directory when it has finished","volumes":[]}',
       ),
     )
     const { host, onMoved } = shown()
@@ -528,7 +528,7 @@ describe('MoveRoot', () => {
 
     it('does not cancel while its own move is out', async () => {
       const onCancel = vi.fn()
-      vi.mocked(api.moveFolder).mockReturnValue(new Promise(() => {}))
+      vi.mocked(api.moveDir).mockReturnValue(new Promise(() => {}))
       const host = mount(dialog(false, onCancel))
       await choose(host, '7')
       await press(see(host))

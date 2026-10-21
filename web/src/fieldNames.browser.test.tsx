@@ -96,7 +96,7 @@ const MANGA: librariesApi.Library = {
   name: 'Manga',
   works: 0,
   books: 0,
-  folders: [root],
+  dirs: [root],
 }
 
 /**
@@ -352,15 +352,15 @@ describe('the name Chromium gives a control under a field label — O175', () =>
     const host = await shown(librariesAt('/config/libraries/new'))
     expect(drawn(host)).toEqual([
       ['Name', 'uppercase'],
-      ['Folder path', 'uppercase'],
+      ['Directory path', 'uppercase'],
     ])
     expect(await controls()).toEqual([
       ['textbox', 'Name'],
-      ['textbox', 'Folder path'],
+      ['textbox', 'Directory path'],
     ])
   })
 
-  it('names a folder page’s controls as written', async () => {
+  it('names a directory page’s controls as written', async () => {
     vi.mocked(config.scanStatus).mockResolvedValue({
       root_id: 3,
       running: false,
@@ -498,7 +498,7 @@ describe('the name Chromium gives a heading or a group drawn in capitals — O18
 
 /**
  * Each page of the libraries screen heads itself with one h2 — the screen's
- * name, the library's name or the folder's path — and its sections a level
+ * name, the library's name or the directory's path — and its sections a level
  * below. What the tree makes of them is held beside the capitals cases
  * because the same sheet draws those headings.
  */
@@ -510,10 +510,10 @@ describe('the headings of the libraries screen, in Chromium’s own tree', () =>
       '/config/libraries/1',
       [
         ['Manga', 2],
-        ['Folders', 3],
+        ['Directories', 3],
       ],
     ],
-    ['/config/libraries/1/folders/3', [[root.path, 2]]],
+    ['/config/libraries/1/dirs/3', [[root.path, 2]]],
   ])(
     'reads %s as one page: its own heading, and its sections beneath it',
     async (entry, headings) => {
@@ -528,7 +528,7 @@ describe('the headings of the libraries screen, in Chromium’s own tree', () =>
         library_id: 1,
         running: false,
         elapsed_secs: null,
-        folders: [],
+        dirs: [],
       })
       vi.mocked(librariesApi.listLibraries).mockResolvedValue({
         libraries: [MANGA],
@@ -545,7 +545,7 @@ describe('the headings of the libraries screen, in Chromium’s own tree', () =>
     },
   )
 
-  it('reads a folder’s scan report one level beneath the folder’s path', async () => {
+  it('reads a directory’s scan report one level beneath the directory’s path', async () => {
     // A report's two headings are named by their words and sit under the
     // heading of whatever draws them.
     const finishedScan = {
@@ -565,7 +565,7 @@ describe('the headings of the libraries screen, in Chromium’s own tree', () =>
       },
       derive: emptyDerive,
     }
-    // Running when the folder's page is drawn, so it adopts the scan and
+    // Running when the directory's page is drawn, so it adopts the scan and
     // polls; the poll then finds it finished, with its report.
     vi.mocked(config.scanStatus)
       .mockResolvedValueOnce({
@@ -587,12 +587,12 @@ describe('the headings of the libraries screen, in Chromium’s own tree', () =>
       library_id: 1,
       running: false,
       elapsed_secs: null,
-      folders: [],
+      dirs: [],
     })
     vi.mocked(librariesApi.listLibraries).mockResolvedValue({
       libraries: [MANGA],
     })
-    await shown(librariesAt('/config/libraries/1/folders/3'))
+    await shown(librariesAt('/config/libraries/1/dirs/3'))
     await act(async () => {
       await new Promise((resolve) => {
         setTimeout(resolve, config.SCAN_POLL_MS + 400)
@@ -614,7 +614,7 @@ describe('the headings of the libraries screen, in Chromium’s own tree', () =>
       library_id: 1,
       running: false,
       elapsed_secs: null,
-      folders: [],
+      dirs: [],
     })
     vi.mocked(config.scanStatus).mockResolvedValue({
       root_id: 3,

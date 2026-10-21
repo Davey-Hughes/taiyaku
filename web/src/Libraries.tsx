@@ -2,7 +2,7 @@
  * The libraries screen: Configuration → Libraries, and the pages beneath it.
  *
  * **Four pages over one list.** The table of libraries, the form that makes
- * one, a library's page and a folder's page each read the list this screen
+ * one, a library's page and a directory's page each read the list this screen
  * holds and pick what they draw from it by id; there is no route that answers
  * one library. The list is read when the screen mounts, again on each move
  * between its pages, and after every write.
@@ -11,18 +11,18 @@
  * whichever page is showing; a refusal is drawn in the form that was sent,
  * while that form is drawn.
  *
- * **The probe from an add is kept, by the folder's path.** The watch probe
- * runs when a folder is added and at no other time, so a folder added in
+ * **The probe from an add is kept, by the directory's path.** The watch probe
+ * runs when a directory is added and at no other time, so a directory added in
  * this session has a watch state and one read from the list does not.
  *
  * **A removal's re-derive report, or a move's, is kept here, and drawn one
  * level up.** What was removed or moved has no page to draw it on, so the
  * report belongs to the page above it: a library's removal to the table, a
- * folder's to its library's page, or to the table where the library went with
- * its last folder. The screen goes up to that page when the answer comes,
- * if the person is still where they asked, and the report takes focus there:
- * the button that had it went with the page. The report is the one place a
- * lost position or an unwritable document is said.
+ * directory's to its library's page, or to the table where the library went
+ * with its last directory. The screen goes up to that page when the answer
+ * comes, if the person is still where they asked, and the report takes focus
+ * there: the button that had it went with the page. The report is the one place
+ * a lost position or an unwritable document is said.
  *
  * **An answer that comes once the person has gone to another page of the
  * screen is said on the page they are on**, as `configPages.tsx` says for
@@ -40,7 +40,7 @@
  *
  * **What a write takes away is dropped from what is drawn at once**, and in
  * the same transition as the move to the page above it, so the page that
- * asked is never drawn over a library or folder that is gone.
+ * asked is never drawn over a library or directory that is gone.
  */
 import {
   type ReactNode,
@@ -62,7 +62,7 @@ import {
 } from 'react-router'
 import type { Added, Derived, Probe, RemovalAnswer } from './config'
 import { useLateAnswers } from './configPages'
-import { FolderPage } from './FolderPage'
+import { DirPage } from './DirPage'
 import {
   type Created,
   type Library,
@@ -158,7 +158,7 @@ export function Libraries() {
    */
   const answering = useRef(false)
 
-  const folderChanged = useCallback(
+  const dirChanged = useCallback(
     (quiet?: boolean) => {
       if (!answering.current) reload(quiet)
     },
@@ -169,8 +169,8 @@ export function Libraries() {
    * Takes the answer to a removal or a move started on the page `from`: its
    * report, and what the write took out of the list, at once. The person is
    * sent to the report's page, `next.at`, only while on `from`, by path: the
-   * folder is gone, so a folder page left and opened again goes up too. An
-   * answer that comes after they went elsewhere leaves them where they are,
+   * directory is gone, so a directory page left and opened again goes up too.
+   * An answer that comes after they went elsewhere leaves them where they are,
    * with the report drawn on that page. The list is read once either way: by
    * the change of page, or here.
    */
@@ -251,14 +251,14 @@ export function Libraries() {
   )
 
   /**
-   * A folder was removed from a library. A folder that was the last of its
-   * library's took the library with it: the report is then named for the
+   * A directory was removed from a library. A directory that was the last of
+   * its library's took the library with it: the report is then named for the
    * library, which is what went, and drawn on the table.
    */
-  const folderRemoved = useCallback(
+  const dirRemoved = useCallback(
     (from: string, id: number, path: string, answer: RemovalAnswer) => {
       const library = drawn.current?.find((one) => one.id === id)
-      const left = library?.folders.filter((one) => one.path !== path)
+      const left = library?.dirs.filter((one) => one.path !== path)
       if (library !== undefined && left?.length === 0) {
         libraryRemoved(from, id, library.name, answer)
         return
@@ -269,7 +269,7 @@ export function Libraries() {
         (held) =>
           held.map((one) =>
             one.id === id
-              ? { ...one, folders: one.folders.filter((f) => f.path !== path) }
+              ? { ...one, dirs: one.dirs.filter((f) => f.path !== path) }
               : one,
           ),
       )
@@ -278,11 +278,11 @@ export function Libraries() {
   )
 
   /**
-   * A folder was moved to another library. The report goes to the library it
+   * A directory was moved to another library. The report goes to the library it
    * left, or to the table where the move emptied and removed that library. It
-   * is named for the folder and the library it went to.
+   * is named for the directory and the library it went to.
    */
-  const folderMoved = useCallback(
+  const dirMoved = useCallback(
     (from: string, id: number, path: string, answer: MoveAnswer) => {
       const gone = answer.moved.library_removed !== null
       answered(
@@ -300,7 +300,7 @@ export function Libraries() {
             ),
           },
         },
-        // The folder is not drawn in its new library: the reload does that.
+        // The directory is not drawn in its new library: the reload does that.
         (held) =>
           gone
             ? held.filter((one) => one.id !== id)
@@ -308,7 +308,7 @@ export function Libraries() {
                 one.id === id
                   ? {
                       ...one,
-                      folders: one.folders.filter((f) => f.path !== path),
+                      dirs: one.dirs.filter((f) => f.path !== path),
                     }
                   : one,
               ),
@@ -415,13 +415,13 @@ export function Libraries() {
           }
         />
         <Route
-          path=":id/folders/:fid"
+          path=":id/dirs/:did"
           element={
             <LibraryAt libraries={libraries} notices={notices}>
               {(library) => (
-                <FolderAt library={library} notices={notices}>
+                <DirAt library={library} notices={notices}>
                   {(root) => (
-                    <FolderPage
+                    <DirPage
                       key={root.path}
                       library={library}
                       root={root}
@@ -430,17 +430,17 @@ export function Libraries() {
                         .filter((other) => other.id !== library.id)
                         .map(({ id, name }) => ({ id, name }))}
                       notices={notices}
-                      onChanged={folderChanged}
+                      onChanged={dirChanged}
                       onLateRefusal={say}
                       onRemoved={(answer) =>
-                        folderRemoved(pathname, library.id, root.path, answer)
+                        dirRemoved(pathname, library.id, root.path, answer)
                       }
                       onMoved={(answer) =>
-                        folderMoved(pathname, library.id, root.path, answer)
+                        dirMoved(pathname, library.id, root.path, answer)
                       }
                     />
                   )}
-                </FolderAt>
+                </DirAt>
               )}
             </LibraryAt>
           }
@@ -481,26 +481,26 @@ function LibraryAt({
   return children(library)
 }
 
-/** The folder of `library` the path names, or a line saying there is none. */
-function FolderAt({
+/** The directory of `library` the path names, or a line saying there is none. */
+function DirAt({
   library,
   notices,
   children,
 }: {
   library: Library
   notices: ReactNode
-  children: (root: Library['folders'][number]) => ReactNode
+  children: (root: Library['dirs'][number]) => ReactNode
 }) {
-  const { fid } = useParams()
-  const root = library.folders.find((one) => String(one.id) === fid)
+  const { did } = useParams()
+  const root = library.dirs.find((one) => String(one.id) === did)
   if (root === undefined) {
     return (
-      <div className="folder-page">
+      <div className="dir-page">
         <p className="back">
           <Link to={libraryPath(library.id)}>‹ {library.name}</Link>
         </p>
         {notices}
-        <Missing key={fid}>No such folder in this library.</Missing>
+        <Missing key={did}>No such directory in this library.</Missing>
       </div>
     )
   }

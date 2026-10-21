@@ -357,7 +357,7 @@ async fn the_import_route_reports_the_proposals_it_reopens() {
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
         library_job: Default::default(),
-        folders: Vec::new(),
+        dirs: Vec::new(),
     });
 
     // The rule set exactly as it stood before the accept above — importing
@@ -1357,7 +1357,7 @@ fn state_with_many_scan_entries(
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
         library_job: Default::default(),
-        folders: Vec::new(),
+        dirs: Vec::new(),
     });
     (state, fixture)
 }
@@ -1443,7 +1443,7 @@ async fn the_preview_route_does_not_wait_on_the_shared_connections_mutex() {
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
         library_job: Default::default(),
-        folders: Vec::new(),
+        dirs: Vec::new(),
     });
 
     // A background thread takes `Library::conn`'s mutex and holds it — for up
@@ -1722,8 +1722,8 @@ async fn patching_or_deleting_an_unknown_root_is_a_404() {
     let text = test_support::body_string(response).await;
     assert_eq!(
         serde_json::from_str::<serde_json::Value>(&text).expect("a JSON body"),
-        serde_json::json!({ "error": "there is no folder 999999" }),
-        "the Libraries screen draws this, and it shows folders"
+        serde_json::json!({ "error": "there is no directory 999999" }),
+        "the Libraries screen draws this, and it shows directories"
     );
 
     let response = send_json(
@@ -1737,7 +1737,7 @@ async fn patching_or_deleting_an_unknown_root_is_a_404() {
     let text = test_support::body_string(response).await;
     assert_eq!(
         serde_json::from_str::<serde_json::Value>(&text).expect("a JSON body"),
-        serde_json::json!({ "error": "there is no folder 999999" }),
+        serde_json::json!({ "error": "there is no directory 999999" }),
     );
 }
 
@@ -1816,7 +1816,7 @@ async fn a_dry_run_delete_costs_without_removing_and_a_real_one_then_still_can()
     );
 }
 
-/// Removing the one folder of a library that is a reader's only grant goes
+/// Removing the one directory of a library that is a reader's only grant goes
 /// ahead: the dry run names the reader under `left_with_no_library` and
 /// removes nothing, the removal answers the same, and the reader is then
 /// listed nothing. The first root's series stands, so a reader widened to
@@ -2013,8 +2013,8 @@ async fn patching_a_root_with_bad_fields_names_a_root_not_a_rule() {
         let json: serde_json::Value = serde_json::from_str(&text).expect("a JSON body");
         let error = json["error"].as_str().expect("an `error` string");
         assert!(
-            error.contains(&format!("the folder's `{field}`")),
-            "the message must name a folder: {error}"
+            error.contains(&format!("the directory's `{field}`")),
+            "the message must name a directory: {error}"
         );
         assert!(
             !error.contains("the rule's"),
@@ -2023,10 +2023,10 @@ async fn patching_a_root_with_bad_fields_names_a_root_not_a_rule() {
     }
 }
 
-/// A folder's settings that are not an object are refused in the folder's
+/// A directory's settings that are not an object are refused in the directory's
 /// words, which are the ones the Libraries screen draws.
 #[tokio::test]
-async fn a_folder_patch_that_is_not_an_object_is_refused_in_the_folders_words() {
+async fn a_dir_patch_that_is_not_an_object_is_refused_in_the_dirs_words() {
     let (router, state, _fixture) = test_support::router_over_a_single_scanned_work();
     let root_id = only_root_id(&state);
 
@@ -2042,7 +2042,7 @@ async fn a_folder_patch_that_is_not_an_object_is_refused_in_the_folders_words() 
     assert_eq!(status, StatusCode::BAD_REQUEST, "{text}");
     assert_eq!(
         serde_json::from_str::<serde_json::Value>(&text).expect("a JSON body"),
-        serde_json::json!({ "error": "a folder's settings must be a JSON object" }),
+        serde_json::json!({ "error": "a directory's settings must be a JSON object" }),
     );
 }
 
@@ -2067,7 +2067,7 @@ async fn a_rules_route_validation_message_still_names_a_rule() {
     let text = test_support::body_string(response).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{text}");
     assert!(text.contains("the rule's `kind`"), "{text}");
-    assert!(!text.contains("the folder's"), "{text}");
+    assert!(!text.contains("the directory's"), "{text}");
 
     // `patch_bool`, `patch_nullable_text` and `patch_nullable_i64`, via
     // `rule_patch_from_json` — the id need not exist, since a patch this
@@ -2091,7 +2091,7 @@ async fn a_rules_route_validation_message_still_names_a_rule() {
             text.contains(&format!("the rule's `{field}`")),
             "{field}: {text}"
         );
-        assert!(!text.contains("the folder's"), "{field}: {text}");
+        assert!(!text.contains("the directory's"), "{field}: {text}");
     }
 }
 
@@ -2290,7 +2290,7 @@ async fn a_derive_failure_after_a_successful_scan_corrects_last_scan_status() {
     let outcome = crate::scan_jobs::run(
         &library,
         std::slice::from_ref(&root),
-        crate::scan_jobs::Reread::Folder,
+        crate::scan_jobs::Reread::Dir,
         &job,
     );
     let why = outcome.expect_err("the derive must actually fail, or this test proves nothing");
@@ -2390,7 +2390,7 @@ fn state_with_a_root_that_cannot_write_its_document(
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
         library_job: Default::default(),
-        folders: Vec::new(),
+        dirs: Vec::new(),
     });
     (state, fixture)
 }
@@ -2475,7 +2475,7 @@ fn state_with_a_root_that_folds_a_hand_documented_work(
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
         library_job: Default::default(),
-        folders: Vec::new(),
+        dirs: Vec::new(),
     });
     (state, fixture)
 }
@@ -2636,7 +2636,7 @@ async fn a_second_scan_of_a_root_already_scanning_is_refused() {
     assert_eq!(
         serde_json::from_str::<serde_json::Value>(&text).expect("a JSON body"),
         serde_json::json!({ "error": format!("a scan of {} is already running", path.display()) }),
-        "the refusal names the folder by its path, not by an id the screen never shows"
+        "the refusal names the directory by its path, not by an id the screen never shows"
     );
 
     // A *finished* scan does not block a fresh one — only `done: false`
@@ -2826,7 +2826,7 @@ fn state_with_a_root_scanned_once_then_given_real_exclusions(
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
         library_job: Default::default(),
-        folders: Vec::new(),
+        dirs: Vec::new(),
     });
     (state, fixture)
 }
@@ -3058,7 +3058,7 @@ async fn a_scan_does_not_wait_on_the_shared_connections_mutex() {
     let result = crate::scan_jobs::run(
         &library,
         std::slice::from_ref(&root),
-        crate::scan_jobs::Reread::Folder,
+        crate::scan_jobs::Reread::Dir,
         &job,
     );
     let elapsed = started.elapsed();
@@ -3227,7 +3227,7 @@ async fn deleting_a_root_clears_its_stale_scan_registry_entry() {
     let new_id = {
         let working = state.library.working().expect("a working connection");
         taiyaku_library::scan::add_root_checked(&working, new_fixture.path())
-            .expect("adds the folder")
+            .expect("adds the directory")
             .root
             .id
     };
@@ -3794,10 +3794,10 @@ async fn a_roots_patch_refuses_an_exclude_globs_line_that_will_not_compile() {
     assert!(text.contains("a{b"), "the refusal names the line: {text}");
     assert_eq!(
         serde_json::from_str::<serde_json::Value>(&text).expect("a JSON body"),
-        serde_json::json!({ "error": "the folder's `exclude_globs` line `a{b` is not a usable pattern: error parsing \
+        serde_json::json!({ "error": "the directory's `exclude_globs` line `a{b` is not a usable pattern: error parsing \
                       glob 'a{b': unclosed alternate group; missing '}' (maybe escape '{' with \
                       '[{]'?)" }),
-        "the folder's words, whole"
+        "the directory's words, whole"
     );
 
     assert_eq!(
@@ -3875,11 +3875,11 @@ fn a_scan_that_panicked_is_an_error_report_that_says_so() {
     );
 }
 
-/// While a scan of a folder is reserved, neither a rehearsal nor a removal
-/// of it goes ahead: 409 in a sentence naming the folder, nothing removed,
+/// While a scan of a directory is reserved, neither a rehearsal nor a removal
+/// of it goes ahead: 409 in a sentence naming the directory, nothing removed,
 /// and the reservation left as it was. Once the scan is done, it is removed.
 #[tokio::test]
-async fn a_folder_is_not_removed_while_a_scan_of_it_is_reserved() {
+async fn a_dir_is_not_removed_while_a_scan_of_it_is_reserved() {
     let (router, state, _fixture) = test_support::router_over_a_single_scanned_work();
     let root_id = only_root_id(&state);
     let path = taiyaku_library::scan::roots(&state.library.conn()).expect("roots")[0]
@@ -3910,7 +3910,7 @@ async fn a_folder_is_not_removed_while_a_scan_of_it_is_reserved() {
         assert_eq!(
             body,
             serde_json::json!({
-                "error": format!("a scan of {path} is running; remove the folder once it has finished")
+                "error": format!("a scan of {path} is running; remove the directory once it has finished")
             })
         );
         assert_eq!(
@@ -3943,12 +3943,12 @@ async fn a_folder_is_not_removed_while_a_scan_of_it_is_reserved() {
     assert_eq!(response.status(), StatusCode::OK);
 }
 
-/// A folder's scan that waited while its folder was removed, and another
-/// folder took the freed id, walks nothing: nothing of the removed folder's
+/// A directory's scan that waited while its directory was removed, and another
+/// directory took the freed id, walks nothing: nothing of the removed directory's
 /// is filed under the new one, the new one is not marked scanned, and the
 /// report says why.
 #[tokio::test]
-async fn a_folders_scan_walks_nothing_when_its_folder_changed_while_it_waited() {
+async fn a_dirs_scan_walks_nothing_when_its_dir_changed_while_it_waited() {
     let (_router, state, fixture) = test_support::router_over_a_single_scanned_work();
     let asked = taiyaku_library::scan::roots(&state.library.conn())
         .expect("roots")
@@ -3966,20 +3966,20 @@ async fn a_folders_scan_walks_nothing_when_its_folder_changed_while_it_waited() 
         // Through the store, as a removal that landed between the `DELETE`'s
         // check and its commit would.
         let working = state.library.working().expect("a working connection");
-        taiyaku_library::scan::remove_root(&working, asked.id).expect("removes the folder");
+        taiyaku_library::scan::remove_root(&working, asked.id).expect("removes the directory");
         let other = fixture.path().join("Other");
         std::fs::create_dir_all(&other).expect("mkdir");
         let added =
             taiyaku_library::scan::add_root_checked(&working, &other).expect("adds another");
         assert_eq!(
             added.root.id, asked.id,
-            "the freed id went to the new folder"
+            "the freed id went to the new directory"
         );
     }
 
     let job = std::sync::Arc::clone(&state);
     let root = asked.clone();
-    crate::scan_jobs::spawn(job, vec![root], started, crate::scan_jobs::Reread::Folder)
+    crate::scan_jobs::spawn(job, vec![root], started, crate::scan_jobs::Reread::Dir)
         .await
         .expect("the job ends");
 
@@ -3993,7 +3993,7 @@ async fn a_folders_scan_walks_nothing_when_its_folder_changed_while_it_waited() 
         .expect("counts");
     assert_eq!(
         entries, 0,
-        "nothing of the removed folder's was filed under the new one"
+        "nothing of the removed directory's was filed under the new one"
     );
     let status: Option<String> = conn
         .query_row(
@@ -4002,19 +4002,19 @@ async fn a_folders_scan_walks_nothing_when_its_folder_changed_while_it_waited() 
             |r| r.get(0),
         )
         .expect("reads");
-    assert_eq!(status, None, "the new folder was never scanned");
+    assert_eq!(status, None, "the new directory was never scanned");
     drop(conn);
     assert_eq!(
         state.scans.lock().unwrap()[&asked.id].report,
-        Some(serde_json::json!({ "error": crate::scan_jobs::FOLDER_CHANGED }))
+        Some(serde_json::json!({ "error": crate::scan_jobs::DIR_CHANGED }))
     );
 }
 
-/// A finished folder scan's report lands on its own reservation and on no
+/// A finished directory scan's report lands on its own reservation and on no
 /// other: not on one another scan made on the same id, and not on an id a
 /// removal cleared.
 #[tokio::test]
-async fn a_folders_scan_lands_only_on_its_own_reservation() {
+async fn a_dirs_scan_lands_only_on_its_own_reservation() {
     let (_router, state, _fixture) = test_support::router_over_a_single_scanned_work();
     let root = taiyaku_library::scan::roots(&state.library.conn())
         .expect("roots")
@@ -4032,7 +4032,7 @@ async fn a_folders_scan_lands_only_on_its_own_reservation() {
 
     let job = std::sync::Arc::clone(&state);
     let asked = root.clone();
-    crate::scan_jobs::spawn(job, vec![asked], ours, crate::scan_jobs::Reread::Folder)
+    crate::scan_jobs::spawn(job, vec![asked], ours, crate::scan_jobs::Reread::Dir)
         .await
         .expect("the job ends");
     {
@@ -4044,7 +4044,7 @@ async fn a_folders_scan_lands_only_on_its_own_reservation() {
     state.scans.lock().unwrap().remove(&root.id);
     let job = std::sync::Arc::clone(&state);
     let asked = root.clone();
-    crate::scan_jobs::spawn(job, vec![asked], ours, crate::scan_jobs::Reread::Folder)
+    crate::scan_jobs::spawn(job, vec![asked], ours, crate::scan_jobs::Reread::Dir)
         .await
         .expect("the job ends");
     assert!(
@@ -4053,11 +4053,11 @@ async fn a_folders_scan_lands_only_on_its_own_reservation() {
     );
 }
 
-/// A folder's scan walks the folder as it stands once the scan starts: a
+/// A directory's scan walks the directory as it stands once the scan starts: a
 /// setting changed between the request's reading and the job lock is the one
 /// the walk honours.
 #[tokio::test]
-async fn a_folders_scan_walks_the_settings_the_folder_holds_when_it_starts() {
+async fn a_dirs_scan_walks_the_settings_the_dir_holds_when_it_starts() {
     let (_router, state, _fixture) = test_support::router_over_a_single_scanned_work();
     let asked = taiyaku_library::scan::roots(&state.library.conn())
         .expect("roots")
@@ -4080,7 +4080,7 @@ async fn a_folders_scan_walks_the_settings_the_folder_holds_when_it_starts() {
         job,
         vec![first],
         std::time::Instant::now(),
-        crate::scan_jobs::Reread::Folder,
+        crate::scan_jobs::Reread::Dir,
     )
     .await
     .expect("the job ends");
@@ -4089,7 +4089,7 @@ async fn a_folders_scan_walks_the_settings_the_folder_holds_when_it_starts() {
         "the first walk recorded Extra"
     );
 
-    // After the request read the folder, and before the job took its lock.
+    // After the request read the directory, and before the job took its lock.
     let patch = taiyaku_library::scan::RootPatch {
         exclude_globs: Some(Some("Extra/".to_string())),
         ..Default::default()
@@ -4102,13 +4102,13 @@ async fn a_folders_scan_walks_the_settings_the_folder_holds_when_it_starts() {
     let stale = asked.clone();
     assert_eq!(
         stale.exclude_globs, None,
-        "the request read the folder before the change"
+        "the request read the directory before the change"
     );
     crate::scan_jobs::spawn(
         job,
         vec![stale],
         std::time::Instant::now(),
-        crate::scan_jobs::Reread::Folder,
+        crate::scan_jobs::Reread::Dir,
     )
     .await
     .expect("the job ends");

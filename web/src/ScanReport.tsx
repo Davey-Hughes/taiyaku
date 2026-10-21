@@ -131,7 +131,7 @@ function Orphans({ orphans }: { orphans: Orphan[] }) {
   )
 }
 
-/** The documents a folder no longer keeps — declined, not orphaned. */
+/** The documents a directory no longer keeps — declined, not orphaned. */
 function Declines({ declined }: { declined: Declined[] }) {
   return (
     <div
@@ -139,7 +139,7 @@ function Declines({ declined }: { declined: Declined[] }) {
       data-field="declined_documents"
       data-zero={declined.length === 0 ? '' : undefined}
     >
-      <dt>Documents this folder no longer keeps</dt>
+      <dt>Documents this directory no longer keeps</dt>
       <dd>
         {declined.length}
         {declined.length > 0 && (
@@ -290,7 +290,7 @@ function WalkSection({ walk, level }: { walk: Walk; level: ReportLevel }) {
         <Count field="updated" label="Updated" n={walk.updated} />
         <Count field="gone" label="Gone" n={walk.gone} />
         <div className="count" data-field="root">
-          <dt>Folder</dt>
+          <dt>Directory</dt>
           <dd>
             <code>{walk.root}</code>
           </dd>
@@ -358,7 +358,7 @@ export function DeriveSection({
         />
         <Count
           field="root_removed_mid_derive"
-          label="Folders removed mid-derive"
+          label="Directories removed mid-derive"
           n={derive.root_removed_mid_derive}
         />
         <Count

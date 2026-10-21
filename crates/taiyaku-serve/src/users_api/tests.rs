@@ -571,7 +571,7 @@ async fn a_libraries_value_that_is_not_an_array_of_numbers_is_refused() {
     );
 }
 
-/// The screen sent folder ids under `roots` until it sent library ids under
+/// The screen sent directory ids under `roots` until it sent library ids under
 /// `libraries`. The old key is refused by name, never dropped: dropped, the
 /// request would answer 200 having changed no grant.
 #[tokio::test]
@@ -1508,12 +1508,12 @@ fn user_id_on(conn: &rusqlite::Connection, name: &str) -> i64 {
 
 /// The Users screen is sent libraries and sends library ids back. The fixture
 /// account, granted `Shelf`, is listed with it by id and name, whole, and not
-/// with its folders; a patch naming both libraries lists both, by name, and a
+/// with its directories; a patch naming both libraries lists both, by name, and a
 /// patch naming one keeps only that one.
 #[tokio::test]
 async fn the_users_screen_lists_and_replaces_an_accounts_libraries() {
     let tmp = test_support::Fixture::new("users-granted-library");
-    let (router, state) = test_support::router_over_a_granted_two_folder_library(&tmp);
+    let (router, state) = test_support::router_over_a_granted_two_dir_library(&tmp);
     let reader = user_id(&state, test_support::FIXTURE_NAME);
     let libraries_listed = |body: String| -> serde_json::Value {
         let json: serde_json::Value = serde_json::from_str(&body).expect("json");

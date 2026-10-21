@@ -1,37 +1,37 @@
 /**
  * One library's page: its name, what it holds, what is done to it whole, and
- * a table of its folders, each of which has a page of its own.
+ * a table of its directories, each of which has a page of its own.
  *
- * **The page owns the library's writes and a folder's page owns the
- * folder's.** A rename, an added folder, a scan of the whole library and its
- * removal are sent from here. A folder's settings, its own scan, its move and
- * its removal are `RootRow`'s, on `FolderPage`.
+ * **The page owns the library's writes and a directory's page owns the
+ * directory's.** A rename, an added directory, a scan of the whole library and
+ * its removal are sent from here. A directory's settings, its own scan, its
+ * move and its removal are `RootRow`'s, on `DirPage`.
  *
  * **It asks the library's status once on mount**, for `RootRow`'s reason: a
  * scan started before this page was drawn is still running. The status says
- * whether any folder of the library is scanning, so a folder's own scan,
+ * whether any directory of the library is scanning, so a directory's own scan,
  * started on its page, holds this page's Scan library and Remove library… as
- * a scan of the library does. The folders it names as running say
+ * a scan of the library does. The directories it names as running say
  * "Scanning…" in the table.
  *
  * **A 409 from Scan library is proof a scan is in flight**, of the library or
- * of one folder, so the page draws the sentence and polls. The sentence goes
+ * of one directory, so the page draws the sentence and polls. The sentence goes
  * when that scan ends.
  *
  * **The reports of a scan this page watched are drawn here when it ends.**
- * A report is held by its folder's own status, which this page does not
+ * A report is held by its directory's own status, which this page does not
  * otherwise read, so once the library's says nothing is running the status
- * of each folder the page saw the scan hold is read, and whatever report
- * each holds is drawn under its path. Only those: any other folder's status
- * holds a report from another scan, if any, and a folder that joined the
+ * of each directory the page saw the scan hold is read, and whatever report
+ * each holds is drawn under its path. Only those: any other directory's status
+ * holds a report from another scan, if any, and a directory that joined the
  * library while the scan ran is not in it.
  *
  * **Scans and removals exclude each other.** Scan library and Remove library…
  * are held while a scan is known, starting, or the removal dialog is open;
  * the removal's confirm is held while a scan is known. A scan holds neither
- * Rename… nor Add folder…; the removal holds both, and the Folders table
- * draws its paths without links while it is open: a folder's page offers
- * Scan folder, Move… and Remove… on a folder the removal is taking.
+ * Rename… nor Add directory…; the removal holds both, and the Directories table
+ * draws its paths without links while it is open: a directory's page offers
+ * Scan directory, Move… and Remove… on a directory the removal is taking.
  */
 import { type ReactNode, useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router'
@@ -46,10 +46,10 @@ import {
   scanStatus,
   statusOf,
 } from './config'
-import { FolderPicker } from './FolderPicker'
+import { DirPicker } from './DirPicker'
 import { useDrawn } from './hooks'
 import {
-  addFolder,
+  addDir,
   type Library,
   type LibraryScanStatus,
   libraryScanStatus,
@@ -65,7 +65,7 @@ export interface LibraryPageProps {
   library: Library
   /**
    * What the screen says above the page: a list that could not be read, the
-   * report of a folder that left this library, or an answer that came once
+   * report of a directory that left this library, or an answer that came once
    * the page it was asked from had gone.
    */
   notices?: ReactNode
@@ -74,11 +74,11 @@ export interface LibraryPageProps {
    * it was on, so the heading takes focus.
    */
   arrived?: boolean
-  /** A folder was added here: its probe is the screen's to keep. */
+  /** A directory was added here: its probe is the screen's to keep. */
   onAdded: (added: Added[]) => void
   /**
-   * The list reloads on a rename, an added folder or a finished scan. `quiet`
-   * is a scan that ended by itself: no press started that read.
+   * The list reloads on a rename, an added directory or a finished scan.
+   * `quiet` is a scan that ended by itself: no press started that read.
    */
   onChanged: (quiet?: boolean) => void
   /**
@@ -88,15 +88,15 @@ export interface LibraryPageProps {
   onRemoved: (name: string, answer: RemovalAnswer) => void
   /**
    * A write sent from this page was refused after the page had gone, with
-   * the sentence that says so and names the library or the folder.
+   * the sentence that says so and names the library or the directory.
    */
   onLateRefusal?: (sentence: string) => void
 }
 
-/** The folders a library's status names as scanning, by id. */
+/** The directories a library's status names as scanning, by id. */
 function runningIds(status: LibraryScanStatus): ReadonlySet<number> {
   return new Set(
-    status.folders.filter((one) => one.running).map((one) => one.root_id),
+    status.dirs.filter((one) => one.running).map((one) => one.root_id),
   )
 }
 
@@ -127,7 +127,7 @@ export function LibraryPage({
    * is true only until that scan ends, and is cleared then.
    */
   const [conflict, setConflict] = useState<string | undefined>()
-  /** Why the last folder was not added. Drawn beside the picker it answers. */
+  /** Why the last directory was not added. Drawn beside the picker it answers. */
   const [addFailure, setAddFailure] = useState<string | undefined>()
   /** Why the last rename was refused. Drawn in the rename form. */
   const [renameFailure, setRenameFailure] = useState<string | undefined>()
@@ -139,16 +139,16 @@ export function LibraryPage({
   const [running, setRunning] = useState(false)
   const [starting, setStarting] = useState(false)
   const [elapsed, setElapsed] = useState<number | null>(null)
-  /** The folders the library's status last named as scanning, by id. */
+  /** The directories the library's status last named as scanning, by id. */
   const [scanning, setScanning] = useState<ReadonlySet<number>>(new Set())
-  /** Every folder drawn as scanning since the scan this page watches began. */
+  /** Every directory drawn as scanning since the scan this page watches began. */
   const covered = useRef<Set<number>>(new Set())
   useEffect(() => {
     for (const id of scanning) covered.current.add(id)
   }, [scanning])
   /** Bumped when a scan this page watched ends. */
   const [ended, setEnded] = useState(0)
-  /** What each folder's status held when the scan this page watched ended. */
+  /** What each directory's status held when the scan this page watched ended. */
   const [reports, setReports] = useState<
     { path: string; outcome: ScanOutcome }[] | undefined
   >()
@@ -165,8 +165,8 @@ export function LibraryPage({
   // each time the list reads again.
   const changed = useRef(onChanged)
   changed.current = onChanged
-  const folders = useRef(library.folders)
-  folders.current = library.folders
+  const dirs = useRef(library.dirs)
+  dirs.current = library.dirs
 
   useEffect(() => {
     let cancelled = false
@@ -220,14 +220,14 @@ export function LibraryPage({
     }
   }, [running, library.id])
 
-  // A read that fails draws no report for that folder: the table still says
+  // A read that fails draws no report for that directory: the table still says
   // when it was last scanned.
   useEffect(() => {
     if (ended === 0) return
     let cancelled = false
     const scanned = covered.current
     Promise.all(
-      folders.current
+      dirs.current
         .filter((root) => scanned.has(root.id))
         .map((root) =>
           scanStatus(root.id).then(
@@ -261,7 +261,7 @@ export function LibraryPage({
       .then(() => {
         startingRef.current = false
         setStarting(false)
-        setScanning(new Set(library.folders.map((root) => root.id)))
+        setScanning(new Set(library.dirs.map((root) => root.id)))
         setRunning(true)
       })
       .catch((err: unknown) => {
@@ -310,7 +310,7 @@ export function LibraryPage({
   /** Rejects on a refusal, which is what keeps the picker's typed path. */
   const add = (path: string) => {
     setAddFailure(undefined)
-    return addFolder(library.id, path).then(
+    return addDir(library.id, path).then(
       (added) => {
         setAdding(false)
         onAdded([added])
@@ -332,13 +332,13 @@ export function LibraryPage({
   const addingWas = useRef(adding)
   // The button pressed is replaced by what it opens or closes, so focus
   // follows it: into the path box when the picker opens, and back to
-  // Add folder… when it closes.
+  // Add directory… when it closes.
   useEffect(() => {
     if (addingWas.current === adding) return
     addingWas.current = adding
     addRoot.current
       ?.querySelector<HTMLElement>(
-        adding ? 'input[name="path"]' : 'button[name="add-folder"]',
+        adding ? 'input[name="path"]' : 'button[name="add-dir"]',
       )
       ?.focus()
   }, [adding])
@@ -356,7 +356,7 @@ export function LibraryPage({
       </h2>
       <p className="holds">
         {count(library.works, 'work', 'works')} in{' '}
-        {count(library.folders.length, 'folder', 'folders')}
+        {count(library.dirs.length, 'directory', 'directories')}
       </p>
       {library.works === 0 && library.books > 0 && (
         <p className="no-readable">
@@ -452,8 +452,8 @@ export function LibraryPage({
         />
       )}
 
-      <h3>Folders</h3>
-      <table className="config-table folder-table">
+      <h3>Directories</h3>
+      <table className="config-table dir-table">
         <thead>
           <tr>
             <th scope="col">Path</th>
@@ -462,9 +462,10 @@ export function LibraryPage({
           </tr>
         </thead>
         <tbody>
-          {library.folders.map((root) => (
-            // By path, not id: a freed `root.id` is given to the next folder
-            // added, and a path cannot collide, since no two folders overlap.
+          {library.dirs.map((root) => (
+            // By path, not id: a freed `root.id` is given to the next
+            // directory added, and a path cannot collide, since no two
+            // directories overlap.
             <tr key={root.path}>
               <td className="lead">
                 {removing ? (
@@ -472,7 +473,7 @@ export function LibraryPage({
                 ) : (
                   <Link
                     className="row-link"
-                    to={`/config/libraries/${library.id}/folders/${root.id}`}
+                    to={`/config/libraries/${library.id}/dirs/${root.id}`}
                   >
                     <code>{root.path}</code>
                   </Link>
@@ -495,8 +496,8 @@ export function LibraryPage({
 
       <div className="add-root" ref={addRoot}>
         {adding ? (
-          <FolderPicker
-            action="Add folder"
+          <DirPicker
+            action="Add directory"
             onPick={add}
             disabled={removing}
             onEdit={() => setAddFailure(undefined)}
@@ -511,15 +512,15 @@ export function LibraryPage({
             >
               Cancel
             </button>
-          </FolderPicker>
+          </DirPicker>
         ) : (
           <button
             type="button"
-            name="add-folder"
+            name="add-dir"
             onClick={() => setAdding(true)}
             disabled={removing}
           >
-            Add folder…
+            Add directory…
           </button>
         )}
         {addFailure !== undefined && <Refusal>{addFailure}</Refusal>}
@@ -529,7 +530,7 @@ export function LibraryPage({
         <section className="library-scan-reports">
           <h3>What the scan found</h3>
           {reports.map((one) => (
-            <div key={one.path} className="folder-report">
+            <div key={one.path} className="dir-report">
               <h4>
                 <code>{one.path}</code>
               </h4>

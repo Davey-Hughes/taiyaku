@@ -323,13 +323,13 @@ equally dangerous:
 | Rule | If a reader gets it wrong | Measured |
 | ---- | ------------------------- | -------- |
 | Not stored order | a different sequence for over half of all archives | stored order differs from name order in **32 of 57** cbz files |
-| Whole path, not basename | chapters interleave and the volume is unreadable | **2 of the 7** archives nesting pages in folders sort differently the two ways |
+| Whole path, not basename | chapters interleave and the volume is unreadable | **2 of the 7** archives nesting pages in directories sort differently the two ways |
 | Non-images are not pages | the page count is over by one and every page after it shifts | **12 of 57** carry a `ComicInfo.xml` |
 
 The second is the one worth dwelling on, because it fails worst. Go-Toubun's
 Full Colour edition nests pages under `Chapter 15 - What They Have
-Accumulated/` and carries a `ZBlank (1).jpg` in every chapter folder. Sorted on
-the basename, every chapter's blank page sorts to the front and the chapters
+Accumulated/` and carries a `ZBlank (1).jpg` in every chapter directory. Sorted
+on the basename, every chapter's blank page sorts to the front and the chapters
 interleave — not an off-by-one but a shuffle.
 
 **What generalises and what does not.** The counts above are this corpus and

@@ -9,8 +9,8 @@
 //! # of queries at the call sites
 //!
 //! Every public function but [`filed_in`] takes the caller's [`Access`]:
-//! `Every` applies no filter, `Only` keeps what lies under its folders, and
-//! **`Only` with no folder keeps nothing** — its clause is a false literal, never
+//! `Every` applies no filter, `Only` keeps what lies under its directories, and
+//! **`Only` with no directory keeps nothing** — its clause is a false literal, never
 //! a clause left out, so a grant emptied by any path cannot read as every
 //! library ([`Access::grant_clause`]). `filed_in` reads no grant, and its doc
 //! says how its caller applies one.
@@ -20,12 +20,12 @@
 //! no root — every member of every imported work — has `root_id` NULL, and
 //! `IN (…)` excludes NULL by SQL's own rules, so that case needs no branch.
 //!
-//! A listing narrowed to one library reads the folders that library and the
+//! A listing narrowed to one library reads the directories that library and the
 //! grant share in place of the grant, so a library's page lists what an
 //! account granted only that library would see.
 //!
 //! An **alignment** names two editions, so it survives only if *both* of them
-//! do — both inside the folders the listing reads. One clause says so —
+//! do — both inside the directories the listing reads. One clause says so —
 //! `pair_clause` — and `alignments_of`, `WorkCard::aligned` and
 //! `SeriesCard::aligned` all read it, because the two counts asked a weaker
 //! question until 2026-08-21 and a grid drawing `⇄ 1` beside a work page
@@ -59,7 +59,7 @@
 //! statement**, and that is the whole rule: each function pushes its
 //! parameters in the order the fragments it splices appear in the SQL, reading
 //! left to right from the `SELECT` list. Every group a filter contributes is
-//! the grant's folders ([`Access::bound`]), and a narrowing to one library
+//! the grant's directories ([`Access::bound`]), and a narrowing to one library
 //! swaps the grant for its share of that library (see [`library_scope`])
 //! rather than adding a parameter of its own.
 
@@ -271,7 +271,7 @@ const LIST_CAP: i64 = 20;
 ///
 /// Built as a string because the number of parameters varies with the grant,
 /// which a prepared statement cannot express otherwise. The values are `i64`
-/// folder ids read from the store, a grant's or a library's (see
+/// directory ids read from the store, a grant's or a library's (see
 /// [`library_scope`]), never caller text, so there is nothing here to inject;
 /// the placeholders are still generated rather than the values interpolated,
 /// so that stays true if the source ever changes.
@@ -330,19 +330,19 @@ fn member_clause(access: &Access) -> String {
     access.grant_clause(|holes| format!("m.root_id IN ({holes})"))
 }
 
-/// One library a listing is narrowed to: its name, and the folders of it the
+/// One library a listing is narrowed to: its name, and the directories of it the
 /// caller's grant allows.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LibraryScope {
     pub name: String,
     /// Never empty: see [`library_scope`].
-    pub folders: Vec<i64>,
+    pub dirs: Vec<i64>,
 }
 
-/// The folders of `library` this caller may read, with the library's name.
+/// The directories of `library` this caller may read, with the library's name.
 ///
 /// **`None` when there are none**, whether the library is outside the grant,
-/// holds no folder, or does not exist, and never a scope with no folders, so
+/// holds no directory, or does not exist, and never a scope with no directories, so
 /// "nothing to list" has one answer: the listings here return early on it,
 /// and the OPDS library feed answers it with a 404.
 ///
@@ -359,28 +359,28 @@ pub fn library_scope(
         "SELECT r.id, l.name FROM root r JOIN library l ON l.id = r.library_id
           WHERE r.library_id = ? ORDER BY r.id",
     )
-    .map_err(|e| format!("preparing the folders of library {library}: {e}"))?;
+    .map_err(|e| format!("preparing the directories of library {library}: {e}"))?;
     let rows = stmt
         .query_map([library], |row| {
             Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
         })
-        .map_err(|e| format!("reading the folders of library {library}: {e}"))?
+        .map_err(|e| format!("reading the directories of library {library}: {e}"))?
         .collect::<rusqlite::Result<Vec<(i64, String)>>>()
-        .map_err(|e| format!("reading the folders of library {library}: {e}"))?;
+        .map_err(|e| format!("reading the directories of library {library}: {e}"))?;
     let name = rows.first().map(|(_, name)| name.clone());
-    let folders: Vec<i64> = rows
+    let dirs: Vec<i64> = rows
         .into_iter()
         .map(|(id, _)| id)
         .filter(|id| access.allows(*id))
         .collect();
     Ok(match name {
-        Some(name) if !folders.is_empty() => Some(LibraryScope { name, folders }),
+        Some(name) if !dirs.is_empty() => Some(LibraryScope { name, dirs }),
         _ => None,
     })
 }
 
 /// The access a listing reads: the caller's, or only the caller's share of
-/// `library`'s folders. `None` means there is nothing to list.
+/// `library`'s directories. `None` means there is nothing to list.
 fn narrowed(
     conn: &Connection,
     access: &Access,
@@ -388,7 +388,7 @@ fn narrowed(
 ) -> Result<Option<Access>, String> {
     match library {
         None => Ok(Some(access.clone())),
-        Some(id) => Ok(library_scope(conn, access, id)?.map(|scope| Access::Only(scope.folders))),
+        Some(id) => Ok(library_scope(conn, access, id)?.map(|scope| Access::Only(scope.dirs))),
     }
 }
 
@@ -403,8 +403,8 @@ fn narrowed(
 /// itself, so [`aligned_clause`] and `alignments_of` now read one clause.
 ///
 /// A listing narrowed to one library reaches both sides through `access`
-/// itself, which is only that library's folders (see [`library_scope`]), so a
-/// pair half of which is under another library's folder is counted by nobody.
+/// itself, which is only that library's directories (see [`library_scope`]), so a
+/// pair half of which is under another library's directory is counted by nobody.
 ///
 /// `fe` and `te` rather than `e` twice: see [`root_clause_for`]. Contributes
 /// **two** parameter groups, the from side first, each of them
@@ -449,9 +449,9 @@ fn aligned_clause(access: &Access) -> String {
 /// a correction no longer moves it, so a list sent with no primary would show
 /// text the correction may have removed.
 ///
-/// `library` narrows the listing to the folders of that library the grant
+/// `library` narrows the listing to the directories of that library the grant
 /// allows ([`library_scope`]); a library the grant does not reach, one with no
-/// folder, or one that does not exist lists nothing.
+/// directory, or one that does not exist lists nothing.
 ///
 /// # Errors
 ///
@@ -468,7 +468,7 @@ pub fn series(
     let aligned = aligned_clause(&access);
     let clause = root_clause(&access);
     // Placeholders bind in text order, all anonymous — three groups of the
-    // folder list and then `user_id`:
+    // directory list and then `user_id`:
     //
     //   1. the `aligned` count's from side (`fe`), in the `SELECT` list, which
     //      is the earliest text a parameter can appear in;
@@ -962,7 +962,7 @@ pub fn work(
 /// §5.1's rule applying unchanged, not a second one.
 ///
 /// **A library narrowing leaves every imported work out of this, by that same
-/// rule rather than a new one.** An imported member's `root_id` is NULL, and the narrowed folder
+/// rule rather than a new one.** An imported member's `root_id` is NULL, and the narrowed directory
 /// list is never empty ([`library_scope`]), so `IN (…)` excludes every
 /// imported work: an imported work is in no library, and asking for a library
 /// asks for what is in it.
@@ -1505,7 +1505,7 @@ pub fn visible_editions(
 
 /// The slugs of the works `work.library_id` files in `library`, which is the
 /// store's own answer to which library a work is in. A listing narrowed to a
-/// library reads its folders instead (see [`library_scope`]); this is for the
+/// library reads its directories instead (see [`library_scope`]); this is for the
 /// one view that asks the column.
 ///
 /// **It reads no grant**, so its caller intersects the answer with what
@@ -1525,7 +1525,7 @@ pub fn filed_in(conn: &Connection, library: i64) -> Result<HashSet<String>, Stri
 
 /// One library as the sidebar lists it.
 ///
-/// `scanned` is whether any of its folders has been walked, so a library page
+/// `scanned` is whether any of its directories has been walked, so a library page
 /// with nothing in it can say "not read yet" rather than "nothing here".
 #[derive(Debug, Clone, PartialEq)]
 pub struct LibraryEntry {
@@ -1555,8 +1555,8 @@ pub struct Status {
 /// The libraries this caller may see, each with whether it has been scanned,
 /// ordered by name (`COLLATE NOCASE`) and then by id.
 ///
-/// A library is listed when one of its folders is inside `access`, which for
-/// [`Access::Every`] is when it has a folder at all.
+/// A library is listed when one of its directories is inside `access`, which for
+/// [`Access::Every`] is when it has a directory at all.
 ///
 /// # Errors
 ///

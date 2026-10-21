@@ -134,9 +134,9 @@ async fn every_route_refuses_an_anonymous_request() {
         "/api/library/roots/{id}/scan",
         "/api/library/libraries",
         "/api/library/libraries/{id}",
-        "/api/library/libraries/{id}/folders",
+        "/api/library/libraries/{id}/dirs",
         "/api/library/libraries/{id}/scan",
-        "/api/library/folders",
+        "/api/library/dirs",
         // Spec C4 §4's user administration, PR 2 — admin-gated *inside* each
         // handler, the identical reasoning the scan comment just above gives,
         // and with the sharpest instance of it: these routes are the only
@@ -1140,12 +1140,12 @@ fn channel(v: u32) -> u8 {
     u8::try_from(v).expect("channel value exceeds u8::MAX")
 }
 
-/// Folder 1 at `held` and folder 2 at `withheld`, each the one folder of a
+/// Directory 1 at `held` and directory 2 at `withheld`, each the one directory of a
 /// library named after its leaf, the libraries numbered 70 and 80: apart
-/// from the folders, so a handler that read a library's id as a folder's
-/// finds no folder of that number rather than the one that happens to share
+/// from the directories, so a handler that read a library's id as a directory's
+/// finds no directory of that number rather than the one that happens to share
 /// it.
-fn two_folders_numbered_apart_from_their_libraries(
+fn two_dirs_numbered_apart_from_their_libraries(
     conn: &rusqlite::Connection,
     held: &str,
     withheld: &str,
@@ -1155,26 +1155,26 @@ fn two_folders_numbered_apart_from_their_libraries(
         "INSERT INTO library (id, name) VALUES (70, ?1), (80, ?2)",
         [leaf(held), leaf(withheld)],
     )
-    .expect("two libraries, numbered apart from their folders");
+    .expect("two libraries, numbered apart from their directories");
     conn.execute(
         "INSERT INTO root (id, path, library_id) VALUES (1, ?1, 70), (2, ?2, 80)",
         [held, withheld],
     )
-    .expect("two folders, each in a library of its own");
+    .expect("two directories, each in a library of its own");
 }
 
-/// The library `folder` is in, read from the store, and checked to be
-/// numbered apart from every folder: a handler that read a library's id as a
-/// folder's would otherwise find the folder of the same number and pass.
+/// The library `dir` is in, read from the store, and checked to be
+/// numbered apart from every directory: a handler that read a library's id as a
+/// directory's would otherwise find the directory of the same number and pass.
 /// The same helper `opds::tests` defines, for the reason [`channel`] gives.
-fn library_of(state: &ServeState, folder: i64) -> i64 {
+fn library_of(state: &ServeState, dir: i64) -> i64 {
     let conn = state.library.conn();
     let library: i64 = conn
-        .query_row("SELECT library_id FROM root WHERE id = ?1", [folder], |r| {
+        .query_row("SELECT library_id FROM root WHERE id = ?1", [dir], |r| {
             r.get(0)
         })
-        .expect("the folder's library");
-    let folders: Vec<i64> = conn
+        .expect("the directory's library");
+    let dirs: Vec<i64> = conn
         .prepare("SELECT id FROM root")
         .expect("prepares")
         .query_map([], |r| r.get(0))
@@ -1182,8 +1182,8 @@ fn library_of(state: &ServeState, folder: i64) -> i64 {
         .collect::<rusqlite::Result<_>>()
         .expect("reads");
     assert!(
-        !folders.contains(&library),
-        "library {library} shares a folder's id: {folders:?}"
+        !dirs.contains(&library),
+        "library {library} shares a directory's id: {dirs:?}"
     );
     library
 }
@@ -1220,8 +1220,8 @@ fn library_of(state: &ServeState, folder: i64) -> i64 {
 /// those routes, which is what makes the loop below a proof rather than a
 /// coincidence.
 ///
-/// Each folder is a library of its own, numbered apart from the folders
-/// ([`two_folders_numbered_apart_from_their_libraries`]), which the two OPDS
+/// Each directory is a library of its own, numbered apart from the directories
+/// ([`two_dirs_numbered_apart_from_their_libraries`]), which the two OPDS
 /// routes addressed by a library's id are driven against.
 fn router_with_material_under_a_withheld_root(
     dir: &std::path::Path,
@@ -1271,7 +1271,7 @@ fn router_with_material_under_a_withheld_root(
         let doc = taiyaku_core::Sidecar::from_json(&json).expect("fixture sidecar parses");
         taiyaku_library::import::scanned(&conn, &doc, None).expect("import as a scan");
 
-        two_folders_numbered_apart_from_their_libraries(&conn, "/held", "/withheld");
+        two_dirs_numbered_apart_from_their_libraries(&conn, "/held", "/withheld");
         conn.execute("UPDATE member SET root_id = 2", [])
             .expect("files every member under the withheld root");
         // **O86: a grant only restricts a non-admin.** `Principal::from_account`
@@ -1314,7 +1314,7 @@ fn router_with_material_under_a_withheld_root(
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
         library_job: Default::default(),
-        folders: Vec::new(),
+        dirs: Vec::new(),
     });
     (build_router(state.clone()), state)
 }
@@ -1327,13 +1327,13 @@ fn router_with_material_under_a_withheld_root(
 /// `/held`/`/withheld` convention `opds::tests` and `routes::tests` use
 /// elsewhere in this crate. `library_api::status`'s proof below, and the
 /// OPDS libraries feeds' beside it, check whether a library's *name*, which
-/// this fixture takes from its folder's, is present in the body, and
+/// this fixture takes from its directory's, is present in the body, and
 /// `"withheld"` ends in `"held"` — an assertion that the body contains
 /// `"held"` would pass whether or not `"withheld"` had also leaked. Distinct
 /// roots avoid that trap rather than relying on a reader noticing it.
 ///
-/// Each folder is a library of its own, numbered apart from the folders
-/// ([`two_folders_numbered_apart_from_their_libraries`]).
+/// Each directory is a library of its own, numbered apart from the directories
+/// ([`two_dirs_numbered_apart_from_their_libraries`]).
 fn two_works_one_withheld(dir: &std::path::Path) -> (axum::Router, Arc<ServeState>) {
     let root = dir;
     let shelf = root.to_string_lossy().into_owned();
@@ -1377,7 +1377,7 @@ fn two_works_one_withheld(dir: &std::path::Path) -> (axum::Router, Arc<ServeStat
         let hidden_id = taiyaku_library::import::scanned(&conn, &hidden_doc, None)
             .expect("import the hidden work");
 
-        two_folders_numbered_apart_from_their_libraries(&conn, "/visible-root", "/hidden-root");
+        two_dirs_numbered_apart_from_their_libraries(&conn, "/visible-root", "/hidden-root");
         conn.execute(
             "UPDATE member SET root_id = 1 WHERE edition_id IN \
              (SELECT id FROM edition WHERE work_id = ?1)",
@@ -1413,7 +1413,7 @@ fn two_works_one_withheld(dir: &std::path::Path) -> (axum::Router, Arc<ServeStat
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
         library_job: Default::default(),
-        folders: Vec::new(),
+        dirs: Vec::new(),
     });
     (build_router(state.clone()), state)
 }
@@ -1441,10 +1441,10 @@ fn two_works_one_withheld(dir: &std::path::Path) -> (axum::Router, Arc<ServeStat
 /// itself is visible with one of its work's two editions filtered out —
 /// the split case, at the series level rather than the work level.
 ///
-/// Each folder is a library of its own, numbered apart from the folders
-/// ([`two_folders_numbered_apart_from_their_libraries`]), so the work is
-/// O191's shape: an edition under each library's folder. It is imported
-/// before the folders exist, so `work.library_id` is NULL.
+/// Each directory is a library of its own, numbered apart from the directories
+/// ([`two_dirs_numbered_apart_from_their_libraries`]), so the work is
+/// O191's shape: an edition under each library's directory. It is imported
+/// before the directories exist, so `work.library_id` is NULL.
 fn one_work_two_editions_split_across_roots(
     dir: &std::path::Path,
 ) -> (axum::Router, Arc<ServeState>) {
@@ -1494,7 +1494,7 @@ fn one_work_two_editions_split_across_roots(
             [alignment_id],
         )
         .expect("seeds the run pairing both pages straight across");
-        two_folders_numbered_apart_from_their_libraries(&conn, "/visible-root", "/hidden-root");
+        two_dirs_numbered_apart_from_their_libraries(&conn, "/visible-root", "/hidden-root");
         conn.execute(
             "UPDATE member SET root_id = 2 WHERE edition_id = \
              (SELECT id FROM edition WHERE work_id = ?1 AND key = 'raw')",
@@ -1550,7 +1550,7 @@ fn one_work_two_editions_split_across_roots(
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
         library_job: Default::default(),
-        folders: Vec::new(),
+        dirs: Vec::new(),
     });
     (build_router(state.clone()), state)
 }
@@ -1675,7 +1675,7 @@ fn one_work_three_editions_hub_withheld(dir: &std::path::Path) -> (axum::Router,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
         library_job: Default::default(),
-        folders: Vec::new(),
+        dirs: Vec::new(),
     });
     (build_router(state.clone()), state)
 }
@@ -1858,8 +1858,8 @@ async fn every_route_declares_its_grant_posture() {
     }
 
     // **The two OPDS library feeds, addressed by a library's id.** The
-    // withheld folder's library answers 404, as a library that does not
-    // exist does. The held folder's library holds no material and answers
+    // withheld directory's library answers 404, as a library that does not
+    // exist does. The held directory's library holds no material and answers
     // 200, which is what shows the 404 is the grant's and not a broken route.
     let refuses_held = library_of(&refuses_state, 1);
     let refuses_withheld = library_of(&refuses_state, 2);
@@ -2022,7 +2022,7 @@ async fn every_route_declares_its_grant_posture() {
     // split fixture below is one root's worth of material and has nothing
     // to say about this route, so its proof stays here. Each of
     // `two_works_one_withheld`'s roots is a library of its own, named after
-    // the folder, so the libraries carry the distinct names that fixture was
+    // the directory, so the libraries carry the distinct names that fixture was
     // built with.
     let status_response = works_router
         .clone()
@@ -2048,8 +2048,8 @@ async fn every_route_declares_its_grant_posture() {
     );
     proven_filters.insert("/api/library/status");
 
-    // The OPDS libraries, by folder and by work: each feed of libraries names
-    // the granted folder's library and not the other, by name and by link,
+    // The OPDS libraries, by directory and by work: each feed of libraries names
+    // the granted directory's library and not the other, by name and by link,
     // and the granted library's works feed names its work and not the other.
     let works_visible = library_of(&works_state, 1);
     let works_hidden = library_of(&works_state, 2);
@@ -2089,17 +2089,17 @@ async fn every_route_declares_its_grant_posture() {
     assert!(
         body.contains("Visible Work") && !body.contains("Hidden Work"),
         "/opds/v1.2/libraries/{{library}}/works must name the work under the \
-         library's folder and no other: {body}"
+         library's directory and no other: {body}"
     );
     proven_filters.insert("/opds/v1.2/libraries/{library}/works");
-    // **Both works filed by hand in the granted folder's library**, which
-    // derive never did: the fixture imports them before its folders exist.
+    // **Both works filed by hand in the granted directory's library**, which
+    // derive never did: the fixture imports them before its directories exist.
     // Filed there, only the grant keeps `Hidden Work` out of the by-work feed.
     works_state
         .library
         .conn()
         .execute("UPDATE work SET library_id = ?1", [works_visible])
-        .expect("files both works in the granted folder's library");
+        .expect("files both works in the granted directory's library");
     let (status, body) = get_with_credential(&format!(
         "/opds/v1.2/libraries/{works_visible}/works/by-work"
     ))
@@ -2854,9 +2854,9 @@ async fn every_route_declares_its_grant_posture() {
 
     // The OPDS library feeds, split: a fixture of its own, so no proof above
     // reads a store with the work filed by hand. The work is filed in the
-    // granted folder's library, and both of that library's feeds count the
-    // one edition the grant allows: by folder because the other edition is
-    // under the other library's folder, and by work because it is outside
+    // granted directory's library, and both of that library's feeds count the
+    // one edition the grant allows: by directory because the other edition is
+    // under the other library's directory, and by work because it is outside
     // the grant.
     let tmp5 = crate::test_support::Fixture::new("grant-posture-split-libraries");
     let (libraries_router, libraries_state) = one_work_two_editions_split_across_roots(&tmp5);
@@ -2866,7 +2866,7 @@ async fn every_route_declares_its_grant_posture() {
         .library
         .conn()
         .execute("UPDATE work SET library_id = ?1", [granted_library])
-        .expect("files the work in the granted folder's library");
+        .expect("files the work in the granted directory's library");
     for (pattern, uri) in [
         (
             "/opds/v1.2/libraries/{library}/works",
@@ -3349,13 +3349,13 @@ fn a_users_grant_and_capabilities_are_left_exactly_as_the_row_holds_them() {
     assert!(principal.can_stream);
 }
 
-/// A grant names a library, and the principal carries every folder of it:
+/// A grant names a library, and the principal carries every directory of it:
 /// both of `Shelf`'s and not `Other`'s, whether a key, a password or a session
 /// cookie resolved it.
 #[test]
-fn a_principal_holds_every_folder_of_a_granted_library() {
+fn a_principal_holds_every_dir_of_a_granted_library() {
     let tmp = crate::test_support::Fixture::new("auth-granted-library");
-    let (_router, state) = crate::test_support::router_over_a_granted_two_folder_library(&tmp);
+    let (_router, state) = crate::test_support::router_over_a_granted_two_dir_library(&tmp);
     let client = std::net::IpAddr::from([127, 0, 0, 1]);
 
     let super::Resolved::Yes(by_key, super::By::Key) = super::from_basic(
@@ -3496,9 +3496,9 @@ const REFUSE_A_DEVICE_CREDENTIAL: &[&str] = &[
     "/api/library/roots/{id}/scan",
     "/api/library/libraries",
     "/api/library/libraries/{id}",
-    "/api/library/libraries/{id}/folders",
+    "/api/library/libraries/{id}/dirs",
     "/api/library/libraries/{id}/scan",
-    "/api/library/folders",
+    "/api/library/dirs",
     "/api/library/proposals",
     "/api/library/proposals/{id}",
     "/api/library/proposals/{id}/resolution",

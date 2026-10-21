@@ -68,7 +68,7 @@ pub struct Root {
     /// already holds a `Root` and `hand::save` is the only caller that does
     /// not.
     pub keeps_documents: bool,
-    /// The library this folder is filed under — migration 15. Every root has
+    /// The library this directory is filed under — migration 15. Every root has
     /// one; see [`crate::libraries`].
     pub library_id: i64,
 }
@@ -117,17 +117,17 @@ pub fn roots(conn: &Connection) -> Result<Vec<Root>, String> {
 ///
 /// Returns an error if `path` cannot be canonicalised — it must exist — or if
 /// the insert fails, which includes a `path` this library already holds a
-/// root for, and a folder whose library of its own cannot be named because
+/// root for, and a directory whose library of its own cannot be named because
 /// both names [`InLibrary::Own`] tries are taken ([`add_root_checked`]
 /// refuses that one first, saying so).
 pub fn add_root(conn: &Connection, path: &Path) -> Result<Root, String> {
     add_root_in(conn, path, InLibrary::Own)
 }
 
-/// Which library a folder joins when it is added.
+/// Which library a directory joins when it is added.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InLibrary<'a> {
-    /// A library of its own, named for the folder by the
+    /// A library of its own, named for the directory by the
     /// `root_gets_a_library` trigger (migration 16): its last path component,
     /// or its whole path when a library already has that name in any ASCII
     /// case, stripped of white space either way.
@@ -139,10 +139,10 @@ pub enum InLibrary<'a> {
     Id(i64),
 }
 
-/// [`add_root`], filing the folder under `library`.
+/// [`add_root`], filing the directory under `library`.
 ///
 /// **A named library that does not exist yet is created here, in the same
-/// transaction as the folder**, so a refused insert leaves no empty library
+/// transaction as the directory**, so a refused insert leaves no empty library
 /// behind. See [`crate::libraries`] for why an empty one must not exist.
 ///
 /// # Errors
@@ -193,12 +193,12 @@ pub fn add_root_in(conn: &Connection, path: &Path, library: InLibrary<'_>) -> Re
     })
 }
 
-/// Why a folder at `canonical` cannot be a library of its own, if it cannot.
+/// Why a directory at `canonical` cannot be a library of its own, if it cannot.
 ///
 /// **The `root_gets_a_library` trigger (migration 16) names that library, and
 /// [`add_root_checked_in`] asks the trigger's own question here first**
 /// rather than leaving its insert to fail on `library.name`'s UNIQUE: the
-/// folder's last path component, or its whole path when the component is
+/// directory's last path component, or its whole path when the component is
 /// empty or already a library's name. When the whole path is a library's
 /// name too, the trigger has no third name to try, and [`InLibrary::Own`]
 /// promises none, so this refuses and says which names are taken. The last
@@ -207,7 +207,7 @@ pub fn add_root_in(conn: &Connection, path: &Path, library: InLibrary<'_>) -> Re
 /// [`crate::libraries::trim_name`], as the trigger strips them with SQLite's
 /// two-argument `trim` over the same characters, and are asked in any ASCII
 /// case, as the trigger asks them. A component is empty for `/` and for a
-/// folder named only white space.
+/// directory named only white space.
 fn own_library_clash(conn: &Connection, canonical: &Path) -> Result<Option<String>, String> {
     let taken = |name: &str| -> Result<bool, String> {
         conn.query_row(
@@ -285,8 +285,8 @@ pub enum AddRootError {
     /// [`InLibrary::Named`] that is empty once trimmed, or an
     /// [`InLibrary::Own`] whose two possible names are both taken, which
     /// the message names. Or an [`InLibrary::Id`] no library holds. For
-    /// [`create_library`]: no folder given, a name empty once trimmed or
-    /// already a library's, or two of the folders given overlapping.
+    /// [`create_library`]: no directory given, a name empty once trimmed or
+    /// already a library's, or two of the directories given overlapping.
     Unusable(String),
     /// The store itself failed: [`roots`] (the overlap check's own read),
     /// the library-name lookup, the insert inside [`add_root_in`], or the
@@ -305,7 +305,7 @@ impl std::fmt::Display for AddRootError {
 
 impl std::error::Error for AddRootError {}
 
-/// [`add_root_checked_in`], with the folder a library of its own.
+/// [`add_root_checked_in`], with the directory a library of its own.
 ///
 /// # Errors
 ///
@@ -336,8 +336,8 @@ pub fn add_root_checked(conn: &Connection, path: &Path) -> Result<Added, AddRoot
 ///    keeps a symlink or a `..` from slipping a nested path past a raw
 ///    string comparison. Overlapping roots double-count every file beneath
 ///    the overlap, and the symptom — duplicate works — looks nothing like
-///    the cause, so the refusal names the existing folder it overlaps with,
-///    and that folder's library, rather than only saying "nested."
+///    the cause, so the refusal names the existing directory it overlaps with,
+///    and that directory's library, rather than only saying "nested."
 /// 3. **The watcher probe, run now rather than left for the first scan.**
 ///    [`crate::watch::probe`] answers whether this root can be watched at
 ///    all — spec B §8's experiment — run at the moment a root is added
@@ -373,7 +373,7 @@ pub fn add_root_checked(conn: &Connection, path: &Path) -> Result<Added, AddRoot
 /// join cannot be named (an [`InLibrary::Id`] no library holds is one) —
 /// every one of those is this caller's own mistake,
 /// an `error` a person can act on. A path already held is refused as one,
-/// `<path> is already a folder of the library `<name>``, and not as inside
+/// `<path> is already a directory of the library `<name>``, and not as inside
 /// itself, which is what the nesting check alone would say of an equal path.
 ///
 /// Returns [`AddRootError::Failed`] if the store itself refuses along the
@@ -433,28 +433,28 @@ fn vetted(conn: &Connection, path: &Path) -> Result<PathBuf, AddRootError> {
     for existing in roots(conn).map_err(AddRootError::Failed)? {
         let chosen = canonical.display();
         // Equal paths first: each starts with the other, so the nesting check
-        // would call a folder picked again inside itself. A held folder
+        // would call a directory picked again inside itself. A held directory
         // inside the chosen one is named from the chosen one, so the reader is
         // told where it is rather than left to compare two full paths for the
-        // part that differs. A chosen folder inside a held one keeps both full
+        // part that differs. A chosen directory inside a held one keeps both full
         // paths: the held one is the shorter.
         let said = if canonical == existing.path {
-            format!("{chosen} is already a folder")
+            format!("{chosen} is already a directory")
         } else if canonical.starts_with(&existing.path) {
             format!(
-                "{chosen} is inside {}, which is already a folder",
+                "{chosen} is inside {}, which is already a directory",
                 existing.path.display()
             )
         } else if let Ok(inner) = existing.path.strip_prefix(&canonical) {
             format!(
-                "{chosen} holds `{}`, which is already a folder",
+                "{chosen} holds `{}`, which is already a directory",
                 inner.display()
             )
         } else {
             continue;
         };
         // Named by its library, which is how the Libraries screen groups its
-        // folders, and not by its id, which no screen shows.
+        // directories, and not by its id, which no screen shows.
         let library = crate::libraries::name_of(conn, existing.library_id)
             .map_err(AddRootError::Failed)?
             .map_or_else(String::new, |name| format!(" of the library `{name}`"));
@@ -495,15 +495,16 @@ pub struct Created {
     pub library_id: i64,
     /// The name as stored.
     pub name: String,
-    /// Each folder with its watch probe, in the order given.
-    pub folders: Vec<Added>,
+    /// Each library directory (a `root` row) with its watch probe, in the
+    /// order given.
+    pub dirs: Vec<Added>,
 }
 
-/// A new library called `name` holding each of `paths`: every folder, or no
-/// library and no folder.
+/// A new library called `name` holding each of `paths`: every directory, or no
+/// library and no directory.
 ///
 /// Every path is vetted before anything is written, against the roots held
-/// and against the other paths given. The library and its folders are then
+/// and against the other paths given. The library and its directories are then
 /// inserted in one transaction. The watch probes run after it commits,
 /// because each waits up to [`PROBE_TIMEOUT`] and a write transaction held
 /// that long would stall every other writer.
@@ -522,7 +523,7 @@ pub fn create_library(
 ) -> Result<Created, AddRootError> {
     if paths.is_empty() {
         return Err(AddRootError::Unusable(
-            "a library needs at least one folder".to_string(),
+            "a library needs at least one directory".to_string(),
         ));
     }
     let name = crate::libraries::trim_name(name);
@@ -538,7 +539,7 @@ pub fn create_library(
             .find(|earlier| held.starts_with(earlier) || earlier.starts_with(&held))
         {
             return Err(AddRootError::Unusable(format!(
-                "{} and {} overlap; a library's folders may not be the same folder or sit \
+                "{} and {} overlap; a library's directories may not be the same directory or sit \
                  inside one another",
                 earlier.display(),
                 held.display()
@@ -559,7 +560,7 @@ pub fn create_library(
             .map_err(AddRootError::Failed)?
             .unwrap_or_else(|| name.to_string());
         return Err(AddRootError::Unusable(format!(
-            "a library is already called `{stored}`; add the folder to it instead"
+            "a library is already called `{stored}`; add the directory to it instead"
         )));
     }
     let library_id = crate::libraries::create(&tx, name).map_err(AddRootError::Failed)?;
@@ -571,14 +572,14 @@ pub fn create_library(
     tx.commit()
         .map_err(|e| AddRootError::Failed(format!("committing the library `{name}`: {e}")))?;
 
-    let mut folders = Vec::with_capacity(inserted.len());
+    let mut dirs = Vec::with_capacity(inserted.len());
     for root in inserted {
-        folders.push(probed(conn, root)?);
+        dirs.push(probed(conn, root)?);
     }
     Ok(Created {
         library_id,
         name: name.to_string(),
-        folders,
+        dirs,
     })
 }
 
@@ -693,7 +694,7 @@ pub struct Removal {
     /// The accounts, by name, that see no library once this removal deletes
     /// the only library they are granted: [`only_grant_holders`], asked
     /// before anything is deleted. Empty where the library stays, as it does
-    /// when a folder that is not its library's last goes.
+    /// when a directory that is not its library's last goes.
     pub left_with_no_library: Vec<String>,
 }
 
@@ -752,7 +753,7 @@ const DOOMED_WORKS: &str = "
 /// row, since the row restricts nothing until the account is limited.
 ///
 /// Asked before the library is deleted, because its grants go with it. A
-/// removal and a folder move both report what this answers.
+/// removal and a directory move both report what this answers.
 pub(crate) fn only_grant_holders(
     conn: &Connection,
     library_id: i64,
@@ -834,8 +835,8 @@ fn take_root(conn: &Connection, id: i64) -> Result<Removal, String> {
     })
 }
 
-/// The library root `id` is the last folder of, which removing it deletes.
-/// `None` where the library keeps another folder, and where `id` names no
+/// The library root `id` is the last directory of, which removing it deletes.
+/// `None` where the library keeps another directory, and where `id` names no
 /// root.
 fn emptied_by_removing(conn: &Connection, id: i64) -> Result<Option<i64>, String> {
     conn.query_row(
@@ -847,7 +848,7 @@ fn emptied_by_removing(conn: &Connection, id: i64) -> Result<Option<i64>, String
         |r| r.get::<_, i64>(0),
     )
     .optional()
-    .map_err(|e| format!("checking whether root {id} is its library's last folder: {e}"))
+    .map_err(|e| format!("checking whether root {id} is its library's last directory: {e}"))
 }
 
 /// Delete root `id`, every work that lived entirely under it, and re-derive
@@ -855,8 +856,8 @@ fn emptied_by_removing(conn: &Connection, id: i64) -> Result<Option<i64>, String
 /// runs and commits.
 ///
 /// **Whoever is left with no library is read before anything is deleted**,
-/// where `id` is its library's last folder: the library goes with that
-/// folder, and its grants with the library, so afterwards nothing records
+/// where `id` is its library's last directory: the library goes with that
+/// directory, and its grants with the library, so afterwards nothing records
 /// who held them.
 ///
 /// **Delete-plus-derive, not a bare `DELETE FROM root`.** `scan_entry`,
@@ -1030,39 +1031,39 @@ pub fn remove_root(
     Ok((removal, derived))
 }
 
-/// Remove each folder of `library_id` in turn, summing what each takes, then
+/// Remove each directory of `library_id` in turn, summing what each takes, then
 /// derive once.
 ///
-/// **One folder after another inside the caller's transaction, never one dry
-/// run per folder.** [`DOOMED_WORKS`] names a work for a folder only when
-/// every member of it is under that folder. A work with an edition under each
-/// of two folders is therefore named for neither while both stand, and for
+/// **One directory after another inside the caller's transaction, never one dry
+/// run per directory.** [`DOOMED_WORKS`] names a work for a directory only when
+/// every member of it is under that directory. A work with an edition under each
+/// of two directories is therefore named for neither while both stand, and for
 /// the second once [`take_root`] has deleted the first's members.
 ///
-/// **Whoever is left with no library is read before the first folder goes**,
-/// for [`apply_removal`]'s reason. A library with no folder is not deleted
-/// here, since it goes only with its last folder, so it leaves no one.
+/// **Whoever is left with no library is read before the first directory goes**,
+/// for [`apply_removal`]'s reason. A library with no directory is not deleted
+/// here, since it goes only with its last directory, so it leaves no one.
 fn apply_library_removal(
     conn: &Connection,
     library_id: i64,
 ) -> Result<(Removal, crate::derive::DeriveReport), String> {
-    let folders: Vec<i64> = conn
+    let dirs: Vec<i64> = conn
         .prepare("SELECT id FROM root WHERE library_id = ?1 ORDER BY id")
-        .map_err(|e| format!("listing the folders of library {library_id}: {e}"))?
+        .map_err(|e| format!("listing the directories of library {library_id}: {e}"))?
         .query_map([library_id], |r| r.get(0))
-        .map_err(|e| format!("listing the folders of library {library_id}: {e}"))?
+        .map_err(|e| format!("listing the directories of library {library_id}: {e}"))?
         .collect::<Result<_, _>>()
-        .map_err(|e| format!("listing the folders of library {library_id}: {e}"))?;
+        .map_err(|e| format!("listing the directories of library {library_id}: {e}"))?;
     let mut total = Removal {
-        left_with_no_library: if folders.is_empty() {
+        left_with_no_library: if dirs.is_empty() {
             Vec::new()
         } else {
             only_grant_holders(conn, library_id)?
         },
         ..Removal::default()
     };
-    for folder in folders {
-        let taken = take_root(conn, folder)?;
+    for dir in dirs {
+        let taken = take_root(conn, dir)?;
         total.works += taken.works;
         total.positions += taken.positions;
         total.notes += taken.notes;
@@ -1089,9 +1090,9 @@ pub fn library_removal_cost(
     Ok(removal)
 }
 
-/// Remove library `library_id`: each of its folders, the works they alone
+/// Remove library `library_id`: each of its directories, the works they alone
 /// accounted for, and the library, which migration 15 deletes with its last
-/// folder. Then derive again with documents reconciled, after the commit, for
+/// directory. Then derive again with documents reconciled, after the commit, for
 /// [`remove_root`]'s reason.
 ///
 /// # Errors
@@ -1164,7 +1165,9 @@ impl Excluder {
         // than unwrapped anyway: this module's rule is that a pattern
         // problem is a complaint, never a panic.
         let gitignore = builder.build().unwrap_or_else(|why| {
-            complaints.push(format!("compiling this folder's exclude patterns: {why}"));
+            complaints.push(format!(
+                "compiling this directory's exclude patterns: {why}"
+            ));
             ignore::gitignore::Gitignore::empty()
         });
         Self {
@@ -1224,7 +1227,7 @@ pub fn check_exclude_globs(patterns: &str) -> Result<(), String> {
     for line in patterns.lines() {
         builder.add_line(None, line).map_err(|why| {
             format!(
-                "the folder's `exclude_globs` line `{}` is not a usable pattern: {why}",
+                "the directory's `exclude_globs` line `{}` is not a usable pattern: {why}",
                 line.trim()
             )
         })?;
@@ -1232,7 +1235,7 @@ pub fn check_exclude_globs(patterns: &str) -> Result<(), String> {
     builder
         .build()
         .map(|_| ())
-        .map_err(|why| format!("the folder's `exclude_globs` will not compile: {why}"))
+        .map_err(|why| format!("the directory's `exclude_globs` will not compile: {why}"))
 }
 
 // --- the scan --------------------------------------------------------------
@@ -1241,6 +1244,9 @@ pub fn check_exclude_globs(patterns: &str) -> Result<(), String> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScanReport {
     pub root: PathBuf,
+    /// Every directory on disk the walk recorded (`Kind::Dir` entries), the
+    /// root's own included: the file-system sense, not the `root`-row sense
+    /// `dirs` has elsewhere in this module.
     pub dirs: usize,
     pub files: usize,
     pub added: usize,
@@ -1372,11 +1378,11 @@ impl ScanReport {
 /// case this function tries hardest not to leave silent, since it is the
 /// one nobody chose.
 ///
-/// **Nothing is recorded for a folder that is no longer the one walked.** A
-/// folder can be removed while its walk runs, and its id given to a folder
-/// added after it. The walk's entries are written only where, inside the
+/// **Nothing is recorded for a root that is no longer the one walked.** A
+/// root can be removed while its walk runs, and its id given to a root added
+/// after it. The walk's entries are written only where, inside the
 /// transaction that writes them, `root.id` still names `root.path`, and the
-/// status write here asks the same, so neither lands on another folder.
+/// status write here asks the same, so neither lands on another root.
 pub fn scan_root(conn: &Connection, root: &Root) -> Result<ScanReport, String> {
     let result = scan_root_inner(conn, root);
     let status = match &result {
@@ -1434,7 +1440,7 @@ pub fn mark_derive_failed(conn: &Connection, root: &Root) -> Result<(), String> 
     )
     .map_err(|e| {
         format!(
-            "recording that the post-scan derive of folder {} failed: {e}",
+            "recording that the post-scan derive of directory {} failed: {e}",
             root.path.display()
         )
     })?;
@@ -1464,7 +1470,7 @@ fn scan_root_inner(conn: &Connection, root: &Root) -> Result<ScanReport, String>
                 [root.id],
                 |r| r.get(0),
             )
-            .map_err(|e| format!("counting what this folder already held: {e}"))?;
+            .map_err(|e| format!("counting what this directory already held: {e}"))?;
         if held > 1 {
             // A fourth cause, alongside the three below: this root's own
             // `exclude_globs` can cover everything beneath it just as
@@ -1486,7 +1492,7 @@ fn scan_root_inner(conn: &Connection, root: &Root) -> Result<ScanReport, String>
             let remedy = if excluded_everything {
                 format!(
                     "This scan's own exclude_globs excluded {} director{} and {} \
-                     file{} beneath this folder, which is enough on its own to \
+                     file{} beneath this directory, which is enough on its own to \
                      produce exactly this — loosen or clear the patterns before \
                      assuming anything is actually gone.",
                     walk.excluded_dirs.len(),
@@ -1499,7 +1505,7 @@ fn scan_root_inner(conn: &Connection, root: &Root) -> Result<ScanReport, String>
                     if walk.excluded_files == 1 { "" } else { "s" },
                 )
             } else {
-                "If the folder has genuinely become empty, remove it.".to_string()
+                "If the directory has genuinely become empty, remove it.".to_string()
             };
             return Ok(ScanReport {
                 root: root.path.clone(),
@@ -1516,9 +1522,9 @@ fn scan_root_inner(conn: &Connection, root: &Root) -> Result<ScanReport, String>
                 refused: Some(format!(
                     "{} scanned empty while the library holds {held} entries for it — \
                      refusing to apply. An unmounted share, a bind mount that was not \
-                     ready, a renamed directory, or this folder's own exclude_globs \
+                     ready, a renamed directory, or this directory's own exclude_globs \
                      excluding everything beneath it all look exactly like this, and \
-                     applying it would drop every work under this folder along with the \
+                     applying it would drop every work under this directory along with the \
                      reading positions and notes attached to them. {remedy}",
                     root.path.display()
                 )),
@@ -1547,8 +1553,9 @@ fn scan_root_inner(conn: &Connection, root: &Root) -> Result<ScanReport, String>
         .map_err(|e| format!("starting the scan transaction: {e}"))?;
     // The connection begins its transactions `Immediate`, so the write lock is
     // held from here: no removal can commit between this question and the
-    // writes below.
-    let still_this_folder: bool = tx
+    // writes below. `still_this_dir` asks after the library directory walked:
+    // its `root` row, by id and path.
+    let still_this_dir: bool = tx
         .query_row(
             "SELECT EXISTS (SELECT 1 FROM root WHERE id = ?1 AND path = ?2)",
             rusqlite::params![root.id, root.path.to_string_lossy()],
@@ -1556,11 +1563,11 @@ fn scan_root_inner(conn: &Connection, root: &Root) -> Result<ScanReport, String>
         )
         .map_err(|e| {
             format!(
-                "checking that {} is still a folder: {e}",
+                "checking that {} is still a directory: {e}",
                 root.path.display()
             )
         })?;
-    if !still_this_folder {
+    if !still_this_dir {
         return Err(format!(
             "{} was removed while it was being scanned, so nothing was recorded",
             root.path.display()
@@ -1613,6 +1620,8 @@ struct Seen {
 #[derive(PartialEq, Eq, Clone, Copy)]
 enum Kind {
     File,
+    /// A directory on disk the walk recorded, the root's own included; not a
+    /// library directory (a `root` row).
     Dir,
 }
 
@@ -1867,7 +1876,7 @@ struct Held {
 fn held_for(conn: &Connection, root_id: i64) -> Result<HashMap<String, Held>, String> {
     let mut stmt = conn
         .prepare("SELECT rel_path, size, mtime, kind FROM scan_entry WHERE root_id = ?1")
-        .map_err(|e| format!("reading what this folder held: {e}"))?;
+        .map_err(|e| format!("reading what this directory held: {e}"))?;
     let rows = stmt
         .query_map([root_id], |r| {
             Ok((
@@ -1879,7 +1888,7 @@ fn held_for(conn: &Connection, root_id: i64) -> Result<HashMap<String, Held>, St
                 },
             ))
         })
-        .map_err(|e| format!("reading what this folder held: {e}"))?;
+        .map_err(|e| format!("reading what this directory held: {e}"))?;
     Ok(rows.filter_map(Result::ok).collect())
 }
 

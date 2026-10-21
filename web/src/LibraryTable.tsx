@@ -5,8 +5,8 @@
  * which the stylesheet stretches over the whole row: a row is one place to
  * go, and the name is what a screen reader reads it as.
  *
- * **Last scan is the latest of its folders'**, since a library is scanned
- * through its folders and each keeps its own.
+ * **Last scan is the latest of its directories'**, since a library is scanned
+ * through its directories and each keeps its own.
  */
 import { type ReactNode, useEffect, useRef } from 'react'
 import { Link } from 'react-router'
@@ -28,10 +28,10 @@ export interface LibraryTableProps {
   arrived?: boolean
 }
 
-/** The folder of `library` scanned last, or `undefined` if none has been. */
+/** The directory of `library` scanned last, or `undefined` if none has been. */
 function latestScanned(library: Library) {
-  let latest: Library['folders'][number] | undefined
-  for (const root of library.folders) {
+  let latest: Library['dirs'][number] | undefined
+  for (const root of library.dirs) {
     if (root.last_scan_at === null) continue
     // The server writes these as `YYYY-MM-DD HH:MM:SS`, which sort as text.
     if (latest?.last_scan_at == null || root.last_scan_at > latest.last_scan_at)
@@ -61,15 +61,15 @@ export function LibraryTable({
       {libraries !== undefined &&
         (libraries.length === 0 ? (
           <p className="empty">
-            No libraries yet. A library is a name and the folder its files are
-            in; more folders can be added once it is made.
+            No libraries yet. A library is a name and the directory its files
+            are in; more directories can be added once it is made.
           </p>
         ) : (
           <table className="config-table">
             <thead>
               <tr>
                 <th scope="col">Name</th>
-                <th scope="col">Folders</th>
+                <th scope="col">Directories</th>
                 <th scope="col">Works</th>
                 <th scope="col">Last scan</th>
               </tr>
@@ -89,10 +89,12 @@ export function LibraryTable({
                       </Link>
                     </td>
                     <td>
-                      {library.folders.length}
+                      {library.dirs.length}
                       <span className="cell-unit">
                         {' '}
-                        {library.folders.length === 1 ? 'folder' : 'folders'}
+                        {library.dirs.length === 1
+                          ? 'directory'
+                          : 'directories'}
                       </span>
                     </td>
                     <td>

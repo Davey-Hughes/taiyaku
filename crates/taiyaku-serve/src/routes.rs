@@ -2278,7 +2278,7 @@ pub(crate) fn guarded_routes() -> Vec<(&'static str, axum::routing::MethodRouter
         ),
         (
             "/api/library/roots/{id}/move",
-            axum::routing::post(crate::libraries_api::move_folder),
+            axum::routing::post(crate::libraries_api::move_dir),
         ),
         // **Spec C4 §3's scan-control route, task 12 of the branch plan.**
         // Admin-gated like every other route in this block, and for the
@@ -2295,7 +2295,7 @@ pub(crate) fn guarded_routes() -> Vec<(&'static str, axum::routing::MethodRouter
         ),
         // The libraries an administrator makes, renames and removes on
         // Configuration → Libraries. Admin-gated inside each handler, like
-        // the roots routes above, whose folder rows these cards hold.
+        // the roots routes above, whose directory rows these cards hold.
         (
             "/api/library/libraries",
             get(crate::libraries_api::list_libraries).post(crate::libraries_api::create_library),
@@ -2306,20 +2306,17 @@ pub(crate) fn guarded_routes() -> Vec<(&'static str, axum::routing::MethodRouter
                 .delete(crate::libraries_api::delete_library),
         ),
         (
-            "/api/library/libraries/{id}/folders",
-            axum::routing::post(crate::libraries_api::add_folder),
+            "/api/library/libraries/{id}/dirs",
+            axum::routing::post(crate::libraries_api::add_dir),
         ),
         (
             "/api/library/libraries/{id}/scan",
             axum::routing::get(crate::libraries_api::library_scan_status)
                 .post(crate::libraries_api::start_library_scan),
         ),
-        // The folder browser behind "add a folder": directories beneath the
+        // The directory browser behind "add a directory": directories beneath the
         // prefixes the server was started with, and nowhere else.
-        (
-            "/api/library/folders",
-            get(crate::folders_api::list_folders),
-        ),
+        ("/api/library/dirs", get(crate::dirs_api::list_dirs)),
         // **Spec C4 §4's user-administration routes, PR 2.** Admin-gated for
         // the reason every route in this block is, with one of its own: these
         // routes write `role`, `can_download`, `can_stream` and
@@ -2756,7 +2753,7 @@ pub(crate) fn grant_postures() -> Vec<(&'static str, GrantPosture)> {
         (
             "/api/library/roots/{id}/move",
             GrantIndependent {
-                reason: "moves one folder between libraries, a write to the \
+                reason: "moves one directory between libraries, a write to the \
                           whole store that changes what a library is and so \
                           what a grant on it means, with no account's own \
                           grant to filter it by",
@@ -2792,9 +2789,9 @@ pub(crate) fn grant_postures() -> Vec<(&'static str, GrantPosture)> {
             },
         ),
         (
-            "/api/library/libraries/{id}/folders",
+            "/api/library/libraries/{id}/dirs",
             GrantIndependent {
-                reason: "adds a folder to one library, a write to the \
+                reason: "adds a directory to one library, a write to the \
                           whole store with no account-scoped meaning to \
                           filter against",
             },
@@ -2803,12 +2800,12 @@ pub(crate) fn grant_postures() -> Vec<(&'static str, GrantPosture)> {
             "/api/library/libraries/{id}/scan",
             GrantIndependent {
                 reason: "starts or reports on a scan of one library's \
-                          folders, as the standing /api/library/roots/{id}/scan \
-                          does for one folder",
+                          directories, as the standing /api/library/roots/{id}/scan \
+                          does for one directory",
             },
         ),
         (
-            "/api/library/folders",
+            "/api/library/dirs",
             GrantIndependent {
                 reason: "admin-only; names directories beneath the prefixes \
                           the server was started with, which are a fact \
@@ -2896,7 +2893,7 @@ pub(crate) fn grant_postures() -> Vec<(&'static str, GrantPosture)> {
         ("/opds/v1.2/libraries", Filters),
         // A library outside the grant answers 404, as one that does not exist
         // does, and a granted library's works are listed with only the
-        // editions under its folders, as `/opds/v1.2/works` lists them under
+        // editions under its directories, as `/opds/v1.2/works` lists them under
         // the grant's.
         ("/opds/v1.2/libraries/{library}/works", RefusesAndFilters),
         ("/opds/v1.2/libraries/by-work", Filters),

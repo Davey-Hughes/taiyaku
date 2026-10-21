@@ -666,8 +666,8 @@ describe('Users, making one', () => {
   // The libraries list is read on each change of page too, and its reads
   // need not answer in order either.
   it('keeps the newer libraries list when an older read answers after it', async () => {
-    const manga = { id: 70, name: 'Manga', works: 0, books: 0, folders: [] }
-    const comics = { id: 80, name: 'Comics', works: 0, books: 0, folders: [] }
+    const manga = { id: 70, name: 'Manga', works: 0, books: 0, dirs: [] }
+    const comics = { id: 80, name: 'Comics', works: 0, books: 0, dirs: [] }
     const first = deferred<{ libraries: librariesApi.Library[] }>()
     vi.mocked(librariesApi.listLibraries)
       .mockReturnValueOnce(first.promise)
@@ -694,7 +694,7 @@ describe('Users, making one', () => {
   })
 
   it('keeps the newer libraries list when an older read *fails* after it', async () => {
-    const manga = { id: 70, name: 'Manga', works: 0, books: 0, folders: [] }
+    const manga = { id: 70, name: 'Manga', works: 0, books: 0, dirs: [] }
     const first = deferred<{ libraries: librariesApi.Library[] }>()
     vi.mocked(librariesApi.listLibraries)
       .mockReturnValueOnce(first.promise)
@@ -731,7 +731,7 @@ describe('Users, making one', () => {
 describe('Users, an account’s page', () => {
   it('offers the page the libraries, and names its radios for its own account', async () => {
     vi.mocked(librariesApi.listLibraries).mockResolvedValue({
-      libraries: [{ id: 70, name: 'Manga', works: 0, books: 0, folders: [] }],
+      libraries: [{ id: 70, name: 'Manga', works: 0, books: 0, dirs: [] }],
     })
     vi.mocked(usersApi.listUsers).mockResolvedValue({
       users: [
@@ -778,8 +778,8 @@ describe('Users, an account’s page', () => {
       // kim is limited to no library, and lifting that is asked as well.
       vi.mocked(librariesApi.listLibraries).mockResolvedValue({
         libraries: [
-          { id: 70, name: 'Manga', works: 0, books: 0, folders: [] },
-          { id: 80, name: 'Comics', works: 0, books: 0, folders: [] },
+          { id: 70, name: 'Manga', works: 0, books: 0, dirs: [] },
+          { id: 80, name: 'Comics', works: 0, books: 0, dirs: [] },
         ],
       })
       vi.mocked(usersApi.listUsers).mockResolvedValue({
@@ -841,7 +841,7 @@ describe('Users, an account’s page', () => {
     vi.mocked(librariesApi.listLibraries)
       .mockRejectedValueOnce(unreadLibraries())
       .mockResolvedValue({
-        libraries: [{ id: 70, name: 'Manga', works: 0, books: 0, folders: [] }],
+        libraries: [{ id: 70, name: 'Manga', works: 0, books: 0, dirs: [] }],
       })
     vi.mocked(usersApi.listUsers).mockResolvedValue({
       users: [
@@ -868,10 +868,10 @@ describe('Users, an account’s page', () => {
     vi.mocked(librariesApi.listLibraries)
       .mockRejectedValueOnce(unreadLibraries())
       .mockResolvedValueOnce({
-        libraries: [{ id: 70, name: 'Manga', works: 0, books: 0, folders: [] }],
+        libraries: [{ id: 70, name: 'Manga', works: 0, books: 0, dirs: [] }],
       })
       .mockResolvedValueOnce({
-        libraries: [{ id: 70, name: 'Manga', works: 0, books: 0, folders: [] }],
+        libraries: [{ id: 70, name: 'Manga', works: 0, books: 0, dirs: [] }],
       })
       .mockRejectedValue(unreadLibraries())
     vi.mocked(usersApi.listUsers).mockResolvedValue({
@@ -906,8 +906,8 @@ describe('Users, an account’s page', () => {
   })
 
   it('offers a library made since the screen mounted, once the page changes', async () => {
-    const manga = { id: 70, name: 'Manga', works: 0, books: 0, folders: [] }
-    const comics = { id: 80, name: 'Comics', works: 0, books: 0, folders: [] }
+    const manga = { id: 70, name: 'Manga', works: 0, books: 0, dirs: [] }
+    const comics = { id: 80, name: 'Comics', works: 0, books: 0, dirs: [] }
     vi.mocked(librariesApi.listLibraries)
       .mockResolvedValueOnce({ libraries: [manga] })
       .mockResolvedValue({ libraries: [manga, comics] })
@@ -1263,7 +1263,7 @@ describe('Users, a write refused once its page has gone', () => {
   /** Draws `entry`, sends the write, and holds its answer. */
   async function sent({ entry, over, held, start }: (typeof writes)[number]) {
     vi.mocked(librariesApi.listLibraries).mockResolvedValue({
-      libraries: [{ id: 70, name: 'Manga', works: 0, books: 0, folders: [] }],
+      libraries: [{ id: 70, name: 'Manga', works: 0, books: 0, dirs: [] }],
     })
     vi.mocked(usersApi.listUsers).mockResolvedValue({
       users: [

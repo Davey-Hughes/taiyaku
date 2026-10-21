@@ -34,7 +34,7 @@
 //!
 //! Part F1 of `docs/superpowers/specs/2026-10-05-libraries-design.md`.
 //! [`raise`] pairs only series of one library, and offers a chapter-organised
-//! directory the series of its own folder's library. A series in no library
+//! directory the series of the library it is in. A series in no library
 //! pairs only with another in none. A proposal whose two series are in
 //! different libraries, or one in a library and the other in none, is refused
 //! at [`accept`], and no rule accepted for another proposal answers it.
@@ -708,8 +708,8 @@ fn across_libraries(
     Ok(Some(if subject.is_none() || target.is_none() {
         format!(
             "proposal {}: one of its two series is in no library. A derive files a series under \
-             the library whose folders hold it; if this one is still in none after a scan, dismiss \
-             the proposal.",
+             the library whose directories hold it; if this one is still in none after a scan, \
+             dismiss the proposal.",
             proposal.id
         )
     } else {
@@ -1633,7 +1633,7 @@ pub fn evaluable(rule: &ProposedRule) -> Result<(), String> {
 /// the engine's own record of who decided what rather than a second reading
 /// of the pattern. The live engine says which series each of those entries
 /// belongs to *today*, which is the series a person would see move: the one
-/// of that name in the library of the entry's own folder. An entry
+/// of that name in the entry's own library. An entry
 /// no rule gives a series to, or a series name no `series` row carries — a
 /// container directory resolving to its publisher's name, say — is reached
 /// but has nothing to lose, so it counts towards `entries_matched` and
@@ -1692,8 +1692,8 @@ fn series_reached_by(conn: &Connection, rule: &ProposedRule) -> Result<Reach, St
     let mut stmt = conn
         .prepare("SELECT rel_path FROM scan_entry WHERE root_id = ?1 ORDER BY rel_path")
         .map_err(|e| format!("reading scan entries for the dry run: {e}"))?;
-    // Keyed by the folder's library as well as the name: an entry's series is
-    // the one of that name in its own folder's library.
+    // Keyed by the entry's library as well as the name: an entry's series is
+    // the one of that name in the entry's own library.
     let mut series_ids: BTreeMap<(i64, String), Option<i64>> = BTreeMap::new();
 
     for root in &roots {
@@ -2936,7 +2936,7 @@ fn raise_same_series(conn: &Connection, series: &[SeriesRow]) -> Result<usize, S
 /// across however many such directories one series accumulates.
 ///
 /// **The series is the one in the directory's own library.** A directory's
-/// library is its folder's, the directories are counted per series within a
+/// library is its root's, the directories are counted per series within a
 /// library, and the name is looked up there.
 fn raise_attach_chapters(conn: &Connection) -> Result<usize, String> {
     let dirs = crate::derive::unattached_chapter_dirs(conn)?;
@@ -2946,7 +2946,7 @@ fn raise_attach_chapters(conn: &Connection) -> Result<usize, String> {
         .collect();
     let mut per_series: BTreeMap<(String, i64), usize> = BTreeMap::new();
     for ((root_id, _directory), series_name) in dirs {
-        // A folder removed since the directories were read has no library to
+        // A root removed since the directories were read has no library to
         // ask in.
         let Some(&library_id) = library_of.get(&root_id) else {
             continue;

@@ -2566,7 +2566,7 @@ fn serve_refuses_an_unknown_flag() {
     assert_eq!(
         err,
         "serve has no flag `--bogus`; its flags are --addr, --allow-web-setup, --cache, \
-             --db, --folders, --insecure-cookies, --log-requests, --refresh-stump, \
+             --db, --dirs, --insecure-cookies, --log-requests, --refresh-stump, \
              --secure-cookies, --stump-key, --stump-url, --trusted-proxy, --web"
     );
 }
@@ -3095,31 +3095,31 @@ fn a_malformed_environment_value_is_refused_by_name() {
     assert!(err.contains("nonsense"), "{err}");
 }
 
-/// `--folders` is repeatable, and `TAIYAKU_FOLDERS` is read only when no flag
+/// `--dirs` is repeatable, and `TAIYAKU_DIRS` is read only when no flag
 /// was given. The variable is passed in rather than read here, so no test
 /// sets it for the ones beside it.
 #[test]
-fn serve_folders_reads_each_flag_and_the_variable_only_without_one() {
+fn serve_dirs_reads_each_flag_and_the_variable_only_without_one() {
     let paths = |words: &[&str]| words.iter().map(PathBuf::from).collect::<Vec<_>>();
 
-    assert_eq!(super::serve_folders(&argv(&[]), None), Ok(Vec::new()));
+    assert_eq!(super::serve_dirs(&argv(&[]), None), Ok(Vec::new()));
     assert_eq!(
-        super::serve_folders(&argv(&[]), Some("/media:/mnt/user/media 1::/a,b")),
+        super::serve_dirs(&argv(&[]), Some("/media:/mnt/user/media 1::/a,b")),
         Ok(paths(&["/media", "/mnt/user/media 1", "/a,b"])),
         "split on colons alone: a path may hold a space or a comma"
     );
     assert_eq!(
-        super::serve_folders(
-            &argv(&["--folders", "/one", "--db", "x.db", "--folders", "/two"]),
+        super::serve_dirs(
+            &argv(&["--dirs", "/one", "--db", "x.db", "--dirs", "/two"]),
             Some("/media")
         ),
         Ok(paths(&["/one", "/two"])),
         "a flag replaces the variable's list"
     );
-    assert!(super::serve_folders(&argv(&["--folders"]), None).is_err());
-    assert!(super::serve_folders(&argv(&["--folders", "--db"]), None).is_err());
+    assert!(super::serve_dirs(&argv(&["--dirs"]), None).is_err());
+    assert!(super::serve_dirs(&argv(&["--dirs", "--db"]), None).is_err());
     assert!(
-        super::serve_folders(&argv(&["--folders"]), Some("/media")).is_err(),
+        super::serve_dirs(&argv(&["--dirs"]), Some("/media")).is_err(),
         "a flag with no value is refused, not replaced by the variable"
     );
 }
@@ -3127,21 +3127,21 @@ fn serve_folders_reads_each_flag_and_the_variable_only_without_one() {
 /// One entry, an empty entry between two colons, and a variable that is set
 /// and empty (what an Unraid template's blank field hands over).
 #[test]
-fn the_folders_variable_with_one_entry_an_empty_one_or_none() {
+fn the_dirs_variable_with_one_entry_an_empty_one_or_none() {
     let paths = |words: &[&str]| words.iter().map(PathBuf::from).collect::<Vec<_>>();
 
     assert_eq!(
-        super::serve_folders(&argv(&[]), Some("/media")),
+        super::serve_dirs(&argv(&[]), Some("/media")),
         Ok(paths(&["/media"]))
     );
     assert_eq!(
-        super::serve_folders(&argv(&[]), Some("/a::/b")),
+        super::serve_dirs(&argv(&[]), Some("/a::/b")),
         Ok(paths(&["/a", "/b"])),
-        "an empty entry is no folder, not the working directory"
+        "an empty entry is no directory, not the working directory"
     );
     for value in ["", ":", "::"] {
         assert_eq!(
-            super::serve_folders(&argv(&[]), Some(value)),
+            super::serve_dirs(&argv(&[]), Some(value)),
             Ok(Vec::new()),
             "{value:?}"
         );
@@ -3159,46 +3159,83 @@ fn an_environment<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Optio
     }
 }
 
-/// What `serve` hands the server: the folders reach `ServeOptions` from the
-/// variable `TAIYAKU_FOLDERS` by that name and no other, a flag replaces them,
+/// What `serve` hands the server: the directories reach `ServeOptions` from the
+/// variable `TAIYAKU_DIRS` by that name and no other, a flag replaces them,
 /// and a relative entry is passed as written (the server makes it absolute
 /// against its working directory when it reads it).
 #[test]
-fn serve_options_carries_the_folders_from_the_flag_or_the_variable() {
+fn serve_options_carries_the_dirs_from_the_flag_or_the_variable() {
     let paths = |words: &[&str]| words.iter().map(PathBuf::from).collect::<Vec<_>>();
     let options = |args: &[&str], pairs: &[(&str, &str)]| {
         super::serve_options(&argv(args), &an_environment(pairs)).expect("options")
     };
 
-    assert_eq!(options(&[], &[]).folders, Vec::<PathBuf>::new());
+    assert_eq!(options(&[], &[]).dirs, Vec::<PathBuf>::new());
     assert_eq!(
-        options(&[], &[("TAIYAKU_FOLDERS", "/media:/mnt/b")]).folders,
+        options(&[], &[("TAIYAKU_DIRS", "/media:/mnt/b")]).dirs,
         paths(&["/media", "/mnt/b"])
     );
     assert_eq!(
-        options(&[], &[("TAIYAKU_FOLDER", "/x"), ("FOLDERS", "/y")]).folders,
+        options(&[], &[("TAIYAKU_DIR", "/x"), ("DIRS", "/y")]).dirs,
         Vec::<PathBuf>::new(),
         "no other name is read"
     );
     assert_eq!(
-        options(&["--folders", "/one"], &[("TAIYAKU_FOLDERS", "/media")]).folders,
+        options(&["--dirs", "/one"], &[("TAIYAKU_DIRS", "/media")]).dirs,
         paths(&["/one"])
     );
     assert_eq!(
-        options(&["--folders", "shelf/manga"], &[]).folders,
+        options(&["--dirs", "shelf/manga"], &[]).dirs,
         paths(&["shelf/manga"]),
-        "a relative folder is passed as written"
+        "a relative directory is passed as written"
     );
     assert_eq!(
-        options(&[], &[("TAIYAKU_FOLDERS", "shelf:/abs")]).folders,
+        options(&[], &[("TAIYAKU_DIRS", "shelf:/abs")]).dirs,
         paths(&["shelf", "/abs"])
     );
     let carried = options(
         &["--addr", "0.0.0.0:9", "--trusted-proxy", "10.0.0.1"],
-        &[("TAIYAKU_FOLDERS", "/media")],
+        &[("TAIYAKU_DIRS", "/media")],
     );
     assert_eq!(carried.addr, "0.0.0.0:9");
     assert_eq!(carried.auth.trusted_proxies.len(), 1);
+}
+
+/// `TAIYAKU_FOLDERS` has no alias, and a setting that had an effect must not
+/// be dropped silently: whenever the old name holds a value, empty included,
+/// `serve_options` refuses it, naming both variables. Neither a `--dirs` nor
+/// the new variable beside it excuses it. That the running server refuses
+/// before it listens is `serve_refuses_the_old_dirs_variable_before_it_listens`
+/// in `tests/cli.rs`.
+#[test]
+fn serve_options_refuses_the_old_dirs_variable_naming_both() {
+    let refusal = |args: &[&str], pairs: &[(&str, &str)]| {
+        super::serve_options(&argv(args), &an_environment(pairs))
+            .err()
+            .unwrap_or_else(|| panic!("serve {args:?} with {pairs:?} should have refused"))
+    };
+    let renamed =
+        "TAIYAKU_FOLDERS was renamed TAIYAKU_DIRS; rename it where the server is configured";
+
+    assert_eq!(refusal(&[], &[("TAIYAKU_FOLDERS", "/media")]), renamed);
+    assert_eq!(
+        refusal(&[], &[("TAIYAKU_FOLDERS", "")]),
+        renamed,
+        "set and empty listed nothing, an effect of its own"
+    );
+    assert_eq!(
+        refusal(&["--dirs", "/one"], &[("TAIYAKU_FOLDERS", "/media")]),
+        renamed,
+        "a flag does not excuse it"
+    );
+    assert_eq!(
+        refusal(
+            &[],
+            &[("TAIYAKU_DIRS", "/media"), ("TAIYAKU_FOLDERS", "/media")]
+        ),
+        renamed,
+        "nor does the new variable beside it"
+    );
 }
 
 /// Each variable `serve_options` reads is read under its own name, and nothing
@@ -3220,8 +3257,8 @@ fn serve_options_reads_each_variable_under_its_own_name() {
             .is_empty()
     );
 
-    let foldered = options(&[("TAIYAKU_FOLDERS", "/media")], &[]).expect("options");
-    assert_eq!(foldered.folders, vec![PathBuf::from("/media")]);
+    let with_dirs = options(&[("TAIYAKU_DIRS", "/media")], &[]).expect("options");
+    assert_eq!(with_dirs.dirs, vec![PathBuf::from("/media")]);
 
     let stumped = options(
         &[
@@ -3255,32 +3292,46 @@ fn serve_options_reads_each_variable_under_its_own_name() {
     );
 }
 
-/// `serve` knows the flag, and reads it before it opens a library.
-#[test]
-fn serve_accepts_folders_and_refuses_one_with_no_directory() {
-    // A `serve` that did not refuse would open the library and serve until the
-    // process ends, so it runs on a thread, on a library and a port of its
-    // own, and the answer is waited for with a bound that fails with a
-    // message. That thread is left behind on the failing path, and ends with
-    // the test process.
-    let scratch = TempDir::new("serve-folders-no-directory");
+/// What `serve` refuses `flags` with, on a library and a port of its own.
+///
+/// A `serve` that did not refuse would open the library and serve until the
+/// process ends, so it runs on a thread, and the answer is waited for with a
+/// bound that fails with a message. That thread is left behind on the failing
+/// path, and ends with the test process.
+fn serve_refusal(scratch_label: &str, flags: &[&str]) -> String {
+    let scratch = TempDir::new(scratch_label);
     let db = scratch.join("library.db");
-    let args = argv(&[
-        "--db",
-        db.to_str().unwrap(),
-        "--addr",
-        "127.0.0.1:0",
-        "--folders",
-    ]);
+    let mut words = vec!["--db", db.to_str().unwrap(), "--addr", "127.0.0.1:0"];
+    words.extend_from_slice(flags);
+    let args = argv(&words);
     let (sent, heard) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let _ = sent.send(super::serve(&args));
     });
     let answer = heard
         .recv_timeout(std::time::Duration::from_secs(5))
-        .expect("`serve --folders` with no directory after it should have refused, but it went on to serve");
-    let err = answer.unwrap_err();
-    assert!(err.contains("--folders needs a directory"), "{err}");
+        .unwrap_or_else(|_| {
+            panic!(
+                "`serve {}` should have refused, but it went on to serve",
+                flags.join(" ")
+            )
+        });
+    answer.unwrap_err()
+}
+
+/// `serve` knows the flag, and reads it before it opens a library.
+#[test]
+fn serve_accepts_dirs_and_refuses_one_with_no_directory() {
+    let err = serve_refusal("serve-dirs-no-directory", &["--dirs"]);
+    assert!(err.contains("--dirs needs a directory"), "{err}");
+}
+
+/// The old flag has no alias: it is refused as any flag `serve` does not know
+/// is, before a library is opened.
+#[test]
+fn serve_refuses_the_old_dirs_flag_as_unknown() {
+    let err = serve_refusal("serve-old-dirs-flag", &["--folders", "/x"]);
+    assert!(err.starts_with("serve has no flag `--folders`;"), "{err}");
 }
 
 /// `--web` names a built app, so a directory with no `index.html` is refused

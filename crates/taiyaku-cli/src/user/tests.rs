@@ -414,9 +414,9 @@ fn the_sessions_ended_note_appears_only_when_sessions_ended() {
     );
 }
 
-/// A folder added to the library at `db`, filed under the library called
+/// A directory added to the library at `db`, filed under the library called
 /// `name`, which is created if there is none.
-fn a_folder_in(
+fn a_dir_in(
     db: &std::path::Path,
     shelf: &std::path::Path,
     name: &str,
@@ -424,10 +424,10 @@ fn a_folder_in(
     let library = Library::open(db).expect("opens");
     let conn = library.conn();
     taiyaku_library::scan::add_root_in(&conn, shelf, taiyaku_library::scan::InLibrary::Named(name))
-        .expect("adds the folder")
+        .expect("adds the directory")
 }
 
-/// `davey`'s id, and the libraries and folders that account is granted.
+/// `davey`'s id, and the libraries and directories that account is granted.
 fn grants_of_davey(db: &std::path::Path) -> (Vec<i64>, account::Access) {
     let library = Library::open(db).expect("reopens");
     let conn = library.conn();
@@ -440,22 +440,22 @@ fn grants_of_davey(db: &std::path::Path) -> (Vec<i64>, account::Access) {
     )
 }
 
-/// The library is named by **name**, not by id or by a folder's path, and the
-/// grant is of the library: both of its folders come with it.
+/// The library is named by **name**, not by id or by a directory's path, and the
+/// grant is of the library: both of its directories come with it.
 #[test]
 fn granting_a_library_by_name_resolves_it_to_the_row() {
     let (_dir, db, flags) = a_library("grant-library");
     let first = scratch("grant-library-first-shelf");
     let second = scratch("grant-library-second-shelf");
-    let a = a_folder_in(&db, &first, "Manga");
-    let b = a_folder_in(&db, &second, "Manga");
+    let a = a_dir_in(&db, &first, "Manga");
+    let b = a_dir_in(&db, &second, "Manga");
 
     command(&with(&flags, &["grant-library", "davey", "Manga"])).expect("grants");
 
     assert_eq!(
         grants_of_davey(&db),
         (vec![a.library_id], account::Access::Only(vec![a.id, b.id])),
-        "the library named, and so each of its folders"
+        "the library named, and so each of its directories"
     );
 }
 
@@ -463,7 +463,7 @@ fn granting_a_library_by_name_resolves_it_to_the_row() {
 fn revoking_a_library_takes_the_grant_back() {
     let (_dir, db, flags) = a_library("revoke-library");
     let shelf = scratch("revoke-library-shelf");
-    a_folder_in(&db, &shelf, "Manga");
+    a_dir_in(&db, &shelf, "Manga");
 
     command(&with(&flags, &["grant-library", "davey", "Manga"])).expect("grants");
     command(&with(&flags, &["revoke-library", "davey", "Manga"])).expect("revokes");
@@ -489,7 +489,7 @@ fn granting_a_library_that_does_not_exist_names_it() {
 fn granting_a_library_to_an_account_that_does_not_exist_names_the_account() {
     let (_dir, db, flags) = a_library("grant-unknown-user");
     let shelf = scratch("grant-unknown-user-shelf");
-    a_folder_in(&db, &shelf, "Manga");
+    a_dir_in(&db, &shelf, "Manga");
     let why = command(&with(&flags, &["grant-library", "nobody", "Manga"])).unwrap_err();
     assert!(
         why.contains("nobody"),
@@ -503,14 +503,14 @@ fn granting_a_library_to_an_account_that_does_not_exist_names_the_account() {
 fn granting_a_library_twice_says_nothing_changed() {
     let (_dir, db, flags) = a_library("grant-library-twice");
     let shelf = scratch("grant-library-twice-shelf");
-    let folder = a_folder_in(&db, &shelf, "Manga");
+    let dir = a_dir_in(&db, &shelf, "Manga");
 
     command(&with(&flags, &["grant-library", "davey", "Manga"])).expect("grants");
     command(&with(&flags, &["grant-library", "davey", "Manga"])).expect("grants again");
 
     assert_eq!(
         grants_of_davey(&db).0,
-        vec![folder.library_id],
+        vec![dir.library_id],
         "granting twice is still one grant"
     );
 }
@@ -520,7 +520,7 @@ fn granting_a_library_twice_says_nothing_changed() {
 fn revoking_a_library_that_was_never_granted_is_not_an_error() {
     let (_dir, db, flags) = a_library("revoke-library-absent");
     let shelf = scratch("revoke-library-absent-shelf");
-    a_folder_in(&db, &shelf, "Manga");
+    a_dir_in(&db, &shelf, "Manga");
     command(&with(&flags, &["revoke-library", "davey", "Manga"]))
         .expect("revoking what is not granted succeeds");
 }
@@ -572,8 +572,8 @@ fn granting_names_the_library_it_was_given_and_not_another() {
     let (_dir, db, flags) = a_library("grant-library-picks-one");
     let other = scratch("grant-library-picks-other");
     let wanted = scratch("grant-library-picks-wanted");
-    let other = a_folder_in(&db, &other, "Other");
-    let wanted = a_folder_in(&db, &wanted, "Wanted");
+    let other = a_dir_in(&db, &other, "Other");
+    let wanted = a_dir_in(&db, &wanted, "Wanted");
 
     command(&with(&flags, &["grant-library", "davey", "Wanted"])).expect("grants");
 
@@ -594,8 +594,8 @@ fn revoking_names_the_library_it_was_given_and_not_another() {
     let (_dir, db, flags) = a_library("revoke-library-picks-one");
     let other = scratch("revoke-library-picks-other");
     let wanted = scratch("revoke-library-picks-wanted");
-    let other = a_folder_in(&db, &other, "Other");
-    a_folder_in(&db, &wanted, "Wanted");
+    let other = a_dir_in(&db, &other, "Other");
+    a_dir_in(&db, &wanted, "Wanted");
     command(&with(&flags, &["grant-library", "davey", "Other"])).expect("grants");
     command(&with(&flags, &["grant-library", "davey", "Wanted"])).expect("grants");
 

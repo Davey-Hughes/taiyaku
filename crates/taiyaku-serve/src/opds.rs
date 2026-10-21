@@ -141,7 +141,7 @@ async fn catalog() -> Response {
     <id>taiyaku:libraries</id>
     <title>Libraries</title>
     <updated>1970-01-01T00:00:00Z</updated>
-    <content type="text">Each library, with the works under its folders</content>
+    <content type="text">Each library, with the works under its directories</content>
     <link rel="subsection" type="{ATOM};kind=navigation" href="/opds/v1.2/libraries"/>
   </entry>
   <entry>
@@ -165,8 +165,8 @@ fn granted(extensions: &axum::http::Extensions) -> Access {
 /// Which of the two library views a feed belongs to.
 #[derive(Clone, Copy)]
 enum View {
-    /// A library's works are those with an edition under its folders.
-    Folders,
+    /// A library's works are those with an edition under its directories.
+    Dirs,
     /// A library's works are those `work.library_id` files in it.
     Filed,
 }
@@ -177,7 +177,7 @@ fn libraries_body(libraries: &[taiyaku_library::browse::LibraryEntry], view: Vie
     // The feed's id, its title, the words before a library's name in an
     // entry, and what follows the library's own id and link in that view.
     let (feed_id, title, content, suffix, href_suffix) = match view {
-        View::Folders => ("taiyaku:libraries", "Libraries", "The works in", "", ""),
+        View::Dirs => ("taiyaku:libraries", "Libraries", "The works in", "", ""),
         View::Filed => (
             "taiyaku:libraries:by-work",
             "Libraries (by work)",
@@ -220,7 +220,7 @@ pub(crate) async fn libraries(
     State(state): State<Arc<ServeState>>,
     extensions: axum::http::Extensions,
 ) -> Response {
-    libraries_in(state, &extensions, View::Folders).await
+    libraries_in(state, &extensions, View::Dirs).await
 }
 
 /// Every library this caller may read, each linking to the works filed in it.
@@ -249,7 +249,7 @@ async fn libraries_in(
 }
 
 /// One library's works, as `works` lists every work: the works with an
-/// edition under the library's folders, each counted by the editions there.
+/// edition under the library's directories, each counted by the editions there.
 ///
 /// A library outside the grant answers 404 in the words one that does not
 /// exist does; `library_scope` answers `None` for both.
@@ -266,7 +266,7 @@ pub(crate) async fn library_works(
             Ok(None) => return missing(format!("no library {library}")),
             Err(why) => return crate::library_api::failed("the library's works", &why),
         };
-        match taiyaku_library::browse::visible_editions(conn, &Access::Only(scope.folders)) {
+        match taiyaku_library::browse::visible_editions(conn, &Access::Only(scope.dirs)) {
             Ok(visible) => works_feed(
                 &feed_state,
                 Some(&visible),

@@ -6,11 +6,11 @@
 //! keeps its ends, which migration 16 strips from every other, and an id is
 //! never given to a later library.
 //!
-//! **The folder rows inside a library's card are still `config_api`'s.** A
-//! folder's settings, its own scan and its removal are routes under
-//! `/api/library/roots/{id}`. This module makes libraries, adds folders to
-//! them, removes them whole, scans all of a library's folders at once, and
-//! moves a folder from one library to another (`/api/library/roots/{id}/move`).
+//! **The directory rows inside a library's card are still `config_api`'s.** A
+//! directory's settings, its own scan and its removal are routes under
+//! `/api/library/roots/{id}`. This module makes libraries, adds directories to
+//! them, removes them whole, scans all of a library's directories at once, and
+//! moves a directory from one library to another (`/api/library/roots/{id}/move`).
 //!
 //! **A refusal these handlers make is `{"error": "<sentence>"}`**: 400, 404,
 //! 409 and 500, including the ones axum would otherwise answer in plain text
@@ -78,9 +78,9 @@ fn name_from_json(body: &serde_json::Value, missing: &str) -> Result<String, Adm
         .ok_or_else(|| AdminAnswer::Unusable(missing.to_string()))
 }
 
-/// The folders of library `id`, oldest first, or [`AdminAnswer::MissingLibrary`]
+/// The directories of library `id`, oldest first, or [`AdminAnswer::MissingLibrary`]
 /// where there is no such library.
-fn folders_of(conn: &rusqlite::Connection, id: i64) -> Result<Vec<scan::Root>, AdminAnswer> {
+fn dirs_of(conn: &rusqlite::Connection, id: i64) -> Result<Vec<scan::Root>, AdminAnswer> {
     if libraries::name_of(conn, id)
         .map_err(AdminAnswer::Failed)?
         .is_none()
@@ -95,13 +95,13 @@ fn folders_of(conn: &rusqlite::Connection, id: i64) -> Result<Vec<scan::Root>, A
 }
 
 /// Every library as the screen draws it, by name: its id, name, works, the
-/// EPUB and PDF entries its scans recorded, and each folder in
+/// EPUB and PDF entries its scans recorded, and each directory in
 /// [`root_json`]'s shape, oldest first.
 fn libraries_json(conn: &rusqlite::Connection) -> Result<Vec<serde_json::Value>, String> {
     let roots = roots_with_last_scan(conn)?;
     let mut rendered = Vec::new();
     for listed in libraries::list(conn)? {
-        let folders: Vec<serde_json::Value> = roots
+        let dirs: Vec<serde_json::Value> = roots
             .iter()
             .filter(|(root, _, _)| root.library_id == listed.id)
             .map(|(root, at, status)| root_json(root, at.as_deref(), status.as_deref()))
@@ -111,7 +111,7 @@ fn libraries_json(conn: &rusqlite::Connection) -> Result<Vec<serde_json::Value>,
             "name": listed.name,
             "works": listed.works,
             "books": libraries::books(conn, listed.id)?,
-            "folders": folders,
+            "dirs": dirs,
         }));
     }
     Ok(rendered)
@@ -139,26 +139,26 @@ pub(crate) async fn list_libraries(
     }
 }
 
-/// `name` and `folders`, as [`create_library`]'s body is read.
+/// `name` and `dirs`, as [`create_library`]'s body is read.
 fn new_library_from_json(body: &serde_json::Value) -> Result<(String, Vec<PathBuf>), AdminAnswer> {
     let name = name_from_json(body, "a library needs a `name`, a string")?;
     let listed = body
-        .get("folders")
+        .get("dirs")
         .and_then(serde_json::Value::as_array)
         .ok_or_else(|| {
-            AdminAnswer::Unusable("a library needs `folders`, an array of paths".to_string())
+            AdminAnswer::Unusable("a library needs `dirs`, an array of paths".to_string())
         })?;
-    let mut folders = Vec::with_capacity(listed.len());
+    let mut dirs = Vec::with_capacity(listed.len());
     for entry in listed {
-        folders.push(absolute_folder(entry.as_str().ok_or_else(|| {
-            AdminAnswer::Unusable("a library's `folders` must be an array of paths".to_string())
+        dirs.push(absolute_dir(entry.as_str().ok_or_else(|| {
+            AdminAnswer::Unusable("a library's `dirs` must be an array of paths".to_string())
         })?)?);
     }
-    Ok((name, folders))
+    Ok((name, dirs))
 }
 
-/// `POST /api/library/libraries`: a library and its folders, all of them or
-/// nothing. Answers the library as the list would, and each folder's watch
+/// `POST /api/library/libraries`: a library and its directories, all of them or
+/// nothing. Answers the library as the list would, and each directory's watch
 /// probe, which runs on the working connection, not the shared one.
 pub(crate) async fn create_library(
     State(state): State<Arc<ServeState>>,
@@ -169,14 +169,14 @@ pub(crate) async fn create_library(
     if let Some(refusal) = crate::session::administering_or_forbidden(&principal, &extensions) {
         return refusal;
     }
-    let (name, folders) = match json_body(&body).and_then(|body| new_library_from_json(&body)) {
+    let (name, dirs) = match json_body(&body).and_then(|body| new_library_from_json(&body)) {
         Ok(read) => read,
         Err(why) => return why.into_response(),
     };
 
     let created = tokio::task::spawn_blocking(move || {
         let working = state.library.working().map_err(AdminAnswer::Failed)?;
-        let made = scan::create_library(&working, &name, &folders).map_err(added_error)?;
+        let made = scan::create_library(&working, &name, &dirs).map_err(added_error)?;
         let library = libraries_json(&working)
             .map_err(AdminAnswer::Failed)?
             .into_iter()
@@ -189,7 +189,7 @@ pub(crate) async fn create_library(
             })?;
         Ok::<_, AdminAnswer>(serde_json::json!({
             "library": library,
-            "added": made.folders.iter().map(added_json).collect::<Vec<_>>(),
+            "added": made.dirs.iter().map(added_json).collect::<Vec<_>>(),
         }))
     })
     .await;
@@ -241,37 +241,37 @@ pub(crate) async fn patch_library(
     }
 }
 
-/// A folder's path as a request gives it, which must be absolute.
+/// A directory's path as a request gives it, which must be absolute.
 ///
 /// The store resolves a relative path against the server's working directory,
 /// which is the command line's own word and not a request's, and answers an
 /// empty one with an operating-system error that names nothing, so neither is
 /// passed on.
-fn absolute_folder(raw: &str) -> Result<PathBuf, AdminAnswer> {
+fn absolute_dir(raw: &str) -> Result<PathBuf, AdminAnswer> {
     let path = PathBuf::from(raw);
     if path.is_absolute() {
         Ok(path)
     } else {
         Err(AdminAnswer::Unusable(format!(
-            "a folder's path must be absolute, and `{raw}` is not"
+            "a directory's path must be absolute, and `{raw}` is not"
         )))
     }
 }
 
-/// `path`, as [`add_folder`]'s body is read.
-fn folder_path_from_json(body: &serde_json::Value) -> Result<PathBuf, AdminAnswer> {
+/// `path`, as [`add_dir`]'s body is read.
+fn dir_path_from_json(body: &serde_json::Value) -> Result<PathBuf, AdminAnswer> {
     let raw = body
         .get("path")
         .and_then(serde_json::Value::as_str)
         .ok_or_else(|| {
-            AdminAnswer::Unusable("adding a folder needs a `path`, a string".to_string())
+            AdminAnswer::Unusable("adding a directory needs a `path`, a string".to_string())
         })?;
-    absolute_folder(raw)
+    absolute_dir(raw)
 }
 
-/// `POST /api/library/libraries/{id}/folders`: add a folder to this library,
+/// `POST /api/library/libraries/{id}/dirs`: add a directory to this library,
 /// through [`scan::add_root_checked_in`]'s validations.
-pub(crate) async fn add_folder(
+pub(crate) async fn add_dir(
     State(state): State<Arc<ServeState>>,
     Extension(principal): Extension<Principal>,
     extensions: axum::http::Extensions,
@@ -283,7 +283,7 @@ pub(crate) async fn add_folder(
     }
     let read = library_id(&id).and_then(|id| {
         let body = json_body(&body)?;
-        Ok((id, folder_path_from_json(&body)?))
+        Ok((id, dir_path_from_json(&body)?))
     });
     let (id, path) = match read {
         Ok(read) => read,
@@ -292,7 +292,7 @@ pub(crate) async fn add_folder(
 
     let added = tokio::task::spawn_blocking(move || {
         let working = state.library.working().map_err(AdminAnswer::Failed)?;
-        folders_of(&working, id)?;
+        dirs_of(&working, id)?;
         scan::add_root_checked_in(&working, &path, scan::InLibrary::Id(id)).map_err(added_error)
     })
     .await;
@@ -300,7 +300,7 @@ pub(crate) async fn add_folder(
     match added {
         Ok(Ok(added)) => Json(added_json(&added)).into_response(),
         Ok(Err(no_answer)) => no_answer.into_response(),
-        Err(why) => admin_panicked("adding a folder", &why),
+        Err(why) => admin_panicked("adding a directory", &why),
     }
 }
 
@@ -308,7 +308,7 @@ pub(crate) async fn add_folder(
 /// `?dry_run=true` answer what that would cost. The body is
 /// `config_api::delete_root`'s, so one dialog's types read both.
 ///
-/// **A scan reserved on any of its folders refuses it**, 409, for the dry run
+/// **A scan reserved on any of its directories refuses it**, 409, for the dry run
 /// as for the removal. A removal that leaves an account with no library goes
 /// ahead, and the body names those accounts.
 pub(crate) async fn delete_library(
@@ -339,37 +339,37 @@ pub(crate) async fn delete_library(
     let scans_state = Arc::clone(&state);
     let removed = tokio::task::spawn_blocking(move || {
         let working = state.library.working().map_err(AdminAnswer::Failed)?;
-        let folders = folders_of(&working, id)?;
-        if let Some(root) = crate::scan_jobs::a_scan_reserved_on(&state, &folders) {
+        let dirs = dirs_of(&working, id)?;
+        if let Some(root) = crate::scan_jobs::a_scan_reserved_on(&state, &dirs) {
             return Err(AdminAnswer::Refused(crate::scan_jobs::removal_waits_for(
                 root,
                 "the library",
             )));
         }
-        let folders: Vec<i64> = folders.iter().map(|root| root.id).collect();
+        let dirs: Vec<i64> = dirs.iter().map(|root| root.id).collect();
         let (removal, derived) = if dry_run {
             scan::library_removal_cost(&working, id)
         } else {
             scan::remove_library(&working, id)
         }
         .map_err(AdminAnswer::Failed)?;
-        Ok((removal, derived, folders))
+        Ok((removal, derived, dirs))
     })
     .await;
 
-    // A freed `root.id` is given to the next folder added, so a removal that
-    // answers `Ok` clears each folder's slot in the scan registry, as
+    // A freed `root.id` is given to the next directory added, so a removal that
+    // answers `Ok` clears each directory's slot in the scan registry, as
     // `config_api::delete_root` clears one. The slots are cleared when the
     // removal answers, not when it commits: a removal that commits and then
     // fails its reconcile derive answers 500 with the library gone and the
     // slots left.
-    if !dry_run && let Ok(Ok((_, _, folders))) = &removed {
+    if !dry_run && let Ok(Ok((_, _, dirs))) = &removed {
         let mut scans = scans_state
             .scans
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        for folder in folders {
-            scans.remove(folder);
+        for dir in dirs {
+            scans.remove(dir);
         }
     }
 
@@ -385,8 +385,8 @@ pub(crate) async fn delete_library(
     }
 }
 
-/// The folders of library `id` for a scan route, or the answer to give.
-async fn scan_folders(
+/// The directories of library `id` for a scan route, or the answer to give.
+async fn scan_dirs(
     state: &Arc<ServeState>,
     id: i64,
     what: &'static str,
@@ -394,7 +394,7 @@ async fn scan_folders(
     let lookup_state = Arc::clone(state);
     let found = tokio::task::spawn_blocking(move || {
         let conn = lookup_state.library.conn();
-        folders_of(&conn, id)
+        dirs_of(&conn, id)
     })
     .await;
     match found {
@@ -403,15 +403,15 @@ async fn scan_folders(
     }
 }
 
-/// `POST /api/library/libraries/{id}/scan`: walk each folder of the library
+/// `POST /api/library/libraries/{id}/scan`: walk each directory of the library
 /// in the background, derive once, and answer at once.
 ///
-/// **The scan holds the registry slot of each folder.** A scan already
-/// running on one folder refuses the library's, naming the folder, with no
+/// **The scan holds the registry slot of each directory.** A scan already
+/// running on one directory refuses the library's, naming the directory, with no
 /// slot taken for the others. And while the library's runs,
-/// `config_api::start_scan` refuses each folder as already being scanned.
-/// A folder's slot is released when the whole scan ends, since the one derive
-/// is part of each folder's report.
+/// `config_api::start_scan` refuses each directory as already being scanned.
+/// A directory's slot is released when the whole scan ends, since the one derive
+/// is part of each directory's report.
 pub(crate) async fn start_library_scan(
     State(state): State<Arc<ServeState>>,
     Extension(principal): Extension<Principal>,
@@ -429,11 +429,11 @@ pub(crate) async fn start_library_scan(
     if let Some(query) = query.filter(|query| !query.is_empty()) {
         return AdminAnswer::Unusable(format!(
             "starting a scan takes no query, and `?{query}` was sent; every scan walks the \
-             whole of each folder"
+             whole of each directory"
         ))
         .into_response();
     }
-    let roots = match scan_folders(&state, id, "looking up a library to scan").await {
+    let roots = match scan_dirs(&state, id, "looking up a library to scan").await {
         Ok(roots) => roots,
         Err(answer) => return answer.into_response(),
     };
@@ -455,8 +455,8 @@ pub(crate) async fn start_library_scan(
 }
 
 /// `GET /api/library/libraries/{id}/scan`: whether a scan of any of the
-/// library's folders is running, and which. A folder's report is read from
-/// that folder's own status route.
+/// library's directories is running, and which. A directory's report is read from
+/// that directory's own status route.
 pub(crate) async fn library_scan_status(
     State(state): State<Arc<ServeState>>,
     Extension(principal): Extension<Principal>,
@@ -470,12 +470,12 @@ pub(crate) async fn library_scan_status(
         Ok(id) => id,
         Err(why) => return why.into_response(),
     };
-    let roots = match scan_folders(&state, id, "reading a library's scan status").await {
+    let roots = match scan_dirs(&state, id, "reading a library's scan status").await {
         Ok(roots) => roots,
         Err(answer) => return answer.into_response(),
     };
 
-    let folders: Vec<(i64, Option<std::time::Duration>)> = {
+    let dirs: Vec<(i64, Option<std::time::Duration>)> = {
         let scans = state
             .scans
             .lock()
@@ -491,13 +491,13 @@ pub(crate) async fn library_scan_status(
             })
             .collect()
     };
-    let elapsed = folders.iter().filter_map(|(_, running)| *running).max();
+    let elapsed = dirs.iter().filter_map(|(_, running)| *running).max();
 
     Json(serde_json::json!({
         "library_id": id,
         "running": elapsed.is_some(),
         "elapsed_secs": elapsed.map(|e| e.as_secs_f64()),
-        "folders": folders
+        "dirs": dirs
             .iter()
             .map(|(root_id, running)| serde_json::json!({
                 "root_id": root_id,
@@ -508,7 +508,7 @@ pub(crate) async fn library_scan_status(
     .into_response()
 }
 
-/// Where a move's body says the folder goes.
+/// Where a move's body says the directory goes.
 enum MoveTo {
     Library(i64),
     New(String),
@@ -568,12 +568,12 @@ fn moved_json(moved: &relocate::Moved) -> serde_json::Value {
     })
 }
 
-/// `POST /api/library/roots/{id}/move`: move a folder to another library or
+/// `POST /api/library/roots/{id}/move`: move a directory to another library or
 /// to a new one, or with `?dry_run=true` answer what that would do. `body` is
 /// `{"library": id}` or `{"new_library": name}`; [`relocate`] is where the
 /// move is.
 ///
-/// **A scan reserved on any folder of either library refuses it**, the folder's
+/// **A scan reserved on any directory of either library refuses it**, the directory's
 /// own library and the target, as [`delete_library`] refuses a removal: a scan
 /// that is queued holds no job lock, so the lock alone would not see it.
 ///
@@ -586,7 +586,7 @@ fn moved_json(moved: &relocate::Moved) -> serde_json::Value {
 /// **A refusal is a 409 with its sentence and its volumes**, all of them
 /// where the sentence names the first few. Where a scan or a rule save is the
 /// reason, `volumes` is empty.
-pub(crate) async fn move_folder(
+pub(crate) async fn move_dir(
     State(state): State<Arc<ServeState>>,
     Extension(principal): Extension<Principal>,
     extensions: axum::http::Extensions,
@@ -601,7 +601,7 @@ pub(crate) async fn move_folder(
         Ok(id) => id,
         Err(_) => {
             return AdminAnswer::Unusable(format!(
-                "`{id}` is not a folder id; an id is a whole number"
+                "`{id}` is not a directory id; an id is a whole number"
             ))
             .into_response();
         }
@@ -627,19 +627,19 @@ pub(crate) async fn move_folder(
             .working()
             .map_err(relocate::MoveError::Failed)?;
         let roots = scan::roots(&working).map_err(relocate::MoveError::Failed)?;
-        let Some(folder) = roots.iter().find(|root| root.id == id) else {
+        let Some(dir) = roots.iter().find(|root| root.id == id) else {
             return Err(relocate::MoveError::Missing(format!(
-                "there is no folder {id}"
+                "there is no directory {id}"
             )));
         };
         let held_up = roots.iter().filter(|root| {
-            root.library_id == folder.library_id
+            root.library_id == dir.library_id
                 || matches!(to, MoveTo::Library(library) if root.library_id == library)
         });
         let held_up: Vec<scan::Root> = held_up.cloned().collect();
         if let Some(root) = crate::scan_jobs::a_scan_reserved_on(&state, &held_up) {
             return Err(relocate::MoveError::Refused {
-                why: crate::scan_jobs::waits_for(root, "move the folder"),
+                why: crate::scan_jobs::waits_for(root, "move the directory"),
                 volumes: Vec::new(),
             });
         }
@@ -648,7 +648,7 @@ pub(crate) async fn move_folder(
             Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
             Err(std::sync::TryLockError::WouldBlock) => {
                 return Err(relocate::MoveError::Refused {
-                    why: "a scan or a rule save is running; move the folder when it has \
+                    why: "a scan or a rule save is running; move the directory when it has \
                           finished"
                         .to_string(),
                     volumes: Vec::new(),
@@ -686,7 +686,7 @@ pub(crate) async fn move_folder(
             .into_response(),
         Ok(Err(relocate::MoveError::Unusable(why))) => AdminAnswer::Unusable(why).into_response(),
         Ok(Err(relocate::MoveError::Failed(why))) => AdminAnswer::Failed(why).into_response(),
-        Err(why) => admin_panicked("moving a folder", &why),
+        Err(why) => admin_panicked("moving a directory", &why),
     }
 }
 

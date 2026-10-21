@@ -1834,7 +1834,7 @@ fn a_document_import_finds_a_scanned_work_in_any_library() {
 /// Two works in no library holding one key, which `work`'s `UNIQUE
 /// (content_key, library_id)` allows since it does not compare NULLs: two
 /// libraries each held a copy and each has gone, as a library goes when its
-/// last folder moves away.
+/// last directory moves away.
 fn two_unfiled_works_sharing_a_key(conn: &Connection) -> (i64, i64) {
     conn.execute_batch("INSERT INTO library (id, name) VALUES (70, 'A'), (80, 'B');")
         .expect("two libraries");
@@ -1941,7 +1941,7 @@ fn a_document_import_prefers_a_filed_work_and_then_the_oldest() {
 
 /// The document at `document` imported, with a position and a note on its
 /// work; that work taken by library A's scan; the same content scanned into
-/// library B; and A gone, as a library goes with its last folder. Returns the
+/// library B; and A gone, as a library goes with its last directory. Returns the
 /// document's work, which is the older and in no library, and B's.
 fn a_documents_work_in_no_library_beside_a_filed_one(
     conn: &Connection,

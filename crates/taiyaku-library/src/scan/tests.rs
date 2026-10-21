@@ -841,15 +841,15 @@ fn a_root_inside_an_existing_root_is_refused() {
     );
     let library = crate::libraries::name_of(&conn, outer.root.library_id)
         .expect("reads the name")
-        .expect("the outer folder's library has a name");
+        .expect("the outer directory's library has a name");
     assert_eq!(
         refused,
         format!(
-            "{} is inside {}, which is already a folder of the library `{library}`",
+            "{} is inside {}, which is already a directory of the library `{library}`",
             nested.canonicalize().unwrap().display(),
             outer.root.path.display()
         ),
-        "the refusal names the folder and its library, not an id"
+        "the refusal names the directory and its library, not an id"
     );
 }
 
@@ -877,22 +877,22 @@ fn a_root_containing_an_existing_root_is_refused() {
     );
     let library = crate::libraries::name_of(&conn, inner_root.root.library_id)
         .expect("reads the name")
-        .expect("the inner folder's library has a name");
+        .expect("the inner directory's library has a name");
     assert_eq!(
         refused,
         format!(
-            "{} holds `inner`, which is already a folder of the library `{library}`",
+            "{} holds `inner`, which is already a directory of the library `{library}`",
             dir.path().canonicalize().unwrap().display(),
         ),
-        "the refusal names the held folder from inside the chosen one, and its library, not an id"
+        "the refusal names the held directory from inside the chosen one, and its library, not an id"
     );
 }
 
-/// The held folder is named by its path from the chosen one, every component
-/// of it: a last component alone would not say where under the chosen folder
+/// The held directory is named by its path from the chosen one, every component
+/// of it: a last component alone would not say where under the chosen directory
 /// it is.
 #[test]
-fn a_containing_roots_refusal_names_a_deeper_held_folder_by_its_whole_relative_path() {
+fn a_containing_roots_refusal_names_a_deeper_held_dir_by_its_whole_relative_path() {
     let dir = crate::tests::tempdir("scan-add-root-checked-nested-deeper");
     let inner = dir.path().join("a").join("b");
     std::fs::create_dir_all(&inner).expect("mkdir");
@@ -901,41 +901,41 @@ fn a_containing_roots_refusal_names_a_deeper_held_folder_by_its_whole_relative_p
     let inner_root = super::add_root_checked(&conn, &inner).expect("adding the inner root");
     let library = crate::libraries::name_of(&conn, inner_root.root.library_id)
         .expect("reads the name")
-        .expect("the inner folder's library has a name");
+        .expect("the inner directory's library has a name");
 
     let refused = super::add_root_checked(&conn, dir.path()).expect_err("containing root");
 
     assert_eq!(
         refused.to_string(),
         format!(
-            "{} holds `a/b`, which is already a folder of the library `{library}`",
+            "{} holds `a/b`, which is already a directory of the library `{library}`",
             dir.path().canonicalize().unwrap().display(),
         ),
     );
 }
 
-/// A folder picked again is refused as already held, not as inside itself,
+/// A directory picked again is refused as already held, not as inside itself,
 /// which is what the nesting check alone would say of an equal path.
 #[test]
-fn a_root_already_held_is_refused_as_already_a_folder_of_its_library() {
+fn a_root_already_held_is_refused_as_already_a_dir_of_its_library() {
     let dir = crate::tests::tempdir("scan-add-root-checked-again");
     let library = crate::Library::open_in_memory().expect("open");
     let conn = library.conn();
     let held = super::add_root_checked(&conn, dir.path()).expect("adding the root");
     let library = crate::libraries::name_of(&conn, held.root.library_id)
         .expect("reads the name")
-        .expect("the folder's library has a name");
+        .expect("the directory's library has a name");
 
     let refused = super::add_root_checked(&conn, dir.path()).expect_err("the same root again");
     assert!(
         matches!(refused, AddRootError::Unusable(_)),
-        "a folder picked twice is this caller's own mistake, not a store fault: {refused:?}"
+        "a directory picked twice is this caller's own mistake, not a store fault: {refused:?}"
     );
 
     assert_eq!(
         refused.to_string(),
         format!(
-            "{} is already a folder of the library `{library}`",
+            "{} is already a directory of the library `{library}`",
             dir.path().canonicalize().unwrap().display(),
         ),
     );
@@ -1212,7 +1212,7 @@ fn library_of(conn: &Connection, root: &Root) -> String {
 }
 
 #[test]
-fn a_folder_added_on_its_own_is_a_library_named_for_it() {
+fn a_dir_added_on_its_own_is_a_library_named_for_it() {
     let parent = crate::tests::tempdir("scan-own-library");
     let a = parent.path().join("a").join("Volumes");
     let b = parent.path().join("b").join("Volumes");
@@ -1246,7 +1246,7 @@ fn a_folder_added_on_its_own_is_a_library_named_for_it() {
 }
 
 #[test]
-fn a_folder_added_to_a_named_library_joins_it_or_creates_it() {
+fn a_dir_added_to_a_named_library_joins_it_or_creates_it() {
     let parent = crate::tests::tempdir("scan-named-library");
     let (volumes, chapters, other) = (
         parent.path().join("Volumes"),
@@ -1265,18 +1265,18 @@ fn a_folder_added_to_a_named_library_joins_it_or_creates_it() {
 
     assert_eq!(
         first.library_id, second.library_id,
-        "the second folder joined, by trimmed name"
+        "the second directory joined, by trimmed name"
     );
     assert_ne!(third.library_id, first.library_id);
     assert_eq!(library_of(&conn, &first), "Manga");
 }
 
-/// A folder's name can begin or end with spaces, and a library's name made by
+/// A directory's name can begin or end with spaces, and a library's name made by
 /// the trigger or `libraries::create` never does: the trigger strips them, as
 /// `libraries::create` strips them from a name it is given. Otherwise
 /// `Named("Manga")` could not find the library and would make a second one.
 #[test]
-fn a_folder_named_with_spaces_is_a_library_its_name_without_them_joins() {
+fn a_dir_named_with_spaces_is_a_library_its_name_without_them_joins() {
     let parent = crate::tests::tempdir("scan-library-spaces");
     let (spaced, other) = (parent.path().join(" Manga "), parent.path().join("Other"));
     for dir in [&spaced, &other] {
@@ -1291,11 +1291,11 @@ fn a_folder_named_with_spaces_is_a_library_its_name_without_them_joins() {
     assert_eq!(
         library_of(&conn, &own),
         "Manga",
-        "named for its folder, without the spaces"
+        "named for its directory, without the spaces"
     );
     assert_eq!(
         joined.library_id, own.library_id,
-        "`Manga` found the folder's library"
+        "`Manga` found the directory's library"
     );
     assert_eq!(
         crate::libraries::list(&conn).expect("lists").len(),
@@ -1307,7 +1307,7 @@ fn a_folder_named_with_spaces_is_a_library_its_name_without_them_joins() {
 /// A named add finds the library stripped and in any ASCII case, and makes no
 /// second one.
 #[test]
-fn a_folder_joins_the_library_its_name_names_in_any_case() {
+fn a_dir_joins_the_library_its_name_names_in_any_case() {
     let parent = crate::tests::tempdir("scan-library-any-case");
     let (first, second) = (
         parent.path().join("Volumes"),
@@ -1348,25 +1348,25 @@ fn a_library_is_not_made_under_a_name_another_holds_in_another_case() {
     assert_eq!(
         why,
         AddRootError::Unusable(
-            "a library is already called `Manga`; add the folder to it instead".to_string()
+            "a library is already called `Manga`; add the directory to it instead".to_string()
         )
     );
     assert_eq!(
         roots(&conn).expect("reads").len(),
         1,
-        "the second folder was not added"
+        "the second directory was not added"
     );
 }
 
-/// Where both names a folder could be a library under are taken in another
-/// case, the folder is refused as the caller's mistake, naming both, and not
+/// Where both names a directory could be a library under are taken in another
+/// case, the directory is refused as the caller's mistake, naming both, and not
 /// left to the trigger's insert to fail on the index as a store fault.
 #[test]
-fn a_folder_whose_two_names_are_taken_in_another_case_is_refused_naming_both() {
+fn a_dir_whose_two_names_are_taken_in_another_case_is_refused_naming_both() {
     let parent = crate::tests::tempdir("scan-own-case");
-    let folder = parent.path().join("Manga");
-    std::fs::create_dir_all(&folder).expect("mkdir");
-    let canonical = folder.canonicalize().expect("canonical");
+    let dir = parent.path().join("Manga");
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let canonical = dir.canonicalize().expect("canonical");
     let whole = canonical.to_string_lossy().to_ascii_uppercase();
     assert_ne!(
         whole,
@@ -1381,7 +1381,7 @@ fn a_folder_whose_two_names_are_taken_in_another_case_is_refused_naming_both() {
     )
     .expect("both names, in another case");
 
-    let why = add_root_checked(&conn, &folder).expect_err("both names are taken");
+    let why = add_root_checked(&conn, &dir).expect_err("both names are taken");
 
     assert!(
         matches!(&why, AddRootError::Unusable(text) if text.contains("`Manga`")),
@@ -1390,7 +1390,7 @@ fn a_folder_whose_two_names_are_taken_in_another_case_is_refused_naming_both() {
 }
 
 #[test]
-fn a_refused_folder_names_no_library_into_being() {
+fn a_refused_dir_names_no_library_into_being() {
     let dir = crate::tests::tempdir("scan-refused-library");
     let nested = dir.path().join("inner");
     std::fs::create_dir(&nested).expect("mkdir");
@@ -1409,9 +1409,9 @@ fn a_refused_folder_names_no_library_into_being() {
 }
 
 /// The unchecked path's half of the same promise: the library is created in
-/// the folder's transaction, so an insert refused after it leaves none.
+/// the directory's transaction, so an insert refused after it leaves none.
 #[test]
-fn a_folder_refused_at_the_insert_leaves_no_library_behind() {
+fn a_dir_refused_at_the_insert_leaves_no_library_behind() {
     let dir = crate::tests::tempdir("scan-refused-insert-library");
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
@@ -1432,7 +1432,7 @@ fn a_folder_refused_at_the_insert_leaves_no_library_behind() {
 /// (`libraries::create`, for a new named library) or inside it (migration
 /// 15's `root_gets_a_library`). Where every root is a library of its own, a
 /// fresh database gives each root and its library the same id, and a test
-/// cannot tell one from the other. Two folders filed under one library put
+/// cannot tell one from the other. Two directories filed under one library put
 /// the ids out of step before the roots this test reads, and it reads them
 /// back through `roots` too.
 #[test]
@@ -1481,14 +1481,14 @@ fn a_new_root_is_returned_with_its_own_id_not_its_librarys() {
     );
 }
 
-/// The checked path refuses a folder that cannot be a library of its own,
-/// and only that one. The `root_gets_a_library` trigger tries the folder's
+/// The checked path refuses a directory that cannot be a library of its own,
+/// and only that one. The `root_gets_a_library` trigger tries the directory's
 /// last component and then its whole path; with both taken its insert would
 /// fail on `library.name`'s UNIQUE, which `add_root_checked_in` would report as
-/// a store fault. Each folder here is checked against the libraries the ones
+/// a store fault. Each directory here is checked against the libraries the ones
 /// before it made.
 #[test]
-fn a_folder_is_refused_a_library_of_its_own_only_when_both_its_names_are_taken() {
+fn a_dir_is_refused_a_library_of_its_own_only_when_both_its_names_are_taken() {
     let parent = crate::tests::tempdir("scan-own-library-clash");
     let dirs: Vec<PathBuf> = ["a/Volumes", "b/Volumes", "c/Volumes", "Other"]
         .iter()
@@ -1525,7 +1525,7 @@ fn a_folder_is_refused_a_library_of_its_own_only_when_both_its_names_are_taken()
     assert_eq!(
         crate::libraries::list(&conn).expect("lists"),
         before,
-        "the refusal added no library and no folder"
+        "the refusal added no library and no directory"
     );
 }
 
@@ -1546,7 +1546,7 @@ fn the_filesystem_root_can_be_refused_on_its_whole_path_alone() {
     assert!(why.contains("`/`"), "{why}");
 }
 
-/// `own_library_clash` refuses exactly the folders the trigger cannot file:
+/// `own_library_clash` refuses exactly the directories the trigger cannot file:
 /// each path here is asked of both, the trigger by an insert rolled back
 /// afterwards. The paths need not exist, since neither reads the disk. The
 /// libraries are chosen so that comparing a name with its spaces, without its
@@ -2325,24 +2325,24 @@ fn remove_root_repairs_a_surviving_documents_gap_only_after_its_own_commit() {
 
 // --- removal, and an account's only grant --------------------------------
 
-/// Three libraries over real folders, each folder holding one volume:
-/// `Shelf` of two folders, then `Solo` and `Lone` of one each, so that the
-/// last two have a library id that is not their folder's id. Answers the
+/// Three libraries over real directories, each directory holding one volume:
+/// `Shelf` of two directories, then `Solo` and `Lone` of one each, so that the
+/// last two have a library id that is not their directory's id. Answers the
 /// roots in that order.
 fn three_libraries(parent: &Path, conn: &Connection) -> [Root; 4] {
     let mut added = Vec::new();
-    for (folder, library, series) in [
+    for (name, library, series) in [
         ("shelf-a", "Shelf", "Alpha"),
         ("shelf-b", "Shelf", "Gamma"),
         ("solo", "Solo", "Beta"),
         ("lone", "Lone", "Delta"),
     ] {
-        let dir = parent.join(folder);
+        let dir = parent.join(name);
         write_archive(
             &dir.join(series).join(format!("{series} - v01.cbz")),
             2 + added.len(),
         );
-        let root = add_root_in(conn, &dir, InLibrary::Named(library)).expect("adds the folder");
+        let root = add_root_in(conn, &dir, InLibrary::Named(library)).expect("adds the directory");
         scan_root(conn, &root).expect("scans it");
         added.push(root);
     }
@@ -2350,7 +2350,7 @@ fn three_libraries(parent: &Path, conn: &Connection) -> [Root; 4] {
     for root in &added[2..] {
         assert_ne!(
             root.id, root.library_id,
-            "the fixture must tell a folder's id from its library's: {root:?}"
+            "the fixture must tell a directory's id from its library's: {root:?}"
         );
     }
     added.try_into().expect("four roots")
@@ -2404,7 +2404,7 @@ fn what_a_removal_touches(conn: &Connection) -> Vec<String> {
 }
 
 /// `Solo` is the only grant of `alex` and of `sam`, so removing its one
-/// folder deletes it and leaves them seeing no library. The dry run names
+/// directory deletes it and leaves them seeing no library. The dry run names
 /// them, in name order, and the removal does what the dry run said.
 ///
 /// No other account loses its last library, and none is named: `zed` is an
@@ -2412,7 +2412,7 @@ fn what_a_removal_touches(conn: &Connection) -> Vec<String> {
 /// set to every library, though it keeps a row of `Solo`; `both` keeps
 /// `Shelf`; `pat` never held `Solo`.
 #[test]
-fn removing_the_last_folder_of_an_accounts_only_library_names_who_is_left_with_none() {
+fn removing_the_last_dir_of_an_accounts_only_library_names_who_is_left_with_none() {
     let dir = crate::tests::tempdir("scan-removal-only-grant");
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
@@ -2449,7 +2449,7 @@ fn removing_the_last_folder_of_an_accounts_only_library_names_who_is_left_with_n
     );
 }
 
-/// `account` is "only these" with no folder, and no series is listed to it,
+/// `account` is "only these" with no directory, and no series is listed to it,
 /// though the libraries left still hold series.
 fn sees_no_library(conn: &Connection, account: i64) {
     let access = crate::account::access_for(conn, account).expect("reads");
@@ -2471,10 +2471,10 @@ fn sees_no_library(conn: &Connection, account: i64) {
     );
 }
 
-/// The same removal once the account holds another library too: the folder
+/// The same removal once the account holds another library too: the directory
 /// goes, and its library and that grant with it, and no one is named.
 #[test]
-fn removing_the_last_folder_of_a_library_is_allowed_when_its_accounts_hold_another() {
+fn removing_the_last_dir_of_a_library_is_allowed_when_its_accounts_hold_another() {
     let dir = crate::tests::tempdir("scan-removal-second-grant");
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
@@ -2496,7 +2496,7 @@ fn removing_the_last_folder_of_a_library_is_allowed_when_its_accounts_hold_anoth
 /// The same where the other library was made after the one removed, so its id
 /// is the higher of the two.
 #[test]
-fn removing_the_last_folder_of_a_library_is_allowed_when_its_accounts_hold_a_later_one() {
+fn removing_the_last_dir_of_a_library_is_allowed_when_its_accounts_hold_a_later_one() {
     let dir = crate::tests::tempdir("scan-removal-later-grant");
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
@@ -2519,9 +2519,9 @@ fn removing_the_last_folder_of_a_library_is_allowed_when_its_accounts_hold_a_lat
 }
 
 /// The same removal where no account is restricted to `Solo`, though one is
-/// restricted to `Lone`, another library of one folder.
+/// restricted to `Lone`, another library of one directory.
 #[test]
-fn removing_the_last_folder_of_a_library_nobody_is_restricted_to_is_allowed() {
+fn removing_the_last_dir_of_a_library_nobody_is_restricted_to_is_allowed() {
     let dir = crate::tests::tempdir("scan-removal-no-only-grant");
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
@@ -2539,22 +2539,22 @@ fn removing_the_last_folder_of_a_library_nobody_is_restricted_to_is_allowed() {
     );
 }
 
-/// A folder that is not its library's last goes, though the library is an
+/// A directory that is not its library's last goes, though the library is an
 /// account's only grant: the library and the grant stay, so neither the dry
 /// run nor the removal names the account.
 #[test]
-fn removing_one_folder_of_two_names_no_one_though_the_library_is_an_only_grant() {
-    let dir = crate::tests::tempdir("scan-removal-not-last-folder");
+fn removing_one_dir_of_two_names_no_one_though_the_library_is_an_only_grant() {
+    let dir = crate::tests::tempdir("scan-removal-not-last-dir");
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
     let [shelf_a, shelf_b, _, _] = three_libraries(dir.path(), &conn);
     let pat = an_account_granted(&conn, "pat", "user", &["Shelf"]);
 
     let (cost, _) = removal_cost(&conn, shelf_a.id).expect("costs");
-    let (removal, _) = remove_root(&conn, shelf_a.id).expect("Shelf keeps a folder");
+    let (removal, _) = remove_root(&conn, shelf_a.id).expect("Shelf keeps a directory");
 
     for (which, answer) in [("the dry run", cost), ("the removal", removal)] {
-        assert_eq!(answer.works, 1, "{which}: the folder's one volume");
+        assert_eq!(answer.works, 1, "{which}: the directory's one volume");
         assert_eq!(
             answer.left_with_no_library,
             Vec::<String>::new(),
@@ -2564,7 +2564,7 @@ fn removing_one_folder_of_two_names_no_one_though_the_library_is_an_only_grant()
     assert_eq!(
         crate::account::access_for(&conn, pat).expect("reads"),
         crate::account::Access::Only(vec![shelf_b.id]),
-        "the grant resolves to the folder that is left"
+        "the grant resolves to the directory that is left"
     );
 }
 
@@ -2574,7 +2574,7 @@ fn library_called(conn: &Connection, name: &str) -> i64 {
         .expect("the library exists")
 }
 
-/// The one work with a member under folder `root_id`.
+/// The one work with a member under directory `root_id`.
 fn work_under(conn: &Connection, root_id: i64) -> i64 {
     conn.query_row(
         "SELECT DISTINCT e.work_id FROM member m JOIN edition e ON e.id = m.edition_id
@@ -2582,7 +2582,7 @@ fn work_under(conn: &Connection, root_id: i64) -> i64 {
         [root_id],
         |r| r.get(0),
     )
-    .expect("one work under the folder")
+    .expect("one work under the directory")
 }
 
 /// `account` has a reading position on `work`, and `notes` notes.
@@ -2629,7 +2629,7 @@ fn rows_of_library(conn: &Connection, library: i64) -> Vec<String> {
 }
 
 #[test]
-fn removing_a_library_takes_each_folders_works_and_the_library() {
+fn removing_a_library_takes_each_dirs_works_and_the_library() {
     let parent = crate::tests::tempdir("remove-library");
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
@@ -2639,7 +2639,10 @@ fn removing_a_library_takes_each_folders_works_and_the_library() {
 
     let (removal, _derived) = remove_library(&conn, shelf).expect("removes");
 
-    assert_eq!(removal.works, 2, "one work under each of Shelf's folders");
+    assert_eq!(
+        removal.works, 2,
+        "one work under each of Shelf's directories"
+    );
     assert_eq!(
         crate::libraries::name_of(&conn, shelf).expect("reads"),
         None
@@ -2675,10 +2678,10 @@ fn removing_a_library_takes_each_folders_works_and_the_library() {
     );
 }
 
-/// Works, positions and notes each sum across the folders, with a different
+/// Works, positions and notes each sum across the directories, with a different
 /// figure for each so that no two can be swapped for one another.
 #[test]
-fn removing_a_library_sums_works_positions_and_notes_across_its_folders() {
+fn removing_a_library_sums_works_positions_and_notes_across_its_dirs() {
     let parent = crate::tests::tempdir("remove-library-sums");
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
@@ -2702,27 +2705,23 @@ fn removing_a_library_sums_works_positions_and_notes_across_its_folders() {
     );
 }
 
-/// A library `Manga` of two folders, `hub` and `other`, made in `order` so
-/// that the one with the lower folder id differs between the two orders.
+/// A library `Manga` of two directories, `hub` and `other`, made in `order` so
+/// that the one with the lower directory id differs between the two orders.
 ///
-/// Each holds `Series` volume 1, which is one work across the two folders.
-/// With `an_edition_per_folder` the first folder made is given the edition
-/// key `en`, and the work has two editions, one under each folder; without,
-/// it has one edition holding a member under each folder. `hub` also holds
+/// Each holds `Series` volume 1, which is one work across the two directories.
+/// With `an_edition_per_dir` the first directory made is given the edition
+/// key `en`, and the work has two editions, one under each directory; without,
+/// it has one edition holding a member under each directory. `hub` also holds
 /// a work of its own, `Extra`. Positions and notes are put on both works,
 /// with a different figure for each of works, positions and notes.
 ///
 /// Answers what the library's dry run and its removal each counted, after
-/// asserting the fixture's own shape and that each folder's own dry run
-/// counts only what that folder alone accounts for.
-fn a_library_removed_across_two_folders(order: [usize; 2], an_edition_per_folder: bool) -> Removal {
+/// asserting the fixture's own shape and that each directory's own dry run
+/// counts only what that directory alone accounts for.
+fn a_library_removed_across_two_dirs(order: [usize; 2], an_edition_per_dir: bool) -> Removal {
     let parent = crate::tests::tempdir("remove-library-spanning");
     let dirs = [parent.path().join("hub"), parent.path().join("other")];
-    let pages = if an_edition_per_folder {
-        [2, 3]
-    } else {
-        [2, 2]
-    };
+    let pages = if an_edition_per_dir { [2, 3] } else { [2, 2] };
     for (dir, pages) in dirs.iter().zip(pages) {
         write_archive(&dir.join("Series").join("Series - v01.cbz"), pages);
     }
@@ -2735,23 +2734,23 @@ fn a_library_removed_across_two_folders(order: [usize; 2], an_edition_per_folder
         &[dirs[order[0]].clone(), dirs[order[1]].clone()],
     )
     .expect("creates");
-    if an_edition_per_folder {
+    if an_edition_per_dir {
         update_root(
             &conn,
-            made.folders[0].root.id,
+            made.dirs[0].root.id,
             &RootPatch {
                 edition_key: Some(Some("en".to_string())),
                 ..Default::default()
             },
         )
-        .expect("the first folder's volume is its own edition");
+        .expect("the first directory's volume is its own edition");
     }
     for root in roots(&conn).expect("lists") {
         scan_root(&conn, &root).expect("scans");
     }
     crate::derive::derive(&conn).expect("derives");
 
-    let hub = made.folders[order.iter().position(|&i| i == 0).expect("hub")]
+    let hub = made.dirs[order.iter().position(|&i| i == 0).expect("hub")]
         .root
         .id;
     let ids = |sql: &str| -> Vec<i64> {
@@ -2769,7 +2768,7 @@ fn a_library_removed_across_two_folders(order: [usize; 2], an_edition_per_folder
     assert_eq!(
         spanning.len(),
         1,
-        "the fixture: one work across the two folders"
+        "the fixture: one work across the two directories"
     );
     let editions: i64 = conn
         .query_row(
@@ -2780,7 +2779,7 @@ fn a_library_removed_across_two_folders(order: [usize; 2], an_edition_per_folder
         .expect("counts");
     assert_eq!(
         editions,
-        if an_edition_per_folder { 2 } else { 1 },
+        if an_edition_per_dir { 2 } else { 1 },
         "the fixture's editions of the work"
     );
     assert_eq!(
@@ -2798,12 +2797,12 @@ fn a_library_removed_across_two_folders(order: [usize; 2], an_edition_per_folder
     read_with_notes(&conn, pat, spanning[0], 2);
     read_with_notes(&conn, sam, spanning[0], 0);
     read_with_notes(&conn, pat, extra, 4);
-    for folder in &made.folders {
-        let alone = removal_cost(&conn, folder.root.id).expect("costs").0;
+    for dir in &made.dirs {
+        let alone = removal_cost(&conn, dir.root.id).expect("costs").0;
         assert_eq!(
             alone.works,
-            usize::from(folder.root.id == hub),
-            "the fixture: a folder alone accounts for `Extra` if it is `hub`, and never for \
+            usize::from(dir.root.id == hub),
+            "the fixture: a directory alone accounts for `Extra` if it is `hub`, and never for \
              the spanning work"
         );
     }
@@ -2823,12 +2822,12 @@ fn a_library_removed_across_two_folders(order: [usize; 2], an_edition_per_folder
     cost
 }
 
-/// A work with an edition under each of a library's two folders: neither
-/// folder alone accounts for it, so each folder's own dry run counts none of
-/// it, and the library's counts it once, whichever folder is taken first.
+/// A work with an edition under each of a library's two directories: neither
+/// directory alone accounts for it, so each directory's own dry run counts none of
+/// it, and the library's counts it once, whichever directory is taken first.
 #[test]
-fn a_library_removal_counts_a_work_with_an_edition_per_folder_once() {
-    let forward = a_library_removed_across_two_folders([0, 1], true);
+fn a_library_removal_counts_a_work_with_an_edition_per_dir_once() {
+    let forward = a_library_removed_across_two_dirs([0, 1], true);
 
     assert_eq!(
         (forward.works, forward.positions, forward.notes),
@@ -2836,17 +2835,17 @@ fn a_library_removal_counts_a_work_with_an_edition_per_folder_once() {
         "{forward:?}"
     );
     assert_eq!(
-        a_library_removed_across_two_folders([1, 0], true),
+        a_library_removed_across_two_dirs([1, 0], true),
         forward,
-        "whichever folder is taken first"
+        "whichever directory is taken first"
     );
 }
 
 /// A work with one edition holding a member under each of a library's two
-/// folders: the same count, by the same rule, for a different shape.
+/// directories: the same count, by the same rule, for a different shape.
 #[test]
-fn a_library_removal_counts_a_work_with_one_edition_in_both_folders_once() {
-    let forward = a_library_removed_across_two_folders([0, 1], false);
+fn a_library_removal_counts_a_work_with_one_edition_in_both_dirs_once() {
+    let forward = a_library_removed_across_two_dirs([0, 1], false);
 
     assert_eq!(
         (forward.works, forward.positions, forward.notes),
@@ -2854,15 +2853,15 @@ fn a_library_removal_counts_a_work_with_one_edition_in_both_folders_once() {
         "{forward:?}"
     );
     assert_eq!(
-        a_library_removed_across_two_folders([1, 0], false),
+        a_library_removed_across_two_dirs([1, 0], false),
         forward,
-        "whichever folder is taken first"
+        "whichever directory is taken first"
     );
 }
 
-/// The first folder's work has a position and a note, and the second folder's
+/// The first directory's work has a position and a note, and the second directory's
 /// removal is made to fail. Neither the dry run nor the removal may leave the
-/// first folder's removal behind.
+/// first directory's removal behind.
 #[test]
 fn a_library_removal_that_fails_part_way_removes_nothing() {
     let parent = crate::tests::tempdir("remove-library-part-way");
@@ -2892,10 +2891,10 @@ fn a_library_removal_that_fails_part_way_removes_nothing() {
     let before = stands(&conn);
     let shelf = library_called(&conn, "Shelf");
 
-    let costed = library_removal_cost(&conn, shelf).expect_err("the second folder fails");
+    let costed = library_removal_cost(&conn, shelf).expect_err("the second directory fails");
     assert!(costed.contains("planted"), "{costed}");
     assert_eq!(stands(&conn), before, "after the dry run");
-    let removed = remove_library(&conn, shelf).expect_err("the second folder fails");
+    let removed = remove_library(&conn, shelf).expect_err("the second directory fails");
     assert!(removed.contains("planted"), "{removed}");
     assert_eq!(stands(&conn), before, "after the removal");
 }
@@ -2958,7 +2957,7 @@ fn a_library_id_that_names_no_library_removes_nothing() {
     assert_eq!(stands(&conn), before);
 }
 
-/// `Shelf`, of two folders, is the only grant of `alex` and of `bo`: removing
+/// `Shelf`, of two directories, is the only grant of `alex` and of `bo`: removing
 /// it leaves them seeing no library, and the dry run names them, in name
 /// order. `both` keeps `Solo` and is not named.
 #[test]
@@ -3059,9 +3058,9 @@ fn a_library_that_is_not_an_accounts_only_grant_names_no_one_whichever_was_made_
     assert!(
         matches!(
             crate::account::access_for(&conn, dual).expect("reads"),
-            crate::account::Access::Only(folders) if folders.len() == 2
+            crate::account::Access::Only(dirs) if dirs.len() == 2
         ),
-        "the account keeps Shelf's two folders"
+        "the account keeps Shelf's two directories"
     );
     assert_eq!(
         library_removal_cost(&conn, shelf)
@@ -3073,19 +3072,19 @@ fn a_library_that_is_not_an_accounts_only_grant_names_no_one_whichever_was_made_
     );
 }
 
-/// A library with no folder goes only with its last folder, so a removal of
+/// A library with no directory goes only with its last directory, so a removal of
 /// it deletes nothing and names no one, though it is an account's only
 /// grant. Written by hand: nothing public makes such a library.
 #[test]
-fn removing_a_library_with_no_folder_names_no_one() {
+fn removing_a_library_with_no_dir_names_no_one() {
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
     conn.execute(
-        "INSERT INTO library (id, name) VALUES (90, 'Folderless')",
+        "INSERT INTO library (id, name) VALUES (90, 'Directoryless')",
         [],
     )
-    .expect("a library with no folder");
-    let alex = an_account_granted(&conn, "alex", "user", &["Folderless"]);
+    .expect("a library with no directory");
+    let alex = an_account_granted(&conn, "alex", "user", &["Directoryless"]);
 
     let (cost, _) = library_removal_cost(&conn, 90).expect("costs");
     let (removal, _) = remove_library(&conn, 90).expect("removes");
@@ -3095,7 +3094,7 @@ fn removing_a_library_with_no_folder_names_no_one() {
     }
     assert_eq!(
         crate::libraries::name_of(&conn, 90).expect("reads"),
-        Some("Folderless".to_string()),
+        Some("Directoryless".to_string()),
         "the library stands"
     );
     assert_eq!(
@@ -3167,19 +3166,19 @@ fn removing_a_library_repairs_a_surviving_documents_gap_and_its_cost_does_not() 
     let doomed = create_library(&conn, "Doomed", &[dir.path().join("b")]).expect("creates");
     conn.execute(
         "UPDATE root SET keeps_documents = 1 WHERE id = ?1",
-        [kept.folders[0].root.id],
+        [kept.dirs[0].root.id],
     )
-    .expect("the kept folder keeps documents");
+    .expect("the kept directory keeps documents");
     for root in roots(&conn).expect("lists") {
         scan_root(&conn, &root).expect("scans");
     }
     crate::derive::derive(&conn).expect("derives");
-    let alpha = work_under(&conn, kept.folders[0].root.id);
+    let alpha = work_under(&conn, kept.dirs[0].root.id);
     let mut doc = crate::librarydoc::of(&conn, alpha).expect("projects");
     doc.title = Some("Hand-Set Alpha Title".to_string());
     crate::librarydoc::apply(&conn, alpha, &doc).expect("applies");
     let saved = crate::hand::save(&conn, alpha).expect("saves");
-    let document = saved.path.expect("a kept folder's work has an address");
+    let document = saved.path.expect("a kept directory's work has an address");
     std::fs::remove_file(&document).expect("the gap");
 
     let (_, rehearsed) = library_removal_cost(&conn, doomed.library_id).expect("costs");
@@ -3197,10 +3196,10 @@ fn removing_a_library_repairs_a_surviving_documents_gap_and_its_cost_does_not() 
     );
 }
 
-/// A library of one folder, the only grant of one account: the library's
+/// A library of one directory, the only grant of one account: the library's
 /// removal names that account alone, and leaves it seeing no library.
 #[test]
-fn removing_a_one_folder_library_names_its_one_account() {
+fn removing_a_one_dir_library_names_its_one_account() {
     let parent = crate::tests::tempdir("remove-library-one-account");
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
@@ -4049,7 +4048,7 @@ fn a_directory_only_pattern_does_not_swallow_a_present_file_of_the_same_name() {
     );
 }
 
-fn two_folders(parent: &Path) -> (PathBuf, PathBuf) {
+fn two_dirs(parent: &Path) -> (PathBuf, PathBuf) {
     let (a, b) = (parent.join("Volumes"), parent.join("Chapters"));
     for dir in [&a, &b] {
         std::fs::create_dir_all(dir).expect("mkdir");
@@ -4058,9 +4057,9 @@ fn two_folders(parent: &Path) -> (PathBuf, PathBuf) {
 }
 
 #[test]
-fn a_library_is_made_with_each_of_its_folders() {
+fn a_library_is_made_with_each_of_its_dirs() {
     let parent = crate::tests::tempdir("create-library");
-    let (a, b) = two_folders(parent.path());
+    let (a, b) = two_dirs(parent.path());
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
 
@@ -4085,14 +4084,11 @@ fn a_library_is_made_with_each_of_its_folders() {
             (b.canonicalize().expect("canonical"), made.library_id),
         ]
     );
-    assert_eq!(made.folders.len(), 2);
+    assert_eq!(made.dirs.len(), 2);
     assert_eq!(
-        made.folders
-            .iter()
-            .map(|f| f.root.clone())
-            .collect::<Vec<_>>(),
+        made.dirs.iter().map(|f| f.root.clone()).collect::<Vec<_>>(),
         roots(&conn).expect("lists"),
-        "the folders are answered in the order given, as stored"
+        "the directories are answered in the order given, as stored"
     );
 }
 
@@ -4105,9 +4101,9 @@ fn libraries_and_roots(conn: &Connection) -> (i64, i64) {
 }
 
 #[test]
-fn a_library_is_refused_whole_for_one_bad_folder() {
+fn a_library_is_refused_whole_for_one_bad_dir() {
     let parent = crate::tests::tempdir("create-library-refused");
-    let (a, b) = two_folders(parent.path());
+    let (a, b) = two_dirs(parent.path());
     let inside = a.join("inside");
     std::fs::create_dir_all(&inside).expect("mkdir");
     let library = Library::open_in_memory().expect("open");
@@ -4118,7 +4114,7 @@ fn a_library_is_refused_whole_for_one_bad_folder() {
         (vec![a.clone(), inside.clone()], "overlap"),
         (vec![inside.clone(), a.clone()], "overlap"),
         (vec![a.clone(), a.clone()], "overlap"),
-        (Vec::new(), "at least one folder"),
+        (Vec::new(), "at least one directory"),
     ] {
         let why = create_library(&conn, "Manga", &paths).expect_err("refuses");
         assert!(
@@ -4138,12 +4134,12 @@ fn a_library_is_refused_whole_for_one_bad_folder() {
     assert_eq!(libraries_and_roots(&conn), (0, 0));
 }
 
-/// The second folder's insert is refused by a trigger planted for it, after
-/// both paths were vetted. The library and the first folder must go with it.
+/// The second directory's insert is refused by a trigger planted for it, after
+/// both paths were vetted. The library and the first directory must go with it.
 #[test]
-fn a_library_whose_second_folder_fails_at_the_insert_leaves_nothing() {
+fn a_library_whose_second_dir_fails_at_the_insert_leaves_nothing() {
     let parent = crate::tests::tempdir("create-library-insert");
-    let (a, b) = two_folders(parent.path());
+    let (a, b) = two_dirs(parent.path());
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
     conn.execute_batch(
@@ -4165,7 +4161,7 @@ fn a_library_whose_second_folder_fails_at_the_insert_leaves_nothing() {
 #[test]
 fn a_library_is_not_made_under_a_name_already_taken() {
     let parent = crate::tests::tempdir("create-library-taken");
-    let (a, b) = two_folders(parent.path());
+    let (a, b) = two_dirs(parent.path());
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
     add_root_in(&conn, &a, InLibrary::Named("Manga")).expect("Manga exists");
@@ -4176,7 +4172,7 @@ fn a_library_is_not_made_under_a_name_already_taken() {
     assert!(
         matches!(&why, AddRootError::Unusable(text)
             if text.contains(" is inside ")
-                && text.contains(", which is already a folder of the library `Manga`")),
+                && text.contains(", which is already a directory of the library `Manga`")),
         "{why:?}"
     );
     assert_eq!(libraries_and_roots(&conn), (1, 1));
@@ -4192,9 +4188,9 @@ fn a_library_is_not_made_under_a_name_already_taken() {
 }
 
 #[test]
-fn a_folder_joins_a_library_by_its_id_and_no_library_by_an_id_none_has() {
+fn a_dir_joins_a_library_by_its_id_and_no_library_by_an_id_none_has() {
     let parent = crate::tests::tempdir("add-by-id");
-    let (a, b) = two_folders(parent.path());
+    let (a, b) = two_dirs(parent.path());
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
     let first = add_root_in(&conn, &a, InLibrary::Named("Manga")).expect("Manga exists");
@@ -4212,22 +4208,22 @@ fn a_folder_joins_a_library_by_its_id_and_no_library_by_an_id_none_has() {
     assert_eq!(libraries_and_roots(&conn), (1, 2));
 }
 
-/// A folder removed while its walk runs, and its id taken by a folder added
+/// A directory removed while its walk runs, and its id taken by a directory added
 /// after it: the walk's `Root` is stale, and neither its entries nor its
-/// status may land on the folder that holds the id now.
-fn stale_root_and_the_folder_that_took_its_id(
+/// status may land on the directory that holds the id now.
+fn stale_root_and_the_dir_that_took_its_id(
     conn: &Connection,
     tag: &str,
 ) -> (Root, Root, crate::tests::TempDir, crate::tests::TempDir) {
     let walked = crate::tests::tempdir(&format!("{tag}-walked"));
     write_pages(&walked.path().join("Series").join("c001"), 2);
-    let stale = super::add_root(conn, walked.path()).expect("adding the folder");
+    let stale = super::add_root(conn, walked.path()).expect("adding the directory");
     super::remove_root(conn, stale.id).expect("removing it");
     let other = crate::tests::tempdir(&format!("{tag}-other"));
-    let new = super::add_root(conn, other.path()).expect("adding another folder");
+    let new = super::add_root(conn, other.path()).expect("adding another directory");
     assert_eq!(
         new.id, stale.id,
-        "sanity: the freed id was given to the new folder"
+        "sanity: the freed id was given to the new directory"
     );
     assert_ne!(new.path, stale.path);
     (stale, new, walked, other)
@@ -4251,18 +4247,18 @@ fn status_and_entries(conn: &Connection, id: i64) -> (Option<String>, i64) {
     (status, entries)
 }
 
-/// **A walk records nothing for a folder that is no longer the one walked.**
-/// A folder removed while its walk ran, and its id given to a folder added
+/// **A walk records nothing for a directory that is no longer the one walked.**
+/// A directory removed while its walk ran, and its id given to a directory added
 /// after it: the walk records neither its entries nor its status under the
-/// new folder.
+/// new directory.
 #[test]
-fn a_walk_of_a_removed_folder_records_nothing_under_the_folder_that_took_its_id() {
+fn a_walk_of_a_removed_dir_records_nothing_under_the_dir_that_took_its_id() {
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
     let (stale, new, _walked, _other) =
-        stale_root_and_the_folder_that_took_its_id(&conn, "stale-walk");
+        stale_root_and_the_dir_that_took_its_id(&conn, "stale-walk");
 
-    let refused = super::scan_root(&conn, &stale).expect_err("the walk's folder is gone");
+    let refused = super::scan_root(&conn, &stale).expect_err("the walk's directory is gone");
     assert_eq!(
         refused,
         format!(
@@ -4273,26 +4269,26 @@ fn a_walk_of_a_removed_folder_records_nothing_under_the_folder_that_took_its_id(
     let (status, entries) = status_and_entries(&conn, new.id);
     assert_eq!(
         entries, 0,
-        "no entry of the walk may be filed under the new folder"
+        "no entry of the walk may be filed under the new directory"
     );
     assert_eq!(
         status, None,
-        "the walk's status may not land on the new folder"
+        "the walk's status may not land on the new directory"
     );
 }
 
-/// The derive failure's correction asks the same of the folder it names.
+/// The derive failure's correction asks the same of the directory it names.
 #[test]
-fn mark_derive_failed_leaves_the_folder_that_took_a_removed_ones_id_alone() {
+fn mark_derive_failed_leaves_the_dir_that_took_a_removed_ones_id_alone() {
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
     let (stale, new, _walked, _other) =
-        stale_root_and_the_folder_that_took_its_id(&conn, "stale-derive");
+        stale_root_and_the_dir_that_took_its_id(&conn, "stale-derive");
 
     super::mark_derive_failed(&conn, &stale).expect("a no-op is not a fault");
     let (status, _) = status_and_entries(&conn, new.id);
     assert_eq!(
         status, None,
-        "the correction may not land on the new folder"
+        "the correction may not land on the new directory"
     );
 }

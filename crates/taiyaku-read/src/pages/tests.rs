@@ -207,10 +207,10 @@ fn entries_are_pages_in_name_order_whatever_order_they_were_stored_in() {
     assert_eq!(names, ["p1.jpg", "p2.jpg", "p10.jpg"]);
 }
 
-/// Sorting on the basename rather than the whole path scatters a
-/// chapter-foldered edition beyond recovery, and the corpus holds the case:
+/// Sorting on the basename rather than the whole path scatters an edition
+/// with a directory per chapter beyond recovery, and the corpus holds the case:
 /// Go-Toubun's Full Colour edition nests pages under `Chapter 15 - …/` and
-/// carries a `ZBlank (1).jpg` in each folder. On the basename every
+/// carries a `ZBlank (1).jpg` in each directory. On the basename every
 /// chapter's blank sorts to the front and the chapters interleave; 2 of the
 /// 7 nested archives measured come out differently the two ways.
 #[test]
@@ -715,7 +715,7 @@ fn member_entry_reads_a_directory_members_own_file() {
 }
 
 /// Deliberately not a recursive walk: unlike `directory_page_paths`,
-/// which descends into a chapter-foldered edition to find images,
+/// which descends into an edition's chapter directories to find images,
 /// `member_entry` only looks beside the pages at the member's own level —
 /// every `ComicInfo.xml` this crate has read sits there, never nested.
 #[test]

@@ -1,17 +1,17 @@
 /**
- * One folder's page, under its library's: a way back to the library, and
- * the folder's own settings, scan, move and removal, which are `RootRow`'s.
+ * One directory's page, under its library's: a way back to the library, and
+ * the directory's own settings, scan, move and removal, which are `RootRow`'s.
  *
- * **Another folder's scan holds this one's Scan folder, Move… and Remove…**,
- * because of the three the server refuses only the move for it. It refuses
- * a scan or a removal of a folder only while that folder itself is being
- * scanned; a scan asked of a second folder waits for the first to finish,
- * and a removal does not wait. The library's status names every folder that
- * is scanning, so it is read once on mount and, while another folder is
- * named, again each poll until none is. A failed poll keeps the hold until
- * `POLL_MISSES_ALLOWED` have failed in a row, as `RootRow`'s poll keeps
- * watching its scan. A scan of this folder, or of the whole library, is
- * `RootRow`'s own to see: the library's scan holds each folder's slot.
+ * **Another directory's scan holds this one's Scan directory, Move… and
+ * Remove…**, because of the three the server refuses only the move for it. It
+ * refuses a scan or a removal of a directory only while that directory itself
+ * is being scanned; a scan asked of a second directory waits for the first to
+ * finish, and a removal does not wait. The library's status names every
+ * directory that is scanning, so it is read once on mount and, while another
+ * directory is named, again each poll until none is. A failed poll keeps the
+ * hold until `POLL_MISSES_ALLOWED` have failed in a row, as `RootRow`'s poll
+ * keeps watching its scan. A scan of this directory, or of the whole library,
+ * is `RootRow`'s own to see: the library's scan holds each directory's slot.
  */
 import { type ReactNode, useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router'
@@ -26,10 +26,10 @@ import { type Library, libraryScanStatus, type MoveAnswer } from './libraries'
 import { sentenceOf } from './message'
 import { RootRow } from './RootRow'
 
-export interface FolderPageProps {
+export interface DirPageProps {
   library: Library
   root: Root
-  /** Only a folder added in this session has one. */
+  /** Only a directory added in this session has one. */
   probe?: Probe
   /** Every other library, for Move…. */
   others: { id: number; name: string }[]
@@ -46,9 +46,9 @@ export interface FolderPageProps {
 }
 
 /**
- * Whether a folder of `libraryId` other than `rootId` is scanning, and why
+ * Whether a directory of `libraryId` other than `rootId` is scanning, and why
  * that could no longer be told once a hold was given up. The sentence holds
- * until the library or the folder changes, which asks afresh, or `forget`
+ * until the library or the directory changes, which asks afresh, or `forget`
  * is called.
  */
 function useOtherScan(
@@ -62,7 +62,7 @@ function useOtherScan(
     setFailure(undefined)
     let cancelled = false
     let timer: ReturnType<typeof setTimeout> | undefined
-    /** Whether the last answer named another folder scanning. */
+    /** Whether the last answer named another directory scanning. */
     let holding = false
     /** Consecutive failed polls, counted as `RootRow` counts its own. */
     let misses = 0
@@ -71,7 +71,7 @@ function useOtherScan(
         .then((status) => {
           if (cancelled) return
           misses = 0
-          holding = status.folders.some(
+          holding = status.dirs.some(
             (one) => one.running && one.root_id !== rootId,
           )
           setOther(holding)
@@ -80,7 +80,7 @@ function useOtherScan(
         .catch((err: unknown) => {
           if (cancelled) return
           // A blip in a poll must not free the buttons while the other
-          // folder still scans, so the hold outlasts a miss as `RootRow`'s
+          // directory still scans, so the hold outlasts a miss as `RootRow`'s
           // poll does.
           misses += 1
           if (holding && misses < POLL_MISSES_ALLOWED) {
@@ -90,8 +90,8 @@ function useOtherScan(
           // A first read that fails held nothing and says nothing, as
           // `RootRow`'s mount read does. A hold given up is said, as
           // `RootRow`'s and `LibraryPage`'s polls say theirs: it frees the
-          // buttons while the other folder may still be scanning, and the
-          // server refuses neither this folder's scan nor its removal for
+          // buttons while the other directory may still be scanning, and the
+          // server refuses neither this directory's scan nor its removal for
           // that. Only Move… is still refused.
           if (holding) setFailure(sentenceOf(err))
           holding = false
@@ -104,12 +104,12 @@ function useOtherScan(
       clearTimeout(timer)
     }
   }, [libraryId, rootId])
-  // Stable, so `RootRow`'s Scan folder handler is not made afresh each draw.
+  // Stable, so `RootRow`'s Scan directory handler is not made afresh each draw.
   const forget = useCallback(() => setFailure(undefined), [])
   return { other, failure, forget }
 }
 
-export function FolderPage({
+export function DirPage({
   library,
   root,
   probe,
@@ -119,10 +119,10 @@ export function FolderPage({
   onRemoved,
   onMoved,
   onLateRefusal,
-}: FolderPageProps) {
+}: DirPageProps) {
   const { other: held, failure, forget } = useOtherScan(library.id, root.id)
   return (
-    <div className="folder-page">
+    <div className="dir-page">
       <p className="back">
         <Link to={`/config/libraries/${library.id}`}>‹ {library.name}</Link>
       </p>
@@ -133,9 +133,9 @@ export function FolderPage({
         key={root.path}
         root={root}
         probe={probe}
-        lastOf={library.folders.length === 1 ? library.name : undefined}
+        lastOf={library.dirs.length === 1 ? library.name : undefined}
         held={held}
-        // A scan of this folder is a fresh start, and the sentence of a
+        // A scan of this directory is a fresh start, and the sentence of a
         // hold given up says nothing of it.
         onScan={forget}
         moveTo={{

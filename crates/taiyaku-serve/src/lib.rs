@@ -27,8 +27,8 @@ mod cover;
 /// [`build_router`] and nothing else — a `pub` here would be surface with no
 /// caller.
 mod curation;
+mod dirs_api;
 pub(crate) mod download;
-mod folders_api;
 mod libraries_api;
 pub mod library_api;
 mod limit;
@@ -118,7 +118,7 @@ pub struct ServeState {
     pub auth: crate::session::AuthConfig,
     /// Every root scan currently running or just finished, by root id: the
     /// registry for `POST`/`GET /api/library/roots/{id}/scan`, and for a
-    /// library's scan, which holds an entry for each of its folders at once.
+    /// library's scan, which holds an entry for each of its directories at once.
     ///
     /// **In-process only, and deliberately.** Nothing here survives a
     /// restart: a process that died mid-scan left no lock behind, and the
@@ -178,9 +178,9 @@ pub struct ServeState {
     /// background, and `scan_status` is where a caller learns how long that
     /// took either way.
     pub library_job: Arc<std::sync::Mutex<()>>,
-    /// The directories `GET /api/library/folders` may list beneath:
-    /// `--folders`, or `TAIYAKU_FOLDERS`. Empty lists nothing.
-    pub folders: Vec<std::path::PathBuf>,
+    /// The directories `GET /api/library/dirs` may list beneath:
+    /// `--dirs`, or `TAIYAKU_DIRS`. Empty lists nothing.
+    pub dirs: Vec<std::path::PathBuf>,
 }
 
 /// One root's scan, as the registry in [`ServeState::scans`] tracks it —
@@ -391,14 +391,14 @@ pub struct ServeOptions {
     /// [`crate::web`]. `None` serves the API alone, which is what `vite dev`'s
     /// proxy expects.
     pub web: Option<std::path::PathBuf>,
-    /// `--folders`: what the folder browser may list beneath.
-    pub folders: Vec<std::path::PathBuf>,
+    /// `--dirs`: what the directory browser may list beneath.
+    pub dirs: Vec<std::path::PathBuf>,
 }
 
-/// Says, line by line to `say`, why each folder the server was started with
+/// Says, line by line to `say`, why each directory the server was started with
 /// lists nothing. Split from `serve` so a test can read what it says.
-pub(crate) fn announce_folders(folders: &[std::path::PathBuf], say: &mut dyn FnMut(&str)) {
-    for line in folders_api::notices(folders) {
+pub(crate) fn announce_dirs(dirs: &[std::path::PathBuf], say: &mut dyn FnMut(&str)) {
+    for line in dirs_api::notices(dirs) {
         say(&line);
     }
 }
@@ -446,7 +446,7 @@ pub async fn serve(
         cache,
         auth,
         web,
-        folders,
+        dirs,
     } = options;
     let addr = addr.as_str();
     // Opened before anything else so a bad `--log-requests` path is a
@@ -528,7 +528,7 @@ pub async fn serve(
         eprintln!("{complaint}");
     }
 
-    announce_folders(&folders, &mut |line| eprintln!("{line}"));
+    announce_dirs(&dirs, &mut |line| eprintln!("{line}"));
 
     let state = Arc::new(ServeState {
         library,
@@ -539,7 +539,7 @@ pub async fn serve(
         auth,
         scans: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         library_job: Arc::new(std::sync::Mutex::new(())),
-        folders,
+        dirs,
     });
 
     // §4's other half: expired sessions are deleted lazily on lookup, and swept

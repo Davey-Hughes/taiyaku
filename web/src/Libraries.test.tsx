@@ -15,7 +15,7 @@ import * as api from './libraries'
 import { deferred, flush } from './testing/async'
 import { press, submit, typeInto } from './testing/input'
 import { fields } from './testing/fields'
-import { folder, idle, scanningIn } from './testing/libraries'
+import { dir, idle, scanningIn } from './testing/libraries'
 import { mount } from './testing/mount'
 import { cellValue } from './testing/table'
 import { StatusRefreshContext } from './shell'
@@ -30,13 +30,13 @@ vi.mock('./config', async (importOriginal) => ({
 }))
 vi.mock('./libraries', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./libraries')>()),
-  addFolder: vi.fn(),
+  addDir: vi.fn(),
   createLibrary: vi.fn(),
   libraryRemovalCost: vi.fn(),
   libraryScanStatus: vi.fn(),
   listLibraries: vi.fn(),
   moveCost: vi.fn(),
-  moveFolder: vi.fn(),
+  moveDir: vi.fn(),
   removeLibrary: vi.fn(),
   renameLibrary: vi.fn(),
   startLibraryScan: vi.fn(),
@@ -44,16 +44,16 @@ vi.mock('./libraries', async (importOriginal) => ({
 
 const TABLE = '/config/libraries'
 
-/** A library whose folders are numbered `id * 10`, `id * 10 + 1`, …. */
+/** A library whose directories are numbered `id * 10`, `id * 10 + 1`, …. */
 const library = (id: number, name: string, paths: string[]): api.Library => ({
   id,
   name,
   works: 0,
   books: 0,
-  folders: paths.map((p, i) => folder(id * 10 + i, p)),
+  dirs: paths.map((p, i) => dir(id * 10 + i, p)),
 })
 
-/** Two libraries: Manga, of two folders, and Comics, of one. */
+/** Two libraries: Manga, of two directories, and Comics, of one. */
 const twoAndOne = () => [
   library(1, 'Manga', ['/media/Manga/Volumes', '/media/Manga/Chapters']),
   library(2, 'Comics', ['/media/Comics']),
@@ -139,13 +139,11 @@ const names = (host: HTMLElement) =>
     (a) => a.textContent,
   )
 
-/** The paths in the library page's Folders table, in the order drawn. */
+/** The paths in the library page's Directories table, in the order drawn. */
 const paths = (host: HTMLElement) =>
-  [...host.querySelectorAll('.folder-table tbody code')].map(
-    (c) => c.textContent,
-  )
+  [...host.querySelectorAll('.dir-table tbody code')].map((c) => c.textContent)
 
-/** The facts the folder page states about its watch, scans and last scan. */
+/** The facts the directory page states about its watch, scans and last scan. */
 const regime = (host: HTMLElement) =>
   [...host.querySelectorAll('.root-row .regime dd')].map((d) => d.textContent)
 
@@ -186,10 +184,10 @@ async function choose(select: HTMLSelectElement, value: string) {
 }
 
 /**
- * Moves the folder whose page is drawn to the library `to`, or to a new one
+ * Moves the directory whose page is drawn to the library `to`, or to a new one
  * called Extras, through the rehearsal and the confirm.
  */
-async function moveDrawnFolder(host: HTMLElement, to: string) {
+async function moveDrawnDir(host: HTMLElement, to: string) {
   await press(button(host, 'Move…'))
   await choose(
     host.querySelector('select[name="move-target"]') as HTMLSelectElement,
@@ -206,8 +204,8 @@ async function moveDrawnFolder(host: HTMLElement, to: string) {
   await flush()
 }
 
-/** Removes the folder whose page is drawn, through its dialog. */
-async function removeDrawnFolder(host: HTMLElement) {
+/** Removes the directory whose page is drawn, through its dialog. */
+async function removeDrawnDir(host: HTMLElement) {
   await press(button(host, 'Remove…'))
   await press(host.querySelector('.remove-root .confirm') as Element)
   await flush()
@@ -261,7 +259,7 @@ beforeEach(() => {
       library_id: id,
       running: false,
       elapsed_secs: null,
-      folders: [],
+      dirs: [],
     }),
   )
   vi.mocked(config.scanStatus).mockImplementation((id) =>
@@ -291,7 +289,7 @@ describe('Libraries, the table', () => {
     expect(host.querySelector('.library-table table')).toBeNull()
   })
 
-  it('draws a row per library, in the order sent, and offers a folder the other libraries to move to', async () => {
+  it('draws a row per library, in the order sent, and offers a directory the other libraries to move to', async () => {
     vi.mocked(api.listLibraries).mockResolvedValue({
       libraries: [
         library(2, 'Comics', ['/media/Comics']),
@@ -302,7 +300,7 @@ describe('Libraries, the table', () => {
     expect(names(host)).toEqual(['Comics', 'Manga'])
     expect(host.querySelector('.empty')).toBeNull()
 
-    await go('/config/libraries/1/folders/10')
+    await go('/config/libraries/1/dirs/10')
     await press(button(host, 'Move…'))
     const options = [
       ...(host.querySelector('select[name="move-target"]') as HTMLSelectElement)
@@ -312,7 +310,7 @@ describe('Libraries, the table', () => {
     expect(options).not.toContain('Manga')
   })
 
-  it('draws a table of Name, Folders, Works and Last scan, each row a link to its library’s page through its name', async () => {
+  it('draws a table of Name, Directories, Works and Last scan, each row a link to its library’s page through its name', async () => {
     const manga = library(1, 'Manga', [
       '/media/Manga/Volumes',
       '/media/Manga/C',
@@ -332,7 +330,7 @@ describe('Libraries, the table', () => {
       ]),
     ).toEqual([
       ['Name', 'col'],
-      ['Folders', 'col'],
+      ['Directories', 'col'],
       ['Works', 'col'],
       ['Last scan', 'col'],
     ])
@@ -340,8 +338,8 @@ describe('Libraries, the table', () => {
       [...tr.querySelectorAll('td')].map(cellValue),
     )
     expect(rows).toEqual([
-      ['Comics', '1 folder', '12 works', 'Never'],
-      ['Manga', '2 folders', '1 work', 'Never'],
+      ['Comics', '1 directory', '12 works', 'Never'],
+      ['Manga', '2 directories', '1 work', 'Never'],
     ])
     // The row's one link is its name, and nothing else in the row is one.
     for (const tr of table.querySelectorAll('tbody tr')) {
@@ -354,19 +352,19 @@ describe('Libraries, the table', () => {
     expect(host.querySelector('.library-page > h2')?.textContent).toBe('Manga')
   })
 
-  it('says when each library was last scanned: its latest folder’s scan, with the outcome when that was not ok, or Never', async () => {
+  it('says when each library was last scanned: its latest directory’s scan, with the outcome when that was not ok, or Never', async () => {
     const scanned = (
       id: number,
       at: string | null,
       status: string | null,
     ): config.Root => ({
-      ...folder(id, `/media/${id}`),
+      ...dir(id, `/media/${id}`),
       last_scan_at: at,
       last_scan_status: status,
     })
     const latest: api.Library = {
       ...library(1, 'Latest', []),
-      folders: [
+      dirs: [
         scanned(10, '2026-10-01 10:00:00', 'ok'),
         scanned(11, null, null),
         scanned(12, '2026-10-03 09:00:00', 'ok'),
@@ -375,15 +373,15 @@ describe('Libraries, the table', () => {
     }
     const failed: api.Library = {
       ...library(2, 'Failed', []),
-      folders: [scanned(20, '2026-10-04 08:00:00', 'failed: disk gone')],
+      dirs: [scanned(20, '2026-10-04 08:00:00', 'failed: disk gone')],
     }
     const unrecorded: api.Library = {
       ...library(3, 'Unrecorded', []),
-      folders: [scanned(30, '2026-10-05 07:00:00', null)],
+      dirs: [scanned(30, '2026-10-05 07:00:00', null)],
     }
     const never: api.Library = {
       ...library(4, 'Never', []),
-      folders: [scanned(40, null, null), scanned(41, null, null)],
+      dirs: [scanned(40, null, null), scanned(41, null, null)],
     }
     vi.mocked(api.listLibraries).mockResolvedValue({
       libraries: [latest, failed, unrecorded, never],
@@ -439,7 +437,7 @@ describe('Libraries, the pages', () => {
     await follow(host, 'Manga')
     expect(api.listLibraries).toHaveBeenCalledTimes(2)
     await follow(host, '/media/Manga')
-    expect(here()).toBe('/config/libraries/1/folders/10')
+    expect(here()).toBe('/config/libraries/1/dirs/10')
     expect(api.listLibraries).toHaveBeenCalledTimes(3)
     await follow(host, '‹ Manga')
     expect(api.listLibraries).toHaveBeenCalledTimes(4)
@@ -464,18 +462,18 @@ describe('Libraries, the pages', () => {
     expect(link(host, '‹ Libraries').getAttribute('href')).toBe(TABLE)
   })
 
-  it('says there is no such folder, with the way back to its library, for a folder id the library does not hold', async () => {
+  it('says there is no such directory, with the way back to its library, for a directory id the library does not hold', async () => {
     vi.mocked(api.listLibraries).mockResolvedValue({
       libraries: [
         library(1, 'Manga', ['/media/Manga']),
         library(2, 'Comics', ['/media/Comics']),
       ],
     })
-    // Folder 20 is Comics', not Manga's.
-    const host = await at('/config/libraries/1/folders/20')
+    // Directory 20 is Comics', not Manga's.
+    const host = await at('/config/libraries/1/dirs/20')
     expect(host.querySelector('.root-row')).toBeNull()
     expect(host.querySelector('.missing')?.textContent).toBe(
-      'No such folder in this library.',
+      'No such directory in this library.',
     )
     expect(link(host, '‹ Manga').getAttribute('href')).toBe(
       '/config/libraries/1',
@@ -484,7 +482,7 @@ describe('Libraries, the pages', () => {
 
   it.each([
     { what: 'a library', entry: '/config/libraries/9' },
-    { what: 'a folder', entry: '/config/libraries/1/folders/20' },
+    { what: 'a directory', entry: '/config/libraries/1/dirs/20' },
   ])(
     'puts focus on the line that says there is no such $what',
     async ({ entry }) => {
@@ -505,9 +503,9 @@ describe('Libraries, the pages', () => {
       second: '/config/libraries/78',
     },
     {
-      what: 'folder',
-      first: '/config/libraries/1/folders/77',
-      second: '/config/libraries/1/folders/78',
+      what: 'directory',
+      first: '/config/libraries/1/dirs/77',
+      second: '/config/libraries/1/dirs/78',
     },
   ])(
     'puts focus on the no-such-$what line again when a second unknown id follows the first',
@@ -548,33 +546,33 @@ describe('Libraries, the pages', () => {
       act: removeDrawnLibrary,
     },
     {
-      what: 'a folder’s removal goes to its library’s page',
-      from: '/config/libraries/1/folders/11',
+      what: 'a directory’s removal goes to its library’s page',
+      from: '/config/libraries/1/dirs/11',
       to: '/config/libraries/1',
       page: '.library-page',
-      act: removeDrawnFolder,
+      act: removeDrawnDir,
     },
     {
-      what: 'the removal of a library’s last folder goes to the table',
-      from: '/config/libraries/2/folders/20',
+      what: 'the removal of a library’s last directory goes to the table',
+      from: '/config/libraries/2/dirs/20',
       to: TABLE,
       page: '.library-table',
-      act: removeDrawnFolder,
+      act: removeDrawnDir,
     },
     {
-      what: 'a folder’s move goes to the page of the library it left',
-      from: '/config/libraries/1/folders/11',
+      what: 'a directory’s move goes to the page of the library it left',
+      from: '/config/libraries/1/dirs/11',
       to: '/config/libraries/1',
       page: '.library-page',
-      act: (host: HTMLElement) => moveDrawnFolder(host, '2'),
+      act: (host: HTMLElement) => moveDrawnDir(host, '2'),
       moved: {},
     },
     {
       what: 'a move that took its library goes to the table',
-      from: '/config/libraries/2/folders/20',
+      from: '/config/libraries/2/dirs/20',
       to: TABLE,
       page: '.library-table',
-      act: (host: HTMLElement) => moveDrawnFolder(host, '1'),
+      act: (host: HTMLElement) => moveDrawnDir(host, '1'),
       moved: { library_id: 1, library: 'Manga', library_removed: 'Comics' },
     },
   ])(
@@ -583,7 +581,7 @@ describe('Libraries, the pages', () => {
       vi.mocked(api.listLibraries).mockResolvedValue({ libraries: twoAndOne() })
       if (moved !== undefined) {
         vi.mocked(api.moveCost).mockResolvedValue(movedAnswer(moved, true))
-        vi.mocked(api.moveFolder).mockResolvedValue(movedAnswer(moved))
+        vi.mocked(api.moveDir).mockResolvedValue(movedAnswer(moved))
       }
       const host = await at(from)
       vi.mocked(api.listLibraries).mockClear()
@@ -600,21 +598,21 @@ describe('Libraries, the pages', () => {
   it.each([
     {
       what: 'removal',
-      act: removeDrawnFolder,
+      act: removeDrawnDir,
       said: 'What re-deriving after removing /media/Manga/Chapters found:',
     },
     {
       what: 'move',
-      act: (host: HTMLElement) => moveDrawnFolder(host, '2'),
+      act: (host: HTMLElement) => moveDrawnDir(host, '2'),
       said: 'Moved /media/Manga/Chapters from Manga to Comics.',
     },
   ])(
-    'names the folder by its path in the report its $what draws a page up',
+    'names the directory by its path in the report its $what draws a page up',
     async ({ act: run, said }) => {
       vi.mocked(api.listLibraries).mockResolvedValue({ libraries: twoAndOne() })
       vi.mocked(api.moveCost).mockResolvedValue(movedAnswer({}, true))
-      vi.mocked(api.moveFolder).mockResolvedValue(movedAnswer())
-      const host = await at('/config/libraries/1/folders/11')
+      vi.mocked(api.moveDir).mockResolvedValue(movedAnswer())
+      const host = await at('/config/libraries/1/dirs/11')
       await run(host)
       expect(
         host.querySelector('.library-page > .removal-report > p')?.textContent,
@@ -642,7 +640,7 @@ describe('Libraries, the pages', () => {
       to: '/config/users',
     },
   ])(
-    'saves the folder settings typed and not yet left when the folder’s page goes by $by',
+    'saves the directory settings typed and not yet left when the directory’s page goes by $by',
     async ({ leave, to }) => {
       vi.mocked(api.listLibraries).mockResolvedValue({
         libraries: [library(1, 'Manga', ['/media/Manga'])],
@@ -696,14 +694,14 @@ describe('Libraries, the pages', () => {
     expect(host.querySelector('form.rename-library')).toBeNull()
   })
 
-  it('says a folder setting refused as its page went on the page the person went to, without taking focus, and drops it on the next change of page', async () => {
+  it('says a directory setting refused as its page went on the page the person went to, without taking focus, and drops it on the next change of page', async () => {
     vi.mocked(api.listLibraries).mockResolvedValue({
       libraries: [library(1, 'Manga', ['/media/Manga'])],
     })
     vi.mocked(config.patchRoot).mockRejectedValue(
       new Error('/api/library/roots/10: 500 {"error":"the store is locked"}'),
     )
-    const host = await at('/config/libraries/1/folders/10')
+    const host = await at('/config/libraries/1/dirs/10')
     await typeInto(
       host.querySelector('input[name="default_language"]') as HTMLInputElement,
       'ja',
@@ -725,11 +723,11 @@ describe('Libraries, the pages', () => {
     expect(host.querySelector('[role="alert"]')).toBeNull()
   })
 
-  it('still reads the list after a save on a folder’s page that follows a folder’s removal', async () => {
+  it('still reads the list after a save on a directory’s page that follows a directory’s removal', async () => {
     vi.mocked(api.listLibraries).mockResolvedValue({ libraries: twoAndOne() })
     vi.mocked(config.patchRoot).mockResolvedValue(undefined)
-    const host = await at('/config/libraries/1/folders/11')
-    await removeDrawnFolder(host)
+    const host = await at('/config/libraries/1/dirs/11')
+    await removeDrawnDir(host)
     await follow(host, '/media/Manga/Volumes')
     vi.mocked(api.listLibraries).mockClear()
     await press(host.querySelector('input[name="keeps_documents"]') as Element)
@@ -741,7 +739,7 @@ describe('Libraries, the pages', () => {
 
 describe('Libraries, an answer that comes after the person has moved on', () => {
   /**
-   * Starts the removal or the move of Manga's second folder from its page,
+   * Starts the removal or the move of Manga's second directory from its page,
    * and holds the answer until `answer` lets it go. `answer` counts the
    * reads of the list from then on.
    */
@@ -751,8 +749,8 @@ describe('Libraries, an answer that comes after the person has moved on', () => 
     const moved = deferred<api.MoveAnswer>()
     vi.mocked(config.removeRoot).mockReturnValue(removed.promise)
     vi.mocked(api.moveCost).mockResolvedValue(movedAnswer({}, true))
-    vi.mocked(api.moveFolder).mockReturnValue(moved.promise)
-    const host = await at('/config/libraries/1/folders/11')
+    vi.mocked(api.moveDir).mockReturnValue(moved.promise)
+    const host = await at('/config/libraries/1/dirs/11')
     if (kind === 'removal') {
       await press(button(host, 'Remove…'))
       await press(host.querySelector('.remove-root .confirm') as Element)
@@ -765,7 +763,7 @@ describe('Libraries, an answer that comes after the person has moved on', () => 
       )
       await press(host.querySelector('button[name="rehearse"]') as Element)
       await press(host.querySelector('.move-root .confirm') as Element)
-      expect(api.moveFolder).toHaveBeenCalledTimes(1)
+      expect(api.moveDir).toHaveBeenCalledTimes(1)
     }
     const answer = async () => {
       vi.mocked(api.listLibraries).mockClear()
@@ -786,7 +784,7 @@ describe('Libraries, an answer that comes after the person has moved on', () => 
   }
 
   it.each(['removal', 'move'] as const)(
-    'draws a folder’s %s report on the library page the person already went up to, leaves focus where they put it, reads the list once, and holds back no later read',
+    'draws a directory’s %s report on the library page the person already went up to, leaves focus where they put it, reads the list once, and holds back no later read',
     async (kind) => {
       const { host, answer } = await started(kind)
       await follow(host, '‹ Manga')
@@ -805,7 +803,7 @@ describe('Libraries, an answer that comes after the person has moved on', () => 
       expect(document.activeElement).toBe(before)
       expect(api.listLibraries).toHaveBeenCalledTimes(1)
 
-      // A save on a folder's page after it still reads the list.
+      // A save on a directory's page after it still reads the list.
       vi.mocked(config.patchRoot).mockResolvedValue(undefined)
       await follow(host, '/media/Manga/Volumes')
       vi.mocked(api.listLibraries).mockClear()
@@ -818,7 +816,7 @@ describe('Libraries, an answer that comes after the person has moved on', () => 
   )
 
   it.each(['removal', 'move'] as const)(
-    'leaves the person on the table when a folder’s %s answers there, draws its report there without taking focus, and reads the list once',
+    'leaves the person on the table when a directory’s %s answers there, draws its report there without taking focus, and reads the list once',
     async (kind) => {
       const { host, answer } = await started(kind)
       await follow(host, '‹ Manga')
@@ -838,7 +836,7 @@ describe('Libraries, an answer that comes after the person has moved on', () => 
   )
 
   it.each(['removal', 'move'] as const)(
-    'leaves the person on another library’s page when a folder’s %s answers there, draws its report there without taking focus, and drops it on the next change of page',
+    'leaves the person on another library’s page when a directory’s %s answers there, draws its report there without taking focus, and drops it on the next change of page',
     async (kind) => {
       const { host, answer } = await started(kind)
       await go('/config/libraries/2')
@@ -880,7 +878,7 @@ describe('Libraries, an answer that comes after the person has moved on', () => 
   )
 
   it.each(['removal', 'move'] as const)(
-    'leaves focus, and what is typed, in the rename box of the page the person went up to when a folder’s %s answers there',
+    'leaves focus, and what is typed, in the rename box of the page the person went up to when a directory’s %s answers there',
     async (kind) => {
       const { host, answer } = await started(kind)
       await follow(host, '‹ Manga')
@@ -902,7 +900,7 @@ describe('Libraries, an answer that comes after the person has moved on', () => 
   )
 
   it.each(['removal', 'move'] as const)(
-    'leaves the person on another Configuration tab when a folder’s %s answers there, and reads the list once',
+    'leaves the person on another Configuration tab when a directory’s %s answers there, and reads the list once',
     async (kind) => {
       const { host, answer } = await started(kind)
       await go('/config/users')
@@ -917,12 +915,12 @@ describe('Libraries, an answer that comes after the person has moved on', () => 
   )
 
   it.each(['removal', 'move'] as const)(
-    'goes up from a folder page the person left and opened again before its %s answered, with the report, and reads the list once',
+    'goes up from a directory page the person left and opened again before its %s answered, with the report, and reads the list once',
     async (kind) => {
       const { host, answer } = await started(kind)
       await follow(host, '‹ Manga')
       await follow(host, '/media/Manga/Chapters')
-      expect(here()).toBe('/config/libraries/1/folders/11')
+      expect(here()).toBe('/config/libraries/1/dirs/11')
       await answer()
       expect(here()).toBe('/config/libraries/1')
       const report = host.querySelector('.library-page > .removal-report')
@@ -935,7 +933,7 @@ describe('Libraries, an answer that comes after the person has moved on', () => 
 
 describe('Libraries, a write refused once its page has gone', () => {
   const MANGA = '/config/libraries/1'
-  const CHAPTERS = '/config/libraries/1/folders/11'
+  const CHAPTERS = '/config/libraries/1/dirs/11'
   const box = (host: HTMLElement, name: string) =>
     host.querySelector(`[name="${name}"]`) as HTMLInputElement
 
@@ -957,11 +955,11 @@ describe('Libraries, a write refused once its page has gone', () => {
       said: 'Manga was not renamed to Comix (the store is locked).',
     },
     {
-      what: 'an added folder',
+      what: 'an added directory',
       entry: MANGA,
-      held: () => vi.mocked(api.addFolder),
+      held: () => vi.mocked(api.addDir),
       start: async (host: HTMLElement) => {
-        await press(box(host, 'add-folder'))
+        await press(box(host, 'add-dir'))
         await typeInto(box(host, 'path'), '/media/Extras')
         await press(box(host, 'pick'))
       },
@@ -985,7 +983,7 @@ describe('Libraries, a write refused once its page has gone', () => {
       said: 'Manga was not removed (the store is locked).',
     },
     {
-      what: 'a folder setting left by its box',
+      what: 'a directory setting left by its box',
       entry: CHAPTERS,
       held: () => vi.mocked(config.patchRoot),
       start: async (host: HTMLElement) => {
@@ -999,31 +997,31 @@ describe('Libraries, a write refused once its page has gone', () => {
       said: 'Default language for /media/Manga/Chapters was not saved (the store is locked).',
     },
     {
-      what: 'the folder’s checkbox',
+      what: 'the directory’s checkbox',
       entry: CHAPTERS,
       held: () => vi.mocked(config.patchRoot),
       start: (host: HTMLElement) => press(box(host, 'keeps_documents')),
       said: 'Keeps documents under .taiyaku/ for /media/Manga/Chapters was not saved (the store is locked).',
     },
     {
-      what: 'a scan of the folder',
+      what: 'a scan of the directory',
       entry: CHAPTERS,
       held: () => vi.mocked(config.startScan),
-      start: (host: HTMLElement) => press(button(host, 'Scan folder')),
+      start: (host: HTMLElement) => press(button(host, 'Scan directory')),
       said: 'A scan of /media/Manga/Chapters did not start (the store is locked).',
     },
     {
-      what: 'the folder’s removal',
+      what: 'the directory’s removal',
       entry: CHAPTERS,
       held: () => vi.mocked(config.removeRoot),
-      start: removeDrawnFolder,
+      start: removeDrawnDir,
       said: '/media/Manga/Chapters was not removed (the store is locked).',
     },
     {
-      what: 'the folder’s move',
+      what: 'the directory’s move',
       entry: CHAPTERS,
-      held: () => vi.mocked(api.moveFolder),
-      start: (host: HTMLElement) => moveDrawnFolder(host, '2'),
+      held: () => vi.mocked(api.moveDir),
+      start: (host: HTMLElement) => moveDrawnDir(host, '2'),
       said: '/media/Manga/Chapters was not moved from Manga (the store is locked).',
     },
   ])(
@@ -1134,13 +1132,13 @@ describe('Libraries, making one', () => {
     expect(api.listLibraries).toHaveBeenCalledTimes(1)
   })
 
-  it('makes a library from a name and one folder, goes to its page, and keeps the folder’s probe for the folder’s page', async () => {
+  it('makes a library from a name and one directory, goes to its page, and keeps the directory’s probe for the directory’s page', async () => {
     const made = library(1, 'Manga', ['/media/Manga/Volumes'])
     vi.mocked(api.createLibrary).mockResolvedValue({
       library: made,
       added: [
         {
-          root: made.folders[0],
+          root: made.dirs[0],
           watching: false,
           watch_reason: 'no events',
           interval_secs: 3600,
@@ -1291,7 +1289,7 @@ describe('Libraries, making one', () => {
     // By its label, not its name: the form reads the box by the name the
     // picker gives it, and a box renamed under it must fail here.
     const box = form(host).querySelector(
-      'input[aria-label="Folder path"]',
+      'input[aria-label="Directory path"]',
     ) as HTMLInputElement
     await typeInto(nameBox(host), 'Trial')
     await typeInto(box, '/media/Trial-')
@@ -1324,7 +1322,7 @@ describe('Libraries, making one', () => {
     expect(box.value).toBe('/media/Manga')
   })
 
-  it('sends the folder’s path without the white space around it', async () => {
+  it('sends the directory’s path without the white space around it', async () => {
     const made = library(1, 'Manga', ['/media/Manga'])
     vi.mocked(api.createLibrary).mockResolvedValue({ library: made, added: [] })
     const host = await at('/config/libraries/new')
@@ -1332,8 +1330,8 @@ describe('Libraries, making one', () => {
     expect(api.createLibrary).toHaveBeenCalledWith('Manga', ['/media/Manga'])
   })
 
-  it('holds Make the library, and says nothing of why, while the name or the folder box is empty', async () => {
-    // The box's path is the folder sent, so there is no path waiting to be
+  it('holds Make the library, and says nothing of why, while the name or the directory box is empty', async () => {
+    // The box's path is the directory sent, so there is no path waiting to be
     // added and nothing to explain: what is missing is an empty box in view.
     const host = await at('/config/libraries/new')
     const said = () => form(host).querySelectorAll('.why').length
@@ -1446,7 +1444,7 @@ describe('Libraries, making one', () => {
     expect(form(host).querySelector('[role="alert"]')).toBeNull()
   })
 
-  it('clears a create refusal when the name or the folder’s path is edited', async () => {
+  it('clears a create refusal when the name or the directory’s path is edited', async () => {
     vi.mocked(api.createLibrary).mockRejectedValue(
       new Error('/api/library/libraries: 400 {"error":"refused"}'),
     )
@@ -1574,7 +1572,7 @@ describe('Libraries, making one', () => {
   it('gives each box of the make-a-library form its label’s words as its aria-label — O175', async () => {
     const host = await at('/config/libraries/new')
     const labelled = fields(form(host).querySelectorAll('label.field'))
-    expect(labelled.map((f) => f.written)).toEqual(['Name', 'Folder path'])
+    expect(labelled.map((f) => f.written)).toEqual(['Name', 'Directory path'])
     for (const { written, control } of labelled) {
       expect(control.getAttribute('aria-label'), written).toBe(written)
     }
@@ -1582,13 +1580,13 @@ describe('Libraries, making one', () => {
 })
 
 describe('Libraries, a probe', () => {
-  it('does not hand a folder the probe of a removed one that shared its id', async () => {
+  it('does not hand a directory the probe of a removed one that shared its id', async () => {
     const first = library(1, 'Manga', ['/srv/first'])
     vi.mocked(api.createLibrary).mockResolvedValueOnce({
       library: first,
       added: [
         {
-          root: first.folders[0],
+          root: first.dirs[0],
           watching: false,
           watch_reason: 'inotify limit reached',
           interval_secs: 900,
@@ -1601,10 +1599,10 @@ describe('Libraries, a probe', () => {
     await follow(host, '/srv/first')
     expect(host.textContent).toContain('inotify limit reached')
 
-    // The folder's id, freed and given to another folder by the store.
+    // The directory's id, freed and given to another directory by the store.
     const second = {
       ...first,
-      folders: [folder(first.folders[0].id, '/srv/second')],
+      dirs: [dir(first.dirs[0].id, '/srv/second')],
     }
     vi.mocked(api.createLibrary).mockResolvedValueOnce({
       library: second,
@@ -1614,25 +1612,25 @@ describe('Libraries, a probe', () => {
     await go('/config/libraries/new')
     await makeOne(host, 'Manga', '/srv/second')
     await follow(host, '/srv/second')
-    expect(here()).toBe('/config/libraries/1/folders/10')
+    expect(here()).toBe('/config/libraries/1/dirs/10')
     expect(host.textContent).toContain('/srv/second')
     expect(host.textContent).not.toContain('inotify limit reached')
   })
 
-  it('does not reuse a folder’s page across two folders that shared an id', async () => {
+  it('does not reuse a directory’s page across two directories that shared an id', async () => {
     const edition = (host: HTMLElement) =>
       (host.querySelector('input[name="edition_key"]') as HTMLInputElement)
         .value
     const first = library(1, 'Manga', ['/srv/first'])
-    first.folders[0].edition_key = 'first'
+    first.dirs[0].edition_key = 'first'
     vi.mocked(api.listLibraries).mockResolvedValue({ libraries: [first] })
-    const host = await at('/config/libraries/1/folders/10')
+    const host = await at('/config/libraries/1/dirs/10')
     expect(edition(host)).toBe('first')
 
-    // A save on this page reads the list again, and the folder at this id is
+    // A save on this page reads the list again, and the directory at this id is
     // now another one.
     const second = library(1, 'Manga', ['/srv/second'])
-    second.folders[0].edition_key = 'second'
+    second.dirs[0].edition_key = 'second'
     vi.mocked(config.patchRoot).mockResolvedValue(undefined)
     vi.mocked(api.listLibraries).mockResolvedValue({ libraries: [second] })
     await press(host.querySelector('input[name="keeps_documents"]') as Element)
@@ -1641,10 +1639,10 @@ describe('Libraries, a probe', () => {
     expect(edition(host)).toBe('second')
   })
 
-  it('draws a folder’s page opened from a sibling’s free of the hold the sibling’s page had, until its own read of the library answers', async () => {
+  it('draws a directory’s page opened from a sibling’s free of the hold the sibling’s page had, until its own read of the library answers', async () => {
     const libraries = twoAndOne()
     vi.mocked(api.listLibraries).mockResolvedValue({ libraries })
-    // The first read finds the second folder scanning; every later one is
+    // The first read finds the second directory scanning; every later one is
     // held open, so only the page's own state can free its buttons.
     const later = deferred<api.LibraryScanStatus>()
     let asked = 0
@@ -1654,13 +1652,13 @@ describe('Libraries, a probe', () => {
         : later.promise,
     )
     const held = (host: HTMLElement) =>
-      ['Scan folder', 'Move…', 'Remove…'].map(
+      ['Scan directory', 'Move…', 'Remove…'].map(
         (text) => button(host, text).disabled,
       )
-    const host = await at('/config/libraries/1/folders/10')
+    const host = await at('/config/libraries/1/dirs/10')
     expect(held(host)).toEqual([true, true, true])
 
-    await go('/config/libraries/1/folders/11')
+    await go('/config/libraries/1/dirs/11')
     expect(host.querySelector('.root-row h2')?.textContent).toBe(
       '/media/Manga/Chapters',
     )
@@ -1670,7 +1668,7 @@ describe('Libraries, a probe', () => {
   })
 
   it('keeps a watch probe through a failed read of the list, for the read that follows', async () => {
-    // The probe runs when a folder is added and never again, so it is the
+    // The probe runs when a directory is added and never again, so it is the
     // only chance to say what the watch found; a list that could not be read
     // after the add must not take it with it.
     const first = library(1, 'Manga', ['/srv/first'])
@@ -1678,7 +1676,7 @@ describe('Libraries, a probe', () => {
       library: first,
       added: [
         {
-          root: first.folders[0],
+          root: first.dirs[0],
           watching: false,
           watch_reason: 'inotify limit reached',
           interval_secs: 900,
@@ -1692,18 +1690,18 @@ describe('Libraries, a probe', () => {
       host.querySelector('.library-page > [role="alert"]')?.textContent,
     ).toContain('the store is locked')
 
-    // A later read answers, as the one on opening the folder's page does.
+    // A later read answers, as the one on opening the directory's page does.
     vi.mocked(api.listLibraries).mockResolvedValue({ libraries: [first] })
     await follow(host, '/srv/first')
     expect(host.querySelector('[role="alert"]')).toBeNull()
     expect(regime(host)).toContain('probe failed: inotify limit reached')
   })
 
-  it('keeps the watch probe of a folder added to a library, for its page', async () => {
+  it('keeps the watch probe of a directory added to a library, for its page', async () => {
     const manga = library(1, 'Manga', ['/media/Manga'])
     vi.mocked(api.listLibraries).mockResolvedValue({ libraries: [manga] })
-    const extra = folder(9, '/media/Manga/Extras')
-    vi.mocked(api.addFolder).mockResolvedValue({
+    const extra = dir(9, '/media/Manga/Extras')
+    vi.mocked(api.addDir).mockResolvedValue({
       root: extra,
       watching: false,
       watch_reason: 'inotify limit reached',
@@ -1711,9 +1709,9 @@ describe('Libraries, a probe', () => {
     })
     const host = await at('/config/libraries/1')
     vi.mocked(api.listLibraries).mockResolvedValue({
-      libraries: [{ ...manga, folders: [...manga.folders, extra] }],
+      libraries: [{ ...manga, dirs: [...manga.dirs, extra] }],
     })
-    await press(host.querySelector('button[name="add-folder"]') as Element)
+    await press(host.querySelector('button[name="add-dir"]') as Element)
     const picker = host.querySelector(
       '.library-page > .add-root',
     ) as HTMLElement
@@ -1725,7 +1723,7 @@ describe('Libraries, a probe', () => {
     await until(() => paths(host).length === 2)
     expect(paths(host)).toEqual(['/media/Manga', '/media/Manga/Extras'])
     await follow(host, '/media/Manga/Extras')
-    expect(here()).toBe('/config/libraries/1/folders/9')
+    expect(here()).toBe('/config/libraries/1/dirs/9')
     expect(regime(host)).toContain('probe failed: inotify limit reached')
   })
 })
@@ -1877,7 +1875,7 @@ describe('Libraries, a library’s removal', () => {
         library_id: id,
         running: id === 2,
         elapsed_secs: 1,
-        folders: [],
+        dirs: [],
       }),
     )
     const held = () =>
@@ -1886,7 +1884,7 @@ describe('Libraries, a library’s removal', () => {
         .map((b) => b.textContent)
     await press(host.querySelector('button[name="scan-library"]') as Element)
 
-    // Held: the library's own scan and removal. Its folders' buttons are on
+    // Held: the library's own scan and removal. Its directories' buttons are on
     // their own pages.
     expect(held()).toEqual(['Scan library', 'Remove library…'])
     expect(host.querySelector('.library-page .scanning')).not.toBeNull()
@@ -1902,7 +1900,7 @@ describe('Libraries, a library’s removal', () => {
             library_id: id,
             running: true,
             elapsed_secs: 1,
-            folders: [],
+            dirs: [],
           }),
     )
     await go('/config/libraries/1')
@@ -1912,8 +1910,8 @@ describe('Libraries, a library’s removal', () => {
   })
 })
 
-describe('Libraries, a folder’s move', () => {
-  it('keeps what deriving after the move found, named for the folder and the library, once the list has reloaded', async () => {
+describe('Libraries, a directory’s move', () => {
+  it('keeps what deriving after the move found, named for the directory and the library, once the list has reloaded', async () => {
     const answer = (dry_run: boolean): api.MoveAnswer => ({
       moved: {
         library_id: 2,
@@ -1935,20 +1933,20 @@ describe('Libraries, a folder’s move', () => {
       dry_run,
     })
     vi.mocked(api.moveCost).mockResolvedValue(answer(true))
-    vi.mocked(api.moveFolder).mockResolvedValue(answer(false))
+    vi.mocked(api.moveDir).mockResolvedValue(answer(false))
     vi.mocked(api.listLibraries).mockResolvedValue({
       libraries: [
         library(1, 'Manga', ['/media/Manga/Volumes', '/media/Manga/Chapters']),
         library(2, 'Comics', ['/media/Comics']),
       ],
     })
-    const host = await at('/config/libraries/1/folders/11')
+    const host = await at('/config/libraries/1/dirs/11')
     const after = [
       library(1, 'Manga', ['/media/Manga/Volumes']),
       library(2, 'Comics', ['/media/Comics', '/media/Manga/Chapters']),
     ]
     vi.mocked(api.listLibraries).mockResolvedValue({ libraries: after })
-    await moveDrawnFolder(host, '2')
+    await moveDrawnDir(host, '2')
 
     expect(here()).toBe('/config/libraries/1')
     const report = host.querySelector(
@@ -1979,21 +1977,21 @@ describe('Libraries, a folder’s move', () => {
     expect(paths(host)).toEqual(['/media/Comics', '/media/Manga/Chapters'])
   })
 
-  /** Moves Manga's second folder to `to` and answers the report kept. */
+  /** Moves Manga's second directory to `to` and answers the report kept. */
   async function keptReport(
     to: '2' | 'new',
     moved: Partial<api.Moved>,
   ): Promise<HTMLElement> {
     vi.mocked(api.moveCost).mockResolvedValue(movedAnswer(moved, true))
-    vi.mocked(api.moveFolder).mockResolvedValue(movedAnswer(moved))
+    vi.mocked(api.moveDir).mockResolvedValue(movedAnswer(moved))
     vi.mocked(api.listLibraries).mockResolvedValue({
       libraries: [
         library(1, 'Manga', ['/media/Manga/Volumes', '/media/Manga/Chapters']),
         library(2, 'Comics', ['/media/Comics']),
       ],
     })
-    const host = await at('/config/libraries/1/folders/11')
-    await moveDrawnFolder(host, to)
+    const host = await at('/config/libraries/1/dirs/11')
+    await moveDrawnDir(host, to)
     return host.querySelector('.removal-report') as HTMLElement
   }
 
@@ -2020,22 +2018,22 @@ describe('Libraries, a folder’s move', () => {
       '2 alignments between editions the move separated were dropped.',
     )
     expect(did).toContain(
-      'Manga had no other folder, so it was removed, with 3 grants.',
+      'Manga had no other directory, so it was removed, with 3 grants.',
     )
   })
 
-  it('drops a moved folder from its library at once when the list that follows cannot be read', async () => {
+  it('drops a moved directory from its library at once when the list that follows cannot be read', async () => {
     vi.mocked(api.moveCost).mockResolvedValue(movedAnswer({}, true))
-    vi.mocked(api.moveFolder).mockResolvedValue(movedAnswer())
+    vi.mocked(api.moveDir).mockResolvedValue(movedAnswer())
     vi.mocked(api.listLibraries).mockResolvedValue({
       libraries: [
         library(1, 'Manga', ['/media/Manga/Volumes', '/media/Manga/Chapters']),
         library(2, 'Comics', ['/media/Comics']),
       ],
     })
-    const host = await at('/config/libraries/1/folders/11')
+    const host = await at('/config/libraries/1/dirs/11')
     vi.mocked(api.listLibraries).mockRejectedValue(locked())
-    await moveDrawnFolder(host, '2')
+    await moveDrawnDir(host, '2')
     // Gone from Manga; not drawn in Comics, which the reload would do.
     expect(paths(host)).toEqual(['/media/Manga/Volumes'])
     expect(
@@ -2053,7 +2051,7 @@ describe('Libraries, a folder’s move', () => {
     vi.mocked(api.moveCost).mockResolvedValue(
       movedAnswer({ library_removed: 'Manga' }, true),
     )
-    vi.mocked(api.moveFolder).mockResolvedValue(
+    vi.mocked(api.moveDir).mockResolvedValue(
       movedAnswer({ library_removed: 'Manga' }),
     )
     vi.mocked(api.listLibraries).mockResolvedValue({
@@ -2062,14 +2060,14 @@ describe('Libraries, a folder’s move', () => {
         library(2, 'Comics', ['/media/Comics']),
       ],
     })
-    const host = await at('/config/libraries/1/folders/10')
+    const host = await at('/config/libraries/1/dirs/10')
     vi.mocked(api.listLibraries).mockRejectedValue(locked())
-    await moveDrawnFolder(host, '2')
+    await moveDrawnDir(host, '2')
     expect(names(host)).toEqual(['Comics'])
   })
 })
 
-describe('Libraries, a folder’s removal', () => {
+describe('Libraries, a directory’s removal', () => {
   beforeEach(() => {
     vi.mocked(config.removalCost).mockResolvedValue({
       removed: { works: 5, positions: 2, notes: 0, left_with_no_library: [] },
@@ -2086,13 +2084,13 @@ describe('Libraries, a folder’s removal', () => {
   const two = () =>
     library(1, 'Manga', ['/media/Manga/Volumes', '/media/Manga/Chapters'])
 
-  it('keeps what a folder’s re-derive found, named for the folder, once the list has reloaded', async () => {
+  it('keeps what a directory’s re-derive found, named for the directory, once the list has reloaded', async () => {
     vi.mocked(api.listLibraries).mockResolvedValue({ libraries: [two()] })
-    const host = await at('/config/libraries/1/folders/11')
+    const host = await at('/config/libraries/1/dirs/11')
     vi.mocked(api.listLibraries).mockResolvedValue({
       libraries: [library(1, 'Manga', ['/media/Manga/Volumes'])],
     })
-    await removeDrawnFolder(host)
+    await removeDrawnDir(host)
 
     const report = host.querySelector(
       '.library-page > .removal-report',
@@ -2108,18 +2106,18 @@ describe('Libraries, a folder’s removal', () => {
     expect(
       [...report.querySelectorAll('.report-heading')].map((h) => h.tagName),
     ).toEqual(['H3'])
-    // The library stays, with the folder that is left.
+    // The library stays, with the directory that is left.
     expect(host.querySelector('.library-page > h2')?.textContent).toBe('Manga')
     expect(paths(host)).toEqual(['/media/Manga/Volumes'])
   })
 
-  it('drops a folder’s report once its library’s page is left, so the page opened again draws none', async () => {
+  it('drops a directory’s report once its library’s page is left, so the page opened again draws none', async () => {
     vi.mocked(api.listLibraries).mockResolvedValue({ libraries: [two()] })
-    const host = await at('/config/libraries/1/folders/11')
+    const host = await at('/config/libraries/1/dirs/11')
     vi.mocked(api.listLibraries).mockResolvedValue({
       libraries: [library(1, 'Manga', ['/media/Manga/Volumes'])],
     })
-    await removeDrawnFolder(host)
+    await removeDrawnDir(host)
     expect(host.querySelector('.library-page > .removal-report')).not.toBeNull()
 
     await follow(host, '/media/Manga/Volumes')
@@ -2130,15 +2128,15 @@ describe('Libraries, a folder’s removal', () => {
     expect(document.activeElement?.closest('.removal-report')).toBeNull()
   })
 
-  it('drops a removed folder at once when the list that follows cannot be read', async () => {
+  it('drops a removed directory at once when the list that follows cannot be read', async () => {
     vi.mocked(api.listLibraries).mockResolvedValue({ libraries: [two()] })
-    const host = await at('/config/libraries/1/folders/11')
+    const host = await at('/config/libraries/1/dirs/11')
     vi.mocked(api.listLibraries).mockRejectedValue(locked())
-    await removeDrawnFolder(host)
+    await removeDrawnDir(host)
 
     expect(paths(host)).toEqual(['/media/Manga/Volumes'])
     expect(host.querySelector('.holds')?.textContent).toBe(
-      '0 works in 1 folder',
+      '0 works in 1 directory',
     )
     expect(
       host.querySelector('.library-page > .removal-report > p')?.textContent,
@@ -2146,17 +2144,17 @@ describe('Libraries, a folder’s removal', () => {
     expect(
       host.querySelector('.library-page > [role="alert"]')?.textContent,
     ).toContain('the store is locked')
-    // What is left is live, and is now the library's last folder.
+    // What is left is live, and is now the library's last directory.
     await follow(host, '/media/Manga/Volumes')
     const remove = button(host, 'Remove…')
     expect(remove.disabled).toBe(false)
     await press(remove)
-    expect(
-      host.querySelector('.remove-root .last-folder')?.textContent,
-    ).toContain('the only folder of the library Manga')
+    expect(host.querySelector('.remove-root .last-dir')?.textContent).toContain(
+      'the only directory of the library Manga',
+    )
   })
 
-  it('names the library, not the folder, when both folders of a library are removed before the list answers', async () => {
+  it('names the library, not the directory, when both directories of a library are removed before the list answers', async () => {
     vi.mocked(api.listLibraries).mockResolvedValue({ libraries: [two()] })
     vi.mocked(config.removeRoot)
       .mockResolvedValueOnce({
@@ -2169,16 +2167,16 @@ describe('Libraries, a folder’s removal', () => {
         derive: { ...emptyDerive, lost_positions: 7 },
         dry_run: false,
       })
-    const host = await at('/config/libraries/1/folders/11')
+    const host = await at('/config/libraries/1/dirs/11')
     const slow = deferred<{ libraries: api.Library[] }>()
     vi.mocked(api.listLibraries).mockReturnValue(slow.promise)
-    await removeDrawnFolder(host)
+    await removeDrawnDir(host)
     expect(
       host.querySelector('.library-page > .removal-report > p')?.textContent,
     ).toBe('What re-deriving after removing /media/Manga/Chapters found:')
 
     await follow(host, '/media/Manga/Volumes')
-    await removeDrawnFolder(host)
+    await removeDrawnDir(host)
     expect(here()).toBe(TABLE)
     const report = host.querySelector(
       '.library-table > .removal-report',
@@ -2195,14 +2193,14 @@ describe('Libraries, a folder’s removal', () => {
     expect(names(host)).toEqual([])
   })
 
-  it('drops a library at once when its last folder went and the list cannot be read, and reads the list once', async () => {
+  it('drops a library at once when its last directory went and the list cannot be read, and reads the list once', async () => {
     const one = library(1, 'Manga', ['/media/Manga'])
     const comics = library(2, 'Comics', ['/media/Comics'])
     vi.mocked(api.listLibraries).mockResolvedValue({ libraries: [comics, one] })
-    const host = await at('/config/libraries/1/folders/10')
+    const host = await at('/config/libraries/1/dirs/10')
     vi.mocked(api.listLibraries).mockRejectedValue(locked())
     vi.mocked(api.listLibraries).mockClear()
-    await removeDrawnFolder(host)
+    await removeDrawnDir(host)
 
     expect(names(host)).toEqual(['Comics'])
     expect(
@@ -2211,16 +2209,16 @@ describe('Libraries, a folder’s removal', () => {
     expect(api.listLibraries).toHaveBeenCalledTimes(1)
   })
 
-  it('names the library when its last folder went and the library with it', async () => {
+  it('names the library when its last directory went and the library with it', async () => {
     const one = library(1, 'Manga', ['/media/Manga'])
     vi.mocked(api.listLibraries).mockResolvedValue({
       libraries: [one, library(2, 'Comics', ['/media/Comics'])],
     })
-    const host = await at('/config/libraries/1/folders/10')
+    const host = await at('/config/libraries/1/dirs/10')
     vi.mocked(api.listLibraries).mockResolvedValue({
       libraries: [library(2, 'Comics', ['/media/Comics'])],
     })
-    await removeDrawnFolder(host)
+    await removeDrawnDir(host)
 
     const report = host.querySelector(
       '.library-table > .removal-report',

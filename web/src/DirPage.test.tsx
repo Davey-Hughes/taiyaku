@@ -2,14 +2,14 @@ import { act } from 'react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as config from './config'
-import { FolderPage } from './FolderPage'
+import { DirPage } from './DirPage'
 import * as api from './libraries'
 import { deferred, flush } from './testing/async'
 import { emptyDerive } from './testing/derive'
 import { press } from './testing/input'
 import {
   counted,
-  folder,
+  dir,
   idle,
   manga,
   scanningIn,
@@ -29,12 +29,12 @@ vi.mock('./libraries', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./libraries')>()),
   libraryScanStatus: vi.fn(),
   moveCost: vi.fn(),
-  moveFolder: vi.fn(),
+  moveDir: vi.fn(),
 }))
 
 /**
- * The page of the folder `at` at its own route, with each handler a mock. It
- * draws the second folder, so the first is the sibling a test scans.
+ * The page of the directory `at` at its own route, with each handler a mock. It
+ * draws the second directory, so the first is the sibling a test scans.
  */
 async function shown({
   library = manga(),
@@ -43,8 +43,8 @@ async function shown({
   library?: api.Library
   at?: number
 } = {}) {
-  const root = library.folders.find((one) => one.id === at)
-  if (root === undefined) throw new Error(`no folder ${at}`)
+  const root = library.dirs.find((one) => one.id === at)
+  if (root === undefined) throw new Error(`no directory ${at}`)
   const onChanged = vi.fn()
   const onRemoved = vi.fn()
   const onMoved = vi.fn()
@@ -52,9 +52,9 @@ async function shown({
   await act(async () => {
     host = mount(
       <MemoryRouter
-        initialEntries={[`/config/libraries/${library.id}/folders/${root.id}`]}
+        initialEntries={[`/config/libraries/${library.id}/dirs/${root.id}`]}
       >
-        <FolderPage
+        <DirPage
           library={library}
           root={root}
           others={[{ id: 8, name: 'Comics' }]}
@@ -76,9 +76,9 @@ const control = (host: HTMLElement, text: string) =>
     (b) => b.textContent === text,
   ) as HTMLButtonElement
 
-/** Scan folder, Move… and Remove…, each drawn disabled or not. */
+/** Scan directory, Move… and Remove…, each drawn disabled or not. */
 const actionsHeld = (host: HTMLElement) =>
-  ['Scan folder', 'Move…', 'Remove…'].map(
+  ['Scan directory', 'Move…', 'Remove…'].map(
     (text) => control(host, text).disabled,
   )
 
@@ -91,13 +91,13 @@ const statusOf = (id: number, running: boolean): config.ScanStatus => ({
   last_scan_status: null,
 })
 
-/** Each folder's own status: running for the ids named, idle for the rest. */
+/** Each directory's own status: running for the ids named, idle for the rest. */
 const ownRunning = (...ids: number[]) =>
   vi
     .mocked(config.scanStatus)
     .mockImplementation((id) => Promise.resolve(statusOf(id, ids.includes(id))))
 
-/** The folder's own Scanning… line, which `RootRow` draws from its status. */
+/** The directory's own Scanning… line, which `RootRow` draws from its status. */
 const ownScanning = (host: HTMLElement) =>
   host.querySelector('.root-row .scanning')
 
@@ -131,34 +131,34 @@ afterEach(() => {
   vi.useRealTimers()
 })
 
-describe('FolderPage', () => {
-  it('words the folder’s button Scan folder', async () => {
+describe('DirPage', () => {
+  it('words the directory’s button Scan directory', async () => {
     const { host } = await shown()
     expect(
       [...host.querySelectorAll('.root-row button')]
         .map((b) => b.textContent)
         .filter((text) => text?.startsWith('Scan')),
-    ).toEqual(['Scan folder'])
+    ).toEqual(['Scan directory'])
   })
 
-  it('tells a folder it is the last one, and no folder of two', async () => {
+  it('tells a directory it is the last one, and no directory of two', async () => {
     vi.mocked(config.removalCost).mockResolvedValue(counted(0))
     const one = await shown({
-      library: manga({ folders: [folder(1, '/media/Manga/Volumes')] }),
+      library: manga({ dirs: [dir(1, '/media/Manga/Volumes')] }),
       at: 1,
     })
     await press(control(one.host, 'Remove…'))
-    expect(one.host.querySelector('.last-folder')?.textContent).toContain(
-      'the only folder of the library Manga',
+    expect(one.host.querySelector('.last-dir')?.textContent).toContain(
+      'the only directory of the library Manga',
     )
 
     const two = await shown()
     await press(control(two.host, 'Remove…'))
     expect(two.host.querySelector('.remove-root .counts')).not.toBeNull()
-    expect(two.host.querySelector('.last-folder')).toBeNull()
+    expect(two.host.querySelector('.last-dir')).toBeNull()
   })
 
-  it('hands a folder’s removal up, and not as a move', async () => {
+  it('hands a directory’s removal up, and not as a move', async () => {
     vi.mocked(config.removalCost).mockResolvedValue(counted())
     const real = { ...counted(5), dry_run: false }
     vi.mocked(config.removeRoot).mockResolvedValue(real)
@@ -171,7 +171,7 @@ describe('FolderPage', () => {
     expect(onChanged).toHaveBeenCalled()
   })
 
-  it('hands a folder’s move up, and not as a removal', async () => {
+  it('hands a directory’s move up, and not as a removal', async () => {
     const moved: api.MoveAnswer = {
       moved: {
         library_id: 8,
@@ -195,7 +195,7 @@ describe('FolderPage', () => {
       derive: { ...emptyDerive, lost_positions: 2 },
       dry_run: true,
     })
-    vi.mocked(api.moveFolder).mockResolvedValue(moved)
+    vi.mocked(api.moveDir).mockResolvedValue(moved)
     const { host, onMoved, onRemoved } = await shown()
     await press(control(host, 'Move…'))
     await act(async () => {
@@ -210,12 +210,12 @@ describe('FolderPage', () => {
     })
     await press(host.querySelector('button[name="rehearse"]') as Element)
     await press(host.querySelector('.move-root .confirm') as Element)
-    expect(api.moveFolder).toHaveBeenCalledWith(2, { library: 8 })
+    expect(api.moveDir).toHaveBeenCalledWith(2, { library: 8 })
     expect(onMoved).toHaveBeenCalledWith(moved)
     expect(onRemoved).not.toHaveBeenCalled()
   })
 
-  it('offers the folder the other libraries', async () => {
+  it('offers the directory the other libraries', async () => {
     const { host } = await shown()
     await press(control(host, 'Move…'))
     const target = host.querySelector(
@@ -229,13 +229,13 @@ describe('FolderPage', () => {
   })
 })
 
-describe('FolderPage, scans and removals across its library exclude each other', () => {
-  it('holds the folder’s Scan folder, Move… and Remove… while a sibling is scanning, and sends nothing from them', async () => {
+describe('DirPage, scans and removals across its library exclude each other', () => {
+  it('holds the directory’s Scan directory, Move… and Remove… while a sibling is scanning, and sends nothing from them', async () => {
     vi.mocked(api.libraryScanStatus).mockResolvedValue(scanningIn(manga(), 1))
     const { host } = await shown()
 
     expect(actionsHeld(host)).toEqual([true, true, true])
-    for (const text of ['Scan folder', 'Move…', 'Remove…']) {
+    for (const text of ['Scan directory', 'Move…', 'Remove…']) {
       await press(control(host, text))
     }
     expect(config.startScan).not.toHaveBeenCalled()
@@ -248,9 +248,9 @@ describe('FolderPage, scans and removals across its library exclude each other',
     expect(actionsHeld(host)).toEqual([false, false, false])
   })
 
-  it('holds Scan folder, Move… and Remove… while its library is being scanned, and asks again until the scan ends', async () => {
-    // A scan of the library holds every folder's slot until the whole scan
-    // ends, so this folder's own status says running too.
+  it('holds Scan directory, Move… and Remove… while its library is being scanned, and asks again until the scan ends', async () => {
+    // A scan of the library holds every directory's slot until the whole scan
+    // ends, so this directory's own status says running too.
     vi.mocked(api.libraryScanStatus).mockResolvedValue(
       scanningIn(manga(), 1, 2),
     )
@@ -278,7 +278,7 @@ describe('FolderPage, scans and removals across its library exclude each other',
     expect(api.libraryScanStatus).toHaveBeenCalledTimes(3)
   })
 
-  it('leaves a scan of only this folder to the folder’s own status, and asks its library’s once', async () => {
+  it('leaves a scan of only this directory to the directory’s own status, and asks its library’s once', async () => {
     vi.mocked(api.libraryScanStatus).mockResolvedValue(scanningIn(manga(), 2))
     ownRunning(2)
     const { host } = await shown()
@@ -286,7 +286,7 @@ describe('FolderPage, scans and removals across its library exclude each other',
     await tick()
     expect(api.libraryScanStatus).toHaveBeenCalledTimes(1)
 
-    // The folder's own poll sees its scan end, and that alone frees the
+    // The directory's own poll sees its scan end, and that alone frees the
     // buttons: the library's status is not asked again.
     ownRunning()
     await tick()
@@ -295,8 +295,8 @@ describe('FolderPage, scans and removals across its library exclude each other',
     expect(api.libraryScanStatus).toHaveBeenCalledTimes(1)
   })
 
-  it('closes the folder’s open removal dialog when the page’s own first read finds a scan of the library under it, and asks its cost afresh once that ends', async () => {
-    // The library's status and the folder's own are separate requests, and
+  it('closes the directory’s open removal dialog when the page’s own first read finds a scan of the library under it, and asks its cost afresh once that ends', async () => {
+    // The library's status and the directory's own are separate requests, and
     // the library's answers first here.
     const late = deferred<api.LibraryScanStatus>()
     vi.mocked(api.libraryScanStatus).mockReturnValueOnce(late.promise)
@@ -322,7 +322,7 @@ describe('FolderPage, scans and removals across its library exclude each other',
     )
   })
 
-  it('closes a folder’s open removal dialog when a sibling is found scanning under it, and asks its cost afresh when it is opened again', async () => {
+  it('closes a directory’s open removal dialog when a sibling is found scanning under it, and asks its cost afresh when it is opened again', async () => {
     const late = deferred<api.LibraryScanStatus>()
     vi.mocked(api.libraryScanStatus).mockReturnValueOnce(late.promise)
     vi.mocked(config.removalCost).mockResolvedValue(counted(5))
@@ -346,7 +346,7 @@ describe('FolderPage, scans and removals across its library exclude each other',
     )
   })
 
-  it('keeps a folder’s removal dialog while its own DELETE is out when a sibling is found scanning, and draws the DELETE’s refusal', async () => {
+  it('keeps a directory’s removal dialog while its own DELETE is out when a sibling is found scanning, and draws the DELETE’s refusal', async () => {
     const late = deferred<api.LibraryScanStatus>()
     vi.mocked(api.libraryScanStatus).mockReturnValueOnce(late.promise)
     vi.mocked(config.removalCost).mockResolvedValue(counted(5))
@@ -375,9 +375,9 @@ describe('FolderPage, scans and removals across its library exclude each other',
     )
   })
 
-  it('closes the folder’s open Move… dialog when its first read finds a scan of the library under it', async () => {
+  it('closes the directory’s open Move… dialog when its first read finds a scan of the library under it', async () => {
     // As in the removal's case above: the library's status answers before
-    // the folder's own, which says running too.
+    // the directory's own, which says running too.
     const late = deferred<api.LibraryScanStatus>()
     vi.mocked(api.libraryScanStatus).mockReturnValueOnce(late.promise)
     const own = deferred<config.ScanStatus>()
@@ -388,15 +388,15 @@ describe('FolderPage, scans and removals across its library exclude each other',
 
     await flush(() => late.resolve(scanningIn(manga(), 1, 2)))
     expect(host.querySelector('.move-root')).toBeNull()
-    expect(api.moveFolder).not.toHaveBeenCalled()
+    expect(api.moveDir).not.toHaveBeenCalled()
     await flush(() => own.resolve(statusOf(2, true)))
     expect(ownScanning(host)).not.toBeNull()
   })
 
-  it('does not hold the folder’s settings for a sibling’s scan', async () => {
+  it('does not hold the directory’s settings for a sibling’s scan', async () => {
     vi.mocked(api.libraryScanStatus).mockResolvedValue(scanningIn(manga(), 1))
     const { host } = await shown()
-    expect(control(host, 'Scan folder').disabled).toBe(true)
+    expect(control(host, 'Scan directory').disabled).toBe(true)
 
     const keepsDocuments = host.querySelector(
       'input[name="keeps_documents"]',
@@ -424,12 +424,12 @@ describe('FolderPage, scans and removals across its library exclude each other',
     })
   })
 
-  it('stops asking when it is unmounted while another folder is scanning', async () => {
+  it('stops asking when it is unmounted while another directory is scanning', async () => {
     vi.mocked(api.libraryScanStatus).mockResolvedValue(scanningIn(manga(), 1))
     const { host } = await shown()
     vi.mocked(api.libraryScanStatus).mockClear()
     act(() => rerender(<div />))
-    expect(host.querySelector('.folder-page')).toBeNull()
+    expect(host.querySelector('.dir-page')).toBeNull()
     await tick()
     await tick()
     expect(api.libraryScanStatus).not.toHaveBeenCalled()
@@ -477,7 +477,7 @@ describe('FolderPage, scans and removals across its library exclude each other',
     expect(api.libraryScanStatus).toHaveBeenCalledTimes(4)
   })
 
-  it('drops the sentence of a given-up hold when the folder’s own scan is pressed', async () => {
+  it('drops the sentence of a given-up hold when the directory’s own scan is pressed', async () => {
     vi.mocked(api.libraryScanStatus).mockResolvedValue(scanningIn(manga(), 1))
     vi.mocked(config.startScan).mockResolvedValue({
       root_id: 2,
@@ -490,11 +490,11 @@ describe('FolderPage, scans and removals across its library exclude each other',
     await tick()
     await tick()
     await tick()
-    expect(host.querySelector('.folder-page > [role="alert"]')).not.toBeNull()
+    expect(host.querySelector('.dir-page > [role="alert"]')).not.toBeNull()
 
-    await press(control(host, 'Scan folder'))
+    await press(control(host, 'Scan directory'))
     expect(config.startScan).toHaveBeenCalledWith(2)
-    expect(host.querySelector('.folder-page > [role="alert"]')).toBeNull()
+    expect(host.querySelector('.dir-page > [role="alert"]')).toBeNull()
   })
 
   it('drops the sentence of a given-up hold when the page asks its library again, though that read fails', async () => {
@@ -506,23 +506,20 @@ describe('FolderPage, scans and removals across its library exclude each other',
     await tick()
     await tick()
     await tick()
-    expect(host.querySelector('.folder-page > [role="alert"]')).not.toBeNull()
+    expect(host.querySelector('.dir-page > [role="alert"]')).not.toBeNull()
 
     // The same path under another id: the page asks its library again, and
     // the read fails as a first read: silently.
     vi.mocked(api.libraryScanStatus).mockClear()
     const library = manga({
-      folders: [
-        folder(1, '/media/Manga/Volumes'),
-        folder(3, '/media/Manga/Chapters'),
-      ],
+      dirs: [dir(1, '/media/Manga/Volumes'), dir(3, '/media/Manga/Chapters')],
     })
     await act(async () => {
       rerender(
-        <MemoryRouter initialEntries={['/config/libraries/7/folders/3']}>
-          <FolderPage
+        <MemoryRouter initialEntries={['/config/libraries/7/dirs/3']}>
+          <DirPage
             library={library}
-            root={library.folders[1]}
+            root={library.dirs[1]}
             others={[{ id: 8, name: 'Comics' }]}
             onChanged={vi.fn()}
             onRemoved={vi.fn()}
@@ -534,7 +531,7 @@ describe('FolderPage, scans and removals across its library exclude each other',
       await Promise.resolve()
     })
     expect(api.libraryScanStatus).toHaveBeenCalledTimes(1)
-    expect(host.querySelector('.folder-page > [role="alert"]')).toBeNull()
+    expect(host.querySelector('.dir-page > [role="alert"]')).toBeNull()
     expect(actionsHeld(host)).toEqual([false, false, false])
   })
 

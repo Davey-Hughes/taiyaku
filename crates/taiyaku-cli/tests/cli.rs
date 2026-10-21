@@ -203,7 +203,7 @@ fn the_usage_advertises_serve_cache() {
 }
 
 #[test]
-fn the_usage_advertises_serve_folders() {
+fn the_usage_advertises_serve_dirs() {
     let run = taiyaku().output().expect("the binary runs");
 
     let stdout = String::from_utf8_lossy(&run.stdout);
@@ -212,7 +212,7 @@ fn the_usage_advertises_serve_folders() {
         .find(|l| l.contains("taiyaku serve"))
         .expect("the usage lists serve");
     assert!(
-        serve_line.contains("[--folders DIR]..."),
+        serve_line.contains("[--dirs DIR]..."),
         "serve's usage line advertises the flag: {serve_line}"
     );
 }
@@ -262,10 +262,10 @@ fn the_usage_lists_library_scan_and_rules() {
     );
 }
 
-/// The folder `name` under `tree`, one file in it, added to the library at
+/// The directory `name` under `tree`, one file in it, added to the library at
 /// `db` with `scan --add --no-derive`, under `--library` where one is given.
 /// Returns its canonical path and what the command printed to stdout.
-fn add_folder(tree: &Path, db: &str, name: &str, library: Option<&str>) -> (String, String) {
+fn add_dir(tree: &Path, db: &str, name: &str, library: Option<&str>) -> (String, String) {
     let dir = tree.join(name);
     std::fs::create_dir_all(&dir).expect("mkdir");
     std::fs::write(dir.join("placeholder.txt"), b"x").expect("a file, so the root is not empty");
@@ -284,32 +284,32 @@ fn add_folder(tree: &Path, db: &str, name: &str, library: Option<&str>) -> (Stri
     (canonical, printed)
 }
 
-/// The folders `Comics`, `Volumes` and `Chapters` under `tree`, one file in
+/// The directories `Comics`, `Volumes` and `Chapters` under `tree`, one file in
 /// each, added to the library at `db` in that order. `Comics` is a library of
 /// its own and the other two are the library `Manga`. Returns their canonical
 /// paths in the same order.
-fn comics_and_a_two_folder_manga(tree: &Path, db: &str) -> [String; 3] {
-    let folders = [
+fn comics_and_a_two_dir_manga(tree: &Path, db: &str) -> [String; 3] {
+    let dirs = [
         ("Comics", None),
         ("Volumes", Some("Manga")),
         ("Chapters", Some("Manga")),
     ];
-    folders.map(|(name, library)| add_folder(tree, db, name, library).0)
+    dirs.map(|(name, library)| add_dir(tree, db, name, library).0)
 }
 
-/// `scan --add PATH --library NAME` walks `NAME`'s folders, the new one among
-/// them, and no folder of another library.
+/// `scan --add PATH --library NAME` walks `NAME`'s directories, the new one among
+/// them, and no directory of another library.
 #[test]
 fn library_scan_add_with_a_library_walks_only_that_library() {
     let tree = TempDir::new("cli-scan-add-library");
     let db_dir = TempDir::new("cli-scan-add-library-db");
     let db = db_path(&db_dir);
-    let (comics, _) = add_folder(&tree, &db, "Comics", None);
-    let (volumes, _) = add_folder(&tree, &db, "Volumes", Some("Manga"));
+    let (comics, _) = add_dir(&tree, &db, "Comics", None);
+    let (volumes, _) = add_dir(&tree, &db, "Volumes", Some("Manga"));
 
-    let (chapters, printed) = add_folder(&tree, &db, "Chapters", Some("Manga"));
+    let (chapters, printed) = add_dir(&tree, &db, "Chapters", Some("Manga"));
 
-    let reported = |folder: &str| printed.contains(&format!("root {folder} "));
+    let reported = |dir: &str| printed.contains(&format!("root {dir} "));
     assert_eq!(
         [reported(&comics), reported(&volumes), reported(&chapters)],
         [false, true, true],
@@ -317,34 +317,34 @@ fn library_scan_add_with_a_library_walks_only_that_library() {
     );
 }
 
-/// `scan --add` says first which library the folder is now in, by the name
-/// the store holds: the folder's own name, its whole path where a library
+/// `scan --add` says first which library the directory is now in, by the name
+/// the store holds: the directory's own name, its whole path where a library
 /// already has that name, and the library's name where `--library` was typed
-/// with spaces around it. A folder added without `--library` made its
+/// with spaces around it. A directory added without `--library` made its
 /// library, and the line says so.
 #[test]
-fn library_scan_add_says_which_library_the_folder_is_filed_under() {
+fn library_scan_add_says_which_library_the_dir_is_filed_under() {
     let tree = TempDir::new("cli-scan-add-filed");
     let db_dir = TempDir::new("cli-scan-add-filed-db");
     let db = db_path(&db_dir);
 
-    let (_, own) = add_folder(&tree, &db, "one/Manga", None);
-    let (second, by_path) = add_folder(&tree, &db, "two/Manga", None);
-    let (_, joined) = add_folder(&tree, &db, "shelf", Some(" Manga "));
+    let (_, own) = add_dir(&tree, &db, "one/Manga", None);
+    let (second, by_path) = add_dir(&tree, &db, "two/Manga", None);
+    let (_, joined) = add_dir(&tree, &db, "shelf", Some(" Manga "));
 
     let first_line = |printed: &str| printed.lines().next().unwrap_or_default().to_string();
     assert_eq!(
         [first_line(&own), first_line(&by_path), first_line(&joined)],
         [
-            "created the library `Manga` for this folder".to_string(),
-            format!("created the library `{second}` for this folder"),
+            "created the library `Manga` for this directory".to_string(),
+            format!("created the library `{second}` for this directory"),
             "filed under the library `Manga`".to_string(),
         ]
     );
 }
 
 /// `scan --add PATH --library NAME` says whether it made the library: the
-/// first folder added under a name no library answers to creates it, and the
+/// first directory added under a name no library answers to creates it, and the
 /// next joins it.
 #[test]
 fn library_scan_add_with_a_library_says_whether_it_made_the_library() {
@@ -352,33 +352,33 @@ fn library_scan_add_with_a_library_says_whether_it_made_the_library() {
     let db_dir = TempDir::new("cli-scan-add-created-db");
     let db = db_path(&db_dir);
 
-    let (_, first) = add_folder(&tree, &db, "Volumes", Some("New"));
-    let (_, second) = add_folder(&tree, &db, "Chapters", Some("New"));
+    let (_, first) = add_dir(&tree, &db, "Volumes", Some("New"));
+    let (_, second) = add_dir(&tree, &db, "Chapters", Some("New"));
 
     let first_line = |printed: &str| printed.lines().next().unwrap_or_default().to_string();
     assert_eq!(
         [first_line(&first), first_line(&second)],
         [
-            "created the library `New` for this folder",
+            "created the library `New` for this directory",
             "filed under the library `New`",
         ]
     );
 }
 
-/// `scan --library` derives once its folders are walked, and derives the
-/// whole store: a folder of another library, walked before with
+/// `scan --library` derives once its directories are walked, and derives the
+/// whole store: a directory of another library, walked before with
 /// `--no-derive`, gains its work.
 #[test]
 fn library_scan_with_a_library_derives_the_whole_store() {
     let tree = TempDir::new("cli-scan-library-derives");
     let db_dir = TempDir::new("cli-scan-library-derives-db");
     let db = db_path(&db_dir);
-    let mut folders = Vec::new();
-    for (folder, series, library) in [
+    let mut dirs = Vec::new();
+    for (name, series, library) in [
         ("Comics", "Saga", None),
         ("Volumes", "Kaguya", Some("Manga")),
     ] {
-        let dir = tree.join(folder);
+        let dir = tree.join(name);
         let volume = dir.join(series).join(format!("{series} - v01"));
         std::fs::create_dir_all(&volume).expect("mkdir");
         std::fs::write(volume.join("000.jpg"), b"page").expect("write");
@@ -388,14 +388,14 @@ fn library_scan_with_a_library_derives_the_whole_store() {
         }
         args.extend(["--no-derive", "--db", &db]);
         taiyaku_stdout(&args);
-        folders.push(dir.canonicalize().expect("canonical").display().to_string());
+        dirs.push(dir.canonicalize().expect("canonical").display().to_string());
     }
     let listing = ["library", "libraries", "--db", &db];
     let listed = |works: usize| {
         format!(
-            "Comics: 1 folder(s), {works} work(s)\n  {}\n\
-             Manga: 1 folder(s), {works} work(s)\n  {}\n",
-            folders[0], folders[1]
+            "Comics: 1 directory, {works} work(s)\n  {}\n\
+             Manga: 1 directory, {works} work(s)\n  {}\n",
+            dirs[0], dirs[1]
         )
     };
     let before = taiyaku_stdout(&listing);
@@ -413,19 +413,19 @@ fn library_scan_with_a_library_derives_the_whole_store() {
 }
 
 #[test]
-fn library_libraries_lists_each_library_with_its_folders() {
+fn library_libraries_lists_each_library_with_its_dirs() {
     let tree = TempDir::new("cli-libraries");
     let db_dir = TempDir::new("cli-libraries-db");
     let db = db_path(&db_dir);
-    let [comics, volumes, chapters] = comics_and_a_two_folder_manga(&tree, &db);
+    let [comics, volumes, chapters] = comics_and_a_two_dir_manga(&tree, &db);
 
     let listed = taiyaku_stdout(&["library", "libraries", "--db", &db]);
 
     assert_eq!(
         listed,
         format!(
-            "Comics: 1 folder(s), 0 work(s)\n  {comics}\n\
-             Manga: 2 folder(s), 0 work(s)\n  {volumes}\n  {chapters}\n"
+            "Comics: 1 directory, 0 work(s)\n  {comics}\n\
+             Manga: 2 directories, 0 work(s)\n  {volumes}\n  {chapters}\n"
         )
     );
 }
@@ -436,14 +436,14 @@ fn library_libraries_lists_each_library_with_its_folders() {
 #[test]
 fn library_libraries_says_there_are_none_and_counts_the_works_in_none() {
     let tree = TempDir::new("cli-libraries-none");
-    let folder = tree.join("Shelf");
-    std::fs::create_dir_all(&folder).expect("mkdir");
-    std::fs::write(folder.join("placeholder.txt"), b"x").expect("write");
-    let shelf = folder.canonicalize().expect("canonical");
+    let dir = tree.join("Shelf");
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    std::fs::write(dir.join("placeholder.txt"), b"x").expect("write");
+    let shelf = dir.canonicalize().expect("canonical");
     let db_dir = TempDir::new("cli-libraries-none-db");
     let db = db_path(&db_dir);
     let listing = ["library", "libraries", "--db", &db];
-    let none = "no libraries yet; `taiyaku library scan --add PATH` adds a folder as one\n";
+    let none = "no libraries yet; `taiyaku library scan --add PATH` adds a directory as one\n";
     let unfiled = "1 work(s) in no library\n";
 
     let empty = taiyaku_stdout(&listing);
@@ -456,7 +456,7 @@ fn library_libraries_says_there_are_none_and_counts_the_works_in_none() {
         .into_iter()
         .map(|word| {
             if word == "PATH" {
-                folder.to_str().unwrap().to_string()
+                dir.to_str().unwrap().to_string()
             } else {
                 word
             }
@@ -467,24 +467,24 @@ fn library_libraries_says_there_are_none_and_counts_the_works_in_none() {
     assert_eq!(
         taiyaku_stdout(&listing),
         format!(
-            "Shelf: 1 folder(s), 0 work(s)\n  {}\n{unfiled}",
+            "Shelf: 1 directory, 0 work(s)\n  {}\n{unfiled}",
             shelf.display()
         )
     );
 }
 
-/// `scan --library` walks the named library's folders, both of them, and no
-/// folder of another library. Each folder gains a file after it was added, so
-/// a folder that was walked has that file recorded and one that was not does
+/// `scan --library` walks the named library's directories, both of them, and no
+/// directory of another library. Each directory gains a file after it was added, so
+/// a directory that was walked has that file recorded and one that was not does
 /// not.
 #[test]
-fn library_scan_with_a_library_walks_only_its_folders() {
+fn library_scan_with_a_library_walks_only_its_dirs() {
     let tree = TempDir::new("cli-scan-library");
     let db_dir = TempDir::new("cli-scan-library-db");
     let db = db_path(&db_dir);
-    let [comics, volumes, chapters] = comics_and_a_two_folder_manga(&tree, &db);
-    for folder in [&comics, &volumes, &chapters] {
-        std::fs::write(Path::new(folder).join("new.txt"), b"x").expect("write");
+    let [comics, volumes, chapters] = comics_and_a_two_dir_manga(&tree, &db);
+    for dir in [&comics, &volumes, &chapters] {
+        std::fs::write(Path::new(dir).join("new.txt"), b"x").expect("write");
     }
 
     let reported = taiyaku_stdout(&[
@@ -498,8 +498,8 @@ fn library_scan_with_a_library_walks_only_its_folders() {
     ]);
 
     let conn = rusqlite::Connection::open(&db).expect("open the same database taiyaku wrote");
-    // Whether the scan reported on `folder`, and the files recorded under it.
-    let walked = |folder: &str| -> (bool, Vec<String>) {
+    // Whether the scan reported on `dir`, and the files recorded under it.
+    let walked = |dir: &str| -> (bool, Vec<String>) {
         let mut files = conn
             .prepare(
                 "SELECT e.rel_path FROM scan_entry e JOIN root r ON r.id = e.root_id \
@@ -507,11 +507,11 @@ fn library_scan_with_a_library_walks_only_its_folders() {
             )
             .expect("prepares");
         let recorded = files
-            .query_map([folder], |row| row.get(0))
+            .query_map([dir], |row| row.get(0))
             .expect("reads")
             .collect::<Result<Vec<String>, _>>()
             .expect("reads");
-        (reported.contains(&format!("root {folder} ")), recorded)
+        (reported.contains(&format!("root {dir} ")), recorded)
     };
     let before = vec!["placeholder.txt".to_string()];
     let both = vec!["new.txt".to_string(), "placeholder.txt".to_string()];
@@ -527,7 +527,7 @@ fn library_scan_refuses_a_library_it_does_not_hold_and_root_with_library() {
     let tree = TempDir::new("cli-scan-library-refusals");
     let db_dir = TempDir::new("cli-scan-library-refusals-db");
     let db = db_path(&db_dir);
-    let [_, volumes, _] = comics_and_a_two_folder_manga(&tree, &db);
+    let [_, volumes, _] = comics_and_a_two_dir_manga(&tree, &db);
 
     let run = taiyaku()
         .args(["library", "scan", "--library", "Nope", "--db", &db])
@@ -542,8 +542,8 @@ fn library_scan_refuses_a_library_it_does_not_hold_and_root_with_library() {
     );
     assert!(run.stdout.is_empty(), "nothing is walked");
 
-    // A folder of `Manga` and `Manga` itself, so neither flag is wrong alone,
-    // and a folder to add, which the refusal comes before.
+    // A directory of `Manga` and `Manga` itself, so neither flag is wrong alone,
+    // and a directory to add, which the refusal comes before.
     let unadded = tree.join("Unadded");
     std::fs::create_dir_all(&unadded).expect("mkdir");
     std::fs::write(unadded.join("placeholder.txt"), b"x").expect("write");
@@ -576,7 +576,7 @@ fn library_scan_refuses_a_library_it_does_not_hold_and_root_with_library() {
     );
     assert!(
         stderr.lines().any(|line| line
-            == "taiyaku: `--root` and `--library` each choose which folders are walked; \
+            == "taiyaku: `--root` and `--library` each choose which directories are walked; \
                 pass one of them"),
         "{stderr}"
     );
@@ -589,7 +589,7 @@ fn library_user_grants_name_the_library_as_the_store_holds_it() {
     let tree = TempDir::new("cli-grant-stored-name");
     let db_dir = TempDir::new("cli-grant-stored-name-db");
     let db = db_path(&db_dir);
-    add_folder(&tree, &db, "Volumes", Some("Manga"));
+    add_dir(&tree, &db, "Volumes", Some("Manga"));
     {
         let library = taiyaku_library::Library::open(Path::new(&db)).expect("opens");
         taiyaku_library::account::promote(&library.conn(), "davey", "a password", "admin")
@@ -630,7 +630,7 @@ fn library_user_grant_notes_follow_the_role_and_whether_anything_changed() {
     let tree = TempDir::new("cli-grant-notes");
     let db_dir = TempDir::new("cli-grant-notes-db");
     let db = db_path(&db_dir);
-    add_folder(&tree, &db, "Volumes", Some("Manga"));
+    add_dir(&tree, &db, "Volumes", Some("Manga"));
     {
         let library = taiyaku_library::Library::open(Path::new(&db)).expect("opens");
         let conn = library.conn();
@@ -682,8 +682,8 @@ fn library_user_list_shows_what_each_account_is_granted() {
     let tree = TempDir::new("cli-user-list-grants");
     let db_dir = TempDir::new("cli-user-list-grants-db");
     let db = db_path(&db_dir);
-    add_folder(&tree, &db, "Volumes", Some("Other"));
-    add_folder(&tree, &db, "Comics", Some("Manga"));
+    add_dir(&tree, &db, "Volumes", Some("Other"));
+    add_dir(&tree, &db, "Comics", Some("Manga"));
     {
         let library = taiyaku_library::Library::open(Path::new(&db)).expect("opens");
         let conn = library.conn();
@@ -740,7 +740,7 @@ fn library_user_every_library_lifts_the_limit_and_says_whether_it_did() {
     let tree = TempDir::new("cli-every-library");
     let db_dir = TempDir::new("cli-every-library-db");
     let db = db_path(&db_dir);
-    add_folder(&tree, &db, "Volumes", Some("Manga"));
+    add_dir(&tree, &db, "Volumes", Some("Manga"));
     {
         let library = taiyaku_library::Library::open(Path::new(&db)).expect("opens");
         let conn = library.conn();
@@ -801,7 +801,7 @@ fn the_command_a_missing_library_is_answered_with_lists_the_libraries() {
     let tree = TempDir::new("cli-missing-library");
     let db_dir = TempDir::new("cli-missing-library-db");
     let db = db_path(&db_dir);
-    comics_and_a_two_folder_manga(&tree, &db);
+    comics_and_a_two_dir_manga(&tree, &db);
     {
         // `grant-library` and `revoke-library` look the account up first.
         let library = taiyaku_library::Library::open(Path::new(&db)).expect("opens");
@@ -833,7 +833,7 @@ fn the_command_a_missing_library_is_answered_with_lists_the_libraries() {
         listing.extend(["--db".to_string(), db.clone()]);
         let listed = taiyaku_stdout(&listing.iter().map(String::as_str).collect::<Vec<_>>());
         assert!(
-            listed.contains("Manga: 2 folder(s), 0 work(s)\n"),
+            listed.contains("Manga: 2 directories, 0 work(s)\n"),
             "{args:?} names `taiyaku {}`, which prints: {listed}",
             listing.join(" ")
         );
@@ -1615,21 +1615,72 @@ fn serve_refuses_a_malformed_trusted_proxy_variable_by_name() {
     assert!(stderr.contains("nonsense"), "{stderr}");
 }
 
-/// A folder the server was started with that is not there is named on its
+/// The running server refuses the old `TAIYAKU_FOLDERS` before it listens,
+/// naming the variable to set instead. A valid `--dirs` is given beside it, so
+/// the old variable is the only thing wrong and the flag does not excuse it.
+///
+/// The variable is set on the child's environment and not on this process's,
+/// which other tests in the binary share.
+#[test]
+fn serve_refuses_the_old_dirs_variable_before_it_listens() {
+    let dir = TempDir::new("cli-serve-old-dirs-variable");
+    let db_dir = TempDir::new("cli-serve-old-dirs-variable-db");
+    let from_flag = dir.join("from-flag");
+    std::fs::create_dir_all(&from_flag).expect("mkdir");
+    let mut child = ServeChild(
+        taiyaku()
+            .env("TAIYAKU_FOLDERS", dir.join("from-variable"))
+            .args([
+                "serve",
+                "--db",
+                &db_path(&db_dir),
+                "--addr",
+                "127.0.0.1:0",
+                "--dirs",
+            ])
+            .arg(&from_flag)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("the binary runs"),
+    );
+
+    // Polled against a deadline for the reason the malformed-proxy test gives.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let status = loop {
+        if let Some(status) = child.try_wait().expect("polls the child") {
+            break status;
+        }
+        if std::time::Instant::now() >= deadline {
+            panic!("the server started with TAIYAKU_FOLDERS set");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    let mut stderr = String::new();
+    std::io::Read::read_to_string(&mut child.stderr.take().expect("piped"), &mut stderr)
+        .expect("reads stderr");
+
+    assert_eq!(status.code(), Some(1), "{stderr}");
+    assert!(stderr.contains("TAIYAKU_FOLDERS"), "{stderr}");
+    assert!(stderr.contains("TAIYAKU_DIRS"), "{stderr}");
+    assert!(!stderr.contains("listening"), "{stderr}");
+}
+
+/// A directory the server was started with that is not there is named on its
 /// console before it says it is listening, so a deployer whose share is not
-/// mapped sees why the browser is empty. A `TAIYAKU_FOLDERS` is set on the
-/// child's environment (never this process's) and a `--folders` given beside
-/// it: the flag replaces the variable, so only the flag's folder is in use.
+/// mapped sees why the browser is empty. A `TAIYAKU_DIRS` is set on the
+/// child's environment (never this process's) and a `--dirs` given beside
+/// it: the flag replaces the variable, so only the flag's directory is in use.
 #[cfg(unix)]
 #[test]
-fn serve_says_which_folders_it_cannot_browse() {
+fn serve_says_which_dirs_it_cannot_browse() {
     use std::io::{BufRead, BufReader};
     use std::process::Stdio;
     use std::time::{Duration, Instant};
 
-    let dir = TempDir::new("cli-serve-folders");
-    let db_dir = TempDir::new("cli-serve-folders-db");
-    let cache = TempDir::new("cli-serve-folders-cache");
+    let dir = TempDir::new("cli-serve-dirs");
+    let db_dir = TempDir::new("cli-serve-dirs-db");
+    let cache = TempDir::new("cli-serve-dirs-cache");
     let from_variable = dir.join("unmapped-variable");
     let from_flag = dir.join("unmapped-flag");
     let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("a free port");
@@ -1638,7 +1689,7 @@ fn serve_says_which_folders_it_cannot_browse() {
 
     let mut child = ServeChild(
         taiyaku()
-            .env("TAIYAKU_FOLDERS", &from_variable)
+            .env("TAIYAKU_DIRS", &from_variable)
             .args([
                 "serve",
                 "--db",
@@ -1647,7 +1698,7 @@ fn serve_says_which_folders_it_cannot_browse() {
                 cache.to_str().expect("a utf-8 temp path"),
                 "--addr",
                 &addr,
-                "--folders",
+                "--dirs",
             ])
             .arg(&from_flag)
             .stdout(Stdio::null())
@@ -1689,7 +1740,7 @@ fn serve_says_which_folders_it_cannot_browse() {
     assert_eq!(
         said_of(&from_variable),
         0,
-        "a flag replaces the variable, so the variable's folder is not in use: {seen:?}"
+        "a flag replaces the variable, so the variable's directory is not in use: {seen:?}"
     );
 }
 

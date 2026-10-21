@@ -517,7 +517,7 @@ fn patch_string(body: &serde_json::Value, field: &str) -> Result<Option<String>,
 /// anything else (`Some(Some(value))`) replaces it.
 ///
 /// `noun` names the caller for the one message this can produce — `"rule"`
-/// from [`rule_patch_from_json`]'s `root_id`, `"folder"` from
+/// from [`rule_patch_from_json`]'s `root_id`, `"directory"` from
 /// [`root_patch_from_json`]'s `scan_interval_secs` — shared for the same
 /// reason [`required_str`] takes the same parameter.
 fn patch_nullable_i64(
@@ -1174,15 +1174,15 @@ pub(crate) async fn import_rules(
 /// as JSON, with the store's own sentence in an `error` field.
 #[derive(Debug)]
 pub(crate) enum AdminAnswer {
-    /// `id` names no folder — 404.
-    MissingFolder(i64),
+    /// `id` names no directory — 404.
+    MissingDir(i64),
     /// `id` names no library — 404.
     MissingLibrary(i64),
     /// The caller's own mistake, decided before any store call or inside
     /// one: a body that could not be read as a patch, or a scan the caller
     /// asked for wrongly.
     Unusable(String),
-    /// Well-formed, names a real folder or library, and still not allowed —
+    /// Well-formed, names a real directory or library, and still not allowed —
     /// 409: in [`crate::scan_jobs::removal_waits_for`]'s words, a scan of it
     /// is reserved; in [`crate::scan_jobs::reserve`]'s, a scan would be a
     /// second.
@@ -1195,7 +1195,7 @@ pub(crate) enum AdminAnswer {
 impl IntoResponse for AdminAnswer {
     fn into_response(self) -> Response {
         let (status, message) = match self {
-            Self::MissingFolder(id) => (StatusCode::NOT_FOUND, format!("there is no folder {id}")),
+            Self::MissingDir(id) => (StatusCode::NOT_FOUND, format!("there is no directory {id}")),
             Self::MissingLibrary(id) => {
                 (StatusCode::NOT_FOUND, format!("there is no library {id}"))
             }
@@ -1207,7 +1207,7 @@ impl IntoResponse for AdminAnswer {
     }
 }
 
-/// [`panicked`]'s twin for the folder and library routes: the one failure
+/// [`panicked`]'s twin for the directory and library routes: the one failure
 /// `spawn_blocking` itself can hand back, worded through [`AdminAnswer`]
 /// rather than [`NoAnswer`] so the body stays JSON like every other refusal
 /// these routes send.
@@ -1216,7 +1216,7 @@ pub(crate) fn admin_panicked(what: &str, why: &tokio::task::JoinError) -> Respon
 }
 
 /// One `root` row, as [`list_roots`] sends it and `libraries_api` sends the
-/// folders of a library.
+/// directories of a library.
 ///
 /// **`last_scan_at`/`last_scan_status` are read separately from
 /// [`scan::Root`], not carried on it** — that type has neither column: Task
@@ -1249,7 +1249,7 @@ pub(crate) fn root_json(
     })
 }
 
-/// The success body for a folder added, in `libraries_api`: the row
+/// The success body for a directory added, in `libraries_api`: the row
 /// [`scan::add_root_checked_in`] minted, plus the watch probe it ran
 /// immediately and the interval that probe implies — [`scan::Added`]'s own
 /// three fields, over the wire.
@@ -1279,15 +1279,15 @@ pub(crate) fn added_json(added: &scan::Added) -> serde_json::Value {
 /// caller no way to clear it — `rules::RulePatch`'s five non-nullable
 /// columns take the same two-way reading for the same reason.
 ///
-/// **Every call below passes `"folder"`.** [`patch_nullable_text`],
+/// **Every call below passes `"directory"`.** [`patch_nullable_text`],
 /// [`patch_nullable_i64`] and [`patch_bool`] are the identical functions
 /// [`rule_patch_from_json`] calls with `"rule"` — this is not a second copy
 /// of their validation logic, only a different noun for the message each
 /// can produce, so a stray `{"keeps_documents": "yes"}` here is reported
-/// against a folder rather than "the rule's `keeps_documents`".
+/// against a directory rather than "the rule's `keeps_documents`".
 fn root_patch_from_json(body: &serde_json::Value) -> Result<scan::RootPatch, String> {
     if !body.is_object() {
-        return Err("a folder's settings must be a JSON object".to_string());
+        return Err("a directory's settings must be a JSON object".to_string());
     }
     // **Refused here rather than at the store**, so a typo is caught at save
     // rather than after a scan. `Some(None)` — clearing the column — is not
@@ -1296,17 +1296,17 @@ fn root_patch_from_json(body: &serde_json::Value) -> Result<scan::RootPatch, Str
     // that means nothing useful, which is why a stored pattern that will not
     // build is *also* handled, in `scan::Excluder::build`, rather than
     // treated as impossible.
-    let exclude_globs = patch_nullable_text(body, "exclude_globs", "folder")?;
+    let exclude_globs = patch_nullable_text(body, "exclude_globs", "directory")?;
     if let Some(Some(patterns)) = &exclude_globs {
         scan::check_exclude_globs(patterns)?;
     }
     Ok(scan::RootPatch {
-        edition_key: patch_nullable_text(body, "edition_key", "folder")?,
-        default_kind: patch_nullable_text(body, "default_kind", "folder")?,
-        default_language: patch_nullable_text(body, "default_language", "folder")?,
+        edition_key: patch_nullable_text(body, "edition_key", "directory")?,
+        default_kind: patch_nullable_text(body, "default_kind", "directory")?,
+        default_language: patch_nullable_text(body, "default_language", "directory")?,
         exclude_globs,
-        scan_interval_secs: patch_nullable_i64(body, "scan_interval_secs", "folder")?,
-        keeps_documents: patch_bool(body, "keeps_documents", "folder")?,
+        scan_interval_secs: patch_nullable_i64(body, "scan_interval_secs", "directory")?,
+        keeps_documents: patch_bool(body, "keeps_documents", "directory")?,
     })
 }
 
@@ -1612,17 +1612,17 @@ pub(crate) async fn start_scan(
     let root = match found {
         Ok(Ok(roots)) => match roots.into_iter().find(|r| r.id == id) {
             Some(root) => root,
-            None => return AdminAnswer::MissingFolder(id).into_response(),
+            None => return AdminAnswer::MissingDir(id).into_response(),
         },
         Ok(Err(no_answer)) => return no_answer.into_response(),
-        Err(why) => return admin_panicked("looking up a folder to scan", &why),
+        Err(why) => return admin_panicked("looking up a directory to scan", &why),
     };
 
     let started = Instant::now();
     if let Err(refused) = crate::scan_jobs::reserve(&state, std::slice::from_ref(&root), started) {
         return AdminAnswer::Refused(refused).into_response();
     }
-    crate::scan_jobs::spawn(state, vec![root], started, crate::scan_jobs::Reread::Folder);
+    crate::scan_jobs::spawn(state, vec![root], started, crate::scan_jobs::Reread::Dir);
 
     (
         StatusCode::ACCEPTED,
@@ -1708,15 +1708,15 @@ pub(crate) async fn scan_status(
             },
         )
         .optional()
-        .map_err(|e| AdminAnswer::Failed(format!("reading folder {id}'s scan status: {e}")))
+        .map_err(|e| AdminAnswer::Failed(format!("reading directory {id}'s scan status: {e}")))
     })
     .await;
 
     let (last_scan_at, last_scan_status) = match found {
         Ok(Ok(Some(pair))) => pair,
-        Ok(Ok(None)) => return AdminAnswer::MissingFolder(id).into_response(),
+        Ok(Ok(None)) => return AdminAnswer::MissingDir(id).into_response(),
         Ok(Err(no_answer)) => return no_answer.into_response(),
-        Err(why) => return admin_panicked("reading a folder's scan status", &why),
+        Err(why) => return admin_panicked("reading a directory's scan status", &why),
     };
 
     match entry {
@@ -1796,7 +1796,7 @@ pub(crate) async fn list_roots(
     match built {
         Ok(Ok(body)) => Json(body).into_response(),
         Ok(Err(no_answer)) => no_answer.into_response(),
-        Err(why) => admin_panicked("listing folders", &why),
+        Err(why) => admin_panicked("listing directories", &why),
     }
 }
 
@@ -1823,7 +1823,7 @@ pub(crate) async fn patch_root(
         let conn = state.library.conn();
         match scan::update_root(&conn, id, &patch) {
             Ok(true) => Ok(()),
-            Ok(false) => Err(AdminAnswer::MissingFolder(id)),
+            Ok(false) => Err(AdminAnswer::MissingDir(id)),
             Err(why) => Err(AdminAnswer::Failed(why)),
         }
     })
@@ -1832,7 +1832,7 @@ pub(crate) async fn patch_root(
     match updated {
         Ok(Ok(())) => StatusCode::NO_CONTENT.into_response(),
         Ok(Err(no_answer)) => no_answer.into_response(),
-        Err(why) => admin_panicked("patching a folder", &why),
+        Err(why) => admin_panicked("patching a directory", &why),
     }
 }
 
@@ -1894,22 +1894,22 @@ pub(crate) struct DryRunQuery {
 /// body names those accounts (`left_with_no_library`), for the dry run as for
 /// the removal.
 ///
-/// **A removal is refused, 409, while a scan of the folder is reserved**,
+/// **A removal is refused, 409, while a scan of the directory is reserved**,
 /// for the dry run and the removal alike, in
 /// [`crate::scan_jobs::removal_waits_for`]'s words. The registry is asked when
 /// the request arrives, and a scan can be reserved after that and before the
 /// removal commits; holding the registry's lock across a removal's derive
 /// would stall every status read. What covers that window is
-/// [`crate::scan_jobs::run`]'s reading of its folder again under the job lock:
-/// a scan reserved in it walks nothing where the folder is gone.
+/// [`crate::scan_jobs::run`]'s reading of its directory again under the job lock:
+/// a scan reserved in it walks nothing where the directory is gone.
 ///
 /// **That does not reach a walk already past its re-read when the removal
 /// commits**, since the removal takes no job lock and commits on a connection
 /// of its own. [`scan::scan_root`] holds that case: it records a walk only
-/// where, under its write lock, the folder's id still names the path it
-/// walked, and its status write asks the same. A walk whose folder went, or
-/// whose id another folder took, records nothing, and the route has cleared
-/// the folder's registry slot, so [`crate::scan_jobs::finish_reservation`]
+/// where, under its write lock, the directory's id still names the path it
+/// walked, and its status write asks the same. A walk whose directory went, or
+/// whose id another directory took, records nothing, and the route has cleared
+/// the directory's registry slot, so [`crate::scan_jobs::finish_reservation`]
 /// drops whatever the scan reports.
 ///
 /// Takes its connection from `working`, not `conn`: both `removal_cost` and
@@ -1943,12 +1943,12 @@ pub(crate) async fn delete_root(
             .into_iter()
             .find(|root| root.id == id)
         else {
-            return Err(AdminAnswer::MissingFolder(id));
+            return Err(AdminAnswer::MissingDir(id));
         };
         if crate::scan_jobs::a_scan_reserved_on(&state, std::slice::from_ref(&root)).is_some() {
             return Err(AdminAnswer::Refused(crate::scan_jobs::removal_waits_for(
                 &root,
-                "the folder",
+                "the directory",
             )));
         }
         if dry_run {
@@ -1984,7 +1984,7 @@ pub(crate) async fn delete_root(
         }))
         .into_response(),
         Ok(Err(no_answer)) => no_answer.into_response(),
-        Err(why) => admin_panicked("removing a folder", &why),
+        Err(why) => admin_panicked("removing a directory", &why),
     }
 }
 

@@ -43,14 +43,14 @@ vi.mock('./config', async (importOriginal) => ({
 }))
 vi.mock('./libraries', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./libraries')>()),
-  addFolder: vi.fn(),
+  addDir: vi.fn(),
   createLibrary: vi.fn(),
   libraryRemovalCost: vi.fn(),
   libraryScanStatus: vi.fn(),
-  listFolders: vi.fn(),
+  listDirs: vi.fn(),
   listLibraries: vi.fn(),
   moveCost: vi.fn(),
-  moveFolder: vi.fn(),
+  moveDir: vi.fn(),
   removeLibrary: vi.fn(),
   renameLibrary: vi.fn(),
   startLibraryScan: vi.fn(),
@@ -72,12 +72,12 @@ vi.mock('./about', async (importOriginal) => {
 const TABLE = '/config/libraries'
 /** The page that makes a library. */
 const NEW_LIBRARY = `${TABLE}/new`
-/** Manga's page, where its own controls and its folders' table are. */
+/** Manga's page, where its own controls and its directories' table are. */
 const MANGA_PAGE = `${TABLE}/1`
-/** The page of Light novels' only folder, where its Move… is. */
-const NOVELS_FOLDER_PAGE = `${TABLE}/2/folders/3`
+/** The page of Light novels' only directory, where its Move… is. */
+const NOVELS_DIR_PAGE = `${TABLE}/2/dirs/3`
 
-const folder = (
+const dir = (
   id: number,
   path: string,
   over: Partial<config.Root> = {},
@@ -100,9 +100,9 @@ const MANGA: librariesApi.Library = {
   name: 'Manga',
   works: 1858,
   books: 0,
-  folders: [
-    folder(1, '/mnt/user/media 1/Manga/Volumes'),
-    folder(2, '/mnt/user/media 1/Manga/Chapters (weekly)', {
+  dirs: [
+    dir(1, '/mnt/user/media 1/Manga/Volumes'),
+    dir(2, '/mnt/user/media 1/Manga/Chapters (weekly)', {
       edition_key: 'weekly',
       default_kind: 'chapter',
     }),
@@ -113,7 +113,7 @@ const NOVELS: librariesApi.Library = {
   name: 'Light novels',
   works: 0,
   books: 14,
-  folders: [folder(3, '/mnt/user/media 1/Light Novels')],
+  dirs: [dir(3, '/mnt/user/media 1/Light Novels')],
 }
 
 /**
@@ -129,16 +129,16 @@ const SHELVES = Array.from(
     name: `Shelf ${i + 1}`,
     works: 0,
     books: 0,
-    folders: [folder(10 + i, `/srv/shelf ${i + 1}`)],
+    dirs: [dir(10 + i, `/srv/shelf ${i + 1}`)],
   }),
 )
-/** Manga with folders enough that its page is taller than the window too. */
+/** Manga with directories enough that its page is taller than the window too. */
 const LONG_MANGA: librariesApi.Library = {
   ...MANGA,
-  folders: [
-    ...MANGA.folders,
+  dirs: [
+    ...MANGA.dirs,
     ...Array.from({ length: 24 }, (_, i) =>
-      folder(40 + i, `/mnt/user/media 1/Manga/Extras ${i + 1}`),
+      dir(40 + i, `/mnt/user/media 1/Manga/Extras ${i + 1}`),
     ),
   ],
 }
@@ -180,7 +180,7 @@ beforeEach(() => {
       library_id: id,
       running: false,
       elapsed_secs: null,
-      folders: [],
+      dirs: [],
     }),
   )
   vi.mocked(librariesApi.listLibraries).mockResolvedValue({
@@ -343,9 +343,9 @@ async function putAt(host: HTMLElement, el: Element, y: number) {
   expect(Math.round(el.getBoundingClientRect().top)).toBe(y)
 }
 
-/** Opens the picker under Manga's folders with a real mouse. */
-async function openAddFolder(host: HTMLElement) {
-  await click(host.querySelector('button[name="add-folder"]') as Element)
+/** Opens the picker under Manga's directories with a real mouse. */
+async function openAddDir(host: HTMLElement) {
+  await click(host.querySelector('button[name="add-dir"]') as Element)
   return host.querySelector('.library-page > .add-root') as HTMLElement
 }
 
@@ -427,14 +427,14 @@ describe('the Libraries screen in the real Shell', () => {
       expect(head.bottom).toBeLessThanOrEqual(window.innerHeight)
     })
 
-    it(`draws a refused Add folder where the person is looking, at ${width}`, async () => {
-      vi.mocked(librariesApi.addFolder).mockRejectedValue(
+    it(`draws a refused Add directory where the person is looking, at ${width}`, async () => {
+      vi.mocked(librariesApi.addDir).mockRejectedValue(
         new Error(
-          '/api/library/libraries/1/folders: 400 {"error":"/mnt/user/media 1/Manga/Volumes/Extras is inside /mnt/user/media 1/Manga/Volumes, which is already a folder of the library `Manga`"}',
+          '/api/library/libraries/1/dirs: 400 {"error":"/mnt/user/media 1/Manga/Volumes/Extras is inside /mnt/user/media 1/Manga/Volumes, which is already a directory of the library `Manga`"}',
         ),
       )
       const host = await shell(width, height, MANGA_PAGE)
-      const picker = await openAddFolder(host)
+      const picker = await openAddDir(host)
       const box = picker.querySelector('input[name="path"]') as HTMLInputElement
       await click(box)
       await fill(box, '/mnt/user/media 1/Manga/Volumes/Extras')
@@ -442,7 +442,7 @@ describe('the Libraries screen in the real Shell', () => {
       await settle()
       const alert = picker.querySelector('[role="alert"]') as HTMLElement
       expect(alert.textContent).toContain(
-        ', which is already a folder of the library',
+        ', which is already a directory of the library',
       )
       const at = alert.getBoundingClientRect()
       expect(at.top).toBeGreaterThanOrEqual(barBottom())
@@ -518,12 +518,12 @@ describe('the Libraries screen in the real Shell', () => {
       expectInSight(make)
     })
 
-    it(`brings a refused Add folder into view from the foot, at ${width}`, async () => {
-      vi.mocked(librariesApi.addFolder).mockRejectedValue(
-        new Error('/api/library/libraries/1/folders: 400 {"error":"refused"}'),
+    it(`brings a refused Add directory into view from the foot, at ${width}`, async () => {
+      vi.mocked(librariesApi.addDir).mockRejectedValue(
+        new Error('/api/library/libraries/1/dirs: 400 {"error":"refused"}'),
       )
       const host = await shell(width, height, MANGA_PAGE)
-      const picker = await openAddFolder(host)
+      const picker = await openAddDir(host)
       await fill(
         picker.querySelector('input[name="path"]') as Element,
         '/srv/extra',
@@ -617,7 +617,7 @@ describe('the Libraries screen in the real Shell', () => {
           name: 'Comics',
           works: 0,
           books: 0,
-          folders: [folder(9, '/srv/comics')],
+          dirs: [dir(9, '/srv/comics')],
         },
         added: [],
       })
@@ -657,7 +657,7 @@ describe('the Libraries screen in the real Shell', () => {
       name: 'Manga',
       works: 0,
       books: 0,
-      folders: [folder(9, '/srv/manga')],
+      dirs: [dir(9, '/srv/manga')],
     }
     let made = false
     vi.mocked(librariesApi.createLibrary).mockImplementation(async () => {
@@ -777,11 +777,11 @@ describe('the Libraries screen in the real Shell', () => {
   })
 
   /**
-   * The same, for a move: moving a library's only folder to a new library
+   * The same, for a move: moving a library's only directory to a new library
    * removes the one and makes the other, and the sidebar follows both.
    */
   it('follows a move that makes one library and removes another in the sidebar, with no reload', async () => {
-    const moved = () => vi.mocked(librariesApi.moveFolder).mock.calls.length > 0
+    const moved = () => vi.mocked(librariesApi.moveDir).mock.calls.length > 0
     const EXTRAS: librariesApi.Library = {
       ...NOVELS,
       id: 3,
@@ -806,7 +806,7 @@ describe('the Libraries screen in the real Shell', () => {
       dry_run,
     })
     vi.mocked(librariesApi.moveCost).mockResolvedValue(answer(true))
-    vi.mocked(librariesApi.moveFolder).mockResolvedValue(answer(false))
+    vi.mocked(librariesApi.moveDir).mockResolvedValue(answer(false))
     vi.mocked(librariesApi.listLibraries).mockImplementation(async () => ({
       libraries: moved() ? [EXTRAS, MANGA] : [NOVELS, MANGA],
     }))
@@ -819,7 +819,7 @@ describe('the Libraries screen in the real Shell', () => {
       ],
       restricted: false,
     }))
-    const host = await shell(1280, 800, NOVELS_FOLDER_PAGE)
+    const host = await shell(1280, 800, NOVELS_DIR_PAGE)
     expect(sidebarNames(host)).toEqual(['Light novels', 'Manga'])
 
     const move = [...host.querySelectorAll('.root-row button')].find(
@@ -940,12 +940,12 @@ describe('the Libraries screen in the real Shell', () => {
           library_id: id,
           running: id === 1 && scanning,
           elapsed_secs: 1,
-          folders: [],
+          dirs: [],
         }),
       )
       await click(host.querySelector('button[name="scan-library"]') as Element)
       await settle()
-      const picker = await openAddFolder(host)
+      const picker = await openAddDir(host)
       await toTheFoot(host)
       const box = picker.querySelector('input[name="path"]') as HTMLInputElement
       await click(box)
@@ -972,29 +972,29 @@ describe('the Libraries screen in the real Shell', () => {
   }
 
   it('leaves typing in the path box alone when a listing the person asked for arrives', async () => {
-    const slow = deferred<librariesApi.FolderListing>()
-    vi.mocked(librariesApi.listFolders).mockImplementation((path) =>
+    const slow = deferred<librariesApi.DirListing>()
+    vi.mocked(librariesApi.listDirs).mockImplementation((path) =>
       path === undefined
         ? Promise.resolve({
             path: null,
             parent: null,
-            folders: [{ name: '/mnt/user', path: '/mnt/user' }],
+            dirs: [{ name: '/mnt/user', path: '/mnt/user' }],
           })
         : slow.promise,
     )
     const host = await shell(1280, 800, MANGA_PAGE)
-    const picker = await openAddFolder(host)
+    const picker = await openAddDir(host)
     const box = picker.querySelector('input[name="path"]') as HTMLInputElement
     await click(picker.querySelector('button[name="browse"]') as Element)
     await settle()
-    await click(picker.querySelector('.folder-list button') as Element)
+    await click(picker.querySelector('.dir-list button') as Element)
     await click(box)
     await keys('/mnt/user/med')
     await act(async () => {
       slow.resolve({
         path: '/mnt/user',
         parent: null,
-        folders: [{ name: 'media 1', path: '/mnt/user/media 1' }],
+        dirs: [{ name: 'media 1', path: '/mnt/user/media 1' }],
       })
       await Promise.resolve()
       await Promise.resolve()

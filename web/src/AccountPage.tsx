@@ -746,10 +746,10 @@ export function AccountPage({
                         />
                         <span>{library.name}</span>
                       </label>
-                      <ul className="grant-folders">
-                        {library.folders.map((folder) => (
-                          <li key={folder.path}>
-                            <code>{folder.path}</code>
+                      <ul className="grant-dirs">
+                        {library.dirs.map((dir) => (
+                          <li key={dir.path}>
+                            <code>{dir.path}</code>
                           </li>
                         ))}
                       </ul>

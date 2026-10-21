@@ -37,7 +37,7 @@ const lib = (id: number, name: string, paths: string[]): Library => ({
   name,
   works: 0,
   books: 0,
-  folders: paths.map((path, i) => ({
+  dirs: paths.map((path, i) => ({
     id: id * 10 + i,
     path,
     edition_key: null,
@@ -617,7 +617,7 @@ describe('the fields', () => {
     expect(radio(host, 'only').name).toBe('sees-2')
   })
 
-  it('draws a granted account as Only these, a box per library with its folders', async () => {
+  it('draws a granted account as Only these, a box per library with its directories', async () => {
     const me = user()
     const other = user({
       id: 2,
@@ -633,21 +633,19 @@ describe('the fields', () => {
     const manga = tick(host, 70).closest('li') as HTMLElement
     expect(manga.querySelector('label span')?.textContent).toBe('Manga')
     expect(
-      [...manga.querySelectorAll('.grant-folders code')].map(
-        (c) => c.textContent,
-      ),
+      [...manga.querySelectorAll('.grant-dirs code')].map((c) => c.textContent),
     ).toEqual(['/media/Manga/Volumes', '/media/Manga/Chapters'])
     const comics = tick(host, 80).closest('li') as HTMLElement
     expect(comics.querySelector('label span')?.textContent).toBe('Comics')
     expect(
-      [...comics.querySelectorAll('.grant-folders code')].map(
+      [...comics.querySelectorAll('.grant-dirs code')].map(
         (c) => c.textContent,
       ),
     ).toEqual(['/media/Comics'])
   })
 
-  // O193: a library of two folders is one box, and unticking it revokes it.
-  it('revokes a library of two folders by its one box', async () => {
+  // O193: a library of two directories is one box, and unticking it revokes it.
+  it('revokes a library of two directories by its one box', async () => {
     const me = user()
     const other = user({
       id: 2,

@@ -1272,7 +1272,7 @@ fn library_names(conn: &Connection, sql: &str) -> Vec<(i64, Option<String>)> {
 }
 
 #[test]
-fn migration_15_files_every_root_under_a_library_named_for_its_folder() {
+fn migration_15_files_every_root_under_a_library_named_for_its_dir() {
     let conn = a_schema_14_library();
     migrate_with(&conn, &MIGRATIONS[..15]).expect("migrates to 15");
     assert_eq!(
@@ -1288,13 +1288,13 @@ fn migration_15_files_every_root_under_a_library_named_for_its_folder() {
             (5, Some("/srv/old/Comics".to_string())),
             (6, Some("/srv/".to_string())),
         ],
-        "two folders called Volumes are named by their whole paths; Chapters by its own; \
-         two called Comics once trimmed by their whole paths, trimmed; and a folder named \
+        "two directories called Volumes are named by their whole paths; Chapters by its own; \
+         two called Comics once trimmed by their whole paths, trimmed; and a directory named \
          only spaces by its whole path, trimmed"
     );
 }
 
-/// **Two folders whose paths differ only in surrounding spaces keep their
+/// **Two directories whose paths differ only in surrounding spaces keep their
 /// paths as they are.** Both share the leaf `Extra`, so both fall back to the
 /// whole path, and the trimmed paths are the same, so trimming them would
 /// collide on `library.name` and the migration, and the database, would not
@@ -1308,7 +1308,7 @@ fn migration_15_keeps_whole_paths_that_trimming_would_make_the_same() {
     conn.execute_batch(
         "INSERT INTO root (id, path) VALUES (1, '/srv/a/Extra'), (2, '/srv/a/Extra ');",
     )
-    .expect("two folders whose paths differ only in a trailing space");
+    .expect("two directories whose paths differ only in a trailing space");
     migrate_with(&conn, &MIGRATIONS[..15]).expect("migrates to 15 without a name collision");
     assert_eq!(
         library_names(
@@ -1350,10 +1350,10 @@ fn migration_15_never_gives_a_librarys_id_to_another() {
     );
 
     conn.execute("DELETE FROM root WHERE id = 5", [])
-        .expect("the last folder of library 5 goes, and the library with it");
+        .expect("the last directory of library 5 goes, and the library with it");
     assert_eq!(ids(&conn), vec![1], "the fixture: library 5 is gone");
     conn.execute("INSERT INTO root (path) VALUES ('/srv/zines')", [])
-        .expect("a new folder, filed under a library of its own");
+        .expect("a new directory, filed under a library of its own");
 
     assert_eq!(
         ids(&conn),
@@ -1532,7 +1532,7 @@ fn migration_15_recreates_every_index_and_trigger_work_had() {
 
 /// Ids for the trigger cases, with library ids that differ from root ids so a
 /// statement joining the wrong pair cannot pass by coincidence.
-const TWO_FOLDER_LIBRARY: &str = "
+const TWO_DIR_LIBRARY: &str = "
     INSERT INTO library (id, name) VALUES (70, 'Shelf'), (80, 'Other');
     INSERT INTO root (id, path, library_id) VALUES
       (7, '/srv/manga', 70), (8, '/srv/raw', 70), (9, '/srv/other', 80);
@@ -1563,7 +1563,7 @@ fn a_root_written_without_a_library_is_filed_under_one_of_its_own() {
 }
 
 /// The trigger strips every character `libraries::trim_name` strips, each on
-/// its own at both ends of a folder's name, and keeps one that is not white
+/// its own at both ends of a directory's name, and keeps one that is not white
 /// space. A name taken in another case is taken.
 #[test]
 fn a_root_written_without_a_library_is_named_without_white_space_or_a_case_clash() {
@@ -1659,7 +1659,7 @@ fn migration_16_strips_names_and_keeps_an_id_beside_a_name_another_holds() {
 }
 
 /// **Migration 17 changes no account's view.** An account holding a grant
-/// row is set to "only these" and still sees its folders; one holding none
+/// row is set to "only these" and still sees its directories; one holding none
 /// stays "every library". An administrator's rows count like anyone's, so a
 /// demotion still restores them.
 #[test]
@@ -1668,7 +1668,7 @@ fn migration_17_restricts_exactly_the_accounts_that_hold_a_grant() {
     conn.pragma_update(None, "foreign_keys", "ON")
         .expect("foreign keys on, as `Library::open` sets them");
     migrate_with(&conn, &MIGRATIONS[..16]).expect("migrates to 16");
-    conn.execute_batch(TWO_FOLDER_LIBRARY).expect("seeds");
+    conn.execute_batch(TWO_DIR_LIBRARY).expect("seeds");
     conn.execute_batch(
         "INSERT INTO user (id, name, password_hash, role) VALUES
            (2, 'granted', 'x', 'user'), (3, 'open', 'x', 'user'), (4, 'boss', 'x', 'admin');
@@ -1692,7 +1692,7 @@ fn migration_17_restricts_exactly_the_accounts_that_hold_a_grant() {
     assert_eq!(
         crate::account::access_for(&conn, 2).expect("reads"),
         crate::account::Access::Only(vec![7, 8]),
-        "the granted account still sees Shelf's two folders"
+        "the granted account still sees Shelf's two directories"
     );
     assert_eq!(
         crate::account::access_for(&conn, 3).expect("reads"),
@@ -1712,7 +1712,7 @@ fn migration_17_restricts_exactly_the_accounts_that_hold_a_grant() {
 fn a_library_goes_with_its_last_root_and_takes_its_grants_with_it() {
     let library = crate::Library::open_in_memory().expect("library");
     let conn = library.conn();
-    conn.execute_batch(TWO_FOLDER_LIBRARY).expect("seeds");
+    conn.execute_batch(TWO_DIR_LIBRARY).expect("seeds");
     conn.execute(
         "INSERT INTO user_library (user_id, library_id) VALUES (1, 70)",
         [],
@@ -1720,7 +1720,7 @@ fn a_library_goes_with_its_last_root_and_takes_its_grants_with_it() {
     .expect("grants Shelf");
 
     conn.execute("DELETE FROM root WHERE id = 7", [])
-        .expect("removes one folder");
+        .expect("removes one directory");
     let shelf = |conn: &Connection| -> (i64, i64) {
         conn.query_row(
             "SELECT (SELECT count(*) FROM library WHERE id = 70),
@@ -1733,15 +1733,15 @@ fn a_library_goes_with_its_last_root_and_takes_its_grants_with_it() {
     assert_eq!(
         shelf(&conn),
         (1, 1),
-        "a library with a folder left keeps itself and its grant"
+        "a library with a directory left keeps itself and its grant"
     );
 
     conn.execute("DELETE FROM root WHERE id = 8", [])
-        .expect("removes the last folder");
+        .expect("removes the last directory");
     assert_eq!(
         shelf(&conn),
         (0, 0),
-        "the library and its grant went with its last folder"
+        "the library and its grant went with its last directory"
     );
 }
 
@@ -1749,7 +1749,7 @@ fn a_library_goes_with_its_last_root_and_takes_its_grants_with_it() {
 fn a_library_goes_when_its_last_root_moves_away_and_its_works_stay() {
     let library = crate::Library::open_in_memory().expect("library");
     let conn = library.conn();
-    conn.execute_batch(TWO_FOLDER_LIBRARY).expect("seeds");
+    conn.execute_batch(TWO_DIR_LIBRARY).expect("seeds");
     conn.execute(
         "INSERT INTO work (id, content_key, slug, title, reading, hub, library_id)
          VALUES (1, 'k', 's', 'T', 'rtl', 'raw', 80)",
@@ -1758,7 +1758,7 @@ fn a_library_goes_when_its_last_root_moves_away_and_its_works_stay() {
     .expect("a work in Other");
 
     conn.execute("UPDATE root SET library_id = 70 WHERE id = 9", [])
-        .expect("moves Other's one folder into Shelf");
+        .expect("moves Other's one directory into Shelf");
 
     // Counted with its NULL in the predicate: `SELECT library_id FROM work
     // WHERE id = 1` reads NULL for a deleted work too, and could not tell SET
@@ -1771,21 +1771,21 @@ fn a_library_goes_when_its_last_root_moves_away_and_its_works_stay() {
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .expect("reads");
-    assert_eq!(libraries, 0, "Other had no folder left");
+    assert_eq!(libraries, 0, "Other had no directory left");
     assert_eq!(
         unfiled, 1,
         "its work is kept, in no library, for the next derive to adopt"
     );
 }
 
-/// [`TWO_FOLDER_LIBRARY`], two accounts, and `grants` as `(user_id,
+/// [`TWO_DIR_LIBRARY`], two accounts, and `grants` as `(user_id,
 /// library_id)` rows. Each granted account is set to "only these", as
 /// [`crate::account::grant_library`] sets it.
 fn libraries_granted(grants: &str) -> crate::Library {
     let library = crate::Library::open_in_memory().expect("library");
     {
         let conn = library.conn();
-        conn.execute_batch(TWO_FOLDER_LIBRARY).expect("seeds");
+        conn.execute_batch(TWO_DIR_LIBRARY).expect("seeds");
         conn.execute_batch(&format!(
             "INSERT INTO user (id, name, password_hash) VALUES (2, 'a', 'x'), (3, 'b', 'x');
              INSERT INTO user_library (user_id, library_id) VALUES {grants};
@@ -1796,8 +1796,8 @@ fn libraries_granted(grants: &str) -> crate::Library {
     library
 }
 
-/// **Nothing in the store keeps an only grant's last folder.** Deleting or
-/// moving away `Other`'s one folder succeeds while account 2 is granted
+/// **Nothing in the store keeps an only grant's last directory.** Deleting or
+/// moving away `Other`'s one directory succeeds while account 2 is granted
 /// `Other` and nothing else, administrator or not: the library and its grant
 /// go, and the account is left seeing no library, never every library.
 /// Account 3 keeps its grant of `Shelf`.
@@ -1826,7 +1826,7 @@ fn the_last_root_of_an_accounts_only_library_can_be_deleted_or_moved_away() {
                             (SELECT count(*) FROM user_library WHERE user_id = 2)"
                 ),
                 vec![vec!["Integer(0)".to_string(), "Integer(0)".to_string()]],
-                "{role}, {statement}: Other and its grant went with its last folder"
+                "{role}, {statement}: Other and its grant went with its last directory"
             );
             assert_eq!(
                 crate::account::access_for(&conn, 2).expect("reads"),
@@ -1848,7 +1848,7 @@ fn a_content_key_is_unique_within_a_library_and_a_slug_across_all_of_them() {
     conn.pragma_update(None, "foreign_keys", "ON")
         .expect("foreign keys");
     migrate(&conn).expect("migrates");
-    conn.execute_batch(TWO_FOLDER_LIBRARY).expect("seeds");
+    conn.execute_batch(TWO_DIR_LIBRARY).expect("seeds");
     let insert = |key: &str, slug: &str, library: i64| {
         conn.execute(
             "INSERT INTO work (content_key, slug, title, reading, hub, library_id)

@@ -309,12 +309,12 @@ const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 /// `--no-derive` stops after the walk, which is what makes "what would the
 /// facts be" answerable without changing structure.
 ///
-/// **`--add PATH` files the folder under `--library NAME`**, creating that
+/// **`--add PATH` files the directory under `--library NAME`**, creating that
 /// library where no library has the name, **and under a library of its own
 /// where `--library` is absent**, and prints which library that is, by the
-/// name the store holds, and whether the add created it. The folders to walk
+/// name the store holds, and whether the add created it. The directories to walk
 /// are chosen after the add, so `--add PATH --library NAME` walks `NAME`'s
-/// folders, the new one among them.
+/// directories, the new one among them.
 ///
 /// **A root that cannot be scanned does not take the others down with it,
 /// but it does take the exit status down with it.** Neither an outright
@@ -346,7 +346,7 @@ fn scan(args: &[String]) -> Result<(), String> {
     let library_name = option_value(args, "--library", "a library name")?;
     if root_filter.is_some() && library_name.is_some() {
         return Err(
-            "`--root` and `--library` each choose which folders are walked; pass one of them"
+            "`--root` and `--library` each choose which directories are walked; pass one of them"
                 .to_string(),
         );
     }
@@ -491,12 +491,12 @@ fn select_roots(
         return Ok(matched);
     }
     if roots.is_empty() {
-        return Err("there are no folders to scan; pass --add PATH to add one".to_string());
+        return Err("there are no directories to scan; pass --add PATH to add one".to_string());
     }
     Ok(roots)
 }
 
-/// `taiyaku library libraries [--db PATH]`: every library, its folders, and
+/// `taiyaku library libraries [--db PATH]`: every library, its directories, and
 /// how many works each holds, then how many works are in none.
 ///
 /// # Errors
@@ -515,8 +515,8 @@ fn libraries(args: &[String]) -> Result<(), String> {
     }
     for one in &listed {
         println!("{}", library_line(one));
-        for folder in &one.folders {
-            println!("  {}", folder.display());
+        for dir in &one.dirs {
+            println!("  {}", dir.display());
         }
     }
     if let Some(line) = unfiled_line(taiyaku_library::libraries::unfiled_works(&conn)?) {
@@ -529,18 +529,19 @@ fn libraries(args: &[String]) -> Result<(), String> {
 /// that makes one. Extracted for the reason [`unfiled_line`] was.
 fn no_libraries_line(libraries: usize) -> Option<String> {
     (libraries == 0).then(|| {
-        "no libraries yet; `taiyaku library scan --add PATH` adds a folder as one".to_string()
+        "no libraries yet; `taiyaku library scan --add PATH` adds a directory as one".to_string()
     })
 }
 
 /// One library's heading line.
 fn library_line(listed: &taiyaku_library::libraries::Listed) -> String {
-    format!(
-        "{}: {} folder(s), {} work(s)",
-        listed.name,
-        listed.folders.len(),
-        listed.works
-    )
+    let dirs = listed.dirs.len();
+    let noun = if dirs == 1 {
+        "directory"
+    } else {
+        "directories"
+    };
+    format!("{}: {dirs} {noun}, {} work(s)", listed.name, listed.works)
 }
 
 /// The works in no library, said only when there are some. Extracted for the
@@ -549,12 +550,12 @@ fn unfiled_line(works: usize) -> Option<String> {
     (works > 0).then(|| format!("{works} work(s) in no library"))
 }
 
-/// What `scan --add` says once the folder is added: the library it is now
+/// What `scan --add` says once the directory is added: the library it is now
 /// in, by the name the store holds for it, and whether the add `created`
-/// that library or the folder joined one already there.
+/// that library or the directory joined one already there.
 fn added_line(library: &str, created: bool) -> String {
     if created {
-        format!("created the library `{library}` for this folder")
+        format!("created the library `{library}` for this directory")
     } else {
         format!("filed under the library `{library}`")
     }

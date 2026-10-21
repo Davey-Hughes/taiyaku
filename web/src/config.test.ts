@@ -83,8 +83,8 @@ describe('regimeFacts', () => {
   // since each is one arm of the same three-entry result.
 
   it('names each fact under its own label, in order watch / scan every / last scan', () => {
-    // A folder read from a list carries no probe (only a route that adds a
-    // folder runs one) and this root has never been scanned and has no
+    // A directory read from a list carries no probe (only a route that adds a
+    // directory runs one) and this root has never been scanned and has no
     // interval set — every arm at its fallback, and the order the caller's
     // `<dl>` renders in. Spec §3.1: the honest gap beats a number nobody
     // measured.
@@ -94,7 +94,7 @@ describe('regimeFacts', () => {
       last_scan_status: null,
     })
     expect(regimeFacts(bare)).toEqual([
-      { label: 'watch', value: 'unknown — probed when a folder is added' },
+      { label: 'watch', value: 'unknown — probed when a directory is added' },
       { label: 'scan every', value: 'not set' },
       { label: 'last scan', value: 'never' },
     ])

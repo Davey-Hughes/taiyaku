@@ -157,8 +157,11 @@ it mutates only changed code and takes minutes.
 | 2026-10-08 | F2b (Move), `--since main` (225 mutants, 30 m), then `--file` `relocate.rs` and `fold.rs` (292 mutants, 33 m) | **The first run: 183 caught, 29 unviable, 13 missed, 0 timeouts; the second: 276 caught, 10 unviable, 6 missed, 0 timeouts.** The 13 were all in `relocate.rs` and `fold.rs`, and each was killed before the second run, by a test or by deleting the code it lived in (an unused `Display` impl and three sums nothing read). The second run's six are in lines of `fold.rs` this branch did not change: `fold::pair`'s body four ways and its `<=`, and a comparison in `absorb`'s sentence of conflicting rows; they are O211 and are not baselined. Every unviable mutant but two replaces a function's whole body with a value that does not compile there; the two are `&&` as `\|\|` inside a `let` chain, in `scan_jobs::finish_reservation` in the first run and `fold::unplaceable` in the second. A third run, over `relocate.rs` alone after its last change (cde926ee, 92 mutants, 12 m): 87 caught, 5 unviable, none missed. No mutant is made of SQL in a string literal, which is most of what Move's refusals, re-filing and split say; the defects put back by hand in the branch's tasks and reviews are their evidence |
 | 2026-10-12 | O57, O60 and O138, `--since main` (53 mutants, 17 m), then `--file` `credential.rs` at `2db48eef`, the last commit to change that file (31 mutants, 4 m) | **`--since main`: 39 caught, 8 unviable, 2 missed, 4 timeouts. `credential.rs`: 26 caught, 4 unviable, 1 missed.** The one missed in both runs is `credential::hasher` as `Default::default()`, an equivalent whose entry was already here under the line the function used to stand on. The first run's other was `<` as `<=` where `WorkingMemory::blocks_for` decides whether to grow, which changes nothing the server does, since it is a growth by zero. The second run caught it: the fix round between the two gave the test build a count of a memory's growths, and that count reads a growth by zero as a growth. Three of the first run's timeouts are in `limit.rs`'s semaphore, where an acquire that waits while a permit is free, a permit that is never given back, or a count that never moves leaves a test waiting. The fourth is `taiyaku-cli`'s `serve_auth` replaced by a default configuration. Put back by hand under nextest it fails tests at once, and `tests::run_dispatches_to_serve` does not return, which is what the sweep waited out its 450 s bound for. Seven of the first run's unviable replace a function's whole body with a value that does not compile there: `auth::from_basic`, `routes::sidecar_as_seen`, `VerifyLimit::permit`, `Semaphore::acquire`, `WorkingMemory::blocks_for`, `credential::hash_in` and `KeptMemories::lend`. The eighth is `&&` as `\|\|` inside a `let` chain in `credential::verified_in`. The second run's four are the four of those that are in `credential.rs`. No mutant moves a statement, so none is made for where `visible_editions_or_refuse` is asked in the six handlers or where a permit is taken and given back, which is most of what the branch's tests are about; the defects put back by hand in its tasks and reviews are their evidence |
 | 2026-10-17 | O220, `--since main` at `6e83021d` (257 mutants, 26 m) | **183 caught, 72 unviable, 2 missed, 0 timeouts.** Both missed were put back by hand and failed nothing in `taiyaku-serve` or `taiyaku-cli` either (O87). One was real: with `grant_library`'s `+` as `*`, granting a second library to an account already limited returns false, and the CLI prints `that account could already see …; nothing to do` over the grant it has just written. `dc480579` kills it with `granting_another_library_to_a_limited_account_is_new_and_repeating_it_is_not`, and `library_user_list_shows_what_each_account_is_granted` now reads every grant's line; both fail with it put back. The other, `Access::grant_clause`'s guard `roots.is_empty()` as `false`, is equivalent, because every closure handed to `grant_clause` writes a positive `IN (…)` and SQLite reads an empty `IN ()` as false; it is recorded below. Thirty-six of the unviable are `user::grant_target`'s, whose tuple holds a `Library`, which derives no `Default`. The rest replace a function's whole body with a value that does not compile there, but for one `&&` as `\|\|` inside a `let` chain in `browse::cover_work`. That leaves `auth::access_of` and `opds::granted`, which return the new `Access`, `browse::status`, rewritten to take one, and `grant_target` with no viable mutant, so the sweep says nothing about them: `Access` derives no `Default`, and cargo-mutants does not try `Access::Every` as a body. No mutant is made of migration 017 or of the SQL that reads and writes `every_library` |
+| 2026-10-21 | dir-rename: `serve_options`, which holds the `TAIYAKU_FOLDERS` refusal; `library_line`, the one function the branch gave a new mutant; `visible_editions`; and `read_line` as a control, function-scoped (16 mutants, 5 m; 3 of them field deletions, which `--re` does not filter, all caught) | **14 caught, 2 missed, and the 2 are the control: the `read_line` entries below.** cargo-mutants makes no mutant of the refusal's `if`, so it was put wrong by hand five ways: removed, inverted, excused when empty, excused by `TAIYAKU_DIRS` beside it and excused by `--dirs`. Each failed `serve_options_refuses_the_old_dirs_variable_naming_both`, and the removal, the inversion and the `--dirs` excuse also failed `tests/cli.rs`'s `serve_refuses_the_old_dirs_variable_before_it_listens`. **`visible_editions`' seven entries are dropped**: O220's `browse::tests::only_with_no_dir_sees_nothing` kills all seven inside `taiyaku-library`. All but one of the other entries in the files this branch edits were keyed to lines that had moved before it; each is re-keyed by its description and by the source line at the commit that wrote the key, and its reason re-read |
 
-<!-- entries -->### `crates/taiyaku-cli/src/duplicates.rs`
+<!-- entries -->
+
+### `crates/taiyaku-cli/src/duplicates.rs`
 
 - `crates/taiyaku-cli/src/duplicates.rs:453:53: replace > with >= in contradictions`
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
@@ -193,7 +196,7 @@ it mutates only changed code and takes minutes.
 
 ### `crates/taiyaku-cli/src/library.rs`
 
-- `crates/taiyaku-cli/src/library.rs:202:5: replace resolve_export_user -> Result<i64, String> with Ok(1)`
+- `crates/taiyaku-cli/src/library.rs:1368:20: delete ! in export_targets`
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
@@ -202,7 +205,7 @@ it mutates only changed code and takes minutes.
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
   nobody asserts on, or a missing assertion. Only the third is work on the tests.
-- `crates/taiyaku-cli/src/library.rs:720:20: delete ! in export_targets`
+- `crates/taiyaku-cli/src/library.rs:274:5: replace resolve_export_user -> Result<i64, String> with Ok(1)`
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
@@ -214,7 +217,7 @@ it mutates only changed code and takes minutes.
 
 ### `crates/taiyaku-cli/src/main.rs`
 
-- `crates/taiyaku-cli/src/main.rs:1479:8: delete ! in serve_work`
+- `crates/taiyaku-cli/src/main.rs:1696:8: delete ! in serve_work`
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
@@ -223,7 +226,7 @@ it mutates only changed code and takes minutes.
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
   nobody asserts on, or a missing assertion. Only the third is work on the tests.
-- `crates/taiyaku-cli/src/main.rs:1808:5: replace slot_index -> u32 with 0`
+- `crates/taiyaku-cli/src/main.rs:2025:5: replace slot_index -> u32 with 0`
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
@@ -232,7 +235,7 @@ it mutates only changed code and takes minutes.
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
   nobody asserts on, or a missing assertion. Only the third is work on the tests.
-- `crates/taiyaku-cli/src/main.rs:1808:5: replace slot_index -> u32 with 1`
+- `crates/taiyaku-cli/src/main.rs:2025:5: replace slot_index -> u32 with 1`
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
@@ -241,7 +244,7 @@ it mutates only changed code and takes minutes.
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
   nobody asserts on, or a missing assertion. Only the third is work on the tests.
-- `crates/taiyaku-cli/src/main.rs:1828:5: replace print_alignment_detail with ()`
+- `crates/taiyaku-cli/src/main.rs:2045:5: replace print_alignment_detail with ()`
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
@@ -250,7 +253,7 @@ it mutates only changed code and takes minutes.
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
   nobody asserts on, or a missing assertion. Only the third is work on the tests.
-- `crates/taiyaku-cli/src/main.rs:726:37: replace / with * in verify`
+- `crates/taiyaku-cli/src/main.rs:739:37: replace / with * in verify`
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
@@ -259,7 +262,7 @@ it mutates only changed code and takes minutes.
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
   nobody asserts on, or a missing assertion. Only the third is work on the tests.
-- `crates/taiyaku-cli/src/main.rs:726:37: replace / with % in verify`
+- `crates/taiyaku-cli/src/main.rs:739:37: replace / with % in verify`
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
@@ -268,7 +271,7 @@ it mutates only changed code and takes minutes.
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
   nobody asserts on, or a missing assertion. Only the third is work on the tests.
-- `crates/taiyaku-cli/src/main.rs:788:5: replace page_count -> u32 with 0`
+- `crates/taiyaku-cli/src/main.rs:801:5: replace page_count -> u32 with 0`
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
@@ -277,7 +280,7 @@ it mutates only changed code and takes minutes.
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
   nobody asserts on, or a missing assertion. Only the third is work on the tests.
-- `crates/taiyaku-cli/src/main.rs:788:5: replace page_count -> u32 with 1`
+- `crates/taiyaku-cli/src/main.rs:801:5: replace page_count -> u32 with 1`
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
@@ -466,34 +469,34 @@ it mutates only changed code and takes minutes.
 
 ### `crates/taiyaku-cli/src/user.rs`
 
-- `crates/taiyaku-cli/src/user.rs:116:5: replace read_password -> Result<String, String> with Ok("xyzzy".into())`
+- `crates/taiyaku-cli/src/user.rs:137:5: replace read_password -> Result<String, String> with Ok("xyzzy".into())`
   The process boundary. `read_password` is a terminal prompt, two blocking reads
   from stdin and an `stty` call; nothing under `cargo test` has a tty. **The
   testable half is already extracted** — `accept(first, &second)` holds the rule
   about which inputs are refused and in what words, and it is tested; the
   commands take an injected `AskForPassword` rather than calling this at all.
   What survives here is the reading itself.
-- `crates/taiyaku-cli/src/user.rs:116:5: replace read_password -> Result<String, String> with Ok(String::new())`
+- `crates/taiyaku-cli/src/user.rs:137:5: replace read_password -> Result<String, String> with Ok(String::new())`
   The process boundary. `read_password` is a terminal prompt, two blocking reads
   from stdin and an `stty` call; nothing under `cargo test` has a tty. **The
   testable half is already extracted** — `accept(first, &second)` holds the rule
   about which inputs are refused and in what words, and it is tested; the
   commands take an injected `AskForPassword` rather than calling this at all.
   What survives here is the reading itself.
-- `crates/taiyaku-cli/src/user.rs:119:8: delete ! in read_password`
+- `crates/taiyaku-cli/src/user.rs:140:8: delete ! in read_password`
   The `if !quiet` that warns when echo could not be turned off — a decision about
   what a terminal shows, reachable only with a tty. It sits above the extracted
   `accept` for the same reason the rest of this function does.
-- `crates/taiyaku-cli/src/user.rs:159:5: replace read_line -> Result<String, String> with Ok("xyzzy".into())`
+- `crates/taiyaku-cli/src/user.rs:180:5: replace read_line -> Result<String, String> with Ok("xyzzy".into())`
   `read_line` is `std::io::stdin().read_line`. There is nothing here but the read.
-- `crates/taiyaku-cli/src/user.rs:159:5: replace read_line -> Result<String, String> with Ok(String::new())`
+- `crates/taiyaku-cli/src/user.rs:180:5: replace read_line -> Result<String, String> with Ok(String::new())`
   `read_line` is `std::io::stdin().read_line`. There is nothing here but the read.
-- `crates/taiyaku-cli/src/user.rs:169:5: replace set_echo -> bool with false`
+- `crates/taiyaku-cli/src/user.rs:190:5: replace set_echo -> bool with false`
   `set_echo` shells out to `stty` against an inherited stdin. Under a test harness
   stdin is not a tty, so it answers false — which would kill `-> true` and not
   `-> false`, and only while the harness captures stdin. A test whose result
   depends on whether the runner has a terminal is worse than this entry.
-- `crates/taiyaku-cli/src/user.rs:169:5: replace set_echo -> bool with true`
+- `crates/taiyaku-cli/src/user.rs:190:5: replace set_echo -> bool with true`
   `set_echo` shells out to `stty` against an inherited stdin. Under a test harness
   stdin is not a tty, so it answers false — which would kill `-> true` and not
   `-> false`, and only while the harness captures stdin. A test whose result
@@ -641,8 +644,8 @@ it mutates only changed code and takes minutes.
 
 - `crates/taiyaku-library/src/account.rs:156:36: replace match guard roots.is_empty() with false in Access::grant_clause`
   **An equivalent mutant, because SQLite reads an empty `IN ()` as false.**
-  With the guard false, `Only` with no folder falls through to `in_folders`
-  over no holes, and every `in_folders` closure handed to `grant_clause`
+  With the guard false, `Only` with no directory falls through to `in_dirs`
+  over no holes, and every `in_dirs` closure handed to `grant_clause`
   writes a positive `IN (…)`, so the clause becomes `AND … IN ()`. SQLite
   answers that false, which is what the guard's ` AND 0` answers, and neither
   form binds a parameter, so no statement's count moves either.
@@ -654,92 +657,6 @@ it mutates only changed code and takes minutes.
   it. It stops being equivalent the day a closure writes `NOT IN (…)`, which
   an empty list answers true: then the guard is the only thing standing
   between an account granted nothing and every library.
-
-### `crates/taiyaku-library/src/browse.rs`
-
-- `crates/taiyaku-library/src/browse.rs:1320:5: replace visible_editions -> Result<HashMap<String, HashSet<String>>, String> with Ok(HashMap::new())`
-  DEFERRED behind **O87**, and verified false rather than assumed so. Every test
-  in `taiyaku-library` — 557 of them — passes with `visible_editions`' body
-  replaced, while `taiyaku-serve` fails **five**, among them
-  `opds::tests::the_works_feed_does_not_name_a_work_outside_the_grant` and
-  `routes::tests::the_work_list_does_not_name_a_work_outside_the_grant`. Checked
-  by hand on 2026-08-29 by making the substitution and running both packages,
-  not read off a timing. This function exists *for* `taiyaku-serve` — its own
-  doc says so — so every assertion on it lives across the crate boundary that
-  `--test-workspace = false` does not cross. These stop being reported at all
-  the day O87 is settled; they are not a gap in the tests.
-
-- `crates/taiyaku-library/src/browse.rs:1320:5: replace visible_editions -> Result<HashMap<String, HashSet<String>>, String> with Ok(HashMap::from_iter([(String::new(), HashSet::new())]))`
-  DEFERRED behind **O87**, and verified false rather than assumed so. Every test
-  in `taiyaku-library` — 557 of them — passes with `visible_editions`' body
-  replaced, while `taiyaku-serve` fails **five**, among them
-  `opds::tests::the_works_feed_does_not_name_a_work_outside_the_grant` and
-  `routes::tests::the_work_list_does_not_name_a_work_outside_the_grant`. Checked
-  by hand on 2026-08-29 by making the substitution and running both packages,
-  not read off a timing. This function exists *for* `taiyaku-serve` — its own
-  doc says so — so every assertion on it lives across the crate boundary that
-  `--test-workspace = false` does not cross. These stop being reported at all
-  the day O87 is settled; they are not a gap in the tests.
-
-- `crates/taiyaku-library/src/browse.rs:1320:5: replace visible_editions -> Result<HashMap<String, HashSet<String>>, String> with Ok(HashMap::from_iter([(String::new(), HashSet::from_iter([String::new()]))]))`
-  DEFERRED behind **O87**, and verified false rather than assumed so. Every test
-  in `taiyaku-library` — 557 of them — passes with `visible_editions`' body
-  replaced, while `taiyaku-serve` fails **five**, among them
-  `opds::tests::the_works_feed_does_not_name_a_work_outside_the_grant` and
-  `routes::tests::the_work_list_does_not_name_a_work_outside_the_grant`. Checked
-  by hand on 2026-08-29 by making the substitution and running both packages,
-  not read off a timing. This function exists *for* `taiyaku-serve` — its own
-  doc says so — so every assertion on it lives across the crate boundary that
-  `--test-workspace = false` does not cross. These stop being reported at all
-  the day O87 is settled; they are not a gap in the tests.
-
-- `crates/taiyaku-library/src/browse.rs:1320:5: replace visible_editions -> Result<HashMap<String, HashSet<String>>, String> with Ok(HashMap::from_iter([(String::new(), HashSet::from_iter(["xyzzy".into()]))]))`
-  DEFERRED behind **O87**, and verified false rather than assumed so. Every test
-  in `taiyaku-library` — 557 of them — passes with `visible_editions`' body
-  replaced, while `taiyaku-serve` fails **five**, among them
-  `opds::tests::the_works_feed_does_not_name_a_work_outside_the_grant` and
-  `routes::tests::the_work_list_does_not_name_a_work_outside_the_grant`. Checked
-  by hand on 2026-08-29 by making the substitution and running both packages,
-  not read off a timing. This function exists *for* `taiyaku-serve` — its own
-  doc says so — so every assertion on it lives across the crate boundary that
-  `--test-workspace = false` does not cross. These stop being reported at all
-  the day O87 is settled; they are not a gap in the tests.
-
-- `crates/taiyaku-library/src/browse.rs:1320:5: replace visible_editions -> Result<HashMap<String, HashSet<String>>, String> with Ok(HashMap::from_iter([("xyzzy".into(), HashSet::new())]))`
-  DEFERRED behind **O87**, and verified false rather than assumed so. Every test
-  in `taiyaku-library` — 557 of them — passes with `visible_editions`' body
-  replaced, while `taiyaku-serve` fails **five**, among them
-  `opds::tests::the_works_feed_does_not_name_a_work_outside_the_grant` and
-  `routes::tests::the_work_list_does_not_name_a_work_outside_the_grant`. Checked
-  by hand on 2026-08-29 by making the substitution and running both packages,
-  not read off a timing. This function exists *for* `taiyaku-serve` — its own
-  doc says so — so every assertion on it lives across the crate boundary that
-  `--test-workspace = false` does not cross. These stop being reported at all
-  the day O87 is settled; they are not a gap in the tests.
-
-- `crates/taiyaku-library/src/browse.rs:1320:5: replace visible_editions -> Result<HashMap<String, HashSet<String>>, String> with Ok(HashMap::from_iter([("xyzzy".into(), HashSet::from_iter([String::new()]))]))`
-  DEFERRED behind **O87**, and verified false rather than assumed so. Every test
-  in `taiyaku-library` — 557 of them — passes with `visible_editions`' body
-  replaced, while `taiyaku-serve` fails **five**, among them
-  `opds::tests::the_works_feed_does_not_name_a_work_outside_the_grant` and
-  `routes::tests::the_work_list_does_not_name_a_work_outside_the_grant`. Checked
-  by hand on 2026-08-29 by making the substitution and running both packages,
-  not read off a timing. This function exists *for* `taiyaku-serve` — its own
-  doc says so — so every assertion on it lives across the crate boundary that
-  `--test-workspace = false` does not cross. These stop being reported at all
-  the day O87 is settled; they are not a gap in the tests.
-
-- `crates/taiyaku-library/src/browse.rs:1320:5: replace visible_editions -> Result<HashMap<String, HashSet<String>>, String> with Ok(HashMap::from_iter([("xyzzy".into(), HashSet::from_iter(["xyzzy".into()]))]))`
-  DEFERRED behind **O87**, and verified false rather than assumed so. Every test
-  in `taiyaku-library` — 557 of them — passes with `visible_editions`' body
-  replaced, while `taiyaku-serve` fails **five**, among them
-  `opds::tests::the_works_feed_does_not_name_a_work_outside_the_grant` and
-  `routes::tests::the_work_list_does_not_name_a_work_outside_the_grant`. Checked
-  by hand on 2026-08-29 by making the substitution and running both packages,
-  not read off a timing. This function exists *for* `taiyaku-serve` — its own
-  doc says so — so every assertion on it lives across the crate boundary that
-  `--test-workspace = false` does not cross. These stop being reported at all
-  the day O87 is settled; they are not a gap in the tests.
 
 ### `crates/taiyaku-library/src/credential.rs`
 
@@ -759,7 +676,7 @@ it mutates only changed code and takes minutes.
 
 ### `crates/taiyaku-library/src/import.rs`
 
-- `crates/taiyaku-library/src/import.rs:437:36: replace && with || in drop_stale_spoke`
+- `crates/taiyaku-library/src/import.rs:474:36: replace && with || in drop_stale_spoke`
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
@@ -768,7 +685,7 @@ it mutates only changed code and takes minutes.
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
   nobody asserts on, or a missing assertion. Only the third is work on the tests.
-- `crates/taiyaku-library/src/import.rs:437:72: replace && with || in drop_stale_spoke`
+- `crates/taiyaku-library/src/import.rs:474:72: replace && with || in drop_stale_spoke`
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
@@ -777,7 +694,7 @@ it mutates only changed code and takes minutes.
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
   nobody asserts on, or a missing assertion. Only the third is work on the tests.
-- `crates/taiyaku-library/src/import.rs:441:74: replace && with || in drop_stale_spoke`
+- `crates/taiyaku-library/src/import.rs:478:74: replace && with || in drop_stale_spoke`
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
@@ -933,7 +850,7 @@ it mutates only changed code and takes minutes.
 
 ### `crates/taiyaku-library/src/proposals.rs`
 
-- `crates/taiyaku-library/src/proposals.rs:170:26: replace * with /`
+- `crates/taiyaku-library/src/proposals.rs:179:26: replace * with /`
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
@@ -942,7 +859,7 @@ it mutates only changed code and takes minutes.
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
   nobody asserts on, or a missing assertion. Only the third is work on the tests.
-- `crates/taiyaku-library/src/proposals.rs:2193:40: replace - with + in interior_indices`
+- `crates/taiyaku-library/src/proposals.rs:2536:40: replace - with + in interior_indices`
   Equivalent: the bound becomes `page_count + 1`.
   **The upper half of the `clamp` never fires**, so raising its bound cannot
   change a returned value: `page_count * 3 / 5 <= page_count - 1` holds for
@@ -957,7 +874,7 @@ it mutates only changed code and takes minutes.
   whichever fractions somebody later picks. A test could only kill them by
   asserting on fractions that do not exist, and a fix that deleted the bound
   would leave the next fraction free to run off the end.
-- `crates/taiyaku-library/src/proposals.rs:2193:40: replace - with / in interior_indices`
+- `crates/taiyaku-library/src/proposals.rs:2536:40: replace - with / in interior_indices`
   Equivalent: the bound becomes `page_count / 1`, which is the mutation the
   code comment names verbatim.
   **The upper half of the `clamp` never fires**, so raising its bound cannot
@@ -973,7 +890,7 @@ it mutates only changed code and takes minutes.
   whichever fractions somebody later picks. A test could only kill them by
   asserting on fractions that do not exist, and a fix that deleted the bound
   would leave the next fraction free to run off the end.
-- `crates/taiyaku-library/src/proposals.rs:2428:38: replace && with || in EditionOfSignals::volume_signal`
+- `crates/taiyaku-library/src/proposals.rs:2791:38: replace && with || in EditionOfSignals::volume_signal`
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
@@ -982,7 +899,7 @@ it mutates only changed code and takes minutes.
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
   nobody asserts on, or a missing assertion. Only the third is work on the tests.
-- `crates/taiyaku-library/src/proposals.rs:2549:20: replace += with *= in raise_same_series`
+- `crates/taiyaku-library/src/proposals.rs:2920:20: replace += with *= in raise_same_series`
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
@@ -991,7 +908,7 @@ it mutates only changed code and takes minutes.
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
   nobody asserts on, or a missing assertion. Only the third is work on the tests.
-- `crates/taiyaku-library/src/proposals.rs:2570:53: replace += with *= in raise_attach_chapters`
+- `crates/taiyaku-library/src/proposals.rs:2954:67: replace += with *= in raise_attach_chapters`
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
@@ -1000,7 +917,7 @@ it mutates only changed code and takes minutes.
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
   nobody asserts on, or a missing assertion. Only the third is work on the tests.
-- `crates/taiyaku-library/src/proposals.rs:2584:31: replace == with != in raise_attach_chapters`
+- `crates/taiyaku-library/src/proposals.rs:2968:31: replace == with != in raise_attach_chapters`
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
@@ -1009,7 +926,7 @@ it mutates only changed code and takes minutes.
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
   nobody asserts on, or a missing assertion. Only the third is work on the tests.
-- `crates/taiyaku-library/src/proposals.rs:2597:20: replace += with *= in raise_attach_chapters`
+- `crates/taiyaku-library/src/proposals.rs:2981:20: replace += with *= in raise_attach_chapters`
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
@@ -1021,7 +938,7 @@ it mutates only changed code and takes minutes.
 
 ### `crates/taiyaku-library/src/scan.rs`
 
-- `crates/taiyaku-library/src/scan.rs:200:17: replace > with >= in scan_root`
+- `crates/taiyaku-library/src/scan.rs:1474:17: replace > with >= in scan_root_inner`
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
@@ -1030,7 +947,7 @@ it mutates only changed code and takes minutes.
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
   nobody asserts on, or a missing assertion. Only the third is work on the tests.
-- `crates/taiyaku-library/src/scan.rs:357:28: replace += with *= in record`
+- `crates/taiyaku-library/src/scan.rs:1704:28: replace += with *= in record`
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
@@ -1039,7 +956,7 @@ it mutates only changed code and takes minutes.
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
   nobody asserts on, or a missing assertion. Only the third is work on the tests.
-- `crates/taiyaku-library/src/scan.rs:462:23: replace match guard format == taiyaku_read::Format::Zip.token() with true in pages_of`
+- `crates/taiyaku-library/src/scan.rs:1809:23: replace match guard format == taiyaku_read::Format::Zip.token() with true in pages_of`
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
@@ -1048,7 +965,7 @@ it mutates only changed code and takes minutes.
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
   nobody asserts on, or a missing assertion. Only the third is work on the tests.
-- `crates/taiyaku-library/src/scan.rs:652:14: replace > with == in measure_dir`
+- `crates/taiyaku-library/src/scan.rs:2064:14: replace > with == in measure_dir`
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
@@ -1057,7 +974,7 @@ it mutates only changed code and takes minutes.
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
   nobody asserts on, or a missing assertion. Only the third is work on the tests.
-- `crates/taiyaku-library/src/scan.rs:652:14: replace > with >= in measure_dir`
+- `crates/taiyaku-library/src/scan.rs:2064:14: replace > with >= in measure_dir`
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
@@ -1066,7 +983,7 @@ it mutates only changed code and takes minutes.
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
   nobody asserts on, or a missing assertion. Only the third is work on the tests.
-- `crates/taiyaku-library/src/scan.rs:682:21: replace += with -= in measure_dir`
+- `crates/taiyaku-library/src/scan.rs:2118:21: replace += with -= in measure_dir`
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
@@ -1075,7 +992,7 @@ it mutates only changed code and takes minutes.
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
   nobody asserts on, or a missing assertion. Only the third is work on the tests.
-- `crates/taiyaku-library/src/scan.rs:682:21: replace += with *= in measure_dir`
+- `crates/taiyaku-library/src/scan.rs:2118:21: replace += with *= in measure_dir`
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
@@ -1249,7 +1166,7 @@ it mutates only changed code and takes minutes.
 
 ### `crates/taiyaku-serve/src/auth.rs`
 
-- `crates/taiyaku-serve/src/auth.rs:283:12: delete ! in client_of`
+- `crates/taiyaku-serve/src/auth.rs:284:12: delete ! in client_of`
   The `!said.swap(true, Ordering::Relaxed)` that makes each `X-Forwarded-For`
   warning print once per process, `said` being one of two statics, one per case.
   Deleting the `!` inverts which call prints, and no in-process test can see it:
@@ -1261,7 +1178,7 @@ it mutates only changed code and takes minutes.
   `auth::tests::the_forwarded_warning_fires_only_when_a_header_is_being_ignored`
   covers it. What is left is the once-ness, which is the part that is genuinely
   about the process rather than about the request.
-- `crates/taiyaku-serve/src/auth.rs:647:26: replace || with && in from_basic`
+- `crates/taiyaku-serve/src/auth.rs:812:26: replace || with && in from_basic`
   **Equivalent in practice, and it is worth saying why rather than asserting it.**
   The expression is `pair.is_err() || address.is_err()` over two
   `account::note_failure` calls made back to back on one connection, against one
@@ -1281,7 +1198,7 @@ it mutates only changed code and takes minutes.
   It stops being equivalent if the two counters ever move to different tables or
   different connections. `session::tests::a_failure_the_limiter_cannot_record_is_answered_as_a_lockout`
   and its `Basic` twin cover the case where both fail.
-- `crates/taiyaku-serve/src/auth.rs:663:26: replace || with && in from_basic`
+- `crates/taiyaku-serve/src/auth.rs:828:26: replace || with && in from_basic`
   **Equivalent in practice, and it is worth saying why rather than asserting it.**
   The expression is `pair.is_err() || address.is_err()` over two
   `account::note_failure` calls made back to back on one connection, against one
@@ -1304,7 +1221,7 @@ it mutates only changed code and takes minutes.
 
 ### `crates/taiyaku-serve/src/lib.rs`
 
-- `crates/taiyaku-serve/src/lib.rs:352:8: delete ! in serve`
+- `crates/taiyaku-serve/src/lib.rs:568:8: delete ! in serve`
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
@@ -1313,7 +1230,7 @@ it mutates only changed code and takes minutes.
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
   nobody asserts on, or a missing assertion. Only the third is work on the tests.
-- `crates/taiyaku-serve/src/lib.rs:353:88: delete ! in serve`
+- `crates/taiyaku-serve/src/lib.rs:569:88: delete ! in serve`
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
@@ -1322,7 +1239,7 @@ it mutates only changed code and takes minutes.
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
   nobody asserts on, or a missing assertion. Only the third is work on the tests.
-- `crates/taiyaku-serve/src/lib.rs:353:9: replace && with || in serve`
+- `crates/taiyaku-serve/src/lib.rs:569:9: replace && with || in serve`
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
@@ -1331,7 +1248,7 @@ it mutates only changed code and takes minutes.
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
   nobody asserts on, or a missing assertion. Only the third is work on the tests.
-- `crates/taiyaku-serve/src/lib.rs:370:13: delete match arm Ok(true) in serve`
+- `crates/taiyaku-serve/src/lib.rs:586:13: delete match arm Ok(true) in serve`
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
@@ -1359,7 +1276,7 @@ it mutates only changed code and takes minutes.
 
 ### `crates/taiyaku-serve/src/routes.rs`
 
-- `crates/taiyaku-serve/src/routes.rs:657:9: replace <impl IntoResponse for NoPrincipal>::into_response -> Response with Default::default()`
+- `crates/taiyaku-serve/src/routes.rs:1202:9: replace <impl IntoResponse for NoPrincipal>::into_response -> Response with Default::default()`
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 

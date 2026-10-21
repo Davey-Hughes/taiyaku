@@ -5,11 +5,11 @@ use crate::{Library, Progress, derive, scan, state};
 /// Two roots, one series, one volume in each — the shape spec C1 §5.1 is
 /// designed around, and the only one where the filter can be seen working.
 ///
-/// Both roots are folders of one library: since Part F1 a work gathers its
+/// Both roots are directories of one library: since Part F1 a work gathers its
 /// editions within a library, and a root of its own library would hold a
-/// work of its own. **That library is numbered 70**, apart from the folders,
-/// so a narrowing that read a library id as a folder id finds nothing rather
-/// than the English folder that happens to share its number.
+/// work of its own. **That library is numbered 70**, apart from the directories,
+/// so a narrowing that read a library id as a directory id finds nothing rather
+/// than the English directory that happens to share its number.
 fn two_root_library() -> (
     Library,
     i64,
@@ -26,7 +26,7 @@ fn two_root_library() -> (
     let (en_id, raw_id) = {
         let conn = library.conn();
         conn.execute("INSERT INTO library (id, name) VALUES (70, 'Manga')", [])
-            .expect("the library, numbered apart from its folders");
+            .expect("the library, numbered apart from its directories");
         let en_root =
             scan::add_root_in(&conn, en.path(), scan::InLibrary::Named("Manga")).expect("adds en");
         let raw_root = scan::add_root_in(&conn, raw.path(), scan::InLibrary::Named("Manga"))
@@ -65,19 +65,19 @@ fn two_root_library() -> (
 
 /// Two libraries, scanned and derived.
 ///
-/// - **Manga**: the English and raw folders of `two_root_library`, edition
+/// - **Manga**: the English and raw directories of `two_root_library`, edition
 ///   keys `en` and `raw`, one series `Series` whose one work holds both
 ///   editions.
-/// - **comics**: one folder holding a `Series` of its own (the same title, so
+/// - **comics**: one directory holding a `Series` of its own (the same title, so
 ///   a second series row, and byte-identical pages, so a second work) and a
 ///   series `Other`. Its edition key is the default, `raw`.
 ///
 /// Lower-case `comics` on purpose: listed by name (`COLLATE NOCASE`) it comes
 /// first, by bytes or by id it comes second.
 ///
-/// **The libraries are numbered 70 and 80**, apart from the folders, so a
-/// query that read a library id as a folder id finds nothing rather than the
-/// folder that happens to share its number.
+/// **The libraries are numbered 70 and 80**, apart from the directories, so a
+/// query that read a library id as a directory id finds nothing rather than the
+/// directory that happens to share its number.
 struct TwoLibraries {
     library: Library,
     manga: i64,
@@ -104,7 +104,7 @@ fn two_library_store() -> TwoLibraries {
             "INSERT INTO library (id, name) VALUES (70, 'Manga'), (80, 'comics')",
             [],
         )
-        .expect("two libraries, numbered apart from their folders");
+        .expect("two libraries, numbered apart from their directories");
         let en_root = scan::add_root_in(&conn, en.path(), scan::InLibrary::Named("Manga"))
             .expect("adds en")
             .id;
@@ -118,13 +118,13 @@ fn two_library_store() -> TwoLibraries {
             "UPDATE root SET edition_key = 'en' WHERE id = ?1",
             [en_root],
         )
-        .expect("names the English folder's edition");
+        .expect("names the English directory's edition");
         conn.execute(
             "UPDATE root SET edition_key = 'raw' WHERE id = ?1",
             [raw_root],
         )
-        .expect("names the raw folder's edition");
-        // Re-read, so each folder is walked carrying the key just set.
+        .expect("names the raw directory's edition");
+        // Re-read, so each directory is walked carrying the key just set.
         for root in scan::roots(&conn).expect("re-reads the roots") {
             scan::scan_root(&conn, &root).expect("scans");
         }
@@ -133,7 +133,7 @@ fn two_library_store() -> TwoLibraries {
             conn.query_row("SELECT library_id FROM root WHERE id = ?1", [root], |r| {
                 r.get(0)
             })
-            .expect("the folder's library")
+            .expect("the directory's library")
         };
         (
             library_of(en_root),
@@ -234,9 +234,9 @@ fn access_every_sees_every_root() {
     assert_eq!(cards[0].works, 1, "one volume, held in two roots");
 }
 
-/// **`Only` with no folder sees nothing, at every public function**: the
+/// **`Only` with no directory sees nothing, at every public function**: the
 /// access `account::access_for` reads for a grant whose library holds no
-/// folder, which a clause left out would read as every library.
+/// directory, which a clause left out would read as every library.
 ///
 /// The fixture holds what each function could leak: a series whose work has
 /// two editions, an alignment between them and a reader's open position, an
@@ -244,7 +244,7 @@ fn access_every_sees_every_root() {
 /// asked with `Every` first, so every empty answer below is the filter's and
 /// not the fixture's.
 #[test]
-fn only_with_no_folder_sees_nothing() {
+fn only_with_no_dir_sees_nothing() {
     let (library, en_id, _raw_id, _en, _raw) = two_root_library();
     let scanned = work_ids(&library)[0];
     align(&library, scanned, "en", "raw");
@@ -278,7 +278,7 @@ fn only_with_no_folder_sees_nothing() {
             [en_id],
             |row| row.get(0),
         )
-        .expect("the folders' library");
+        .expect("the directories' library");
     let slug = "series---v01";
 
     for access in [Access::Every, Access::Only(Vec::new())] {
@@ -1167,7 +1167,7 @@ fn a_library_narrows_the_grid_to_its_own_series() {
     let ids: Vec<i64> = manga.iter().map(|c| c.id).collect();
     drop(conn);
     assert_eq!(ids, series_of(&s.library, s.manga), "Manga's one series");
-    assert_eq!(manga[0].editions, 2, "with both its folders' editions");
+    assert_eq!(manga[0].editions, 2, "with both its directories' editions");
 
     let conn = s.library.conn();
     let comics = series(&conn, &Access::Every, 1, Some(s.comics)).expect("lists");
@@ -1207,7 +1207,7 @@ fn a_library_outside_the_grant_answers_nothing() {
     assert!(home.added.is_empty() && home.continuing.is_empty() && home.read.is_empty());
 }
 
-/// **A library with no folder of its own answers nothing**, never the caller's
+/// **A library with no directory of its own answers nothing**, never the caller's
 /// whole access in its place ([`library_scope`]'s `None`). Unrestricted
 /// caller, so a leak would be the whole store.
 #[test]
@@ -1231,10 +1231,10 @@ fn a_library_that_does_not_exist_answers_nothing_rather_than_everything() {
             .is_none()
     );
 
-    // A library with no folder, which nothing public makes (O205), written
+    // A library with no directory, which nothing public makes (O205), written
     // by hand: the same answer.
     conn.execute("INSERT INTO library (name) VALUES ('Empty')", [])
-        .expect("a library with no folder");
+        .expect("a library with no directory");
     let empty = conn.last_insert_rowid();
     assert!(
         series(&conn, &Access::Every, 1, Some(empty))
@@ -1249,11 +1249,11 @@ fn a_library_that_does_not_exist_answers_nothing_rather_than_everything() {
 }
 
 /// **The grant's share, not the library's whole.** Grants are whole libraries
-/// through the API, but `browse` takes any folder list; this pins the
-/// intersection, which a narrowing to the library's folders alone would fail
+/// through the API, but `browse` takes any directory list; this pins the
+/// intersection, which a narrowing to the library's directories alone would fail
 /// (Manga's series would show both editions).
 #[test]
-fn the_narrowing_reads_the_folders_the_library_and_the_grant_share() {
+fn the_narrowing_reads_the_dirs_the_library_and_the_grant_share() {
     let s = two_library_store();
     let conn = s.library.conn();
     let cards = series(
@@ -1271,9 +1271,9 @@ fn the_narrowing_reads_the_folders_the_library_and_the_grant_share() {
         s.manga,
     )
     .expect("reads")
-    .expect("Manga, through its English folder");
+    .expect("Manga, through its English directory");
     assert_eq!(scope.name, "Manga");
-    assert_eq!(scope.folders, vec![s.en_root]);
+    assert_eq!(scope.dirs, vec![s.en_root]);
 }
 
 /// Each of home's three lists narrows. Positions: continuing on Manga's work
@@ -1530,7 +1530,7 @@ fn access_every_counts_the_alignment_as_it_always_did() {
     assert_eq!(cards.first().expect("one series").aligned, 1);
 }
 
-/// The raw folder moved to a library of its own by hand, not derived
+/// The raw directory moved to a library of its own by hand, not derived
 /// again: one work keeps an edition under each library (O191's shape).
 fn raw_in_a_library_of_its_own(library: &Library, raw_root: i64) -> i64 {
     let conn = library.conn();
@@ -1541,16 +1541,16 @@ fn raw_in_a_library_of_its_own(library: &Library, raw_root: i64) -> i64 {
         "UPDATE root SET library_id = ?1 WHERE id = ?2",
         [raws, raw_root],
     )
-    .expect("files the raw folder under it");
+    .expect("files the raw directory under it");
     raws
 }
 
 /// **A library narrowing reaches the `aligned` count, not only `works`,
 /// `editions` and `unread`.**
 ///
-/// With the raw folder in `Raws` ([`raw_in_a_library_of_its_own`]), the one
-/// work holds its `en` edition in the English folder's library and its `raw`
-/// edition in `Raws`. Narrowed to the English folder's library, the work
+/// With the raw directory in `Raws` ([`raw_in_a_library_of_its_own`]), the one
+/// work holds its `en` edition in the English directory's library and its `raw`
+/// edition in `Raws`. Narrowed to the English directory's library, the work
 /// survives on its English edition and the `en`↔`raw` pair, whose other side
 /// is in `Raws`, is counted by nobody: a tile drawing `⇄ 1` beside
 /// `editions: 1` would claim a pair it shows half of. The `None` call is the
@@ -1567,10 +1567,10 @@ fn a_library_narrows_the_aligned_count_and_not_only_the_other_three() {
         .query_row("SELECT library_id FROM root WHERE id = ?1", [en_id], |r| {
             r.get(0)
         })
-        .expect("the English folder's library");
+        .expect("the English directory's library");
     assert!(
         ![en_id, raw_id].contains(&english_library),
-        "library {english_library} shares a folder's id"
+        "library {english_library} shares a directory's id"
     );
     let all = series(&conn, &Access::Every, 1, None).expect("lists series");
     let whole = all.first().expect("one series");
@@ -1592,8 +1592,8 @@ fn a_library_narrows_the_aligned_count_and_not_only_the_other_three() {
 /// `an_alignment_wholly_inside_the_grant_is_counted_by_both` fills for the
 /// grant.
 ///
-/// Both folders are in Manga and the grant names both, so the narrowing reads
-/// two folders and the pair survives with both its editions.
+/// Both directories are in Manga and the grant names both, so the narrowing reads
+/// two directories and the pair survives with both its editions.
 #[test]
 fn a_library_keeps_a_pair_whose_two_editions_are_both_in_it() {
     let (library, en_id, raw_id, _en_dir, _raw_dir) = two_root_library();
@@ -1605,7 +1605,7 @@ fn a_library_keeps_a_pair_whose_two_editions_are_both_in_it() {
         .query_row("SELECT library_id FROM root WHERE id = ?1", [en_id], |r| {
             r.get(0)
         })
-        .expect("the library both folders are in");
+        .expect("the library both directories are in");
     let cards =
         series(&conn, &Access::Only(vec![en_id, raw_id]), 1, Some(manga)).expect("lists series");
     let card = cards.first().expect("one series");
@@ -1632,21 +1632,21 @@ fn status_lists_each_library_once_by_name_with_case_folded() {
     assert_eq!(
         names,
         vec!["comics".to_string(), "Manga".to_string()],
-        "two folders make one entry, and lower-case `comics` sorts first"
+        "two directories make one entry, and lower-case `comics` sorts first"
     );
 }
 
 /// The slugs `work.library_id` files in each library: Manga's one work and
-/// comics' two, told apart by the folders their members are under rather
+/// comics' two, told apart by the directories their members are under rather
 /// than by asking the column again.
 #[test]
 fn filed_in_answers_the_slugs_of_the_works_filed_in_a_library() {
     let s = two_library_store();
     let conn = s.library.conn();
-    let folders = [s.en_root, s.raw_root, s.comics_root];
+    let dirs = [s.en_root, s.raw_root, s.comics_root];
     assert!(
-        !folders.contains(&s.manga) && !folders.contains(&s.comics),
-        "libraries {} and {} share a folder's id: {folders:?}",
+        !dirs.contains(&s.manga) && !dirs.contains(&s.comics),
+        "libraries {} and {} share a directory's id: {dirs:?}",
         s.manga,
         s.comics
     );
@@ -1686,14 +1686,14 @@ fn status_lists_only_the_libraries_the_grant_names() {
     assert_eq!(ids, vec![s.manga]);
 }
 
-/// Per library: a scan of one library's folder says nothing of another's.
+/// Per library: a scan of one library's directory says nothing of another's.
 ///
-/// **The libraries are numbered 70 and 80**, apart from their folders, so a
-/// status that read a library id as a folder id (`d.root_id = l.id`, with no
-/// `JOIN root`) cannot find the walked folder's rows under a library of the
+/// **The libraries are numbered 70 and 80**, apart from their directories, so a
+/// status that read a library id as a directory id (`d.root_id = l.id`, with no
+/// `JOIN root`) cannot find the walked directory's rows under a library of the
 /// same number and pass.
 #[test]
-fn scanned_is_true_only_for_a_library_one_of_whose_folders_was_walked() {
+fn scanned_is_true_only_for_a_library_one_of_whose_dirs_was_walked() {
     let walked = crate::tests::tempdir("browse-walked");
     write_pages(&walked.path().join("Series").join("Series - v01"), 1);
     let unwalked = crate::tests::tempdir("browse-unwalked");
@@ -1704,7 +1704,7 @@ fn scanned_is_true_only_for_a_library_one_of_whose_folders_was_walked() {
         "INSERT INTO library (id, name) VALUES (70, 'Walked'), (80, 'Unwalked')",
         [],
     )
-    .expect("two libraries, numbered apart from their folders");
+    .expect("two libraries, numbered apart from their directories");
     let a =
         scan::add_root_in(&conn, walked.path(), scan::InLibrary::Named("Walked")).expect("adds");
     let b = scan::add_root_in(&conn, unwalked.path(), scan::InLibrary::Named("Unwalked"))
@@ -1719,13 +1719,13 @@ fn scanned_is_true_only_for_a_library_one_of_whose_folders_was_walked() {
     assert_eq!(
         filed,
         vec![(a.id, 70), (b.id, 80)],
-        "each folder in its library"
+        "each directory in its library"
     );
     assert!(
         filed
             .iter()
-            .all(|(_, library)| filed.iter().all(|(folder, _)| folder != library)),
-        "no library's id is a folder's: {filed:?}"
+            .all(|(_, library)| filed.iter().all(|(dir, _)| dir != library)),
+        "no library's id is a directory's: {filed:?}"
     );
     let before = status(&conn, &Access::Every).expect("reads");
     assert!(
@@ -1948,7 +1948,7 @@ fn a_short_query_is_filtered_by_the_grant_like_a_long_one() {
 }
 
 /// With no library asked for, search reads the whole grant: a series whose
-/// two editions are under two granted folders is found with both of them.
+/// two editions are under two granted directories is found with both of them.
 /// `search_narrowed_to_a_library_finds_only_its_series` is the narrowed half.
 #[test]
 fn search_with_no_library_spans_the_whole_grant() {
@@ -1971,7 +1971,7 @@ fn search_with_no_library_spans_the_whole_grant() {
     let card = both.series.first().expect("one series");
     assert_eq!(
         card.editions, 2,
-        "and it carries both editions, one under each granted folder"
+        "and it carries both editions, one under each granted directory"
     );
 }
 
@@ -2088,7 +2088,7 @@ fn library_with_volumes(volumes: usize) -> (Library, crate::tests::TempDir, crat
     let library = Library::open_in_memory().expect("in-memory");
     {
         let conn = library.conn();
-        // Folders of one library, as `two_root_library`'s are and for its
+        // Directories of one library, as `two_root_library`'s are and for its
         // reason.
         let en_root =
             scan::add_root_in(&conn, en.path(), scan::InLibrary::Named("Manga")).expect("adds en");

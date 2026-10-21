@@ -14,7 +14,7 @@ import { GateContext } from './gate'
 import { Backup } from './Backup'
 import * as librariesApi from './libraries'
 import * as backupApi from './backup'
-import { FolderPicker } from './FolderPicker'
+import { DirPicker } from './DirPicker'
 import * as usersApi from './users'
 import { DeriveSection, ScanReport } from './ScanReport'
 import { deferred, flush } from './testing/async'
@@ -60,11 +60,11 @@ vi.mock('./config', async (importOriginal) => ({
 
 vi.mock('./libraries', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./libraries')>()),
-  addFolder: vi.fn(),
+  addDir: vi.fn(),
   createLibrary: vi.fn(),
   libraryRemovalCost: vi.fn(),
   libraryScanStatus: vi.fn(),
-  listFolders: vi.fn(),
+  listDirs: vi.fn(),
   listLibraries: vi.fn(),
   moveCost: vi.fn(),
   removeLibrary: vi.fn(),
@@ -114,18 +114,18 @@ const root = (over: Partial<config.Root> = {}): config.Root => ({
  */
 const longPathRoot = root({ path: '/home/davey/temp/manga-test/Volumes' })
 
-/** A library of one folder, as the grant editor lists it. */
-const libraryOf = (folder: config.Root): librariesApi.Library => ({
+/** A library of one directory, as the grant editor lists it. */
+const libraryOf = (dir: config.Root): librariesApi.Library => ({
   id: 70,
   name: 'Manga',
   works: 0,
   books: 0,
-  folders: [folder],
+  dirs: [dir],
 })
 
-/** One library holding `folders`, as the list route sends it. */
-const holding = (...folders: config.Root[]) => ({
-  libraries: [{ id: 1, name: 'Manga', works: 0, books: 0, folders }],
+/** One library holding `dirs`, as the list route sends it. */
+const holding = (...dirs: config.Root[]) => ({
+  libraries: [{ id: 1, name: 'Manga', works: 0, books: 0, dirs }],
 })
 
 /** A library name with sixty characters and nowhere to break. */
@@ -242,8 +242,8 @@ const TABLE = '/config/libraries'
 const NEW_LIBRARY = `${TABLE}/new`
 /** The page of `holding(…)`'s library. */
 const LIBRARY = `${TABLE}/1`
-/** The page of `root()`'s folder, in `holding(…)`'s library. */
-const FOLDER = `${LIBRARY}/folders/3`
+/** The page of `root()`'s directory, in `holding(…)`'s library. */
+const DIR = `${LIBRARY}/dirs/3`
 
 // --- the Users screen's three pages ------------------------------------------
 
@@ -295,7 +295,7 @@ beforeEach(() => {
     library_id: 1,
     running: false,
     elapsed_secs: null,
-    folders: [],
+    dirs: [],
   })
   vi.mocked(librariesApi.listLibraries).mockResolvedValue({ libraries: [] })
   vi.mocked(usersApi.listUsers).mockResolvedValue({ users: [] })
@@ -387,14 +387,14 @@ describe('the Libraries screen, with real keys and a real pointer', () => {
             name: 'Manga',
             works: 340,
             books: 0,
-            folders: [root(), root({ id: 4, path: '/srv/chapters' })],
+            dirs: [root(), root({ id: 4, path: '/srv/chapters' })],
           },
           {
             id: 2,
             name: 'Comics',
             works: 1,
             books: 0,
-            folders: [root({ id: 5, path: '/srv/comics' })],
+            dirs: [root({ id: 5, path: '/srv/comics' })],
           },
         ],
       })
@@ -471,7 +471,7 @@ function expectStacked(table: HTMLElement, rows: string[][], short: string) {
 
 describe('the Libraries pages at a phone’s width', () => {
   /**
-   * One library whose name and folder have nowhere to break, its folder's
+   * One library whose name and directory have nowhere to break, its directory's
    * last scan failed: the longest words each of the four pages draws.
    */
   const UNBROKEN_LIBRARY = {
@@ -481,7 +481,7 @@ describe('the Libraries pages at a phone’s width', () => {
         name: UNBROKEN_NAME,
         works: 12,
         books: 0,
-        folders: [
+        dirs: [
           {
             ...UNBROKEN_ROOT,
             last_scan_at: '2026-10-01 10:00:00',
@@ -495,8 +495,8 @@ describe('the Libraries pages at a phone’s width', () => {
   it.each([
     [TABLE, '.library-table .config-table'],
     [NEW_LIBRARY, '.new-library form.add-library'],
-    [LIBRARY, '.library-page .folder-table'],
-    [FOLDER, '.folder-page .root-row'],
+    [LIBRARY, '.library-page .dir-table'],
+    [DIR, '.dir-page .root-row'],
   ])(
     'does not scroll sideways on %s, whose name and path have nowhere to break',
     async (entry, drawn) => {
@@ -510,7 +510,7 @@ describe('the Libraries pages at a phone’s width', () => {
     },
   )
 
-  /** Two libraries: one whose folders hold a failed scan and none, one never scanned. */
+  /** Two libraries: one whose directories hold a failed scan and none, one never scanned. */
   const SCANNED = {
     libraries: [
       {
@@ -518,7 +518,7 @@ describe('the Libraries pages at a phone’s width', () => {
         name: 'Manga',
         works: 340,
         books: 0,
-        folders: [
+        dirs: [
           root(),
           root({
             id: 4,
@@ -534,7 +534,7 @@ describe('the Libraries pages at a phone’s width', () => {
         name: 'Comics',
         works: 1,
         books: 0,
-        folders: [root({ id: 5, path: '/srv/comics' })],
+        dirs: [root({ id: 5, path: '/srv/comics' })],
       },
     ],
   }
@@ -546,17 +546,17 @@ describe('the Libraries pages at a phone’s width', () => {
       [
         [
           'Manga',
-          '2 folders',
+          '2 directories',
           '340 works',
           'Last scan: 2026-10-01 10:00:00 · failed',
         ],
-        ['Comics', '1 folder', '1 work', 'Last scan: Never'],
+        ['Comics', '1 directory', '1 work', 'Last scan: Never'],
       ],
       'Comics',
     ],
     [
       LIBRARY,
-      '.library-page .folder-table',
+      '.library-page .dir-table',
       [
         ['/srv/manga', 'Scan every: 24h', 'Last scan: Never'],
         [
@@ -584,19 +584,19 @@ describe('the Libraries pages at a phone’s width', () => {
     [1280, 'shut'],
     [1280, 'open'],
   ])(
-    'puts the add-folder picker’s Cancel on the line of its buttons, at %ipx with the browser %s',
+    'puts the add-directory picker’s Cancel on the line of its buttons, at %ipx with the browser %s',
     async (width, browser) => {
       await page.viewport(width, 844)
       vi.mocked(librariesApi.listLibraries).mockResolvedValue(
         holding(longPathRoot),
       )
-      vi.mocked(librariesApi.listFolders).mockResolvedValue({
+      vi.mocked(librariesApi.listDirs).mockResolvedValue({
         path: '/srv',
         parent: '/',
-        folders: [{ name: 'manga', path: '/srv/manga' }],
+        dirs: [{ name: 'manga', path: '/srv/manga' }],
       })
       const host = await opened(LIBRARY)
-      await press(host.querySelector('button[name="add-folder"]') as Element)
+      await press(host.querySelector('button[name="add-dir"]') as Element)
       const add = host.querySelector('.library-page > .add-root') as HTMLElement
       if (browser === 'open')
         await press(add.querySelector('button[name="browse"]') as Element)
@@ -611,7 +611,7 @@ describe('the Libraries pages at a phone’s width', () => {
       expect(cancel.top).toBeCloseTo(browse.top, 0)
       expect(cancel.left).toBeGreaterThan(browse.right)
       // The browser, when open, is beneath the whole line of buttons.
-      const shown = add.querySelector('.folder-browser')
+      const shown = add.querySelector('.dir-browser')
       expect(shown !== null).toBe(browser === 'open')
       if (shown !== null) {
         expect(shown.getBoundingClientRect().top).toBeGreaterThanOrEqual(
@@ -622,18 +622,18 @@ describe('the Libraries pages at a phone’s width', () => {
     },
   )
 
-  it('draws a refused Add folder on a line of its own beneath the buttons', async () => {
+  it('draws a refused Add directory on a line of its own beneath the buttons', async () => {
     // A refusal short enough to sit beside Cancel, were it let: at 390 the
     // buttons' line has room for it.
     await page.viewport(390, 844)
     vi.mocked(librariesApi.listLibraries).mockResolvedValue(
       holding(longPathRoot),
     )
-    vi.mocked(librariesApi.addFolder).mockRejectedValue(
-      new Error('/api/library/libraries/1/folders: 400 {"error":"refused"}'),
+    vi.mocked(librariesApi.addDir).mockRejectedValue(
+      new Error('/api/library/libraries/1/dirs: 400 {"error":"refused"}'),
     )
     const host = await opened(LIBRARY)
-    await press(host.querySelector('button[name="add-folder"]') as Element)
+    await press(host.querySelector('button[name="add-dir"]') as Element)
     const add = host.querySelector('.library-page > .add-root') as HTMLElement
     await typeInto(
       add.querySelector('input[name="path"]') as HTMLInputElement,
@@ -659,7 +659,7 @@ describe('the Libraries pages at a phone’s width', () => {
 describe('the Users pages at a phone’s width', () => {
   /**
    * An account whose name has nowhere to break, limited to the one library,
-   * whose name and folder have nowhere to break either: the longest words
+   * whose name and directory have nowhere to break either: the longest words
    * the table and the account's page draw. The make page draws none of them,
    * and is held as it is drawn.
    */
@@ -805,7 +805,7 @@ describe('the Configuration screens at 390px', () => {
     }
   })
 
-  it('keeps a folder’s own path inside its page when the path has nowhere to break', async () => {
+  it('keeps a directory’s own path inside its page when the path has nowhere to break', async () => {
     // `longPathRoot` above breaks at its hyphen and fits. A path with a
     // longer run than the page is wide takes the page's heading past its
     // edge, and the document with it, unless the heading breaks it (O180).
@@ -813,7 +813,7 @@ describe('the Configuration screens at 390px', () => {
     vi.mocked(librariesApi.listLibraries).mockResolvedValue(
       holding(UNBROKEN_ROOT),
     )
-    const host = await opened(FOLDER)
+    const host = await opened(DIR)
     await document.fonts.ready
     assertNoSidewaysScroll(host)
     expect(pastItsPage(host)).toEqual([])
@@ -824,7 +824,7 @@ describe('the Configuration screens at 390px', () => {
   })
 
   it('keeps the removal’s confirm button inside the page for the same path', async () => {
-    // Another place the folder's page draws its path: `RemoveRoot`'s confirm
+    // Another place the directory's page draws its path: `RemoveRoot`'s confirm
     // button says "Remove " and then the whole of it (O180).
     await page.viewport(390, 844)
     vi.mocked(librariesApi.listLibraries).mockResolvedValue(
@@ -835,7 +835,7 @@ describe('the Configuration screens at 390px', () => {
       derive: derived(),
       dry_run: true,
     })
-    const host = await opened(FOLDER)
+    const host = await opened(DIR)
     await act(async () => {
       const open = [...host.querySelectorAll('button')].find(
         (b) => b.textContent === 'Remove…',
@@ -853,7 +853,7 @@ describe('the Configuration screens at 390px', () => {
 
   /**
    * The move dialog on a long path and a long library name (the same O180
-   * defect): a folder's page in one library, a second library whose name has
+   * defect): a directory's page in one library, a second library whose name has
    * nowhere to break, Move… pressed, the second chosen and the rehearsal
    * asked for.
    */
@@ -868,14 +868,14 @@ describe('the Configuration screens at 390px', () => {
           name: 'Manga',
           works: 0,
           books: 0,
-          folders: [UNBROKEN_ROOT],
+          dirs: [UNBROKEN_ROOT],
         },
         {
           id: 2,
           name: UNBROKEN_NAME,
           works: 0,
           books: 0,
-          folders: [root({ id: 4, path: '/srv/other' })],
+          dirs: [root({ id: 4, path: '/srv/other' })],
         },
       ],
     })
@@ -884,17 +884,17 @@ describe('the Configuration screens at 390px', () => {
     } else {
       vi.mocked(librariesApi.moveCost).mockResolvedValue(await asked)
     }
-    const host = await opened(FOLDER)
-    const folder = host.querySelector('.folder-page') as HTMLElement
+    const host = await opened(DIR)
+    const dir = host.querySelector('.dir-page') as HTMLElement
     await act(async () => {
-      const open = [...folder.querySelectorAll('button')].find(
+      const open = [...dir.querySelectorAll('button')].find(
         (b) => b.textContent === 'Move…',
       )
       open?.click()
       await Promise.resolve()
     })
     await act(async () => {
-      const box = folder.querySelector(
+      const box = dir.querySelector(
         'select[name="move-target"]',
       ) as HTMLSelectElement
       Object.getOwnPropertyDescriptor(
@@ -903,16 +903,16 @@ describe('the Configuration screens at 390px', () => {
       )?.set?.call(box, '2')
       box.dispatchEvent(new Event('change', { bubbles: true }))
     })
-    await press(folder.querySelector('button[name="rehearse"]') as Element)
+    await press(dir.querySelector('button[name="rehearse"]') as Element)
     await document.fonts.ready
-    return { host, folder }
+    return { host, dir }
   }
 
   it('keeps a move’s refusal and the list of volumes it names inside the page', async () => {
     const volumes = Array.from({ length: 20 }, (_, i) =>
       `${String(i).padStart(2, '0')}_`.padEnd(80, 'v'),
     )
-    const { host, folder } = await rehearsedMove(
+    const { host, dir } = await rehearsedMove(
       new Error(
         `/api/library/roots/3/move?dry_run=true: 409 ${JSON.stringify({
           error: `${UNBROKEN_NAME} already holds volumes of ${UNBROKEN_ROOT.path}`,
@@ -920,7 +920,7 @@ describe('the Configuration screens at 390px', () => {
         })}`,
       ),
     )
-    const list = folder.querySelector('.move-volumes') as HTMLDetailsElement
+    const list = dir.querySelector('.move-volumes') as HTMLDetailsElement
     list.open = true
     await document.fonts.ready
     expect(list.querySelectorAll('li')).toHaveLength(20)
@@ -929,7 +929,7 @@ describe('the Configuration screens at 390px', () => {
   })
 
   it('keeps a move’s confirm button inside the page for the same path and name', async () => {
-    const { host, folder } = await rehearsedMove(
+    const { host, dir } = await rehearsedMove(
       Promise.resolve({
         moved: {
           library_id: 2,
@@ -949,7 +949,7 @@ describe('the Configuration screens at 390px', () => {
         dry_run: true,
       }),
     )
-    const confirm = folder.querySelector('.move-root .confirm')
+    const confirm = dir.querySelector('.move-root .confirm')
     expect(confirm?.textContent).toBe(
       `Move ${UNBROKEN_ROOT.path} to ${UNBROKEN_NAME}`,
     )
@@ -958,7 +958,7 @@ describe('the Configuration screens at 390px', () => {
   })
 
   it('draws a move’s confirm as the action: --accent on its border and text, and heavier', async () => {
-    const { folder } = await rehearsedMove(
+    const { dir } = await rehearsedMove(
       Promise.resolve({
         moved: {
           library_id: 2,
@@ -978,14 +978,12 @@ describe('the Configuration screens at 390px', () => {
         dry_run: true,
       }),
     )
-    const confirm = folder.querySelector('.move-root .confirm') as HTMLElement
-    const rehearse = folder.querySelector(
-      'button[name="rehearse"]',
-    ) as HTMLElement
+    const confirm = dir.querySelector('.move-root .confirm') as HTMLElement
+    const rehearse = dir.querySelector('button[name="rehearse"]') as HTMLElement
     // The token as the browser resolves it, whichever scheme is in force.
     const probe = document.createElement('span')
     probe.style.color = 'var(--accent)'
-    folder.append(probe)
+    dir.append(probe)
     const accent = getComputedStyle(probe).color
     probe.remove()
     const style = getComputedStyle(confirm)
@@ -995,7 +993,7 @@ describe('the Configuration screens at 390px', () => {
     expect(getComputedStyle(rehearse).borderTopColor).not.toBe(accent)
   })
 
-  /** Makes a library through the make page's form: a name and its folder, submitted. */
+  /** Makes a library through the make page's form: a name and its directory, submitted. */
   async function makeLibrary(host: HTMLElement, name: string, path: string) {
     const form = host.querySelector('form.add-library') as HTMLFormElement
     await typeInto(
@@ -1034,15 +1032,15 @@ describe('the Configuration screens at 390px', () => {
   })
 
   /**
-   * A folder's page around `children`, with the ancestors the app draws it
-   * in: Configuration, the Libraries screen, and the folder's
+   * A directory's page around `children`, with the ancestors the app draws it
+   * in: Configuration, the Libraries screen, and the directory's
    * `section.root-row`, inside the shell.
    */
-  function onAFolderPage(children: React.ReactNode) {
+  function onADirPage(children: React.ReactNode) {
     return inShell(
       <div className="config">
         <section className="libraries">
-          <div className="folder-page">
+          <div className="dir-page">
             <section className="root-row">{children}</section>
           </div>
         </section>
@@ -1051,7 +1049,7 @@ describe('the Configuration screens at 390px', () => {
   }
 
   /**
-   * A scan report where a folder's page draws it, at the level `RootRow`
+   * A scan report where a directory's page draws it, at the level `RootRow`
    * gives it, holding the `unreadable` block and the walk given.
    *
    * **Nothing around it is padded**, so the report has the width of `main`'s
@@ -1059,12 +1057,12 @@ describe('the Configuration screens at 390px', () => {
    * enough: each case's viewport is one at which the defect it names,
    * put back by hand, fails it.
    */
-  async function reportOnAFolderPage(
+  async function reportOnADirPage(
     unreadable: Unreadable,
     scan: Partial<Walk> = {},
   ) {
     return await settled(
-      onAFolderPage(
+      onADirPage(
         <ScanReport
           outcome={finished({
             scan: walk(scan),
@@ -1090,7 +1088,7 @@ describe('the Configuration screens at 390px', () => {
     // other thing that has pushed this list past its row (O178, held by the
     // cases below), and here the rule is the only thing that can.
     await page.viewport(360, 844)
-    const host = await reportOnAFolderPage({
+    const host = await reportOnADirPage({
       total: 26,
       refused_format: 15,
       by_format: { '7z': 3, rar: 12 },
@@ -1112,7 +1110,7 @@ describe('the Configuration screens at 390px', () => {
 
   it('does not scroll sideways with a populated scan report', async () => {
     // **What it holds is that a report naming paths stays inside the
-    // folder's page** (O178): a path does not break at a slash, and without
+    // directory's page** (O178): a path does not break at a slash, and without
     // the `overflow-wrap` of `.scan-report .paths li, .derived .paths li` the
     // causes that name one end past the page in a 320px window. It asks the page and not only the
     // document, which a list ending in `main`'s padding does not scroll.
@@ -1120,7 +1118,7 @@ describe('the Configuration screens at 390px', () => {
     // Fixture copied from `ScanReport.test.tsx`'s "says why each unreadable
     // entry was skipped, cause by cause".
     await page.viewport(320, 844)
-    const host = await reportOnAFolderPage({
+    const host = await reportOnADirPage({
       total: 29,
       refused_format: 15,
       by_format: { '7z': 3, rar: 12 },
@@ -1131,7 +1129,7 @@ describe('the Configuration screens at 390px', () => {
     await document.fonts.ready
     assertNoSidewaysScroll(host)
     expect(pastItsPage(host)).toEqual([])
-    // On a folder's page a report's headings step off what is above them and
+    // On a directory's page a report's headings step off what is above them and
     // sit near what they head.
     const headings = [...host.querySelectorAll('.report-heading')]
     expect(headings).toHaveLength(2)
@@ -1149,7 +1147,7 @@ describe('the Configuration screens at 390px', () => {
   const UNBROKEN_PATH = `/srv/manga/${'a_directory_with_no_break_in_it_'.repeat(2)}/v01.cbz`
 
   /**
-   * Every element in the folder's page whose box ends past the page's edge,
+   * Every element in the directory's page whose box ends past the page's edge,
    * by tag and class — so a failure names what stuck out. The document
    * cannot stand in for this: the page sits inside `main`'s padding, and a
    * list that ends in that padding scrolls nothing.
@@ -1161,9 +1159,9 @@ describe('the Configuration screens at 390px', () => {
    * `assertNoSidewaysScroll`.
    */
   function pastItsPage(host: HTMLElement): string[] {
-    const folderPage = host.querySelector('.folder-page') as HTMLElement
-    const edge = folderPage.getBoundingClientRect().right + 0.5
-    return [...folderPage.querySelectorAll('*')]
+    const dirPage = host.querySelector('.dir-page') as HTMLElement
+    const edge = dirPage.getBoundingClientRect().right + 0.5
+    return [...dirPage.querySelectorAll('*')]
       .filter((el) => el.getBoundingClientRect().right > edge)
       .map((el) => `${el.tagName.toLowerCase()}.${el.className}`)
   }
@@ -1198,9 +1196,9 @@ describe('the Configuration screens at 390px', () => {
     })
   }
 
-  it('keeps a path longer than its row inside the folder’s page, in the faces and in their fallbacks', async () => {
+  it('keeps a path longer than its row inside the directory’s page, in the faces and in their fallbacks', async () => {
     await page.viewport(390, 844)
-    const host = await reportOnAFolderPage(
+    const host = await reportOnADirPage(
       {
         total: 14,
         refused_format: 12,
@@ -1231,7 +1229,7 @@ describe('the Configuration screens at 390px', () => {
     // At 375 the causes' column is narrow enough to take one label onto two
     // lines, which the last check below needs.
     await page.viewport(375, 844)
-    const host = await reportOnAFolderPage(
+    const host = await reportOnADirPage(
       {
         total: 13,
         refused_format: 12,
@@ -1274,7 +1272,7 @@ describe('the Configuration screens at 390px', () => {
     // the two lines share the spare height between them unless told not to,
     // and the list ends up far below the label it belongs to.
     await page.viewport(1280, 900)
-    const host = await reportOnAFolderPage(NOTHING_UNREADABLE, {
+    const host = await reportOnADirPage(NOTHING_UNREADABLE, {
       unreadable_dirs: ['/srv/manga/some_directory_or_other/lost+found'],
       excluded_dirs: Array.from(
         { length: 12 },
@@ -1297,10 +1295,10 @@ describe('the Configuration screens at 390px', () => {
 
   it('keeps a refused scan’s sentence inside the window', async () => {
     // `scan.rs` opens its refusal with the root's own path, and
-    // `WalkSection` draws it as plain text in a paragraph on the folder's
+    // `WalkSection` draws it as plain text in a paragraph on the directory's
     // page.
     await page.viewport(390, 844)
-    const host = await reportOnAFolderPage(NOTHING_UNREADABLE, {
+    const host = await reportOnADirPage(NOTHING_UNREADABLE, {
       refused: `${UNBROKEN_ROOT.path} scanned empty while the library holds 12 entries for it — refusing to apply.`,
     })
     await document.fonts.ready
@@ -1310,10 +1308,10 @@ describe('the Configuration screens at 390px', () => {
     assertNoSidewaysScroll(host)
   })
 
-  it('keeps a failed watch probe’s reason inside the folder’s page', async () => {
-    // The folder page's `watch` fact is the probe's own sentence once its
-    // folder has just been added, and `watch.rs` puts the path in it. The
-    // library is made, and its folder's page opened from the library's.
+  it('keeps a failed watch probe’s reason inside the directory’s page', async () => {
+    // The directory page's `watch` fact is the probe's own sentence once its
+    // directory has just been added, and `watch.rs` puts the path in it. The
+    // library is made, and its directory's page opened from the library's.
     await page.viewport(390, 844)
     const reason = `watching ${UNBROKEN_ROOT.path}: No space left on device (os error 28)`
     vi.mocked(librariesApi.listLibraries)
@@ -1332,10 +1330,10 @@ describe('the Configuration screens at 390px', () => {
     })
     const host = await opened(NEW_LIBRARY)
     await makeLibrary(host, 'Manga', UNBROKEN_ROOT.path)
-    await press(host.querySelector('.folder-table .row-link') as Element)
+    await press(host.querySelector('.dir-table .row-link') as Element)
     await document.fonts.ready
     expect(
-      [...host.querySelectorAll('.folder-page .regime dd')].map(
+      [...host.querySelectorAll('.dir-page .regime dd')].map(
         (el) => el.textContent,
       ),
     ).toContain(`probe failed: ${reason}`)
@@ -1349,7 +1347,7 @@ describe('the Configuration screens at 390px', () => {
     await page.viewport(390, 844)
     const why = `${UNBROKEN_ROOT.path} was scanned, but deriving its structure afterward failed: database is locked`
     const host = await settled(
-      onAFolderPage(<ScanReport outcome={{ error: why }} level={3} />),
+      onADirPage(<ScanReport outcome={{ error: why }} level={3} />),
     )
     await document.fonts.ready
     expect(
@@ -1360,8 +1358,8 @@ describe('the Configuration screens at 390px', () => {
     assertNoSidewaysScroll(host)
   })
 
-  it('keeps a turned-down “Scan folder”’s sentence inside the window', async () => {
-    // The folder page's own alert, for a "Scan folder" the server turned
+  it('keeps a turned-down “Scan directory”’s sentence inside the window', async () => {
+    // The directory page's own alert, for a "Scan directory" the server turned
     // down with a sentence that names the root's path — as its 409 for a
     // scan already running does.
     await page.viewport(390, 844)
@@ -1370,11 +1368,11 @@ describe('the Configuration screens at 390px', () => {
     )
     const why = `/api/library/roots/3/scan: 500 ${UNBROKEN_ROOT.path} could not be scanned`
     vi.mocked(config.startScan).mockRejectedValueOnce(new Error(why))
-    const host = await opened(FOLDER)
+    const host = await opened(DIR)
     await act(async () => {
       const scan = [
         ...host.querySelectorAll<HTMLButtonElement>('.root-row button'),
-      ].find((b) => b.textContent === 'Scan folder')
+      ].find((b) => b.textContent === 'Scan directory')
       scan?.click()
       await Promise.resolve()
       await Promise.resolve()
@@ -1388,8 +1386,8 @@ describe('the Configuration screens at 390px', () => {
     assertNoSidewaysScroll(host)
   })
 
-  it('keeps a long path inside the folder’s page in a removal’s rehearsal, outside any scan report', async () => {
-    // What removing the folder would make of the library is drawn in the
+  it('keeps a long path inside the directory’s page in a removal’s rehearsal, outside any scan report', async () => {
+    // What removing the directory would make of the library is drawn in the
     // removal's own `<details>`, which no `.scan-report` holds.
     await page.viewport(390, 844)
     vi.mocked(librariesApi.listLibraries).mockResolvedValue(
@@ -1409,7 +1407,7 @@ describe('the Configuration screens at 390px', () => {
       }),
       dry_run: true,
     })
-    const host = await opened(FOLDER)
+    const host = await opened(DIR)
     await press(
       [...host.querySelectorAll('.root-row button')].find(
         (b) => b.textContent === 'Remove…',
@@ -1426,10 +1424,10 @@ describe('the Configuration screens at 390px', () => {
     expect(pastItsPage(host)).toEqual([])
   })
 
-  /** The page of a library of one folder, named `name`, in the shell. */
-  async function libraryNamed(name: string, folder: config.Root) {
+  /** The page of a library of one directory, named `name`, in the shell. */
+  async function libraryNamed(name: string, dir: config.Root) {
     vi.mocked(librariesApi.listLibraries).mockResolvedValue({
-      libraries: [{ ...holding(folder).libraries[0], name }],
+      libraries: [{ ...holding(dir).libraries[0], name }],
     })
     return await opened(LIBRARY)
   }
@@ -1448,12 +1446,12 @@ describe('the Configuration screens at 390px', () => {
     assertNoSidewaysScroll(host)
   })
 
-  it('keeps the folder browser inside the page', async () => {
+  it('keeps the directory browser inside the page', async () => {
     await page.viewport(390, 844)
-    vi.mocked(librariesApi.listFolders).mockResolvedValue({
+    vi.mocked(librariesApi.listDirs).mockResolvedValue({
       path: UNBROKEN_ROOT.path,
       parent: '/',
-      folders: [
+      dirs: [
         {
           name: 'x'.repeat(80),
           path: `${UNBROKEN_ROOT.path}/${'x'.repeat(80)}`,
@@ -1461,21 +1459,21 @@ describe('the Configuration screens at 390px', () => {
       ],
     })
     const host = await libraryNamed('Manga', UNBROKEN_ROOT)
-    await press(host.querySelector('button[name="add-folder"]') as Element)
+    await press(host.querySelector('button[name="add-dir"]') as Element)
     await press(
       host.querySelector(
         '.library-page > .add-root button[name="browse"]',
       ) as Element,
     )
     await document.fonts.ready
-    const browser = host.querySelector('.folder-browser') as HTMLElement
-    const entry = host.querySelector('.folder-list button') as HTMLElement
+    const browser = host.querySelector('.dir-browser') as HTMLElement
+    const entry = host.querySelector('.dir-list button') as HTMLElement
     expect(entry.textContent).toBe('x'.repeat(80))
     assertNoSidewaysScroll(host)
     expect(entry.getBoundingClientRect().right).toBeLessThanOrEqual(
       browser.getBoundingClientRect().right,
     )
-    const where = host.querySelector('.folder-browser .where') as HTMLElement
+    const where = host.querySelector('.dir-browser .where') as HTMLElement
     expect(where.getBoundingClientRect().right).toBeLessThanOrEqual(
       browser.getBoundingClientRect().right,
     )
@@ -1491,47 +1489,47 @@ describe('the Configuration screens at 390px', () => {
     expect(buttons[1].top).toBe(buttons[0].top)
   })
 
-  it('keeps the folder browser’s own path inside it, whatever paragraph rule is above it', async () => {
+  it('keeps the directory browser’s own path inside it, whatever paragraph rule is above it', async () => {
     // Under `.libraries` the screen's paragraph rule breaks the path as well,
-    // so the library page's case cannot tell whether `.folder-browser .where`
+    // so the library page's case cannot tell whether `.dir-browser .where`
     // does. Mounted bare, only that rule is left to.
     await page.viewport(390, 844)
-    vi.mocked(librariesApi.listFolders).mockResolvedValue({
+    vi.mocked(librariesApi.listDirs).mockResolvedValue({
       path: UNBROKEN_ROOT.path,
       parent: '/',
-      folders: [],
+      dirs: [],
     })
     const host = await act(async () => {
       const mounted = mount(
-        inShell(<FolderPicker action="Add folder" onPick={() => undefined} />),
+        inShell(<DirPicker action="Add directory" onPick={() => undefined} />),
       )
       await Promise.resolve()
       return mounted
     })
     await press(host.querySelector('button[name="browse"]') as Element)
     await document.fonts.ready
-    const where = host.querySelector('.folder-browser .where') as HTMLElement
+    const where = host.querySelector('.dir-browser .where') as HTMLElement
     expect(where.textContent).toBe(UNBROKEN_ROOT.path)
-    const box = host.querySelector('.folder-browser') as HTMLElement
+    const box = host.querySelector('.dir-browser') as HTMLElement
     assertNoSidewaysScroll(host)
     expect(where.getBoundingClientRect().right).toBeLessThanOrEqual(
       box.getBoundingClientRect().right,
     )
   })
 
-  it('keeps Up inside the folder browser when the folder it names has nowhere to break', async () => {
+  it('keeps Up inside the directory browser when the directory it names has nowhere to break', async () => {
     // Mounted bare for the reason the case above is: no rule above the
     // browser is left to break the name for it.
     await page.viewport(390, 844)
     const outer = 'a_directory_with_no_break_in_it_'.repeat(3)
-    vi.mocked(librariesApi.listFolders).mockResolvedValue({
+    vi.mocked(librariesApi.listDirs).mockResolvedValue({
       path: `/srv/manga/${outer}/Trial-a`,
       parent: `/srv/manga/${outer}`,
-      folders: [],
+      dirs: [],
     })
     const host = await act(async () => {
       const mounted = mount(
-        inShell(<FolderPicker action="Add folder" onPick={() => undefined} />),
+        inShell(<DirPicker action="Add directory" onPick={() => undefined} />),
       )
       await Promise.resolve()
       return mounted
@@ -1544,65 +1542,64 @@ describe('the Configuration screens at 390px', () => {
       )
       .toBeVisible()
     const up = host.querySelector('button[name="up"]') as HTMLElement
-    const box = host.querySelector('.folder-browser') as HTMLElement
+    const box = host.querySelector('.dir-browser') as HTMLElement
     assertNoSidewaysScroll(host)
     expect(up.getBoundingClientRect().right).toBeLessThanOrEqual(
       box.getBoundingClientRect().right,
     )
   })
 
-  it('holds the folder list still while the next listing is read after a refusal', async () => {
+  it('holds the directory list still while the next listing is read after a refusal', async () => {
     await page.viewport(390, 844)
-    vi.mocked(librariesApi.listFolders).mockResolvedValue({
+    vi.mocked(librariesApi.listDirs).mockResolvedValue({
       path: '/srv/manga',
       parent: null,
-      folders: [{ name: 'extra', path: '/srv/manga/extra' }],
+      dirs: [{ name: 'extra', path: '/srv/manga/extra' }],
     })
     const host = await act(async () => {
       const mounted = mount(
-        inShell(<FolderPicker action="Add folder" onPick={() => undefined} />),
+        inShell(<DirPicker action="Add directory" onPick={() => undefined} />),
       )
       await Promise.resolve()
       return mounted
     })
     await press(host.querySelector('button[name="browse"]') as Element)
-    vi.mocked(librariesApi.listFolders).mockRejectedValueOnce(
+    vi.mocked(librariesApi.listDirs).mockRejectedValueOnce(
       new Error('/x: 403 {"error":"/srv/manga/extra is not readable"}'),
     )
-    await press(host.querySelector('.folder-list button') as Element)
+    await press(host.querySelector('.dir-list button') as Element)
     await document.fonts.ready
-    expect(host.querySelector('.folder-browser [role="alert"]')).not.toBeNull()
+    expect(host.querySelector('.dir-browser [role="alert"]')).not.toBeNull()
     const list = () =>
-      (
-        host.querySelector('.folder-list') as HTMLElement
-      ).getBoundingClientRect().top
+      (host.querySelector('.dir-list') as HTMLElement).getBoundingClientRect()
+        .top
     const before = list()
-    const held = deferred<librariesApi.FolderListing>()
-    vi.mocked(librariesApi.listFolders).mockReturnValueOnce(held.promise)
-    await press(host.querySelector('.folder-list button') as Element)
+    const held = deferred<librariesApi.DirListing>()
+    vi.mocked(librariesApi.listDirs).mockReturnValueOnce(held.promise)
+    await press(host.querySelector('.dir-list button') as Element)
     expect(list()).toBe(before)
     await act(async () =>
       held.resolve({
         path: '/srv/manga/extra',
         parent: '/srv/manga',
-        folders: [],
+        dirs: [],
       }),
     )
   })
 
-  it('holds the folder list still while the next listing is read, slow or not', async () => {
+  it('holds the directory list still while the next listing is read, slow or not', async () => {
     await page.viewport(390, 844)
-    vi.mocked(librariesApi.listFolders).mockResolvedValue({
+    vi.mocked(librariesApi.listDirs).mockResolvedValue({
       path: '/srv/manga',
       parent: null,
-      folders: [
+      dirs: [
         { name: 'extra', path: '/srv/manga/extra' },
         { name: 'Volumes', path: '/srv/manga/Volumes' },
       ],
     })
     const host = await act(async () => {
       const mounted = mount(
-        inShell(<FolderPicker action="Add folder" onPick={() => undefined} />),
+        inShell(<DirPicker action="Add directory" onPick={() => undefined} />),
       )
       await Promise.resolve()
       return mounted
@@ -1610,13 +1607,12 @@ describe('the Configuration screens at 390px', () => {
     await press(host.querySelector('button[name="browse"]') as Element)
     await document.fonts.ready
     const list = () =>
-      (
-        host.querySelector('.folder-list') as HTMLElement
-      ).getBoundingClientRect().top
+      (host.querySelector('.dir-list') as HTMLElement).getBoundingClientRect()
+        .top
     const before = list()
-    const held = deferred<librariesApi.FolderListing>()
-    vi.mocked(librariesApi.listFolders).mockReturnValueOnce(held.promise)
-    await press(host.querySelector('.folder-list button') as Element)
+    const held = deferred<librariesApi.DirListing>()
+    vi.mocked(librariesApi.listDirs).mockReturnValueOnce(held.promise)
+    await press(host.querySelector('.dir-list button') as Element)
     expect(list()).toBe(before)
 
     await act(
@@ -1625,15 +1621,15 @@ describe('the Configuration screens at 390px', () => {
           setTimeout(done, librariesApi.READING_DELAY_MS + 50),
         ),
     )
-    expect(host.querySelector('.folder-browser')?.textContent).toContain(
-      'Reading folders…',
+    expect(host.querySelector('.dir-browser')?.textContent).toContain(
+      'Reading directories…',
     )
     expect(list()).toBe(before)
     await act(async () =>
       held.resolve({
         path: '/srv/manga/extra',
         parent: '/srv/manga',
-        folders: [],
+        dirs: [],
       }),
     )
   })
@@ -1657,10 +1653,10 @@ describe('the Configuration screens at 390px', () => {
     expect(confirm.getBoundingClientRect().right).toBeLessThanOrEqual(
       box.getBoundingClientRect().right,
     )
-    // The dialog is followed by the folders it would remove, and is clear
+    // The dialog is followed by the directories it would remove, and is clear
     // of them.
     const next = box.nextElementSibling as HTMLElement
-    expect(next.textContent).toBe('Folders')
+    expect(next.textContent).toBe('Directories')
     expect(
       next.getBoundingClientRect().top - box.getBoundingClientRect().bottom,
     ).toBeGreaterThanOrEqual(16)
@@ -1724,7 +1720,7 @@ describe('the Configuration screens at 390px', () => {
       name: 'Comics',
       works: 0,
       books: 0,
-      folders: [root({ id: 5, path: '/srv/comics' })],
+      dirs: [root({ id: 5, path: '/srv/comics' })],
     }
     vi.mocked(librariesApi.listLibraries).mockResolvedValue({
       libraries: [
@@ -1780,8 +1776,8 @@ describe('the Configuration screens at 390px', () => {
 
   it('does not scroll sideways on the users screen', async () => {
     await sized(390, 844)
-    // The grant editor draws a library's folders, so the path that must wrap
-    // is the one that is on screen.
+    // The grant editor draws a library's directories, so the path that must
+    // wrap is the one that is on screen.
     vi.mocked(librariesApi.listLibraries).mockResolvedValue({
       libraries: [libraryOf(UNBROKEN_ROOT)],
     })
@@ -1793,9 +1789,9 @@ describe('the Configuration screens at 390px', () => {
     const host = await opened(ACCOUNT)
     await document.fonts.ready
     // The account's page, whose grant editor is what draws the path.
-    expect(
-      host.querySelector('.user-row .grant-folders code')?.textContent,
-    ).toBe(UNBROKEN_ROOT.path)
+    expect(host.querySelector('.user-row .grant-dirs code')?.textContent).toBe(
+      UNBROKEN_ROOT.path,
+    )
     assertNoSidewaysScroll(host)
   })
 
@@ -1953,7 +1949,7 @@ describe('the Configuration screens at desktop width', () => {
     vi.mocked(librariesApi.listLibraries).mockResolvedValue(
       holding(longPathRoot),
     )
-    const host = await settled(routed(FOLDER))
+    const host = await settled(routed(DIR))
     const rows = [...host.querySelectorAll('.regime > div')]
     expect(rows).toHaveLength(3)
     const tops = rows.map(
@@ -2126,14 +2122,14 @@ describe('the libraries screen at desktop width', () => {
         name: 'Manga',
         works: 5,
         books: 0,
-        folders: [longPathRoot],
+        dirs: [longPathRoot],
       },
       {
         id: 2,
         name: 'Light novels',
         works: 0,
         books: 3,
-        folders: [root({ id: 4, path: '/srv/novels' })],
+        dirs: [root({ id: 4, path: '/srv/novels' })],
       },
     ],
   }
@@ -2155,7 +2151,7 @@ describe('the libraries screen at desktop width', () => {
     const libraryPage = host.querySelector('.library-page') as HTMLElement
     expect(box(libraryPage).width).toBeLessThanOrEqual(40 * 16 + 0.5)
 
-    // What a library holds is quiet: the colour and size of a folder's own
+    // What a library holds is quiet: the colour and size of a directory's own
     // labels, `--muted` at `--text-meta`, as the browser resolves them.
     const probe = document.createElement('span')
     probe.style.color = 'var(--muted)'
@@ -2173,7 +2169,7 @@ describe('the libraries screen at desktop width', () => {
 
     // The picker's line runs to its own edge, Cancel last: the box takes the
     // room its buttons and Cancel leave.
-    await press(host.querySelector('button[name="add-folder"]') as Element)
+    await press(host.querySelector('button[name="add-dir"]') as Element)
     const add = host.querySelector('.library-page > .add-root') as HTMLElement
     const cancel = add.querySelector('button[name="cancel-add"]') as HTMLElement
     expect(box(cancel).right).toBeCloseTo(box(add).right, 0)
@@ -2188,10 +2184,10 @@ describe('the libraries screen at desktop width', () => {
     expect(box(make).width).toBeLessThan(box(form).width / 2)
   })
 
-  it('draws the two boxes of a folder’s first row at one height', async () => {
+  it('draws the two boxes of a directory’s first row at one height', async () => {
     // A neighbour's textarea, and its hint, made the row taller than a box
     // needs; a box in a grid stretches to its row unless told not to.
-    const host = await shown(routed(FOLDER))
+    const host = await shown(routed(DIR))
     const edition = host.querySelector('input[name="edition_key"]') as Element
     const language = host.querySelector(
       'input[name="default_language"]',
@@ -2199,7 +2195,7 @@ describe('the libraries screen at desktop width', () => {
     expect(box(language).height).toBe(box(edition).height)
   })
 
-  it('lights a Folders row under the pointer only while the row is a link', async () => {
+  it('lights a Directories row under the pointer only while the row is a link', async () => {
     vi.mocked(librariesApi.libraryRemovalCost).mockResolvedValue({
       removed: { works: 5, positions: 0, notes: 0, left_with_no_library: [] },
       derive: derived(),
@@ -2207,7 +2203,7 @@ describe('the libraries screen at desktop width', () => {
     })
     const host = await shown(routed(LIBRARY))
     const heading = host.querySelector('.library-page > h2') as HTMLElement
-    const row = () => host.querySelector('.folder-table tbody tr') as Element
+    const row = () => host.querySelector('.dir-table tbody tr') as Element
     const pointAt = (el: Element) =>
       act(async () => {
         await userEvent.hover(el)
@@ -2252,7 +2248,7 @@ describe('the libraries screen at desktop width', () => {
       box(host.querySelector('.library-table .config-table') as Element).right,
       0,
     )
-    // Its lists are the two-column grid a folder's scan report has, so a
+    // Its lists are the two-column grid a directory's scan report has, so a
     // report of this many rows is not a page tall.
     const list = report.querySelector('.derived > dl') as Element
     expect(getComputedStyle(list).display).toBe('grid')
@@ -2273,7 +2269,7 @@ describe('the libraries screen at desktop width', () => {
   it('draws a report’s heading alike at every level its caller may pass', async () => {
     // Styled by class, not by tag: a heading is the same label whether a
     // page holds the report under its h2 or the library page holds it under
-    // a folder's h4. The browser's own heading faces differ from level to
+    // a directory's h4. The browser's own heading faces differ from level to
     // level, so only the class can make these equal.
     await page.viewport(1280, 900)
     const host = await act(async () => {
@@ -2311,25 +2307,25 @@ describe('the libraries screen at desktop width', () => {
     }
   })
 
-  it('puts the folder browser on a line of its own, and its folders full width', async () => {
-    vi.mocked(librariesApi.listFolders).mockResolvedValue({
+  it('puts the directory browser on a line of its own, and its directories full width', async () => {
+    vi.mocked(librariesApi.listDirs).mockResolvedValue({
       path: '/a',
       parent: '/',
-      folders: [{ name: 'b', path: '/a/b' }],
+      dirs: [{ name: 'b', path: '/a/b' }],
     })
     const host = await shown(
-      <FolderPicker action="Add folder" onPick={() => undefined} />,
+      <DirPicker action="Add directory" onPick={() => undefined} />,
     )
     await press(host.querySelector('button[name="browse"]') as Element)
-    const browser = host.querySelector('.folder-browser') as Element
+    const browser = host.querySelector('.dir-browser') as Element
     expect(box(browser).width).toBeCloseTo(
-      box(host.querySelector('.folder-picker') as Element).width,
+      box(host.querySelector('.dir-picker') as Element).width,
       0,
     )
-    // A folder's button takes the whole row of the list it is in.
-    const entry = host.querySelector('.folder-list button') as Element
+    // A directory's button takes the whole row of the list it is in.
+    const entry = host.querySelector('.dir-list button') as Element
     expect(box(entry).width).toBeCloseTo(
-      box(host.querySelector('.folder-list') as Element).width,
+      box(host.querySelector('.dir-list') as Element).width,
       0,
     )
   })
@@ -2413,7 +2409,7 @@ describe('the scan report', () => {
 /**
  * **The way up from a page beneath a table is a finger's 44 px under a
  * coarse pointer** (spec 2026-09-17 §7.1), on a new library's page, a
- * library's, a folder's, a new account's and an account's, and its target
+ * library's, a directory's, a new account's and an account's, and its target
  * stays clear of the tabs' above it, which O157 grows to 44 the same way.
  * Each target, measured by hit testing along its middle row and
  * column (`pressArea`), is its box grown about its middle to 44 px
@@ -2427,7 +2423,7 @@ describe('the way up from a page beneath a table', () => {
   it.each([
     [NEW_LIBRARY, 390, 'coarse', '‹ Libraries'],
     [LIBRARY, 390, 'coarse', '‹ Libraries'],
-    [FOLDER, 390, 'coarse', '‹ Manga'],
+    [DIR, 390, 'coarse', '‹ Manga'],
     [NEW_ACCOUNT, 390, 'coarse', '‹ Users'],
     [ACCOUNT, 390, 'coarse', '‹ Users'],
     [LIBRARY, 1280, 'coarse', '‹ Libraries'],

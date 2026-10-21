@@ -1,10 +1,10 @@
 /**
- * Moving a folder to another library, and what that does.
+ * Moving a directory to another library, and what that does.
  *
  * **Nothing is asked of the server until a target is chosen and the
  * rehearsal asked for**, and the confirm does not exist until the rehearsal
  * has answered. `RemoveRoot`'s rule, for a move: a rehearsal derives
- * the whole store, and a button that moves a folder under a
+ * the whole store, and a button that moves a directory under a
  * sentence that says nothing is what this component is for preventing.
  *
  * **The rehearsal is for one target.** Choosing another takes the counts and
@@ -26,7 +26,7 @@ import {
   type MoveAnswer,
   type MoveTarget,
   moveCost,
-  moveFolder,
+  moveDir,
   noLibrarySentence,
 } from './libraries'
 import { useDrawn } from './hooks'
@@ -43,18 +43,18 @@ export interface NamedLibrary {
 
 export interface MoveRootProps {
   root: Root
-  /** The library the folder is in. */
+  /** The library the directory is in. */
   from: NamedLibrary
   /** Every other library. */
   targets: NamedLibrary[]
   /**
-   * Something else in the folder's library has begun, so the counts quoted
+   * Something else in the directory's library has begun, so the counts quoted
    * here are from before it. The dialog cancels itself when this becomes
    * true, as its Cancel does, and so not while its move is out.
    */
   held?: boolean
   onCancel: () => void
-  /** Called once the folder has moved, with what the move did. */
+  /** Called once the directory has moved, with what the move did. */
   onMoved: (answer: MoveAnswer) => void
   /** The move was refused once this dialog had gone, with why. */
   onLateRefusal?: (sentence: string) => void
@@ -158,7 +158,7 @@ export function MoveRoot({
     if (to === undefined || inFlight.current) return
     inFlight.current = true
     setMoving(true)
-    moveFolder(root.id, to)
+    moveDir(root.id, to)
       .then((answer) => onMoved(answer))
       .catch((err: unknown) => {
         inFlight.current = false
@@ -183,7 +183,7 @@ export function MoveRoot({
     <div
       className="move-root"
       role="group"
-      aria-label={`Move the folder at ${root.path}`}
+      aria-label={`Move the directory at ${root.path}`}
     >
       <div className="fields">
         {/* O175: each `aria-label` repeats its label's words. */}
@@ -263,7 +263,7 @@ export function MoveRoot({
             <p className="left-with-no-library">
               {noLibrarySentence(
                 moved.left_with_no_library,
-                "this folder's library",
+                "this directory's library",
               )}
             </p>
           )}

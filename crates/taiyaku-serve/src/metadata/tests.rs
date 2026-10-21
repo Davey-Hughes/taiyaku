@@ -1627,7 +1627,7 @@ fn the_grant_clause_still_filters_even_though_no_route_can_supply_a_grant() {
         "`Every` resolves the member, so a Missing below is the access's"
     );
 
-    // Each resolver must read `Only` with no folder as seeing nothing: a
+    // Each resolver must read `Only` with no directory as seeing nothing: a
     // clause left out for it would resolve everything, as `Every` does above.
     let nothing = Access::Only(Vec::new());
     assert!(
@@ -1635,26 +1635,26 @@ fn the_grant_clause_still_filters_even_though_no_route_can_supply_a_grant() {
             super::work_by_slug(&conn, &nothing, "held-v01"),
             Err(super::NoAnswer::Missing)
         ),
-        "work_by_slug: `Only` with no folder sees nothing"
+        "work_by_slug: `Only` with no directory sees nothing"
     );
     assert!(
         super::works_in_series(&conn, &nothing, 1)
             .expect("seeing nothing is not an error")
             .is_empty(),
-        "works_in_series: `Only` with no folder sees nothing"
+        "works_in_series: `Only` with no directory sees nothing"
     );
     assert!(
         matches!(
             super::edition_owner(&conn, &nothing, 1),
             Err(super::NoAnswer::Missing)
         ),
-        "edition_owner: `Only` with no folder sees nothing"
+        "edition_owner: `Only` with no directory sees nothing"
     );
     assert!(
         matches!(
             super::member_owner(&conn, &nothing, 1),
             Err(super::NoAnswer::Missing)
         ),
-        "member_owner: `Only` with no folder sees nothing"
+        "member_owner: `Only` with no directory sees nothing"
     );
 }

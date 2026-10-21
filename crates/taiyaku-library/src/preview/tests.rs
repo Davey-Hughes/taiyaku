@@ -383,16 +383,16 @@ fn a_preview_of_removing_a_merging_rule_shows_the_split() {
 }
 
 /// A store where two libraries each hold a series called `Alpha`: `Manga`
-/// holds `Alpha` and `Beta`, one in each of its two folders, and `Other`
-/// holds `Alpha` and `Gamma` in its one. Returns the directory, the store and
-/// `Manga`'s second folder, which is the one holding `Beta`.
+/// holds `Alpha` and `Beta`, one in each of its two directories, and `Other`
+/// holds `Alpha` and `Gamma` in its one. Returns the temporary directory, the
+/// store and `Manga`'s second directory, which is the one holding `Beta`.
 ///
-/// **`Manga` has two folders so that the second one's id is not its
-/// library's.** A rule on that folder read as a rule on the library of that
+/// **`Manga` has two directories so that the second one's id is not its
+/// library's.** A rule on that directory read as a rule on the library of that
 /// id would match nothing, since `Other` holds no `Beta`.
 fn two_libraries_sharing_a_title() -> (crate::tests::TempDir, crate::Library, crate::scan::Root) {
-    let dir = crate::tests::tempdir("preview-shared-title");
-    let folders = [
+    let top = crate::tests::tempdir("preview-shared-title");
+    let dirs = [
         ("manga-a", "Manga", vec![("Alpha", 1)]),
         ("manga-b", "Manga", vec![("Beta", 2)]),
         ("other", "Other", vec![("Alpha", 3), ("Gamma", 4)]),
@@ -401,8 +401,8 @@ fn two_libraries_sharing_a_title() -> (crate::tests::TempDir, crate::Library, cr
     let mut roots = Vec::new();
     {
         let conn = library.conn();
-        for (folder, name, volumes) in folders {
-            let at = dir.path().join(folder);
+        for (dir, name, volumes) in dirs {
+            let at = top.path().join(dir);
             for (series, volume) in volumes {
                 crate::scan::tests::write_archive(
                     &at.join(series).join(format!("{series} - v0{volume}.cbz")),
@@ -410,8 +410,8 @@ fn two_libraries_sharing_a_title() -> (crate::tests::TempDir, crate::Library, cr
                 );
             }
             let root = crate::scan::add_root_in(&conn, &at, crate::scan::InLibrary::Named(name))
-                .expect("adding the folder");
-            crate::scan::scan_root(&conn, &root).expect("scanning the folder");
+                .expect("adding the directory");
+            crate::scan::scan_root(&conn, &root).expect("scanning the directory");
             roots.push(root);
         }
         crate::derive::derive(&conn).expect("deriving the fixture");
@@ -428,11 +428,11 @@ fn two_libraries_sharing_a_title() -> (crate::tests::TempDir, crate::Library, cr
         );
         assert_ne!(
             roots[1].id, roots[1].library_id,
-            "the fixture: the folder a rule names is not numbered as its library is"
+            "the fixture: the directory a rule names is not numbered as its library is"
         );
     }
-    let beta_folder = roots.swap_remove(1);
-    (dir, library, beta_folder)
+    let beta_dir = roots.swap_remove(1);
+    (top, library, beta_dir)
 }
 
 /// Every series holding a member, as `(title, library)`, read from the rows
@@ -459,11 +459,11 @@ fn series_holding_a_member(conn: &rusqlite::Connection) -> Vec<(String, String)>
 /// hold a member after as before, and none has merged.
 #[test]
 fn filing_a_series_under_a_title_only_another_library_holds_is_not_previewed_as_a_merge() {
-    let (_dir, library, beta_folder) = two_libraries_sharing_a_title();
+    let (_dir, library, beta_dir) = two_libraries_sharing_a_title();
     let conn = library.conn();
     let mut proposed = crate::rules::read(&conn).unwrap().0;
     proposed.push(crate::rules::Rule {
-        root_id: Some(beta_folder.id),
+        root_id: Some(beta_dir.id),
         pattern: "^Beta/".to_string(),
         ..crate::tests::a_rule_setting_series("Gamma")
     });
@@ -507,7 +507,7 @@ fn filing_a_series_under_a_title_only_another_library_holds_is_not_previewed_as_
 /// series holding a member, the two called `Alpha` among them.
 #[test]
 fn the_unchanged_rules_count_one_title_in_two_libraries_as_two_series() {
-    let (_dir, library, _beta_folder) = two_libraries_sharing_a_title();
+    let (_dir, library, _beta_dir) = two_libraries_sharing_a_title();
     let conn = library.conn();
     let unchanged = crate::rules::read(&conn).unwrap().0;
 

@@ -3325,7 +3325,7 @@ fn a_fold_refused_after_its_slot_plan_has_writes_makes_none_of_them() {
     );
 }
 
-/// A work divided by a folder move, as a derive leaves it: work 1 still holds
+/// A work divided by a directory move, as a derive leaves it: work 1 still holds
 /// `raw` (its hub, which stays) and `en`, and work 2 is the fresh work the
 /// derive made for `en`'s archives on the other side.
 fn divided_pair() -> (Connection, i64, i64) {

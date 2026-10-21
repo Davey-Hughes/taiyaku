@@ -143,7 +143,7 @@ describe('names — §4.3 and §4.4', () => {
                 name: 'Manga',
                 works: 0,
                 books: 0,
-                folders: [root()],
+                dirs: [root()],
               },
             ]}
             onChanged={() => {}}

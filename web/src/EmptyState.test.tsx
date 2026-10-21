@@ -13,11 +13,11 @@ describe('the empty states', () => {
     expect(host.textContent).toContain('without writing anything back')
   })
 
-  it('says a library with folders has not been read yet, which is not the same thing', () => {
+  it('says a library with directories has not been read yet, which is not the same thing', () => {
     const host = mount(<EmptyState kind="not-scanned" />)
     expect(host.querySelector('h2')?.textContent).toBe('Not read yet')
     expect(host.textContent).toContain(
-      'This library has folders, and nothing has scanned them.',
+      'This library has directories, and nothing has scanned them.',
     )
     expect(host.textContent).toContain(
       'Scan library, on Configuration → Libraries, reads them',

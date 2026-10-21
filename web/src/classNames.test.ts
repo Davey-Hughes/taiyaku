@@ -124,7 +124,7 @@ const HOOKS: Record<string, string[]> = {
   './App.browser.test.tsx': ['reader-turn'],
   './App.test.tsx': ['page-area'],
   './Labeller.test.tsx': ['region-overlay'],
-  './LibraryPage.test.tsx': ['folder-table'],
+  './LibraryPage.test.tsx': ['dir-table'],
   './MetadataEditor.test.tsx': [
     'archive',
     'asking',

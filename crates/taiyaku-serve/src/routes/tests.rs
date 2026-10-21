@@ -852,7 +852,7 @@ async fn assert_answered(handler: &str, response: Response, expected: StatusCode
 /// asserted one at a time, so a failing run names every handler that stalled.
 ///
 /// **Then every handler again for a reader granted nothing, each asserted to
-/// answer 404.** `Only` with no folder is asked of the library like any other
+/// answer 404.** `Only` with no directory is asked of the library like any other
 /// restricted access, so the watchdog still measures the check, and the 404
 /// is what that check answers. The writes are here because no other test
 /// sends one with this access.
@@ -1315,8 +1315,8 @@ async fn no_grant_check_stalls_the_runtime() {
 /// unrestricted one.
 ///
 /// **Each access, because they take different paths**: one that names
-/// folders is asked of the library, and `Every` is answered without it.
-/// `Only` with no folder is asked of the library too, and must find nothing
+/// directories is asked of the library, and `Every` is answered without it.
+/// `Only` with no directory is asked of the library too, and must find nothing
 /// there: the works feed answers 200 listing no work, and the work's feed the
 /// 404 a work outside the grant gets. Every other call is asserted to answer
 /// 200, so neither feed is free for having been refused, and the stalls are
@@ -4153,7 +4153,7 @@ fn router_with_two_works_one_withheld(dir: &std::path::Path) -> (axum::Router, A
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
         library_job: Default::default(),
-        folders: Vec::new(),
+        dirs: Vec::new(),
     });
     let router = build_router(state.clone());
     (router, state)
@@ -4184,7 +4184,7 @@ async fn the_work_list_does_not_name_a_work_outside_the_grant() {
     );
 }
 
-/// How [`an_account_granted_only_a_library_with_no_folder_sees_nothing`]
+/// How [`an_account_granted_only_a_library_with_no_dir_sees_nothing`]
 /// counts what a route's answer shows.
 enum Shows {
     /// The elements of a JSON body's lists: the body itself when it is one,
@@ -4226,7 +4226,7 @@ async fn what_it_shows(call: &str, response: Response, shows: &Shows) -> usize {
     }
 }
 
-/// The `GET` [`an_account_granted_only_a_library_with_no_folder_sees_nothing`]
+/// The `GET` [`an_account_granted_only_a_library_with_no_dir_sees_nothing`]
 /// sends for a route [`grant_postures`] says reads the grant, and how it counts
 /// the answer, or `None` for the one such route a `GET` cannot ask.
 ///
@@ -4271,11 +4271,11 @@ fn get_for(pattern: &str, held_library: i64) -> Option<(String, Shows)> {
     Some((uri, shows))
 }
 
-/// **An account granted only a library with no folder sees nothing**, through
+/// **An account granted only a library with no directory sees nothing**, through
 /// the real guard, on every `GET` route [`grant_postures`] says reads the
 /// grant (spec §3), each asked as [`get_for`] says. The grant is written by
 /// hand, as `account::tests` writes it, and `access_for` reads it as
-/// `Access::Only` with no folder, which the guard puts on every request.
+/// `Access::Only` with no directory, which the guard puts on every request.
 ///
 /// **The same requests from the same account granted the work's own library
 /// show the work.** That pass is what shows each empty answer is the access's,
@@ -4283,7 +4283,7 @@ fn get_for(pattern: &str, held_library: i64) -> Option<(String, Shows)> {
 /// restricted path, so neither pass is answered by `Every`'s shortcut in
 /// `on_the_grant`.
 #[tokio::test]
-async fn an_account_granted_only_a_library_with_no_folder_sees_nothing() {
+async fn an_account_granted_only_a_library_with_no_dir_sees_nothing() {
     let (state, _fixture) = crate::test_support::state_whose_grant_waits_on_the_library();
     let held_library: i64 = {
         let conn = state.library.conn();
@@ -4293,12 +4293,12 @@ async fn an_account_granted_only_a_library_with_no_folder_sees_nothing() {
              VALUES (1, 'W', 'english', 1);
              UPDATE work SET series_id = 1, volume = 1.0,
                              library_id = (SELECT library_id FROM root WHERE id = 1);
-             INSERT INTO library (id, name) VALUES (90, 'Folderless');",
+             INSERT INTO library (id, name) VALUES (90, 'Directoryless');",
         )
-        .expect("files the work under a series and a library, beside one with no folder");
+        .expect("files the work under a series and a library, beside one with no directory");
         crate::test_support::grant_root(&conn, 1);
         conn.query_row("SELECT library_id FROM root WHERE id = 1", [], |r| r.get(0))
-            .expect("the held folder's library")
+            .expect("the held directory's library")
     };
     let router =
         crate::test_support::authenticating(build_router(Arc::clone(&state)), &state.library);
@@ -4311,7 +4311,7 @@ async fn an_account_granted_only_a_library_with_no_folder_sees_nothing() {
     let mut wrong = Vec::new();
     for (grant, sees) in [
         ("granted the work's library", true),
-        ("granted only a library with no folder", false),
+        ("granted only a library with no directory", false),
     ] {
         if !sees {
             state
@@ -4321,7 +4321,7 @@ async fn an_account_granted_only_a_library_with_no_folder_sees_nothing() {
                     "INSERT INTO user_library (user_id, library_id) VALUES (1, 90);
                      DELETE FROM user_library WHERE user_id = 1 AND library_id <> 90;",
                 )
-                .expect("leaves the account granted the folderless library alone");
+                .expect("leaves the account granted the directoryless library alone");
         }
         for (uri, shows) in &routes {
             let response = crate::test_support::get(&router, uri).await;
@@ -4354,7 +4354,7 @@ async fn a_request_with_no_principal_sees_nothing() {
         .library
         .conn()
         .query_row("SELECT library_id FROM root WHERE id = 1", [], |r| r.get(0))
-        .expect("the held folder's library");
+        .expect("the held directory's library");
 
     let mut wrong = Vec::new();
     for (who, extensions, sees) in [
@@ -4423,10 +4423,10 @@ async fn a_request_with_no_principal_sees_nothing() {
     assert!(wrong.is_empty(), "{wrong:#?}");
 }
 
-/// What migration 15 leaves where a work spanned two folders, read by a
-/// reader granted the hub folder's library alone. The old work is theirs,
+/// What migration 15 leaves where a work spanned two directories, read by a
+/// reader granted the hub directory's library alone. The old work is theirs,
 /// with its hub edition `en`. The edition `raw` it kept from the other
-/// library's folder is not listed with it, and its pages, thumbnail and
+/// library's directory is not listed with it, and its pages, thumbnail and
 /// downloads answer as a work that does not exist, here and under OPDS. So
 /// does the other library's own work.
 #[tokio::test]
@@ -4507,13 +4507,13 @@ async fn a_reader_is_refused_the_edition_a_work_kept_from_a_library_they_are_not
 }
 
 /// A reader granted the library `Shelf` is listed the work under each of its
-/// two folders and may open each and ask for its pages. The work under
+/// two directories and may open each and ask for its pages. The work under
 /// `Other` is not listed, and its own address and its pages answer as a work
 /// that does not exist.
 #[tokio::test]
-async fn the_work_list_names_every_folder_of_a_granted_library() {
+async fn the_work_list_names_every_dir_of_a_granted_library() {
     let tmp = crate::test_support::Fixture::new("routes-granted-library");
-    let (router, state) = crate::test_support::router_over_a_granted_two_folder_library(&tmp);
+    let (router, state) = crate::test_support::router_over_a_granted_two_dir_library(&tmp);
     let slug_of = |title: &str| -> String {
         state
             .library
@@ -4533,10 +4533,10 @@ async fn the_work_list_names_every_folder_of_a_granted_library() {
         "a work of a library that was not granted is listed: {listed}"
     );
 
-    for title in ["First Folder Work", "Second Folder Work"] {
+    for title in ["First Directory Work", "Second Directory Work"] {
         assert!(
             listed.contains(title),
-            "a work under a folder of the granted library is missing: {title}: {listed}"
+            "a work under a directory of the granted library is missing: {title}: {listed}"
         );
         let slug = slug_of(title);
         let work = crate::test_support::get(&router, &format!("/api/works/{slug}")).await;
@@ -4650,7 +4650,7 @@ fn router_over_a_scanned_work_under_a_withheld_root(
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
         library_job: Default::default(),
-        folders: Vec::new(),
+        dirs: Vec::new(),
     });
     let router = build_router(state.clone());
     (router, state)
@@ -5132,7 +5132,7 @@ async fn progress_notes_and_truth_answer_a_hidden_work_as_a_slug_no_work_holds()
     use axum::http::Method;
 
     let tmp = crate::test_support::Fixture::new("o60-hidden-work");
-    let (router, state) = crate::test_support::router_over_a_granted_two_folder_library(&tmp);
+    let (router, state) = crate::test_support::router_over_a_granted_two_dir_library(&tmp);
     let hidden: String = state
         .library
         .conn()
@@ -5244,7 +5244,7 @@ async fn every_route_naming_a_work_answers_a_hidden_one_as_a_slug_no_work_holds(
     use axum::http::Method;
 
     let tmp = crate::test_support::Fixture::new("o60-walk");
-    let (router, state) = crate::test_support::router_over_a_granted_two_folder_library(&tmp);
+    let (router, state) = crate::test_support::router_over_a_granted_two_dir_library(&tmp);
     let slug_of = |title: &str| -> String {
         state
             .library
@@ -5254,7 +5254,7 @@ async fn every_route_naming_a_work_answers_a_hidden_one_as_a_slug_no_work_holds(
             })
             .expect("the work's slug")
     };
-    let granted = slug_of("First Folder Work");
+    let granted = slug_of("First Directory Work");
     let hidden = slug_of("Other Library Work");
     let unknown = "no-work-is-called-this".to_string();
     let concrete = |pattern: &str, work: &str| -> String {
@@ -5331,12 +5331,12 @@ async fn a_position_and_a_note_outlive_the_grant_and_come_back_with_it() {
     use axum::http::Method;
 
     let tmp = crate::test_support::Fixture::new("o60-outlives-the-grant");
-    let (router, state) = crate::test_support::router_over_a_granted_two_folder_library(&tmp);
+    let (router, state) = crate::test_support::router_over_a_granted_two_dir_library(&tmp);
     let slug: String = state
         .library
         .conn()
         .query_row(
-            "SELECT slug FROM work WHERE title = 'First Folder Work'",
+            "SELECT slug FROM work WHERE title = 'First Directory Work'",
             [],
             |row| row.get(0),
         )
@@ -5417,7 +5417,7 @@ async fn a_document_that_does_not_parse_is_refused_before_the_grant_is_asked() {
     use axum::http::Method;
 
     let tmp = crate::test_support::Fixture::new("o60-malformed");
-    let (router, state) = crate::test_support::router_over_a_granted_two_folder_library(&tmp);
+    let (router, state) = crate::test_support::router_over_a_granted_two_dir_library(&tmp);
     let slug_of = |title: &str| -> String {
         state
             .library
@@ -5427,7 +5427,7 @@ async fn a_document_that_does_not_parse_is_refused_before_the_grant_is_asked() {
             })
             .expect("the work's slug")
     };
-    let granted = slug_of("First Folder Work");
+    let granted = slug_of("First Directory Work");
     let hidden = slug_of("Other Library Work");
     let (status, body) = answered(
         &router,
@@ -5802,7 +5802,7 @@ async fn a_write_to_a_hidden_work_is_refused_before_its_own_checks_are_made() {
     use axum::http::Method;
 
     let tmp = crate::test_support::Fixture::new("o60-before-its-own-checks");
-    let (router, state) = crate::test_support::router_over_a_granted_two_folder_library(&tmp);
+    let (router, state) = crate::test_support::router_over_a_granted_two_dir_library(&tmp);
     let slug_of = |title: &str| -> String {
         state
             .library
@@ -5812,7 +5812,7 @@ async fn a_write_to_a_hidden_work_is_refused_before_its_own_checks_are_made() {
             })
             .expect("the work's slug")
     };
-    let granted = slug_of("First Folder Work");
+    let granted = slug_of("First Directory Work");
     let hidden = slug_of("Other Library Work");
     let unknown = "no-work-is-called-this";
 
@@ -5871,7 +5871,7 @@ async fn a_notes_body_naming_another_work_is_refused_and_stored_under_neither() 
     use axum::http::Method;
 
     let tmp = crate::test_support::Fixture::new("o60-body-names-another-work");
-    let (router, state) = crate::test_support::router_over_a_granted_two_folder_library(&tmp);
+    let (router, state) = crate::test_support::router_over_a_granted_two_dir_library(&tmp);
     let slug_of = |title: &str| -> String {
         state
             .library
@@ -5881,7 +5881,7 @@ async fn a_notes_body_naming_another_work_is_refused_and_stored_under_neither() 
             })
             .expect("the work's slug")
     };
-    let granted = slug_of("First Folder Work");
+    let granted = slug_of("First Directory Work");
     let hidden = slug_of("Other Library Work");
     let granted_notes = format!("/api/works/{granted}/notes");
     let hidden_notes = format!("/api/works/{hidden}/notes");
@@ -5950,7 +5950,7 @@ async fn answered_if_none_match(
 #[tokio::test]
 async fn a_conditional_read_of_a_hidden_work_is_refused_as_a_slug_no_work_holds() {
     let tmp = crate::test_support::Fixture::new("o60-conditional-read");
-    let (router, state) = crate::test_support::router_over_a_granted_two_folder_library(&tmp);
+    let (router, state) = crate::test_support::router_over_a_granted_two_dir_library(&tmp);
     let slug_of = |title: &str| -> String {
         state
             .library
@@ -5960,7 +5960,7 @@ async fn a_conditional_read_of_a_hidden_work_is_refused_as_a_slug_no_work_holds(
             })
             .expect("the work's slug")
     };
-    let granted = slug_of("First Folder Work");
+    let granted = slug_of("First Directory Work");
     let hidden = slug_of("Other Library Work");
     let unknown = "no-work-is-called-this";
 

@@ -1338,7 +1338,7 @@
 .user-table,
 .new-account,
 .library-page,
-.folder-page,
+.dir-page,
 .add-library {
   max-width: var(--config-measure);
 }
@@ -1366,7 +1366,7 @@
 /* O180: the sentences this screen says name a path as plain text, and a
    path does not break at a slash. On any of its pages that is a list that
    could not be read, a refusal, in its form or said once its page has gone,
-   and the sentence over a removal's report; on a folder's page, a scan that
+   and the sentence over a removal's report; on a directory's page, a scan that
    was turned down, was refused, or ran and failed as well. A paragraph that
    is a flex or grid item breaks its words but keeps the width its track
    gives it, so a sentence that must not widen its box is measured, not
@@ -1382,7 +1382,7 @@
   overflow-wrap: anywhere;
 }
 
-/* O180: the page's heading is the folder's path, and a path does not
+/* O180: the page's heading is the directory's path, and a path does not
    break at a slash. A path runs long, so it is drawn at a heading's weight
    and not at its size. */
 .root-row > h2 {
@@ -1396,9 +1396,9 @@
 
 /* A report's two section headings, drawn at whatever level its caller says
    is beneath the heading that holds it. Styled by class and not by tag, so
-   they draw alike at any level and never as a library's name or a folder's
+   they draw alike at any level and never as a library's name or a directory's
    path; the size is the body's, so a heading in a report is never louder
-   than the one above it. Among a folder's facts, which are packed close, a
+   than the one above it. Among a directory's facts, which are packed close, a
    heading takes a step off the facts above and sits near the ones it
    heads. */
 .report-heading {
@@ -1414,8 +1414,8 @@
 }
 
 /* Three independent facts, each naming what it is a fact about. A sentence
-   was the wrong shape for them: `unknown — probed when a folder is added` does
-   not say what is unknown (spec §11.6). */
+   was the wrong shape for them: `unknown — probed when a directory is added`
+   does not say what is unknown (spec §11.6). */
 .root-row .regime {
   display: grid;
   grid-template-columns: auto 1fr;
@@ -1557,7 +1557,7 @@
    do not. `.add-root` lays the picker's own controls out with these same
    declarations (below), so the picker's line is the same there as on the
    make page. */
-.folder-picker,
+.dir-picker,
 .add-root {
   display: flex;
   flex-wrap: wrap;
@@ -1565,19 +1565,19 @@
   gap: var(--space-2);
 }
 
-.folder-picker .field {
+.dir-picker .field {
   flex: 1 1 20rem;
 }
 
 /* The browser, when open, on a line of its own beneath the box. */
-.folder-browser {
+.dir-browser {
   flex-basis: 100%;
   border: 1px solid var(--line);
   border-radius: var(--radius-control);
   padding: var(--space-3);
 }
 
-.folder-browser .where {
+.dir-browser .where {
   min-width: 0;
   margin: 0 0 var(--space-2);
   overflow-wrap: anywhere;
@@ -1586,29 +1586,29 @@
 /* Nothing to draw yet: the first listing is being read and is not yet slow
    enough to say so. An empty box drawn for that while is a flicker of its
    own. */
-.folder-browser:empty {
+.dir-browser:empty {
   display: none;
 }
 
 /* A slow read: what is still drawn is the listing being left, and the line
    that says so may be below the window on a long one. */
-.folder-browser:has(> .reading) > :not(.reading) {
+.dir-browser:has(> .reading) > :not(.reading) {
   color: var(--muted);
 }
 
-.folder-browser .reading {
+.dir-browser .reading {
   margin: var(--space-2) 0 0;
 }
 
-/* Up names the folder it goes to, and a folder's name may have nowhere to
+/* Up names the directory it goes to, and a directory's name may have nowhere to
    break. Broken over lines, it starts at the edge the path above and the
-   folders below start at. */
-.folder-browser button[name="up"] {
+   directories below start at. */
+.dir-browser button[name="up"] {
   text-align: left;
   overflow-wrap: anywhere;
 }
 
-.folder-list {
+.dir-list {
   list-style: none;
   margin: var(--space-2) 0 0;
   padding: 0;
@@ -1616,7 +1616,7 @@
   gap: var(--space-1);
 }
 
-.folder-list button {
+.dir-list button {
   width: 100%;
   text-align: left;
   overflow-wrap: anywhere;
@@ -1702,9 +1702,9 @@
   font-weight: 600;
 }
 
-/* The library going with its last folder is a second thing removed, so it is
+/* The library going with its last directory is a second thing removed, so it is
    drawn as strongly as the counts above it. */
-.remove-root .last-folder {
+.remove-root .last-dir {
   font-weight: 600;
   max-width: 60ch;
 }
@@ -1765,14 +1765,14 @@
   overflow-wrap: anywhere;
 }
 
-/* The folder picker under a library's table. Its own box gives way, so its
+/* The directory picker under a library's table. Its own box gives way, so its
    box, its buttons, the Cancel it draws after them and the browser wrap in
    `.add-root`'s row, and a refusal joins that row at its gap. */
 .add-root {
   margin-top: var(--space-3);
 }
 
-.add-root > .folder-picker {
+.add-root > .dir-picker {
   display: contents;
 }
 
@@ -1783,7 +1783,7 @@
   margin: 0;
 }
 
-/* Configuration's tables: a row per library, folder or account, each a way
+/* Configuration's tables: a row per library, directory or account, each a way
    to that one's page. The UI face, not `base.css`'s figures face: these
    cells are names and paths more than numbers. */
 .config-table {
@@ -1811,7 +1811,7 @@
 
 /* The row is the link: the name's link is stretched over the whole row, so
    the row is positioned for it, and shows where the pointer or focus is. A
-   row whose link is withdrawn, as a library's Folders table draws while its
+   row whose link is withdrawn, as a library's Directories table draws while its
    removal is open, goes nowhere and does not light. */
 .config-table tbody tr {
   position: relative;
@@ -1970,7 +1970,7 @@
   margin: var(--space-5) 0 var(--space-2);
 }
 
-.library-scan-reports .folder-report > h4 {
+.library-scan-reports .dir-report > h4 {
   margin: var(--space-4) 0 0;
   overflow-wrap: anywhere;
 }
@@ -2178,7 +2178,7 @@
   padding: 0;
 }
 
-.user-row .grant-folders {
+.user-row .grant-dirs {
   list-style: none;
   margin: 0;
   padding: 0 0 0 var(--space-5);
@@ -2186,7 +2186,7 @@
   font-size: var(--text-meta);
 }
 
-.user-row .grant-folders code {
+.user-row .grant-dirs code {
   overflow-wrap: anywhere;
 }
 

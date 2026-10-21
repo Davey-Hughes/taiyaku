@@ -106,7 +106,7 @@ export interface HomeLists {
 
 /**
  * One library, as `/api/library/status` lists it — spec F §3. `scanned` says
- * whether any of its folders has been walked, so a library's page with
+ * whether any of its directories has been walked, so a library's page with
  * nothing on it can say "not read yet" rather than "nothing here".
  */
 export interface LibraryEntry {

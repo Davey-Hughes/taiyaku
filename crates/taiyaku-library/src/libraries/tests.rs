@@ -5,7 +5,7 @@ use crate::scan::{InLibrary, add_root, add_root_in};
 /// Manga is made first and Comics last, so the order by name is not also the
 /// order by id.
 #[test]
-fn listing_names_each_library_with_its_folders_and_works() {
+fn listing_names_each_library_with_its_dirs_and_works() {
     let parent = crate::tests::tempdir("libraries-list");
     let dirs: Vec<_> = ["Volumes", "Chapters", "Comics"]
         .iter()
@@ -32,13 +32,13 @@ fn listing_names_each_library_with_its_folders_and_works() {
     assert_eq!(
         listed
             .iter()
-            .map(|l| (l.name.as_str(), l.folders.clone(), l.works))
+            .map(|l| (l.name.as_str(), l.dirs.clone(), l.works))
             .collect::<Vec<_>>(),
         vec![
             ("Comics", vec![dirs[2].clone()], 1),
             ("Manga", vec![dirs[0].clone(), dirs[1].clone()], 0),
         ],
-        "by name, each folder once, oldest first, and each library's own works"
+        "by name, each directory once, oldest first, and each library's own works"
     );
 }
 

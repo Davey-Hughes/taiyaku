@@ -116,24 +116,24 @@ pub fn by_api_key(conn: &Connection, secret: &str) -> Result<Option<Account>, St
     Ok(found)
 }
 
-/// What an account may see, as the folders that hold it.
+/// What an account may see, as the directories that hold it.
 ///
 /// Two cases rather than a list where empty means "everything": a list that
 /// can stand for every library turns any path that empties it (a revoke, a
-/// removal, a folderless library) into a silent widening. `Only` with no
-/// folders sees nothing. No `Default`, so each place that builds one says
+/// removal, a library with no directory) into a silent widening. `Only` with no
+/// directories sees nothing. No `Default`, so each place that builds one says
 /// which case it means.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Access {
     /// An administrator, or an account set to "Every library", including any
     /// added later.
     Every,
-    /// Only these folders (root ids).
+    /// Only these directories (root ids).
     Only(Vec<i64>),
 }
 
 impl Access {
-    /// Whether a folder is inside this access.
+    /// Whether a directory is inside this access.
     pub fn allows(&self, root_id: i64) -> bool {
         match self {
             Access::Every => true,
@@ -141,21 +141,21 @@ impl Access {
         }
     }
 
-    /// The `AND` clause this access adds to a query, with `in_folders` writing
-    /// the test over one `?` per folder: the one place the cases of `Access`
+    /// The `AND` clause this access adds to a query, with `in_dirs` writing
+    /// the test over one `?` per directory: the one place the cases of `Access`
     /// become SQL, for `browse` and for the server's own queries alike.
     ///
-    /// **`Only` with no folder is a false literal, never a clause left out**,
+    /// **`Only` with no directory is a false literal, never a clause left out**,
     /// because an account granted nothing must match nothing and a missing
     /// clause matches everything. It binds no parameter, as `Every`'s missing
     /// clause binds none, which is why [`Access::bound`] answers both with no
     /// values and every statement's count still agrees with its holes.
-    pub fn grant_clause(&self, in_folders: impl FnOnce(&str) -> String) -> String {
+    pub fn grant_clause(&self, in_dirs: impl FnOnce(&str) -> String) -> String {
         match self {
             Access::Every => String::new(),
             Access::Only(roots) if roots.is_empty() => " AND 0".to_owned(),
             Access::Only(roots) => {
-                format!(" AND {}", in_folders(&crate::browse::holes(roots.len())))
+                format!(" AND {}", in_dirs(&crate::browse::holes(roots.len())))
             }
         }
     }
@@ -170,16 +170,16 @@ impl Access {
 }
 
 /// What this account may see: every library when its `every_library` is set,
-/// and otherwise the folders of the libraries it was granted, ascending.
+/// and otherwise the directories of the libraries it was granted, ascending.
 ///
 /// **"Only these" with no grant sees nothing**, never every library, so that
 /// revoking an account's last grant or removing its only library leaves it
 /// blind rather than widened. An id naming no account reads the same way.
 ///
-/// A grant names a library and the guard filters on folders, so this is where
+/// A grant names a library and the guard filters on directories, so this is where
 /// one becomes the other. **A grant counts whether or not its library still
-/// has a folder** (the `LEFT JOIN`): an account whose grants resolve to no
-/// folder is `Only` with none and sees nothing, never `Every`.
+/// has a directory** (the `LEFT JOIN`): an account whose grants resolve to no
+/// directory is `Only` with none and sees nothing, never `Every`.
 ///
 /// The role is not read here: `taiyaku-serve`'s `Principal::from_account`
 /// gives an administrator `Every` whatever this answers.
@@ -226,7 +226,7 @@ pub fn libraries_for(conn: &Connection, user_id: i64) -> Result<Vec<i64>, String
 
 /// Whether a library has the id.
 ///
-/// **A library with no folder may be granted**: it resolves to no folder, so
+/// **A library with no directory may be granted**: it resolves to no directory, so
 /// granting it to an account seeing only some libraries adds nothing, and on
 /// one seeing every library it narrows to nothing. Neither widens.
 fn library_exists(conn: &Connection, library_id: i64) -> Result<bool, String> {
@@ -238,7 +238,7 @@ fn library_exists(conn: &Connection, library_id: i64) -> Result<bool, String> {
     .map_err(|e| format!("checking whether library {library_id} can be granted: {e}"))
 }
 
-/// Grant `user_id` sight of `library_id`: every folder filed under it.
+/// Grant `user_id` sight of `library_id`: every directory filed under it.
 ///
 /// **Granting is restricting**: the account is set to "only these" and the
 /// library is added to them, so an account that saw every library sees only

@@ -14,9 +14,9 @@ pub(super) fn scalar(conn: &Connection, sql: &str) -> i64 {
     conn.query_row(sql, [], |r| r.get(0)).expect(sql)
 }
 
-/// A folder at `dir` holding each `(series, volume, pages)`, filed under
+/// A directory at `dir` holding each `(series, volume, pages)`, filed under
 /// `library`, with `edition` as its edition key where one is given.
-pub(super) fn a_folder(
+pub(super) fn a_dir(
     conn: &Connection,
     dir: &Path,
     library: &str,
@@ -93,37 +93,37 @@ pub(super) fn dump(conn: &Connection) -> Vec<String> {
 }
 
 fn refusal(conn: &Connection, root: &Root, target: i64) -> (String, Vec<String>) {
-    let folder = folder(conn, root.id).expect("the folder");
-    match refused_before(conn, &folder, target).expect("reads") {
+    let dir = dir(conn, root.id).expect("the directory");
+    match refused_before(conn, &dir, target).expect("reads") {
         Some(MoveError::Refused { why, volumes }) => (why, volumes),
         other => panic!("not refused: {other:?}"),
     }
 }
 
 #[test]
-fn a_folder_or_a_library_that_is_not_there_is_missing_and_its_own_library_is_a_mistake() {
-    let dir = tempdir("relocate-resolve");
+fn a_dir_or_a_library_that_is_not_there_is_missing_and_its_own_library_is_a_mistake() {
+    let top = tempdir("relocate-resolve");
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = a_folder(
+    let root = a_dir(
         &conn,
-        &dir.path().join("a"),
+        &top.path().join("a"),
         "Manga",
         None,
         &[("S", "v01", 2)],
     );
-    a_folder(
+    a_dir(
         &conn,
-        &dir.path().join("b"),
+        &top.path().join("b"),
         "Comics",
         None,
         &[("T", "v01", 2)],
     );
-    let held = folder(&conn, root.id).expect("the folder");
+    let held = dir(&conn, root.id).expect("the directory");
     assert_eq!(held.library, "Manga");
 
     assert!(
-        matches!(folder(&conn, 4242), Err(MoveError::Missing(why)) if why.contains("there is no folder 4242"))
+        matches!(dir(&conn, 4242), Err(MoveError::Missing(why)) if why.contains("there is no directory 4242"))
     );
     assert!(matches!(
         resolve(&conn, &held, Target::Library(4242)),
@@ -169,14 +169,14 @@ fn the_same_volume_under_the_same_edition_key_in_the_target_refuses_the_move() {
     let dir = tempdir("relocate-same-key");
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let moving = a_folder(
+    let moving = a_dir(
         &conn,
         &dir.path().join("a"),
         "Chapters",
         None,
         &[("Series", "v01", 2), ("Series", "v02", 2)],
     );
-    a_folder(
+    a_dir(
         &conn,
         &dir.path().join("b"),
         "Manga",
@@ -197,57 +197,57 @@ fn the_same_volume_under_the_same_edition_key_in_the_target_refuses_the_move() {
     assert!(volumes[0].ends_with("(raw)"), "{volumes:?}");
 }
 
-/// The same two folders with an edition key apiece is case 3, which a move
+/// The same two directories with an edition key apiece is case 3, which a move
 /// makes: nothing refuses it here.
 #[test]
 fn the_same_volume_under_another_edition_key_does_not_refuse_the_move() {
-    let dir = tempdir("relocate-other-key");
+    let top = tempdir("relocate-other-key");
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let moving = a_folder(
+    let moving = a_dir(
         &conn,
-        &dir.path().join("a"),
+        &top.path().join("a"),
         "Chapters",
         Some("chapters"),
         &[("Series", "v01", 2)],
     );
-    a_folder(
+    a_dir(
         &conn,
-        &dir.path().join("b"),
+        &top.path().join("b"),
         "Manga",
         None,
         &[("Series", "v01", 3)],
     );
     scanned(&conn);
-    let held = folder(&conn, moving.id).expect("the folder");
+    let held = dir(&conn, moving.id).expect("the directory");
     assert_eq!(
         refused_before(&conn, &held, library_called(&conn, "Manga")).expect("reads"),
         None
     );
 }
 
-/// One edition with a member under each of two folders of one library. Moving
-/// either folder away would divide the edition itself.
+/// One edition with a member under each of two directories of one library. Moving
+/// either directory away would divide the edition itself.
 #[test]
 fn an_edition_with_members_on_both_sides_refuses_the_move() {
     let dir = tempdir("relocate-spanning");
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let moving = a_folder(
+    let moving = a_dir(
         &conn,
         &dir.path().join("a"),
         "Manga",
         None,
         &[("Series", "v01", 2)],
     );
-    a_folder(
+    a_dir(
         &conn,
         &dir.path().join("b"),
         "Manga",
         None,
         &[("Series", "v01", 3)],
     );
-    a_folder(
+    a_dir(
         &conn,
         &dir.path().join("c"),
         "Other",
@@ -262,7 +262,7 @@ fn an_edition_with_members_on_both_sides_refuses_the_move() {
                         WHERE w.title LIKE 'Series%'"
         ),
         1,
-        "the fixture: both folders' files are one edition of one work"
+        "the fixture: both directories' files are one edition of one work"
     );
 
     let (why, volumes) = refusal(&conn, &moving, library_called(&conn, "Other"));
@@ -271,31 +271,31 @@ fn an_edition_with_members_on_both_sides_refuses_the_move() {
     assert_eq!(volumes.len(), 1, "{volumes:?}");
 }
 
-/// The folder is its library's last and the library is `sam`'s only grant:
+/// The directory is its library's last and the library is `sam`'s only grant:
 /// the move goes ahead, the rehearsal names `sam`, and `sam` then sees no
-/// library. Moving a folder its library keeps another of names no one.
+/// library. Moving a directory its library keeps another of names no one.
 #[test]
-fn moving_the_last_folder_of_an_accounts_only_library_names_who_is_left_with_none() {
+fn moving_the_last_dir_of_an_accounts_only_library_names_who_is_left_with_none() {
     let dir = tempdir("relocate-only-grant");
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    // Shelf's two folders come first, so the moved folder's id is not its
-    // library's, and a holder lookup keyed on the folder's id finds no one.
-    let shelf_a = a_folder(
+    // Shelf's two directories come first, so the moved directory's id is not its
+    // library's, and a holder lookup keyed on the directory's id finds no one.
+    let shelf_a = a_dir(
         &conn,
         &dir.path().join("b"),
         "Shelf",
         None,
         &[("T", "v01", 2)],
     );
-    a_folder(
+    a_dir(
         &conn,
         &dir.path().join("c"),
         "Shelf",
         None,
         &[("U", "v01", 2)],
     );
-    let solo = a_folder(
+    let solo = a_dir(
         &conn,
         &dir.path().join("a"),
         "Solo",
@@ -304,7 +304,7 @@ fn moving_the_last_folder_of_an_accounts_only_library_names_who_is_left_with_non
     );
     assert_ne!(
         solo.id, solo.library_id,
-        "the fixture must tell a folder's id from its library's: {solo:?}"
+        "the fixture must tell a directory's id from its library's: {solo:?}"
     );
     scanned(&conn);
     conn.execute(
@@ -338,12 +338,12 @@ fn moving_the_last_folder_of_an_accounts_only_library_names_who_is_left_with_non
         !crate::browse::series(&conn, &crate::account::Access::Every, sam, None)
             .expect("lists")
             .is_empty(),
-        "the fixture: Shelf holds series, the moved folder's among them"
+        "the fixture: Shelf holds series, the moved directory's among them"
     );
 
     crate::account::grant_library(&conn, sam, shelf_a.library_id).expect("grants Shelf");
     let kept = moved(&conn, &shelf_a, Target::New("Fresh"));
-    assert_eq!(kept.library_removed, None, "Shelf keeps another folder");
+    assert_eq!(kept.library_removed, None, "Shelf keeps another directory");
     assert_eq!(kept.left_with_no_library, Vec::<String>::new());
 }
 
@@ -374,30 +374,30 @@ fn moved(conn: &Connection, root: &Root, target: Target<'_>) -> Moved {
     move_root(conn, root.id, target).expect("moves").0
 }
 
-/// Case 2, the one a move exists for: the library keeps another folder, and
-/// the moved folder's work keeps its row, its slug, its position, its note
+/// Case 2, the one a move exists for: the library keeps another directory, and
+/// the moved directory's work keeps its row, its slug, its position, its note
 /// and what was put on it by hand. `keeps_documents` is off, so nothing but
 /// the row holds the hand title.
 #[test]
-fn a_folder_leaving_a_library_that_keeps_another_keeps_its_works_as_they_were() {
+fn a_dir_leaving_a_library_that_keeps_another_keeps_its_works_as_they_were() {
     let dir = tempdir("relocate-case-2");
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    a_folder(
+    a_dir(
         &conn,
         &dir.path().join("kept"),
         "A",
         None,
         &[("Kept", "v01", 2)],
     );
-    let moving = a_folder(
+    let moving = a_dir(
         &conn,
         &dir.path().join("moved"),
         "A",
         None,
         &[("Moved", "v01", 3)],
     );
-    let other = a_folder(
+    let other = a_dir(
         &conn,
         &dir.path().join("else"),
         "B",
@@ -493,22 +493,22 @@ fn a_folder_leaving_a_library_that_keeps_another_keeps_its_works_as_they_were() 
     );
 }
 
-/// Case 1: the folder is alone in its library, so the library goes with the
+/// Case 1: the directory is alone in its library, so the library goes with the
 /// move, and its grant with it. The account holds another library, so that
 /// is allowed, and counted.
 #[test]
-fn a_folder_alone_in_its_library_takes_its_works_and_the_library_goes() {
+fn a_dir_alone_in_its_library_takes_its_works_and_the_library_goes() {
     let dir = tempdir("relocate-case-1");
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let moving = a_folder(
+    let moving = a_dir(
         &conn,
         &dir.path().join("moved"),
         "Solo",
         None,
         &[("Moved", "v01", 3)],
     );
-    let other = a_folder(
+    let other = a_dir(
         &conn,
         &dir.path().join("else"),
         "B",
@@ -566,14 +566,14 @@ fn a_volume_the_target_holds_under_another_key_joins_it_as_an_edition() {
     let dir = tempdir("relocate-case-3");
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let moving = a_folder(
+    let moving = a_dir(
         &conn,
         &dir.path().join("chapters"),
         "Chapters",
         Some("chapters"),
         &[("Series", "v01", 2), ("Series", "v02", 2)],
     );
-    let volumes = a_folder(
+    let volumes = a_dir(
         &conn,
         &dir.path().join("volumes"),
         "Manga",
@@ -662,14 +662,14 @@ fn a_divided_work_stays_with_its_hub_and_its_other_edition_takes_its_history() {
     let dir = tempdir("relocate-split-stays");
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    a_folder(
+    a_dir(
         &conn,
         &dir.path().join("hub"),
         "Manga",
         Some("en"),
         &[("Series", "v01", 2)],
     );
-    let moving = a_folder(
+    let moving = a_dir(
         &conn,
         &dir.path().join("raw"),
         "Manga",
@@ -684,7 +684,7 @@ fn a_divided_work_stays_with_its_hub_and_its_other_edition_takes_its_history() {
             &format!("SELECT count(*) FROM work WHERE id = {id} AND hub = 'en'")
         ),
         1,
-        "the fixture: one work, its hub the folder that stays"
+        "the fixture: one work, its hub the directory that stays"
     );
     for edition in ["en", "raw"] {
         a_position_and_a_note(&conn, id, edition);
@@ -784,14 +784,14 @@ fn a_divided_work_goes_with_its_hub_and_the_edition_that_stays_keeps_its_history
     let dir = tempdir("relocate-split-moves");
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let moving = a_folder(
+    let moving = a_dir(
         &conn,
         &dir.path().join("hub"),
         "Manga",
         Some("en"),
         &[("Series", "v01", 2)],
     );
-    a_folder(
+    a_dir(
         &conn,
         &dir.path().join("raw"),
         "Manga",
@@ -860,21 +860,21 @@ fn a_divided_work_goes_with_its_hub_and_the_edition_that_stays_keeps_its_history
 }
 
 /// A rehearsal is the move rolled back: the same answer, and neither the
-/// store nor the folders' `.taiyaku/` directories changed. Both folders keep
+/// store nor either directory's `.taiyaku/` changed. Both directories keep
 /// documents, so a derive that reconciled would write there.
 #[test]
 fn a_rehearsal_answers_what_the_move_would_and_leaves_everything_as_it_was() {
     let dir = tempdir("relocate-rehearsal");
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    a_folder(
+    a_dir(
         &conn,
         &dir.path().join("kept"),
         "A",
         None,
         &[("Kept", "v01", 2)],
     );
-    let moving = a_folder(
+    let moving = a_dir(
         &conn,
         &dir.path().join("moved"),
         "A",
@@ -956,14 +956,14 @@ fn a_refused_move_changes_nothing_whether_rehearsed_or_made() {
     let dir = tempdir("relocate-refused");
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let moving = a_folder(
+    let moving = a_dir(
         &conn,
         &dir.path().join("a"),
         "Chapters",
         None,
         &[("Series", "v01", 2)],
     );
-    let target = a_folder(
+    let target = a_dir(
         &conn,
         &dir.path().join("b"),
         "Manga",
@@ -1003,14 +1003,14 @@ fn a_move_that_would_lose_a_position_is_refused_by_the_verdict() {
     let dir = tempdir("relocate-verdict");
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let moving = a_folder(
+    let moving = a_dir(
         &conn,
         &dir.path().join("chapters"),
         "Chapters",
         Some("chapters"),
         &[("Series", "v01", 2)],
     );
-    let volumes = a_folder(
+    let volumes = a_dir(
         &conn,
         &dir.path().join("volumes"),
         "Manga",
@@ -1050,29 +1050,29 @@ fn a_move_that_would_lose_a_position_is_refused_by_the_verdict() {
     assert_eq!(dump(&conn), before);
 }
 
-/// `refused_before`'s second statement counts a member whose folder was
+/// `refused_before`'s second statement counts a member whose directory was
 /// removed (`root_id` NULL, what `ON DELETE SET NULL` leaves) as "elsewhere".
 /// `!= ?1` would call it nowhere and let the move divide the edition.
 #[test]
-fn an_edition_with_a_member_whose_folder_is_gone_still_refuses_the_move() {
+fn an_edition_with_a_member_whose_dir_is_gone_still_refuses_the_move() {
     let dir = tempdir("relocate-spanning-null");
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let moving = a_folder(
+    let moving = a_dir(
         &conn,
         &dir.path().join("a"),
         "Manga",
         None,
         &[("Series", "v01", 2)],
     );
-    let other = a_folder(
+    let other = a_dir(
         &conn,
         &dir.path().join("b"),
         "Manga",
         None,
         &[("Series", "v01", 3)],
     );
-    a_folder(
+    a_dir(
         &conn,
         &dir.path().join("c"),
         "Other",
@@ -1084,11 +1084,11 @@ fn an_edition_with_a_member_whose_folder_is_gone_still_refuses_the_move() {
         "UPDATE member SET root_id = NULL WHERE root_id = ?1",
         [other.id],
     )
-    .expect("a member whose folder is gone");
+    .expect("a member whose directory is gone");
     assert_eq!(
         scalar(&conn, "SELECT count(*) FROM member WHERE root_id IS NULL"),
         1,
-        "the fixture: one member under no folder, one under the moving one"
+        "the fixture: one member under no directory, one under the moving one"
     );
 
     let (why, volumes) = refusal(&conn, &moving, library_called(&conn, "Other"));
@@ -1108,8 +1108,8 @@ fn a_refusal_naming_four_volumes_ends_its_list_with_how_many_more() {
         .into_iter()
         .map(|v| ("Series", v, 2))
         .collect();
-    let moving = a_folder(&conn, &dir.path().join("a"), "Chapters", None, &volumes);
-    a_folder(&conn, &dir.path().join("b"), "Manga", None, &volumes);
+    let moving = a_dir(&conn, &dir.path().join("a"), "Chapters", None, &volumes);
+    a_dir(&conn, &dir.path().join("b"), "Manga", None, &volumes);
     scanned(&conn);
 
     let (why, named) = refusal(&conn, &moving, library_called(&conn, "Manga"));
@@ -1125,14 +1125,14 @@ fn the_works_of_a_series_the_target_holds_join_it() {
     let dir = tempdir("relocate-series-joins");
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let moving = a_folder(
+    let moving = a_dir(
         &conn,
         &dir.path().join("a"),
         "A",
         None,
         &[("Series", "v01", 2)],
     );
-    let target = a_folder(
+    let target = a_dir(
         &conn,
         &dir.path().join("b"),
         "B",
@@ -1185,14 +1185,14 @@ fn a_series_that_keeps_works_behind_stays_and_the_target_gets_one_of_its_title()
     let dir = tempdir("relocate-series-stays");
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let moving = a_folder(
+    let moving = a_dir(
         &conn,
         &dir.path().join("a"),
         "A",
         None,
         &[("Series", "v01", 2)],
     );
-    a_folder(
+    a_dir(
         &conn,
         &dir.path().join("b"),
         "A",
@@ -1257,18 +1257,18 @@ fn a_series_that_keeps_works_behind_stays_and_the_target_gets_one_of_its_title()
 }
 
 #[test]
-fn a_new_library_is_made_for_the_folder_and_named_in_the_answer() {
+fn a_new_library_is_made_for_the_dir_and_named_in_the_answer() {
     let dir = tempdir("relocate-new-library");
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let moving = a_folder(
+    let moving = a_dir(
         &conn,
         &dir.path().join("a"),
         "A",
         None,
         &[("Kept", "v01", 2)],
     );
-    a_folder(
+    a_dir(
         &conn,
         &dir.path().join("b"),
         "A",
@@ -1290,21 +1290,21 @@ fn a_new_library_is_made_for_the_folder_and_named_in_the_answer() {
     );
 }
 
-/// The document is addressed off the hub's folder, which has not moved on
+/// The document is addressed off the hub's directory, which has not moved on
 /// disk, so it is where it was.
 #[test]
 fn a_move_with_documents_kept_leaves_the_works_document_where_it_was() {
     let dir = tempdir("relocate-documents");
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    a_folder(
+    a_dir(
         &conn,
         &dir.path().join("a"),
         "A",
         None,
         &[("Kept", "v01", 2)],
     );
-    let moving = a_folder(
+    let moving = a_dir(
         &conn,
         &dir.path().join("b"),
         "A",
@@ -1361,21 +1361,21 @@ fn a_divided_work_whose_hub_moves_to_a_library_holding_its_volume_is_refused() {
     let dir = tempdir("relocate-third-refusal");
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let moving = a_folder(
+    let moving = a_dir(
         &conn,
         &dir.path().join("hub"),
         "A",
         Some("en"),
         &[("Series", "v01", 2)],
     );
-    a_folder(
+    a_dir(
         &conn,
         &dir.path().join("raw"),
         "A",
         None,
         &[("Series", "v01", 3)],
     );
-    let target = a_folder(
+    let target = a_dir(
         &conn,
         &dir.path().join("held"),
         "B",
@@ -1392,7 +1392,7 @@ fn a_divided_work_whose_hub_moves_to_a_library_holding_its_volume_is_refused() {
             )
         ),
         1,
-        "the fixture: one work in A, its hub the folder that moves"
+        "the fixture: one work in A, its hub the directory that moves"
     );
     assert_eq!(
         scalar(
@@ -1421,18 +1421,18 @@ fn a_divided_work_whose_hub_moves_to_a_library_holding_its_volume_is_refused() {
 /// O190: what a move does to an open proposal. It asserts only that the move
 /// succeeds and the row stands, and prints the rest.
 #[test]
-fn a_proposal_across_a_moved_folder_still_exists() {
+fn a_proposal_across_a_moved_dir_still_exists() {
     let dir = tempdir("relocate-o190");
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    a_folder(
+    a_dir(
         &conn,
         &dir.path().join("a"),
         "A",
         None,
         &[("Sousou no Frieren", "v01", 2)],
     );
-    let moving = a_folder(
+    let moving = a_dir(
         &conn,
         &dir.path().join("b"),
         "A",
@@ -1490,14 +1490,14 @@ fn a_join_that_loses_an_alignment_the_fold_cannot_carry_is_refused() {
     let dir = tempdir("relocate-lost-alignment");
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let moving = a_folder(
+    let moving = a_dir(
         &conn,
         &dir.path().join("chapters"),
         "Chapters",
         Some("chapters"),
         &[("Series", "v01", 2)],
     );
-    let volumes = a_folder(
+    let volumes = a_dir(
         &conn,
         &dir.path().join("volumes"),
         "Manga",
@@ -1537,19 +1537,19 @@ fn a_join_that_loses_an_alignment_the_fold_cannot_carry_is_refused() {
 /// A work put in a series by hand, in a series whose other work stays.
 #[test]
 fn a_work_put_in_a_series_by_hand_that_keeps_works_behind_refuses_the_move() {
-    let dir = tempdir("relocate-hand-series-behind");
+    let top = tempdir("relocate-hand-series-behind");
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let moving = a_folder(
+    let moving = a_dir(
         &conn,
-        &dir.path().join("x"),
+        &top.path().join("x"),
         "A",
         None,
         &[("Alpha", "v01", 2)],
     );
-    a_folder(
+    a_dir(
         &conn,
-        &dir.path().join("y"),
+        &top.path().join("y"),
         "A",
         None,
         &[("Beta", "v01", 3)],
@@ -1575,7 +1575,7 @@ fn a_work_put_in_a_series_by_hand_that_keeps_works_behind_refuses_the_move() {
         z,
         "the fixture: the derive leaves the hand placement standing"
     );
-    let held = folder(&conn, moving.id).expect("the folder");
+    let held = dir(&conn, moving.id).expect("the directory");
     let target = resolve_for_test(&conn);
     let before = dump(&conn);
     let (why, volumes) = match refused_before(&conn, &held, target).expect("reads") {
@@ -1607,14 +1607,14 @@ fn a_work_put_in_a_series_by_hand_that_moves_whole_is_not_refused() {
     let dir = tempdir("relocate-hand-series-whole");
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let moving = a_folder(
+    let moving = a_dir(
         &conn,
         &dir.path().join("x"),
         "A",
         None,
         &[("Alpha", "v01", 2), ("Beta", "v01", 3)],
     );
-    a_folder(
+    a_dir(
         &conn,
         &dir.path().join("y"),
         "A",
@@ -1807,30 +1807,30 @@ fn a_work_with_the_same_content_key_in_the_target_is_refused_and_not_a_store_fau
     assert_eq!(dump(&conn), before);
 }
 
-/// `Census` counts a member whose folder is gone (`root_id` NULL) as
-/// elsewhere, so the work is divided and not wholly under the folder.
+/// `Census` counts a member whose directory is gone (`root_id` NULL) as
+/// elsewhere, so the work is divided and not wholly under the directory.
 #[test]
-fn a_census_counts_a_member_under_no_folder_as_elsewhere() {
-    let dir = tempdir("relocate-census-null");
+fn a_census_counts_a_member_under_no_dir_as_elsewhere() {
+    let top = tempdir("relocate-census-null");
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let moving = a_folder(
+    let moving = a_dir(
         &conn,
-        &dir.path().join("a"),
+        &top.path().join("a"),
         "Manga",
         None,
         &[("Series", "v01", 2)],
     );
-    let other = a_folder(
+    let other = a_dir(
         &conn,
-        &dir.path().join("b"),
+        &top.path().join("b"),
         "Manga",
         None,
         &[("Series", "v01", 3)],
     );
-    let away = a_folder(
+    let away = a_dir(
         &conn,
-        &dir.path().join("c"),
+        &top.path().join("c"),
         "Other",
         None,
         &[("Else", "v01", 2)],
@@ -1840,25 +1840,25 @@ fn a_census_counts_a_member_under_no_folder_as_elsewhere() {
         "UPDATE member SET root_id = NULL WHERE root_id = ?1",
         [other.id],
     )
-    .expect("a member whose folder is gone");
-    let held = folder(&conn, moving.id).expect("the folder");
+    .expect("a member whose directory is gone");
+    let held = dir(&conn, moving.id).expect("the directory");
 
     let census = Census::take(&conn, &held, away.library_id).expect("takes");
 
     assert_eq!((census.whole.len(), census.divided.len()), (0, 1));
 }
 
-/// A chapters folder and a volumes folder holding the same volume, scanned;
+/// A chapters directory and a volumes directory holding the same volume, scanned;
 /// the work of each.
 fn a_chapters_and_a_volume(conn: &Connection, dir: &Path) -> (Root, Root, i64, i64) {
-    let moving = a_folder(
+    let moving = a_dir(
         conn,
         &dir.join("chapters"),
         "Chapters",
         Some("chapters"),
         &[("Series", "v01", 2)],
     );
-    let volumes = a_folder(
+    let volumes = a_dir(
         conn,
         &dir.join("volumes"),
         "Manga",
@@ -1887,21 +1887,21 @@ fn resolve_for_test(conn: &Connection) -> i64 {
     crate::libraries::create(conn, "Elsewhere").expect("makes a library")
 }
 
-/// O191's shape: a work across two folders of one library, the folder that
+/// O191's shape: a work across two directories of one library, the directory that
 /// does not hold its hub given a library of its own by hand and derived (what
-/// migration 15's split leaves). W (Manga) keeps `en`, its hub over folder
-/// `hub`, and a kept `raw` over folder `raw`'s files, with a position and a
+/// migration 15's split leaves). W (Manga) keeps `en`, its hub over directory
+/// `hub`, and a kept `raw` over directory `raw`'s files, with a position and a
 /// note on each and a hand title; N (Bees) holds `raw` over the same files.
-/// Answers (hub folder, raw folder, W, N, Bees).
+/// Answers (hub directory, raw directory, W, N, Bees).
 fn o191(conn: &Connection, dir: &Path) -> (Root, Root, i64, i64, i64) {
-    let hub = a_folder(
+    let hub = a_dir(
         conn,
         &dir.join("hub"),
         "Manga",
         Some("en"),
         &[("Series", "v01", 2)],
     );
-    let raw = a_folder(
+    let raw = a_dir(
         conn,
         &dir.join("raw"),
         "Manga",
@@ -1951,7 +1951,7 @@ fn both_refused(conn: &Connection, root: &Root, target: Target<'_>) -> (String, 
     answers.remove(0)
 }
 
-/// O191, moving the folder that holds W's hub into Bees, where N holds W's
+/// O191, moving the directory that holds W's hub into Bees, where N holds W's
 /// other edition's files: the derive would fold W into N, and W's row, slug
 /// and hand title would go while the answer said "split". Refused, naming W.
 #[test]
@@ -1981,14 +1981,14 @@ fn a_divided_work_the_derive_would_fold_away_keeps_its_document_when_refused() {
     let dir = tempdir("relocate-o191-docs");
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let hub = a_folder(
+    let hub = a_dir(
         &conn,
         &dir.path().join("hub"),
         "Manga",
         Some("en"),
         &[("Series", "v01", 2)],
     );
-    let raw = a_folder(
+    let raw = a_dir(
         &conn,
         &dir.path().join("raw"),
         "Manga",
@@ -2033,8 +2033,8 @@ fn a_divided_work_the_derive_would_fold_away_keeps_its_document_when_refused() {
     );
 }
 
-/// O191, moving the raw folder to a library of its own: N, which holds the
-/// folder's files in Bees, goes with it, and W's `raw` would replace N's. N's
+/// O191, moving the raw directory to a library of its own: N, which holds the
+/// directory's files in Bees, goes with it, and W's `raw` would replace N's. N's
 /// edition carries a label, kind, language and chapter number a person set,
 /// which the replacement would delete. Refused, in the rehoming's words.
 #[test]
@@ -2106,21 +2106,21 @@ fn a_divided_work_whose_other_edition_joins_a_volume_the_target_holds_under_anot
     let dir = tempdir("relocate-3-and-5");
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    a_folder(
+    a_dir(
         &conn,
         &dir.path().join("hub"),
         "Manga",
         Some("en"),
         &[("Series", "v01", 2)],
     );
-    let moving = a_folder(
+    let moving = a_dir(
         &conn,
         &dir.path().join("raw"),
         "Manga",
         None,
         &[("Series", "v01", 3)],
     );
-    let vols = a_folder(
+    let vols = a_dir(
         &conn,
         &dir.path().join("vols"),
         "Vols",
@@ -2204,28 +2204,28 @@ fn a_tag_that_a_join_would_lose_refuses_the_move() {
 }
 
 /// The store holds a change a derive has not made yet, and making it would
-/// lose a reader's tag: the folder being moved has nothing to do with it, and the
+/// lose a reader's tag: the directory being moved has nothing to do with it, and the
 /// move is refused rather than commit that derive's work unreported.
 #[test]
 fn a_move_beside_a_derive_that_would_lose_a_row_is_refused() {
     let dir = tempdir("relocate-baseline-loss");
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let chapters = a_folder(
+    let chapters = a_dir(
         &conn,
         &dir.path().join("chapters"),
         "A",
         Some("chapters"),
         &[("Series", "v01", 2)],
     );
-    let bystander = a_folder(
+    let bystander = a_dir(
         &conn,
         &dir.path().join("else"),
         "A",
         None,
         &[("Else", "v01", 4)],
     );
-    let volumes = a_folder(
+    let volumes = a_dir(
         &conn,
         &dir.path().join("volumes"),
         "B",
@@ -2262,14 +2262,14 @@ fn a_move_writes_back_a_document_that_went_missing() {
     let dir = tempdir("relocate-reconciles");
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    a_folder(
+    a_dir(
         &conn,
         &dir.path().join("a"),
         "A",
         None,
         &[("Kept", "v01", 2)],
     );
-    let moving = a_folder(
+    let moving = a_dir(
         &conn,
         &dir.path().join("b"),
         "A",
@@ -2305,25 +2305,25 @@ fn a_move_writes_back_a_document_that_went_missing() {
 }
 
 /// A store whose pending derive folds one work into another with a reader's
-/// row on the same key: the `chapters` folder was given the target's library
-/// by hand and no derive has run since. The bystander folder is the one moved.
-/// Answers the folder and the library to move it to.
+/// row on the same key: the `chapters` directory was given the target's library
+/// by hand and no derive has run since. The bystander directory is the one moved.
+/// Answers the directory and the library to move it to.
 fn a_pending_fold_that_loses(conn: &Connection, dir: &Path, row: &str) -> (Root, i64) {
-    let chapters = a_folder(
+    let chapters = a_dir(
         conn,
         &dir.join("chapters"),
         "A",
         Some("chapters"),
         &[("Series", "v01", 2)],
     );
-    let volumes = a_folder(
+    let volumes = a_dir(
         conn,
         &dir.join("volumes"),
         "B",
         None,
         &[("Series", "v01", 3)],
     );
-    let bystander = a_folder(conn, &dir.join("else"), "A", None, &[("Else", "v01", 4)]);
+    let bystander = a_dir(conn, &dir.join("else"), "A", None, &[("Else", "v01", 4)]);
     scanned(conn);
     let joining: i64 = scalar(
         conn,
@@ -2415,25 +2415,25 @@ fn a_move_beside_a_derive_that_would_drop_a_note_is_refused() {
     assert!(why.contains("not yet derived"), "{why}");
 }
 
-/// O191's shape with a third edition: W holds `en` (its hub, folder `hub`),
-/// `fr` (folder `fr`) and a kept `raw` over folder `raw`'s files, which
-/// belong to Bees; N (Bees) holds `raw`. Answers (the `fr` folder, W, N).
+/// O191's shape with a third edition: W holds `en` (its hub, directory `hub`),
+/// `fr` (directory `fr`) and a kept `raw` over directory `raw`'s files, which
+/// belong to Bees; N (Bees) holds `raw`. Answers (the `fr` directory, W, N).
 fn o191_with_a_french_edition(conn: &Connection, dir: &Path) -> (Root, i64, i64) {
-    a_folder(
+    a_dir(
         conn,
         &dir.join("hub"),
         "Manga",
         Some("en"),
         &[("Series", "v01", 2)],
     );
-    let fr = a_folder(
+    let fr = a_dir(
         conn,
         &dir.join("fr"),
         "Manga",
         Some("fr"),
         &[("Series", "v01", 4)],
     );
-    let raw = a_folder(
+    let raw = a_dir(
         conn,
         &dir.join("raw"),
         "Manga",
@@ -2537,7 +2537,7 @@ fn rows(conn: &Connection, sql: &str) -> Vec<String> {
 }
 
 /// A reader's position on N's `raw` is nothing to the `fr` move: it is not
-/// refused for an edition the folder does not hold.
+/// refused for an edition the directory does not hold.
 #[test]
 fn a_position_on_an_edition_the_move_does_not_touch_does_not_refuse_it() {
     let dir = tempdir("relocate-only-fr-position");
@@ -2596,7 +2596,7 @@ fn a_spread_flag_on_the_edition_a_split_would_replace_refuses_the_move() {
     );
 }
 
-/// The hub's folder moves: W goes with `en`, keeps the `raw` an earlier change
+/// The hub's directory moves: W goes with `en`, keeps the `raw` an earlier change
 /// left in Bees, and gives `fr`, whose files stay in Manga, to a new work
 /// there. N is not the move's business.
 #[test]
@@ -2609,7 +2609,7 @@ fn moving_the_hub_carries_the_work_and_gives_away_only_the_edition_left_behind()
         .expect("lists")
         .into_iter()
         .find(|root| root.path.ends_with("hub"))
-        .expect("the hub's folder");
+        .expect("the hub's directory");
     let manga = fr.library_id;
     let n_before = dump(&conn)
         .into_iter()
@@ -2684,21 +2684,21 @@ fn a_move_beside_a_fold_the_derive_already_refuses_is_made() {
     let dir = tempdir("relocate-baseline-unfoldable");
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let chapters = a_folder(
+    let chapters = a_dir(
         &conn,
         &dir.path().join("chapters"),
         "A",
         Some("chapters"),
         &[("Series", "v01", 2)],
     );
-    let volumes = a_folder(
+    let volumes = a_dir(
         &conn,
         &dir.path().join("volumes"),
         "B",
         None,
         &[("Series", "v01", 3)],
     );
-    let bystander = a_folder(
+    let bystander = a_dir(
         &conn,
         &dir.path().join("else"),
         "A",
