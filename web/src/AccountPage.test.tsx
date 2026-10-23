@@ -3,9 +3,18 @@ import { MemoryRouter } from 'react-router'
 import { beforeEach, describe, expect, it, type Mock, vi } from 'vitest'
 import { AccountPage } from './AccountPage'
 import type { Library } from './libraries'
-import { fields } from './testing/fields'
-import { typeInto } from './testing/input'
+import { deferred, flush } from './testing/async'
+import { holdOf } from './testing/held'
+import { submit, typeInto } from './testing/input'
 import { mount, rerender } from './testing/mount'
+import { expectRowsWired, helpOf, row, section } from './testing/settingsRows'
+import {
+  holdTheClock,
+  pass,
+  sentenceDrawn,
+  WAIT_DRAWN_AFTER_MS,
+  watchDrawn,
+} from './testing/wait'
 import * as usersApi from './users'
 
 vi.mock('./users', async (importOriginal) => ({
@@ -71,6 +80,7 @@ async function show(
     libraries?: Library[] | null
     actingAs?: number
     onChanged?: Mock
+    onLateRefusal?: Mock
   } = {},
 ): Promise<Mounted> {
   const changed = over.onChanged ?? vi.fn()
@@ -90,6 +100,7 @@ async function show(
           }
           actingAs={over.actingAs}
           onChanged={changed}
+          onLateRefusal={over.onLateRefusal}
         />
       </MemoryRouter>,
     )
@@ -119,17 +130,20 @@ async function choose(host: HTMLElement, selector: string, value: string) {
   })
 }
 
+/** The Libraries section, which holds the grants. */
+const grants = (host: HTMLElement) => section(host, 'Libraries')
+
 const radio = (host: HTMLElement, value: 'every' | 'only') =>
   control<HTMLInputElement>(
-    host,
-    `.grants input[type="radio"][value="${value}"]`,
+    grants(host),
+    `input[type="radio"][value="${value}"]`,
   )
 /** The sentence naming grants whose library the list does not hold. */
 const unlisted = (host: HTMLElement) =>
-  host.querySelector('.grants [data-field="unlisted-grants"]')
+  grants(host).querySelector('[data-field="unlisted-grants"]')
 /** The sentence saying a limited account holds no grant at all. */
 const seesNone = (host: HTMLElement) =>
-  host.querySelector('.grants [data-field="no-library"]')
+  grants(host).querySelector('[data-field="no-library"]')
 const tick = (host: HTMLElement, id: number) =>
   control<HTMLInputElement>(host, `input[name="library-${id}"]`)
 
@@ -144,11 +158,9 @@ async function click(el: Element) {
 beforeEach(() => {
   vi.clearAllMocks()
   // **Answers for the account it was asked about.** A flat `user()` here is
-  // davey, so since `applied` shipped every patch on sam's page turned it into
-  // davey's — the name, the role, and with it the last-administrator sentence
-  // — and every assertion was a whole-page `toContain` with no name in it, so
-  // they all passed anyway. Third review pass; the repo's own rule is to
-  // assert per element rather than per page.
+  // davey, and the page draws a patch's answer (`applied`), so a patch on
+  // sam's page answered with it would turn the page into davey's: the name,
+  // the role, and with it the last-administrator sentence.
   vi.mocked(usersApi.patchUser).mockImplementation((id, patch) =>
     Promise.resolve(
       user({
@@ -194,7 +206,13 @@ describe('the two invariants on the last administrator', () => {
     expect(
       control<HTMLButtonElement>(host, 'button[name="remove"]').disabled,
     ).toBe(true)
-    expect(host.textContent).toContain('only administrator who can log in')
+    // One reason in two sentences, each beside the control it holds.
+    expect(helpOf(row(host, 'Role'))?.textContent).toBe(
+      'davey is the only administrator who can log in, so the role cannot change. Give another account the admin role first.',
+    )
+    expect(helpOf(row(host, 'Remove this account'))?.textContent).toBe(
+      'davey is the only administrator who can log in, so it cannot be removed. Give another account the admin role first.',
+    )
   })
 
   it('leaves both live beside a second administrator who can log in', async () => {
@@ -203,11 +221,15 @@ describe('the two invariants on the last administrator', () => {
     const first = user()
     const { host } = await show(first, [first, sam()], { actingAs: 99 })
     expect(
-      control<HTMLSelectElement>(host, 'select[name="role"]').disabled,
-    ).toBe(false)
-    expect(
-      control<HTMLButtonElement>(host, 'button[name="remove"]').disabled,
-    ).toBe(false)
+      [
+        control<HTMLSelectElement>(host, 'select[name="role"]'),
+        control<HTMLButtonElement>(host, 'button[name="remove"]'),
+      ].map(holdOf),
+    ).toEqual(['free', 'free'])
+    expect(helpOf(row(host, 'Role'))).toBeNull()
+    expect(helpOf(row(host, 'Remove this account'))?.textContent).toBe(
+      'Asks first, with what it would take.',
+    )
   })
 
   it('still disables the role control beside an administrator who cannot log in', async () => {
@@ -234,7 +256,9 @@ describe('the actor rule', () => {
     expect(
       control<HTMLSelectElement>(host, 'select[name="role"]').disabled,
     ).toBe(true)
-    expect(host.textContent).toContain('another administrator has to do it')
+    expect(helpOf(row(host, 'Role'))?.textContent).toBe(
+      'You cannot take away your own admin role; another administrator has to.',
+    )
   })
 
   it('will not let an administrator reset their own password, and links to where to', async () => {
@@ -248,7 +272,8 @@ describe('the actor rule', () => {
     expect(
       control<HTMLInputElement>(host, 'input[name="password"]').disabled,
     ).toBe(true)
-    const why = control(host, 'form.reset .why')
+    const why = helpOf(row(host, 'New password'))
+    if (!why) throw new Error('no help beside New password')
     expect(why.querySelector('code')?.textContent).toBe('/api/password')
     expect(why.querySelector('a')?.getAttribute('href')).toBe('/account')
     expect(why.textContent).not.toContain('press A')
@@ -271,13 +296,65 @@ describe('the actor rule', () => {
     await click(control(host, 'button[name="reset"]'))
     expect(usersApi.patchUser).toHaveBeenCalledWith(2, { password: 'hunter2' })
     expect(changed).toHaveBeenCalled()
-    expect(host.textContent).toContain('API keys are untouched')
+    expect(helpOf(row(host, 'New password'))?.textContent).toBe(
+      'Ends every session sam has open. API keys are untouched: they are separate credentials, revoked on their own.',
+    )
     // Per element: the page is still sam's after the answer it applied.
     expect(control(host, 'h2').textContent).toBe('sam')
   })
 })
 
 describe('the fields', () => {
+  it('puts focus in the password’s box when a set pressed on Set password works and empties it', async () => {
+    const me = user()
+    const other = user({ id: 2, name: 'sam', role: 'user' })
+    const { host } = await show(other, [me, other], { actingAs: 1 })
+    const box = control<HTMLInputElement>(host, 'input[name="password"]')
+    const set = control<HTMLButtonElement>(host, 'button[name="reset"]')
+    await typeInto(box, 'hunter2')
+    act(() => set.focus())
+    await click(set)
+    expect(usersApi.patchUser).toHaveBeenCalledWith(2, { password: 'hunter2' })
+    expect(control(host, '.done').textContent).toBe(
+      'Password set. sam is signed out everywhere.',
+    )
+    expect([box.value, holdOf(set)]).toEqual(['', 'disabled'])
+    expect(document.activeElement).toBe(box)
+  })
+
+  it('says a password was set in a polite live region drawn with the form, empty until then', async () => {
+    // A region drawn together with what it says is often not read at all.
+    const me = user()
+    const other = user({ id: 2, name: 'sam', role: 'user' })
+    const { host } = await show(other, [me, other], { actingAs: 1 })
+    const region = host.querySelector('form.reset [aria-live="polite"]')
+    expect(region?.textContent).toBe('')
+    await typeInto(
+      control<HTMLInputElement>(host, 'input[name="password"]'),
+      'hunter2',
+    )
+    await click(control(host, 'button[name="reset"]'))
+    expect(usersApi.patchUser).toHaveBeenCalledWith(2, { password: 'hunter2' })
+    expect(host.querySelector('form.reset [aria-live="polite"]')).toBe(region)
+    expect(region?.textContent).toBe(
+      'Password set. sam is signed out everywhere.',
+    )
+  })
+
+  it('leaves focus where it is when a set that empties the box came from elsewhere than Set password', async () => {
+    const me = user()
+    const other = user({ id: 2, name: 'sam', role: 'user' })
+    const { host } = await show(other, [me, other], { actingAs: 1 })
+    const box = control<HTMLInputElement>(host, 'input[name="password"]')
+    const role = control<HTMLSelectElement>(host, 'select[name="role"]')
+    await typeInto(box, 'hunter2')
+    act(() => role.focus())
+    await submit(control(host, 'form.reset'))
+    expect(usersApi.patchUser).toHaveBeenCalledWith(2, { password: 'hunter2' })
+    expect(box.value).toBe('')
+    expect(document.activeElement).toBe(role)
+  })
+
   it('retires the password notice on the next write', async () => {
     // O96's `heldNotice` shape: a notice about one write standing over every
     // later one. The mutation that follows it is what retires it.
@@ -337,6 +414,7 @@ describe('the fields', () => {
     // boxes live — and `toggleGrant` computes a *whole list* from those, so a
     // second tick there sends the new library alone and silently revokes the
     // first. Held until `onChanged` settles.
+    holdTheClock()
     let release: (() => void) | undefined
     const changed = vi.fn(
       () =>
@@ -379,11 +457,10 @@ describe('the fields', () => {
       expect(box.disabled, box.name).toBe(false)
       expect(box.getAttribute('aria-disabled'), box.name).toBe('true')
     }
-    // The rest of the page keeps `disabled`. Its greying is not what O159
-    // was about.
-    expect(
-      control<HTMLSelectElement>(host, 'select[name="role"]').disabled,
-    ).toBe(true)
+    // The rest of the page is drawn held once the write has gone on long
+    // enough. Its greying is not what O159 was about.
+    pass(WAIT_DRAWN_AFTER_MS)
+    expect(holdOf(control(host, 'select[name="role"]'))).toBe('held')
 
     // **The lock is `begin`'s guard, and nothing stands in front of it
     // now.** A tick lands on a live box, reaches `save`, and `begin`
@@ -427,11 +504,11 @@ describe('the fields', () => {
   })
 
   it('computes the next grant list from the answer when the reload brings nothing', async () => {
-    // **The hold's own hole, found by the second review pass.** `settled`
-    // waits for the reload — but a reload that fails, or one superseded by
-    // a later one, resolves without fresh props, so the page came back
-    // live over pre-write values and the next tick computed a whole grant
-    // list from them, silently revoking the first.
+    // `settled` waits for the reload, but a reload that fails, or one
+    // superseded by a later one, resolves without fresh props. A page that
+    // came back live over the values from before the write would compute
+    // the next tick's whole grant list from them, silently revoking the
+    // first.
     const me = user()
     const other = user({
       id: 2,
@@ -487,11 +564,11 @@ describe('the fields', () => {
       actingAs: 1,
       libraries: null,
     })
-    const grants = control(host, '.grants').textContent ?? ''
-    expect(grants).toContain('has not been read')
-    expect(grants).toContain('Manga')
-    expect(grants).not.toContain('no libraries yet')
-    expect(host.querySelector('.grants input')).toBeNull()
+    const said = grants(host).textContent ?? ''
+    expect(said).toContain('has not been read')
+    expect(said).toContain('Manga')
+    expect(said).not.toContain('no libraries yet')
+    expect(grants(host).querySelector('input')).toBeNull()
   })
 
   // With the list unread this sentence is the only place the page says what
@@ -514,7 +591,7 @@ describe('the fields', () => {
         actingAs: 1,
         libraries: null,
       })
-      expect(control(host, '.grants p.unknown').textContent).toBe(
+      expect(control(grants(host), 'p.unknown').textContent).toBe(
         `The libraries list has not been read, so there is nothing to offer here. ${sees}`,
       )
     },
@@ -524,7 +601,7 @@ describe('the fields', () => {
     const me = user()
     const other = user({ id: 2, name: 'sam', role: 'user' })
     const { host } = await show(other, [me, other], { actingAs: 1 })
-    expect(control(host, '.grants legend').textContent).toBe(
+    expect(control(grants(host), 'legend').textContent).toBe(
       'Libraries this account may see',
     )
     expect(radio(host, 'every').checked).toBe(true)
@@ -571,9 +648,7 @@ describe('the fields', () => {
         actingAs: 1,
         libraries: libraries === null ? null : [...libraries],
       })
-      expect(control(host, '.grants').textContent).not.toContain(
-        'sees no library',
-      )
+      expect(grants(host).textContent).not.toContain('sees no library')
     },
   )
 
@@ -591,7 +666,7 @@ describe('the fields', () => {
       actingAs: 1,
       libraries: [],
     })
-    expect(control(limited.host, '.grants .empty').textContent).toBe(
+    expect(control(grants(limited.host), '.empty').textContent).toBe(
       'There are no libraries yet.',
     )
     expect(seesNone(limited.host)?.textContent).toBe(
@@ -631,12 +706,16 @@ describe('the fields', () => {
     expect(tick(host, 70).checked).toBe(true)
     expect(tick(host, 80).checked).toBe(false)
     const manga = tick(host, 70).closest('li') as HTMLElement
-    expect(manga.querySelector('label span')?.textContent).toBe('Manga')
+    expect(
+      [...(tick(host, 70).labels ?? [])].map((l) => l.textContent),
+    ).toEqual(['Manga'])
     expect(
       [...manga.querySelectorAll('.grant-dirs code')].map((c) => c.textContent),
     ).toEqual(['/media/Manga/Volumes', '/media/Manga/Chapters'])
     const comics = tick(host, 80).closest('li') as HTMLElement
-    expect(comics.querySelector('label span')?.textContent).toBe('Comics')
+    expect(
+      [...(tick(host, 80).labels ?? [])].map((l) => l.textContent),
+    ).toEqual(['Comics'])
     expect(
       [...comics.querySelectorAll('.grant-dirs code')].map(
         (c) => c.textContent,
@@ -675,7 +754,13 @@ describe('the fields', () => {
     })
     const { host } = await show(other, [me, other], { actingAs: 1 })
     expect(tick(host, 70).getAttribute('aria-disabled')).toBe('false')
-    expect(tick(host, 70).hasAttribute('aria-describedby')).toBe(false)
+    // Described by its library's directories alone: no reason holds it.
+    const dirs = helpOf(tick(host, 70).closest('.settings-row') as HTMLElement)
+    expect(dirs?.id).toBeTruthy()
+    expect(tick(host, 70).getAttribute('aria-describedby')).toBe(dirs?.id)
+    expect(
+      [...(dirs?.querySelectorAll('code') ?? [])].map((c) => c.textContent),
+    ).toEqual(['/media/Manga/Volumes', '/media/Manga/Chapters'])
     expect(seesNone(host)).toBeNull()
 
     await click(tick(host, 70))
@@ -780,7 +865,7 @@ describe('the fields', () => {
       actingAs: 1,
       libraries: [],
     })
-    expect(control(host, '.grants .empty').textContent).toBe(
+    expect(control(grants(host), '.empty').textContent).toBe(
       'There are no libraries yet.',
     )
     expect(unlisted(host)?.textContent).toBe(
@@ -848,7 +933,7 @@ describe('the fields', () => {
     await click(radio(host, 'every'))
     expect(usersApi.patchUser).not.toHaveBeenCalled()
     expect(radio(host, 'only').checked).toBe(true)
-    const asking = control(host, '.grants .lift-limit')
+    const asking = control(grants(host), '.lift-limit')
     expect(asking.getAttribute('role')).toBe('group')
     expect(asking.querySelector('p')?.textContent).toBe(
       'sam would see every library, including any added later, and the ticks below would be cleared.',
@@ -879,7 +964,7 @@ describe('the fields', () => {
     expect(document.activeElement).toBe(
       control(host, 'button[name="keep-limit"]'),
     )
-    const asking = control(host, '.grants .lift-limit')
+    const asking = control(grants(host), '.lift-limit')
     expect(asking.getAttribute('aria-label')).toBe('Lift the limit')
     const described = asking.getAttribute('aria-describedby')
     expect(described).toBeTruthy()
@@ -967,7 +1052,7 @@ describe('the fields', () => {
     await click(radio(host, 'every'))
     expect(usersApi.patchUser).not.toHaveBeenCalled()
     expect(radio(host, 'only').checked).toBe(true)
-    expect(control(host, '.grants .lift-limit p').textContent).toBe(
+    expect(control(grants(host), '.lift-limit p').textContent).toBe(
       'sam would see every library, including any added later.',
     )
 
@@ -977,7 +1062,8 @@ describe('the fields', () => {
     expect(seesNone(host)).toBeNull()
   })
 
-  it('holds both answers while a write is in flight', async () => {
+  it('holds both answers while a write is in flight, from the send, and draws them held once it has lasted', async () => {
+    holdTheClock()
     const me = user()
     const other = user({
       id: 2,
@@ -993,12 +1079,19 @@ describe('the fields', () => {
     await click(radio(host, 'every'))
     await click(control(host, 'input[name="can_stream"]'))
     expect(usersApi.patchUser).toHaveBeenCalledTimes(1)
-    expect(
-      control<HTMLButtonElement>(host, 'button[name="lift-limit"]').disabled,
-    ).toBe(true)
-    expect(
-      control<HTMLButtonElement>(host, 'button[name="keep-limit"]').disabled,
-    ).toBe(true)
+    pass(WAIT_DRAWN_AFTER_MS - 1)
+    const answers = ['lift-limit', 'keep-limit'].map((name) =>
+      control<HTMLButtonElement>(host, `button[name="${name}"]`),
+    )
+    expect(answers.map(holdOf)).toEqual(['free', 'free'])
+    for (const answer of answers) await click(answer)
+    expect(usersApi.patchUser).toHaveBeenCalledTimes(1)
+    expect(host.querySelector('.lift-limit')).not.toBeNull()
+    pass(1)
+    expect(answers.map(holdOf)).toEqual(['held', 'held'])
+    for (const answer of answers) await click(answer)
+    expect(usersApi.patchUser).toHaveBeenCalledTimes(1)
+    expect(host.querySelector('.lift-limit')).not.toBeNull()
   })
 
   it('keeps the limit when the answer is no, and puts focus back on Only these', async () => {
@@ -1175,12 +1268,14 @@ describe('the fields', () => {
       libraries: [{ id: 70, name: 'Manga' }],
     })
     const { host } = await show(admin, [me, admin], { actingAs: 1 })
-    expect(control(host, '.grants').textContent).toContain(
-      'An administrator sees every library',
+    // Beside the choice it qualifies, as its help.
+    expect(helpOf(row(host, 'Sees'))?.textContent).toBe(
+      'An administrator sees every library whatever is chosen here; the choice applies if the role becomes user.',
     )
     const reader = user({ id: 3, name: 'kim', role: 'user' })
     const other = await show(reader, [me, reader], { actingAs: 1 })
-    expect(control(other.host, '.grants').textContent).not.toContain(
+    expect(helpOf(row(other.host, 'Sees'))).toBeNull()
+    expect(grants(other.host).textContent).not.toContain(
       'An administrator sees every library',
     )
   })
@@ -1243,10 +1338,8 @@ describe('the fields', () => {
       actingAs: 1,
       libraries: [],
     })
-    expect(control(host, '.grants').textContent).toContain(
-      'There are no libraries yet',
-    )
-    expect(host.querySelector('.grants input')).toBeNull()
+    expect(grants(host).textContent).toContain('There are no libraries yet')
+    expect(grants(host).querySelector('input')).toBeNull()
   })
 
   it('draws the server sentence when a patch is refused', async () => {
@@ -1269,10 +1362,15 @@ describe('the fields', () => {
   it('names an account nobody can sign in as', async () => {
     const locked = user({ id: 2, name: 'sam', role: 'user', can_log_in: false })
     const { host } = await show(locked, [user(), locked], { actingAs: 1 })
-    expect(host.textContent).toContain('Nobody can sign in as this account')
+    // Under the header, above every section.
+    const notice = control(host, '.page-header').nextElementSibling
+    expect(notice?.className).toBe('locked')
+    expect(notice?.textContent).toBe(
+      'Nobody can sign in as this account: it holds no usable password. Setting one below gives it a way in.',
+    )
   })
 
-  it('keeps the role explanation out of the field grid', async () => {
+  it('keeps the role explanation beside its label, out of the control’s box', async () => {
     // The same last-administrator scenario the invariant tests above use,
     // which is known to render `roleWhy` — the sentence this test checks the
     // placement of.
@@ -1281,33 +1379,64 @@ describe('the fields', () => {
       sole,
       user({ id: 2, name: 'reader', role: 'user' }),
     ])
-    const fields = host.querySelector('.user-row .fields')
-    expect(fields).not.toBeNull()
-    // `p.why` is a sentence, not a field: it must not be a child of the grid.
-    expect(fields?.querySelector('p.why')).toBeNull()
-    // It still renders — it moved, it did not go.
-    expect(host.querySelector('.user-row p.why')).not.toBeNull()
+    const role = row(host, 'Role')
+    // A sentence, not a control: it sits under the label, and the control's
+    // box holds the dropdown alone.
+    const why = helpOf(role)
+    expect(why?.textContent).toContain('only administrator who can log in')
+    expect(why?.parentElement).toBe(
+      role.querySelector(':scope > .settings-row-text'),
+    )
+    const box = role.querySelector(':scope > .settings-row-control')
+    expect([...(box?.children ?? [])].map((el) => el.tagName)).toEqual([
+      'SELECT',
+    ])
   })
 
-  it('groups the three permission checkboxes in a row of their own', async () => {
+  it('gives each permission checkbox a row of its own, with its words and its help', async () => {
     const me = user()
     const other = user({ id: 2, name: 'sam', role: 'user' })
     const { host } = await show(other, [me, other], { actingAs: 1 })
-    const checks = host.querySelector('.user-row .checks')
-    expect(checks).not.toBeNull()
-    expect(checks?.querySelectorAll('input[type="checkbox"]')).toHaveLength(3)
-    // And none of them is left behind in the grid.
+    const rows = ['can_download', 'can_stream', 'can_stamp'].map((name) => {
+      const r = control(host, `input[name="${name}"]`).closest('.settings-row')
+      if (!r) throw new Error(`no row holds ${name}`)
+      return r
+    })
     expect(
-      host.querySelectorAll('.user-row .fields input[type="checkbox"]'),
+      rows.map((r) => [
+        r.querySelector(':scope > .settings-row-text > .settings-row-label')
+          ?.textContent,
+        helpOf(r)?.textContent,
+        r.querySelectorAll('input').length,
+        r.classList.contains('settings-row-check'),
+      ]),
+    ).toEqual([
+      ['Can download', 'Save whole editions as files.', 1, true],
+      ['Can stream', 'Read pages, in the browser or an OPDS app.', 1, true],
+      ['Can stamp', 'Write ComicInfo.xml into archives.', 1, true],
+    ])
+    // And none of them shares the role's row.
+    expect(
+      row(host, 'Role').querySelectorAll('input[type="checkbox"]'),
     ).toHaveLength(0)
   })
 
-  it('gives the role label the field pattern rather than inline flow', async () => {
+  it('gives the role its row’s label, tied by for, in a row that stacks when narrow', async () => {
     const me = user()
     const other = user({ id: 2, name: 'sam', role: 'user' })
     const { host } = await show(other, [me, other], { actingAs: 1 })
-    const role = host.querySelector('select[name="role"]')?.closest('label')
-    expect(role?.className).toContain('field')
+    const select = control<HTMLSelectElement>(host, 'select[name="role"]')
+    const labels = [...(select.labels ?? [])]
+    expect(labels.map((l) => [l.className, l.textContent])).toEqual([
+      ['settings-row-label', 'Role'],
+    ])
+    // Not wrapped: the label sits in the row's text, apart from the box.
+    expect(labels[0]?.contains(select)).toBe(false)
+    // A check row keeps its control beside its words at every width; this
+    // one puts the label above the dropdown when the box is narrow.
+    expect(select.closest('.settings-row')?.classList).not.toContain(
+      'settings-row-check',
+    )
   })
 })
 
@@ -1317,19 +1446,22 @@ describe('sessions and keys', () => {
       id: 2,
       name: 'sam',
       role: 'user',
+      // In the server's order, the last seen first. The newest session is
+      // not the one last seen, so a header that gave the newest session's
+      // time would say 2026-09-02.
       sessions: [
         {
           id: 'aaa',
-          created: '2026-09-01T10:00:00Z',
-          last_seen: '2026-09-06T09:00:00Z',
+          created: '2026-08-01 10:00:00',
+          last_seen: '2026-09-06 09:00:00',
           user_agent: 'Firefox',
           ip: '10.0.0.2',
           current: true,
         },
         {
           id: 'bbb',
-          created: '2026-08-01T10:00:00Z',
-          last_seen: '2026-08-02T10:00:00Z',
+          created: '2026-09-01 10:00:00',
+          last_seen: '2026-09-02 10:00:00',
           user_agent: null,
           ip: null,
           current: false,
@@ -1339,7 +1471,7 @@ describe('sessions and keys', () => {
         {
           id: 9,
           name: 'the tablet',
-          created: '2026-08-01T10:00:00Z',
+          created: '2026-08-01 10:00:00',
           last_used: null,
         },
       ],
@@ -1347,6 +1479,26 @@ describe('sessions and keys', () => {
     const { host, changed } = await show(other, [user(), other], {
       actingAs: 1,
     })
+
+    // The tally is the section's line, and the last time any session was
+    // seen is the header's.
+    expect(
+      control(section(host, 'Sessions & keys'), '.settings-section-description')
+        .textContent,
+    ).toBe('2 sessions\u00a0·\u00a01 API key')
+    expect(control(host, '.page-description').textContent).toBe(
+      'User\u00a0·\u00a0last seen 2026-09-06 09:00:00 UTC',
+    )
+    // Each time the server wrote says it is UTC, as the Backups list says.
+    expect(
+      [...host.querySelectorAll('.session-list .when, .key-list .when')].map(
+        (when) => when.textContent,
+      ),
+    ).toEqual([
+      'started 2026-08-01 10:00:00 UTC\u00a0·\u00a0last seen 2026-09-06 09:00:00 UTC',
+      'started 2026-09-01 10:00:00 UTC\u00a0·\u00a0last seen 2026-09-02 10:00:00 UTC',
+      'API key\u00a0·\u00a0made 2026-08-01 10:00:00 UTC\u00a0·\u00a0never used',
+    ])
 
     // Asserted per element, not by `toContain` over the whole page: a
     // whole-page match cannot see which session carries the marker.
@@ -1378,8 +1530,8 @@ describe('a revocation that fails', () => {
       sessions: [
         {
           id: 'aaa',
-          created: '2026-09-01T10:00:00Z',
-          last_seen: '2026-09-06T09:00:00Z',
+          created: '2026-09-01 10:00:00',
+          last_seen: '2026-09-06 09:00:00',
           user_agent: 'Firefox',
           ip: '10.0.0.2',
           current: false,
@@ -1389,8 +1541,8 @@ describe('a revocation that fails', () => {
         {
           id: 9,
           name: 'the tablet',
-          created: '2026-08-01T10:00:00Z',
-          last_used: '2026-09-05T08:00:00Z',
+          created: '2026-08-01 10:00:00',
+          last_used: '2026-09-05 08:00:00',
         },
       ],
     })
@@ -1405,7 +1557,7 @@ describe('a revocation that fails', () => {
     // The key's own row says when it was last used, rather than only the
     // never-used case the other test covers.
     expect(host.querySelector('.key-list')?.textContent).toContain(
-      'last used 2026-09-05T08:00:00Z',
+      'last used 2026-09-05 08:00:00 UTC',
     )
     await click(control(host, 'button[name="revoke-session-aaa"]'))
     expect(host.querySelector('[role="alert"]')?.textContent).toContain(
@@ -1418,9 +1570,9 @@ describe('a revocation that fails', () => {
 describe('a revocation whose reload brings nothing back', () => {
   it('drops the row it revoked, so no second press can 404 over it', async () => {
     // `settled` waits for the list read, and that read can fail or be
-    // superseded without bringing fresh props — so the revoked session stayed
-    // listed with a live Revoke, and its next press answered 404 for a session
-    // already gone. Third review pass, inside the second's fix.
+    // superseded without bringing fresh props. A revoked session left listed
+    // would keep a live Revoke, whose next press answers 404 for a session
+    // already gone.
     const other = user({
       id: 2,
       name: 'sam',
@@ -1428,16 +1580,16 @@ describe('a revocation whose reload brings nothing back', () => {
       sessions: [
         {
           id: 'aaa',
-          created: '2026-09-01T10:00:00Z',
-          last_seen: '2026-09-06T09:00:00Z',
+          created: '2026-09-01 10:00:00',
+          last_seen: '2026-09-06 09:00:00',
           user_agent: 'Firefox',
           ip: '10.0.0.2',
           current: false,
         },
         {
           id: 'bbb',
-          created: '2026-08-01T10:00:00Z',
-          last_seen: '2026-08-02T10:00:00Z',
+          created: '2026-08-01 10:00:00',
+          last_seen: '2026-08-02 10:00:00',
           user_agent: 'an old iPad',
           ip: null,
           current: false,
@@ -1463,13 +1615,12 @@ describe('a revocation whose reload brings nothing back', () => {
 describe('a revocation answering after a fresher list', () => {
   it('drops its row from what the page holds now, not from the click-time copy', async () => {
     // A list read landing during the `DELETE` brings a newer row; writing back
-    // the snapshot the click was made from would drop whatever it brought —
-    // a session opened since, or a role another administrator changed. Fourth
-    // review pass.
+    // the snapshot the click was made from would drop whatever it brought:
+    // a session opened since, or a role another administrator changed.
     const session = (id: string, agent: string) => ({
       id,
-      created: '2026-09-01T10:00:00Z',
-      last_seen: '2026-09-06T09:00:00Z',
+      created: '2026-09-01 10:00:00',
+      last_seen: '2026-09-06 09:00:00',
       user_agent: agent,
       ip: null,
       current: false,
@@ -1537,8 +1688,8 @@ describe('a double-clicked revocation', () => {
       sessions: [
         {
           id: 'aaa',
-          created: '2026-09-01T10:00:00Z',
-          last_seen: '2026-09-06T09:00:00Z',
+          created: '2026-09-01 10:00:00',
+          last_seen: '2026-09-06 09:00:00',
           user_agent: 'Firefox',
           ip: '10.0.0.2',
           current: false,
@@ -1564,11 +1715,41 @@ describe('a double-clicked revocation', () => {
 })
 
 describe('removal', () => {
+  it('keeps Remove… drawn, held, while the confirm it opened is open, and a press of it asks nothing more', async () => {
+    const me = user()
+    const other = user({ id: 2, name: 'sam', role: 'user' })
+    vi.mocked(usersApi.removalCost).mockReturnValue(new Promise(() => {}))
+    const { host } = await show(other, [me, other], { actingAs: 1 })
+    const remove = control<HTMLButtonElement>(host, 'button[name="remove"]')
+    await click(remove)
+    expect(host.querySelector('.remove-user')).not.toBeNull()
+    expect(host.querySelector('button[name="remove"]')).toBe(remove)
+    expect(holdOf(remove)).toBe('held')
+    await click(remove)
+    expect(usersApi.removalCost).toHaveBeenCalledTimes(1)
+  })
+
+  it('hands focus back to Remove… when its confirm is cancelled', async () => {
+    const me = user()
+    const other = user({ id: 2, name: 'sam', role: 'user' })
+    vi.mocked(usersApi.removalCost).mockReturnValue(new Promise(() => {}))
+    const { host } = await show(other, [me, other], { actingAs: 1 })
+    await click(control(host, 'button[name="remove"]'))
+    const cancel = control<HTMLButtonElement>(
+      host,
+      'button[name="cancel-remove"]',
+    )
+    act(() => cancel.focus())
+    await click(cancel)
+    expect(host.querySelector('button[name="cancel-remove"]')).toBeNull()
+    expect(document.activeElement).toBe(control(host, 'button[name="remove"]'))
+  })
+
   it('keeps a failed dry run visible when another write clears the page', async () => {
     // `begin()` clears the shared failure slot on every write, and the dialog
-    // draws "working out…" while there is neither a cost nor a reason — so a
-    // capability toggle after a failed dry run put the dialog back to
-    // "working out" for ever, with nothing in flight. Third review pass.
+    // draws "working out…" while there is neither a cost nor a reason, so a
+    // capability toggle after a failed dry run would put the dialog back to
+    // "working out" for ever, with nothing in flight.
     const me = user()
     const other = user({ id: 2, name: 'sam', role: 'user' })
     vi.mocked(usersApi.removalCost).mockRejectedValue(
@@ -1634,9 +1815,9 @@ describe('removal', () => {
 
   it('keeps the newest dry run when a slower one answers after it', async () => {
     // Remove…, Cancel, Remove… again: two are in flight and nothing orders
-    // them, so a slow first answer landing after a failed second drew five
-    // counts and a live *Remove sam* under an alert saying the count could not
-    // be taken. Fourth review pass.
+    // them, so a slow first answer landing after a failed second would draw
+    // its counts and a live *Remove sam* under an alert saying the count
+    // could not be taken.
     let settleFirst: ((answer: usersApi.RemovalAnswer) => void) | undefined
     vi.mocked(usersApi.removalCost)
       .mockImplementationOnce(
@@ -1676,11 +1857,11 @@ describe('removal', () => {
     expect(host.textContent).toContain('counting failed')
   })
 
-  it('deadens the confirm while another write is in flight', async () => {
-    // Every other control on the page is held while a write is in flight;
-    // this one did not, so a press during a live patch was swallowed by the
-    // ref guard with nothing on screen saying why — an enabled destructive
-    // button that does nothing. Third review pass.
+  it('deadens the confirm while another write is in flight, from the send, and draws it held once the write has lasted', async () => {
+    // One write at a time: from the send, `inFlight` turns a press of the
+    // confirm down, as it does every other control's, and the confirm is
+    // drawn held once the write has lasted `WAIT_DRAWN_AFTER_MS`, as the
+    // page's other buttons are, so a write answered at once draws no hold.
     const me = user()
     const other = user({ id: 2, name: 'sam', role: 'user' })
     vi.mocked(usersApi.removalCost).mockResolvedValue({
@@ -1697,13 +1878,22 @@ describe('removal', () => {
     vi.mocked(usersApi.patchUser).mockImplementation(
       () => new Promise(() => undefined),
     )
+    holdTheClock()
     const { host } = await show(other, [me, other], { actingAs: 1 })
     await click(control(host, 'button[name="remove"]'))
     await click(control(host, 'input[name="can_stream"]'))
-    expect(
-      control<HTMLButtonElement>(host, 'button[name="confirm-remove"]')
-        .disabled,
-    ).toBe(true)
+    const confirm = control<HTMLButtonElement>(
+      host,
+      'button[name="confirm-remove"]',
+    )
+    pass(WAIT_DRAWN_AFTER_MS - 1)
+    expect(holdOf(confirm)).toBe('free')
+    await click(confirm)
+    expect(usersApi.removeUser).not.toHaveBeenCalled()
+    pass(1)
+    expect(holdOf(confirm)).toBe('held')
+    await click(confirm)
+    expect(usersApi.removeUser).not.toHaveBeenCalled()
   })
 
   it('draws a removed account as gone rather than as an editable page', async () => {
@@ -2038,6 +2228,337 @@ describe('removal', () => {
   })
 })
 
+describe('the waits, drawn only once each has lasted', () => {
+  const other = () =>
+    user({
+      id: 2,
+      name: 'sam',
+      role: 'user',
+      sessions: [
+        {
+          id: 'aaa',
+          created: '2026-09-01 10:00:00',
+          last_seen: '2026-09-06 09:00:00',
+          user_agent: 'Firefox',
+          ip: '10.0.0.2',
+          current: false,
+        },
+      ],
+      keys: [
+        {
+          id: 9,
+          name: 'the tablet',
+          created: '2026-08-01 10:00:00',
+          last_used: null,
+        },
+      ],
+    })
+  const cost: usersApi.RemovalAnswer = {
+    removed: {
+      name: 'sam',
+      positions: 0,
+      notes: 0,
+      sessions: 1,
+      keys: 1,
+      grants: 0,
+    },
+    dry_run: true,
+  }
+  /** How each control that a write draws held once it has lasted is held. */
+  const held = (host: HTMLElement) =>
+    [
+      'select[name="role"]',
+      'input[name="password"]',
+      'button[name="revoke-session-aaa"]',
+      'button[name="revoke-key-9"]',
+      'button[name="remove"]',
+    ].map((selector) => holdOf(control(host, selector)))
+  const none = ['free', 'free', 'free', 'free', 'free']
+
+  describe('a write on the page', () => {
+    it('draws no control held for a write answered inside the wait’s delay', async () => {
+      holdTheClock()
+      const answer = deferred<usersApi.User>()
+      vi.mocked(usersApi.patchUser).mockReturnValue(answer.promise)
+      const { host } = await show(other(), [user(), other()], { actingAs: 1 })
+      const drawn = watchDrawn(() => JSON.stringify(held(host)))
+      await click(control(host, 'input[name="can_stream"]'))
+      pass(WAIT_DRAWN_AFTER_MS - 1)
+      await flush(() => answer.resolve({ ...other(), can_stream: false }))
+      pass(WAIT_DRAWN_AFTER_MS)
+      drawn.stop()
+      expect(
+        control<HTMLInputElement>(host, 'input[name="can_stream"]').checked,
+      ).toBe(false)
+      expect([...drawn.seen]).toEqual([JSON.stringify(none)])
+    })
+
+    it('draws every control it holds as held from the wait’s delay', async () => {
+      holdTheClock()
+      vi.mocked(usersApi.patchUser).mockReturnValue(new Promise(() => {}))
+      const { host } = await show(other(), [user(), other()], { actingAs: 1 })
+      await click(control(host, 'input[name="can_stream"]'))
+      pass(WAIT_DRAWN_AFTER_MS - 1)
+      expect(held(host)).toEqual(none)
+      pass(1)
+      expect(held(host)).toEqual(['held', 'held', 'held', 'held', 'held'])
+    })
+
+    // The password's form is submitted on its own as well as through a
+    // press of Set password: a submit that reaches it other than through
+    // the held button finds its write refused too.
+    it.each<[string, (host: HTMLElement) => Promise<void>]>([
+      [
+        'a choice of Role',
+        (host) => choose(host, 'select[name="role"]', 'admin'),
+      ],
+      [
+        'typing in New password',
+        (host) =>
+          typeInto(
+            control<HTMLInputElement>(host, 'input[name="password"]'),
+            'hunter22',
+          ),
+      ],
+      [
+        'a press of Set password',
+        (host) => click(control(host, 'button[name="reset"]')),
+      ],
+      [
+        'a submit of the password’s form',
+        (host) => submit(control(host, 'form.reset')),
+      ],
+      [
+        'a press of a session’s Revoke',
+        (host) => click(control(host, 'button[name="revoke-session-aaa"]')),
+      ],
+      [
+        'a press of a key’s Revoke',
+        (host) => click(control(host, 'button[name="revoke-key-9"]')),
+      ],
+      [
+        'a press of Remove…',
+        (host) => click(control(host, 'button[name="remove"]')),
+      ],
+    ])('turns down %s once the write is drawn holding it', async (_, touch) => {
+      holdTheClock()
+      vi.mocked(usersApi.patchUser).mockReturnValue(new Promise(() => {}))
+      vi.mocked(usersApi.removalCost).mockResolvedValue(cost)
+      const { host } = await show(other(), [user(), other()], { actingAs: 1 })
+      const password = control<HTMLInputElement>(host, 'input[name="password"]')
+      await typeInto(password, 'hunter2')
+      await click(control(host, 'input[name="can_stream"]'))
+      pass(WAIT_DRAWN_AFTER_MS)
+      expect([
+        ...held(host),
+        holdOf(control(host, 'button[name="reset"]')),
+      ]).toEqual(['held', 'held', 'held', 'held', 'held', 'held'])
+
+      await touch(host)
+      expect(usersApi.patchUser).toHaveBeenCalledTimes(1)
+      expect(
+        control<HTMLSelectElement>(host, 'select[name="role"]').value,
+      ).toBe('user')
+      expect(password.value).toBe('hunter2')
+      expect(usersApi.revokeUserSession).not.toHaveBeenCalled()
+      expect(usersApi.revokeUserKey).not.toHaveBeenCalled()
+      expect(usersApi.removalCost).not.toHaveBeenCalled()
+      expect(host.querySelector('.remove-user')).toBeNull()
+    })
+
+    it('holds every control from the send, before any is drawn held', async () => {
+      holdTheClock()
+      vi.mocked(usersApi.patchUser).mockReturnValue(new Promise(() => {}))
+      vi.mocked(usersApi.removalCost).mockResolvedValue(cost)
+      const { host } = await show(other(), [user(), other()], { actingAs: 1 })
+      await click(control(host, 'input[name="can_stream"]'))
+      pass(WAIT_DRAWN_AFTER_MS - 1)
+      expect(held(host)).toEqual(none)
+
+      await choose(host, 'select[name="role"]', 'admin')
+      expect(usersApi.patchUser).toHaveBeenCalledTimes(1)
+      const password = control<HTMLInputElement>(host, 'input[name="password"]')
+      await typeInto(password, 'hunter2')
+      expect(password.value).toBe('')
+      await click(control(host, 'button[name="revoke-session-aaa"]'))
+      await click(control(host, 'button[name="revoke-key-9"]'))
+      expect(usersApi.revokeUserSession).not.toHaveBeenCalled()
+      expect(usersApi.revokeUserKey).not.toHaveBeenCalled()
+      await click(control(host, 'button[name="remove"]'))
+      expect(usersApi.removalCost).not.toHaveBeenCalled()
+      expect(host.querySelector('.remove-user')).toBeNull()
+    })
+  })
+
+  describe('a removal', () => {
+    const WORKING = 'Working out what this would remove…'
+    /** Remove's words, and how it and Cancel are held. */
+    const state = (host: HTMLElement) => {
+      const confirm = control<HTMLButtonElement>(
+        host,
+        'button[name="confirm-remove"]',
+      )
+      const cancel = control<HTMLButtonElement>(
+        host,
+        'button[name="cancel-remove"]',
+      )
+      return [confirm.textContent, holdOf(confirm), holdOf(cancel)]
+    }
+    async function confirming() {
+      vi.mocked(usersApi.removalCost).mockResolvedValue(cost)
+      const shown = await show(other(), [user(), other()], { actingAs: 1 })
+      await click(control(shown.host, 'button[name="remove"]'))
+      return shown.host
+    }
+
+    it('keeps the dry run’s sentence unseen for counts answered inside the wait’s delay', async () => {
+      holdTheClock()
+      const counted = deferred<usersApi.RemovalAnswer>()
+      vi.mocked(usersApi.removalCost).mockReturnValue(counted.promise)
+      const { host } = await show(other(), [user(), other()], { actingAs: 1 })
+      const drawn = watchDrawn(() => sentenceDrawn(host, WORKING))
+      await click(control(host, 'button[name="remove"]'))
+      pass(WAIT_DRAWN_AFTER_MS - 1)
+      await flush(() => counted.resolve(cost))
+      pass(WAIT_DRAWN_AFTER_MS)
+      drawn.stop()
+      expect(host.querySelector('.remove-user .counts')).not.toBeNull()
+      expect([...drawn.seen]).toEqual(['none', 'unseen'])
+    })
+
+    it('draws the dry run’s sentence from the wait’s delay, in the room it kept', async () => {
+      holdTheClock()
+      vi.mocked(usersApi.removalCost).mockReturnValue(new Promise(() => {}))
+      const { host } = await show(other(), [user(), other()], { actingAs: 1 })
+      await click(control(host, 'button[name="remove"]'))
+      pass(WAIT_DRAWN_AFTER_MS - 1)
+      expect(sentenceDrawn(host, WORKING)).toBe('unseen')
+      pass(1)
+      expect(sentenceDrawn(host, WORKING)).toBe('drawn')
+    })
+
+    it('draws no wait and no held button for a removal refused inside the wait’s delay', async () => {
+      holdTheClock()
+      const sent = deferred<usersApi.RemovalAnswer>()
+      vi.mocked(usersApi.removeUser).mockReturnValue(sent.promise)
+      const host = await confirming()
+      const drawn = watchDrawn(() => JSON.stringify(state(host)))
+      await click(control(host, 'button[name="confirm-remove"]'))
+      pass(WAIT_DRAWN_AFTER_MS - 1)
+      await flush(() =>
+        sent.reject(new Error('/api/library/users/2: 500 the disk is full')),
+      )
+      pass(WAIT_DRAWN_AFTER_MS)
+      drawn.stop()
+      expect(host.querySelector('[role="alert"]')?.textContent).toContain(
+        'the disk is full',
+      )
+      expect([...drawn.seen]).toEqual([
+        JSON.stringify(['Remove sam', 'free', 'free']),
+      ])
+    })
+
+    it('draws Removing… and holds Remove and Cancel from the wait’s delay', async () => {
+      holdTheClock()
+      vi.mocked(usersApi.removeUser).mockReturnValue(new Promise(() => {}))
+      const host = await confirming()
+      await click(control(host, 'button[name="confirm-remove"]'))
+      pass(WAIT_DRAWN_AFTER_MS - 1)
+      expect(state(host)).toEqual(['Remove sam', 'free', 'free'])
+      pass(1)
+      expect(state(host)).toEqual(['Removing…', 'held', 'held'])
+      await click(control(host, 'button[name="confirm-remove"]'))
+      expect(usersApi.removeUser).toHaveBeenCalledTimes(1)
+      await click(control(host, 'button[name="cancel-remove"]'))
+      expect(host.querySelector('.remove-user')).not.toBeNull()
+    })
+
+    it('holds Remove and Cancel from the send, before either is drawn held', async () => {
+      holdTheClock()
+      vi.mocked(usersApi.removeUser).mockReturnValue(new Promise(() => {}))
+      const host = await confirming()
+      await click(control(host, 'button[name="confirm-remove"]'))
+      pass(WAIT_DRAWN_AFTER_MS - 1)
+      expect(state(host)).toEqual(['Remove sam', 'free', 'free'])
+      await click(control(host, 'button[name="confirm-remove"]'))
+      expect(usersApi.removeUser).toHaveBeenCalledTimes(1)
+      await click(control(host, 'button[name="cancel-remove"]'))
+      expect(host.querySelector('.remove-user')).not.toBeNull()
+    })
+  })
+})
+
+describe('a permission refused once its page has gone', () => {
+  // The sentence is said on whatever page the person is on, where nothing
+  // else names the setting, so it names it by the words its row shows.
+  it.each([
+    ['can_download', 'Can download'],
+    ['can_stream', 'Can stream'],
+    ['can_stamp', 'Can stamp'],
+  ])('names %s by its row’s label, %s', async (name, label) => {
+    let refuse: ((err: Error) => void) | undefined
+    vi.mocked(usersApi.patchUser).mockImplementation(
+      () =>
+        new Promise((_, reject) => {
+          refuse = reject
+        }),
+    )
+    const late = vi.fn()
+    const other = user({ id: 2, name: 'sam', role: 'user' })
+    const { host } = await show(other, [user(), other], {
+      actingAs: 1,
+      onLateRefusal: late,
+    })
+    const box = control<HTMLInputElement>(host, `input[name="${name}"]`)
+    expect([...(box.labels ?? [])].map((l) => l.textContent)).toEqual([label])
+    await click(box)
+    // Gone before the answer comes: an `act` of its own, since one nested
+    // in the next would not unmount the page until that one ended.
+    rerender(<p>another page</p>)
+    await act(async () => {
+      refuse?.(
+        new Error('/api/library/users/2: 500 {"error":"the store is locked"}'),
+      )
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(late.mock.calls).toEqual([
+      [`${label} for sam was not saved (the store is locked).`],
+    ])
+  })
+})
+
+describe('the rows', () => {
+  // Each case names the rows it reaches, so the check is never over fewer
+  // rows than it says: the grant list's only while a limit stands, and the
+  // choice's help only for an administrator.
+  it.each([
+    ['an account that sees every library', 'user', true, 0],
+    ['an account limited to one library', 'user', false, 2],
+    ['an administrator limited to no library', 'admin', false, 2],
+  ] as const)(
+    'ties each row’s label and help to its control, for %s',
+    async (_, role, every, ticks) => {
+      const who = user({
+        id: 2,
+        name: 'sam',
+        role,
+        every_library: every,
+        libraries: role === 'user' && !every ? [{ id: 70, name: 'Manga' }] : [],
+      })
+      const { host } = await show(who, [user(), who], { actingAs: 1 })
+      const sees = row(host, 'Sees')
+      expect(sees.querySelectorAll('input[type="radio"]')).toHaveLength(2)
+      expect(helpOf(sees) !== null).toBe(role === 'admin')
+      expect(
+        grants(host).querySelectorAll('input[type="checkbox"]'),
+      ).toHaveLength(ticks)
+      expectRowsWired(host)
+    },
+  )
+})
+
 describe('the permission boxes — O154', () => {
   it('are one group named Permissions, holding exactly the three', async () => {
     const { host } = await show(sam(), [user(), sam()])
@@ -2054,13 +2575,20 @@ describe('the permission boxes — O154', () => {
 })
 
 describe('the field labels — O175', () => {
-  it('gives each control under a field label that label’s words as its aria-label', async () => {
+  it('gives each control that carries an aria-label its row label’s words as that label', async () => {
     const { host } = await show(sam(), [user(), sam()])
-    const labelled = fields(host.querySelectorAll('.user-row label.field'))
-    // Role and the new password. Counted, because a loop over nothing passes.
-    expect(labelled).toHaveLength(2)
+    const labelled = [
+      ...host.querySelectorAll<HTMLLabelElement>('label.settings-row-label'),
+    ]
+      .map((label) => ({ written: label.textContent, control: label.control }))
+      .filter(({ control }) => control?.hasAttribute('aria-label'))
+    // Role and the new password. Named, because a loop over nothing passes.
+    expect(labelled.map(({ written }) => written)).toEqual([
+      'Role',
+      'New password',
+    ])
     for (const { written, control } of labelled) {
-      expect(control.getAttribute('aria-label'), written).toBe(written)
+      expect(control?.getAttribute('aria-label'), written ?? '').toBe(written)
     }
   })
 })

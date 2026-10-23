@@ -7,6 +7,7 @@ import { AccountPage } from './AccountPage'
 import './index.css'
 import type { Library } from './libraries'
 import { mount } from './testing/mount'
+import { row } from './testing/settingsRows'
 import * as usersApi from './users'
 
 /**
@@ -83,8 +84,8 @@ async function shown(who: usersApi.User = sam): Promise<HTMLElement> {
 }
 
 const radio = (host: HTMLElement, value: 'every' | 'only') => {
-  const found = host.querySelector<HTMLInputElement>(
-    `.grants input[type="radio"][value="${value}"]`,
+  const found = row(host, 'Sees').querySelector<HTMLInputElement>(
+    `input[type="radio"][value="${value}"]`,
   )
   if (!found) throw new Error(`no ${value} radio`)
   return found
@@ -105,6 +106,24 @@ beforeEach(() => {
     ...sam,
     every_library: true,
     libraries: [],
+  })
+})
+
+describe('the account page’s choice of libraries, as the browser names it', () => {
+  // Each radio keeps its own label, so the row's word and the help reach a
+  // screen reader only through the group around them.
+  it('names the radio group by its row’s label and describes it by the administrator’s help', async () => {
+    const host = await shown({ ...sam, role: 'admin' })
+    const group = row(host, 'Sees').querySelector('[role="radiogroup"]')
+    if (!group) throw new Error('no radiogroup in the Sees row')
+    expect(group).toHaveAccessibleName('Sees')
+    expect(group).toHaveAccessibleDescription(
+      'An administrator sees every library whatever is chosen here; the choice applies if the role becomes user.',
+    )
+    expect(radio(host, 'every')).toHaveAccessibleName(
+      'Every library, including any added later',
+    )
+    expect(radio(host, 'only')).toHaveAccessibleName('Only these')
   })
 })
 

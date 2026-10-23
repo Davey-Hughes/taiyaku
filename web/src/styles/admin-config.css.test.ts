@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import adminSource from './admin.css?raw'
+import settingsSource from './settings.css?raw'
 import { rules, selectors, subject, withoutComments } from '../testing/css'
 
 /**
@@ -76,14 +77,21 @@ describe('admin.css marks the removal blocks with --danger', () => {
 
 /**
  * A move's box is the removal's without the danger strip: a strip would say
- * this step is graver than it is.
+ * this step is graver than it is. The box is the dialog's, drawn by
+ * `settings.css`'s `.settings-dialog`, and `admin.css` styles what is in
+ * it by `.move-root`, so both sheets are read for both names.
  */
-describe('admin.css gives the move dialog no danger strip', () => {
-  it('sets a box-shadow on no rule that names .move-root', () => {
-    const shadowed = rules(adminSource)
+describe('admin.css and settings.css give the move dialog no danger strip', () => {
+  it('sets a box-shadow on no rule in either sheet that names .settings-dialog or .move-root', () => {
+    const shadowed = [adminSource, settingsSource]
+      .flatMap((source) => rules(source))
       .filter(({ body }) => /(?:^|;)\s*box-shadow:/.test(body))
       .flatMap(({ prelude }) => selectors(prelude))
-      .filter((selector) => selector.includes('.move-root'))
+      .filter(
+        (selector) =>
+          selector.includes('.settings-dialog') ||
+          selector.includes('.move-root'),
+      )
     expect(shadowed).toEqual([])
   })
 })
@@ -116,7 +124,7 @@ describe('admin.css sets the settings-area measure once', () => {
   it('sets the measure once rather than per control', () => {
     const widths = rules(adminSource)
       .filter(({ prelude }) =>
-        /\.(root-row|user-row|add-user|add-root|library-table|new-library|user-table|new-account|library-page|dir-page|add-library|rename-library|dir-picker|move-root)\b/.test(
+        /\.(add-user|add-root|library-table|new-library|user-table|new-account|library-page|dir-page|add-library|dir-picker|move-root)\b/.test(
           prelude,
         ),
       )
@@ -130,15 +138,14 @@ describe('admin.css sets the settings-area measure once', () => {
 
 /**
  * O153: every `.why` on `/config/users` is one kind of sentence, an
- * explanation beneath the control it is about, so one rule quiets them all.
- * It read `.user-row .why` until 2026-09-25, which reached the role hint and
- * the two inside `.reset` and missed the add-account form's, the one `.why`
- * outside a card. Measured in Chromium on 2026-09-24: that one computed
- * 16px in `--text` beside two at 12px in `--muted`, louder than the form's
- * own labels.
+ * explanation beneath what it is about, so one rule quiets them all. They
+ * are an account's page's two, inside its Libraries box: that the account
+ * sees no library, and the grants the list of libraries does not hold. The
+ * rule reaches them as descendants of the screen rather than of a box, so a
+ * `.why` drawn anywhere on it is quiet without a rule of its own.
  */
 describe('admin.css quiets every .why on the users screen', () => {
-  it('reaches .users .why rather than only the ones inside a card', () => {
+  it('reaches .users .why, every one on the screen', () => {
     // Found by its body rather than its prelude, because the prelude is
     // what this case is about.
     const quiet = rules(adminSource).filter(
@@ -149,13 +156,6 @@ describe('admin.css quiets every .why on the users screen', () => {
     expect(
       quiet.filter(({ prelude }) => selectors(prelude).includes('.users .why')),
     ).toHaveLength(1)
-    // And the narrow one is gone rather than left beside it, where it would
-    // be a second rule for the same three paragraphs to drift apart in.
-    expect(
-      quiet.some(({ prelude }) =>
-        selectors(prelude).includes('.user-row .why'),
-      ),
-    ).toBe(false)
   })
 })
 
@@ -192,8 +192,12 @@ describe("admin.css makes a grid of the scan report's top-level lists only", () 
  * do is the browser cases' to say.
  */
 describe('admin.css lets a path break and its list drop under its label', () => {
-  const declares = (selector: string, declaration: RegExp) =>
-    rules(adminSource).some(
+  const declares = (
+    selector: string,
+    declaration: RegExp,
+    source: string = adminSource,
+  ) =>
+    rules(source).some(
       ({ prelude, body }) =>
         selectors(prelude).includes(selector) && declaration.test(body),
     )
@@ -201,12 +205,10 @@ describe('admin.css lets a path break and its list drop under its label', () => 
   it.each([
     '.scan-report .paths li',
     '.derived .paths li',
-    '.root-row > h2',
     '.libraries h2',
     '.config-table td.lead',
     '.remove-root .confirm',
     '.remove-library .confirm',
-    '.move-root .confirm',
     '.move-volumes li',
     '.libraries p',
     '.users p',
@@ -215,10 +217,20 @@ describe('admin.css lets a path break and its list drop under its label', () => 
     '.dir-browser .where',
     '.dir-browser button[name="up"]',
     '.dir-list button',
-    '.user-row .grant-dirs code',
-    '.root-row .regime dd',
   ])('breaks a long path in %s', (selector) => {
     expect(declares(selector, /(?:^|;)\s*overflow-wrap:\s*anywhere/)).toBe(true)
+  })
+
+  // The page title, a directory's path; the help under a grant's library,
+  // its directories' paths; and the `watch` fact under a directory's path.
+  it.each([
+    '.page-header .page-title',
+    '.settings-row-help',
+    '.page-description .regime dd',
+  ])('breaks a long path in %s, in settings.css', (selector) => {
+    expect(
+      declares(selector, /(?:^|;)\s*overflow-wrap:\s*anywhere/, settingsSource),
+    ).toBe(true)
   })
 
   it('wraps a row that holds a list, and no other row', () => {
@@ -245,17 +257,17 @@ describe('admin.css lets a path break and its list drop under its label', () => 
   })
 })
 
+// The one `.field` label on the libraries screen is the directory picker's
+// under a library's table: New library hands the picker its row's ids, and
+// draws no `.field`.
 describe('admin.css styles the field labels of the libraries screen', () => {
-  it.each(['.add-library', '.rename-library'])(
-    'scopes the field rules to %s',
-    (container) => {
-      const preludes = rules(adminSource).flatMap(({ prelude }) =>
-        selectors(prelude),
-      )
-      expect(preludes).toContain(`${container} .field`)
-      expect(preludes).toContain(`${container} .field input`)
-    },
-  )
+  it('scopes the field rules to .add-root', () => {
+    const preludes = rules(adminSource).flatMap(({ prelude }) =>
+      selectors(prelude),
+    )
+    expect(preludes).toContain('.add-root .field')
+    expect(preludes).toContain('.add-root .field input')
+  })
 })
 
 /**

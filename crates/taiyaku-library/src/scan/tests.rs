@@ -1389,6 +1389,49 @@ fn a_dir_whose_two_names_are_taken_in_another_case_is_refused_naming_both() {
     );
 }
 
+/// `root_gets_a_library` strips white space off the directory's last
+/// component, so a directory called `. ` would make a library called `.`,
+/// which no page address holds ([`crate::has_no_address`]).
+#[test]
+fn a_dir_called_a_dot_and_a_space_is_not_a_library_of_its_own() {
+    let parent = crate::tests::tempdir("scan-own-dot");
+    let dir = parent.path().join(". ");
+    std::fs::create_dir(&dir).expect("mkdir");
+    let canonical = dir.canonicalize().expect("canonical");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+
+    assert_eq!(
+        add_root_checked(&conn, &dir),
+        Err(AddRootError::Unusable(format!(
+            "{} cannot be a library of its own: a library named for it would be called `.`, \
+             and no address can hold “.” or “..” as a name; add it to a library by name",
+            canonical.display()
+        )))
+    );
+    assert_eq!(libraries_and_roots(&conn), (0, 0), "nothing was added");
+}
+
+#[test]
+fn a_dir_called_a_space_and_two_dots_is_not_a_library_of_its_own() {
+    let parent = crate::tests::tempdir("scan-own-two-dots");
+    let dir = parent.path().join(" ..");
+    std::fs::create_dir(&dir).expect("mkdir");
+    let canonical = dir.canonicalize().expect("canonical");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+
+    assert_eq!(
+        add_root_checked(&conn, &dir),
+        Err(AddRootError::Unusable(format!(
+            "{} cannot be a library of its own: a library named for it would be called `..`, \
+             and no address can hold “.” or “..” as a name; add it to a library by name",
+            canonical.display()
+        )))
+    );
+    assert_eq!(libraries_and_roots(&conn), (0, 0), "nothing was added");
+}
+
 #[test]
 fn a_refused_dir_names_no_library_into_being() {
     let dir = crate::tests::tempdir("scan-refused-library");
@@ -1621,16 +1664,42 @@ fn a_library_named_nothing_is_refused_as_the_callers_mistake() {
     let refused =
         add_root_checked_in(&conn, dir.path(), InLibrary::Named("  ")).expect_err("a blank name");
 
-    assert!(
-        matches!(refused, AddRootError::Unusable(_)),
-        "a blank name is this caller's to fix, not a store fault: {refused:?}"
+    assert_eq!(
+        refused,
+        AddRootError::Unusable(format!(
+            "{}: a library needs a name",
+            dir.path().canonicalize().expect("canonical").display()
+        )),
+        "a blank name is this caller's to fix, not a store fault"
     );
-    assert!(refused.to_string().contains("needs a name"), "{refused}");
     assert_eq!(
         roots(&conn).expect("lists"),
         Vec::new(),
         "nothing was added"
     );
+}
+
+/// No page address holds `.` or `..` ([`crate::has_no_address`]), so no
+/// directory is filed under a library of either name, and the refusal is this
+/// caller's to fix rather than `libraries::create`'s inside the insert.
+#[test]
+fn a_dir_is_not_added_to_a_library_called_a_dot_name() {
+    let dir = crate::tests::tempdir("scan-library-named-dots");
+    let canonical = dir.path().canonicalize().expect("canonical");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+
+    for name in [".", ".."] {
+        assert_eq!(
+            add_root_checked_in(&conn, dir.path(), InLibrary::Named(name)),
+            Err(AddRootError::Unusable(format!(
+                "{}: An address cannot hold “.” or “..” as a name.",
+                canonical.display()
+            ))),
+            "{name:?}"
+        );
+    }
+    assert_eq!(libraries_and_roots(&conn), (0, 0), "nothing was added");
 }
 
 // --- update_root -------------------------------------------------------
@@ -4131,6 +4200,39 @@ fn a_library_is_refused_whole_for_one_bad_dir() {
         create_library(&conn, "  ", std::slice::from_ref(&b)),
         Err(AddRootError::Unusable(why)) if why.contains("needs a name")
     ));
+    assert_eq!(libraries_and_roots(&conn), (0, 0));
+}
+
+/// The route's way to a new library refuses a name no page address holds
+/// ([`crate::has_no_address`]) as the caller's mistake, and makes neither the
+/// library nor its directory.
+#[test]
+fn a_library_called_one_dot_is_not_made_with_its_dir() {
+    let dir = crate::tests::tempdir("create-library-one-dot");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    for name in [".", " . "] {
+        assert_eq!(
+            create_library(&conn, name, &[dir.path().to_path_buf()]),
+            Err(AddRootError::Unusable(crate::NO_ADDRESS.to_string())),
+            "{name:?}"
+        );
+    }
+    assert_eq!(libraries_and_roots(&conn), (0, 0));
+}
+
+#[test]
+fn a_library_called_two_dots_is_not_made_with_its_dir() {
+    let dir = crate::tests::tempdir("create-library-two-dots");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    for name in ["..", "\t.."] {
+        assert_eq!(
+            create_library(&conn, name, &[dir.path().to_path_buf()]),
+            Err(AddRootError::Unusable(crate::NO_ADDRESS.to_string())),
+            "{name:?}"
+        );
+    }
     assert_eq!(libraries_and_roots(&conn), (0, 0));
 }
 

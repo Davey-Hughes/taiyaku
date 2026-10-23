@@ -20,7 +20,8 @@
  */
 import { useEffect, useRef, useState } from 'react'
 import type { RemovalAnswer } from './config'
-import { useDrawn } from './hooks'
+import { HeldButton } from './HeldButton'
+import { useDrawn, useDrawnWait } from './hooks'
 import {
   type Library,
   libraryRemovalCost,
@@ -29,11 +30,15 @@ import {
 } from './libraries'
 import { sentenceOf } from './message'
 import { DeriveSection } from './ScanReport'
+import { WaitWords } from './WaitWords'
 
 /** `n` of a thing, in the number the count is. Zero takes the plural. */
 function count(n: number, one: string, many: string): string {
   return `${n} ${n === 1 ? one : many}`
 }
+
+/** The confirm's words while the removal is out. */
+const REMOVING = 'Removing…'
 
 export interface RemoveLibraryProps {
   library: Library
@@ -64,6 +69,7 @@ export function RemoveLibrary({
   >()
   const [failure, setFailure] = useState<string | undefined>()
   const [removing, setRemoving] = useState(false)
+  const removingDrawn = useDrawnWait(removing)
   /**
    * A hold ending bumps `epoch`: whatever went on under the dialog may have
    * changed what removing would cost, so the figures from before it are not
@@ -84,6 +90,8 @@ export function RemoveLibrary({
   const dirs = library.dirs.map((f) => f.path).join('\n')
   const about = `${epoch}:${dirs}`
   const cost = asked?.about === about ? asked.answer : undefined
+  /** The dry run's wait, drawn once it has lasted; until then it keeps its room. */
+  const costDrawn = useDrawnWait(cost === undefined && failure === undefined)
   /** A ref as well as `removing`: two presses before a render both read false. */
   const inFlight = useRef(false)
 
@@ -104,7 +112,8 @@ export function RemoveLibrary({
     }
   }, [library.id, about])
 
-  // A held confirm is a disabled button, which sends nothing when pressed.
+  // A held confirm turns its press down (`HeldButton`), so `blocked` needs
+  // no check here; `inFlight` holds it from the send, before that is drawn.
   const confirm = () => {
     if (inFlight.current || cost === undefined) return
     inFlight.current = true
@@ -129,7 +138,11 @@ export function RemoveLibrary({
     >
       {failure !== undefined && <p role="alert">{failure}</p>}
       {cost === undefined ? (
-        failure === undefined && <p>Working out what this would remove…</p>
+        failure === undefined && (
+          <p className={costDrawn ? undefined : 'wait-unseen'}>
+            Working out what this would remove…
+          </p>
+        )
       ) : (
         <>
           <p className="counts">
@@ -156,23 +169,42 @@ export function RemoveLibrary({
             untouched; what goes is everything this library derived from them,
             and everything anybody recorded against it.
           </p>
-          <button
-            type="button"
-            className="confirm"
-            onClick={confirm}
-            disabled={removing || blocked}
-          >
-            {removing ? 'Removing…' : `Remove ${library.name}`}
-          </button>
-          <details className="removal-derive">
-            <summary>What re-deriving without this library would find</summary>
-            <DeriveSection derive={cost.derive} level={4} />
-          </details>
         </>
       )}
-      <button type="button" onClick={onCancel} disabled={removing}>
-        Cancel
-      </button>
+      {/* The confirm and Cancel, apart, then the disclosure, so that a
+          press meant for one does not land on another; in the document in
+          that order, so Tab goes the way the eye does. */}
+      <div className="settings-actions">
+        {cost !== undefined && (
+          <HeldButton
+            type="button"
+            className="confirm keeps-wait-width"
+            onClick={confirm}
+            held={removingDrawn || blocked}
+          >
+            <WaitWords
+              drawn={removingDrawn}
+              words={`Remove ${library.name}`}
+              wait={REMOVING}
+            />
+          </HeldButton>
+        )}
+        <HeldButton
+          type="button"
+          onClick={() => {
+            if (!removing) onCancel()
+          }}
+          held={removingDrawn}
+        >
+          Cancel
+        </HeldButton>
+      </div>
+      {cost !== undefined && (
+        <details className="removal-derive">
+          <summary>What re-deriving without this library would find</summary>
+          <DeriveSection derive={cost.derive} level={4} />
+        </details>
+      )}
     </div>
   )
 }

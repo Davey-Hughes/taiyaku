@@ -90,11 +90,10 @@
   margin-top: var(--space-4);
 }
 
-/* The threshold is an independent toggle and so is a checkbox — the same
- * treatment ⑤b gave the permission and grant boxes, whose labels are
- * sentences rather than field names (spec §11.3). `.proposals .checks` joins
- * their two rules below; only the bottom margin is this row's own, because
- * the list follows it directly. */
+/* The threshold is an independent toggle and so is a checkbox, whose label
+ * is a sentence rather than a field name (spec §11.3): the two
+ * `.proposals .checks` rules below lay the row out. Only the bottom margin
+ * is here, because the list follows it directly. */
 .proposals .checks {
   margin-bottom: var(--space-4);
 }
@@ -563,13 +562,7 @@
  * `library.css`'s `.search-box` comment records fixing. */
 .proposal-detail .field,
 .rule-form .field,
-.root-row .field,
-.user-row .field,
-.add-user .field,
 .add-root .field,
-.add-library .field,
-.rename-library .field,
-.move-root .field,
 .account .field {
   min-width: 0;
   display: grid;
@@ -623,14 +616,11 @@
  * moment the same task put the class on nine more. `--space-1`/`--space-2`
  * rather than `--space-2`/`--space-3`: the nearer pair to the `0.25rem` this
  * held, so the controls stay as compact as they were rather than growing. */
-/* `textarea` is new to this list: the root row's `exclude_globs` box is one,
- * and the four existing hosts have none, which is why it was never needed
- * before. */
 /* `.account .account-row input` is the one entry here whose second class is
  * not `.field`: it is the account page's key-name box, the only control on
- * any of these screens that no `.field` wraps, so its row is what reaches
- * it. Two classes and not the one `.account-row` would need, because every
- * other selector in this list is (0,2,1) and a (0,1,1) beside them is a
+ * `/account` that no `.field` wraps, so its row is what reaches it. Two
+ * classes and not the one `.account-row` would need, because every other
+ * selector in this list is (0,2,1) and a (0,1,1) beside them is a
  * descending specificity — biome says so, and the rule it names is about a
  * cascade that reads the wrong way round to anyone editing this block later.
  *
@@ -645,18 +635,7 @@
 .rule-form .field input,
 .proposal-detail .field select,
 .rule-form .field select,
-.root-row .field input,
-.root-row .field select,
-.root-row .field textarea,
-.user-row .field input,
-.user-row .field select,
-.add-user .field input,
-.add-user .field select,
 .add-root .field input,
-.add-library .field input,
-.rename-library .field input,
-.move-root .field input,
-.move-root .field select,
 .account .field input,
 .account .account-row input {
   /* **A `<select>`'s intrinsic width is its widest option, and a grid item
@@ -705,18 +684,7 @@
   .rule-form .field input,
   .proposal-detail .field select,
   .rule-form .field select,
-  .root-row .field input,
-  .root-row .field select,
-  .root-row .field textarea,
-  .user-row .field input,
-  .user-row .field select,
-  .add-user .field input,
-  .add-user .field select,
   .add-root .field input,
-  .add-library .field input,
-  .rename-library .field input,
-  .move-root .field input,
-  .move-root .field select,
   .account .field input,
   .account .account-row input {
     font-size: max(16px, var(--text-ui));
@@ -1329,8 +1297,6 @@
   --config-measure: 40rem;
 }
 
-.root-row,
-.user-row,
 .add-root,
 .add-user,
 .library-table,
@@ -1343,23 +1309,11 @@
   max-width: var(--config-measure);
 }
 
-/* Prose keeps a narrower measure than the page: 60ch, `.what-a-backup-is`'s
-   own precedent, set once here rather than on each selector below.
-
-   **Every `.why` on these screens**: the role hint, those in the grant
-   editor, the one inside an account's `.reset` and the one inside
-   `.add-user` are the same kind of sentence, so they take the same measure —
-   `ch`, so each is sixty characters of its own size rather than one shared
-   pixel width. The quiet rule further down (`.users .why`) is a descendant
-   selector, so all of them take `--text-meta` alike.
-
-   `.libraries .why` is the one beneath the make-a-library form: it
-   explains the control above it as the users screen's do, and `RootRow` and
-   `LibraryPage` draw none. */
+/* Prose keeps a narrower measure than the page: 60ch, set once here rather
+   than on each selector below. `ch`, so each sentence is sixty characters
+   of its own size rather than one shared pixel width. */
 .users .why,
-.libraries .why,
-.account .why,
-.backup .what-a-backup-is {
+.account .why {
   max-width: 60ch;
 }
 
@@ -1382,25 +1336,11 @@
   overflow-wrap: anywhere;
 }
 
-/* O180: the page's heading is the directory's path, and a path does not
-   break at a slash. A path runs long, so it is drawn at a heading's weight
-   and not at its size. */
-.root-row > h2 {
-  overflow-wrap: anywhere;
-  font-size: var(--text-body);
-}
-
-.root-row .fields {
-  margin-top: var(--space-4);
-}
-
 /* A report's two section headings, drawn at whatever level its caller says
    is beneath the heading that holds it. Styled by class and not by tag, so
    they draw alike at any level and never as a library's name or a directory's
    path; the size is the body's, so a heading in a report is never louder
-   than the one above it. Among a directory's facts, which are packed close, a
-   heading takes a step off the facts above and sits near the ones it
-   heads. */
+   than the one above it. */
 .report-heading {
   margin: 1.25rem 0;
   font-family: var(--font-title);
@@ -1409,87 +1349,15 @@
   line-height: 1.25;
 }
 
-.root-row .report-heading {
-  margin: var(--space-3) 0 var(--space-2);
-}
-
-/* Three independent facts, each naming what it is a fact about. A sentence
-   was the wrong shape for them: `unknown — probed when a directory is added`
-   does not say what is unknown (spec §11.6). */
-.root-row .regime {
-  display: grid;
-  grid-template-columns: auto 1fr;
-  gap: var(--space-1) var(--space-3);
-  margin: var(--space-2) 0 0;
-  font-size: var(--text-meta);
-}
-
-.root-row .regime > div {
-  display: contents;
-}
-
-.root-row .regime dt {
-  color: var(--muted);
-}
-
-/* `overflow-wrap`, for O180: the `watch` fact is the probe's own sentence
-   once a root has just been added, and that sentence names the root's path. */
-.root-row .regime dd {
-  margin: 0;
-  color: var(--text);
-  overflow-wrap: anywhere;
-}
-
-.root-row .fields {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
-  align-items: start;
-  gap: 0.5rem;
-}
-
-.root-row .fields small {
-  color: var(--muted);
-  font-size: var(--text-meta);
-}
-
-/* `.field`'s micro-label typography is for the label's own word; the hint
-   under the box is a sentence and must not inherit it. Measured in Chromium
-   without this: 9.33px, in capitals. */
-.root-row .field small {
-  font-size: var(--text-meta);
-  letter-spacing: normal;
-  text-transform: none;
-}
-
-.root-row .actions {
-  display: flex;
-  gap: 0.5rem;
-  margin-top: 1rem;
-}
-
 /* A checkbox's label *is* a sentence, so it takes the row rather than a
    field track, and the box sits beside the sentence rather than under an
-   uppercase micro-label. Spec §11.3.
-
-   Relocated beside the other `.root-row` rules — a minor of the whole-branch
-   review over ⑤b found this pair (which also styles `.user-row .checks`)
-   sitting ~200 lines below every other `.root-row` rule, under the header for
-   the users and backup screens. Pure relocation: the only other rule in
-   either stylesheet carrying `.checks` selector text is `.proposals .checks`'s
-   own bottom margin near the head of this file, added by ⑤c, and it shares no
-   property with this pair — that one sets `margin-bottom`, this one
-   `margin-top` — so moving this earlier changes no cascade outcome. (Until ⑤c
-   nothing else carried it at all, which is what this sentence used to say.) */
-.root-row .checks,
-.user-row .checks,
+   uppercase micro-label. Spec §11.3. */
 .proposals .checks {
   display: grid;
   gap: var(--space-2);
   margin-top: var(--space-3);
 }
 
-.root-row .checks label,
-.user-row .checks label,
 .proposals .checks label {
   display: flex;
   align-items: baseline;
@@ -1505,50 +1373,10 @@
   max-width: 60ch;
 }
 
-.library-page > .actions,
-.rename-library {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-end;
-  gap: var(--space-2);
-  margin: var(--space-3) 0;
-}
-
-/* The form is the page, so it draws no box of its own, as the form that
-   makes an account draws none. */
-.add-library {
-  display: grid;
-  gap: var(--space-3);
-}
-
-/* The form's two buttons on one line, with a gap between them, rather than
-   stretched across `.add-library`'s grid as its fields are. */
-.add-library > .actions,
-.add-user > .actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-}
-
-/* The refusal answers the button above it, so it keeps the form's own gap
-   from it rather than a paragraph's margins on top of the gap. */
-.add-library > [role="alert"] {
-  margin: 0;
-}
-
-/* The rename's refusal answers the form's controls, so it takes a line of its
-   own beneath them at the form's own gap, as the make form's does, and not a
-   paragraph's margins beside the buttons. */
-.rename-library > [role="alert"] {
-  flex-basis: 100%;
-  margin: 0;
-}
-
 /* A refusal beneath its button is scrolled to with `block: 'nearest'`, which
    leaves its foot on the window's edge to within a pixel's rounding; this is
    the breath it keeps from that edge. */
 .add-library > [role="alert"],
-.rename-library > [role="alert"],
 .add-root > [role="alert"] {
   scroll-margin-bottom: 0.5rem;
 }
@@ -1565,8 +1393,33 @@
   gap: var(--space-2);
 }
 
+/* The buttons, a caller's Cancel among them, are one item of the line, so
+   they go under the box together or not at all. On a line narrower than
+   the three, Browse… and what follows it are the one item that goes under
+   the pick button, so a Cancel is never left on a line alone. */
+.dir-picker-buttons,
+.dir-picker-browse {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+/* The path box keeps its smaller type on its buttons' line, so that it and
+   Browse… beside it are drawn at one height and, bottoms aligned, from one
+   top. `1lh` in `line-height` is the parent's line, the picker's, which is
+   the buttons' own, and a length is inherited as one: by the box where it
+   is the row's control (New library), and where it is under its own label
+   (Add directory…), through the label. */
+.settings-row-control > .dir-picker > input,
+.dir-picker > .field {
+  line-height: 1lh;
+}
+
+/* The box gives up width before the buttons leave its line, down to the
+   width the make page's box keeps beside Browse…, and takes the line on
+   its own once the buttons are under it. */
 .dir-picker .field {
-  flex: 1 1 20rem;
+  flex: 1 1 12rem;
 }
 
 /* The browser, when open, on a line of its own beneath the box. */
@@ -1648,27 +1501,6 @@
   padding: var(--space-4);
 }
 
-/* Kept apart from the shared rule above: `.remove-user` sits inside
-   `.actions`, a flex container that already carries its own margin-top, and
-   a flex item's margin never collapses with its parent's — sharing this
-   declaration put a second `--space-4` inside `.actions` that the layout
-   never had. `.remove-root` sits directly in the root row's own flow, after
-   `.actions` and whatever scan report precedes it, and still needs one.
-   Measured in the browser, not reasoned about. */
-.remove-root,
-.remove-library {
-  margin-top: var(--space-4);
-}
-
-/* A move is a dialog of the same kind as a removal's and not so grave, so it
-   takes the box and not the strip. */
-.move-root {
-  border: 1px solid var(--line);
-  border-radius: var(--radius-control);
-  margin-top: var(--space-4);
-  padding: var(--space-4);
-}
-
 /* What the re-derive after a removal found, drawn by the screen above the
    page. Boxed on the pages' measure, border box and all, so it ends where
    the page's own content does, and so a report of a few dozen rows reads as
@@ -1684,7 +1516,8 @@
 }
 
 /* What is scrolled to the top of the view lands beneath the phone bar's
-   edge, and a half-line of air keeps a focus ring whole. */
+   edge, and a half-line of air keeps its first line from sitting flush
+   against the bar, where it reads as cut off by it. */
 .libraries .removal-report,
 .libraries [role="alert"] {
   scroll-margin-top: calc(var(--sticky-top, 0px) + 0.5rem);
@@ -1744,6 +1577,25 @@
   overflow-wrap: anywhere;
 }
 
+/* The confirm and Cancel, a form foot's pair (`.settings-actions`: a gap
+   between them, and the same between their lines where a long path or
+   name leaves Cancel no room beside the confirm), start where the
+   sentences they act on start, at every width: at the end of a wide box
+   they would stand apart from what they confirm, and from the disclosure
+   under them, where there is one. That disclosure starts a clear step
+   lower than the gap between the two buttons, so a press meant for Cancel
+   does not open it and one meant for it does not land on Cancel. */
+.remove-root > .settings-actions,
+.remove-user > .settings-actions,
+.remove-library > .settings-actions {
+  justify-content: flex-start;
+}
+
+.remove-root > .removal-derive,
+.remove-library > .removal-derive {
+  margin-top: var(--space-5);
+}
+
 /* The sentences a rehearsal says, held to the measure the removal's own are. */
 .move-counts {
   max-width: 60ch;
@@ -1758,16 +1610,14 @@
   font-weight: 600;
 }
 
-/* The move's confirm says "Move ", the whole path, " to " and a library's
-   name, and the volumes a refusal lists are paths too. */
-.move-root .confirm,
+/* The volumes a refusal lists are paths. */
 .move-volumes li {
   overflow-wrap: anywhere;
 }
 
 /* The directory picker under a library's table. Its own box gives way, so its
-   box, its buttons, the Cancel it draws after them and the browser wrap in
-   `.add-root`'s row, and a refusal joins that row at its gap. */
+   box, its buttons with the Cancel it draws after them, and the browser wrap
+   in `.add-root`'s row, and a refusal joins that row at its gap. */
 .add-root {
   margin-top: var(--space-3);
 }
@@ -1915,9 +1765,16 @@
     font-size: var(--text-meta);
   }
 
-  .config-table td:not(.lead) + td:not(.lead)::before {
-    content: "·";
+  /* Drawn after the cell it follows, so that no line starts with one, and
+     unseen after a cell that ends a line (`lineEnds.ts`), so that none
+     ends with one. */
+  .config-table td:not(.lead):not(:last-child)::after {
+    content: "·" / "";
     margin: 0 var(--space-2);
+  }
+
+  .config-table td:not(.lead)[data-ends-line]::after {
+    visibility: hidden;
   }
 
   .config-table .cell-unit,
@@ -1964,15 +1821,6 @@
 .config .missing,
 .users .gone-line {
   color: var(--muted);
-}
-
-.library-page > h3 {
-  margin: var(--space-5) 0 var(--space-2);
-}
-
-.library-scan-reports .dir-report > h4 {
-  margin: var(--space-4) 0 0;
-  overflow-wrap: anywhere;
 }
 
 /* Scoped to the two top-level lists — one per direct `<section>` — rather
@@ -2100,40 +1948,12 @@
   flex: 1;
 }
 
-/* Spec C4 §4's users screen and §5's backup screen. Tokens, as the
-   settings-area comment above requires and `index.css.test.ts` checks. */
+/* Spec C4 §4's users screen. Tokens, as the settings-area comment above
+   requires and `index.css.test.ts` checks. */
 
-/* An account's page is its sections, one under another, each under its
-   own heading. */
-.account-section {
-  margin-top: var(--space-5);
-}
-
-.account-section > h3 {
-  margin: 0 0 var(--space-2);
-}
-
-.account-section .tally {
-  margin: 0 0 var(--space-2);
-  color: var(--muted);
-  font-size: var(--text-meta);
-}
-
-/* Descendant, not child, and on the whole screen: this reaches the role
-   hint, the `.why` inside `.reset`, those in the grant editor and the one
-   under the make form alike.
-
-   **A link inside keeps `--accent` and that is deliberate.** `color` reaches
-   text and `currentColor`, not an anchor that has its own, so the "your
-   account screen" link in the `isSelf` paragraph is the accent every other
-   link is, and not a dimmed one matching nothing; `index.css.test.ts` holds
-   that accent's contrast on `--bg`.
-
-   `.locked` is the account page's line saying nobody can sign in. The
-   table's mark of the same name is drawn by `.config-table .mark`. */
-.users .why,
-.libraries .why,
-.user-row .locked {
+/* Descendant, not child: an account's page draws its `.why` lines inside
+   its Libraries box. */
+.users .why {
   color: var(--muted);
   font-size: var(--text-meta);
 }
@@ -2144,146 +1964,8 @@
   font-size: var(--text-meta);
 }
 
-.user-row .fields {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
-  gap: 0.5rem;
-  margin-top: 0.5rem;
-}
-
-/* The role's hint leaves the grid and sits under the fields it explains.
-   Placement only: the measure lives with the settings area's `.why` rule and
-   the colour and size with `.users .why` above. A child, not a descendant:
-   every other `.why` on the page is inside a group of its own, the grants or
-   the password form. */
-.account-section > .why {
-  margin: var(--space-2) 0 0;
-}
-
-/* A box and its words on one line with a gap between them, for the two radios
-   and for each library's tick. The coarse-pointer block below raises each to a
-   44px row. */
-.user-row .grants > label,
-.user-row .grant-list label {
-  display: flex;
-  align-items: baseline;
-  gap: var(--space-2);
-}
-
-.user-row .grant-list,
-.user-row .session-list,
-.user-row .key-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-}
-
-.user-row .grant-dirs {
-  list-style: none;
-  margin: 0;
-  padding: 0 0 0 var(--space-5);
-  color: var(--muted);
-  font-size: var(--text-meta);
-}
-
-.user-row .grant-dirs code {
-  overflow-wrap: anywhere;
-}
-
-/* The grants are one group under the section's heading, boxed as the rule
-   form's `sets` group is, in the hairline the removal's box and the table's
-   rules are drawn in. */
-.user-row .grants {
-  margin: var(--space-3) 0 0;
-  padding: var(--space-3);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-control);
-}
-
-/* The ticks belong to "Only these", so they sit under its words and not at
-   the radios' edge. A library's name beside its tick, and the sentence that
-   says the list was not read, break where they must: a `<fieldset>` otherwise takes its widest
-   unbroken word as its width, and a name without a space is one. */
-.user-row .grants .grant-list {
-  padding-left: var(--space-5);
-}
-
-/* O195: the question "Every library" asks before it lifts a limit. Its
-   sentence on a line of its own, and the two answers beside each other. */
-.grants .lift-limit {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-  margin: var(--space-2) 0;
-}
-
-.grants .lift-limit p {
-  flex-basis: 100%;
-  margin: 0;
-}
-
-.user-row .grant-list label > span,
-.user-row .grants .unknown {
-  overflow-wrap: anywhere;
-}
-
-.user-row .session-list li,
-.user-row .key-list li {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 0.5rem;
-  padding: 0.25rem 0;
-}
-
-.user-row .session-list .when,
-.user-row .key-list .when {
-  color: var(--muted);
-  font-size: var(--text-meta);
-}
-
-.user-row .session-list .current {
-  font-weight: 600;
-}
-
-/* The page's own guard, drawn where a caller leaves the page up once its
-   account is removed: no controls, and a line saying so. No production
-   caller does: `Users` takes the page away in the removal's own answer. */
-.user-row.removed .gone {
-  color: var(--muted);
-}
-
-.user-row .actions {
-  display: flex;
-  gap: 0.5rem;
-  margin-top: 1rem;
-}
-
 /* `.remove-user`'s own rules live with `.remove-root`'s above: one shared
-   treatment for the product's two removal blocks, stated once. */
-
-.add-user .field {
-  margin-bottom: var(--space-2);
-}
-
-/* The list is this screen's card, and without a measure the backup screen is
-   the one screen `--config-measure` never reaches: its prose stops at 60ch
-   while its rows ran to `main`'s full 1168px. The rows are flex and pack
-   left, so this moves no visible edge today — what it decides is where a
-   long filename wraps. */
-.backup .backup-list {
-  list-style: none;
-  margin: 1rem 0;
-  padding: 0;
-  max-width: var(--config-measure);
-}
-
-.backup .backup-list li {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.75rem;
-  padding: 0.25rem 0;
-}
+   treatment for the product's removal blocks, stated once. */
 
 /* O94's account screen at `/account`: the `Account` the reader draws as an
    overlay, drawn here inside `.library`'s `<main>`. The panel's palette is
@@ -2521,9 +2203,8 @@
    control's ring — 4px outside the border box, see the shared `.field`
    block's own comment — painted over the *next* field's micro-label.
    Measured at 390px with a coarse pointer before this rule: **1.00px**
-   between the ring's bottom edge and the ink of the label under it, against
-   9.00px in the add-account form, where `.add-user .field` carries the
-   margin this rule copies. Unlike the 2.4px that block records, this one is
+   between the ring's bottom edge and the ink of the label under it. Unlike
+   the 2.4px that block records, this one is
    ⑤c's own: the account page's labels took `.field` here without their
    container taking a gap.
 
@@ -2535,12 +2216,7 @@
    beside a 75px button to **110px with the button stacked under a 178px
    box**. The API-key form carries no `.field` — its box takes the shared
    reset through `.account .account-row input` instead — so a rule written
-   on the field cannot reach it at all.
-
-   `var(--space-2)`, which is the 8px the rest of the settings area stacks
-   fields at: `.add-user .field` carries this exact declaration, and
-   `.user-row .fields` and `.root-row .fields` carry the same 8px as a grid
-   `gap` (written `0.5rem` there). */
+   on the field cannot reach it at all. */
 .account form .field {
   margin-bottom: var(--space-2);
 }
@@ -2557,8 +2233,8 @@
    the box shares with the Create button, and the shared reset's `min-width:
    0` leaves it at its intrinsic width with the rest of the row empty. A rule
    of its own rather than a declaration in that reset, because the reset
-   reaches five other screens and none of them puts a control in a flex row
-   beside a button. */
+   reaches other screens' boxes too, and none of them puts a control in a
+   flex row beside a button. */
 .account .account-row input {
   flex: 1;
 }
@@ -2594,19 +2270,6 @@
   word-break: break-all;
 }
 
-.backup .backup-list .when,
-.backup .backup-list .size {
-  color: var(--muted);
-}
-
-/* The measure itself lives with the settings area's other `.why` rule,
-   above, so this one property is not set twice. */
-.backup .what-a-backup-is {
-  margin-top: var(--space-5);
-  border-top: 1px solid var(--line);
-  padding-top: var(--space-4);
-}
-
 /* **44 px targets for a finger, which this stylesheet has never had** — spec
    §7.1, §12.4a. `shell.css`, `library.css` and `reader.css` each carry one;
    `admin.css` carried none, so on a phone every control on all six of its
@@ -2636,19 +2299,18 @@
    holds both a `.proposal-states` and a `.proposal-tabs` selector, which is
    O150's guard. A floor naming both would break both pins.
 
-   **The two link-shaped actions are named, because §7.1 is about links *and*
+   **The link-shaped action is named, because §7.1 is about links *and*
    controls and the first draft of this block covered only the controls.**
-   Both were on these screens the whole time and neither was reached:
-   `RuleEditor`'s `<a className="export" download>`, which sits in the same
+   `RuleEditor`'s `<a className="export" download>` sits in the same
    `.editor-actions` group as an Import `<button>` that already cleared 44,
-   and `Backup`'s per-backup `<a href download>`, the *only* per-row action
-   on `/config/backup`. No stylesheet defined `.export` at all before this.
+   and nothing reached it. No stylesheet defined `.export` at all before
+   this. `Backup`'s per-backup `<a href download>` takes the same three
+   declarations in `settings.css`, as `.backup-rows a`.
 
    **Three declarations rather than one, and the first two are what make the
    third do anything to a link.** An `<a>` is an inline box and `min-height`
-   does nothing to one — the same fact the grant rows below turn on. Both of
-   these happen to be flex items today (`.editor-actions` and a
-   `.backup-list` `<li>` are each `display: flex`), which blockifies them, so
+   does nothing to one. Export happens to be a flex item today
+   (`.editor-actions` is `display: flex`), which blockifies it, so
    `min-height` alone did reach 44 — measured — but left the word at the top
    of the box, 0 px above it and 20 below. `inline-flex` with `align-items:
    center` reaches the same 44 without depending on a parent staying flex,
@@ -2657,8 +2319,6 @@
    properties, with `flex` where this one has `inline-flex`: those are rows
    filling a column and want the whole width, these are actions sitting in a
    row, so the target is the width of the word and not of the screen.
-   The `.backup-list` row grows from 68 px to 88 as a result, its filename
-   and its date already being on two lines at 390 px.
 
    **An earlier draft named `a.button` here in their place, and it is
    dropped.** It matched nothing, and no stylesheet in this project defines
@@ -2673,9 +2333,10 @@
 
    **The `<summary>` toggles get the floor, and cannot get it the way
    everything else here does.** `RuleEditor`'s save-derive, the
-   removal-derives of `RemoveRoot`, `RemoveLibrary` and `MoveRoot`, and
-   `MoveRoot`'s move-volumes are the app's `<details>`, and no other rule
-   styles `summary`.
+   removal-derives of `RemoveRoot`, `RemoveLibrary` and `MoveRoot`,
+   `MoveRoot`'s move-volumes and Backup's How backups work are the app's
+   `<details>`, and no other rule sets a `summary`'s `min-height` or
+   `display`.
    A `<summary>` is `display: list-item`, so unlike a link it takes
    `min-height` as it stands — but the text then sits at the top of the box,
    0 px above and 20 below. `display: flex` with `align-items: center` does
@@ -2695,7 +2356,7 @@
 
    **The links these screens draw that this floor deliberately leaves
    alone** are named here so the next reader sees they were seen rather
-   than missed. `.config-nav`'s four `NavLink`s are kept off the floor, and
+   than missed. `.config-nav`'s four links are kept off the floor, and
    take their 44 px to the touch from O157's `::after` in the coarse block
    instead, which grows the target and leaves the link drawn as it was.
    They are kept off it because they are a row with its own geometry: the
@@ -2724,7 +2385,7 @@
 
    `.account .account-row input` is here for the reason it is in the shared
    `.field` block and that block's own companion: the account page's key-name
-   box is the one control on these six screens that no `.field` wraps — only
+   box is the one control on `/account` that no `.field` wraps — only
    a placeholder labels it — so the `.field` line above cannot reach it, and
    without this it would be the single input on `/account` left at 35.6 while
    every other control beside it cleared 44. `.account-wide` is named for the
@@ -2737,46 +2398,29 @@
    draws a checkbox that looks like a button. (`library.css` has two
    `min-height: 24px` controls of its own, `.volumes a.get` and
    `.volumes .panel-open`; they are tile controls rather than checkboxes, so
-   they are a precedent for the number and not for the shape.) Where there is
-   a `<label>` beside the box, that row is the tappable target and takes the
-   44.
+   they are a precedent for the number and not for the shape.) Where a
+   `.checks` label is beside the box, that row is the tappable target and
+   takes the 44.
 
    **The box rule is keyed on that treatment and not on a container**, which
    is why it names `input[type="checkbox"]` under the three roots rather than
-   `.checks input[type="checkbox"]`. `.checks` is where five of these boxes
-   are — the inbox's weak filter, the root row's one, the user row's three —
-   and it was never where all of them are: the user row's per-root grants sit
-   in a `.grant-list`, and `.rule-list`'s enable box sits in a wordless
-   label of its own (O157). Both drew 13×13. The grant list at least said
-   so — the paragraph this one replaces named it as left out — while the
-   enable box went unmentioned; either way the heading above said a checkbox
-   takes a box, and two kinds of checkbox did not get one.
-   §12.4's `0.7rem` exemption is the same mistake one section over — an
-   earlier draft keyed it on the value instead of on the uppercase-label
-   typography the value was for, and so swept in two sites that had nothing
-   to do with that treatment. That one was caught in review; this one was
-   not.
+   `.checks input[type="checkbox"]`. `.checks` holds only the inbox's weak
+   filter: an account's permissions and grants and a directory's keeps
+   documents box are settings rows, whose label takes the 44 in
+   `settings.css`'s coarse block, and `.rule-list`'s enable box sits in a
+   wordless label of its own (O157).
 
    `.checks label` is already `display: flex` with a gap from its own rule
-   above, so its floor adds only the height and the centring. A
-   `.grant-list` label is an inline box until the base rule above makes it
-   a flex one, and `min-height` does nothing to an inline box. So that rule
-   carries the `display: flex` and the gap as well, and reaches the same
-   centred row the `.checks` labels get. **The two rows are still not
-   twins**: a `.checks` sentence is `--text-ui` at 14 px and a grant row's
-   words are not, because only `.checks label` carries a `font-size`. That
-   is a typography difference rather than a target one, it predates this
-   floor, and a floor is the wrong place to settle it.
+   above, so its floor adds only the height and the centring.
 
    **`flex-shrink: 0` is what makes the 24 px above a size rather than a
    wish.** A flex item's base size is its max-content width, so a label
    whose words are longer than its row has negative free space, and the
    default `flex-shrink: 1` takes it out of *both* items, the box included.
    With the declaration only the words give way, wrapping inside what is
-   left to them. Written on the box rule rather than on the grant rule
-   because it is true of every checkbox here: `.checks label` and
-   `.rule-row` are flex containers too, and both only happen to have slack
-   today.
+   left to them. Written on the box rule because it is true of every
+   checkbox here: `.checks label` and `.rule-row` are flex containers too,
+   and both only happen to have slack today.
 
    `align-items: center` goes with every 44 here. `.checks label` is
    `align-items: baseline` above, and baseline puts a checkbox's *bottom
@@ -2784,7 +2428,7 @@
    draws, wrong at 24. Measured in Chromium on 2026-09-24: the box sat 3 px
    below the row's top and 17 px above its bottom, its centre 6.5 px above
    the sentence's, against 10 and 10 once centred. The `.checks` rule is
-   written over the same three selectors as the rule it corrects, at the same
+   written over the same selector as the rule it corrects, at the same
    (0, 2, 1), because a `:where()`-scoped copy would be (0, 1, 1) and lose
    the `align-items` tie it exists to win.
 
@@ -2848,16 +2492,12 @@
        *content* on the text boxes, and the shared reset's `var(--space-1)`
        padding and 1px border then added 10px on top of it. Measured at
        390px with a coarse pointer on 2026-09-25, before this line: every
-       `<input>` this floor reaches rendered **54px** — `/account`, the
+       `<input>` this floor then reached rendered **54px** — `/account`, the
        add-account and add-root forms, the expanded root and user rows, the
        rule form and the proposals accept form alike — while every
        `<select>` beside them, already `border-box`, rendered 44 or more.
        One declaration, two heights, decided by an element's UA default
        rather than by anything written here.
-
-       The root row's `exclude_globs` `<textarea>` is the one control this
-       does not move: its `rows` make it 82px, already over the floor, so
-       the box model has nothing to decide there.
 
        Inside the media query with the floor it corrects rather than hoisted
        out of it, because outside it there is nothing to correct: no rule
@@ -2869,13 +2509,12 @@
   }
 
   /* About's commit and Source, and the licence page's contents, grow their
-     boxes, as these two actions do, rather than a target around them:
+     boxes, as Export does, rather than a target around them:
      their rows sit closer than a finger's height, so a target grown around
      each would cover its neighbours'. The grown boxes move the rows apart
      instead, and each of About's labels stays on its value's line because
      `.about-facts` sets the two on one baseline. */
   .editor-actions .export,
-  .backup .backup-list a,
   .about .about-facts a,
   .licence .licence-contents a {
     display: inline-flex;
@@ -2936,19 +2575,9 @@
     padding-block: 2.5px 5.5px;
   }
 
-  .root-row .checks label,
-  .user-row .checks label,
   .proposals .checks label {
     min-height: 44px;
     align-items: center;
-  }
-
-  .user-row .grants > label,
-  .user-row .grant-list label {
-    display: flex;
-    align-items: center;
-    gap: var(--space-2);
-    min-height: 44px;
   }
 
   /* **O157: the three underlined one-of-N rows reach 44px to the touch
@@ -2975,7 +2604,11 @@
      links and Copy address (`About.browser.test.tsx`). The way up on the
      not-found pages sits under the same tabs and is not measured. That
      nothing that can be pressed lies under the part of each target outside
-     its link's box, so the target covers nobody's, holds by reading. */
+     its link's box, so the target covers nobody's, holds by reading, but
+     for one exception: while a library's name is edited, the box laid over
+     its title lies under the way up's target and wins the press, its
+     positioned column being painted later (`settings.css`,
+     `.page-header-text:has(> .page-title-editor)`). */
   .config-nav a,
   .proposal-tabs > button,
   .preview-tabs > button,

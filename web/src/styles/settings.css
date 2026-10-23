@@ -1,0 +1,937 @@
+/* The settings pages' frame — `settingsLayout.tsx`. A header, then
+ * sections: each heading sits outside a bordered box, and the box holds
+ * rows split by faint lines, the label and its help at the start and the
+ * control at the end. The box's edge is what tells one section from the
+ * next, so it is drawn in `--line-strong`: `--line` on `--bg` is 1.38:1 in
+ * Paper and 1.62:1 in Ink, which is the separation that was missing. The
+ * rows inside one box are split in `--line`, quieter than the edge, so the
+ * box reads as one thing before its rows do. */
+
+.settings-page {
+  max-width: var(--config-measure);
+}
+
+/* Header. The title and its line take the width; the actions sit at the
+   title's end while both fit, and wrap under it when they do not. */
+.page-header {
+  max-width: var(--config-measure);
+  margin-bottom: var(--space-2);
+}
+
+.page-header-main {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3) var(--space-5);
+}
+
+.page-header-text {
+  flex: 1 1 20rem;
+  min-width: 0;
+}
+
+/* The containing block of a title's editor, which is laid over the title.
+   Only while there is one: a positioned column is painted over the back
+   link's grown target (`admin.css`, a coarse pointer's 44px) where the two
+   meet, and takes the presses meant for it. */
+.page-header-text:has(> .page-title-editor) {
+  position: relative;
+}
+
+/* Two classes, so this outranks `.users h2` and `.libraries h2`. Below the
+   phone bar when it is given focus, as the box that edits it is. */
+.page-header .page-title {
+  margin: 0;
+  font-size: var(--text-h2);
+  overflow-wrap: anywhere;
+  scroll-margin-top: calc(var(--sticky-top, 0px) + 0.5rem);
+}
+
+/* A title edited where it stands (`PageHeader`'s `titleEditor`) stays in
+   the flow, unseen, so the header keeps the height and the width it gives
+   it whatever the box holds. */
+.page-header .page-title[inert] {
+  visibility: hidden;
+}
+
+/* The editor is out of the flow, over the title's first line: the
+   headings' line height (`base.css`) at the title's size. Its box is
+   centred on that line, so a box taller than the line, as Firefox draws one
+   at the title's face, stands out of it as far above as below, over the
+   header's own gaps, and moves nothing. */
+.page-header .page-title-editor {
+  position: absolute;
+  inset: 0 0 auto;
+  display: flex;
+  align-items: center;
+  height: calc(1.25 * var(--text-h2));
+}
+
+/* The box takes the title's face, size, weight and line height, and runs
+   from the title's start to the end of its column, inside it, so a column
+   that clips at its edge (the list beside an open directory) neither cuts
+   it off nor scrolls sideways for it. The name's words stand where the
+   title's did: no padding and no edge but a line under them, which marks
+   the box, and whose width the negative margin gives back, so that the
+   text, not the text and its line, is what is centred on the title's line
+   and keeps its baseline. Below the phone bar when it takes focus, as a
+   refusal is (`admin.css`). */
+.page-header .page-title-box {
+  --underline: 2px;
+
+  box-sizing: border-box;
+  flex: 1 1 auto;
+  min-width: 0;
+  margin-bottom: calc(-1 * var(--underline));
+  padding: 0;
+  border: 0;
+  border-bottom: var(--underline) solid var(--line-strong);
+  border-radius: 0;
+  background: none;
+  font-family: var(--font-title);
+  font-size: var(--text-h2);
+  font-weight: 600;
+  line-height: 1.25;
+  scroll-margin-top: calc(var(--sticky-top, 0px) + 0.5rem);
+}
+
+/* Focus is the line under it in the accent, in place of the ring, which
+   would stand out of a column that clips at its edge. The ring is kept,
+   transparent and inside the box: forced colours draw the line in one
+   colour whether the box has focus or not, and give the ring theirs. */
+.page-header .page-title-box:focus {
+  border-bottom-color: var(--accent);
+  outline: 2px solid transparent;
+  outline-offset: -2px;
+}
+
+/* A directory's path is the title, and a path runs long. */
+.page-header .page-title code {
+  font-size: var(--text-h3);
+}
+
+/* Where a path may break (`PathWithBreaks`): a zero-width space, which a
+   line may break at, said as nothing and copied as nothing. */
+.path-break::before {
+  content: "\200b" / "";
+}
+
+.page-description {
+  margin-top: var(--space-1);
+  color: var(--muted);
+  font-size: var(--text-ui);
+  overflow-wrap: anywhere;
+}
+
+/* While a title is edited, what answers the edit (`PageHeader`'s
+   `editorAnswer`: why the name typed would be refused, or a refusal) is
+   laid over what is under the header, as a form's bubble is laid over the
+   form, so that neither opening the editor nor an answer coming or going
+   moves anything on the page. At the
+   header's foot, so that at a phone's width it is beneath Save, as each
+   refusal on these screens is beneath the button it answers, and never
+   over the count or the buttons. From the header's start and no wider than
+   the header, so it stays in the page's column, and above the rows it lies
+   over, which may be positioned; the phone bar (`shell.css`) stays above
+   it. */
+.page-header:has(> .page-header-answer) {
+  position: relative;
+}
+
+.page-header-answer {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 1;
+  max-width: 100%;
+}
+
+/* The page's own words, as every other refusal here is drawn, on the
+   raised surface and edge of the shell's menus, so that it reads as laid
+   over the page in either theme. A name with nowhere to break breaks
+   inside the box rather than widening it past the column. Below Save, so a
+   Save pressed at the window's foot leaves it under the fold, and it is
+   brought into view with the breath `admin.css` gives a refusal beneath
+   its button. */
+.page-header-answer > [role="alert"],
+.page-header-answer > .name-clash:not(:empty) {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+  box-shadow: 0 4px 16px var(--scrim);
+  overflow-wrap: anywhere;
+  scroll-margin-bottom: 0.5rem;
+}
+
+/* Why a name typed would be refused (`NameClash`) is drawn as a refusal of
+   that box is, where that refusal is. It is drawn, empty, for as long as
+   its box is, so that a screen reader reads it as it fills; empty, it
+   takes no room and draws no line or box. Its weight of two classes is
+   what puts it over the padding and the line a form gives each of its
+   parts (below), which weigh one class at most. */
+.name-clash:empty {
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.page-actions,
+.page-actions-set {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+/* A header whose actions change while its title is edited
+   (`PageHeader`'s `editorActions`) stacks both sets in one cell, so the
+   slot is as wide as the wider set whichever is shown, and the set not in
+   use is unseen. Each set starts at the slot's start. */
+.page-actions.page-actions-swap {
+  display: grid;
+}
+
+.page-actions-swap > .page-actions-set {
+  grid-area: 1 / 1;
+}
+
+.page-actions-swap > [inert] {
+  visibility: hidden;
+}
+
+/* A button whose words change while its write is out (`WaitWords`) keeps
+   the box of the wider and taller of its two, the one not drawn laid unseen
+   in the drawn one's cell, so that nothing beside or beneath it moves when
+   the wait is drawn or ends. The unseen words are generated from
+   `data-unseen` on an `aria-hidden` child: in the DOM's text or in a
+   pseudo-element of the button itself they would be read as part of its
+   name. The drawn words sit in the middle of the cell the taller sizes:
+   stretched to it, as a grid item is unless told otherwise, the shorter
+   would sit at its top. */
+.keeps-wait-width {
+  display: inline-grid;
+  align-items: center;
+}
+
+.keeps-wait-width > span {
+  grid-area: 1 / 1;
+}
+
+.keeps-wait-width > [data-unseen]::before {
+  content: attr(data-unseen);
+  visibility: hidden;
+}
+
+/* A wait's sentence before the wait has lasted long enough to be drawn
+   (`useDrawnWait`): laid out, so that what follows it does not move when
+   it appears, and unseen and unread until then. */
+.wait-unseen {
+  visibility: hidden;
+}
+
+/* A directory's three facts on the header's line, each still naming what it
+   is a fact about. */
+.page-description .regime {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 var(--space-2);
+  margin: 0;
+}
+
+.page-description .regime > div {
+  display: flex;
+  gap: var(--space-1);
+}
+
+/* The dot ends a fact rather than starting the next, so a line that wraps
+   does not begin with one, and it is unseen after a fact that ends a line
+   (`lineEnds.ts`), so that none ends with one. */
+.page-description .regime > div:not(:last-child)::after {
+  content: "·" / "";
+}
+
+.page-description .regime > div[data-ends-line]::after {
+  visibility: hidden;
+}
+
+.page-description .regime dt::after {
+  content: ":";
+}
+
+.page-description .regime dd {
+  margin: 0;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+/* Sections. */
+.settings-section {
+  max-width: var(--config-measure);
+  margin-top: var(--space-6);
+}
+
+.settings-section-head {
+  margin-bottom: var(--space-2);
+}
+
+.settings-section .settings-section-title {
+  margin: 0;
+  font-size: var(--text-h3);
+}
+
+.settings-section-description {
+  margin: var(--space-1) 0 0;
+  color: var(--muted);
+  font-size: var(--text-ui);
+}
+
+.settings-box {
+  container: settings-box / inline-size;
+  padding: 0 var(--space-4);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-control);
+}
+
+/* A group is a list, a named group of rows or a form inside a box, drawn
+   as nothing of its own. Zero specificity and ahead of the lines below, so
+   the line drawn above a group that follows something else still shows. */
+:where(.settings-group) {
+  min-inline-size: 0;
+  padding: 0;
+  border: 0;
+  list-style: none;
+}
+
+/* What a box holds, and what a group inside it holds — a list, a named
+   group of rows, a form — is split by faint lines. The group itself takes
+   no line or space of its own, so its rows line up with the box's. Zero
+   specificity, so a component's own rule for one of these still wins. */
+:where(.settings-box, .settings-group) > * {
+  margin: 0;
+}
+
+:where(.settings-box, .settings-group) > :not(.settings-group) {
+  padding-block: var(--space-3);
+}
+
+:where(.settings-box, .settings-group) > * + * {
+  border-top: 1px solid var(--line);
+}
+
+/* A live region is drawn before it has anything to say, so that what lands
+   in it is read; empty, it takes no room and no line. One pseudo-class of
+   specificity, as the padding's `:not()` above has, and after it, so it
+   wins there. */
+:where(.settings-box, .settings-group) > :where([aria-live]):empty {
+  padding-block: 0;
+  border-top: 0;
+}
+
+/* A hidden legend is first in its fieldset and draws nothing, so the row
+   after it is the first one seen. */
+.settings-group > .visually-hidden + * {
+  border-top: 0;
+}
+
+/* Rows. */
+.settings-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-2) var(--space-5);
+}
+
+.settings-row-text {
+  min-width: 0;
+}
+
+.settings-row-label {
+  display: block;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+.settings-row-help {
+  margin: var(--space-1) 0 0;
+  color: var(--muted);
+  font-size: var(--text-meta);
+  overflow-wrap: anywhere;
+}
+
+.settings-row-control {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.settings-row-control
+  :where(input:not([type="checkbox"], [type="radio"]), select, textarea) {
+  box-sizing: border-box;
+  width: 16rem;
+  max-width: 100%;
+  padding: var(--space-1) var(--space-2);
+  font-size: var(--text-ui);
+}
+
+/* A checkbox is beside its label's first line, however tall the help
+   under the label is: centred on the label and its help together, a
+   library's box would hang lines below its name, among its directories.
+   The control's column is one line tall, the label's line, which it
+   inherits from the row as the label does, and the box is centred in it. */
+.settings-row-check {
+  align-items: start;
+}
+
+.settings-row-check > .settings-row-control {
+  min-block-size: 1lh;
+}
+
+/* A box that shares its control with a button, as the password's does,
+   leaves the label's column room for its help. */
+.settings-row-control
+:where(input:not([type="checkbox"], [type="radio"])):not(:only-child) {
+  width: 12rem;
+}
+
+/* A row whose control is the directory picker (New library) puts the
+   picker under its label at the box's width: its browser opens beneath its
+   buttons, and in the control's column beside the label its listing would
+   take the label's room or have too little of its own. The box takes the
+   line its buttons leave. */
+.settings-row:has(> .settings-row-control > .dir-picker) {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.settings-row-control > .dir-picker {
+  flex: 1 1 100%;
+  min-width: 0;
+}
+
+.settings-row-control > .dir-picker > input {
+  flex: 1 1 12rem;
+  width: auto;
+}
+
+/* A form's buttons, at the foot of its box: at the end of the line, under
+   the controls they send, while the rows draw their controls there. */
+.settings-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+.settings-choices {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.settings-choices label {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+
+/* A box too narrow for a label beside its control puts the label above.
+   A checkbox stays beside its words: alone on a line under them it reads
+   as a different control. */
+@container settings-box (width < 30rem) {
+  .settings-row:not(.settings-row-check) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .settings-row:not(.settings-row-check) .settings-row-control,
+  .settings-actions {
+    justify-content: flex-start;
+  }
+
+  .settings-row-control
+    :where(input:not([type="checkbox"], [type="radio"]), select, textarea) {
+    width: 100%;
+  }
+}
+
+/* The page's last box, with the strip the confirm boxes carry. The confirm
+   it opens is drawn inside it without a second box. */
+.settings-removal .settings-box {
+  box-shadow: inset 3px 0 0 var(--danger);
+}
+
+.settings-removal .remove-user,
+.settings-removal .remove-root,
+.settings-removal .remove-library {
+  margin: 0;
+  padding: var(--space-3) 0;
+  border-width: 1px 0 0;
+  box-shadow: none;
+}
+
+/* A dialog opened over its page (Move…, `MoveRoot`), modal and so in the
+   top layer: nothing on the page beneath it moves when it opens. On the
+   page's measure, and never nearer a window's edge than a phone's gutter,
+   so at 390 it stands where the page's own boxes do. Its top stays
+   `--dialog-top` from the window's whatever it holds, at a desk's width a
+   step lower than a page's head would sit, so that it reads as laid over
+   the page: a rehearsal's answer or an opened disclosure grows it downward,
+   where a box centred in the window would rise by half of what it gained
+   and take the fields being read with it. Once its foot reaches the gutter
+   it scrolls inside itself, and not the page. The top margin pins it; the
+   others, `auto`, centre it across and leave the rest of the window's
+   height under its foot.
+   The box with no danger strip: a move is not as grave as a removal.
+   In Ink the backdrop darkens the page nearly to `--bg`, the ground the
+   dialog would otherwise share with the page, so the dialog is raised onto
+   `--surface`, as the shell's menus are, to stand off it by more than its
+   edge; in Paper the backdrop greys the page, and the page's own ground
+   stands off it as it is. */
+.settings-dialog {
+  --dialog-top: var(--space-7);
+  box-sizing: border-box;
+  width: min(var(--config-measure), 100% - 2 * var(--space-4));
+  max-width: none;
+  max-height: calc(100% - var(--dialog-top) - var(--space-4));
+  margin: var(--dialog-top) auto auto;
+  overflow: auto;
+  padding: var(--space-4);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-control);
+  background: light-dark(var(--bg), var(--surface));
+  color: var(--text);
+}
+
+/* The phone bar's layout (`shell.css`, below 900px), on a phone or in a
+   narrow window: the top at the page's gutter, which leaves a short window
+   the most of its height. */
+@media (width < 900px) {
+  .settings-dialog {
+    --dialog-top: var(--space-4);
+  }
+}
+
+.settings-dialog::backdrop {
+  background: var(--scrim);
+}
+
+/* In Ink the dialog is raised onto `--surface`, the fill the page's buttons
+   and selects have, which would leave them told apart from it by their edge
+   alone; so there they take the page's ground, and stand off the dialog as
+   they stand off the page. A held button takes the dialog's own ground, as
+   O201 has one take the ground it stands on (`base.css`). In Paper the
+   dialog keeps the page's ground, and its controls keep their fills. Wholly
+   in `:where()`, as `base.css`'s are, so a class rule that fills a button
+   (a confirm's) still wins. */
+:where(.settings-dialog) :where(button, select) {
+  background: light-dark(var(--surface), var(--bg));
+}
+
+:where(.settings-dialog) :where(button:disabled, button[aria-disabled="true"]) {
+  background: light-dark(var(--bg), var(--surface));
+}
+
+/* A step under a page's title. Its margin, and the break a long path
+   needs, are `.libraries h2`'s (`admin.css`), the screen's own headings'. */
+.settings-dialog .dialog-title {
+  font-size: var(--text-h3);
+}
+
+/* See what this would do, in the row under the fields it rehearses, starts
+   where their boxes start: in the controls' column, at least a box's width
+   (`.settings-row-control`'s 16rem, above), while the labels sit beside
+   their controls, and at the row's start once they stack. Its wait's words
+   can be wider than a box; the column then grows on the label's side, so
+   that they keep one line. */
+.settings-dialog .move-rehearse > .settings-row-control {
+  grid-column: -2;
+  min-width: 16rem;
+  justify-content: flex-start;
+}
+
+/* Stacked, the row is the control's, which a box's width could overrun. */
+@container settings-box (width < 30rem) {
+  .settings-dialog .move-rehearse > .settings-row-control {
+    min-width: 0;
+  }
+}
+
+/* What a rehearsal says, as rows of the dialog's box: each runs the box's
+   width, so the line above it spans the box as every row's does, while its
+   sentences keep the measure prose keeps in a box. The accounts' sentence
+   is a row by itself, so its measure is the padding at its end, which
+   leaves its line whole. The counts' sentences start and end a row's
+   padding from those lines. */
+.settings-dialog .move-counts,
+.settings-dialog .left-with-no-library {
+  max-width: none;
+}
+
+.settings-dialog .move-counts > * {
+  max-width: 60ch;
+}
+
+.settings-dialog .left-with-no-library {
+  padding-inline-end: max(0px, 100% - 60ch);
+}
+
+.settings-dialog .move-counts > :first-child {
+  margin-top: 0;
+}
+
+.settings-dialog .move-counts > :last-child {
+  margin-bottom: 0;
+}
+
+/* O195's question, inside the libraries box. */
+.settings-group > .lift-limit {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.lift-limit > p {
+  flex-basis: 100%;
+  margin: 0;
+}
+
+/* A library's directories, one to a line, under its name. */
+.settings-row-help .grant-dirs code {
+  display: block;
+}
+
+.settings-box .empty,
+.settings-box .unknown {
+  color: var(--muted);
+}
+
+.account-page .current {
+  margin-left: var(--space-2);
+  padding: 0 var(--space-1);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-control);
+  font-size: var(--text-badge);
+}
+
+/* An account nobody can sign in as is a fact about the whole page, so it
+   is drawn as one, under the header. */
+.account-page .locked {
+  margin: var(--space-4) 0 0;
+  padding-left: var(--space-3);
+  border-left: 3px solid var(--warning);
+}
+
+.account-page .gone {
+  color: var(--muted);
+}
+
+.dir-page .scanning {
+  margin: var(--space-2) 0 0;
+  color: var(--muted);
+  font-size: var(--text-ui);
+}
+
+/* A scan report's headings, inside its box, start at the box's edge. */
+.settings-box .report-heading {
+  margin: var(--space-3) 0 var(--space-2);
+}
+
+.settings-box .scan-report > section:first-child > .report-heading {
+  margin-top: 0;
+}
+
+/* A directory's path over its report in What the scan found's box. A path
+   can run longer than the box with nowhere to break. */
+.settings-box > .dir-report > h4 {
+  margin: 0 0 var(--space-2);
+  overflow-wrap: anywhere;
+}
+
+/* The prose behind "How backups work" keeps the measure prose keeps. */
+.settings-details {
+  max-width: var(--config-measure);
+  margin-top: var(--space-6);
+}
+
+.settings-details > summary {
+  font-family: var(--font-title);
+  font-size: var(--text-h3);
+  font-weight: 600;
+}
+
+.settings-details > p {
+  max-width: 60ch;
+  font-size: var(--text-ui);
+}
+
+/* A finger's 44px, as `admin.css`'s coarse block gives the controls it
+   reaches; these sit outside the `.field` labels it names. */
+@media (pointer: coarse) {
+  /* The same selector as the size it lifts, so the two tie and this one,
+     later, wins: iOS zooms the page into a field under 16px. */
+  .settings-row-control
+  :where(input:not([type="checkbox"], [type="radio"]), select, textarea) {
+    font-size: max(16px, var(--text-ui));
+  }
+
+  .settings-row-control
+    :where(input:not([type="checkbox"], [type="radio"]), select) {
+    min-height: 44px;
+  }
+
+  .settings-choices label {
+    min-height: 44px;
+    align-items: center;
+  }
+
+  /* A checkbox row's first line is a finger's target, 44px tall, all of it:
+     a press anywhere on it ticks the box. So the label takes the whole
+     line, across the gap and the box's column, and the box is drawn over
+     its end. The label's words keep the first column, its grid being the
+     row's own columns, and the help takes the line under them, so the box
+     is centred on the words however tall the help is: centred on the label
+     and its help together, it would hang below the words, out of the line a
+     finger aims along. */
+  .settings-row-check {
+    grid-template-areas:
+      "label label"
+      "help .";
+    align-items: center;
+    row-gap: 0;
+  }
+
+  .settings-row-check > .settings-row-text {
+    display: contents;
+  }
+
+  /* Its one item is the span `Row` wraps the words in. The words are
+     padded out to the 44px on their first line, and the padding is kept
+     above and below them however many lines they take, so that the help
+     starts as far under a two-line name as under a one-line one: centred
+     in a 44px band with no padding, a one-line name would have the band's
+     spare height under it and a two-line name none. The 44px is the
+     border box's, padding included. */
+  .settings-row-check .settings-row-label {
+    grid-area: label;
+    display: grid;
+    grid-template-columns: subgrid;
+    align-items: center;
+    box-sizing: border-box;
+    min-height: 44px;
+    padding-block: max(0px, (44px - 1lh) / 2);
+  }
+
+  .settings-row-check .settings-row-help {
+    grid-area: help;
+  }
+
+  /* Over the label's end, a press on it outside the box passes through to
+     the label. */
+  .settings-row-check > .settings-row-control {
+    grid-row: 1;
+    grid-column: 2;
+    pointer-events: none;
+  }
+
+  .settings-row-check > .settings-row-control > * {
+    pointer-events: auto;
+  }
+
+  .backup-rows a {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+  }
+}
+
+/* A backup's file name is drawn as a table draws a name that opens what it
+   names (`.row-link`): bold, in the accent, with no line under it at rest.
+   The line comes with the pointer and with the keyboard's focus, as a
+   table's row is lit then, so that it still shows it can be pressed. After
+   the coarse block, which sets this link's box, so that neither rule
+   follows one more specific than itself. */
+.backup-rows a {
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.backup-rows a:is(:hover, :focus-visible) {
+  text-decoration: underline;
+}
+
+/* A list and the end of its tree side by side: Users and an account, a
+   library and one of its directories (`SideBySide.tsx`). The address says
+   whether a page is open, and the width whether the two fit beside each
+   other, which `useFitsPair` reads from `.split-breakpoint`: the list's
+   least column, the gap and the page's measure, from their tokens, since
+   a container query cannot read them. Narrower, the page is drawn alone
+   with its way back, as a page of its own, and the list is not drawn. */
+.split {
+  --split-list: 20rem;
+  /* A formatting context of its own, as the pair's grid is, so a pane's
+     first margin stays inside the split whether the list is alone or
+     beside a page. */
+  display: flow-root;
+}
+
+/* The scroller a split is drawn in keeps its scrollbar's gutter whether or
+   not it scrolls: `main`, and below 900px, where `main` does not scroll
+   (`shell.css`), the document. The pair can be taller than the window
+   where the page alone is not, so within a scrollbar's width of the
+   breakpoint a scrollbar that came with the pair would narrow the split
+   below the breakpoint, and going with it would widen it again: the
+   layout would change every frame. The breakpoint is in rem, so a small
+   root font size can bring it under 900px. Every Configuration screen
+   keeps the same gutter, the ones with no split among them, so that going
+   from one tab or page to another moves nothing. */
+.library > main:has(.config, .split) {
+  scrollbar-gutter: stable;
+}
+
+@media (width < 900px) {
+  :root:has(.config, .split) {
+    scrollbar-gutter: stable;
+  }
+}
+
+/* Out of the flow, so the pair's grid gives it no cell, and the size of
+   nothing with its overflow clipped, since the breakpoint inside it is
+   wider than a phone's window and would otherwise be scrolled to. */
+.split-probe {
+  position: absolute;
+  inline-size: 0;
+  block-size: 0;
+  overflow: hidden;
+}
+
+/* The breakpoint, as a width. */
+.split-breakpoint {
+  inline-size: calc(var(--split-list) + var(--space-6) + var(--config-measure));
+}
+
+.split-list {
+  container: split-list / inline-size;
+}
+
+/* The list at least its least column and as wide as its table's measure
+   where the width allows, the page one gap after it at its own measure,
+   and only what is left beyond the two measures and the gap to the page's
+   right, so the two read as a pair at any width and the gap never grows. */
+.split-pair {
+  display: grid;
+  grid-template-columns:
+    minmax(
+      var(--split-list),
+      min(
+        var(--config-measure),
+        calc(100% - var(--config-measure) - var(--space-6))
+      )
+    )
+    minmax(0, var(--config-measure));
+  justify-content: start;
+  align-items: start;
+  column-gap: var(--space-6);
+}
+
+/* The list holds still while a long page scrolls past it, and scrolls on
+   its own when it is the longer of the two. */
+.split-pair > .split-list {
+  position: sticky;
+  top: 0;
+  max-height: 100dvh;
+  overflow-y: auto;
+}
+
+.split-pair > .split-detail {
+  min-width: 0;
+}
+
+/* A list beside an open page keeps every column, and while its column is
+   too narrow for them it draws the two-line rows `admin.css` draws at a
+   phone's width: the name, then the rest after it, so the list never
+   scrolls sideways. `.split-list` is the container this asks. */
+@container split-list (width < 36rem) {
+  .split-pair .config-table thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  .split-pair .config-table,
+  .split-pair .config-table tbody {
+    display: block;
+  }
+
+  .split-pair .config-table tbody tr {
+    display: flex;
+    flex-wrap: wrap;
+    padding: var(--space-2) var(--space-3);
+    border-bottom: 1px solid var(--line);
+  }
+
+  .split-pair .config-table td {
+    display: block;
+    min-width: 0;
+    padding: 0;
+    border: 0;
+    white-space: normal;
+  }
+
+  .split-pair .config-table td.lead {
+    flex-basis: 100%;
+  }
+
+  .split-pair .config-table td:not(.lead) {
+    color: var(--muted);
+    font-size: var(--text-meta);
+  }
+
+  /* After the cell it follows, and unseen where that cell ends a line, as
+     at a phone's width (`admin.css`). */
+  .split-pair .config-table td:not(.lead):not(:last-child)::after {
+    content: "·" / "";
+    margin: 0 var(--space-2);
+  }
+
+  .split-pair .config-table td:not(.lead)[data-ends-line]::after {
+    visibility: hidden;
+  }
+
+  .split-pair .config-table .cell-label {
+    display: inline;
+  }
+}
+
+/* The row whose detail is open beside the list. */
+.config-table tbody tr:has(.row-link[aria-current="page"]) {
+  background: var(--surface);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+/* A table in a box sits as far from the box's top and bottom as from its
+   sides, so a lit row, first or last, is lit inside that inset and never
+   against the box's edge. The inset is a margin, and the padding a box
+   gives what it holds is taken off: a table with collapsed borders, as
+   `.config-table` is (`admin.css`), ignores it, but rows drawn in two lines
+   make the table a block, where it would add to the margin and the inset
+   would be deeper above and below than at the sides. */
+.settings-box > .config-table {
+  margin-block: var(--space-4);
+  padding-block: 0;
+}
+
+/* The box's edge is the table's last line. */
+.settings-box > .config-table tbody tr:last-child,
+.settings-box > .config-table tbody tr:last-child > td {
+  border-bottom: 0;
+}
+
+/* A box with no heading of its own sits close under the page's header,
+   which names it. */
+.settings-untitled {
+  margin-top: var(--space-4);
+}

@@ -45,8 +45,10 @@ import {
 } from './config'
 import { noLibrarySentence } from './libraries'
 import { DeriveSection } from './ScanReport'
-import { useDrawn } from './hooks'
+import { HeldButton } from './HeldButton'
+import { useDrawn, useDrawnWait } from './hooks'
 import { sentenceOf } from './message'
+import { WaitWords } from './WaitWords'
 
 /**
  * `n` of a thing, in the number the count actually is.
@@ -59,6 +61,9 @@ import { sentenceOf } from './message'
 function count(n: number, one: string, many: string): string {
   return `${n} ${n === 1 ? one : many}`
 }
+
+/** The confirm's words while the removal is out. */
+const REMOVING = 'Removing…'
 
 export interface RemoveRootProps {
   root: Root
@@ -103,6 +108,9 @@ export function RemoveRoot({
   const [cost, setCost] = useState<RemovalAnswer | undefined>()
   const [failure, setFailure] = useState<string | undefined>()
   const [removing, setRemoving] = useState(false)
+  const removingDrawn = useDrawnWait(removing)
+  /** The dry run's wait, drawn once it has lasted; until then it keeps its room. */
+  const costDrawn = useDrawnWait(cost === undefined && failure === undefined)
   // Read when `held` changes, and not a dependency: a removal that is refused
   // while the hold stands must leave its refusal drawn.
   const state = useRef({ removing, onCancel })
@@ -114,10 +122,12 @@ export function RemoveRoot({
    * Whether the real `DELETE` is already on its way.
    *
    * **A ref, for the reason `RootRow`'s and `Libraries`' own are** — React batches
-   * state, so `disabled={removing}` alone let two presses dispatched before
-   * the next render both send. This is the one button on the branch where an
-   * unguarded second dispatch is least worth leaving to luck: C4 §2 calls it
-   * the most destructive action in the product. Review pass 2, 2026-09-04.
+   * state, so two presses dispatched before the next render both read
+   * `removing` false, and the confirm is drawn held only once the wait
+   * has lasted, so nothing else holds a second press until then. This is
+   * the one button on the branch where an unguarded second dispatch is
+   * least worth leaving to luck: C4 §2 calls it the most destructive action
+   * in the product.
    */
   const inFlight = useRef(false)
 
@@ -162,7 +172,11 @@ export function RemoveRoot({
     >
       {failure !== undefined && <p role="alert">{failure}</p>}
       {cost === undefined ? (
-        failure === undefined && <p>Working out what this would remove…</p>
+        failure === undefined && (
+          <p className={costDrawn ? undefined : 'wait-unseen'}>
+            Working out what this would remove…
+          </p>
+        )
       ) : (
         <>
           <p className="counts">
@@ -193,25 +207,42 @@ export function RemoveRoot({
             untouched; what goes is everything this library derived from them,
             and everything anybody recorded against it.
           </p>
-          <button
-            type="button"
-            className="confirm"
-            onClick={confirm}
-            disabled={removing}
-          >
-            {removing ? 'Removing…' : `Remove ${root.path}`}
-          </button>
-          <details className="removal-derive">
-            <summary>
-              What re-deriving without this directory would find
-            </summary>
-            <DeriveSection derive={cost.derive} level={5} />
-          </details>
         </>
       )}
-      <button type="button" onClick={onCancel} disabled={removing}>
-        Cancel
-      </button>
+      {/* As a library's removal draws them (`RemoveLibrary`): the confirm
+          and Cancel, then the disclosure, in that order in the document
+          too. */}
+      <div className="settings-actions">
+        {cost !== undefined && (
+          <HeldButton
+            type="button"
+            className="confirm keeps-wait-width"
+            onClick={confirm}
+            held={removingDrawn}
+          >
+            <WaitWords
+              drawn={removingDrawn}
+              words={`Remove ${root.path}`}
+              wait={REMOVING}
+            />
+          </HeldButton>
+        )}
+        <HeldButton
+          type="button"
+          onClick={() => {
+            if (!removing) onCancel()
+          }}
+          held={removingDrawn}
+        >
+          Cancel
+        </HeldButton>
+      </div>
+      {cost !== undefined && (
+        <details className="removal-derive">
+          <summary>What re-deriving without this directory would find</summary>
+          <DeriveSection derive={cost.derive} level={5} />
+        </details>
+      )}
     </div>
   )
 }

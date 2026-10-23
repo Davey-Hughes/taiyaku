@@ -1604,3 +1604,138 @@ async fn the_users_screen_lists_and_replaces_an_accounts_libraries() {
         vec![70]
     );
 }
+
+/// The sentence the pages draw for an account named `.` or `..`, which no page
+/// address holds.
+const NO_ADDRESS: &str = "An address cannot hold “.” or “..” as a name.";
+
+/// Making an account and renaming one each refuse `.` and `..` as the caller's
+/// mistake, in the sentence the pages draw, and write nothing.
+#[tokio::test]
+async fn no_account_is_made_or_renamed_called_a_dot_name() {
+    let (router, state, _fixture) = test_support::router_over_a_single_scanned_work();
+    let id = a_reader(&router, &state).await;
+    let names = || async {
+        get_json(&router, "/api/library/users").await["users"]
+            .as_array()
+            .expect("a users array")
+            .iter()
+            .map(|u| u["name"].as_str().expect("a name").to_string())
+            .collect::<Vec<_>>()
+    };
+    let before = names().await;
+
+    for name in [".", ".."] {
+        for (method, path, body) in [
+            (
+                Method::POST,
+                "/api/library/users".to_string(),
+                serde_json::json!({ "name": name, "password": "hunter2" }),
+            ),
+            (
+                Method::PATCH,
+                format!("/api/library/users/{id}"),
+                serde_json::json!({ "name": name }),
+            ),
+        ] {
+            let response = send_json(&router, method.clone(), &path, &body).await;
+            assert_eq!(
+                response.status(),
+                StatusCode::BAD_REQUEST,
+                "{method} {body}"
+            );
+            let refused: serde_json::Value =
+                serde_json::from_str(&test_support::body_string(response).await).expect("JSON");
+            assert_eq!(refused["error"], NO_ADDRESS, "{method} {body}");
+        }
+    }
+    assert_eq!(names().await, before);
+}
+
+/// Making an account with an empty name, and renaming one to it, are each
+/// refused as the caller's mistake, as `.` and `..` are, since an empty name
+/// has no page address either, and write nothing.
+#[tokio::test]
+async fn no_account_is_made_or_renamed_with_an_empty_name() {
+    let (router, state, _fixture) = test_support::router_over_a_single_scanned_work();
+    let id = a_reader(&router, &state).await;
+    let names = || async {
+        get_json(&router, "/api/library/users").await["users"]
+            .as_array()
+            .expect("a users array")
+            .iter()
+            .map(|u| u["name"].as_str().expect("a name").to_string())
+            .collect::<Vec<_>>()
+    };
+    let before = names().await;
+
+    for (method, path, body) in [
+        (
+            Method::POST,
+            "/api/library/users".to_string(),
+            serde_json::json!({ "name": "", "password": "hunter2" }),
+        ),
+        (
+            Method::PATCH,
+            format!("/api/library/users/{id}"),
+            serde_json::json!({ "name": "" }),
+        ),
+    ] {
+        let response = send_json(&router, method.clone(), &path, &body).await;
+        assert_eq!(
+            response.status(),
+            StatusCode::BAD_REQUEST,
+            "{method} {body}"
+        );
+        let refused: serde_json::Value =
+            serde_json::from_str(&test_support::body_string(response).await).expect("JSON");
+        assert_eq!(
+            refused["error"], "an account needs a name, since its page is at its name",
+            "{method} {body}"
+        );
+    }
+    assert_eq!(names().await, before);
+}
+
+/// Making an account, and renaming one, to a name another account holds are
+/// each refused as the caller's mistake, with the 400 a taken library name
+/// gets, in the sentence the pages draw as the name is typed.
+#[tokio::test]
+async fn no_account_is_made_or_renamed_to_a_name_another_holds() {
+    let (router, state, _fixture) = test_support::router_over_a_single_scanned_work();
+    let id = a_reader(&router, &state).await;
+    send_json(
+        &router,
+        Method::POST,
+        "/api/library/users",
+        &serde_json::json!({ "name": "sam", "password": "hunter2" }),
+    )
+    .await;
+
+    for (method, path, body) in [
+        (
+            Method::POST,
+            "/api/library/users".to_string(),
+            serde_json::json!({ "name": "sam", "password": "hunter2" }),
+        ),
+        (
+            Method::PATCH,
+            format!("/api/library/users/{id}"),
+            serde_json::json!({ "name": "sam" }),
+        ),
+    ] {
+        let response = send_json(&router, method.clone(), &path, &body).await;
+        assert_eq!(
+            response.status(),
+            StatusCode::BAD_REQUEST,
+            "{method} {body}"
+        );
+        let refused: serde_json::Value =
+            serde_json::from_str(&test_support::body_string(response).await).expect("JSON");
+        assert_eq!(
+            refused["error"], "an account is already called `sam`",
+            "{method} {body}"
+        );
+    }
+    assert_eq!(user_id(&state, "reader"), id, "the reader kept its name");
+}

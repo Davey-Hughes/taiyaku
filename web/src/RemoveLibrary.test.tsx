@@ -5,8 +5,16 @@ import * as api from './libraries'
 import { RemoveLibrary } from './RemoveLibrary'
 import { deferred, flush } from './testing/async'
 import { emptyDerive } from './testing/derive'
+import { holdOf } from './testing/held'
 import { press } from './testing/input'
 import { mount, rerender } from './testing/mount'
+import {
+  holdTheClock,
+  pass,
+  sentenceDrawn,
+  WAIT_DRAWN_AFTER_MS,
+  watchDrawn,
+} from './testing/wait'
 
 vi.mock('./libraries', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./libraries')>()),
@@ -108,9 +116,7 @@ describe('RemoveLibrary', () => {
     )
     expect(host.querySelector('.counts + .left-with-no-library')).not.toBeNull()
     expect(host.querySelector('.confirm')?.textContent).toBe('Remove Manga')
-    expect((host.querySelector('.confirm') as HTMLButtonElement).disabled).toBe(
-      false,
-    )
+    expect(holdOf(host.querySelector('.confirm') as Element)).toBe('free')
     expect(host.querySelector('[role="alert"]')).toBeNull()
   })
 
@@ -137,7 +143,7 @@ describe('RemoveLibrary', () => {
     const cancel = [...host.querySelectorAll('button')].find(
       (b) => b.textContent === 'Cancel',
     ) as HTMLButtonElement
-    expect(cancel.disabled).toBe(false)
+    expect(holdOf(cancel)).toBe('free')
   })
 
   it('sends one removal for two presses, and hands back what it did', async () => {
@@ -169,20 +175,116 @@ describe('RemoveLibrary', () => {
       'the disk is full',
     )
     expect(onRemoved).not.toHaveBeenCalled()
-    expect((host.querySelector('.confirm') as HTMLButtonElement).disabled).toBe(
-      false,
-    )
+    expect(holdOf(host.querySelector('.confirm') as Element)).toBe('free')
   })
 
-  it('cannot be cancelled while the removal is in flight', async () => {
+  it('cannot be cancelled while the removal is in flight, from the send, and draws Cancel held once the wait has lasted', async () => {
+    holdTheClock()
     vi.mocked(api.removeLibrary).mockReturnValue(new Promise(() => {}))
-    const host = await shown()
+    const onCancel = vi.fn()
+    const host = await shown(vi.fn(), onCancel)
     const cancel = [...host.querySelectorAll('button')].find(
       (b) => b.textContent === 'Cancel',
     ) as HTMLButtonElement
-    expect(cancel.disabled).toBe(false)
+    expect(holdOf(cancel)).toBe('free')
     await press(host.querySelector('.confirm') as Element)
-    expect(cancel.disabled).toBe(true)
+    pass(WAIT_DRAWN_AFTER_MS - 1)
+    expect(holdOf(cancel)).toBe('free')
+    await press(cancel)
+    expect(onCancel).not.toHaveBeenCalled()
+    pass(1)
+    expect(holdOf(cancel)).toBe('held')
+    await press(cancel)
+    expect(onCancel).not.toHaveBeenCalled()
+  })
+
+  describe('its waits, drawn only once each has lasted', () => {
+    const WORKING = 'Working out what this would remove…'
+    const asking = async () => {
+      const cost = deferred<config.RemovalAnswer>()
+      vi.mocked(api.libraryRemovalCost).mockReturnValue(cost.promise)
+      return { host: await shown(), cost }
+    }
+
+    it('keeps the dry run’s sentence unseen for counts answered inside the wait’s delay', async () => {
+      holdTheClock()
+      const { host, cost } = await asking()
+      const drawn = watchDrawn(() => sentenceDrawn(host, WORKING))
+      pass(WAIT_DRAWN_AFTER_MS - 1)
+      await flush(() => cost.resolve(answer()))
+      pass(WAIT_DRAWN_AFTER_MS)
+      drawn.stop()
+      expect(host.querySelector('.counts')).not.toBeNull()
+      expect([...drawn.seen]).toEqual(['unseen', 'none'])
+    })
+
+    it('draws the dry run’s sentence from the wait’s delay, in the room it kept', async () => {
+      holdTheClock()
+      const { host } = await asking()
+      pass(WAIT_DRAWN_AFTER_MS - 1)
+      expect(sentenceDrawn(host, WORKING)).toBe('unseen')
+      pass(1)
+      expect(sentenceDrawn(host, WORKING)).toBe('drawn')
+    })
+
+    /** Remove's words, and whether it and Cancel are drawn held. */
+    const state = (host: HTMLElement) => {
+      const buttons = [...host.querySelectorAll('button')]
+      const confirm = host.querySelector('.confirm') as HTMLButtonElement
+      const cancel = buttons.find(
+        (b) => b.textContent === 'Cancel',
+      ) as HTMLButtonElement
+      return [confirm.textContent, holdOf(confirm), holdOf(cancel)]
+    }
+
+    it('draws no wait and no held button for a removal refused inside the wait’s delay', async () => {
+      holdTheClock()
+      const sent = deferred<config.RemovalAnswer>()
+      vi.mocked(api.removeLibrary).mockReturnValue(sent.promise)
+      const host = await shown()
+      const drawn = watchDrawn(() => JSON.stringify(state(host)))
+      await press(host.querySelector('.confirm') as Element)
+      pass(WAIT_DRAWN_AFTER_MS - 1)
+      await flush(() =>
+        sent.reject(
+          new Error(
+            '/api/library/libraries/7: 500 {"error":"the disk is full"}',
+          ),
+        ),
+      )
+      pass(WAIT_DRAWN_AFTER_MS)
+      drawn.stop()
+      expect(host.querySelector('[role="alert"]')?.textContent).toBe(
+        'the disk is full',
+      )
+      expect([...drawn.seen]).toEqual([
+        JSON.stringify(['Remove Manga', 'free', 'free']),
+      ])
+    })
+
+    it('draws Removing… and holds Remove and Cancel from the wait’s delay', async () => {
+      holdTheClock()
+      vi.mocked(api.removeLibrary).mockReturnValue(new Promise(() => {}))
+      const host = await shown()
+      await press(host.querySelector('.confirm') as Element)
+      pass(WAIT_DRAWN_AFTER_MS - 1)
+      expect(state(host)).toEqual(['Remove Manga', 'free', 'free'])
+      pass(1)
+      expect(state(host)).toEqual(['Removing…', 'held', 'held'])
+      await press(host.querySelector('.confirm') as Element)
+      expect(api.removeLibrary).toHaveBeenCalledTimes(1)
+    })
+
+    it('sends one removal for a second press inside the wait’s delay', async () => {
+      holdTheClock()
+      vi.mocked(api.removeLibrary).mockReturnValue(new Promise(() => {}))
+      const host = await shown()
+      await press(host.querySelector('.confirm') as Element)
+      pass(WAIT_DRAWN_AFTER_MS - 1)
+      expect(state(host)).toEqual(['Remove Manga', 'free', 'free'])
+      await press(host.querySelector('.confirm') as Element)
+      expect(api.removeLibrary).toHaveBeenCalledTimes(1)
+    })
   })
 
   it('draws the real removal’s failure as the server’s sentence', async () => {
@@ -223,7 +325,7 @@ describe('RemoveLibrary', () => {
       await Promise.resolve()
     })
     const confirm = host.querySelector('.confirm') as HTMLButtonElement
-    expect(confirm.disabled).toBe(true)
+    expect(holdOf(confirm)).toBe('held')
     confirm.click()
     expect(api.removeLibrary).not.toHaveBeenCalled()
   })
@@ -246,9 +348,7 @@ describe('RemoveLibrary', () => {
     // Held: the figures stand, and nothing is asked.
     expect(api.libraryRemovalCost).toHaveBeenCalledTimes(1)
     expect(host.querySelector('.counts')).not.toBeNull()
-    expect((host.querySelector('.confirm') as HTMLButtonElement).disabled).toBe(
-      true,
-    )
+    expect(holdOf(host.querySelector('.confirm') as Element)).toBe('held')
 
     const second = deferred<config.RemovalAnswer>()
     vi.mocked(api.libraryRemovalCost).mockReturnValueOnce(second.promise)
@@ -262,9 +362,7 @@ describe('RemoveLibrary', () => {
 
     await flush(() => second.resolve(answer({ works: 4 })))
     expect(host.querySelector('.counts')?.textContent).toContain('4 works')
-    expect((host.querySelector('.confirm') as HTMLButtonElement).disabled).toBe(
-      false,
-    )
+    expect(holdOf(host.querySelector('.confirm') as Element)).toBe('free')
   })
 
   it('keeps Cancel live while its confirm is held', async () => {
@@ -281,13 +379,11 @@ describe('RemoveLibrary', () => {
       )
       await Promise.resolve()
     })
-    expect((host.querySelector('.confirm') as HTMLButtonElement).disabled).toBe(
-      true,
-    )
+    expect(holdOf(host.querySelector('.confirm') as Element)).toBe('held')
     const cancel = [...host.querySelectorAll('button')].find(
       (b) => b.textContent === 'Cancel',
     ) as HTMLButtonElement
-    expect(cancel.disabled).toBe(false)
+    expect(holdOf(cancel)).toBe('free')
     await press(cancel)
     expect(onCancel).toHaveBeenCalledTimes(1)
   })
@@ -311,9 +407,11 @@ describe('RemoveLibrary', () => {
     }
 
     it('does not ask again while its own removal is out', async () => {
+      holdTheClock()
       vi.mocked(api.removeLibrary).mockReturnValue(new Promise(() => {}))
       const host = await shown()
       await press(host.querySelector('.confirm') as Element)
+      pass(WAIT_DRAWN_AFTER_MS)
       expect(host.querySelector('.confirm')?.textContent).toBe('Removing…')
       await holdAndRelease()
       expect(api.libraryRemovalCost).toHaveBeenCalledTimes(1)
@@ -336,9 +434,7 @@ describe('RemoveLibrary', () => {
       await holdAndRelease()
       expect(api.libraryRemovalCost).toHaveBeenCalledTimes(2)
       expect(host.querySelector('.counts')?.textContent).toContain('99 works')
-      expect(
-        (host.querySelector('.confirm') as HTMLButtonElement).disabled,
-      ).toBe(false)
+      expect(holdOf(host.querySelector('.confirm') as Element)).toBe('free')
     })
   })
 

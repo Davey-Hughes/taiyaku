@@ -97,8 +97,8 @@ fn resolve(conn: &Connection, dir: &Dir, target: Target<'_>) -> Result<i64, Move
             Ok(id)
         }
         Target::New(name) => {
-            if crate::libraries::trim_name(name).is_empty() {
-                return Err(MoveError::Unusable("a library needs a name".to_string()));
+            if let Err(why) = crate::libraries::usable_name(name) {
+                return Err(MoveError::Unusable(why.to_string()));
             }
             if let Some(taken) = crate::libraries::id_of(conn, name).map_err(MoveError::Failed)? {
                 let stored = crate::libraries::name_of(conn, taken)

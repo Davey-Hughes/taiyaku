@@ -1,7 +1,7 @@
 import { act } from 'react'
 import { MemoryRouter, Route, Routes } from 'react-router'
 import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
-import { page, userEvent } from 'vitest/browser'
+import { cdp, type Locator, page, userEvent } from 'vitest/browser'
 // **Required**, the same reason `PreviewTabs.browser.test.tsx` gives: every
 // rule under test lives in `styles/admin.css`, which reaches the app through
 // `index.css`. Without this the boxes below are unstyled and the assertions
@@ -17,23 +17,35 @@ import * as backupApi from './backup'
 import { DirPicker } from './DirPicker'
 import * as usersApi from './users'
 import { DeriveSection, ScanReport } from './ScanReport'
+import { Row, Section } from './settingsLayout'
 import { deferred, flush } from './testing/async'
+import {
+  type Channels,
+  channels,
+  contrast,
+  tokenColour,
+} from './testing/colour'
+import { expectDisclosure } from './testing/disclosure'
 import { press, submit, typeInto } from './testing/input'
+import { boxOf, expectKept } from './testing/kept'
+import { buttonSaying, byRole } from './testing/located'
 import { mount } from './testing/mount'
 import {
+  areaOf,
   coarseRulesOn,
   fingerArea,
   near,
   overlapOf,
   pressArea,
 } from './testing/pointer'
+import { holdTheClock, pass, WAIT_DRAWN_AFTER_MS } from './testing/wait'
 
 /**
  * The browser pass over all four Configuration screens — Task 7 of style
  * pass ⑤b. Nothing Tasks 1–6 did is measurable in jsdom: a measured width, a
  * computed colour and a grid's row count all need a real layout engine — the
- * gap ⑤a's own scope-`<select>` defect shipped through (`admin.css`'s
- * `.root-row .field select` comment records it: found by the browser pass,
+ * gap ⑤a's own scope-`<select>` defect shipped through (the comment on
+ * `admin.css`'s shared `.field` controls records it: found by the browser pass,
  * against a 35-character real root, on a screen `RuleForm.browser.test.tsx`'s
  * short fixture root had already passed). This file turns the one-off
  * Chromium checks each of Tasks 1–6 did by hand into standing assertions.
@@ -54,6 +66,7 @@ vi.mock('./config', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./config')>()),
   patchRoot: vi.fn(),
   removalCost: vi.fn(),
+  removeRoot: vi.fn(),
   scanStatus: vi.fn(),
   startScan: vi.fn(),
 }))
@@ -67,6 +80,7 @@ vi.mock('./libraries', async (importOriginal) => ({
   listDirs: vi.fn(),
   listLibraries: vi.fn(),
   moveCost: vi.fn(),
+  moveDir: vi.fn(),
   removeLibrary: vi.fn(),
 }))
 
@@ -238,10 +252,10 @@ const who = {
 
 /** The table of libraries. */
 const TABLE = '/config/libraries'
-/** The page that makes a library. */
-const NEW_LIBRARY = `${TABLE}/new`
-/** The page of `holding(…)`'s library. */
-const LIBRARY = `${TABLE}/1`
+/** The page that makes a library, outside the names' space. */
+const NEW_LIBRARY = '/config/new-library'
+/** The page of `holding(…)`'s library, at its name. */
+const LIBRARY = `${TABLE}/Manga`
 /** The page of `root()`'s directory, in `holding(…)`'s library. */
 const DIR = `${LIBRARY}/dirs/3`
 
@@ -249,10 +263,10 @@ const DIR = `${LIBRARY}/dirs/3`
 
 /** The table of accounts. */
 const USERS = '/config/users'
-/** The page that makes an account. */
-const NEW_ACCOUNT = `${USERS}/new`
-/** The page of `user()`'s account, the one signed in. */
-const ACCOUNT = `${USERS}/1`
+/** The page that makes an account, outside the names' space. */
+const NEW_ACCOUNT = '/config/new-account'
+/** The page of `user()`'s account, the one signed in, at its name. */
+const ACCOUNT = `${USERS}/davey`
 
 /**
  * Configuration at `entry`, its tabs above the page: each page is a route of
@@ -305,6 +319,7 @@ beforeEach(() => {
   vi.mocked(usersApi.removeUser).mockReset()
   vi.mocked(usersApi.patchUser).mockReset()
   vi.mocked(usersApi.removalCost).mockReset()
+  vi.mocked(config.patchRoot).mockReset()
 })
 
 /**
@@ -335,6 +350,29 @@ function assertNoSidewaysScroll(host: HTMLElement) {
   expect(main!.scrollWidth).toBeLessThanOrEqual(main!.clientWidth)
 }
 
+/**
+ * Presses `button`, whose write the test holds unanswered, and waits on the
+ * browser's clock past the time a wait takes to be drawn, so that it is
+ * drawn at its wait's `words`. Each of `kept`, the button first, keeps the
+ * box it had: the button keeps the width of the words it waits with.
+ */
+async function drawnWaiting(
+  button: HTMLElement,
+  words: string,
+  kept: HTMLElement[] = [button],
+) {
+  const names = kept.map((el) => el.textContent ?? '')
+  const before = kept.map(boxOf)
+  await act(async () => {
+    button.click()
+    await new Promise((r) => setTimeout(r, WAIT_DRAWN_AFTER_MS + 100))
+  })
+  expect(button.textContent).toBe(words)
+  names.forEach((name, i) => {
+    expectKept(name, before[i], boxOf(kept[i]))
+  })
+}
+
 /** Configuration at `entry`, in the shell, once what it reads has landed. */
 const opened = (entry: string) => settled(inShell(routed(entry)))
 
@@ -347,6 +385,94 @@ async function sized(width: number, height: number) {
   const was = [window.innerWidth, window.innerHeight] as const
   onTestFinished(() => page.viewport(...was))
   await page.viewport(width, height)
+}
+
+/** A spacing token's length in px, as the document defines it. */
+function token(name: string): number {
+  const px = Number.parseFloat(
+    getComputedStyle(document.documentElement).getPropertyValue(name),
+  )
+  expect(px, name).toBeGreaterThan(0)
+  return px
+}
+
+/**
+ * A removal's confirm `box` laid out with its confirm and Cancel side by
+ * side, `--space-2` apart, or, where the two do not fit on one line, on two
+ * that far apart; then, where the removal has one, the disclosure of what
+ * re-deriving would find, starting a `--space-5` below the lower of the
+ * two; and in the document in that order, so Tab goes the way the eye does.
+ */
+function expectRemovalFoot(box: HTMLElement, lines: 1 | 2) {
+  const confirm = box.querySelector('.confirm') as HTMLElement
+  const cancel = buttonSaying(box, 'Cancel')
+  const derive = box.querySelector<HTMLElement>(':scope > .removal-derive')
+  const names = ['the confirm', 'Cancel', 'the disclosure']
+  const drawn = [confirm, cancel, ...(derive === null ? [] : [derive])]
+  drawn.slice(1).forEach((el, at) => {
+    expect(
+      drawn[at].compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING,
+      `${names[at + 1]} after ${names[at]}`,
+    ).toBeTruthy()
+  })
+  const gap = token('--space-2')
+  const yes = confirm.getBoundingClientRect()
+  const no = cancel.getBoundingClientRect()
+  // Under the sentences they act on, where those start, at every width.
+  const counts = (
+    box.querySelector('.counts') as HTMLElement
+  ).getBoundingClientRect()
+  expect
+    .soft(Math.abs(yes.left - counts.left), 'the confirm at the start')
+    .toBeLessThanOrEqual(0.5)
+  if (lines === 1) {
+    expect.soft(Math.abs(no.top - yes.top), 'one line').toBeLessThanOrEqual(0.5)
+    expect
+      .soft(no.left - yes.right, 'the gap between')
+      .toBeGreaterThanOrEqual(gap - 0.5)
+  } else {
+    expect
+      .soft(no.top - yes.bottom, 'the gap between lines')
+      .toBeGreaterThanOrEqual(gap - 0.5)
+    // And on two only because the confirm's words, on one line, leave
+    // Cancel no room beside it.
+    const room = (box.querySelector('.settings-actions') as HTMLElement)
+      .clientWidth
+    confirm.style.width = 'max-content'
+    const asked = confirm.getBoundingClientRect().width + gap + no.width
+    confirm.style.width = ''
+    expect.soft(asked, 'too wide for one line').toBeGreaterThan(room)
+  }
+  if (derive !== null) {
+    expect
+      .soft(
+        derive.getBoundingClientRect().top - Math.max(yes.bottom, no.bottom),
+        'the gap above the disclosure',
+      )
+      .toBeGreaterThanOrEqual(token('--space-5') - 0.5)
+  }
+  // The boxes a press can land on: no two share any of their area,
+  // and each one's press area (`pressArea`) is its own box.
+  const pressed = [
+    confirm,
+    cancel,
+    ...(derive === null ? [] : [derive.querySelector('summary') as Element]),
+  ]
+  pressed.at(-1)?.scrollIntoView({ block: 'center' })
+  const boxes = pressed.map((el) => areaOf(el.getBoundingClientRect()))
+  boxes.forEach((area, at) => {
+    boxes.slice(at + 1).forEach((other, past) => {
+      expect
+        .soft(
+          overlapOf(area, other),
+          `${names[at]} over ${names[at + 1 + past]}`,
+        )
+        .toBe(0)
+    })
+    expect
+      .soft(pressArea(pressed[at]), `a press on ${names[at]}`)
+      .toEqual(near(area))
+  })
 }
 
 describe('the Libraries screen, with real keys and a real pointer', () => {
@@ -414,7 +540,7 @@ describe('the Libraries screen, with real keys and a real pointer', () => {
           expect(
             hit?.closest('a')?.getAttribute('href'),
             cell.textContent,
-          ).toBe(`/config/libraries/${i + 1}`)
+          ).toBe(`/config/libraries/${['Manga', 'Comics'][i]}`)
         }
       })
     },
@@ -470,6 +596,8 @@ function expectStacked(table: HTMLElement, rows: string[][], short: string) {
 }
 
 describe('the Libraries pages at a phone’s width', () => {
+  /** The page of `UNBROKEN_LIBRARY`'s library, at its name. */
+  const UNBROKEN_PAGE = `${TABLE}/${UNBROKEN_NAME}`
   /**
    * One library whose name and directory have nowhere to break, its directory's
    * last scan failed: the longest words each of the four pages draws.
@@ -495,8 +623,8 @@ describe('the Libraries pages at a phone’s width', () => {
   it.each([
     [TABLE, '.library-table .config-table'],
     [NEW_LIBRARY, '.new-library form.add-library'],
-    [LIBRARY, '.library-page .dir-table'],
-    [DIR, '.dir-page .root-row'],
+    [UNBROKEN_PAGE, '.library-page .dir-table'],
+    [`${UNBROKEN_PAGE}/dirs/3`, '.dir-page .settings-section'],
   ])(
     'does not scroll sideways on %s, whose name and path have nowhere to break',
     async (entry, drawn) => {
@@ -548,7 +676,7 @@ describe('the Libraries pages at a phone’s width', () => {
           'Manga',
           '2 directories',
           '340 works',
-          'Last scan: 2026-10-01 10:00:00 · failed',
+          'Last scan: 2026-10-01 10:00:00 UTC\u00a0·\u00a0failed',
         ],
         ['Comics', '1 directory', '1 work', 'Last scan: Never'],
       ],
@@ -562,7 +690,7 @@ describe('the Libraries pages at a phone’s width', () => {
         [
           '/srv/chapters',
           'Scan every: not set',
-          'Last scan: 2026-10-01 10:00:00 · failed',
+          'Last scan: 2026-10-01 10:00:00 UTC\u00a0·\u00a0failed',
         ],
       ],
       '/srv/manga',
@@ -597,7 +725,7 @@ describe('the Libraries pages at a phone’s width', () => {
       })
       const host = await opened(LIBRARY)
       await press(host.querySelector('button[name="add-dir"]') as Element)
-      const add = host.querySelector('.library-page > .add-root') as HTMLElement
+      const add = host.querySelector('.library-page .add-root') as HTMLElement
       if (browser === 'open')
         await press(add.querySelector('button[name="browse"]') as Element)
       await document.fonts.ready
@@ -622,10 +750,87 @@ describe('the Libraries pages at a phone’s width', () => {
     },
   )
 
+  it.each([
+    // [the window, the line it leaves, where the buttons go, the page open]
+    // At 390 the three just fit on the line under the path box, in any
+    // grouping of them, so this case holds only that the gutters leave them
+    // that room.
+    [390, 309, 'under the path box', LIBRARY],
+    // The refused Add directory's case below.
+    [520, 439, 'under the path box', LIBRARY],
+    [531, 450, 'under the path box', LIBRARY],
+    [633, 552, 'beside the path box', LIBRARY],
+    // A desk's width: the page at its measure.
+    [1280, 606, 'beside the path box', LIBRARY],
+    // The library's page as the list, a directory's page beside it: at
+    // 1280 the list's column is at its least, narrower than the three.
+    [1280, 287, 'stacked under the path box', DIR],
+    [1920, 606, 'beside the path box', DIR],
+  ] as const)(
+    'keeps Cancel beside Browse…, and Add directory on their line where the three fit, at %ipx, whose %ipx line has them %s',
+    async (width, line, where, entry) => {
+      await sized(width, 844)
+      vi.mocked(librariesApi.listLibraries).mockResolvedValue(
+        holding(longPathRoot),
+      )
+      const host = await opened(entry)
+      await press(host.querySelector('button[name="add-dir"]') as Element)
+      await document.fonts.ready
+      const add = host.querySelector('.library-page .add-root') as HTMLElement
+      const at = add.getBoundingClientRect()
+      // The line measured, so a change of gutter fails here rather than
+      // moving every case to some other width unseen.
+      expect(host.querySelector('.split-pair') !== null).toBe(entry === DIR)
+      expect(at.width).toBeCloseTo(line, 0)
+      const field = (
+        add.querySelector('label.field') as HTMLElement
+      ).getBoundingClientRect()
+      const [pick, browse, cancel] = ['pick', 'browse', 'cancel-add'].map(
+        (name) =>
+          (
+            add.querySelector(`button[name="${name}"]`) as HTMLElement
+          ).getBoundingClientRect(),
+      )
+      // Cancel is never left alone: it is on Browse…'s line, after it.
+      expect(cancel.top).toBeCloseTo(browse.top, 0)
+      expect(cancel.left).toBeGreaterThan(browse.right)
+      if (where === 'stacked under the path box') {
+        // Too narrow for the three: the path box, then Add directory, then
+        // Browse… and Cancel together, each line at the line's start (Add
+        // directory's place is held below, with the other cases under the
+        // path box).
+        expect(browse.top).toBeGreaterThanOrEqual(pick.bottom)
+        expect(browse.left).toBeCloseTo(at.left, 0)
+        expect(pick.width + browse.width + cancel.width + 16).toBeGreaterThan(
+          at.width,
+        )
+      } else {
+        // The three on one line, in their order.
+        expect(browse.top).toBeCloseTo(pick.top, 0)
+        expect(browse.left).toBeGreaterThan(pick.right)
+      }
+      if (where === 'beside the path box') {
+        // The path box gives up width before the buttons wrap, and keeps a
+        // usable width while it does.
+        expect(pick.left).toBeGreaterThan(field.right)
+        expect(pick.bottom).toBeCloseTo(field.bottom, 0)
+        expect(cancel.right).toBeCloseTo(at.right, 0)
+        expect(field.width).toBeGreaterThanOrEqual(12 * 16)
+      } else {
+        // The buttons go under the path box, which takes the line.
+        expect(pick.top).toBeGreaterThanOrEqual(field.bottom)
+        expect(pick.left).toBeCloseTo(at.left, 0)
+        expect(field.right).toBeCloseTo(at.right, 0)
+      }
+      assertNoSidewaysScroll(host)
+    },
+  )
+
   it('draws a refused Add directory on a line of its own beneath the buttons', async () => {
-    // A refusal short enough to sit beside Cancel, were it let: at 390 the
-    // buttons' line has room for it.
-    await page.viewport(390, 844)
+    // A refusal short enough to sit beside Cancel, were it let: at 520 the
+    // box has its own line and the buttons' line beneath it has room for the
+    // refusal's words, which is checked before what it is there for.
+    await page.viewport(520, 844)
     vi.mocked(librariesApi.listLibraries).mockResolvedValue(
       holding(longPathRoot),
     )
@@ -634,7 +839,7 @@ describe('the Libraries pages at a phone’s width', () => {
     )
     const host = await opened(LIBRARY)
     await press(host.querySelector('button[name="add-dir"]') as Element)
-    const add = host.querySelector('.library-page > .add-root') as HTMLElement
+    const add = host.querySelector('.library-page .add-root') as HTMLElement
     await typeInto(
       add.querySelector('input[name="path"]') as HTMLInputElement,
       '/srv/extra',
@@ -643,6 +848,18 @@ describe('the Libraries pages at a phone’s width', () => {
     await document.fonts.ready
     const alert = add.querySelector('[role="alert"]') as HTMLElement
     expect(alert.textContent).toBe('refused')
+    const words = document.createRange()
+    words.selectNodeContents(alert)
+    const cancel = (
+      add.querySelector('button[name="cancel-add"]') as HTMLElement
+    ).getBoundingClientRect()
+    const pick = (
+      add.querySelector('button[name="pick"]') as HTMLElement
+    ).getBoundingClientRect()
+    expect(cancel.top).toBeCloseTo(pick.top, 0)
+    expect(
+      add.getBoundingClientRect().right - cancel.right - 8,
+    ).toBeGreaterThan(words.getBoundingClientRect().width)
     const lowest = Math.max(
       ...[...add.querySelectorAll('button')].map(
         (b) => b.getBoundingClientRect().bottom,
@@ -670,11 +887,13 @@ describe('the Users pages at a phone’s width', () => {
     every_library: false,
     libraries: [{ id: 70, name: UNBROKEN_NAME }],
   })
+  /** Its page, at its name. */
+  const UNBROKEN_ACCOUNT_PAGE = `${USERS}/${UNBROKEN_NAME}`
 
   it.each([
     [USERS, '.user-table .config-table'],
     [NEW_ACCOUNT, '.new-account form.add-user'],
-    [`${USERS}/2`, '.user-row .grant-list'],
+    [UNBROKEN_ACCOUNT_PAGE, '.account-page .grant-list'],
   ])(
     'does not scroll sideways on %s, whose names and path have nowhere to break',
     async (entry, drawn) => {
@@ -709,12 +928,20 @@ describe('the Users pages at a phone’s width', () => {
       },
       dry_run: true,
     })
-    const host = await opened(`${USERS}/2`)
+    vi.mocked(usersApi.removeUser).mockReturnValue(new Promise(() => {}))
+    const host = await opened(UNBROKEN_ACCOUNT_PAGE)
     await press(host.querySelector('button[name="remove"]') as Element)
     await document.fonts.ready
-    expect(host.querySelector('.remove-user .confirm')?.textContent).toBe(
-      `Remove ${UNBROKEN_NAME}`,
-    )
+    const confirm = host.querySelector('.remove-user .confirm') as HTMLElement
+    expect(confirm.textContent).toBe(`Remove ${UNBROKEN_NAME}`)
+    assertNoSidewaysScroll(host)
+    // Too wide for Cancel beside it, so Cancel takes the next line.
+    expectRemovalFoot(confirm.closest('.remove-user') as HTMLElement, 2)
+    // And at its wait's words, in the box it had.
+    await drawnWaiting(confirm, 'Removing…', [
+      confirm,
+      host.querySelector('button[name="cancel-remove"]') as HTMLElement,
+    ])
     assertNoSidewaysScroll(host)
   })
 
@@ -759,48 +986,64 @@ describe('the Users pages at a phone’s width', () => {
       host.querySelector('.user-table .config-table') as HTMLElement,
       [
         [
-          'davey · this is you',
+          'davey\u00a0·\u00a0this is you',
           'Role: admin',
           'Libraries: Every library',
-          'Last seen: 2026-10-01 10:00:00',
+          'Last seen: 2026-10-01 10:00:00 UTC',
         ],
         ['sam', 'Role: user', 'Libraries: Manga, Comics', 'Last seen: —'],
-        ['kim · locked', 'Role: user', 'Libraries: None', 'Last seen: —'],
+        [
+          'kim\u00a0·\u00a0locked',
+          'Role: user',
+          'Libraries: None',
+          'Last seen: —',
+        ],
       ],
-      'kim · locked',
+      'kim\u00a0·\u00a0locked',
     )
   })
 })
 
 describe('the Configuration screens at 390px', () => {
-  it('does not scroll sideways on a library’s page, and wraps the rename form inside the page', async () => {
+  it('does not scroll sideways on a library’s page, and keeps both sets of the header’s buttons whole inside it while the name is edited', async () => {
     await page.viewport(390, 844)
     vi.mocked(librariesApi.listLibraries).mockResolvedValue(
       holding(longPathRoot),
     )
     const host = await opened(LIBRARY)
     assertNoSidewaysScroll(host)
-    // The library's three actions share a row that must wrap: at 320px they
-    // ask for more than is left them in every face. The fallback faces are
-    // forced so that the result does not depend on whether the web faces have
-    // loaded.
+    // Rename… · Scan library and Save · Cancel share one slot as wide as the
+    // wider set, so both are measured, the unseen one too: at 320px a slot
+    // that does not wrap asks for more than the header has in every face.
+    // The fallback faces are forced so that the result does not depend on
+    // whether the web faces have loaded; the web faces' case is
+    // `Libraries.shell.browser.test.tsx`'s at 320.
     withFallbackFonts()
     await page.viewport(320, 844)
     await press(host.querySelector('button[name="rename-library"]') as Element)
     assertNoSidewaysScroll(host)
-    for (const selector of ['.library-page > .actions', '.rename-library']) {
-      const row = host.querySelector(selector) as HTMLElement
-      const edge = row.getBoundingClientRect().right + 0.5
+    const header = host.querySelector(
+      '.library-page > .page-header',
+    ) as HTMLElement
+    const edge = header.getBoundingClientRect().right + 0.5
+    const sets = [...header.querySelectorAll('.page-actions-set')]
+    expect(sets).toHaveLength(2)
+    for (const set of sets) {
+      const buttons = [...set.querySelectorAll('button')]
+      const words = buttons.map((b) => b.textContent).join(' · ')
+      expect(buttons).toHaveLength(2)
       expect(
-        [...row.children]
-          .filter((el) => el.getBoundingClientRect().right > edge)
-          .map((el) => `${el.tagName.toLowerCase()}.${el.className}`),
-        selector,
+        buttons
+          .filter((b) => b.getBoundingClientRect().right > edge)
+          .map((b) => b.textContent),
+        words,
       ).toEqual([])
-      // Each keeps its words on one line: a row that does not wrap shrinks
-      // its buttons until their labels break.
-      for (const button of row.querySelectorAll('button')) {
-        expect(button.getBoundingClientRect().height, selector).toBeLessThan(44)
+      // Each keeps its words on one line. A set's two buttons fit at 320
+      // unwrapped, so what this guards is the header's own line: actions
+      // held beside the title rather than wrapped under it are shrunk until
+      // their labels break.
+      for (const button of buttons) {
+        expect(button.getBoundingClientRect().height, words).toBeLessThan(44)
       }
     }
   })
@@ -818,9 +1061,39 @@ describe('the Configuration screens at 390px', () => {
     assertNoSidewaysScroll(host)
     expect(pastItsPage(host)).toEqual([])
     // The path is the page's heading and takes no margin above it.
-    const heading = host.querySelector('.root-row > h2') as HTMLElement
+    const heading = host.querySelector('.dir-page .page-title') as HTMLElement
     expect(heading.textContent).toBe(UNBROKEN_ROOT.path)
     expect(getComputedStyle(heading).marginTop).toBe('0px')
+  })
+
+  it('keeps the room of a dry run’s sentence while it is unseen, so that Cancel does not move when it is drawn', async () => {
+    await page.viewport(390, 844)
+    vi.mocked(librariesApi.listLibraries).mockResolvedValue(
+      holding(UNBROKEN_ROOT),
+    )
+    vi.mocked(config.removalCost).mockReturnValue(new Promise(() => {}))
+    const host = await opened(DIR)
+    // The wait's timer on a clock the test moves, so that the sentence is
+    // read unseen and then drawn with no race against the test's own time.
+    holdTheClock()
+    await press(buttonSaying(host, 'Remove…'))
+    const removal = host.querySelector('.remove-root') as HTMLElement
+    const sentence = [...removal.querySelectorAll('p')].find(
+      (p) => p.textContent === 'Working out what this would remove…',
+    ) as HTMLElement
+    const cancel = buttonSaying(removal, 'Cancel')
+    const unseenAt = cancel.getBoundingClientRect().top
+    // Laid out, so taking its room, and unseen.
+    expect(sentence.getBoundingClientRect().height).toBeGreaterThan(0)
+    expect(getComputedStyle(sentence).visibility).toBe('hidden')
+    pass(WAIT_DRAWN_AFTER_MS)
+    expect(getComputedStyle(sentence).visibility).toBe('visible')
+    expect(
+      Math.abs(cancel.getBoundingClientRect().top - unseenAt),
+    ).toBeLessThanOrEqual(0.5)
+    expect(sentence.getBoundingClientRect().bottom).toBeLessThanOrEqual(
+      cancel.getBoundingClientRect().top,
+    )
   })
 
   it('keeps the removal’s confirm button inside the page for the same path', async () => {
@@ -845,10 +1118,60 @@ describe('the Configuration screens at 390px', () => {
       await Promise.resolve()
     })
     await document.fonts.ready
-    const confirm = host.querySelector('.remove-root .confirm')
-    expect(confirm?.textContent).toBe(`Remove ${UNBROKEN_ROOT.path}`)
+    const confirm = host.querySelector('.remove-root .confirm') as HTMLElement
+    expect(confirm.textContent).toBe(`Remove ${UNBROKEN_ROOT.path}`)
     assertNoSidewaysScroll(host)
     expect(pastItsPage(host)).toEqual([])
+    // Too wide for Cancel beside it, so Cancel takes the next line.
+    expectRemovalFoot(confirm.closest('.remove-root') as HTMLElement, 2)
+    // And at its wait's words, in the box it had.
+    vi.mocked(config.removeRoot).mockReturnValue(new Promise(() => {}))
+    const removal = host.querySelector('.remove-root') as HTMLElement
+    await drawnWaiting(confirm, 'Removing…', [
+      confirm,
+      buttonSaying(removal, 'Cancel'),
+    ])
+    assertNoSidewaysScroll(host)
+    expect(pastItsPage(host)).toEqual([])
+  })
+
+  it('draws the removal’s wait in the middle of the confirm the path makes tall', async () => {
+    await page.viewport(390, 844)
+    vi.mocked(librariesApi.listLibraries).mockResolvedValue(
+      holding(UNBROKEN_ROOT),
+    )
+    vi.mocked(config.removalCost).mockResolvedValue({
+      removed: { works: 1, positions: 0, notes: 0, left_with_no_library: [] },
+      derive: derived(),
+      dry_run: true,
+    })
+    const host = await opened(DIR)
+    await press(buttonSaying(host, 'Remove…'))
+    await document.fonts.ready
+    const confirm = host.querySelector('.remove-root .confirm') as HTMLElement
+    vi.mocked(config.removeRoot).mockReturnValue(new Promise(() => {}))
+    await drawnWaiting(confirm, 'Removing…')
+    // The words' own box: the element they are drawn in fills the
+    // button's cell.
+    const words = document.createRange()
+    words.selectNodeContents(
+      confirm.querySelector(':scope > span:not([aria-hidden])') as Element,
+    )
+    const said = words.getBoundingClientRect()
+    const button = confirm.getBoundingClientRect()
+    // Tall: the unseen words, the path's, run to several lines.
+    expect(button.height).toBeGreaterThan(2 * said.height)
+    const middle = (from: number, to: number) => (from + to) / 2
+    expect(
+      Math.abs(
+        middle(said.top, said.bottom) - middle(button.top, button.bottom),
+      ),
+    ).toBeLessThanOrEqual(1)
+    expect(
+      Math.abs(
+        middle(said.left, said.right) - middle(button.left, button.right),
+      ),
+    ).toBeLessThanOrEqual(1)
   })
 
   /**
@@ -908,7 +1231,7 @@ describe('the Configuration screens at 390px', () => {
     return { host, dir }
   }
 
-  it('keeps a move’s refusal and the list of volumes it names inside the page', async () => {
+  it('keeps a move’s refusal and the list of volumes it names inside its dialog', async () => {
     const volumes = Array.from({ length: 20 }, (_, i) =>
       `${String(i).padStart(2, '0')}_`.padEnd(80, 'v'),
     )
@@ -925,10 +1248,10 @@ describe('the Configuration screens at 390px', () => {
     await document.fonts.ready
     expect(list.querySelectorAll('li')).toHaveLength(20)
     assertNoSidewaysScroll(host)
-    expect(pastItsPage(host)).toEqual([])
+    expect(pastItsDialog(dir)).toEqual([])
   })
 
-  it('keeps a move’s confirm button inside the page for the same path and name', async () => {
+  it('keeps a move’s dialog inside the page for the same path and name, and its confirm and Cancel in their places through the move’s wait', async () => {
     const { host, dir } = await rehearsedMove(
       Promise.resolve({
         moved: {
@@ -949,12 +1272,18 @@ describe('the Configuration screens at 390px', () => {
         dry_run: true,
       }),
     )
-    const confirm = dir.querySelector('.move-root .confirm')
-    expect(confirm?.textContent).toBe(
-      `Move ${UNBROKEN_ROOT.path} to ${UNBROKEN_NAME}`,
-    )
+    const confirm = dir.querySelector('.move-root .confirm') as HTMLElement
+    expect(confirm.textContent).toBe('Move')
     assertNoSidewaysScroll(host)
-    expect(pastItsPage(host)).toEqual([])
+    expect(pastItsDialog(dir)).toEqual([])
+    // And at its wait's words, in the box it had, Cancel beside it unmoved.
+    vi.mocked(librariesApi.moveDir).mockReturnValue(new Promise(() => {}))
+    await drawnWaiting(confirm, 'Moving…', [
+      confirm,
+      buttonSaying(dir.querySelector('.move-root') as Element, 'Cancel'),
+    ])
+    assertNoSidewaysScroll(host)
+    expect(pastItsDialog(dir)).toEqual([])
   })
 
   it('draws a move’s confirm as the action: --accent on its border and text, and heavier', async () => {
@@ -1032,16 +1361,16 @@ describe('the Configuration screens at 390px', () => {
   })
 
   /**
-   * A directory's page around `children`, with the ancestors the app draws it
-   * in: Configuration, the Libraries screen, and the directory's
-   * `section.root-row`, inside the shell.
+   * A scan report on a directory's page, with the ancestors the app draws it
+   * in: Configuration, the Libraries screen, the directory's page and its
+   * Scan report box, inside the shell.
    */
   function onADirPage(children: React.ReactNode) {
     return inShell(
       <div className="config">
         <section className="libraries">
           <div className="dir-page">
-            <section className="root-row">{children}</section>
+            <Section title="Scan report">{children}</Section>
           </div>
         </section>
       </div>,
@@ -1052,8 +1381,8 @@ describe('the Configuration screens at 390px', () => {
    * A scan report where a directory's page draws it, at the level `RootRow`
    * gives it, holding the `unreadable` block and the walk given.
    *
-   * **Nothing around it is padded**, so the report has the width of `main`'s
-   * content, and a rule's defect shows only where the window is narrow
+   * **Only its box is around it**, so the report has the width of the box's
+   * inside, and a rule's defect shows only where the window is narrow
    * enough: each case's viewport is one at which the defect it names,
    * put back by hand, fails it.
    */
@@ -1068,7 +1397,7 @@ describe('the Configuration screens at 390px', () => {
             scan: walk(scan),
             derive: derived({ unreadable }),
           })}
-          level={3}
+          level={4}
         />,
       ),
     )
@@ -1129,14 +1458,17 @@ describe('the Configuration screens at 390px', () => {
     await document.fonts.ready
     assertNoSidewaysScroll(host)
     expect(pastItsPage(host)).toEqual([])
-    // On a directory's page a report's headings step off what is above them and
-    // sit near what they head.
+    // In its box, a report's first heading starts at the box's edge and the
+    // second steps off what is above it; each sits near what it heads.
     const headings = [...host.querySelectorAll('.report-heading')]
-    expect(headings).toHaveLength(2)
-    for (const heading of headings) {
-      expect(getComputedStyle(heading).marginTop).toBe('12px')
-      expect(getComputedStyle(heading).marginBottom).toBe('8px')
-    }
+    expect(headings.map((h) => getComputedStyle(h).marginTop)).toEqual([
+      '0px',
+      '12px',
+    ])
+    expect(headings.map((h) => getComputedStyle(h).marginBottom)).toEqual([
+      '8px',
+      '8px',
+    ])
   })
 
   /** The one file the real library's scan left uncounted: longer than any row here. */
@@ -1162,6 +1494,21 @@ describe('the Configuration screens at 390px', () => {
     const dirPage = host.querySelector('.dir-page') as HTMLElement
     const edge = dirPage.getBoundingClientRect().right + 0.5
     return [...dirPage.querySelectorAll('*')]
+      .filter((el) => el.getBoundingClientRect().right > edge)
+      .map((el) => `${el.tagName.toLowerCase()}.${el.className}`)
+  }
+
+  /**
+   * The same, for the move's dialog on the directory's page and its own
+   * edge: it is drawn over the page, so the page's edge does not hold it.
+   * It is held open, and from scrolling sideways inside itself, first.
+   */
+  function pastItsDialog(dirPage: HTMLElement): string[] {
+    const dialog = dirPage.querySelector('dialog') as HTMLDialogElement
+    expect(dialog?.open).toBe(true)
+    expect(dialog.scrollWidth).toBeLessThanOrEqual(dialog.clientWidth)
+    const edge = dialog.getBoundingClientRect().right + 0.5
+    return [...dialog.querySelectorAll('*')]
       .filter((el) => el.getBoundingClientRect().right > edge)
       .map((el) => `${el.tagName.toLowerCase()}.${el.className}`)
   }
@@ -1347,7 +1694,7 @@ describe('the Configuration screens at 390px', () => {
     await page.viewport(390, 844)
     const why = `${UNBROKEN_ROOT.path} was scanned, but deriving its structure afterward failed: database is locked`
     const host = await settled(
-      onADirPage(<ScanReport outcome={{ error: why }} level={3} />),
+      onADirPage(<ScanReport outcome={{ error: why }} level={4} />),
     )
     await document.fonts.ready
     expect(
@@ -1371,7 +1718,7 @@ describe('the Configuration screens at 390px', () => {
     const host = await opened(DIR)
     await act(async () => {
       const scan = [
-        ...host.querySelectorAll<HTMLButtonElement>('.root-row button'),
+        ...host.querySelectorAll<HTMLButtonElement>('.dir-page button'),
       ].find((b) => b.textContent === 'Scan directory')
       scan?.click()
       await Promise.resolve()
@@ -1379,7 +1726,7 @@ describe('the Configuration screens at 390px', () => {
     })
     await document.fonts.ready
     expect(
-      [...host.querySelectorAll('.root-row > [role="alert"]')].map(
+      [...host.querySelectorAll('.dir-page > [role="alert"]')].map(
         (el) => el.textContent,
       ),
     ).toEqual([`${UNBROKEN_ROOT.path} could not be scanned`])
@@ -1409,7 +1756,7 @@ describe('the Configuration screens at 390px', () => {
     })
     const host = await opened(DIR)
     await press(
-      [...host.querySelectorAll('.root-row button')].find(
+      [...host.querySelectorAll('.dir-page button')].find(
         (b) => b.textContent === 'Remove…',
       ) as Element,
     )
@@ -1429,21 +1776,36 @@ describe('the Configuration screens at 390px', () => {
     vi.mocked(librariesApi.listLibraries).mockResolvedValue({
       libraries: [{ ...holding(dir).libraries[0], name }],
     })
-    return await opened(LIBRARY)
+    return await opened(`${TABLE}/${encodeURIComponent(name)}`)
   }
 
   it('keeps a library whose name has nowhere to break inside the window', async () => {
     // A library is named by a person, and a name need not hold a space. It is
-    // drawn as its page's heading and, below, in the form that renames it.
+    // drawn as its page's heading and, once Rename… is pressed, in the box
+    // laid over that heading.
     await page.viewport(390, 844)
     const host = await libraryNamed(UNBROKEN_NAME, UNBROKEN_ROOT)
     await document.fonts.ready
-    const heading = host.querySelector('.library-page > h2') as HTMLElement
+    const heading = host.querySelector(
+      '.library-page .page-title',
+    ) as HTMLElement
     expect(heading.textContent).toBe(UNBROKEN_NAME)
     assertNoSidewaysScroll(host)
     expect(heading.scrollWidth).toBeLessThanOrEqual(heading.clientWidth)
+    // The heading breaks the name over lines of its own here, and keeps the
+    // header that tall while the box stands over its first line, so the
+    // Directories beneath do not move as the editor opens.
+    const directories = () =>
+      (
+        [...host.querySelectorAll('.settings-section-title')].find(
+          (h) => h.textContent === 'Directories',
+        ) as Element
+      ).getBoundingClientRect().top
+    const before = directories()
     await press(host.querySelector('button[name="rename-library"]') as Element)
+    expect(document.activeElement?.getAttribute('name')).toBe('library-name')
     assertNoSidewaysScroll(host)
+    expect(directories()).toBeCloseTo(before, 0)
   })
 
   it('keeps the directory browser inside the page', async () => {
@@ -1462,7 +1824,7 @@ describe('the Configuration screens at 390px', () => {
     await press(host.querySelector('button[name="add-dir"]') as Element)
     await press(
       host.querySelector(
-        '.library-page > .add-root button[name="browse"]',
+        '.library-page .add-root button[name="browse"]',
       ) as Element,
     )
     await document.fonts.ready
@@ -1482,7 +1844,7 @@ describe('the Configuration screens at 390px', () => {
     const buttons = ['pick', 'browse'].map((name) =>
       (
         host.querySelector(
-          `.library-page > .add-root button[name="${name}"]`,
+          `.library-page .add-root button[name="${name}"]`,
         ) as HTMLElement
       ).getBoundingClientRect(),
     )
@@ -1647,19 +2009,36 @@ describe('the Configuration screens at 390px', () => {
     const confirm = host.querySelector(
       '.remove-library .confirm',
     ) as HTMLElement
-    expect(confirm.textContent).toBe(`Remove ${UNBROKEN_NAME}`)
-    assertNoSidewaysScroll(host)
     const box = host.querySelector('.remove-library') as HTMLElement
-    expect(confirm.getBoundingClientRect().right).toBeLessThanOrEqual(
-      box.getBoundingClientRect().right,
+    const inside = () => {
+      assertNoSidewaysScroll(host)
+      expect(confirm.getBoundingClientRect().right).toBeLessThanOrEqual(
+        box.getBoundingClientRect().right,
+      )
+    }
+    expect(confirm.textContent).toBe(`Remove ${UNBROKEN_NAME}`)
+    inside()
+    // Too wide for Cancel beside it, so Cancel takes the next line.
+    expectRemovalFoot(box, 2)
+    // And at its wait's words, in the box it had.
+    vi.mocked(librariesApi.removeLibrary).mockReturnValue(new Promise(() => {}))
+    await drawnWaiting(confirm, 'Removing…', [
+      confirm,
+      buttonSaying(box, 'Cancel'),
+    ])
+    inside()
+    // The confirm is drawn inside the page's removal box, beneath its
+    // Remove…, and inside the box's edge as well as the window's.
+    const removal = box.closest('.settings-removal .settings-box') as Element
+    expect(removal).not.toBeNull()
+    const remove = host.querySelector('button[name="remove-library"]')
+    expect(remove?.closest('.settings-box')).toBe(removal)
+    expect(box.getBoundingClientRect().top).toBeGreaterThanOrEqual(
+      (remove as Element).getBoundingClientRect().bottom,
     )
-    // The dialog is followed by the directories it would remove, and is clear
-    // of them.
-    const next = box.nextElementSibling as HTMLElement
-    expect(next.textContent).toBe('Directories')
-    expect(
-      next.getBoundingClientRect().top - box.getBoundingClientRect().bottom,
-    ).toBeGreaterThanOrEqual(16)
+    expect(box.getBoundingClientRect().right).toBeLessThanOrEqual(
+      removal.getBoundingClientRect().right,
+    )
   })
 
   it('keeps what a removal’s re-derive found inside the window', async () => {
@@ -1789,9 +2168,9 @@ describe('the Configuration screens at 390px', () => {
     const host = await opened(ACCOUNT)
     await document.fonts.ready
     // The account's page, whose grant editor is what draws the path.
-    expect(host.querySelector('.user-row .grant-dirs code')?.textContent).toBe(
-      UNBROKEN_ROOT.path,
-    )
+    expect(
+      host.querySelector('.account-page .grant-dirs code')?.textContent,
+    ).toBe(UNBROKEN_ROOT.path)
     assertNoSidewaysScroll(host)
   })
 
@@ -1829,14 +2208,31 @@ describe('the Configuration screens at 390px', () => {
       })
       const host = await opened(ACCOUNT)
       await document.fonts.ready
-      expect(host.querySelector('.grants')?.textContent).toContain(
-        UNBROKEN_NAME,
-      )
+      // The Libraries section's one group: the radios, the ticks, and the
+      // sentence that stands in for them.
+      const group = host.querySelector('.account-page fieldset') as HTMLElement
+      expect(group?.textContent).toContain(UNBROKEN_NAME)
       assertNoSidewaysScroll(host)
-      const group = host.querySelector('.grants') as HTMLElement
       expect(group.scrollWidth).toBeLessThanOrEqual(group.clientWidth)
     },
   )
+
+  for (const width of [390, 1280]) {
+    it(`draws Backing up… in the box Back up now had, at ${width}`, async () => {
+      await sized(width, 844)
+      vi.mocked(backupApi.takeBackup).mockReturnValue(new Promise(() => {}))
+      const host = await act(async () => {
+        const mounted = mount(inShell(<Backup />))
+        await Promise.resolve()
+        await Promise.resolve()
+        return mounted
+      })
+      const take = host.querySelector('button[name="take"]') as HTMLElement
+      expect(take.textContent).toBe('Back up now')
+      await drawnWaiting(take, 'Backing up…')
+      assertNoSidewaysScroll(host)
+    })
+  }
 
   it('does not scroll sideways on the backup screen', async () => {
     await page.viewport(390, 844)
@@ -1869,7 +2265,7 @@ describe('the Configuration screens at desktop width', () => {
       ],
     })
     const host = await settled(routed(ACCOUNT))
-    const account = host.querySelector('.user-row') as HTMLElement
+    const account = host.querySelector('.account-page') as HTMLElement
     expect(account).not.toBeNull()
     // The content box, not the border box: there is no global `border-box`
     // reset, so `max-width` caps the content, and the content box is what a
@@ -1881,22 +2277,29 @@ describe('the Configuration screens at desktop width', () => {
       Number.parseFloat(accountStyle.paddingRight) -
       Number.parseFloat(accountStyle.borderLeftWidth) -
       Number.parseFloat(accountStyle.borderRightWidth)
-    // The measure itself, which `.user-row`'s place in the measure list is.
+    // The measure itself: `.settings-page` sets it, and beside the table the
+    // split's page column holds it as well, so either one alone keeps this.
     expect(contentWidth).toBeLessThanOrEqual(40 * 16)
     const controls = account.querySelectorAll('input, select, textarea')
     expect(controls.length).toBeGreaterThan(0)
     for (const control of controls) {
-      // `.field`, `.checks` and the role `<select>` stretch to the box they
-      // are in, and only the page carries a figure:
-      // `admin-config.css.test.ts`'s "sets the measure once" holds the CSS
-      // side of that.
+      // A row's control takes its own width (`settings.css`), capped at its
+      // column, so the box it is in is what holds it, and the page's
+      // measure holds the box.
+      const name = control.getAttribute('name')
+      const held = control.closest('.settings-box') as Element
+      expect(held, name ?? '').not.toBeNull()
+      expect(
+        control.getBoundingClientRect().right,
+        name ?? '',
+      ).toBeLessThanOrEqual(held.getBoundingClientRect().right + 0.5)
       expect(control.getBoundingClientRect().width).toBeLessThanOrEqual(
         contentWidth + 0.5,
       )
     }
   })
 
-  it('keeps the add-user form inside its own measure', async () => {
+  it('keeps the add-user form inside its own measure, and Add and Cancel where they were while it waits', async () => {
     await sized(1280, 900)
     const host = await settled(routed(NEW_ACCOUNT))
     const form = host.querySelector('.new-account .add-user') as HTMLElement
@@ -1910,6 +2313,22 @@ describe('the Configuration screens at desktop width', () => {
       Number.parseFloat(formStyle.borderLeftWidth) -
       Number.parseFloat(formStyle.borderRightWidth)
     expect(formContentWidth).toBeLessThanOrEqual(40 * 16)
+
+    vi.mocked(usersApi.addUser).mockReturnValue(new Promise(() => {}))
+    await typeInto(
+      form.querySelector('input[name="new-name"]') as HTMLInputElement,
+      'sam',
+    )
+    await typeInto(
+      form.querySelector('input[name="new-password"]') as HTMLInputElement,
+      'hunter2',
+    )
+    const add = form.querySelector('button[type="submit"]') as HTMLElement
+    expect(add.textContent).toBe('Add')
+    await drawnWaiting(add, 'Creating…', [
+      add,
+      form.querySelector('button[name="cancel"]') as HTMLElement,
+    ])
   })
 
   it('keeps the backup list inside its own measure', async () => {
@@ -1923,7 +2342,7 @@ describe('the Configuration screens at desktop width', () => {
       await Promise.resolve()
       return mounted
     })
-    const list = host.querySelector('.backup .backup-list') as HTMLElement
+    const list = host.querySelector('.backup .backup-rows') as HTMLElement
     expect(list).not.toBeNull()
     // A list with no rows can collapse to zero width and pass no matter what
     // `max-width` says, so this fixture (`backupEntry()`, above) must render
@@ -1937,34 +2356,82 @@ describe('the Configuration screens at desktop width', () => {
       Number.parseFloat(listStyle.paddingRight) -
       Number.parseFloat(listStyle.borderLeftWidth) -
       Number.parseFloat(listStyle.borderRightWidth)
-    // `.backup .backup-list` is its own rule, not shared with any other
-    // selector — the one screen `--config-measure` otherwise never reached,
-    // per admin.css's own comment on the rule — and nothing else in this
-    // file watches it.
+    // Backup's page takes no measure of its own: the list keeps to it only
+    // through its section's (`settings.css`), and nothing else in this file
+    // watches that on this screen.
     expect(listContentWidth).toBeLessThanOrEqual(40 * 16)
   })
 
-  it('puts each root fact on its own row beside its label', async () => {
+  it('draws a backup’s file name as the tables draw a name, and marks it under the pointer and the keyboard’s focus', async () => {
+    await page.viewport(1280, 900)
+    vi.mocked(backupApi.listBackups).mockResolvedValue({
+      backups: [backupEntry()],
+    })
+    const host = await opened('/config/backup')
+    const link = host.querySelector('.backup-rows a') as HTMLElement
+    expect(link.textContent).toBe('library-20260906T143502Z.db')
+    // A table's name, drawn by its class alone, beside the backup's.
+    const name = document.createElement('a')
+    name.className = 'row-link'
+    name.href = '#'
+    name.textContent = 'sam'
+    link.closest('li')?.append(name)
+    const look = (el: Element) => {
+      const style = getComputedStyle(el)
+      return [style.fontWeight, style.textDecorationLine, style.color]
+    }
+    const table = look(name)
+    name.remove()
+    const title = host.querySelector('.page-title') as HTMLElement
+    await act(async () => {
+      await userEvent.hover(title)
+    })
+    expect(look(link)).toEqual(table)
+
+    const line = () => getComputedStyle(link).textDecorationLine
+    await act(async () => {
+      await userEvent.hover(link)
+    })
+    expect(line(), 'under the pointer').toBe('underline')
+    await act(async () => {
+      await userEvent.hover(title)
+    })
+    expect(line(), 'the pointer gone').toBe('none')
+
+    // Back up now is the control before it.
+    const backUp = buttonSaying(host, 'Back up now')
+    backUp.focus()
+    await act(async () => {
+      await userEvent.tab()
+    })
+    expect(document.activeElement).toBe(link)
+    expect(line(), 'focused from the keyboard').toBe('underline')
+    expect(getComputedStyle(link).outlineStyle).toBe('solid')
+  })
+
+  it('puts each of a directory’s facts on the header’s line, beside its label', async () => {
     await page.viewport(1280, 900)
     vi.mocked(librariesApi.listLibraries).mockResolvedValue(
       holding(longPathRoot),
     )
     const host = await settled(routed(DIR))
-    const rows = [...host.querySelectorAll('.regime > div')]
-    expect(rows).toHaveLength(3)
-    const tops = rows.map(
-      (row) => row.querySelector('dt')!.getBoundingClientRect().top,
-    )
-    // Three distinct rows: `display: contents` on `.regime > div` is what
-    // makes the grid place the dt/dd pairs directly, one per row — drop it
-    // and the three `<div>` wrappers become the grid items instead, each one
-    // occupying a single cell rather than contributing a dt and a dd to two
-    // columns, and the three collapse onto one line.
-    expect(new Set(tops).size).toBe(3)
-    for (const row of rows) {
-      const dt = row.querySelector('dt')!.getBoundingClientRect()
-      const dd = row.querySelector('dd')!.getBoundingClientRect()
-      expect(dd.left).toBeGreaterThan(dt.right - 1)
+    const facts = [
+      ...host.querySelectorAll('.dir-page .page-description .regime > div'),
+    ]
+    expect(facts.map((fact) => fact.querySelector('dt')?.textContent)).toEqual([
+      'watch',
+      'scan every',
+      'last scan',
+    ])
+    // Each `<div>` lays its dt and dd out on one line, the value after its
+    // label: as blocks, each fact would stand on two lines, its value under
+    // its label.
+    for (const fact of facts) {
+      const dt = (fact.querySelector('dt') as Element).getBoundingClientRect()
+      const dd = (fact.querySelector('dd') as Element).getBoundingClientRect()
+      const label = fact.querySelector('dt')?.textContent ?? ''
+      expect(dd.top, label).toBeCloseTo(dt.top, 0)
+      expect(dd.left, label).toBeGreaterThan(dt.right - 1)
     }
   })
 })
@@ -1982,24 +2449,24 @@ describe('the Users pages’ own lines', () => {
     },
   }
 
-  /** `colour` as the browser resolves it, for an element inside `within`. */
-  function resolved(within: Element, colour: string) {
-    const probe = document.createElement('span')
-    probe.style.color = colour
-    within.append(probe)
-    const { color } = getComputedStyle(probe)
-    probe.remove()
-    return color
-  }
-
-  it('puts the role’s hint a step under the fields it explains', async () => {
+  it('puts the role’s hint a step under the Role label, beside the box it explains', async () => {
     await sized(1280, 900)
     vi.mocked(usersApi.listUsers).mockResolvedValue({ users: [user()] })
     const host = await opened(ACCOUNT)
-    const hint = host.querySelector('.user-row .fields + .why') as HTMLElement
-    expect(hint?.textContent).toContain('cannot take their own admin role')
-    expect(getComputedStyle(hint).marginTop).toBe('8px')
+    const role = host.querySelector('select[name="role"]') as HTMLElement
+    const row = role.closest('.settings-row') as HTMLElement
+    const label = row.querySelector('.settings-row-label') as HTMLElement
+    const hint = row.querySelector('.settings-row-help') as HTMLElement
+    expect(label.textContent).toBe('Role')
+    expect(hint?.textContent).toContain('cannot take away your own admin role')
+    // The row's own step, not a paragraph's margins.
+    expect(getComputedStyle(hint).marginTop).toBe('4px')
     expect(getComputedStyle(hint).marginBottom).toBe('0px')
+    const [at, under, box] = [hint, label, role].map((el) =>
+      el.getBoundingClientRect(),
+    )
+    expect(at.top).toBeCloseTo(under.bottom + 4, 0)
+    expect(at.right).toBeLessThanOrEqual(box.left)
   })
 
   it('says an account was removed quietly, on the table it goes back to', async () => {
@@ -2013,7 +2480,7 @@ describe('the Users pages’ own lines', () => {
       ...removal,
       dry_run: false,
     })
-    const host = await opened(`${USERS}/2`)
+    const host = await opened(`${USERS}/sam`)
     await press(host.querySelector('button[name="remove"]') as Element)
     vi.mocked(usersApi.listUsers).mockResolvedValue({ users: [user()] })
     await press(host.querySelector('.remove-user .confirm') as Element)
@@ -2021,7 +2488,7 @@ describe('the Users pages’ own lines', () => {
     const line = host.querySelector('.user-table > p.gone-line') as HTMLElement
     expect(line?.textContent).toBe('Removed sam.')
     expect(getComputedStyle(line).color).toBe(
-      resolved(line.parentElement as Element, 'var(--muted)'),
+      tokenColour(line.parentElement as Element, '--muted'),
     )
   })
 
@@ -2029,7 +2496,7 @@ describe('the Users pages’ own lines', () => {
     await sized(1280, 900)
     vi.mocked(usersApi.listUsers).mockResolvedValue({ users: [user(), sam] })
     vi.mocked(usersApi.patchUser).mockResolvedValue(sam)
-    const host = await opened(`${USERS}/2`)
+    const host = await opened(`${USERS}/sam`)
     await typeInto(
       host.querySelector('input[name="password"]') as HTMLInputElement,
       'hunter22',
@@ -2041,8 +2508,43 @@ describe('the Users pages’ own lines', () => {
       'Password set. sam is signed out everywhere.',
     )
     expect(getComputedStyle(line).color).toBe(
-      resolved(line.parentElement as Element, 'var(--text)'),
+      tokenColour(line.parentElement as Element, '--text'),
     )
+  })
+
+  it('draws the password’s live region with no room and no line until a set works, and then as a line of its form', async () => {
+    await sized(1280, 900)
+    vi.mocked(usersApi.listUsers).mockResolvedValue({ users: [user(), sam] })
+    vi.mocked(usersApi.patchUser).mockResolvedValue(sam)
+    const host = await opened(`${USERS}/sam`)
+    const region = host.querySelector(
+      '.reset > [aria-live="polite"]',
+    ) as HTMLElement
+    const empty = getComputedStyle(region)
+    expect([
+      region.getBoundingClientRect().height,
+      empty.borderTopStyle,
+    ]).toEqual([0, 'none'])
+
+    await typeInto(
+      host.querySelector('input[name="password"]') as HTMLInputElement,
+      'hunter22',
+    )
+    await submit(host.querySelector('form.reset') as Element)
+    await flush()
+    expect(region.textContent).toBe(
+      'Password set. sam is signed out everywhere.',
+    )
+    const drawn = getComputedStyle(region)
+    expect([drawn.borderTopWidth, drawn.borderTopStyle]).toEqual([
+      '1px',
+      'solid',
+    ])
+    expect(drawn.borderTopColor).toBe(
+      tokenColour(region.parentElement as Element, '--line'),
+    )
+    expect(parseFloat(drawn.paddingTop)).toBeGreaterThan(0)
+    expect(drawn.paddingBottom).toBe(drawn.paddingTop)
   })
 
   it('says a removal that answers on another account’s page there, leaving focus and the view where they were', async () => {
@@ -2070,11 +2572,11 @@ describe('the Users pages’ own lines', () => {
     })
     const remove = deferred<usersApi.RemovalAnswer>()
     vi.mocked(usersApi.removeUser).mockReturnValue(remove.promise)
-    const host = await opened(`${USERS}/2`)
+    const host = await opened(`${USERS}/sam`)
     await press(host.querySelector('button[name="remove"]') as Element)
     await press(host.querySelector('.remove-user .confirm') as Element)
     // Away by the page's own links, while the removal has not answered.
-    await press(host.querySelector('.user-row .back a') as Element)
+    await press(host.querySelector('.account-page .back a') as Element)
     await press(
       [...host.querySelectorAll('.user-table .row-link')].find(
         (a) => a.textContent === 'kim',
@@ -2095,7 +2597,7 @@ describe('the Users pages’ own lines', () => {
     vi.mocked(usersApi.listUsers).mockResolvedValue({ users: [user(), kim] })
     await flush(() => remove.resolve({ ...removal, dry_run: false }))
     await flush()
-    const line = host.querySelector('.user-row p.gone-line') as HTMLElement
+    const line = host.querySelector('.account-page p.gone-line') as HTMLElement
     expect(line?.textContent).toBe('Removed sam.')
     expect(document.activeElement).toBe(revoke)
     // Where the person is looking has not moved. The line is drawn above
@@ -2104,11 +2606,11 @@ describe('the Users pages’ own lines', () => {
     expect(revoke.getBoundingClientRect().top).toBeCloseTo(from, 0)
     // Announced instead, from the region drawn with the page.
     expect(
-      line.parentElement?.matches('.user-row > [aria-live="polite"]'),
+      line.parentElement?.matches('.account-page > [aria-live="polite"]'),
     ).toBe(true)
     // Quiet wherever it is drawn, as on the table.
     expect(getComputedStyle(line).color).toBe(
-      resolved(line.parentElement as Element, 'var(--muted)'),
+      tokenColour(line.parentElement as Element, '--muted'),
     )
   })
 })
@@ -2144,10 +2646,12 @@ describe('the libraries screen at desktop width', () => {
 
   const box = (el: Element) => el.getBoundingClientRect()
 
-  it('sets a library’s page on the measure, says what it holds quietly, and lets its picker’s box take the line’s room', async () => {
+  it('sets a library’s page on the measure, and says what it holds quietly', async () => {
     // The second library's page, which says both what it holds and that
-    // none of it is readable yet.
-    const host = await shown(routed(`${TABLE}/2`))
+    // none of it is readable yet. In the shell, as it is always drawn. Where
+    // its picker's line puts Cancel is the phone-width matrix's (the 1280
+    // case on a library's page).
+    const host = await shown(inShell(routed(`${TABLE}/Light%20novels`)))
     const libraryPage = host.querySelector('.library-page') as HTMLElement
     expect(box(libraryPage).width).toBeLessThanOrEqual(40 * 16 + 0.5)
 
@@ -2161,27 +2665,39 @@ describe('the libraries screen at desktop width', () => {
     probe.remove()
     for (const selector of ['.holds', '.no-readable']) {
       const sentence = getComputedStyle(
-        host.querySelector(`.library-page > ${selector}`) as Element,
+        host.querySelector(`.library-page ${selector}`) as Element,
       )
       expect(sentence.color, selector).toBe(color)
       expect(sentence.fontSize, selector).toBe(fontSize)
     }
-
-    // The picker's line runs to its own edge, Cancel last: the box takes the
-    // room its buttons and Cancel leave.
-    await press(host.querySelector('button[name="add-dir"]') as Element)
-    const add = host.querySelector('.library-page > .add-root') as HTMLElement
-    const cancel = add.querySelector('button[name="cancel-add"]') as HTMLElement
-    expect(box(cancel).right).toBeCloseTo(box(add).right, 0)
   })
 
-  it('sets the make page’s form on the measure, its button at its own width', async () => {
+  it('sets the make page’s form on the measure, its button at its own width, at both its words', async () => {
     const host = await shown(routed(NEW_LIBRARY))
     const form = host.querySelector('form.add-library') as HTMLElement
-    expect(box(form).width).toBeLessThanOrEqual(40 * 16 + 0.5)
-    // Its action keeps its own width and does not stretch across.
     const make = form.querySelector('button[type="submit"]') as HTMLElement
-    expect(box(make).width).toBeLessThan(box(form).width / 2)
+    const measured = () => {
+      expect(box(form).width).toBeLessThanOrEqual(40 * 16 + 0.5)
+      // Its action keeps its own width and does not stretch across.
+      expect(box(make).width).toBeLessThan(box(form).width / 2)
+    }
+    measured()
+    vi.mocked(librariesApi.createLibrary).mockReturnValue(new Promise(() => {}))
+    await typeInto(
+      form.querySelector('input[name="library-name"]') as HTMLInputElement,
+      // No library holds it, so the make is not held as it is typed.
+      'Westerns',
+    )
+    await typeInto(
+      form.querySelector('input[name="path"]') as HTMLInputElement,
+      '/srv/manga',
+    )
+    expect(make.textContent).toBe('Make the library')
+    await drawnWaiting(make, 'Checking…', [
+      make,
+      form.querySelector('button[name="cancel"]') as HTMLElement,
+    ])
+    measured()
   })
 
   it('draws the two boxes of a directory’s first row at one height', async () => {
@@ -2202,16 +2718,19 @@ describe('the libraries screen at desktop width', () => {
       dry_run: true,
     })
     const host = await shown(routed(LIBRARY))
-    const heading = host.querySelector('.library-page > h2') as HTMLElement
+    const heading = host.querySelector(
+      '.library-page .page-title',
+    ) as HTMLElement
     const row = () => host.querySelector('.dir-table tbody tr') as Element
-    const pointAt = (el: Element) =>
+    const pointAt = (el: Element | Locator) =>
       act(async () => {
         await userEvent.hover(el)
       })
+    const rowLead = byRole(row().querySelector('td.lead') as Element, 'cell')
     const background = () => getComputedStyle(row()).backgroundColor
     await pointAt(heading)
     const unlit = background()
-    await pointAt(row())
+    await pointAt(rowLead)
     expect(row().querySelector('a.row-link')).not.toBeNull()
     expect(background()).not.toBe(unlit)
 
@@ -2219,7 +2738,7 @@ describe('the libraries screen at desktop width', () => {
     await press(host.querySelector('button[name="remove-library"]') as Element)
     expect(row().querySelector('a')).toBeNull()
     await pointAt(heading)
-    await pointAt(row())
+    await pointAt(rowLead)
     expect(background()).toBe(unlit)
   })
 
@@ -2243,9 +2762,9 @@ describe('the libraries screen at desktop width', () => {
     const report = host.querySelector(
       '.library-table > .removal-report',
     ) as Element
-    // The report ends where the table beneath it does.
+    // The report ends where the box of the table beneath it does.
     expect(box(report).right).toBeCloseTo(
-      box(host.querySelector('.library-table .config-table') as Element).right,
+      box(host.querySelector('.library-table .settings-box') as Element).right,
       0,
     )
     // Its lists are the two-column grid a directory's scan report has, so a
@@ -2260,8 +2779,9 @@ describe('the libraries screen at desktop width', () => {
     expect(getComputedStyle(heading).marginTop).toBe('20px')
     expect(Number.parseFloat(getComputedStyle(heading).fontSize)).toBeLessThan(
       Number.parseFloat(
-        getComputedStyle(host.querySelector('.library-table > h2') as Element)
-          .fontSize,
+        getComputedStyle(
+          host.querySelector('.library-table .page-title') as Element,
+        ).fontSize,
       ),
     )
   })
@@ -2330,7 +2850,7 @@ describe('the libraries screen at desktop width', () => {
     )
   })
 
-  it('draws the grants of an account as one group, with the ticks under their radio', async () => {
+  it('draws the grants of an account as one group of its section’s box, the ticks a row each beneath the Sees row', async () => {
     vi.mocked(usersApi.listUsers).mockResolvedValue({
       users: [
         user({
@@ -2341,39 +2861,113 @@ describe('the libraries screen at desktop width', () => {
       ],
     })
     const host = await shown(routed(ACCOUNT))
-    const group = host.querySelector('.user-row .grants') as HTMLElement
-    expect(getComputedStyle(group).borderTopWidth).toBe('1px')
-    expect(getComputedStyle(group).borderTopStyle).toBe('solid')
-    // The hairline the removal's box and the table's rules are drawn in, as
-    // the browser resolves it: the page's sections draw no box, so the token
-    // is what the group is held to. A border left to `currentColor` is the
-    // text's colour and fails here.
-    const probe = document.createElement('div')
-    probe.style.borderTop = '1px solid var(--line)'
-    group.append(probe)
-    const line = getComputedStyle(probe).borderTopColor
-    probe.remove()
-    expect(getComputedStyle(group).borderTopColor).toBe(line)
-    expect(line).not.toBe(getComputedStyle(group).color)
-    // A box, then a gap, then its words: for both radios and each tick.
-    for (const label of group.querySelectorAll(
-      ':scope > label, .grant-list label',
-    )) {
-      expect(getComputedStyle(label).display).toBe('flex')
-      expect(getComputedStyle(label).columnGap).toBe('8px')
-    }
-    const radio = group.querySelector('input[type="radio"]') as Element
-    const tick = group.querySelector('.grant-list input') as Element
-    expect(box(tick).left).toBeGreaterThan(box(radio).left + 16)
-
-    // The group stands a step below the boxes above it.
-    expect(getComputedStyle(group).marginTop).toBe('12px')
+    const group = host.querySelector('.account-page fieldset') as HTMLElement
+    const held = group.parentElement as HTMLElement
+    expect(held.matches('.settings-box')).toBe(true)
     // Its legend names it for a screen reader alone: the section's heading
     // is its name on screen, so the legend is clipped to nothing there.
     const legend = group.querySelector(':scope > legend') as HTMLElement
     expect(legend.textContent).toBe('Libraries this account may see')
     expect(getComputedStyle(legend).clipPath).toBe('inset(50%)')
+
+    // The group draws no edge, inset or margin of its own, so its rows line
+    // up with the box's, as a fieldset's own does not.
+    const heldStyle = getComputedStyle(held)
+    const start =
+      box(held).left +
+      Number.parseFloat(heldStyle.borderLeftWidth) +
+      Number.parseFloat(heldStyle.paddingLeft)
+    const end =
+      box(held).right -
+      Number.parseFloat(heldStyle.borderRightWidth) -
+      Number.parseFloat(heldStyle.paddingRight)
+    const sees = group.querySelector(':scope > .settings-row') as HTMLElement
+    expect(sees.textContent).toContain('Sees')
+    expect(box(sees).left).toBeCloseTo(start, 0)
+    expect(box(sees).right).toBeCloseTo(end, 0)
+
+    // The ticks are beneath the Sees row, split from it by the hairline the
+    // box's rows are split by, as the browser resolves it. A border left to
+    // `currentColor` is the text's colour and fails here.
+    const list = group.querySelector('.grant-list') as HTMLElement
+    expect(box(list).top).toBeGreaterThanOrEqual(box(sees).bottom)
+    const listStyle = getComputedStyle(list)
+    expect(listStyle.borderTopWidth).toBe('1px')
+    expect(listStyle.borderTopStyle).toBe('solid')
+    const probe = document.createElement('div')
+    probe.style.borderTop = '1px solid var(--line)'
+    group.append(probe)
+    const line = getComputedStyle(probe).borderTopColor
+    probe.remove()
+    expect(listStyle.borderTopColor).toBe(line)
+    expect(line).not.toBe(listStyle.color)
+
+    // A radio is a box, then a gap, then its words.
+    const choices = [...group.querySelectorAll('.settings-choices label')]
+    expect(choices).toHaveLength(2)
+    for (const label of choices) {
+      expect(getComputedStyle(label).display).toBe('flex')
+      expect(getComputedStyle(label).columnGap).toBe('8px')
+    }
+    // A tick is at its row's end, beside its library's name.
+    const rows = [...list.querySelectorAll('.settings-row')]
+    expect(rows).toHaveLength(2)
+    for (const row of rows) {
+      const name = box(row.querySelector('.settings-row-label') as Element)
+      const input = row.querySelector('input[type="checkbox"]') as Element
+      const tick = box(input)
+      expect(tick.left).toBeGreaterThan(name.right)
+      // The box's own margin is the browser's, outside the row's control.
+      expect(
+        tick.right + Number.parseFloat(getComputedStyle(input).marginRight),
+      ).toBeCloseTo(end, 0)
+      expect(tick.top).toBeLessThan(name.bottom)
+      expect(tick.bottom).toBeGreaterThan(name.top)
+    }
   })
+})
+
+/**
+ * The directory picker's path box and Browse… are one line's controls, so
+ * they are drawn at one height and, side by side, from one top: on the make
+ * page, where the box is the row's control, and in Add directory…, where it
+ * is under its own label. Where the buttons have gone under the box, the
+ * heights are still one.
+ */
+describe('the directory picker’s line', () => {
+  it.each([
+    [NEW_LIBRARY, 1920, true],
+    [NEW_LIBRARY, 1024, true],
+    [NEW_LIBRARY, 390, true],
+    [LIBRARY, 1920, true],
+    [LIBRARY, 1024, true],
+    [LIBRARY, 390, false],
+  ] as const)(
+    'on %s at %i px draws Browse… at the path box’s height, beside it: %s',
+    async (entry, width, beside) => {
+      await sized(width, 900)
+      vi.mocked(librariesApi.listLibraries).mockResolvedValue(holding(root()))
+      const host = await opened(entry)
+      if (entry === LIBRARY) {
+        await press(host.querySelector('button[name="add-dir"]') as Element)
+      }
+      await document.fonts.ready
+      const picker = host.querySelector('.dir-picker') as HTMLElement
+      const [path, browse] = [
+        picker.querySelector('input[name="path"]') as Element,
+        picker.querySelector('button[name="browse"]') as Element,
+      ].map((el) => el.getBoundingClientRect())
+      expect(browse.top < path.bottom, 'beside the box').toBe(beside)
+      expect
+        .soft(Math.abs(browse.height - path.height), 'heights apart')
+        .toBeLessThanOrEqual(0.5)
+      if (beside) {
+        expect
+          .soft(Math.abs(browse.top - path.top), 'tops apart')
+          .toBeLessThanOrEqual(0.5)
+      }
+    },
+  )
 })
 
 describe('the scan report', () => {
@@ -2457,4 +3051,820 @@ describe('the way up from a page beneath a table', () => {
       }
     },
   )
+})
+
+/**
+ * **A checkbox row's first line is a finger's 44 px tall under a coarse
+ * pointer, and all of it is the target** (spec 2026-09-17 §7.1): an
+ * account's three permissions, each library it is limited to, and a
+ * directory's Keeps documents under .taiyaku/, every check row these pages
+ * draw. The label takes the line, the gap and the box's column included,
+ * and the box is centred on it. Hit testing along the label's middle row
+ * and column (`pressArea`) finds it from its start to the box, and a press
+ * a pixel inside the top and the bottom of the 44 px, under the words and
+ * above and below the box, one just above the box and one in the gap, each
+ * sends one write. Per row, since one row's help can be taller than
+ * another's.
+ */
+describe('a checkbox row under a coarse pointer', () => {
+  const sam = user({
+    id: 2,
+    name: 'sam',
+    role: 'user',
+    every_library: false,
+    libraries: [{ id: 1, name: 'Manga' }],
+  })
+
+  it.each([
+    [
+      `${USERS}/sam`,
+      ['Can download', 'Can stream', 'Can stamp', 'Manga'],
+      usersApi.patchUser,
+    ],
+    [DIR, ['Keeps documents under .taiyaku/'], config.patchRoot],
+  ] as const)('on %s at 390 px', async (entry, words, write) => {
+    onTestFinished(coarseRulesOn())
+    await sized(390, 844)
+    vi.mocked(librariesApi.listLibraries).mockResolvedValue(holding(root()))
+    vi.mocked(usersApi.listUsers).mockResolvedValue({ users: [user(), sam] })
+    vi.mocked(usersApi.patchUser).mockResolvedValue(sam)
+    vi.mocked(config.patchRoot).mockResolvedValue(undefined)
+    const host = await opened(entry)
+    await document.fonts.ready
+    const rows = [...host.querySelectorAll<HTMLElement>('.settings-row-check')]
+    expect(rows.map((row) => row.querySelector('label')?.textContent)).toEqual(
+      words,
+    )
+    for (const row of rows) {
+      row.scrollIntoView({ block: 'center' })
+      const label = row.querySelector('label.settings-row-label') as Element
+      const name = label.textContent ?? ''
+      const box = row.closest('.settings-box') as HTMLElement
+      const [at, tick, control, within] = [
+        label,
+        row.querySelector('input[type="checkbox"]') as Element,
+        row.querySelector('.settings-row-control') as Element,
+        box,
+      ].map((el) => el.getBoundingClientRect())
+      const middle = at.top + at.height / 2
+      const tickMiddle = tick.top + tick.height / 2
+      const gap = Number.parseFloat(getComputedStyle(row).columnGap)
+      /** The middle of the words' column, before the gap. */
+      const wordsX = (at.left + control.left - gap) / 2
+      expect
+        .soft(at.height, `${name}: the label's height`)
+        .toBeGreaterThanOrEqual(44)
+      expect
+        .soft(tickMiddle - middle, `${name}: the box's centre`)
+        .toBeCloseTo(0, 0)
+      const area = pressArea(label)
+      expect
+        .soft([area.top, area.bottom, area.left], `${name}: a press lands`)
+        .toEqual([
+          expect.closeTo(at.top, 1),
+          expect.closeTo(at.bottom, 1),
+          expect.closeTo(at.left, 1),
+        ])
+      // And up to the box, and no further: over the box a press lands on the
+      // box, not on the label its column lies over. Hit testing answers for
+      // a pixel, so an edge is found up to a pixel either side.
+      expect
+        .soft(
+          Math.abs(tick.left - area.right),
+          `${name}: a press lands up to the box`,
+        )
+        .toBeLessThan(1)
+      expect
+        .soft(
+          document.elementFromPoint(tick.left + tick.width / 2, tickMiddle),
+          `${name}: a press on the box`,
+        )
+        .toBe(row.querySelector('input[type="checkbox"]'))
+      // Pressed through the box the row is drawn in, so that a press that
+      // misses the label is a press on what lies around it, and not refused.
+      // A press's position is from the box's padding edge, inside its border.
+      for (const [where, x, y] of [
+        ['at the top, under the words', wordsX, middle - 21],
+        ['at the bottom, under the words', wordsX, middle + 21],
+        ['in the gap', control.left - gap / 2, middle],
+        ['above the box', tick.left + tick.width / 2, tickMiddle - 21],
+        ['below the box', tick.left + tick.width / 2, tickMiddle + 21],
+        // Inside the box's own column, whose element wraps the box closely.
+        ['just above the box', tick.left + tick.width / 2, tick.top - 2],
+      ] as const) {
+        const sent = vi.mocked(write).mock.calls.length
+        await act(async () => {
+          await userEvent.click(box, {
+            position: {
+              x: x - within.left - box.clientLeft,
+              y: y - within.top - box.clientTop,
+            },
+          })
+          await new Promise((resolve) => setTimeout(resolve, 20))
+        })
+        expect
+          .soft(
+            vi.mocked(write).mock.calls.length - sent,
+            `${name}: a press ${where}`,
+          )
+          .toBe(1)
+      }
+    }
+  })
+
+  it('keeps the space where a label’s words meet its markup', async () => {
+    onTestFinished(coarseRulesOn())
+    await sized(390, 844)
+    const host = await act(async () =>
+      mount(
+        <div className="config">
+          <Section title="Scanning">
+            <Row
+              check
+              label={
+                <>
+                  Keeps <code>.taiyaku/</code>
+                </>
+              }
+            >
+              {(ids) => <input type="checkbox" id={ids.control} />}
+            </Row>
+          </Section>
+        </div>,
+      ),
+    )
+    await document.fonts.ready
+    const label = host.querySelector('label.settings-row-label') as Element
+    expect(label.textContent).toBe('Keeps .taiyaku/')
+    const text = document.createTreeWalker(label, NodeFilter.SHOW_TEXT)
+    const keeps = text.nextNode() as Text
+    expect(keeps.data).toBe('Keeps ')
+    /** Where the text node's first `end` characters end. */
+    const endOf = (end: number) => {
+      const range = document.createRange()
+      range.setStart(keeps, 0)
+      range.setEnd(keeps, end)
+      return range.getBoundingClientRect()
+    }
+    const word = endOf('Keeps'.length)
+    const space = endOf('Keeps '.length)
+    const code = (
+      label.querySelector('code') as Element
+    ).getBoundingClientRect()
+    // The space is drawn, and the code follows it on the same line.
+    expect(space.right - word.right).toBeGreaterThan(2)
+    expect(code.left).toBeCloseTo(space.right, 0)
+    expect(code.top).toBeLessThan(word.bottom)
+  })
+})
+
+/**
+ * An account limited to two libraries: Manga, whose name is one line and
+ * whose three directories make its help several, and one whose name takes
+ * two lines at a phone's width. The box of each check row is beside its
+ * label's words, and the gap from a name to its first directory is one
+ * whatever the name's length.
+ */
+describe('a library’s grant', () => {
+  const LONG_NAME =
+    'Collected chapters and side stories from the weekly anthology'
+  const GRANTS = {
+    libraries: [
+      {
+        id: 1,
+        name: 'Manga',
+        works: 0,
+        books: 0,
+        dirs: [1, 2, 3].map((id) =>
+          root({ id, path: `/srv/media/manga/shelf-${id}/Volumes` }),
+        ),
+      },
+      {
+        id: 2,
+        name: LONG_NAME,
+        works: 0,
+        books: 0,
+        dirs: [root({ id: 4, path: '/srv/media/anthology/Chapters' })],
+      },
+    ],
+  }
+  const sam = user({
+    id: 2,
+    name: 'sam',
+    role: 'user',
+    every_library: false,
+    libraries: [{ id: 1, name: 'Manga' }],
+  })
+  const grantsAt = async (width: number) => {
+    await sized(width, 900)
+    vi.mocked(librariesApi.listLibraries).mockResolvedValue(GRANTS)
+    vi.mocked(usersApi.listUsers).mockResolvedValue({ users: [user(), sam] })
+    const host = await opened(`${USERS}/sam`)
+    await document.fonts.ready
+    return host
+  }
+  /** Each line a check row's label's words are drawn on, top to bottom. */
+  const linesOf = (row: Element) => {
+    const words = document.createRange()
+    words.selectNodeContents(
+      row.querySelector('label.settings-row-label') as Element,
+    )
+    return [...words.getClientRects()]
+  }
+
+  it.each([1920, 390])(
+    'puts each box beside its label’s first line with a mouse, however tall its help, at %i px',
+    async (width) => {
+      const host = await grantsAt(width)
+      const rows = [...host.querySelectorAll('.settings-row-check')]
+      const names = rows.map((row) => row.querySelector('label')?.textContent)
+      expect(names).toEqual([
+        'Can download',
+        'Can stream',
+        'Can stamp',
+        'Manga',
+        LONG_NAME,
+      ])
+      // Manga's help is taller than its name, so the middle of the whole
+      // item is below the name's line.
+      const manga = rows[3] as Element
+      const help = (
+        manga.querySelector('.settings-row-help') as Element
+      ).getBoundingClientRect()
+      expect(help.height).toBeGreaterThan(2 * linesOf(manga)[0].height)
+      for (const [i, row] of rows.entries()) {
+        const first = linesOf(row)[0]
+        const tick = (
+          row.querySelector('input[type="checkbox"]') as Element
+        ).getBoundingClientRect()
+        const centre = tick.top + tick.height / 2
+        expect
+          .soft([centre >= first.top, centre <= first.bottom], `${names[i]}`)
+          .toEqual([true, true])
+      }
+    },
+  )
+
+  it('keeps the gap from a name to its first directory under a coarse pointer, one line or two', async () => {
+    onTestFinished(coarseRulesOn())
+    const host = await grantsAt(390)
+    const rows = [...host.querySelectorAll('.grant-list .settings-row-check')]
+    const lines = rows.map((row) => linesOf(row))
+    const tops = (rects: DOMRect[]) => new Set(rects.map((r) => r.top)).size
+    expect(lines.map(tops)).toEqual([1, 2])
+    const gaps = rows.map((row, i) => {
+      const path = (
+        row.querySelector('.grant-dirs code') as Element
+      ).getBoundingClientRect()
+      const last = lines[i].at(-1) as DOMRect
+      return path.top - last.bottom
+    })
+    expect(Math.abs(gaps[0] - gaps[1]), `gaps ${gaps}`).toBeLessThanOrEqual(1)
+    // The band a finger aims along is kept.
+    for (const row of rows) {
+      const label = row.querySelector('label.settings-row-label') as Element
+      expect(label.getBoundingClientRect().height).toBeGreaterThanOrEqual(44)
+    }
+  })
+})
+
+// --- colours as drawn --------------------------------------------------------
+
+/** `el` as drawn: the pixels of its screenshot, read back through a canvas. */
+const drawn = async (el: Element) => {
+  const png = await page.screenshot({ element: el, save: false })
+  const image = new Image()
+  image.src = `data:image/png;base64,${png}`
+  await image.decode()
+  const canvas = document.createElement('canvas')
+  canvas.width = image.naturalWidth
+  canvas.height = image.naturalHeight
+  const context = canvas.getContext('2d')
+  if (context === null) throw new Error('no canvas to read the pixels from')
+  context.drawImage(image, 0, 0)
+  return context.getImageData(0, 0, canvas.width, canvas.height)
+}
+const pixelAt = (image: ImageData, x: number, y: number): Channels => {
+  const at = (y * image.width + x) * 4
+  const [r, g, b] = image.data.slice(at, at + 3)
+  return { r, g, b, a: 1 }
+}
+/** How far apart two colours are: their channels' differences, summed. */
+const apart = (one: Channels, other: Channels) =>
+  Math.abs(one.r - other.r) +
+  Math.abs(one.g - other.g) +
+  Math.abs(one.b - other.b)
+
+/**
+ * An unchecked checkbox's and radio's edge is the edge of a control, at 3:1
+ * or more against the ground it is drawn on (WCAG 1.4.11), in Ink as in
+ * Paper; a checked one is filled, or dotted, with the accent. Read from the
+ * computed style, the edge as a drawn border: a box with no border of its
+ * own is the browser's, whose edge no style reaches.
+ */
+describe('a checkbox and a radio', () => {
+  /** The background of the nearest box under `el` that paints one. */
+  const groundOf = (el: Element) => {
+    for (let at = el.parentElement; at; at = at.parentElement) {
+      const ground = channels(getComputedStyle(at).backgroundColor)
+      if (ground.a === 1) return ground
+    }
+    throw new Error('nothing under it paints a ground')
+  }
+
+  for (const [theme, name] of [
+    ['ink', 'Ink'],
+    ['paper', 'Paper'],
+  ] as const) {
+    it(`draws an unchecked one’s edge at 3:1 or more against its ground, and a checked one in the accent, in ${name}`, async () => {
+      document.documentElement.setAttribute('data-theme', theme)
+      onTestFinished(() =>
+        document.documentElement.removeAttribute('data-theme'),
+      )
+      await sized(1280, 900)
+      vi.mocked(librariesApi.listLibraries).mockResolvedValue({
+        libraries: [
+          { id: 1, name: 'Manga', works: 0, books: 0, dirs: [root()] },
+          {
+            id: 2,
+            name: 'Comics',
+            works: 0,
+            books: 0,
+            dirs: [root({ id: 4, path: '/srv/comics' })],
+          },
+        ],
+      })
+      const sam = user({
+        id: 2,
+        name: 'sam',
+        role: 'user',
+        every_library: false,
+        libraries: [{ id: 1, name: 'Manga' }],
+      })
+      vi.mocked(usersApi.listUsers).mockResolvedValue({ users: [user(), sam] })
+      const host = await opened(`${USERS}/sam`)
+      const all = [
+        ...host.querySelectorAll<HTMLInputElement>(
+          'input[type="checkbox"], input[type="radio"]',
+        ),
+      ]
+      const kinds = (checked: boolean) =>
+        all.filter((el) => el.checked === checked).map((el) => el.type)
+      // Can stamp and Comics; Every library. Can download, Can stream and
+      // Manga; Only these.
+      expect(kinds(false)).toEqual(['checkbox', 'radio', 'checkbox'])
+      expect(kinds(true)).toEqual(['checkbox', 'checkbox', 'radio', 'checkbox'])
+      const accent = tokenColour(host, '--accent')
+      for (const box of all) {
+        const style = getComputedStyle(box)
+        const what = `${box.name || box.value} ${box.checked ? 'checked' : 'unchecked'}`
+        expect
+          .soft([style.borderTopStyle, style.borderTopWidth], what)
+          .toEqual(['solid', '1px'])
+        if (!box.checked) {
+          const edge = channels(style.borderTopColor)
+          expect
+            .soft(contrast(edge, groundOf(box)), what)
+            .toBeGreaterThanOrEqual(3)
+        } else if (box.type === 'checkbox') {
+          expect.soft(style.backgroundColor, what).toBe(accent)
+          // The tick, in the colour drawn on the accent.
+          const tick = getComputedStyle(box, '::before')
+          expect
+            .soft(tick.backgroundColor, what)
+            .toBe(tokenColour(host, '--on-accent'))
+        } else {
+          expect.soft(style.borderTopColor, what).toBe(accent)
+          expect
+            .soft(getComputedStyle(box, '::before').backgroundColor, what)
+            .toBe(accent)
+        }
+      }
+    })
+  }
+
+  it('draws a held one with a dashed edge, and a held checked one on the page’s ground with its tick or dot in the accent, unlike a live one', async () => {
+    const host = await act(async () =>
+      mount(
+        <div className="library">
+          <input type="checkbox" disabled />
+          <input type="radio" disabled />
+          <input type="checkbox" />
+          <input type="checkbox" defaultChecked disabled />
+          <input type="checkbox" defaultChecked />
+          <input type="radio" defaultChecked disabled />
+          <input type="radio" defaultChecked />
+        </div>,
+      ),
+    )
+    const [box, radio, live, heldBox, liveBox, heldRadio, liveRadio] = [
+      ...host.querySelectorAll('input'),
+    ]
+    for (const held of [box, radio, heldBox, heldRadio]) {
+      expect.soft(getComputedStyle(held).borderTopStyle).toBe('dashed')
+    }
+    for (const one of [live, liveBox, liveRadio]) {
+      expect.soft(getComputedStyle(one).borderTopStyle).toBe('solid')
+    }
+    const accent = tokenColour(host, '--accent')
+    for (const [held, one] of [
+      [heldBox, liveBox],
+      [heldRadio, liveRadio],
+    ] as const) {
+      const style = getComputedStyle(held)
+      expect
+        .soft(style.backgroundColor, held.type)
+        .toBe(tokenColour(host, '--bg'))
+      expect.soft(style.borderTopColor, held.type).toBe(accent)
+      expect
+        .soft(getComputedStyle(held, '::before').backgroundColor, held.type)
+        .toBe(accent)
+      // The fills differ. For the checkbox the fill is the cue: a dashed
+      // edge in the accent on a box filled with the accent is not seen. For
+      // the radio the dashed ring is: its dot leaves the ring in sight, and
+      // its held ground and its live one are too near to be told apart.
+      expect
+        .soft(style.backgroundColor, held.type)
+        .not.toBe(getComputedStyle(one).backgroundColor)
+    }
+  })
+
+  // Forced colours are set over the DevTools session, as a system set to
+  // them has the browser draw, and cleared after: the setting is the page's,
+  // not this frame's, and would outlive the file.
+  it('leaves it to the browser under forced colours, with no tick or dot of its own drawn over the browser’s', async () => {
+    const force = (value: string) =>
+      cdp().send('Emulation.setEmulatedMedia', {
+        features: [{ name: 'forced-colors', value }],
+      })
+    onTestFinished(async () => {
+      await force('')
+    })
+    const host = await act(async () =>
+      mount(
+        // Four times over, so that a screenshot has pixels enough to count.
+        <div className="library" style={{ zoom: 4 }}>
+          <input type="checkbox" />
+          <input type="checkbox" defaultChecked />
+          <input type="radio" />
+          <input type="radio" defaultChecked />
+        </div>,
+      ),
+    )
+    const [box, checkedBox, radio, checkedRadio] = [
+      ...host.querySelectorAll('input'),
+    ]
+    expect(getComputedStyle(checkedBox).appearance).toBe('none')
+    await force('active')
+    // THE STATE THIS TEST NAMES: this page is told the system forces colours.
+    expect(matchMedia('(forced-colors: active)').matches).toBe(true)
+    const probe = document.createElement('div')
+    probe.style.color = 'Canvas'
+    host.append(probe)
+    const ground = channels(getComputedStyle(probe).color)
+    probe.remove()
+    /** The share of `el`'s box drawn in anything but the ground. */
+    const inked = async (el: Element) => {
+      const image = await drawn(el)
+      let count = 0
+      for (let y = 0; y < image.height; y++) {
+        for (let x = 0; x < image.width; x++) {
+          if (apart(pixelAt(image, x, y), ground) > 192) count++
+        }
+      }
+      return count / (image.width * image.height)
+    }
+    for (const [off, on] of [
+      [box, checkedBox],
+      [radio, checkedRadio],
+    ] as const) {
+      for (const one of [off, on]) {
+        expect.soft(getComputedStyle(one).appearance, one.type).toBe('auto')
+      }
+      expect
+        .soft(getComputedStyle(on, '::before').content, on.type)
+        .toBe('none')
+      // The browser's own control shows its state: checked, its fill or its
+      // dot inks a share of the box that unchecked is the ground.
+      const [unchecked, checked] = [await inked(off), await inked(on)]
+      expect
+        .soft(
+          checked - unchecked,
+          `${on.type}: ${checked} against ${unchecked}`,
+        )
+        .toBeGreaterThan(0.15)
+    }
+  })
+
+  /**
+   * The browser's own radio is dotted three fifths of it across, at any
+   * size, so the dot stands off the ring by the same share of the box at the
+   * coarse 24 px as at the fine 13 px. Measured along each one's middle row:
+   * the run of the dot's colour through its middle, as a share of the box,
+   * the run ending where a pixel is nearer the gap's colour than the dot's.
+   */
+  for (const pointer of ['fine', 'coarse'] as const) {
+    it(`dots a checked radio across the share of it the browser dots its own, with a ${pointer} pointer`, async () => {
+      if (pointer === 'coarse') onTestFinished(coarseRulesOn())
+      const host = await act(async () =>
+        mount(
+          // Eight times over, so that a pixel of the screenshot is a small
+          // share of the box. The browser's own is outside `.library`, which
+          // the drawing is scoped to, and inside `.config`, which the coarse
+          // size is.
+          <div className="config" style={{ zoom: 8 }}>
+            <div className="library">
+              <input type="radio" defaultChecked />
+            </div>
+            <input type="radio" defaultChecked />
+          </div>,
+        ),
+      )
+      const [ours, browsers] = [...host.querySelectorAll('input')]
+      const size = pointer === 'coarse' ? '24px' : '13px'
+      expect(getComputedStyle(ours).inlineSize).toBe(size)
+      expect(getComputedStyle(browsers).inlineSize).toBe(size)
+      expect(getComputedStyle(browsers).appearance).toBe('auto')
+      const dotted = async (radio: Element) => {
+        const image = await drawn(radio)
+        const y = Math.floor(image.height / 2)
+        const middle = Math.floor(image.width / 2)
+        const dot = pixelAt(image, middle, y)
+        const row = Array.from({ length: image.width }, (_, x) =>
+          apart(pixelAt(image, x, y), dot),
+        )
+        // The gap is the colour on the row farthest from the dot's.
+        const half = Math.max(...row) / 2
+        let left = middle
+        while (left > 0 && row[left - 1] < half) left--
+        let right = middle
+        while (right < image.width - 1 && row[right + 1] < half) right++
+        return (right - left + 1) / image.width
+      }
+      const [share, theirs] = [await dotted(ours), await dotted(browsers)]
+      expect(
+        Math.abs(share - theirs),
+        `${share} of it across, the browser's ${theirs}`,
+      ).toBeLessThan(0.03)
+    })
+  }
+})
+
+describe('a library’s rename box', () => {
+  // Forced colours over the DevTools session, cleared after, as `a checkbox
+  // and a radio` sets them.
+  it('marks its focus under forced colours, where the line under it is drawn in one colour whether it has focus or not', async () => {
+    const force = (value: string) =>
+      cdp().send('Emulation.setEmulatedMedia', {
+        features: [{ name: 'forced-colors', value }],
+      })
+    onTestFinished(async () => {
+      await force('')
+    })
+    vi.mocked(librariesApi.listLibraries).mockResolvedValue(holding(root()))
+    const host = await opened(LIBRARY)
+    await press(host.querySelector('button[name="rename-library"]') as Element)
+    const box = host.querySelector('.page-title-box') as HTMLInputElement
+    const save = host.querySelector('button[name="save-rename"]') as Element
+    await force('active')
+    // THE STATE THIS TEST NAMES: this page is told the system forces colours.
+    expect(matchMedia('(forced-colors: active)').matches).toBe(true)
+    const probe = document.createElement('div')
+    probe.style.color = 'Canvas'
+    host.append(probe)
+    const ground = channels(getComputedStyle(probe).color)
+    probe.remove()
+    /**
+     * The share of the box's last two columns drawn in anything but the
+     * ground, above the line under it: past the end of the name, where only
+     * a mark of focus draws.
+     */
+    const markedAtItsEnd = async () => {
+      const image = await drawn(box)
+      const scale = image.width / box.getBoundingClientRect().width
+      const columns = Math.round(2 * scale)
+      const rows = image.height - Math.round(2 * scale)
+      let count = 0
+      for (let y = 0; y < rows; y++) {
+        for (let x = image.width - columns; x < image.width; x++) {
+          if (apart(pixelAt(image, x, y), ground) > 192) count++
+        }
+      }
+      return count / (rows * columns)
+    }
+    act(() => (save as HTMLElement).focus())
+    expect(await markedAtItsEnd()).toBeLessThan(0.1)
+    act(() => box.focus())
+    expect(document.activeElement).toBe(box)
+    expect(await markedAtItsEnd()).toBeGreaterThan(0.9)
+  })
+})
+
+/**
+ * Every `<summary>` the settings pages draw, each pressed with a real mouse:
+ * the cursor over it and its marker, closed and open
+ * (`testing/disclosure.ts`). The Rules page's is held in
+ * `RuleEditor.browser.test.tsx`, which can save a rule.
+ */
+describe('the settings pages’ disclosures', () => {
+  const moved: librariesApi.Moved = {
+    library_id: 2,
+    library: 'Comics',
+    works_kept: 1,
+    works_joined: 0,
+    works_split: 0,
+    series_joined: 0,
+    positions: 0,
+    notes: 0,
+    alignments_dropped: 0,
+    library_removed: null,
+    grants_removed: 0,
+    left_with_no_library: [],
+  }
+
+  /** The directory's page, Move… opened, Comics chosen and its rehearsal asked for. */
+  async function moveRehearsed() {
+    vi.mocked(librariesApi.listLibraries).mockResolvedValue({
+      libraries: [
+        ...holding(root()).libraries,
+        {
+          id: 2,
+          name: 'Comics',
+          works: 0,
+          books: 0,
+          dirs: [root({ id: 4, path: '/srv/comics' })],
+        },
+      ],
+    })
+    const host = await opened(DIR)
+    await press(
+      [...host.querySelectorAll('.dir-page button')].find(
+        (b) => b.textContent === 'Move…',
+      ) as Element,
+    )
+    await act(async () => {
+      await userEvent.selectOptions(
+        host.querySelector('select[name="move-target"]') as HTMLElement,
+        '2',
+      )
+    })
+    await press(host.querySelector('button[name="rehearse"]') as Element)
+    return host
+  }
+
+  const summaryOf = (host: HTMLElement, details: string) =>
+    host.querySelector(`${details} > summary`) as HTMLElement
+
+  it('draws How backups work as something to press, closed and open', async () => {
+    await sized(1280, 800)
+    const host = await opened('/config/backup')
+    await expectDisclosure(
+      summaryOf(host, '.settings-details'),
+      'How backups work',
+    )
+  })
+
+  it('draws what re-deriving without a directory would find as something to press, closed and open', async () => {
+    await sized(1280, 800)
+    vi.mocked(librariesApi.listLibraries).mockResolvedValue(holding(root()))
+    vi.mocked(config.removalCost).mockResolvedValue({
+      removed: { works: 1, positions: 0, notes: 0, left_with_no_library: [] },
+      derive: derived(),
+      dry_run: true,
+    })
+    const host = await opened(DIR)
+    await press(
+      [...host.querySelectorAll('.dir-page button')].find(
+        (b) => b.textContent === 'Remove…',
+      ) as Element,
+    )
+    await expectDisclosure(
+      summaryOf(host, '.remove-root .removal-derive'),
+      'the directory removal’s derive',
+    )
+  })
+
+  it('draws what re-deriving without a library would find as something to press, closed and open', async () => {
+    await sized(1280, 800)
+    vi.mocked(librariesApi.listLibraries).mockResolvedValue(holding(root()))
+    vi.mocked(librariesApi.libraryRemovalCost).mockResolvedValue({
+      removed: { works: 1, positions: 0, notes: 0, left_with_no_library: [] },
+      derive: derived(),
+      dry_run: true,
+    })
+    const host = await opened(LIBRARY)
+    await press(host.querySelector('button[name="remove-library"]') as Element)
+    await expectDisclosure(
+      summaryOf(host, '.remove-library .removal-derive'),
+      'the library removal’s derive',
+    )
+  })
+
+  it('draws what deriving after a move would find as something to press, closed and open', async () => {
+    await sized(1280, 800)
+    vi.mocked(librariesApi.moveCost).mockResolvedValue({
+      moved,
+      derive: derived(),
+      dry_run: true,
+    })
+    const host = await moveRehearsed()
+    await expectDisclosure(
+      summaryOf(host, '.move-root .removal-derive'),
+      'the move’s derive',
+    )
+  })
+
+  it('draws the volumes in a move’s way as something to press, closed and open', async () => {
+    await sized(1280, 800)
+    vi.mocked(librariesApi.moveCost).mockRejectedValue(
+      new Error(
+        '/api/library/roots/3/move?dry_run=true: 409 {"error":"Comics already holds volumes of /srv/manga","volumes":["A v01"]}',
+      ),
+    )
+    const host = await moveRehearsed()
+    await expectDisclosure(
+      summaryOf(host, '.move-root .move-volumes'),
+      'the volumes in the move’s way',
+    )
+  })
+})
+
+describe('a removal’s confirm, its button and Cancel', () => {
+  const COST = {
+    removed: { works: 1896, positions: 0, notes: 0, left_with_no_library: [] },
+    derive: derived(),
+    dry_run: true as const,
+  }
+
+  it.each([1280, 390])('lays out a library’s at %i', async (width) => {
+    await sized(width, 844)
+    vi.mocked(librariesApi.listLibraries).mockResolvedValue({
+      libraries: [
+        {
+          id: 1,
+          name: 'Volumes',
+          works: 1896,
+          books: 0,
+          dirs: [root(), root({ id: 4, path: '/srv/volumes' })],
+        },
+      ],
+    })
+    vi.mocked(librariesApi.libraryRemovalCost).mockResolvedValue(COST)
+    const host = await opened(`${TABLE}/Volumes`)
+    await press(host.querySelector('button[name="remove-library"]') as Element)
+    await document.fonts.ready
+    const box = host.querySelector('.remove-library') as HTMLElement
+    expect(box.querySelector('.confirm')?.textContent).toBe('Remove Volumes')
+    expectRemovalFoot(box, 1)
+  })
+
+  // The path with nowhere to break is too wide at 1280 for Cancel beside
+  // the confirm too; at 390 it is `keeps the removal’s confirm button
+  // inside the page for the same path`'s.
+  it.each([
+    [1280, '/srv/manga', 1],
+    [390, '/srv/manga', 1],
+    [1280, UNBROKEN_ROOT.path, 2],
+  ] as const)(
+    'lays out a directory’s at %i, its path %s, on %i line(s)',
+    async (width, path, lines) => {
+      await sized(width, 844)
+      vi.mocked(librariesApi.listLibraries).mockResolvedValue(
+        holding(root({ path })),
+      )
+      vi.mocked(config.removalCost).mockResolvedValue(COST)
+      const host = await opened(DIR)
+      await press(
+        buttonSaying(host.querySelector('.dir-page') as Element, 'Remove…'),
+      )
+      await document.fonts.ready
+      const box = host.querySelector('.remove-root') as HTMLElement
+      expect(box.querySelector('.confirm')?.textContent).toBe(`Remove ${path}`)
+      expectRemovalFoot(box, lines)
+    },
+  )
+
+  it.each([1280, 390])('lays out an account’s at %i', async (width) => {
+    await sized(width, 844)
+    vi.mocked(usersApi.listUsers).mockResolvedValue({
+      users: [user(), user({ id: 2, name: 'sam', role: 'user' })],
+    })
+    vi.mocked(usersApi.removalCost).mockResolvedValue({
+      removed: {
+        name: 'sam',
+        positions: 0,
+        notes: 0,
+        sessions: 0,
+        keys: 0,
+        grants: 0,
+      },
+      dry_run: true,
+    })
+    const host = await opened(`${USERS}/sam`)
+    await press(host.querySelector('button[name="remove"]') as Element)
+    await document.fonts.ready
+    const box = host.querySelector('.remove-user') as HTMLElement
+    expect(box.querySelector('.confirm')?.textContent).toBe('Remove sam')
+    expectRemovalFoot(box, 1)
+  })
 })

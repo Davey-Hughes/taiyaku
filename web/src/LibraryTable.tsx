@@ -11,7 +11,10 @@
 import { type ReactNode, useEffect, useRef } from 'react'
 import { Link } from 'react-router'
 import { lastScan } from './config'
+import { libraryPath, NEW_LIBRARY } from './configAddress'
 import type { Library } from './libraries'
+import { ROW_CELLS, useLineEnds } from './lineEnds'
+import { PageHeader, Section } from './settingsLayout'
 
 export interface LibraryTableProps {
   libraries: Library[] | undefined
@@ -46,74 +49,83 @@ export function LibraryTable({
   arrived = false,
 }: LibraryTableProps) {
   const heading = useRef<HTMLHeadingElement>(null)
+  /** Which cells end a line where a row is drawn in two. */
+  const cellEnds = useLineEnds<HTMLTableElement>(ROW_CELLS)
   useEffect(() => {
     if (arrived) heading.current?.focus()
   }, [arrived])
   return (
     <div className="library-table">
-      <h2 ref={heading} tabIndex={-1}>
-        Libraries
-      </h2>
+      <PageHeader
+        title="Libraries"
+        description="Each library is a name and the directories its files are in."
+        titleRef={heading}
+        actions={
+          <span className="new-item">
+            <Link to={NEW_LIBRARY}>New library</Link>
+          </span>
+        }
+      />
       {notices}
-      <p className="new-item">
-        <Link to="/config/libraries/new">New library</Link>
-      </p>
-      {libraries !== undefined &&
-        (libraries.length === 0 ? (
-          <p className="empty">
-            No libraries yet. A library is a name and the directory its files
-            are in; more directories can be added once it is made.
-          </p>
-        ) : (
-          <table className="config-table">
-            <thead>
-              <tr>
-                <th scope="col">Name</th>
-                <th scope="col">Directories</th>
-                <th scope="col">Works</th>
-                <th scope="col">Last scan</th>
-              </tr>
-            </thead>
-            <tbody>
-              {libraries.map((library) => {
-                const latest = latestScanned(library)
-                return (
-                  // By id: a library's id is never given to a later library.
-                  <tr key={library.id}>
-                    <td className="lead">
-                      <Link
-                        className="row-link"
-                        to={`/config/libraries/${library.id}`}
-                      >
-                        {library.name}
-                      </Link>
-                    </td>
-                    <td>
-                      {library.dirs.length}
-                      <span className="cell-unit">
-                        {' '}
-                        {library.dirs.length === 1
-                          ? 'directory'
-                          : 'directories'}
-                      </span>
-                    </td>
-                    <td>
-                      {library.works}
-                      <span className="cell-unit">
-                        {' '}
-                        {library.works === 1 ? 'work' : 'works'}
-                      </span>
-                    </td>
-                    <td>
-                      <span className="cell-label">Last scan: </span>
-                      {latest === undefined ? 'Never' : lastScan(latest)}
-                    </td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
-        ))}
+      {libraries !== undefined && (
+        <Section>
+          {libraries.length === 0 ? (
+            <p className="empty">
+              No libraries yet. A library is made with one directory, and more
+              can be added on its page.
+            </p>
+          ) : (
+            <table ref={cellEnds} className="config-table">
+              <thead>
+                <tr>
+                  <th scope="col">Name</th>
+                  <th scope="col">Directories</th>
+                  <th scope="col">Works</th>
+                  <th scope="col">Last scan</th>
+                </tr>
+              </thead>
+              <tbody>
+                {libraries.map((library) => {
+                  const latest = latestScanned(library)
+                  return (
+                    // By id: a library's id is never given to a later library.
+                    <tr key={library.id}>
+                      <td className="lead">
+                        <Link
+                          className="row-link"
+                          to={libraryPath(library.name)}
+                        >
+                          {library.name}
+                        </Link>
+                      </td>
+                      <td>
+                        {library.dirs.length}
+                        <span className="cell-unit">
+                          {' '}
+                          {library.dirs.length === 1
+                            ? 'directory'
+                            : 'directories'}
+                        </span>
+                      </td>
+                      <td>
+                        {library.works}
+                        <span className="cell-unit">
+                          {' '}
+                          {library.works === 1 ? 'work' : 'works'}
+                        </span>
+                      </td>
+                      <td>
+                        <span className="cell-label">Last scan: </span>
+                        {latest === undefined ? 'Never' : lastScan(latest)}
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          )}
+        </Section>
+      )}
     </div>
   )
 }

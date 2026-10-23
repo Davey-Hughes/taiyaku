@@ -4,7 +4,7 @@ import { playwright } from '@vitest/browser-playwright'
 // Vitest's extension to the Vite config, and `vite`'s own type does not know
 // it — `tsc -b` typechecks this file, so the wrong import is a build failure
 // rather than a silently ignored block.
-import { defineConfig } from 'vitest/config'
+import { defaultExclude, defineConfig } from 'vitest/config'
 import react from '@vitejs/plugin-react'
 import { stripWoff } from './src/stripWoff.ts'
 
@@ -26,6 +26,10 @@ const wasmPkgDir = fileURLToPath(new URL('../crates/taiyaku-wasm/pkg', import.me
 // project refuses the import ("Denied ID").
 const licenceFile = fileURLToPath(new URL('../LICENSE', import.meta.url))
 const licenceAllow = [licenceFile, `${licenceFile}?raw`]
+
+// The browser tests that need a scrollbar to take its width: see the
+// `browser` project's `instances`.
+const SHOWN_SCROLLBARS = 'src/**/*.scrollbars.browser.test.tsx'
 
 // The reader is served from Vite in development and talks to `taiyaku serve`
 // on another port. Proxying rather than enabling CORS on the server: CORS
@@ -113,7 +117,29 @@ export default defineConfig({
             // Vitest 4.1 and the string form is refused outright.
             provider: playwright(),
             headless: true,
-            instances: [{ browser: 'chromium' }],
+            // **Two launches of one Chromium.** Playwright starts headless
+            // Chromium with `--hide-scrollbars`, so a scrollbar there takes
+            // no width, and a layout that a scrollbar's width decides cannot
+            // be seen. The files matching `SHOWN_SCROLLBARS` run only in the
+            // second launch, which leaves that flag out; every other file
+            // runs only in the first. `--project browser` runs both, so
+            // `test:browser` and `scripts/check-all.sh` do. An instance's
+            // `exclude` replaces the project's rather than adding to it, so
+            // Vitest's own defaults are named again.
+            instances: [
+              {
+                browser: 'chromium',
+                exclude: [...defaultExclude, SHOWN_SCROLLBARS],
+              },
+              {
+                browser: 'chromium',
+                name: 'browser (chromium, scrollbars shown)',
+                include: [SHOWN_SCROLLBARS],
+                provider: playwright({
+                  launchOptions: { ignoreDefaultArgs: ['--hide-scrollbars'] },
+                }),
+              },
+            ],
           },
         },
       },

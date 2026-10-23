@@ -5,8 +5,17 @@ import * as api from './libraries'
 import { MoveRoot } from './MoveRoot'
 import { deferred, flush } from './testing/async'
 import { emptyDerive } from './testing/derive'
+import './testing/dialog'
+import { holdOf } from './testing/held'
 import { press, typeInto } from './testing/input'
 import { mount, rerender } from './testing/mount'
+import { expectRowsWired, row } from './testing/settingsRows'
+import {
+  holdTheClock,
+  pass,
+  WAIT_DRAWN_AFTER_MS,
+  watchDrawn,
+} from './testing/wait'
 
 vi.mock('./libraries', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./libraries')>()),
@@ -94,18 +103,106 @@ beforeEach(() => {
 describe('MoveRoot', () => {
   it('offers every other library and a new one, and moves nothing unasked', () => {
     const { host } = shown()
-    expect(
-      host.querySelector('[role="group"]')?.getAttribute('aria-label'),
-    ).toBe('Move the directory at /media/Manga/Chapters')
+    const dialog = host.querySelector('dialog') as HTMLDialogElement
+    expect(dialog.open).toBe(true)
+    const title = document.getElementById(
+      dialog.getAttribute('aria-labelledby') ?? '',
+    )
+    expect(title?.tagName).toBe('H2')
+    expect(title?.textContent).toBe('Move /media/Manga/Chapters')
     expect([...target(host).options].map((o) => o.textContent)).toEqual([
       'Choose a library…',
       'Manga',
       'Comics',
       'A new library…',
     ])
-    expect(see(host).disabled).toBe(true)
+    expect(holdOf(see(host))).toBe('disabled')
     expect(confirm(host)).toBeNull()
     expect(api.moveCost).not.toHaveBeenCalled()
+  })
+
+  it('draws Move to, and Its name once a new library is chosen, as rows of one box wired to their labels — O175', async () => {
+    const { host } = shown()
+    const dialog = host.querySelector('dialog') as HTMLDialogElement
+    const box = dialog.querySelector(':scope > .settings-box') as HTMLElement
+    const labels = () =>
+      [
+        ...box.querySelectorAll(
+          ':scope > .settings-row > .settings-row-text > .settings-row-label',
+        ),
+      ].map((label) => label.textContent)
+    expect(labels()).toEqual(['Move to'])
+    expect(row(box, 'Move to').querySelector('select')).toBe(target(host))
+    expectRowsWired(dialog)
+
+    await choose(host, 'new')
+    expect(labels()).toEqual(['Move to', 'Its name'])
+    const name = row(box, 'Its name').querySelector(
+      'input[name="new-library"]',
+    ) as HTMLInputElement
+    expect(name).not.toBeNull()
+    expectRowsWired(dialog)
+    // Each name is its label's words as written.
+    expect([
+      target(host).getAttribute('aria-label'),
+      name.getAttribute('aria-label'),
+    ]).toEqual(['Move to', 'Its name'])
+  })
+
+  it('draws See what this would do under the fields, what a rehearsal said after it, and the move once rehearsed and Cancel alone in one row at the box’s foot', async () => {
+    vi.mocked(api.moveCost).mockResolvedValue(
+      answer({ left_with_no_library: ['alice'] }),
+    )
+    const { host } = shown()
+    const box = host.querySelector('dialog > .settings-box') as HTMLElement
+    /**
+     * The box's parts in order, each by what it is: a row by its label, or
+     * by its words where it has none, anything else by its role or class.
+     */
+    const parts = () =>
+      [...box.children].map((part) =>
+        part.classList.contains('settings-row')
+          ? (part.querySelector('.settings-row-label')?.textContent ??
+            part.textContent)
+          : (part.getAttribute('role') ?? part.className),
+      )
+    const foot = () =>
+      [...box.querySelectorAll(':scope > .settings-actions > button')].map(
+        (button) => button.textContent,
+      )
+    expect(parts()).toEqual([
+      'Move to',
+      'See what this would do',
+      'settings-actions',
+    ])
+    expect(foot()).toEqual(['Cancel'])
+
+    await choose(host, '7')
+    await press(see(host))
+    expect(foot()).toEqual(['Move', 'Cancel'])
+    expect(parts()).toEqual([
+      'Move to',
+      'See what this would do',
+      'move-counts',
+      'left-with-no-library',
+      'removal-derive',
+      'settings-actions',
+    ])
+
+    vi.mocked(api.moveCost).mockRejectedValue(
+      new Error(
+        '/api/library/roots/3/move?dry_run=true: 409 {"error":"x","volumes":["A v01"]}',
+      ),
+    )
+    await press(see(host))
+    expect(foot()).toEqual(['Cancel'])
+    expect(parts()).toEqual([
+      'Move to',
+      'See what this would do',
+      'alert',
+      'move-volumes',
+      'settings-actions',
+    ])
   })
 
   it('says what the move would do before it offers to make it', async () => {
@@ -125,9 +222,8 @@ describe('MoveRoot', () => {
     expect(said).toContain('2 series already in Manga gain volumes')
     expect(said).not.toContain('alignment')
     expect(said).not.toContain('is removed')
-    expect(confirm(host)?.textContent).toBe(
-      'Move /media/Manga/Chapters to Manga',
-    )
+    expect(said).toContain('Moving this directory from Chapters to Manga: ')
+    expect(confirm(host)?.textContent).toBe('Move')
   })
 
   it('says what is dropped and what goes with the directory’s last library', async () => {
@@ -177,10 +273,8 @@ describe('MoveRoot', () => {
     expect(
       host.querySelector('.move-counts + .left-with-no-library'),
     ).not.toBeNull()
-    expect(confirm(host)?.textContent).toBe(
-      'Move /media/Manga/Chapters to Manga',
-    )
-    expect(confirm(host)?.disabled).toBe(false)
+    expect(confirm(host)?.textContent).toBe('Move')
+    expect(holdOf(confirm(host) as Element)).toBe('free')
   })
 
   it('names nobody where no account is left with no library', async () => {
@@ -286,16 +380,43 @@ describe('MoveRoot', () => {
     )
     const { host } = shown()
     await choose(host, 'new')
-    expect(see(host).disabled).toBe(true)
+    expect(holdOf(see(host))).toBe('disabled')
     await typeInto(
       host.querySelector('input[name="new-library"]') as HTMLInputElement,
       'Extras',
     )
     await press(see(host))
     expect(api.moveCost).toHaveBeenCalledWith(3, { new_library: 'Extras' })
-    expect(confirm(host)?.textContent).toBe(
-      'Move /media/Manga/Chapters to Extras',
+    expect(host.querySelector('.move-counts')?.textContent).toContain(
+      'Moving this directory from Chapters to Extras: ',
     )
+    expect(confirm(host)?.textContent).toBe('Move')
+  })
+
+  it('draws, under the fields, why a new library cannot be called . or ..', async () => {
+    // The server refuses both names, since no address can hold either; the
+    // dialog sends the name and draws the server's sentence.
+    const why = 'An address cannot hold “.” or “..” as a name.'
+    vi.mocked(api.moveCost).mockRejectedValue(
+      new Error(
+        `/api/library/roots/3/move?dry_run=true: 400 ${JSON.stringify({ error: why })}`,
+      ),
+    )
+    const { host } = shown()
+    await choose(host, 'new')
+    await typeInto(
+      host.querySelector('input[name="new-library"]') as HTMLInputElement,
+      '.',
+    )
+    await press(see(host))
+    expect(api.moveCost).toHaveBeenCalledWith(3, { new_library: '.' })
+    expect(
+      [...host.querySelectorAll('[role="alert"]')].map((a) => [
+        a.previousElementSibling?.matches('.move-rehearse'),
+        a.textContent,
+      ]),
+    ).toEqual([[true, why]])
+    expect(confirm(host)).toBeNull()
   })
 
   it("draws a refusal's sentence and its volumes, and offers no confirm", async () => {
@@ -329,14 +450,13 @@ describe('MoveRoot', () => {
       answer({ library: 'Comics', library_id: 8 }),
     )
     await press(see(host))
-    expect(confirm(host)?.textContent).toBe(
-      'Move /media/Manga/Chapters to Comics',
-    )
+    const drawn = () => host.querySelector('.move-counts')?.textContent ?? ''
+    expect(drawn()).toContain('Moving this directory from Chapters to Comics: ')
+    expect(confirm(host)?.textContent).toBe('Move')
 
     await flush(() => slow.resolve(answer()))
-    expect(confirm(host)?.textContent).toBe(
-      'Move /media/Manga/Chapters to Comics',
-    )
+    expect(drawn()).toContain('Moving this directory from Chapters to Comics: ')
+    expect(confirm(host)?.textContent).toBe('Move')
   })
 
   it('drops the rehearsal when the move itself is refused, and keeps the refusal', async () => {
@@ -356,7 +476,7 @@ describe('MoveRoot', () => {
     expect(confirm(host)).toBeNull()
     expect(host.querySelector('.move-counts')).toBeNull()
     expect(host.querySelector('.removal-derive')).toBeNull()
-    expect(see(host).disabled).toBe(false)
+    expect(holdOf(see(host))).toBe('free')
   })
 
   it('draws no rehearsal answered after the target changed', async () => {
@@ -447,7 +567,7 @@ describe('MoveRoot', () => {
     expect(target(host).value).toBe('')
     expect(confirm(host)).toBeNull()
     expect(host.querySelector('.move-counts')).toBeNull()
-    expect(see(host).disabled).toBe(true)
+    expect(holdOf(see(host))).toBe('disabled')
   })
 
   it('keeps the dialog and says why when the move itself fails', async () => {
@@ -474,20 +594,187 @@ describe('MoveRoot', () => {
       host.querySelector('input[name="new-library"]') as HTMLInputElement,
       '   ',
     )
-    expect(see(host).disabled).toBe(true)
+    expect(holdOf(see(host))).toBe('disabled')
   })
 
-  it('holds the rehearsal button, and says why, while the answer is awaited', async () => {
+  it('holds the rehearsal button, and says why, once the answer has been awaited a while', async () => {
+    holdTheClock()
     const slow = deferred<api.MoveAnswer>()
     vi.mocked(api.moveCost).mockReturnValue(slow.promise)
     const { host } = shown()
     await choose(host, '7')
     await press(see(host))
-    expect(see(host).disabled).toBe(true)
-    expect(see(host).textContent).toBe('Working out what this would do…')
+    pass(WAIT_DRAWN_AFTER_MS - 1)
+    expect([see(host).textContent, holdOf(see(host))]).toEqual([
+      'See what this would do',
+      'free',
+    ])
+    pass(1)
+    expect([see(host).textContent, holdOf(see(host))]).toEqual([
+      'Working out what this would do…',
+      'held',
+    ])
     await flush(() => slow.resolve(answer()))
-    expect(see(host).disabled).toBe(false)
+    expect(holdOf(see(host))).toBe('free')
     expect(see(host).textContent).toBe('See what this would do')
+  })
+
+  it('never draws the rehearsal waiting, nor its button held, for an answer inside the wait’s delay', async () => {
+    holdTheClock()
+    const quick = deferred<api.MoveAnswer>()
+    vi.mocked(api.moveCost).mockReturnValue(quick.promise)
+    const { host } = shown()
+    await choose(host, '7')
+    const drawn = watchDrawn(
+      () => `${see(host).textContent} ${holdOf(see(host))}`,
+    )
+    await press(see(host))
+    pass(WAIT_DRAWN_AFTER_MS - 1)
+    await flush(() => quick.resolve(answer()))
+    pass(WAIT_DRAWN_AFTER_MS)
+    drawn.stop()
+    expect(confirm(host)).not.toBeNull()
+    expect([...drawn.seen]).toEqual(['See what this would do free'])
+  })
+
+  it('asks for one rehearsal for two presses inside the wait’s delay', async () => {
+    holdTheClock()
+    vi.mocked(api.moveCost).mockReturnValue(new Promise(() => {}))
+    const { host } = shown()
+    await choose(host, '7')
+    await press(see(host))
+    pass(WAIT_DRAWN_AFTER_MS - 1)
+    expect(holdOf(see(host))).toBe('free')
+    await press(see(host))
+    expect(api.moveCost).toHaveBeenCalledTimes(1)
+  })
+
+  describe('while the move is out', () => {
+    /** Rehearsed for a new library, so that every field the move holds is drawn. */
+    async function rehearsed() {
+      const { host, onCancel } = shown()
+      await choose(host, 'new')
+      await typeInto(
+        host.querySelector('input[name="new-library"]') as HTMLInputElement,
+        'Volumes',
+      )
+      await press(see(host))
+      return { host, onCancel }
+    }
+    const cancel = (host: HTMLElement) =>
+      [...host.querySelectorAll('button')].find(
+        (b) => b.textContent === 'Cancel',
+      ) as HTMLButtonElement
+    const nameBox = (host: HTMLElement) =>
+      host.querySelector('input[name="new-library"]') as HTMLInputElement
+    /** Move's words, then how each control the move holds is held. */
+    const state = (host: HTMLElement) => [
+      confirm(host)?.textContent,
+      ...[
+        target(host),
+        nameBox(host),
+        see(host),
+        confirm(host),
+        cancel(host),
+      ].map((el) => (el === null ? undefined : holdOf(el))),
+    ]
+    const idle = ['Move', 'free', 'free', 'free', 'free', 'free']
+
+    it('draws no wait and holds no control drawn for a move refused inside the wait’s delay', async () => {
+      holdTheClock()
+      const sent = deferred<api.MoveAnswer>()
+      vi.mocked(api.moveDir).mockReturnValue(sent.promise)
+      const { host } = await rehearsed()
+      const drawn = watchDrawn(() => JSON.stringify(state(host)))
+      await press(confirm(host) as Element)
+      pass(WAIT_DRAWN_AFTER_MS - 1)
+      await flush(() =>
+        sent.reject(
+          new Error(
+            '/api/library/roots/3/move: 409 {"error":"a scan or a rule save is running; move the directory when it has finished","volumes":[]}',
+          ),
+        ),
+      )
+      pass(WAIT_DRAWN_AFTER_MS)
+      drawn.stop()
+      expect(host.querySelector('[role="alert"]')?.textContent).toContain(
+        'is running',
+      )
+      // The refusal takes the confirm away (`null` once read as JSON); until
+      // then nothing was held.
+      expect([...drawn.seen].map((one) => JSON.parse(one))).toEqual([
+        idle,
+        [null, 'free', 'free', 'free', null, 'free'],
+      ])
+    })
+
+    it('draws Moving… and every control it holds as held from the wait’s delay', async () => {
+      holdTheClock()
+      vi.mocked(api.moveDir).mockReturnValue(new Promise(() => {}))
+      const { host } = await rehearsed()
+      await press(confirm(host) as Element)
+      pass(WAIT_DRAWN_AFTER_MS - 1)
+      expect(state(host)).toEqual(idle)
+      pass(1)
+      expect(state(host)).toEqual([
+        'Moving…',
+        'held',
+        'held',
+        'held',
+        'held',
+        'held',
+      ])
+      expect(nameBox(host).readOnly).toBe(true)
+    })
+
+    it('holds the move, Cancel, the fields and the rehearsal from the send, before any is drawn held', async () => {
+      holdTheClock()
+      vi.mocked(api.moveDir).mockReturnValue(new Promise(() => {}))
+      const { host, onCancel } = await rehearsed()
+      await press(confirm(host) as Element)
+      pass(WAIT_DRAWN_AFTER_MS - 1)
+      expect(state(host)).toEqual(idle)
+
+      await press(confirm(host) as Element)
+      expect(api.moveDir).toHaveBeenCalledTimes(1)
+      await press(cancel(host))
+      expect(onCancel).not.toHaveBeenCalled()
+      await press(see(host))
+      expect(api.moveCost).toHaveBeenCalledTimes(1)
+      await choose(host, '7')
+      expect(target(host).value).toBe('new')
+      await typeInto(nameBox(host), 'Chapters')
+      expect(nameBox(host).value).toBe('Volumes')
+      expect(host.querySelector('.move-counts')).not.toBeNull()
+    })
+
+    it('sends nothing and changes nothing from a control the drawn wait holds', async () => {
+      holdTheClock()
+      vi.mocked(api.moveDir).mockReturnValue(new Promise(() => {}))
+      const { host, onCancel } = await rehearsed()
+      await press(confirm(host) as Element)
+      pass(WAIT_DRAWN_AFTER_MS)
+      expect(state(host)).toEqual([
+        'Moving…',
+        'held',
+        'held',
+        'held',
+        'held',
+        'held',
+      ])
+
+      await press(confirm(host) as Element)
+      expect(api.moveDir).toHaveBeenCalledTimes(1)
+      await press(cancel(host))
+      expect(onCancel).not.toHaveBeenCalled()
+      await press(see(host))
+      expect(api.moveCost).toHaveBeenCalledTimes(1)
+      await choose(host, '7')
+      expect(target(host).value).toBe('new')
+      await typeInto(nameBox(host), 'Chapters')
+      expect(nameBox(host).value).toBe('Volumes')
+      expect(host.querySelector('.move-counts')).not.toBeNull()
+    })
   })
 
   it('draws a list that names one volume twice, once each', async () => {
@@ -535,6 +822,110 @@ describe('MoveRoot', () => {
       await press(confirm(host) as Element)
       await act(async () => rerender(dialog(true, onCancel)))
       expect(onCancel).not.toHaveBeenCalled()
+    })
+  })
+
+  /**
+   * What the browser asks of the dialog arrives as events, and jsdom sends
+   * none of them, so each is dispatched here. What a real Escape does, and
+   * that the page behind is inert, is the browser project's.
+   */
+  describe('as a dialog', () => {
+    const escapeKey = () =>
+      new KeyboardEvent('keydown', {
+        key: 'Escape',
+        bubbles: true,
+        cancelable: true,
+      })
+    /** The browser's request to close `dialog`, as Escape sends it. */
+    const cancelOf = (dialog: HTMLDialogElement) => {
+      const asked = new Event('cancel', { cancelable: true })
+      act(() => {
+        dialog.dispatchEvent(asked)
+      })
+      return asked
+    }
+    /**
+     * Sends the move from `host` and leaves it unanswered, short of the
+     * wait's delay: what holds the dialog is the send, not the drawn wait.
+     */
+    async function midMove(host: HTMLElement) {
+      holdTheClock()
+      vi.mocked(api.moveDir).mockReturnValue(new Promise(() => {}))
+      await choose(host, '7')
+      await press(see(host))
+      await press(confirm(host) as Element)
+      pass(WAIT_DRAWN_AFTER_MS - 1)
+      expect(api.moveDir).toHaveBeenCalledTimes(1)
+      expect(confirm(host)?.textContent).toBe('Move')
+      return host.querySelector('dialog') as HTMLDialogElement
+    }
+
+    it('asks to be closed when the browser asks to close it, and does not let the browser close it under its owner', () => {
+      const { host, onCancel } = shown()
+      const asked = cancelOf(host.querySelector('dialog') as HTMLDialogElement)
+      expect(onCancel).toHaveBeenCalledTimes(1)
+      expect(asked.defaultPrevented).toBe(true)
+    })
+
+    it('refuses the browser’s request to close it, and Escape anywhere in the document, while its move is out', async () => {
+      const { host, onCancel } = shown()
+      const before = escapeKey()
+      document.body.dispatchEvent(before)
+      expect(before.defaultPrevented).toBe(false)
+
+      const dialog = await midMove(host)
+      expect(cancelOf(dialog).defaultPrevented).toBe(true)
+      const during = escapeKey()
+      document.body.dispatchEvent(during)
+      expect(during.defaultPrevented).toBe(true)
+
+      pass(1)
+      expect(confirm(host)?.textContent).toBe('Moving…')
+      expect(cancelOf(dialog).defaultPrevented).toBe(true)
+      const drawn = escapeKey()
+      document.body.dispatchEvent(drawn)
+      expect(drawn.defaultPrevented).toBe(true)
+      expect(onCancel).not.toHaveBeenCalled()
+    })
+
+    it('opens again when it is closed while its move is out', async () => {
+      const { host, onCancel } = shown()
+      const dialog = await midMove(host)
+      act(() => {
+        dialog.open = false
+        dialog.dispatchEvent(new Event('close'))
+      })
+      expect(dialog.open).toBe(true)
+      expect(onCancel).not.toHaveBeenCalled()
+    })
+
+    it('lets Escape through again, and asks to be closed, once its move is refused', async () => {
+      holdTheClock()
+      const sent = deferred<api.MoveAnswer>()
+      vi.mocked(api.moveDir).mockReturnValue(sent.promise)
+      const { host, onCancel } = shown()
+      await choose(host, '7')
+      await press(see(host))
+      await press(confirm(host) as Element)
+      // Drawn mid-move first, so Escape was being refused.
+      pass(WAIT_DRAWN_AFTER_MS)
+      expect(confirm(host)?.textContent).toBe('Moving…')
+      await flush(() =>
+        sent.reject(
+          new Error(
+            '/api/library/roots/3/move: 409 {"error":"a scan or a rule save is running; move the directory when it has finished","volumes":[]}',
+          ),
+        ),
+      )
+      expect(host.querySelector('[role="alert"]')?.textContent).toContain(
+        'is running',
+      )
+      const after = escapeKey()
+      document.body.dispatchEvent(after)
+      expect(after.defaultPrevented).toBe(false)
+      cancelOf(host.querySelector('dialog') as HTMLDialogElement)
+      expect(onCancel).toHaveBeenCalledTimes(1)
     })
   })
 })

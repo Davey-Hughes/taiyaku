@@ -1,16 +1,19 @@
 /// <reference types="@vitest/browser-playwright" />
 import { act } from 'react'
 import { MemoryRouter, Route, Routes } from 'react-router'
-import { describe, expect, it, vi } from 'vitest'
-import { cdp } from 'vitest/browser'
+import { describe, expect, it, onTestFinished, vi } from 'vitest'
+import { cdp, page } from 'vitest/browser'
 import { Account } from './Account'
 import * as api from './api'
+import * as backupApi from './backup'
+import { Config } from './Config'
 import * as config from './config'
 import * as curation from './curation'
+import { GateContext } from './gate'
 import * as librariesApi from './libraries'
 // **Required.** The capitals this file is about are `admin.css`'s, which
-// reaches the app through `index.css`; without it every label is drawn as
-// written and each case's first assertion fails.
+// reaches the app through `index.css`; without it every `.field` label is
+// drawn as written and each `.field` case's first assertion fails.
 import './index.css'
 import { ProposalRow } from './ProposalRow'
 import { RootRow } from './RootRow'
@@ -36,9 +39,19 @@ import { Users } from './Users'
  * label's words in an `aria-label`, and this file holds what the tree makes
  * of that.
  *
- * **Each case first asserts that its labels are drawn in capitals.** A label
- * drawn as written names its control as written with no `aria-label` at all,
- * so without that the names below could pass having tested nothing.
+ * **A `.field` case first asserts that its labels are drawn in capitals.** A
+ * label drawn as written names its control as written with no `aria-label`
+ * at all, so without that the names below could pass having tested nothing.
+ *
+ * **A settings row's label is drawn as written**: `settings.css` gives
+ * `.settings-row-label` no `text-transform`. So a row case holds what O175
+ * is for rather than the capitals: it first reads every row's label, tied to
+ * its control by `for`, and then holds each control's name in Chromium's
+ * tree to a list written out: those words in their own case or, where its
+ * `aria-label` says more, those words and then the rest. An `aria-label` in
+ * other words or another case fails it, and so does a sheet drawing the
+ * label in capitals over a control left without its `aria-label`, which
+ * Chromium's tree then names in those capitals.
  *
  * One `it()` per form or card: `testing/mount.ts` holds one root, for the
  * reason `Filmstrip.browser.test.tsx` gives.
@@ -51,6 +64,11 @@ vi.mock('./api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./api')>()),
   listKeys: vi.fn(),
   listSessions: vi.fn(),
+}))
+
+vi.mock('./backup', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./backup')>()),
+  listBackups: vi.fn(),
 }))
 
 vi.mock('./config', async (importOriginal) => ({
@@ -103,20 +121,53 @@ const MANGA: librariesApi.Library = {
  * The Libraries screen at `entry`, as Configuration routes it, without
  * Configuration's own heading and tabs: what is read is the page's.
  */
-const librariesAt = (entry: string) => (
-  <MemoryRouter initialEntries={[entry]}>
-    <Routes>
-      <Route path="/config/libraries/*" element={<Libraries />} />
-    </Routes>
-  </MemoryRouter>
-)
+const librariesAt = (entry: string) => {
+  // One element for both routes, as Configuration gives it.
+  const screen = <Libraries />
+  return (
+    <MemoryRouter initialEntries={[entry]}>
+      <Routes>
+        <Route path="/config/libraries/*" element={screen} />
+        <Route path="/config/new-library" element={screen} />
+      </Routes>
+    </MemoryRouter>
+  )
+}
 
 /** The Users screen at `entry`, as Configuration routes it. */
-const usersAt = (entry: string) => (
+const usersAt = (entry: string) => {
+  // One element for both routes, as Configuration gives it.
+  const screen = <Users />
+  return (
+    <MemoryRouter initialEntries={[entry]}>
+      <Routes>
+        <Route path="/config/users/*" element={screen} />
+        <Route path="/config/new-account" element={screen} />
+      </Routes>
+    </MemoryRouter>
+  )
+}
+
+/** The account signed in: `user()`'s, an administrator. */
+const who = {
+  user_id: 1,
+  admin: true,
+  can_download: true,
+  can_stream: true,
+  can_stamp: false,
+}
+
+/**
+ * Configuration at `entry`, its hidden h1 and its tabs above the page, so
+ * that a page's outline is read under the heading it sits beneath.
+ */
+const configAt = (entry: string) => (
   <MemoryRouter initialEntries={[entry]}>
-    <Routes>
-      <Route path="/config/users/*" element={<Users />} />
-    </Routes>
+    <GateContext value={{ who, signOut: () => undefined }}>
+      <Routes>
+        <Route path="/config/*" element={<Config />} />
+      </Routes>
+    </GateContext>
   </MemoryRouter>
 )
 
@@ -204,7 +255,7 @@ async function shown(ui: React.ReactNode): Promise<HTMLElement> {
 
 /**
  * Each `.field` label's words as written, and the `text-transform` they are
- * drawn with — the guard every case opens on.
+ * drawn with — the guard every `.field` case opens on.
  */
 const drawn = (host: HTMLElement): Array<[string, string]> =>
   fields(host.querySelectorAll('label.field')).map(({ written, words }) => [
@@ -212,8 +263,21 @@ const drawn = (host: HTMLElement): Array<[string, string]> =>
     getComputedStyle(words).textTransform,
   ])
 
+/**
+ * Each settings row's label words as written, read through the `for` that
+ * ties it to its control: the guard every row case opens on, which proves
+ * the names below are read against every row.
+ */
+const rowWords = (host: HTMLElement): string[] =>
+  fields(host.querySelectorAll('label.settings-row-label')).map(
+    ({ written }) => written,
+  )
+
 /** The roles Chromium's tree gives a text box, a `<select>` and a number box. */
 const CONTROLS = ['textbox', 'combobox', 'spinbutton']
+
+/** `CONTROLS` and a checkbox: what a settings row's label can name. */
+const ROW_CONTROLS = [...CONTROLS, 'checkbox']
 
 /**
  * `[role, name]` for every node of one of `roles` in this file's frame, as
@@ -279,6 +343,9 @@ async function treeOf(roles: string[]): Promise<Node[]> {
 /** Every text box, `<select>` and number box, by `named`. */
 const controls = () => named(CONTROLS)
 
+/** Every control a settings row's label can name, by `named`. */
+const rowControls = () => named(ROW_CONTROLS)
+
 /**
  * An expanded `ProposalRow` for `detail`, with its accept form drawn: the row
  * is what renders `.proposal-detail`, and the form is drawn inside it.
@@ -318,13 +385,9 @@ describe('the name Chromium gives a control under a field label — O175', () =>
   it('names the add-account form’s controls as written', async () => {
     vi.mocked(usersApi.listUsers).mockResolvedValue({ users: [] })
     vi.mocked(librariesApi.listLibraries).mockResolvedValue({ libraries: [] })
-    const host = await shown(usersAt('/config/users/new'))
-    expect(drawn(host)).toEqual([
-      ['Name', 'uppercase'],
-      ['Password', 'uppercase'],
-      ['Role', 'uppercase'],
-    ])
-    expect(await controls()).toEqual([
+    const host = await shown(usersAt('/config/new-account'))
+    expect(rowWords(host)).toEqual(['Name', 'Password', 'Role'])
+    expect(await rowControls()).toEqual([
       ['textbox', 'Name'],
       ['textbox', 'Password'],
       ['combobox', 'Role'],
@@ -335,26 +398,29 @@ describe('the name Chromium gives a control under a field label — O175', () =>
     const sam = user({ id: 2, name: 'sam', role: 'user' })
     vi.mocked(usersApi.listUsers).mockResolvedValue({ users: [user(), sam] })
     vi.mocked(librariesApi.listLibraries).mockResolvedValue({ libraries: [] })
-    const host = await shown(usersAt('/config/users/2'))
-    expect(drawn(host)).toEqual([
-      ['Role', 'uppercase'],
-      ['Set a new password', 'uppercase'],
+    const host = await shown(usersAt('/config/users/sam'))
+    expect(rowWords(host)).toEqual([
+      'Role',
+      'Can download',
+      'Can stream',
+      'Can stamp',
+      'New password',
     ])
-    expect(await controls()).toEqual([
+    expect(await rowControls()).toEqual([
       ['combobox', 'Role'],
-      ['textbox', 'Set a new password'],
+      ['checkbox', 'Can download'],
+      ['checkbox', 'Can stream'],
+      ['checkbox', 'Can stamp'],
+      ['textbox', 'New password'],
     ])
   })
 
   it('names the make-a-library form’s boxes as written', async () => {
     // The make page, whose form's two boxes are the only ones on it.
     vi.mocked(librariesApi.listLibraries).mockResolvedValue({ libraries: [] })
-    const host = await shown(librariesAt('/config/libraries/new'))
-    expect(drawn(host)).toEqual([
-      ['Name', 'uppercase'],
-      ['Directory path', 'uppercase'],
-    ])
-    expect(await controls()).toEqual([
+    const host = await shown(librariesAt('/config/new-library'))
+    expect(rowWords(host)).toEqual(['Name', 'Directory path'])
+    expect(await rowControls()).toEqual([
       ['textbox', 'Name'],
       ['textbox', 'Directory path'],
     ])
@@ -371,19 +437,23 @@ describe('the name Chromium gives a control under a field label — O175', () =>
     const host = await shown(
       <RootRow root={root} probe={undefined} onChanged={() => {}} />,
     )
-    expect(drawn(host)).toEqual([
-      ['Edition key', 'uppercase'],
-      ['Default kind', 'uppercase'],
-      ['Default language', 'uppercase'],
-      ['Exclude globs (one gitignore pattern per line)', 'uppercase'],
-      ['Scan interval (seconds)', 'uppercase'],
+    expect(rowWords(host)).toEqual([
+      'Scan interval',
+      'Exclude globs',
+      'Keeps documents under .taiyaku/',
+      'Edition key',
+      'Default kind',
+      'Default language',
     ])
-    expect(await controls()).toEqual([
+    expect(await rowControls()).toEqual([
+      // Two `aria-label`s say more than their row's label, the unit and the
+      // syntax, after its words.
+      ['spinbutton', 'Scan interval (seconds)'],
+      ['textbox', 'Exclude globs (one gitignore pattern per line)'],
+      ['checkbox', 'Keeps documents under .taiyaku/'],
       ['textbox', 'Edition key'],
       ['textbox', 'Default kind'],
       ['textbox', 'Default language'],
-      ['textbox', 'Exclude globs (one gitignore pattern per line)'],
-      ['spinbutton', 'Scan interval (seconds)'],
     ])
   })
 
@@ -496,44 +566,86 @@ describe('the name Chromium gives a heading or a group drawn in capitals — O18
   })
 })
 
+/** What every Configuration page reads on mount, answered with nothing running. */
+function answerPages() {
+  vi.mocked(config.scanStatus).mockResolvedValue({
+    root_id: 3,
+    running: false,
+    report: null,
+    last_scan_at: null,
+    last_scan_status: null,
+  })
+  vi.mocked(librariesApi.libraryScanStatus).mockResolvedValue({
+    library_id: 1,
+    running: false,
+    elapsed_secs: null,
+    dirs: [],
+  })
+  vi.mocked(librariesApi.listLibraries).mockResolvedValue({
+    libraries: [MANGA],
+  })
+  vi.mocked(usersApi.listUsers).mockResolvedValue({
+    users: [user(), user({ id: 2, name: 'sam', role: 'user' })],
+  })
+  vi.mocked(backupApi.listBackups).mockResolvedValue({ backups: [] })
+}
+
 /**
- * Each page of the libraries screen heads itself with one h2 — the screen's
- * name, the library's name or the directory's path — and its sections a level
- * below. What the tree makes of them is held beside the capitals cases
- * because the same sheet draws those headings.
+ * Each page of the Configuration screens heads itself with one h2 — the
+ * table's name, the make page's, the library's or the account's name, or the
+ * directory's path — beneath Configuration's hidden h1, and its sections a
+ * level below. Where a window is wide enough for a page to open beside its
+ * list, the two are two pages, so the outline holds two h2s, the list's
+ * first. What the tree makes of them is held beside the capitals cases
+ * because the same sheets draw those headings.
  */
-describe('the headings of the libraries screen, in Chromium’s own tree', () => {
+describe('the headings of the Configuration pages, in Chromium’s own tree', () => {
   it.each([
     ['/config/libraries', [['Libraries', 2]]],
-    ['/config/libraries/new', [['New library', 2]]],
+    ['/config/new-library', [['New library', 2]]],
     [
-      '/config/libraries/1',
+      '/config/libraries/Manga',
       [
         ['Manga', 2],
         ['Directories', 3],
+        ['Removal', 3],
       ],
     ],
-    ['/config/libraries/1/dirs/3', [[root.path, 2]]],
+    [
+      '/config/libraries/Manga/dirs/3',
+      [
+        [root.path, 2],
+        ['How it is scanned', 3],
+        ['How it is read', 3],
+        ['Removal', 3],
+      ],
+    ],
+    ['/config/users', [['Users', 2]]],
+    ['/config/new-account', [['New account', 2]]],
+    [
+      '/config/users/sam',
+      [
+        ['sam', 2],
+        ['Role & permissions', 3],
+        ['Libraries', 3],
+        ['Password', 3],
+        ['Sessions & keys', 3],
+        ['Removal', 3],
+      ],
+    ],
+    [
+      '/config/backup',
+      [
+        ['Backup', 2],
+        ['Backups', 3],
+      ],
+    ],
   ])(
     'reads %s as one page: its own heading, and its sections beneath it',
-    async (entry, headings) => {
-      vi.mocked(config.scanStatus).mockResolvedValue({
-        root_id: 3,
-        running: false,
-        report: null,
-        last_scan_at: null,
-        last_scan_status: null,
-      })
-      vi.mocked(librariesApi.libraryScanStatus).mockResolvedValue({
-        library_id: 1,
-        running: false,
-        elapsed_secs: null,
-        dirs: [],
-      })
-      vi.mocked(librariesApi.listLibraries).mockResolvedValue({
-        libraries: [MANGA],
-      })
-      const host = await shown(librariesAt(entry))
+    async (entry, page) => {
+      answerPages()
+      const headings = [['Configuration', 1], ...page]
+      const host = await shown(configAt(entry))
       expect(
         [...host.querySelectorAll('h1, h2, h3, h4, h5, h6')].map(
           (h) => h.tagName,
@@ -545,9 +657,67 @@ describe('the headings of the libraries screen, in Chromium’s own tree', () =>
     },
   )
 
-  it('reads a directory’s scan report one level beneath the directory’s path', async () => {
+  // Wide enough for a page to open beside its list (spec §3): the list's
+  // page and the opened one are two pages, each with its own h2, the list's
+  // first as the document draws it.
+  it.each([
+    [
+      '/config/libraries/Manga/dirs/3',
+      [
+        ['Manga', 2],
+        ['Directories', 3],
+        ['Removal', 3],
+        [root.path, 2],
+        ['How it is scanned', 3],
+        ['How it is read', 3],
+        ['Removal', 3],
+      ],
+    ],
+    [
+      '/config/users/sam',
+      [
+        ['Users', 2],
+        ['sam', 2],
+        ['Role & permissions', 3],
+        ['Libraries', 3],
+        ['Password', 3],
+        ['Sessions & keys', 3],
+        ['Removal', 3],
+      ],
+    ],
+  ])(
+    'reads %s at a wide window as its list and its page side by side, each heading its own sections',
+    async (entry, pair) => {
+      // The window this file's other cases are read at, given back after.
+      const was = [window.innerWidth, window.innerHeight] as const
+      onTestFinished(() => page.viewport(...was))
+      await page.viewport(1920, 900)
+      answerPages()
+      const headings = [['Configuration', 1], ...pair]
+      const host = await shown(configAt(entry))
+      // `useFitsPair`'s observer reports once the next frames are drawn,
+      // and sets its state again then: waited for inside `act`, so that
+      // update lands where an `act` is waiting for it.
+      await act(async () => {
+        await new Promise((resolve) => requestAnimationFrame(resolve))
+        await new Promise((resolve) => requestAnimationFrame(resolve))
+      })
+      expect(host.querySelector('.split-pair')).not.toBeNull()
+      expect(
+        [...host.querySelectorAll('h1, h2, h3, h4, h5, h6')].map(
+          (h) => h.tagName,
+        ),
+      ).toEqual(headings.map(([, level]) => `H${level}`))
+      expect(await treeOf(['heading'])).toEqual(
+        headings.map(([name, level]) => ({ role: 'heading', name, level })),
+      )
+    },
+  )
+
+  it('reads a directory’s scan report one level beneath its section’s heading', async () => {
     // A report's two headings are named by their words and sit under the
-    // heading of whatever draws them.
+    // heading of whatever draws them: on a directory's page, its Scan report
+    // section.
     const finishedScan = {
       scan: {
         root: root.path,
@@ -592,7 +762,7 @@ describe('the headings of the libraries screen, in Chromium’s own tree', () =>
     vi.mocked(librariesApi.listLibraries).mockResolvedValue({
       libraries: [MANGA],
     })
-    await shown(librariesAt('/config/libraries/1/dirs/3'))
+    await shown(librariesAt('/config/libraries/Manga/dirs/3'))
     await act(async () => {
       await new Promise((resolve) => {
         setTimeout(resolve, config.SCAN_POLL_MS + 400)
@@ -600,12 +770,16 @@ describe('the headings of the libraries screen, in Chromium’s own tree', () =>
     })
     expect(await treeOf(['heading'])).toEqual([
       { role: 'heading', name: root.path, level: 2 },
-      { role: 'heading', name: 'What the walk found', level: 3 },
+      { role: 'heading', name: 'How it is scanned', level: 3 },
+      { role: 'heading', name: 'How it is read', level: 3 },
+      { role: 'heading', name: 'Scan report', level: 3 },
+      { role: 'heading', name: 'What the walk found', level: 4 },
       {
         role: 'heading',
         name: 'What derivation made of every library',
-        level: 3,
+        level: 4,
       },
+      { role: 'heading', name: 'Removal', level: 3 },
     ])
   })
 
@@ -637,7 +811,7 @@ describe('the headings of the libraries screen, in Chromium’s own tree', () =>
       dry_run: false,
     })
     // Removed from its page, whose report is drawn on the table.
-    const host = await shown(librariesAt('/config/libraries/1'))
+    const host = await shown(librariesAt('/config/libraries/Manga'))
     await press(host.querySelector('button[name="remove-library"]') as Element)
     vi.mocked(librariesApi.listLibraries).mockResolvedValue({ libraries: [] })
     await press(host.querySelector('.remove-library .confirm') as Element)

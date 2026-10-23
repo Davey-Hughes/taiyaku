@@ -1,4 +1,10 @@
-import { useEffect, useRef, useState } from 'react'
+import {
+  type RefObject,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from 'react'
 import { createDecodeQueue, type DecodeQueue } from './decode'
 import { initialPrefs, persistPrefs, type ReaderModule } from './module'
 import { nextTurns } from './modules/readouts'
@@ -90,6 +96,62 @@ export function useDrawn(): { readonly current: boolean } {
     }
   }, [])
   return drawn
+}
+
+/**
+ * How long a write may be out before what sent it is drawn waiting. One that
+ * answers sooner is never drawn so: a wait painted for a frame or two reads
+ * as the buttons flashing their words and borders, not as a wait.
+ */
+export const WAIT_DRAWN_AFTER_MS = 200
+
+/**
+ * Whether `waiting` has held for `WAIT_DRAWN_AFTER_MS`, and so is drawn: a
+ * button's "…ing" words and the held look of what the wait holds, or a
+ * sentence that says what is awaited. False from the render in which
+ * `waiting` falls. Only the drawing waits: what keeps a second press from
+ * sending again, or a held control from acting, is the caller's, and must
+ * hold from the first press.
+ */
+export function useDrawnWait(waiting: boolean): boolean {
+  const [long, setLong] = useState(false)
+  useEffect(() => {
+    if (!waiting) {
+      setLong(false)
+      return
+    }
+    const timer = setTimeout(() => setLong(true), WAIT_DRAWN_AFTER_MS)
+    return () => clearTimeout(timer)
+  }, [waiting])
+  return waiting && long
+}
+
+/**
+ * Moves focus to `box` when `held` comes on while `button` has it. Each
+ * caller makes `button` `disabled` while `held` is true, not `aria-disabled`
+ * as `HeldButton`'s `held` does, and a browser moves focus off a control
+ * that becomes disabled to the page.
+ * `box` is the field the hold sends the person back to: where the value that
+ * disables the button is changed, or where a refusal that ends the wait
+ * holding it is put right. Whether the button has focus is read as the
+ * render that disables it is drawn, while it is still enabled, since a
+ * browser may move focus off it as soon as it is disabled.
+ */
+export function useFocusLeavesHeld(
+  held: boolean,
+  button: RefObject<HTMLElement | null>,
+  box: RefObject<HTMLElement | null>,
+): void {
+  const heldWas = useRef(held)
+  const takesFocus =
+    held &&
+    !heldWas.current &&
+    button.current !== null &&
+    button.current === document.activeElement
+  useLayoutEffect(() => {
+    heldWas.current = held
+    if (takesFocus) box.current?.focus()
+  })
 }
 
 /**

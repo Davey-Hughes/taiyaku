@@ -6,7 +6,9 @@ import { DirPage } from './DirPage'
 import * as api from './libraries'
 import { deferred, flush } from './testing/async'
 import { emptyDerive } from './testing/derive'
+import './testing/dialog'
 import { press } from './testing/input'
+import { holdOf } from './testing/held'
 import {
   counted,
   dir,
@@ -16,6 +18,8 @@ import {
   tick,
 } from './testing/libraries'
 import { mount, rerender } from './testing/mount'
+import { expectRowsWired, row, section } from './testing/settingsRows'
+import { pass, WAIT_DRAWN_AFTER_MS } from './testing/wait'
 
 vi.mock('./config', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./config')>()),
@@ -52,7 +56,7 @@ async function shown({
   await act(async () => {
     host = mount(
       <MemoryRouter
-        initialEntries={[`/config/libraries/${library.id}/dirs/${root.id}`]}
+        initialEntries={[`/config/libraries/${library.name}/dirs/${root.id}`]}
       >
         <DirPage
           library={library}
@@ -76,10 +80,10 @@ const control = (host: HTMLElement, text: string) =>
     (b) => b.textContent === text,
   ) as HTMLButtonElement
 
-/** Scan directory, Move… and Remove…, each drawn disabled or not. */
+/** Scan directory, Move… and Remove…, each held, disabled or free. */
 const actionsHeld = (host: HTMLElement) =>
-  ['Scan directory', 'Move…', 'Remove…'].map(
-    (text) => control(host, text).disabled,
+  ['Scan directory', 'Move…', 'Remove…'].map((text) =>
+    holdOf(control(host, text)),
   )
 
 const statusOf = (id: number, running: boolean): config.ScanStatus => ({
@@ -97,9 +101,12 @@ const ownRunning = (...ids: number[]) =>
     .mocked(config.scanStatus)
     .mockImplementation((id) => Promise.resolve(statusOf(id, ids.includes(id))))
 
-/** The directory's own Scanning… line, which `RootRow` draws from its status. */
+/**
+ * The directory's own Scanning… line, which `RootRow` draws from its status
+ * under the page's header.
+ */
 const ownScanning = (host: HTMLElement) =>
-  host.querySelector('.root-row .scanning')
+  host.querySelector('.dir-page > .scanning')
 
 /** Type into a box and leave it, as a person committing an edit does. */
 async function editBox(box: Element | null, value: string) {
@@ -135,10 +142,104 @@ describe('DirPage', () => {
   it('words the directory’s button Scan directory', async () => {
     const { host } = await shown()
     expect(
-      [...host.querySelectorAll('.root-row button')]
+      [...host.querySelectorAll('.dir-page button')]
         .map((b) => b.textContent)
         .filter((text) => text?.startsWith('Scan')),
     ).toEqual(['Scan directory'])
+  })
+
+  it('heads itself with ‹ the library, the path as its title, the facts as its line, and Scan directory and Move… as its actions', async () => {
+    const { host } = await shown()
+    const header = host.querySelector('.dir-page > .page-header') as HTMLElement
+    const back = header.querySelector('.back a')
+    expect([back?.textContent, back?.getAttribute('href')]).toEqual([
+      '‹ Manga',
+      '/config/libraries/Manga',
+    ])
+    const title = header.querySelector('.page-title')
+    expect(title?.tagName).toBe('H2')
+    expect(title?.querySelector('code')?.textContent).toBe(
+      '/media/Manga/Chapters',
+    )
+    // The facts by name, each the header's line's own.
+    expect(
+      [...header.querySelectorAll('.page-description .regime > div')].map(
+        (fact) => fact.querySelector('dt')?.textContent,
+      ),
+    ).toEqual(['watch', 'scan every', 'last scan'])
+    // Remove… is the removal box's, not the header's.
+    expect(
+      [...header.querySelectorAll('.page-actions button')].map(
+        (b) => b.textContent,
+      ),
+    ).toEqual(['Scan directory', 'Move…'])
+  })
+
+  it('draws How it is scanned, How it is read, then the removal box, whose Remove… opens its confirm inside it', async () => {
+    vi.mocked(config.removalCost).mockResolvedValue(counted())
+    const { host } = await shown()
+    expect(
+      [...host.querySelectorAll('.dir-page > .settings-section')].map(
+        (one) => one.querySelector('.settings-section-title')?.textContent,
+      ),
+    ).toEqual(['How it is scanned', 'How it is read', 'Removal'])
+    const removal = section(host, 'Removal')
+    expect(removal.classList.contains('settings-removal')).toBe(true)
+    const remove = row(removal, 'Remove this directory').querySelector(
+      'button',
+    ) as HTMLButtonElement
+    expect(remove.textContent).toBe('Remove…')
+    await press(remove)
+    expect(
+      removal.querySelector(':scope > .settings-box > .remove-root .counts'),
+    ).not.toBeNull()
+  })
+
+  it('opens Move… in a dialog named for the directory, and draws nothing new between the header and the settings', async () => {
+    const { host } = await shown()
+    await press(control(host, 'Move…'))
+    const page = host.querySelector('.dir-page') as HTMLElement
+    const dialogs = [...page.querySelectorAll('dialog')]
+    expect(dialogs).toHaveLength(1)
+    expect(dialogs[0].open).toBe(true)
+    expect(
+      document.getElementById(dialogs[0].getAttribute('aria-labelledby') ?? '')
+        ?.textContent,
+    ).toBe('Move /media/Manga/Chapters')
+    expect(
+      dialogs[0].querySelector('select[name="move-target"]'),
+    ).not.toBeNull()
+    // The page's own parts in its own order, by what each is: the dialog is
+    // drawn over them and takes no place among them.
+    expect(
+      [...page.children]
+        .filter((part) => part.tagName !== 'DIALOG')
+        .map((part) =>
+          part.classList.contains('settings-section')
+            ? part.querySelector('.settings-section-title')?.textContent
+            : part.className,
+        )
+        .slice(0, 2),
+    ).toEqual(['page-header', 'How it is scanned'])
+  })
+
+  it('ties each row’s label and help to its control', async () => {
+    const { host } = await shown()
+    // Every row the page draws, named, so the check is never over fewer.
+    expect(
+      [...host.querySelectorAll('.settings-row-label')].map(
+        (label) => label.textContent,
+      ),
+    ).toEqual([
+      'Scan interval',
+      'Exclude globs',
+      'Keeps documents under .taiyaku/',
+      'Edition key',
+      'Default kind',
+      'Default language',
+      'Remove this directory',
+    ])
+    expectRowsWired(host)
   })
 
   it('tells a directory it is the last one, and no directory of two', async () => {
@@ -234,7 +335,7 @@ describe('DirPage, scans and removals across its library exclude each other', ()
     vi.mocked(api.libraryScanStatus).mockResolvedValue(scanningIn(manga(), 1))
     const { host } = await shown()
 
-    expect(actionsHeld(host)).toEqual([true, true, true])
+    expect(actionsHeld(host)).toEqual(['held', 'held', 'held'])
     for (const text of ['Scan directory', 'Move…', 'Remove…']) {
       await press(control(host, text))
     }
@@ -245,7 +346,7 @@ describe('DirPage, scans and removals across its library exclude each other', ()
 
     vi.mocked(api.libraryScanStatus).mockResolvedValue(idle(7))
     await tick()
-    expect(actionsHeld(host)).toEqual([false, false, false])
+    expect(actionsHeld(host)).toEqual(['free', 'free', 'free'])
   })
 
   it('holds Scan directory, Move… and Remove… while its library is being scanned, and asks again until the scan ends', async () => {
@@ -258,19 +359,19 @@ describe('DirPage, scans and removals across its library exclude each other', ()
     const { host } = await shown()
     expect(api.libraryScanStatus).toHaveBeenCalledTimes(1)
     expect(api.libraryScanStatus).toHaveBeenCalledWith(7)
-    expect(actionsHeld(host)).toEqual([true, true, true])
+    expect(actionsHeld(host)).toEqual(['held', 'held', 'held'])
     expect(ownScanning(host)).not.toBeNull()
 
     await tick()
     expect(api.libraryScanStatus).toHaveBeenCalledTimes(2)
-    expect(actionsHeld(host)).toEqual([true, true, true])
+    expect(actionsHeld(host)).toEqual(['held', 'held', 'held'])
 
     vi.mocked(api.libraryScanStatus).mockResolvedValue(idle(7))
     ownRunning()
     await tick()
     expect(api.libraryScanStatus).toHaveBeenCalledTimes(3)
     expect(ownScanning(host)).toBeNull()
-    expect(actionsHeld(host)).toEqual([false, false, false])
+    expect(actionsHeld(host)).toEqual(['free', 'free', 'free'])
 
     // Nothing else is scanning, so nothing more is asked.
     await tick()
@@ -291,7 +392,7 @@ describe('DirPage, scans and removals across its library exclude each other', ()
     ownRunning()
     await tick()
     expect(ownScanning(host)).toBeNull()
-    expect(actionsHeld(host)).toEqual([false, false, false])
+    expect(actionsHeld(host)).toEqual(['free', 'free', 'free'])
     expect(api.libraryScanStatus).toHaveBeenCalledTimes(1)
   })
 
@@ -355,6 +456,7 @@ describe('DirPage, scans and removals across its library exclude each other', ()
     const { host } = await shown()
     await press(control(host, 'Remove…'))
     await press(host.querySelector('.remove-root .confirm') as Element)
+    pass(WAIT_DRAWN_AFTER_MS)
     expect(host.querySelector('.remove-root .confirm')?.textContent).toBe(
       'Removing…',
     )
@@ -396,7 +498,7 @@ describe('DirPage, scans and removals across its library exclude each other', ()
   it('does not hold the directory’s settings for a sibling’s scan', async () => {
     vi.mocked(api.libraryScanStatus).mockResolvedValue(scanningIn(manga(), 1))
     const { host } = await shown()
-    expect(control(host, 'Scan directory').disabled).toBe(true)
+    expect(holdOf(control(host, 'Scan directory'))).toBe('held')
 
     const keepsDocuments = host.querySelector(
       'input[name="keeps_documents"]',
@@ -449,7 +551,7 @@ describe('DirPage, scans and removals across its library exclude each other', ()
   it('keeps the hold through two failed polls, lets go on the third and says why, and asks no more', async () => {
     vi.mocked(api.libraryScanStatus).mockResolvedValue(scanningIn(manga(), 1))
     const { host } = await shown()
-    expect(actionsHeld(host)).toEqual([true, true, true])
+    expect(actionsHeld(host)).toEqual(['held', 'held', 'held'])
 
     vi.mocked(api.libraryScanStatus)
       .mockRejectedValueOnce(new Error('502'))
@@ -461,12 +563,12 @@ describe('DirPage, scans and removals across its library exclude each other', ()
       )
     await tick()
     await tick()
-    expect(actionsHeld(host)).toEqual([true, true, true])
+    expect(actionsHeld(host)).toEqual(['held', 'held', 'held'])
     expect(host.querySelector('[role="alert"]')).toBeNull()
     expect(api.libraryScanStatus).toHaveBeenCalledTimes(3)
 
     await tick()
-    expect(actionsHeld(host)).toEqual([false, false, false])
+    expect(actionsHeld(host)).toEqual(['free', 'free', 'free'])
     // The sentence of the poll that ended the hold, as the library page's
     // poll draws its own.
     expect(
@@ -516,7 +618,7 @@ describe('DirPage, scans and removals across its library exclude each other', ()
     })
     await act(async () => {
       rerender(
-        <MemoryRouter initialEntries={['/config/libraries/7/dirs/3']}>
+        <MemoryRouter initialEntries={['/config/libraries/Manga/dirs/3']}>
           <DirPage
             library={library}
             root={library.dirs[1]}
@@ -532,7 +634,7 @@ describe('DirPage, scans and removals across its library exclude each other', ()
     })
     expect(api.libraryScanStatus).toHaveBeenCalledTimes(1)
     expect(host.querySelector('.dir-page > [role="alert"]')).toBeNull()
-    expect(actionsHeld(host)).toEqual([false, false, false])
+    expect(actionsHeld(host)).toEqual(['free', 'free', 'free'])
   })
 
   it('counts only consecutive failed polls', async () => {
@@ -548,7 +650,7 @@ describe('DirPage, scans and removals across its library exclude each other', ()
     }
     for (let i = 0; i < 5; i++) await tick()
     // Four misses in five polls and never three together: still held.
-    expect(actionsHeld(host)).toEqual([true, true, true])
+    expect(actionsHeld(host)).toEqual(['held', 'held', 'held'])
     expect(api.libraryScanStatus).toHaveBeenCalledTimes(6)
   })
 
@@ -557,7 +659,7 @@ describe('DirPage, scans and removals across its library exclude each other', ()
       new Error('/api/library/libraries/7/scan: 502 bad gateway'),
     )
     const { host } = await shown()
-    expect(actionsHeld(host)).toEqual([false, false, false])
+    expect(actionsHeld(host)).toEqual(['free', 'free', 'free'])
     expect(host.querySelector('[role="alert"]')).toBeNull()
     await tick()
     await tick()

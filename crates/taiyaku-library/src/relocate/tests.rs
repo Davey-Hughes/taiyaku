@@ -162,6 +162,33 @@ fn a_dir_or_a_library_that_is_not_there_is_missing_and_its_own_library_is_a_mist
     );
 }
 
+/// A move makes no library a page address cannot hold
+/// ([`crate::has_no_address`]), and says so as the caller's mistake rather
+/// than as `libraries::create`'s fault inside the insert.
+#[test]
+fn a_move_makes_no_library_called_a_dot_name() {
+    let top = tempdir("relocate-dot-names");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = a_dir(
+        &conn,
+        &top.path().join("a"),
+        "Manga",
+        None,
+        &[("S", "v01", 2)],
+    );
+    let held = dir(&conn, root.id).expect("the directory");
+
+    for name in [".", "..", " .. "] {
+        assert_eq!(
+            resolve(&conn, &held, Target::New(name)),
+            Err(MoveError::Unusable(crate::NO_ADDRESS.to_string())),
+            "{name:?}"
+        );
+    }
+    assert_eq!(scalar(&conn, "SELECT count(*) FROM library"), 1);
+}
+
 /// §6.2's case 4: the target holds the volume under the same edition key.
 /// The other volume, which the target does not hold, is not named.
 #[test]

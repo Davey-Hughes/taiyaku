@@ -285,8 +285,8 @@ fn promoting_the_only_account_to_a_reader_is_refused() {
 
     let refusal = promote(&conn, "alice", "a password", "user").expect_err("refused");
     assert!(
-        refusal.contains("no administrator"),
-        "the refusal must say what it is protecting: {refusal}"
+        matches!(&refusal, WriteError::Refused(why) if why.contains("no administrator")),
+        "the refusal must say what it is protecting: {refusal:?}"
     );
     assert!(
         !is_claimed(&conn).expect("reads"),
@@ -541,11 +541,28 @@ fn there_is_nothing_to_promote_twice() {
     promote(&conn, "davey", "a password", "admin").expect("promotes");
 
     let refused = promote(&conn, "someone-else", "another", "admin").expect_err("refuses");
-    assert!(refused.contains("already has a password"), "{refused}");
     assert!(
-        refused.contains("user add"),
+        matches!(&refused, WriteError::Refused(why) if why.contains("already has a password")),
+        "{refused:?}"
+    );
+    assert!(
+        refused.to_string().contains("user add"),
         "the refusal must name the command that does what was wanted: {refused}"
     );
+}
+
+/// [`unclaimed`] answers the seeded account on a fresh library and nothing
+/// once it is promoted: the CLI asks it before the prompt, so an answer here
+/// for a claimed library has a person type a password twice for nothing.
+#[test]
+fn unclaimed_finds_nothing_once_the_seeded_account_is_promoted() {
+    let library = library();
+    let conn = library.conn();
+    assert_eq!(unclaimed(&conn), Ok(1));
+
+    promote(&conn, "davey", "a password", "admin").expect("promotes");
+
+    assert_eq!(unclaimed(&conn), Err(NOTHING_TO_PROMOTE.to_string()));
 }
 
 #[test]
@@ -560,6 +577,300 @@ fn a_second_account_is_added_beside_the_first() {
 
     let taken = add(&conn, "alex", "again", "user").expect_err("refuses a duplicate name");
     assert!(taken.contains("alex"), "{taken}");
+}
+
+/// [`crate::has_no_address`]: an account's page is at its name, and no page
+/// address holds `.`.
+#[test]
+fn an_account_is_not_made_called_one_dot() {
+    let library = library();
+    let conn = library.conn();
+    assert_eq!(
+        add(&conn, ".", "theirs", "user"),
+        Err(crate::NO_ADDRESS.to_string())
+    );
+    assert_eq!(id_of(&conn, ".").expect("reads"), None, "nothing was made");
+}
+
+#[test]
+fn an_account_is_not_made_called_two_dots() {
+    let library = library();
+    let conn = library.conn();
+    assert_eq!(
+        add(&conn, "..", "theirs", "user"),
+        Err(crate::NO_ADDRESS.to_string())
+    );
+    assert_eq!(id_of(&conn, "..").expect("reads"), None, "nothing was made");
+}
+
+/// An account's page is at its name, and an empty name has no address: the
+/// table's own is all `/config/users/` reaches.
+#[test]
+fn an_account_is_not_made_with_an_empty_name() {
+    let library = library();
+    let conn = library.conn();
+    assert_eq!(add(&conn, "", "theirs", "user"), Err(NO_NAME.to_string()));
+    assert_eq!(id_of(&conn, "").expect("reads"), None, "nothing was made");
+}
+
+/// Only `.` and `..` exactly. An account's name is stored as written, so `. `
+/// keeps its space, and its address is no dot segment.
+#[test]
+fn an_account_is_made_with_any_other_name_of_dots() {
+    let library = library();
+    let conn = library.conn();
+    for name in ["...", ". ", ".a", "a.b"] {
+        let id = add(&conn, name, "theirs", "user").expect(name);
+        assert_eq!(id_of(&conn, name).expect("reads"), Some(id), "{name:?}");
+    }
+}
+
+/// `user.name`'s `UNIQUE` refusing the promotion is the caller's mistake, not
+/// a store fault, and the seeded account is left to claim.
+#[test]
+fn promoting_to_a_name_another_account_holds_is_the_callers_mistake() {
+    let library = library();
+    let conn = library.conn();
+    add(&conn, "alice", "theirs", "admin").expect("adds");
+
+    let refused = promote(&conn, "alice", "a password", "admin").expect_err("refuses");
+    assert!(
+        matches!(&refused, WriteError::Unusable(why) if why.contains("`alice`")),
+        "{refused:?}"
+    );
+    assert_eq!(
+        unclaimed(&conn),
+        Ok(1),
+        "the seeded account is still unclaimed"
+    );
+}
+
+#[test]
+fn promoting_with_an_empty_password_is_the_callers_mistake() {
+    let library = library();
+    let conn = library.conn();
+    let refused = promote(&conn, "davey", "", "admin").expect_err("refuses");
+    assert!(
+        matches!(&refused, WriteError::Unusable(why) if why.contains("empty password")),
+        "{refused:?}"
+    );
+    assert_eq!(
+        unclaimed(&conn),
+        Ok(1),
+        "the seeded account is still unclaimed"
+    );
+}
+
+/// The claim names the seeded account, so it refuses the names an account is
+/// not made with, and leaves the account there to claim.
+#[test]
+fn an_account_is_not_claimed_under_a_dot_name() {
+    let library = library();
+    let conn = library.conn();
+    for name in [".", ".."] {
+        assert_eq!(
+            promote(&conn, name, "a password", "admin"),
+            Err(WriteError::Unusable(crate::NO_ADDRESS.to_string())),
+            "{name:?}"
+        );
+    }
+    assert_eq!(
+        unclaimed(&conn),
+        Ok(1),
+        "the seeded account is still unclaimed"
+    );
+}
+
+#[test]
+fn an_account_is_not_claimed_under_an_empty_name() {
+    let library = library();
+    let conn = library.conn();
+    assert_eq!(
+        promote(&conn, "", "a password", "admin"),
+        Err(WriteError::Unusable(NO_NAME.to_string()))
+    );
+    assert_eq!(
+        unclaimed(&conn),
+        Ok(1),
+        "the seeded account is still unclaimed"
+    );
+}
+
+#[test]
+fn an_account_is_not_renamed_to_a_dot_name() {
+    let library = claimed_library();
+    let conn = library.conn();
+    let alex = add(&conn, "alex", "theirs", "user").expect("adds");
+    for name in [".", ".."] {
+        let patch = Patch {
+            name: Some(name.to_string()),
+            can_download: Some(false),
+            ..Patch::default()
+        };
+        assert_eq!(
+            update(&conn, alex, &patch, Some(1)),
+            Err(WriteError::Unusable(crate::NO_ADDRESS.to_string())),
+            "{name:?}"
+        );
+    }
+    let kept = by_id(&conn, alex).expect("reads").expect("still there");
+    assert_eq!(kept.name, "alex");
+    assert!(
+        kept.can_download,
+        "a refused patch wrote none of its fields"
+    );
+}
+
+#[test]
+fn an_account_is_not_renamed_to_an_empty_name() {
+    let library = claimed_library();
+    let conn = library.conn();
+    let alex = add(&conn, "alex", "theirs", "user").expect("adds");
+    let patch = Patch {
+        name: Some(String::new()),
+        can_download: Some(false),
+        ..Patch::default()
+    };
+    assert_eq!(
+        update(&conn, alex, &patch, Some(1)),
+        Err(WriteError::Unusable(NO_NAME.to_string()))
+    );
+    let kept = by_id(&conn, alex).expect("reads").expect("still there");
+    assert_eq!(kept.name, "alex");
+    assert!(
+        kept.can_download,
+        "a refused patch wrote none of its fields"
+    );
+}
+
+/// A taken account name refused in the words `libraries::rename` gives a
+/// taken library name, which the Configuration pages also draw as the name
+/// is typed, rather than in SQLite's report of the constraint.
+const TAKEN_ALEX: &str = "an account is already called `alex`";
+
+/// `add` refuses a name another account holds exactly as written; one that
+/// differs only in case is another account's.
+#[test]
+fn an_account_is_not_added_under_a_name_another_holds() {
+    let library = claimed_library();
+    let conn = library.conn();
+    add(&conn, "alex", "theirs", "user").expect("adds");
+    assert_eq!(
+        add(&conn, "alex", "again", "user"),
+        Err(TAKEN_ALEX.to_string())
+    );
+    add(&conn, "Alex", "theirs", "user").expect("another case is another name");
+}
+
+#[test]
+fn an_account_is_not_claimed_under_a_name_another_holds() {
+    let library = library();
+    let conn = library.conn();
+    add(&conn, "alex", "theirs", "user").expect("adds");
+    assert_eq!(
+        promote(&conn, "alex", "a password", "admin"),
+        Err(WriteError::Unusable(TAKEN_ALEX.to_string()))
+    );
+}
+
+#[test]
+fn an_account_is_not_renamed_to_a_name_another_holds() {
+    let library = claimed_library();
+    let conn = library.conn();
+    add(&conn, "alex", "theirs", "user").expect("adds");
+    let sam = add(&conn, "sam", "theirs", "user").expect("adds");
+    let patch = Patch {
+        name: Some("alex".to_string()),
+        can_download: Some(false),
+        ..Patch::default()
+    };
+    assert_eq!(
+        update(&conn, sam, &patch, Some(1)),
+        Err(WriteError::Unusable(TAKEN_ALEX.to_string()))
+    );
+    let kept = by_id(&conn, sam).expect("reads").expect("still there");
+    assert_eq!(kept.name, "sam");
+    assert!(
+        kept.can_download,
+        "a refused patch wrote none of its fields"
+    );
+}
+
+/// [`check_name`] refuses each name [`add`] and [`promote`] refuse, in their
+/// words, for either: the CLI asks it before reading a password, so a name it
+/// lets through costs the person the secret typed for a write that refuses.
+#[test]
+fn check_name_refuses_each_name_the_writers_refuse() {
+    let library = library();
+    let conn = library.conn();
+    add(&conn, "alex", "theirs", "user").expect("adds");
+    for keeping in [None, Some(1)] {
+        for (name, why) in [
+            (".", crate::NO_ADDRESS),
+            ("..", crate::NO_ADDRESS),
+            ("", NO_NAME),
+            ("alex", TAKEN_ALEX),
+        ] {
+            assert_eq!(
+                check_name(&conn, name, keeping),
+                Err(WriteError::Unusable(why.to_string())),
+                "{name:?}, keeping {keeping:?}"
+            );
+        }
+        assert_eq!(check_name(&conn, "sam", keeping), Ok(()), "{keeping:?}");
+    }
+}
+
+/// The account a promotion reaches holds its own name, and keeping it is no
+/// clash; to [`add`], which reaches no account, the same name is taken.
+#[test]
+fn check_name_lets_the_account_it_keeps_keep_its_own_name() {
+    let library = library();
+    let conn = library.conn();
+    let seeded = by_id(&conn, 1).expect("reads").expect("seeded").name;
+
+    assert_eq!(check_name(&conn, &seeded, Some(1)), Ok(()));
+    assert_eq!(
+        check_name(&conn, &seeded, None),
+        Err(WriteError::Unusable(taken(&seeded)))
+    );
+}
+
+/// A write to `user` that fails on anything but `UNIQUE` is not a taken name:
+/// told so, a person would try another name when no name would do. The fault
+/// is a trigger's `RAISE(ABORT)`, a constraint failure of another kind.
+#[test]
+fn a_failed_account_write_is_not_answered_as_a_taken_name() {
+    let library = library();
+    let conn = library.conn();
+    conn.execute_batch(
+        "CREATE TRIGGER insert_fault BEFORE INSERT ON user \
+         BEGIN SELECT RAISE(ABORT, 'a simulated store fault'); END; \
+         CREATE TRIGGER update_fault BEFORE UPDATE ON user \
+         BEGIN SELECT RAISE(ABORT, 'a simulated store fault'); END;",
+    )
+    .expect("installs the triggers");
+
+    assert_eq!(
+        add(&conn, "alex", "theirs", "user"),
+        Err("adding the account `alex`: a simulated store fault".to_string())
+    );
+    assert_eq!(
+        promote(&conn, "davey", "a password", "admin"),
+        Err(WriteError::Failed(
+            "promoting account 1 to `davey`: a simulated store fault".to_string()
+        ))
+    );
+    let patch = Patch {
+        name: Some("sam".to_string()),
+        ..Patch::default()
+    };
+    assert_eq!(
+        update(&conn, 1, &patch, None),
+        Err(WriteError::Unusable(
+            "updating account 1, name `sam`: a simulated store fault".to_string()
+        ))
+    );
 }
 
 /// §4: changing a password ends the account's other sessions and keeps the one

@@ -3363,3 +3363,61 @@ fn moved_is_written_with_each_value_under_its_own_key() {
     expected["left_with_no_library"] = serde_json::json!([]);
     assert_eq!(super::moved_json(&kept), expected);
 }
+
+/// The sentence the pages draw for a library named `.` or `..`, which no page
+/// address holds.
+const NO_ADDRESS: &str = "An address cannot hold “.” or “..” as a name.";
+
+/// Making a library, renaming one and moving a directory into a new one each
+/// refuse `.` and `..` as the caller's mistake, in the sentence the pages draw,
+/// and write nothing.
+#[tokio::test]
+async fn no_library_is_made_or_renamed_called_a_dot_name() {
+    let (router, state, _held) = test_support::state_with_two_scanned_roots();
+    let fixture = test_support::Fixture::new("library-dot-names");
+    let good = a_dir_of(&fixture, "Volumes", "Alpha");
+    let listed = get_json(&router, "/api/library/libraries").await;
+    let a = the_library(&listed, "root-a");
+    let id = a["id"].as_i64().expect("an id");
+    let dir = a["dirs"][0]["id"].as_i64().expect("a directory id");
+    let stored = the_store(&state);
+
+    for name in [".", ".."] {
+        let (status, refused) = answered(
+            &router,
+            Method::POST,
+            "/api/library/libraries",
+            &serde_json::json!({ "name": name, "dirs": [good] }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "make {name:?}: {refused}");
+        assert_eq!(the_sentence(&refused), NO_ADDRESS, "make {name:?}");
+
+        let (status, refused) = answered(
+            &router,
+            Method::PATCH,
+            &format!("/api/library/libraries/{id}"),
+            &serde_json::json!({ "name": name }),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "rename {name:?}: {refused}"
+        );
+        assert_eq!(the_sentence(&refused), NO_ADDRESS, "rename {name:?}");
+
+        for dry_run in [true, false] {
+            let (status, refused) = moved(
+                &router,
+                dir,
+                dry_run,
+                &serde_json::json!({ "new_library": name }),
+            )
+            .await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "move {name:?}: {refused}");
+            assert_eq!(the_sentence(&refused), NO_ADDRESS, "move {name:?}");
+        }
+    }
+    assert_eq!(the_store(&state), stored);
+}

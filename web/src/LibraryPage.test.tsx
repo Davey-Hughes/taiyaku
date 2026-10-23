@@ -2,11 +2,15 @@ import { act, useState } from 'react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as config from './config'
+import { NO_ADDRESS } from './configAddress'
+import { WAIT_DRAWN_AFTER_MS } from './hooks'
 import * as api from './libraries'
 import { LibraryPage } from './LibraryPage'
 import { deferred, flush } from './testing/async'
 import { emptyDerive } from './testing/derive'
 import { press, submit, typeInto } from './testing/input'
+import { holdOf } from './testing/held'
+import { changesIn } from './testing/liveRegion'
 import {
   counted,
   dir,
@@ -16,6 +20,7 @@ import {
   tick,
 } from './testing/libraries'
 import { mount, rerender } from './testing/mount'
+import { expectRowsWired, row, section } from './testing/settingsRows'
 import { cellValue } from './testing/table'
 
 vi.mock('./config', async (importOriginal) => ({
@@ -34,15 +39,19 @@ vi.mock('./libraries', async (importOriginal) => ({
   startLibraryScan: vi.fn(),
 }))
 
-/** The page at its own route, with each handler a mock. */
-async function shown(library = manga()) {
+/**
+ * The page at its own route, with each handler a mock, in a list that holds
+ * `others` beside it.
+ */
+async function shown(library = manga(), others: api.Library[] = []) {
   const onAdded = vi.fn()
   const onChanged = vi.fn()
   const onRemoved = vi.fn()
-  const page = (drawn: api.Library) => (
-    <MemoryRouter initialEntries={[`/config/libraries/${drawn.id}`]}>
+  const page = (drawn: api.Library, list = others) => (
+    <MemoryRouter initialEntries={[`/config/libraries/${drawn.name}`]}>
       <LibraryPage
         library={drawn}
+        libraries={[drawn, ...list]}
         onAdded={onAdded}
         onChanged={onChanged}
         onRemoved={onRemoved}
@@ -56,10 +65,13 @@ async function shown(library = manga()) {
     await Promise.resolve()
   })
   if (!host) throw new Error('nothing mounted')
-  /** The same page handed another library, as a reload of the list does. */
-  const redraw = (next: api.Library) =>
+  /**
+   * The same page handed another library, and the list's other libraries
+   * if they changed, as a reload of the list does.
+   */
+  const redraw = (next: api.Library, list = others) =>
     act(async () => {
-      rerender(page(next))
+      rerender(page(next, list))
       await Promise.resolve()
     })
   return { host, onAdded, onChanged, onRemoved, redraw }
@@ -68,11 +80,79 @@ async function shown(library = manga()) {
 const button = (host: HTMLElement, name: string) =>
   host.querySelector(`button[name="${name}"]`) as HTMLButtonElement
 
+/** The box that edits the name, in the header's title's place. */
+const nameBox = (host: HTMLElement) =>
+  host.querySelector(
+    '.library-page > .page-header .page-header-text > form.rename-library > input[name="library-name"]',
+  ) as HTMLInputElement
+
+/** The rename's refusal, in the room the header keeps under its line. */
+const renameRefusal = (host: HTMLElement) =>
+  host.querySelector(
+    '.library-page > .page-header > .page-header-answer > [role="alert"]',
+  )
+
+/** What the header draws over what is under it while the name is edited. */
+const editorAnswer = (host: HTMLElement) =>
+  host.querySelector('.library-page > .page-header > .page-header-answer')
+
+/** Why the name typed would be refused, said as it is typed. */
+const clashNote = (host: HTMLElement) =>
+  editorAnswer(host)?.querySelector<HTMLElement>(':scope > [role="status"]')
+
+/** Whether the name box is marked invalid, and what describes it. */
+const boxMarks = (host: HTMLElement) => [
+  nameBox(host).getAttribute('aria-invalid'),
+  nameBox(host).getAttribute('aria-describedby'),
+]
+
+/** Past the time a write may be out before its wait is drawn. */
+const waitDrawn = () =>
+  act(() => new Promise((r) => setTimeout(r, WAIT_DRAWN_AFTER_MS + 50)))
+
+/** Escape pressed on `el`, as a key goes to whatever has focus. */
+const pressEscape = (el: Element) =>
+  flush(() => {
+    el.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }),
+    )
+  })
+
+/** The page's title, beneath the box while the name is edited. */
+const title = (host: HTMLElement) =>
+  host.querySelector('.library-page > .page-header .page-title')
+
+/**
+ * The names and words of the header's buttons in one of its two sets: the
+ * one a person can reach, or the one made inert, which is not seen either.
+ */
+const actions = (host: HTMLElement, set: 'shown' | 'unseen') =>
+  [
+    ...host.querySelectorAll(
+      `.library-page > .page-header .page-actions > .page-actions-set${set === 'shown' ? ':not([inert])' : '[inert]'} button`,
+    ),
+  ].map((b) => [b.getAttribute('name'), b.textContent])
+
+/** The header's line saying what the library holds. */
+const holds = (host: HTMLElement) =>
+  host.querySelector('.library-page > .page-header .page-description > .holds')
+    ?.textContent
+
 /** Press Add directory… and hand back what holds the picker and its refusal. */
 async function openPicker(host: HTMLElement) {
   await press(button(host, 'add-dir'))
-  return host.querySelector('.library-page > .add-root') as HTMLElement
+  return section(host, 'Directories').querySelector(
+    ':scope > .settings-box > .add-root',
+  ) as HTMLElement
 }
+
+/** The titles of the page's sections, in the order they are drawn. */
+const sectionTitles = (host: HTMLElement) =>
+  [
+    ...host.querySelectorAll(
+      '.library-page > .settings-section > .settings-section-head > .settings-section-title',
+    ),
+  ].map((title) => title.textContent)
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -118,16 +198,150 @@ describe('LibraryPage', () => {
 
   it('names the library, what it holds, and a row per directory', async () => {
     const { host } = await shown()
-    expect(host.querySelector('.library-page > h2')?.textContent).toBe('Manga')
-    expect(host.querySelector('.holds')?.textContent).toBe(
-      '12 works in 2 directories',
-    )
+    const header = host.querySelector('.library-page > .page-header')
+    expect(header?.querySelector('.page-title')?.textContent).toBe('Manga')
+    expect(
+      header?.querySelector('.page-description > .holds')?.textContent,
+    ).toBe('12 works in 2 directories')
     expect(
       [...host.querySelectorAll('.dir-table tbody code')].map(
         (c) => c.textContent,
       ),
     ).toEqual(['/media/Manga/Volumes', '/media/Manga/Chapters'])
     expect(host.querySelector('.no-readable')).toBeNull()
+  })
+
+  it('heads itself with ‹ Libraries, its name, what it holds, and Rename… and Scan library as its actions, over Directories and the removal box', async () => {
+    const { host } = await shown()
+    const header = host.querySelector(
+      '.library-page > .page-header',
+    ) as HTMLElement
+    const back = header.querySelector('.back a')
+    expect([back?.textContent, back?.getAttribute('href')]).toEqual([
+      '‹ Libraries',
+      '/config/libraries',
+    ])
+    expect(header.querySelector('.page-title')?.tagName).toBe('H2')
+    expect(title(host)?.hasAttribute('inert')).toBe(false)
+    expect(actions(host, 'shown')).toEqual([
+      ['rename-library', 'Rename…'],
+      ['scan-library', 'Scan library'],
+    ])
+    // Save and Cancel keep the slot they share with these, out of reach.
+    expect(actions(host, 'unseen')).toEqual([
+      ['save-rename', 'Save'],
+      ['cancel-rename', 'Cancel'],
+    ])
+    expect(sectionTitles(host)).toEqual(['Directories', 'Removal'])
+    expect(
+      section(host, 'Directories').querySelector(
+        ':scope > .settings-box > .add-root > button[name="add-dir"]',
+      )?.textContent,
+    ).toBe('Add directory…')
+    const removal = section(host, 'Removal')
+    expect(removal.classList.contains('settings-removal')).toBe(true)
+    expect(
+      row(removal, 'Remove this library').querySelector(
+        'button[name="remove-library"]',
+      )?.textContent,
+    ).toBe('Remove…')
+  })
+
+  it('opens the rename in the header’s title, nothing between the header and Directories, and the removal’s confirm inside the removal box', async () => {
+    vi.mocked(api.libraryRemovalCost).mockReturnValue(new Promise(() => {}))
+    const { host } = await shown()
+    await press(button(host, 'rename-library'))
+    const header = host.querySelector(
+      '.library-page > .page-header',
+    ) as HTMLElement
+    expect(header.contains(nameBox(host))).toBe(true)
+    expect(header.nextElementSibling).toBe(section(host, 'Directories'))
+    await press(button(host, 'remove-library'))
+    expect(
+      section(host, 'Removal').querySelector(
+        ':scope > .settings-box > .remove-library',
+      ),
+    ).not.toBeNull()
+  })
+
+  it('ties each row’s label and help to its control, and names the rename’s box Name — O175', async () => {
+    const { host } = await shown()
+    await press(button(host, 'rename-library'))
+    // Every row the page draws, named, so the check is never over fewer.
+    expect(
+      [...host.querySelectorAll('.settings-row-label')].map(
+        (label) => label.textContent,
+      ),
+    ).toEqual(['Remove this library'])
+    expect(nameBox(host).getAttribute('aria-label')).toBe('Name')
+    expectRowsWired(host)
+  })
+
+  it('lays a box holding the name over the title, which stays inert beneath it, selected, with focus in it, and shows Save and Cancel where Rename… and Scan library were', async () => {
+    const { host } = await shown()
+    await press(button(host, 'rename-library'))
+    // The title holds its place, out of reach, and the box follows it.
+    expect(title(host)?.textContent).toBe('Manga')
+    expect(title(host)?.hasAttribute('inert')).toBe(true)
+    const box = nameBox(host)
+    expect(box.form?.previousElementSibling).toBe(title(host))
+    expect(box.value).toBe('Manga')
+    expect(document.activeElement).toBe(box)
+    expect([box.selectionStart, box.selectionEnd]).toEqual([0, 'Manga'.length])
+    expect(actions(host, 'shown')).toEqual([
+      ['save-rename', 'Save'],
+      ['cancel-rename', 'Cancel'],
+    ])
+    expect(actions(host, 'unseen')).toEqual([
+      ['rename-library', 'Rename…'],
+      ['scan-library', 'Scan library'],
+    ])
+    // Outside the box's form, and its submit all the same, so Enter in the
+    // box presses it.
+    expect(button(host, 'save-rename').form).toBe(box.form)
+    expect(holds(host)).toBe('12 works in 2 directories')
+  })
+
+  it('closes the editor with Escape from the box, Save or Cancel, and with Cancel, putting focus back on Rename…, but holds both from the moment a save is sent', async () => {
+    vi.mocked(api.renameLibrary).mockReturnValue(new Promise(() => {}))
+    const { host } = await shown()
+    const editor = () => host.querySelector('form.rename-library')
+    for (const from of [
+      nameBox,
+      (h: HTMLElement) => button(h, 'save-rename'),
+      (h: HTMLElement) => button(h, 'cancel-rename'),
+    ]) {
+      await press(button(host, 'rename-library'))
+      await pressEscape(from(host))
+      expect(editor()).toBeNull()
+      expect(title(host)?.textContent).toBe('Manga')
+      expect(title(host)?.hasAttribute('inert')).toBe(false)
+      expect(actions(host, 'shown')[0]).toEqual(['rename-library', 'Rename…'])
+      expect(document.activeElement).toBe(button(host, 'rename-library'))
+    }
+
+    await press(button(host, 'rename-library'))
+    await press(button(host, 'cancel-rename'))
+    expect(editor()).toBeNull()
+    expect(document.activeElement).toBe(button(host, 'rename-library'))
+
+    await press(button(host, 'rename-library'))
+    await typeInto(nameBox(host), 'Comics')
+    await submit(host.querySelector('form.rename-library') as Element)
+    // Held before the wait is drawn: Cancel is not drawn held yet.
+    expect(button(host, 'cancel-rename').disabled).toBe(false)
+    await press(button(host, 'cancel-rename'))
+    expect(nameBox(host)).not.toBeNull()
+    for (const from of [
+      nameBox,
+      (h: HTMLElement) => button(h, 'save-rename'),
+      (h: HTMLElement) => button(h, 'cancel-rename'),
+    ]) {
+      await pressEscape(from(host))
+      expect(nameBox(host)).not.toBeNull()
+    }
+    await waitDrawn()
+    expect(button(host, 'cancel-rename').disabled).toBe(true)
   })
 
   it('says so when it holds books and no work, and only then', async () => {
@@ -156,11 +370,41 @@ describe('LibraryPage', () => {
     expect(box.value).toBe('Manga')
 
     await typeInto(box, 'Comics')
-    await submit(host.querySelector('form.rename-library') as Element)
+    // Saved as a mouse saves, with focus on Save, which goes with the editor.
+    const save = button(host, 'save-rename')
+    act(() => save.focus())
+    await press(save)
 
     expect(api.renameLibrary).toHaveBeenCalledWith(7, 'Comics')
     expect(onChanged).toHaveBeenCalled()
     expect(host.querySelector('form.rename-library')).toBeNull()
+    // The title takes focus, and reads the name saved before the list read
+    // again says it (`onChanged` here reads nothing).
+    expect(document.activeElement).toBe(title(host))
+    expect(title(host)?.textContent).toBe('Comics')
+  })
+
+  it('puts focus on the title when the editor closes by Escape or Cancel while the removal holds Rename…', async () => {
+    vi.mocked(api.libraryRemovalCost).mockResolvedValue(counted(12))
+    const { host } = await shown()
+    const cancelRemoval = () =>
+      press(
+        [...host.querySelectorAll('.remove-library button')].find(
+          (b) => b.textContent === 'Cancel',
+        ) as Element,
+      )
+    for (const close of [
+      () => pressEscape(nameBox(host)),
+      () => press(button(host, 'cancel-rename')),
+    ]) {
+      await press(button(host, 'rename-library'))
+      await press(button(host, 'remove-library'))
+      await close()
+      expect(host.querySelector('form.rename-library')).toBeNull()
+      expect(button(host, 'rename-library').disabled).toBe(true)
+      expect(document.activeElement).toBe(title(host))
+      await cancelRemoval()
+    }
   })
 
   it('keeps the rename open and says why when the name is taken', async () => {
@@ -177,12 +421,240 @@ describe('LibraryPage', () => {
     )
     await submit(host.querySelector('form.rename-library') as Element)
 
-    expect(
-      host.querySelector('form.rename-library [role="alert"]')?.textContent,
-    ).toBe('a library is already called `Comics`')
+    expect(renameRefusal(host)?.textContent).toBe(
+      'a library is already called `Comics`',
+    )
+    expect(holds(host)).toBe('12 works in 2 directories')
     expect(host.querySelector('.library-page > [role="alert"]')).toBeNull()
     expect(host.querySelector('form.rename-library')).not.toBeNull()
     expect(onChanged).not.toHaveBeenCalled()
+  })
+
+  it('draws, under the header’s line and as it is typed, why a library cannot be renamed . or .., holds Save and sends nothing', async () => {
+    // The server refuses both names once trimmed, since no address can hold
+    // either; the page says so in the server's sentence before Save.
+    const why = 'An address cannot hold “.” or “..” as a name.'
+    expect(NO_ADDRESS).toBe(why)
+    const { host } = await shown()
+    await press(button(host, 'rename-library'))
+    for (const name of ['..', ' . ']) {
+      await typeInto(nameBox(host), name)
+      expect(
+        [...(editorAnswer(host)?.children ?? [])].map((a) => [
+          a.getAttribute('role'),
+          a.textContent,
+        ]),
+        JSON.stringify(name),
+      ).toEqual([['status', why]])
+      expect(button(host, 'save-rename').disabled).toBe(true)
+    }
+    await submit(host.querySelector('form.rename-library') as Element)
+    expect(api.renameLibrary).not.toHaveBeenCalled()
+  })
+
+  it('says as it is typed that another library holds the name in another case, tied to the box, and holds Save at once until the name is free', async () => {
+    const { host } = await shown(manga(), [manga({ id: 8, name: 'Comics' })])
+    await press(button(host, 'rename-library'))
+    const note = clashNote(host) as HTMLElement
+    // Drawn, empty, before it has anything to say, so that its words are
+    // read out as they come.
+    expect(note.textContent).toBe('')
+    expect(boxMarks(host)).toEqual([null, null])
+
+    await typeInto(nameBox(host), 'COMICS')
+    expect(clashNote(host)).toBe(note)
+    expect(note.textContent).toBe('a library is already called `Comics`')
+    expect(boxMarks(host)).toEqual(['true', note.id])
+    // At once: no wait is drawn for it.
+    expect(button(host, 'save-rename').disabled).toBe(true)
+    expect(button(host, 'save-rename').textContent).toBe('Save')
+    expect(renameRefusal(host)).toBeNull()
+
+    // A keystroke that keeps the clash changes nothing that is read out.
+    const changes = changesIn(note)
+    await typeInto(nameBox(host), 'comics')
+    expect(changes()).toBe(0)
+
+    await typeInto(nameBox(host), 'Comics 2')
+    expect(clashNote(host)).toBe(note)
+    expect(note.textContent).toBe('')
+    expect(boxMarks(host)).toEqual([null, null])
+    expect(button(host, 'save-rename').disabled).toBe(false)
+  })
+
+  it('sends nothing on Enter in the box while the name clashes', async () => {
+    const { host } = await shown(manga(), [manga({ id: 8, name: 'Comics' })])
+    await press(button(host, 'rename-library'))
+    await typeInto(nameBox(host), 'comics')
+    await submit(host.querySelector('form.rename-library') as Element)
+    expect(api.renameLibrary).not.toHaveBeenCalled()
+    expect(host.querySelector('form.rename-library')).not.toBeNull()
+  })
+
+  it('says a taken name once when the list read after a refused rename learns of it', async () => {
+    // A list gone stale: another admin took the name, and a scan's end then
+    // reads the list again while the refusal is drawn.
+    vi.mocked(api.renameLibrary).mockRejectedValue(
+      new Error(
+        '/api/library/libraries/7: 400 {"error":"a library is already called `Comics`"}',
+      ),
+    )
+    const { host, redraw } = await shown()
+    await press(button(host, 'rename-library'))
+    await typeInto(nameBox(host), 'Comics')
+    await submit(host.querySelector('form.rename-library') as Element)
+    await redraw(manga(), [manga({ id: 8, name: 'Comics' })])
+
+    const said = () =>
+      [...(editorAnswer(host)?.children ?? [])]
+        .filter((one) => one.textContent !== '')
+        .map((one) => [one.getAttribute('role'), one.textContent])
+    expect(said()).toEqual([['alert', 'a library is already called `Comics`']])
+    expect(boxMarks(host)).toEqual([null, null])
+    expect(button(host, 'save-rename').disabled).toBe(true)
+
+    // An edit takes the refusal away, and the list's clash is said then.
+    await typeInto(nameBox(host), 'COMICS')
+    expect(said()).toEqual([['status', 'a library is already called `Comics`']])
+    expect(boxMarks(host)).toEqual(['true', clashNote(host)?.id])
+  })
+
+  it('says the clash a list read brings beside a rename refusal in other words, and holds Save with it', async () => {
+    vi.mocked(api.renameLibrary).mockRejectedValue(
+      new Error(
+        '/api/library/libraries/7: 500 {"error":"renaming library 7: database is locked"}',
+      ),
+    )
+    const { host, redraw } = await shown()
+    await press(button(host, 'rename-library'))
+    await typeInto(nameBox(host), 'Comics')
+    await submit(host.querySelector('form.rename-library') as Element)
+    await redraw(manga(), [manga({ id: 8, name: 'Comics' })])
+
+    expect(
+      [...(editorAnswer(host)?.children ?? [])]
+        .filter((one) => one.textContent !== '')
+        .map((one) => [one.getAttribute('role'), one.textContent]),
+    ).toEqual([
+      ['alert', 'renaming library 7: database is locked'],
+      ['status', 'a library is already called `Comics`'],
+    ])
+    expect(boxMarks(host)).toEqual(['true', clashNote(host)?.id])
+    expect(button(host, 'save-rename').disabled).toBe(true)
+  })
+
+  it('moves focus from Save to the name box when a list read holds Save, so that Escape still closes the editor', async () => {
+    const { host, redraw } = await shown()
+    await press(button(host, 'rename-library'))
+    await typeInto(nameBox(host), 'Comics')
+    const save = button(host, 'save-rename')
+    act(() => save.focus())
+    expect(document.activeElement).toBe(save)
+    // Another admin took the name; a scan's end reads the list again.
+    await redraw(manga(), [manga({ id: 8, name: 'Comics' })])
+    expect(save.disabled).toBe(true)
+    expect(document.activeElement).toBe(nameBox(host))
+    await pressEscape(nameBox(host))
+    expect(host.querySelector('form.rename-library')).toBeNull()
+  })
+
+  it('leaves focus on the editor’s Cancel when a list read holds Save', async () => {
+    const { host, redraw } = await shown()
+    await press(button(host, 'rename-library'))
+    await typeInto(nameBox(host), 'Comics')
+    const cancel = button(host, 'cancel-rename')
+    act(() => cancel.focus())
+    await redraw(manga(), [manga({ id: 8, name: 'Comics' })])
+    expect(button(host, 'save-rename').disabled).toBe(true)
+    expect(document.activeElement).toBe(cancel)
+  })
+
+  it('moves focus from Save to the name box once the save’s wait is drawn, and keeps it there through a refusal, so that Escape still closes the editor', async () => {
+    const sent = deferred<{ id: number; name: string }>()
+    vi.mocked(api.renameLibrary).mockReturnValue(sent.promise)
+    const { host } = await shown()
+    await press(button(host, 'rename-library'))
+    await typeInto(nameBox(host), 'Comics')
+    const save = button(host, 'save-rename')
+    act(() => save.focus())
+    await press(save)
+    expect(document.activeElement).toBe(save)
+    await waitDrawn()
+    expect([save.disabled, save.textContent]).toEqual([true, 'Saving…'])
+    expect(document.activeElement).toBe(nameBox(host))
+
+    await flush(() =>
+      sent.reject(
+        new Error(
+          '/api/library/libraries/7: 400 {"error":"a library is already called `Comics`"}',
+        ),
+      ),
+    )
+    expect(renameRefusal(host)?.textContent).toBe(
+      'a library is already called `Comics`',
+    )
+    expect(document.activeElement).toBe(nameBox(host))
+    await pressEscape(nameBox(host))
+    expect(host.querySelector('form.rename-library')).toBeNull()
+  })
+
+  it('moves focus from the editor’s Cancel to the name box once the save’s wait holds it', async () => {
+    const sent = deferred<{ id: number; name: string }>()
+    vi.mocked(api.renameLibrary).mockReturnValue(sent.promise)
+    const { host } = await shown()
+    await press(button(host, 'rename-library'))
+    await typeInto(nameBox(host), 'Comics')
+    await submit(host.querySelector('form.rename-library') as Element)
+    // Tabbed to inside the wait's delay.
+    const cancel = button(host, 'cancel-rename')
+    act(() => cancel.focus())
+    expect(document.activeElement).toBe(cancel)
+    await waitDrawn()
+    expect(cancel.disabled).toBe(true)
+    expect(document.activeElement).toBe(nameBox(host))
+
+    await flush(() =>
+      sent.reject(
+        new Error(
+          '/api/library/libraries/7: 400 {"error":"a library is already called `Comics`"}',
+        ),
+      ),
+    )
+    expect(document.activeElement).toBe(nameBox(host))
+    await pressEscape(nameBox(host))
+    expect(host.querySelector('form.rename-library')).toBeNull()
+  })
+
+  it('puts focus on the title after a save whose wait was drawn, as after one answered at once', async () => {
+    const sent = deferred<{ id: number; name: string }>()
+    vi.mocked(api.renameLibrary).mockReturnValue(sent.promise)
+    const { host } = await shown()
+    await press(button(host, 'rename-library'))
+    await typeInto(nameBox(host), 'Comics')
+    const save = button(host, 'save-rename')
+    act(() => save.focus())
+    await press(save)
+    await waitDrawn()
+    expect(document.activeElement).toBe(nameBox(host))
+
+    await flush(() => sent.resolve({ id: 7, name: 'Comics' }))
+    expect(host.querySelector('form.rename-library')).toBeNull()
+    expect(title(host)?.textContent).toBe('Comics')
+    expect(document.activeElement).toBe(title(host))
+  })
+
+  it('takes the library’s own name, in any case, as no clash', async () => {
+    vi.mocked(api.renameLibrary).mockResolvedValue({ id: 7, name: 'MANGA' })
+    const { host } = await shown(manga(), [manga({ id: 8, name: 'Comics' })])
+    await press(button(host, 'rename-library'))
+    expect(nameBox(host).value).toBe('Manga')
+    expect(clashNote(host)?.textContent).toBe('')
+    await typeInto(nameBox(host), 'MANGA')
+    expect(clashNote(host)?.textContent).toBe('')
+    expect(boxMarks(host)).toEqual([null, null])
+    expect(button(host, 'save-rename').disabled).toBe(false)
+    await submit(host.querySelector('form.rename-library') as Element)
+    expect(api.renameLibrary).toHaveBeenCalledWith(7, 'MANGA')
   })
 
   it('adds a directory to this library, hands its probe up, and reloads', async () => {
@@ -247,8 +719,8 @@ describe('LibraryPage', () => {
     await flush()
     expect(api.startLibraryScan).toHaveBeenCalledTimes(1)
     expect(api.startLibraryScan).toHaveBeenCalledWith(7)
-    expect(button(host, 'scan-library').disabled).toBe(true)
-    expect(button(host, 'remove-library').disabled).toBe(true)
+    expect(holdOf(button(host, 'scan-library'))).toBe('held')
+    expect(holdOf(button(host, 'remove-library'))).toBe('held')
     expect(config.startScan).not.toHaveBeenCalled()
 
     await act(async () => {
@@ -268,7 +740,7 @@ describe('LibraryPage', () => {
       await Promise.resolve()
     })
     expect(host.querySelector('.library-page > .scanning')).toBeNull()
-    expect(button(host, 'scan-library').disabled).toBe(false)
+    expect(holdOf(button(host, 'scan-library'))).toBe('free')
     expect(onChanged).toHaveBeenCalledTimes(1)
     expect(onChanged).toHaveBeenCalledWith(true)
   })
@@ -283,7 +755,7 @@ describe('LibraryPage', () => {
     expect(
       host.querySelector('.library-page > .scanning')?.textContent,
     ).toContain('41s')
-    expect(button(host, 'scan-library').disabled).toBe(true)
+    expect(holdOf(button(host, 'scan-library'))).toBe('held')
   })
 
   it('reads a 409 as a scan in flight: the sentence, and a poll', async () => {
@@ -300,14 +772,18 @@ describe('LibraryPage', () => {
     expect(host.querySelector('.library-page > .scanning')).not.toBeNull()
   })
 
-  it('opens the removal dialog, and holds the scan button while it is open', async () => {
+  it('opens the removal dialog, and holds the scan button while it is open, sending nothing from it', async () => {
     vi.mocked(api.libraryRemovalCost).mockReturnValue(new Promise(() => {}))
     const { host } = await shown()
     await press(button(host, 'remove-library'))
     expect(
       host.querySelector('.remove-library')?.getAttribute('aria-label'),
     ).toBe('Remove the library Manga')
-    expect(button(host, 'scan-library').disabled).toBe(true)
+    // Out of the tab order: focus is on Remove… as this hold comes on.
+    expect(holdOf(button(host, 'scan-library'))).toBe('disabled')
+    await press(button(host, 'scan-library'))
+    expect(api.startLibraryScan).not.toHaveBeenCalled()
+    expect(host.querySelector('.library-page > .scanning')).toBeNull()
   })
 
   it('hands up the real answer of a removal, by name, and does not reload itself', async () => {
@@ -334,8 +810,9 @@ describe('LibraryPage', () => {
     vi.mocked(api.startLibraryScan).mockReturnValue(new Promise(() => {}))
     const { host } = await shown()
     await press(button(host, 'scan-library'))
-    expect(button(host, 'scan-library').disabled).toBe(true)
-    expect(button(host, 'remove-library').disabled).toBe(true)
+    expect(holdOf(button(host, 'scan-library'))).toBe('held')
+    // Out of the tab order: focus is on Scan library as this hold comes on.
+    expect(holdOf(button(host, 'remove-library'))).toBe('disabled')
   })
 
   it('draws a failed scan start as its sentence and no running scan', async () => {
@@ -348,10 +825,10 @@ describe('LibraryPage', () => {
       host.querySelector('.library-page > [role="alert"]')?.textContent,
     ).toContain('the store is locked')
     expect(host.querySelector('.library-page > .scanning')).toBeNull()
-    expect(button(host, 'scan-library').disabled).toBe(false)
+    expect(holdOf(button(host, 'scan-library'))).toBe('free')
   })
 
-  it('sends one rename for two submits, with Save disabled meanwhile', async () => {
+  it('sends one rename for two submits, and draws Save waiting only once the save has been out a while', async () => {
     vi.mocked(api.renameLibrary).mockReturnValue(new Promise(() => {}))
     const { host } = await shown()
     await press(button(host, 'rename-library'))
@@ -363,11 +840,44 @@ describe('LibraryPage', () => {
     await submit(form)
     await submit(form)
     expect(api.renameLibrary).toHaveBeenCalledTimes(1)
-    const save = form.querySelector(
-      'button[type="submit"]',
-    ) as HTMLButtonElement
-    expect(save.disabled).toBe(true)
-    expect(save.textContent).toBe('Saving…')
+    const save = button(host, 'save-rename')
+    expect([save.disabled, save.textContent]).toEqual([false, 'Save'])
+    await waitDrawn()
+    expect([save.disabled, save.textContent]).toEqual([true, 'Saving…'])
+    await submit(form)
+    expect(api.renameLibrary).toHaveBeenCalledTimes(1)
+  })
+
+  it('never draws Save waiting, nor Save or Cancel held, for a save answered at once', async () => {
+    vi.mocked(api.renameLibrary).mockResolvedValue({ id: 7, name: 'Comics' })
+    const { host } = await shown()
+    await press(button(host, 'rename-library'))
+    await typeInto(nameBox(host), 'Comics')
+    const save = button(host, 'save-rename')
+    const cancel = button(host, 'cancel-rename')
+    // Every state the two are drawn in, not only the last.
+    const drawn: string[] = []
+    const record = () =>
+      drawn.push(
+        `${save.textContent} ${save.disabled} ${cancel.textContent} ${cancel.disabled}`,
+      )
+    const watch = new MutationObserver(record)
+    for (const el of [save, cancel]) {
+      watch.observe(el, {
+        attributes: true,
+        childList: true,
+        characterData: true,
+        subtree: true,
+      })
+    }
+    record()
+    await submit(host.querySelector('form.rename-library') as Element)
+    await waitDrawn()
+    watch.disconnect()
+    record()
+    expect(api.renameLibrary).toHaveBeenCalledTimes(1)
+    expect(host.querySelector('form.rename-library')).toBeNull()
+    expect(new Set(drawn)).toEqual(new Set(['Save false Cancel false']))
   })
 
   it('lets a rename be saved while a scan is being started', async () => {
@@ -453,8 +963,8 @@ describe('LibraryPage, a library and its directories', () => {
     vi.mocked(api.libraryScanStatus).mockResolvedValue(scanningIn(manga(), 2))
     const { host } = await shown()
 
-    expect(button(host, 'scan-library').disabled).toBe(true)
-    expect(button(host, 'remove-library').disabled).toBe(true)
+    expect(holdOf(button(host, 'scan-library'))).toBe('held')
+    expect(holdOf(button(host, 'remove-library'))).toBe('held')
     await press(button(host, 'scan-library'))
     await press(button(host, 'remove-library'))
     expect(api.startLibraryScan).not.toHaveBeenCalled()
@@ -479,11 +989,11 @@ describe('LibraryPage, a library and its directories', () => {
   it('frees the library once the directory’s scan has ended', async () => {
     vi.mocked(api.libraryScanStatus).mockResolvedValue(scanningIn(manga(), 2))
     const { host } = await shown()
-    expect(button(host, 'scan-library').disabled).toBe(true)
+    expect(holdOf(button(host, 'scan-library'))).toBe('held')
     vi.mocked(api.libraryScanStatus).mockResolvedValue(idle(7))
     await tick()
-    expect(button(host, 'scan-library').disabled).toBe(false)
-    expect(button(host, 'remove-library').disabled).toBe(false)
+    expect(holdOf(button(host, 'scan-library'))).toBe('free')
+    expect(holdOf(button(host, 'remove-library'))).toBe('free')
   })
 
   it('draws a Directories table: a row per directory, its path a link to the directory’s page, how often it is scanned and when it last was', async () => {
@@ -501,7 +1011,11 @@ describe('LibraryPage, a library and its directories', () => {
       }),
     )
     const table = host.querySelector('table.dir-table') as HTMLElement
-    expect(table.previousElementSibling?.textContent).toBe('Directories')
+    expect(
+      section(host, 'Directories').querySelector(
+        ':scope > .settings-box > table.dir-table',
+      ),
+    ).toBe(table)
     expect(
       [...table.querySelectorAll('thead th')].map((th) => th.textContent),
     ).toEqual(['Path', 'Scan every', 'Last scan'])
@@ -517,15 +1031,15 @@ describe('LibraryPage, a library and its directories', () => {
       })),
     ).toEqual([
       {
-        links: [['/media/Manga/Volumes', '/config/libraries/7/dirs/1']],
+        links: [['/media/Manga/Volumes', '/config/libraries/Manga/dirs/1']],
         cells: ['/media/Manga/Volumes', '24h', 'Never'],
       },
       {
-        links: [['/media/Manga/Chapters', '/config/libraries/7/dirs/4']],
+        links: [['/media/Manga/Chapters', '/config/libraries/Manga/dirs/4']],
         cells: [
           '/media/Manga/Chapters',
           'not set',
-          '2026-10-01 10:00:00 · failed',
+          '2026-10-01 10:00:00 UTC\u00a0·\u00a0failed',
         ],
       },
     ])
@@ -550,7 +1064,7 @@ describe('LibraryPage, a library and its directories', () => {
 
     vi.mocked(api.libraryScanStatus).mockResolvedValue(idle(7))
     await tick()
-    expect(lastScans(host)).toEqual(['Never', '2026-10-01 10:00:00'])
+    expect(lastScans(host)).toEqual(['Never', '2026-10-01 10:00:00 UTC'])
 
     // A scan of the library is a scan of every directory in it.
     vi.mocked(api.libraryScanStatus).mockResolvedValue(
@@ -581,6 +1095,36 @@ describe('LibraryPage, a library and its directories', () => {
     expect(document.activeElement).toBe(button(host, 'add-dir'))
   })
 
+  it('moves focus from Add directory to the path box as the add holds it, and keeps it there through a refusal', async () => {
+    const sent = deferred<config.Added>()
+    vi.mocked(api.addDir).mockReturnValue(sent.promise)
+    const { host } = await shown()
+    const picker = await openPicker(host)
+    const box = picker.querySelector('input[name="path"]') as HTMLInputElement
+    await typeInto(box, '/media/x')
+    const pick = picker.querySelector(
+      'button[name="pick"]',
+    ) as HTMLButtonElement
+    act(() => pick.focus())
+    await press(pick)
+    expect(api.addDir).toHaveBeenCalledWith(7, '/media/x')
+    expect(pick.disabled).toBe(true)
+    expect(document.activeElement).toBe(box)
+
+    await flush(() =>
+      sent.reject(
+        new Error(
+          '/api/library/libraries/7/dirs: 400 {"error":"/media/x: No such file or directory (os error 2)"}',
+        ),
+      ),
+    )
+    expect(picker.querySelector('[role="alert"]')?.textContent).toBe(
+      '/media/x: No such file or directory (os error 2)',
+    )
+    expect(box.value).toBe('/media/x')
+    expect(document.activeElement).toBe(box)
+  })
+
   it('closes the picker once a directory is added, and the directory joins the table when the list is read again', async () => {
     const added: config.Added = {
       root: dir(3, '/media/Manga/Extras'),
@@ -595,9 +1139,10 @@ describe('LibraryPage, a library and its directories', () => {
     function Reloading() {
       const [library, setLibrary] = useState(before)
       return (
-        <MemoryRouter initialEntries={['/config/libraries/7']}>
+        <MemoryRouter initialEntries={['/config/libraries/Manga']}>
           <LibraryPage
             library={library}
+            libraries={[library]}
             onAdded={vi.fn()}
             onChanged={() => setLibrary(after)}
             onRemoved={vi.fn()}
@@ -626,9 +1171,9 @@ describe('LibraryPage, a library and its directories', () => {
         a.getAttribute('href'),
       ]),
     ).toEqual([
-      ['/media/Manga/Volumes', '/config/libraries/7/dirs/1'],
-      ['/media/Manga/Chapters', '/config/libraries/7/dirs/2'],
-      ['/media/Manga/Extras', '/config/libraries/7/dirs/3'],
+      ['/media/Manga/Volumes', '/config/libraries/Manga/dirs/1'],
+      ['/media/Manga/Chapters', '/config/libraries/Manga/dirs/2'],
+      ['/media/Manga/Extras', '/config/libraries/Manga/dirs/3'],
     ])
   })
 
@@ -664,23 +1209,31 @@ describe('LibraryPage, a library and its directories', () => {
     )
     const { host } = await shown()
     await flush()
-    expect(host.querySelector('.library-scan-reports')).toBeNull()
+    expect(sectionTitles(host)).toEqual(['Directories', 'Removal'])
     vi.mocked(api.libraryScanStatus).mockResolvedValue(
       scanningIn(manga(), 1, 2),
     )
     await press(button(host, 'scan-library'))
     await tick()
     await flush()
-    expect(host.querySelector('.library-scan-reports')).toBeNull()
+    expect(sectionTitles(host)).toEqual(['Directories', 'Removal'])
 
     vi.mocked(api.libraryScanStatus).mockResolvedValue(idle(7))
     await tick()
     await flush()
 
-    const section = host.querySelector('.library-scan-reports') as HTMLElement
-    expect(section).not.toBeNull()
-    expect(section.querySelector('h3')?.textContent).toBe('What the scan found')
-    const reports = [...section.querySelectorAll('.dir-report')]
+    // Between the directories and the removal box, its heading an h3 and
+    // each directory's path an h4 beneath it.
+    expect(sectionTitles(host)).toEqual([
+      'Directories',
+      'What the scan found',
+      'Removal',
+    ])
+    const found = section(host, 'What the scan found')
+    expect(found.querySelector('h3')?.textContent).toBe('What the scan found')
+    const reports = [
+      ...found.querySelectorAll(':scope > .settings-box > .dir-report'),
+    ]
     // Per report, so a report drawn under the wrong directory is seen.
     expect(
       reports.map((one) => ({
@@ -738,9 +1291,13 @@ const reporting = () =>
 
 /** The paths the reports of the last scan are drawn under, in order. */
 const reportedPaths = (host: HTMLElement) =>
-  [...host.querySelectorAll('.library-scan-reports .dir-report h4')].map(
-    (h) => h.textContent,
-  )
+  sectionTitles(host).includes('What the scan found')
+    ? [
+        ...section(host, 'What the scan found').querySelectorAll(
+          '.dir-report > h4',
+        ),
+      ].map((h) => h.textContent)
+    : []
 
 describe('LibraryPage, whose reports a scan draws', () => {
   it('draws no report for a directory that joined the library while the scan ran, though its status holds one', async () => {
@@ -843,7 +1400,7 @@ describe('LibraryPage, what it says went wrong', () => {
     await tick()
     expect(pageAlert(host)).toBeNull()
     expect(host.querySelector('.library-page > .scanning')).toBeNull()
-    expect(button(host, 'scan-library').disabled).toBe(false)
+    expect(holdOf(button(host, 'scan-library'))).toBe('free')
   })
 
   it('keeps a 409’s sentence through a poll that finds the scan still running', async () => {
@@ -892,7 +1449,7 @@ describe('LibraryPage, what it says went wrong', () => {
         (a) => a.textContent,
       ),
     ).toEqual(['bad gateway'])
-    expect(button(host, 'scan-library').disabled).toBe(false)
+    expect(holdOf(button(host, 'scan-library'))).toBe('free')
   })
 
   it('draws a failed scan start as the server’s sentence', async () => {
@@ -904,31 +1461,30 @@ describe('LibraryPage, what it says went wrong', () => {
     expect(pageAlert(host)?.textContent).toBe('no disk')
   })
 
-  it('draws a rename refusal in the rename form, until the name is edited or the form is cancelled', async () => {
+  it('draws a rename refusal under the header’s line, beneath the count it leaves in place, until the name is edited or the editor is cancelled', async () => {
     vi.mocked(api.renameLibrary).mockRejectedValue(
       new Error('/api/library/libraries/7: 400 {"error":"taken"}'),
     )
     const { host } = await shown()
     await press(button(host, 'rename-library'))
     const form = () => host.querySelector('form.rename-library') as HTMLElement
-    const box = form().querySelector('input') as HTMLInputElement
+    const box = nameBox(host)
     await typeInto(box, 'Comics')
     await submit(form())
-    expect(form().querySelector('[role="alert"]')?.textContent).toBe('taken')
+    expect(renameRefusal(host)?.textContent).toBe('taken')
+    expect(holds(host)).toBe('12 works in 2 directories')
 
     await typeInto(box, 'Comics Two')
-    expect(form().querySelector('[role="alert"]')).toBeNull()
+    expect(renameRefusal(host)).toBeNull()
+    expect(holds(host)).toBe('12 works in 2 directories')
 
     await submit(form())
-    expect(form().querySelector('[role="alert"]')).not.toBeNull()
-    await press(
-      [...form().querySelectorAll('button')].find(
-        (b) => b.textContent === 'Cancel',
-      ) as Element,
-    )
+    expect(renameRefusal(host)).not.toBeNull()
+    await press(button(host, 'cancel-rename'))
     expect(host.querySelector('form.rename-library')).toBeNull()
+    expect(holds(host)).toBe('12 works in 2 directories')
     await press(button(host, 'rename-library'))
-    expect(host.querySelector('form.rename-library [role="alert"]')).toBeNull()
+    expect(renameRefusal(host)).toBeNull()
   })
 
   it('holds no rename refusal while the next attempt is in flight', async () => {
@@ -940,11 +1496,11 @@ describe('LibraryPage, what it says went wrong', () => {
     const { host } = await shown()
     await press(button(host, 'rename-library'))
     const form = () => host.querySelector('form.rename-library') as HTMLElement
-    await typeInto(form().querySelector('input') as HTMLInputElement, 'Comics')
+    await typeInto(nameBox(host), 'Comics')
     await submit(form())
-    expect(form().querySelector('[role="alert"]')).not.toBeNull()
+    expect(renameRefusal(host)).not.toBeNull()
     await submit(form())
-    expect(form().querySelector('[role="alert"]')).toBeNull()
+    expect(renameRefusal(host)).toBeNull()
   })
 
   it('draws an add refusal beside the picker, and holds none while the next attempt is in flight', async () => {
@@ -1048,7 +1604,20 @@ describe('LibraryPage, what it says went wrong', () => {
     expect(api.libraryScanStatus).not.toHaveBeenCalled()
   })
 
-  it('closes the library’s removal dialog with Cancel, and the rename form with Cancel', async () => {
+  it('hands focus back to Remove… when the library’s removal confirm is cancelled', async () => {
+    vi.mocked(api.libraryRemovalCost).mockResolvedValue(counted(12))
+    const { host } = await shown()
+    await press(button(host, 'remove-library'))
+    const cancel = [...host.querySelectorAll('.remove-library button')].find(
+      (b) => b.textContent === 'Cancel',
+    ) as HTMLButtonElement
+    act(() => cancel.focus())
+    await press(cancel)
+    expect(host.querySelector('.remove-library')).toBeNull()
+    expect(document.activeElement).toBe(button(host, 'remove-library'))
+  })
+
+  it('closes the library’s removal dialog with Cancel, and the name’s editor with Cancel', async () => {
     vi.mocked(api.libraryRemovalCost).mockResolvedValue(counted(12))
     const { host } = await shown()
     await press(button(host, 'remove-library'))
@@ -1060,11 +1629,7 @@ describe('LibraryPage, what it says went wrong', () => {
     expect(host.querySelector('.remove-library')).toBeNull()
 
     await press(button(host, 'rename-library'))
-    await press(
-      [...host.querySelectorAll('form.rename-library button')].find(
-        (b) => b.textContent === 'Cancel',
-      ) as Element,
-    )
+    await press(button(host, 'cancel-rename'))
     expect(host.querySelector('form.rename-library')).toBeNull()
   })
 })
@@ -1078,10 +1643,10 @@ describe('LibraryPage, scans and removals of a library and its directories exclu
     await press(button(host, 'remove-library'))
     const confirm = () =>
       host.querySelector('.remove-library .confirm') as HTMLButtonElement
-    expect(confirm().disabled).toBe(false)
+    expect(holdOf(confirm())).toBe('free')
 
     await flush(() => late.resolve(scanningIn(manga(), 2)))
-    expect(confirm().disabled).toBe(true)
+    expect(holdOf(confirm())).toBe('held')
     confirm().click()
     await flush()
     expect(api.removeLibrary).not.toHaveBeenCalled()
@@ -1101,7 +1666,7 @@ describe('LibraryPage, scans and removals of a library and its directories exclu
     expect(
       host.querySelector('.remove-library .counts')?.textContent,
     ).toContain('9 works')
-    expect(confirm().disabled).toBe(false)
+    expect(holdOf(confirm())).toBe('free')
   })
 
   it('holds the library’s removal when the page’s own first read finds a scan under its open dialog', async () => {
@@ -1112,12 +1677,12 @@ describe('LibraryPage, scans and removals of a library and its directories exclu
     await press(button(host, 'remove-library'))
     const confirm = () =>
       host.querySelector('.remove-library .confirm') as HTMLButtonElement
-    expect(confirm().disabled).toBe(false)
+    expect(holdOf(confirm())).toBe('free')
 
     await flush(() =>
       late.resolve({ ...idle(7), running: true, elapsed_secs: 5 }),
     )
-    expect(confirm().disabled).toBe(true)
+    expect(holdOf(confirm())).toBe('held')
     confirm().click()
     await flush()
     expect(api.removeLibrary).not.toHaveBeenCalled()
@@ -1137,9 +1702,7 @@ describe('LibraryPage, scans and removals of a library and its directories exclu
     await typeInto(box, '/media/Manga/Extras')
     await press(button(host, 'remove-library'))
 
-    const save = host.querySelector(
-      'form.rename-library button[type="submit"]',
-    ) as HTMLButtonElement
+    const save = button(host, 'save-rename')
     expect(held(save, add)).toEqual([true, true])
     await press(save)
     await press(add)
@@ -1192,8 +1755,8 @@ describe('LibraryPage, scans and removals of a library and its directories exclu
         (c) => c.textContent,
       )
     expect(links()).toEqual([
-      '/config/libraries/7/dirs/1',
-      '/config/libraries/7/dirs/2',
+      '/config/libraries/Manga/dirs/1',
+      '/config/libraries/Manga/dirs/2',
     ])
 
     await press(button(host, 'remove-library'))
@@ -1215,8 +1778,8 @@ describe('LibraryPage, scans and removals of a library and its directories exclu
       ) as Element,
     )
     expect(links()).toEqual([
-      '/config/libraries/7/dirs/1',
-      '/config/libraries/7/dirs/2',
+      '/config/libraries/Manga/dirs/1',
+      '/config/libraries/Manga/dirs/2',
     ])
   })
 
@@ -1237,9 +1800,7 @@ describe('LibraryPage, scans and removals of a library and its directories exclu
       host.querySelector('form.rename-library input') as HTMLInputElement,
       'Comics',
     )
-    const save = host.querySelector(
-      'form.rename-library button[type="submit"]',
-    ) as HTMLButtonElement
+    const save = button(host, 'save-rename')
     expect(save.disabled).toBe(false)
     await press(save)
     expect(api.renameLibrary).toHaveBeenCalledWith(7, 'Comics')
@@ -1289,25 +1850,28 @@ describe('LibraryPage, what a refusal outlasts', () => {
     expect(picker.querySelector('[role="alert"]')?.textContent).toBe('nope')
   })
 
-  it('keeps a rename’s refusal through a scan of the library', async () => {
-    vi.mocked(api.startLibraryScan).mockResolvedValue(started)
+  // Scan library is not drawn while the name is edited, so the scan is one
+  // the page took up on being drawn, and it ends under the refusal.
+  it('keeps a rename’s refusal through the end of a scan of the library', async () => {
+    vi.mocked(api.libraryScanStatus).mockResolvedValue({
+      ...idle(7),
+      running: true,
+      elapsed_secs: 3,
+    })
     vi.mocked(api.renameLibrary).mockRejectedValue(
       new Error('/api/library/libraries/7: 400 {"error":"taken"}'),
     )
-    const { host } = await shown()
+    const { host, onChanged } = await shown()
     await press(button(host, 'rename-library'))
-    await typeInto(
-      host.querySelector('form.rename-library input') as HTMLInputElement,
-      'Comics',
-    )
+    await typeInto(nameBox(host), 'Comics')
     await submit(host.querySelector('form.rename-library') as Element)
-    const alert = () =>
-      host.querySelector('form.rename-library [role="alert"]')?.textContent
-    expect(alert()).toBe('taken')
+    expect(renameRefusal(host)?.textContent).toBe('taken')
 
-    await press(button(host, 'scan-library'))
-    expect(api.startLibraryScan).toHaveBeenCalled()
-    expect(alert()).toBe('taken')
+    vi.mocked(api.libraryScanStatus).mockResolvedValue(idle(7))
+    await tick()
+    expect(host.querySelector('.library-page > .scanning')).toBeNull()
+    expect(onChanged).toHaveBeenCalledWith(true)
+    expect(renameRefusal(host)?.textContent).toBe('taken')
   })
 
   it('clears an add’s refusal when browsing writes another path into the box', async () => {

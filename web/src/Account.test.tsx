@@ -604,6 +604,46 @@ describe('Account', () => {
     expect(host.textContent).toMatch(/API keys still work/)
   })
 
+  // Both placements draw the one confirmation. One `it()` each:
+  // `testing/mount.ts` holds one root.
+  for (const placement of ['page', 'panel'] as const) {
+    it(`says a password change worked in a polite live region drawn empty before it, as a ${placement}`, async () => {
+      // A region drawn together with what it says is often not read at all.
+      vi.stubGlobal(
+        'fetch',
+        server({
+          '/api/keys': () => json([]),
+          '/api/sessions': () => json([]),
+          'PUT /api/password': () => new Response(null, { status: 204 }),
+        }),
+      )
+      const host = mount(
+        placement === 'page' ? (
+          <Account placement="page" onSignedOut={noop} />
+        ) : (
+          <Account visible onClose={noop} onSignedOut={noop} />
+        ),
+      )
+      await settle()
+      const region = host.querySelector('[aria-live="polite"]')
+      expect(region?.textContent).toBe('')
+
+      await act(async () => {
+        host
+          .querySelector('form')
+          ?.dispatchEvent(
+            new Event('submit', { bubbles: true, cancelable: true }),
+          )
+        await Promise.resolve()
+      })
+      await settle()
+      expect(host.querySelector('[aria-live="polite"]')).toBe(region)
+      expect(region?.textContent).toBe(
+        'Password changed. Every other signed-in browser has been signed out; API keys still work.',
+      )
+    })
+  }
+
   it('shows why a password change was refused', async () => {
     vi.stubGlobal(
       'fetch',

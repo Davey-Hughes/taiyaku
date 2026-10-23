@@ -229,16 +229,17 @@ fn promote_with(args: &[String], ask: AskForPassword<'_>) -> Result<(), String> 
     let role = role_of(args, PROMOTE_DEFAULT_ROLE)?;
     let library = open(args)?;
     // **Before the prompt, not after.** A library that has already been claimed
-    // has nothing to promote, and reading a password twice before saying so
-    // makes a person do the work and type the secret for a command that was
-    // never going to act.
+    // has nothing to promote, a name the store refuses is never given, and
+    // reading a password twice before saying so makes a person do the work and
+    // type the secret for a command that was never going to act.
     {
         let conn = library.conn();
-        account::unclaimed(&conn)?;
+        let id = account::unclaimed(&conn)?;
+        account::check_name(&conn, name, Some(id)).map_err(|e| e.to_string())?;
     }
     let password = ask("password")?;
     let conn = library.conn();
-    let id = account::promote(&conn, name, &password, &role)?;
+    let id = account::promote(&conn, name, &password, &role).map_err(|e| e.to_string())?;
     println!("promoted account {id} to `{name}` ({role})");
     println!("everything recorded before now — notes, reading positions — belongs to this account");
     Ok(())
@@ -252,6 +253,9 @@ fn add_with(args: &[String], ask: AskForPassword<'_>) -> Result<(), String> {
     };
     let role = role_of(args, ADD_DEFAULT_ROLE)?;
     let library = open(args)?;
+    // Before the prompt, for `promote_with`'s reason: a name the store refuses
+    // would be refused only after the password had been typed twice.
+    account::check_name(&library.conn(), name, None).map_err(|e| e.to_string())?;
     let password = ask("password")?;
     let conn = library.conn();
     let id = account::add(&conn, name, &password, &role)?;

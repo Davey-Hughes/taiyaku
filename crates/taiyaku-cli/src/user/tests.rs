@@ -174,9 +174,7 @@ fn listing_accounts_reaches_a_real_library() {
 /// The default reaching a stored row, not only `role_of`'s return.
 ///
 /// Driven through `account::add` rather than through the `add` command, which
-/// prompts for a password and would block on stdin — the same reason
-/// `promoting_a_claimed_library_points_at_user_add` can only reach the refusal
-/// that happens before the prompt.
+/// prompts for a password and would block on stdin.
 #[test]
 fn a_second_account_added_from_the_command_line_is_a_reader() {
     let (_dir, db, _flags) = a_library("add-is-a-reader");
@@ -250,13 +248,15 @@ fn an_unknown_account_is_named_in_the_refusal() {
 #[test]
 fn promoting_a_claimed_library_points_at_user_add() {
     let (_dir, _db, flags) = a_library("promote-twice");
-    // **Refused before any password is read**, which is what makes this test
-    // able to run at all: the version that prompted first would block on stdin
-    // here forever, which is exactly what it does to a person.
-    let err = command(&with(&flags, &["promote", "someone-else"])).unwrap_err();
-    assert!(
-        err.contains("already has a password") || err.contains("password"),
-        "{err}"
+    // `someone-else` is a name the store would give, so only the claim can
+    // refuse it, and `never_asked` holds that it does so before the prompt.
+    assert_eq!(
+        promote_with(&with(&flags, &["someone-else"]), &never_asked),
+        Err(
+            "every account in this library already has a password, so there is none \
+             to promote. `taiyaku library user add <name>` creates another"
+                .to_string()
+        )
     );
 }
 
@@ -332,6 +332,68 @@ fn add_creates_a_reader_end_to_end() {
     // A name already taken is refused rather than silently doing nothing.
     let taken = add_with(&with(&flags, &["alex"]), &says("again")).unwrap_err();
     assert!(taken.contains("alex"), "{taken}");
+}
+
+/// A password source that fails the test if it is asked: the command was to
+/// refuse the name, or the claim, before reading one.
+fn never_asked(prompt: &str) -> Result<String, String> {
+    panic!("asked for the {prompt} before refusing")
+}
+
+/// Each name the store refuses for an account, with the sentence it refuses
+/// it in, where `alex` is held by another account.
+const REFUSED_NAMES: [(&str, &str); 4] = [
+    (".", "An address cannot hold “.” or “..” as a name."),
+    ("..", "An address cannot hold “.” or “..” as a name."),
+    ("", "an account needs a name, since its page is at its name"),
+    ("alex", "an account is already called `alex`"),
+];
+
+/// `user add` refuses each name the store refuses before it asks for a
+/// password, so nobody types a secret twice for an account never made.
+#[test]
+fn add_refuses_a_name_before_asking_for_a_password() {
+    let (_dir, db, flags) = a_library("add-name-first");
+    {
+        let library = Library::open(&db).expect("opens");
+        account::add(&library.conn(), "alex", "theirs", "user").expect("adds");
+    }
+    for (name, said) in REFUSED_NAMES {
+        assert_eq!(
+            add_with(&with(&flags, &[name]), &never_asked),
+            Err(said.to_string()),
+            "{name:?}"
+        );
+    }
+}
+
+/// `user promote` does the same, and the account it would promote keeps its
+/// own name: giving that is no clash.
+#[test]
+fn promote_refuses_a_name_before_asking_for_a_password() {
+    let dir = scratch("promote-name-first");
+    let db = dir.join("library.db");
+    {
+        let library = Library::open(&db).expect("opens");
+        account::add(&library.conn(), "alex", "theirs", "user").expect("adds");
+    }
+    let flags = vec!["--db".to_string(), db.to_str().unwrap().to_string()];
+    for (name, said) in REFUSED_NAMES {
+        assert_eq!(
+            promote_with(&with(&flags, &[name]), &never_asked),
+            Err(said.to_string()),
+            "{name:?}"
+        );
+    }
+    let seeded = {
+        let library = Library::open(&db).expect("opens");
+        let conn = library.conn();
+        conn.query_row("SELECT name FROM user WHERE id = 1", [], |row| {
+            row.get::<_, String>(0)
+        })
+        .expect("reads")
+    };
+    promote_with(&with(&flags, &[&seeded]), &says("a real password")).expect("promotes");
 }
 
 /// `user password` replaces the hash and ends the account's sessions.

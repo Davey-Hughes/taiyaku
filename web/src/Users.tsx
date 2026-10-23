@@ -6,9 +6,10 @@
  * **The screen owns who exists; an account's page owns what it is doing.**
  * `Libraries`' split, and the same reason: a patch, a revocation and a dry
  * run belong to the account being administered. Each page reads the list
- * this screen holds and picks its account by id; there is no route that
- * answers one account. The list is read when the screen mounts, again on
- * each move between its pages, and after every write the server carries out.
+ * this screen holds and picks its account by the name its address spells, as
+ * `configAddress.ts` finds it; there is no route that answers one account.
+ * The list is read when the screen mounts, again on each move between its
+ * pages, and after every write the server carries out.
  *
  * **The libraries list is fetched here and handed down**, on mount and again
  * on each move between pages, as the list of accounts is. `libraries.ts`
@@ -48,25 +49,32 @@ import {
   useState,
 } from 'react'
 import {
-  Link,
   Navigate,
   Route,
   Routes,
   useLocation,
+  useMatch,
   useNavigate,
   useParams,
 } from 'react-router'
 import { AccountPage } from './AccountPage'
+import {
+  accountPath,
+  byName,
+  NEW_ACCOUNT,
+  nameAt,
+  USERS,
+} from './configAddress'
 import { useLateAnswers } from './configPages'
 import { useGate } from './gate'
 import { type Library, listLibraries } from './libraries'
 import { sentenceOf } from './message'
 import { Missing } from './Missing'
 import { NewAccount } from './NewAccount'
+import { PageHeader } from './settingsLayout'
+import { SideBySide } from './SideBySide'
 import { UserTable } from './UserTable'
 import { listUsers, type User } from './users'
-
-const TABLE = '/config/users'
 
 /**
  * The account the last removal took, and the page its line is drawn on: the
@@ -130,7 +138,7 @@ export function Users() {
     setArrival,
     cancel,
     drawNotices,
-  } = useLateAnswers<Gone>(TABLE, goneEl)
+  } = useLateAnswers<Gone>(USERS, goneEl)
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: `pathname` is the trigger: each page reads the list afresh.
   useEffect(() => {
@@ -174,8 +182,8 @@ export function Users() {
         )
         if (stillHere) {
           setGone(undefined)
-          setArrival(`${TABLE}/${user.id}`)
-          navigate(`${TABLE}/${user.id}`)
+          setArrival(accountPath(user.name))
+          navigate(accountPath(user.name))
         }
       })
       if (!stillHere) void reload()
@@ -191,11 +199,11 @@ export function Users() {
    */
   const removed = useCallback(
     (from: string, id: number, name: string) => {
-      const { sent, line } = place(from, { at: TABLE, name })
+      const { sent, line } = place(from, { at: USERS, name })
       startTransition(() => {
         setGone(line)
         setUsers((held) => held?.filter((one) => one.id !== id))
-        if (sent) navigate(TABLE)
+        if (sent) navigate(USERS)
       })
     },
     [place, setGone, navigate],
@@ -225,84 +233,127 @@ export function Users() {
     </>
   )
 
+  /**
+   * The make page, whose address `Config` routes to this screen outside the
+   * table's, so that the accounts' names are the only segments beneath it.
+   */
+  const making = useMatch(NEW_ACCOUNT) !== null
+  /** The address goes beyond the table's: an account's page. */
+  const beyond = (useParams()['*'] ?? '') !== ''
+  /**
+   * Whether a page is open, the make form or an account's: either is the end
+   * of this screen's tree, which `SideBySide` draws beside the table where
+   * the width allows and alone where it does not.
+   */
+  const open = making || beyond
+  /**
+   * The account the address names, found in the list as `byName` finds
+   * names, and read from the address as the browser holds it, for the reason
+   * `configAddress.ts` gives. `undefined` while the list is unread, and where
+   * the address names no account.
+   */
+  const named = nameAt(pathname, USERS)
+  const account =
+    named === undefined || users === undefined
+      ? undefined
+      : byName(users, named.name)
+
   return (
     <section className="users">
-      <Routes>
-        <Route
-          index
-          element={
-            <UserTable
+      <SideBySide
+        list={
+          <UserTable
+            users={users}
+            actingAs={gate?.who.user_id}
+            // The screen says each thing once: on the page open beside the
+            // table where there is one.
+            notices={open ? undefined : notices}
+            arrived={arrived && !open}
+            opened={account?.id}
+            onOpen={setArrival}
+          />
+        }
+        page={
+          making ? (
+            <NewAccount
               users={users}
-              actingAs={gate?.who.user_id}
               notices={notices}
               arrived={arrived}
-            />
-          }
-        />
-        <Route
-          path="new"
-          element={
-            <NewAccount
-              notices={notices}
               onAdded={added}
               onLateRefusal={say}
               onCancel={cancel}
             />
-          }
-        />
-        <Route
-          path=":id"
-          element={
-            <AccountAt users={users} notices={notices}>
-              {(user, all) => (
-                <AccountPage
-                  key={user.name}
-                  user={user}
-                  users={all}
-                  libraries={libraries}
-                  actingAs={gate?.who.user_id}
-                  notices={grantNotices}
-                  arrived={arrived}
-                  onChanged={reload}
-                  onLateRefusal={say}
-                  onRemoved={(name) => removed(pathname, user.id, name)}
-                />
-              )}
-            </AccountAt>
-          }
-        />
-        <Route path="*" element={<Navigate to={TABLE} replace />} />
-      </Routes>
+          ) : open ? (
+            <Routes>
+              <Route
+                path=":name"
+                element={
+                  <AccountAt
+                    users={users}
+                    account={account}
+                    name={named?.name}
+                    notices={notices}
+                  >
+                    {(user, all) => (
+                      <AccountPage
+                        key={user.name}
+                        user={user}
+                        users={all}
+                        libraries={libraries}
+                        actingAs={gate?.who.user_id}
+                        notices={grantNotices}
+                        arrived={arrived}
+                        onChanged={reload}
+                        onLateRefusal={say}
+                        onRemoved={(name) => removed(pathname, user.id, name)}
+                      />
+                    )}
+                  </AccountAt>
+                }
+              />
+              <Route path="*" element={<Navigate to={USERS} replace />} />
+            </Routes>
+          ) : null
+        }
+      />
     </section>
   )
 }
 
 /**
- * The account the path names, or a line saying there is none. Nothing is
- * drawn while the list has not been read: the failure, if it failed, is.
+ * The account's page, or a page saying there is none, whose line takes
+ * focus. Nothing is drawn while the list has not been read: the failure, if
+ * it failed, is.
  */
 function AccountAt({
   users,
+  account,
+  name,
   notices,
   children,
 }: {
   users: User[] | undefined
+  /** The account `name` finds in `users`. */
+  account: User | undefined
+  /** The name the address spells, so another such address says so afresh. */
+  name: string | undefined
   notices: ReactNode
   children: (user: User, users: User[]) => ReactNode
 }) {
-  const { id } = useParams()
   if (users === undefined) return notices
-  const user = users.find((one) => String(one.id) === id)
-  if (user === undefined) {
+  if (account === undefined) {
     return (
-      <div className="user-row">
-        <p className="back">
-          <Link to={TABLE}>‹ Users</Link>
-        </p>
+      <div className="settings-page">
+        <PageHeader
+          back={{ to: USERS, label: 'Users' }}
+          title="No such account"
+        />
         {notices}
-        <Missing key={id}>No such account.</Missing>
+        <Missing key={name}>
+          There is no account at this address: it may have been removed.
+        </Missing>
       </div>
     )
   }
-  return children(user, users)
+  return children(account, users)
 }

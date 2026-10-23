@@ -113,11 +113,57 @@ body {
    sentence beside it that says why is read with it. Written wholly in
    `:where()`, it has no specificity, so a class rule or an inline style that
    sets a button's `background` or `border-style` wins over it, and such a
-   button keeps whatever held look its own rules give it, or none. */
-:where(.library, .login) :where(button:disabled) {
+   button keeps whatever held look its own rules give it, or none. A button
+   held by `aria-disabled` (`HeldButton`), which keeps focus where `disabled`
+   does not, is drawn the same. */
+:where(.library, .login) :where(button:disabled, button[aria-disabled="true"]) {
   background: var(--bg);
   border-style: dashed;
   cursor: default;
+}
+
+/* A select or a text box held by `aria-disabled`, which keeps focus where
+   `disabled` does not, is drawn as the browser draws a disabled one, which
+   no rule here draws: a select at 0.7 opacity, though not under forced
+   colours, where the browser does not dim it, and a box with the arrow and
+   not the text cursor. A checkbox or a radio held so draws nothing (O159,
+   `AccountPage.tsx`). */
+@media (forced-colors: none) {
+  :where(.library, .login) :where(select[aria-disabled="true"]) {
+    opacity: 0.7;
+  }
+}
+
+:where(.library, .login)
+  :where(input[aria-disabled="true"]:not([type="checkbox"], [type="radio"])) {
+  cursor: default;
+}
+
+/* Under forced colours the system's palette replaces every colour above, and
+   the browser draws a disabled control's words and edge in `GrayText`; one
+   held by `aria-disabled` is drawn so here, by `--forced-held`. Not in
+   `:where()`: a class rule that colours a button (a confirm's `--danger` or
+   `--accent`, two classes) would outrank it, and its colour is then put back
+   to the browser's own for a control that is not disabled, which is not
+   `GrayText`. */
+@media (forced-colors: active) {
+  :where(.library, .login)
+    [aria-disabled="true"]:is(
+      button,
+      select,
+      input:not([type="checkbox"], [type="radio"])
+    ) {
+    color: var(--forced-held);
+    border-color: var(--forced-held);
+  }
+}
+
+/* A summary opens and closes what it heads when pressed, so it takes the
+   pointer a button does, and not the text cursor its words would give it.
+   Its marker is the browser's own, which turns as it opens; a rule that
+   sets a summary's `display` or `list-style` takes that marker away. */
+:where(.library, .login) :where(summary) {
+  cursor: pointer;
 }
 
 :where(.library, .login)
@@ -128,6 +174,103 @@ body {
     progress
   ) {
   accent-color: var(--accent);
+}
+
+/* A checkbox and a radio are drawn from the tokens, not by the browser: its
+   own unchecked box is a grey it picks for a dark scheme, grey on grey in
+   Ink, and no property reaches that edge. `--line-strong` is 3:1 or more on
+   every ground the theme draws (WCAG 1.4.11; `index.css.test.ts`). Checked,
+   the box is filled with the accent and ticked in `--on-accent`, and the
+   radio is ringed and dotted in the accent, as `accent-color` had the
+   browser draw them. The size is the browser's, so nothing beside them
+   moves. A held one takes O201's dashed edge, as a held button does, and a
+   held checked one O201's ground as well (below). Under forced colours the
+   browser's own control comes back, with nothing drawn over it: the
+   system's palette replaces these grounds, and would paint the tick and the
+   dot in its Canvas, over the browser's own. */
+:where(.library, .login) :where(input[type="checkbox"], input[type="radio"]) {
+  appearance: none;
+  position: relative;
+  box-sizing: border-box;
+  inline-size: 13px;
+  block-size: 13px;
+  border: 1px solid var(--line-strong);
+  background: var(--field);
+}
+
+:where(.library, .login) :where(input[type="checkbox"]) {
+  border-radius: var(--radius-control);
+}
+
+:where(.library, .login) :where(input[type="radio"]) {
+  border-radius: 50%;
+}
+
+:where(.library, .login)
+  :where(input[type="checkbox"]:checked, input[type="radio"]:checked) {
+  border-color: var(--accent);
+}
+
+:where(.library, .login) :where(input[type="checkbox"]:checked) {
+  background: var(--accent);
+}
+
+:where(.library, .login)
+  :where(input[type="checkbox"]:checked, input[type="radio"]:checked)::before {
+  content: "";
+  position: absolute;
+  inset: 1px;
+}
+
+:where(.library, .login) :where(input[type="checkbox"]:checked)::before {
+  background: var(--on-accent);
+  clip-path: polygon(14% 44%, 0 65%, 40% 100%, 100% 22%, 80% 3%, 38% 62%);
+}
+
+/* The dot is three fifths of the radio across, as the browser's own is at
+   any size, so it stands off the ring by the same share of the box's ground
+   at the coarse 24px (`admin.css`) as at 13px. It is laid out over the whole
+   box, from the outside of the 1px edge, and drawn at that share of it
+   about its middle. */
+:where(.library, .login) :where(input[type="radio"]:checked)::before {
+  inset: -1px;
+  scale: 0.6;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+:where(.library, .login)
+  :where(input[type="checkbox"]:disabled, input[type="radio"]:disabled) {
+  border-style: dashed;
+  cursor: default;
+}
+
+/* A held checked one stands on the page's ground, as O201 has a held
+   button do, with its tick or dot in the accent. Filled with the accent, as
+   a live one is, its dashed accent edge is not seen against the fill, and
+   it looks live. */
+:where(.library, .login)
+:where(
+  input[type="checkbox"]:disabled:checked,
+  input[type="radio"]:disabled:checked
+) {
+  background: var(--bg);
+}
+
+:where(.library, .login)
+  :where(input[type="checkbox"]:disabled:checked)::before {
+  background: var(--accent);
+}
+
+@media (forced-colors: active) {
+  :where(.library, .login) :where(input[type="checkbox"], input[type="radio"]) {
+    appearance: auto;
+  }
+
+  :where(.library, .login)
+    :where(input[type="checkbox"], input[type="radio"])::before {
+    content: none;
+  }
 }
 
 :where(.library, .login) :where(table) {
@@ -145,6 +288,25 @@ body {
 :where(.library, .login) :where(:focus-visible) {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
+}
+
+/* Where focus only lands, and nothing is pressed: a settings page's title,
+   the line saying the page asked for is not there, the line saying an
+   account was removed, a removal's report, and the directory browser's line
+   saying where it is. Each takes focus so that the keyboard starts there
+   and a screen reader reads it, and a ring would mark it as a control. The
+   skip link's landing is drawn the same way (`shell.css`). After the ring,
+   which this ties at no specificity. `base.css.test.ts` holds the list and
+   the order. */
+:where(.library, .login)
+:where(
+  .page-title,
+  .missing,
+  .gone-line,
+  .removal-report,
+  .dir-browser .where
+):where(:focus) {
+  outline: none;
 }
 
 /* Ink's body text one step heavier. Light text on a dark ground reads

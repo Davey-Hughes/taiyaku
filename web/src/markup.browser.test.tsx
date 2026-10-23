@@ -122,8 +122,9 @@ describe('names — §4.3 and §4.4', () => {
         }),
       )
       .toHaveAccessibleDescription(
-        'A trailing slash or bare name excludes the directory and everything ' +
-          "under it; a '/**' suffix excludes only what's inside it.",
+        'One gitignore pattern per line. A trailing slash or a bare name ' +
+          "excludes the directory and all under it; a '/**' suffix excludes " +
+          'only what is inside it.',
       )
   })
 

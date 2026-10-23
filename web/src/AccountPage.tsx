@@ -42,10 +42,14 @@
  */
 import { type ReactNode, useEffect, useId, useRef, useState } from 'react'
 import { Link } from 'react-router'
-import { useDrawn } from './hooks'
+import { accountPath, USERS } from './configAddress'
+import { HeldButton } from './HeldButton'
+import { useDrawn, useDrawnWait, useFocusLeavesHeld } from './hooks'
 import type { Library } from './libraries'
 import { sentenceOf } from './message'
+import { PageHeader, RemovalSection, Row, Section } from './settingsLayout'
 import {
+  lastSeen,
   onlyAdminWhoCanLogIn,
   patchUser,
   type RemovalAnswer,
@@ -57,6 +61,9 @@ import {
   type User,
   type UserPatch,
 } from './users'
+import { WaitWords } from './WaitWords'
+import { JOINING_DOT } from './joiningDot'
+import { inUtc } from './utc'
 
 export interface AccountPageProps {
   user: User
@@ -121,6 +128,9 @@ export interface AccountPageProps {
   notices?: ReactNode
 }
 
+/** The confirm's words while the removal is out. */
+const REMOVING = 'Removing…'
+
 /**
  * `n` of a thing, in the number the count actually is.
  *
@@ -162,9 +172,26 @@ export function AccountPage({
    */
   const [applied, setApplied] = useState<User | undefined>()
   const [saving, setSaving] = useState(false)
+  /**
+   * `saving`, once it has gone on long enough to be drawn: the held look of
+   * every control a write holds. What holds is `inFlight`, from the send.
+   */
+  const savingDrawn = useDrawnWait(saving)
   const [password, setPassword] = useState('')
   const [wasReset, setWasReset] = useState(false)
   const [confirming, setConfirming] = useState(false)
+  const removeButton = useRef<HTMLButtonElement>(null)
+  /**
+   * Set when the removal's confirm is cancelled: focus goes back to the
+   * Remove… that opened it, not to the document, where the confirm's Cancel
+   * leaves it as it goes.
+   */
+  const backToRemove = useRef(false)
+  useEffect(() => {
+    if (confirming || !backToRemove.current) return
+    backToRemove.current = false
+    removeButton.current?.focus()
+  }, [confirming])
   const [cost, setCost] = useState<RemovalAnswer | undefined>()
   /**
    * Why the dry run could not answer. **A slot of its own**, because the
@@ -177,7 +204,12 @@ export function AccountPage({
    * refusal in `NewAccount.tsx`.
    */
   const [costFailure, setCostFailure] = useState<string | undefined>()
+  /** The dry run's wait, drawn once it has lasted; until then it keeps its room. */
+  const costDrawn = useDrawnWait(
+    confirming && cost === undefined && costFailure === undefined,
+  )
   const [removing, setRemoving] = useState(false)
+  const removingDrawn = useDrawnWait(removing)
   /**
    * Whether this account is gone and the list has not caught up.
    *
@@ -194,8 +226,9 @@ export function AccountPage({
    * Whether the real `DELETE` is already on its way.
    *
    * **A ref, for the reason `RemoveRoot`'s and `RootRow`'s are**: React
-   * batches state, so `disabled={removing}` alone lets two presses dispatched
-   * before the next render both send.
+   * batches state, so two presses dispatched before the next render both
+   * read `removing` false, and no control is drawn disabled until the wait
+   * has lasted.
    */
   const inFlight = useRef(false)
   /** False once the page has gone, and a refusal has no page here to say it. */
@@ -404,9 +437,22 @@ export function AccountPage({
 
   /** The question goes, and focus goes back to the choice that stands. */
   const keepLimit = () => {
+    if (inFlight.current) return
     setLifting(false)
     onlyRadio.current?.focus()
   }
+
+  const passwordBox = useRef<HTMLInputElement>(null)
+  const setButton = useRef<HTMLButtonElement>(null)
+  /**
+   * The box is empty, as a set that worked leaves it, or this is the
+   * person's own account.
+   */
+  const nothingToSet = isSelf || password === ''
+  // A set that worked empties the box, which takes Set password away from a
+  // person who pressed it: focus goes to the box, where the next one is
+  // typed, and not to the page.
+  useFocusLeavesHeld(nothingToSet, setButton, passwordBox)
 
   const submitPassword = (e: React.FormEvent) => {
     e.preventDefault()
@@ -452,6 +498,7 @@ export function AccountPage({
   }
 
   const askCost = () => {
+    if (inFlight.current) return
     // **The newest dry run wins.** Two are routinely in flight — Remove…,
     // Cancel, Remove… again — and nothing makes them answer in order, so a
     // slow first answer landing after a failed second drew five counts and an
@@ -483,7 +530,7 @@ export function AccountPage({
       // the same name drops the tombstone — an account re-created under the
       // removed one's name — and a dialog left open would come back over
       // that account, "working out what this would remove…" with nothing in
-      // flight and no *Remove…* button.
+      // flight and *Remove…* held under it.
       .then(() => {
         settled(() => {
           setRemoved(true)
@@ -497,22 +544,32 @@ export function AccountPage({
   }
 
   const roleWhy = isSelf
-    ? 'An administrator cannot take their own admin role away; another administrator has to do it.'
+    ? 'You cannot take away your own admin role; another administrator has to.'
     : lastAdmin
-      ? `${shown.name} is the only administrator who can log in, so neither the role nor Remove can change that. Give another account the admin role first.`
+      ? `${shown.name} is the only administrator who can log in, so the role cannot change. Give another account the admin role first.`
       : undefined
 
-  const back = (
-    <p className="back">
-      <Link to="/config/users">‹ Users</Link>
-    </p>
-  )
+  // The last-administrator rule reaches Remove as well as the role, and the
+  // reason is said beside each control it holds.
+  const removeWhy = lastAdmin
+    ? `${shown.name} is the only administrator who can log in, so it cannot be removed. Give another account the admin role first.`
+    : 'Asks first, with what it would take.'
+
+  const seen = lastSeen(shown)
+  const summary = `${
+    shown.role === 'admin'
+      ? 'Administrator'
+      : shown.role === 'user'
+        ? 'User'
+        : shown.role
+  }${JOINING_DOT}${seen === undefined ? 'no session open' : `last seen ${inUtc(seen)}`}`
+
+  const back = { to: USERS, label: 'Users', closes: accountPath(user.name) }
 
   if (removed) {
     return (
-      <div className="user-row removed">
-        {back}
-        <h2>{shown.name}</h2>
+      <div className="settings-page account-page">
+        <PageHeader back={back} title={shown.name} />
         <p className="gone">
           Removed. The list has not caught up — this page is what is left of it,
           and nothing here can be edited.
@@ -522,12 +579,18 @@ export function AccountPage({
   }
 
   return (
-    <div className="user-row">
-      {back}
-      <h2 ref={heading} tabIndex={-1}>
-        {shown.name}
-        {isSelf && <span className="you"> — this is you</span>}
-      </h2>
+    <div className="settings-page account-page">
+      <PageHeader
+        back={back}
+        title={
+          <>
+            {shown.name}
+            {isSelf && <span className="you"> — this is you</span>}
+          </>
+        }
+        description={summary}
+        titleRef={heading}
+      />
       {notices}
       {failure !== undefined && <p role="alert">{failure}</p>}
 
@@ -538,20 +601,24 @@ export function AccountPage({
         </p>
       )}
 
-      <section className="account-section">
-        <h3>Role &amp; permissions</h3>
-        <div className="fields">
-          {/* O175: the `aria-label` repeats the label's words because `.field`
-            draws them in capitals, and Chromium's accessibility tree named
-            the control in those capitals. The password box below carries one
-            for the same reason. */}
-          <label className="field">
-            <span>Role</span>
+      <Section title="Role & permissions">
+        {/* O175: each `aria-label` on this page is its row label's words as
+          written, so the name keeps their case whatever case a stylesheet
+          draws the label in. */}
+        <Row label="Role" help={roleWhy}>
+          {(ids) => (
+            // Held by `aria-disabled` once a write's wait is drawn, so that
+            // it keeps focus, as a `HeldButton` does: `begin` refuses a
+            // choice made then, and React puts the controlled value back.
+            // `disabled` only where the role cannot change at all.
             <select
+              id={ids.control}
               name="role"
               aria-label="Role"
+              aria-describedby={ids.help}
               value={shown.role}
-              disabled={saving || isSelf || lastAdmin}
+              disabled={isSelf || lastAdmin}
+              aria-disabled={savingDrawn}
               onChange={(e) =>
                 save(
                   { role: e.target.value },
@@ -565,9 +632,8 @@ export function AccountPage({
                 </option>
               ))}
             </select>
-          </label>
-        </div>
-        {roleWhy !== undefined && <p className="why">{roleWhy}</p>}
+          )}
+        </Row>
 
         {/* **`aria-disabled`, not `disabled`, on every checkbox on this page —
           here and in the grant list below. O159.** `disabled` draws a
@@ -578,69 +644,82 @@ export function AccountPage({
           `appearance: none` can, which is a redesign of every checkbox.
           The lock never lived in the attribute: `begin` refuses a second
           write through `inFlight`, and each box is controlled, so React
-          puts a refused tick back. The role select, the password field
-          and the buttons keep `disabled`.
-          With `aria-disabled`, a tick refused mid-save does nothing and
-          shows no cue: the box keeps its real value. `aria-disabled` also
-          leaves keyboard focus on the box, where in Chromium a control
-          that becomes `disabled` loses it (`docs/notes.md`, "Admin
-          follow-ups"). */}
-        {/* O154: one named group, as the grants below are one named group.
-          A `role` and a name rather than a `<fieldset>`: nothing on screen
-          changes, and a fieldset's box model has cost these screens width
-          before (`admin.css`, above `.rule-form .rule-sets`). */}
-        <div className="checks" role="group" aria-label="Permissions">
-          <label>
-            <input
-              type="checkbox"
-              name="can_download"
-              checked={shown.can_download}
-              aria-disabled={saving}
-              onChange={(e) =>
-                save(
-                  { can_download: e.target.checked },
-                  notSaved('May download whole editions'),
-                )
-              }
-            />
-            <span>May download whole editions</span>
-          </label>
-          <label>
-            <input
-              type="checkbox"
-              name="can_stream"
-              checked={shown.can_stream}
-              aria-disabled={saving}
-              onChange={(e) =>
-                save(
-                  { can_stream: e.target.checked },
-                  notSaved('May stream pages'),
-                )
-              }
-            />
-            <span>May stream pages</span>
-          </label>
-          <label>
-            <input
-              type="checkbox"
-              name="can_stamp"
-              checked={shown.can_stamp}
-              aria-disabled={saving}
-              onChange={(e) =>
-                save(
-                  { can_stamp: e.target.checked },
-                  notSaved('May write ComicInfo.xml into archives'),
-                )
-              }
-            />
-            <span>May write ComicInfo.xml into archives</span>
-          </label>
+          puts a refused tick back. On a box `aria-disabled` draws
+          nothing, so it says the hold from the send. The role select,
+          the password field and the buttons are held by it too, but from
+          `savingDrawn`: on them it draws `:disabled`'s look (`base.css`),
+          which waits until the write has lasted, and `inFlight` holds
+          them from the send. With `aria-disabled`, a tick refused
+          mid-save does nothing and shows no cue: the box keeps its real
+          value. `aria-disabled` also leaves keyboard focus on the box,
+          where in Chromium a control that becomes `disabled` loses it
+          (`docs/notes.md`, "Admin follow-ups"). */}
+        {/* O154: one named group, as the grants below are one named group. */}
+        <div className="settings-group" role="group" aria-label="Permissions">
+          <Row check label="Can download" help="Save whole editions as files.">
+            {(ids) => (
+              <input
+                type="checkbox"
+                id={ids.control}
+                name="can_download"
+                aria-describedby={ids.help}
+                checked={shown.can_download}
+                aria-disabled={saving}
+                onChange={(e) =>
+                  save(
+                    { can_download: e.target.checked },
+                    notSaved('Can download'),
+                  )
+                }
+              />
+            )}
+          </Row>
+          <Row
+            check
+            label="Can stream"
+            help="Read pages, in the browser or an OPDS app."
+          >
+            {(ids) => (
+              <input
+                type="checkbox"
+                id={ids.control}
+                name="can_stream"
+                aria-describedby={ids.help}
+                checked={shown.can_stream}
+                aria-disabled={saving}
+                onChange={(e) =>
+                  save({ can_stream: e.target.checked }, notSaved('Can stream'))
+                }
+              />
+            )}
+          </Row>
+          <Row
+            check
+            label="Can stamp"
+            help="Write ComicInfo.xml into archives."
+          >
+            {(ids) => (
+              <input
+                type="checkbox"
+                id={ids.control}
+                name="can_stamp"
+                aria-describedby={ids.help}
+                checked={shown.can_stamp}
+                aria-disabled={saving}
+                onChange={(e) =>
+                  save({ can_stamp: e.target.checked }, notSaved('Can stamp'))
+                }
+              />
+            )}
+          </Row>
         </div>
-      </section>
+      </Section>
 
-      <section className="account-section">
-        <h3>Libraries</h3>
-        <fieldset className="grants">
+      <Section
+        title="Libraries"
+        description="Which libraries this account may see."
+      >
+        <fieldset className="settings-group">
           <legend className="visually-hidden">
             Libraries this account may see
           </legend>
@@ -664,37 +743,52 @@ export function AccountPage({
             </>
           ) : (
             <>
-              <label>
-                <input
-                  type="radio"
-                  name={`sees-${user.id}`}
-                  ref={everyRadio}
-                  value="every"
-                  checked={!restricted}
-                  aria-disabled={saving}
-                  onChange={seeEvery}
-                />
-                <span>Every library, including any added later</span>
-              </label>
-              <label>
-                <input
-                  type="radio"
-                  name={`sees-${user.id}`}
-                  ref={onlyRadio}
-                  value="only"
-                  checked={restricted}
-                  aria-disabled={saving}
-                  onChange={seeOnly}
-                  // A radio already chosen fires no change, and "Only these"
-                  // stands while the question is up, so choosing it again by
-                  // click or by an arrow key is heard here.
-                  onClick={() => {
-                    if (inFlight.current) return
-                    setLifting(false)
-                  }}
-                />
-                <span>Only these</span>
-              </label>
+              {/* A radio group, so the row's word and the administrator's
+                help are read as focus enters the radios, which each keep
+                their own label. */}
+              <Row
+                label="Sees"
+                help={
+                  shown.role === 'admin'
+                    ? 'An administrator sees every library whatever is chosen here; the choice applies if the role becomes user.'
+                    : undefined
+                }
+                group="radiogroup"
+              >
+                <div className="settings-choices">
+                  <label>
+                    <input
+                      type="radio"
+                      name={`sees-${user.id}`}
+                      ref={everyRadio}
+                      value="every"
+                      checked={!restricted}
+                      aria-disabled={saving}
+                      onChange={seeEvery}
+                    />
+                    <span>Every library, including any added later</span>
+                  </label>
+                  <label>
+                    <input
+                      type="radio"
+                      name={`sees-${user.id}`}
+                      ref={onlyRadio}
+                      value="only"
+                      checked={restricted}
+                      aria-disabled={saving}
+                      onChange={seeOnly}
+                      // A radio already chosen fires no change, and "Only
+                      // these" stands while the question is up, so choosing
+                      // it again by click or by an arrow key is heard here.
+                      onClick={() => {
+                        if (inFlight.current) return
+                        setLifting(false)
+                      }}
+                    />
+                    <span>Only these</span>
+                  </label>
+                </div>
+              </Row>
               {lifting && (
                 <div
                   className="lift-limit"
@@ -711,198 +805,241 @@ export function AccountPage({
                       : ', and the ticks below would be cleared'}
                     .
                   </p>
-                  <button
+                  <HeldButton
                     type="button"
                     name="lift-limit"
-                    disabled={saving}
+                    held={savingDrawn}
                     onClick={lift}
                   >
                     See every library
-                  </button>
-                  <button
+                  </HeldButton>
+                  <HeldButton
                     type="button"
                     name="keep-limit"
                     ref={keepButton}
-                    disabled={saving}
+                    held={savingDrawn}
                     onClick={keepLimit}
                   >
                     Keep the limit
-                  </button>
+                  </HeldButton>
                 </div>
               )}
               {restricted && (
-                <ul className="grant-list">
+                <ul className="grant-list settings-group">
                   {libraries.map((library) => (
                     <li key={library.id}>
-                      <label>
-                        <input
-                          type="checkbox"
-                          name={`library-${library.id}`}
-                          checked={granted.includes(library.id)}
-                          aria-disabled={saving}
-                          onChange={(e) =>
-                            toggleGrant(library.id, e.target.checked)
-                          }
-                        />
-                        <span>{library.name}</span>
-                      </label>
-                      <ul className="grant-dirs">
-                        {library.dirs.map((dir) => (
-                          <li key={dir.path}>
-                            <code>{dir.path}</code>
-                          </li>
-                        ))}
-                      </ul>
+                      <Row
+                        check
+                        label={library.name}
+                        help={
+                          <span className="grant-dirs">
+                            {library.dirs.map((dir) => (
+                              <code key={dir.path}>{dir.path}</code>
+                            ))}
+                          </span>
+                        }
+                      >
+                        {(ids) => (
+                          <input
+                            type="checkbox"
+                            id={ids.control}
+                            name={`library-${library.id}`}
+                            aria-describedby={ids.help}
+                            checked={granted.includes(library.id)}
+                            aria-disabled={saving}
+                            onChange={(e) =>
+                              toggleGrant(library.id, e.target.checked)
+                            }
+                          />
+                        )}
+                      </Row>
                     </li>
                   ))}
                 </ul>
               )}
               {unlistedLine}
               {noLibraryLine}
-              {shown.role === 'admin' && (
-                <p className="why">
-                  An administrator sees every library whatever is chosen here.
-                  The choice takes effect if the role becomes user.
-                </p>
-              )}
             </>
           )}
         </fieldset>
-      </section>
+      </Section>
 
-      <section className="account-section">
-        <h3>Password</h3>
-        <form className="reset" onSubmit={submitPassword}>
-          <label className="field">
-            <span>Set a new password</span>
-            <input
-              type="password"
-              name="password"
-              aria-label="Set a new password"
-              value={password}
-              disabled={isSelf || saving}
-              onChange={(e) => setPassword(e.target.value)}
-            />
-          </label>
-          <button
-            type="submit"
-            name="reset"
-            disabled={isSelf || saving || password === ''}
+      <Section title="Password">
+        <form className="reset settings-group" onSubmit={submitPassword}>
+          <Row
+            label="New password"
+            help={
+              isSelf ? (
+                <>
+                  Not here: this ends every session, the one making the change
+                  included, so the server refuses it and names{' '}
+                  <code>/api/password</code>, which keeps that session. Change
+                  yours on <Link to="/account">your account screen</Link>.
+                </>
+              ) : (
+                `Ends every session ${shown.name} has open. API keys are untouched: they are separate credentials, revoked on their own.`
+              )
+            }
           >
-            Set password
-          </button>
-          {isSelf ? (
-            <p className="why">
-              You cannot reset your own password here: this ends every session
-              the account has, and yours is the session making the change. The
-              server refuses it and names <code>/api/password</code>, which
-              keeps the session making the change. Change your own on{' '}
-              <Link to="/account">your account screen</Link>.
-            </p>
-          ) : (
-            <p className="why">
-              This ends every session {shown.name} has open. Their API keys are
-              untouched — independent credentials with their own revocation.
-            </p>
-          )}
-          {wasReset && (
-            <p className="done">
-              Password set. {shown.name} is signed out everywhere.
-            </p>
-          )}
+            {(ids) => (
+              <>
+                {/* Held as the role is, and read-only from the send, so
+                  typing changes nothing while a write is out. Enter in the
+                  box presses Set password, which turns the press down while
+                  it is held; before then, and for a submit that reaches the
+                  form another way, `begin` refuses `submitPassword`'s
+                  write. `disabled` only where nothing can be set here. */}
+                <input
+                  ref={passwordBox}
+                  type="password"
+                  id={ids.control}
+                  name="password"
+                  aria-label="New password"
+                  aria-describedby={ids.help}
+                  value={password}
+                  disabled={isSelf}
+                  readOnly={saving}
+                  aria-disabled={savingDrawn}
+                  onChange={(e) => {
+                    if (inFlight.current) return
+                    setPassword(e.target.value)
+                  }}
+                />
+                <HeldButton
+                  ref={setButton}
+                  type="submit"
+                  name="reset"
+                  held={savingDrawn}
+                  disabled={nothingToSet}
+                >
+                  Set password
+                </HeldButton>
+              </>
+            )}
+          </Row>
+          {/* Drawn with the form, empty, so that the sentence is read when
+              it lands in it: a live region drawn together with what it says
+              is often not read at all, and focus goes to the box, not here.
+              Empty, it takes no room and no line (`settings.css`). */}
+          <p className="done" aria-live="polite">
+            {wasReset &&
+              `Password set. ${shown.name} is signed out everywhere.`}
+          </p>
         </form>
-      </section>
+      </Section>
 
-      <section className="account-section credentials">
-        <h3>Sessions &amp; keys</h3>
-        <p className="tally">
-          {count(shown.sessions.length, 'session', 'sessions')} ·{' '}
-          {count(shown.keys.length, 'API key', 'API keys')}
-        </p>
+      <Section
+        title="Sessions & keys"
+        description={`${count(shown.sessions.length, 'session', 'sessions')}${JOINING_DOT}${count(shown.keys.length, 'API key', 'API keys')}`}
+      >
         {shown.sessions.length === 0 ? (
           <p className="empty">No sessions open.</p>
         ) : (
-          <ul className="session-list">
+          <ul className="session-list settings-group">
             {shown.sessions.map((session) => (
               <li key={session.id}>
-                <span className="what">
-                  {session.user_agent ?? 'no user-agent recorded'} ·{' '}
-                  {session.ip ?? 'no address recorded'}
-                </span>
-                <span className="when">
-                  started {session.created} · last seen {session.last_seen}
-                </span>
-                {session.current && (
-                  <span className="current">this browser</span>
-                )}
-                <button
-                  type="button"
-                  name={`revoke-session-${session.id}`}
-                  disabled={saving}
-                  onClick={() =>
-                    revoke(
-                      () => revokeUserSession(user.id, session.id),
-                      (held) => ({
-                        ...held,
-                        sessions: held.sessions.filter(
-                          (s) => s.id !== session.id,
-                        ),
-                      }),
-                      `A session for ${shown.name} was not revoked`,
-                    )
+                <Row
+                  label={
+                    <>
+                      <span className="what">
+                        {session.user_agent ?? 'no user-agent recorded'}
+                        {JOINING_DOT}
+                        {session.ip ?? 'no address recorded'}
+                      </span>
+                      {session.current && (
+                        <span className="current">this browser</span>
+                      )}
+                    </>
+                  }
+                  help={
+                    <span className="when">
+                      started {inUtc(session.created)}
+                      {JOINING_DOT}last seen {inUtc(session.last_seen)}
+                    </span>
                   }
                 >
-                  Revoke
-                </button>
+                  <HeldButton
+                    type="button"
+                    name={`revoke-session-${session.id}`}
+                    held={savingDrawn}
+                    onClick={() =>
+                      revoke(
+                        () => revokeUserSession(user.id, session.id),
+                        (held) => ({
+                          ...held,
+                          sessions: held.sessions.filter(
+                            (s) => s.id !== session.id,
+                          ),
+                        }),
+                        `A session for ${shown.name} was not revoked`,
+                      )
+                    }
+                  >
+                    Revoke
+                  </HeldButton>
+                </Row>
               </li>
             ))}
           </ul>
         )}
         {shown.keys.length > 0 && (
-          <ul className="key-list">
+          <ul className="key-list settings-group">
             {shown.keys.map((key) => (
               <li key={key.id}>
-                <span className="what">{key.name}</span>
-                <span className="when">
-                  made {key.created} ·{' '}
-                  {key.last_used === null
-                    ? 'never used'
-                    : `last used ${key.last_used}`}
-                </span>
-                <button
-                  type="button"
-                  name={`revoke-key-${key.id}`}
-                  disabled={saving}
-                  onClick={() =>
-                    revoke(
-                      () => revokeUserKey(user.id, key.id),
-                      (held) => ({
-                        ...held,
-                        keys: held.keys.filter((k) => k.id !== key.id),
-                      }),
-                      `The API key ${key.name} for ${shown.name} was not revoked`,
-                    )
+                <Row
+                  label={<span className="what">{key.name}</span>}
+                  help={
+                    <span className="when">
+                      API key{JOINING_DOT}made {inUtc(key.created)}
+                      {JOINING_DOT}
+                      {key.last_used === null
+                        ? 'never used'
+                        : `last used ${inUtc(key.last_used)}`}
+                    </span>
                   }
                 >
-                  Revoke
-                </button>
+                  <HeldButton
+                    type="button"
+                    name={`revoke-key-${key.id}`}
+                    held={savingDrawn}
+                    onClick={() =>
+                      revoke(
+                        () => revokeUserKey(user.id, key.id),
+                        (held) => ({
+                          ...held,
+                          keys: held.keys.filter((k) => k.id !== key.id),
+                        }),
+                        `The API key ${key.name} for ${shown.name} was not revoked`,
+                      )
+                    }
+                  >
+                    Revoke
+                  </HeldButton>
+                </Row>
               </li>
             ))}
           </ul>
         )}
-      </section>
+      </Section>
 
-      <div className="actions">
-        {!confirming && (
-          <button
+      <RemovalSection title="Removal">
+        <Row label="Remove this account" help={removeWhy}>
+          {/* Held, not taken away, while the confirm its press opens is
+            open, as the library's and a directory's Remove… are, so focus
+            stays on it; and held by a write once its wait is drawn, as the
+            page's other buttons are. `disabled` only where the account
+            cannot be removed at all. */}
+          <HeldButton
+            ref={removeButton}
             type="button"
             name="remove"
-            disabled={lastAdmin || saving}
+            held={confirming || savingDrawn}
+            disabled={lastAdmin}
             onClick={askCost}
           >
             Remove…
-          </button>
-        )}
+          </HeldButton>
+        </Row>
         {confirming && (
           <div
             className="remove-user"
@@ -911,7 +1048,9 @@ export function AccountPage({
           >
             {costFailure !== undefined && <p role="alert">{costFailure}</p>}
             {cost === undefined && costFailure === undefined && (
-              <p>Working out what this would remove…</p>
+              <p className={costDrawn ? undefined : 'wait-unseen'}>
+                Working out what this would remove…
+              </p>
             )}
             {cost !== undefined && (
               <>
@@ -943,32 +1082,44 @@ export function AccountPage({
                   {isSelf &&
                     ' This is the account you are signed in as; removing it signs you out.'}
                 </p>
-                <button
-                  type="button"
-                  className="confirm"
-                  name="confirm-remove"
-                  onClick={confirmRemoval}
-                  disabled={removing || saving}
-                >
-                  {removing ? 'Removing…' : `Remove ${shown.name}`}
-                </button>
               </>
             )}
-            <button
-              type="button"
-              name="cancel-remove"
-              onClick={() => {
-                setConfirming(false)
-                setCost(undefined)
-                setCostFailure(undefined)
-              }}
-              disabled={removing}
-            >
-              Cancel
-            </button>
+            {/* The confirm and Cancel, a form foot's pair, as a library's
+                and a directory's removals draw them. */}
+            <div className="settings-actions">
+              {cost !== undefined && (
+                <HeldButton
+                  type="button"
+                  className="confirm keeps-wait-width"
+                  name="confirm-remove"
+                  onClick={confirmRemoval}
+                  held={removingDrawn || savingDrawn}
+                >
+                  <WaitWords
+                    drawn={removingDrawn}
+                    words={`Remove ${shown.name}`}
+                    wait={REMOVING}
+                  />
+                </HeldButton>
+              )}
+              <HeldButton
+                type="button"
+                name="cancel-remove"
+                onClick={() => {
+                  if (removing) return
+                  backToRemove.current = true
+                  setConfirming(false)
+                  setCost(undefined)
+                  setCostFailure(undefined)
+                }}
+                held={removingDrawn}
+              >
+                Cancel
+              </HeldButton>
+            </div>
           </div>
         )}
-      </div>
+      </RemovalSection>
     </div>
   )
 }

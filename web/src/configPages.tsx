@@ -36,17 +36,32 @@ interface Said {
   at: string
   /** Taken when the answer itself moved the person to `at`. */
   focus?: boolean
+  /**
+   * Which answer the line says, given by `place`. A line that follows a
+   * rename to the page's new address is the same answer, and does not take
+   * focus again.
+   */
+  n?: number
 }
+
+/** Whether the address `at` is the page `page` or a page beneath it. */
+const under = (at: string, page: string): boolean =>
+  at === page || at.startsWith(`${page}/`)
+
+/** `at`, where it is `from` or beneath it, at the same place beneath `to`. */
+const moved = (at: string, from: string, to: string): string =>
+  under(at, from) ? `${to}${at.slice(from.length)}` : at
 
 export interface LateAnswers<Line extends Said> {
   /**
    * Places the line for the answer to a write sent from the page `from`.
    * `next.at` is the page it belongs on. While the person is still on
    * `from`, with the screen still drawn, `sent` is true: the screen sends
-   * them to `next.at`, and the line takes focus there. Otherwise the line is
-   * drawn, without focus, on the page they are on. It sets nothing, so the
-   * screen sets the line, with whatever else the answer changes, in one
-   * transition.
+   * them to `line.at`, that page, and the line takes focus there. Otherwise
+   * the line is drawn, without focus, on the page they are on. It sets
+   * nothing, so the screen sets the line, with whatever else the answer
+   * changes, in one transition. A `from` and a `next.at` a rename has moved
+   * (`follow`) are read at their new addresses.
    */
   place: (
     from: string,
@@ -57,6 +72,20 @@ export interface LateAnswers<Line extends Said> {
   setLine: Dispatch<SetStateAction<Line | undefined>>
   /** A refusal whose page or form is gone, said on the page the person is on. */
   say: (sentence: string) => void
+  /**
+   * A rename moved the page at `from`, and every page beneath it, to `to`.
+   * What is drawn there goes with it: the line, the late refusals and an
+   * arrival. An answer to a write sent from beneath `from` before the rename
+   * is placed as though sent from the same page beneath `to`. Called in the
+   * transition that moves the person to the new address, so that nothing is
+   * drawn for a frame at an address the person is not at.
+   */
+  follow: (from: string, to: string) => void
+  /**
+   * The page drawn now, for a screen's own answers to read after a page
+   * change. Not for drawing: it is not state.
+   */
+  here: RefObject<string>
   /** Whether the page drawn is the one a make or Cancel sent the person to. */
   arrived: boolean
   setArrival: Dispatch<SetStateAction<string | undefined>>
@@ -102,6 +131,14 @@ export function useLateAnswers<Line extends Said>(
    */
   const here = useRef(pathname)
   here.current = pathname
+  /**
+   * The renames still to be read into an answer's `from`, oldest first. One
+   * goes once the person is at its old address again: a page there now is
+   * not the page that was renamed, and a write sent from it is its own.
+   */
+  const follows = useRef<{ from: string; to: string }[]>([])
+  /** Which answer each line says (`Said.n`). */
+  const lineCount = useRef(0)
   /** False once another Configuration tab has replaced the screen. */
   const mounted = useRef(false)
   useEffect(() => {
@@ -111,19 +148,51 @@ export function useLateAnswers<Line extends Said>(
     }
   }, [])
 
-  const place = useCallback((from: string, next: Omit<Line, 'focus'>) => {
-    const sent = mounted.current && here.current === from
-    return {
-      sent,
-      line: sent
-        ? { ...next, focus: true }
-        : { ...next, at: here.current, focus: false },
-    }
-  }, [])
+  /**
+   * `at` read through every rename still held. The page drawn is read so too:
+   * between a rename and the commit that moves the person, it is still the
+   * old address.
+   */
+  const followed = useCallback(
+    (at: string) =>
+      follows.current.reduce((read, { from, to }) => moved(read, from, to), at),
+    [],
+  )
 
-  const say = useCallback((sentence: string) => {
-    const n = ++lateCount.current
-    setLate((held) => [...held, { at: here.current, sentence, n }])
+  const place = useCallback(
+    (from: string, next: Omit<Line, 'focus'>) => {
+      const now = followed(here.current)
+      const sent = mounted.current && followed(from) === now
+      const n = ++lineCount.current
+      return {
+        sent,
+        line: sent
+          ? { ...next, at: followed(next.at), focus: true, n }
+          : { ...next, at: now, focus: false, n },
+      }
+    },
+    [followed],
+  )
+
+  const say = useCallback(
+    (sentence: string) => {
+      const n = ++lateCount.current
+      setLate((held) => [...held, { at: followed(here.current), sentence, n }])
+    },
+    [followed],
+  )
+
+  const follow = useCallback((from: string, to: string) => {
+    follows.current = [...follows.current, { from, to }]
+    setLine((held) =>
+      held === undefined || !under(held.at, from)
+        ? held
+        : { ...held, at: moved(held.at, from, to) },
+    )
+    setLate((held) =>
+      held.map((one) => ({ ...one, at: moved(one.at, from, to) })),
+    )
+    setArrival((held) => (held === undefined ? held : moved(held, from, to)))
   }, [])
 
   // What is said belongs to the page it was drawn on, and so does an
@@ -140,6 +209,9 @@ export function useLateAnswers<Line extends Said>(
     // Kept on the page it names: a page first drawn after the move, once a
     // read brings its item into the list, still takes focus for it.
     setArrival((held) => (held === pathname ? held : undefined))
+    follows.current = follows.current.filter(
+      ({ from }) => !under(pathname, from),
+    )
   }, [pathname])
 
   const cancel = useCallback(() => {
@@ -156,15 +228,17 @@ export function useLateAnswers<Line extends Said>(
   // has it read. Focus alone scrolls only as far as the nearest edge, which
   // for a line taller than the window is its foot, so its head is put at the
   // top of the view, clear of the phone bar, as well, when it is not already
-  // in view. Taken once per line: the list reading again leaves focus where
-  // it is. A line drawn on a page the person went to themselves is neither
-  // focused nor scrolled to: they are doing something else there.
+  // in view. Taken once per answer: the list reading again, or a rename
+  // moving the line to the page's new address, leaves focus where it is. A
+  // line drawn on a page the person went to themselves is neither focused
+  // nor scrolled to: they are doing something else there.
+  const taking = shown?.focus === true ? shown.n : undefined
   useEffect(() => {
     const el = lineEl.current
-    if (shown?.focus !== true || el === null) return
+    if (taking === undefined || el === null) return
     el.focus({ preventScroll: true })
     reveal(el)
-  }, [shown, lineEl])
+  }, [taking, lineEl])
 
   const drawNotices = (head: ReactNode, drawn: ReactNode): ReactNode => (
     <>
@@ -189,6 +263,8 @@ export function useLateAnswers<Line extends Said>(
     shown,
     setLine,
     say,
+    follow,
+    here,
     arrived: arrival === pathname,
     setArrival,
     cancel,

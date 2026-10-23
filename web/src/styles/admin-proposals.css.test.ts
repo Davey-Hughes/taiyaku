@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import adminSource from './admin.css?raw'
+import settingsSource from './settings.css?raw'
 // Aliased: three cases below bind `subject` as a loop variable, and a
 // helper that only some of this file's blocks can see reads worse than one
 // name that means the same thing everywhere.
@@ -213,16 +214,10 @@ describe('the inbox tile height follows the stylesheet', () => {
  * holds it**, and that anchor is what makes a case red when a selector is
  * narrowed until it matches nothing in the app. A bare `toContain`, and
  * `<selector>[^{}]*\{` equally, span a *suffix* appended to the selector as
- * happily as they span the rest of a selector list — so the two link
- * selectors rewritten to `.editor-actions .exports` and
- * `.backup .backup-list a.download`, classes no component writes, left the
- * floor reaching neither link and this file 27 of 27 green. Watched, and
- * then watched one step further: `.nope` appended to all ten remaining
- * subjects as well, a floor reaching nothing at all on any of the six
- * screens, and 26 of the 27 were **still** green — every case but `gives the
- * grant list the same centred 44px row`, the one that already wrote its
- * selector against its own brace. Anchored, that same pair reddens three
- * cases and the whole narrowing reddens nineteen. `inRule` below lets only
+ * happily as they span the rest of a selector list, so a selector narrowed
+ * to a class no component writes, such as `.editor-actions .exports` for
+ * `.editor-actions .export`, would pass a case that read it either way
+ * while the floor reached nothing it names. `inRule` below lets only
  * whitespace — or, for a selector that is not last in its list, a `,` and
  * the rest of the prelude — stand between a selector and its brace, which is
  * every place a selector list can put one and nowhere a suffix can sit.
@@ -258,8 +253,8 @@ describe('admin.css carries a coarse-pointer floor', () => {
    * whether or not this one was ever written. That version of this helper was
    * caught in review before it shipped; this is the replacement.
    */
-  const coarse = (() => {
-    const src = withoutComments(adminSource)
+  const lastCoarseBlock = (source: string) => {
+    const src = withoutComments(source)
     const at = src.lastIndexOf('@media (pointer: coarse)')
     if (at === -1) return ''
     const open = src.indexOf('{', at)
@@ -272,7 +267,11 @@ describe('admin.css carries a coarse-pointer floor', () => {
       }
     }
     return ''
-  })()
+  }
+  const coarse = lastCoarseBlock(adminSource)
+  // `settings.css`'s one coarse block: the floor for what the settings
+  // components draw, which sits outside the `.field` labels this one names.
+  const settingsCoarse = lastCoarseBlock(settingsSource)
 
   /**
    * A literal selector, escaped for use inside a regular expression — and
@@ -316,6 +315,16 @@ describe('admin.css carries a coarse-pointer floor', () => {
     expect(blocks).toHaveLength(2)
   })
 
+  it('reads settings.css’s one coarse block, and it has exactly one', () => {
+    expect(settingsCoarse).not.toBe('')
+    // `settingsCoarse` reads the last block, so a second one added above it
+    // would take every settings.css case below off the rules they name.
+    const blocks = withoutComments(settingsSource).match(
+      /@media\s*\(pointer:\s*coarse\)/g,
+    )
+    expect(blocks).toHaveLength(1)
+  })
+
   for (const subject of [
     // Every button on the six screens and `/about`, which is how the inbox's
     // pills, its kind tabs and its Dismiss/Reopen are reached.
@@ -327,40 +336,46 @@ describe('admin.css carries a coarse-pointer floor', () => {
     // on that screen left at its desktop 35.6.
     '.account .account-row input',
     '.account-wide',
-    // The two link-shaped actions, which the `button` line cannot reach and
-    // which the speculative `a.button` this list used to name reached
-    // neither of: `/config/rules`'s Export, beside an Import button already
-    // at 44, and the download on `/config/backup`, that screen's only
-    // per-row action.
+    // The link-shaped action the `button` line cannot reach, and which the
+    // speculative `a.button` this list used to name did not reach either:
+    // `/config/rules`'s Export, beside an Import button already at 44.
     '.editor-actions .export',
-    '.backup .backup-list a',
     // The `<details>` toggles, which no other rule styles.
     ':where(.proposals, .account, .config) summary',
-    // The checkbox rows. Named at (0, 2, 1) rather than scoped with
-    // `:where()`, because they carry `align-items` as well and the rule they
-    // have to beat for that is (0, 2, 1). **All three**: before this list
-    // named them, deleting the root row's and the user row's took the 44px
-    // row and the centring off `/config/users`'s three permission checkboxes
-    // and the root row's one — the controls §12.4a measured at 13×13 and the
-    // reason this block exists — with every case here still green.
-    '.root-row .checks label',
-    '.user-row .checks label',
+    // The inbox's checkbox row. Named at (0, 2, 1) rather than scoped with
+    // `:where()`, because it carries `align-items` as well and the rule it
+    // has to beat for that is (0, 2, 1).
     '.proposals .checks label',
-    // The account page's per-library grant rows, which none of the
-    // `.checks` lines can reach: `AccountPage` draws one `<li><label>` per
-    // library inside a `.grant-list`, and none of the `.checks` lines names
-    // that label.
-    '.user-row .grant-list label',
-    // The two radios above them, a box and its words as well.
-    '.user-row .grants > label',
     // The box itself, scoped to the three roots rather than to `.checks`.
-    // `.checks` holds five of these boxes and never held all of them — see
+    // `.checks` holds one of these boxes and never held all of them — see
     // `scopes the box to the three roots` below, which is the half of this
     // that a second, narrower copy cannot satisfy.
     ':where(.proposals, .account, .config) input[type="checkbox"]',
   ]) {
     it(`names ${subject}`, () => {
       expect(coarse).toMatch(inRule(subject))
+    })
+  }
+
+  for (const subject of [
+    // The download on `/config/backup`, that screen's only per-row action.
+    '.backup-rows a',
+    // The two radios of an account's Sees choice, a box and its words.
+    '.settings-choices label',
+    // The checkbox rows `Row check` draws: an account's three permissions,
+    // each library it is limited to, and a directory's Keeps documents
+    // under .taiyaku/. Their label takes the whole first line, 44px tall,
+    // and all of it is the target.
+    '.settings-row-check .settings-row-label',
+    // The row's text drawn as no box of its own, so that its label and its
+    // help are the grid's items and the label can take a line of its own.
+    '.settings-row-check > .settings-row-text',
+    // And the box drawn over the label's end, a press beside it passing
+    // through to the label.
+    '.settings-row-check > .settings-row-control',
+  ]) {
+    it(`names ${subject} in settings.css`, () => {
+      expect(settingsCoarse).toMatch(inRule(subject))
     })
   }
 
@@ -517,22 +532,20 @@ describe('admin.css carries a coarse-pointer floor', () => {
     expect(coarse).not.toMatch(/\.library/)
   })
 
-  it('gives all three checkbox rows a centred 44px row', () => {
+  it('gives the inbox’s checkbox row a centred 44px row', () => {
     // `.checks label` is `align-items: baseline` above, which puts a
     // checkbox's bottom edge on the sentence's baseline: right at the 13px
     // box the browser draws, and at 24px it lifts the box 6.5px above the
     // sentence's centre. Measured in Chromium at 390px on 2026-09-24 — 3px
     // above the row's top and 17px below, against 10 and 10 once centred.
     //
-    // **Per row and per declaration**, because `names` above is satisfied by
-    // the selector sitting in a rule with nothing in it. The `{` each of
-    // these reaches is the one belonging to the rule whose prelude holds
-    // that selector, wherever in the list it sits.
-    for (const row of ['.root-row', '.user-row', '.proposals']) {
-      const label = `${row} .checks label`
-      expect(coarse).toMatch(inRule(label, 'min-height:\\s*44px'))
-      expect(coarse).toMatch(inRule(label, 'align-items:\\s*center'))
-    }
+    // **Per declaration**, because `names` above is satisfied by the
+    // selector sitting in a rule with nothing in it. The `{` this reaches is
+    // the one belonging to the rule whose prelude holds that selector,
+    // wherever in the list it sits.
+    const label = '.proposals .checks label'
+    expect(coarse).toMatch(inRule(label, 'min-height:\\s*44px'))
+    expect(coarse).toMatch(inRule(label, 'align-items:\\s*center'))
   })
 
   it('gives the two link-shaped actions a centred 44px row', () => {
@@ -545,10 +558,13 @@ describe('admin.css carries a coarse-pointer floor', () => {
     // do anything to a link that is not a flex item — and because
     // `min-height` alone, which these two do take today, left the word at
     // the top of the 44px box (0 above, 20 below) rather than centred.
-    for (const link of ['.editor-actions .export', '.backup .backup-list a']) {
-      expect(coarse).toMatch(inRule(link, 'display:\\s*inline-flex'))
-      expect(coarse).toMatch(inRule(link, 'align-items:\\s*center'))
-      expect(coarse).toMatch(inRule(link, 'min-height:\\s*44px'))
+    for (const [block, link] of [
+      [coarse, '.editor-actions .export'],
+      [settingsCoarse, '.backup-rows a'],
+    ] as const) {
+      expect(block).toMatch(inRule(link, 'display:\\s*inline-flex'))
+      expect(block).toMatch(inRule(link, 'align-items:\\s*center'))
+      expect(block).toMatch(inRule(link, 'min-height:\\s*44px'))
     }
   })
 
@@ -564,8 +580,8 @@ describe('admin.css carries a coarse-pointer floor', () => {
     // `align-items: center` does centre it and deletes the disclosure
     // triangle: measured in Chromium at 390px, the content's inline-start
     // offset falls from 16.94px to 0. This negative is what stops that
-    // being the fix, and it is brace-scoped so the `display: flex` on the
-    // grant-list rule two rules down cannot satisfy it.
+    // being the fix, and it is brace-scoped so a `display: flex` on another
+    // rule in the block cannot satisfy it.
     expect(coarse).toMatch(inRule(summary, 'align-content:\\s*center'))
     expect(coarse).not.toMatch(/summary[^{}]*\{[^}]*display:\s*(inline-)?flex/)
   })
@@ -580,22 +596,56 @@ describe('admin.css carries a coarse-pointer floor', () => {
   })
 
   it('gives the two radios of the grants the same centred 44px row', () => {
-    const radios = '.user-row .grants > label'
-    expect(coarse).toMatch(inRule(radios, 'display:\\s*flex'))
-    expect(coarse).toMatch(inRule(radios, 'align-items:\\s*center'))
-    expect(coarse).toMatch(inRule(radios, 'min-height:\\s*44px'))
+    // `display: flex` is what lets the floor's `min-height` reach a label at
+    // all, since it does nothing to an inline box; it is the label's own
+    // rule, outside the coarse block.
+    const radios = '.settings-choices label'
+    expect(withoutComments(settingsSource)).toMatch(
+      inRule(radios, 'display:\\s*flex'),
+    )
+    expect(settingsCoarse).toMatch(inRule(radios, 'align-items:\\s*center'))
+    expect(settingsCoarse).toMatch(inRule(radios, 'min-height:\\s*44px'))
   })
 
-  it('gives the grant list the same centred 44px row', () => {
-    // `display: flex` is not decoration here and is the reason this is three
-    // assertions rather than one. `.checks label` is already flex from its
-    // own rule above, so its floor adds only the height and the centring; a
-    // `.grant-list` label is flex through its own base rule, which is why the
-    // floor can name `min-height` at all: it does nothing to an inline box.
-    const grant = '.user-row .grant-list label'
-    expect(coarse).toMatch(inRule(grant, 'display:\\s*flex'))
-    expect(coarse).toMatch(inRule(grant, 'align-items:\\s*center'))
-    expect(coarse).toMatch(inRule(grant, 'min-height:\\s*44px'))
+  it('gives every checkbox row’s label a centred 44px row, its box beside it', () => {
+    // The label's own rule draws it as a block, and `min-height` centres
+    // nothing in a block, so `display: grid` is asserted with the centring;
+    // the subgrid keeps its words in the row's first column.
+    const label = '.settings-row-check .settings-row-label'
+    expect(settingsCoarse).toMatch(inRule(label, 'display:\\s*grid'))
+    expect(settingsCoarse).toMatch(
+      inRule(label, 'grid-template-columns:\\s*subgrid'),
+    )
+    expect(settingsCoarse).toMatch(inRule(label, 'align-items:\\s*center'))
+    expect(settingsCoarse).toMatch(inRule(label, 'min-height:\\s*44px'))
+    // The label across the grid's first line and the box over its end, the
+    // help under them: centred on the label and its help together, the box
+    // hangs below the words. The browser pass measures the centring and the
+    // presses (`Config.browser.test.tsx`, "a checkbox row under a coarse
+    // pointer").
+    expect(settingsCoarse).toMatch(
+      inRule(
+        '.settings-row-check',
+        'grid-template-areas:\\s*"label label"\\s*"help \\."',
+      ),
+    )
+    expect(settingsCoarse).toMatch(
+      inRule(
+        '.settings-row-check > .settings-row-text',
+        'display:\\s*contents',
+      ),
+    )
+    expect(settingsCoarse).toMatch(inRule(label, 'grid-area:\\s*label'))
+    expect(settingsCoarse).toMatch(
+      inRule('.settings-row-check .settings-row-help', 'grid-area:\\s*help'),
+    )
+    const control = '.settings-row-check > .settings-row-control'
+    expect(settingsCoarse).toMatch(inRule(control, 'grid-row:\\s*1;'))
+    expect(settingsCoarse).toMatch(inRule(control, 'grid-column:\\s*2;'))
+    expect(settingsCoarse).toMatch(inRule(control, 'pointer-events:\\s*none'))
+    expect(settingsCoarse).toMatch(
+      inRule(`${control} > *`, 'pointer-events:\\s*auto'),
+    )
   })
 
   /**

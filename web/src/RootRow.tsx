@@ -59,9 +59,9 @@
 import {
   type ChangeEvent,
   type FocusEvent,
+  type ReactNode,
   useCallback,
   useEffect,
-  useId,
   useRef,
   useState,
 } from 'react'
@@ -79,22 +79,38 @@ import {
   startScan,
   statusOf,
 } from './config'
+import { HeldButton } from './HeldButton'
 import { useDrawn } from './hooks'
 import type { MoveAnswer } from './libraries'
 import { MoveRoot, type NamedLibrary } from './MoveRoot'
 import { RemoveRoot } from './RemoveRoot'
 import { ScanReport } from './ScanReport'
 import { messageOf, sentenceOf } from './message'
+import { useLineEnds } from './lineEnds'
+import { PathWithBreaks } from './PathWithBreaks'
+import {
+  type BackTo,
+  PageHeader,
+  RemovalSection,
+  Row,
+  Section,
+} from './settingsLayout'
 
 export interface RootRowProps {
   root: Root
+  /** The way up to the directory's library, drawn in the page's header. */
+  back?: BackTo
+  /** What the page says under its header, before this directory's own alerts. */
+  notices?: ReactNode
+  /** The page was opened from a link that is now hidden or gone: the path takes focus. */
+  arrived?: boolean
   /** Only a root added in this session has one. See `config.ts`'s `Probe`. */
   probe?: Probe
   /** The library's name, where this is its only directory. */
   lastOf?: string
   /**
    * Something else in the library is going on: another directory's scan.
-   * Scan directory, Move… and Remove… do nothing then and are drawn disabled,
+   * Scan directory, Move… and Remove… do nothing then and are drawn held,
    * and an open removal or move dialog is closed.
    */
   held?: boolean
@@ -142,7 +158,15 @@ export interface RootRowProps {
  */
 interface TextField {
   name: string
+  /**
+   * The setting's whole name: the box's `aria-label`, and the words a
+   * refusal names it by once the page has gone.
+   */
   label: string
+  /** The row's label: `label`'s first words, which the name must contain. */
+  title: string
+  /** The section the row is drawn in. */
+  group: 'scan' | 'read'
   /**
    * What the `root` row says this column holds.
    *
@@ -165,7 +189,7 @@ interface TextField {
    */
   multiline?: boolean
   /**
-   * A line under the box, drawn only when set.
+   * The row's help, beside the label, drawn only when set.
    *
    * **`exclude_globs` alone, because it alone hides a trap the matcher's own
    * correctness makes invisible.** Measured against the `ignore` crate,
@@ -179,25 +203,31 @@ interface TextField {
    * purpose — the server rejects a dangling `\` and an unclosed `{` and
    * accepts everything else, and this line must not imply otherwise.
    */
-  hint?: string
+  help?: string
 }
 
 const TEXT_FIELDS: TextField[] = [
   {
     name: 'edition_key',
     label: 'Edition key',
+    title: 'Edition key',
+    group: 'read',
     from: (r) => r.edition_key ?? '',
     patch: (edition_key) => ({ edition_key }),
   },
   {
     name: 'default_kind',
     label: 'Default kind',
+    title: 'Default kind',
+    group: 'read',
     from: (r) => r.default_kind ?? '',
     patch: (default_kind) => ({ default_kind }),
   },
   {
     name: 'default_language',
     label: 'Default language',
+    title: 'Default language',
+    group: 'read',
     from: (r) => r.default_language ?? '',
     patch: (default_language) => ({ default_language }),
   },
@@ -210,12 +240,15 @@ const TEXT_FIELDS: TextField[] = [
     // rejects a dangling `\` and an unclosed `{` and accepts everything
     // else, which is a guard against two typos rather than a verification.
     label: 'Exclude globs (one gitignore pattern per line)',
+    title: 'Exclude globs',
+    group: 'scan',
     multiline: true,
     from: (r) => r.exclude_globs ?? '',
     patch: (exclude_globs) => ({ exclude_globs }),
-    hint:
-      'A trailing slash or bare name excludes the directory and everything ' +
-      "under it; a '/**' suffix excludes only what's inside it.",
+    help:
+      'One gitignore pattern per line. A trailing slash or a bare name ' +
+      "excludes the directory and all under it; a '/**' suffix excludes " +
+      'only what is inside it.',
   },
 ]
 
@@ -271,6 +304,9 @@ function leftPatch(
 
 export function RootRow({
   root,
+  back,
+  notices,
+  arrived = false,
   probe,
   lastOf,
   held = false,
@@ -281,19 +317,6 @@ export function RootRow({
   onScan,
   onLateRefusal,
 }: RootRowProps) {
-  /**
-   * O165: each text box is named by its label's own words and described by
-   * its hint, rather than through the `<label>` around both — which named
-   * Exclude globs with the hint's whole sentence. The hint is reached by an
-   * id, per instance, so that two rows drawn at once cannot share one.
-   *
-   * O175: the name is an `aria-label` holding those words, where it was an
-   * `aria-labelledby` naming the label's `<span>`. `.field` draws the span
-   * in capitals, and Chromium's accessibility tree named the box in those
-   * capitals; `aria-labelledby` outranks `aria-label`, so it had to go
-   * rather than stay beside it.
-   */
-  const fieldIds = useId()
   /**
    * Why the last write or scan *request* failed. Cleared by the next one.
    *
@@ -312,6 +335,43 @@ export function RootRow({
   const [starting, setStarting] = useState(false)
   const [elapsed, setElapsed] = useState<number | undefined>()
   const [report, setReport] = useState<ScanOutcome | null>(null)
+  const heading = useRef<HTMLHeadingElement>(null)
+  /** Which of the facts under the title end a line. */
+  const factEnds = useLineEnds<HTMLDListElement>('.regime > div')
+  useEffect(() => {
+    if (arrived) heading.current?.focus()
+  }, [arrived])
+  const moveButton = useRef<HTMLButtonElement>(null)
+  /**
+   * Set when the move dialog is cancelled, by Cancel or Escape: focus goes
+   * back to the Move… that opened it, as a closing dialog's should, and not
+   * to the document, which is where the removed dialog leaves it. A hold
+   * cancels it too, and focus goes back to Move… all the same, held as it
+   * then is (`HeldButton`); a finished move leaves it to what the screen
+   * draws next.
+   */
+  const backToMove = useRef(false)
+  useEffect(() => {
+    if (moving || !backToMove.current) return
+    backToMove.current = false
+    moveButton.current?.focus()
+  }, [moving])
+  const removeButton = useRef<HTMLButtonElement>(null)
+  /**
+   * Set when the removal's confirm is cancelled, for the reason `backToMove`
+   * is: focus goes back to the Remove… that opened it, not to the document,
+   * where the confirm's Cancel leaves it as it goes, and to a Remove… that a
+   * hold has taken too (`HeldButton`). Only from the document: the confirm
+   * is not modal, and a hold that cancels it while focus is in a box
+   * elsewhere on the page leaves focus in that box.
+   */
+  const backToRemove = useRef(false)
+  useEffect(() => {
+    if (confirming || !backToRemove.current) return
+    backToRemove.current = false
+    const at = document.activeElement
+    if (at === null || at === document.body) removeButton.current?.focus()
+  }, [confirming])
   /**
    * Each box the admin has typed in since focusing it, by its name. The
    * interval box is in it too, for the row's going; its blur compares the
@@ -372,12 +432,12 @@ export function RootRow({
   /**
    * Whether a `POST` is already on its way.
    *
-   * **A ref, not the `starting` state below, and that distinction is the whole
-   * fix.** React batches state updates, so two clicks dispatched before the
-   * next render both read the *old* `disabled` — the button is still enabled
-   * on the second, and both POSTs go. A ref is written and read synchronously,
-   * so the second click sees the first. `starting` still exists because it is
-   * what *draws* the disabled button; this is what enforces it.
+   * **A ref, not the `starting` state below.** React batches state updates,
+   * so two clicks dispatched before the next render both read the *old*
+   * hold: the button is still free on the second, and both POSTs go. A ref is
+   * written and read synchronously, so the second click sees the first.
+   * `starting` still exists because it is what *draws* the held button; this
+   * is what enforces it.
    */
   const inFlight = useRef(false)
 
@@ -413,6 +473,9 @@ export function RootRow({
       })
   }
 
+  /** Which dialog is open, for `absorb`, which is made once. */
+  const open = useRef({ confirming, moving })
+  open.current = { confirming, moving }
   /**
    * Fold one status answer into this row's state.
    *
@@ -428,7 +491,10 @@ export function RootRow({
       setElapsed(status.elapsed_secs)
       if (status.running) {
         // A removal or a move being confirmed quotes counts from before this
-        // scan.
+        // scan. The scan closes it as a hold from elsewhere does, and focus
+        // goes back to the button that opened it as it does then.
+        if (open.current.confirming) backToRemove.current = true
+        if (open.current.moving) backToMove.current = true
         setConfirming(false)
         setMoving(false)
         setRunning(true)
@@ -491,7 +557,7 @@ export function RootRow({
   }, [])
 
   const begin = useCallback(() => {
-    // Guarded synchronously, not by `disabled` alone: that left two rapid
+    // Guarded synchronously, not by the hold alone: that left two rapid
     // presses both sending, and the second's 409 — about the admin's own scan
     // — landed in the alert slot while that scan ran fine.
     if (inFlight.current) return
@@ -576,19 +642,110 @@ export function RootRow({
     }
   }, [running, root.id, absorb])
 
+  /*
+   * Scan directory, Move… and Remove… are held alike, for one set of reasons:
+   * by a scan, of this directory or another, and by a press of their own,
+   * either of which can come while the button has focus, so it is held by
+   * `HeldButton` and keeps it. A press of one of the other two holds it by
+   * `disabled`: focus is on the button pressed then, and a button that cannot
+   * take focus as its hold comes on stays out of the tab order.
+   */
+  const scanning = running || held
+
+  const textRow = (field: TextField) => (
+    <Row key={field.name} label={field.title} help={field.help}>
+      {(ids) => {
+        const boxProps = {
+          id: ids.control,
+          name: field.name,
+          defaultValue: field.from(root),
+          onFocus: () => {
+            edited.current.delete(field.name)
+          },
+          onChange: (
+            e: ChangeEvent<HTMLInputElement | HTMLTextAreaElement>,
+          ) => {
+            edited.current.set(field.name, e.target)
+          },
+          onBlur: (e: FocusEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+            // Nothing typed since this box was focused: nothing to write,
+            // whatever the box happens to show.
+            if (!edited.current.has(field.name)) return
+            edited.current.delete(field.name)
+            // Edited back to what the row already holds: a no-op.
+            const patch = textPatch(field, root, e.target.value)
+            if (patch !== undefined) savePatch(patch, field.label)
+          },
+          'aria-label': field.label,
+          'aria-describedby': ids.help,
+        }
+        return field.multiline ? (
+          <textarea rows={3} {...boxProps} />
+        ) : (
+          <input type="text" {...boxProps} />
+        )
+      }}
+    </Row>
+  )
+
   return (
-    <section className="root-row">
-      <h2>
-        <code>{root.path}</code>
-      </h2>
-      <dl className="regime">
-        {regimeFacts(root, probe).map(({ label, value }) => (
-          <div key={label}>
-            <dt>{label}</dt>
-            <dd>{value}</dd>
-          </div>
-        ))}
-      </dl>
+    <>
+      <PageHeader
+        back={back}
+        title={
+          <code>
+            <PathWithBreaks path={root.path} />
+          </code>
+        }
+        titleRef={heading}
+        description={
+          <dl ref={factEnds} className="regime">
+            {regimeFacts(root, probe).map(({ label, value }) => (
+              <div key={label}>
+                <dt>{label}</dt>
+                <dd>{value}</dd>
+              </div>
+            ))}
+          </dl>
+        }
+        actions={
+          <>
+            {/*
+              `confirming` holds this too, and that is not tidiness. The
+              removal dialog asks its dry run once, when it opens, so a scan
+              started here while it is open imports works underneath a
+              sentence still quoting the old counts, and the confirm below it
+              then sends a real DELETE into a running derive, which is the
+              interleaving `DeriveReport::root_removed_mid_derive` counts.
+            */}
+            <HeldButton
+              type="button"
+              onClick={begin}
+              held={scanning || starting}
+              disabled={confirming || moving}
+            >
+              Scan directory
+            </HeldButton>
+            {moveTo !== undefined && (
+              <HeldButton
+                ref={moveButton}
+                type="button"
+                onClick={() => setMoving(true)}
+                held={scanning || moving}
+                disabled={starting || confirming}
+              >
+                Move…
+              </HeldButton>
+            )}
+          </>
+        }
+      />
+      {running && (
+        <p className="scanning">
+          Scanning…{elapsed === undefined ? '' : ` ${Math.round(elapsed)}s`}
+        </p>
+      )}
+      {notices}
       {failure !== undefined && <p role="alert">{failure}</p>}
       {conflict !== undefined && <p role="alert">{conflict}</p>}
       {scanNotice !== undefined && (
@@ -596,163 +753,19 @@ export function RootRow({
           {scanNotice}
         </p>
       )}
-
-      <div className="fields">
-        {TEXT_FIELDS.map((field) => {
-          const boxProps = {
-            name: field.name,
-            defaultValue: field.from(root),
-            onFocus: () => {
-              edited.current.delete(field.name)
-            },
-            onChange: (
-              e: ChangeEvent<HTMLInputElement | HTMLTextAreaElement>,
-            ) => {
-              edited.current.set(field.name, e.target)
-            },
-            onBlur: (e: FocusEvent<HTMLInputElement | HTMLTextAreaElement>) => {
-              // Nothing typed since this box was focused: nothing to write,
-              // whatever the box happens to show.
-              if (!edited.current.has(field.name)) return
-              edited.current.delete(field.name)
-              // Edited back to what the row already holds: a no-op.
-              const patch = textPatch(field, root, e.target.value)
-              if (patch !== undefined) savePatch(patch, field.label)
-            },
-            'aria-label': field.label,
-            'aria-describedby':
-              field.hint === undefined
-                ? undefined
-                : `${fieldIds}-${field.name}-hint`,
-          }
-          return field.multiline ? (
-            <label key={field.name} className="field">
-              <span>{field.label}</span>
-              <textarea rows={3} {...boxProps} />
-              {field.hint !== undefined && (
-                <small id={`${fieldIds}-${field.name}-hint`}>
-                  {field.hint}
-                </small>
-              )}
-            </label>
-          ) : (
-            <label key={field.name} className="field">
-              <span>{field.label}</span>
-              <input type="text" {...boxProps} />
-              {field.hint !== undefined && (
-                <small id={`${fieldIds}-${field.name}-hint`}>
-                  {field.hint}
-                </small>
-              )}
-            </label>
-          )
-        })}
-        <label className="field">
-          <span>Scan interval (seconds)</span>
-          <input
-            type="number"
-            name="scan_interval_secs"
-            aria-label="Scan interval (seconds)"
-            min="1"
-            step="1"
-            defaultValue={root.scan_interval_secs ?? ''}
-            onChange={(e) => {
-              edited.current.set('scan_interval_secs', e.target)
-            }}
-            onBlur={(e) => {
-              edited.current.delete('scan_interval_secs')
-              const patch = intervalPatch(root, e.target)
-              if (typeof patch === 'string') {
-                setFailure(patch)
-                return
-              }
-              if (patch === undefined) return
-              setFailure(undefined)
-              savePatch(patch, 'Scan interval (seconds)')
-            }}
-          />
-        </label>
-      </div>
-
-      <div className="checks">
-        <label>
-          <input
-            type="checkbox"
-            name="keeps_documents"
-            checked={keepsDocuments}
-            onChange={(e) => {
-              const next = e.target.checked
-              setKeepsDocuments(next)
-              patchRoot(root.id, { keeps_documents: next })
-                .then(() => {
-                  setFailure(undefined)
-                  onChanged()
-                })
-                .catch((err: unknown) => {
-                  // Back to what the server still holds. See the state's own
-                  // doc comment for why this box is controlled and the text
-                  // ones are not.
-                  setKeepsDocuments(!next)
-                  const sentence = sentenceOf(err)
-                  if (drawn.current) setFailure(sentence)
-                  else
-                    onLateRefusal?.(
-                      `Keeps documents under .taiyaku/ for ${root.path} was not saved (${sentence}).`,
-                    )
-                })
-            }}
-          />
-          <span>Keeps documents under .taiyaku/</span>
-        </label>
-      </div>
-
-      <div className="actions">
-        {/*
-          `confirming` disables this too, and that is not tidiness. The
-          removal dialog asks its dry run once, when it opens, so a scan
-          started here while it is open imports works underneath a sentence
-          still quoting the old counts, and the confirm below it then sends a
-          real DELETE into a running derive, which is the interleaving
-          `DeriveReport::root_removed_mid_derive` counts.
-        */}
-        <button
-          type="button"
-          onClick={begin}
-          disabled={running || starting || confirming || moving || held}
-        >
-          Scan directory
-        </button>
-        {moveTo !== undefined && (
-          <button
-            type="button"
-            onClick={() => setMoving(true)}
-            disabled={running || starting || confirming || moving || held}
-          >
-            Move…
-          </button>
-        )}
-        <button
-          type="button"
-          onClick={() => setConfirming(true)}
-          disabled={running || starting || confirming || moving || held}
-        >
-          Remove…
-        </button>
-      </div>
-
-      {running && (
-        <p className="scanning">
-          Scanning…{elapsed === undefined ? '' : ` ${Math.round(elapsed)}s`}
-        </p>
-      )}
-      {report !== null && <ScanReport outcome={report} level={3} />}
+      {/* A modal, drawn over the page and so taking no place in it. Inside
+          the page all the same, which is what gives it the screen's own
+          rules and measure. */}
       {moving && moveTo !== undefined && (
         <MoveRoot
           root={root}
           from={moveTo.from}
           targets={moveTo.targets}
           held={held}
-          onCancel={() => setMoving(false)}
+          onCancel={() => {
+            backToMove.current = true
+            setMoving(false)
+          }}
           onMoved={(answer) => {
             setMoving(false)
             onMoved?.(answer)
@@ -761,24 +774,120 @@ export function RootRow({
           onLateRefusal={onLateRefusal}
         />
       )}
-      {confirming && (
-        <RemoveRoot
-          root={root}
-          lastOf={lastOf}
-          held={held}
-          onCancel={() => setConfirming(false)}
-          onRemoved={(answer) => {
-            setConfirming(false)
-            // The directory is gone, so an edit still in its box has nowhere
-            // to go when the row does. A move keeps its edits: the directory
-            // is still there, in another library.
-            edited.current.clear()
-            onRemoved?.(answer)
-            onChanged()
-          }}
-          onLateRefusal={onLateRefusal}
-        />
+
+      <Section title="How it is scanned">
+        <Row
+          label="Scan interval"
+          help="Whole seconds, at least one. Empty sets no interval."
+        >
+          {(ids) => (
+            <input
+              type="number"
+              id={ids.control}
+              name="scan_interval_secs"
+              aria-label="Scan interval (seconds)"
+              aria-describedby={ids.help}
+              min="1"
+              step="1"
+              defaultValue={root.scan_interval_secs ?? ''}
+              onChange={(e) => {
+                edited.current.set('scan_interval_secs', e.target)
+              }}
+              onBlur={(e) => {
+                edited.current.delete('scan_interval_secs')
+                const patch = intervalPatch(root, e.target)
+                if (typeof patch === 'string') {
+                  setFailure(patch)
+                  return
+                }
+                if (patch === undefined) return
+                setFailure(undefined)
+                savePatch(patch, 'Scan interval (seconds)')
+              }}
+            />
+          )}
+        </Row>
+        {TEXT_FIELDS.filter((field) => field.group === 'scan').map(textRow)}
+        <Row label="Keeps documents under .taiyaku/" check>
+          {(ids) => (
+            <input
+              type="checkbox"
+              id={ids.control}
+              name="keeps_documents"
+              checked={keepsDocuments}
+              onChange={(e) => {
+                const next = e.target.checked
+                setKeepsDocuments(next)
+                patchRoot(root.id, { keeps_documents: next })
+                  .then(() => {
+                    setFailure(undefined)
+                    onChanged()
+                  })
+                  .catch((err: unknown) => {
+                    // Back to what the server still holds. See the state's
+                    // own doc comment for why this box is controlled and the
+                    // text ones are not.
+                    setKeepsDocuments(!next)
+                    const sentence = sentenceOf(err)
+                    if (drawn.current) setFailure(sentence)
+                    else
+                      onLateRefusal?.(
+                        `Keeps documents under .taiyaku/ for ${root.path} was not saved (${sentence}).`,
+                      )
+                  })
+              }}
+            />
+          )}
+        </Row>
+      </Section>
+
+      <Section title="How it is read">
+        {TEXT_FIELDS.filter((field) => field.group === 'read').map(textRow)}
+      </Section>
+
+      {report !== null && (
+        <Section title="Scan report">
+          <ScanReport outcome={report} level={4} />
+        </Section>
       )}
-    </section>
+
+      <RemovalSection title="Removal">
+        <Row
+          label="Remove this directory"
+          help="Asks first, with what it would take."
+        >
+          <HeldButton
+            ref={removeButton}
+            type="button"
+            onClick={() => setConfirming(true)}
+            held={scanning || confirming}
+            disabled={starting || moving}
+          >
+            Remove…
+          </HeldButton>
+        </Row>
+        {confirming && (
+          <RemoveRoot
+            root={root}
+            lastOf={lastOf}
+            held={held}
+            onCancel={() => {
+              backToRemove.current = true
+              setConfirming(false)
+            }}
+            onRemoved={(answer) => {
+              setConfirming(false)
+              // The directory is gone, so an edit still in its box has nowhere
+              // to go when the row does. A move keeps its edits: the directory
+              // is still there, in another library.
+              edited.current.clear()
+              onRemoved?.(answer)
+              onChanged()
+            }}
+            onLateRefusal={onLateRefusal}
+          />
+        )}
+      </RemovalSection>
+    </>
   )
 }

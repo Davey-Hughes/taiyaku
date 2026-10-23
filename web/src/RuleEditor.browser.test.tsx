@@ -10,6 +10,7 @@ import * as curation from './curation'
 import { RuleEditor } from './RuleEditor'
 import * as rulesApi from './rules'
 import { emptyDerive } from './testing/derive'
+import { expectDisclosure } from './testing/disclosure'
 import { press } from './testing/input'
 import { mount } from './testing/mount'
 
@@ -132,4 +133,27 @@ describe('the Rules screen’s save report', () => {
       ).toBeGreaterThanOrEqual(16)
     },
   )
+
+  it('draws what a save’s re-derive found as something to press, closed and open', async () => {
+    await page.viewport(1280, 800)
+    const host = await act(async () => {
+      const mounted = mount(
+        <div className="library">
+          <main>
+            <div className="config">
+              <RuleEditor />
+            </div>
+          </main>
+        </div>,
+      )
+      await Promise.resolve()
+      await Promise.resolve()
+      return mounted
+    })
+    await press(host.querySelector('button.save') as Element)
+    await expectDisclosure(
+      host.querySelector('details.save-derive > summary') as HTMLElement,
+      'the save’s re-derive',
+    )
+  })
 })

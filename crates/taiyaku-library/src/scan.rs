@@ -208,6 +208,12 @@ pub fn add_root_in(conn: &Connection, path: &Path, library: InLibrary<'_>) -> Re
 /// two-argument `trim` over the same characters, and are asked in any ASCII
 /// case, as the trigger asks them. A component is empty for `/` and for a
 /// directory named only white space.
+///
+/// **A component that strips to `.` or `..` is refused too**, as a directory
+/// called `. ` or ` ..` would otherwise make a library of that name, which no
+/// page address holds ([`crate::has_no_address`]). Refused rather than given
+/// its whole path, because the trigger takes any component that is not empty
+/// and not taken.
 fn own_library_clash(conn: &Connection, canonical: &Path) -> Result<Option<String>, String> {
     let taken = |name: &str| -> Result<bool, String> {
         conn.query_row(
@@ -220,6 +226,12 @@ fn own_library_clash(conn: &Connection, canonical: &Path) -> Result<Option<Strin
     let path = canonical.to_string_lossy();
     let whole = crate::libraries::trim_name(&path);
     let leaf = crate::libraries::trim_name(path.rsplit('/').next().unwrap_or_default());
+    if crate::has_no_address(leaf) {
+        return Ok(Some(format!(
+            "{path} cannot be a library of its own: a library named for it would be called \
+             `{leaf}`, and no address can hold “.” or “..” as a name; add it to a library by name"
+        )));
+    }
     if !leaf.is_empty() && !taken(leaf)? {
         return Ok(None);
     }
@@ -282,11 +294,12 @@ pub enum AddRootError {
     /// overlaps a root already held, nested in either direction. The
     /// message already names which, and for an overlap, the colliding root
     /// by path and id. Or the library it would join cannot be named: an
-    /// [`InLibrary::Named`] that is empty once trimmed, or an
-    /// [`InLibrary::Own`] whose two possible names are both taken, which
-    /// the message names. Or an [`InLibrary::Id`] no library holds. For
-    /// [`create_library`]: no directory given, a name empty once trimmed or
-    /// already a library's, or two of the directories given overlapping.
+    /// [`InLibrary::Named`] that [`crate::libraries::usable_name`] refuses,
+    /// or an [`InLibrary::Own`] whose two possible names are both taken,
+    /// which the message names. Or an [`InLibrary::Id`] no library holds.
+    /// For [`create_library`]: no directory given, a name `usable_name`
+    /// refuses or that is already a library's, or two of the directories
+    /// given overlapping.
     Unusable(String),
     /// The store itself failed: [`roots`] (the overlap check's own read),
     /// the library-name lookup, the insert inside [`add_root_in`], or the
@@ -348,11 +361,12 @@ pub fn add_root_checked(conn: &Connection, path: &Path) -> Result<Added, AddRoot
 ///    the column default until some later call happens to set it.
 ///
 /// **And the library it joins can be named**, checked with the first two,
-/// before anything is written: an [`InLibrary::Named`] needs a name once
-/// trimmed, and an [`InLibrary::Own`] needs a name the `root_gets_a_library`
-/// trigger can give it (see `own_library_clash`). Otherwise the first would
-/// surface as a store fault and the second as a bare UNIQUE failure on
-/// `library.name`, though both are this caller's to fix.
+/// before anything is written: an [`InLibrary::Named`] needs a name
+/// [`crate::libraries::usable_name`] takes, and an [`InLibrary::Own`] needs a
+/// name the `root_gets_a_library` trigger can give it (see
+/// `own_library_clash`). Otherwise the first would surface as a store fault
+/// and the second as a bare UNIQUE failure on `library.name`, though both are
+/// this caller's to fix.
 ///
 /// **The library is created only once every validation has passed**, by
 /// [`add_root_in`], so a refused path names no library into being.
@@ -389,13 +403,14 @@ pub fn add_root_checked_in(
     let canonical = vetted(conn, path)?;
 
     match library {
-        InLibrary::Named(name) if crate::libraries::trim_name(name).is_empty() => {
-            return Err(AddRootError::Unusable(format!(
-                "{}: a library needs a name",
-                canonical.display()
-            )));
+        InLibrary::Named(name) => {
+            if let Err(why) = crate::libraries::usable_name(name) {
+                return Err(AddRootError::Unusable(format!(
+                    "{}: {why}",
+                    canonical.display()
+                )));
+            }
         }
-        InLibrary::Named(_) => {}
         InLibrary::Own => {
             if let Some(why) = own_library_clash(conn, &canonical).map_err(AddRootError::Failed)? {
                 return Err(AddRootError::Unusable(why));
@@ -511,11 +526,11 @@ pub struct Created {
 ///
 /// # Errors
 ///
-/// Returns [`AddRootError::Unusable`] for no path, a name that is empty once
-/// trimmed or that a library already holds, a path [`add_root_checked_in`]
-/// would refuse, or two of the paths overlapping. Returns
-/// [`AddRootError::Failed`] if the store refuses; a fault while recording a
-/// probe's interval is one, and by then the library exists.
+/// Returns [`AddRootError::Unusable`] for no path, a name
+/// [`crate::libraries::usable_name`] refuses or that a library already holds,
+/// a path [`add_root_checked_in`] would refuse, or two of the paths
+/// overlapping. Returns [`AddRootError::Failed`] if the store refuses; a fault
+/// while recording a probe's interval is one, and by then the library exists.
 pub fn create_library(
     conn: &Connection,
     name: &str,
@@ -526,10 +541,8 @@ pub fn create_library(
             "a library needs at least one directory".to_string(),
         ));
     }
-    let name = crate::libraries::trim_name(name);
-    if name.is_empty() {
-        return Err(AddRootError::Unusable("a library needs a name".to_string()));
-    }
+    let name = crate::libraries::usable_name(name)
+        .map_err(|why| AddRootError::Unusable(why.to_string()))?;
 
     let mut canonical: Vec<PathBuf> = Vec::with_capacity(paths.len());
     for path in paths {

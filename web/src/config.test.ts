@@ -132,7 +132,7 @@ describe('regimeFacts', () => {
     })
     expect(regimeFacts(scanned)[2]).toEqual({
       label: 'last scan',
-      value: '2026-09-17 08:33:49 · ok',
+      value: '2026-09-17 08:33:49 UTC\u00a0·\u00a0ok',
     })
   })
 
@@ -142,7 +142,7 @@ describe('regimeFacts', () => {
       last_scan_status: null,
     })
     expect(regimeFacts(scanned)[2].value).toBe(
-      '2026-09-17 08:33:49 · outcome unrecorded',
+      '2026-09-17 08:33:49 UTC\u00a0·\u00a0outcome unrecorded',
     )
   })
 })

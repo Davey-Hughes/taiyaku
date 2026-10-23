@@ -67,7 +67,9 @@ the hand-built back link, title and `.actions` row each page draws today go.
 - **`RemovalSection`**: the last box on a page that can remove something,
   with a danger-coloured edge. It holds Remove… and, once that is pressed,
   the existing confirm box. Remove… leaves the action row, so no destructive
-  button sits beside Scan.
+  button sits beside Scan. In the confirm, its button and Cancel sit side by
+  side, on two lines where they do not fit on one, and the disclosure of what
+  re-deriving would find, where there is one, comes after them.
 
 **Headings:** a page title is one level below the screen's h1, and a
 section one level below the title. Configuration keeps its visually hidden
@@ -113,13 +115,15 @@ its own.
   drawn alone with its back link, as today.
 - **The breakpoint** is the list's column, the gap and the opened page's
   measure added up from their tokens, never written as a literal.
-- **The list** is a fixed column (20rem on the prototype). It keeps all its
-  information (the user chose "full" over names only); in that column each
-  row is drawn in two lines, as on a phone. The opened page starts one gap
-  after the list (`--space-6`) at its own measure, and any spare width goes
-  to its right, never between the two (round 3: "the panel shouldn't be
-  right aligned, it should basically be floating from an offset from the
-  list"). The list is sticky with its own scroll, so a long page scrolls
+- **The list** is a column at least 20rem wide that grows to the table's
+  measure where the window allows (the user ruled on 2026-10-21 for this,
+  as tried on the prototype, over a fixed 20rem). It keeps all its
+  information (the user chose "full" over names only); while its column is
+  narrower than 36rem each row is drawn in two lines, as on a phone. The
+  opened page starts one gap after the list (`--space-6`) at its own
+  measure, and width beyond the list's measure goes to the page's right,
+  never between the two (round 3: "the panel shouldn't be right aligned, it
+  should basically be floating from an offset from the list"). The list is sticky with its own scroll, so a long page scrolls
   past it.
 - **The open row** has `aria-current="page"` and the highlight from §2.
 - **Focus:** opening a row moves focus to the opened page's heading, in both
@@ -141,17 +145,20 @@ As built on the prototype, for the five pages it covers:
 
 - **An account** (Configuration → Users → a name): header with ‹ Users, the
   name, and a description line from data the page already loads (role, and
-  the newest session's last seen); the locked notice under it. Sections
+  when it was last seen); the locked notice under it. Sections
   Role & permissions (Role; Can download, Can stream and Can stamp, each a
   row with its help), Libraries (the every-library or chosen-libraries
   choice as a row, the grant list below it), Password (field and button on
-  one row), Sessions & keys (the tally as the description; Revoke at each
-  row's end); then the removal box. The last-admin reason is two sentences,
-  one beside Role and one beside Remove….
+  one row; "Password set" is said from a polite live region, as "Password
+  changed" is on `/account` and in the reader's account panel), Sessions &
+  keys (the tally as the description; Revoke at each row's end); then the
+  removal box. The last-admin reason is two sentences, one beside Role and
+  one beside Remove….
 - **A directory** (a library → a directory): header with ‹ the library, the
   path as title, the watch, scan-every and last-scan facts as the
-  description, and Scan directory · Move… as actions (Move's box opens under
-  the header). Sections How it is scanned (scan interval; exclude globs, with
+  description, and Scan directory · Move… as actions. Move… opens in a modal
+  dialog over the page, so nothing on the page moves (the user's ruling at
+  PR 2's checkpoint, 2026-10-21). Sections How it is scanned (scan interval; exclude globs, with
   its hint as the row's help; keeps documents under `.taiyaku/`), How it is
   read (edition key, default kind, default language), the scan report when
   there is one; then the removal box.
@@ -163,7 +170,22 @@ As built on the prototype, for the five pages it covers:
 - **The Users table**: header "Users" with a one-line description and New
   account as the action; the table in a box.
 - **A library**: header with ‹ Libraries, the name, the works-and-directories
-  count as the description, Scan library and Rename… as actions; Directories
+  count as the description, Rename… and Scan library as actions. Rename…
+  edits the name in the title's place and Save · Cancel take the actions'
+  place, so nothing below the header moves (the same ruling). A refusal is
+  a callout laid over what is under the header, at the header's foot, as a
+  form's validation bubble is: the page's own words in a box with an edge,
+  on the raised surface, inside the page's column and clear of the phone
+  bar. No room is kept for it, and it goes when the name is edited or the
+  editor is closed, so opening the editor, a refusal and its going move
+  nothing on the page (the user's ruling of 2026-10-21 on the look-over).
+  A name another library holds, in any ASCII case, or `.` or `..`, is
+  said in that callout as it is typed, in the server's own sentence, and
+  Save is drawn held at once until the name is free; New library's name
+  and New account's (another account's exactly as written) do the same in
+  their refusal's place (the user's ruling of 2026-10-21, after trying the
+  refusal). The server still judges every save;
+  Directories
   in a box with Add directory…; What the scan found; then the removal box,
   whose button reads Remove….
 
@@ -171,6 +193,46 @@ The rest follow the same pattern, with no prototype round of their own:
 the Libraries table, New library, New account (PR 2); Rules, `/account`,
 About and Licence (PR 3). On `/account`, About and Licence the existing
 cards become sections with the heading outside the box.
+
+**Addresses are names** (the user's rulings during PR 2, 2026-10-21): a
+library's page is at `/config/libraries/<name>`, its directories' at
+`/config/libraries/<name>/dirs/<did>`, and an account's at
+`/config/users/<name>`, the name escaped only where an address needs it.
+After a rename the page follows the new name, and the old address says No
+such library. New library and New account are at `/config/new-library` and
+`/config/new-account`, outside the names' space, so no name is reserved.
+The server refuses `.` and `..` as a library's or an account's name, since
+the router and the URL parser collapse either segment and no address could
+hold it. It refuses an empty account name too, whose address would be the
+Users table's (the user's ruling of 2026-10-22).
+
+**A save, a make, a rename, a move, a removal and a backup are drawn
+waiting only once the wait has lasted 200 ms** (the user's ruling of
+2026-10-21), as is a removal's line saying what it would do, and as
+Rename's Save draws "Saving…": the words that say a wait is on, and the
+held look of what it holds, appear only for a wait still out then, while
+what the wait holds is held from the send. A button that waits keeps the
+box of the wider and taller of its two words, so drawing the wait moves
+nothing. Four waits keep their own timing: the directory browser draws
+"Reading directories…" at 400 ms, a scan's start holds a directory's Scan
+directory, Move… and Remove…, or a library's Scan library and Remove…,
+from the send, the picker's Add directory on a library's page is held from
+the send while its add is out, and the line saying a scan is running is
+drawn as soon as its start answers.
+
+**A control that a wait or a hold takes while it has focus keeps focus**
+(the user's ruling of 2026-10-23), where a `disabled` control that has
+focus drops it to the page in Chromium. It is held by `aria-disabled`,
+through `HeldButton` for a button, and a press, a choice or an edit of it
+is turned down while it is held, as the account page's checkboxes and
+radios are held (O159). A held button, select or text box is drawn as a
+`disabled` one is, under forced colours too. An account's Remove… stays
+drawn and held while its confirm is open, as a library's and a
+directory's do. The exceptions are Save, Make the library and Add, their
+Cancels, the picker's Add directory, Set password once a set has emptied
+its box, and See what this would do once the library chosen leaves the
+list: these are held by `disabled`, and move the focus they had to the
+name, path or password box, or to Move to.
 
 **Help text** may be shortened, moved beside the setting it explains, or
 folded into a disclosure, but every fact stays. The prototype's rewrites
@@ -185,7 +247,7 @@ short (the user: "everywhere, but use 'dir' where appropriate to shorten").
 - **Prose says "directory"**: sentences, headings, buttons and notices, in
   the web app, in the server's sentences the web app shows, and in the CLI's
   help ("Add directory…", "Scan directory", "Directories").
-- **Names say "dir"**: the address (`/config/libraries/:id/dirs/:did`), the
+- **Names say "dir"**: the address (`/config/libraries/<name>/dirs/<did>`), the
   flag (`--dirs`), the environment variable (`TAIYAKU_DIRS`), API routes and
   fields, file names and code identifiers (`dirs_api.rs`, `DirPicker`).
 - **A clean break**: no alias for `--folders`, `TAIYAKU_FOLDERS` or the old

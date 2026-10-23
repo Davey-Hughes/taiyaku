@@ -39,3 +39,25 @@ export async function flush(work?: () => void): Promise<void> {
     await Promise.resolve()
   })
 }
+
+/**
+ * Lets the clock run, inside `act`, until `drawn` holds, so that a test waits
+ * on what it needs rather than on a guess at how long that takes. In slices,
+ * each its own `act`, since `act` draws what an update set only as it ends.
+ * Throws, naming `what`, once `within` ms have passed without it.
+ */
+export async function settleUntil(
+  what: string,
+  drawn: () => boolean,
+  within: number,
+): Promise<void> {
+  const until = performance.now() + within
+  while (!drawn()) {
+    if (performance.now() > until) {
+      throw new Error(`${what}: not drawn within ${within} ms`)
+    }
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 20))
+    })
+  }
+}

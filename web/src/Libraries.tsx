@@ -3,9 +3,10 @@
  *
  * **Four pages over one list.** The table of libraries, the form that makes
  * one, a library's page and a directory's page each read the list this screen
- * holds and pick what they draw from it by id; there is no route that answers
- * one library. The list is read when the screen mounts, again on each move
- * between its pages, and after every write.
+ * holds and pick what they draw from it: a library by the name its address
+ * spells, as `configAddress.ts` finds it, and a directory by its number. There
+ * is no route that answers one library. The list is read when the screen
+ * mounts, again on each move between its pages, and after every write.
  *
  * **Two failure slots.** The list's failure is the screen's and is drawn on
  * whichever page is showing; a refusal is drawn in the form that was sent,
@@ -44,6 +45,7 @@
  */
 import {
   type ReactNode,
+  type RefObject,
   startTransition,
   useCallback,
   useEffect,
@@ -52,15 +54,22 @@ import {
   useState,
 } from 'react'
 import {
-  Link,
   Navigate,
   Route,
   Routes,
   useLocation,
+  useMatch,
   useNavigate,
   useParams,
 } from 'react-router'
 import type { Added, Derived, Probe, RemovalAnswer } from './config'
+import {
+  byName,
+  LIBRARIES,
+  libraryPath,
+  NEW_LIBRARY,
+  nameAt,
+} from './configAddress'
 import { useLateAnswers } from './configPages'
 import { DirPage } from './DirPage'
 import {
@@ -78,10 +87,9 @@ import { sentenceOf } from './message'
 import { NewLibrary } from './NewLibrary'
 import { reveal } from './reveal'
 import { DeriveSection } from './ScanReport'
+import { PageHeader } from './settingsLayout'
 import { useStatusRefresh } from './shell'
-
-const TABLE = '/config/libraries'
-const libraryPath = (id: number) => `${TABLE}/${id}`
+import { SideBySide } from './SideBySide'
 
 /** What a removal or a move found, whose it was, and the page it is drawn on. */
 interface Report {
@@ -92,6 +100,17 @@ interface Report {
   derive: Derived
   /** A move's: what it did, and where from. Absent for a removal's. */
   move?: { moved: Moved; from?: string; newLibrary: boolean }
+}
+
+/**
+ * Marks the current task as taking a write's answer (`answering`), until its
+ * microtasks have run.
+ */
+function takeAnswer(answering: RefObject<boolean>) {
+  answering.current = true
+  queueMicrotask(() => {
+    answering.current = false
+  })
 }
 
 export function Libraries() {
@@ -143,22 +162,25 @@ export function Libraries() {
     shown,
     setLine: setReport,
     say,
+    follow,
+    here,
     arrived,
     setArrival,
     cancel,
     drawNotices,
-  } = useLateAnswers<Report>(TABLE, reportEl)
+  } = useLateAnswers<Report>(LIBRARIES, reportEl)
 
   /**
-   * True while a removal's or a move's answer is being taken. `RootRow` calls
-   * `onChanged` in the same call as `onRemoved` or `onMoved`, and the answer
-   * has already arranged the one read that follows the write, so that
+   * True while a removal's, a move's or a rename's answer is being taken.
+   * `RootRow` calls `onChanged` in the same call as `onRemoved` or `onMoved`,
+   * and `LibraryPage` in the same call as `onRenamed`, and the answer has
+   * already arranged the one read that follows the write, so that
    * `onChanged` reads nothing. It is cleared when the current task's
-   * microtasks run, before any later `onChanged` can come.
+   * microtasks run, before any later `onChanged` can come (`takeAnswer`).
    */
   const answering = useRef(false)
 
-  const dirChanged = useCallback(
+  const changed = useCallback(
     (quiet?: boolean) => {
       if (!answering.current) reload(quiet)
     },
@@ -176,15 +198,12 @@ export function Libraries() {
    */
   const answered = useCallback(
     (from: string, next: Report, drop: (held: Library[]) => Library[]) => {
-      answering.current = true
-      queueMicrotask(() => {
-        answering.current = false
-      })
+      takeAnswer(answering)
       const { sent, line } = place(from, next)
       startTransition(() => {
         setReport(line)
         setLibraries((held) => held && drop(held))
-        if (sent) navigate(next.at)
+        if (sent) navigate(line.at)
       })
       if (!sent) reload(true)
     },
@@ -232,8 +251,8 @@ export function Libraries() {
         )
         if (sent) {
           setReport(undefined)
-          setArrival(libraryPath(created.library.id))
-          navigate(libraryPath(created.library.id))
+          setArrival(libraryPath(created.library.name))
+          navigate(libraryPath(created.library.name))
         }
       })
       if (!sent) reload(true)
@@ -243,7 +262,7 @@ export function Libraries() {
 
   const libraryRemoved = useCallback(
     (from: string, id: number, name: string, answer: RemovalAnswer) => {
-      answered(from, { at: TABLE, name, derive: answer.derive }, (held) =>
+      answered(from, { at: LIBRARIES, name, derive: answer.derive }, (held) =>
         held.filter((one) => one.id !== id),
       )
     },
@@ -253,7 +272,8 @@ export function Libraries() {
   /**
    * A directory was removed from a library. A directory that was the last of
    * its library's took the library with it: the report is then named for the
-   * library, which is what went, and drawn on the table.
+   * library, which is what went, and drawn on the table. So is the report of
+   * one whose library the list no longer holds, which has no page.
    */
   const dirRemoved = useCallback(
     (from: string, id: number, path: string, answer: RemovalAnswer) => {
@@ -265,7 +285,11 @@ export function Libraries() {
       }
       answered(
         from,
-        { at: libraryPath(id), name: path, derive: answer.derive },
+        {
+          at: library === undefined ? LIBRARIES : libraryPath(library.name),
+          name: path,
+          derive: answer.derive,
+        },
         (held) =>
           held.map((one) =>
             one.id === id
@@ -285,15 +309,16 @@ export function Libraries() {
   const dirMoved = useCallback(
     (from: string, id: number, path: string, answer: MoveAnswer) => {
       const gone = answer.moved.library_removed !== null
+      const left = drawn.current?.find((one) => one.id === id)
       answered(
         from,
         {
-          at: gone ? TABLE : libraryPath(id),
+          at: gone || left === undefined ? LIBRARIES : libraryPath(left.name),
           name: path,
           derive: answer.derive,
           move: {
             moved: answer.moved,
-            from: drawn.current?.find((one) => one.id === id)?.name,
+            from: left?.name,
             // A target the screen does not draw is one the move made.
             newLibrary: !drawn.current?.some(
               (one) => one.id === answer.moved.library_id,
@@ -315,6 +340,45 @@ export function Libraries() {
       )
     },
     [answered],
+  )
+
+  /**
+   * A library was renamed. While the address is still this library's, its
+   * page follows the name: the address is replaced, not pushed, with an
+   * open directory's part kept, so Back does not return to an address that
+   * now names nothing. What the page says goes with it (`follow`), and so
+   * does an answer still out from it. The list takes the new name in the
+   * same transition, so the page is never drawn at an address the list
+   * cannot find, and a read sent before the rename is dropped, since it
+   * would say the old name. The list is read once: by the change of page, or
+   * here where there is none.
+   */
+  const libraryRenamed = useCallback(
+    (id: number, name: string) => {
+      takeAnswer(answering)
+      latest.current++
+      const page = here.current
+      const at = nameAt(page, LIBRARIES)
+      const held = drawn.current
+      const named =
+        at !== undefined &&
+        held !== undefined &&
+        byName(held, at.name)?.id === id
+      const to = libraryPath(name)
+      const moves = named && `${to}${at.rest}` !== page
+      startTransition(() => {
+        setLibraries((list) =>
+          list?.map((one) => (one.id === id ? { ...one, name } : one)),
+        )
+        if (moves) {
+          // From the library's own page as the address spells it.
+          follow(page.slice(0, page.length - at.rest.length), to)
+          navigate(`${to}${at.rest}`, { replace: true })
+        }
+      })
+      if (!moves) reload()
+    },
+    [here, follow, navigate, reload],
   )
 
   const reportLabel = useId()
@@ -368,6 +432,33 @@ export function Libraries() {
     reportNode,
   )
 
+  /**
+   * Whether the address goes beyond a library's own: a directory's page,
+   * the end of this screen's tree, which `SideBySide` draws beside its
+   * library's page where the width allows and alone where it does not. A
+   * library is not the end of its tree, so its page opens on its own.
+   */
+  const dirOpen = (useMatch(`${LIBRARIES}/:name/*`)?.params['*'] ?? '') !== ''
+  /**
+   * The make page, whose address `Config` routes to this screen outside the
+   * table's, so that the libraries' names are the only segments beneath it.
+   */
+  const making = useMatch(NEW_LIBRARY) !== null
+
+  if (making) {
+    return (
+      <section className="libraries">
+        <NewLibrary
+          libraries={libraries}
+          notices={notices}
+          onMade={made}
+          onLateRefusal={say}
+          onCancel={cancel}
+        />
+      </section>
+    )
+  }
+
   return (
     <section className="libraries">
       <Routes>
@@ -381,79 +472,98 @@ export function Libraries() {
             />
           }
         />
+        {/* One route for a library and its directories, so the library's page
+            stays mounted while a directory opens beside it or another directory
+            replaces that one. */}
         <Route
-          path="new"
-          element={
-            <NewLibrary
-              notices={notices}
-              onMade={made}
-              onLateRefusal={say}
-              onCancel={cancel}
-            />
-          }
-        />
-        <Route
-          path=":id"
+          path=":name/*"
           element={
             <LibraryAt libraries={libraries} notices={notices}>
               {(library) => (
-                <LibraryPage
-                  // By id, so another library's page is a page of its own.
-                  key={library.id}
-                  library={library}
-                  notices={notices}
-                  arrived={arrived}
-                  onAdded={remember}
-                  onChanged={reload}
-                  onLateRefusal={say}
-                  onRemoved={(name, answer) =>
-                    libraryRemoved(pathname, library.id, name, answer)
+                <SideBySide
+                  list={
+                    <LibraryPage
+                      // By id, so another library's page is a page of its own.
+                      key={library.id}
+                      library={library}
+                      libraries={libraries}
+                      // The screen says each thing once: on the directory's
+                      // page where one is open.
+                      notices={dirOpen ? undefined : notices}
+                      arrived={arrived && !dirOpen}
+                      onOpen={setArrival}
+                      onAdded={remember}
+                      onChanged={changed}
+                      onRenamed={(name) => libraryRenamed(library.id, name)}
+                      onLateRefusal={say}
+                      onRemoved={(name, answer) =>
+                        libraryRemoved(pathname, library.id, name, answer)
+                      }
+                    />
+                  }
+                  page={
+                    dirOpen ? (
+                      <Routes>
+                        <Route
+                          path="dirs/:did"
+                          element={
+                            <DirAt library={library} notices={notices}>
+                              {(root) => (
+                                <DirPage
+                                  key={root.path}
+                                  library={library}
+                                  root={root}
+                                  probe={probes[root.path]}
+                                  others={(libraries ?? [])
+                                    .filter((other) => other.id !== library.id)
+                                    .map(({ id, name }) => ({ id, name }))}
+                                  notices={notices}
+                                  arrived={arrived}
+                                  onChanged={changed}
+                                  onLateRefusal={say}
+                                  onRemoved={(answer) =>
+                                    dirRemoved(
+                                      pathname,
+                                      library.id,
+                                      root.path,
+                                      answer,
+                                    )
+                                  }
+                                  onMoved={(answer) =>
+                                    dirMoved(
+                                      pathname,
+                                      library.id,
+                                      root.path,
+                                      answer,
+                                    )
+                                  }
+                                />
+                              )}
+                            </DirAt>
+                          }
+                        />
+                        <Route
+                          path="*"
+                          element={<Navigate to={LIBRARIES} replace />}
+                        />
+                      </Routes>
+                    ) : null
                   }
                 />
               )}
             </LibraryAt>
           }
         />
-        <Route
-          path=":id/dirs/:did"
-          element={
-            <LibraryAt libraries={libraries} notices={notices}>
-              {(library) => (
-                <DirAt library={library} notices={notices}>
-                  {(root) => (
-                    <DirPage
-                      key={root.path}
-                      library={library}
-                      root={root}
-                      probe={probes[root.path]}
-                      others={(libraries ?? [])
-                        .filter((other) => other.id !== library.id)
-                        .map(({ id, name }) => ({ id, name }))}
-                      notices={notices}
-                      onChanged={dirChanged}
-                      onLateRefusal={say}
-                      onRemoved={(answer) =>
-                        dirRemoved(pathname, library.id, root.path, answer)
-                      }
-                      onMoved={(answer) =>
-                        dirMoved(pathname, library.id, root.path, answer)
-                      }
-                    />
-                  )}
-                </DirAt>
-              )}
-            </LibraryAt>
-          }
-        />
-        <Route path="*" element={<Navigate to={TABLE} replace />} />
+        <Route path="*" element={<Navigate to={LIBRARIES} replace />} />
       </Routes>
     </section>
   )
 }
 
 /**
- * The library the path names, or a line saying there is none. Nothing is
- * drawn while the list has not been read: the failure, if it failed, is.
+ * The library whose name the path spells, or a page saying there is none,
+ * whose line takes focus. Nothing is drawn while the list has not been read:
+ * the failure, if it failed, is.
  */
 function LibraryAt({
   libraries,
@@ -464,24 +574,30 @@ function LibraryAt({
   notices: ReactNode
   children: (library: Library) => ReactNode
 }) {
-  const { id } = useParams()
+  const at = nameAt(useLocation().pathname, LIBRARIES)
   if (libraries === undefined) return notices
-  const library = libraries.find((one) => String(one.id) === id)
+  const library = at === undefined ? undefined : byName(libraries, at.name)
   if (library === undefined) {
     return (
-      <div className="library-page">
-        <p className="back">
-          <Link to={TABLE}>‹ Libraries</Link>
-        </p>
+      <div className="settings-page">
+        <PageHeader
+          back={{ to: LIBRARIES, label: 'Libraries' }}
+          title="No such library"
+        />
         {notices}
-        <Missing key={id}>No such library.</Missing>
+        <Missing key={at?.name}>
+          There is no library at this address: it may have been removed.
+        </Missing>
       </div>
     )
   }
   return children(library)
 }
 
-/** The directory of `library` the path names, or a line saying there is none. */
+/**
+ * The directory of `library` the path names, or a page saying there is none,
+ * whose line takes focus.
+ */
 function DirAt({
   library,
   notices,
@@ -495,12 +611,16 @@ function DirAt({
   const root = library.dirs.find((one) => String(one.id) === did)
   if (root === undefined) {
     return (
-      <div className="dir-page">
-        <p className="back">
-          <Link to={libraryPath(library.id)}>‹ {library.name}</Link>
-        </p>
+      <div className="settings-page">
+        <PageHeader
+          back={{ to: libraryPath(library.name), label: library.name }}
+          title="No such directory"
+        />
         {notices}
-        <Missing key={did}>No such directory in this library.</Missing>
+        <Missing key={did}>
+          This library has no directory at this address: it may have been
+          removed, or moved to another library.
+        </Missing>
       </div>
     )
   }

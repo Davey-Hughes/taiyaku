@@ -17,6 +17,9 @@
  * part worth testing is the three facts, not the `<dl>` they land in.
  */
 import { getJson, sendJson } from './api'
+import { NEW_ACCOUNT, NEW_LIBRARY } from './configAddress'
+import { JOINING_DOT } from './joiningDot'
+import { inUtc } from './utc'
 
 /** One tab of the settings area. */
 export interface Tab {
@@ -29,7 +32,18 @@ export interface Tab {
    * other path that names nothing.
    */
   pages?: true
+  /**
+   * The path segment under `/config` of the page that makes one of the
+   * tab's things. Outside the tab's own path, whose segments are the things'
+   * names, so that no name is reserved; the tab is still the current one
+   * there.
+   */
+  make?: string
 }
+
+/** `address`'s path under `/config`, as a `Tab` names one. */
+const underConfig = (address: string): string =>
+  address.replace(/^\/config\//, '')
 
 /**
  * The settings area's tabs, in the order the sub-nav draws them.
@@ -39,8 +53,18 @@ export interface Tab {
  * leads this list, not a separate decision somewhere else.
  */
 export const TABS: Tab[] = [
-  { path: 'libraries', label: 'Libraries', pages: true },
-  { path: 'users', label: 'Users', pages: true },
+  {
+    path: 'libraries',
+    label: 'Libraries',
+    pages: true,
+    make: underConfig(NEW_LIBRARY),
+  },
+  {
+    path: 'users',
+    label: 'Users',
+    pages: true,
+    make: underConfig(NEW_ACCOUNT),
+  },
   { path: 'rules', label: 'Rules' },
   { path: 'backup', label: 'Backup' },
 ]
@@ -371,8 +395,8 @@ export function lastScan(
 ) {
   if (root.last_scan_at === null) return 'Never'
   return root.last_scan_status === 'ok'
-    ? root.last_scan_at
-    : `${root.last_scan_at} · ${root.last_scan_status ?? 'outcome unrecorded'}`
+    ? inUtc(root.last_scan_at)
+    : `${inUtc(root.last_scan_at)}${JOINING_DOT}${root.last_scan_status ?? 'outcome unrecorded'}`
 }
 
 /**
@@ -425,7 +449,7 @@ export function regimeFacts(
   const last =
     root.last_scan_at === null
       ? 'never'
-      : `${root.last_scan_at} · ${root.last_scan_status ?? 'outcome unrecorded'}`
+      : `${inUtc(root.last_scan_at)}${JOINING_DOT}${root.last_scan_status ?? 'outcome unrecorded'}`
 
   return [
     { label: 'watch', value: watch },

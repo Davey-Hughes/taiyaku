@@ -8,10 +8,13 @@ import * as curation from './curation'
 import * as librariesApi from './libraries'
 import * as rulesApi from './rules'
 import * as usersApi from './users'
+import { deferred, flush } from './testing/async'
+import { press, submit, typeInto } from './testing/input'
 import { mount } from './testing/mount'
 
 vi.mock('./libraries', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./libraries')>()),
+  createLibrary: vi.fn(),
   listLibraries: vi.fn(),
 }))
 vi.mock('./rules', async (importOriginal) => ({
@@ -135,11 +138,13 @@ describe('Config', () => {
   })
 
   it.each([
-    ['/config/users/new', '.new-account form.add-user'],
-    ['/config/users/1', '.user-row > h2'],
+    ['/config/new-account', '.new-account form.add-user'],
+    ['/config/users/davey', '.account-page .page-title'],
   ])('draws the users tab’s page at %s', async (entry, drawn) => {
-    // Only a tab with `pages` is routed with the paths beneath its own; any
-    // other sends them back to the leading tab.
+    // Only a tab with `pages` is routed with the paths beneath its own, and
+    // only a tab with `make` with its make page outside them; any other path
+    // goes back to the leading tab.
+    document.title = 'stale'
     vi.mocked(usersApi.listUsers).mockResolvedValue({
       users: [
         {
@@ -162,6 +167,50 @@ describe('Config', () => {
     expect(
       host.querySelector('.config-nav a[aria-current="page"]')?.textContent,
     ).toBe('Users')
+    expect(document.title).toBe('Users — taiyaku')
+  })
+
+  it('draws the make-a-library page at /config/new-library, under the Libraries tab', async () => {
+    document.title = 'stale'
+    const host = await at('/config/new-library')
+    expect(
+      host.querySelector('.libraries .new-library form.add-library'),
+    ).not.toBeNull()
+    expect(
+      host.querySelector('.config-nav a[aria-current="page"]')?.textContent,
+    ).toBe('Libraries')
+    expect(document.title).toBe('Libraries — taiyaku')
+  })
+
+  it('keeps the libraries screen between the make page and the table, so a make refused after the person left is said on the table', async () => {
+    const made = deferred<never>()
+    vi.mocked(librariesApi.createLibrary).mockReturnValue(made.promise)
+    const host = await at('/config/new-library')
+    const form = host.querySelector('form.add-library') as HTMLFormElement
+    await typeInto(
+      form.querySelector('input[name="library-name"]') as HTMLInputElement,
+      'Comics',
+    )
+    await typeInto(
+      form.querySelector('input[name="path"]') as HTMLInputElement,
+      '/media/Comics',
+    )
+    await submit(form)
+    await press(host.querySelector('.new-library .back a') as Element)
+    await flush()
+    expect(host.querySelector('.library-table')).not.toBeNull()
+    await flush(() =>
+      made.reject(
+        new Error(
+          '/api/library/libraries: 500 {"error":"the store is locked"}',
+        ),
+      ),
+    )
+    expect(
+      [...host.querySelectorAll('.library-table [role="alert"]')].map(
+        (alert) => alert.textContent,
+      ),
+    ).toEqual(['The library Comics was not made (the store is locked).'])
   })
 
   it('sends the old roots tab to the libraries screen', async () => {

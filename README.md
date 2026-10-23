@@ -258,25 +258,27 @@ carried in from another library and wrong for a save.
 settings area beside the library, where a library is made, renamed, scanned and
 removed from the browser rather than a terminal, and so is each directory in it;
 `/config/roots` lands there, and so does a bare `/config`. It is a table of the
-libraries, where a row opens that library's page, and a directory of a library
-has a page of its own beneath it. A library is made from a name and one
-directory, typed or found with the directory browser, which lists only beneath
-the directories the server was started with (`--dirs`, or `TAIYAKU_DIRS`); more
-directories are added on the library's page. A refusal — a name already taken, a
-directory inside another, a path that cannot be read — is drawn as the server's
-own sentence. Removing a library or a directory states what it will take —
-works, reading positions, notes — and offers no confirm button at all until
-those counts have arrived, and names any account the removal leaves seeing no
-library. A directory's page has **Move…**, to another library or a new one: it
-says what the move would do — how many works keep their address, how many join a
-work the library already holds, how many are split — before it offers the move,
-and refuses, naming what stands in the way, a move that cannot keep every
-reader's place. **Scan library** on a library walks each of its directories in
-turn and derives once. A scan started from the screen reports both halves of
-what it did in full: the walk and the derivation, every field, with what it
-*could not* do listed before what it did, and an empty list drawn as `0` rather
-than left out — so "nothing was unreadable this time" cannot be mistaken for
-"this version does not say".
+libraries, where a row opens that library's page, at its name
+(`/config/libraries/<name>`), and a directory of a library has a page of its own
+beneath it, which a wide screen draws beside the library's. A library is made on
+`/config/new-library` from a name and one directory, typed or found with the
+directory browser, which lists only beneath the directories the server was
+started with (`--dirs`, or `TAIYAKU_DIRS`); more directories are added on the
+library's page. A refusal — a name already taken, a name no address could hold
+(`.` or `..`), a directory inside another, a path that cannot be read — is drawn
+as the server's own sentence. Removing a library or a directory states what it
+will take — works, reading positions, notes — and offers no confirm button at
+all until those counts have arrived, and names any account the removal leaves
+seeing no library. A directory's page has **Move…**, to another library or a new
+one: it says what the move would do — how many works keep their address, how
+many join a work the library already holds, how many are split — before it
+offers the move, and refuses, naming what stands in the way, a move that cannot
+keep every reader's place. **Scan library** on a library walks each of its
+directories in turn and derives once. A scan started from the screen reports
+both halves of what it did in full: the walk and the derivation, every field,
+with what it *could not* do listed before what it did, and an empty list drawn
+as `0` rather than left out — so "nothing was unreadable this time" cannot be
+mistaken for "this version does not say".
 
 **The rule editor is built too**, at `/config/rules` — the screen the whole
 preview mechanism exists for. An ordered
@@ -295,21 +297,24 @@ it says which proposal that reopens before it does anything.
 
 **And the other two tabs are built**, at `/config/users` and `/config/backup`.
 Users is a table of the accounts — Name, Role, Libraries, Last seen — where a
-row opens that account's page, and an account is made on a page of its own
-from a name, a password and a role. An account's page holds its role, whether
-it may download, stream and write ComicInfo.xml into archives, which libraries
-it may see — *Every library, including any added later*, or *Only these* with a
-tick per library — and its open sessions and its API keys, each revocable one
-at a time for the device that was lost. The account this browser is signed in
-as is marked, and so is the session in front of you, so revoking one is not a
-guess. The two things that would lock a library out of its own administration
-are refused by the server and drawn as one reason over both controls: the last
-administrator who can log in can be neither removed nor demoted, and nobody may
-demote themselves. Resetting somebody's password ends every session they have
-and leaves their API keys alone; resetting your own is refused here and belongs
-to your account screen at `/account`, which the refusal links to. Removing an
-account states five counts and the name first, takes no work, edition or member
-with it, and goes back to the table, which says the account was removed.
+row opens that account's page, at its name (`/config/users/<name>`) and beside
+the table on a wide screen, and an account is made at `/config/new-account`,
+which opens beside the table on a wide screen too, from a name, a password and a
+role. An account's page holds its role, whether it may download, stream and
+write ComicInfo.xml into archives, which libraries it may see — *Every library,
+including any added later*, or *Only these* with a tick per library — and its
+open sessions and its API keys, each revocable one at a time for the device that
+was lost. The account this browser is signed in as is marked, and so is the
+session in front of you, so revoking one is not a guess. The two things that
+would lock a library out of its own administration are refused by the server,
+and the page says why beside each control a rule holds: the last administrator
+who can log in can be neither removed nor demoted, and nobody may demote
+themselves. Resetting
+somebody's password ends every session they have and leaves their API keys
+alone; resetting your own is refused here and belongs to your account screen at
+`/account`, which the refusal links to. Removing an account states five counts
+and the name first, takes no work, edition or member with it, and goes back to
+the table, which says the account was removed.
 
 The backup tab takes one now, lists what exists with a download link each, and
 says the four things a button cannot: restore is out of band, a backup is the

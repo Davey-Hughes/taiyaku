@@ -713,9 +713,13 @@ pub fn clear_failures(conn: &Connection, key: &str) -> Result<(), String> {
 ///
 /// # Errors
 ///
-/// Returns an error if no unclaimed account exists — every account already has a
-/// password, so there is nothing to promote and `add` is the command wanted — or
-/// if the update fails.
+/// Returns [`WriteError::Unusable`] if [`refused_name`] refuses the name, if
+/// the password is refused (it is empty), or if another account holds the
+/// name; [`WriteError::Refused`] if no unclaimed account
+/// exists — every account already has a password, so there is nothing to
+/// promote and `add` is the command wanted — or if the role would leave the
+/// library with no administrator; [`WriteError::Failed`] if a read or the
+/// update fails.
 /// **The caller holds the connection across `hash_password` here**, unlike
 /// `auth::from_basic`, and that is a deliberate difference rather than the same
 /// oversight: these are CLI and setup paths that run once with nobody else
@@ -723,8 +727,18 @@ pub fn clear_failures(conn: &Connection, key: &str) -> Result<(), String> {
 /// follows — never hold the library's one mutex across argon2 — is stated at its
 /// own call site so that neither reads as the other's precedent. Noted by the
 /// second whole-branch review.
-pub fn promote(conn: &Connection, name: &str, password: &str, role: &str) -> Result<i64, String> {
-    let id = unclaimed(conn)?;
+pub fn promote(
+    conn: &Connection,
+    name: &str,
+    password: &str,
+    role: &str,
+) -> Result<i64, WriteError> {
+    if let Some(why) = refused_name(name) {
+        return Err(WriteError::Unusable(why.to_string()));
+    }
+    let id = unclaimed_row(conn)
+        .map_err(WriteError::Failed)?
+        .ok_or_else(|| WriteError::Refused(NOTHING_TO_PROMOTE.to_string()))?;
     // **Refuse to leave the library with nobody who can administer it.**
     // `promote --role user` on a fresh library set the one row that could be
     // promoted to a role that cannot administer, and then every bootstrap path
@@ -734,21 +748,93 @@ pub fn promote(conn: &Connection, name: &str, password: &str, role: &str) -> Res
     // Adding an admin first and promoting to `user` afterwards still works —
     // the rule is the invariant, not the order. Found by the fourth
     // whole-branch review.
-    if role != "admin" && !admin_exists(conn)? {
-        return Err(format!(
+    if role != "admin" && !admin_exists(conn).map_err(WriteError::Failed)? {
+        return Err(WriteError::Refused(format!(
             "promoting the only account to `{role}` would leave this library with no \
              administrator and no way to add one, since there would be nothing \
              left to promote. Run it without `--role`, or `taiyaku library user \
              add <name> --role admin` first"
-        ));
+        )));
     }
-    let phc = credential::hash_password(password)?;
+    let phc = credential::hash_password(password).map_err(WriteError::Unusable)?;
     conn.execute(
         "UPDATE user SET name = ?2, password_hash = ?3, role = ?4 WHERE id = ?1",
         params![id, name, phc, role],
     )
-    .map_err(|e| format!("promoting account {id} to `{name}`: {e}"))?;
+    .map_err(|e| {
+        if is_unique_violation(&e) {
+            WriteError::Unusable(taken(name))
+        } else {
+            WriteError::Failed(format!("promoting account {id} to `{name}`: {e}"))
+        }
+    })?;
     Ok(id)
+}
+
+/// Why no account is given an empty name. An account's page is at its name
+/// (`web/src/configAddress.ts`), and an empty one has no address: what
+/// `/config/users/` reaches is the table.
+const NO_NAME: &str = "an account needs a name, since its page is at its name";
+
+/// Why no account can be called `name`, whatever other accounts hold: it is
+/// empty, or [`crate::has_no_address`] answers true for it. `None` for any
+/// other name. Every write of a name a caller gave to `user.name` asks this
+/// first.
+fn refused_name(name: &str) -> Option<&'static str> {
+    if name.is_empty() {
+        Some(NO_NAME)
+    } else if crate::has_no_address(name) {
+        Some(crate::NO_ADDRESS)
+    } else {
+        None
+    }
+}
+
+/// `Ok` where [`add`] or [`promote`] would give an account `name`, or the
+/// refusal either would answer: [`refused_name`]'s, or that another account
+/// holds it. `keeping` is the account that would take the name, whose own
+/// name is no clash: the one [`promote`] reaches; `None` for [`add`].
+///
+/// **For a caller that asks something of the person before it writes**, as
+/// the CLI asks for a password twice: refused only by the write, a name it
+/// was never going to take costs the person the secret typed for nothing.
+/// The writers still refuse for themselves, so a name taken between this
+/// read and the write is refused there.
+///
+/// # Errors
+///
+/// Returns [`WriteError::Unusable`] for a name either writer refuses, and
+/// [`WriteError::Failed`] if the read fails.
+pub fn check_name(conn: &Connection, name: &str, keeping: Option<i64>) -> Result<(), WriteError> {
+    if let Some(why) = refused_name(name) {
+        return Err(WriteError::Unusable(why.to_string()));
+    }
+    match id_of(conn, name).map_err(WriteError::Failed)? {
+        Some(holder) if Some(holder) != keeping => Err(WriteError::Unusable(taken(name))),
+        _ => Ok(()),
+    }
+}
+
+/// Why no account can be called `name`: another holds it. Names are stored as
+/// written and compared byte for byte, so the holder's name is `name`. The
+/// words are `libraries::rename`'s for a taken library name, and the
+/// Configuration pages say the same sentence as a name is typed
+/// (`accountNameClash`, `web/src/configAddress.ts`), so the two change
+/// together.
+fn taken(name: &str) -> String {
+    format!("an account is already called `{name}`")
+}
+
+/// Whether `e` is a `UNIQUE` constraint refusing a write. `user.name` is the
+/// one `UNIQUE` column a write to `user` can collide on (the id is a primary
+/// key, refused under a code of its own), so a write to `user` refused so was
+/// refused a name another account holds.
+fn is_unique_violation(e: &rusqlite::Error) -> bool {
+    matches!(
+        e,
+        rusqlite::Error::SqliteFailure(f, _)
+            if f.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE
+    )
 }
 
 /// The account a [`promote`] would reach, or the refusal explaining that there
@@ -766,33 +852,47 @@ pub fn promote(conn: &Connection, name: &str, password: &str, role: &str) -> Res
 /// Returns an error if every account already has a password — naming `user add`
 /// as the command that does what was wanted — or if the query fails.
 pub fn unclaimed(conn: &Connection) -> Result<i64, String> {
-    let found: Option<i64> = conn
-        .query_row(
-            "SELECT id FROM user WHERE password_hash = ?1 ORDER BY id LIMIT 1",
-            params![credential::LOCKED],
-            |row| row.get(0),
-        )
-        .optional()
-        .map_err(|e| format!("looking for an unclaimed account: {e}"))?;
-    found.ok_or_else(|| {
-        "every account in this library already has a password, so there is none to \
-         promote. `taiyaku library user add <name>` creates another"
-            .to_string()
-    })
+    unclaimed_row(conn)?.ok_or_else(|| NOTHING_TO_PROMOTE.to_string())
+}
+
+/// [`unclaimed`]'s refusal when every account has a password.
+const NOTHING_TO_PROMOTE: &str = "every account in this library already has a password, so \
+     there is none to promote. `taiyaku library user add <name>` creates another";
+
+/// The account a [`promote`] would reach, if any. Apart from [`unclaimed`] so
+/// that [`promote`] can tell "none" (refused) from a failed read.
+fn unclaimed_row(conn: &Connection) -> Result<Option<i64>, String> {
+    conn.query_row(
+        "SELECT id FROM user WHERE password_hash = ?1 ORDER BY id LIMIT 1",
+        params![credential::LOCKED],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(|e| format!("looking for an unclaimed account: {e}"))
 }
 
 /// Create a second account.
 ///
 /// # Errors
 ///
-/// Returns an error if the name is taken, or if the insert fails.
+/// Returns an error if [`refused_name`] refuses the name, if the name is
+/// taken, or if the insert fails.
 pub fn add(conn: &Connection, name: &str, password: &str, role: &str) -> Result<i64, String> {
+    if let Some(why) = refused_name(name) {
+        return Err(why.to_string());
+    }
     let phc = credential::hash_password(password)?;
     conn.execute(
         "INSERT INTO user (name, password_hash, role) VALUES (?1, ?2, ?3)",
         params![name, phc, role],
     )
-    .map_err(|e| format!("adding the account `{name}`: {e}"))?;
+    .map_err(|e| {
+        if is_unique_violation(&e) {
+            taken(name)
+        } else {
+            format!("adding the account `{name}`: {e}")
+        }
+    })?;
     Ok(conn.last_insert_rowid())
 }
 
@@ -867,8 +967,8 @@ pub struct Patch {
 /// identical mistake, and a disk fault inside either was reported to the
 /// client as a conflict. Found by C4 PR 2's whole-branch review.
 ///
-/// **Shared by [`update`], [`remove`] and [`removal_cost`] rather than one
-/// type per function.** Typing only `update` — which is what the review
+/// **Shared by [`update`], [`remove`], [`removal_cost`] and [`promote`] rather
+/// than one type per function.** Typing only `update` — which is what the review
 /// named — left `remove`'s disk faults answering `409` and, worse, left a
 /// *dry run* of removing the last administrator answering **500** where the
 /// real removal answered 409: the quote is the safety feature on the
@@ -877,8 +977,9 @@ pub struct Patch {
 /// second instance survives.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WriteError {
-    /// The caller's own mistake: an empty password, a name already taken, a
-    /// role the schema's `CHECK (role IN ('admin', 'user'))` refuses.
+    /// The caller's own mistake: an empty password, a name already taken or
+    /// one [`refused_name`] refuses, a role the schema's
+    /// `CHECK (role IN ('admin', 'user'))` refuses.
     Unusable(String),
     /// Well-formed, names a real account, and still not allowed — spec C4
     /// §4's refusals.
@@ -933,15 +1034,19 @@ fn another_admin_can_log_in(conn: &Connection, excluding: i64) -> Result<bool, S
 ///
 /// # Errors
 ///
-/// Returns an error if `id` names no account, if either refusal fires, or if
-/// SQLite refuses the write — which includes a `role` the schema's `CHECK`
-/// rejects.
+/// Returns an error if the patch names the account with a name
+/// [`refused_name`] refuses, if `id` names no account, if either
+/// refusal fires, or if SQLite refuses the write — which includes a `role`
+/// the schema's `CHECK` rejects.
 pub fn update(
     conn: &Connection,
     id: i64,
     patch: &Patch,
     acting_as: Option<i64>,
 ) -> Result<Account, WriteError> {
+    if let Some(why) = patch.name.as_deref().and_then(refused_name) {
+        return Err(WriteError::Unusable(why.to_string()));
+    }
     // **The hash is taken before the scope opens**, so an empty password is
     // refused before anything is written and no argon2 runs inside a
     // transaction. [`Patch`]'s own doc carries the argument.
@@ -1026,7 +1131,11 @@ pub fn update(
             // ('admin', 'user')" with nothing saying what they typed. Named
             // by echoing the patch rather than by re-listing the two allowed
             // words here, which would be a second list to drift from the
-            // schema's.
+            // schema's. A taken name is said in [`taken`]'s words, the ones
+            // the pages draw as a name is typed.
+            if let (true, Some(name)) = (is_unique_violation(&e), &patch.name) {
+                return WriteError::Unusable(taken(name));
+            }
             let mut named = format!("updating account {id}");
             if let Some(role) = &patch.role {
                 named.push_str(&format!(", role `{role}`"));

@@ -230,3 +230,12 @@
   /* A region's fill while the pointer is still drawing it. */
   --art-drawing: rgba(0, 0, 0, 0.42);
 }
+
+/* Drawn under forced colours only, where the system's palette replaces every
+ * colour above: a disabled control's words and edge are `GrayText` from the
+ * browser, and a control held by `aria-disabled`, which keeps focus where
+ * `disabled` does not, takes the same from `base.css`. A system colour,
+ * since only a system colour is kept under forced colours. */
+:root {
+  --forced-held: GrayText;
+}

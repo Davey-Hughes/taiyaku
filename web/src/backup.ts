@@ -14,6 +14,7 @@
  * cost the file's size in JS heap.
  */
 import { getJson, sendJson } from './api'
+import { inUtc } from './utc'
 
 /** One backup file, as `GET /api/library/backups` sends it. */
 export interface Backup {
@@ -69,5 +70,5 @@ export function readableTaken(taken: string): string {
   const found = /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z$/.exec(taken)
   if (found === null) return taken
   const [, year, month, day, hour, minute, second] = found
-  return `${year}-${month}-${day} ${hour}:${minute}:${second} UTC`
+  return inUtc(`${year}-${month}-${day} ${hour}:${minute}:${second}`)
 }

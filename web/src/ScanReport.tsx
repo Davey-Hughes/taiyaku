@@ -284,7 +284,7 @@ function WalkSection({ walk, level }: { walk: Walk; level: ReportLevel }) {
           <dt>Refused</dt>
           <dd>{walk.refused === null ? 'no' : 'yes'}</dd>
         </div>
-        <Count field="dirs" label="Directories" n={walk.dirs} />
+        <Count field="dirs" label="Directories walked" n={walk.dirs} />
         <Count field="files" label="Files" n={walk.files} />
         <Count field="added" label="Added" n={walk.added} />
         <Count field="updated" label="Updated" n={walk.updated} />
@@ -358,7 +358,7 @@ export function DeriveSection({
         />
         <Count
           field="root_removed_mid_derive"
-          label="Directories removed mid-derive"
+          label="Members whose directory was removed mid-derive"
           n={derive.root_removed_mid_derive}
         />
         <Count

@@ -25,13 +25,20 @@
  * what is left; the server sends the same empty listing when it was told and
  * none of what it was told exists, so the sentence names both.
  *
+ * **In a settings row the row's label is the box's.** Handed a `Row`'s ids,
+ * the box is drawn bare and takes them, so the row's label names it and the
+ * row's help describes it; a box with a label of its own as well would have
+ * two. Without them the picker draws its own label.
+ *
  * No path is checked here. Whether the server can read a directory is a
  * question a browser cannot ask, and the refusal's own sentence says which
  * check failed.
  */
 import { type ReactNode, useEffect, useRef, useState } from 'react'
+import { useFocusLeavesHeld } from './hooks'
 import { type DirListing, listDirs, READING_DELAY_MS } from './libraries'
 import { sentenceOf } from './message'
+import type { RowIds } from './settingsLayout'
 
 export interface DirPickerProps {
   /** What the button says. Without one there is no button, and no pick. */
@@ -61,11 +68,14 @@ export interface DirPickerProps {
    */
   onPath?: (path: string) => void
   /**
-   * The caller's own controls, drawn after Browse… on the buttons' line and
-   * before the browser, so a Cancel stays with the buttons it belongs to
-   * whether or not the browser is open, and is reached in that order.
+   * The caller's own controls, drawn after Browse… and with it, before the
+   * browser, so a Cancel wraps with the buttons it belongs to whether or not
+   * the browser is open, is never left on a line alone, and is reached in
+   * that order.
    */
   children?: ReactNode
+  /** The ids of the settings row the picker is the control of. */
+  ids?: RowIds
 }
 
 export function DirPicker({
@@ -75,6 +85,7 @@ export function DirPicker({
   onEdit,
   onPath,
   children,
+  ids,
 }: DirPickerProps) {
   const [path, setPath] = useState('')
   // In a ref, so a caller's new closure on each render does not count as a
@@ -87,6 +98,11 @@ export function DirPicker({
   const [picking, setPicking] = useState(false)
   /** A ref as well as `picking`: two presses before a render both read false. */
   const inFlight = useRef(false)
+  const pathBox = useRef<HTMLInputElement>(null)
+  const pickButton = useRef<HTMLButtonElement>(null)
+  // The pick holds its button from the press; the box is where a refused
+  // path is corrected.
+  useFocusLeavesHeld(picking, pickButton, pathBox)
 
   // Checked here as well as on the button, since Enter in the box picks too.
   const pick = () => {
@@ -193,44 +209,71 @@ export function DirPicker({
     setOpen(!open)
   }
 
+  /* O175: the `aria-label` is the label's words as written, whether the
+     label is the picker's own, which `.field` draws in capitals, or that of
+     the row the box is the control of. */
+  const box = (
+    <input
+      ref={pathBox}
+      type="text"
+      id={ids?.control}
+      name="path"
+      aria-label="Directory path"
+      aria-describedby={ids?.help}
+      value={path}
+      placeholder="/media/Manga/Volumes"
+      onChange={(e) => {
+        typed.current = true
+        onEdit?.()
+        setPath(e.target.value)
+      }}
+      onKeyDown={(e) => {
+        if (e.key !== 'Enter' || action === undefined) return
+        e.preventDefault()
+        pick()
+      }}
+    />
+  )
+
   return (
     <div className="dir-picker">
-      {/* O175: the `aria-label` repeats the label's words, which `.field`
-          draws in capitals. */}
-      <label className="field">
-        <span>Directory path</span>
-        <input
-          type="text"
-          name="path"
-          aria-label="Directory path"
-          value={path}
-          placeholder="/media/Manga/Volumes"
-          onChange={(e) => {
-            typed.current = true
-            onEdit?.()
-            setPath(e.target.value)
-          }}
-          onKeyDown={(e) => {
-            if (e.key !== 'Enter' || action === undefined) return
-            e.preventDefault()
-            pick()
-          }}
-        />
-      </label>
-      {action !== undefined && (
-        <button
-          type="button"
-          name="pick"
-          onClick={pick}
-          disabled={path === '' || disabled || picking}
-        >
-          {action}
-        </button>
+      {ids === undefined ? (
+        // biome-ignore lint/a11y/noLabelWithoutControl: `box` is the `<input>` this label wraps, written once for both branches.
+        <label className="field">
+          <span>Directory path</span>
+          {box}
+        </label>
+      ) : (
+        box
       )}
-      <button type="button" name="browse" aria-expanded={open} onClick={toggle}>
-        Browse…
-      </button>
-      {children}
+      {/* Boxes, so the buttons wrap by groups and not one at a time, since
+          a flex line breaks between its items: the buttons go under the
+          path box together, and where the three cannot share a line,
+          Browse… and what follows it go under the pick button together. */}
+      <div className="dir-picker-buttons">
+        {action !== undefined && (
+          <button
+            ref={pickButton}
+            type="button"
+            name="pick"
+            onClick={pick}
+            disabled={path === '' || disabled || picking}
+          >
+            {action}
+          </button>
+        )}
+        <div className="dir-picker-browse">
+          <button
+            type="button"
+            name="browse"
+            aria-expanded={open}
+            onClick={toggle}
+          >
+            Browse…
+          </button>
+          {children}
+        </div>
+      </div>
       {open && (
         <div
           ref={browser}

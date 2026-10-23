@@ -2,7 +2,9 @@
  * The backup screen — spec C4 §5 and the build design's §6.3.
  *
  * **The copy here is load-bearing rather than decorative**, which is why four
- * sentences are on the screen and not in a doc:
+ * sentences are on the screen and not in a doc. The hashes are the header's
+ * line, since they are the one a person must not miss before pressing; the
+ * other three are behind "How backups work":
  *
  * - **Restore is out of band.** Stop the server, move the file, start it. C4
  *   §5 declines an in-server restore, so there is no button and the screen
@@ -42,7 +44,15 @@ import {
   takeBackup,
 } from './backup'
 import { humanBytes } from './bytes'
+import { HeldButton } from './HeldButton'
+import { useDrawnWait } from './hooks'
 import { messageOf } from './message'
+import { PageHeader, Row, Section } from './settingsLayout'
+import { WaitWords } from './WaitWords'
+import { JOINING_DOT } from './joiningDot'
+
+/** Back up now's words while a backup is out. */
+const BACKING_UP = 'Backing up…'
 
 export function Backup() {
   const [backups, setBackups] = useState<StoredBackup[] | undefined>()
@@ -61,6 +71,7 @@ export function Backup() {
    */
   const [takeFailure, setTakeFailure] = useState<string | undefined>()
   const [taking, setTaking] = useState(false)
+  const takingDrawn = useDrawnWait(taking)
   /** Whether a `POST` is already on its way. See `Users.tsx`'s own note. */
   const inFlight = useRef(false)
   /**
@@ -113,62 +124,94 @@ export function Backup() {
 
   return (
     <section className="backup">
-      <h2>Backup</h2>
+      <PageHeader
+        title="Backup"
+        description={
+          <>
+            A backup is the whole database, password hashes included: anyone
+            holding one can read every account&rsquo;s stored hash offline.
+          </>
+        }
+        actions={
+          <HeldButton
+            type="button"
+            name="take"
+            className="keeps-wait-width"
+            onClick={take}
+            held={takingDrawn}
+          >
+            <WaitWords
+              drawn={takingDrawn}
+              words="Back up now"
+              wait={BACKING_UP}
+            />
+          </HeldButton>
+        }
+      />
       {failure !== undefined && <p role="alert">{failure}</p>}
       {takeFailure !== undefined && <p role="alert">{takeFailure}</p>}
 
-      <button type="button" name="take" onClick={take} disabled={taking}>
-        {taking ? 'Backing up…' : 'Back up now'}
-      </button>
+      {backups !== undefined && (
+        <Section title="Backups">
+          {backups.length === 0 ? (
+            <p className="empty">
+              None yet. Back up now takes one with <code>VACUUM INTO</code> on
+              the live database, so nothing has to stop.
+            </p>
+          ) : (
+            <ul className="backup-rows settings-group">
+              {backups.map((held) => (
+                <li key={held.name}>
+                  <Row
+                    label={
+                      <a href={backupUrl(held.name)} download>
+                        {held.name}
+                      </a>
+                    }
+                    help={
+                      <>
+                        <span className="when">
+                          {readableTaken(held.taken)}
+                        </span>
+                        {JOINING_DOT}
+                        <span className="size">{humanBytes(held.bytes)}</span>
+                      </>
+                    }
+                  />
+                </li>
+              ))}
+            </ul>
+          )}
+        </Section>
+      )}
 
-      {backups !== undefined &&
-        (backups.length === 0 ? (
-          <p className="empty">
-            No backups yet. The button above takes one; it is a
-            <code> VACUUM INTO</code> of the live database, so nothing has to
-            stop for it.
-          </p>
-        ) : (
-          <ul className="backup-list">
-            {backups.map((held) => (
-              <li key={held.name}>
-                <a href={backupUrl(held.name)} download>
-                  {held.name}
-                </a>
-                <span className="when">{readableTaken(held.taken)}</span>
-                <span className="size">{humanBytes(held.bytes)}</span>
-              </li>
-            ))}
-          </ul>
-        ))}
-
-      <div className="what-a-backup-is">
+      <details className="settings-details">
+        <summary>How backups work</summary>
+        <p>
+          <strong>
+            It is the same file an operator would copy off the disk
+          </strong>
+          , which is why every route behind this screen is administrator-only.
+        </p>
         <p>
           <strong>Restore is out of band.</strong> Stop the server, move the
-          file into place, start it again. There is no restore button here: a
-          restore through a running server would have to quiesce every writer in
-          the process, and that is not worth the failure modes it introduces.
+          file into place, start it again. There is no restore button: a restore
+          through a running server would have to quiesce every writer in the
+          process, and that is not worth the failure modes it brings.
         </p>
         <p>
-          <strong>A backup is the whole database</strong>, password hashes
-          included. Anyone who downloads one can read every account&rsquo;s
-          stored hash offline. That is what a backup is — the same file an
-          operator would copy off the disk — and it is why every route behind
-          this screen is administrator-only.
-        </p>
-        <p>
-          <strong>A sidecar export is not a backup.</strong> An export writes
-          five documents per work and carries none of the cross-work data:
-          collections, tags, external ids, users, read history. Somebody who
-          exported their library still needs this.
+          <strong>A sidecar export is not a backup.</strong> It writes five
+          documents per work and none of the cross-work data: collections, tags,
+          external ids, users, read history. An exported library still needs
+          this.
         </p>
         <p>
           <strong>There is no schedule here.</strong> Run{' '}
-          <code>taiyaku library backup</code> from cron for that, and{' '}
-          <code>--keep N</code> to prune old ones. The server takes a backup
-          only when asked.
+          <code>taiyaku library backup</code> from cron, with{' '}
+          <code>--keep N</code> to prune old ones. The server backs up only when
+          asked.
         </p>
-      </div>
+      </details>
     </section>
   )
 }

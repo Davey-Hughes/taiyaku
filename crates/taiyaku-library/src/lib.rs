@@ -51,6 +51,34 @@ use std::time::{Duration, Instant};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 
+/// Why a library or an account is not given a name [`has_no_address`] answers
+/// true for, in the words the Configuration pages draw.
+pub(crate) const NO_ADDRESS: &str = "An address cannot hold “.” or “..” as a name.";
+
+/// Whether `name` is `.` or `..`, exactly.
+///
+/// **No page address can hold either.** A library's page and an account's are
+/// at their name (`web/src/configAddress.ts`), and the router and the URL
+/// parser collapse a `.` or `..` segment, `%2E` too, so a thing with either
+/// name would have no page. A name holding dots beside anything else, such as
+/// `...` or `a.b`, is an ordinary segment. Every write of a name a caller gave
+/// to `library.name` or `user.name` asks this first.
+///
+/// **A library named for its directory is asked of the name the
+/// `root_gets_a_library` trigger would give it**, by
+/// `scan::add_root_checked_in` before the insert: the trigger strips white
+/// space off the directory's last component, so a directory called `. ` would
+/// make a library called `.`. The unchecked `scan::add_root` and
+/// `scan::add_root_in` do not ask it of an `InLibrary::Own` directory, as they
+/// run none of C4 §2's validations of a new directory: every caller outside
+/// the tests reaches them through `add_root_checked_in`, or through
+/// `scan::create_library` into a library it has already made, and the tests
+/// use them to plant rows. A row that already holds either name is left as it
+/// is.
+pub(crate) fn has_no_address(name: &str) -> bool {
+    matches!(name, "." | "..")
+}
+
 // Per-person state, moved down from `taiyaku-serve` because this crate
 // cannot depend on the server — the dependency points the other way.
 // `taiyaku-serve` re-exports each of these from its old module paths, so

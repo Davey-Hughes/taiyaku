@@ -1551,6 +1551,93 @@ async fn a_server_cannot_be_claimed_with_an_empty_password() {
     );
 }
 
+/// No page address holds `.` or `..`, so the claim refuses either name as the
+/// caller's mistake, in the sentence the pages draw, and not as the 404 a
+/// claimed server answers.
+#[tokio::test]
+async fn a_server_cannot_be_claimed_under_a_dot_name() {
+    let tmp = crate::test_support::Fixture::new("claim-dot-name");
+    let state = unclaimed(&tmp, true);
+
+    for name in [".", ".."] {
+        let refused = build_router(state.clone())
+            .oneshot(claim_request(name, "a password"))
+            .await
+            .expect("answers");
+        assert_eq!(refused.status(), StatusCode::BAD_REQUEST, "{name:?}");
+        let body: serde_json::Value =
+            serde_json::from_str(&crate::test_support::body_string(refused).await).expect("JSON");
+        assert_eq!(
+            body,
+            serde_json::json!({ "error": "An address cannot hold “.” or “..” as a name." }),
+            "{name:?}"
+        );
+    }
+    let conn = state.library.conn();
+    assert!(
+        !account::is_claimed(&conn).expect("reads"),
+        "a refused claim must leave the server unclaimed"
+    );
+}
+
+/// An empty name has no page address either, so the claim refuses it as the
+/// caller's mistake, as it does `.` and `..`.
+#[tokio::test]
+async fn a_server_cannot_be_claimed_under_an_empty_name() {
+    let tmp = crate::test_support::Fixture::new("claim-empty-name");
+    let state = unclaimed(&tmp, true);
+
+    let refused = build_router(state.clone())
+        .oneshot(claim_request("", "a password"))
+        .await
+        .expect("answers");
+    assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+    let body: serde_json::Value =
+        serde_json::from_str(&crate::test_support::body_string(refused).await).expect("JSON");
+    assert_eq!(
+        body,
+        serde_json::json!({ "error": "an account needs a name, since its page is at its name" })
+    );
+    let conn = state.library.conn();
+    assert!(
+        !account::is_claimed(&conn).expect("reads"),
+        "a refused claim must leave the server unclaimed"
+    );
+}
+
+/// A store fault while claiming is answered as a claimed server is: the
+/// caller has not signed in, and the store's own words, which name its
+/// accounts and its tables, are not for them.
+#[tokio::test]
+async fn a_store_fault_while_claiming_is_answered_as_shut_without_the_stores_words() {
+    let tmp = crate::test_support::Fixture::new("claim-store-fault");
+    let state = unclaimed(&tmp, true);
+    state
+        .library
+        .conn()
+        .execute_batch(
+            "CREATE TRIGGER a_claim_fault BEFORE UPDATE ON user
+             BEGIN SELECT RAISE(ABORT, 'a planted store fault'); END;",
+        )
+        .expect("plants the fault");
+
+    let refused = build_router(state.clone())
+        .oneshot(claim_request("davey", "a password"))
+        .await
+        .expect("answers");
+    assert_eq!(refused.status(), StatusCode::NOT_FOUND);
+    assert_eq!(
+        crate::test_support::body_string(refused).await,
+        crate::test_support::body_string(shut()).await,
+        "the answer of a server that cannot be claimed, and nothing else"
+    );
+    let conn = state.library.conn();
+    assert!(
+        !account::is_claimed(&conn).expect("reads"),
+        "the fault left the server unclaimed"
+    );
+}
+
 /// **The cookie's `Max-Age` was written once at login and never again**, so a
 /// browser discarded it thirty days after sign-in however often it was used —
 /// while the database row's `expires` slid forward on every request.

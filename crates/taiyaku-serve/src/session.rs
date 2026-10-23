@@ -739,6 +739,16 @@ pub(crate) async fn claim(
          server can claim it until an admin exists."
     );
 
+    /// What the claim's blocking half came to.
+    enum Claimed {
+        /// Claimed, and signed in with this session token.
+        Token(String),
+        /// The caller's own mistake, in the store's sentence.
+        Unusable(String),
+        /// Anything else, answered as a claimed server is.
+        Shut,
+    }
+
     let secure_cookies = state.auth.secure_cookies;
     let claimed = tokio::task::spawn_blocking(move || {
         use taiyaku_library::{account, credential};
@@ -751,25 +761,43 @@ pub(crate) async fn claim(
         // could take the seeded row — with every note and reading position
         // hanging off it. Found by the fourth whole-branch review.
         if account::is_claimed(&conn).unwrap_or(true) {
-            return None;
+            return Claimed::Shut;
         }
-        account::promote(&conn, &body.name, &body.password, "admin").ok()?;
-        let id = account::id_of(&conn, &body.name).ok()??;
+        // **A name the store refuses is said, as the empty password above
+        // is**: answered as shut, a name such as `.` would read as a server
+        // already claimed, and the person would stop trying. Every other
+        // refusal stays shut, since one that is not the caller's mistake says
+        // only that this server cannot be claimed now.
+        match account::promote(&conn, &body.name, &body.password, "admin") {
+            Ok(_) => {}
+            Err(account::WriteError::Unusable(why)) => return Claimed::Unusable(why),
+            Err(_) => return Claimed::Shut,
+        }
+        let Ok(Some(id)) = account::id_of(&conn, &body.name) else {
+            return Claimed::Shut;
+        };
         let token = credential::mint_token();
-        account::open_session(&conn, id, &token, None, None).ok()?;
-        Some(token)
+        if account::open_session(&conn, id, &token, None, None).is_err() {
+            return Claimed::Shut;
+        }
+        Claimed::Token(token)
     })
     .await;
 
     match claimed {
         // Signed in by the same response that claimed it: a person who has just
         // set the only password on the server should not then be asked for it.
-        Ok(Some(token)) => (
+        Ok(Claimed::Token(token)) => (
             StatusCode::NO_CONTENT,
             [(header::SET_COOKIE, set_cookie(&token, secure_cookies))],
         )
             .into_response(),
-        _ => shut(),
+        Ok(Claimed::Unusable(why)) => (
+            StatusCode::BAD_REQUEST,
+            axum::Json(serde_json::json!({ "error": why })),
+        )
+            .into_response(),
+        Ok(Claimed::Shut) | Err(_) => shut(),
     }
 }
 

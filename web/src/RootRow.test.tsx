@@ -5,8 +5,10 @@ import * as api from './libraries'
 import { RootRow } from './RootRow'
 import { emptyDerive } from './testing/derive'
 import { deferred, flush } from './testing/async'
-import { fields } from './testing/fields'
+import './testing/dialog'
+import { holdOf } from './testing/held'
 import { mount, rerender } from './testing/mount'
+import { helpOf, row, section } from './testing/settingsRows'
 
 vi.mock('./libraries', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./libraries')>()),
@@ -268,6 +270,64 @@ describe('RootRow', () => {
     )
   })
 
+  it('hands focus back to Remove… when its confirm is cancelled', async () => {
+    const host = await settle()
+    await act(async () => {
+      press(host, 'Remove…').click()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    const cancel = [...host.querySelectorAll('.remove-root button')].find(
+      (b) => b.textContent === 'Cancel',
+    ) as HTMLButtonElement
+    act(() => cancel.focus())
+    await act(async () => {
+      cancel.click()
+      await Promise.resolve()
+    })
+    expect(host.querySelector('.remove-root')).toBeNull()
+    expect(document.activeElement).toBe(press(host, 'Remove…'))
+  })
+
+  it('hands focus to Remove…, held, when a hold cancels its confirm while focus is in it', async () => {
+    const host = await settle()
+    await act(async () => {
+      press(host, 'Remove…').click()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    const cancel = [...host.querySelectorAll('.remove-root button')].find(
+      (b) => b.textContent === 'Cancel',
+    ) as HTMLButtonElement
+    act(() => cancel.focus())
+    await act(async () => {
+      rerender(<RootRow root={root()} held onChanged={vi.fn()} />)
+      await Promise.resolve()
+    })
+    expect(host.querySelector('.remove-root')).toBeNull()
+    expect(document.activeElement).toBe(press(host, 'Remove…'))
+    expect(holdOf(press(host, 'Remove…'))).toBe('held')
+  })
+
+  it('leaves focus in a box elsewhere on the page when a hold cancels its confirm', async () => {
+    const host = await settle()
+    await act(async () => {
+      press(host, 'Remove…').click()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    const box = host.querySelector(
+      'input[name="edition_key"]',
+    ) as HTMLInputElement
+    act(() => box.focus())
+    await act(async () => {
+      rerender(<RootRow root={root()} held onChanged={vi.fn()} />)
+      await Promise.resolve()
+    })
+    expect(host.querySelector('.remove-root')).toBeNull()
+    expect(document.activeElement).toBe(box)
+  })
+
   it('draws no library sentence in the removal dialog without one', async () => {
     const host = await settle()
     await act(async () => {
@@ -292,6 +352,9 @@ describe('RootRow', () => {
       await Promise.resolve()
     })
     expect(host.querySelector('.remove-root .confirm')).not.toBeNull()
+    act(() =>
+      (host.querySelector('.remove-root .confirm') as HTMLElement).focus(),
+    )
     await act(async () => {
       answer({
         root_id: 3,
@@ -307,19 +370,30 @@ describe('RootRow', () => {
     expect(host.querySelector('.remove-root')).toBeNull()
     expect(host.querySelector('.scanning')?.textContent).toBe('Scanning… 7s')
     expect(config.removeRoot).not.toHaveBeenCalled()
+    // Focus was in the confirm the scan took away: it goes back to Remove…,
+    // which the scan holds.
+    expect(document.activeElement).toBe(press(host, 'Remove…'))
+    expect(holdOf(press(host, 'Remove…'))).toBe('held')
   })
 
-  it('is held while another directory of its library is scanning: Scan directory and Remove… are disabled and send nothing', async () => {
+  it('is held while another directory of its library is scanning: Scan directory and Remove… are held and send nothing', async () => {
     const host = await settle()
     await act(async () => {
       rerender(<RootRow root={root()} held onChanged={vi.fn()} />)
       await Promise.resolve()
     })
     for (const label of ['Scan directory', 'Remove…']) {
-      expect(press(host, label).disabled, label).toBe(true)
-      press(host, label).click()
+      expect(holdOf(press(host, label)), label).toBe('held')
+      await act(async () => {
+        press(host, label).click()
+        await Promise.resolve()
+      })
     }
     expect(config.startScan).not.toHaveBeenCalled()
+    // The removal asks what it would cost as it opens. The row's hold closes
+    // a removal it finds open, so the dialog's absence alone cannot show
+    // that Remove… did nothing.
+    expect(config.removalCost).not.toHaveBeenCalled()
     expect(host.querySelector('.remove-root')).toBeNull()
   })
 
@@ -391,21 +465,68 @@ describe('RootRow', () => {
         press(host, 'Move…').click()
         await Promise.resolve()
       })
+      const dialog = host.querySelector('dialog') as HTMLDialogElement
+      expect(dialog.open).toBe(true)
       expect(
-        host.querySelector('[aria-label="Move the directory at /srv/manga"]'),
-      ).not.toBeNull()
-      for (const label of ['Scan directory', 'Remove…', 'Move…']) {
-        expect(press(host, label).disabled, label).toBe(true)
-      }
+        document.getElementById(dialog.getAttribute('aria-labelledby') ?? '')
+          ?.textContent,
+      ).toBe('Move /srv/manga')
+      // Move… by its own press, the others out of the tab order: focus was
+      // on Move… as the dialog opened.
+      expect(
+        ['Scan directory', 'Remove…', 'Move…'].map((label) =>
+          holdOf(press(host, label)),
+        ),
+      ).toEqual(['disabled', 'disabled', 'held'])
     })
 
-    it('holds Move… while a removal is being confirmed', async () => {
+    it('hands focus back to Move… when its dialog is cancelled, by Cancel and by the browser', async () => {
+      const host = await mounted()
+      const move = press(host, 'Move…')
+      const cancel = () =>
+        [
+          ...(host.querySelector('dialog') as HTMLElement).querySelectorAll(
+            'button',
+          ),
+        ].find((b) => b.textContent === 'Cancel') as HTMLButtonElement
+      await act(async () => {
+        move.click()
+        await Promise.resolve()
+      })
+      await act(async () => {
+        cancel().click()
+        await Promise.resolve()
+      })
+      expect(host.querySelector('dialog')).toBeNull()
+      expect(document.activeElement).toBe(move)
+
+      ;(host.querySelector('input[name="edition_key"]') as HTMLElement).focus()
+      await act(async () => {
+        move.click()
+        await Promise.resolve()
+      })
+      await act(async () => {
+        host
+          .querySelector('dialog')
+          ?.dispatchEvent(new Event('cancel', { cancelable: true }))
+        await Promise.resolve()
+      })
+      expect(host.querySelector('dialog')).toBeNull()
+      expect(document.activeElement).toBe(move)
+    })
+
+    it('holds Move… while a removal is being confirmed, and opens nothing from it', async () => {
       const host = await mounted()
       await act(async () => {
         press(host, 'Remove…').click()
         await Promise.resolve()
       })
-      expect(press(host, 'Move…').disabled).toBe(true)
+      expect(holdOf(press(host, 'Move…'))).toBe('disabled')
+      await act(async () => {
+        press(host, 'Move…').click()
+        await Promise.resolve()
+      })
+      expect(host.querySelector('dialog')).toBeNull()
     })
 
     it('closes its dialog when a scan the mount read finds begins', async () => {
@@ -417,6 +538,10 @@ describe('RootRow', () => {
         await Promise.resolve()
       })
       expect(host.querySelector('.move-root')).not.toBeNull()
+      // Where the browser puts focus as the modal opens.
+      act(() =>
+        (host.querySelector('.move-root select') as HTMLElement).focus(),
+      )
       await flush(() =>
         status.resolve({
           root_id: 3,
@@ -428,6 +553,8 @@ describe('RootRow', () => {
         }),
       )
       expect(host.querySelector('.move-root')).toBeNull()
+      expect(document.activeElement).toBe(press(host, 'Move…'))
+      expect(holdOf(press(host, 'Move…'))).toBe('held')
     })
 
     it('closes its dialog when the row becomes held', async () => {
@@ -463,7 +590,7 @@ describe('RootRow', () => {
         await Promise.resolve()
       })
       await act(async () => {
-        press(host, 'Move /srv/manga to Manga').click()
+        ;(host.querySelector('.move-root .confirm') as HTMLElement).click()
         await Promise.resolve()
         await Promise.resolve()
       })
@@ -522,7 +649,7 @@ describe('RootRow', () => {
       root_id: 3,
       running: false,
       report: { error: 'the scan panicked' },
-      last_scan_at: '2026-09-04T12:00:00Z',
+      last_scan_at: '2026-09-04 12:00:00',
       last_scan_status: 'failed',
     })
     await act(async () => {
@@ -615,7 +742,7 @@ describe('RootRow', () => {
     expect(
       [...host.querySelectorAll('[role="alert"]')].map((a) => a.textContent),
     ).toEqual(['bad gateway'])
-    expect(press(host, 'Scan directory').disabled).toBe(false)
+    expect(holdOf(press(host, 'Scan directory'))).toBe('free')
   })
 
   it('draws the sentence of the refusal that ends a run of failed polls', async () => {
@@ -697,7 +824,7 @@ describe('RootRow', () => {
         running: false,
         elapsed_secs: 4.5,
         report: { error: 'the scan panicked' },
-        last_scan_at: '2026-09-04T12:00:00Z',
+        last_scan_at: '2026-09-04 12:00:00',
         last_scan_status: 'failed',
       })
 
@@ -737,7 +864,7 @@ describe('RootRow', () => {
       running: false,
       elapsed_secs: 4.5,
       report: { error: 'nope' },
-      last_scan_at: '2026-09-04T12:00:00Z',
+      last_scan_at: '2026-09-04 12:00:00',
       last_scan_status: 'failed',
     })
     const host = await settle({}, onChanged)
@@ -894,7 +1021,12 @@ describe('RootRow', () => {
       await Promise.resolve()
       await Promise.resolve()
     })
-    expect(press(host, 'Scan directory').disabled).toBe(true)
+    expect(holdOf(press(host, 'Scan directory'))).toBe('disabled')
+    await act(async () => {
+      press(host, 'Scan directory').click()
+      await Promise.resolve()
+    })
+    expect(config.startScan).not.toHaveBeenCalled()
   })
 
   it('puts the checkbox back when its save is refused', async () => {
@@ -980,7 +1112,7 @@ describe('RootRow', () => {
           root_removed_mid_derive: 0,
         },
       },
-      last_scan_at: '2026-09-04T12:00:00Z',
+      last_scan_at: '2026-09-04 12:00:00',
       last_scan_status: 'ok',
     })
     const host = await settle()
@@ -994,14 +1126,32 @@ describe('RootRow', () => {
       await Promise.resolve()
       await Promise.resolve()
     })
-    expect(host.querySelector('.scan-report')).not.toBeNull()
-    expect(host.textContent).toContain('What derivation made of every library')
-    // The report's two headings sit one level beneath the directory's h2.
+    // After the settings and before the removal box, which stays the page's
+    // last box.
     expect(
-      [...host.querySelectorAll('.scan-report .report-heading')].map(
+      [
+        ...host.querySelectorAll(
+          '.settings-section > .settings-section-head > .settings-section-title',
+        ),
+      ].map((title) => title.textContent),
+    ).toEqual(['How it is scanned', 'How it is read', 'Scan report', 'Removal'])
+    const report = section(host, 'Scan report')
+    expect(report.querySelector('.scan-report')).not.toBeNull()
+    expect(report.textContent).toContain(
+      'What derivation made of every library',
+    )
+    // The report's two headings sit one level beneath its section's h3,
+    // which sits beneath the directory's h2.
+    expect(report.querySelector('.settings-section-title')?.tagName).toBe('H3')
+    expect(
+      [...report.querySelectorAll('.scan-report .report-heading')].map(
         (h) => h.tagName,
       ),
-    ).toEqual(['H3', 'H3'])
+    ).toEqual(['H4', 'H4'])
+    // The regime line stays in the header beside it.
+    expect(
+      host.querySelectorAll('.page-header .page-description .regime > div'),
+    ).toHaveLength(3)
   })
 
   it('opens the removal dialog and closes it again without removing', async () => {
@@ -1324,7 +1474,7 @@ describe('RootRow', () => {
       await Promise.resolve()
     })
     expect(host.textContent).toContain('Scanning')
-    expect(press(host, 'Scan directory').disabled).toBe(true)
+    expect(holdOf(press(host, 'Scan directory'))).toBe('held')
   })
 
   // --- whole-branch review pass 4, 2026-09-04 ----------------------------
@@ -1487,11 +1637,13 @@ describe('RootRow', () => {
   it('no longer says exclude_globs is unapplied', async () => {
     const host = await settle({ exclude_globs: null })
 
-    const label = host
-      .querySelector('textarea[name="exclude_globs"]')
-      ?.closest('label')
-      ?.querySelector('span')?.textContent
-    expect(label).toBe('Exclude globs (one gitignore pattern per line)')
+    const globs = row(host, 'Exclude globs')
+    const box = globs.querySelector('textarea[name="exclude_globs"]')
+    expect(box?.getAttribute('aria-label')).toBe(
+      'Exclude globs (one gitignore pattern per line)',
+    )
+    // Neither the words beside the box nor its name say it is only kept.
+    expect(globs.textContent).not.toMatch(/not yet applied|recorded/i)
   })
 
   // --- O92: the directory-vs-contents trap, 2026-09-09 -------------------
@@ -1504,14 +1656,13 @@ describe('RootRow', () => {
     // excluded: 0" — which reads to an admin as "my pattern did nothing"
     // when gitignore did exactly what it was asked. Both shapes have to be
     // named for the hint to be useful, so this checks both rather than just
-    // that a `<small>` exists.
+    // that the row has help.
     const host = await settle({ exclude_globs: null })
-    const hint = host
-      .querySelector('textarea[name="exclude_globs"]')
-      ?.closest('label')
-      ?.querySelector('small')?.textContent
-    expect(hint).toContain('trailing slash or bare name')
-    expect(hint).toContain('/**')
+    const hint = helpOf(row(host, 'Exclude globs'))?.textContent
+    expect(hint).toContain(
+      'A trailing slash or a bare name excludes the directory and all under it',
+    )
+    expect(hint).toContain("a '/**' suffix excludes only what is inside it")
   })
 
   it('gives the other three text fields no hint', async () => {
@@ -1519,43 +1670,55 @@ describe('RootRow', () => {
     // which field a hint landed on, and this repository has been bitten by
     // exactly that shape of test before.
     const host = await settle()
-    for (const name of ['edition_key', 'default_kind', 'default_language']) {
-      const hint = host
-        .querySelector(`input[name="${name}"]`)
-        ?.closest('label')
-        ?.querySelector('small')
-      expect(hint, `${name} should carry no hint`).toBeNull()
+    for (const label of ['Edition key', 'Default kind', 'Default language']) {
+      expect(
+        helpOf(row(host, label)),
+        `${label} should carry no hint`,
+      ).toBeNull()
     }
   })
 
-  it('groups the keeps-documents checkbox outside the field grid', async () => {
-    // A checkbox's label is a sentence, not a field name: it takes a row of
-    // its own rather than a track in the `.fields` grid. The account page's
-    // equivalent is pinned in AccountPage.test.tsx; this is the root row's.
+  it('draws the keeps-documents checkbox as a check row, its box kept beside its words', async () => {
+    // A checkbox's label is a sentence, not a field name, and a box alone on
+    // a line under its words reads as a different control: its row is the
+    // one check row, which keeps the box beside the words at every width.
     const host = await settle()
+    const checks = [...host.querySelectorAll('.settings-row-check')]
+    expect(checks).toEqual([row(host, 'Keeps documents under .taiyaku/')])
     expect(
-      host.querySelector('.root-row .fields input[type="checkbox"]'),
-    ).toBeNull()
-    const checks = host.querySelector('.root-row .checks')
-    expect(checks).not.toBeNull()
-    expect(
-      checks?.querySelector('input[name="keeps_documents"]'),
+      checks[0]?.querySelector(
+        'input[type="checkbox"][name="keeps_documents"]',
+      ),
     ).not.toBeNull()
   })
 
-  it('gives every labelled control in the field grid the field pattern', async () => {
+  it('draws each setting as a row of its section: how it is scanned, then how it is read', async () => {
     const host = await settle()
-    const labels = [...host.querySelectorAll('.root-row .fields label')]
-    // Five: edition key, default kind, default language, exclude globs, scan
-    // interval. Asserted as a count as well as a predicate, because
-    // `.every()` on an empty list is vacuously true.
-    expect(labels).toHaveLength(5)
-    expect(labels.every((l) => l.classList.contains('field'))).toBe(true)
+    // Per section and per row, by the row's label and its control's name, so
+    // a setting drawn in the wrong section or under another's label is seen.
+    const rowsOf = (title: string) =>
+      [...section(host, title).querySelectorAll('.settings-row')].map((r) => [
+        r.querySelector('.settings-row-label')?.textContent,
+        r.querySelector('input, textarea')?.getAttribute('name'),
+      ])
+    expect(rowsOf('How it is scanned')).toEqual([
+      ['Scan interval', 'scan_interval_secs'],
+      ['Exclude globs', 'exclude_globs'],
+      ['Keeps documents under .taiyaku/', 'keeps_documents'],
+    ])
+    expect(rowsOf('How it is read')).toEqual([
+      ['Edition key', 'edition_key'],
+      ['Default kind', 'default_kind'],
+      ['Default language', 'default_language'],
+    ])
   })
 
   it('names Exclude globs by its label alone and describes it by its hint — O165', async () => {
     const host = await settle()
-    const box = host.querySelector('textarea[name="exclude_globs"]')
+    // `row` finds the row by its label's words alone, so a hint drawn
+    // inside the label would lose it the row.
+    const globs = row(host, 'Exclude globs')
+    const box = globs.querySelector('textarea[name="exclude_globs"]')
     if (!box) throw new Error('no exclude_globs box')
     // What each attribute points at, by id. `getElementById` rather than a
     // `#` selector: `useId`'s ids are not valid CSS identifiers.
@@ -1569,9 +1732,11 @@ describe('RootRow', () => {
       'Exclude globs (one gitignore pattern per line)',
     )
     expect(box.hasAttribute('aria-labelledby')).toBe(false)
+    expect(text('aria-describedby')).toBe(helpOf(globs)?.textContent)
     expect(text('aria-describedby')).toBe(
-      'A trailing slash or bare name excludes the directory and everything ' +
-        "under it; a '/**' suffix excludes only what's inside it.",
+      'One gitignore pattern per line. A trailing slash or a bare name ' +
+        "excludes the directory and all under it; a '/**' suffix excludes " +
+        'only what is inside it.',
     )
   })
 
@@ -1618,14 +1783,33 @@ describe('RootRow', () => {
     expect(new Set(ids).size).toBe(2)
   })
 
-  it('gives each control under a field label that label’s words as its aria-label — O175', async () => {
+  it('gives each control under a row label that label’s words as its aria-label — O175', async () => {
     const host = await settle()
-    // The four text columns and the scan interval. Counted, because a loop
-    // over nothing passes.
-    const labelled = fields(host.querySelectorAll('.root-row label.field'))
-    expect(labelled).toHaveLength(5)
+    const labelled = [
+      ...host.querySelectorAll<HTMLLabelElement>('label.settings-row-label'),
+    ]
+      .map((label) => ({ written: label.textContent, control: label.control }))
+      .filter(({ control }) => control?.hasAttribute('aria-label'))
+    // The scan interval and the four text columns, named: a loop over
+    // nothing passes. Two names say more than their row's label, the unit
+    // and the syntax, and each starts with the label's words as written.
+    expect(
+      labelled.map(({ written, control }) => [
+        written,
+        control?.getAttribute('aria-label'),
+      ]),
+    ).toEqual([
+      ['Scan interval', 'Scan interval (seconds)'],
+      ['Exclude globs', 'Exclude globs (one gitignore pattern per line)'],
+      ['Edition key', 'Edition key'],
+      ['Default kind', 'Default kind'],
+      ['Default language', 'Default language'],
+    ])
     for (const { written, control } of labelled) {
-      expect(control.getAttribute('aria-label'), written).toBe(written)
+      expect(
+        control?.getAttribute('aria-label')?.startsWith(written ?? '-'),
+        written ?? '',
+      ).toBe(true)
     }
   })
 })
@@ -1875,7 +2059,7 @@ describe('RootRow, an edit still in its box when the row goes', () => {
       await Promise.resolve()
     })
     await act(async () => {
-      press(row, 'Move /srv/manga to Manga').click()
+      ;(row.querySelector('.move-root .confirm') as HTMLElement).click()
       await Promise.resolve()
     })
     await typeAndStay(row, 'default_language', 'ja')

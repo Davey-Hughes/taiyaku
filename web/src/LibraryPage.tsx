@@ -10,7 +10,7 @@
  * **It asks the library's status once on mount**, for `RootRow`'s reason: a
  * scan started before this page was drawn is still running. The status says
  * whether any directory of the library is scanning, so a directory's own scan,
- * started on its page, holds this page's Scan library and Remove library… as
+ * started on its page, holds this page's Scan library and Remove… as
  * a scan of the library does. The directories it names as running say
  * "Scanning…" in the table.
  *
@@ -26,15 +26,15 @@
  * holds a report from another scan, if any, and a directory that joined the
  * library while the scan ran is not in it.
  *
- * **Scans and removals exclude each other.** Scan library and Remove library…
+ * **Scans and removals exclude each other.** Scan library and Remove…
  * are held while a scan is known, starting, or the removal dialog is open;
  * the removal's confirm is held while a scan is known. A scan holds neither
  * Rename… nor Add directory…; the removal holds both, and the Directories table
  * draws its paths without links while it is open: a directory's page offers
  * Scan directory, Move… and Remove… on a directory the removal is taking.
  */
-import { type ReactNode, useEffect, useRef, useState } from 'react'
-import { Link } from 'react-router'
+import { type ReactNode, useEffect, useId, useRef, useState } from 'react'
+import { NavLink } from 'react-router'
 import {
   type Added,
   humanInterval,
@@ -46,8 +46,10 @@ import {
   scanStatus,
   statusOf,
 } from './config'
+import { dirPath, LIBRARIES, libraryNameClash } from './configAddress'
 import { DirPicker } from './DirPicker'
-import { useDrawn } from './hooks'
+import { HeldButton } from './HeldButton'
+import { useDrawn, useDrawnWait, useFocusLeavesHeld } from './hooks'
 import {
   addDir,
   type Library,
@@ -57,12 +59,24 @@ import {
   startLibraryScan,
 } from './libraries'
 import { messageOf, sentenceOf } from './message'
+import { NameClash } from './NameClash'
+import { PathWithBreaks } from './PathWithBreaks'
 import { Refusal } from './Refusal'
+import { bringIntoView } from './reveal'
 import { RemoveLibrary } from './RemoveLibrary'
 import { ScanReport } from './ScanReport'
+import { PageHeader, RemovalSection, Row, Section } from './settingsLayout'
+import { WaitWords } from './WaitWords'
+import { ROW_CELLS, useLineEnds } from './lineEnds'
 
 export interface LibraryPageProps {
   library: Library
+  /**
+   * Every library the list holds, this one among them, so that a rename to
+   * a name another holds is refused as it is typed; `undefined` while the
+   * list is unread, when only the server refuses it.
+   */
+  libraries: readonly Pick<Library, 'id' | 'name'>[] | undefined
   /**
    * What the screen says above the page: a list that could not be read, the
    * report of a directory that left this library, or an answer that came once
@@ -82,6 +96,11 @@ export interface LibraryPageProps {
    */
   onChanged: (quiet?: boolean) => void
   /**
+   * The library was renamed to `name`, the server's answer, called just
+   * before `onChanged`: its address is its name, which the screen follows.
+   */
+  onRenamed?: (name: string) => void
+  /**
    * The library is gone. Its re-derive's report is the screen's to keep, since
    * this page is not drawn once the library is gone.
    */
@@ -91,6 +110,11 @@ export interface LibraryPageProps {
    * the sentence that says so and names the library or the directory.
    */
   onLateRefusal?: (sentence: string) => void
+  /**
+   * A directory's link was followed, with its address: the directory's page
+   * takes focus, since the link that had it may be hidden beside it.
+   */
+  onOpen?: (to: string) => void
 }
 
 /** The directories a library's status names as scanning, by id. */
@@ -105,16 +129,24 @@ function count(n: number, one: string, many: string): string {
   return `${n} ${n === 1 ? one : many}`
 }
 
+/** Save's words while a rename is out, and the width Save keeps for them. */
+const SAVING = 'Saving…'
+
 export function LibraryPage({
   library,
+  libraries,
   notices,
   arrived = false,
   onAdded,
   onChanged,
+  onRenamed,
   onRemoved,
   onLateRefusal,
+  onOpen,
 }: LibraryPageProps) {
   const heading = useRef<HTMLHeadingElement>(null)
+  /** Which of a directory's cells end a line where its row is drawn in two. */
+  const cellEnds = useLineEnds<HTMLTableElement>(ROW_CELLS)
   useEffect(() => {
     if (arrived) heading.current?.focus()
   }, [arrived])
@@ -129,12 +161,40 @@ export function LibraryPage({
   const [conflict, setConflict] = useState<string | undefined>()
   /** Why the last directory was not added. Drawn beside the picker it answers. */
   const [addFailure, setAddFailure] = useState<string | undefined>()
-  /** Why the last rename was refused. Drawn in the rename form. */
+  /** Why the last rename was refused. Laid over what is under the header. */
   const [renameFailure, setRenameFailure] = useState<string | undefined>()
   const [renaming, setRenaming] = useState(false)
+  /**
+   * The name a save set, drawn as the title until the list read after the
+   * save says it: the title takes focus as the editor closes, and is read
+   * out then. `from` is the name the list said, so the saved one is drawn
+   * only while the list still says that.
+   */
+  const [renamed, setRenamed] = useState<{ from: string; to: string }>()
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `library.name` is the trigger: the list has been read again, and its name is the one to draw.
+  useEffect(() => {
+    setRenamed(undefined)
+  }, [library.name])
+  const title = renamed?.from === library.name ? renamed.to : library.name
   const [adding, setAdding] = useState(false)
   const [name, setName] = useState(library.name)
   const [saving, setSaving] = useState(false)
+  /** `saving`, once it has gone on long enough to be drawn. */
+  const savingDrawn = useDrawnWait(saving)
+  /**
+   * Why the server would refuse the name typed, as the list judges it. Save
+   * is held at once while there is one, since it is no wait: the server
+   * still judges every save, against a list another admin may have changed.
+   */
+  const clash = libraryNameClash(name, libraries ?? [], library.id)
+  /**
+   * The clash as it is said: not while a refusal in the same words is
+   * drawn, which an edit takes away, so that one sentence is never said
+   * twice. Beside a refusal in other words it is said, since it is what
+   * holds Save.
+   */
+  const saidClash = renameFailure === clash ? undefined : clash
+  const clashNote = useId()
   const [removing, setRemoving] = useState(false)
   const [running, setRunning] = useState(false)
   const [starting, setStarting] = useState(false)
@@ -284,15 +344,18 @@ export function LibraryPage({
 
   const rename = (e: React.FormEvent) => {
     e.preventDefault()
-    if (name === '' || writing.current) return
+    if (name === '' || clash !== undefined || writing.current) return
     writing.current = true
     setSaving(true)
     setRenameFailure(undefined)
     renameLibrary(library.id, name)
-      .then(() => {
+      .then((answer) => {
         writing.current = false
         setSaving(false)
+        setRenamed({ from: library.name, to: answer.name })
+        closedBy.current = 'save'
         setRenaming(false)
+        onRenamed?.(answer.name)
         onChanged()
       })
       .catch((err: unknown) => {
@@ -328,6 +391,58 @@ export function LibraryPage({
     )
   }
 
+  const renameForm = useId()
+  const nameBox = useRef<HTMLInputElement>(null)
+  const renameButton = useRef<HTMLButtonElement>(null)
+  const saveButton = useRef<HTMLButtonElement>(null)
+  const cancelRenameButton = useRef<HTMLButtonElement>(null)
+  useFocusLeavesHeld(clash !== undefined || savingDrawn, saveButton, nameBox)
+  // The wait holds Cancel too, which a person may have tabbed to.
+  useFocusLeavesHeld(savingDrawn, cancelRenameButton, nameBox)
+  /** How the editor was closed, which says where focus goes next. */
+  const closedBy = useRef<'save' | 'cancel' | undefined>(undefined)
+  // The button pressed is hidden by what it opens or closes, so focus
+  // follows it. Into the box, with the name selected so that typing replaces
+  // it. Back to Rename…, shown again in the slot Cancel leaves, after Cancel
+  // or Escape.
+  // To the title, which reads the name out, after a save, and after a Cancel
+  // whose Rename… the removal holds. Each is brought out from under the
+  // phone bar: `focus` scrolls only what is outside the window, and the bar
+  // covers its top.
+  useEffect(() => {
+    const show = (el: HTMLElement | null) => {
+      el?.focus({ preventScroll: true })
+      bringIntoView(el)
+    }
+    if (renaming) {
+      show(nameBox.current)
+      nameBox.current?.select()
+      return
+    }
+    const by = closedBy.current
+    closedBy.current = undefined
+    if (by === undefined) return
+    const back = renameButton.current
+    if (by === 'cancel' && back !== null && !back.disabled) back.focus()
+    else show(heading.current)
+  }, [renaming])
+  // Held from the moment a save is sent, before Cancel is drawn held, so
+  // that nothing closes the editor under a save on its way.
+  const closeRename = () => {
+    if (writing.current) return
+    setRenameFailure(undefined)
+    closedBy.current = 'cancel'
+    setRenaming(false)
+  }
+  /** Escape from the box, Save or Cancel closes the editor, as Cancel does. */
+  const closeOnEscape = (e: React.KeyboardEvent) => {
+    // An Escape that closes an input method's candidates is that method's,
+    // not the editor's.
+    if (e.key !== 'Escape' || e.nativeEvent.isComposing) return
+    e.preventDefault()
+    closeRename()
+  }
+
   const addRoot = useRef<HTMLDivElement>(null)
   const addingWas = useRef(adding)
   // The button pressed is replaced by what it opens or closes, so focus
@@ -343,21 +458,128 @@ export function LibraryPage({
       ?.focus()
   }, [adding])
 
-  /** Scan library and Remove library… are held while this is. */
-  const busy = running || starting || removing
+  const removeButton = useRef<HTMLButtonElement>(null)
+  /**
+   * Set when the removal's confirm is cancelled: focus goes back to the
+   * Remove… that opened it, not to the document, where the confirm's Cancel
+   * leaves it as it goes. It takes focus whether or not a scan still holds
+   * it, as a held `HeldButton` does.
+   */
+  const backToRemove = useRef(false)
+  useEffect(() => {
+    if (removing || !backToRemove.current) return
+    backToRemove.current = false
+    removeButton.current?.focus()
+  }, [removing])
 
   return (
     <div className="library-page">
-      <p className="back">
-        <Link to="/config/libraries">‹ Libraries</Link>
-      </p>
-      <h2 ref={heading} tabIndex={-1}>
-        {library.name}
-      </h2>
-      <p className="holds">
-        {count(library.works, 'work', 'works')} in{' '}
-        {count(library.dirs.length, 'directory', 'directories')}
-      </p>
+      <PageHeader
+        back={{ to: LIBRARIES, label: 'Libraries' }}
+        title={title}
+        titleRef={heading}
+        titleEditor={
+          renaming ? (
+            <form
+              className="rename-library page-title-editor"
+              id={renameForm}
+              onSubmit={rename}
+            >
+              {/* O175: no label is drawn in the title's place, so the
+                  box's name is said here. */}
+              <input
+                ref={nameBox}
+                type="text"
+                className="page-title-box"
+                name="library-name"
+                aria-label="Name"
+                aria-invalid={saidClash === undefined ? undefined : true}
+                aria-describedby={
+                  saidClash === undefined ? undefined : clashNote
+                }
+                value={name}
+                onChange={(e) => {
+                  setRenameFailure(undefined)
+                  setName(e.target.value)
+                }}
+                onKeyDown={closeOnEscape}
+              />
+            </form>
+          ) : undefined
+        }
+        description={
+          <span className="holds">
+            {count(library.works, 'work', 'works')} in{' '}
+            {count(library.dirs.length, 'directory', 'directories')}
+          </span>
+        }
+        editorAnswer={
+          <>
+            {renameFailure !== undefined && <Refusal>{renameFailure}</Refusal>}
+            <NameClash id={clashNote} sentence={saidClash} />
+          </>
+        }
+        actions={
+          <>
+            <button
+              ref={renameButton}
+              type="button"
+              name="rename-library"
+              onClick={() => {
+                setName(title)
+                setRenaming(true)
+              }}
+              disabled={removing}
+            >
+              Rename…
+            </button>
+            {/* Scan library and Remove… are held by a scan and by a press of
+                their own, either of which can come while the button has
+                focus, so each is a `HeldButton` and keeps it. A press of the
+                other holds it by `disabled`: focus is on the button pressed
+                then, and a button that cannot take focus as its hold comes
+                on stays out of the tab order. */}
+            <HeldButton
+              type="button"
+              name="scan-library"
+              onClick={scan}
+              held={running || starting}
+              disabled={removing}
+            >
+              Scan library
+            </HeldButton>
+          </>
+        }
+        editorActions={
+          <>
+            {/* Kept as wide as the wider of its words, so that drawing its
+                wait moves nothing beside it. */}
+            <button
+              ref={saveButton}
+              type="submit"
+              form={renameForm}
+              name="save-rename"
+              className="keeps-wait-width"
+              disabled={
+                savingDrawn || name === '' || clash !== undefined || removing
+              }
+              onKeyDown={closeOnEscape}
+            >
+              <WaitWords drawn={savingDrawn} words="Save" wait={SAVING} />
+            </button>
+            <button
+              ref={cancelRenameButton}
+              type="button"
+              name="cancel-rename"
+              onClick={closeRename}
+              onKeyDown={closeOnEscape}
+              disabled={savingDrawn}
+            >
+              Cancel
+            </button>
+          </>
+        }
+      />
       {library.works === 0 && library.books > 0 && (
         <p className="no-readable">
           No readable files yet: its scans found{' '}
@@ -366,169 +588,102 @@ export function LibraryPage({
           library will need then.
         </p>
       )}
-      {notices}
-      {failure !== undefined && <p role="alert">{failure}</p>}
-      {conflict !== undefined && <p role="alert">{conflict}</p>}
-
-      <div className="actions">
-        <button
-          type="button"
-          name="scan-library"
-          onClick={scan}
-          disabled={busy}
-        >
-          Scan library
-        </button>
-        <button
-          type="button"
-          name="rename-library"
-          onClick={() => {
-            setName(library.name)
-            setRenaming(true)
-          }}
-          disabled={renaming || removing}
-        >
-          Rename…
-        </button>
-        <button
-          type="button"
-          name="remove-library"
-          onClick={() => setRemoving(true)}
-          disabled={busy}
-        >
-          Remove library…
-        </button>
-      </div>
       {running && (
         <p className="scanning">
           A scan is running in this library…
           {elapsed === null ? '' : ` ${Math.round(elapsed)}s`}
         </p>
       )}
+      {notices}
+      {failure !== undefined && <p role="alert">{failure}</p>}
+      {conflict !== undefined && <p role="alert">{conflict}</p>}
 
-      {renaming && (
-        <form className="rename-library" onSubmit={rename}>
-          {/* O175: the `aria-label` repeats the label's words. */}
-          <label className="field">
-            <span>Name</span>
-            <input
-              type="text"
-              name="library-name"
-              aria-label="Name"
-              value={name}
-              onChange={(e) => {
-                setRenameFailure(undefined)
-                setName(e.target.value)
-              }}
-            />
-          </label>
-          <button type="submit" disabled={saving || name === '' || removing}>
-            {saving ? 'Saving…' : 'Save'}
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              setRenameFailure(undefined)
-              setRenaming(false)
-            }}
-            disabled={saving}
-          >
-            Cancel
-          </button>
-          {renameFailure !== undefined && <Refusal>{renameFailure}</Refusal>}
-        </form>
-      )}
-
-      {removing && (
-        <RemoveLibrary
-          library={library}
-          blocked={running}
-          onCancel={() => setRemoving(false)}
-          onRemoved={(answer) => {
-            setRemoving(false)
-            onRemoved(library.name, answer)
-          }}
-          onLateRefusal={onLateRefusal}
-        />
-      )}
-
-      <h3>Directories</h3>
-      <table className="config-table dir-table">
-        <thead>
-          <tr>
-            <th scope="col">Path</th>
-            <th scope="col">Scan every</th>
-            <th scope="col">Last scan</th>
-          </tr>
-        </thead>
-        <tbody>
-          {library.dirs.map((root) => (
-            // By path, not id: a freed `root.id` is given to the next
-            // directory added, and a path cannot collide, since no two
-            // directories overlap.
-            <tr key={root.path}>
-              <td className="lead">
-                {removing ? (
-                  <code>{root.path}</code>
-                ) : (
-                  <Link
-                    className="row-link"
-                    to={`/config/libraries/${library.id}/dirs/${root.id}`}
-                  >
-                    <code>{root.path}</code>
-                  </Link>
-                )}
-              </td>
-              <td>
-                <span className="cell-label">Scan every: </span>
-                {root.scan_interval_secs === null
-                  ? 'not set'
-                  : humanInterval(root.scan_interval_secs)}
-              </td>
-              <td>
-                <span className="cell-label">Last scan: </span>
-                {scanning.has(root.id) ? 'Scanning…' : lastScan(root)}
-              </td>
+      <Section title="Directories">
+        <table ref={cellEnds} className="config-table dir-table">
+          <thead>
+            <tr>
+              <th scope="col">Path</th>
+              <th scope="col">Scan every</th>
+              <th scope="col">Last scan</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
-
-      <div className="add-root" ref={addRoot}>
-        {adding ? (
-          <DirPicker
-            action="Add directory"
-            onPick={add}
-            disabled={removing}
-            onEdit={() => setAddFailure(undefined)}
-          >
+          </thead>
+          <tbody>
+            {library.dirs.map((root) => {
+              const to = dirPath(library.name, root.id)
+              return (
+                // By path, not id: a freed `root.id` is given to the next
+                // directory added, and a path cannot collide, since no two
+                // directories overlap.
+                <tr key={root.path}>
+                  <td className="lead">
+                    {removing ? (
+                      <code>
+                        <PathWithBreaks path={root.path} />
+                      </code>
+                    ) : (
+                      // A NavLink, so the row whose directory is open beside
+                      // this page says so: `aria-current="page"`.
+                      <NavLink
+                        className="row-link"
+                        to={to}
+                        onClick={() => onOpen?.(to)}
+                      >
+                        <code>
+                          <PathWithBreaks path={root.path} />
+                        </code>
+                      </NavLink>
+                    )}
+                  </td>
+                  <td>
+                    <span className="cell-label">Scan every: </span>
+                    {root.scan_interval_secs === null
+                      ? 'not set'
+                      : humanInterval(root.scan_interval_secs)}
+                  </td>
+                  <td>
+                    <span className="cell-label">Last scan: </span>
+                    {scanning.has(root.id) ? 'Scanning…' : lastScan(root)}
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+        <div className="add-root" ref={addRoot}>
+          {adding ? (
+            <DirPicker
+              action="Add directory"
+              onPick={add}
+              disabled={removing}
+              onEdit={() => setAddFailure(undefined)}
+            >
+              <button
+                type="button"
+                name="cancel-add"
+                onClick={() => {
+                  setAddFailure(undefined)
+                  setAdding(false)
+                }}
+              >
+                Cancel
+              </button>
+            </DirPicker>
+          ) : (
             <button
               type="button"
-              name="cancel-add"
-              onClick={() => {
-                setAddFailure(undefined)
-                setAdding(false)
-              }}
+              name="add-dir"
+              onClick={() => setAdding(true)}
+              disabled={removing}
             >
-              Cancel
+              Add directory…
             </button>
-          </DirPicker>
-        ) : (
-          <button
-            type="button"
-            name="add-dir"
-            onClick={() => setAdding(true)}
-            disabled={removing}
-          >
-            Add directory…
-          </button>
-        )}
-        {addFailure !== undefined && <Refusal>{addFailure}</Refusal>}
-      </div>
+          )}
+          {addFailure !== undefined && <Refusal>{addFailure}</Refusal>}
+        </div>
+      </Section>
 
       {reports !== undefined && (
-        <section className="library-scan-reports">
-          <h3>What the scan found</h3>
+        <Section title="What the scan found">
           {reports.map((one) => (
             <div key={one.path} className="dir-report">
               <h4>
@@ -537,8 +692,42 @@ export function LibraryPage({
               <ScanReport outcome={one.outcome} level={5} />
             </div>
           ))}
-        </section>
+        </Section>
       )}
+
+      <RemovalSection title="Removal">
+        <Row
+          label="Remove this library"
+          help="Asks first, with what it would take."
+        >
+          {/* Held as Scan library is, and for the same reasons. */}
+          <HeldButton
+            ref={removeButton}
+            type="button"
+            name="remove-library"
+            onClick={() => setRemoving(true)}
+            held={running || removing}
+            disabled={starting}
+          >
+            Remove…
+          </HeldButton>
+        </Row>
+        {removing && (
+          <RemoveLibrary
+            library={library}
+            blocked={running}
+            onCancel={() => {
+              backToRemove.current = true
+              setRemoving(false)
+            }}
+            onRemoved={(answer) => {
+              setRemoving(false)
+              onRemoved(library.name, answer)
+            }}
+            onLateRefusal={onLateRefusal}
+          />
+        )}
+      </RemovalSection>
     </div>
   )
 }

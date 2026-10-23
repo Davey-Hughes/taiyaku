@@ -77,6 +77,24 @@ describe('base.css', () => {
     expect(strays(baseSource)).toEqual([])
   })
 
+  // The two rules tie at no specificity, so the later one wins; a ring rule
+  // moved below this one would ring every landing point again.
+  it('draws no ring where focus only lands, in one rule after the ring it ties', () => {
+    const all = rules(baseSource)
+    const ring = all.findIndex(
+      ({ prelude }) =>
+        prelude === ':where(.library, .login) :where(:focus-visible)',
+    )
+    const none = all.filter(({ body }) =>
+      /(?:^|;)\s*outline:\s*none\s*(?:;|$)/.test(body),
+    )
+    expect(none.map(({ prelude }) => prelude)).toEqual([
+      ':where(.library, .login) :where( .page-title, .missing, .gone-line, .removal-report, .dir-browser .where ):where(:focus)',
+    ])
+    expect(ring).toBeGreaterThanOrEqual(0)
+    expect(all.indexOf(none[0])).toBeGreaterThan(ring)
+  })
+
   it('catches a bare selector hiding in an otherwise-scoped selector list', () => {
     expect(
       strays(':where(.library, .login) a, button { color: red; }'),
@@ -320,6 +338,7 @@ describe('the 16px iOS zoom floor, against every stylesheet index.css imports', 
       './shell.css',
       './library.css',
       './admin.css',
+      './settings.css',
       './reader.css',
     ])
     for (const path of CASCADE_ORDER) {

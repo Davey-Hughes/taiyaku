@@ -118,13 +118,19 @@ const HOOKS: Record<string, string[]> = {
     'language',
     'match-kind',
   ],
-  // The password form and its "Password set." are drawn as the page is, so
+  // The account page's "Password set." is drawn as the page is, and its
+  // lists of grants, sessions and keys as the settings groups they are, so
   // no rule names them.
-  './AccountPage.test.tsx': ['done', 'reset'],
+  './AccountPage.test.tsx': ['done', 'grant-list', 'key-list', 'session-list'],
   './App.browser.test.tsx': ['reader-turn'],
   './App.test.tsx': ['page-area'],
+  // The account page's password form, which this file submits; drawn as
+  // the page is, so no rule names it.
+  './Config.browser.test.tsx': ['reset'],
   './Labeller.test.tsx': ['region-overlay'],
-  './LibraryPage.test.tsx': ['dir-table'],
+  // `rename-library` is the form holding the name's box in the title's
+  // place; the box is drawn by its own class, and the form by none.
+  './LibraryPage.test.tsx': ['dir-table', 'rename-library'],
   './MetadataEditor.test.tsx': [
     'archive',
     'asking',
@@ -178,15 +184,13 @@ const HOOKS: Record<string, string[]> = {
  * else draws — and what that is.
  */
 const ELSEWHERE: Record<string, string> = {
-  credentials:
-    "`.account-section`'s rules, as one of the account page's sections",
   labeller: 'its own `style` prop',
   'labeller-controls': 'its own `style` prop',
   'labeller-legend-row': "`.labeller-legend`'s rules, as that element's child",
   matched: "admin.css's `.preview` table rules; a comment beside them names it",
-  'removal-derive':
-    "admin.css's `summary` and `.derived` rules, whose comments name it",
   'save-derive': "admin.css's `summary` rule, whose comment names it",
+  size: "Backup's, `.settings-row-help`'s rules, as part of a row's help; `MetadataEditor`'s, nothing but the archive's row it sits in",
+  when: "`.settings-row-help`'s rules, as part of a row's help",
 }
 
 /**
@@ -211,7 +215,6 @@ const UNREAD = [
   'preview-body',
   'save-mismatch',
   'scan-notice',
-  'scanning',
   'series-count',
   'stamp-failure',
   'unwritten',

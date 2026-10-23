@@ -54,11 +54,36 @@ async fn get(tmp: &Fixture, dist: &Path, path: &str) -> (StatusCode, HeaderMap, 
 
 /// A reload on any of the app's own routes gets `index.html`, and the app's
 /// router takes it from there.
+///
+/// A library's page and an account's are each at its name, escaped where an
+/// address needs it, so a path may hold any escape: `ServeDir` decodes one
+/// before looking for a file, and `%2F` then reads as a separator, `%25` as a
+/// bare `%`. Each still names no file, so each still gets the app.
 #[tokio::test]
 async fn a_deep_link_answers_the_app() {
     let tmp = Fixture::new("web-deep-link");
     let dist = built_app(&tmp);
-    for path in ["/", "/read/some-work", "/series/3", "/config/users"] {
+    for path in [
+        "/",
+        "/read/some-work",
+        "/series/3",
+        "/config/users",
+        "/config/new-library",
+        "/config/libraries/Light%20novels",
+        "/config/libraries/Manga%2FChapters/dirs/101",
+        "/config/libraries/What%3F",
+        "/config/libraries/No.%20%231",
+        "/config/libraries/100%25",
+        "/config/libraries/Text%20holding%20%252F",
+        "/config/libraries/Tom%20%26%20Jerry",
+        "/config/libraries/Tom%20&%20Jerry",
+        "/config/libraries/%C3%89mile/dirs/107",
+        "/config/libraries/2",
+        "/config/new-account",
+        "/config/users/Sam%20Jones",
+        "/config/users/sam%2Fkim",
+        "/config/users/new",
+    ] {
         let (status, headers, body) = get(&tmp, &dist, path).await;
         assert_eq!(status, StatusCode::OK, "{path}");
         assert_eq!(body, INDEX, "{path}");

@@ -269,7 +269,13 @@ export function Account(props: AccountProps) {
           {failure}
         </p>
       )}
-      {note === null ? null : <p className={look.note}>{note}</p>}
+      {/* Drawn with the screen, empty, so that the note is read when it
+          lands in it: a live region drawn together with what it says is
+          often not read at all. A bare `<div>`, so the note's margins
+          collapse through it and an empty one takes no room. */}
+      <div aria-live="polite">
+        {note === null ? null : <p className={look.note}>{note}</p>}
+      </div>
 
       <section className={look.section}>
         <SectionHeading className={look.heading}>Password</SectionHeading>

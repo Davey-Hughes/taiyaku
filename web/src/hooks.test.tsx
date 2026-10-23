@@ -5,6 +5,7 @@ import {
   useDecodeQueue,
   useDrawn,
   useDrawnSrcs,
+  useDrawnWait,
   useFlushOnHide,
   useLatest,
   usePrefsMap,
@@ -12,6 +13,7 @@ import {
   useReadingClock,
   useScrollToCurrent,
   useWindowWidth,
+  WAIT_DRAWN_AFTER_MS,
 } from './hooks'
 import type { Mode } from './pairing'
 import type { ReaderModule } from './module'
@@ -123,6 +125,49 @@ describe('useDrawn', () => {
       expect(held?.current).toBe(true)
       rerender(<div />)
       expect(held?.current).toBe(false)
+    }
+  })
+})
+
+describe('useDrawnWait', () => {
+  const waits = () =>
+    probe(({ waiting }: { waiting: boolean }) => useDrawnWait(waiting), {
+      waiting: false,
+    })
+
+  it('draws a wait once it has held for its delay, and not from the render it ends', () => {
+    vi.useFakeTimers()
+    try {
+      const p = waits()
+      p.render({ waiting: true })
+      act(() => vi.advanceTimersByTime(WAIT_DRAWN_AFTER_MS - 1))
+      expect(p.seen).not.toContain(true)
+      act(() => vi.advanceTimersByTime(1))
+      expect(p.last()).toBe(true)
+
+      const ended = p.seen.length
+      p.render({ waiting: false })
+      expect(p.seen.slice(ended)).not.toContain(true)
+      expect(p.seen.length).toBeGreaterThan(ended)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('draws no wait that ends before its delay, and counts the next one from its own start', () => {
+    vi.useFakeTimers()
+    try {
+      const p = waits()
+      p.render({ waiting: true })
+      act(() => vi.advanceTimersByTime(WAIT_DRAWN_AFTER_MS - 1))
+      p.render({ waiting: false })
+      p.render({ waiting: true })
+      act(() => vi.advanceTimersByTime(WAIT_DRAWN_AFTER_MS - 1))
+      expect(p.seen).not.toContain(true)
+      act(() => vi.advanceTimersByTime(1))
+      expect(p.last()).toBe(true)
+    } finally {
+      vi.useRealTimers()
     }
   })
 })

@@ -2,7 +2,16 @@ import { act } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import * as config from './config'
 import { RemoveRoot } from './RemoveRoot'
+import { deferred, flush } from './testing/async'
+import { holdOf } from './testing/held'
 import { mount, rerender } from './testing/mount'
+import {
+  holdTheClock,
+  pass,
+  sentenceDrawn,
+  WAIT_DRAWN_AFTER_MS,
+  watchDrawn,
+} from './testing/wait'
 
 vi.mock('./config', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./config')>()),
@@ -172,7 +181,7 @@ describe('RemoveRoot', () => {
     expect(
       host.querySelector('.last-dir + .left-with-no-library'),
     ).not.toBeNull()
-    expect(press(host, 'Remove /srv/manga').disabled).toBe(false)
+    expect(holdOf(press(host, 'Remove /srv/manga'))).toBe('free')
     expect(host.querySelector('[role="alert"]')).toBeNull()
   })
 
@@ -317,7 +326,7 @@ describe('RemoveRoot', () => {
     expect(host.querySelector('[role="alert"]')?.textContent).toContain(
       'deriving after the removal failed',
     )
-    expect(press(host, 'Remove /srv/manga').disabled).toBe(false)
+    expect(holdOf(press(host, 'Remove /srv/manga'))).toBe('free')
   })
 
   it('holds no failure while the next removal is in flight', async () => {
@@ -480,5 +489,124 @@ describe('RemoveRoot', () => {
       'Remove /srv/manga',
     )
     expect(press(host, 'Cancel').classList.contains('confirm')).toBe(false)
+  })
+
+  describe('its waits, drawn only once each has lasted', () => {
+    const WORKING = 'Working out what this would remove…'
+    const asking = async () => {
+      const cost = deferred<config.RemovalAnswer>()
+      vi.mocked(config.removalCost).mockReturnValue(cost.promise)
+      let host: HTMLElement | undefined
+      await act(async () => {
+        host = mount(
+          <RemoveRoot root={root} onCancel={vi.fn()} onRemoved={vi.fn()} />,
+        )
+        await Promise.resolve()
+      })
+      if (!host) throw new Error('nothing mounted')
+      return { host, cost }
+    }
+
+    it('keeps the dry run’s sentence unseen for counts answered inside the wait’s delay', async () => {
+      holdTheClock()
+      const { host, cost } = await asking()
+      const drawn = watchDrawn(() => sentenceDrawn(host, WORKING))
+      pass(WAIT_DRAWN_AFTER_MS - 1)
+      await flush(() => cost.resolve(answer()))
+      pass(WAIT_DRAWN_AFTER_MS)
+      drawn.stop()
+      expect(host.querySelector('.counts')).not.toBeNull()
+      expect([...drawn.seen]).toEqual(['unseen', 'none'])
+    })
+
+    it('draws the dry run’s sentence from the wait’s delay, in the room it kept', async () => {
+      holdTheClock()
+      const { host } = await asking()
+      pass(WAIT_DRAWN_AFTER_MS - 1)
+      expect(sentenceDrawn(host, WORKING)).toBe('unseen')
+      pass(1)
+      expect(sentenceDrawn(host, WORKING)).toBe('drawn')
+    })
+
+    /** Remove's words, and whether it and Cancel are drawn held. */
+    const state = (host: HTMLElement) => {
+      const confirm = host.querySelector(
+        '.remove-root .confirm',
+      ) as HTMLButtonElement
+      return [
+        confirm.textContent,
+        holdOf(confirm),
+        holdOf(press(host, 'Cancel')),
+      ]
+    }
+
+    it('draws no wait and no held button for a removal refused inside the wait’s delay', async () => {
+      holdTheClock()
+      const sent = deferred<config.RemovalAnswer>()
+      vi.mocked(config.removeRoot).mockReturnValue(sent.promise)
+      const host = await settle()
+      const drawn = watchDrawn(() => JSON.stringify(state(host)))
+      await act(async () => {
+        press(host, 'Remove /srv/manga').click()
+        await Promise.resolve()
+      })
+      pass(WAIT_DRAWN_AFTER_MS - 1)
+      await flush(() =>
+        sent.reject(new Error('/api/library/roots/3: 500 the disk is full')),
+      )
+      pass(WAIT_DRAWN_AFTER_MS)
+      drawn.stop()
+      expect(host.querySelector('[role="alert"]')?.textContent).toContain(
+        'the disk is full',
+      )
+      expect([...drawn.seen]).toEqual([
+        JSON.stringify(['Remove /srv/manga', 'free', 'free']),
+      ])
+    })
+
+    it('draws Removing… and holds Remove and Cancel from the wait’s delay', async () => {
+      holdTheClock()
+      vi.mocked(config.removeRoot).mockReturnValue(new Promise(() => {}))
+      const host = await settle()
+      await act(async () => {
+        press(host, 'Remove /srv/manga').click()
+        await Promise.resolve()
+      })
+      pass(WAIT_DRAWN_AFTER_MS - 1)
+      expect(state(host)).toEqual(['Remove /srv/manga', 'free', 'free'])
+      pass(1)
+      expect(state(host)).toEqual(['Removing…', 'held', 'held'])
+    })
+
+    it('holds Remove and Cancel from the send, before either is drawn held, and once they are', async () => {
+      holdTheClock()
+      vi.mocked(config.removeRoot).mockReturnValue(new Promise(() => {}))
+      const onCancel = vi.fn()
+      let host: HTMLElement | undefined
+      await act(async () => {
+        host = mount(
+          <RemoveRoot root={root} onCancel={onCancel} onRemoved={vi.fn()} />,
+        )
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+      if (!host) throw new Error('nothing mounted')
+      const mounted = host
+      const confirm = press(mounted, 'Remove /srv/manga')
+      await flush(() => confirm.click())
+      pass(WAIT_DRAWN_AFTER_MS - 1)
+      expect(state(mounted)).toEqual(['Remove /srv/manga', 'free', 'free'])
+      await flush(() => confirm.click())
+      expect(config.removeRoot).toHaveBeenCalledTimes(1)
+      await flush(() => press(mounted, 'Cancel').click())
+      expect(onCancel).not.toHaveBeenCalled()
+
+      pass(1)
+      expect(state(mounted)).toEqual(['Removing…', 'held', 'held'])
+      await flush(() => press(mounted, 'Removing…').click())
+      expect(config.removeRoot).toHaveBeenCalledTimes(1)
+      await flush(() => press(mounted, 'Cancel').click())
+      expect(onCancel).not.toHaveBeenCalled()
+    })
   })
 })

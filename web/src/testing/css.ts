@@ -1,10 +1,10 @@
 /**
  * Shared parsing for the tests that read a stylesheet's own text rather than
- * render it. Eleven call it: `../index.css.test.ts`, `../theme.test.ts`,
+ * render it. Twelve call it: `../index.css.test.ts`, `../theme.test.ts`,
  * `../classNames.test.ts`, `../builtStylesheet.test.ts`, and `../styles/`'s `base.css.test.ts`,
  * `admin-rules.css.test.ts`, `admin-config.css.test.ts`,
  * `admin-proposals.css.test.ts`, `admin-account.css.test.ts`,
- * `reader.css.test.ts` and `tokens.css.test.ts`. **The count is stated because it is what decides
+ * `reader.css.test.ts`, `settings.css.test.ts` and `tokens.css.test.ts`. **The count is stated because it is what decides
  * whether this module's shape can change**: an open item quoted "three" from
  * an earlier version of this sentence and was wrong by half.
  *

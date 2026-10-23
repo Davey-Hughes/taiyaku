@@ -409,6 +409,37 @@ describe('ScanReport', () => {
     }
   })
 
+  it('names what each directory field counts: directories walked, and members whose directory was removed mid-derive', () => {
+    // Each label says what its field counts. `dirs` is every directory the
+    // walk recorded, and `root_removed_mid_derive` counts members, not
+    // directories: `write_roots` adds one for each member whose directory
+    // was removed while the derive ran. Each label is read from its own
+    // field's row, so a label cannot pass beside another field's count;
+    // compared as one object so every wrong label is named at once.
+    const host = mount(<ScanReport outcome={finished()} />)
+    const fields = [
+      'unreadable_dirs',
+      'excluded_dirs',
+      'dirs',
+      'root',
+      'root_removed_mid_derive',
+    ]
+    const labels = Object.fromEntries(
+      fields.map((field) => [
+        field,
+        host.querySelector(`[data-field="${field}"] > dt`)?.textContent,
+      ]),
+    )
+
+    expect(labels).toEqual({
+      unreadable_dirs: 'Directories it could not read',
+      excluded_dirs: 'Directories excluded',
+      dirs: 'Directories walked',
+      root: 'Directory',
+      root_removed_mid_derive: 'Members whose directory was removed mid-derive',
+    })
+  })
+
   it('marks a zero count and leaves a non-zero count unmarked', () => {
     // `finished()`'s default walk carries both: `added: 3` and `updated: 0`.
     // A fixture where every count is zero would prove only that the

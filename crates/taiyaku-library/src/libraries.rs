@@ -81,6 +81,24 @@ pub(crate) fn trim_name(name: &str) -> &str {
     name.trim()
 }
 
+/// `name` stripped by [`trim_name`], as a library would store it, or why no
+/// library can be called that: it is empty, or [`crate::has_no_address`].
+///
+/// **Asked of the name as it would be stored**, so ` . ` is refused: it is
+/// stored as `.`. Every path that makes or renames a library asks this before
+/// it writes, so each refuses the same names as the caller's mistake rather
+/// than as a fault inside the write.
+pub(crate) fn usable_name(name: &str) -> Result<&str, &'static str> {
+    let name = trim_name(name);
+    if name.is_empty() {
+        Err("a library needs a name")
+    } else if crate::has_no_address(name) {
+        Err(crate::NO_ADDRESS)
+    } else {
+        Ok(name)
+    }
+}
+
 /// The library called `name`, if there is one: the library whose name is
 /// `name` stripped by [`trim_name`], in any ASCII case.
 ///
@@ -106,12 +124,9 @@ pub fn id_of(conn: &Connection, name: &str) -> Result<Option<i64>, String> {
 ///
 /// # Errors
 ///
-/// Returns an error if `name` is empty once trimmed, or taken.
+/// Returns an error if [`usable_name`] refuses `name`, or if it is taken.
 pub(crate) fn create(conn: &Connection, name: &str) -> Result<i64, String> {
-    let name = trim_name(name);
-    if name.is_empty() {
-        return Err("a library needs a name".to_string());
-    }
+    let name = usable_name(name).map_err(str::to_string)?;
     conn.execute("INSERT INTO library (name) VALUES (?1)", [name])
         .map_err(|e| format!("creating the library `{name}`: {e}"))?;
     Ok(conn.last_insert_rowid())
@@ -133,8 +148,8 @@ pub fn name_of(conn: &Connection, id: i64) -> Result<Option<String>, String> {
 pub enum RenameError {
     /// No library has this id.
     Missing(i64),
-    /// The caller's own mistake: no name once trimmed, or one another library
-    /// holds.
+    /// The caller's own mistake: a name [`usable_name`] refuses, or one
+    /// another library holds.
     Unusable(String),
     /// A store fault.
     Failed(String),
@@ -153,10 +168,7 @@ pub enum RenameError {
 ///
 /// See [`RenameError`].
 pub fn rename(conn: &Connection, id: i64, name: &str) -> Result<String, RenameError> {
-    let name = trim_name(name);
-    if name.is_empty() {
-        return Err(RenameError::Unusable("a library needs a name".to_string()));
-    }
+    let name = usable_name(name).map_err(|why| RenameError::Unusable(why.to_string()))?;
     match conn.execute(
         "UPDATE library SET name = ?2 WHERE id = ?1",
         rusqlite::params![id, name],

@@ -199,6 +199,91 @@ fn a_rename_is_refused_as_the_callers_mistake_or_as_no_such_library() {
     assert_eq!(rename(&conn, 999, "Other"), Err(RenameError::Missing(999)));
 }
 
+/// Every library's name, by name.
+fn names(conn: &Connection) -> Vec<String> {
+    list(conn)
+        .expect("lists")
+        .into_iter()
+        .map(|l| l.name)
+        .collect()
+}
+
+/// [`crate::has_no_address`]: no page address holds `.`. It is asked of the
+/// name as it would be stored, so white space around the dot is no way past.
+#[test]
+fn a_library_is_not_made_called_one_dot() {
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    for name in [".", " .\t"] {
+        assert_eq!(
+            create(&conn, name),
+            Err(crate::NO_ADDRESS.to_string()),
+            "{name:?}"
+        );
+    }
+    assert_eq!(names(&conn), Vec::<String>::new(), "nothing was made");
+}
+
+#[test]
+fn a_library_is_not_made_called_two_dots() {
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    for name in ["..", "\u{3000}.. "] {
+        assert_eq!(
+            create(&conn, name),
+            Err(crate::NO_ADDRESS.to_string()),
+            "{name:?}"
+        );
+    }
+    assert_eq!(names(&conn), Vec::<String>::new(), "nothing was made");
+}
+
+#[test]
+fn a_library_is_not_renamed_to_one_dot() {
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let id = create(&conn, "Manga").expect("creates");
+    for name in [".", " . "] {
+        assert_eq!(
+            rename(&conn, id, name),
+            Err(RenameError::Unusable(crate::NO_ADDRESS.to_string())),
+            "{name:?}"
+        );
+    }
+    assert_eq!(names(&conn), ["Manga"], "a refused rename wrote nothing");
+}
+
+#[test]
+fn a_library_is_not_renamed_to_two_dots() {
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let id = create(&conn, "Manga").expect("creates");
+    for name in ["..", "\t..\n"] {
+        assert_eq!(
+            rename(&conn, id, name),
+            Err(RenameError::Unusable(crate::NO_ADDRESS.to_string())),
+            "{name:?}"
+        );
+    }
+    assert_eq!(names(&conn), ["Manga"], "a refused rename wrote nothing");
+}
+
+/// Only `.` and `..`: a name holding dots beside anything else is an ordinary
+/// segment of an address.
+#[test]
+fn a_library_is_made_and_renamed_with_any_other_name_of_dots() {
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    for name in ["...", ".a", "a.b", "..a"] {
+        create(&conn, name).expect(name);
+    }
+    let id = create(&conn, "Manga").expect("creates");
+    for name in ["....", "a.", ". ."] {
+        assert_eq!(rename(&conn, id, name), Ok(name.to_string()));
+    }
+    assert_eq!(names(&conn), [". .", "...", "..a", ".a", "a.b"]);
+}
+
 /// Only the UNIQUE constraint is the caller's mistake: any other failure of
 /// the write is the store's, and is reported in the store's words.
 #[test]

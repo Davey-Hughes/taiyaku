@@ -1,7 +1,23 @@
-import { describe, expect, it } from 'vitest'
+import { act } from 'react'
+import { MemoryRouter } from 'react-router'
+import { describe, expect, it, onTestFinished, vi } from 'vitest'
+import { cdp } from 'vitest/browser'
+import { AccountPage } from './AccountPage'
+import { HeldButton } from './HeldButton'
+import { WAIT_DRAWN_AFTER_MS } from './hooks'
 // **Required**: the rules under test reach the app through `index.css`.
 import './index.css'
+import { holdOf } from './testing/held'
+import { typeInto } from './testing/input'
 import { mount } from './testing/mount'
+import * as usersApi from './users'
+
+vi.mock('./users', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./users')>()),
+  patchUser: vi.fn(),
+  removalCost: vi.fn(),
+  removeUser: vi.fn(),
+}))
 
 /**
  * O201: a held button is drawn unlike a live one, by `base.css`'s own rule,
@@ -57,6 +73,300 @@ describe('a held button', () => {
       expect(style(held).backgroundColor).toBe(page)
       expect(style(held).backgroundColor).not.toBe(style(live).backgroundColor)
       expect(style(held).color).toBe(style(live).color)
+    }
+  })
+})
+
+/**
+ * A control held by `aria-disabled`, so that it keeps focus, is drawn as one
+ * held by `disabled`: each kind beside its `disabled` twin, on the page, in a
+ * removal's block and in Move…'s dialog, whose rules give a held button the
+ * dialog's own ground. Under forced colours the browser draws a disabled
+ * control's words and edge in `GrayText`, which a held one has from
+ * `base.css`, a confirm's class colour notwithstanding.
+ */
+describe('a control held by aria-disabled', () => {
+  const LOOK = [
+    'border-top-style',
+    'border-top-color',
+    'color',
+    'background-color',
+    'opacity',
+    'cursor',
+  ]
+  const look = (el: Element) => {
+    const style = getComputedStyle(el)
+    return Object.fromEntries(LOOK.map((p) => [p, style.getPropertyValue(p)]))
+  }
+
+  async function pairs() {
+    const host = await act(async () =>
+      mount(
+        <div className="library">
+          <div data-pair="button">
+            <button type="button" disabled>
+              Scan library
+            </button>
+            <HeldButton type="button" held>
+              Scan library
+            </HeldButton>
+          </div>
+          <div className="remove-library" data-pair="removal confirm">
+            <button type="button" className="confirm keeps-wait-width" disabled>
+              Remove Manga
+            </button>
+            <HeldButton type="button" className="confirm keeps-wait-width" held>
+              Remove Manga
+            </HeldButton>
+          </div>
+          <dialog open className="move-root settings-dialog">
+            <div data-pair="dialog select">
+              <select defaultValue="1" disabled>
+                <option value="1">Manga</option>
+              </select>
+              <select defaultValue="1" aria-disabled>
+                <option value="1">Manga</option>
+              </select>
+            </div>
+            <div data-pair="dialog text box">
+              <input type="text" defaultValue="Comics" disabled />
+              <input type="text" defaultValue="Comics" readOnly aria-disabled />
+            </div>
+            <div data-pair="dialog button">
+              <button type="button" disabled>
+                Cancel
+              </button>
+              <HeldButton type="button" held>
+                Cancel
+              </HeldButton>
+            </div>
+            <div className="settings-actions" data-pair="dialog confirm">
+              <button
+                type="button"
+                className="confirm keeps-wait-width"
+                disabled
+              >
+                Move
+              </button>
+              <HeldButton
+                type="button"
+                className="confirm keeps-wait-width"
+                held
+              >
+                Move
+              </HeldButton>
+            </div>
+          </dialog>
+        </div>,
+      ),
+    )
+    return [...host.querySelectorAll<HTMLElement>('[data-pair]')].map(
+      (pair) => {
+        const [disabled, held] = [...pair.children]
+        return { kind: pair.dataset.pair as string, disabled, held }
+      },
+    )
+  }
+
+  const expectDrawnAlike = async (when: string) => {
+    const all = await pairs()
+    expect(all).toHaveLength(6)
+    for (const { kind, disabled, held } of all) {
+      expect(holdOf(disabled), kind).toBe('disabled')
+      expect(holdOf(held), kind).toBe('held')
+      expect.soft(look(held), `${kind}, ${when}`).toEqual(look(disabled))
+    }
+    return all
+  }
+
+  /**
+   * Every control a write holds on an account's page, drawn held on the page
+   * itself: a removal is out, with the question that lifts the limit open
+   * and a password typed. Each is paired with a copy of itself put beside
+   * it and held by `disabled`, so each kind is read in its own place.
+   */
+  async function accountPairs() {
+    const davey: usersApi.User = {
+      id: 1,
+      name: 'davey',
+      role: 'admin',
+      can_download: true,
+      can_stream: true,
+      can_stamp: true,
+      can_log_in: true,
+      sessions: [],
+      keys: [],
+      every_library: true,
+      libraries: [],
+    }
+    const sam: usersApi.User = {
+      ...davey,
+      id: 2,
+      name: 'sam',
+      role: 'user',
+      sessions: [
+        {
+          id: 'aaa',
+          created: '2026-09-01 10:00:00',
+          last_seen: '2026-09-06 09:00:00',
+          user_agent: 'Firefox',
+          ip: '10.0.0.2',
+          current: false,
+        },
+      ],
+      keys: [
+        {
+          id: 9,
+          name: 'the tablet',
+          created: '2026-08-01 10:00:00',
+          last_used: null,
+        },
+      ],
+      every_library: false,
+      libraries: [],
+    }
+    vi.mocked(usersApi.removalCost).mockResolvedValue({
+      removed: {
+        name: 'sam',
+        positions: 0,
+        notes: 0,
+        sessions: 1,
+        keys: 1,
+        grants: 0,
+      },
+      dry_run: true,
+    })
+    vi.mocked(usersApi.removeUser).mockReturnValue(new Promise(() => {}))
+    const host = await act(async () =>
+      mount(
+        <div className="library">
+          <MemoryRouter>
+            <AccountPage
+              user={sam}
+              users={[davey, sam]}
+              libraries={[
+                { id: 70, name: 'Manga', works: 0, books: 0, dirs: [] },
+              ]}
+              actingAs={1}
+              onChanged={() => undefined}
+            />
+          </MemoryRouter>
+        </div>,
+      ),
+    )
+    const at = <T extends HTMLElement>(selector: string) =>
+      host.querySelector(selector) as T
+    await act(async () => {
+      at('input[value="every"]').click()
+    })
+    await typeInto(at<HTMLInputElement>('input[name="password"]'), 'hunter22')
+    await act(async () => {
+      at('button[name="remove"]').click()
+    })
+    await act(async () => {
+      at('button[name="confirm-remove"]').click()
+      await new Promise((r) => setTimeout(r, WAIT_DRAWN_AFTER_MS + 100))
+    })
+    ;(document.activeElement as HTMLElement | null)?.blur()
+    const pairs = [
+      'select[name="role"]',
+      'input[name="password"]',
+      'button[name="reset"]',
+      'button[name="lift-limit"]',
+      'button[name="keep-limit"]',
+      'button[name="revoke-session-aaa"]',
+      'button[name="revoke-key-9"]',
+      'button[name="remove"]',
+      'button[name="confirm-remove"]',
+      'button[name="cancel-remove"]',
+    ].map((kind) => {
+      const held = at(kind)
+      const disabled = held.cloneNode(true) as HTMLButtonElement
+      disabled.removeAttribute('aria-disabled')
+      disabled.removeAttribute('readonly')
+      disabled.disabled = true
+      held.after(disabled)
+      return { kind, disabled, held }
+    })
+    onTestFinished(() => {
+      for (const { disabled } of pairs) disabled.remove()
+    })
+    return pairs
+  }
+
+  const expectAccountDrawnAlike = async (when: string) => {
+    const all = await accountPairs()
+    for (const { kind, disabled, held } of all) {
+      expect(holdOf(disabled), kind).toBe('disabled')
+      expect(holdOf(held), kind).toBe('held')
+      expect.soft(look(held), `${kind}, ${when}`).toEqual(look(disabled))
+    }
+    return all
+  }
+
+  for (const theme of ['ink', 'paper']) {
+    it(`is drawn as one held by disabled on an account’s page, in ${theme}`, async () => {
+      document.documentElement.setAttribute('data-theme', theme)
+      onTestFinished(() =>
+        document.documentElement.removeAttribute('data-theme'),
+      )
+      await expectAccountDrawnAlike(theme)
+    })
+  }
+
+  for (const theme of ['ink', 'paper']) {
+    it(`is drawn as one held by disabled, in ${theme}`, async () => {
+      document.documentElement.setAttribute('data-theme', theme)
+      onTestFinished(() =>
+        document.documentElement.removeAttribute('data-theme'),
+      )
+      await expectDrawnAlike(theme)
+    })
+  }
+
+  // Set over the DevTools session, as a system set to them has the browser
+  // draw, and cleared after: the setting is the page's, not this frame's.
+  it('is drawn as one held by disabled under forced colours, its words and edge in GrayText', async () => {
+    const force = (value: string) =>
+      cdp().send('Emulation.setEmulatedMedia', {
+        features: [{ name: 'forced-colors', value }],
+      })
+    onTestFinished(async () => {
+      await force('')
+    })
+    await force('active')
+    // THE STATE THIS TEST NAMES: this page is told the system forces colours.
+    expect(matchMedia('(forced-colors: active)').matches).toBe(true)
+    const all = await expectDrawnAlike('under forced colours')
+    const probe = document.createElement('div')
+    probe.style.color = 'GrayText'
+    document.body.append(probe)
+    const gray = getComputedStyle(probe).color
+    probe.remove()
+    for (const { kind, held } of all) {
+      expect.soft(getComputedStyle(held).color, kind).toBe(gray)
+    }
+  })
+
+  it('is drawn as one held by disabled on an account’s page under forced colours, its words and edge in GrayText', async () => {
+    const force = (value: string) =>
+      cdp().send('Emulation.setEmulatedMedia', {
+        features: [{ name: 'forced-colors', value }],
+      })
+    onTestFinished(async () => {
+      await force('')
+    })
+    await force('active')
+    expect(matchMedia('(forced-colors: active)').matches).toBe(true)
+    const all = await expectAccountDrawnAlike('under forced colours')
+    const probe = document.createElement('div')
+    probe.style.color = 'GrayText'
+    document.body.append(probe)
+    const gray = getComputedStyle(probe).color
+    probe.remove()
+    for (const { kind, held } of all) {
+      const { color, borderTopColor } = getComputedStyle(held)
+      expect.soft([color, borderTopColor], kind).toEqual([gray, gray])
     }
   })
 })

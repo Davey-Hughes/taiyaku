@@ -14,7 +14,6 @@
  * is `RootRow`'s own to see: the library's scan holds each directory's slot.
  */
 import { type ReactNode, useCallback, useEffect, useState } from 'react'
-import { Link } from 'react-router'
 import {
   POLL_MISSES_ALLOWED,
   type Probe,
@@ -22,6 +21,7 @@ import {
   type Root,
   SCAN_POLL_MS,
 } from './config'
+import { dirPath, libraryPath } from './configAddress'
 import { type Library, libraryScanStatus, type MoveAnswer } from './libraries'
 import { sentenceOf } from './message'
 import { RootRow } from './RootRow'
@@ -43,6 +43,8 @@ export interface DirPageProps {
   onMoved: (answer: MoveAnswer) => void
   /** A write sent from this page was refused once it had gone. See `RootRow`'s. */
   onLateRefusal?: (sentence: string) => void
+  /** The person opened this from the library's Directories table: the heading takes focus. */
+  arrived?: boolean
 }
 
 /**
@@ -119,19 +121,27 @@ export function DirPage({
   onRemoved,
   onMoved,
   onLateRefusal,
+  arrived,
 }: DirPageProps) {
   const { other: held, failure, forget } = useOtherScan(library.id, root.id)
   return (
     <div className="dir-page">
-      <p className="back">
-        <Link to={`/config/libraries/${library.id}`}>‹ {library.name}</Link>
-      </p>
-      {notices}
-      {failure !== undefined && <p role="alert">{failure}</p>}
       <RootRow
         // By path, for the reason the library's table keys its rows so.
         key={root.path}
+        back={{
+          to: libraryPath(library.name),
+          label: library.name,
+          closes: dirPath(library.name, root.id),
+        }}
+        notices={
+          <>
+            {notices}
+            {failure !== undefined && <p role="alert">{failure}</p>}
+          </>
+        }
         root={root}
+        arrived={arrived}
         probe={probe}
         lastOf={library.dirs.length === 1 ? library.name : undefined}
         held={held}

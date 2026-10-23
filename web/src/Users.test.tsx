@@ -9,16 +9,27 @@ import {
 } from 'react-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Me } from './api'
+import { useFitsPair } from './fitsPair'
 import { GateContext } from './gate'
 import * as librariesApi from './libraries'
 import { deferred, flush } from './testing/async'
-import { fields } from './testing/fields'
 import { press } from './testing/input'
 import { mount } from './testing/mount'
+import { expectRowsWired, helpOf, row, section } from './testing/settingsRows'
 import { cellValue } from './testing/table'
+import {
+  holdTheClock,
+  pass,
+  WAIT_DRAWN_AFTER_MS,
+  watchDrawn,
+} from './testing/wait'
 import * as usersApi from './users'
 import { Users } from './Users'
 
+// Whether the table and an open page fit side by side is the width's, which
+// jsdom does not lay out. Narrow by default, as the real hook answers in
+// jsdom, which has no `ResizeObserver`; a test that draws the pair says so.
+vi.mock('./fitsPair', () => ({ useFitsPair: vi.fn(() => false) }))
 vi.mock('./libraries', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./libraries')>()),
   listLibraries: vi.fn(),
@@ -35,7 +46,8 @@ vi.mock('./users', async (importOriginal) => ({
 }))
 
 const TABLE = '/config/users'
-const NEW = '/config/users/new'
+/** The make page, outside the names' space beneath the table. */
+const NEW = '/config/new-account'
 
 const user = (over: Partial<usersApi.User> = {}): usersApi.User => ({
   id: 1,
@@ -82,12 +94,16 @@ async function at(entry = TABLE, signedInAs: Me = who) {
     return null
   }
   let host: HTMLElement | undefined
+  // One element for both routes, as `Config` gives it, so the screen stays
+  // mounted between the make page and the pages beneath the table.
+  const screen = <Users />
   await act(async () => {
     host = mount(
       <MemoryRouter initialEntries={[entry]}>
         <GateContext value={{ who: signedInAs, signOut: () => undefined }}>
           <Routes>
-            <Route path={`${TABLE}/*`} element={<Users />} />
+            <Route path={`${TABLE}/*`} element={screen} />
+            <Route path={NEW} element={screen} />
             <Route
               path="/config/libraries"
               element={<p className="other-tab" />}
@@ -144,13 +160,24 @@ const rows = (host: HTMLElement) => [
 const names = (host: HTMLElement) =>
   rows(host).map((tr) => tr.querySelector('.row-link')?.textContent)
 
-/** The heading of the account page that is drawn. */
+/** The title of the account page that is drawn. */
 const heading = (host: HTMLElement) =>
-  host.querySelector('.user-row > h2')?.textContent
+  host.querySelector('.account-page .page-title')?.textContent
 
-/** The account page's count of sessions and keys. */
+/** The account page's count of sessions and keys, its section's line. */
 const tally = (host: HTMLElement) =>
-  host.querySelector('.user-row .tally')?.textContent
+  section(host, 'Sessions & keys').querySelector(
+    '.settings-section-description',
+  )?.textContent
+
+/** The account page's Libraries section, which holds the grant editor. */
+const grants = (host: HTMLElement) => section(host, 'Libraries')
+
+/** The titles of the sections drawn, in order. */
+const sectionTitles = (host: HTMLElement) =>
+  [...host.querySelectorAll('.settings-section-title')].map(
+    (title) => title.textContent,
+  )
 
 const session: usersApi.User['sessions'][number] = {
   id: 'aaa',
@@ -173,6 +200,23 @@ async function fill(host: HTMLElement, name: string, value: string) {
   })
 }
 
+/** The make page's Add. */
+const addButton = (host: HTMLElement) =>
+  host.querySelector('form.add-user button[type="submit"]') as HTMLButtonElement
+
+/** Why the name typed would be refused, said as it is typed. */
+const clashNote = (host: HTMLElement) =>
+  host.querySelector<HTMLElement>('form.add-user > [role="status"]')
+
+/** Whether the name box is marked invalid, and what describes it. */
+const boxMarks = (host: HTMLElement) => {
+  const box = host.querySelector('input[name="new-name"]') as HTMLInputElement
+  return [
+    box.getAttribute('aria-invalid'),
+    box.getAttribute('aria-describedby'),
+  ]
+}
+
 async function submitAdd(host: HTMLElement) {
   const form = host.querySelector('form.add-user') as HTMLFormElement
   await act(async () => {
@@ -181,6 +225,9 @@ async function submitAdd(host: HTMLElement) {
     await Promise.resolve()
   })
 }
+
+/** What the page for a name the list does not hold says beneath its title. */
+const NO_SUCH = 'There is no account at this address: it may have been removed.'
 
 const unreadLibraries = () =>
   new Error('/api/library/libraries: 500 {"error":"the store is unavailable"}')
@@ -222,7 +269,9 @@ describe('Users, the table', () => {
     const host = await at()
     const [davey, sam] = rows(host)
     expect(davey?.textContent).not.toContain('locked')
-    expect(sam?.querySelector('td.lead')?.textContent).toBe('sam · locked')
+    expect(sam?.querySelector('td.lead')?.textContent).toBe(
+      'sam\u00a0·\u00a0locked',
+    )
   })
 
   it('draws a table of Name, Role, Libraries and Last seen, each row a link to its account’s page through its name', async () => {
@@ -271,18 +320,46 @@ describe('Users, the table', () => {
       rows(host).map((tr) => [...tr.querySelectorAll('td')].map(cellValue)),
     ).toEqual([
       ['sam', 'user', 'Manga, Comics', '—'],
-      ['davey · this is you', 'admin', 'Every library', '2026-09-06 09:00:00'],
+      [
+        'davey\u00a0·\u00a0this is you',
+        'admin',
+        'Every library',
+        '2026-09-06 09:00:00 UTC',
+      ],
     ])
     // The row's one link is its name, and nothing else in the row is one.
     for (const tr of rows(host)) {
       expect(tr.querySelectorAll('a')).toHaveLength(1)
     }
-    expect(link(host, 'sam').getAttribute('href')).toBe('/config/users/5')
-    expect(link(host, 'davey').getAttribute('href')).toBe('/config/users/1')
+    expect(link(host, 'sam').getAttribute('href')).toBe('/config/users/sam')
+    expect(link(host, 'davey').getAttribute('href')).toBe('/config/users/davey')
 
     await follow(host, 'sam')
-    expect(here()).toBe('/config/users/5')
+    expect(here()).toBe('/config/users/sam')
     expect(heading(host)).toBe('sam')
+  })
+
+  it('draws the table as the whole of an untitled box, under the header Users whose one action is New account', async () => {
+    const host = await at()
+    const screen = host.querySelector('.user-table') as HTMLElement
+    const header = screen.querySelector(':scope > .page-header')
+    expect(header?.querySelector('.page-title')?.textContent).toBe('Users')
+    expect(header?.querySelector('.page-description')?.textContent).toBe(
+      'Who can sign in, what each account may do, and what it sees.',
+    )
+    expect(
+      [...(header?.querySelectorAll('.page-actions a') ?? [])].map((a) => [
+        a.textContent,
+        a.getAttribute('href'),
+      ]),
+    ).toEqual([['New account', NEW]])
+    const sections = screen.querySelectorAll('section.settings-section')
+    expect(sections).toHaveLength(1)
+    expect(sections[0].querySelector('.settings-section-head')).toBeNull()
+    const box = sections[0].querySelector(':scope > .settings-box')
+    expect([...(box?.children ?? [])].map((child) => child.tagName)).toEqual([
+      'TABLE',
+    ])
   })
 
   it('draws the server sentence, not the path and status, for a list that was refused', async () => {
@@ -298,12 +375,14 @@ describe('Users, the table', () => {
   })
 
   it('draws the reason the list could not be read, and no table', async () => {
+    // The server's plain-text 403, as an account demoted while on the page
+    // is answered.
     vi.mocked(usersApi.listUsers).mockRejectedValue(
-      new Error('/api/library/users: 403 an API key is not an administrator'),
+      new Error("/api/library/users: 403 this route is an administrator's"),
     )
     const host = await at()
-    expect(host.querySelector('[role="alert"]')?.textContent).toContain(
-      'an API key is not an administrator',
+    expect(host.querySelector('[role="alert"]')?.textContent).toBe(
+      "this route is an administrator's",
     )
     expect(host.querySelector('.user-table table')).toBeNull()
   })
@@ -317,7 +396,7 @@ describe('Users, the pages', () => {
     const host = await at()
     expect(usersApi.listUsers).toHaveBeenCalledTimes(1)
     await follow(host, 'sam')
-    expect(here()).toBe('/config/users/2')
+    expect(here()).toBe('/config/users/sam')
     expect(usersApi.listUsers).toHaveBeenCalledTimes(2)
     await follow(host, '‹ Users')
     expect(here()).toBe(TABLE)
@@ -331,11 +410,17 @@ describe('Users, the pages', () => {
     expect(usersApi.listUsers).toHaveBeenCalledTimes(5)
   })
 
-  it('says there is no such account, with the way back to the table, for an id the list does not hold', async () => {
-    const host = await at('/config/users/9')
+  it('says there is no such account, with the way back to the table, for a name the list does not hold', async () => {
+    const host = await at('/config/users/kim')
     expect(heading(host)).toBeUndefined()
-    expect(host.querySelector('.missing')?.textContent).toBe('No such account.')
-    expect(link(host, '‹ Users').getAttribute('href')).toBe(TABLE)
+    const page = host
+      .querySelector('.missing')
+      ?.closest<HTMLElement>('.settings-page') as HTMLElement
+    expect(page.querySelector('.page-title')?.textContent).toBe(
+      'No such account',
+    )
+    expect(page.querySelector('.missing')?.textContent).toBe(NO_SUCH)
+    expect(link(page, '‹ Users').getAttribute('href')).toBe(TABLE)
   })
 
   it('goes back to the table once an account is removed, and the table says so', async () => {
@@ -361,7 +446,7 @@ describe('Users, the pages', () => {
       ...removal,
       dry_run: false,
     })
-    const host = await at('/config/users/2')
+    const host = await at('/config/users/sam')
     await press(button(host, 'Remove…'))
     await press(button(host, 'Remove sam'))
     await flush()
@@ -396,7 +481,7 @@ describe('Users, the pages', () => {
       ...removal,
       dry_run: false,
     })
-    const host = await at('/config/users/2')
+    const host = await at('/config/users/sam')
     await press(button(host, 'Remove…'))
     await press(button(host, 'Remove sam'))
     await flush()
@@ -431,7 +516,7 @@ describe('Users, making one', () => {
     await fill(host, 'new-password', 'hunter2')
     await submitAdd(host)
     await flush()
-    expect(here()).toBe('/config/users/2')
+    expect(here()).toBe('/config/users/sam')
     expect(heading(host)).toBe('sam')
   })
 
@@ -455,25 +540,27 @@ describe('Users, making one', () => {
       await submitAdd(host)
       await flush()
       expect(usersApi.listUsers).toHaveBeenCalledTimes(2)
-      expect(here()).toBe('/config/users/2')
+      expect(here()).toBe('/config/users/sam')
       expect(host.querySelector('.missing')).toBeNull()
       expect(heading(host)).toBe('sam')
     },
   )
 
   it('draws the server sentence when a name is already taken', async () => {
-    // C4 §4: no client-side uniqueness check. `user.name` is `UNIQUE` and the
-    // route answers 400 with its own sentence; a second opinion here would be
-    // a race with a store this browser does not own.
+    // The list this page holds does not know `sam`, as when another admin
+    // has just made it: `user.name` is `UNIQUE`, and the route's 400 and its
+    // own sentence are what the page draws.
     vi.mocked(usersApi.addUser).mockRejectedValue(
-      new Error('/api/library/users: 400 an account named sam already exists'),
+      new Error(
+        '/api/library/users: 400 {"error":"an account is already called `sam`"}',
+      ),
     )
     const host = await at(NEW)
     await fill(host, 'new-name', 'sam')
     await fill(host, 'new-password', 'hunter2')
     await submitAdd(host)
     expect(host.querySelector('[role="alert"]')?.textContent).toContain(
-      'already exists',
+      'is already called',
     )
   })
 
@@ -484,28 +571,64 @@ describe('Users, making one', () => {
     const read = deferred<{ users: usersApi.User[] }>()
     vi.mocked(usersApi.listUsers).mockReturnValueOnce(read.promise)
     vi.mocked(usersApi.addUser).mockRejectedValue(
-      new Error('/api/library/users: 400 an account named sam already exists'),
+      new Error(
+        '/api/library/users: 400 {"error":"an account is already called `sam`"}',
+      ),
     )
     const host = await at(NEW)
     await fill(host, 'new-name', 'sam')
     await fill(host, 'new-password', 'hunter2')
     await submitAdd(host)
     expect(host.querySelector('[role="alert"]')?.textContent).toContain(
-      'already exists',
+      'is already called',
     )
 
     await flush(() => read.resolve({ users: [user()] }))
 
     expect(usersApi.listUsers).toHaveBeenCalledTimes(1)
     expect(host.querySelector('[role="alert"]')?.textContent).toContain(
-      'already exists',
+      'is already called',
     )
+  })
+
+  it('says a taken name once when the list read after a refused add learns of it, and says the clash once an edit takes the refusal away', async () => {
+    const read = deferred<{ users: usersApi.User[] }>()
+    vi.mocked(usersApi.listUsers).mockReturnValueOnce(read.promise)
+    vi.mocked(usersApi.addUser).mockRejectedValue(
+      new Error(
+        '/api/library/users: 400 {"error":"an account is already called `sam`"}',
+      ),
+    )
+    const host = await at(NEW)
+    await fill(host, 'new-name', 'sam')
+    await fill(host, 'new-password', 'hunter2')
+    await submitAdd(host)
+    await flush(() =>
+      read.resolve({ users: [user(), user({ id: 2, name: 'sam' })] }),
+    )
+    const said = () =>
+      [
+        ...host.querySelectorAll(
+          'form.add-user > [role="alert"], form.add-user > [role="status"]',
+        ),
+      ]
+        .filter((one) => one.textContent !== '')
+        .map((one) => [one.getAttribute('role'), one.textContent])
+    expect(said()).toEqual([['alert', 'an account is already called `sam`']])
+    expect(boxMarks(host)).toEqual([null, null])
+
+    // Editing the name takes the refusal away, as the page's other forms do.
+    await fill(host, 'new-name', 'sam2')
+    expect(said()).toEqual([])
+    await fill(host, 'new-name', 'sam')
+    expect(said()).toEqual([['status', 'an account is already called `sam`']])
+    expect(boxMarks(host)).toEqual(['true', clashNote(host)?.id])
   })
 
   it('draws the server sentence, not the path and status, for a refused add', async () => {
     vi.mocked(usersApi.addUser).mockRejectedValue(
       new Error(
-        '/api/library/users: 400 {"error":"an account named sam already exists"}',
+        '/api/library/users: 400 {"error":"an account is already called `sam`"}',
       ),
     )
     const host = await at(NEW)
@@ -513,8 +636,278 @@ describe('Users, making one', () => {
     await fill(host, 'new-password', 'hunter2')
     await submitAdd(host)
     expect(host.querySelector('[role="alert"]')?.textContent).toBe(
-      'an account named sam already exists',
+      'an account is already called `sam`',
     )
+  })
+
+  it('draws, under the form and as it is typed, why an account cannot be called . or .., holds Add and sends nothing', async () => {
+    // The server refuses both names, since no address can hold either; the
+    // page says so in the server's sentence before Add.
+    const why = 'An address cannot hold “.” or “..” as a name.'
+    const host = await at(NEW)
+    await fill(host, 'new-password', 'hunter2')
+    for (const name of ['.', '..']) {
+      await fill(host, 'new-name', name)
+      expect(
+        [...host.querySelectorAll('[role="alert"], [role="status"]')]
+          .filter((a) => a.textContent !== '')
+          .map((a) => [
+            a.parentElement?.matches('form.add-user'),
+            a.textContent,
+          ]),
+        name,
+      ).toEqual([[true, why]])
+      expect(addButton(host).disabled).toBe(true)
+    }
+    await submitAdd(host)
+    expect(usersApi.addUser).not.toHaveBeenCalled()
+  })
+
+  it('says as it is typed that an account holds the name exactly as written, tied to the box, and holds Add at once until the name is free', async () => {
+    vi.mocked(usersApi.listUsers).mockResolvedValue({
+      users: [user(), user({ id: 2, name: 'Sam' })],
+    })
+    const host = await at(NEW)
+    await fill(host, 'new-password', 'hunter2')
+    const note = clashNote(host) as HTMLElement
+    // Drawn, empty, before it has anything to say, so that its words are
+    // read out as they come.
+    expect(note.textContent).toBe('')
+    // Another case is another account.
+    await fill(host, 'new-name', 'sam')
+    expect(note.textContent).toBe('')
+    expect(boxMarks(host)).toEqual([null, null])
+    expect(addButton(host).disabled).toBe(false)
+
+    await fill(host, 'new-name', 'Sam')
+    expect(clashNote(host)).toBe(note)
+    expect(note.textContent).toBe('an account is already called `Sam`')
+    expect(boxMarks(host)).toEqual(['true', note.id])
+    // At once: no wait is drawn for it.
+    expect(addButton(host).disabled).toBe(true)
+    expect(addButton(host).textContent).toBe('Add')
+
+    await fill(host, 'new-name', 'Sam 2')
+    expect(clashNote(host)).toBe(note)
+    expect(note.textContent).toBe('')
+    expect(boxMarks(host)).toEqual([null, null])
+    expect(addButton(host).disabled).toBe(false)
+  })
+
+  it('moves focus from Add to the name box when the list read holds it', async () => {
+    const read = deferred<{ users: usersApi.User[] }>()
+    vi.mocked(usersApi.listUsers).mockReturnValueOnce(read.promise)
+    const host = await at(NEW)
+    await fill(host, 'new-name', 'sam')
+    await fill(host, 'new-password', 'hunter2')
+    act(() => addButton(host).focus())
+    expect(document.activeElement).toBe(addButton(host))
+    await flush(() =>
+      read.resolve({ users: [user(), user({ id: 2, name: 'sam' })] }),
+    )
+    expect(addButton(host).disabled).toBe(true)
+    expect(document.activeElement).toBe(
+      host.querySelector('input[name="new-name"]'),
+    )
+  })
+
+  it('leaves focus in the password box when the list read holds Add', async () => {
+    const read = deferred<{ users: usersApi.User[] }>()
+    vi.mocked(usersApi.listUsers).mockReturnValueOnce(read.promise)
+    const host = await at(NEW)
+    await fill(host, 'new-name', 'sam')
+    await fill(host, 'new-password', 'hunter2')
+    const password = host.querySelector(
+      'input[name="new-password"]',
+    ) as HTMLInputElement
+    act(() => password.focus())
+    await flush(() =>
+      read.resolve({ users: [user(), user({ id: 2, name: 'sam' })] }),
+    )
+    expect(addButton(host).disabled).toBe(true)
+    expect(document.activeElement).toBe(password)
+  })
+
+  it('says the clash a list read brings beside an add refusal in other words, and holds Add with it', async () => {
+    const read = deferred<{ users: usersApi.User[] }>()
+    vi.mocked(usersApi.listUsers).mockReturnValueOnce(read.promise)
+    vi.mocked(usersApi.addUser).mockRejectedValue(
+      new Error(
+        '/api/library/users: 500 {"error":"adding sam: database is locked"}',
+      ),
+    )
+    const host = await at(NEW)
+    await fill(host, 'new-name', 'sam')
+    await fill(host, 'new-password', 'hunter2')
+    await submitAdd(host)
+
+    await flush(() =>
+      read.resolve({ users: [user(), user({ id: 2, name: 'sam' })] }),
+    )
+    expect(
+      [
+        ...(host
+          .querySelector('form.add-user')
+          ?.querySelectorAll('[role="alert"], [role="status"]') ?? []),
+      ]
+        .filter((one) => one.textContent !== '')
+        .map((one) => [one.getAttribute('role'), one.textContent]),
+    ).toEqual([
+      ['alert', 'adding sam: database is locked'],
+      ['status', 'an account is already called `sam`'],
+    ])
+    expect(boxMarks(host)).toEqual(['true', clashNote(host)?.id])
+    expect(addButton(host).disabled).toBe(true)
+  })
+
+  it('sends nothing on Enter in the form while the name clashes', async () => {
+    vi.mocked(usersApi.listUsers).mockResolvedValue({
+      users: [user(), user({ id: 2, name: 'Sam' })],
+    })
+    const host = await at(NEW)
+    await fill(host, 'new-name', 'Sam')
+    await fill(host, 'new-password', 'hunter2')
+    await submitAdd(host)
+    expect(usersApi.addUser).not.toHaveBeenCalled()
+    expect(host.querySelector('form.add-user')).not.toBeNull()
+  })
+
+  describe('its wait, drawn only once it has lasted', () => {
+    const add = (host: HTMLElement) =>
+      host.querySelector(
+        'form.add-user button[type="submit"]',
+      ) as HTMLButtonElement
+    const cancel = (host: HTMLElement) =>
+      host.querySelector(
+        'form.add-user button[name="cancel"]',
+      ) as HTMLButtonElement
+    /** Add's words, and whether it and Cancel are drawn held. */
+    const state = (host: HTMLElement) => [
+      add(host).textContent,
+      add(host).disabled,
+      cancel(host).disabled,
+    ]
+    const ready = ['Add', false, false]
+    async function filled() {
+      const host = await at(NEW)
+      await fill(host, 'new-name', 'sam')
+      await fill(host, 'new-password', 'hunter2')
+      return host
+    }
+
+    it('draws no wait and no held button for an add refused inside the wait’s delay', async () => {
+      holdTheClock()
+      const sent = deferred<usersApi.User>()
+      vi.mocked(usersApi.addUser).mockReturnValue(sent.promise)
+      const host = await filled()
+      const drawn = watchDrawn(() => JSON.stringify(state(host)))
+      await submitAdd(host)
+      pass(WAIT_DRAWN_AFTER_MS - 1)
+      await flush(() =>
+        sent.reject(
+          new Error(
+            '/api/library/users: 400 {"error":"an account is already called `sam`"}',
+          ),
+        ),
+      )
+      pass(WAIT_DRAWN_AFTER_MS)
+      drawn.stop()
+      expect(host.querySelector('[role="alert"]')?.textContent).toContain(
+        'is already called',
+      )
+      expect([...drawn.seen]).toEqual([JSON.stringify(ready)])
+    })
+
+    it('draws Creating… and holds Add and Cancel from the wait’s delay', async () => {
+      holdTheClock()
+      vi.mocked(usersApi.addUser).mockReturnValue(new Promise(() => {}))
+      const host = await filled()
+      await submitAdd(host)
+      pass(WAIT_DRAWN_AFTER_MS - 1)
+      expect(state(host)).toEqual(ready)
+      pass(1)
+      expect(state(host)).toEqual(['Creating…', true, true])
+    })
+
+    it('holds a second add and Cancel from the send, before either is drawn held', async () => {
+      holdTheClock()
+      vi.mocked(usersApi.addUser).mockReturnValue(new Promise(() => {}))
+      const host = await filled()
+      await submitAdd(host)
+      pass(WAIT_DRAWN_AFTER_MS - 1)
+      expect(state(host)).toEqual(ready)
+      await submitAdd(host)
+      expect(usersApi.addUser).toHaveBeenCalledTimes(1)
+      await press(cancel(host))
+      expect(here()).toBe(NEW)
+    })
+
+    it('moves focus from Add to the name box once its wait is drawn, and keeps it there through a refusal', async () => {
+      holdTheClock()
+      const sent = deferred<usersApi.User>()
+      vi.mocked(usersApi.addUser).mockReturnValue(sent.promise)
+      const host = await filled()
+      const nameBox = host.querySelector('input[name="new-name"]')
+      act(() => add(host).focus())
+      await submitAdd(host)
+      pass(WAIT_DRAWN_AFTER_MS - 1)
+      expect(document.activeElement).toBe(add(host))
+      pass(1)
+      expect(state(host)).toEqual(['Creating…', true, true])
+      expect(document.activeElement).toBe(nameBox)
+
+      await flush(() =>
+        sent.reject(
+          new Error(
+            '/api/library/users: 400 {"error":"an account is already called `sam`"}',
+          ),
+        ),
+      )
+      expect(
+        host.querySelector('form.add-user [role="alert"]')?.textContent,
+      ).toBe('an account is already called `sam`')
+      expect(document.activeElement).toBe(nameBox)
+    })
+
+    it('moves focus from Cancel to the name box once the add’s wait holds it', async () => {
+      holdTheClock()
+      vi.mocked(usersApi.addUser).mockReturnValue(new Promise(() => {}))
+      const host = await filled()
+      await submitAdd(host)
+      pass(WAIT_DRAWN_AFTER_MS - 1)
+      // Tabbed to inside the wait's delay.
+      act(() => cancel(host).focus())
+      expect(document.activeElement).toBe(cancel(host))
+      pass(1)
+      expect(state(host)).toEqual(['Creating…', true, true])
+      expect(document.activeElement).toBe(
+        host.querySelector('input[name="new-name"]'),
+      )
+    })
+
+    it('puts focus on the made account’s heading after an add whose wait was drawn, as after one answered at once', async () => {
+      holdTheClock()
+      const sent = deferred<usersApi.User>()
+      vi.mocked(usersApi.addUser).mockReturnValue(sent.promise)
+      const sam = user({ id: 2, name: 'sam', role: 'user' })
+      const host = await filled()
+      vi.mocked(usersApi.listUsers).mockResolvedValue({
+        users: [user(), sam],
+      })
+      act(() => add(host).focus())
+      await submitAdd(host)
+      pass(WAIT_DRAWN_AFTER_MS)
+      expect(document.activeElement).toBe(
+        host.querySelector('input[name="new-name"]'),
+      )
+
+      await flush(() => sent.resolve(sam))
+      await flush()
+      const heading = host.querySelector('.account-page .page-title')
+      expect(here()).toBe('/config/users/sam')
+      expect(heading?.textContent).toBe('sam')
+      expect(document.activeElement).toBe(heading)
+    })
   })
 
   it('sends one POST for two submits dispatched before the first answers', async () => {
@@ -559,31 +952,87 @@ describe('Users, making one', () => {
   })
 
   it("explains the add form in the administrator's words, not the repository's", async () => {
-    // O160: this paragraph named a spec section and a migration file, neither
-    // of which the person reading the screen can open. The wording is asserted
-    // on the paragraph itself rather than the page, which holds other words.
-    // The backtick and `<code>` checks hold #112's finding, that this
-    // paragraph once drew markdown backticks as themselves (`docs/notes.md`,
+    // O160: this help named a spec section and a migration file, neither of
+    // which the person reading the screen can open. The wording is asserted
+    // on each element that says it rather than the page, which holds other
+    // words. The backtick and `<code>` checks hold #112's finding, that this
+    // help once drew markdown backticks as themselves (`docs/notes.md`,
     // "What the pixels found that the tests did not").
     const host = await at(NEW)
-    const why = host.querySelector('form.add-user > p.why')
-    expect(why).not.toBeNull()
-    const text = why?.textContent ?? ''
-    expect(text).toContain('an administrator makes accounts')
-    expect(text).toContain('the user role unless Role is set to admin')
-    expect(text).not.toMatch(/C4|§|004_auth|\.sql|`/)
-    expect(why?.querySelector('code')).toBeNull()
-    // "Role", `user` and `admin` are the paragraph's words because they are
-    // the form's: the select's label and its two options.
-    const select = host.querySelector('form.add-user select[name="new-role"]')
-    expect(select?.closest('label')?.querySelector('span')?.textContent).toBe(
-      'Role',
-    )
+    const page = host.querySelector('.new-account') as HTMLElement
+    const role = row(page, 'Role')
+    const said = [
+      page.querySelector('.page-header .page-description'),
+      helpOf(role),
+    ]
+    expect(said.map((one) => one?.textContent)).toEqual([
+      'There is no sign-up: an administrator makes accounts.',
+      'A new account gets the user role unless this is set to admin.',
+    ])
+    for (const one of said) {
+      expect(one?.textContent).not.toMatch(/C4|§|004_auth|\.sql|`/)
+      expect(one?.querySelector('code')).toBeNull()
+    }
+    // `user` and `admin` are the help's words because they are the form's:
+    // the two options of the select its row holds.
     expect(
-      [...(select?.querySelectorAll('option') ?? [])]
+      [...role.querySelectorAll('select[name="new-role"] option')]
         .map((option) => option.textContent)
         .sort(),
     ).toEqual(['admin', 'user'])
+  })
+
+  it('draws the make form as one box of Name, Password and Role, with Add and Cancel at its foot, and a refused add under them', async () => {
+    vi.mocked(usersApi.addUser).mockRejectedValue(
+      new Error(
+        '/api/library/users: 500 {"error":"adding sam: database is locked"}',
+      ),
+    )
+    const host = await at(NEW)
+    const page = host.querySelector('.new-account') as HTMLElement
+    expect(page.querySelector('.page-header .page-title')?.textContent).toBe(
+      'New account',
+    )
+    expect(link(page, '‹ Users').getAttribute('href')).toBe(TABLE)
+    const boxes = page.querySelectorAll('.settings-box')
+    expect(boxes).toHaveLength(1)
+    const form = boxes[0].querySelector(':scope > form.add-user') as Element
+    const parts = () =>
+      [...form.children].map((child) =>
+        child.matches('.settings-row')
+          ? child.querySelector('.settings-row-label')?.textContent
+          : child.matches('[role="status"]')
+            ? { says: child.textContent }
+            : child.matches('[role="alert"]')
+              ? { refuses: child.textContent }
+              : [...child.querySelectorAll('button')].map((b) => b.textContent),
+      )
+    // Last, why the name typed would be refused, empty until it is.
+    expect(parts()).toEqual([
+      'Name',
+      'Password',
+      'Role',
+      ['Add', 'Cancel'],
+      { says: '' },
+    ])
+    expect(page.querySelector('.actions')).toBeNull()
+    // A refused add is answered under the buttons that sent it, in the box.
+    await fill(host, 'new-name', 'sam')
+    await fill(host, 'new-password', 'hunter2')
+    await submitAdd(host)
+    expect(parts()).toEqual([
+      'Name',
+      'Password',
+      'Role',
+      ['Add', 'Cancel'],
+      { refuses: 'adding sam: database is locked' },
+      { says: '' },
+    ])
+  })
+
+  it('wires each of the make form’s rows to its control, and its help to the control it explains', async () => {
+    const host = await at(NEW)
+    expectRowsWired(host.querySelector('.new-account') as HTMLElement)
   })
 
   it.each([
@@ -626,14 +1075,14 @@ describe('Users, making one', () => {
         users: [user(), user({ id: 2, name: 'sam', sessions: [session] })],
       }),
     )
-    expect(tally(host)).toBe('1 session · 0 API keys')
+    expect(tally(host)).toBe('1 session\u00a0·\u00a00 API keys')
 
     // The read the make page started finally answers, with the list as it
     // was before `sam` existed. It is the stale one and must not be drawn.
     await flush(() => first.resolve({ users: [user()] }))
     expect(heading(host)).toBe('sam')
     expect(host.querySelector('.missing')).toBeNull()
-    expect(tally(host)).toBe('1 session · 0 API keys')
+    expect(tally(host)).toBe('1 session\u00a0·\u00a00 API keys')
   })
 
   it('keeps the newer list when an older read *fails* after it', async () => {
@@ -682,14 +1131,14 @@ describe('Users, making one', () => {
     await follow(host, 'sam')
     expect(librariesApi.listLibraries).toHaveBeenCalledTimes(2)
     expect(
-      host.querySelector('.grants input[name="library-80"]'),
+      grants(host).querySelector('input[name="library-80"]'),
     ).not.toBeNull()
 
     // The table's read finally answers, with the list as it was before
     // Comics was made. It is the stale one and must not be drawn.
     await flush(() => first.resolve({ libraries: [manga] }))
     expect(
-      host.querySelector('.grants input[name="library-80"]'),
+      grants(host).querySelector('input[name="library-80"]'),
     ).not.toBeNull()
   })
 
@@ -712,18 +1161,26 @@ describe('Users, making one', () => {
     await flush(() => first.reject(unreadLibraries()))
     expect(host.textContent).not.toContain('libraries list could not be read')
     expect(
-      host.querySelector('.grants input[name="library-70"]'),
+      grants(host).querySelector('input[name="library-70"]'),
     ).not.toBeNull()
   })
 
   it('gives each add-form control its label’s words as its aria-label — O175', async () => {
     const host = await at(NEW)
     // The form's own three: `AccountPage.test.tsx` holds the account page's.
-    // Counted, because a loop over nothing passes.
-    const labelled = fields(host.querySelectorAll('form.add-user label.field'))
-    expect(labelled).toHaveLength(3)
+    // Named, because a loop over nothing passes.
+    const labelled = [
+      ...host.querySelectorAll<HTMLLabelElement>(
+        'form.add-user label.settings-row-label',
+      ),
+    ].map((label) => ({ written: label.textContent, control: label.control }))
+    expect(labelled.map(({ written }) => written)).toEqual([
+      'Name',
+      'Password',
+      'Role',
+    ])
     for (const { written, control } of labelled) {
-      expect(control.getAttribute('aria-label'), written).toBe(written)
+      expect(control?.getAttribute('aria-label'), written ?? '').toBe(written)
     }
   })
 })
@@ -747,13 +1204,13 @@ describe('Users, an account’s page', () => {
     })
     const radios = (host: HTMLElement) =>
       [
-        ...host.querySelectorAll<HTMLInputElement>(
-          '.grants input[type="radio"]',
+        ...grants(host).querySelectorAll<HTMLInputElement>(
+          'input[type="radio"]',
         ),
       ].map((radio) => radio.name)
-    const host = await at('/config/users/2')
-    const granted = host.querySelector<HTMLInputElement>(
-      '.grants input[name="library-70"]',
+    const host = await at('/config/users/sam')
+    const granted = grants(host).querySelector<HTMLInputElement>(
+      'input[name="library-70"]',
     )
     expect(granted?.checked).toBe(true)
     // One account's radios are drawn at a time, so a shared name would break
@@ -761,20 +1218,20 @@ describe('Users, an account’s page', () => {
     // account's whatever page draws it.
     expect(radios(host)).toEqual(['sees-2', 'sees-2'])
 
-    await go('/config/users/1')
+    await go('/config/users/davey')
     expect(heading(host)).toContain('davey')
     expect(radios(host)).toEqual(['sees-1', 'sees-1'])
   })
 
   it.each([
     [
-      2,
+      'sam',
       'sam would see every library, including any added later, and the ticks below would be cleared.',
     ],
-    [3, 'kim would see every library, including any added later.'],
+    ['kim', 'kim would see every library, including any added later.'],
   ])(
-    'asks before lifting account %i’s limit, in its own sentence',
-    async (id, said) => {
+    'asks before lifting account %s’s limit, in its own sentence',
+    async (name, said) => {
       // kim is limited to no library, and lifting that is asked as well.
       vi.mocked(librariesApi.listLibraries).mockResolvedValue({
         libraries: [
@@ -799,10 +1256,10 @@ describe('Users, an account’s page', () => {
           }),
         ],
       })
-      const host = await at(`/config/users/${id}`)
+      const host = await at(`/config/users/${name}`)
       await act(async () => {
-        host
-          .querySelector<HTMLInputElement>('.grants input[value="every"]')
+        grants(host)
+          .querySelector<HTMLInputElement>('input[value="every"]')
           ?.click()
         await Promise.resolve()
       })
@@ -821,7 +1278,7 @@ describe('Users, an account’s page', () => {
     // array, and a failed read would make that sentence a lie about the
     // server, told on the control that decides what an account sees.
     vi.mocked(librariesApi.listLibraries).mockRejectedValue(unreadLibraries())
-    const host = await at('/config/users/1')
+    const host = await at('/config/users/davey')
     // The server's sentence, in the whole alert, not the path and status.
     expect(host.querySelector('[role="alert"]')?.textContent).toBe(
       'The libraries list could not be read (the store is unavailable), so the grant editor below shows nothing rather than what there is.',
@@ -829,12 +1286,8 @@ describe('Users, an account’s page', () => {
     // And the page says the same thing where the editor would be, rather than
     // claiming there are no libraries — an empty editor and an unread one
     // look identical, and only one of them is true.
-    expect(host.querySelector('.grants')?.textContent).toContain(
-      'has not been read',
-    )
-    expect(host.querySelector('.grants')?.textContent).not.toContain(
-      'no libraries yet',
-    )
+    expect(grants(host).textContent).toContain('has not been read')
+    expect(grants(host).textContent).not.toContain('no libraries yet')
   })
 
   it('reads the libraries list again on a change of page, and drops the alert once a read lands', async () => {
@@ -849,16 +1302,16 @@ describe('Users, an account’s page', () => {
         user({ id: 2, name: 'sam', role: 'user', every_library: false }),
       ],
     })
-    const host = await at('/config/users/2')
+    const host = await at('/config/users/sam')
     expect(host.textContent).toContain('libraries list could not be read')
-    expect(host.querySelector('.grants input[name="library-70"]')).toBeNull()
+    expect(grants(host).querySelector('input[name="library-70"]')).toBeNull()
 
     await follow(host, '‹ Users')
     await follow(host, 'sam')
-    expect(here()).toBe('/config/users/2')
+    expect(here()).toBe('/config/users/sam')
     expect(host.textContent).not.toContain('libraries list could not be read')
     expect(
-      host.querySelector('.grants input[name="library-70"]'),
+      grants(host).querySelector('input[name="library-70"]'),
     ).not.toBeNull()
   })
 
@@ -882,11 +1335,11 @@ describe('Users, an account’s page', () => {
     })
     const boxes = (host: HTMLElement) =>
       [
-        ...host.querySelectorAll<HTMLInputElement>(
-          '.grants input[type="checkbox"]',
+        ...grants(host).querySelectorAll<HTMLInputElement>(
+          'input[type="checkbox"]',
         ),
       ].map((box) => box.name)
-    const host = await at('/config/users/2')
+    const host = await at('/config/users/sam')
     expect(host.textContent).toContain('libraries list could not be read')
     expect(boxes(host)).toEqual([])
 
@@ -897,10 +1350,10 @@ describe('Users, an account’s page', () => {
 
     await follow(host, '‹ Users')
     await follow(host, 'sam')
-    expect(here()).toBe('/config/users/2')
+    expect(here()).toBe('/config/users/sam')
     expect(host.textContent).toContain('libraries list could not be read')
     expect(boxes(host)).toEqual([])
-    expect(host.querySelector('.grants .unknown')?.textContent).toContain(
+    expect(grants(host).querySelector('.unknown')?.textContent).toContain(
       'has not been read',
     )
   })
@@ -917,24 +1370,24 @@ describe('Users, an account’s page', () => {
         user({ id: 2, name: 'sam', role: 'user', every_library: false }),
       ],
     })
-    const host = await at('/config/users/2')
+    const host = await at('/config/users/sam')
     expect(
-      host.querySelector('.grants input[name="library-70"]'),
+      grants(host).querySelector('input[name="library-70"]'),
     ).not.toBeNull()
-    expect(host.querySelector('.grants input[name="library-80"]')).toBeNull()
+    expect(grants(host).querySelector('input[name="library-80"]')).toBeNull()
 
     await follow(host, '‹ Users')
     await follow(host, 'sam')
-    expect(here()).toBe('/config/users/2')
+    expect(here()).toBe('/config/users/sam')
     expect(
-      host.querySelector('.grants input[name="library-80"]'),
+      grants(host).querySelector('input[name="library-80"]'),
     ).not.toBeNull()
   })
 
   it.each([
     ['the table', TABLE],
     ['the make page', NEW],
-    ['the line for an unknown account', '/config/users/9'],
+    ['the line for an unknown account', '/config/users/kim'],
   ])(
     'says nothing of the libraries list on %s, which draws no grant editor',
     async (_, page) => {
@@ -942,7 +1395,7 @@ describe('Users, an account’s page', () => {
       // page draws.
       vi.mocked(librariesApi.listLibraries).mockRejectedValue(unreadLibraries())
       const host = await at(page)
-      expect(host.querySelector('.grants')).toBeNull()
+      expect(sectionTitles(host)).not.toContain('Libraries')
       expect(host.textContent).not.toContain('libraries list could not be read')
     },
   )
@@ -998,7 +1451,7 @@ describe('Users, an answer that comes after the person has moved on', () => {
     })
     const remove = deferred<usersApi.RemovalAnswer>()
     vi.mocked(usersApi.removeUser).mockReturnValue(remove.promise)
-    const host = await at('/config/users/2')
+    const host = await at('/config/users/sam')
     await press(button(host, 'Remove…'))
     await press(button(host, 'Remove sam'))
     expect(usersApi.removeUser).toHaveBeenCalledTimes(1)
@@ -1014,8 +1467,8 @@ describe('Users, an answer that comes after the person has moved on', () => {
   it.each([
     {
       where: 'on another account’s page',
-      leave: (_host: HTMLElement) => go('/config/users/3'),
-      to: '/config/users/3',
+      leave: (_host: HTMLElement) => go('/config/users/kim'),
+      to: '/config/users/kim',
     },
     {
       where: 'on the table',
@@ -1039,7 +1492,7 @@ describe('Users, an answer that comes after the person has moved on', () => {
       expect(usersApi.listUsers).toHaveBeenCalledTimes(1)
       // What was made is in the list the page draws once that read lands.
       if (to === TABLE) expect(names(host)).toEqual(['davey', 'kim', 'sam'])
-      if (to === '/config/users/3') expect(heading(host)).toBe('kim')
+      if (to === '/config/users/kim') expect(heading(host)).toBe('kim')
     },
   )
 
@@ -1059,30 +1512,32 @@ describe('Users, an answer that comes after the person has moved on', () => {
 
   it('leaves the person on another account’s page when a removal answers there, says so there without taking focus, and drops it on the next change of page', async () => {
     const { host, answer } = await removing()
-    await go('/config/users/3')
+    await go('/config/users/kim')
     const before = host.querySelector('select[name="role"]') as HTMLElement
     act(() => before.focus())
     // Nothing takes focus to have it read, so it lands in a live region,
     // which is drawn with the page, empty, before the answer comes: a region
     // drawn together with what it says is often not read.
-    const region = host.querySelector('.user-row > [aria-live="polite"]')
+    const region = host.querySelector('.account-page > [aria-live="polite"]')
     const emptyBefore = region?.childNodes.length
     await answer()
-    expect(here()).toBe('/config/users/3')
+    expect(here()).toBe('/config/users/kim')
     expect(heading(host)).toBe('kim')
     expect(region).not.toBeNull()
     expect(emptyBefore).toBe(0)
-    expect(host.querySelector('.user-row > [aria-live="polite"]')).toBe(region)
+    expect(host.querySelector('.account-page > [aria-live="polite"]')).toBe(
+      region,
+    )
     expect(region?.textContent).toBe('Removed sam.')
     expect(document.activeElement).toBe(before)
     expect(usersApi.listUsers).toHaveBeenCalledTimes(1)
 
-    await go('/config/users/1')
+    await go('/config/users/davey')
     expect(host.textContent).not.toContain('Removed sam.')
     await follow(host, '‹ Users')
     expect(host.textContent).not.toContain('Removed sam.')
     // Not drawn again on the page it was drawn on, opened again.
-    await go('/config/users/3')
+    await go('/config/users/kim')
     expect(heading(host)).toBe('kim')
     expect(host.textContent).not.toContain('Removed sam.')
   })
@@ -1117,7 +1572,7 @@ describe('Users, an answer that comes after the person has moved on', () => {
     const { host, answer } = await removing()
     await follow(host, '‹ Users')
     await follow(host, 'sam')
-    expect(here()).toBe('/config/users/2')
+    expect(here()).toBe('/config/users/sam')
     await answer()
     expect(here()).toBe(TABLE)
     expect(host.querySelector('.user-table > p.gone-line')?.textContent).toBe(
@@ -1128,7 +1583,7 @@ describe('Users, an answer that comes after the person has moved on', () => {
 })
 
 describe('Users, a write refused once its page has gone', () => {
-  const SAM = '/config/users/2'
+  const SAM = '/config/users/sam'
   const locked = () =>
     new Error('/api/library/users: 500 {"error":"the store is locked"}')
 
@@ -1200,7 +1655,7 @@ describe('Users, a write refused once its page has gone', () => {
       held: () => vi.mocked(usersApi.patchUser),
       start: (host: HTMLElement) =>
         press(host.querySelector('input[name="can_download"]') as Element),
-      said: 'May download whole editions for sam was not saved (the store is locked).',
+      said: 'Can download for sam was not saved (the store is locked).',
     },
     {
       what: 'a session’s revocation',
@@ -1300,8 +1755,8 @@ describe('Users, a write refused once its page has gone', () => {
   const places = [
     {
       place: 'another account’s page',
-      leave: (_host: HTMLElement) => go('/config/users/3'),
-      page: '.user-row',
+      leave: (_host: HTMLElement) => go('/config/users/kim'),
+      page: '.account-page',
     },
     {
       place: 'the table',
@@ -1329,7 +1784,7 @@ describe('Users, a write refused once its page has gone', () => {
       expect(document.activeElement).toBe(before)
 
       const drawnAt = here()
-      await go('/config/users/1')
+      await go('/config/users/davey')
       expect(host.textContent).not.toContain('the store is locked')
       await go(drawnAt)
       expect(host.textContent).not.toContain('the store is locked')
@@ -1364,7 +1819,9 @@ describe('Users, where focus goes', () => {
     },
   }
   const accountHeading = (host: HTMLElement) =>
-    host.querySelector('.user-row > h2')
+    host.querySelector('.account-page .page-title')
+  const tableHeading = (host: HTMLElement) =>
+    host.querySelector('.user-table .page-title')
 
   async function makeSam(host: HTMLElement) {
     await fill(host, 'new-name', 'sam')
@@ -1373,10 +1830,12 @@ describe('Users, where focus goes', () => {
     await flush()
   }
 
+  // Not by its row's link, which gives the heading focus as opening any row
+  // does: what is held is that the make's arrival is spent once.
   it.each([
     {
-      by: 'its row’s link',
-      back: (host: HTMLElement) => follow(host, 'sam'),
+      by: 'its address',
+      back: (_host: HTMLElement) => go('/config/users/sam'),
     },
     {
       by: 'Back',
@@ -1394,13 +1853,13 @@ describe('Users, where focus goes', () => {
       vi.mocked(usersApi.addUser).mockResolvedValue(sam)
       const host = await at(NEW)
       await makeSam(host)
-      expect(here()).toBe('/config/users/2')
+      expect(here()).toBe('/config/users/sam')
       expect(accountHeading(host)?.textContent).toBe('sam')
       expect(document.activeElement).toBe(accountHeading(host))
 
       await follow(host, '‹ Users')
       await back(host)
-      expect(here()).toBe('/config/users/2')
+      expect(here()).toBe('/config/users/sam')
       expect(document.activeElement).not.toBe(accountHeading(host))
     },
   )
@@ -1414,8 +1873,11 @@ describe('Users, where focus goes', () => {
     vi.mocked(usersApi.listUsers).mockResolvedValue({ users: [davey, sam] })
     await flush(() => add.resolve(sam))
     await flush()
-    await follow(host, 'sam')
-    expect(here()).toBe('/config/users/2')
+    // By its address: its row's link gives the heading focus whatever the
+    // make did.
+    await go('/config/users/sam')
+    expect(here()).toBe('/config/users/sam')
+    expect(accountHeading(host)?.textContent).toBe('sam')
     expect(document.activeElement).not.toBe(accountHeading(host))
   })
 
@@ -1434,7 +1896,7 @@ describe('Users, where focus goes', () => {
       ...removal,
       dry_run: false,
     })
-    const host = await at('/config/users/2')
+    const host = await at('/config/users/sam')
     await press(button(host, 'Remove…'))
     await press(button(host, 'Remove sam'))
     await flush()
@@ -1451,28 +1913,28 @@ describe('Users, where focus goes', () => {
     await flush(() => after.resolve({ users: [davey] }))
     expect(document.activeElement).toBe(elsewhere)
 
-    // The table opened again is opened by the person: no line, and nothing
-    // takes focus.
+    // The table opened again is opened by the person: no line, and focus
+    // goes back to the link of the page they closed, not to a line.
     await follow(host, 'New account')
     await follow(host, '‹ Users')
     expect(here()).toBe(TABLE)
     expect(host.querySelector('.user-table > p.gone-line')).toBeNull()
-    expect(document.activeElement).toBe(document.body)
+    expect(document.activeElement).toBe(link(host, 'New account'))
   })
 
   it('puts focus on the line that says there is no such account', async () => {
-    const host = await at('/config/users/9')
+    const host = await at('/config/users/kim')
     const missing = host.querySelector('.missing')
-    expect(missing?.textContent).toBe('No such account.')
+    expect(missing?.textContent).toBe(NO_SUCH)
     expect(document.activeElement).toBe(missing)
   })
 
-  it('puts focus on the no-such-account line again when a second unknown id follows the first', async () => {
-    const host = await at('/config/users/9')
+  it('puts focus on the no-such-account line again when a second address naming nothing follows the first', async () => {
+    const host = await at('/config/users/kim')
     expect(document.activeElement).toBe(host.querySelector('.missing'))
     act(() => (document.activeElement as HTMLElement).blur())
-    await go('/config/users/8')
-    expect(here()).toBe('/config/users/8')
+    await go('/config/users/lee')
+    expect(here()).toBe('/config/users/lee')
     const missing = host.querySelector('.missing')
     expect(missing).not.toBeNull()
     expect(document.activeElement).toBe(missing)
@@ -1486,13 +1948,13 @@ describe('Users, where focus goes', () => {
       ...sam,
       can_download: false,
     })
-    const host = await at('/config/users/2')
+    const host = await at('/config/users/sam')
     expect(host.querySelector('.missing')).toBeNull()
     await press(host.querySelector('input[name="can_download"]') as Element)
     await flush()
-    expect(here()).toBe('/config/users/2')
+    expect(here()).toBe('/config/users/sam')
     const missing = host.querySelector('.missing')
-    expect(missing?.textContent).toBe('No such account.')
+    expect(missing?.textContent).toBe(NO_SUCH)
     expect(document.activeElement).toBe(missing)
   })
 
@@ -1501,33 +1963,34 @@ describe('Users, where focus goes', () => {
     await press(button(host, 'Cancel'))
     await flush()
     expect(here()).toBe(TABLE)
-    const heading = host.querySelector('.user-table > h2')
+    const heading = tableHeading(host)
     expect(heading?.textContent).toBe('Users')
     expect(document.activeElement).toBe(heading)
   })
 
-  it('leaves focus where it falls on a page the person opened: by a row’s link, by the back link, and by Back', async () => {
+  it('puts focus on the heading of a page its row’s link opens, back on that row when its back link closes it, and leaves it where it falls on Back', async () => {
     vi.mocked(usersApi.listUsers).mockResolvedValue({ users: [davey, sam] })
     const host = await at()
     const row = link(host, 'sam')
     act(() => row.focus())
     await follow(host, 'sam')
-    expect(here()).toBe('/config/users/2')
-    expect(document.activeElement).toBe(document.body)
+    expect(here()).toBe('/config/users/sam')
+    expect(accountHeading(host)?.textContent).toBe('sam')
+    expect(document.activeElement).toBe(accountHeading(host))
 
     const back = link(host, '‹ Users')
     act(() => back.focus())
     await follow(host, '‹ Users')
     expect(here()).toBe(TABLE)
-    expect(document.activeElement).toBe(document.body)
+    expect(document.activeElement).toBe(link(host, 'sam'))
 
     await flush(() => steer?.(-1))
     await flush()
-    expect(here()).toBe('/config/users/2')
+    expect(here()).toBe('/config/users/sam')
     expect(document.activeElement).toBe(document.body)
   })
 
-  it('leaves focus alone on the table the person goes back to from the made account’s page', async () => {
+  it('gives focus to the made account’s row on the table its back link goes to', async () => {
     vi.mocked(usersApi.listUsers)
       .mockResolvedValueOnce({ users: [davey] })
       .mockResolvedValue({ users: [davey, sam] })
@@ -1539,20 +2002,21 @@ describe('Users, where focus goes', () => {
     act(() => back.focus())
     await follow(host, '‹ Users')
     expect(here()).toBe(TABLE)
-    expect(document.activeElement).toBe(document.body)
+    expect(document.activeElement).toBe(link(host, 'sam'))
   })
 
-  it('leaves focus alone on an account’s page opened from the table Cancel went to', async () => {
+  it('puts focus on the heading of an account’s page opened from the table Cancel went to', async () => {
     vi.mocked(usersApi.listUsers).mockResolvedValue({ users: [davey, sam] })
     const host = await at(NEW)
     await press(button(host, 'Cancel'))
     await flush()
-    expect(document.activeElement).toBe(host.querySelector('.user-table > h2'))
+    expect(document.activeElement).toBe(tableHeading(host))
     const row = link(host, 'sam')
     act(() => row.focus())
     await follow(host, 'sam')
-    expect(here()).toBe('/config/users/2')
-    expect(document.activeElement).toBe(document.body)
+    expect(here()).toBe('/config/users/sam')
+    expect(accountHeading(host)?.textContent).toBe('sam')
+    expect(document.activeElement).toBe(accountHeading(host))
   })
 
   it('leaves focus on the box the person pressed on the made account’s page when its write answers', async () => {
@@ -1587,11 +2051,241 @@ describe('Users, where focus goes', () => {
     const host = await at(NEW)
     await press(button(host, 'Cancel'))
     await flush()
-    expect(document.activeElement).toBe(host.querySelector('.user-table > h2'))
+    expect(document.activeElement).toBe(tableHeading(host))
     const elsewhere = link(host, 'New account')
     act(() => elsewhere.focus())
     await flush(() => held.resolve({ users: [davey, sam] }))
     expect(names(host)).toEqual(['davey', 'sam'])
     expect(document.activeElement).toBe(elsewhere)
+  })
+})
+
+describe('Users, side by side', () => {
+  it('draws an account alone where the two do not fit, with no table', async () => {
+    vi.mocked(useFitsPair).mockReturnValue(false)
+    const host = await at(`${TABLE}/davey`)
+    expect(host.querySelector('.account-page .page-title')?.textContent).toBe(
+      'davey — this is you',
+    )
+    expect(host.querySelector('.user-table')).toBeNull()
+  })
+
+  it('draws New account alone where the two do not fit, with no table', async () => {
+    vi.mocked(useFitsPair).mockReturnValue(false)
+    const host = await at(NEW)
+    expect(host.querySelector('.new-account .page-title')?.textContent).toBe(
+      'New account',
+    )
+    expect(host.querySelector('.user-table')).toBeNull()
+  })
+
+  it('draws an account beside the table where the two fit, its row marked as the open one', async () => {
+    vi.mocked(useFitsPair).mockReturnValue(true)
+    vi.mocked(usersApi.listUsers).mockResolvedValue({
+      users: [user(), user({ id: 2, name: 'sam', role: 'user' })],
+    })
+    const host = await at(`${TABLE}/sam`)
+    expect(
+      host.querySelector('.split-detail .account-page .page-title')
+        ?.textContent,
+    ).toBe('sam')
+    expect(names(host)).toEqual(['davey', 'sam'])
+    expect(
+      rows(host).map((tr) =>
+        tr.querySelector('.row-link')?.getAttribute('aria-current'),
+      ),
+    ).toEqual([null, 'page'])
+  })
+
+  it('draws New account beside the table where the two fit', async () => {
+    vi.mocked(useFitsPair).mockReturnValue(true)
+    const host = await at(NEW)
+    expect(
+      host.querySelector('.split-detail .new-account .page-title')?.textContent,
+    ).toBe('New account')
+    expect(names(host)).toEqual(['davey'])
+  })
+
+  // The list's failure stands for every notice: `Users.tsx` hands the one
+  // set to whichever of the two is open, the page before the table.
+  it.each([
+    { page: 'New account', entry: NEW, drawnIn: '.split-detail' },
+    {
+      page: 'an account’s address',
+      entry: `${TABLE}/davey`,
+      drawnIn: '.split-detail',
+    },
+    { page: 'no page', entry: TABLE, drawnIn: '.split-list' },
+  ])(
+    'says the list could not be read once, on $page, where the two fit',
+    async ({ entry, drawnIn }) => {
+      vi.mocked(useFitsPair).mockReturnValue(true)
+      vi.mocked(usersApi.listUsers).mockRejectedValue(
+        new Error('/api/library/users: 503 {"error":"the store is locked"}'),
+      )
+      const host = await at(entry)
+      const alerts = [...host.querySelectorAll('[role="alert"]')]
+      expect(alerts.map((alert) => alert.textContent)).toEqual([
+        'the store is locked',
+      ])
+      expect(alerts[0].closest(drawnIn)).not.toBeNull()
+      // The table's header is drawn in every case, so one alert is not one
+      // for want of a table to draw a second in.
+      expect(host.querySelector('.user-table')).not.toBeNull()
+    },
+  )
+})
+
+describe('Users, addressed by name', () => {
+  /** Whether each row of the table is marked as the open one, in order. */
+  const marks = (host: HTMLElement) =>
+    rows(host).map((tr) =>
+      tr.querySelector('.row-link')?.getAttribute('aria-current'),
+    )
+
+  it('opens an account at its name, and one named as a number at that name rather than at an id', async () => {
+    vi.mocked(usersApi.listUsers).mockResolvedValue({
+      users: [
+        user(),
+        user({ id: 2, name: '3', role: 'user' }),
+        user({ id: 3, name: 'kim', role: 'user' }),
+      ],
+    })
+    const host = await at(`${TABLE}/3`)
+    expect(heading(host)).toBe('3')
+    await go(`${TABLE}/kim`)
+    expect(heading(host)).toBe('kim')
+  })
+
+  it('opens an account at its name in another ASCII case where no other name folds to it, and each of two names differing only in case at its own', async () => {
+    vi.mocked(usersApi.listUsers).mockResolvedValue({
+      users: [
+        user(),
+        user({ id: 2, name: 'Sam', role: 'user' }),
+        user({ id: 3, name: 'sam', role: 'user' }),
+        user({ id: 4, name: 'kim', role: 'user' }),
+      ],
+    })
+    const host = await at(`${TABLE}/KIM`)
+    expect(heading(host)).toBe('kim')
+    await go(`${TABLE}/Sam`)
+    expect(heading(host)).toBe('Sam')
+    await go(`${TABLE}/sam`)
+    expect(heading(host)).toBe('sam')
+  })
+
+  it('says there is no such account at an address whose case two names fold to', async () => {
+    vi.mocked(usersApi.listUsers).mockResolvedValue({
+      users: [
+        user(),
+        user({ id: 2, name: 'Sam', role: 'user' }),
+        user({ id: 3, name: 'sam', role: 'user' }),
+      ],
+    })
+    const host = await at(`${TABLE}/SAM`)
+    expect(heading(host)).toBeUndefined()
+    expect(host.querySelector('.missing')?.textContent).toBe(NO_SUCH)
+  })
+
+  it('reads a name holding the text %2F as written, not as the name with a slash', async () => {
+    vi.mocked(usersApi.listUsers).mockResolvedValue({
+      users: [
+        user(),
+        user({ id: 2, name: 'a/b', role: 'user' }),
+        user({ id: 3, name: 'a%2Fb', role: 'user' }),
+      ],
+    })
+    const host = await at(`${TABLE}/a%252Fb`)
+    expect(heading(host)).toBe('a%2Fb')
+    await go(`${TABLE}/a%2Fb`)
+    expect(heading(host)).toBe('a/b')
+  })
+
+  it('links each account at its name, escaped where an address needs it', async () => {
+    vi.mocked(usersApi.listUsers).mockResolvedValue({
+      users: [
+        user(),
+        user({ id: 2, name: 'Sam Jones', role: 'user' }),
+        user({ id: 3, name: 'Tom & Jerry/Extras?', role: 'user' }),
+      ],
+    })
+    const host = await at()
+    expect(
+      rows(host).map((tr) => {
+        const a = tr.querySelector('.row-link')
+        return [a?.textContent, a?.getAttribute('href')]
+      }),
+    ).toEqual([
+      ['davey', `${TABLE}/davey`],
+      ['Sam Jones', `${TABLE}/Sam%20Jones`],
+      ['Tom & Jerry/Extras?', `${TABLE}/Tom%20%26%20Jerry%2FExtras%3F`],
+    ])
+    await follow(host, 'Tom & Jerry/Extras?')
+    expect(here()).toBe(`${TABLE}/Tom%20%26%20Jerry%2FExtras%3F`)
+    expect(heading(host)).toBe('Tom & Jerry/Extras?')
+  })
+
+  it('marks the row of the account the address opens, and no other, where two names differ only in case and where the address’s case is another', async () => {
+    vi.mocked(useFitsPair).mockReturnValue(true)
+    vi.mocked(usersApi.listUsers).mockResolvedValue({
+      users: [
+        user(),
+        user({ id: 2, name: 'Sam', role: 'user' }),
+        user({ id: 3, name: 'sam', role: 'user' }),
+        user({ id: 4, name: 'kim', role: 'user' }),
+      ],
+    })
+    const host = await at(`${TABLE}/sam`)
+    expect(heading(host)).toBe('sam')
+    expect(marks(host)).toEqual([null, null, 'page', null])
+    await go(`${TABLE}/Sam`)
+    expect(marks(host)).toEqual([null, 'page', null, null])
+    await go(`${TABLE}/KIM`)
+    expect(heading(host)).toBe('kim')
+    expect(marks(host)).toEqual([null, null, null, 'page'])
+  })
+
+  it('draws no page for a name while the list is being read, and the account’s once it is', async () => {
+    const list = deferred<{ users: usersApi.User[] }>()
+    vi.mocked(usersApi.listUsers).mockReturnValue(list.promise)
+    const host = await at(`${TABLE}/sam`)
+    expect(host.querySelector('.missing')).toBeNull()
+    expect(host.querySelector('.account-page')).toBeNull()
+    await flush(() =>
+      list.resolve({
+        users: [user(), user({ id: 2, name: 'sam', role: 'user' })],
+      }),
+    )
+    expect(heading(host)).toBe('sam')
+  })
+
+  it('draws the make page at /config/new-account, and the account named “new” at its own address', async () => {
+    vi.mocked(usersApi.listUsers).mockResolvedValue({
+      users: [user(), user({ id: 2, name: 'new', role: 'user' })],
+    })
+    const host = await at('/config/new-account')
+    expect(host.querySelector('.new-account form.add-user')).not.toBeNull()
+    expect(heading(host)).toBeUndefined()
+    await go(`${TABLE}/new`)
+    expect(host.querySelector('form.add-user')).toBeNull()
+    expect(heading(host)).toBe('new')
+  })
+
+  it('opens an account it has just made at the address of its name, and focuses its title', async () => {
+    const made = user({ id: 2, name: 'Sam Jones', role: 'user' })
+    vi.mocked(usersApi.listUsers)
+      .mockResolvedValueOnce({ users: [user()] })
+      .mockResolvedValue({ users: [user(), made] })
+    vi.mocked(usersApi.addUser).mockResolvedValue(made)
+    const host = await at('/config/new-account')
+    await fill(host, 'new-name', 'Sam Jones')
+    await fill(host, 'new-password', 'hunter2')
+    await submitAdd(host)
+    await flush()
+    expect(here()).toBe(`${TABLE}/Sam%20Jones`)
+    expect(heading(host)).toBe('Sam Jones')
+    expect(document.activeElement).toBe(
+      host.querySelector('.account-page .page-title'),
+    )
   })
 })
