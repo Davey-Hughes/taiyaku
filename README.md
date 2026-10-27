@@ -332,10 +332,13 @@ account screen. A search runs over the library the page shows, every library on
 `/`, and replaces the grid with its hits while the box holds a query; an old
 `/search?q=` link lands there with its query. The sidebar lists the libraries
 under a **Libraries** heading that leads to all of them, as the wordmark above
-it does too, and keeps the theme and **More** at its foot: Proposals,
+it does too, and keeps at its foot the build's label, then **More** (Proposals,
 Configuration and Account for an administrator, and for anyone else the account
-screen itself. Under More is the build's label, its short commit or "unknown
-build", a link for every account to `/about`. That page shows the commit
+screen itself), then the theme, last so that no link sits in the window's
+bottom-left corner, where a browser shows a hovered link's address. The label
+is the build's short commit, with a `*` when tracked files differed from that
+commit, or "unknown build", a link for every account to `/about`. That page
+shows the commit
 (linked into the repository when the build has one), the source link, the OPDS
 catalog's address and each format taiyaku writes, with its version and a line
 saying what it is, and links on to `/about/licence`, which gives taiyaku's
@@ -584,10 +587,25 @@ restoring a backup taken before it, so before merging a change that migrates
 
 The label at the sidebar's foot names the build that is running: the first
 seven characters of its commit, the same seven CI tags the image with as
-`:sha-<7>`. CI builds the image with the commit passed in. Nothing in a build
-runs git, so a build of your own passes it the same way, as the full hash;
-without it, or with anything but a full 40-character lowercase hash, the
-label reads "unknown build":
+`:sha-<7>`. A `cargo build` in a clone asks git for HEAD itself, and marks it
+with a `*` (`abc1234*`, which About spells out as "with uncommitted changes")
+when tracked files differ from it; untracked files do not count. It asks again
+when HEAD moves or git's index changes (a commit, a checkout, a stage), or when
+a crate's `src` or `Cargo.toml`, or the workspace's `Cargo.toml` or
+`Cargo.lock`, changes; not on every build. So an edit anywhere else (under
+`web/`, `docs/` or a crate's `tests/`, say) can carry no `*` until then, and an
+edit undone can keep its `*`. Where git is missing, refuses the repository,
+or there was no repository yet, none of git's state is watched, so once git
+can answer, the label reads "unknown build" until one of those Rust files
+changes.
+
+`TAIYAKU_COMMIT`, as the full 40-character lowercase hash, wins over git and
+is never marked; anything else in it is ignored. Where neither gives a commit,
+the label reads "unknown build". An image build needs `TAIYAKU_COMMIT`,
+because `.git` is not in the image's build context, and CI builds the image
+with the commit passed in. These commands pass the commit explicitly; the
+`cargo build` form names HEAD as a plain build does, but a commit passed in is
+never marked, so it drops the `*` from a changed tree:
 
 ```sh
 docker buildx build --build-arg TAIYAKU_COMMIT=$(git rev-parse HEAD) -t taiyaku .

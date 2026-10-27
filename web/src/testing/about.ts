@@ -6,6 +6,7 @@ import type { About } from '../about'
 /** A build with a commit. */
 export const ABOUT: About = {
   commit: '5ee51597e6269deff221b5954e72296b697d71b2',
+  dirty: false,
   repository: 'https://github.com/Davey-Hughes/taiyaku',
   catalog: '/opds/v1.2/catalog',
   formats: [
@@ -70,4 +71,7 @@ export const ABOUT: About = {
 }
 
 /** The same build reporting no commit. */
-export const UNKNOWN_BUILD: About = { ...ABOUT, commit: null }
+export const UNKNOWN_BUILD: About = { ...ABOUT, commit: null, dirty: false }
+
+/** The same commit, built from a tree whose tracked files differed from it. */
+export const DIRTY_BUILD: About = { ...ABOUT, dirty: true }

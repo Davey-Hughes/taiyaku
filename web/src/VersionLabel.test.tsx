@@ -7,13 +7,13 @@ import * as curation from './curation'
 import { GateContext } from './gate'
 import * as library from './library'
 import { Shell } from './Shell'
-import { ABOUT, UNKNOWN_BUILD } from './testing/about'
+import { ABOUT, DIRTY_BUILD, UNKNOWN_BUILD } from './testing/about'
 import { deferred, flush } from './testing/async'
 import { mount } from './testing/mount'
 import { fakeStorage } from './testing/storage'
 
 /**
- * The label as the shell draws it, at the sidebar's foot under More. Mounted
+ * The label as the shell draws it, at the sidebar's foot above More. Mounted
  * through `Shell` rather than alone, so a label that is not in the foot, or
  * not in the shell at all, fails here as it would in the app.
  */
@@ -125,6 +125,30 @@ describe('the version label', () => {
     const host = await shellAt('/')
     const link = linkIn(host)
     expect(link.getAttribute('href')).toBe('/about')
+    expect(link.textContent).toBe('unknown build')
+    expect(link.getAttribute('aria-label')).toBe('About, unknown build')
+  })
+
+  it('marks a build whose tracked files had changed with a star, and says so in its name', async () => {
+    vi.mocked(aboutApi.about).mockResolvedValue(DIRTY_BUILD)
+    const host = await shellAt('/')
+    const link = linkIn(host)
+    expect(link.getAttribute('href')).toBe('/about')
+    expect(link.textContent).toBe('5ee5159*')
+    expect(link.getAttribute('aria-label')).toBe(
+      'About, build 5ee5159, with uncommitted changes',
+    )
+  })
+
+  // The route answers `dirty` only beside a commit; a label that read it
+  // first would draw a star with no commit before it.
+  it('reads "unknown build", with no star and no words, for an answer marked changed with no commit', async () => {
+    vi.mocked(aboutApi.about).mockResolvedValue({
+      ...UNKNOWN_BUILD,
+      dirty: true,
+    })
+    const host = await shellAt('/')
+    const link = linkIn(host)
     expect(link.textContent).toBe('unknown build')
     expect(link.getAttribute('aria-label')).toBe('About, unknown build')
   })

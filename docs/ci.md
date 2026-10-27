@@ -15,8 +15,11 @@ to `.github/workflows/`; using the Forgejo path keeps the intent unambiguous.
 
 The `test` job's tests run with `TAIYAKU_COMMIT` set to the commit under test,
 so `about`'s route test compares the commit `/api/about` reports with a real
-40-character hash. `check-all.sh` leaves the variable unset, and there that
-comparison is `null` with `null` unless one is exported before the script runs.
+40-character hash, and its `dirty` with `false`, because a commit passed in is
+never marked. Where it is unset, as `check-all.sh` leaves it unless one is
+exported before the script runs, both sides are what `taiyaku-serve`'s build
+script read from git: HEAD, with `dirty` true when tracked files differed from
+it, or `null` and `false` where it read no commit.
 
 The `test` job installs node for one step and one step only. `rust:1-bookworm`
 carries none, and the per-file floor is a node script because it is the *same*
@@ -1703,9 +1706,11 @@ pipeline.
 
 **It compiles the commit in, and checks it is there.** Both builds pass
 `--build-arg TAIYAKU_COMMIT=` the full commit, which the server stage's
-`cargo build` reads through `option_env!` for `/api/about`; nothing in the
-build runs git. The push passes it too because it rebuilds, and without it
-would publish a server other than the one probed. Before the image is removed,
+`cargo build` reads through `option_env!` for `/api/about`. The crate's build
+script asks git for HEAD, but `.git` is not in the build context, so it finds
+no repository and the argument is the only source. The push passes it too
+because it rebuilds, and without it would publish a server other than the one
+probed. Before the image is removed,
 `grep -qaF` over `/usr/local/bin/taiyaku` must find the full commit: a build
 that lost the argument still starts and passes every probe. Because the
 argument changes with every commit, the server stage's `cargo build` runs on

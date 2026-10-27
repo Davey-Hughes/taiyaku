@@ -60,8 +60,10 @@ Top to bottom, in the column and in the phone drawer alike:
    It is drawn even when the account has no library, so that account keeps
    a way to `/` and its "No library shared" state.
 3. The library list, each a link to `/?library=N`, as now; absent when empty.
-4. At the foot: **Theme** (the System/Paper/Ink control, unchanged, with its
-   visible legend) directly above **More**.
+4. At the foot: the version label (§4), then **More**, then **Theme** (the
+   System/Paper/Ink control, unchanged, with its visible legend), last so that
+   no link sits in the window's bottom-left corner, where a browser draws a
+   hovered link's address (the user's ruling of 2026-10-27).
 
 The sidebar's Library and Search links go; so does BrowseSettings, whose
 controls move to §2. The doubled "Library" heading goes with it.
@@ -201,10 +203,10 @@ answered 404 to an anonymous request (private or not yet created); the links
 are built regardless and work once it is public. A commit links to
 `<repository>/commit/<full hash>`, which assumes GitHub mirrors the forge.
 
-**The version label** sits at the sidebar's foot under More, in the column
-and the drawer: the short commit (or "unknown build"), in muted text at the
-14px floor, a link to `/about`. It is the way to About for every account, so
-a non-admin's More stays a plain link.
+**The version label** sits at the top of the sidebar's foot, above More, in
+the column and the drawer: the short commit (or "unknown build"), in muted
+text at the 14px floor, a link to `/about`. It is the way to About for every
+account, so a non-admin's More stays a plain link.
 
 **`/about`:** the commit (linked), the source and issues links, the format
 table, the OPDS catalog address, and a link to the licence page.

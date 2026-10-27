@@ -13,7 +13,7 @@ use axum::response::{IntoResponse, Response};
 /// shorter value, a value in another case or one that is not hex cannot be
 /// matched against the image, and reporting no commit is better than reporting
 /// a wrong one.
-pub(crate) fn build_commit(raw: Option<&'static str>) -> Option<&'static str> {
+pub(crate) fn full_hash(raw: Option<&'static str>) -> Option<&'static str> {
     raw.filter(|commit| {
         commit.len() == 40
             && commit
@@ -22,16 +22,75 @@ pub(crate) fn build_commit(raw: Option<&'static str>) -> Option<&'static str> {
     })
 }
 
+/// What `/api/about` says about the build: the commit it was built from, and
+/// whether its tracked files differed from that commit.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct BuildLabel {
+    pub(crate) commit: Option<&'static str>,
+    pub(crate) dirty: bool,
+}
+
+/// `TAIYAKU_COMMIT` when it is a full hash, never marked; otherwise git's HEAD
+/// as the build script read it, marked when the script saw changes; otherwise
+/// no commit.
+pub(crate) fn build_label(
+    commit: Option<&'static str>,
+    head: Option<&'static str>,
+    dirty: Option<&'static str>,
+) -> BuildLabel {
+    if let Some(commit) = full_hash(commit) {
+        return BuildLabel {
+            commit: Some(commit),
+            dirty: false,
+        };
+    }
+    match full_hash(head) {
+        Some(head) => BuildLabel {
+            commit: Some(head),
+            dirty: dirty.is_some(),
+        },
+        None => BuildLabel {
+            commit: None,
+            dirty: false,
+        },
+    }
+}
+
 /// `GET /api/about`.
 ///
 /// **Behind the guard**, in `routes::guarded_routes`: nothing here is secret,
 /// but an open route needs a reason a guarded one cannot serve it
 /// (`routes::open_routes`), and this has none.
 ///
-/// The commit is read at compile time because nothing runs git during a build
-/// (`.git` is not in the image's build context); the Dockerfile passes it in.
-/// Cargo rebuilds this crate when the variable changes, so a build never
-/// reports a stale one.
+/// The label is read at compile time, from the three values [`build_label`]
+/// weighs. `TAIYAKU_COMMIT` is passed in; the other two come from this crate's
+/// build script, which asks git for HEAD and whether tracked files differ from
+/// it. The image's build context holds no `.git`, so there the script finds no
+/// repository and the Dockerfile's argument is the only source.
+///
+/// Cargo rebuilds this crate when `TAIYAKU_COMMIT` changes or the script runs
+/// again. The script runs again when HEAD moves or git's index changes (a
+/// commit, a checkout, a stage), or a crate's `src` or `Cargo.toml` or the
+/// workspace's `Cargo.toml` or `Cargo.lock` does, not on every build, which
+/// would recompile this crate every time. So an edit anywhere else, a crate's
+/// `tests/` included, can go unseen until then, and the mark can be stale.
+/// Where git is missing, refuses the repository, or there was no repository
+/// yet, the script watches none of git's state, so once git can answer, the
+/// label reads "unknown build" until one of those Rust files changes.
+pub(crate) async fn about() -> Response {
+    (axum::Json(about_body(&build_label(
+        option_env!("TAIYAKU_COMMIT"),
+        option_env!("TAIYAKU_GIT_HEAD"),
+        option_env!("TAIYAKU_GIT_DIRTY"),
+    ))),)
+        .into_response()
+}
+
+/// What `GET /api/about` answers for a build `label` describes.
+///
+/// It takes the label rather than reading the build itself so that a test can
+/// hand it a changed build: CI builds with `TAIYAKU_COMMIT`, which is never
+/// marked, so a body that answered a fixed `false` would pass there.
 ///
 /// Every version is a string because the OPDS one is not an integer, and a
 /// format with no version is `null` rather than missing, so the client reads
@@ -42,9 +101,10 @@ pub(crate) fn build_commit(raw: Option<&'static str>) -> Option<&'static str> {
 /// the name here so a row and what it says about itself cannot part. About
 /// draws the rows in this order, so the five `<stem>` files sit next to each
 /// other here for a reader to find them together.
-pub(crate) async fn about() -> Response {
-    (axum::Json(serde_json::json!({
-        "commit": build_commit(option_env!("TAIYAKU_COMMIT")),
+pub(crate) fn about_body(label: &BuildLabel) -> serde_json::Value {
+    serde_json::json!({
+        "commit": label.commit,
+        "dirty": label.dirty,
         "repository": env!("CARGO_PKG_REPOSITORY"),
         "catalog": crate::opds::catalog_path(),
         "formats": [
@@ -99,8 +159,7 @@ pub(crate) async fn about() -> Response {
                 "description": "taiyaku’s core built for the browser, which the reader uses to match pages between editions.",
             },
         ],
-    })),)
-        .into_response()
+    })
 }
 
 #[cfg(test)]

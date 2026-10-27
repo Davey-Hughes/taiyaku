@@ -367,10 +367,15 @@ export function Shell({ children }: { children: React.ReactNode }) {
                     </svg>
                   </button>
                   <Sidebar libraries={status?.libraries ?? []} />
+                  {/* Theme last (the user's ruling of 2026-10-27): a
+                      browser draws a hovered link's address over the
+                      window's bottom-left corner, so Theme, which holds no
+                      link, takes that corner, and the label and More stand
+                      above it. */}
                   <div className="sidebar-foot">
-                    <ThemeControl />
-                    <AccountMenu admin={admin} openProposals={openProposals} />
                     <VersionLabel />
+                    <AccountMenu admin={admin} openProposals={openProposals} />
+                    <ThemeControl />
                   </div>
                 </div>
                 {menuOpen && (

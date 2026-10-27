@@ -33,7 +33,7 @@ beyond React since the project began, spec C1 §1:
 | `/search` | a redirect — `Search.tsx`: to `/` with its `q` and `library`, so an old search link lands on the search bar with its hits |
 | `/read/:work` | the reader (`App.tsx`), keyed by the slug in the URL so a swap between works remounts rather than trying to stay one component |
 
-`Sidebar.tsx` draws the Libraries heading and list; `Shell.tsx` puts the theme switch and More (`AccountMenu.tsx`) at its foot, wraps every screen but the reader and the `/search` redirect, and owns the one status fetch they need. The browse preferences are behind the View button on the Library view and on a series page (`ViewMenu.tsx`), generated from `browseModule.ts` exactly as `Settings.tsx` is generated from the reader's module registry.
+`Sidebar.tsx` draws the Libraries heading and list; `Shell.tsx` puts the build's label (`VersionLabel.tsx`), More (`AccountMenu.tsx`) and the theme switch at its foot, in that order, wraps every screen but the reader and the `/search` redirect, and owns the one status fetch they need. The browse preferences are behind the View button on the Library view and on a series page (`ViewMenu.tsx`), generated from `browseModule.ts` exactly as `Settings.tsx` is generated from the reader's module registry.
 
 `/proposals`, `/config/*` and `/account` are the proposals inbox, the configuration screens and the account screen (`Proposals.tsx`, `Config.tsx`, `Account.tsx`), each in the shell. Any other path redirects to `/`.
 

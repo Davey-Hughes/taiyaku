@@ -1,7 +1,11 @@
 /**
- * The build's label at the sidebar's foot, under More: the short commit, or
+ * The build's label at the sidebar's foot, above More: the short commit, or
  * "unknown build" when the build carries none. It is a link to About, and
  * the way there for every account, so it is drawn with or without a commit.
+ *
+ * **A `*` after the commit marks a build whose tracked files differed from
+ * it**, which `/api/about` answers as `dirty`. The link's
+ * name says so in words, which a star read aloud does not.
  *
  * **Nothing is drawn until `/api/about` answers, and nothing if it fails**,
  * the open count's rule in `Shell.tsx` for the same reason: the label is an
@@ -32,22 +36,28 @@ export function VersionLabel() {
     }
   }, [])
 
-  const commit = answer?.commit ?? null
-  const short = commit === null ? undefined : shortCommit(commit)
+  const label = answer === undefined ? undefined : labelOf(answer)
   return (
     <p className="version-label">
-      {answer !== undefined && (
-        <NavLink
-          to="/about"
-          aria-label={
-            short === undefined
-              ? 'About, unknown build'
-              : `About, build ${short}`
-          }
-        >
-          {short ?? 'unknown build'}
+      {label !== undefined && (
+        <NavLink to="/about" aria-label={label.name}>
+          {label.text}
         </NavLink>
       )}
     </p>
   )
+}
+
+/** What the link reads, and the name it is announced by. */
+function labelOf(answer: About): { text: string; name: string } {
+  if (answer.commit === null) {
+    return { text: 'unknown build', name: 'About, unknown build' }
+  }
+  const short = shortCommit(answer.commit)
+  return answer.dirty
+    ? {
+        text: `${short}*`,
+        name: `About, build ${short}, with uncommitted changes`,
+      }
+    : { text: short, name: `About, build ${short}` }
 }

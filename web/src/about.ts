@@ -1,6 +1,7 @@
 /**
- * `GET /api/about`: the build's commit, the repository it was built from,
- * the OPDS catalog's path and the version of each format taiyaku writes.
+ * `GET /api/about`: the build's commit and whether its tracked files
+ * differed from it, the repository it was built from, the OPDS catalog's
+ * path and the version of each format taiyaku writes.
  *
  * **Asked once per page load, and the answer shared.** The first answer
  * comes from the server that served this page's code, so it names that
@@ -24,6 +25,8 @@ import { getJson } from './api'
 export type About = {
   /** The full 40-character hash, or `null` when the build carries none. */
   commit: string | null
+  /** True only with a commit: tracked files differed from it. */
+  dirty: boolean
   repository: string
   /** A path on this server; the catalog's address is `location.origin` before it. */
   catalog: string

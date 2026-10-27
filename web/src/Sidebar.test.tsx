@@ -1,9 +1,9 @@
 import { act } from 'react'
 import { MemoryRouter } from 'react-router'
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AccountMenu } from './AccountMenu'
 import { Sidebar } from './Sidebar'
-import { mount } from './testing/mount'
+import { mount, rerender } from './testing/mount'
 
 const at = (ui: React.ReactNode, path = '/') =>
   mount(<MemoryRouter initialEntries={[path]}>{ui}</MemoryRouter>)
@@ -382,6 +382,170 @@ describe('More, at the sidebar’s foot', () => {
     } finally {
       outside.remove()
     }
+  })
+})
+
+/**
+ * jsdom lays nothing out, so the edges More's panel reads are stubbed onto
+ * the boxes it reads them from, and the observer is one the test answers
+ * itself, as the browser does after a change of size. That the panel then
+ * fits a short window, and scrolls, is `Shell.browser.test.tsx`'s to show.
+ */
+class StubResizeObserver {
+  static made: StubResizeObserver[] = []
+  readonly changed: () => void
+  readonly observed: Element[] = []
+  connected = true
+  constructor(changed: () => void) {
+    this.changed = changed
+    StubResizeObserver.made.push(this)
+  }
+  observe(target: Element) {
+    this.observed.push(target)
+  }
+  unobserve() {}
+  disconnect() {
+    this.connected = false
+  }
+}
+
+/** Where the stubbed layout draws the panel's foot and the column's top. */
+const edges = { panelBottom: 0, columnTop: 0 }
+
+/** Stubs the panel's foot onto it, at `edges.panelBottom`. */
+function measuredPanel(host: HTMLElement): HTMLElement {
+  const panel = panelOf(host)
+  panel.getBoundingClientRect = () => ({ bottom: edges.panelBottom }) as DOMRect
+  return panel
+}
+
+/**
+ * More at the foot of a column that clips it, nested as `Shell.tsx` nests
+ * them, the column with 12px of padding at its top and the panel closed.
+ */
+function inColumn() {
+  const host = at(
+    <div id="library-menu" style={{ overflowY: 'auto', paddingTop: '12px' }}>
+      <div className="sidebar-foot">
+        <AccountMenu admin={true} />
+      </div>
+    </div>,
+  )
+  const column = need<HTMLElement>(host, '#library-menu')
+  column.getBoundingClientRect = () => ({ top: edges.columnTop }) as DOMRect
+  return { host, column, panel: measuredPanel(host) }
+}
+
+/** The room the panel is held to, or `''` while nothing holds it. */
+const room = (panel: HTMLElement) =>
+  panel.style.getPropertyValue('--room-above')
+
+/** A watched box changed size: each observer still watching reports it. */
+function resized() {
+  act(() => {
+    for (const observer of StubResizeObserver.made) {
+      if (observer.connected) observer.changed()
+    }
+  })
+}
+
+/** Whether each observer made so far is still watching. */
+const connected = () => StubResizeObserver.made.map((each) => each.connected)
+
+describe('More’s panel, held to the room above More', () => {
+  const held = globalThis.ResizeObserver
+  beforeEach(() => {
+    StubResizeObserver.made = []
+    globalThis.ResizeObserver =
+      StubResizeObserver as unknown as typeof ResizeObserver
+    edges.columnTop = 40
+    edges.panelBottom = 400
+  })
+  afterEach(() => {
+    globalThis.ResizeObserver = held
+    vi.restoreAllMocks()
+  })
+
+  it.each([
+    ['up to the column’s top, past its padding', 40, 400, '348px'],
+    ['up to the window’s top, below the column’s', -30, 400, '400px'],
+    ['of none, where its foot is above the column’s top', 40, 30, '0px'],
+  ])(
+    'holds an open panel to the room above its foot: %s',
+    (_, columnTop, panelBottom, expected) => {
+      edges.columnTop = columnTop
+      edges.panelBottom = panelBottom
+      const { host, panel } = inColumn()
+      expect(room(panel)).toBe('')
+      openMore(host)
+      expect(room(panel)).toBe(expected)
+    },
+  )
+
+  it('holds an open panel to the room up to the window’s top where nothing above More clips it, and watches every box up to the root', () => {
+    edges.panelBottom = 300
+    const host = at(<AccountMenu admin={true} />)
+    const panel = measuredPanel(host)
+    openMore(host)
+    expect(room(panel)).toBe('300px')
+    expect(StubResizeObserver.made.map((each) => each.observed)).toEqual([
+      [need(host, 'nav'), host, document.body, document.documentElement],
+    ])
+  })
+
+  it('watches the boxes that set the room, More’s, the foot’s and the column’s, and none the column sits in', () => {
+    const { host, column } = inColumn()
+    openMore(host)
+    expect(StubResizeObserver.made.map((each) => each.observed)).toEqual([
+      [need(host, 'nav'), need(host, '.sidebar-foot'), column],
+    ])
+  })
+
+  it('measures again when a box it watches changes size, as larger text raises More', () => {
+    const { host, panel } = inColumn()
+    openMore(host)
+    expect(room(panel)).toBe('348px')
+    edges.panelBottom = 360
+    resized()
+    expect(room(panel)).toBe('308px')
+    edges.columnTop = 0
+    resized()
+    expect(room(panel)).toBe('348px')
+  })
+
+  it('writes the room only when it changes, so the report an observer makes as it starts to watch writes nothing', () => {
+    const { host, panel } = inColumn()
+    openMore(host)
+    const write = vi.spyOn(panel.style, 'setProperty')
+    resized()
+    expect(write).not.toHaveBeenCalled()
+    edges.panelBottom = 360
+    resized()
+    resized()
+    expect(write.mock.calls).toEqual([['--room-above', '308px']])
+  })
+
+  it('stops watching when the panel closes, and measures afresh when it opens again', () => {
+    const { host, panel } = inColumn()
+    openMore(host)
+    act(() => {
+      moreButton(host).click()
+    })
+    expect(panel.hidden).toBe(true)
+    expect(connected()).toEqual([false])
+    edges.panelBottom = 200
+    resized()
+    expect(room(panel)).toBe('348px')
+    openMore(host)
+    expect(room(panel)).toBe('148px')
+    expect(connected()).toEqual([false, true])
+  })
+
+  it('stops watching when More goes while its panel is open', () => {
+    const { host } = inColumn()
+    openMore(host)
+    rerender(<div />)
+    expect([connected(), host.querySelector('nav')]).toEqual([[false], null])
   })
 })
 

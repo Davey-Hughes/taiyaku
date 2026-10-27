@@ -320,16 +320,16 @@ describe('Shell', () => {
     expect(vi.mocked(library.status)).toHaveBeenCalledTimes(1)
   })
 
-  it('offers the theme switch at the foot of the sidebar, directly above More, and the build’s label under More', async () => {
+  it('offers the build’s label, More, then the theme switch at the foot of the sidebar', async () => {
     vi.stubGlobal('localStorage', fakeStorage())
     const host = await settle(<Shell>{null}</Shell>)
     const column = host.querySelector('.sidebar-column')
     const foot = column?.lastElementChild
     expect(foot?.classList.contains('sidebar-foot')).toBe(true)
     expect([...(foot?.children ?? [])].map((el) => el.className)).toEqual([
-      'theme-control',
-      'account-menu',
       'version-label',
+      'account-menu',
+      'theme-control',
     ])
     // More is a navigation landmark of its own; Theme is a setting, in none.
     expect(foot?.querySelector('.theme-control')?.closest('nav')).toBeNull()

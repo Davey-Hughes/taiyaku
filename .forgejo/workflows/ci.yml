@@ -253,8 +253,11 @@ jobs:
         #
         # `TAIYAKU_COMMIT` is the commit under test, so `about`'s route test
         # compares `/api/about`'s `commit` with a real 40-character hash on
-        # every pull request; unset, both sides of that comparison are `null`,
-        # and a server that never reported its commit would pass.
+        # every pull request, and its `dirty` with `false`, since a commit
+        # passed in is never marked. Unset, both sides of that comparison are
+        # what `taiyaku-serve`'s build script read from git, which is `null`
+        # where it read no commit, and a server that never reported its commit
+        # would pass there.
         env:
           TAIYAKU_COMMIT: ${{ github.sha }}
         run: |

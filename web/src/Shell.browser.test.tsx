@@ -34,6 +34,7 @@ import {
   overlapOf,
   pressArea,
 } from './testing/pointer'
+import { rootFontAt } from './testing/rootFont'
 
 /**
  * The shell and the library's screens at a phone's width and a desktop's —
@@ -710,6 +711,15 @@ async function clickWithMouse(el: Element) {
   })
 }
 
+/** The drawer at a phone's width, opened and past its slide. */
+async function openDrawer(host: HTMLElement) {
+  await clickWithMouse(need(host, 'button.menu-button'))
+  const column = need(host, '#library-menu')
+  await act(async () => {
+    await Promise.all(column.getAnimations().map((a) => a.finished))
+  })
+}
+
 /** A colour token as the browser resolves it, whichever scheme is in force. */
 function tokenIn(host: HTMLElement, token: string): string {
   const probe = document.createElement('span')
@@ -881,6 +891,189 @@ describe('More, with a real mouse and real keys — spec §1', () => {
     expect(document.activeElement).toBe(menu)
   })
 
+  /**
+   * The panel opens upward over the build's label, which stands above More
+   * (the user's ruling of 2026-10-27). Read by what the browser would hit at
+   * a point: a panel clipped by the foot or the column, or painted under the
+   * label, fails here though its box is where it should be.
+   */
+  it.each([1280, 390])(
+    'draws its panel whole and over the label above it, and Escape or a click outside closes it, at %i px',
+    async (width) => {
+      const host = await shellAt('/', width, true)
+      if (width < 900) await openDrawer(host)
+      const button = need<HTMLButtonElement>(host, 'button.account-button')
+      const label = need(host, '.version-label a')
+      await clickWithMouse(button)
+      expect(button.getAttribute('aria-expanded')).toBe('true')
+      const panel = panelOf(host)
+      const drawn = panel.getBoundingClientRect()
+      expect(drawn.bottom).toBeLessThanOrEqual(
+        button.getBoundingClientRect().top,
+      )
+      const hits = (x: number, y: number) =>
+        panel.contains(document.elementFromPoint(x, y))
+      expect([
+        hits(drawn.left + 1, drawn.top + 1),
+        hits(drawn.right - 1, drawn.top + 1),
+        hits(drawn.left + 1, drawn.bottom - 1),
+        hits(drawn.right - 1, drawn.bottom - 1),
+      ]).toEqual([true, true, true, true])
+      // A full window has room for all of it: nothing inside to scroll.
+      expect(panel.scrollHeight).toBe(panel.clientHeight)
+      const under = label.getBoundingClientRect()
+      expect(
+        hits(under.left + under.width / 2, under.top + under.height / 2),
+      ).toBe(true)
+
+      await act(async () => {
+        await userEvent.keyboard('{Escape}')
+      })
+      expect(button.getAttribute('aria-expanded')).toBe('false')
+      expect(document.activeElement).toBe(button)
+
+      await clickWithMouse(button)
+      expect(button.getAttribute('aria-expanded')).toBe('true')
+      // Theme's legend: text nothing can focus, in the column at both widths.
+      await clickWithMouse(need(host, '.theme-control legend'))
+      expect(button.getAttribute('aria-expanded')).toBe('false')
+      expect(panelOf(host).checkVisibility()).toBe(false)
+    },
+  )
+
+  /**
+   * A window too short for the panel above More, as a phone held on its
+   * side can be: the column clips the panel at its top, where no
+   * scroll reaches. So the panel is held to the room above More and scrolls
+   * inside it, using all of that room, and every entry can be brought into
+   * view and pressed, while More stays clear of it. The same where the room
+   * changes while it is open: a window that shrinks, as a phone turned on
+   * its side does; text made larger, which raises More; or a pointer that
+   * turns coarse, which raises More by growing the foot alone. A coarse
+   * pointer makes the rows, and so the panel, their tallest.
+   */
+  it.each([
+    ['opened in it', 'opened'],
+    ['shrunk to while it is open', 'shrunk'],
+    ['with the text made larger while it is open', 'larger text'],
+    ['with the pointer turned coarse while it is open', 'coarse pointer'],
+  ] as const)(
+    'holds its panel inside a short window %s, every entry within reach, in the drawer with a coarse pointer',
+    async (_, form) => {
+      if (form !== 'coarse pointer') onTestFinished(coarseRulesOn())
+      const host = await shellAt('/', 390, true)
+      if (form !== 'shrunk') await page.viewport(390, 280)
+      await openDrawer(host)
+      const button = need<HTMLButtonElement>(host, 'button.account-button')
+      await clickWithMouse(button)
+      if (form === 'shrunk') {
+        await act(async () => {
+          await page.viewport(390, 280)
+        })
+      }
+      if (form === 'larger text') rootFontAt('20px')
+      if (form === 'coarse pointer') onTestFinished(coarseRulesOn())
+      // Two frames: a change of size is answered in the frame after it.
+      await aFrame()
+      await aFrame()
+      expect(button.getAttribute('aria-expanded')).toBe('true')
+      const panel = panelOf(host)
+      const drawn = panel.getBoundingClientRect()
+      const more = button.getBoundingClientRect()
+      // Held to the column's top, past its padding, and no lower: it uses
+      // the room it has, and what does not fit scrolls.
+      const column = need(host, '#library-menu')
+      expect(drawn.top).toBe(
+        column.getBoundingClientRect().top +
+          Number.parseFloat(getComputedStyle(column).paddingTop),
+      )
+      expect(panel.scrollHeight).toBeGreaterThan(panel.clientHeight)
+      expect(drawn.bottom).toBeLessThanOrEqual(more.top)
+      expect(
+        button.contains(
+          document.elementFromPoint(
+            more.left + more.width / 2,
+            more.top + more.height / 2,
+          ),
+        ),
+      ).toBe(true)
+      const links = [...panel.querySelectorAll('a')]
+      expect(links).toHaveLength(3)
+      const reached = links.map((link) => {
+        link.scrollIntoView({ block: 'nearest' })
+        const box = link.getBoundingClientRect()
+        return link.contains(
+          document.elementFromPoint(
+            box.left + box.width / 2,
+            box.top + box.height / 2,
+          ),
+        )
+      })
+      expect(reached).toEqual([true, true, true])
+      await clickWithMouse(need(panel, 'a[href="/account"]'))
+      expect(button.hasAttribute('data-here')).toBe(true)
+    },
+  )
+
+  /**
+   * Tab and Shift+Tab scroll a short window's panel to the entry they reach,
+   * and each is drawn with its whole focus ring: the panel's edges cut none
+   * of it, at the foot of the list or at its head.
+   */
+  it('draws each entry’s whole focus ring as Tab and Shift+Tab scroll a short window’s panel to it, in the drawer with a coarse pointer', async () => {
+    onTestFinished(coarseRulesOn())
+    const host = await shellAt('/', 390, true)
+    await page.viewport(390, 280)
+    await openDrawer(host)
+    const button = need<HTMLButtonElement>(host, 'button.account-button')
+    // Inside the frame first: a key pressed before anything here has focus
+    // goes to the frame around the test.
+    await act(async () => button.focus())
+    await act(async () => {
+      await userEvent.keyboard('{Enter}')
+    })
+    const panel = panelOf(host)
+    expect(panel.scrollHeight).toBeGreaterThan(panel.clientHeight)
+    /** Where focus is, and whether the panel's scrollport cuts its ring. */
+    const ring = () => {
+      const at = document.activeElement
+      if (!(at instanceof HTMLElement) || !panel.contains(at)) {
+        return { at: at?.outerHTML.slice(0, 60) ?? 'nothing', cut: true }
+      }
+      const style = getComputedStyle(at)
+      expect(style.outlineStyle).toBe('solid')
+      const reach =
+        Number.parseFloat(style.outlineOffset) +
+        Number.parseFloat(style.outlineWidth)
+      const box = at.getBoundingClientRect()
+      const drawn = panel.getBoundingClientRect()
+      const left = drawn.left + panel.clientLeft
+      const top = drawn.top + panel.clientTop
+      return {
+        at: at.getAttribute('href'),
+        cut:
+          box.left - reach < left ||
+          box.top - reach < top ||
+          box.right + reach > left + panel.clientWidth ||
+          box.bottom + reach > top + panel.clientHeight,
+      }
+    }
+    const seen = []
+    for (const shift of [false, false, false, true, true]) {
+      await act(async () => {
+        await userEvent.tab({ shift })
+      })
+      seen.push(ring())
+    }
+    expect(seen).toEqual([
+      { at: '/proposals', cut: false },
+      { at: '/config', cut: false },
+      { at: '/account', cut: false },
+      { at: '/config', cut: false },
+      { at: '/proposals', cut: false },
+    ])
+  })
+
   it.each([
     ['/proposals', true],
     ['/config', true],
@@ -990,7 +1183,7 @@ describe('View, with a real mouse and real keys — spec §2', () => {
 })
 
 /**
- * The build's label under More — spec §4. `VersionLabel.test.tsx` pins what
+ * The build's label above More — spec §4. `VersionLabel.test.tsx` pins what
  * it says and where it is current; this is what a browser draws of that:
  * its colour, the line it holds before the answer, and a real press on it
  * inside the drawer.
@@ -1070,6 +1263,77 @@ describe('the build’s label', () => {
       if (pointer === 'coarse') {
         expect(link.getBoundingClientRect().height).toBeGreaterThanOrEqual(44)
       }
+    },
+  )
+})
+
+/**
+ * The sidebar's foot reads the build's label, then More, then Theme (the
+ * user's ruling of 2026-10-27). A browser draws a hovered link's address
+ * over the window's bottom-left corner, so Theme, which holds no link, takes
+ * that corner, and the label and More stand above it. In both of More's
+ * shapes: an administrator's button and anyone else's link.
+ */
+describe('the sidebar’s foot', () => {
+  const footOf = (host: HTMLElement) => {
+    const foot = need(host, '#library-menu .sidebar-foot')
+    return {
+      foot,
+      label: need(foot, '.version-label'),
+      more: need(foot, '.account-button'),
+      theme: need(foot, '.theme-control'),
+    }
+  }
+
+  const SHAPES = [
+    [1280, true],
+    [1280, false],
+    [390, true],
+    [390, false],
+  ] as const
+
+  it.each(SHAPES)(
+    'draws the label, More, then Theme in the window’s bottom corner, at %i px (admin: %s)',
+    async (width, admin) => {
+      const host = await shellAt('/', width, admin)
+      if (width < 900) await openDrawer(host)
+      const { foot, label, more, theme } = footOf(host)
+      expect(need(label, 'a').checkVisibility()).toBe(true)
+      const box = (el: Element) => el.getBoundingClientRect()
+      expect(box(label).bottom).toBeLessThanOrEqual(box(more).top)
+      expect(box(more).bottom).toBeLessThanOrEqual(box(theme).top)
+      const padding = Number.parseFloat(getComputedStyle(foot).paddingBottom)
+      expect(box(theme).bottom).toBe(box(foot).bottom - padding)
+      expect(box(foot).bottom).toBe(window.innerHeight)
+    },
+  )
+
+  it.each(SHAPES)(
+    'takes Tab from the navigation to the label, More, then Theme, at %i px (admin: %s)',
+    async (width, admin) => {
+      const host = await shellAt('/', width, admin)
+      if (width < 900) await openDrawer(host)
+      const { label, more, theme } = footOf(host)
+      const stops = new Map<Element, string>([
+        [need(label, 'a'), 'the label'],
+        [more, 'More'],
+        [need(theme, 'input:checked'), 'Theme'],
+      ])
+      const links = need(host, 'nav.sidebar').querySelectorAll('a[href]')
+      const last = links[links.length - 1]
+      if (!(last instanceof HTMLElement)) throw new Error('no sidebar link')
+      // Inside the frame first: a key pressed before anything here has focus
+      // goes to the frame around the test.
+      await act(async () => last.focus())
+      const reached: string[] = []
+      for (let i = 0; i < 3; i++) {
+        await userEvent.tab()
+        const at = document.activeElement
+        reached.push(
+          (at && stops.get(at)) ?? at?.outerHTML.slice(0, 60) ?? 'nothing',
+        )
+      }
+      expect(reached).toEqual(['the label', 'More', 'Theme'])
     },
   )
 })
@@ -1536,15 +1800,6 @@ describe('the sidebar’s wordmark', () => {
     const link = mark.closest('a')
     if (!link) throw new Error('the sidebar’s wordmark is no link')
     return { mark, link, name: need(mark, '.wordmark-name') }
-  }
-
-  /** The drawer at a phone's width, opened and past its slide. */
-  async function openDrawer(host: HTMLElement) {
-    await clickWithMouse(need(host, 'button.menu-button'))
-    const column = need(host, '#library-menu')
-    await act(async () => {
-      await Promise.all(column.getAnimations().map((a) => a.finished))
-    })
   }
 
   it('is a link to /, where the Libraries heading goes, named “taiyaku, Libraries”', async () => {

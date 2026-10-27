@@ -2698,6 +2698,15 @@
     min-height: 44px;
   }
 
+  /* A changed build's commit is followed by words, which start at its right
+     edge and, at a phone's width, wrap onto a line that starts at its bottom
+     edge. Positioned, the link is drawn over them, so a press on an edge
+     they share lands on the link rather than on the row's text. It moves
+     nothing: a relative box with no offset stays where it was laid out. */
+  .about .about-facts a {
+    position: relative;
+  }
+
   :where(.proposals, .config) summary {
     min-height: 44px;
     align-content: center;

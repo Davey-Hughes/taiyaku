@@ -1,8 +1,8 @@
 /**
  * The persistent navigation — spec C1 §2, and the sidebar spec's §1: the
  * "Libraries" heading, a link to every library, over a link per library.
- * The column's foot (the theme switch and More, `AccountMenu.tsx`) is
- * `Shell.tsx`'s.
+ * The column's foot (the build's label, More in `AccountMenu.tsx`, and the
+ * theme switch) is `Shell.tsx`'s.
  *
  * **The list is every account's** (spec F §3): the libraries
  * `/api/library/status` answers for it, each linking to its own page,

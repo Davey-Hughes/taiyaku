@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { About } from './About'
 import * as aboutApi from './about'
 import { Licence } from './Licence'
-import { ABOUT, UNKNOWN_BUILD } from './testing/about'
+import { ABOUT, DIRTY_BUILD, UNKNOWN_BUILD } from './testing/about'
 import { clipboardContext } from './testing/clipboard'
 import { focused } from './testing/focused'
 import { licenceTextsLanded } from './testing/licence'
@@ -59,11 +59,25 @@ beforeEach(() => {
 describe('About', () => {
   it('links the short commit to the repository’s page for the full hash', async () => {
     const host = await settle()
-    const commit = linkIn(fact(host, 'Commit'))
+    const row = fact(host, 'Commit')
+    const commit = linkIn(row)
     expect(commit.textContent).toBe('5ee5159')
     expect(commit.getAttribute('href')).toBe(
       'https://github.com/Davey-Hughes/taiyaku/commit/5ee51597e6269deff221b5954e72296b697d71b2',
     )
+    expect(row.textContent).toBe('5ee5159')
+  })
+
+  it('follows the commit’s link with " with uncommitted changes" when the build’s tracked files had changed', async () => {
+    vi.mocked(aboutApi.about).mockResolvedValue(DIRTY_BUILD)
+    const host = await settle()
+    const row = fact(host, 'Commit')
+    const commit = linkIn(row)
+    expect(commit.textContent).toBe('5ee5159')
+    expect(commit.getAttribute('href')).toBe(
+      'https://github.com/Davey-Hughes/taiyaku/commit/5ee51597e6269deff221b5954e72296b697d71b2',
+    )
+    expect(row.textContent).toBe('5ee5159 with uncommitted changes')
   })
 
   it('says "unknown build" as plain text, and links no commit, when the build carries none', async () => {
@@ -73,6 +87,19 @@ describe('About', () => {
     expect(commit.textContent).toBe('unknown build')
     expect(commit.querySelector('a')).toBeNull()
     expect(host.querySelector('a[href*="/commit"]')).toBeNull()
+  })
+
+  // The route answers `dirty` only beside a commit; a row that read it
+  // apart from the commit would say the words after "unknown build".
+  it('says "unknown build" alone for an answer marked changed with no commit', async () => {
+    vi.mocked(aboutApi.about).mockResolvedValue({
+      ...UNKNOWN_BUILD,
+      dirty: true,
+    })
+    const host = await settle()
+    const commit = fact(host, 'Commit')
+    expect(commit.textContent).toBe('unknown build')
+    expect(commit.querySelector('a')).toBeNull()
   })
 
   it('links Source to the repository', async () => {

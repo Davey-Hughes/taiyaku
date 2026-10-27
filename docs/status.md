@@ -146,8 +146,8 @@ library the store files each work in (Part F3). Spec
 
 ## What is built
 
-Six crates, 2777 tests, plus 4,027 in `web/`'s TypeScript — 1,603 in the `node`
-project and 2,424 in the `jsdom` one — and nine hundred and thirty-seven more in a
+Six crates, 2786 tests, plus 4,040 in `web/`'s TypeScript — 1,603 in the `node`
+project and 2,437 in the `jsdom` one — and nine hundred and fifty-six more in a
 **browser** project of its own, no dependencies beyond
 `image`, `zip`, `sha2`, `rayon`, `base64` and `serde`, plus `axum`, `tokio`,
 `tower`, `tower-http` (feature `fs`, for `--web`) and `ureq` in the server, `rusqlite` (features `["backup"]`, against
@@ -223,7 +223,7 @@ unmeasured when the browser is absent. That adds `@vitest/browser`,
 `@vitest/browser-playwright` and `playwright` to `web/`'s dev dependencies;
 the runtime list above is unchanged. That list did not grow for L1: zoom is a CSS transform and
 a page of arithmetic, and its corpus experiment fingerprints with `image` and
-`rayon` exactly as `align` already did. Twenty-four of the 2777 are standing checks gated on
+`rayon` exactly as `align` already did. Twenty-four of the 2786 are standing checks gated on
 `TAIYAKU_CORPUS` — seventeen in `crates/taiyaku-cli/src/corpus.rs`, five in
 `crates/taiyaku-serve/src/corpus.rs`, two in
 `crates/taiyaku-library/src/corpus.rs` (this read "nineteen … ten … five"
@@ -4865,17 +4865,6 @@ mismatched pair said nothing at all.
 
 ### Later
 
-- **Next after PR 3: a local build names its commit.** A build made without
-  `TAIYAKU_COMMIT` says "unknown build"
-  in the version label and on About. The user asked on 2026-10-25 for git's
-  HEAD there instead, with `*` where tracked files differ from it, as
-  `git describe --dirty` marks them. The order: `TAIYAKU_COMMIT` when it is a
-  full hash, then HEAD read by a build script in `taiyaku-serve`, then
-  "unknown build" where there is no git, as in an image build whose context
-  holds no `.git`. The commit is the server binary's, so a rebuild of the web
-  alone does not change it. It is its own PR, straight after PR 3 (the
-  user's ruling).
-
 - **After PR 3: the loading work, in two PRs.** The user saw on 2026-10-26
   that the sections of a Configuration page and of `/account` land at
   different times, and asked whether anything is kept between pages. They
@@ -5530,8 +5519,11 @@ transform is stored, in the sidecar or beside it. §5 above is what shipped.
   (§1–§3) is the record, and this entry now says what shipped. **The
   sidebar** is the wordmark, a "Libraries" heading that is itself the link to
   every library (`/`) and is drawn even for an account that sees none, the
-  libraries under it, and at its foot Theme above More; its Library and
-  Search links and the browse settings are gone (`Sidebar.tsx`, `Shell.tsx`).
+  libraries under it, and at its foot the build's label, More, then Theme,
+  last so that no link sits in the window's bottom-left corner, where a
+  browser draws a hovered link's address (the user's ruling of 2026-10-27);
+  its Library and Search links and the browse settings are gone
+  (`Sidebar.tsx`, `Shell.tsx`).
   **More**, for an administrator, is a disclosure button that opens upward
   onto Proposals, Configuration and Account, and carries the open-proposal
   count as a badge and in its name; opening it leaves focus on the button,
@@ -5707,29 +5699,65 @@ transform is stored, in the sidecar or beside it. §5 above is what shipped.
 
 - **A version label, an About page and a licence page. The sidebar and
   readability spec's second PR shipped on 2026-10-20** on `about-licence`;
-  the spec's §4 is the record, and this entry now says what shipped.
+  the spec's §4 is the record, and this entry now says what shipped. The
+  build label's PR, on `build-label`, made a build without
+  `TAIYAKU_COMMIT` name git's HEAD, with a `*` where tracked files differed
+  from it (spec `2026-10-26-build-label-design.md`).
   **`GET /api/about`** is one of `routes::guarded_routes`, so a request to
   it needs a session cookie, or a password or an API key over HTTP Basic.
-  It answers the build's commit, the repository, the OPDS catalog's path and
-  each format taiyaku writes, the five `<stem>` files next to each other,
-  each with its version and a sentence saying what it is;
-  `<stem>.notes.json`, the HTTP API and the wasm module are unversioned
-  (`about.rs`). **The commit**
-  is compiled in from `TAIYAKU_COMMIT` through `option_env!`, and only a
-  full 40-character lowercase hash counts: any other value, or none, is no
-  commit. The Dockerfile's server stage takes it as a build argument, and
-  CI's docker job passes the full commit to both its builds and checks the
-  image's binary holds it (`docs/ci.md`, "The image job"). **The
+  It answers the build's commit and `dirty`, the repository, the OPDS
+  catalog's path and each format taiyaku writes, the five `<stem>` files
+  next to each other, each with its version and a sentence saying what it
+  is; `<stem>.notes.json`, the HTTP API and the wasm module are unversioned
+  (`about.rs`). **The commit** is compiled in through `option_env!` from
+  three values, and `about::build_label` decides which wins:
+  `TAIYAKU_COMMIT` when it is a full 40-character lowercase hash, never
+  marked; otherwise git's HEAD, which `taiyaku-serve`'s build script hands
+  over as `TAIYAKU_GIT_HEAD`, marked when the script also set
+  `TAIYAKU_GIT_DIRTY`; otherwise no commit. Only a full hash counts for
+  either, so an invalid `TAIYAKU_COMMIT` falls through to HEAD.
+  **`dirty`** is true only beside a commit from HEAD: the script sets
+  `TAIYAKU_GIT_DIRTY` when
+  `git status --porcelain --untracked-files=no` prints anything, so
+  untracked files never count. It runs git with `GIT_OPTIONAL_LOCKS=0`, so
+  `git status` does not refresh the index it watches, and it reports
+  nothing where the workspace is not the top of its own repository, so a
+  source tree unpacked inside another repository does not take that one's
+  HEAD (`build.rs`). **The commit and the mark are worked out again** only
+  when the script runs again: when HEAD, HEAD's reflog, the branch's ref
+  (or, where the branch has no ref file of its own, the directory under
+  `refs/heads` that will hold it), `packed-refs`, the `reftable` format's
+  `tables.list` or git's index changes (a commit, a checkout, a stage), or
+  a crate's `src` or `Cargo.toml` or the workspace's `Cargo.toml` or
+  `Cargo.lock` does, not on every build, which would recompile the crate
+  every time. So an edit anywhere else, under `web/`, `docs/` or a crate's
+  `tests/` say, can go unseen until then, and an edit undone can keep its
+  `*`. Git's paths are watched whenever the workspace is the top of its
+  repository, whether or not HEAD gave a commit, so a first commit after
+  `git init`, and a commit that writes no index on a branch whose ref is
+  only in `packed-refs`, are both seen. Where git is missing, refuses the
+  repository, or there was no repository yet, none of git's state is
+  watched, so once git can answer, the label reads "unknown build" until one of those Rust files
+  changes. Cargo
+  also rebuilds the crate when `TAIYAKU_COMMIT` changes. The image's build
+  context holds no `.git`, so there the script finds no repository and
+  `TAIYAKU_COMMIT` is the only source: the Dockerfile's server stage takes
+  it as a build argument, and CI's docker job passes the full commit to
+  both its builds and checks the image's binary holds it (`docs/ci.md`,
+  "The image job"). **The
   repository** is now `https://github.com/Davey-Hughes/taiyaku`, in
   `Cargo.toml`'s `repository`, which the route reads as
   `CARGO_PKG_REPOSITORY`; it named the forge before. The GitHub URL
   answered 404 to an anonymous request on 2026-10-18, so About's source
   link works once the GitHub repository is public, and its commit link
   once that repository also holds the commit.
-  **The label** at the sidebar's foot, under More, in the column and the
-  drawer, is the short commit or "unknown build", a link to `/about` for
-  every account (`VersionLabel.tsx`). **`/about`** shows the commit, linked
-  to `<repository>/commit/<hash>` when there is one, the source link, the
+  **The label** at the top of the sidebar's foot, above More, in the column
+  and the drawer, is the short commit, with a `*` after it when `dirty`
+  (`abc1234*`, its link named "About, build abc1234, with uncommitted
+  changes"), or "unknown build", a link to `/about` for every account
+  (`VersionLabel.tsx`). **`/about`** shows the commit, linked to
+  `<repository>/commit/<hash>` when there is one and followed by " with
+  uncommitted changes" when `dirty`, the source link, the
   OPDS catalog's address, the format table, with each format's sentence
   under its name, and taiyaku's licence and the fonts', each a link to its
   own on the licence page, the fonts' to the first font's (`About.tsx`).

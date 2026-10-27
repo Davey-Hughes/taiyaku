@@ -1,6 +1,6 @@
 use super::*;
 
-/// The one shape [`build_commit`] lets through.
+/// The one shape [`full_hash`] lets through.
 const FULL: &str = "0123456789abcdef0123456789abcdef01234567";
 
 /// [`FULL`] with its last character made not hex, so length cannot be the
@@ -10,14 +10,17 @@ const NOT_HEX: &str = "0123456789abcdef0123456789abcdef0123456g";
 /// [`FULL`] in upper case, so case is the only thing wrong with it.
 const UPPER: &str = "0123456789ABCDEF0123456789ABCDEF01234567";
 
+/// A second full hash, for git's HEAD, so a case can tell which source won.
+const HEAD: &str = "89abcdef0123456789abcdef0123456789abcdef";
+
 #[test]
 fn an_unset_commit_is_no_commit() {
-    assert_eq!(build_commit(None), None);
+    assert_eq!(full_hash(None), None);
 }
 
 #[test]
 fn an_empty_commit_is_no_commit() {
-    assert_eq!(build_commit(Some("")), None);
+    assert_eq!(full_hash(Some("")), None);
 }
 
 /// The seven characters the label shows, which are hex: refused on length
@@ -26,24 +29,123 @@ fn an_empty_commit_is_no_commit() {
 fn a_short_hash_is_no_commit() {
     let short = &FULL[..7];
     assert!(short.bytes().all(|byte| byte.is_ascii_hexdigit()));
-    assert_eq!(build_commit(Some(short)), None);
+    assert_eq!(full_hash(Some(short)), None);
 }
 
 #[test]
 fn a_full_length_string_with_a_character_that_is_not_hex_is_no_commit() {
     assert_eq!(NOT_HEX.len(), FULL.len());
-    assert_eq!(build_commit(Some(NOT_HEX)), None);
+    assert_eq!(full_hash(Some(NOT_HEX)), None);
 }
 
 #[test]
 fn an_uppercase_hash_is_no_commit() {
     assert_eq!(UPPER.to_ascii_lowercase(), FULL);
-    assert_eq!(build_commit(Some(UPPER)), None);
+    assert_eq!(full_hash(Some(UPPER)), None);
 }
 
 #[test]
 fn a_full_lowercase_hash_is_the_commit() {
-    assert_eq!(build_commit(Some(FULL)), Some(FULL));
+    assert_eq!(full_hash(Some(FULL)), Some(FULL));
+}
+
+#[test]
+fn a_valid_taiyaku_commit_wins_over_a_changed_head_and_is_not_marked() {
+    assert_eq!(
+        build_label(Some(FULL), Some(HEAD), Some("1")),
+        BuildLabel {
+            commit: Some(FULL),
+            dirty: false,
+        },
+    );
+}
+
+#[test]
+fn an_invalid_taiyaku_commit_falls_through_to_a_changed_head_which_is_marked() {
+    assert_eq!(
+        build_label(Some(NOT_HEX), Some(HEAD), Some("1")),
+        BuildLabel {
+            commit: Some(HEAD),
+            dirty: true,
+        },
+    );
+}
+
+#[test]
+fn without_taiyaku_commit_a_clean_head_is_the_commit_and_is_not_marked() {
+    assert_eq!(
+        build_label(None, Some(HEAD), None),
+        BuildLabel {
+            commit: Some(HEAD),
+            dirty: false,
+        },
+    );
+}
+
+#[test]
+fn with_neither_there_is_no_commit_and_no_mark_even_with_the_dirty_fact_set() {
+    assert_eq!(
+        build_label(None, None, Some("1")),
+        BuildLabel {
+            commit: None,
+            dirty: false,
+        },
+    );
+}
+
+#[test]
+fn an_invalid_head_is_no_commit_and_no_mark() {
+    assert_eq!(
+        build_label(None, Some(UPPER), Some("1")),
+        BuildLabel {
+            commit: None,
+            dirty: false,
+        },
+    );
+}
+
+/// The image's own configuration: the Dockerfile passes the commit, and its
+/// build context has no `.git`, so there is no HEAD.
+#[test]
+fn a_valid_taiyaku_commit_without_a_head_is_the_commit_and_is_not_marked() {
+    assert_eq!(
+        build_label(Some(FULL), None, None),
+        BuildLabel {
+            commit: Some(FULL),
+            dirty: false,
+        },
+    );
+}
+
+#[test]
+fn an_invalid_taiyaku_commit_without_a_head_is_no_commit_and_no_mark() {
+    assert_eq!(
+        build_label(Some(NOT_HEX), None, Some("1")),
+        BuildLabel {
+            commit: None,
+            dirty: false,
+        },
+    );
+}
+
+#[test]
+fn the_body_answers_a_changed_labels_commit_and_marks_it() {
+    let body = about_body(&BuildLabel {
+        commit: Some(HEAD),
+        dirty: true,
+    });
+    assert_eq!(body["commit"], serde_json::json!(HEAD));
+    assert_eq!(body["dirty"], serde_json::json!(true));
+}
+
+#[test]
+fn the_body_answers_a_clean_labels_commit_and_does_not_mark_it() {
+    let body = about_body(&BuildLabel {
+        commit: Some(FULL),
+        dirty: false,
+    });
+    assert_eq!(body["commit"], serde_json::json!(FULL));
+    assert_eq!(body["dirty"], serde_json::json!(false));
 }
 
 /// The whole body, compared exactly. A string literal and a `json!` key get
@@ -53,19 +155,28 @@ fn a_full_lowercase_hash_is_the_commit() {
 /// Each version is its constant's own `to_string()`, so the expected body
 /// follows a bump. A swap between two constants that hold the same value gives
 /// the same body, so this cannot see one; which row reads which constant is
-/// held by reading [`about`].
+/// held by reading [`about_body`].
 ///
-/// `commit` is tested only when the crate is built with a valid 40-hex
-/// `TAIYAKU_COMMIT`; without one both sides are `null`. CI's `test` job
-/// builds with the commit under test (`.forgejo/workflows/ci.yml`).
+/// `commit` and `dirty` are compared with the same [`build_label`] call the
+/// route makes, so this always holds their keys but holds a value only when
+/// the build gives it one other than `null` or `false`; CI's `test` job builds
+/// with the commit under test (`.forgejo/workflows/ci.yml`). Which source wins
+/// is held by the [`build_label`] cases above, and that the body answers the
+/// label it is given by the [`about_body`] cases.
 #[tokio::test]
 async fn about_answers_the_commit_the_source_the_catalog_and_every_format() {
     let (router, _state, _fixture) = crate::test_support::router_over_a_library().await;
     let body = crate::test_support::get_json(&router, "/api/about").await;
+    let label = build_label(
+        option_env!("TAIYAKU_COMMIT"),
+        option_env!("TAIYAKU_GIT_HEAD"),
+        option_env!("TAIYAKU_GIT_DIRTY"),
+    );
     assert_eq!(
         body,
         serde_json::json!({
-            "commit": build_commit(option_env!("TAIYAKU_COMMIT")),
+            "commit": label.commit,
+            "dirty": label.dirty,
             "repository": "https://github.com/Davey-Hughes/taiyaku",
             "catalog": "/opds/v1.2/catalog",
             "formats": [

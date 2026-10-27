@@ -66,7 +66,7 @@ function AccountScreen() {
   return <Account placement="page" onSignedOut={() => gate?.signOut()} />
 }
 
-/** About at a URL of its own, reached from the build's label under More. */
+/** About at a URL of its own, reached from the build's label above More. */
 function AboutScreen() {
   useDocumentTitle('About')
   return <About />

@@ -24,10 +24,10 @@
   background: var(--bg);
 }
 
-/* The column holds the navigation and, at its foot, the account menu. A
- * flex column so the navigation takes the height and the menu sits at the
- * bottom; the menu is sticky there, so a long libraries list scrolls under it
- * and the menu is never scrolled away. */
+/* The column holds the navigation and, at its foot, the build's label, More
+ * and the theme switch. A flex column so the navigation takes the height and
+ * the foot sits at the bottom; the foot is sticky there, so a long libraries
+ * list scrolls under it and the foot is never scrolled away. */
 .sidebar-column {
   display: flex;
   flex-direction: column;
@@ -40,8 +40,10 @@
   padding: var(--space-4);
 }
 
-/* The column's foot: the theme switch, then the account menu
- * (`AccountMenu.tsx`) under it, then the build's label (`VersionLabel.tsx`). */
+/* The column's foot: the build's label (`VersionLabel.tsx`), then the
+ * account menu (`AccountMenu.tsx`), then the theme switch, last because a
+ * browser draws a hovered link's address over the window's bottom-left
+ * corner, and the switch holds no link. */
 .sidebar-foot {
   position: sticky;
   bottom: 0;
@@ -78,7 +80,7 @@
 }
 
 /* The panel opens upward from the button and is positioned against this
- * box, so it covers the theme switch above while it is open. */
+ * box, so it covers the build's label above while it is open. */
 .account-menu {
   position: relative;
 }
@@ -134,13 +136,21 @@ a.account-button {
   transform: rotate(180deg);
 }
 
+/* Held to the room above More, which `AccountMenu.tsx` measures while the
+ * panel is open, and scrolled inside it when a short window leaves less. An
+ * entry scrolled into view, by Tab or otherwise, keeps the panel's padding
+ * around it, and with it the whole of its focus ring. */
 .account-panel {
   position: absolute;
   right: 0;
   bottom: calc(100% + var(--space-1));
   left: 0;
   z-index: 5;
+  box-sizing: border-box;
+  max-block-size: var(--room-above, none);
+  overflow-y: auto;
   padding: var(--space-3);
+  scroll-padding-block: var(--space-3);
   border: 1px solid var(--line-strong);
   background: var(--surface);
   box-shadow: 0 4px 16px var(--scrim);

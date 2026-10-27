@@ -5,7 +5,7 @@ import { page, userEvent } from 'vitest/browser'
 import { About } from './About'
 import type { About as AboutAnswer } from './about'
 import './index.css'
-import { ABOUT } from './testing/about'
+import { ABOUT, DIRTY_BUILD } from './testing/about'
 import { answerAbout, inShell } from './testing/aboutPage'
 import { clipboardContext } from './testing/clipboard'
 import { mount } from './testing/mount'
@@ -421,6 +421,36 @@ describe('About’s links', () => {
       }
     }
   })
+
+  /**
+   * **A changed build's commit keeps its whole target with the words drawn
+   * after it.** They start at the link's right edge, and at a phone's width
+   * they wrap onto a line that starts at its bottom edge, under its middle,
+   * so every edge the link shares with them is one a press could land on
+   * either side of.
+   */
+  it.each([
+    [1280, false],
+    [390, true],
+    [360, true],
+    [320, true],
+  ] as const)(
+    'keeps the commit’s target whole when " with uncommitted changes" follows it, at %i px with a coarse pointer (the words wrap: %s)',
+    async (width, wraps) => {
+      onTestFinished(coarseRulesOn())
+      const host = await aboutAt(width, 2400, DIRTY_BUILD)
+      const row = fact(host, 'Commit')[1]
+      const commit = one(row, 'a')
+      expect(row.textContent).toBe('5ee5159 with uncommitted changes')
+      // The case's premise: where the words wrap, they take a line under
+      // the link as well as the rest of its own.
+      const words = document.createRange()
+      words.setStartAfter(commit)
+      words.setEndAfter(row.lastChild as Node)
+      expect(words.getClientRects().length > 1).toBe(wraps)
+      expect(pressArea(commit)).toEqual(near(fingerArea(commit)))
+    },
+  )
 })
 
 /**

@@ -16,7 +16,10 @@
  *
  * **The commit links to the repository's page for it only when there is
  * one.** A build that carries no commit says "unknown build" as plain text:
- * a link to `<repository>/commit/` with nothing after it leads nowhere.
+ * a link to `<repository>/commit/` with nothing after it leads nowhere. A
+ * build whose tracked files differed from its commit says " with uncommitted
+ * changes" after the link, in words where the sidebar's label has a `*`;
+ * the link still leads to the commit the changes were made on.
  *
  * **Each format's sentence is drawn under its name, in the name's cell**,
  * as text rather than a tooltip, so it is there on a touch screen and read
@@ -74,9 +77,12 @@ export function About() {
                   {answer.commit === null ? (
                     'unknown build'
                   ) : (
-                    <a href={`${answer.repository}/commit/${answer.commit}`}>
-                      {shortCommit(answer.commit)}
-                    </a>
+                    <>
+                      <a href={`${answer.repository}/commit/${answer.commit}`}>
+                        {shortCommit(answer.commit)}
+                      </a>
+                      {answer.dirty && ' with uncommitted changes'}
+                    </>
                   )}
                 </dd>
               </div>

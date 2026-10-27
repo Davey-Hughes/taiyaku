@@ -57,11 +57,12 @@ RUN rustup toolchain install
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
 # The commit `/api/about` reports, which `taiyaku-serve` reads at compile time
-# through `option_env!`: nothing in the build runs git, and `.git` is not in
-# the context. A `RUN` after an `ARG` misses the cache whenever its value
-# changes, so it is declared here and not higher, where every commit would
-# reinstall the toolchain. Unset, or anything but a full 40-character
-# lowercase hash, and the server reports no commit.
+# through `option_env!`. Its build script asks git for HEAD, but `.git` is not
+# in the context, so here this argument is the only source. A `RUN` after an
+# `ARG` misses the cache whenever its value changes, so it is declared here and
+# not higher, where every commit would reinstall the toolchain. Unset, or
+# anything but a full 40-character lowercase hash, and the server reports no
+# commit.
 ARG TAIYAKU_COMMIT
 # `rusqlite` links the system SQLite (`libsqlite3-dev` ships in this image),
 # so this stage and the runtime one below must be the same distribution.
