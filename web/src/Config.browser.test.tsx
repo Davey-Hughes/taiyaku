@@ -19,12 +19,25 @@ import * as usersApi from './users'
 import { DeriveSection, ScanReport } from './ScanReport'
 import { Row, Section } from './settingsLayout'
 import { deferred, flush } from './testing/async'
+import { holdOf } from './testing/held'
 import {
   type Channels,
   channels,
   contrast,
   tokenColour,
 } from './testing/colour'
+import {
+  changesOf,
+  expectCallout,
+  expectLaidUnderConfirm,
+  expectPressesTaken,
+  expectRoomUnseen,
+  expectRowDrawnAt,
+  layoutOf,
+  liesOver,
+  linesOf,
+  roomKept,
+} from './testing/callout'
 import { expectDisclosure } from './testing/disclosure'
 import { press, submit, typeInto } from './testing/input'
 import { boxOf, expectKept } from './testing/kept'
@@ -38,6 +51,7 @@ import {
   overlapOf,
   pressArea,
 } from './testing/pointer'
+import { rootFontAt } from './testing/rootFont'
 import { holdTheClock, pass, WAIT_DRAWN_AFTER_MS } from './testing/wait'
 
 /**
@@ -2323,12 +2337,204 @@ describe('the Configuration screens at desktop width', () => {
       form.querySelector('input[name="new-password"]') as HTMLInputElement,
       'hunter2',
     )
+    await typeInto(
+      form.querySelector('input[name="confirm-password"]') as HTMLInputElement,
+      'hunter2',
+    )
     const add = form.querySelector('button[type="submit"]') as HTMLElement
     expect(add.textContent).toBe('Add')
     await drawnWaiting(add, 'Creating…', [
       add,
       form.querySelector('button[name="cancel"]') as HTMLElement,
     ])
+  })
+
+  describe('New account’s Confirm password', () => {
+    const keys = (text: string) =>
+      act(async () => {
+        await userEvent.keyboard(text)
+      })
+
+    /**
+     * The make page, at a desktop's width unless asked, alone or `inShell`
+     * as it is drawn in the app, and its parts.
+     */
+    async function makeForm(width = 1280, height = 900, shell = false) {
+      await sized(width, height)
+      const host = shell
+        ? await opened(NEW_ACCOUNT)
+        : await settled(routed(NEW_ACCOUNT))
+      const form = host.querySelector('.new-account .add-user') as HTMLElement
+      const box = (name: string) =>
+        form.querySelector(`input[name="${name}"]`) as HTMLInputElement
+      return {
+        name: box('new-name'),
+        password: box('new-password'),
+        confirm: box('confirm-password'),
+        confirmRow: box('confirm-password').closest(
+          '.settings-row',
+        ) as HTMLElement,
+        role: form.querySelector('select[name="new-role"]') as HTMLElement,
+        roleLabel: form.querySelector(
+          '.settings-row:has(select[name="new-role"]) label',
+        ) as HTMLElement,
+        roleHelp: form.querySelector(
+          '.settings-row:has(select[name="new-role"]) .settings-row-help',
+        ) as HTMLElement,
+        add: form.querySelector('button[type="submit"]') as HTMLButtonElement,
+        cancel: form.querySelector(
+          'button[name="cancel"]',
+        ) as HTMLButtonElement,
+        form,
+        // The status region in the callout drawn after Confirm password's
+        // row, laid over Role's select.
+        line: form.querySelector(
+          ':scope > .callout > [role="status"]',
+        ) as HTMLElement,
+      }
+    }
+
+    it('says the two passwords differ in a callout laid over Role’s select, moving nothing, and holds Add; Enter sends nothing then', async () => {
+      vi.mocked(usersApi.addUser).mockReturnValue(new Promise(() => {}))
+      const { name, password, confirm, confirmRow, role, add, form, line } =
+        await makeForm()
+      const callout = line.parentElement as HTMLElement
+      expect([
+        callout.getBoundingClientRect().height,
+        getComputedStyle(line).borderTopStyle,
+      ]).toEqual([0, 'none'])
+
+      // A real click gives the frame focus, so the keys reach the page.
+      await act(async () => {
+        await userEvent.click(name)
+      })
+      const before = layoutOf(form, callout)
+      // Enter while Confirm password is empty, then while it holds the
+      // start of the password, presses the held Add, which says so.
+      await keys('sam{Tab}hunter22{Enter}')
+      expect(line.textContent).toBe('The two passwords do not match.')
+      await keys('{Tab}hunter')
+      expect(line.textContent).toBe('')
+      await keys('{Enter}')
+      expect(line.textContent).toBe('The two passwords do not match.')
+      await keys('{Backspace}d{Enter}')
+      expect(document.activeElement).toBe(confirm)
+      expect(line.textContent).toBe('The two passwords do not match.')
+      expect(holdOf(add)).toBe('held')
+      expect(layoutOf(form, callout)).toEqual(before)
+      await expectCallout(line, confirmRow, { over: role })
+      expect(usersApi.addUser).not.toHaveBeenCalled()
+      // Back to Password and on to Confirm password, the words untouched.
+      expect(
+        await changesOf(line, () =>
+          userEvent.keyboard('{Shift>}{Tab}{/Shift}'),
+        ),
+      ).toBe(0)
+      expect(document.activeElement).toBe(password)
+      await keys('{Tab}{End}')
+
+      await keys('{Backspace}{Backspace}er22{Enter}')
+      expect(line.textContent).toBe('')
+      expect(vi.mocked(usersApi.addUser).mock.calls).toEqual([
+        ['sam', 'hunter22', 'user'],
+      ])
+    })
+
+    for (const [width, height] of [
+      [1920, 1080],
+      [600, 900],
+      [390, 844],
+    ] as const) {
+      it(`lays the line saying the two passwords differ over Role’s select alone, whole, its words on one line, leaving Role’s label and help, Add and Cancel in view, at ${width}px`, async () => {
+        const {
+          name,
+          confirmRow,
+          role,
+          roleLabel,
+          roleHelp,
+          add,
+          cancel,
+          line,
+        } = await makeForm(width, height)
+        await act(async () => {
+          await userEvent.click(name)
+        })
+        await keys('sam{Tab}hunter22{Tab}hunted')
+        expect(line.textContent).toBe('The two passwords do not match.')
+        await expectCallout(line, confirmRow, { over: role })
+        expect({
+          role: liesOver(line, role),
+          label: liesOver(line, roleLabel),
+          help: liesOver(line, roleHelp),
+          add: liesOver(line, add),
+          cancel: liesOver(line, cancel),
+        }).toEqual({
+          role: true,
+          label: false,
+          help: false,
+          add: false,
+          cancel: false,
+        })
+        const words = document.createRange()
+        words.selectNodeContents(line)
+        expect(words.getClientRects(), 'its words’ lines').toHaveLength(1)
+      })
+    }
+
+    for (const [width, rootFont] of [
+      [320, ''],
+      [390, '20px'],
+    ] as const) {
+      it(`lays the line saying the two passwords differ over Role’s select and no box, so a press on Confirm password reaches it, moving nothing, at ${width}px with the root’s font at ${rootFont || 'the browser’s own'}`, async () => {
+        rootFontAt(rootFont)
+        const { name, confirm, confirmRow, role, form, line } = await makeForm(
+          width,
+          900,
+          true,
+        )
+        const callout = line.parentElement as HTMLElement
+        await act(async () => {
+          await userEvent.click(name)
+        })
+        const before = layoutOf(form, callout)
+        await keys('sam{Tab}hunter22{Tab}hunted')
+        expect(line.textContent).toBe('The two passwords do not match.')
+        expect(layoutOf(form, callout), 'what the line moved').toEqual(before)
+        act(() => name.focus())
+        await expectLaidUnderConfirm(line, confirm, confirmRow, { over: role })
+      })
+    }
+
+    it('takes a press on the line over Role’s select, so that Role opens nothing and takes no focus, and Tab still reaches it', async () => {
+      const { name, confirm, role, line } = await makeForm()
+      await act(async () => {
+        await userEvent.click(name)
+      })
+      await keys('sam{Tab}hunter22{Tab}hunted')
+      expect(line.textContent).toBe('The two passwords do not match.')
+      await expectPressesTaken(line, role)
+
+      await act(async () => {
+        await userEvent.click(confirm)
+      })
+      await keys('{Tab}')
+      expect(document.activeElement).toBe(role)
+      expect(line.textContent).toBe('The two passwords do not match.')
+    })
+
+    it('keeps focus on Add when a fill of Confirm password holds it', async () => {
+      const { name, confirm, add } = await makeForm()
+      await act(async () => {
+        await userEvent.click(name)
+      })
+      await keys('sam{Tab}hunter22{Tab}hunter22')
+      act(() => add.focus())
+      expect(document.activeElement).toBe(add)
+      // As a password manager fills a box, with focus left where it was.
+      await typeInto(confirm, 'hunter2')
+      expect(holdOf(add)).toBe('held')
+      expect(document.activeElement).toBe(add)
+    })
   })
 
   it('keeps the backup list inside its own measure', async () => {
@@ -2501,6 +2707,10 @@ describe('the Users pages’ own lines', () => {
       host.querySelector('input[name="password"]') as HTMLInputElement,
       'hunter22',
     )
+    await typeInto(
+      host.querySelector('input[name="confirm-password"]') as HTMLInputElement,
+      'hunter22',
+    )
     await submit(host.querySelector('form.reset') as Element)
     await flush()
     const line = host.querySelector('.reset .done') as HTMLElement
@@ -2530,6 +2740,10 @@ describe('the Users pages’ own lines', () => {
       host.querySelector('input[name="password"]') as HTMLInputElement,
       'hunter22',
     )
+    await typeInto(
+      host.querySelector('input[name="confirm-password"]') as HTMLInputElement,
+      'hunter22',
+    )
     await submit(host.querySelector('form.reset') as Element)
     await flush()
     expect(region.textContent).toBe(
@@ -2545,6 +2759,151 @@ describe('the Users pages’ own lines', () => {
     )
     expect(parseFloat(drawn.paddingTop)).toBeGreaterThan(0)
     expect(drawn.paddingBottom).toBe(drawn.paddingTop)
+  })
+
+  for (const [width, height] of [
+    [1920, 1080],
+    [1280, 900],
+    [390, 844],
+  ] as const) {
+    it(`draws the callout saying the two passwords differ under Confirm password’s row, over Set password’s, covering Set password whole and moving nothing, at ${width}px`, async () => {
+      await sized(width, height)
+      vi.mocked(usersApi.listUsers).mockResolvedValue({ users: [user(), sam] })
+      const host = await opened(`${USERS}/sam`)
+      const form = host.querySelector('form.reset') as HTMLElement
+      const parts = ['password', 'confirm-password'].map(
+        (name) =>
+          form.querySelector(`input[name="${name}"]`) as HTMLInputElement,
+      )
+      const set = form.querySelector('button[name="reset"]') as HTMLElement
+      const line = form.querySelector(
+        ':scope > .callout > [role="status"]',
+      ) as HTMLElement
+      const callout = line.parentElement as HTMLElement
+      expect([
+        callout.getBoundingClientRect().height,
+        getComputedStyle(line).borderTopStyle,
+      ]).toEqual([0, 'none'])
+      const page = host.querySelector('.account-page') as HTMLElement
+      await typeInto(parts[0], 'hunter22')
+      // In the middle of the view, so the callout under it is in view too,
+      // and focused first: neither is a change of layout.
+      parts[1].scrollIntoView({ block: 'center' })
+      act(() => parts[1].focus())
+      const before = layoutOf(page, callout)
+
+      await typeInto(parts[1], 'hunted')
+      expect(line.textContent).toBe('The two passwords do not match.')
+      expect(layoutOf(page, callout)).toEqual(before)
+      await expectCallout(line, parts[1].closest('.settings-row') as Element)
+      expect(liesOver(line, set)).toBe(true)
+    })
+  }
+
+  /**
+   * The line lies under Confirm password's row and over no box, its words
+   * on one line or two (the user's ruling of 2026-10-26): where they take
+   * two, Set password's row keeps their room whether the line is said or
+   * not, so nothing moves when it comes. Where they take one, that row
+   * keeps no room beyond Set password's, as it kept none before.
+   */
+  for (const [width, rootFont] of [
+    [320, ''],
+    [390, '20px'],
+    [390, ''],
+    [1920, ''],
+  ] as const) {
+    it(`lays the line saying the two passwords differ under Confirm password’s row and over no box, so a press on Confirm password reaches it, moving nothing, at ${width}px with the root’s font at ${rootFont || 'the browser’s own'}`, async () => {
+      rootFontAt(rootFont)
+      await sized(width, 900)
+      vi.mocked(usersApi.listUsers).mockResolvedValue({ users: [user(), sam] })
+      const host = await opened(`${USERS}/sam`)
+      const form = host.querySelector('form.reset') as HTMLElement
+      const [password, confirm] = ['password', 'confirm-password'].map(
+        (name) =>
+          form.querySelector(`input[name="${name}"]`) as HTMLInputElement,
+      )
+      const set = form.querySelector('button[name="reset"]') as HTMLElement
+      const line = form.querySelector(
+        ':scope > .callout > [role="status"]',
+      ) as HTMLElement
+      const callout = line.parentElement as HTMLElement
+      const accountPage = host.querySelector('.account-page') as HTMLElement
+      await typeInto(password, 'hunter22')
+      // In the middle of the view, so the line under it is in view too, and
+      // focused first: neither is a change of layout.
+      confirm.scrollIntoView({ block: 'center' })
+      act(() => confirm.focus())
+      const before = layoutOf(accountPage, callout)
+      await typeInto(confirm, 'hunted')
+      expect(line.textContent).toBe('The two passwords do not match.')
+      expect(layoutOf(accountPage, callout), 'what the line moved').toEqual(
+        before,
+      )
+      act(() => password.focus())
+      await expectLaidUnderConfirm(
+        line,
+        confirm,
+        confirm.closest('.settings-row') as Element,
+      )
+      expectRoomUnseen(set, line)
+      if (linesOf(line) === 1) {
+        expect(roomKept(set), 'room kept beside Set password').toBeCloseTo(0, 1)
+      }
+    })
+  }
+
+  /**
+   * At a desktop width the line takes one line, so Set password's row
+   * keeps no room for it, and the form is drawn as a row keeping none
+   * draws it (`expectRowDrawnAt`): Set password at its row's end, where a
+   * form's buttons stand (`.settings-actions`), under the two boxes.
+   */
+  for (const width of [1920, 1280]) {
+    it(`draws Set password at its row’s end under the two boxes, its row keeping no room for the line saying the two passwords differ, at ${width}px`, async () => {
+      await sized(width, 900)
+      vi.mocked(usersApi.listUsers).mockResolvedValue({ users: [user(), sam] })
+      const host = await opened(`${USERS}/sam`)
+      await expectRowDrawnAt(
+        host.querySelector('form.reset button[name="reset"]') as HTMLElement,
+        {
+          row: [0, 171, 606, 59],
+          button: [483, 184, 123, 34],
+          boxes: [
+            [350, 42, 256, 31],
+            [350, 128, 256, 31],
+          ],
+        },
+      )
+    })
+  }
+
+  it('takes a press on the line saying the two passwords differ, so that Set password beneath it is neither pressed nor focused, and Tab still reaches it', async () => {
+    await sized(1280, 900)
+    vi.mocked(usersApi.listUsers).mockResolvedValue({ users: [user(), sam] })
+    vi.mocked(usersApi.patchUser).mockResolvedValue(sam)
+    const host = await opened(`${USERS}/sam`)
+    const form = host.querySelector('form.reset') as HTMLElement
+    const box = (name: string) =>
+      form.querySelector(`input[name="${name}"]`) as HTMLInputElement
+    const [password, confirm] = [box('password'), box('confirm-password')]
+    const set = form.querySelector('button[name="reset"]') as HTMLElement
+    const line = form.querySelector(
+      ':scope > .callout > [role="status"]',
+    ) as HTMLElement
+    await typeInto(password, 'hunter22')
+    await typeInto(confirm, 'hunted')
+    confirm.scrollIntoView({ block: 'center' })
+    expect(line.textContent).toBe('The two passwords do not match.')
+    await expectPressesTaken(line, set)
+    expect(usersApi.patchUser).not.toHaveBeenCalled()
+
+    await act(async () => {
+      await userEvent.click(confirm)
+      await userEvent.keyboard('{Tab}')
+    })
+    expect(document.activeElement).toBe(set)
+    expect(line.textContent).toBe('The two passwords do not match.')
   })
 
   it('says a removal that answers on another account’s page there, leaving focus and the view where they were', async () => {

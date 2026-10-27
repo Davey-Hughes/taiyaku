@@ -36,13 +36,18 @@ function isPlainSentence(body: string): boolean {
 }
 
 /**
- * The body of a thrown `path: status body`, trimmed, or `undefined` for a
- * failure that is not a response. The one place the two readers below find
- * it, so that they cannot disagree about what a body is.
+ * The status and the body, trimmed, of a thrown `path: status body`, or
+ * `undefined` for a failure that is not a response. The one place the
+ * readers below find them, so that they cannot disagree about what a body
+ * is.
  */
-function bodyOf(message: string): string | undefined {
-  const found = /^\S+: \d{3} ([\s\S]*)$/.exec(message)
-  return found === null ? undefined : found[1].trim()
+function answerOf(
+  message: string,
+): { status: number; body: string } | undefined {
+  const found = /^\S+: (\d{3}) ([\s\S]*)$/.exec(message)
+  return found === null
+    ? undefined
+    : { status: Number(found[1]), body: found[2].trim() }
 }
 
 /** A body that is a JSON object, parsed, or `undefined`. */
@@ -78,11 +83,54 @@ function objectOf(
  */
 export function sentenceOf(err: unknown): string {
   const message = messageOf(err)
-  const body = bodyOf(message)
-  if (body === undefined || body === '') return message
-  if (!body.startsWith('{')) return isPlainSentence(body) ? body : message
+  return ownSentenceOf(answerOf(message)?.body) ?? message
+}
+
+/** The sentence a body carries, as `sentenceOf` reads it, or `undefined`. */
+function ownSentenceOf(body: string | undefined): string | undefined {
+  if (body === undefined || body === '') return undefined
+  if (!body.startsWith('{')) return isPlainSentence(body) ? body : undefined
   const error = objectOf(body)?.error
-  return typeof error === 'string' && error.trim() !== '' ? error : message
+  return typeof error === 'string' && error.trim() !== '' ? error : undefined
+}
+
+/**
+ * The status of a response whose body carries no sentence, or `undefined`
+ * for one that carries one and for a failure that is not a response. Such
+ * a body is a proxy's page of markup, an empty body, or anything else
+ * `sentenceOf` answers the whole message for.
+ */
+function statusWithoutSentence(err: unknown): number | undefined {
+  const answer = answerOf(messageOf(err))
+  return answer === undefined || ownSentenceOf(answer.body) !== undefined
+    ? undefined
+    : answer.status
+}
+
+/**
+ * Why a write failed, for a screen that says it after what was not done:
+ * the server's own sentence, as `sentenceOf` reads it; for a response that
+ * carries none, its status alone, since the body is markup or nothing and
+ * not words to read; and a failure that is not a response as it was
+ * thrown.
+ */
+export function reasonOf(err: unknown): string {
+  const status = statusWithoutSentence(err)
+  return status === undefined
+    ? sentenceOf(err)
+    : `the server answered ${status}`
+}
+
+/**
+ * A refused write, for a screen that says it on its own: the server's own
+ * sentence, which says what is wrong; for a response that carries none,
+ * `notDone` and then `reasonOf`'s status, so that the person reads what
+ * failed; and a failure that is not a response as it was thrown.
+ */
+export function refusalOf(err: unknown, notDone: string): string {
+  return statusWithoutSentence(err) === undefined
+    ? reasonOf(err)
+    : `${notDone}: ${reasonOf(err)}`
 }
 
 /**
@@ -93,7 +141,7 @@ export function sentenceOf(err: unknown): string {
  * of strings.
  */
 export function volumesOf(err: unknown): string[] {
-  const volumes = objectOf(bodyOf(messageOf(err)))?.volumes
+  const volumes = objectOf(answerOf(messageOf(err))?.body)?.volumes
   return Array.isArray(volumes) && volumes.every((v) => typeof v === 'string')
     ? volumes
     : []

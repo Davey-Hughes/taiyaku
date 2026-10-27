@@ -8,8 +8,7 @@ import { rules } from './testing/css'
  * they write, and the rules in `index.css` and `styles/*.css` — through
  * `testing/css.ts`'s `rules()` — for the classes their selectors name. A
  * class written and named by no selector fails here, with the file that
- * writes it. O158 was filed from ⑤c's rename of `.reader-note-ok` to
- * `.reader-success`, which `Account.tsx` spells in `LOOKS`.
+ * writes it.
  *
  * **What it reads.** A `className="…"`, word by word. Inside a
  * `className={…}`, each word of a quoted string — except one side of an
@@ -159,18 +158,10 @@ const HOOKS: Record<string, string[]> = {
     'provenance',
     'reorder',
     'truncated',
-    'values',
   ],
   './ProposalRow.test.tsx': ['page'],
   './Proposals.test.tsx': ['tab', 'weak-check'],
-  './RuleEditor.test.tsx': [
-    'busy',
-    'held-edit',
-    'import',
-    'refused',
-    'save',
-    'saved',
-  ],
+  './RuleEditor.test.tsx': ['held-edit', 'refused', 'save', 'saved'],
   './RuleList.test.tsx': [
     'add-rule',
     'confirm-delete',
@@ -366,8 +357,8 @@ describe('class names', () => {
         .filter(([, css]) => css.trim() === '')
         .map(([path]) => path),
     ).toEqual([])
-    expect(DRAWN.has('reader-success')).toBe(true)
-    expect([...(SCAN.classes.get('reader-success') ?? [])]).toEqual([
+    expect(DRAWN.has('reader-failure')).toBe(true)
+    expect([...(SCAN.classes.get('reader-failure') ?? [])]).toEqual([
       './Account.tsx',
     ])
   })

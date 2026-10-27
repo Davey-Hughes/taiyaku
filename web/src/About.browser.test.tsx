@@ -3,6 +3,7 @@ import { MemoryRouter } from 'react-router'
 import { describe, expect, it, onTestFinished } from 'vitest'
 import { page, userEvent } from 'vitest/browser'
 import { About } from './About'
+import type { About as AboutAnswer } from './about'
 import './index.css'
 import { ABOUT } from './testing/about'
 import { answerAbout, inShell } from './testing/aboutPage'
@@ -18,12 +19,16 @@ import {
 
 /**
  * About at `width` × `height`, inside the shell's `<main>` (`inShell`), once
- * `/api/about` has answered and the faces have loaded: a face arriving
- * between two measurements moves what the second one reads.
+ * `/api/about` has answered with `answer` and the faces have loaded: a face
+ * arriving between two measurements moves what the second one reads.
  */
-async function aboutAt(width: number, height: number): Promise<HTMLElement> {
+async function aboutAt(
+  width: number,
+  height: number,
+  answer: AboutAnswer = ABOUT,
+): Promise<HTMLElement> {
   await page.viewport(width, height)
-  answerAbout()
+  answerAbout(answer)
   const host = mount(<MemoryRouter>{inShell(<About />)}</MemoryRouter>)
   await act(async () => {
     await new Promise((resolve) => {
@@ -180,12 +185,12 @@ function drawnWords(button: HTMLElement): string[] {
   return drawn
 }
 
-/** About's card headed `heading`. */
-function card(host: HTMLElement, heading: string): HTMLElement {
-  const found = [...host.querySelectorAll<HTMLElement>('.about-card')].find(
-    (el) => el.querySelector('h2')?.textContent === heading,
-  )
-  if (!found) throw new Error(`no ${heading} card`)
+/** About's section headed `heading`. */
+function section(host: HTMLElement, heading: string): HTMLElement {
+  const found = [
+    ...host.querySelectorAll<HTMLElement>('.settings-section'),
+  ].find((el) => el.querySelector('h2')?.textContent === heading)
+  if (!found) throw new Error(`no ${heading} section`)
   return found
 }
 
@@ -220,15 +225,25 @@ function alone(el: HTMLElement, words: string): number {
 }
 
 /**
- * **A press changes the word on Copy address and moves nothing.** At 1280
- * the test page's address, `http://localhost:<port>/opds/v1.2/catalog`,
- * leaves less room after the button than the gap a third item on the line
- * would need, so anything beside the button in the row's flow, even an
- * empty live region, wraps onto a line of its own and pushes Formats and
- * Licence down. The row is the button's height before the press and after
- * it, and the button keeps its width while it says what the press did.
- * Headless Chromium refuses the write, which says "Not copied"; a clipboard
- * that takes it says "Copied".
+ * An answer whose catalog address, at this frame's origin and whatever its
+ * port, is 36 characters long: at 1280 px, in the address's monospace face,
+ * it shares its line with Copy address and leaves less room after the
+ * button than the gap a third item on the line would need. The line is the
+ * This build box's, whose width the settings components set.
+ */
+const fillingTheLine = (): AboutAnswer => ({
+  ...ABOUT,
+  catalog: `/opds/${'v'.repeat(36 - location.origin.length - '/opds/'.length)}`,
+})
+
+/**
+ * **A press changes the word on Copy address and moves nothing.** With an
+ * address that fills its line (`fillingTheLine`), anything beside the
+ * button in the row's flow, even an empty live region, wraps onto a line of
+ * its own and pushes Formats and Licence down. The row is the button's
+ * height before the press and after it, and the button keeps its width
+ * while it says what the press did. Headless Chromium refuses the write,
+ * which says "Not copied"; a clipboard that takes it says "Copied".
  */
 describe('About’s Copy address, pressed', () => {
   it.each([
@@ -238,9 +253,9 @@ describe('About’s Copy address, pressed', () => {
     'moves nothing at 1280 px with %s',
     async (_, writeText, said) => {
       const writes = clipboardFor(writeText)
-      const host = await aboutAt(1280, 900)
+      const host = await aboutAt(1280, 900, fillingTheLine())
       const { row, address, button, region } = catalogLine(host)
-      const formats = card(host, 'Formats')
+      const formats = section(host, 'Formats')
       const room =
         row.getBoundingClientRect().right - button.getBoundingClientRect().right
       // The case's premise: the button shares the address's line, with too
@@ -348,14 +363,16 @@ describe('About’s Copy address, pressed', () => {
 /**
  * **Every link on About that stands alone is a finger's 44 px under a
  * coarse pointer** (spec 2026-09-17 §7.1): the commit and Source, the
- * Licence card's link, and Copy address beside them. Under a coarse
+ * Licence section's two links, and Copy address beside them. Under a coarse
  * pointer each target, measured by hit testing along its middle row and
  * column (`pressArea`), is its box grown about its middle to 44 px
  * (`fingerArea`): so no other target is drawn over any of it on those
  * lines, and each is at least 44 each way. Those grown boxes are then
- * checked not to overlap at all, corners included. A window tall enough to
- * hold the whole page, so every area is measured where it is drawn and none
- * of them scrolls. The fine case shows it is the coarse rules that reach 44.
+ * checked not to overlap at all, corners included. Down to 320, the
+ * narrowest phone, where a sentence wrapped before its second link would
+ * stack the two licence links' targets. A window tall enough to hold the
+ * whole page, so every area is measured where it is drawn and none of them
+ * scrolls. The fine case shows it is the coarse rules that reach 44.
  */
 describe('About’s links', () => {
   // Coarse first at 1280: the fine case after it is what shows the coarse
@@ -364,17 +381,24 @@ describe('About’s links', () => {
     [1280, 'coarse'],
     [1280, 'fine'],
     [390, 'coarse'],
+    [360, 'coarse'],
+    [320, 'coarse'],
   ] as const)('at %i px with a %s pointer', async (width, pointer) => {
     if (pointer === 'coarse') onTestFinished(coarseRulesOn())
-    const host = await aboutAt(width, 1600)
-    const licence = [...host.querySelectorAll('.about-card')].find(
-      (card) => card.querySelector('h2')?.textContent === 'Licence',
-    )
-    if (!licence) throw new Error('no Licence card')
+    const host = await aboutAt(width, 2400)
+    // The case's premise: the whole page is in the window, so every target
+    // is measured where it is drawn.
+    expect(host.getBoundingClientRect().bottom).toBeLessThanOrEqual(innerHeight)
+    const licence = [...section(host, 'Licence').querySelectorAll('a')]
+    expect(licence.map((link) => link.textContent)).toEqual([
+      'GPL-3.0-or-later',
+      'OFL-1.1',
+    ])
     const links = {
       Commit: one(fact(host, 'Commit')[1], 'a'),
       Source: one(fact(host, 'Source')[1], 'a'),
-      Licence: one(licence, 'a'),
+      'GPL-3.0-or-later': licence[0] as HTMLElement,
+      'OFL-1.1': licence[1] as HTMLElement,
     }
     if (pointer === 'fine') {
       for (const [name, link] of Object.entries(links)) {
@@ -491,7 +515,7 @@ function colourIn(el: HTMLElement, value: string): string {
  * the 14px floor, and wraps rather than widening the page.** `--muted` is
  * the colour whose floors `index.css.test.ts` holds in both themes, so the
  * sentence keeps them by being that colour. At 390, where a sentence is
- * longer than the card is wide, so the wrap is what keeps the page from
+ * longer than the box is wide, so the wrap is what keeps the page from
  * scrolling sideways; at 1280 too, where the name and the sentence share
  * a wider cell beside the version.
  */
@@ -500,7 +524,7 @@ describe('About’s formats', () => {
     'draw each sentence under its name, muted at 14 px, at %i px',
     async (width) => {
       const host = await aboutAt(width, 900)
-      const formats = card(host, 'Formats')
+      const formats = section(host, 'Formats')
       const right = formats.getBoundingClientRect().right
       const rows = [...formats.querySelectorAll('tbody tr')]
       expect(rows).toHaveLength(ABOUT.formats.length)
@@ -523,7 +547,7 @@ describe('About’s formats', () => {
           .soft(text.box.top, `${said}: under its name`)
           .toBeGreaterThanOrEqual(textOf(name).box.bottom)
         expect
-          .soft(text.box.right, `${said}: inside the card`)
+          .soft(text.box.right, `${said}: inside the box`)
           .toBeLessThanOrEqual(right)
       }
       expect
@@ -558,7 +582,7 @@ describe('About’s format names', () => {
         document.documentElement.removeAttribute('data-theme'),
       )
       const host = await aboutAt(1280, 900)
-      const rows = [...card(host, 'Formats').querySelectorAll('tbody tr')]
+      const rows = [...section(host, 'Formats').querySelectorAll('tbody tr')]
       expect(
         rows.map((row) => {
           const lead = one(row, 'td.lead')

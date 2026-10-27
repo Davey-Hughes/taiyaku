@@ -562,8 +562,7 @@
  * `library.css`'s `.search-box` comment records fixing. */
 .proposal-detail .field,
 .rule-form .field,
-.add-root .field,
-.account .field {
+.add-root .field {
   min-width: 0;
   display: grid;
   /* **`var(--space-1)` is 4px, and 4px is what the focus ring occupies.**
@@ -573,8 +572,7 @@
    * The `0.15rem` this shipped with is 2.4px, so the ring landed inside the
    * label's own line: measured in a 390px Chromium context with `hasTouch`
    * and `isMobile` set, the label's ink stopped **2.00px** above the ring on
-   * `/account`, `/config/users`, `/config/roots`, `/config/rules` and the
-   * proposals accept form — five screens, one figure, because one rule.
+   * every screen the block then reached — one figure, because one rule.
    *
    * **This is older than the branch that fixed it.** `main` carries the
    * same 2.4px on the same block, and `.proposal-detail .field` — the one
@@ -616,43 +614,23 @@
  * moment the same task put the class on nine more. `--space-1`/`--space-2`
  * rather than `--space-2`/`--space-3`: the nearer pair to the `0.25rem` this
  * held, so the controls stay as compact as they were rather than growing. */
-/* `.account .account-row input` is the one entry here whose second class is
- * not `.field`: it is the account page's key-name box, the only control on
- * `/account` that no `.field` wraps, so its row is what reaches it. Two
- * classes and not the one `.account-row` would need, because every other
- * selector in this list is (0,2,1) and a (0,1,1) beside them is a
- * descending specificity — biome says so, and the rule it names is about a
- * cascade that reads the wrong way round to anyone editing this block later.
- *
- * It joins this list and the coarse-pointer companion below — the coupled
- * pair — and not the block's base rule above, which styles a `<label>`: an
- * `<input>` there would take a `display: grid` and an 11.2px size that this
- * rule then has to undo. Measured both ways in Chromium on 2026-09-24; the
- * box is identical but for a computed `display` of `grid` against `block`.
- * The one other rule naming this selector is its `flex` beside
- * `.account-row` itself. `admin-account.css.test.ts` counts all three. */
 .proposal-detail .field input,
 .rule-form .field input,
 .proposal-detail .field select,
 .rule-form .field select,
-.add-root .field input,
-.account .field input,
-.account .account-row input {
+.add-root .field input {
   /* **A `<select>`'s intrinsic width is its widest option, and a grid item
    * will not go below that without this.** `scope`'s options are absolute
-   * root paths. Measured at 390 before this line, against the library these
-   * rules were built on, whose root is 35 characters: the select rendered
-   * **299px inside its 166px label**, and the 133px it spilled ran up
-   * through `.rule-form`, `.editor-right`, `.editor-panes` and `.config` —
-   * every one `overflow-x: visible` — to put **118px of sideways scroll on
-   * the document**, on the screen whose whole purpose is not doing that.
+   * root paths, so on a phone the select is wider than its label, and what
+   * it spills passes up through `.rule-form`, its pane's box,
+   * `.editor-panes` and `.config` — every one `overflow-x: visible` — and
+   * scrolls the screen sideways, the screen whose whole purpose is not
+   * doing that. `RuleForm.browser.test.tsx`'s fixture holds a root as long
+   * as a real one, so that it can see this.
    *
-   * Found by the browser pass, and `RuleForm.browser.test.tsx` could not
-   * have found it: its fixture root was `/srv/manga`, ten characters, which
-   * fits. That fixture now carries a real one.
-   *
-   * `.editor-right` carries the same declaration for the same element one
-   * layer out, and its comment names this select. This is where it bites. */
+   * Where Rules' panes are sized by what they hold, a select's field gives
+   * the form no width at all (`.editor-panes .rule-form`), so the select
+   * takes the width its field has. */
   min-width: 0;
   padding: var(--space-1) var(--space-2);
   border: 1px solid var(--line-strong);
@@ -684,9 +662,7 @@
   .rule-form .field input,
   .proposal-detail .field select,
   .rule-form .field select,
-  .add-root .field input,
-  .account .field input,
-  .account .account-row input {
+  .add-root .field input {
     font-size: max(16px, var(--text-ui));
   }
 }
@@ -896,12 +872,10 @@
 
 /* The rule editor — spec 2026-09-17 §10.3.
  *
- * **The preview is a sibling of the panes, not inside the right one.** The
- * class names promised two panes and drew none: `.editor-panes`,
- * `.rule-list` and `.editor-right` were block `<div>`s that each measured
- * 1168px of `<main>`'s 1216 and stacked, while a rule row's own children
- * ended at x=584 — 856px of every row empty. So what was missing was a grid
- * over full-width blocks, not width for narrow ones.
+ * **The preview is a sibling of the panes, not inside the rule's.** The
+ * panes are a grid, the list's beside the rule's where they fit, since a
+ * rule row's own parts take a fraction of the screen's width and a block of
+ * its own would leave most of every row empty.
  *
  * The list goes beside the form because they are what you edit together.
  * The preview goes underneath both because it is the only part that needs
@@ -915,50 +889,177 @@
   gap: var(--space-5);
 }
 
-.rule-editor > h2 {
+/* The column's gap is the one space between the header, the boxes and the
+ * rest. The margins the frame gives them in a page's block flow would be
+ * added to it, since nothing collapses in a flex column or a grid. */
+.rule-editor > .page-header,
+.rule-editor .settings-section {
   margin: 0;
-  font-size: var(--text-h2);
 }
 
 .editor-panes {
   display: grid;
-  gap: var(--space-5);
+  gap: var(--rule-panes-gap);
   align-items: start;
 }
 
 /* One column below the breakpoint, and the source order — list, form — is
- * already the order a phone wants, so nothing is reordered.
+ * already the order a phone wants, so nothing is reordered. There each box
+ * is as wide as the column, as a settings box is.
  *
  * Range syntax, and 900 rather than a number of this file's own: `shell.css`,
  * `library.css` and `reader.css` all turn at `(width < 900px)`, which is where
  * the sidebar becomes the drawer. This is the same turn seen from the other
- * side, so it is written the same way. */
+ * side, so it is written the same way.
+ *
+ * **Side by side only where Rules has the room for it** (`@container
+ * rules`, here and at the form's rules): 36rem holds the seeded rules' list
+ * whole, its longest piece beside each row's own parts, one gap, and the
+ * rule's pane at its narrowest (`--rule-pane-narrowest`), under either
+ * pointer (a coarse one grows each row's enable box) and at any root font
+ * from 17px up; at 16px and under, the breakpoint itself leaves Rules more
+ * room than that list needs.
+ * The room is asked of Rules' own width, in rem, because the sidebar,
+ * `main`'s padding, the names and the pane all grow with the root font and
+ * the breakpoint does not, so past the breakpoint at a larger root font
+ * Rules has less room than the window's width says. With less room, side
+ * by side would break a seeded name inside a word, so Rules is the one
+ * column it is below the breakpoint, where a name has the column's whole
+ * width. A container query cannot read a custom property, so the figure is
+ * written in both places.
+ *
+ * **Side by side, each box is as wide as what it holds**, all from where
+ * the other Configuration pages start, and the room past them is on the
+ * right (the user's ruling of 2026-10-26). The column is as wide as its
+ * widest part, short of `main`'s width; the preview takes the column's
+ * width, so it is at least as wide as the list and the rule's pane beside
+ * it, and wider only where a tab holds something wider, a table or a path.
+ * Never wider than `main`'s width: a table's narrowest is still wider than
+ * `main` where it has many columns, and it scrolls inside its box
+ * (`.table-scroll`) only once the column stops there. */
 @media (width >= 900px) {
-  .editor-panes {
-    grid-template-columns: minmax(14rem, 22rem) minmax(0, 1fr);
+  /* The width Rules has, which the queries ask and the list's bound reads
+     as `100cqi`: `.config` is as wide as `main`'s content, and nothing in
+     it sets that. A container only from the breakpoint up, so that below
+     it nothing asks it and Rules is one column whatever its width. */
+  .config:has(> .rule-editor) {
+    container: rules / inline-size;
   }
 }
 
-/* `minmax(0, 1fr)` above, and `min-width: 0` here: a grid item defaults to
- * `min-width: auto` and refuses to shrink below its content. The same reason
- * `.proposal-list li` carries it.
- *
- * **What makes that concrete here is the `scope` select, not the `pattern`
- * box.** A native text input does not grow to fit its value — its width is
- * the `size` attribute's, whatever is typed into it — so a long pattern
- * cannot widen this pane. A `<select>` does: its intrinsic width is its
- * widest option, and `RuleForm`'s scope options are absolute root paths.
- * The one in the library this was measured against is 35 characters, and a
- * deployment is free to mount something far longer. */
-.editor-right {
-  min-width: 0;
+@container rules (inline-size >= 36rem) {
+  .rule-editor {
+    width: fit-content;
+    max-width: 100%;
+  }
+
+  /* A settings box is an inline-size container, which gives it no width
+     from what it holds. Here the width is what it holds, and nothing in
+     Rules' boxes asks the box's width (`@container settings-box`). */
+  .rule-editor .settings-box {
+    container-type: normal;
+  }
+
+  /* The panes keep their own width when the preview is wider.
+   *
+   * With no rule picked, the list's track is maximized before the pane's
+   * `fr` takes what is left, so the list is as wide as its widest rule, up
+   * to its cap (`--rule-list-widest`), and the pane's sentence wraps first,
+   * the pane down to `--rule-pane-least`; past that the list gives way, down to its
+   * longest unbreakable piece, which the track never goes below unless the
+   * piece is too wide to fit at all (the list's bound, below). A
+   * `fit-content` percentage is read only once the grid's width is known,
+   * so it caps nothing while the column is measuring how wide the panes
+   * want to be. */
+  .editor-panes {
+    align-self: start;
+    grid-template-columns:
+      fit-content(calc(100% - var(--rule-pane-least) - var(--rule-panes-gap)))
+      minmax(0, 1fr);
+  }
+
+  /* With a rule picked, the order turns round: the form is what is being
+     edited, and a form squeezed narrower than its own width puts the boxes
+     under Sets on two lines and cuts its note, where a name squeezed
+     narrower only wraps between its words. So the pane's `auto` track
+     takes the form's own width before the list's `fr` takes what is left,
+     and the list gives way first, down to its longest unbreakable piece
+     (or its bound, below); only then does the pane give way, to whatever
+     room the list leaves. */
+  .editor-panes:has(.rule-form) {
+    grid-template-columns: minmax(min-content, 1fr) auto;
+  }
+
+  /* The list stops at its cap, and short of the room Rules has less the
+     rule's pane's narrowest (`--rule-pane-narrowest`). Its longest piece
+     sets its floor only up to that bound, so a piece too wide for that
+     breaks inside its line (`.rule-row .rule-name`) rather than pushing
+     the pane out of `main` or down to nothing. */
+  .editor-panes > .settings-section:first-child {
+    max-width: min(
+      var(--rule-list-widest),
+      100cqi -
+      var(--rule-panes-gap) -
+      var(--rule-pane-narrowest)
+    );
+  }
+
+  /* What is said in sentences, and the save's report, wraps at the width
+     the boxes set and gives the column none of its own: a sentence on one
+     line is wider than the box it says something about. Sentences keep the
+     reading measure where the column is wider. A path is not a sentence:
+     an override's `.where`, like a table's paths, gives the preview its
+     width up to `main`'s and breaks anywhere past that (`.preview
+     .where`). The rule's pane's sentence, while no rule is picked, is what
+     the pane holds, so it is not here. */
+  .rule-editor > :is(p, details),
+  .rule-list p,
+  .preview p:not(.where),
+  .preview .values {
+    contain: inline-size;
+  }
+
+  .rule-editor > p,
+  .rule-list p,
+  .preview p:not(.where),
+  .preview .values {
+    max-width: 60ch;
+  }
 }
 
+/* "Previewing…", at the end of the Preview heading's line, quiet as a
+   section's description is. */
+.rule-editor .settings-section-actions .busy {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--text-ui);
+}
+
+/* Save, Import and Export, with Import's help and what an import says
+   under them. On the controls' words' baseline, so the three read as one
+   row wherever they share a line; each wraps whole. Import's box draws
+   nothing of its own, so its help, after Import in the reading order, is
+   drawn on a line of its own under all three, and Export sits beside
+   Import. */
 .editor-actions {
   display: flex;
   flex-wrap: wrap;
-  align-items: center;
+  align-items: baseline;
   gap: var(--space-3);
+}
+
+.editor-actions .import {
+  display: contents;
+}
+
+/* The line's whole width, so nothing shares it, with its words held to
+   the reading measure by the room kept at its end. Contained, so the
+   words give the column no width of their own. */
+.editor-actions .import > p {
+  order: 1;
+  flex-basis: 100%;
+  contain: inline-size;
+  padding-inline-end: max(0px, 100% - 60ch);
 }
 
 /* The rule list — §10.4. An `<ol>` whose markers are off because the row
@@ -967,7 +1068,8 @@
   list-style: none;
   margin: 0;
   padding: 0;
-  display: grid;
+  display: flex;
+  flex-direction: column;
   gap: var(--space-1);
 }
 
@@ -1033,7 +1135,8 @@
 .rule-row .select {
   flex: 1;
   min-width: 0;
-  display: grid;
+  display: flex;
+  flex-direction: column;
   gap: 1px;
   padding: 0;
   border: 0;
@@ -1044,8 +1147,18 @@
   cursor: pointer;
 }
 
+/* A name wraps between its words and after a Rust path's `::`
+   (`NameWithBreaks`), and inside a piece only where the piece is wider
+   than its whole line. `break-word` and not `anywhere`, so the list's
+   min-content keeps the longest piece, and the list's track
+   (`.editor-panes`) never draws the list narrower than that piece where
+   there is room for it. Where there is not, the piece breaks inside its
+   line rather than running past the list's box, because the rows and the
+   name are stacked in flex columns (`.rule-list ol`, `.rule-row
+   .select`), which stretch each to the width they have where a grid's
+   column would grow to the piece. */
 .rule-row .rule-name {
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
 }
 
 /* Quiet by size and colour, never by `opacity` — the rule this stylesheet's
@@ -1100,26 +1213,19 @@
 /* **`box-sizing: border-box`, because `flex-basis` sizes the content box and
  * this project sets no global reset.** `1 0 100%` asks for the form's full
  * width as *content*; the fieldset's own `var(--space-3)` padding and 1px
- * border then add 26px on top of it. Measured at 1440 before this line: the
- * fieldset rendered **803px inside a 777px form** — exactly 12+12 of padding
- * and 1+1 of border — and the 26px it spilled propagated up through
- * `.editor-right`, `.editor-panes` and `.config`, all `overflow-x: visible`
- * so each only passed it on, until it reached `main`, which is
- * `overflow-x: auto` and grew a sideways scrollbar for it.
+ * border would then be added on top of it, and what they spill would pass
+ * up through the rule's pane, `.editor-panes` and `.config`, all
+ * `overflow-x: visible` so each only passes it on, until it reaches `main`,
+ * which is `overflow-x: auto` and grows a sideways scrollbar for it.
  *
- * `min-width: 0` was the first guess and is not the cause: a `<fieldset>`
- * does carry `min-width: min-content` from the UA stylesheet, but overriding
- * it changed the rendered width by nothing. The 26px is the box model, not
- * the minimum.
+ * `min-width: 0` does not answer it: a `<fieldset>` does carry
+ * `min-width: min-content` from the UA stylesheet, but the overflow is the
+ * box model, not the minimum.
  *
- * **Found by the browser pass, and nothing on this branch could have caught
- * it at the time**: the *document's* `scrollWidth` reads no overflow at any
- * width, because the element that scrolls is `main`. Every assertion written
- * to guard against unwanted sideways scroll measured the document — and the
- * ones that do measure a box, in `PreviewTabs.browser.test.tsx`, watch a
- * `.table-scroll` that is *meant* to scroll, in a different component.
- * `RuleForm.browser.test.tsx` now measures this fieldset against the form
- * that contains it, which is the shape that can see this. */
+ * The *document's* `scrollWidth` reads no overflow at any width, because the
+ * element that scrolls is `main`, so `RuleForm.browser.test.tsx` measures
+ * this fieldset against the form that contains it, which is the shape that
+ * can see this. */
 .rule-form .rule-sets {
   flex: 1 0 100%;
   box-sizing: border-box;
@@ -1138,6 +1244,50 @@
   font-size: var(--text-meta);
   letter-spacing: 0.06em;
   text-transform: uppercase;
+}
+
+/* Side by side, where Rules has the room `.editor-panes`' query asks for. */
+@container rules (inline-size >= 36rem) {
+  /* The rule's fields in two columns as wide as the widest row needs: the
+     four boxes under Sets side by side, the pattern and the note each on a
+     row of their own, so the longest seeded rule's note is whole in its
+     box. A select is as wide as its widest option, and scope's options are
+     absolute root paths with no bound, so a select takes the width its
+     column has and gives it none. */
+  .editor-panes .rule-form {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .editor-panes
+    .rule-form
+    > :is(.field.pattern, .rule-sets, .field:has(> input[name="note"])) {
+    grid-column: 1 / -1;
+  }
+
+  .editor-panes .rule-form .field:has(> select) {
+    contain: inline-size;
+  }
+
+  /* Each box under Sets as wide as what it holds (`--rule-sets-box`), and
+     each field as wide as its box. The fieldset is as wide as the four
+     boxes and their gaps, and it breaks its line by each field's basis, so
+     the 8rem basis `.rule-form .field` gives would put the fourth box on a
+     line of its own; and where the form is narrower, a growing field would
+     leave room inside it, between its box and the next field. */
+  .editor-panes .rule-sets .field {
+    flex: none;
+  }
+
+  /* `--rule-sets-box` inside the box's padding and border, the ones
+     `.rule-form .field input` gives it, with the box drawn border-box under
+     either pointer: a coarse pointer draws it so, for its 44px floor to be
+     the drawn box's, and a width that left the edges out would there hold
+     fewer characters than under a fine one. */
+  .editor-panes .rule-sets input {
+    box-sizing: border-box;
+    width: calc(var(--rule-sets-box) + 2 * var(--space-2) + 2px);
+  }
 }
 
 /* A wide table scrolls inside its own box, and the page never does — §10.6,
@@ -1287,6 +1437,13 @@
   box-shadow: 1px 0 0 var(--line);
 }
 
+/* An override's path breaks as the tables' paths do: anywhere, once it is
+   wider than the preview, which a path with no spaces in it would
+   otherwise run past and scroll `main` sideways. */
+.preview .where {
+  overflow-wrap: anywhere;
+}
+
 /* One measure for the settings area, set once. A width per control is a
    figure per control, and this pass has already spent four review rounds on
    that kind of drift (spec §11.4). `.account`'s 40rem is the precedent and
@@ -1295,6 +1452,32 @@
 .users,
 .backup {
   --config-measure: 40rem;
+}
+
+/* Rules' boxes are as wide as what they hold (`.editor-panes`), with
+   bounds of their own. The list's box stops at the settings measure, so a
+   long note wraps between its words rather than widening the list past
+   any other settings box. Where the screen is too narrow for both panes at
+   their own width and no rule is picked, the rule's pane keeps 20rem, two
+   lines of its sentence, before the list gives any: a name wrapping between
+   its words can still be read.
+
+   The boxes under Sets hold a series, an edition key, a kind and a
+   language tag, short values (the longest kind is `official`). Twelve
+   characters holds those and a short series name, and keeps the four on
+   one line beside the list on narrower screens than the browser's own
+   twenty would. A longer value scrolls in its box. `ch` is read in the
+   box's own font, where the token is used.
+
+   However long a rule's name, the rule's pane keeps 14rem. The two panes go side by side only where Rules has
+   room for the seeded rules' list whole beside it (`@container rules`), so
+   only a piece too wide to fit beside it is broken for it. */
+.rule-editor {
+  --rule-list-widest: 40rem;
+  --rule-pane-least: 20rem;
+  --rule-pane-narrowest: 14rem;
+  --rule-panes-gap: var(--space-5);
+  --rule-sets-box: 12ch;
 }
 
 .add-root,
@@ -1968,75 +2151,44 @@
    treatment for the product's removal blocks, stated once. */
 
 /* O94's account screen at `/account`: the `Account` the reader draws as an
-   overlay, drawn here inside `.library`'s `<main>`. The panel's palette is
-   fixed dark to sit over a page, so `Account` hands *that* placement the
-   reader's own classes and this one `admin.css`'s (spec §12.5).
-
-   ⑤c made it a settings screen rather than a page of hairlines: a card per
-   section on the same measure the libraries and users screens use, the `.field`
-   micro-label on the two boxes that have a label, and quiet text bought with
-   `--muted` and size. It was bought with `opacity` before, and the 0.6 dim on
-   a session's "last seen" measured 4.18:1 on Paper at 16px — under AA.
-
-   The key-name box has no label to carry the micro-label — only a
-   placeholder, and whether it should have a real label is the accessibility
-   pass's question, not this file's — so the shared `.field` block reaches it
-   by `.account .account-row input` instead. Left out of that block it drew
-   `base.css`'s bare-control defaults: **166px wide at 16px with `1px 2px` of
-   padding**, beside password boxes at 14px and `4px 8px`, and a 399px hole
-   between it and the Create button. Measured in Chromium at 1280px,
-   2026-09-24. */
-/* About (`About.tsx`) is drawn as the account page is: the same measure,
-   the same title and a card per section. */
+   overlay, drawn here inside `.library`'s `<main>` on the settings
+   components (`settings.css`). The panel's palette is fixed dark to sit over
+   a page, so `Account` hands *that* placement the reader's own classes, and
+   this one `admin.css`'s for what the components do not draw: the alert
+   above its sections, and the one-time secret with its caption (spec
+   §12.5). Quiet text here is `--muted` at a smaller size and never an
+   `opacity`, which dims it under AA on Paper. */
+/* About and the licence page (`.about`) take the account page's measure,
+   which the settings components are drawn to (`settings.css`), so the way
+   down from About and back keeps one width. */
 .account,
 .about {
   --config-measure: 40rem;
 }
 
-/* An h1 since O163, held at the h2 size it was drawn at: `base.css` sizes
- * an h1 a step up. */
-.account > h1,
-.about > h1 {
-  margin: 0;
-  font-size: var(--text-h2);
-}
-
-.account-card,
-.about-card {
-  max-width: var(--config-measure);
-  margin-top: var(--space-4);
-  padding: var(--space-4);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-control);
-}
-
-.account-heading,
-.about-heading {
-  margin: 0 0 var(--space-3);
-  font-family: var(--font-title);
-  font-size: var(--text-body);
-  font-weight: 600;
-}
-
-/* The build's facts, each beside the word that names it and on its
-   baseline: the catalog's address shares its line with Copy address where
-   the line has room, and the button is taller than the address, and under
-   a coarse pointer a link's box is taller than its word, so a label at the
-   top of its row would sit above its value. A repository's address does
-   not break at a slash, and must not widen the card. The parts are scoped by `.about` too, which puts
-   them at the specificity of the `dt` and `dd` rules above them in this
-   file: a weaker selector after a stronger one is what
-   `noDescendingSpecificity` refuses. */
+/* The build's facts, a row of the box each, split by the box's lines (the
+   `dl` is a `settings-group`). The rows share the list's two columns, so
+   every fact starts at one edge, and each fact is beside the word that
+   names it and on its baseline: the catalog's address shares its line with
+   Copy address where the line has room, and the button is taller than the
+   address, and under a coarse pointer a link's box is taller than its word,
+   so a label at the top of its row would sit above its value. A
+   repository's address does not break at a slash, and must not widen the
+   box. The parts are scoped by `.about` too, which puts them at the
+   specificity of the `dt` and `dd` rules above them in this file: a weaker
+   selector after a stronger one is what `noDescendingSpecificity`
+   refuses. */
 .about-facts {
   display: grid;
   grid-template-columns: auto 1fr;
-  align-items: baseline;
-  gap: var(--space-2) var(--space-4);
-  margin: 0;
+  column-gap: var(--space-4);
 }
 
 .about .about-facts > div {
-  display: contents;
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: subgrid;
+  align-items: baseline;
 }
 
 .about .about-facts dt {
@@ -2047,12 +2199,6 @@
   min-width: 0;
   margin: 0;
   overflow-wrap: anywhere;
-}
-
-/* About's licence card holds one sentence, and the card's padding is the
-   space under it. */
-.about-licence {
-  margin: 0;
 }
 
 /* A format's sentence, on a line of its own under the name in the name's
@@ -2074,25 +2220,22 @@
   font-weight: 600;
 }
 
-/* The licence page's texts (`Licence.tsx`), in cards of About's width, the
-   measure `.about` sets, so the way down from About and back keeps one
-   width. Each text keeps its line breaks and indents, and wraps where the
-   card is narrower than its lines; anywhere if it must, since a font
-   licence's first line runs its copyright notices and their addresses
-   together. A `pre` that did not wrap would widen the page.
+/* The licence page's texts (`Licence.tsx`). Each keeps its line breaks and
+   indents, and wraps where its box is narrower than its lines; anywhere if
+   it must, since a font licence's first line runs its copyright notices and
+   their addresses together. A `pre` that did not wrap would widen the page.
    `Licence.browser.test.tsx` holds a phone's width and a desktop's. */
 .licence-text {
-  margin: 0;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
   font-family: ui-monospace, monospace;
   font-size: var(--text-ui);
 }
 
-/* The licence page's contents: a line per card under the title, in the
-   cards' order. The gap keeps each link's target apart from the next one's,
-   which under a coarse pointer are boxes a finger's height tall that would
-   otherwise meet. */
+/* The licence page's contents: a line per licence under the header, in the
+   order the licences are drawn. The gap keeps each link's target apart from
+   the next one's, which under a coarse pointer are boxes a finger's height
+   tall that would otherwise meet. */
 .licence .licence-contents ul {
   display: grid;
   gap: var(--space-1);
@@ -2101,25 +2244,28 @@
   list-style: none;
 }
 
-/* Where Back to the page's own address puts the view: the page's top, with
-   `<main>`'s padding above it, as at the top of the scroll, and the phone
-   bar, which covers the top of the view at a phone's width
-   (`--sticky-top`). */
-.licence {
-  scroll-margin-top: calc(var(--sticky-top, 0px) + var(--space-4));
+/* Each licence's ways back to the page's top, drawn as the way up is: one
+   at the end of its heading's line (`Section`'s actions), and one as the
+   last row of its box, at the row's end. */
+.licence .to-top {
+  font-size: var(--text-ui);
+  text-decoration: none;
 }
 
-/* Where a contents link lands. The heading is what is scrolled to, so its
-   margin holds the card's border and padding above it and a little air,
-   which keeps the card's top edge in view, and the phone bar, which covers
-   the top of the view at a phone's width (`--sticky-top`). */
-.licence .about-heading {
-  scroll-margin-top: calc(
-    var(--sticky-top, 0px) +
-    1px +
-    var(--space-4) +
-    var(--space-2)
-  );
+.licence .licence-foot {
+  text-align: end;
+}
+
+/* Where the view lands: the page's top, on Back to the page's own address
+   and on Back to top, and a licence's heading, on a contents link. Each
+   lands with `<main>`'s padding above it, as the page's top is at the top
+   of the scroll, and below the phone bar, which covers the top of the view
+   at a phone's width (`--sticky-top`). The heading is the top of its
+   section, above its box, so nothing of the section is left above the
+   view. */
+.licence,
+.licence .settings-section-title {
+  scroll-margin-top: calc(var(--sticky-top, 0px) + var(--space-4));
 }
 
 /* The OPDS catalog's address (`CatalogAddress.tsx`), on `/about` and in
@@ -2151,123 +2297,157 @@
   font-family: ui-monospace, monospace;
 }
 
-/* Copy address's three words, "Copy address", "Copied" and "Not copied",
-   drawn one over another in one grid cell, so the button is as wide as the
-   widest of them in whatever font draws them, whichever one shows, and a
-   press moves nothing beside it or under it. The cell's baseline is
-   "Copy address"'s, the first item's, so the button sits on the address's
-   line as plain text would.
+/* The unseen Copy address that keeps a button's room in a row that draws
+   none (`CatalogAddress`'s `keepsButtonRoom`): laid out as the real one is,
+   so the row is as tall, and not drawn. */
+.catalog-address > button[aria-hidden="true"] {
+  visibility: hidden;
+}
+
+/* On /account Copy address sits at its row's end, as every button in the
+   boxes does, and at the end of a line of its own where the address leaves
+   it none; in a box too narrow for a label beside its control, at the
+   start, where those buttons are then (`settings.css`). */
+.account .catalog-address > button {
+  margin-inline-start: auto;
+}
+
+@container settings-box (width < 30rem) {
+  .account .catalog-address > button {
+    margin-inline-start: 0;
+  }
+}
+
+/* A copy button's words (`CopyWords`): Copy address's "Copy address", or
+   the shown key's caption, drawn in one grid cell with "Copied" and "Not
+   copied", so the button keeps the size of the largest of them in whatever
+   font draws them, whichever one shows, and a press moves nothing beside it
+   or under it. The cell's baseline is the words', the first item's, so
+   Copy address sits on the address's line as plain text would.
 
    **The results are generated content of a box hidden from assistive
    technology**, so they are not the button's text and not its name, which
-   stays "Copy address" while a result shows. For the same reason "Copy
-   address" is clipped out of sight then rather than hidden: `visibility:
-   hidden` would take it out of the name too, and a clip, as
-   `.visually-hidden` uses, keeps both its name and the box that holds the
-   width. */
-.catalog-address-words,
-.catalog-address-results {
+   stays its words while a result shows. For the same reason the words are
+   clipped out of sight then rather than hidden: `visibility: hidden` would
+   take them out of the name too, and a clip, as `.visually-hidden` uses,
+   keeps both the name and the box that holds the size. */
+.copy-words,
+.copy-results {
   display: inline-grid;
 }
 
-.catalog-address-word,
-.catalog-address-results,
-.catalog-address-results::before,
-.catalog-address-results::after {
+.copy-word,
+.copy-results,
+.copy-results::before,
+.copy-results::after {
   grid-area: 1 / 1;
 }
 
-.catalog-address-results::before {
+.copy-results::before {
   content: attr(data-copied);
   visibility: hidden;
 }
 
-.catalog-address-results::after {
+.copy-results::after {
   content: attr(data-not-copied);
   visibility: hidden;
 }
 
-.catalog-address-words[data-shows="copied"] .catalog-address-results::before,
-.catalog-address-words[data-shows="not-copied"]
-  .catalog-address-results::after {
+.copy-words[data-shows="copied"] .copy-results::before,
+.copy-words[data-shows="not-copied"] .copy-results::after {
   visibility: visible;
 }
 
-.catalog-address-words[data-shows] .catalog-address-word {
+.copy-words[data-shows] .copy-word {
   clip-path: inset(50%);
 }
 
-/* **The separation no container on this page gives.** The password form
-   stacks its two `.field`s straight inside a `<form>`, which is `display:
-   block` with no `gap`, so consecutive fields sat 0px apart and a focused
-   control's ring — 4px outside the border box, see the shared `.field`
-   block's own comment — painted over the *next* field's micro-label.
-   Measured at 390px with a coarse pointer before this rule: **1.00px**
-   between the ring's bottom edge and the ink of the label under it. Unlike
-   the 2.4px that block records, this one is
-   ⑤c's own: the account page's labels took `.field` here without their
-   container taking a gap.
-
-   **A margin on the fields and not a `gap` on the form, because `.account
-   form` would reach the wrong form.** `.account form` is (0, 1, 1) against
-   `.account-row`'s (0, 1, 0), so its `display` would win on the API-key row
-   too — a flex row the key box shares with the Create button. Injected at
-   390px to see what that costs: the row went from 54px with a 237px box
-   beside a 75px button to **110px with the button stacked under a 178px
-   box**. The API-key form carries no `.field` — its box takes the shared
-   reset through `.account .account-row input` instead — so a rule written
-   on the field cannot reach it at all. */
-.account form .field {
-  margin-bottom: var(--space-2);
-}
-
-.account-row {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: var(--space-3);
-  margin-top: var(--space-2);
-}
-
-/* The fill, which no list above can give it: `.account-row` is a flex row
-   the box shares with the Create button, and the shared reset's `min-width:
-   0` leaves it at its intrinsic width with the rest of the row empty. A rule
-   of its own rather than a declaration in that reset, because the reset
-   reaches other screens' boxes too, and none of them puts a control in a
-   flex row beside a button. */
-.account .account-row input {
-  flex: 1;
-}
-
-.account-wide {
-  margin-top: var(--space-3);
-}
-
-/* The measure as well as the colour. These two are siblings of the cards
-   rather than children of one — `Account.tsx` puts them above the first
-   `<section>` — so `.account-card`'s `max-width` does not reach them, and
-   without this a failure ran the full width of `<main>` while every card
-   beside it stopped at 40rem. Found by ⑤c's whole-branch review. */
-.account-failure,
-.account-note {
-  max-width: var(--config-measure);
-}
-
+/* The measure as well as the colour: a failure sits above the page's
+   sections, outside every box, so no section's `max-width` reaches it, and
+   it would otherwise run the full width of `<main>` beside boxes that stop
+   at the measure. */
 .account-failure {
+  max-width: var(--config-measure);
   color: var(--danger);
 }
 
-.account-note {
-  color: var(--success);
-}
-
+/* The one-time secret, a box of its own in the API keys box, under the
+   form that made it and read as part of that form's row: nothing above it
+   but the row's own padding, and as much again below it, before the line
+   that starts the next row or the box's edge. */
 .account .secret {
-  margin-top: var(--space-2);
+  margin: 0 0 var(--space-3);
   padding: var(--space-2) var(--space-3);
   border: 1px solid var(--line-strong);
   border-radius: var(--radius-control);
   font-family: ui-monospace, monospace;
+}
+
+/* The secret has no spaces to break at, so it breaks anywhere, and only it:
+   the caption under it is words, broken between them, and inside one only
+   where a key's name is too long for a line. */
+.account .secret-value {
   word-break: break-all;
+}
+
+/* Where the secret can be copied, its box is a button (`Account.tsx`), and
+   it is drawn as the box of text it is elsewhere, not as a button: none of
+   a button's ground or centring, and the width the box of text fills. */
+.account button.secret {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  background: none;
+  text-align: start;
+}
+
+/* Under the pointer it takes the ground every other button here is drawn
+   on, so that it shows itself a button before it is pressed (the user's
+   ruling of 2026-10-26); nothing else of it changes, so nothing moves. */
+.account button.secret:hover {
+  background: var(--surface);
+}
+
+/* The caption under the secret, on a line of its own: a grid of one cell,
+   which "Copied" shares while it shows (`CopyWords`). */
+.account .secret-caption {
+  display: grid;
+  overflow-wrap: anywhere;
+}
+
+/* The form that makes a key holds the visually hidden regions that say a
+   key was made and what a press of its secret did, and Password's box holds
+   the one beside its form that says a change worked (`Account.tsx`). Each
+   is positioned so that they are placed in its box and scroll with it, for
+   the reason `.catalog-address` is: placed in the window's box, they would
+   make the document scroll in a short window. The reader's panel needs no
+   such rule, since its dialog is fixed and no document scrolls under it. */
+.account .key-form,
+.account .settings-box:has(> .visually-hidden) {
+  position: relative;
+}
+
+/* New key's box and Create share a control column of the width each
+   password box above fills, 16rem, or the whole row where the label is
+   above its control: the box starts on the password boxes' edge and takes
+   what Create leaves, and Create ends on their other edge, so the column
+   lines up from Password to API keys. */
+.account .key-form .settings-row-control {
+  flex-wrap: nowrap;
+  width: 16rem;
+  max-width: 100%;
+}
+
+.account .key-form .settings-row-control > input {
+  flex: 1 1 0;
+  width: auto;
+  min-width: 0;
+}
+
+@container settings-box (width < 30rem) {
+  .account .key-form .settings-row-control {
+    width: auto;
+  }
 }
 
 /* **44 px targets for a finger, which this stylesheet has never had** — spec
@@ -2383,27 +2563,23 @@
    `AccountPage`'s one sentence link to `/account` is left alone for its own
    reason — it is prose rather than a control.
 
-   `.account .account-row input` is here for the reason it is in the shared
-   `.field` block and that block's own companion: the account page's key-name
-   box is the one control on `/account` that no `.field` wraps — only
-   a placeholder labels it — so the `.field` line above cannot reach it, and
-   without this it would be the single input on `/account` left at 35.6 while
-   every other control beside it cleared 44. `.account-wide` is named for the
-   neighbouring reason: it is the class `Account.tsx` guarantees for the
-   page's two wide buttons, where `button` is only what they happen to be.
+   `/account`'s boxes are settings rows' controls, which `settings.css`'s
+   coarse block floors as it floors every row's, so the `.field` line leaves
+   that root out; it has no disclosure and no checkbox, so the `summary` and
+   box lines leave it out too. Its buttons are reached by the `button` line.
 
-   **A checkbox is not a row.** Every checkbox on these three roots takes an
-   explicit 24 px box — 24 rather than the 13 the browser draws at this font
-   size, and rather than 44, because a 44 px box beside a 14 px sentence
-   draws a checkbox that looks like a button. (`library.css` has two
-   `min-height: 24px` controls of its own, `.volumes a.get` and
+   **A checkbox is not a row.** Every checkbox under `.proposals` and
+   `.config` takes an explicit 24 px box — 24 rather than the 13 the browser
+   draws at this font size, and rather than 44, because a 44 px box beside a
+   14 px sentence draws a checkbox that looks like a button. (`library.css`
+   has two `min-height: 24px` controls of its own, `.volumes a.get` and
    `.volumes .panel-open`; they are tile controls rather than checkboxes, so
    they are a precedent for the number and not for the shape.) Where a
    `.checks` label is beside the box, that row is the tappable target and
    takes the 44.
 
    **The box rule is keyed on that treatment and not on a container**, which
-   is why it names `input[type="checkbox"]` under the three roots rather than
+   is why it names `input[type="checkbox"]` under those two roots rather than
    `.checks input[type="checkbox"]`. `.checks` holds only the inbox's weak
    filter: an account's permissions and grants and a directory's keeps
    documents box are settings rows, whose label takes the 44 in
@@ -2481,9 +2657,7 @@
      anything that wants to floor a tab deliberately. */
   :where(.proposals, .account, .config, .about)
   button:not(:where(.proposal-tabs, .preview-tabs) > button),
-  :where(.proposals, .account, .config) .field :where(input, select, textarea),
-  .account .account-row input,
-  .account-wide {
+  :where(.proposals, .config) .field :where(input, select, textarea) {
     /* **A floor on the rendered box, not on its content.** In standards
        mode the UA stylesheet gives `<select>` and `<button>` `border-box`
        and leaves `<input>` and `<textarea>` at `content-box` (probed in
@@ -2492,9 +2666,7 @@
        *content* on the text boxes, and the shared reset's `var(--space-1)`
        padding and 1px border then added 10px on top of it. Measured at
        390px with a coarse pointer on 2026-09-25, before this line: every
-       `<input>` this floor then reached rendered **54px** — `/account`, the
-       add-account and add-root forms, the expanded root and user rows, the
-       rule form and the proposals accept form alike — while every
+       `<input>` this floor then reached rendered **54px**, while every
        `<select>` beside them, already `border-box`, rendered 44 or more.
        One declaration, two heights, decided by an element's UA default
        rather than by anything written here.
@@ -2508,12 +2680,16 @@
     min-height: 44px;
   }
 
-  /* About's commit and Source, and the licence page's contents, grow their
-     boxes, as Export does, rather than a target around them:
-     their rows sit closer than a finger's height, so a target grown around
-     each would cover its neighbours'. The grown boxes move the rows apart
-     instead, and each of About's labels stays on its value's line because
-     `.about-facts` sets the two on one baseline. */
+  /* These grow their boxes, as Export does, rather than a target around
+     them. The licence page's contents' lines sit closer than a finger's
+     height, so a target grown around each would cover its neighbours'; the
+     grown boxes move the lines apart instead. About's Source address wraps
+     at a phone's width, and a target centred on a link needs the link on
+     one line (the centred targets below say why), while a grown box is one
+     box however many lines its words take. About's commit, the other link
+     among the facts, never wraps, and grows with Source so that the two are
+     one kind of target. Each of About's labels stays on its value's line
+     because `.about-facts` sets the two on one baseline. */
   .editor-actions .export,
   .about .about-facts a,
   .licence .licence-contents a {
@@ -2522,7 +2698,7 @@
     min-height: 44px;
   }
 
-  :where(.proposals, .account, .config) summary {
+  :where(.proposals, .config) summary {
     min-height: 44px;
     align-content: center;
   }
@@ -2593,20 +2769,24 @@
      (`testing/pointer.ts`'s `coarseRulesOn`) and measures the
      configuration tabs' targets against the way up beneath them.
 
-     **The way up from a page beneath a table or from the licence page, and
-     the link in About's licence card, take the same target**, because a
-     grown box would move what is drawn around them: the way up would push
-     its page down, and the licence link would open a gap in its sentence.
-     The browser tests measure these targets against what can be pressed
-     above them: the way up on the five pages `Config.browser.test.tsx`
-     draws against the tabs, the licence page's against the phone bar
-     (`Shell.browser.test.tsx`), and the licence link against About's other
-     links and Copy address (`About.browser.test.tsx`). The way up on the
-     not-found pages sits under the same tabs and is not measured. That
-     nothing that can be pressed lies under the part of each target outside
-     its link's box, so the target covers nobody's, holds by reading, but
-     for one exception: while a library's name is edited, the box laid over
-     its title lies under the way up's target and wins the press, its
+     **The way up from a page beneath a table or from the licence page, the
+     link in each of About's two Licence sentences, and each licence's two
+     Back to top links take the same target**, because a grown box would
+     move what is drawn around them: the way up would push its page down, a
+     licence link would open a gap in its sentence, and Back to top would
+     push down what follows it. The browser tests measure these targets:
+     the way up on the five pages `Config.browser.test.tsx` draws against
+     the tabs above it, the licence page's against the phone bar
+     (`Shell.browser.test.tsx`), About's two licence links against each
+     other, About's other links and Copy address at 320, 360, 390 and
+     1280px (`About.browser.test.tsx`), and each Back to top alone at 390
+     and 1280px, the heading's also against its heading's words at 320, 390
+     and 1280px (`Licence.browser.test.tsx`). The way up on the not-found
+     pages sits under the same tabs and is not measured. That nothing that
+     can be pressed lies under the part of each target outside its link's
+     box, so the target covers nobody's, holds by reading, but for one
+     exception: while a library's name is edited, the box laid over its
+     title lies under the way up's target and wins the press, its
      positioned column being painted later (`settings.css`,
      `.page-header-text:has(> .page-title-editor)`). */
   .config-nav a,
@@ -2614,13 +2794,15 @@
   .preview-tabs > button,
   .config .back a,
   .licence .back a,
-  .about-licence a {
+  .about-licence a,
+  .licence .to-top {
     position: relative;
   }
 
   /* On one line, because the target is centred on the link's box, and a
      link broken across two lines has no one box to centre it on. */
-  .about-licence a {
+  .about-licence a,
+  .licence .to-top {
     white-space: nowrap;
   }
 
@@ -2629,7 +2811,8 @@
   .preview-tabs > button::after,
   .config .back a::after,
   .licence .back a::after,
-  .about-licence a::after {
+  .about-licence a::after,
+  .licence .to-top::after {
     content: "";
     position: absolute;
     inset-block-start: 50%;
@@ -2646,8 +2829,8 @@
     min-block-size: 44px;
   }
 
-  :where(.proposals, .account, .config) input[type="checkbox"],
-  :where(.proposals, .account, .config) input[type="radio"] {
+  :where(.proposals, .config) input[type="checkbox"],
+  :where(.proposals, .config) input[type="radio"] {
     inline-size: 24px;
     block-size: 24px;
     flex-shrink: 0;

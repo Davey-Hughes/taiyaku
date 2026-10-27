@@ -15,10 +15,25 @@
 import { Fragment } from 'react'
 
 export function PathWithBreaks({ path }: { path: string }) {
-  const parts = path.split(/(?<=[/-])/)
+  return withBreaks(path, /(?<=[/-])/)
+}
+
+/**
+ * A rule's name, with a line allowed to break after each `::` in it. A
+ * seeded rule's note names a Rust item, `taiyaku_read::volume_number`, and a
+ * browser breaks between words but never inside that one, so without these
+ * breaks the item's whole path is the narrowest the rule list can be drawn.
+ * The breaks are drawn as `PathWithBreaks` draws its own.
+ */
+export function NameWithBreaks({ name }: { name: string }) {
+  return withBreaks(name, /(?<=::)/)
+}
+
+function withBreaks(text: string, after: RegExp) {
+  const parts = text.split(after)
   let from = 0
   return parts.map((part, i) => {
-    // Where the part starts in the path: unique, and the same each draw.
+    // Where the part starts in the text: unique, and the same each draw.
     const key = from
     from += part.length
     return (

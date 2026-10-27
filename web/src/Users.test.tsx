@@ -13,6 +13,7 @@ import { useFitsPair } from './fitsPair'
 import { GateContext } from './gate'
 import * as librariesApi from './libraries'
 import { deferred, flush } from './testing/async'
+import { holdOf } from './testing/held'
 import { press } from './testing/input'
 import { mount } from './testing/mount'
 import { expectRowsWired, helpOf, row, section } from './testing/settingsRows'
@@ -500,6 +501,7 @@ describe('Users, making one', () => {
     const host = await at(NEW)
     await fill(host, 'new-name', 'sam')
     await fill(host, 'new-password', 'hunter2')
+    await fill(host, 'confirm-password', 'hunter2')
     await submitAdd(host)
     expect(usersApi.addUser).toHaveBeenCalledWith('sam', 'hunter2', 'user')
     expect(usersApi.listUsers).toHaveBeenCalledTimes(2)
@@ -514,6 +516,7 @@ describe('Users, making one', () => {
     const host = await at(NEW)
     await fill(host, 'new-name', 'sam')
     await fill(host, 'new-password', 'hunter2')
+    await fill(host, 'confirm-password', 'hunter2')
     await submitAdd(host)
     await flush()
     expect(here()).toBe('/config/users/sam')
@@ -537,6 +540,7 @@ describe('Users, making one', () => {
       const host = await at(NEW)
       await fill(host, 'new-name', 'sam')
       await fill(host, 'new-password', 'hunter2')
+      await fill(host, 'confirm-password', 'hunter2')
       await submitAdd(host)
       await flush()
       expect(usersApi.listUsers).toHaveBeenCalledTimes(2)
@@ -558,6 +562,7 @@ describe('Users, making one', () => {
     const host = await at(NEW)
     await fill(host, 'new-name', 'sam')
     await fill(host, 'new-password', 'hunter2')
+    await fill(host, 'confirm-password', 'hunter2')
     await submitAdd(host)
     expect(host.querySelector('[role="alert"]')?.textContent).toContain(
       'is already called',
@@ -578,6 +583,7 @@ describe('Users, making one', () => {
     const host = await at(NEW)
     await fill(host, 'new-name', 'sam')
     await fill(host, 'new-password', 'hunter2')
+    await fill(host, 'confirm-password', 'hunter2')
     await submitAdd(host)
     expect(host.querySelector('[role="alert"]')?.textContent).toContain(
       'is already called',
@@ -602,6 +608,7 @@ describe('Users, making one', () => {
     const host = await at(NEW)
     await fill(host, 'new-name', 'sam')
     await fill(host, 'new-password', 'hunter2')
+    await fill(host, 'confirm-password', 'hunter2')
     await submitAdd(host)
     await flush(() =>
       read.resolve({ users: [user(), user({ id: 2, name: 'sam' })] }),
@@ -634,6 +641,7 @@ describe('Users, making one', () => {
     const host = await at(NEW)
     await fill(host, 'new-name', 'sam')
     await fill(host, 'new-password', 'hunter2')
+    await fill(host, 'confirm-password', 'hunter2')
     await submitAdd(host)
     expect(host.querySelector('[role="alert"]')?.textContent).toBe(
       'an account is already called `sam`',
@@ -646,6 +654,7 @@ describe('Users, making one', () => {
     const why = 'An address cannot hold “.” or “..” as a name.'
     const host = await at(NEW)
     await fill(host, 'new-password', 'hunter2')
+    await fill(host, 'confirm-password', 'hunter2')
     for (const name of ['.', '..']) {
       await fill(host, 'new-name', name)
       expect(
@@ -669,6 +678,7 @@ describe('Users, making one', () => {
     })
     const host = await at(NEW)
     await fill(host, 'new-password', 'hunter2')
+    await fill(host, 'confirm-password', 'hunter2')
     const note = clashNote(host) as HTMLElement
     // Drawn, empty, before it has anything to say, so that its words are
     // read out as they come.
@@ -700,6 +710,7 @@ describe('Users, making one', () => {
     const host = await at(NEW)
     await fill(host, 'new-name', 'sam')
     await fill(host, 'new-password', 'hunter2')
+    await fill(host, 'confirm-password', 'hunter2')
     act(() => addButton(host).focus())
     expect(document.activeElement).toBe(addButton(host))
     await flush(() =>
@@ -717,6 +728,7 @@ describe('Users, making one', () => {
     const host = await at(NEW)
     await fill(host, 'new-name', 'sam')
     await fill(host, 'new-password', 'hunter2')
+    await fill(host, 'confirm-password', 'hunter2')
     const password = host.querySelector(
       'input[name="new-password"]',
     ) as HTMLInputElement
@@ -739,6 +751,7 @@ describe('Users, making one', () => {
     const host = await at(NEW)
     await fill(host, 'new-name', 'sam')
     await fill(host, 'new-password', 'hunter2')
+    await fill(host, 'confirm-password', 'hunter2')
     await submitAdd(host)
 
     await flush(() =>
@@ -760,6 +773,23 @@ describe('Users, making one', () => {
     expect(addButton(host).disabled).toBe(true)
   })
 
+  it('says a make answered with a page of markup by what was not done and the status, and never the page', async () => {
+    vi.mocked(usersApi.addUser).mockRejectedValue(
+      new Error(
+        '/api/library/users: 502 <html>\r\n<head><title>502 Bad Gateway</title></head>\r\n</html>\r\n',
+      ),
+    )
+    const host = await at(NEW)
+    await fill(host, 'new-name', 'sam')
+    await fill(host, 'new-password', 'hunter2')
+    await fill(host, 'confirm-password', 'hunter2')
+    await submitAdd(host)
+    expect(
+      host.querySelector('form.add-user')?.querySelector('[role="alert"]')
+        ?.textContent,
+    ).toBe('The account sam was not made: the server answered 502')
+  })
+
   it('sends nothing on Enter in the form while the name clashes', async () => {
     vi.mocked(usersApi.listUsers).mockResolvedValue({
       users: [user(), user({ id: 2, name: 'Sam' })],
@@ -767,6 +797,7 @@ describe('Users, making one', () => {
     const host = await at(NEW)
     await fill(host, 'new-name', 'Sam')
     await fill(host, 'new-password', 'hunter2')
+    await fill(host, 'confirm-password', 'hunter2')
     await submitAdd(host)
     expect(usersApi.addUser).not.toHaveBeenCalled()
     expect(host.querySelector('form.add-user')).not.toBeNull()
@@ -792,6 +823,7 @@ describe('Users, making one', () => {
       const host = await at(NEW)
       await fill(host, 'new-name', 'sam')
       await fill(host, 'new-password', 'hunter2')
+      await fill(host, 'confirm-password', 'hunter2')
       return host
     }
 
@@ -921,6 +953,7 @@ describe('Users, making one', () => {
     const host = await at(NEW)
     await fill(host, 'new-name', 'sam')
     await fill(host, 'new-password', 'hunter2')
+    await fill(host, 'confirm-password', 'hunter2')
     await submitAdd(host)
     await submitAdd(host)
     expect(usersApi.addUser).toHaveBeenCalledTimes(1)
@@ -936,6 +969,7 @@ describe('Users, making one', () => {
     const host = await at(NEW)
     await fill(host, 'new-name', 'sam')
     await fill(host, 'new-password', 'hunter2')
+    await fill(host, 'confirm-password', 'hunter2')
     const select = host.querySelector(
       'select[name="new-role"]',
     ) as HTMLSelectElement
@@ -982,7 +1016,7 @@ describe('Users, making one', () => {
     ).toEqual(['admin', 'user'])
   })
 
-  it('draws the make form as one box of Name, Password and Role, with Add and Cancel at its foot, and a refused add under them', async () => {
+  it('draws the make form as one box of Name, Password, Confirm password and Role, with Add and Cancel at its foot, and a refused add under them', async () => {
     vi.mocked(usersApi.addUser).mockRejectedValue(
       new Error(
         '/api/library/users: 500 {"error":"adding sam: database is locked"}',
@@ -1005,12 +1039,19 @@ describe('Users, making one', () => {
             ? { says: child.textContent }
             : child.matches('[role="alert"]')
               ? { refuses: child.textContent }
-              : [...child.querySelectorAll('button')].map((b) => b.textContent),
+              : child.matches('.callout')
+                ? { differs: child.textContent }
+                : [...child.querySelectorAll('button')].map(
+                    (b) => b.textContent,
+                  ),
       )
-    // Last, why the name typed would be refused, empty until it is.
+    // Under Confirm password, the callout saying the two passwords differ;
+    // last, why the name typed would be refused; each empty until it speaks.
     expect(parts()).toEqual([
       'Name',
       'Password',
+      'Confirm password',
+      { differs: '' },
       'Role',
       ['Add', 'Cancel'],
       { says: '' },
@@ -1019,10 +1060,13 @@ describe('Users, making one', () => {
     // A refused add is answered under the buttons that sent it, in the box.
     await fill(host, 'new-name', 'sam')
     await fill(host, 'new-password', 'hunter2')
+    await fill(host, 'confirm-password', 'hunter2')
     await submitAdd(host)
     expect(parts()).toEqual([
       'Name',
       'Password',
+      'Confirm password',
+      { differs: '' },
       'Role',
       ['Add', 'Cancel'],
       { refuses: 'adding sam: database is locked' },
@@ -1035,18 +1079,22 @@ describe('Users, making one', () => {
     expectRowsWired(host.querySelector('.new-account') as HTMLElement)
   })
 
+  // The password is typed twice where it is filled, so that only the
+  // empty box stands between the submit and an add.
   it.each([
-    { empty: 'name', filled: 'new-password', value: 'hunter2' },
-    { empty: 'password', filled: 'new-name', value: 'sam' },
-  ])(
-    'sends nothing when the $empty box is empty',
-    async ({ filled, value }) => {
-      const host = await at(NEW)
-      await fill(host, filled, value)
-      await submitAdd(host)
-      expect(usersApi.addUser).not.toHaveBeenCalled()
+    {
+      empty: 'name',
+      filled: { 'new-password': 'hunter2', 'confirm-password': 'hunter2' },
     },
-  )
+    { empty: 'password', filled: { 'new-name': 'sam' } },
+  ])('sends nothing when the $empty box is empty', async ({ filled }) => {
+    const host = await at(NEW)
+    for (const [name, value] of Object.entries(filled)) {
+      await fill(host, name, value)
+    }
+    await submitAdd(host)
+    expect(usersApi.addUser).not.toHaveBeenCalled()
+  })
 
   // `reload` runs on each change of page and after every write the server
   // carries out, so two reads of the list are routinely in flight at once —
@@ -1064,6 +1112,7 @@ describe('Users, making one', () => {
     const host = await at(NEW)
     await fill(host, 'new-name', 'sam')
     await fill(host, 'new-password', 'hunter2')
+    await fill(host, 'confirm-password', 'hunter2')
     await submitAdd(host)
     // The make page's read and the account page's are both in flight.
     expect(usersApi.listUsers).toHaveBeenCalledTimes(2)
@@ -1099,6 +1148,7 @@ describe('Users, making one', () => {
     const host = await at(NEW)
     await fill(host, 'new-name', 'sam')
     await fill(host, 'new-password', 'hunter2')
+    await fill(host, 'confirm-password', 'hunter2')
     await submitAdd(host)
     // The make page's read and the account page's are both in flight.
     expect(usersApi.listUsers).toHaveBeenCalledTimes(2)
@@ -1167,7 +1217,7 @@ describe('Users, making one', () => {
 
   it('gives each add-form control its label’s words as its aria-label — O175', async () => {
     const host = await at(NEW)
-    // The form's own three: `AccountPage.test.tsx` holds the account page's.
+    // The form's own four: `AccountPage.test.tsx` holds the account page's.
     // Named, because a loop over nothing passes.
     const labelled = [
       ...host.querySelectorAll<HTMLLabelElement>(
@@ -1177,11 +1227,178 @@ describe('Users, making one', () => {
     expect(labelled.map(({ written }) => written)).toEqual([
       'Name',
       'Password',
+      'Confirm password',
       'Role',
     ])
     for (const { written, control } of labelled) {
       expect(control?.getAttribute('aria-label'), written ?? '').toBe(written)
     }
+  })
+})
+
+/**
+ * Confirm password (the user's rulings of 2026-10-25): Add is held while
+ * Password and Confirm password differ, and a callout laid over Role's
+ * select, drawn after Confirm password's row, says so whenever the confirm
+ * is neither empty nor the start of the password, wherever focus is, and
+ * after a press of the held button (the user's ruling of 2026-10-26). A
+ * made account's page takes the make page's place, so no box is drawn
+ * after an add that works.
+ */
+describe('Users, making one: Confirm password', () => {
+  const box = (host: HTMLElement, name: string) =>
+    host.querySelector(`input[name="${name}"]`) as HTMLInputElement
+  /** The make page, with a name typed that nobody holds. */
+  async function named() {
+    const host = await at(NEW)
+    await fill(host, 'new-name', 'sam')
+    return host
+  }
+  /**
+   * The status region in the callout drawn straight after Confirm
+   * password's row.
+   */
+  const lineAfter = (host: HTMLElement) => {
+    const callout = box(host, 'confirm-password').closest(
+      '.settings-row',
+    )?.nextElementSibling
+    expect(callout?.className).toBe('callout')
+    const region = callout?.querySelector(':scope > [role="status"]')
+    if (!(region instanceof HTMLElement)) throw new Error('no status region')
+    return region
+  }
+
+  it('holds Add, by aria-disabled, while Password and Confirm password differ, and frees it when they match', async () => {
+    const host = await named()
+    await fill(host, 'new-password', 'hunter22')
+    expect(holdOf(addButton(host))).toBe('held')
+    await fill(host, 'confirm-password', 'hunter2')
+    expect(holdOf(addButton(host))).toBe('held')
+    await fill(host, 'confirm-password', 'hunter22')
+    expect(holdOf(addButton(host))).toBe('free')
+    await fill(host, 'confirm-password', 'hunter222')
+    expect(holdOf(addButton(host))).toBe('held')
+    await fill(host, 'new-password', 'hunter222')
+    expect(holdOf(addButton(host))).toBe('free')
+  })
+
+  it('says the two do not match for a press of Add while they differ, the confirm empty or the start of the password, until a box is edited, and makes nothing', async () => {
+    const host = await named()
+    const region = lineAfter(host)
+    const confirm = box(host, 'confirm-password')
+    const press = () =>
+      act(async () => {
+        addButton(host).click()
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+    await fill(host, 'new-password', 'hunter22')
+    expect(region.textContent).toBe('')
+    await press()
+    expect([
+      region.textContent,
+      confirm.getAttribute('aria-invalid'),
+      confirm.getAttribute('aria-describedby'),
+    ]).toEqual(['The two passwords do not match.', 'true', region.id])
+
+    await fill(host, 'confirm-password', 'hunter')
+    expect(region.textContent).toBe('')
+    await press()
+    expect(region.textContent).toBe('The two passwords do not match.')
+    await fill(host, 'confirm-password', 'hunter2')
+    expect(region.textContent).toBe('')
+
+    // A submit that reaches the form another way says it too.
+    await submitAdd(host)
+    expect(region.textContent).toBe('The two passwords do not match.')
+    expect(usersApi.addUser).not.toHaveBeenCalled()
+  })
+
+  it('says the two do not match in a callout under Confirm password’s row, in a status region drawn empty before it, for a typo and a longer confirm and not for the start of the password', async () => {
+    const host = await named()
+    const region = lineAfter(host)
+    expect(region.textContent).toBe('')
+    await fill(host, 'new-password', 'hunter22')
+    act(() => box(host, 'confirm-password').focus())
+    const said = async (typed: string) => {
+      await fill(host, 'confirm-password', typed)
+      expect(lineAfter(host)).toBe(region)
+      return region.textContent
+    }
+    expect(await said('hun')).toBe('')
+    expect(await said('hunx')).toBe('The two passwords do not match.')
+    expect(await said('hunter22')).toBe('')
+    expect(await said('hunter222')).toBe('The two passwords do not match.')
+    expect(await said('')).toBe('')
+  })
+
+  it('says the two do not match while they differ, wherever focus is, Role’s too, which the callout lies over', async () => {
+    const host = await named()
+    const region = lineAfter(host)
+    // Filled while focus is in neither, as a password manager fills.
+    await fill(host, 'new-password', 'hunter22')
+    await fill(host, 'confirm-password', 'hunted')
+    expect(region.textContent).toBe('The two passwords do not match.')
+    const role = host.querySelector('select[name="new-role"]') as HTMLElement
+    for (const focused of [
+      box(host, 'confirm-password'),
+      box(host, 'new-password'),
+      role,
+    ]) {
+      act(() => focused.focus())
+      expect(region.textContent, focused.getAttribute('name') ?? '').toBe(
+        'The two passwords do not match.',
+      )
+    }
+    await fill(host, 'confirm-password', 'hunter')
+    expect(region.textContent).toBe('')
+  })
+
+  it('names the line as Confirm password’s description, and marks the box invalid, only while the line is said', async () => {
+    const host = await named()
+    const confirm = box(host, 'confirm-password')
+    act(() => confirm.focus())
+    const marks = () => [
+      confirm.getAttribute('aria-invalid'),
+      confirm.getAttribute('aria-describedby'),
+    ]
+    await fill(host, 'new-password', 'hunter22')
+    await fill(host, 'confirm-password', 'hunter')
+    expect(marks()).toEqual([null, null])
+    await fill(host, 'confirm-password', 'hunted')
+    const region = lineAfter(host)
+    expect(region.id).not.toBe('')
+    expect(marks()).toEqual(['true', region.id])
+    await fill(host, 'confirm-password', 'hunter22')
+    expect(marks()).toEqual([null, null])
+  })
+
+  it('sends nothing for a submit while the two differ, and makes the account once they match', async () => {
+    vi.mocked(usersApi.addUser).mockResolvedValue(user({ id: 2, name: 'sam' }))
+    const host = await named()
+    await fill(host, 'new-password', 'hunter22')
+    await fill(host, 'confirm-password', 'hunter2')
+    await submitAdd(host)
+    await fill(host, 'confirm-password', 'hunter23')
+    await submitAdd(host)
+    expect(usersApi.addUser).not.toHaveBeenCalled()
+    await fill(host, 'confirm-password', 'hunter22')
+    await submitAdd(host)
+    expect(vi.mocked(usersApi.addUser).mock.calls).toEqual([
+      ['sam', 'hunter22', 'user'],
+    ])
+  })
+
+  it('keeps focus on Add when a change to the boxes holds it', async () => {
+    const host = await named()
+    await fill(host, 'new-password', 'hunter22')
+    await fill(host, 'confirm-password', 'hunter22')
+    act(() => addButton(host).focus())
+    expect(document.activeElement).toBe(addButton(host))
+    // A box filled while Add has focus, as a password manager may fill one.
+    await fill(host, 'confirm-password', 'hunter2')
+    expect(holdOf(addButton(host))).toBe('held')
+    expect(document.activeElement).toBe(addButton(host))
   })
 })
 
@@ -1427,6 +1644,7 @@ describe('Users, an answer that comes after the person has moved on', () => {
     const host = await at(NEW)
     await fill(host, 'new-name', 'sam')
     await fill(host, 'new-password', 'hunter2')
+    await fill(host, 'confirm-password', 'hunter2')
     await submitAdd(host)
     expect(usersApi.addUser).toHaveBeenCalledTimes(1)
     const answer = async () => {
@@ -1607,6 +1825,7 @@ describe('Users, a write refused once its page has gone', () => {
       start: async (host: HTMLElement) => {
         await fill(host, 'new-name', 'lee')
         await fill(host, 'new-password', 'hunter2')
+        await fill(host, 'confirm-password', 'hunter2')
         await submitAdd(host)
       },
       said: 'The account lee was not made (the store is locked).',
@@ -1692,6 +1911,7 @@ describe('Users, a write refused once its page has gone', () => {
       held: () => vi.mocked(usersApi.patchUser),
       start: async (host: HTMLElement) => {
         await fill(host, 'password', 'hunter3')
+        await fill(host, 'confirm-password', 'hunter3')
         await act(async () => {
           host
             .querySelector('form.reset')
@@ -1791,6 +2011,26 @@ describe('Users, a write refused once its page has gone', () => {
     },
   )
 
+  it('says a make answered with a page of markup once its page has gone by what was not done and the status, and never the page', async () => {
+    const make = writes[0]
+    if (make?.what !== 'a make') throw new Error('no make in the table')
+    const { host, write } = await sent(make)
+    await follow(host, '‹ Users')
+    await flush(() =>
+      write.reject(
+        new Error(
+          '/api/library/users: 502 <html>\r\n<head><title>502 Bad Gateway</title></head>\r\n</html>\r\n',
+        ),
+      ),
+    )
+    await flush()
+    expect(
+      [...host.querySelectorAll('.user-table > [role="alert"]')].map(
+        (p) => p.textContent,
+      ),
+    ).toEqual(['The account lee was not made (the server answered 502).'])
+  })
+
   it.each(writes)(
     'says $what refused once another tab has replaced the screen nowhere, and leaves the person there',
     async (each) => {
@@ -1826,6 +2066,7 @@ describe('Users, where focus goes', () => {
   async function makeSam(host: HTMLElement) {
     await fill(host, 'new-name', 'sam')
     await fill(host, 'new-password', 'hunter2')
+    await fill(host, 'confirm-password', 'hunter2')
     await submitAdd(host)
     await flush()
   }
@@ -2280,6 +2521,7 @@ describe('Users, addressed by name', () => {
     const host = await at('/config/new-account')
     await fill(host, 'new-name', 'Sam Jones')
     await fill(host, 'new-password', 'hunter2')
+    await fill(host, 'confirm-password', 'hunter2')
     await submitAdd(host)
     await flush()
     expect(here()).toBe(`${TABLE}/Sam%20Jones`)

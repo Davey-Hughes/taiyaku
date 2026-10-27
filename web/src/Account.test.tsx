@@ -3,9 +3,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { forgetAbout } from './about'
 import { Account } from './Account'
 import { ABOUT } from './testing/about'
+import { deferred } from './testing/async'
 import { clipboardContext } from './testing/clipboard'
 import { fields } from './testing/fields'
+import { holdOf } from './testing/held'
 import { mount, rerender } from './testing/mount'
+import { expectRowsWired, helpOf, row, section } from './testing/settingsRows'
 
 const noop = () => {}
 
@@ -54,6 +57,271 @@ const buttonSaying = (host: HTMLElement, text: string) =>
     (b.textContent ?? '').includes(text),
   )
 
+/** The page placement's screen, the `<section>` it is drawn in. */
+const pageScreen = (host: HTMLElement): HTMLElement => {
+  const screen = host.querySelector<HTMLElement>(
+    'section.account[aria-label="Account"]',
+  )
+  if (!screen) throw new Error('no account page drawn')
+  return screen
+}
+
+/** Each settings row's label words under `root`, in order. */
+const rowLabels = (root: ParentNode) =>
+  [...root.querySelectorAll('.settings-row')].map(
+    (each) =>
+      each.querySelector(':scope > .settings-row-text > .settings-row-label')
+        ?.textContent,
+  )
+
+/** The screen in either placement, the panel open. */
+const mountAs = (placement: 'page' | 'panel') =>
+  mount(
+    placement === 'page' ? (
+      <Account placement="page" onSignedOut={noop} />
+    ) : (
+      <Account visible onClose={noop} onSignedOut={noop} />
+    ),
+  )
+
+/**
+ * Submit `form`, and let what it sent be answered, and the listing that
+ * follows: a macrotask, which runs once every promise before it has settled.
+ */
+const submitted = async (form: Element | null) => {
+  if (!form) throw new Error('no form to submit')
+  await act(async () => {
+    form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    await new Promise((resolve) => {
+      setTimeout(resolve, 0)
+    })
+  })
+}
+
+const KEY_FORM = 'form:has(input[placeholder])'
+const PASSWORD_FORM = 'form:has(input[type="password"])'
+
+/** API keys' visually hidden polite region, which says a key was made. */
+const keyRegion = (host: HTMLElement) => {
+  const region = host.querySelector(`${KEY_FORM} > [aria-live="polite"]`)
+  if (!region) throw new Error('no region saying a key was made')
+  return region
+}
+
+/** The region that says what a press of the secret's box did, if drawn. */
+const copyRegion = (host: HTMLElement) =>
+  host.querySelector(`${KEY_FORM} > [role="status"]`)
+
+/**
+ * Password's visually hidden polite region, beside its form, which says a
+ * change worked.
+ */
+const passwordRegion = (host: HTMLElement) => {
+  const region = host.querySelector(`${PASSWORD_FORM} + [aria-live="polite"]`)
+  if (!region) throw new Error('no region saying the password was changed')
+  return region
+}
+
+const CAPTION = 'Copy this now — it is not stored and cannot be shown again.'
+
+type Key = { id: number; name: string }
+
+/**
+ * A server whose keys are `before` until a create adds `made`, and which
+ * revokes any of them; `revoked` holds each id it was asked to, in order.
+ */
+function listedKeys(before: Key[], made: Key[]) {
+  const row = ({ id, name }: Key) => ({
+    id,
+    name,
+    created: 'then',
+    last_used: null,
+  })
+  let listed = before.map(row)
+  const revoked: number[] = []
+  const revokes = [...before, ...made].map(({ id }) => [
+    `DELETE /api/keys/${id}`,
+    () => {
+      revoked.push(id)
+      listed = listed.filter((key) => key.id !== id)
+      return new Response(null, { status: 204 })
+    },
+  ])
+  return {
+    revoked,
+    server: server({
+      '/api/keys': () => json(listed),
+      '/api/sessions': () => json([]),
+      'POST /api/keys': () => {
+        listed = [...listed, ...made.map(row)]
+        return json({ secret: 'tyk_the-only-copy' })
+      },
+      ...Object.fromEntries(revokes),
+    }),
+  }
+}
+
+/**
+ * A server that makes `phone` (id 1, secret `tyk_first`) on the first
+ * create and `tablet` (id 2, `tyk_second`) on the second, and answers each
+ * listing with the keys it holds when asked. `hold` keeps one request's
+ * answer until the case settles it; `holdKeyRead` keeps the nth listing of
+ * the keys, answering it with the keys it held when it was asked.
+ */
+function madeInTurn() {
+  const MADE = [
+    { id: 1, name: 'phone', secret: 'tyk_first' },
+    { id: 2, name: 'tablet', secret: 'tyk_second' },
+  ]
+  let listed: { id: number; name: string; created: string; last_used: null }[] =
+    []
+  let creates = 0
+  let keyReads = 0
+  const revoked: number[] = []
+  const held = new Map<string, Promise<Response>>()
+  const heldReads = new Map<number, Promise<void>>()
+  const fetch = vi.fn((input: string, init?: RequestInit) => {
+    const asked = `${init?.method ?? 'GET'} ${input}`
+    if (asked === 'POST /api/keys') {
+      const made = MADE[creates]
+      creates += 1
+      if (!made) throw new Error('a third key was asked for')
+      listed = [
+        ...listed,
+        { id: made.id, name: made.name, created: 'then', last_used: null },
+      ]
+      return Promise.resolve(json({ secret: made.secret }))
+    }
+    const deleted = /^DELETE \/api\/keys\/(\d+)$/.exec(asked)
+    if (deleted) {
+      const id = Number(deleted[1])
+      const answer = held.get(asked) ?? Promise.resolve(new Response(null))
+      return answer.then((response) => {
+        revoked.push(id)
+        listed = listed.filter((key) => key.id !== id)
+        return response
+      })
+    }
+    if (asked === 'GET /api/keys') {
+      keyReads += 1
+      const now = json(listed)
+      return (heldReads.get(keyReads) ?? Promise.resolve()).then(() => now)
+    }
+    if (asked === 'GET /api/sessions') return Promise.resolve(json([]))
+    return Promise.resolve(new Response(null, { status: 404 }))
+  })
+  return {
+    fetch,
+    revoked,
+    hold: (asked: string, answer: Promise<Response>) => {
+      held.set(asked, answer)
+    },
+    holdKeyRead: (nth: number, until: Promise<void>) => {
+      heldReads.set(nth, until)
+    },
+  }
+}
+
+/**
+ * A server that changes the password, signing out every session but this
+ * one, and answers each listing of the sessions with the ones it holds when
+ * asked. `holdChange` keeps the change's answer until the case settles it;
+ * `holdSessionRead` keeps the nth listing of the sessions.
+ */
+function signsOthersOut() {
+  const session = (id: string, agent: string, current: boolean) => ({
+    id,
+    created: 'then',
+    last_seen: 'today',
+    user_agent: agent,
+    ip: null,
+    current,
+  })
+  let listed = [session('aa', 'Firefox', true), session('bb', 'Safari', false)]
+  let changes = 0
+  let sessionReads = 0
+  let heldChange: Promise<Response> | undefined
+  const heldReads = new Map<number, Promise<void>>()
+  vi.stubGlobal(
+    'fetch',
+    vi.fn((input: string, init?: RequestInit) => {
+      const asked = `${init?.method ?? 'GET'} ${input}`
+      if (asked === 'PUT /api/password') {
+        changes += 1
+        const answer =
+          heldChange ?? Promise.resolve(new Response(null, { status: 204 }))
+        return answer.then((response) => {
+          if (response.ok) listed = listed.filter((each) => each.current)
+          return response
+        })
+      }
+      if (asked === 'GET /api/sessions') {
+        sessionReads += 1
+        const now = json(listed)
+        return (heldReads.get(sessionReads) ?? Promise.resolve()).then(
+          () => now,
+        )
+      }
+      if (asked === 'GET /api/keys') return Promise.resolve(json([]))
+      return Promise.resolve(new Response(null, { status: 404 }))
+    }),
+  )
+  return {
+    changes: () => changes,
+    holdChange: (answer: Promise<Response>) => {
+      heldChange = answer
+    },
+    holdSessionRead: (nth: number, until: Promise<void>) => {
+      heldReads.set(nth, until)
+    },
+  }
+}
+
+/** The alert above the sections, if drawn. */
+const alertIn = (host: HTMLElement) =>
+  host.querySelector('[role="alert"]')?.textContent
+
+/**
+ * Whether a list holds a row for `name`, ending in its Revoke. Not the
+ * screen's words: the OPDS line names Panels and Chunky, and the hidden
+ * line a create says names its key.
+ */
+const rowListed = (host: HTMLElement, name: string) =>
+  [...host.querySelectorAll('li, .reader-section-head')].some(
+    (row) =>
+      (row.textContent ?? '').includes(name) &&
+      row.querySelector('button')?.textContent === 'Revoke',
+  )
+
+/** Whether Signed in lists a session from Safari, which a change signs out. */
+const listsSafari = (host: HTMLElement) =>
+  [...host.querySelectorAll('li, .reader-section-head')].some((row) =>
+    (row.textContent ?? '').includes('Safari'),
+  )
+
+/** Press Revoke on the key named `name`, and let what follows land. */
+async function revoke(host: HTMLElement, name: string) {
+  const button = [...host.querySelectorAll('li, .reader-section-head')]
+    .filter((row) => row.querySelector('button')?.textContent === 'Revoke')
+    .find((row) => (row.textContent ?? '').includes(name))
+    ?.querySelector('button')
+  if (!button) throw new Error(`no Revoke on ${name}`)
+  await act(async () => {
+    button.click()
+    await new Promise((resolve) => {
+      setTimeout(resolve, 0)
+    })
+  })
+}
+/** What the server answers a Create sent with no name (`session.rs`). */
+const NEEDS_A_NAME = 'a key needs a name, so the right one can be revoked later'
+const KEY_MADE =
+  'Key made: phone. Copy it now — it is not stored and cannot be shown again.'
+const KEY_MADE_UNNAMED =
+  'Key made. Copy it now — it is not stored and cannot be shown again.'
+const PASSWORD_CHANGED =
+  'Password changed. Every other signed-in browser has been signed out; API keys still work.'
+
 describe('Account', () => {
   afterEach(() => {
     vi.restoreAllMocks()
@@ -78,18 +346,16 @@ describe('Account', () => {
    * sidebar beside it is how a person leaves. And the panel's look does not
    * come with it. `.library` follows the viewer's colour scheme, while the
    * panel's classes are the reader's and resolve dark whatever the theme
-   * says — so on a paper `--bg` the "Password changed" confirmation would be
-   * `--success`'s dark green on white. The check runs after a change, with
-   * the notice on screen.
+   * says. The check runs after a change, with what the change drew on
+   * screen.
    *
-   * **The sweep is for any `style` attribute, not only one naming a colour.**
-   * Until ⑤c `LOOKS.page` was `{}` beside a panel half made of
-   * `CSSProperties`, and the layout-only objects the two placements shared —
-   * `rowStyle`, the headings, the small print — reached this page too, so a
-   * colour filter was the only thing that could be asserted. The panel half
-   * is class names now and those objects are gone, which leaves the page
-   * carrying no inline style at all; Task 6 fills `LOOKS.page`, and this is
-   * what says it did so with classes.
+   * **The sweep is for any `style` attribute, not only one naming a colour**:
+   * the page is drawn by classes alone, the settings components' and
+   * `admin.css`'s, so an inline style of any kind is one no stylesheet
+   * answers for.
+   *
+   * **The page's shape is the settings pages'**: a header, then a section
+   * per part; nothing a form says is drawn between them.
    */
   it('draws as a page with no overlay, no Close and no inline style of its own', async () => {
     vi.stubGlobal(
@@ -108,6 +374,14 @@ describe('Account', () => {
     if (!(screen instanceof HTMLElement)) throw new Error('nothing drawn')
     expect(screen.tagName).toBe('SECTION')
     expect(screen.getAttribute('aria-label')).toBe('Account')
+    expect(
+      [...screen.children].map((el) => [el.tagName, el.className]),
+    ).toEqual([
+      ['DIV', 'page-header'],
+      ['SECTION', 'settings-section'],
+      ['SECTION', 'settings-section'],
+      ['SECTION', 'settings-section'],
+    ])
     expect(host.querySelector('[role="dialog"]')).toBeNull()
     expect(buttonSaying(host, 'Close')).toBeUndefined()
     // The key list loaded: its one row's Revoke is the only one drawn.
@@ -116,12 +390,15 @@ describe('Account', () => {
     const current = host.querySelector<HTMLInputElement>(
       'input[autocomplete="current-password"]',
     )
-    const next = host.querySelector<HTMLInputElement>(
+    const [next, confirm] = host.querySelectorAll<HTMLInputElement>(
       'input[autocomplete="new-password"]',
     )
-    if (!current || !next) throw new Error('missing password fields')
+    if (!current || !next || !confirm) {
+      throw new Error('missing password fields')
+    }
     type(current, 'old')
     type(next, 'new')
+    type(confirm, 'new')
     await act(async () => {
       current.form?.dispatchEvent(
         new Event('submit', { bubbles: true, cancelable: true }),
@@ -129,10 +406,7 @@ describe('Account', () => {
       await Promise.resolve()
     })
     await settle()
-    const notice = [...screen.querySelectorAll('p')].find((p) =>
-      (p.textContent ?? '').startsWith('Password changed'),
-    )
-    expect(notice).toBeDefined()
+    expect(passwordRegion(screen).textContent).toBe(PASSWORD_CHANGED)
 
     // Read off the `style` attribute React wrote, element by element.
     const painted = [...screen.querySelectorAll('[style]')].map(
@@ -178,22 +452,30 @@ describe('Account', () => {
     const secret = host.querySelector('.secret')
     expect(secret?.textContent).toContain('tyk_the-only-copy')
     expect(secret?.className).toBe('secret')
+    // `look.meta` on its caption, which buys the quiet text `.why` draws.
+    expect(secret?.querySelector('.secret-caption')?.className).toBe(
+      'copy-words secret-caption why',
+    )
+    // In the API keys box, straight under the form that made it.
+    const keys = section(pageScreen(host), 'API keys')
+    expect(secret?.parentElement).toBe(
+      keys.querySelector(':scope > .settings-box'),
+    )
+    expect(secret?.previousElementSibling).toBe(create)
   })
 
   /**
-   * **Every key in `LOOKS.page`, pinned the way `LOOKS.panel` is below.**
-   * Deleting `section: 'account-card'` from `LOOKS.page` leaves `/account`
-   * with no cards at all, and every other gate stays green: the stylesheet
-   * test in `admin-account.css.test.ts` reads `admin.css`, not the component,
-   * so the rule still exists whether or not anything wears it;
-   * `Account.browser.test.tsx`'s page case measures the key-name box, not the
-   * card; and neither the no-inline-style case above nor the secret case
-   * looks at it. `heading`, `wide`, `signOut`, `failure` and `note` sit in the
-   * same position — nothing else in this file names them for the page. This
-   * pins all six, following the panel's shape below rather than a different
-   * one.
+   * **Every part of the page, drawn by the settings components or by
+   * `LOOKS.page`.** Each section is a `Section` at h2, its heading outside
+   * its box; each setting, key and session is a `Row`, its facts as the
+   * row's help, where `settings.css` draws them quiet; each verb sits where
+   * the settings pages put it, and takes no class, since `base.css` draws
+   * every button there. What the components do not draw — the failure
+   * above the sections — keeps `LOOKS.page`'s class, which nothing else in
+   * this file names for the page. Per element, so that a fact drawn in the
+   * wrong section, or in no row, fails here.
    */
-  it('paints every part of the page with admin.css’s classes', async () => {
+  it('draws every part of the page with the settings components, and its alerts with admin.css’s classes', async () => {
     vi.stubGlobal(
       'fetch',
       server({
@@ -216,46 +498,86 @@ describe('Account', () => {
     )
     const host = mount(<Account placement="page" onSignedOut={noop} />)
     await settle()
+    const screen = pageScreen(host)
 
-    // `look.section`, `look.heading`: one of each per section. `.account >`,
-    // not a bare `section`: the page wrapper itself is a `<section
-    // className="account">`, and a bare query counts it as a fourth.
+    // A `Section` per part, at h2 under the page's h1.
     expect(
-      [...host.querySelectorAll('.account > section')].map(
-        (el) => el.className,
-      ),
-    ).toEqual(['account-card', 'account-card', 'account-card'])
-    expect([...host.querySelectorAll('h2')].map((el) => el.className)).toEqual([
-      'account-heading',
-      'account-heading',
-      'account-heading',
+      [...screen.querySelectorAll(':scope > section')].map((el) => [
+        el.className,
+        el.querySelector(
+          ':scope > .settings-section-head > h2.settings-section-title',
+        )?.textContent,
+      ]),
+    ).toEqual([
+      ['settings-section', 'Password'],
+      ['settings-section', 'API keys'],
+      ['settings-section', 'Signed in'],
+    ])
+    const password = section(screen, 'Password')
+    const keys = section(screen, 'API keys')
+    const signedIn = section(screen, 'Signed in')
+
+    // Each section's rows, by their labels.
+    expect(rowLabels(password)).toEqual([
+      'Current password',
+      'New password',
+      'Confirm password',
+    ])
+    expect(rowLabels(keys)).toEqual(['New key', 'phone'])
+    expect(rowLabels(signedIn)).toEqual(['Firefox (this one)'])
+
+    // A key's and a session's facts are their row's help, and each row ends
+    // in its Revoke.
+    const key = row(keys, 'phone')
+    expect(helpOf(key)?.textContent).toBe('never used')
+    expect(
+      key.querySelector(':scope > .settings-row-control > button')?.textContent,
+    ).toBe('Revoke')
+    const session = row(signedIn, 'Firefox (this one)')
+    expect(helpOf(session)?.textContent).toBe('last seen today')
+    expect(
+      session.querySelector(':scope > .settings-row-control > button')
+        ?.textContent,
+    ).toBe('Revoke')
+
+    // Create beside the box it sends, in the New key row.
+    expect(
+      row(keys, 'New key').querySelector(
+        ':scope > .settings-row-control > button',
+      )?.textContent,
+    ).toBe('Create')
+
+    // Change password at the foot of its form, Sign out at the foot of its
+    // box, each the last thing there.
+    const foot = (root: ParentNode) =>
+      root.querySelector(':scope > .settings-actions:last-child > button')
+    expect(
+      foot(password.querySelector(':scope > .settings-box > form') ?? password)
+        ?.textContent,
+    ).toBe('Change password')
+    expect(
+      foot(signedIn.querySelector(':scope > .settings-box') ?? signedIn)
+        ?.textContent,
+    ).toBe('Sign out')
+
+    // No button on the page carries a class of its own.
+    expect(
+      [...screen.querySelectorAll('button')]
+        .filter((b) => b.className !== '')
+        .map((b) => `${b.textContent}: ${b.className}`),
+    ).toEqual([])
+
+    // The confirmation a password change leaves behind is said and not
+    // drawn, from Password's visually hidden region, which takes no class
+    // of `LOOKS`.
+    await submitted(host.querySelector(PASSWORD_FORM))
+    const region = passwordRegion(host)
+    expect([region.textContent, region.className]).toEqual([
+      PASSWORD_CHANGED,
+      'visually-hidden',
     ])
 
-    // `look.wide` and `look.signOut`, on the two section verbs — pinned
-    // separately, as the panel does below, because they are two keys even
-    // though both hold `'account-wide'` today.
-    expect(buttonSaying(host, 'Change password')?.className).toBe(
-      'account-wide',
-    )
-    expect(buttonSaying(host, 'Sign out')?.className).toBe('account-wide')
-
-    // `look.note`, on the confirmation a password change leaves behind.
-    await act(async () => {
-      host
-        .querySelector('form')
-        ?.dispatchEvent(
-          new Event('submit', { bubbles: true, cancelable: true }),
-        )
-      await Promise.resolve()
-    })
-    await settle()
-    const notice = [...host.querySelectorAll('p')].find((el) =>
-      (el.textContent ?? '').startsWith('Password changed'),
-    )
-    expect(notice?.className).toBe('account-note')
-
-    // `look.failure`. A revocation the server refuses, so the alert appears
-    // beside the confirmation rather than in place of it.
+    // `look.failure`, on a revocation the server refuses.
     const revoke = [...host.querySelectorAll('button')].find(
       (b) => b.textContent === 'Revoke' && !b.disabled,
     )
@@ -267,24 +589,6 @@ describe('Account', () => {
     expect(host.querySelector('[role="alert"]')?.className).toBe(
       'account-failure',
     )
-
-    // **`look.meta` and `look.row`, the two keys the first pass left out.**
-    // `meta` is not cosmetic: `.why` is what buys `--muted` at
-    // `--text-meta`, and without it these four paragraphs render `--text` at
-    // 16 px — which is the 4.18:1 on Paper that ⑤c exists to fix. Deleting
-    // the key restores the defect with every other gate green, because
-    // `admin-account.css.test.ts` reads the stylesheet and the rule is
-    // still there; only the class stops being applied.
-    expect([...host.querySelectorAll('.why')].map((el) => el.tagName)).toEqual([
-      'P',
-      'SPAN',
-      'SPAN',
-    ])
-
-    // `look.row` on the create form and on each key and session row. Asserted
-    // by count rather than per element: the three are one key in the map and
-    // a mutation takes all of them at once.
-    expect(host.querySelectorAll('.account-row')).toHaveLength(3)
   })
 
   /**
@@ -295,8 +599,8 @@ describe('Account', () => {
    * part: an `<input>` reads 14px from `.reader-dialog-panel :where(input,
    * select) { font: inherit }` whether or not `look.field` is on it, so
    * dropping `field` from the map entirely leaves that file green. And the
-   * secret, the failure and the confirmation are drawn only after an action,
-   * so no fixture that merely mounts the panel ever sees them.
+   * secret and the failure are drawn only after an action, so no fixture
+   * that merely mounts the panel ever sees them.
    *
    * A class name is worth asserting here because that file proves the same
    * classes resolve, inside `.reader`, to the box ③ draws. Neither half
@@ -350,10 +654,12 @@ describe('Account', () => {
       'reader-panel-heading',
     ])
 
-    // `look.field` on all three boxes, `look.wide`/`look.signOut` on the two
-    // section verbs, `look.button` on the row-level ones.
+    // `look.field` on all four boxes, Confirm's as its other
+    // fields', `look.wide`/`look.signOut` on the two section verbs,
+    // `look.button` on the row-level ones.
     expect([...host.querySelectorAll('input')].map((el) => el.className)) //
       .toEqual([
+        'reader-field reader-field-block',
         'reader-field reader-field-block',
         'reader-field reader-field-block',
         'reader-field reader-field-block',
@@ -405,25 +711,21 @@ describe('Account', () => {
     // The fourth `look.meta` site, and the one the count above cannot see:
     // that count runs before this submit, when no secret is on screen, so
     // dropping `look.meta` from the caption turned nothing red.
-    expect(secret?.querySelector('p')?.className).toBe('reader-meta')
-
-    // `look.note`, on the confirmation a password change leaves behind.
-    await act(async () => {
-      host
-        .querySelector('form')
-        ?.dispatchEvent(
-          new Event('submit', { bubbles: true, cancelable: true }),
-        )
-      await Promise.resolve()
-    })
-    await settle()
-    const notice = [...host.querySelectorAll('p')].find((el) =>
-      (el.textContent ?? '').startsWith('Password changed'),
+    expect(secret?.querySelector('.secret-caption')?.className).toBe(
+      'copy-words secret-caption reader-meta',
     )
-    expect(notice?.className).toBe('reader-success')
 
-    // `look.failure`. A revocation the server refuses, so the alert appears
-    // beside the confirmation rather than in place of it.
+    // The confirmation a password change leaves behind is said and not
+    // drawn, from Password's visually hidden region, which takes no class
+    // of `LOOKS`.
+    await submitted(host.querySelector(PASSWORD_FORM))
+    const region = passwordRegion(host)
+    expect([region.textContent, region.className]).toEqual([
+      PASSWORD_CHANGED,
+      'visually-hidden',
+    ])
+
+    // `look.failure`, on a revocation the server refuses.
     const revoke = [...host.querySelectorAll('button')].find(
       (b) => b.textContent === 'Revoke' && !b.disabled,
     )
@@ -500,8 +802,11 @@ describe('Account', () => {
     })
     await settle()
 
-    expect(host.textContent).toContain('tyk_the-only-copy')
-    expect(host.textContent).toMatch(/cannot be shown again/)
+    // Read off the box: the line the polite region says a key was made in
+    // says "cannot be shown again" as well.
+    const secret = host.querySelector('.secret')
+    expect(secret?.textContent).toContain('tyk_the-only-copy')
+    expect(secret?.textContent).toMatch(/cannot be shown again/)
   })
 
   /**
@@ -604,10 +909,12 @@ describe('Account', () => {
     expect(host.textContent).toMatch(/API keys still work/)
   })
 
-  // Both placements draw the one confirmation. One `it()` each:
-  // `testing/mount.ts` holds one root.
+  // Both placements say the one confirmation, from Password's own visually
+  // hidden region beside its form, as API keys says a key was made, so that
+  // saying it moves nothing (the user's ruling of 2026-10-25). One `it()`
+  // each: `testing/mount.ts` holds one root.
   for (const placement of ['page', 'panel'] as const) {
-    it(`says a password change worked in a polite live region drawn empty before it, as a ${placement}`, async () => {
+    it(`says a password change worked in a visually hidden polite region in Password, drawn empty before it, and from no region above the sections, as a ${placement}`, async () => {
       // A region drawn together with what it says is often not read at all.
       vi.stubGlobal(
         'fetch',
@@ -617,32 +924,641 @@ describe('Account', () => {
           'PUT /api/password': () => new Response(null, { status: 204 }),
         }),
       )
-      const host = mount(
-        placement === 'page' ? (
-          <Account placement="page" onSignedOut={noop} />
-        ) : (
-          <Account visible onClose={noop} onSignedOut={noop} />
-        ),
-      )
+      const host = mountAs(placement)
       await settle()
-      const region = host.querySelector('[aria-live="polite"]')
-      expect(region?.textContent).toBe('')
+      const region = passwordRegion(host)
+      expect(region.textContent).toBe('')
+      expect(region.classList.contains('visually-hidden')).toBe(true)
+      expect(
+        region.closest('section')?.querySelector('h2, h3')?.textContent,
+      ).toBe('Password')
+
+      await submitted(host.querySelector(PASSWORD_FORM))
+      expect(passwordRegion(host)).toBe(region)
+      expect(region.textContent).toBe(PASSWORD_CHANGED)
+      const screen = host.querySelector('section.account, [role="dialog"]')
+      expect(screen?.querySelectorAll(':scope > [aria-live]')).toHaveLength(0)
+    })
+  }
+
+  for (const placement of ['page', 'panel'] as const) {
+    it(`says a second password change again, in a node of its own, as a ${placement}`, async () => {
+      // A live region speaks its text changing: the same words left in the
+      // same node have not changed, and are not spoken again.
+      vi.stubGlobal(
+        'fetch',
+        server({
+          '/api/keys': () => json([]),
+          '/api/sessions': () => json([]),
+          'PUT /api/password': () => new Response(null, { status: 204 }),
+        }),
+      )
+      const host = mountAs(placement)
+      await settle()
+      const region = passwordRegion(host)
+      await submitted(host.querySelector(PASSWORD_FORM))
+      const first = region.firstChild
+      expect([first?.textContent, region.textContent]).toEqual([
+        PASSWORD_CHANGED,
+        PASSWORD_CHANGED,
+      ])
+
+      await submitted(host.querySelector(PASSWORD_FORM))
+      expect(passwordRegion(host)).toBe(region)
+      expect(region.textContent).toBe(PASSWORD_CHANGED)
+      expect(region.firstChild).not.toBeNull()
+      expect(region.firstChild).not.toBe(first)
+    })
+  }
+
+  // The user's ruling of 2026-10-25: the sessions a change signed out leave
+  // Signed in in the render that says it worked, so the page moves once.
+  for (const placement of ['page', 'panel'] as const) {
+    it(`says Password changed in the render that draws the Signed in list after the change, and holds Change password until then, as a ${placement}`, async () => {
+      const sessions = signsOthersOut()
+      const listing = deferred<void>()
+      // The mount's listing is the first; the change's is the second.
+      sessions.holdSessionRead(2, listing.promise)
+      const host = mountAs(placement)
+      await settle()
+      const region = passwordRegion(host)
+      expect(listsSafari(host)).toBe(true)
+
+      await submitted(host.querySelector(PASSWORD_FORM))
+      expect(sessions.changes()).toBe(1)
+      expect([region.textContent, listsSafari(host)]).toEqual(['', true])
+      await submitted(host.querySelector(PASSWORD_FORM))
+      expect(sessions.changes()).toBe(1)
 
       await act(async () => {
-        host
-          .querySelector('form')
-          ?.dispatchEvent(
-            new Event('submit', { bubbles: true, cancelable: true }),
-          )
-        await Promise.resolve()
+        listing.resolve()
+        await new Promise((resolve) => {
+          setTimeout(resolve, 0)
+        })
       })
+      expect([region.textContent, listsSafari(host)]).toEqual([
+        PASSWORD_CHANGED,
+        false,
+      ])
+      await submitted(host.querySelector(PASSWORD_FORM))
+      expect(sessions.changes()).toBe(2)
+    })
+  }
+
+  // A change answered after the panel closed is not this panel's to answer:
+  // the close emptied its boxes, and what is typed after it is not undone.
+  // The sessions it signed out are true all the same, and the reopen's
+  // listing was read before they were.
+  it('does not say Password changed, nor empty what is typed, in a panel opened again while the change was out, and lists the sessions it signed out no longer', async () => {
+    const sessions = signsOthersOut()
+    const answer = deferred<Response>()
+    sessions.holdChange(answer.promise)
+    const host = mount(<Account visible onClose={noop} onSignedOut={noop} />)
+    await settle()
+    await submitted(host.querySelector(PASSWORD_FORM))
+    rerender(<Account visible={false} onClose={noop} onSignedOut={noop} />)
+    await settle()
+    rerender(<Account visible onClose={noop} onSignedOut={noop} />)
+    await settle()
+    expect(listsSafari(host)).toBe(true)
+    const current = host.querySelector<HTMLInputElement>(
+      'input[autocomplete="current-password"]',
+    )
+    if (!current) throw new Error('no Current box')
+    type(current, 'typed since')
+
+    await act(async () => {
+      answer.resolve(new Response(null, { status: 204 }))
+      await new Promise((resolve) => {
+        setTimeout(resolve, 0)
+      })
+    })
+    expect(sessions.changes()).toBe(1)
+    expect([passwordRegion(host).textContent, current.value]).toEqual([
+      '',
+      'typed since',
+    ])
+    expect(listsSafari(host)).toBe(false)
+  })
+
+  it('does not say Password changed in a panel opened again after a close that came between the change’s answer and its listing', async () => {
+    const sessions = signsOthersOut()
+    const listing = deferred<void>()
+    // The mount's listing is the first; the change's is the second.
+    sessions.holdSessionRead(2, listing.promise)
+    const host = mount(<Account visible onClose={noop} onSignedOut={noop} />)
+    await settle()
+    await submitted(host.querySelector(PASSWORD_FORM))
+    rerender(<Account visible={false} onClose={noop} onSignedOut={noop} />)
+    await settle()
+    await act(async () => {
+      listing.resolve()
+      await new Promise((resolve) => {
+        setTimeout(resolve, 0)
+      })
+    })
+    rerender(<Account visible onClose={noop} onSignedOut={noop} />)
+    await settle()
+    expect(sessions.changes()).toBe(1)
+    expect(passwordRegion(host).textContent).toBe('')
+  })
+
+  it('does not say a failed revocation of a key or a session, nor a failed sign-out, in a panel opened again after a close that came while they were out', async () => {
+    const answer = deferred<void>()
+    const session = (id: string, agent: string, current: boolean) => ({
+      id,
+      created: 'then',
+      last_seen: 'today',
+      user_agent: agent,
+      ip: null,
+      current,
+    })
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: string, init?: RequestInit) => {
+        const asked = `${init?.method ?? 'GET'} ${input}`
+        if (asked.startsWith('DELETE ')) {
+          return answer.promise.then(() => new Response(null, { status: 500 }))
+        }
+        if (asked === 'GET /api/keys') {
+          return Promise.resolve(
+            json([{ id: 1, name: 'phone', created: 'then', last_used: null }]),
+          )
+        }
+        if (asked === 'GET /api/sessions') {
+          return Promise.resolve(
+            json([
+              session('aa', 'Firefox', true),
+              session('bb', 'Safari', false),
+            ]),
+          )
+        }
+        return Promise.resolve(new Response(null, { status: 404 }))
+      }),
+    )
+    const host = mount(<Account visible onClose={noop} onSignedOut={noop} />)
+    await settle()
+    const fetch = vi.mocked(globalThis.fetch)
+    const revokeOn = (name: string) =>
+      [...host.querySelectorAll('.reader-section-head')]
+        .find((row) => (row.textContent ?? '').includes(name))
+        ?.querySelector('button')
+    const presses = [
+      revokeOn('phone'),
+      revokeOn('Safari'),
+      buttonSaying(host, 'Sign out'),
+    ]
+    for (const button of presses) {
+      if (!button) throw new Error('a button to press is missing')
+      act(() => button.click())
+    }
+    expect(
+      fetch.mock.calls
+        .filter(([, init]) => init?.method === 'DELETE')
+        .map(([path]) => path),
+    ).toEqual(['/api/keys/1', '/api/sessions/bb', '/api/session'])
+
+    rerender(<Account visible={false} onClose={noop} onSignedOut={noop} />)
+    await settle()
+    await act(async () => {
+      answer.resolve()
+      await new Promise((resolve) => {
+        setTimeout(resolve, 0)
+      })
+    })
+    rerender(<Account visible onClose={noop} onSignedOut={noop} />)
+    await settle()
+    expect(host.querySelector('[role="alert"]')).toBeNull()
+  })
+
+  // O228, and the user's rulings of 2026-10-25: a made key is said by its
+  // name, never by its secret, in a visually hidden polite region in API
+  // keys beside the secret's box, so the line moves nothing on the page;
+  // Password's region says "Password changed" alone.
+  for (const placement of ['page', 'panel'] as const) {
+    it(`says a key was made, by its name and not its secret, in a polite region in API keys and not in Password’s, as a ${placement}`, async () => {
+      vi.stubGlobal(
+        'fetch',
+        server({
+          '/api/keys': () => json([]),
+          '/api/sessions': () => json([]),
+          'POST /api/keys': () => json({ secret: 'tyk_the-only-copy' }),
+        }),
+      )
+      const host = mountAs(placement)
       await settle()
-      expect(host.querySelector('[aria-live="polite"]')).toBe(region)
-      expect(region?.textContent).toBe(
-        'Password changed. Every other signed-in browser has been signed out; API keys still work.',
+      const region = keyRegion(host)
+      expect(region.textContent).toBe('')
+      const keyName = host.querySelector<HTMLInputElement>('input[placeholder]')
+      if (!keyName) throw new Error('no key name box')
+      type(keyName, 'phone')
+
+      await submitted(host.querySelector(KEY_FORM))
+      // The screen holds the secret, in its box, and the region does not.
+      expect(host.querySelector('.secret')?.textContent).toContain(
+        'tyk_the-only-copy',
+      )
+      expect(keyRegion(host)).toBe(region)
+      expect(region.classList.contains('visually-hidden')).toBe(true)
+      expect(region.textContent).toBe(KEY_MADE)
+      expect(region.textContent).not.toContain('tyk_the-only-copy')
+      expect(passwordRegion(host).textContent).toBe('')
+    })
+  }
+
+  for (const placement of ['page', 'panel'] as const) {
+    it(`names the key in its secret's caption, in the caption's own words, and the line saying it was made as before, as a ${placement}`, async () => {
+      vi.stubGlobal(
+        'fetch',
+        server({
+          '/api/keys': () => json([]),
+          '/api/sessions': () => json([]),
+          'POST /api/keys': () => json({ secret: 'tyk_the-only-copy' }),
+        }),
+      )
+      const host = mountAs(placement)
+      await settle()
+      const keyName = host.querySelector<HTMLInputElement>('input[placeholder]')
+      if (!keyName) throw new Error('no key name box')
+      type(keyName, ' tablet ')
+
+      await submitted(host.querySelector(KEY_FORM))
+      expect(host.querySelector('.secret-caption')?.textContent).toBe(
+        'Key “tablet”: copy this now — it is not stored and cannot be shown again.',
+      )
+      expect(keyRegion(host).textContent).toBe(
+        'Key made: tablet. Copy it now — it is not stored and cannot be shown again.',
       )
     })
   }
+
+  for (const placement of ['page', 'panel'] as const) {
+    it(`says a key made with no name was made, naming none, as a ${placement}`, async () => {
+      // `create_key` (`session.rs`) refuses a blank name, so this is a server
+      // that lets one through, and the line still reads whole. A name of
+      // spaces is none, as that check reads it.
+      vi.stubGlobal(
+        'fetch',
+        server({
+          '/api/keys': () => json([]),
+          '/api/sessions': () => json([]),
+          'POST /api/keys': () => json({ secret: 'tyk_the-only-copy' }),
+        }),
+      )
+      const host = mountAs(placement)
+      await settle()
+      const region = keyRegion(host)
+      const keyName = host.querySelector<HTMLInputElement>('input[placeholder]')
+      if (!keyName) throw new Error('no key name box')
+
+      await submitted(host.querySelector(KEY_FORM))
+      expect(region.textContent).toBe(KEY_MADE_UNNAMED)
+      expect(host.querySelector('.secret-caption')?.textContent).toBe(CAPTION)
+
+      type(keyName, '   ')
+      await submitted(host.querySelector(KEY_FORM))
+      expect(region.textContent).toBe(KEY_MADE_UNNAMED)
+      expect(host.querySelector('.secret-caption')?.textContent).toBe(CAPTION)
+    })
+  }
+
+  for (const placement of ['page', 'panel'] as const) {
+    it(`says a second key made with the same name again, in a node of its own, as a ${placement}`, async () => {
+      // A live region speaks its text changing: the same words left in the
+      // same node have not changed, and are not spoken again.
+      vi.stubGlobal(
+        'fetch',
+        server({
+          '/api/keys': () => json([]),
+          '/api/sessions': () => json([]),
+          'POST /api/keys': () => json({ secret: 'tyk_the-only-copy' }),
+        }),
+      )
+      const host = mountAs(placement)
+      await settle()
+      const region = keyRegion(host)
+      const keyName = host.querySelector<HTMLInputElement>('input[placeholder]')
+      if (!keyName) throw new Error('no key name box')
+      type(keyName, 'phone')
+      await submitted(host.querySelector(KEY_FORM))
+      const first = region.firstChild
+      expect([first?.textContent, region.textContent]).toEqual([
+        KEY_MADE,
+        KEY_MADE,
+      ])
+
+      type(keyName, 'phone')
+      await submitted(host.querySelector(KEY_FORM))
+      expect(keyRegion(host)).toBe(region)
+      expect(region.textContent).toBe(KEY_MADE)
+      expect(region.firstChild).not.toBeNull()
+      expect(region.firstChild).not.toBe(first)
+    })
+  }
+
+  it('takes a made key’s line away when the panel closes, as it takes Password changed', async () => {
+    vi.stubGlobal(
+      'fetch',
+      server({
+        '/api/keys': () => json([]),
+        '/api/sessions': () => json([]),
+        'POST /api/keys': () => json({ secret: 'tyk_the-only-copy' }),
+        'PUT /api/password': () => new Response(null, { status: 204 }),
+      }),
+    )
+    const host = mountAs('panel')
+    await settle()
+    // Closed, nothing is drawn, so each is read again after reopening.
+    const reopen = async () => {
+      rerender(<Account visible={false} onClose={noop} onSignedOut={noop} />)
+      await settle()
+      rerender(<Account visible onClose={noop} onSignedOut={noop} />)
+      await settle()
+    }
+    const keyName = host.querySelector<HTMLInputElement>('input[placeholder]')
+    if (!keyName) throw new Error('no key name box')
+    type(keyName, 'phone')
+    await submitted(host.querySelector(KEY_FORM))
+    expect(keyRegion(host).textContent).toBe(KEY_MADE)
+    await reopen()
+    expect(keyRegion(host).textContent).toBe('')
+
+    await submitted(host.querySelector(PASSWORD_FORM))
+    expect(passwordRegion(host).textContent).toBe(PASSWORD_CHANGED)
+    await reopen()
+    expect(passwordRegion(host).textContent).toBe('')
+  })
+
+  for (const placement of ['page', 'panel'] as const) {
+    it(`keeps Password changed through a key made, and takes a key’s line away as the next key is asked for, so that none stands beside a refusal, as a ${placement}`, async () => {
+      let creates = 0
+      vi.stubGlobal(
+        'fetch',
+        server({
+          '/api/keys': () => json([]),
+          '/api/sessions': () => json([]),
+          'POST /api/keys': () =>
+            ++creates === 1
+              ? json({ secret: 'tyk_the-only-copy' })
+              : new Response(NEEDS_A_NAME, { status: 400 }),
+          'PUT /api/password': () => new Response(null, { status: 204 }),
+        }),
+      )
+      const host = mountAs(placement)
+      await settle()
+      const note = passwordRegion(host)
+      const region = keyRegion(host)
+      const alert = () => host.querySelector('[role="alert"]')?.textContent
+      await submitted(host.querySelector(PASSWORD_FORM))
+      expect(note.textContent).toBe(PASSWORD_CHANGED)
+
+      const keyName = host.querySelector<HTMLInputElement>('input[placeholder]')
+      if (!keyName) throw new Error('no key name box')
+      type(keyName, 'phone')
+      await submitted(host.querySelector(KEY_FORM))
+      expect([note.textContent, region.textContent]).toEqual([
+        PASSWORD_CHANGED,
+        KEY_MADE,
+      ])
+
+      // A key the server refuses: the last key's line went as it was sent.
+      await submitted(host.querySelector(KEY_FORM))
+      expect([note.textContent, region.textContent, alert()]).toEqual([
+        PASSWORD_CHANGED,
+        '',
+        NEEDS_A_NAME,
+      ])
+    })
+  }
+
+  // The user's ruling of 2026-10-25: a revoked key's secret no longer works,
+  // so its box goes; another key's revocation leaves a key that still does.
+  for (const placement of ['page', 'panel'] as const) {
+    it(`takes the secret’s box and its line away when the key it shows is revoked, and leaves both when another key is, as a ${placement}`, async () => {
+      const keys = listedKeys(
+        [{ id: 1, name: 'Panels' }],
+        [{ id: 2, name: 'phone' }],
+      )
+      vi.stubGlobal('fetch', keys.server)
+      const host = mountAs(placement)
+      await settle()
+      const keyName = host.querySelector<HTMLInputElement>('input[placeholder]')
+      if (!keyName) throw new Error('no key name box')
+      type(keyName, 'phone')
+      await submitted(host.querySelector(KEY_FORM))
+      expect(host.querySelector('.secret')?.textContent).toContain(
+        'tyk_the-only-copy',
+      )
+
+      await revoke(host, 'Panels')
+      expect(keys.revoked).toEqual([1])
+      expect(host.querySelector('.secret')?.textContent).toContain(
+        'tyk_the-only-copy',
+      )
+      expect(keyRegion(host).textContent).toBe(KEY_MADE)
+
+      await revoke(host, 'phone')
+      expect(keys.revoked).toEqual([1, 2])
+      expect(host.querySelector('.secret')).toBeNull()
+      expect(keyRegion(host).textContent).toBe('')
+    })
+  }
+
+  it('leaves the secret’s box on every revoke when the listing after the create cannot say which key it is', async () => {
+    // Another browser made a key while this one's was made, so two keys are
+    // new to the listing that follows, and either may be the one shown.
+    const keys = listedKeys(
+      [{ id: 1, name: 'Panels' }],
+      [
+        { id: 2, name: 'phone' },
+        { id: 3, name: 'tablet' },
+      ],
+    )
+    vi.stubGlobal('fetch', keys.server)
+    const host = mountAs('page')
+    await settle()
+    await submitted(host.querySelector(KEY_FORM))
+    await revoke(host, 'tablet')
+    await revoke(host, 'phone')
+    expect(keys.revoked).toEqual([3, 2])
+    expect(host.querySelector('.secret')?.textContent).toContain(
+      'tyk_the-only-copy',
+    )
+  })
+
+  it('leaves a newer key’s box when the revoke of the key shown before it answers after that key is made', async () => {
+    // Revoke is not held while a key is asked for, so the shown key's
+    // revocation can answer once the next key's box is drawn, and that box
+    // holds a secret nothing can show again.
+    const keys = madeInTurn()
+    const revoked = deferred<Response>()
+    keys.hold('DELETE /api/keys/1', revoked.promise)
+    vi.stubGlobal('fetch', keys.fetch)
+    const host = mountAs('page')
+    await settle()
+    const keyName = host.querySelector<HTMLInputElement>('input[placeholder]')
+    if (!keyName) throw new Error('no key name box')
+    type(keyName, 'phone')
+    await submitted(host.querySelector(KEY_FORM))
+    expect(host.querySelector('.secret')?.textContent).toContain('tyk_first')
+
+    await revoke(host, 'phone')
+    type(keyName, 'tablet')
+    await submitted(host.querySelector(KEY_FORM))
+    expect(host.querySelector('.secret')?.textContent).toContain('tyk_second')
+
+    await act(async () => {
+      revoked.resolve(new Response(null, { status: 204 }))
+      await new Promise((resolve) => {
+        setTimeout(resolve, 0)
+      })
+    })
+    expect(host.querySelector('.secret')?.textContent ?? '').toContain(
+      'tyk_second',
+    )
+    expect(keyRegion(host).textContent).toBe(
+      'Key made: tablet. Copy it now — it is not stored and cannot be shown again.',
+    )
+  })
+
+  // The listing that names a made key is its own create's: the box is drawn
+  // with it, and Create is held until then, so no later key can be asked
+  // for while it is out and take the box's place.
+  it('draws a made key’s box only with the listing after its create, and holds Create until then', async () => {
+    const keys = madeInTurn()
+    const firstListing = deferred<void>()
+    // The mount's listing is the first; the first create's is the second.
+    keys.holdKeyRead(2, firstListing.promise)
+    vi.stubGlobal('fetch', keys.fetch)
+    const host = mountAs('page')
+    await settle()
+    const keyName = host.querySelector<HTMLInputElement>('input[placeholder]')
+    if (!keyName) throw new Error('no key name box')
+    type(keyName, 'phone')
+    await submitted(host.querySelector(KEY_FORM))
+    // The create has answered and its listing has not.
+    expect(host.querySelector('.secret')).toBeNull()
+    type(keyName, 'tablet')
+    await submitted(host.querySelector(KEY_FORM))
+    const creates = () =>
+      keys.fetch.mock.calls.filter(([, init]) => init?.method === 'POST')
+    expect(creates()).toHaveLength(1)
+
+    await act(async () => {
+      firstListing.resolve()
+      await new Promise((resolve) => {
+        setTimeout(resolve, 0)
+      })
+    })
+    expect(host.querySelector('.secret')?.textContent).toContain('tyk_first')
+    await revoke(host, 'phone')
+    expect(keys.revoked).toEqual([1])
+    expect(host.querySelector('.secret')).toBeNull()
+  })
+
+  // The user's ruling of 2026-10-25: a press of the secret's box copies it,
+  // through `useCopy`, as Copy address copies the catalog's address.
+  for (const placement of ['page', 'panel'] as const) {
+    it(`draws the secret’s box as a button named by its caption, which copies exactly the secret and says Copied, as a ${placement}`, async () => {
+      const writeText = vi.fn(() => Promise.resolve())
+      clipboardContext(true, { writeText })
+      vi.stubGlobal(
+        'fetch',
+        server({
+          '/api/keys': () => json([]),
+          '/api/sessions': () => json([]),
+          'POST /api/keys': () => json({ secret: 'tyk_the-only-copy' }),
+        }),
+      )
+      const host = mountAs(placement)
+      await settle()
+      const said = copyRegion(host)
+      expect(said?.textContent).toBe('')
+      await submitted(host.querySelector(KEY_FORM))
+
+      const box = host.querySelector<HTMLButtonElement>('.secret')
+      if (!box) throw new Error('no secret box')
+      expect([box.tagName, box.type, box.className]).toEqual([
+        'BUTTON',
+        'button',
+        placement === 'page' ? 'secret' : 'secret reader-secret',
+      ])
+      // Named by its caption, which says what a press does, and so not by
+      // the secret it holds.
+      const name = document.getElementById(
+        box.getAttribute('aria-labelledby') ?? '',
+      )
+      expect(name?.textContent).toBe(CAPTION)
+      expect(box.contains(name)).toBe(true)
+      expect(box.hasAttribute('aria-label')).toBe(false)
+
+      await act(async () => {
+        box.click()
+      })
+      await settle()
+      expect(writeText.mock.calls).toEqual([['tyk_the-only-copy']])
+      expect(copyRegion(host)).toBe(said)
+      expect(said?.textContent).toBe('Copied')
+    })
+  }
+
+  it.each([
+    ['outside a secure context', false, { writeText: vi.fn() }],
+    ['without a clipboard', true, undefined],
+  ] as const)(
+    'draws the secret as text to be selected by hand, and no copy, %s',
+    async (_, secure, clipboard) => {
+      clipboardContext(secure, clipboard)
+      vi.stubGlobal(
+        'fetch',
+        server({
+          '/api/keys': () => json([]),
+          '/api/sessions': () => json([]),
+          'POST /api/keys': () => json({ secret: 'tyk_the-only-copy' }),
+        }),
+      )
+      const host = mountAs('page')
+      await settle()
+      await submitted(host.querySelector(KEY_FORM))
+      const box = host.querySelector('.secret')
+      expect(box?.tagName).toBe('DIV')
+      expect(box?.textContent).toBe(`tyk_the-only-copy${CAPTION}`)
+      expect(copyRegion(host)).toBeNull()
+    },
+  )
+
+  it('says Not copied for a refused write, and draws the secret as text, selected for copying by hand, with focus on its box, until the next key', async () => {
+    clipboardContext(true, {
+      writeText: vi.fn(() => Promise.reject(new Error('denied'))),
+    })
+    vi.stubGlobal(
+      'fetch',
+      server({
+        '/api/keys': () => json([]),
+        '/api/sessions': () => json([]),
+        'POST /api/keys': () => json({ secret: 'tyk_the-only-copy' }),
+      }),
+    )
+    const host = mountAs('page')
+    await settle()
+    await submitted(host.querySelector(KEY_FORM))
+    const button = host.querySelector<HTMLButtonElement>('button.secret')
+    if (!button) throw new Error('no secret box to press')
+    act(() => button.focus())
+    await act(async () => {
+      button.click()
+    })
+    await settle()
+
+    expect(copyRegion(host)?.textContent).toBe('Not copied')
+    const box = host.querySelector<HTMLElement>('.secret')
+    expect(box?.tagName).toBe('DIV')
+    expect(document.activeElement).toBe(box)
+    expect(window.getSelection()?.toString()).toBe('tyk_the-only-copy')
+
+    await submitted(host.querySelector(KEY_FORM))
+    expect(host.querySelector('.secret')?.tagName).toBe('BUTTON')
+  })
 
   it('shows why a password change was refused', async () => {
     vi.stubGlobal(
@@ -759,7 +1675,7 @@ describe('Account', () => {
       server({
         '/api/keys': () => json([]),
         '/api/sessions': () => json([]),
-        'POST /api/keys': () => new Response(null, { status: 400 }),
+        'POST /api/keys': () => new Response(NEEDS_A_NAME, { status: 400 }),
       }),
     )
     const host = mount(
@@ -815,10 +1731,13 @@ describe('Account', () => {
     await settle()
 
     const inputs = [...host.querySelectorAll('input')] as HTMLInputElement[]
-    const [current, next, keyName] = inputs
-    if (!current || !next || !keyName) throw new Error('missing fields')
+    const [current, next, confirm, keyName] = inputs
+    if (!current || !next || !confirm || !keyName) {
+      throw new Error('missing fields')
+    }
     type(current, 'the old one')
     type(next, 'the new one')
+    type(confirm, 'the new one')
     type(keyName, 'tablet')
 
     const forms = [...host.querySelectorAll('form')]
@@ -872,7 +1791,7 @@ describe('Account', () => {
       await Promise.resolve()
     })
     await settle()
-    expect(host.textContent).toContain('phone')
+    expect(rowListed(host, 'phone')).toBe(true)
   })
 
   /** Signing out that fails does not tell `App` the reader is signed out. */
@@ -923,9 +1842,12 @@ describe('Account', () => {
     await settle()
 
     const inputs = [...host.querySelectorAll('input')] as HTMLInputElement[]
-    const [current, , keyName] = inputs
-    if (!current || !keyName) throw new Error('missing fields')
+    const [current, next, confirm, keyName] = inputs
+    if (!current || !next || !confirm || !keyName)
+      throw new Error('missing fields')
     type(current, 'my password')
+    type(next, 'my next password')
+    type(confirm, 'my next password')
 
     const form = host.querySelector('form:has(input[placeholder])')
     await act(async () => {
@@ -945,7 +1867,7 @@ describe('Account', () => {
 
     expect(host.textContent).not.toContain('tyk_the-only-copy')
     const reopened = [...host.querySelectorAll('input')] as HTMLInputElement[]
-    expect(reopened[0]?.value).toBe('')
+    expect(reopened.slice(0, 3).map((box) => box.value)).toEqual(['', '', ''])
   })
 
   /**
@@ -1214,36 +2136,87 @@ describe('Account', () => {
     ])
   })
 
-  // Both placements. Only the page's labels are `.field`s, and the panel's
-  // boxes carry the same `aria-label` all the same. One `it()` each:
-  // `testing/mount.ts` holds one root.
-  for (const placement of ['page', 'panel'] as const) {
-    it(`gives each password box its label’s words as its aria-label, as a ${placement} — O175`, async () => {
-      vi.stubGlobal(
-        'fetch',
-        server({
-          '/api/keys': () => json([]),
-          '/api/sessions': () => json([]),
-        }),
-      )
-      const host = mount(
-        placement === 'page' ? (
-          <Account placement="page" onSignedOut={noop} />
-        ) : (
-          <Account visible onClose={noop} onSignedOut={noop} />
-        ),
-      )
-      await settle()
-      // Current and New — the screen's only two labels. Counted, because a
-      // loop over nothing passes.
-      const labelled = fields(host.querySelectorAll('label'))
-      expect(labelled).toHaveLength(2)
-      for (const { written, control } of labelled) {
-        expect(control.getAttribute('type'), written).toBe('password')
-        expect(control.getAttribute('aria-label'), written).toBe(written)
-      }
-    })
-  }
+  // With a key and a session, so the report-only rows are on the page too,
+  // and are passed over as rows holding no form control.
+  it('wires each of the page’s boxes to its row’s label, as Row wires one', async () => {
+    vi.stubGlobal(
+      'fetch',
+      server({
+        '/api/keys': () =>
+          json([{ id: 7, name: 'phone', created: 'then', last_used: null }]),
+        '/api/sessions': () =>
+          json([
+            {
+              id: 'aa',
+              created: 'then',
+              last_seen: 'today',
+              user_agent: 'Firefox',
+              ip: null,
+              current: true,
+            },
+          ]),
+      }),
+    )
+    const host = mount(<Account placement="page" onSignedOut={noop} />)
+    await settle()
+    const screen = pageScreen(host)
+    expect(screen.querySelectorAll('.settings-row')).toHaveLength(6)
+    expectRowsWired(screen)
+  })
+
+  // The page's four boxes, each a row's control: the three passwords and the
+  // key's name, which its label names now and not its placeholder.
+  it('gives each box its label’s words as its aria-label, as a page — O175', async () => {
+    vi.stubGlobal(
+      'fetch',
+      server({
+        '/api/keys': () => json([]),
+        '/api/sessions': () => json([]),
+      }),
+    )
+    const host = mount(<Account placement="page" onSignedOut={noop} />)
+    await settle()
+    expect(
+      fields(host.querySelectorAll('label')).map(({ written, control }) => [
+        written,
+        control.getAttribute('aria-label'),
+        control.getAttribute('type'),
+      ]),
+    ).toEqual([
+      ['Current password', 'Current password', 'password'],
+      ['New password', 'New password', 'password'],
+      ['Confirm password', 'Confirm password', 'password'],
+      ['New key', 'New key', null],
+    ])
+  })
+
+  // The panel's three labels, drawn as written, whose boxes carry the same
+  // `aria-label` all the same: Current, New and Confirm, the panel's short
+  // words (the user's ruling of 2026-10-25), where the page says Confirm
+  // password.
+  it('gives each password box its label’s words as its aria-label, as a panel — O175', async () => {
+    vi.stubGlobal(
+      'fetch',
+      server({
+        '/api/keys': () => json([]),
+        '/api/sessions': () => json([]),
+      }),
+    )
+    const host = mount(<Account visible onClose={noop} onSignedOut={noop} />)
+    await settle()
+    // The screen's only three labels. Counted, because a loop over nothing
+    // passes.
+    const labelled = fields(host.querySelectorAll('label'))
+    expect(labelled.map(({ written }) => written)).toEqual([
+      'Current',
+      'New',
+      'Confirm',
+    ])
+    for (const { written, control } of labelled) {
+      expect(control.getAttribute('type'), written).toBe('password')
+      expect(control.getAttribute('aria-label'), written).toBe(written)
+    }
+  })
 
   /**
    * **The catalog's address, beside the OPDS line, in both placements**, as
@@ -1271,6 +2244,27 @@ describe('Account', () => {
         ),
       )
 
+    /**
+     * Whether `row`'s one button is the unseen Copy address that keeps a
+     * button's room: hidden from assistive technology, out of the Tab
+     * order and taking no press (`CatalogAddress`'s `keepsButtonRoom`),
+     * and of the class `placement` draws its buttons with, so that it
+     * takes the room one of them does.
+     */
+    const roomKeeper = (
+      row: Element | null | undefined,
+      placement: 'page' | 'panel',
+    ) => {
+      const buttons = [...(row?.querySelectorAll('button') ?? [])]
+      return (
+        buttons.length === 1 &&
+        buttons[0]?.getAttribute('aria-hidden') === 'true' &&
+        buttons[0]?.tabIndex === -1 &&
+        buttons[0]?.disabled === true &&
+        buttons[0]?.className === (placement === 'panel' ? 'reader-button' : '')
+      )
+    }
+
     /** The OPDS line: the paragraph under "API keys" that starts so. */
     const opdsLine = (host: HTMLElement) => {
       const section = [...host.querySelectorAll('section')].find(
@@ -1283,18 +2277,35 @@ describe('Account', () => {
       return line
     }
 
+    /**
+     * What is drawn straight after the OPDS line. In the panel that is the
+     * line's next sibling. On the page the line is the API keys section's
+     * description, above its box, so what follows it is the box's first
+     * part.
+     */
+    const afterLine = (host: HTMLElement, placement: 'page' | 'panel') => {
+      const line = opdsLine(host)
+      if (placement === 'panel') return line.nextElementSibling
+      expect(line.className).toBe('settings-section-description')
+      return (
+        line.closest('section')?.querySelector(':scope > .settings-box')
+          ?.firstElementChild ?? null
+      )
+    }
+
     // One `it()` per placement: `testing/mount.ts` holds one root.
     for (const placement of ['page', 'panel'] as const) {
-      it(`draws it straight after the OPDS line, as a ${placement}`, async () => {
+      it(`draws it straight after the OPDS line, and the form after it, as a ${placement}`, async () => {
         vi.stubGlobal('fetch', answered())
         const host = placed(placement)
         await settle()
-        const next = opdsLine(host).nextElementSibling
+        const next = afterLine(host, placement)
         expect(next?.className).toBe('catalog-address')
         expect(next?.querySelector('code')?.textContent).toBe(
           `${location.origin}${CATALOG}`,
         )
         expect(host.querySelectorAll('code')).toHaveLength(1)
+        expect(next?.nextElementSibling?.tagName).toBe('FORM')
       })
 
       it(`draws Copy address as it draws the row’s own buttons, as a ${placement}`, async () => {
@@ -1309,7 +2320,7 @@ describe('Account', () => {
         expect(copy?.className).toBe(buttonSaying(host, 'Create')?.className)
       })
 
-      it(`draws the OPDS line with no address when /api/about does not answer, as a ${placement}`, async () => {
+      it(`says in the address’s row that the catalog’s address could not be read, with no Copy address but an unseen one keeping its room, and no alert, when /api/about does not answer, as a ${placement}`, async () => {
         clipboardContext(true, { writeText: vi.fn() })
         const fetchMock = server(lists)
         vi.stubGlobal('fetch', fetchMock)
@@ -1317,14 +2328,1460 @@ describe('Account', () => {
         await settle()
         // Asked, and answered 404: not a screen that never asked.
         expect(fetchMock).toHaveBeenCalledWith('/api/about')
-        expect(opdsLine(host).nextElementSibling?.tagName).toBe('FORM')
-        expect(host.querySelector('.catalog-address')).toBeNull()
+        const next = afterLine(host, placement)
+        expect(next?.className).toBe('catalog-address')
+        expect(next?.firstElementChild?.textContent).toBe(
+          'The catalog’s address could not be read.',
+        )
+        expect(next?.nextElementSibling?.tagName).toBe('FORM')
         expect(host.querySelector('code')).toBeNull()
-        expect(buttonSaying(host, 'Copy address')).toBeUndefined()
+        expect(roomKeeper(next, placement)).toBe(true)
         expect(host.querySelector('[role="alert"]')).toBeNull()
+      })
+
+      it(`draws the address’s row while /api/about is being read, with nothing in it but an unseen Copy address keeping its room, as a ${placement}`, async () => {
+        clipboardContext(true, { writeText: vi.fn() })
+        const listing = server(lists)
+        vi.stubGlobal(
+          'fetch',
+          vi.fn((input: string, init?: RequestInit) =>
+            input === '/api/about'
+              ? new Promise<Response>(() => {})
+              : listing(input, init),
+          ),
+        )
+        const host = placed(placement)
+        await settle()
+        const next = afterLine(host, placement)
+        expect(next?.className).toBe('catalog-address')
+        expect(next?.children).toHaveLength(1)
+        expect(roomKeeper(next, placement)).toBe(true)
+        expect(next?.nextElementSibling?.tagName).toBe('FORM')
       })
     }
   })
+})
+
+/**
+ * What a create or a revocation leaves behind when its answer lands late:
+ * the panel closed meanwhile, a slow list of sessions, a name typed while
+ * the key list is read, and an alert from an earlier revocation.
+ */
+describe('Account’s keys, answered late', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    forgetAbout()
+  })
+
+  // The defect the close effect's comment names, reached through a create
+  // whose listing lands once the panel has closed.
+  it('does not draw a key made before the panel closed when the panel opens again, though its listing landed while it was closed', async () => {
+    const keys = madeInTurn()
+    const listing = deferred<void>()
+    // The mount's listing is the first; the create's is the second.
+    keys.holdKeyRead(2, listing.promise)
+    vi.stubGlobal('fetch', keys.fetch)
+    const host = mount(<Account visible onClose={noop} onSignedOut={noop} />)
+    await settle()
+    const keyName = host.querySelector<HTMLInputElement>('input[placeholder]')
+    if (!keyName) throw new Error('no key name box')
+    type(keyName, 'phone')
+    await submitted(host.querySelector(KEY_FORM))
+
+    rerender(<Account visible={false} onClose={noop} onSignedOut={noop} />)
+    await settle()
+    await act(async () => {
+      listing.resolve()
+      await new Promise((resolve) => {
+        setTimeout(resolve, 0)
+      })
+    })
+    rerender(<Account visible onClose={noop} onSignedOut={noop} />)
+    await settle()
+    expect(host.querySelector('.secret')).toBeNull()
+    expect(host.textContent).not.toContain('tyk_first')
+    expect(keyRegion(host).textContent).toBe('')
+  })
+
+  for (const placement of ['page', 'panel'] as const) {
+    it(`draws a made key’s box with the key list alone, and frees Create, while the list of sessions has not answered, as a ${placement}`, async () => {
+      const keys = madeInTurn()
+      vi.stubGlobal(
+        'fetch',
+        vi.fn((input: string, init?: RequestInit) =>
+          input === '/api/sessions'
+            ? new Promise<Response>(() => {})
+            : keys.fetch(input, init),
+        ),
+      )
+      const host = mountAs(placement)
+      await settle()
+      const keyName = host.querySelector<HTMLInputElement>('input[placeholder]')
+      if (!keyName) throw new Error('no key name box')
+      type(keyName, 'phone')
+      await submitted(host.querySelector(KEY_FORM))
+      expect(host.querySelector('.secret')?.textContent).toContain('tyk_first')
+      expect(rowListed(host, 'phone')).toBe(true)
+      type(keyName, 'tablet')
+      await submitted(host.querySelector(KEY_FORM))
+      expect(host.querySelector('.secret')?.textContent).toContain('tyk_second')
+    })
+
+    it(`keeps a name typed in the key’s box while the listing after a create is read, and empties a box still holding the name sent, as a ${placement}`, async () => {
+      const keys = madeInTurn()
+      const first = deferred<void>()
+      const second = deferred<void>()
+      keys.holdKeyRead(2, first.promise)
+      keys.holdKeyRead(3, second.promise)
+      vi.stubGlobal('fetch', keys.fetch)
+      const host = mountAs(placement)
+      await settle()
+      const keyName = host.querySelector<HTMLInputElement>('input[placeholder]')
+      if (!keyName) throw new Error('no key name box')
+      const land = (listing: { resolve: () => void }) =>
+        act(async () => {
+          listing.resolve()
+          await new Promise((resolve) => {
+            setTimeout(resolve, 0)
+          })
+        })
+
+      type(keyName, 'phone')
+      await submitted(host.querySelector(KEY_FORM))
+      type(keyName, 'tablet')
+      await land(first)
+      expect(host.querySelector('.secret')?.textContent).toContain('tyk_first')
+      expect(keyName.value).toBe('tablet')
+
+      await submitted(host.querySelector(KEY_FORM))
+      await land(second)
+      expect(host.querySelector('.secret')?.textContent).toContain('tyk_second')
+      expect(keyName.value).toBe('')
+    })
+
+    it(`takes away the alert of a revocation that failed with the list change of the next one that works, of a key or of a session, as a ${placement}`, async () => {
+      const listings: Array<() => void> = []
+      let keyRows = [
+        { id: 1, name: 'Panels', created: 'then', last_used: null },
+        { id: 2, name: 'Chunky', created: 'then', last_used: null },
+      ]
+      let sessionRows = [
+        {
+          id: 'aa',
+          created: 'then',
+          last_seen: 'today',
+          user_agent: 'Firefox',
+          ip: null,
+          current: true,
+        },
+        {
+          id: 'bb',
+          created: 'then',
+          last_seen: 'then',
+          user_agent: 'Safari',
+          ip: null,
+          current: false,
+        },
+        {
+          id: 'cc',
+          created: 'then',
+          last_seen: 'then',
+          user_agent: 'Chrome',
+          ip: null,
+          current: false,
+        },
+      ]
+      // Each listing after the mount's waits for the case to let it land.
+      let reads = 0
+      const later = <T,>(rows: () => T) => {
+        reads += 1
+        if (reads <= 2) return Promise.resolve(json(rows()))
+        return new Promise<Response>((resolve) => {
+          listings.push(() => resolve(json(rows())))
+        })
+      }
+      vi.stubGlobal(
+        'fetch',
+        vi.fn((input: string, init?: RequestInit) => {
+          const asked = `${init?.method ?? 'GET'} ${input}`
+          if (asked === 'DELETE /api/keys/1') {
+            return Promise.resolve(new Response(null, { status: 500 }))
+          }
+          if (asked === 'DELETE /api/keys/2') {
+            keyRows = keyRows.filter((key) => key.id !== 2)
+            return Promise.resolve(new Response(null, { status: 204 }))
+          }
+          if (asked === 'DELETE /api/sessions/bb') {
+            return Promise.resolve(new Response(null, { status: 500 }))
+          }
+          if (asked === 'DELETE /api/sessions/cc') {
+            sessionRows = sessionRows.filter((session) => session.id !== 'cc')
+            return Promise.resolve(new Response(null, { status: 204 }))
+          }
+          if (input === '/api/keys') return later(() => keyRows)
+          if (input === '/api/sessions') return later(() => sessionRows)
+          return Promise.resolve(new Response(null, { status: 404 }))
+        }),
+      )
+      const host = mountAs(placement)
+      await settle()
+      const alert = () => host.querySelector('[role="alert"]')?.textContent
+      // A list's row for `name`, ending in its Revoke. Not the screen's
+      // words: the OPDS line names Chunky as well.
+      const listed = (name: string) =>
+        [...host.querySelectorAll('li, .reader-section-head')].some(
+          (row) =>
+            (row.textContent ?? '').includes(name) &&
+            row.querySelector('button')?.textContent === 'Revoke',
+        )
+      const landAll = () =>
+        act(async () => {
+          for (const land of listings.splice(0)) land()
+          await new Promise((resolve) => {
+            setTimeout(resolve, 0)
+          })
+        })
+
+      await revoke(host, 'Panels')
+      expect(alert()).toMatch(/That key was not revoked/)
+      await revoke(host, 'Chunky')
+      // Answered, and its listing not yet landed: the alert and the row stay.
+      expect([alert(), listed('Chunky')]).toEqual([
+        expect.stringMatching(/That key was not revoked/),
+        true,
+      ])
+      await landAll()
+      expect([alert(), listed('Chunky')]).toEqual([undefined, false])
+
+      const sessionRevoke = (agent: string) => {
+        const button = [...host.querySelectorAll('li, .reader-section-head')]
+          .filter((row) => (row.textContent ?? '').includes(agent))
+          .map((row) => row.querySelector('button'))
+          .find((b) => b?.textContent === 'Revoke')
+        if (!button) throw new Error(`no Revoke for ${agent}`)
+        return button
+      }
+      const press = (agent: string) =>
+        act(async () => {
+          sessionRevoke(agent).click()
+          await new Promise((resolve) => {
+            setTimeout(resolve, 0)
+          })
+        })
+      await press('Safari')
+      expect(alert()).toMatch(/That session was not ended/)
+      await press('Chrome')
+      expect([alert(), listed('Chrome')]).toEqual([
+        expect.stringMatching(/That session was not ended/),
+        true,
+      ])
+      await landAll()
+      expect([alert(), listed('Chrome')]).toEqual([undefined, false])
+    })
+  }
+
+  for (const placement of ['page', 'panel'] as const) {
+    it(`keeps the alert of a revocation or a sign-out that failed after the press of a revocation that worked, through the list change of the one that worked, as a ${placement}`, async () => {
+      const revokes = failsSomeRevokes()
+      vi.stubGlobal('fetch', revokes.fetch)
+      const host = mountAs(placement)
+      await settle()
+
+      await revoke(host, 'Chunky')
+      await revoke(host, 'Panels')
+      expect(alertIn(host)).toMatch(/That key was not revoked/)
+      await revokes.land()
+      expect([
+        alertIn(host),
+        rowListed(host, 'Panels'),
+        rowListed(host, 'Chunky'),
+      ]).toEqual([
+        expect.stringMatching(/That key was not revoked/),
+        true,
+        false,
+      ])
+
+      await revoke(host, 'Chrome')
+      await revoke(host, 'Safari')
+      expect(alertIn(host)).toMatch(/That session was not ended/)
+      await revokes.land()
+      expect([
+        alertIn(host),
+        rowListed(host, 'Safari'),
+        rowListed(host, 'Chrome'),
+      ]).toEqual([
+        expect.stringMatching(/That session was not ended/),
+        true,
+        false,
+      ])
+
+      await revoke(host, 'Edge')
+      const signOut = buttonSaying(host, 'Sign out')
+      if (!signOut) throw new Error('no Sign out')
+      await act(async () => {
+        signOut.click()
+        await new Promise((resolve) => {
+          setTimeout(resolve, 0)
+        })
+      })
+      const signOutFailure = alertIn(host)
+      expect(signOutFailure).not.toMatch(/That session was not ended/)
+      await revokes.land()
+      expect([alertIn(host), rowListed(host, 'Edge')]).toEqual([
+        signOutFailure,
+        false,
+      ])
+    })
+  }
+
+  it('keeps a failed revocation’s alert in a panel opened again, through the list change of a revocation pressed before the close', async () => {
+    const revokes = failsSomeRevokes()
+    vi.stubGlobal('fetch', revokes.fetch)
+    const host = mount(<Account visible onClose={noop} onSignedOut={noop} />)
+    await settle()
+    await revoke(host, 'Chunky')
+    rerender(<Account visible={false} onClose={noop} onSignedOut={noop} />)
+    await settle()
+    rerender(<Account visible onClose={noop} onSignedOut={noop} />)
+    await settle()
+
+    await revoke(host, 'Panels')
+    await revokes.land()
+    expect([alertIn(host), rowListed(host, 'Panels')]).toEqual([
+      expect.stringMatching(/That key was not revoked/),
+      true,
+    ])
+  })
+
+  for (const placement of ['page', 'panel'] as const) {
+    it(`drops a listing of the keys that lands after a later one, so that a revoked key is not listed again, as a ${placement}`, async () => {
+      const keys = madeInTurn()
+      const tabletListing = deferred<void>()
+      // The mount's listing, the two creates', then the revocations'.
+      keys.holdKeyRead(4, tabletListing.promise)
+      vi.stubGlobal('fetch', keys.fetch)
+      const host = mountAs(placement)
+      await settle()
+      const keyName = host.querySelector<HTMLInputElement>('input[placeholder]')
+      if (!keyName) throw new Error('no key name box')
+      type(keyName, 'phone')
+      await submitted(host.querySelector(KEY_FORM))
+      type(keyName, 'tablet')
+      await submitted(host.querySelector(KEY_FORM))
+
+      // Asked once tablet was revoked, and so still holding phone.
+      await revoke(host, 'tablet')
+      await revoke(host, 'phone')
+      // Phone's listing, the later one, has landed and run what tablet's
+      // revocation does alongside its list: tablet's box has gone with it.
+      expect([
+        rowListed(host, 'phone'),
+        rowListed(host, 'tablet'),
+        host.querySelector('.secret'),
+      ]).toEqual([false, false, null])
+      await act(async () => {
+        tabletListing.resolve()
+        await new Promise((resolve) => {
+          setTimeout(resolve, 0)
+        })
+      })
+      // Tablet's own listing, landing after, is not drawn.
+      expect([
+        rowListed(host, 'phone'),
+        rowListed(host, 'tablet'),
+        host.querySelector('.secret'),
+      ]).toEqual([false, false, null])
+    })
+
+    it(`drops a listing of the keys that lands after a later one, so that a made key’s box keeps its row, as a ${placement}`, async () => {
+      const keys = madeInTurn()
+      const mountListing = deferred<void>()
+      keys.holdKeyRead(1, mountListing.promise)
+      vi.stubGlobal('fetch', keys.fetch)
+      const host = mountAs(placement)
+      await settle()
+      const keyName = host.querySelector<HTMLInputElement>('input[placeholder]')
+      if (!keyName) throw new Error('no key name box')
+      type(keyName, 'phone')
+      await submitted(host.querySelector(KEY_FORM))
+      expect([
+        host.querySelector('.secret')?.textContent,
+        rowListed(host, 'phone'),
+      ]).toEqual([expect.stringContaining('tyk_first'), true])
+
+      // Asked as the screen was drawn, before phone was made.
+      await act(async () => {
+        mountListing.resolve()
+        await new Promise((resolve) => {
+          setTimeout(resolve, 0)
+        })
+      })
+      expect([
+        host.querySelector('.secret')?.textContent,
+        rowListed(host, 'phone'),
+      ]).toEqual([expect.stringContaining('tyk_first'), true])
+    })
+
+    it(`draws a made key's box, with its secret, though the listing after its create fails, as a ${placement}`, async () => {
+      let reads = 0
+      vi.stubGlobal(
+        'fetch',
+        server({
+          'POST /api/keys': () => json({ secret: 'tyk_the-only-copy' }),
+          'GET /api/keys': () => {
+            reads += 1
+            return reads === 1 ? json([]) : new Response(null, { status: 500 })
+          },
+          '/api/sessions': () => json([]),
+        }),
+      )
+      const host = mountAs(placement)
+      await settle()
+      const keyName = host.querySelector<HTMLInputElement>('input[placeholder]')
+      if (!keyName) throw new Error('no key name box')
+      type(keyName, 'phone')
+      await submitted(host.querySelector(KEY_FORM))
+      expect(reads).toBe(2)
+      expect([
+        host.querySelector('.secret')?.textContent,
+        keyRegion(host).textContent,
+      ]).toEqual([expect.stringContaining('tyk_the-only-copy'), KEY_MADE])
+    })
+
+    it(`takes away, with a later listing that lands first, the alert a revocation's own listing would have taken away after it, as a ${placement}`, async () => {
+      const revokes = failsSomeRevokes()
+      vi.stubGlobal('fetch', revokes.fetch)
+      const host = mountAs(placement)
+      await settle()
+      const keyName = host.querySelector<HTMLInputElement>('input[placeholder]')
+      if (!keyName) throw new Error('no key name box')
+
+      await revoke(host, 'Panels')
+      await revoke(host, 'Chunky')
+      // Asked after Chunky's, so it no longer holds Chunky.
+      type(keyName, 'Kobo')
+      await submitted(host.querySelector(KEY_FORM))
+      expect(alertIn(host)).toMatch(/That key was not revoked/)
+      await revokes.landLast(2)
+      const drawn = () => [
+        alertIn(host),
+        rowListed(host, 'Chunky'),
+        rowListed(host, 'Kobo'),
+        host.querySelector('.secret')?.textContent,
+      ]
+      const once = [undefined, false, true, expect.stringContaining('tyk_kobo')]
+      expect(drawn()).toEqual(once)
+      await revokes.land()
+      expect(drawn()).toEqual(once)
+    })
+
+    it(`draws a made key's box with a later listing that lands first and lists it, as a ${placement}`, async () => {
+      const revokes = failsSomeRevokes()
+      vi.stubGlobal('fetch', revokes.fetch)
+      const host = mountAs(placement)
+      await settle()
+      const keyName = host.querySelector<HTMLInputElement>('input[placeholder]')
+      if (!keyName) throw new Error('no key name box')
+
+      type(keyName, 'Kobo')
+      await submitted(host.querySelector(KEY_FORM))
+      // Asked after Kobo's, so it lists Kobo too.
+      await revoke(host, 'Chunky')
+      await revokes.landLast(2)
+      const drawn = () => [
+        rowListed(host, 'Chunky'),
+        rowListed(host, 'Kobo'),
+        host.querySelector('.secret')?.textContent,
+        keyRegion(host).textContent,
+      ]
+      const once = [
+        false,
+        true,
+        expect.stringContaining('tyk_kobo'),
+        'Key made: Kobo. Copy it now — it is not stored and cannot be shown again.',
+      ]
+      expect(drawn()).toEqual(once)
+      await revokes.land()
+      expect(drawn()).toEqual(once)
+    })
+
+    it(`runs a made key's box with its own listing, not with an earlier one that lands first, so that the box comes with its row and goes when its key is revoked, as a ${placement}`, async () => {
+      const revokes = failsSomeRevokes()
+      vi.stubGlobal('fetch', revokes.fetch)
+      const host = mountAs(placement)
+      await settle()
+      const keyName = host.querySelector<HTMLInputElement>('input[placeholder]')
+      if (!keyName) throw new Error('no key name box')
+
+      await revoke(host, 'Chunky')
+      type(keyName, 'Kobo')
+      await submitted(host.querySelector(KEY_FORM))
+      const drawn = () => [
+        rowListed(host, 'Chunky'),
+        rowListed(host, 'Kobo'),
+        host.querySelector('.secret')?.textContent,
+      ]
+      // Chunky's two listings, the keys' asked before Kobo was made, so
+      // without Kobo.
+      await revokes.landFirst(2)
+      expect(drawn()).toEqual([false, false, undefined])
+      await revokes.land()
+      expect(drawn()).toEqual([
+        false,
+        true,
+        expect.stringContaining('tyk_kobo'),
+      ])
+
+      await revoke(host, 'Kobo')
+      await revokes.land()
+      expect(drawn()).toEqual([false, false, undefined])
+    })
+
+    it(`runs a made key's box with its own listing, not with a later one that fails first, so that the box comes with its row and goes when its key is revoked, as a ${placement}`, async () => {
+      const revokes = failsSomeRevokes()
+      vi.stubGlobal('fetch', revokes.fetch)
+      const host = mountAs(placement)
+      await settle()
+      const keyName = host.querySelector<HTMLInputElement>('input[placeholder]')
+      if (!keyName) throw new Error('no key name box')
+
+      type(keyName, 'Kobo')
+      await submitted(host.querySelector(KEY_FORM))
+      await revoke(host, 'Chunky')
+      const drawn = () => [
+        rowListed(host, 'Kobo'),
+        host.querySelector('.secret')?.textContent,
+      ]
+      // Chunky's listing of the keys, asked after Kobo's, fails first.
+      await revokes.failLast(1)
+      expect(drawn()).toEqual([false, undefined])
+      await revokes.land()
+      expect(drawn()).toEqual([true, expect.stringContaining('tyk_kobo')])
+
+      await revoke(host, 'Kobo')
+      await revokes.land()
+      expect(drawn()).toEqual([false, undefined])
+    })
+
+    it(`drops a listing of the sessions that lands after a later one, so that an ended session is not listed again, as a ${placement}`, async () => {
+      const revokes = failsSomeRevokes()
+      vi.stubGlobal('fetch', revokes.fetch)
+      const host = mountAs(placement)
+      await settle()
+
+      // Chrome's listing is asked while Edge is still signed in.
+      await revoke(host, 'Chrome')
+      await revoke(host, 'Edge')
+      await revokes.landLast(2)
+      expect([rowListed(host, 'Chrome'), rowListed(host, 'Edge')]).toEqual([
+        false,
+        false,
+      ])
+      await revokes.land()
+      expect([rowListed(host, 'Chrome'), rowListed(host, 'Edge')]).toEqual([
+        false,
+        false,
+      ])
+    })
+  }
+})
+
+/**
+ * A server holding the keys Panels (1) and Chunky (2), and the sessions
+ * Firefox (this one), Safari, Chrome and Edge. Revoking Panels or Safari
+ * fails, as does signing out; revoking Chunky, Chrome or Edge works, and a
+ * create makes Kobo (3), whose secret is `tyk_kobo`, and revoking Kobo
+ * works. The mount's two listings answer at once; each listing after them
+ * waits until `land` answers every one out so far, each with the rows the
+ * server held when it was asked, or until `landFirst` or `landLast`
+ * answers some of them, or `failLast` answers them with a failure.
+ */
+function failsSomeRevokes() {
+  const key = (id: number, name: string) => ({
+    id,
+    name,
+    created: 'then',
+    last_used: null,
+  })
+  const session = (id: string, agent: string, current: boolean) => ({
+    id,
+    created: 'then',
+    last_seen: 'then',
+    user_agent: agent,
+    ip: null,
+    current,
+  })
+  let keyRows = [key(1, 'Panels'), key(2, 'Chunky')]
+  let sessionRows = [
+    session('aa', 'Firefox', true),
+    session('bb', 'Safari', false),
+    session('cc', 'Chrome', false),
+    session('dd', 'Edge', false),
+  ]
+  const out: Array<(failed: boolean) => void> = []
+  let reads = 0
+  const listing = (rows: unknown) => {
+    reads += 1
+    const now = json(rows)
+    if (reads <= 2) return Promise.resolve(now)
+    return new Promise<Response>((resolve) => {
+      out.push((failed) =>
+        resolve(failed ? new Response(null, { status: 500 }) : now),
+      )
+    })
+  }
+  const fetch = vi.fn((input: string, init?: RequestInit) => {
+    const asked = `${init?.method ?? 'GET'} ${input}`
+    if (
+      asked === 'DELETE /api/keys/1' ||
+      asked === 'DELETE /api/sessions/bb' ||
+      asked === 'DELETE /api/session'
+    )
+      return Promise.resolve(new Response(null, { status: 500 }))
+    const revokedKey = /^DELETE \/api\/keys\/(2|3)$/.exec(asked)
+    if (revokedKey) {
+      keyRows = keyRows.filter((each) => each.id !== Number(revokedKey[1]))
+      return Promise.resolve(new Response(null, { status: 204 }))
+    }
+    if (asked === 'POST /api/keys') {
+      keyRows = [...keyRows, key(3, 'Kobo')]
+      return Promise.resolve(json({ secret: 'tyk_kobo' }))
+    }
+    const ended = /^DELETE \/api\/sessions\/(cc|dd)$/.exec(asked)
+    if (ended) {
+      sessionRows = sessionRows.filter((each) => each.id !== ended[1])
+      return Promise.resolve(new Response(null, { status: 204 }))
+    }
+    if (asked === 'GET /api/keys') return listing(keyRows)
+    if (asked === 'GET /api/sessions') return listing(sessionRows)
+    return Promise.resolve(new Response(null, { status: 404 }))
+  })
+  const answered = (
+    answers: Array<(failed: boolean) => void>,
+    failed = false,
+  ) =>
+    act(async () => {
+      for (const answer of answers) answer(failed)
+      await new Promise((resolve) => {
+        setTimeout(resolve, 0)
+      })
+    })
+  return {
+    fetch,
+    land: () => answered(out.splice(0)),
+    /** Answers the `count` listings asked for first, and no other. */
+    landFirst: (count: number) => answered(out.splice(0, count)),
+    /** Answers the `count` listings asked for last, and no other. */
+    landLast: (count: number) => answered(out.splice(-count)),
+    /** Answers the `count` listings asked for last with a 500. */
+    failLast: (count: number) => answered(out.splice(-count), true),
+  }
+}
+
+/**
+ * Where focus goes when a Revoke's row goes with focus on it, which would
+ * drop it to the page, and out of the panel's dialog: to the nearest row
+ * left in the same list, the next one, else the one before, passing over
+ * the current session's, whose Revoke is disabled; with no row to go to,
+ * to the New key box, or to Signed in's heading. Focus is compared with
+ * `toBe`: `toEqual` reads two elements of the same markup, such as two
+ * Revokes, as equal.
+ */
+describe('Account’s focus after a Revoke', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    forgetAbout()
+  })
+
+  /** The Revoke in the row of a list that names `name`. */
+  const revokeOf = (host: HTMLElement, name: string) => {
+    const button = [...host.querySelectorAll('li, .reader-section-head')]
+      .filter((row) => (row.textContent ?? '').includes(name))
+      .map((row) => row.querySelector('button'))
+      .find((each) => each?.textContent === 'Revoke')
+    if (!button) throw new Error(`no Revoke for ${name}`)
+    return button
+  }
+
+  /** Focus a row's Revoke, press it, and let its listing land. */
+  const pressRevoke = async (host: HTMLElement, name: string) => {
+    const button = revokeOf(host, name)
+    act(() => button.focus())
+    await act(async () => {
+      button.click()
+      await new Promise((resolve) => {
+        setTimeout(resolve, 0)
+      })
+    })
+  }
+
+  /** The heading of the section titled `title`, in either placement. */
+  const headingOf = (host: HTMLElement, title: string) =>
+    [...host.querySelectorAll('h2, h3')].find(
+      (heading) => heading.textContent === title,
+    )
+
+  /** Focus is still in the panel's dialog, where there is one. */
+  const inDialog = (host: HTMLElement) =>
+    host.querySelector('[role="dialog"]')?.contains(document.activeElement) ??
+    true
+
+  /**
+   * A server whose sessions are Safari, this one (Firefox) and Chrome, in
+   * that order, and which ends any but this one at once.
+   */
+  function endsSessions() {
+    const session = (id: string, agent: string, current: boolean) => ({
+      id,
+      created: 'then',
+      last_seen: 'then',
+      user_agent: agent,
+      ip: null,
+      current,
+    })
+    let listed = [
+      session('bb', 'Safari', false),
+      session('aa', 'Firefox', true),
+      session('cc', 'Chrome', false),
+    ]
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: string, init?: RequestInit) => {
+        const ended = /^\/api\/sessions\/(\w+)$/.exec(input)
+        if (init?.method === 'DELETE' && ended) {
+          listed = listed.filter((each) => each.id !== ended[1])
+          return Promise.resolve(new Response(null, { status: 204 }))
+        }
+        if (input === '/api/sessions') return Promise.resolve(json(listed))
+        return Promise.resolve(json([]))
+      }),
+    )
+  }
+
+  for (const placement of ['page', 'panel'] as const) {
+    it(`gives focus to the next key’s Revoke, else the one before’s, and with no key left to the New key box, as a ${placement}`, async () => {
+      const keys = listedKeys(
+        [
+          { id: 1, name: 'Panels' },
+          { id: 2, name: 'Chunky' },
+          { id: 3, name: 'Tablet' },
+        ],
+        [],
+      )
+      vi.stubGlobal('fetch', keys.server)
+      const host = mountAs(placement)
+      await settle()
+
+      await pressRevoke(host, 'Chunky')
+      expect(document.activeElement).toBe(revokeOf(host, 'Tablet'))
+      expect(inDialog(host)).toBe(true)
+      await pressRevoke(host, 'Tablet')
+      expect(document.activeElement).toBe(revokeOf(host, 'Panels'))
+      expect(inDialog(host)).toBe(true)
+      await pressRevoke(host, 'Panels')
+      expect(document.activeElement).toBe(
+        host.querySelector('input[placeholder]'),
+      )
+      expect(inDialog(host)).toBe(true)
+      expect(keys.revoked).toEqual([2, 3, 1])
+    })
+
+    it(`gives focus to the next session’s Revoke, passing over this one’s, and with none left to Signed in’s heading, as a ${placement}`, async () => {
+      endsSessions()
+      const host = mountAs(placement)
+      await settle()
+
+      await pressRevoke(host, 'Safari')
+      expect(document.activeElement).toBe(revokeOf(host, 'Chrome'))
+      expect(inDialog(host)).toBe(true)
+      await pressRevoke(host, 'Chrome')
+      const heading = headingOf(host, 'Signed in')
+      expect(document.activeElement).toBe(heading)
+      expect(inDialog(host)).toBe(true)
+      expect(heading?.getAttribute('tabindex')).toBe('-1')
+    })
+
+    it(`passes over a row that goes in the same listing as the one whose Revoke had focus, as a ${placement}`, async () => {
+      const keys = madeInTurn()
+      const tabletListing = deferred<void>()
+      // The mount's listing, the two creates', then the revocations'.
+      keys.holdKeyRead(4, tabletListing.promise)
+      vi.stubGlobal('fetch', keys.fetch)
+      const host = mountAs(placement)
+      await settle()
+      const keyName = host.querySelector<HTMLInputElement>('input[placeholder]')
+      if (!keyName) throw new Error('no key name box')
+      type(keyName, 'phone')
+      await submitted(host.querySelector(KEY_FORM))
+      type(keyName, 'tablet')
+      await submitted(host.querySelector(KEY_FORM))
+
+      // Phone's listing is asked once both are revoked, so both rows go.
+      await pressRevoke(host, 'tablet')
+      await pressRevoke(host, 'phone')
+      expect([rowListed(host, 'phone'), rowListed(host, 'tablet')]).toEqual([
+        false,
+        false,
+      ])
+      expect(document.activeElement).toBe(keyName)
+    })
+
+    it(`leaves focus where it was put when a Revoke’s row goes once focus has left it, as a ${placement}`, async () => {
+      const revokes = failsSomeRevokes()
+      vi.stubGlobal('fetch', revokes.fetch)
+      const host = mountAs(placement)
+      await settle()
+      const keyName = host.querySelector<HTMLInputElement>('input[placeholder]')
+      if (!keyName) throw new Error('no key name box')
+
+      await pressRevoke(host, 'Chrome')
+      act(() => keyName.focus())
+      await revokes.land()
+      expect(rowListed(host, 'Chrome')).toBe(false)
+      expect(document.activeElement).toBe(keyName)
+    })
+  }
+})
+
+/**
+ * A refusal of Create or of Change password (the user's ruling of
+ * 2026-10-25) is said in a callout drawn straight after the row it answers
+ * (the user's rulings of 2026-10-26), the New key row's or Confirm
+ * password's, not above the sections, where it moved the page; it goes
+ * when a box of its form is edited, when focus leaves the form, or as the
+ * next attempt is sent. One `it()` per placement.
+ */
+describe('Account’s refusals of Create and Change password', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    forgetAbout()
+  })
+
+  /** Create and Change password are refused while `refusing` holds. */
+  function refusals() {
+    const holds = {
+      refusing: true,
+      held: undefined as Promise<void> | undefined,
+    }
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: string, init?: RequestInit) => {
+        const asked = `${init?.method ?? 'GET'} ${input}`
+        const answer = (status: number, body: string | null) =>
+          (holds.held ?? Promise.resolve()).then(() =>
+            holds.refusing
+              ? new Response(body, { status })
+              : new Response(null, { status: 204 }),
+          )
+        if (asked === 'POST /api/keys') return answer(400, NEEDS_A_NAME)
+        if (asked === 'PUT /api/password') return answer(403, null)
+        return Promise.resolve(json([]))
+      }),
+    )
+    return holds
+  }
+
+  /**
+   * The callout a refusal of `form` is said in, if drawn: among the
+   * callouts drawn straight after the row it answers, the New key row (on
+   * the page, the row in its form; in the panel, the form), or Confirm
+   * password's row (in the panel, its label).
+   */
+  const calloutOf = (host: HTMLElement, form: 'key' | 'password') => {
+    const row =
+      form === 'key'
+        ? (host.querySelector(`${KEY_FORM} > .settings-row`) ??
+          host.querySelector(KEY_FORM))
+        : host
+            .querySelector(`${PASSWORD_FORM} input[aria-label^="Confirm"]`)
+            ?.closest('.settings-row, label')
+    for (
+      let after = row?.nextElementSibling;
+      after?.matches('.callout');
+      after = after.nextElementSibling
+    ) {
+      if (after.querySelector(':scope > [role="alert"]') !== null) return after
+    }
+    return null
+  }
+  const refusalIn = (host: HTMLElement, form: 'key' | 'password') =>
+    calloutOf(host, form)?.querySelector(':scope > [role="alert"]')?.textContent
+
+  for (const placement of ['page', 'panel'] as const) {
+    it(`says a refused Create in an alert in a callout drawn after the New key row, and nothing above the sections, as a ${placement}`, async () => {
+      refusals()
+      const host = mountAs(placement)
+      await settle()
+      await submitted(host.querySelector(KEY_FORM))
+      expect(refusalIn(host, 'key')).toBe(NEEDS_A_NAME)
+      expect(
+        [...host.querySelectorAll('[role="alert"]')].map((alert) =>
+          alert.parentElement?.matches('.callout'),
+        ),
+      ).toEqual([true])
+    })
+
+    it(`says a refused Change password in an alert in a callout drawn after Confirm password’s row, and nothing above the sections, as a ${placement}`, async () => {
+      refusals()
+      const host = mountAs(placement)
+      await settle()
+      await submitted(host.querySelector(PASSWORD_FORM))
+      expect(refusalIn(host, 'password')).toMatch(
+        /current password did not match/,
+      )
+      expect(
+        [...host.querySelectorAll('[role="alert"]')].map((alert) =>
+          alert.parentElement?.matches('.callout'),
+        ),
+      ).toEqual([true])
+    })
+
+    it(`takes a refused Create’s callout away when the key’s name is edited, when focus leaves its form and not when it moves inside it, and as the next key is asked for, as a ${placement}`, async () => {
+      const holds = refusals()
+      const host = mountAs(placement)
+      await settle()
+      const keyName = host.querySelector<HTMLInputElement>('input[placeholder]')
+      const outside = host.querySelector<HTMLInputElement>(
+        'input[type="password"]',
+      )
+      if (!keyName || !outside) throw new Error('a box is missing')
+      const create = buttonSaying(host, 'Create') as HTMLButtonElement
+
+      await submitted(host.querySelector(KEY_FORM))
+      type(keyName, 'phone')
+      expect(calloutOf(host, 'key')).toBeNull()
+
+      act(() => keyName.focus())
+      await submitted(host.querySelector(KEY_FORM))
+      act(() => create.focus())
+      expect(refusalIn(host, 'key')).toBe(NEEDS_A_NAME)
+      act(() => outside.focus())
+      expect(calloutOf(host, 'key')).toBeNull()
+
+      await submitted(host.querySelector(KEY_FORM))
+      expect(refusalIn(host, 'key')).toBe(NEEDS_A_NAME)
+      holds.held = new Promise(() => {})
+      await submitted(host.querySelector(KEY_FORM))
+      expect(calloutOf(host, 'key')).toBeNull()
+    })
+
+    it(`takes a refused Change password’s callout away when any of its boxes is edited, when focus leaves its form and not when it moves inside it, and as the next change is sent, as a ${placement}`, async () => {
+      const holds = refusals()
+      const host = mountAs(placement)
+      await settle()
+      const form = host.querySelector(PASSWORD_FORM)
+      const boxes = [...(form?.querySelectorAll('input') ?? [])]
+      const outside = host.querySelector<HTMLInputElement>('input[placeholder]')
+      if (boxes.length !== 3 || !outside) throw new Error('a box is missing')
+
+      const [current, next, confirm] = boxes
+      const editTakesItAway = async (box: HTMLInputElement, typed: string) => {
+        await submitted(form)
+        expect(refusalIn(host, 'password')).toMatch(/did not match/)
+        type(box, typed)
+        expect(calloutOf(host, 'password')).toBeNull()
+      }
+      await editTakesItAway(current, 'old')
+      await editTakesItAway(next, 'new')
+      type(confirm, 'new')
+      await editTakesItAway(confirm, 'newer')
+      type(next, 'newer')
+
+      act(() => current.focus())
+      await submitted(form)
+      act(() => confirm.focus())
+      expect(refusalIn(host, 'password')).toMatch(/did not match/)
+      act(() => outside.focus())
+      expect(calloutOf(host, 'password')).toBeNull()
+
+      await submitted(form)
+      expect(refusalIn(host, 'password')).toMatch(/did not match/)
+      holds.held = new Promise(() => {})
+      await submitted(form)
+      expect(calloutOf(host, 'password')).toBeNull()
+    })
+  }
+
+  it('keeps a refused Create’s callout while the window loses focus, and takes it away as focus goes to the page', async () => {
+    refusals()
+    const host = mountAs('page')
+    await settle()
+    const keyName = host.querySelector<HTMLInputElement>('input[placeholder]')
+    if (!keyName) throw new Error('no key name box')
+    act(() => keyName.focus())
+    await submitted(host.querySelector(KEY_FORM))
+    expect(refusalIn(host, 'key')).toBe(NEEDS_A_NAME)
+    // Focus leaving for nowhere: the window's, where the document has no
+    // focus, and the page's, where it keeps it.
+    const blur = (documentHasFocus: boolean) => {
+      const hasFocus = vi
+        .spyOn(document, 'hasFocus')
+        .mockReturnValue(documentHasFocus)
+      act(() => {
+        keyName.dispatchEvent(
+          new FocusEvent('focusout', { bubbles: true, relatedTarget: null }),
+        )
+      })
+      hasFocus.mockRestore()
+    }
+    blur(false)
+    expect(refusalIn(host, 'key')).toBe(NEEDS_A_NAME)
+    blur(true)
+    expect(calloutOf(host, 'key')).toBeNull()
+  })
+
+  it('takes both refusals’ callouts away when the panel closes', async () => {
+    refusals()
+    const host = mount(<Account visible onClose={noop} onSignedOut={noop} />)
+    await settle()
+    await submitted(host.querySelector(KEY_FORM))
+    await submitted(host.querySelector(PASSWORD_FORM))
+    expect([refusalIn(host, 'key'), refusalIn(host, 'password')]).toEqual([
+      NEEDS_A_NAME,
+      expect.stringMatching(/did not match/),
+    ])
+    rerender(<Account visible={false} onClose={noop} onSignedOut={noop} />)
+    await settle()
+    rerender(<Account visible onClose={noop} onSignedOut={noop} />)
+    await settle()
+    expect([calloutOf(host, 'key'), calloutOf(host, 'password')]).toEqual([
+      null,
+      null,
+    ])
+  })
+
+  it('does not say a refusal of Change password in a panel opened again after a close that came while it was out', async () => {
+    const holds = refusals()
+    const answer = deferred<void>()
+    holds.held = answer.promise
+    const host = mount(<Account visible onClose={noop} onSignedOut={noop} />)
+    await settle()
+    await submitted(host.querySelector(PASSWORD_FORM))
+    rerender(<Account visible={false} onClose={noop} onSignedOut={noop} />)
+    await settle()
+    await act(async () => {
+      answer.resolve()
+      await new Promise((resolve) => {
+        setTimeout(resolve, 0)
+      })
+    })
+    rerender(<Account visible onClose={noop} onSignedOut={noop} />)
+    await settle()
+    expect(calloutOf(host, 'password')).toBeNull()
+  })
+
+  /**
+   * A server listing key 7, tablet, and session bb, from Safari, that
+   * answers this screen's five writes from `writes`.
+   */
+  function answersWrites(writes: Record<string, () => Response>) {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: string, init?: RequestInit) => {
+        const asked = `${init?.method ?? 'GET'} ${input}`
+        const answers: Record<string, () => Response> = {
+          ...writes,
+          'GET /api/keys': () =>
+            json([{ id: 7, name: 'tablet', created: 'then', last_used: null }]),
+          'GET /api/sessions': () =>
+            json([
+              {
+                id: 'bb',
+                created: 'then',
+                last_seen: 'then',
+                user_agent: 'Safari',
+                ip: null,
+                current: false,
+              },
+            ]),
+        }
+        return Promise.resolve(
+          answers[asked]?.() ?? new Response(null, { status: 404 }),
+        )
+      }),
+    )
+  }
+
+  /** The five writes: Create, Change password, the two Revokes, Sign out. */
+  const WRITES = [
+    'POST /api/keys',
+    'PUT /api/password',
+    'DELETE /api/keys/7',
+    'DELETE /api/sessions/bb',
+    'DELETE /api/session',
+  ]
+
+  /**
+   * A server that refuses, in its own words, a Create with no name, a
+   * Change password to an empty password, the revocation of key 7 and of
+   * session bb, which it does not hold, and a sign-out from another origin.
+   */
+  function refusesInWords() {
+    answersWrites({
+      'POST /api/keys': () => new Response(NEEDS_A_NAME, { status: 400 }),
+      'PUT /api/password': () =>
+        new Response(
+          'an empty password would lock the account rather than open it',
+          { status: 400 },
+        ),
+      'DELETE /api/keys/7': () => new Response('no such key', { status: 404 }),
+      'DELETE /api/sessions/bb': () =>
+        new Response('no such session', { status: 404 }),
+      'DELETE /api/session': () =>
+        new Response(
+          JSON.stringify({
+            error:
+              "this request's Origin does not match this server; a session can only be opened or closed from the reader's own origin",
+          }),
+          { status: 403, headers: { 'content-type': 'application/json' } },
+        ),
+    })
+  }
+
+  /** A proxy's own page for an upstream that did not answer. */
+  const PROXY_PAGE =
+    '<html>\r\n<head><title>502 Bad Gateway</title></head>\r\n<body>\r\n<center><h1>502 Bad Gateway</h1></center>\r\n</body>\r\n</html>\r\n'
+
+  /** A server behind a proxy that answers each write with its page. */
+  function failsBehindAProxy() {
+    answersWrites(
+      Object.fromEntries(
+        WRITES.map((write) => [
+          write,
+          () =>
+            new Response(PROXY_PAGE, {
+              status: 502,
+              headers: { 'content-type': 'text/html' },
+            }),
+        ]),
+      ),
+    )
+  }
+
+  for (const placement of ['page', 'panel'] as const) {
+    it(`says a refused Create and a refused Change password in the server’s words, with no address or status, as a ${placement}`, async () => {
+      refusesInWords()
+      const host = mountAs(placement)
+      await settle()
+      const keyName = host.querySelector<HTMLInputElement>('input[placeholder]')
+      if (!keyName) throw new Error('no key name box')
+      type(keyName, '   ')
+      await submitted(host.querySelector(KEY_FORM))
+      expect(refusalIn(host, 'key')).toBe(NEEDS_A_NAME)
+
+      const current = host.querySelector<HTMLInputElement>(
+        'input[autocomplete="current-password"]',
+      )
+      if (!current) throw new Error('no current password box')
+      type(current, 'the old one')
+      await submitted(host.querySelector(PASSWORD_FORM))
+      expect(refusalIn(host, 'password')).toBe(
+        'an empty password would lock the account rather than open it',
+      )
+    })
+
+    it(`says a failed revocation of a key or a session, and a failed sign-out, by what was not done and in the server’s words, as a ${placement}`, async () => {
+      refusesInWords()
+      const host = mountAs(placement)
+      await settle()
+      await revoke(host, 'tablet')
+      expect(alertIn(host)).toBe('That key was not revoked: no such key')
+      await revoke(host, 'Safari')
+      expect(alertIn(host)).toBe('That session was not ended: no such session')
+      const signOut = buttonSaying(host, 'Sign out')
+      if (!signOut) throw new Error('no Sign out')
+      await act(async () => {
+        signOut.click()
+        await new Promise((resolve) => {
+          setTimeout(resolve, 0)
+        })
+      })
+      expect(alertIn(host)).toBe(
+        "You were not signed out: this request's Origin does not match this server; a session can only be opened or closed from the reader's own origin",
+      )
+    })
+  }
+
+  for (const placement of ['page', 'panel'] as const) {
+    it(`says a write answered with a page of markup by what was not done and the status, and never the page, as a ${placement}`, async () => {
+      failsBehindAProxy()
+      const host = mountAs(placement)
+      await settle()
+      const keyName = host.querySelector<HTMLInputElement>('input[placeholder]')
+      if (!keyName) throw new Error('no key name box')
+      type(keyName, 'phone')
+      await submitted(host.querySelector(KEY_FORM))
+      expect(refusalIn(host, 'key')).toBe(
+        'The key was not made: the server answered 502',
+      )
+
+      const current = host.querySelector<HTMLInputElement>(
+        'input[autocomplete="current-password"]',
+      )
+      if (!current) throw new Error('no current password box')
+      type(current, 'the old one')
+      await submitted(host.querySelector(PASSWORD_FORM))
+      expect(refusalIn(host, 'password')).toBe(
+        'The password was not changed: the server answered 502',
+      )
+
+      await revoke(host, 'tablet')
+      expect(alertIn(host)).toBe(
+        'That key was not revoked: the server answered 502',
+      )
+      await revoke(host, 'Safari')
+      expect(alertIn(host)).toBe(
+        'That session was not ended: the server answered 502',
+      )
+      const signOut = buttonSaying(host, 'Sign out')
+      if (!signOut) throw new Error('no Sign out')
+      await act(async () => {
+        signOut.click()
+        await new Promise((resolve) => {
+          setTimeout(resolve, 0)
+        })
+      })
+      expect(alertIn(host)).toBe(
+        'You were not signed out: the server answered 502',
+      )
+    })
+  }
+
+  it('does not say a refusal of Create in a panel opened again after a close that came while it was out', async () => {
+    const holds = refusals()
+    const answer = deferred<void>()
+    holds.held = answer.promise
+    const host = mount(<Account visible onClose={noop} onSignedOut={noop} />)
+    await settle()
+    await submitted(host.querySelector(KEY_FORM))
+    rerender(<Account visible={false} onClose={noop} onSignedOut={noop} />)
+    await settle()
+    await act(async () => {
+      answer.resolve()
+      await new Promise((resolve) => {
+        setTimeout(resolve, 0)
+      })
+    })
+    rerender(<Account visible onClose={noop} onSignedOut={noop} />)
+    await settle()
+    expect(calloutOf(host, 'key')).toBeNull()
+  })
+})
+
+/**
+ * Confirm password (the user's rulings of 2026-10-25): Change password is
+ * held while New password and Confirm password differ, and a callout laid
+ * over the form at Confirm password says so whenever the confirm is neither
+ * empty nor the start of the new one, wherever focus is, and after a press
+ * of the held button (the user's ruling of 2026-10-26). One `it()` per
+ * placement: `testing/mount.ts` holds one root.
+ */
+describe('Account’s Confirm password', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    forgetAbout()
+  })
+
+  /** A server that answers a password change, and counts each one sent. */
+  function changes() {
+    vi.stubGlobal(
+      'fetch',
+      server({
+        '/api/keys': () => json([]),
+        '/api/sessions': () => json([]),
+        'PUT /api/password': () => new Response(null, { status: 204 }),
+      }),
+    )
+    const fetch = vi.mocked(globalThis.fetch)
+    return {
+      sent: () =>
+        fetch.mock.calls
+          .filter(([, init]) => init?.method === 'PUT')
+          .map(([, init]) => JSON.parse(String(init?.body))),
+    }
+  }
+
+  /** The password form's three boxes and Change password, in each placement. */
+  async function passwordForm(placement: 'page' | 'panel') {
+    const host = mountAs(placement)
+    await settle()
+    const form = host.querySelector<HTMLFormElement>(PASSWORD_FORM)
+    if (!form) throw new Error('no password form')
+    const [current, next, confirm] = form.querySelectorAll('input')
+    const change = buttonSaying(host, 'Change password')
+    if (!current || !next || !confirm || !change) {
+      throw new Error('the password form is missing a part')
+    }
+    return { host, form, current, next, confirm, change }
+  }
+
+  /**
+   * The status region in the callout drawn straight after Confirm
+   * password's row, or its label in the panel.
+   */
+  const lineAfter = (confirm: HTMLInputElement) => {
+    const callout = confirm.closest('.settings-row, label')?.nextElementSibling
+    expect(callout?.className).toBe('callout')
+    const region = callout?.querySelector(':scope > [role="status"]')
+    if (!(region instanceof HTMLElement)) throw new Error('no status region')
+    return region
+  }
+
+  for (const placement of ['page', 'panel'] as const) {
+    it(`holds Change password, by aria-disabled, while New password and Confirm password differ, and frees it when they match, as a ${placement}`, async () => {
+      changes()
+      const { next, confirm, change } = await passwordForm(placement)
+      expect(holdOf(change)).toBe('free')
+      type(next, 'hunter22')
+      expect(holdOf(change)).toBe('held')
+      type(confirm, 'hunter2')
+      expect(holdOf(change)).toBe('held')
+      type(confirm, 'hunter22')
+      expect(holdOf(change)).toBe('free')
+      type(confirm, 'hunter222')
+      expect(holdOf(change)).toBe('held')
+      type(next, 'hunter222')
+      expect(holdOf(change)).toBe('free')
+    })
+
+    it(`says the two do not match for a press of Change password while they differ, the confirm empty or the start of the password, until a box is edited, and sends nothing, as a ${placement}`, async () => {
+      const sends = changes()
+      const { form, current, next, confirm, change } =
+        await passwordForm(placement)
+      const region = lineAfter(confirm)
+      const press = () =>
+        act(async () => {
+          change.click()
+          await new Promise((resolve) => {
+            setTimeout(resolve, 0)
+          })
+        })
+      type(current, 'the old one')
+      type(next, 'hunter22')
+      expect(region.textContent).toBe('')
+      await press()
+      expect([
+        region.textContent,
+        confirm.getAttribute('aria-invalid'),
+        confirm.getAttribute('aria-describedby'),
+      ]).toEqual(['The two passwords do not match.', 'true', region.id])
+
+      type(confirm, 'hunter')
+      expect(region.textContent).toBe('')
+      await press()
+      expect(region.textContent).toBe('The two passwords do not match.')
+      type(confirm, 'hunter2')
+      expect(region.textContent).toBe('')
+      // Back to what the press found: an edit ended what it said.
+      type(confirm, 'hunter')
+      expect(region.textContent).toBe('')
+
+      // A submit that reaches the form another way says it too.
+      await submitted(form)
+      expect(region.textContent).toBe('The two passwords do not match.')
+      expect(sends.sent()).toEqual([])
+    })
+
+    it(`says the two do not match in a callout under Confirm password’s row, in a status region drawn empty before it, for a typo and a longer confirm and not for the start of the password, as a ${placement}`, async () => {
+      changes()
+      const { next, confirm } = await passwordForm(placement)
+      const region = lineAfter(confirm)
+      expect(region.textContent).toBe('')
+      type(next, 'hunter22')
+      act(() => confirm.focus())
+      const said = (typed: string) => {
+        type(confirm, typed)
+        expect(lineAfter(confirm)).toBe(region)
+        return region.textContent
+      }
+      expect(said('hun')).toBe('')
+      expect(said('hunx')).toBe('The two passwords do not match.')
+      expect(said('hunter22')).toBe('')
+      expect(said('hunter222')).toBe('The two passwords do not match.')
+      expect(said('')).toBe('')
+    })
+
+    it(`says the two do not match while they differ, wherever focus is, as a ${placement}`, async () => {
+      changes()
+      const { current, next, confirm } = await passwordForm(placement)
+      const region = lineAfter(confirm)
+      // Filled while focus is on none of them, as a password manager fills.
+      type(next, 'hunter22')
+      type(confirm, 'hunted')
+      expect(region.textContent).toBe('The two passwords do not match.')
+      for (const box of [confirm, next, current]) {
+        act(() => box.focus())
+        expect(region.textContent, box.getAttribute('aria-label') ?? '').toBe(
+          'The two passwords do not match.',
+        )
+      }
+      act(() => current.blur())
+      expect(region.textContent).toBe('The two passwords do not match.')
+      type(confirm, 'hunter')
+      expect(region.textContent).toBe('')
+    })
+
+    it(`names the line as Confirm password’s description, and marks the box invalid, only while the line is said, as a ${placement}`, async () => {
+      changes()
+      const { next, confirm } = await passwordForm(placement)
+      const region = lineAfter(confirm)
+      act(() => confirm.focus())
+      const marks = () => [
+        confirm.getAttribute('aria-invalid'),
+        confirm.getAttribute('aria-describedby'),
+      ]
+      type(next, 'hunter22')
+      type(confirm, 'hunter')
+      expect(marks()).toEqual([null, null])
+      type(confirm, 'hunted')
+      expect(region.id).not.toBe('')
+      expect(marks()).toEqual(['true', region.id])
+      type(confirm, 'hunter22')
+      expect(marks()).toEqual([null, null])
+    })
+
+    it(`sends nothing for a submit while the two differ, and sends the new password once they match, as a ${placement}`, async () => {
+      const sends = changes()
+      const { form, current, next, confirm } = await passwordForm(placement)
+      type(current, 'the old one')
+      type(next, 'hunter22')
+      type(confirm, 'hunter2')
+      await submitted(form)
+      type(confirm, 'hunter23')
+      await submitted(form)
+      expect(sends.sent()).toEqual([])
+      type(confirm, 'hunter22')
+      await submitted(form)
+      expect(sends.sent()).toEqual([
+        { current: 'the old one', next: 'hunter22' },
+      ])
+    })
+
+    it(`keeps focus on Change password when a change to the boxes holds it, as a ${placement}`, async () => {
+      changes()
+      const { next, confirm, change } = await passwordForm(placement)
+      type(next, 'hunter22')
+      type(confirm, 'hunter22')
+      act(() => change.focus())
+      expect(document.activeElement).toBe(change)
+      // A box filled while Change password has focus, as a password
+      // manager may fill one.
+      type(confirm, 'hunter2')
+      expect(holdOf(change)).toBe('held')
+      expect(document.activeElement).toBe(change)
+    })
+
+    it(`empties New password and Confirm password, with Current password, once a change works, as a ${placement}`, async () => {
+      const sends = changes()
+      const { form, current, next, confirm } = await passwordForm(placement)
+      type(current, 'the old one')
+      type(next, 'hunter22')
+      type(confirm, 'hunter22')
+      await submitted(form)
+      expect(sends.sent()).toHaveLength(1)
+      expect([current.value, next.value, confirm.value]).toEqual(['', '', ''])
+    })
+  }
 })
 
 /**

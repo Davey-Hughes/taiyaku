@@ -1,5 +1,5 @@
 /**
- * Making an account: a name, a password and a role.
+ * Making an account: a name, a password typed twice, and a role.
  *
  * **The refusal is drawn in the form**, and stays until the name is edited
  * or the next attempt: it names why the server refused, such as a name that
@@ -9,9 +9,12 @@
  */
 import { type ReactNode, useEffect, useId, useRef, useState } from 'react'
 import { accountNameClash, NEW_ACCOUNT, USERS } from './configAddress'
+import { useConfirmPassword } from './confirmPassword'
+import { HeldButton } from './HeldButton'
 import { useDrawn, useDrawnWait, useFocusLeavesHeld } from './hooks'
-import { sentenceOf } from './message'
+import { reasonOf, refusalOf } from './message'
 import { NameClash } from './NameClash'
+import { PasswordsDiffer } from './PasswordsDiffer'
 import { Refusal } from './Refusal'
 import { PageHeader, Row, Section } from './settingsLayout'
 import { addUser, ROLES, type User } from './users'
@@ -92,13 +95,20 @@ export function NewAccount({
   const nameBox = useRef<HTMLInputElement>(null)
   const addButton = useRef<HTMLButtonElement>(null)
   const cancelButton = useRef<HTMLButtonElement>(null)
+  const roleBox = useRef<HTMLSelectElement>(null)
   useFocusLeavesHeld(clash !== undefined || addingDrawn, addButton, nameBox)
+  const confirmation = useConfirmPassword(password)
+  const { differ } = confirmation
   // The wait holds Cancel too, which a person may have tabbed to.
   useFocusLeavesHeld(addingDrawn, cancelButton, nameBox)
 
   const submit = (e: React.FormEvent) => {
     e.preventDefault()
     if (name === '' || password === '' || clash !== undefined) return
+    if (differ) {
+      confirmation.heldPress()
+      return
+    }
     if (inFlight.current) return
     inFlight.current = true
     setAdding(true)
@@ -112,9 +122,9 @@ export function NewAccount({
       .catch((err: unknown) => {
         inFlight.current = false
         setAdding(false)
-        const sentence = sentenceOf(err)
-        if (drawn.current) setFailure(sentence)
-        else onLateRefusal?.(`The account ${name} was not made (${sentence}).`)
+        const notMade = `The account ${name} was not made`
+        if (drawn.current) setFailure(refusalOf(err, notMade))
+        else onLateRefusal?.(`${notMade} (${reasonOf(err)}).`)
       })
   }
 
@@ -176,12 +186,30 @@ export function NewAccount({
               />
             )}
           </Row>
+          <Row label="Confirm password">
+            {(ids) => (
+              <input
+                type="password"
+                id={ids.control}
+                name="confirm-password"
+                aria-label="Confirm password"
+                {...confirmation.confirmBox}
+              />
+            )}
+          </Row>
+          {/* Laid over Role's select, whole, and never over Add or Cancel,
+              so that Role's label stays in view; where its words take two
+              lines it also reaches into Role's help, never a box. It takes
+              a press, so one on it opens nothing; Tab still reaches Role
+              (`Callout`). */}
+          <PasswordsDiffer {...confirmation.line} over={roleBox} />
           <Row
             label="Role"
             help="A new account gets the user role unless this is set to admin."
           >
             {(ids) => (
               <select
+                ref={roleBox}
                 id={ids.control}
                 name="new-role"
                 aria-label="Role"
@@ -200,10 +228,12 @@ export function NewAccount({
           {/* At the box's foot, after the last field, where a form's
               submit is looked for; the refusal beneath answers it. */}
           <div className="settings-actions">
-            <button
+            <HeldButton
               ref={addButton}
               type="submit"
               className="keeps-wait-width"
+              held={differ}
+              onHeldPress={confirmation.heldPress}
               disabled={
                 addingDrawn ||
                 name === '' ||
@@ -212,7 +242,7 @@ export function NewAccount({
               }
             >
               <WaitWords drawn={addingDrawn} words="Add" wait={CREATING} />
-            </button>
+            </HeldButton>
             <button
               ref={cancelButton}
               type="button"

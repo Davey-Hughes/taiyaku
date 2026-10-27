@@ -466,9 +466,22 @@
   cursor: pointer;
 }
 
-.reader-button:disabled {
+/* A button held by `aria-disabled` (`HeldButton`), which keeps focus where
+ * `disabled` does not, is drawn as a disabled one is. */
+.reader-button:is(:disabled, [aria-disabled="true"]) {
   color: var(--muted);
   cursor: default;
+}
+
+/* Under forced colours the system's palette replaces the colours above, and
+ * the browser draws a disabled button's words and edge in `GrayText`; one
+ * held by `aria-disabled` is drawn so here, by `--forced-held`, as `base.css`
+ * draws one in the library's screens. */
+@media (forced-colors: active) {
+  .reader-button[aria-disabled="true"] {
+    color: var(--forced-held);
+    border-color: var(--forced-held);
+  }
 }
 
 .reader-field {
@@ -557,52 +570,56 @@
   padding: var(--space-2) var(--space-3);
   border: 1px solid var(--reader-hair);
   font-family: ui-monospace, monospace;
+}
+
+/* The secret breaks anywhere, and only it, as on the page (`admin.css`). */
+.reader-secret .secret-value {
   word-break: break-all;
 }
 
-/* The caption under the secret — the box's only paragraph — at the margin
- * the inline `margin: '8px 0 0'` gave it before ⑤c. Without this it takes a
- * `<p>`'s own 1em top *and bottom*, and the bottom one lands inside this
- * box's border: the secret grew a blank line under its last line of text.
- * The page's copy has no such rule and keeps the browser's margins, which is
- * what it drew before ⑤c too — Task 6 is where that box joins a vocabulary. */
-.reader-secret p {
-  margin: var(--space-2) 0 0;
+/* Where the secret can be copied, its box is a button (`Account.tsx`), and
+ * it is drawn as the box of text it is elsewhere, not as a button: none of
+ * the browser's own ground, edge, font or centring, and the width the box
+ * of text fills. */
+button.reader-secret {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  border-radius: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-family: ui-monospace, monospace;
+  text-align: start;
+  cursor: pointer;
 }
 
-/* A failure and a confirmation inside a panel. `--danger` and `--success`
- * resolve to their dark values here because `.reader` sets
- * `color-scheme: dark`.
+/* Under the pointer it takes the panel's buttons' ground, as on the page
+ * (`admin.css`). */
+button.reader-secret:hover {
+  background: var(--surface);
+}
+
+/* The caption under the secret, on a line of its own, a grid of one cell
+ * that "Copied" shares while it shows (`CopyWords`), and with nothing under
+ * it inside the box's border, where a margin would draw a blank line under
+ * the secret's last line of text. */
+.reader-secret .secret-caption {
+  display: grid;
+  margin: var(--space-2) 0 0;
+  overflow-wrap: anywhere;
+}
+
+/* A failure inside a panel. `--danger` resolves to its dark value here
+ * because `.reader` sets `color-scheme: dark`.
  *
  * **The floor on this ground is already asserted**, by
  * `index.css.test.ts`'s *"keep every Ink text colour above 4.5:1 on a panel
  * over black"* and its white-artwork twin: both composite `--reader-panel`
  * over `--reader-ground` and run every one of `TEXT_TOKENS`, which includes
- * these two. So nothing here needs a hand-checked number to be safe — the
- * measured 7.99:1 and 9.23:1 (2026-09-24) are a record of what it draws,
- * not the guarantee that it clears AA.
- *
- * (An earlier version of this comment said that floor computes against
- * `--bg`, `--surface` and `--field` only and so did not reach this ground.
- * That is true of one `describe` in that file and false of the file. Saying
- * a gate is absent where one exists is worse than saying nothing: the next
- * person adds a second.) */
+ * `--danger`. So nothing here needs a hand-checked number to be safe. */
 .reader-failure {
   color: var(--danger);
-}
-
-/* **Named for `.reader-failure` beside it, not for `.reader-note` above it.**
- * This was `.reader-note-ok`, which read as `.reader-note` plus a modifier
- * and was never applied with it — so it looked like a composition that had
- * lost half of itself. It is not one. The two messages an account panel
- * draws sit in the same place at the top of the dialog, one above the other
- * when both are on screen, and composing only the confirmation with
- * `.reader-note` would give it a 4 px top margin and no bottom one while the
- * failure next to it kept the browser's. `.reader-note` stays ③'s
- * per-section note, where `Settings.tsx` composes it for real —
- * `className="reader-meta reader-note"`. */
-.reader-success {
-  color: var(--success);
 }
 
 /* A note colour's swatch, the chosen one ringed: the panel, then the text. */

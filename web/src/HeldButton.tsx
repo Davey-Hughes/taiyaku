@@ -4,6 +4,11 @@ export type HeldButtonProps = ComponentPropsWithRef<'button'> & {
   type: 'button' | 'submit'
   /** Nobody may press it now: it is drawn held and a press does nothing. */
   held: boolean
+  /**
+   * Called for a press turned down while it is held, so that the caller
+   * can say why it is held where nothing says so yet.
+   */
+  onHeldPress?: () => void
 }
 
 /**
@@ -33,6 +38,7 @@ export type HeldButtonProps = ComponentPropsWithRef<'button'> & {
 export function HeldButton({
   type,
   held,
+  onHeldPress,
   onClick,
   ...button
 }: HeldButtonProps) {
@@ -44,6 +50,7 @@ export function HeldButton({
       onClick={(e) => {
         if (held) {
           e.preventDefault()
+          onHeldPress?.()
           return
         }
         onClick?.(e)

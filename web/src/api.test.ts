@@ -666,9 +666,7 @@ describe('the account calls', () => {
       'fetch',
       vi.fn().mockResolvedValue(new Response(null, { status: 500 })),
     )
-    await expect(changePassword('a', 'b')).rejects.toThrow(
-      /changing the password/,
-    )
+    await expect(changePassword('a', 'b')).rejects.toThrow('/api/password: 500')
 
     const fetchMock = vi
       .fn()
@@ -689,11 +687,40 @@ describe('the account calls', () => {
     )
     await expect(listKeys()).rejects.toThrow(/listing keys/)
     await expect(listSessions()).rejects.toThrow(/listing sessions/)
-    await expect(createKey('x')).rejects.toThrow(/creating a key/)
-    await expect(revokeKey(1)).rejects.toThrow(/revoking key/)
-    await expect(revokeSession('x')).rejects.toThrow(/revoking a session/)
+    await expect(createKey('x')).rejects.toThrow('/api/keys: 500')
+    await expect(revokeKey(1)).rejects.toThrow('/api/keys/1: 500')
+    await expect(revokeSession('x')).rejects.toThrow('/api/sessions/x: 500')
     await expect(me()).rejects.toThrow(/reading the account/)
-    await expect(logout()).rejects.toThrow(/signing out/)
+    await expect(logout()).rejects.toThrow('/api/session: 500')
+  })
+
+  /**
+   * Each write the account screen says the failure of throws its address,
+   * its status and the server's body, the shape `sentenceOf` reads the
+   * server's own sentence from.
+   */
+  it('carries the server’s words with each refused account write', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() =>
+        Promise.resolve(new Response('the server’s words', { status: 400 })),
+      ),
+    )
+    await expect(createKey(' ')).rejects.toThrow(
+      '/api/keys: 400 the server’s words',
+    )
+    await expect(revokeKey(7)).rejects.toThrow(
+      '/api/keys/7: 400 the server’s words',
+    )
+    await expect(revokeSession('a b')).rejects.toThrow(
+      '/api/sessions/a%20b: 400 the server’s words',
+    )
+    await expect(changePassword('a', '')).rejects.toThrow(
+      '/api/password: 400 the server’s words',
+    )
+    await expect(logout()).rejects.toThrow(
+      '/api/session: 400 the server’s words',
+    )
   })
 })
 

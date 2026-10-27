@@ -152,7 +152,7 @@ const PAIRS = [
     opens: 'an account',
     from: 'the Users table',
     entry: accountPath(ACCOUNTS[2].name),
-    height: 1200,
+    height: 1300,
   },
   {
     opens: 'a directory',

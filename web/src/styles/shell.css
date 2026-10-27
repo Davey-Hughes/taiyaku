@@ -453,11 +453,25 @@ a.account-button {
   writing-mode: vertical-rl;
 }
 
-/* The wordmark at the column's top, at both widths (spec 2026-09-17 §7.1). */
-.sidebar-column > .wordmark {
-  padding: var(--space-4) var(--space-4) 0;
+/* The wordmark at the column's top, at both widths (spec 2026-09-17 §7.1),
+ * a link to `/` as the Libraries heading is (the user's ruling of
+ * 2026-10-26), drawn at rest as the plain wordmark: in the column's colour,
+ * with no line under it. Set in from the column by margins, not padding,
+ * and as wide as the wordmark, so that what a press reaches and the ring
+ * focus draws are the wordmark's own box, as a sidebar link's are. */
+.sidebar-column > .wordmark-home {
+  align-self: flex-start;
+  margin: var(--space-4) var(--space-4) 0;
+  color: inherit;
   font-size: var(--text-h3);
   font-weight: 700;
+  text-decoration: none;
+}
+
+/* Under the pointer its name is underlined, as a sidebar link is; the
+ * seal is not, where the line would be drawn down its side. */
+.sidebar-column > .wordmark-home:hover .wordmark-name {
+  text-decoration: underline;
 }
 
 /* The phone bar, the scrim and the drawer's Close button exist below 900 px
@@ -636,5 +650,28 @@ a.account-button {
     display: flex;
     align-items: center;
     min-height: 44px;
+  }
+
+  /* The wordmark's links take their 44 px to the touch from a box with no
+     paint centred on each, as `admin.css`'s O157 targets do, and are not
+     drawn at 44: the column's would push the navigation down under it. A
+     press on a pseudo-element is a press on its element. Each grows only
+     up and down, into the margin over the column's wordmark and the
+     navigation's padding over its first link, or into the bar's room, so
+     it covers no other control. */
+  .sidebar-column > .wordmark-home,
+  .phone-bar .home {
+    position: relative;
+  }
+
+  .sidebar-column > .wordmark-home::after,
+  .phone-bar .home::after {
+    content: "";
+    position: absolute;
+    inset-block-start: 50%;
+    inset-inline-start: 50%;
+    inline-size: max(100%, 44px);
+    block-size: max(100%, 44px);
+    translate: -50% -50%;
   }
 }

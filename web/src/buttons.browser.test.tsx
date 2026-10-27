@@ -3,10 +3,14 @@ import { MemoryRouter } from 'react-router'
 import { describe, expect, it, onTestFinished, vi } from 'vitest'
 import { cdp } from 'vitest/browser'
 import { AccountPage } from './AccountPage'
+import * as config from './config'
+import * as curation from './curation'
 import { HeldButton } from './HeldButton'
 import { WAIT_DRAWN_AFTER_MS } from './hooks'
 // **Required**: the rules under test reach the app through `index.css`.
 import './index.css'
+import { RuleEditor } from './RuleEditor'
+import * as rulesApi from './rules'
 import { holdOf } from './testing/held'
 import { typeInto } from './testing/input'
 import { mount } from './testing/mount'
@@ -17,6 +21,20 @@ vi.mock('./users', async (importOriginal) => ({
   patchUser: vi.fn(),
   removalCost: vi.fn(),
   removeUser: vi.fn(),
+}))
+vi.mock('./rules', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./rules')>()),
+  listRules: vi.fn(),
+  previewRules: vi.fn(),
+  saveRules: vi.fn(),
+}))
+vi.mock('./config', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./config')>()),
+  listRoots: vi.fn(),
+}))
+vi.mock('./curation', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./curation')>()),
+  listProposals: vi.fn(),
 }))
 
 /**
@@ -182,7 +200,7 @@ describe('a control held by aria-disabled', () => {
   /**
    * Every control a write holds on an account's page, drawn held on the page
    * itself: a removal is out, with the question that lifts the limit open
-   * and a password typed. Each is paired with a copy of itself put beside
+   * and a password typed twice. Each is paired with a copy of itself put beside
    * it and held by `disabled`, so each kind is read in its own place.
    */
   async function accountPairs() {
@@ -260,6 +278,10 @@ describe('a control held by aria-disabled', () => {
       at('input[value="every"]').click()
     })
     await typeInto(at<HTMLInputElement>('input[name="password"]'), 'hunter22')
+    await typeInto(
+      at<HTMLInputElement>('input[name="confirm-password"]'),
+      'hunter22',
+    )
     await act(async () => {
       at('button[name="remove"]').click()
     })
@@ -271,6 +293,7 @@ describe('a control held by aria-disabled', () => {
     const pairs = [
       'select[name="role"]',
       'input[name="password"]',
+      'input[name="confirm-password"]',
       'button[name="reset"]',
       'button[name="lift-limit"]',
       'button[name="keep-limit"]',
@@ -303,6 +326,171 @@ describe('a control held by aria-disabled', () => {
     }
     return all
   }
+
+  /**
+   * Every button a save holds on the Rules screen, drawn held on the screen
+   * itself: a save is out, with the Overrides tab open on a row and the
+   * confirm of a delete that reopens a proposal open. Each is paired with a
+   * copy of itself put beside it and held by `disabled`. The list's enable
+   * box is not among them: held by `aria-disabled`, a box draws nothing
+   * (O159, `base.css`).
+   */
+  async function rulesPairs() {
+    const rule: rulesApi.Rule = {
+      id: 1,
+      ordinal: 1,
+      enabled: true,
+      root_id: null,
+      kind: 'regex',
+      pattern: 'Manga/.*',
+      match_on: 'path',
+      set_series: 'Series',
+      set_edition_key: null,
+      set_kind: null,
+      set_language: null,
+      note: null,
+    }
+    vi.mocked(rulesApi.listRules).mockResolvedValue({
+      rules: [rule, { ...rule, id: 2, ordinal: 2, pattern: 'Colour/.*' }],
+      complaints: [],
+    })
+    vi.mocked(config.listRoots).mockResolvedValue({ roots: [] })
+    vi.mocked(curation.listProposals).mockResolvedValue({
+      proposals: [
+        {
+          id: 42,
+          kind: 'same-series',
+          subject_id: 1,
+          target_id: 2,
+          score: 0.9,
+          reason: 'two spellings of one title',
+          state: 'accepted',
+          created_rule_id: 2,
+          subject_title: 'Death Note',
+          target_title: 'Death Note (Colour)',
+        },
+      ],
+      counts: {},
+    })
+    vi.mocked(rulesApi.previewRules).mockResolvedValue({
+      impact: {
+        series_before: 8,
+        series_after: 2,
+        series_merged: 6,
+        works_rehomed: 71,
+        works_orphaned: 0,
+        proposals_reopened: 0,
+        proposals_raised: 0,
+      },
+      rows: [],
+      rows_truncated: false,
+      overrides: [
+        {
+          field: 'series',
+          rel_path: 'a/b',
+          first: 0,
+          wins: 1,
+          first_value: 'A',
+          wins_value: 'B',
+          others: 0,
+          examples: 3,
+        },
+      ],
+    })
+    vi.mocked(rulesApi.saveRules).mockReturnValue(new Promise(() => {}))
+    const host = await act(async () =>
+      mount(
+        <div className="library">
+          <main>
+            <div className="config">
+              <RuleEditor />
+            </div>
+          </main>
+        </div>,
+      ),
+    )
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 50))
+    })
+    const at = (selector: string) =>
+      host.querySelector(selector) as HTMLButtonElement
+    await act(async () => {
+      ;[...host.querySelectorAll<HTMLElement>('.preview-tabs button')]
+        .find((b) => b.textContent?.startsWith('Overrides'))
+        ?.click()
+    })
+    await act(async () => {
+      host.querySelectorAll<HTMLElement>('.rule-row button.delete')[1].click()
+    })
+    await act(async () => {
+      at('button.save').click()
+      await new Promise((r) => setTimeout(r, WAIT_DRAWN_AFTER_MS + 100))
+    })
+    ;(document.activeElement as HTMLElement | null)?.blur()
+    const pairs = [
+      'button.save',
+      '.import button',
+      '.rule-row button.select',
+      '.rule-row button.delete',
+      'button.confirm-delete',
+      'button.add-rule',
+      'button.reorder',
+      'button.edit-winner',
+    ].map((kind) => {
+      const held = at(kind)
+      const disabled = held.cloneNode(true) as HTMLButtonElement
+      disabled.removeAttribute('aria-disabled')
+      disabled.disabled = true
+      held.after(disabled)
+      return { kind, disabled, held }
+    })
+    onTestFinished(() => {
+      for (const { disabled } of pairs) disabled.remove()
+    })
+    return pairs
+  }
+
+  const expectRulesDrawnAlike = async (when: string) => {
+    const all = await rulesPairs()
+    for (const { kind, disabled, held } of all) {
+      expect(holdOf(disabled), kind).toBe('disabled')
+      expect(holdOf(held), kind).toBe('held')
+      expect.soft(look(held), `${kind}, ${when}`).toEqual(look(disabled))
+    }
+    return all
+  }
+
+  for (const theme of ['ink', 'paper']) {
+    it(`is drawn as one held by disabled on the Rules screen, in ${theme}`, async () => {
+      document.documentElement.setAttribute('data-theme', theme)
+      onTestFinished(() =>
+        document.documentElement.removeAttribute('data-theme'),
+      )
+      await expectRulesDrawnAlike(theme)
+    })
+  }
+
+  it('is drawn as one held by disabled on the Rules screen under forced colours, its words and edge in GrayText', async () => {
+    const force = (value: string) =>
+      cdp().send('Emulation.setEmulatedMedia', {
+        features: [{ name: 'forced-colors', value }],
+      })
+    onTestFinished(async () => {
+      await force('')
+    })
+    await force('active')
+    expect(matchMedia('(forced-colors: active)').matches).toBe(true)
+    const all = await expectRulesDrawnAlike('under forced colours')
+    const probe = document.createElement('div')
+    probe.style.color = 'GrayText'
+    document.body.append(probe)
+    const gray = getComputedStyle(probe).color
+    probe.remove()
+    for (const { kind, held } of all) {
+      const { color, borderTopColor } = getComputedStyle(held)
+      expect.soft([color, borderTopColor], kind).toEqual([gray, gray])
+    }
+  })
 
   for (const theme of ['ink', 'paper']) {
     it(`is drawn as one held by disabled on an account’s page, in ${theme}`, async () => {

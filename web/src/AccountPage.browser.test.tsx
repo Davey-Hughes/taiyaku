@@ -19,6 +19,8 @@ import * as usersApi from './users'
 vi.mock('./users', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./users')>()),
   patchUser: vi.fn(),
+  revokeUserKey: vi.fn(),
+  revokeUserSession: vi.fn(),
 }))
 
 const dir = (id: number, path: string): Library['dirs'][number] => ({
@@ -107,6 +109,8 @@ beforeEach(() => {
     every_library: true,
     libraries: [],
   })
+  vi.mocked(usersApi.revokeUserKey).mockResolvedValue(undefined)
+  vi.mocked(usersApi.revokeUserSession).mockResolvedValue(undefined)
 })
 
 describe('the account page’s choice of libraries, as the browser names it', () => {
@@ -181,5 +185,75 @@ describe('the account page under real keys', () => {
     await keys('{ArrowDown}')
     expect(host.querySelector('.lift-limit')).toBeNull()
     expect(usersApi.patchUser).not.toHaveBeenCalled()
+  })
+})
+
+/**
+ * Chromium moves the focus of a control taken out of the page to the
+ * body, which jsdom only stands in for. Focus is compared with `toBe`.
+ */
+describe('the account page’s focus after a Revoke, under real keys', () => {
+  it('gives focus, as Enter on each Revoke takes its row, to the next row’s Revoke, and with none left in its list to the heading of Sessions & keys, from which Tab reaches the keys’ first', async () => {
+    const session = (id: string, agent: string) => ({
+      id,
+      created: '2026-09-01 10:00:00',
+      last_seen: '2026-09-06 09:00:00',
+      user_agent: agent,
+      ip: null,
+      current: false,
+    })
+    const key = (id: number, name: string) => ({
+      id,
+      name,
+      created: '2026-08-01 10:00:00',
+      last_used: null,
+    })
+    const host = await shown({
+      ...sam,
+      sessions: [session('aaa', 'Firefox'), session('bbb', 'Safari')],
+      keys: [key(9, 'the tablet'), key(10, 'the phone')],
+    })
+    const named = (name: string) => {
+      const found = host.querySelector<HTMLButtonElement>(
+        `button[name="${name}"]`,
+      )
+      if (!found) throw new Error(`no ${name}`)
+      return found
+    }
+    const heading = [...host.querySelectorAll('h2, h3')].find(
+      (each) => each.textContent === 'Sessions & keys',
+    )
+    /** Enter on the focused control, and what it sends lands. */
+    const enter = () =>
+      act(async () => {
+        await userEvent.keyboard('{Enter}')
+        await new Promise((resolve) => {
+          setTimeout(resolve, 0)
+        })
+      })
+
+    // A real click first, so that the keys reach the page, not the frame.
+    const password = host.querySelector('input[name="password"]')
+    if (!password) throw new Error('no password box')
+    await click(password)
+    act(() => named('revoke-session-aaa').focus())
+    await enter()
+    expect(document.activeElement).toBe(named('revoke-session-bbb'))
+    await enter()
+    expect(document.activeElement).toBe(heading)
+    await keys('{Tab}')
+    expect(document.activeElement).toBe(named('revoke-key-9'))
+    await enter()
+    expect(document.activeElement).toBe(named('revoke-key-10'))
+    await enter()
+    expect(document.activeElement).toBe(heading)
+    expect(vi.mocked(usersApi.revokeUserSession).mock.calls).toEqual([
+      [2, 'aaa'],
+      [2, 'bbb'],
+    ])
+    expect(vi.mocked(usersApi.revokeUserKey).mock.calls).toEqual([
+      [2, 9],
+      [2, 10],
+    ])
   })
 })

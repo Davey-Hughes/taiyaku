@@ -64,6 +64,14 @@ describe('Login', () => {
     expect(host.firstElementChild?.classList.contains('login')).toBe(true)
   })
 
+  it('draws its heading’s wordmark as words, not as a link as the sidebar’s is', () => {
+    const host = mount(<Login onSignedIn={noop} />)
+    const heading = host.querySelector('h1')
+    expect(heading?.querySelector('.wordmark')).not.toBeNull()
+    expect(heading?.querySelector('a')).toBeNull()
+    expect(heading?.closest('a')).toBeNull()
+  })
+
   /**
    * The heading is the wordmark, and the 対訳 seal inside it is drawn for the
    * eye only — `aria-hidden` — so the heading's accessible name is `taiyaku`

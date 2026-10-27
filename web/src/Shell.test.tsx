@@ -916,16 +916,19 @@ describe('Shell', () => {
       ).toBe(true)
     })
 
-    it('takes focus to its first link, and gives it back to ☰ on Escape', async () => {
+    it('takes focus to the Libraries heading’s link, not the wordmark’s above it, and gives it back to ☰ on Escape', async () => {
       const host = await settle(
         <Shell>
           <p>x</p>
         </Shell>,
       )
       openMenu(host)
-      expect(document.activeElement).toBe(
-        menu(host).querySelector('a[href="/"]'),
-      )
+      const focused = document.activeElement
+      expect([
+        focused === menu(host).querySelector('.sidebar-heading a'),
+        focused?.textContent,
+        focused?.getAttribute('aria-label'),
+      ]).toEqual([true, 'Libraries', null])
       act(() => {
         document.dispatchEvent(
           new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }),
@@ -1001,18 +1004,24 @@ describe('Shell', () => {
       expect(menuButton(host).getAttribute('aria-expanded')).toBe('false')
     })
 
-    it('draws the wordmark at the top of the column, and as the bar’s way home', async () => {
+    it('draws the wordmark at the top of the column as a link to /, and as the bar’s way home, each named for both', async () => {
       const host = await settle(
         <Shell>
           <p>x</p>
         </Shell>,
       )
-      expect(menu(host).firstElementChild?.classList.contains('wordmark')).toBe(
-        true,
-      )
-      expect(
-        host.querySelector('.phone-bar a[href="/"] .wordmark'),
-      ).not.toBeNull()
+      const top = menu(host).firstElementChild
+      expect([
+        top?.tagName,
+        top?.getAttribute('href'),
+        top?.getAttribute('aria-label'),
+        top?.firstElementChild?.classList.contains('wordmark'),
+      ]).toEqual(['A', '/', 'taiyaku, Libraries', true])
+      const home = host.querySelector('.phone-bar a[href="/"]')
+      expect([
+        home?.firstElementChild?.classList.contains('wordmark'),
+        home?.getAttribute('aria-label'),
+      ]).toEqual([true, 'taiyaku, Libraries'])
       // Search is the Library view's bar (spec §2), so its icon goes there.
       expect(
         host

@@ -23,6 +23,7 @@ import { ABOUT } from './testing/about'
 import { deferred } from './testing/async'
 import { licenceTextsLanded } from './testing/licence'
 import { focused } from './testing/focused'
+import { lengthOf } from './testing/length'
 import { mount } from './testing/mount'
 import { mouse } from './testing/mouse'
 import {
@@ -338,8 +339,8 @@ describe('the shell at 390 px', () => {
         .elementFromPoint(box.left + box.width / 2, box.top + box.height / 2)
         ?.closest('.menu-close'),
     ).toBe(close)
-    // Beside the wordmark (spec §7.1): on its row, clear of its text. The
-    // `.wordmark` box itself spans the column, so measure what it holds.
+    // Beside the wordmark (spec §7.1): on its row, clear of its text, read
+    // from what the wordmark holds.
     const markEl = need(column, '.wordmark')
     const text = document.createRange()
     text.selectNodeContents(markEl)
@@ -1099,7 +1100,7 @@ describe('a screen with the catalog’s address, at a desktop width', () => {
       false,
       <Account placement="page" onSignedOut={() => {}} />,
     )
-    await page.viewport(1280, 400)
+    await page.viewport(1280, 300)
     await act(async () => {
       await new Promise((resolve) => {
         setTimeout(resolve, 0)
@@ -1139,6 +1140,39 @@ describe('the licence page’s way up, under the phone bar', () => {
     const bar = areaOf(need(host, '.phone-bar').getBoundingClientRect())
     expect(overlapOf(target, bar)).toBe(0)
     expect(pressArea(back)).toEqual(near(target))
+  })
+})
+
+/**
+ * The phone bar's wordmark is the way to `/` too, named as the sidebar's
+ * is (`the sidebar’s wordmark`), and a finger's 44 px with a coarse
+ * pointer, inside the bar and over neither ☰ nor Search beside it.
+ */
+describe('the phone bar’s wordmark', () => {
+  it('is a link to /, named “taiyaku, Libraries”, as the sidebar’s wordmark is', async () => {
+    const host = await shellAt('/config/rules', 390, true)
+    const home = need(host, '.phone-bar a:has(.wordmark)')
+    expect(home.getAttribute('href')).toBe('/')
+    expect(
+      page
+        .getByRole('link', { name: 'taiyaku, Libraries', exact: true })
+        .elements(),
+    ).toEqual([home])
+  })
+
+  it('is a finger’s 44 px with a coarse pointer, inside the bar and over neither ☰ nor Search', async () => {
+    onTestFinished(coarseRulesOn())
+    const host = await shellAt('/config/rules', 390, true)
+    await document.fonts.ready
+    const home = need(host, '.phone-bar a:has(.wordmark)')
+    const target = fingerArea(home)
+    expect(pressArea(home)).toEqual(near(target))
+    const bar = areaOf(need(host, '.phone-bar').getBoundingClientRect())
+    expect(overlapOf(target, bar)).toBeCloseTo(target.width * target.height, 1)
+    for (const beside of ['.menu-button', '.search']) {
+      const drawn = areaOf(need(host, beside).getBoundingClientRect())
+      expect(overlapOf(target, drawn), beside).toBe(0)
+    }
   })
 })
 
@@ -1267,16 +1301,16 @@ const scrolled = (host: HTMLElement) => [
 ]
 
 /**
- * **A contents link followed at a phone's width lands its card below the
- * phone bar**, which covers the top of the view there: the card's top edge
- * is not under the bar, and a press at the middle of its heading lands on
- * the heading, so the bar is not drawn over it. The router hears the
- * fragment change, and focus is on the heading a frame after it has drawn
- * the new location. Each link is clicked from wherever the last one left
- * the view.
+ * **A contents link followed at a phone's width lands its licence's heading
+ * below the phone bar**, which covers the top of the view there: the
+ * heading's top edge, the top of its section, is not under the bar, and a
+ * press at the middle of the heading lands on it, so the bar is not drawn
+ * over it. The router hears the fragment change, and focus is on the
+ * heading a frame after it has drawn the new location. Each link is clicked
+ * from wherever the last one left the view.
  */
 describe('the licence page’s contents, under the phone bar', () => {
-  it('land each card below the bar, focus on its heading', async () => {
+  it('land each licence’s heading below the bar, focus on it', async () => {
     const host = await licenceInShell(390)
     const landed = []
     for (const link of host.querySelectorAll('nav[aria-label="Contents"] a')) {
@@ -1287,7 +1321,6 @@ describe('the licence page’s contents, under the phone bar', () => {
       await expect.poll(() => document.activeElement).toBe(heading)
       await aFrame()
       const bar = need(host, '.phone-bar').getBoundingClientRect()
-      const card = heading.closest('.about-card')?.getBoundingClientRect()
       const middle = heading.getBoundingClientRect()
       const hit = document.elementFromPoint(
         middle.left + middle.width / 2,
@@ -1297,7 +1330,7 @@ describe('the licence page’s contents, under the phone bar', () => {
         heading.textContent,
         need(host, '[data-fragment]').dataset.fragment,
         document.activeElement === heading,
-        card !== undefined && card.top >= bar.bottom,
+        middle.top >= bar.bottom,
         hit !== null && heading.contains(hit),
       ])
     }
@@ -1311,16 +1344,72 @@ describe('the licence page’s contents, under the phone bar', () => {
 })
 
 /**
+ * **Back to top, on the heading's line or at the box's foot, pressed at a
+ * phone's width, lands the page's top below the phone bar**: both scrollers
+ * at their tops, the title's top edge not under the bar, a press at the
+ * middle of the title landing on it, and focus on it, with the fragment gone
+ * from the router's address. Pressed from a licence a contents link has
+ * landed, so the view starts far down the page.
+ */
+describe('the licence page’s Back to top, under the phone bar', () => {
+  it.each([
+    ['heading', ':scope > .settings-section-head'],
+    ['foot', ':scope > .settings-box'],
+  ] as const)(
+    'at the %s, lands the page’s top below the bar, focus on its title',
+    async (_, part) => {
+      const host = await licenceInShell(390)
+      await follow(host, '#zen-kaku-gothic-new')
+      expect(scrolled(host)).not.toEqual([0, 0])
+      const section = need(host, '#zen-kaku-gothic-new').closest(
+        '.settings-section',
+      )
+      const links = [
+        ...(section?.querySelector(part)?.querySelectorAll('a') ?? []),
+      ].filter((each) => each.textContent?.endsWith('Back to top'))
+      expect(links).toHaveLength(1)
+      const link = links[0]
+      if (!link) throw new Error('no Back to top')
+      await act(async () => {
+        await userEvent.click(link)
+      })
+      await aFrame()
+      const title = need(host, 'h1')
+      const bar = need(host, '.phone-bar').getBoundingClientRect()
+      const box = title.getBoundingClientRect()
+      const hit = document.elementFromPoint(
+        box.left + box.width / 2,
+        box.top + box.height / 2,
+      )
+      expect({
+        fragment: need(host, '[data-fragment]').dataset.fragment,
+        scrolled: scrolled(host),
+        focus: document.activeElement === title,
+        belowBar: box.top >= bar.bottom,
+        hit: hit !== null && title.contains(hit),
+      }).toEqual({
+        fragment: '',
+        scrolled: [0, 0],
+        focus: true,
+        belowBar: true,
+        hit: true,
+      })
+    },
+  )
+})
+
+/**
  * **Back puts the view where the address it goes back to says**, at a
  * desktop width, where `<main>` scrolls and the browser keeps no scroll of
  * its own for it, and at a phone's, where the document scrolls. To the
  * page's own address, with no fragment: the page's top, the contents in
- * view, focus left where the link put it. To another card's fragment: that
- * card, landed as following its link lands it, focus on its heading.
+ * view, focus left where the link put it. To another licence's fragment:
+ * that licence, landed as following its link lands it, focus on its
+ * heading.
  */
 describe('the licence page’s contents, and Back', () => {
   it.each([1280, 390])(
-    'at %i px, Back from a card to the page’s own address puts the page’s top in view',
+    'at %i px, Back from a licence to the page’s own address puts the page’s top in view',
     async (width) => {
       const host = await licenceInShell(width)
       await follow(host, '#zen-kaku-gothic-new')
@@ -1341,15 +1430,15 @@ describe('the licence page’s contents, and Back', () => {
   )
 
   it.each([1280, 390])(
-    'at %i px, Back from one card to another lands on that card, focus on its heading',
+    'at %i px, Back from one licence to another lands on that licence, focus on its heading',
     async (width) => {
       const host = await licenceInShell(width)
       await follow(host, '#shippori-mincho-b1')
       await follow(host, '#zen-kaku-gothic-new')
       await back()
       const heading = need(host, '#shippori-mincho-b1')
-      const card = heading.closest('.about-card')
-      if (!card) throw new Error('no card')
+      const section = heading.closest('.settings-section')
+      if (!section) throw new Error('no section')
       expect({
         fragment: need(host, '[data-fragment]').dataset.fragment,
         focus: focused(),
@@ -1357,12 +1446,12 @@ describe('the licence page’s contents, and Back', () => {
           heading.getBoundingClientRect().top -
             Number.parseFloat(getComputedStyle(heading).scrollMarginTop),
         ),
-        card: card.getBoundingClientRect().top >= viewOf(host).top,
+        section: section.getBoundingClientRect().top >= viewOf(host).top,
       }).toEqual({
         fragment: '#shippori-mincho-b1',
         focus: 'Shippori Mincho B1',
         heading: 0,
-        card: true,
+        section: true,
       })
     },
   )
@@ -1372,7 +1461,7 @@ describe('the licence page’s contents, and Back', () => {
   // history moved. The reader has scrolled on into the GPL's text first,
   // and focus is moved off the heading, so a landing has to put it back.
   it.each([1280, 390])(
-    'at %i px, Back two entries from one card’s fragment to the same fragment lands on that card again',
+    'at %i px, Back two entries from one licence’s fragment to the same fragment lands on that licence again',
     async (width) => {
       const host = await licenceInShell(width)
       await follow(host, '#taiyaku')
@@ -1381,7 +1470,7 @@ describe('the licence page’s contents, and Back', () => {
       const heading = need(host, '#taiyaku')
       act(() => {
         need(host, '.back a').focus({ preventScroll: true })
-        heading.closest('.about-card')?.scrollIntoView({ block: 'end' })
+        heading.closest('.settings-section')?.scrollIntoView({ block: 'end' })
       })
       expect({ focus: focused(), heading: inView(host, heading) }).toEqual({
         focus: '‹ About',
@@ -1405,10 +1494,10 @@ describe('the licence page’s contents, and Back', () => {
 
   // Under React's own scheduler rather than `act`, which draws every update
   // it holds at once: the page's count of the history's moves is never drawn
-  // beside the location the history has left, so Back lands on the card it
-  // goes to and never first on the card it leaves. Focus is moved off that
-  // card's heading first, so a landing on it would be heard.
-  it('at 1280 px, Back under React’s own scheduler lands only on the card it goes to', async () => {
+  // beside the location the history has left, so Back lands on the licence
+  // it goes to and never first on the licence it leaves. Focus is moved off
+  // that licence's heading first, so a landing on it would be heard.
+  it('at 1280 px, Back under React’s own scheduler lands only on the licence it goes to', async () => {
     const host = await licenceInShell(1280)
     await follow(host, '#shippori-mincho-b1')
     await follow(host, '#zen-kaku-gothic-new')
@@ -1432,4 +1521,168 @@ describe('the licence page’s contents, and Back', () => {
     }
     expect(landed).toEqual(['shippori-mincho-b1'])
   })
+})
+
+/**
+ * The sidebar's wordmark is the way to `/`, as its Libraries heading is
+ * (the user's ruling of 2026-10-26): a link named for both, drawn at rest
+ * as the plain wordmark it was, with the sidebar links' ring and hover.
+ * Login's wordmark stays a heading's words (`Login.test.tsx`).
+ */
+describe('the sidebar’s wordmark', () => {
+  /** The column's wordmark, and the link it is drawn in. */
+  const wordmarkOf = (host: HTMLElement) => {
+    const mark = need(host, '#library-menu .wordmark')
+    const link = mark.closest('a')
+    if (!link) throw new Error('the sidebar’s wordmark is no link')
+    return { mark, link, name: need(mark, '.wordmark-name') }
+  }
+
+  /** The drawer at a phone's width, opened and past its slide. */
+  async function openDrawer(host: HTMLElement) {
+    await clickWithMouse(need(host, 'button.menu-button'))
+    const column = need(host, '#library-menu')
+    await act(async () => {
+      await Promise.all(column.getAnimations().map((a) => a.finished))
+    })
+  }
+
+  it('is a link to /, where the Libraries heading goes, named “taiyaku, Libraries”', async () => {
+    const host = await shellAt('/config/rules', 1440, true)
+    const { link } = wordmarkOf(host)
+    expect(link.getAttribute('href')).toBe('/')
+    expect(link.getAttribute('href')).toBe(
+      need(host, '.sidebar-heading a').getAttribute('href'),
+    )
+    expect(
+      page
+        .getByRole('link', { name: 'taiyaku, Libraries', exact: true })
+        .elements(),
+    ).toEqual([link])
+  })
+
+  it('goes to / on a real press', async () => {
+    const host = await shellAt('/config/rules', 1440, true)
+    const heading = need(host, '.sidebar-heading a')
+    expect(heading.getAttribute('aria-current')).toBeNull()
+    await clickWithMouse(wordmarkOf(host).link)
+    expect(heading.getAttribute('aria-current')).toBe('page')
+  })
+
+  it('is drawn at rest as the plain wordmark, and takes the sidebar links’ hover and focus ring', async () => {
+    const host = await shellAt('/config/rules', 1440, true)
+    const { link, name } = wordmarkOf(host)
+    const library = need(host, '.sidebar-libraries a')
+    const column = need(host, '#library-menu')
+    expect(getComputedStyle(link).color).toBe(getComputedStyle(column).color)
+    expect(
+      [link, name].map((el) => getComputedStyle(el).textDecorationLine),
+    ).toEqual(['none', 'none'])
+
+    const hovered = async (el: Element, drawn: Element) => {
+      const box = el.getBoundingClientRect()
+      await mouse.moveTo(box.left + box.width / 2, box.top + box.height / 2)
+      return getComputedStyle(drawn).textDecorationLine
+    }
+    expect(await hovered(library, library)).toBe('underline')
+    expect(await hovered(link, name)).toBe('underline')
+
+    // Reached by Tab, so each is `:focus-visible` as a person's Tab makes it.
+    const ring = async (el: Element) => {
+      act(() => {
+        need(host, '.skip-link').focus()
+      })
+      for (let i = 0; i < 8 && document.activeElement !== el; i++) {
+        await userEvent.tab()
+      }
+      expect(document.activeElement).toBe(el)
+      const style = getComputedStyle(el)
+      return [
+        style.outlineStyle,
+        style.outlineWidth,
+        style.outlineColor,
+        style.outlineOffset,
+      ]
+    }
+    const libraryRing = await ring(library)
+    expect(libraryRing[0]).toBe('solid')
+    expect(await ring(link)).toEqual(libraryRing)
+  })
+
+  /**
+   * A finger's 44 px with a coarse pointer, as every link in the column
+   * is, though the target grows and not the box (`shell.css`): drawn at
+   * 44, the link would push the column's links down under it. The target
+   * covers none of them, nor Close beside it in the drawer.
+   */
+  it.each([1440, 390])(
+    'is a finger’s 44 px with a coarse pointer, drawn where it stood and over no other control, at %i px',
+    async (width) => {
+      onTestFinished(coarseRulesOn())
+      const host = await shellAt('/config/rules', width, true)
+      if (width < 900) await openDrawer(host)
+      await document.fonts.ready
+      const { mark, link } = wordmarkOf(host)
+      const target = fingerArea(link)
+      expect(pressArea(link)).toEqual(near(target))
+      expect(link.getBoundingClientRect().toJSON()).toEqual(
+        mark.getBoundingClientRect().toJSON(),
+      )
+      expect(need(host, 'nav.sidebar').getBoundingClientRect().top).toBe(
+        link.getBoundingClientRect().bottom,
+      )
+      const others = [
+        ...need(host, '#library-menu').querySelectorAll('a[href], button'),
+      ].filter((other) => other !== link && other.checkVisibility())
+      expect(others.length).toBeGreaterThan(1)
+      expect(
+        others
+          .filter(
+            (other) =>
+              overlapOf(target, areaOf(other.getBoundingClientRect())) > 0,
+          )
+          .map((other) => other.outerHTML.slice(0, 60)),
+      ).toEqual([])
+    },
+  )
+
+  /**
+   * Opening the drawer gives focus to the Libraries heading's link, the
+   * first of the navigation's, and not to the wordmark's above it, which
+   * leads to the same place: Close, beside the wordmark, is one Shift+Tab
+   * back (spec 2026-09-17 §7.1), and the wordmark one more.
+   */
+  it('gives focus, as the drawer opens, to the Libraries heading’s link, Close one Shift+Tab before it and the wordmark’s link one more', async () => {
+    const host = await shellAt('/config/rules', 390, true)
+    await openDrawer(host)
+    expect(document.activeElement).toBe(
+      page.getByRole('link', { name: 'Libraries', exact: true }).element(),
+    )
+    await userEvent.tab({ shift: true })
+    expect(document.activeElement).toBe(need(host, 'button.menu-close'))
+    await userEvent.tab({ shift: true })
+    expect(document.activeElement).toBe(wordmarkOf(host).link)
+  })
+
+  it.each([1440, 390])(
+    'stands where the plain wordmark stood, its link as big as the wordmark, at %i px',
+    async (width) => {
+      const host = await shellAt('/config/rules', width, true)
+      if (width < 900) await openDrawer(host)
+      const { mark, link } = wordmarkOf(host)
+      const column = need(host, '#library-menu').getBoundingClientRect()
+      const seal = need(mark, '.seal').getBoundingClientRect()
+      const inset = lengthOf(host, '--space-4')
+      expect([seal.left - column.left, seal.top - column.top]).toEqual([
+        inset,
+        inset,
+      ])
+      expect(link.getBoundingClientRect().toJSON()).toEqual(
+        mark.getBoundingClientRect().toJSON(),
+      )
+      expect(need(host, 'nav.sidebar').getBoundingClientRect().top).toBe(
+        link.getBoundingClientRect().bottom,
+      )
+    },
+  )
 })

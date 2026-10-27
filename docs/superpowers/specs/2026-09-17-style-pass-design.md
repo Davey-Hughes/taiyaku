@@ -490,7 +490,8 @@ naming the sidebar column. The search icon is a link to `/search` labelled
 *taiyaku* — becomes one `Wordmark` component. It was `Login.tsx`'s markup and
 inline style objects before ②; the sign-in screen keeps its `<h2>` around the
 component, the phone bar wraps it in its home link, and the sidebar draws it
-at its top, unlinked, with the Library link just below.
+at its top as a link to `/`, named "taiyaku, Libraries", with the Libraries
+link just below.
 
 **The drawer**, below 900 px, is the sidebar column, sliding in from the
 left at `min(20rem, 85vw)` over a scrim. While it is open:
@@ -498,7 +499,7 @@ left at `min(20rem, 85vw)` over a scrim. While it is open:
 1. the column has `role="dialog"`, `aria-modal="true"` and the label "Menu";
 2. the phone bar and `<main>` carry `inert`;
 3. the document does not scroll;
-4. focus moves to the column's first link.
+4. focus moves to the Libraries heading's link, the navigation's first.
 
 It closes on Escape, on a tap on the scrim, on its own Close button, on
 any navigation, and when the viewport widens to 900 px or more (a
@@ -511,10 +512,10 @@ below 900 px only — was added on 2026-09-18 after the whole-branch review
 found the modal had no way out inside it: the scrim sits outside the
 `aria-modal` region and ☰ is inert, so under VoiceOver following a link
 could have been the only exit. It is what the W3C's dialog guidance asks
-for. Focus still opens on the first link, so the button is one Shift+Tab
-away rather than the first thing announced. Closed, the column is
-`visibility: hidden` as well as off-screen, so neither Tab nor a screen
-reader reaches it. The slide takes 200 ms, and none under
+for. Focus still opens on the Libraries heading's link, so the button is
+one Shift+Tab away rather than the first thing announced. Closed, the
+column is `visibility: hidden` as well as off-screen, so neither Tab nor a
+screen reader reaches it. The slide takes 200 ms, and none under
 `prefers-reduced-motion`.
 
 **Below 900 px the document scrolls, not `<main>`.** At and above it,
@@ -629,8 +630,8 @@ On top of §5's list for every PR:
   `aria-controls` names the column; while open the column has
   `role="dialog"` and `aria-modal`, and the bar and `<main>` are `inert`;
   Escape, a scrim tap, the Close button, a navigation and a stubbed
-  media-query change each close it; focus goes to the first link on open
-  and back to ☰ on close.
+  media-query change each close it; focus goes to the Libraries heading's
+  link on open and back to ☰ on close.
   The continue card's cover `src` is `workCover(slug, opens)`, its
   "Vol. N" shows, and an unreadable one has no link. The grid's count reads
   "42 volumes" and "1 volume". The table sits in its scroll box, and only

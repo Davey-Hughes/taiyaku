@@ -282,7 +282,8 @@ mistaken for "this version does not say".
 
 **The rule editor is built too**, at `/config/rules` — the screen the whole
 preview mechanism exists for. An ordered
-list on the left, the rule being edited and its preview on the right. Nothing
+list on the left and the rule being edited beside it, with the preview beneath
+both; on a narrow screen the list comes first and the rule under it. Nothing
 is written until Save, and the button says what saving will do — *apply to 71
 works* — from a preview that is never stale, because the preview re-runs on
 every gesture that changes the answer and on none that do not: a field commits
@@ -299,22 +300,22 @@ it says which proposal that reopens before it does anything.
 Users is a table of the accounts — Name, Role, Libraries, Last seen — where a
 row opens that account's page, at its name (`/config/users/<name>`) and beside
 the table on a wide screen, and an account is made at `/config/new-account`,
-which opens beside the table on a wide screen too, from a name, a password and a
-role. An account's page holds its role, whether it may download, stream and
-write ComicInfo.xml into archives, which libraries it may see — *Every library,
-including any added later*, or *Only these* with a tick per library — and its
-open sessions and its API keys, each revocable one at a time for the device that
-was lost. The account this browser is signed in as is marked, and so is the
-session in front of you, so revoking one is not a guess. The two things that
-would lock a library out of its own administration are refused by the server,
-and the page says why beside each control a rule holds: the last administrator
-who can log in can be neither removed nor demoted, and nobody may demote
-themselves. Resetting
-somebody's password ends every session they have and leaves their API keys
-alone; resetting your own is refused here and belongs to your account screen at
-`/account`, which the refusal links to. Removing an account states five counts
-and the name first, takes no work, edition or member with it, and goes back to
-the table, which says the account was removed.
+which opens beside the table on a wide screen too, from a name, a password typed
+twice and a role. An account's page holds its role, whether it may download,
+stream and write ComicInfo.xml into archives, which libraries it may see —
+*Every library, including any added later*, or *Only these* with a tick per
+library — and its open sessions and its API keys, each revocable one at a time
+for the device that was lost. The account this browser is signed in as is
+marked, and so is the session in front of you, so revoking one is not a guess.
+The two things that would lock a library out of its own administration are
+refused by the server, and the page says why beside each control a rule holds:
+the last administrator who can log in can be neither removed nor demoted, and
+nobody may demote themselves. Resetting somebody's password ends every session
+they have and leaves their API keys alone; resetting your own is refused here
+and belongs to your account screen at `/account`, which the refusal links to.
+Removing an account states five counts and the name first, takes no work,
+edition or member with it, and goes back to the table, which says the account
+was removed.
 
 The backup tab takes one now, lists what exists with a download link each, and
 says the four things a button cannot: restore is out of band, a backup is the
@@ -322,36 +323,35 @@ whole database — password hashes included — a sidecar export is not a backup
 and the schedule is the cron entry above rather than anything inside the
 server.
 
-To read in the browser, build the WebAssembly binding first, then run the reader
-against `serve --db`. The browser opens on a **library** now, not a single work —
-a grid of series with a search bar and a continue strip above it, and
-`react-router` resolving the routes between the grid, a series page and the
+To read in the browser, build the WebAssembly binding first, then run the
+reader against `serve --db`. The browser opens on a **library** now, not a
+single work — a grid of series with a search bar and a continue strip above it,
+and `react-router` resolving the routes between the grid, a series page and the
 reader itself, besides the settings area above, the proposals inbox and the
-account screen. A search runs over the library the page shows, every library
-on `/`, and replaces the grid with its hits while the box holds a query; an
-old `/search?q=` link lands there with its query. The sidebar lists the
-libraries under a **Libraries** heading that leads to all of them, and keeps
-the theme and **More** at its foot: Proposals, Configuration and Account for
-an administrator, and for anyone else the account screen itself. Under More
-is the build's label, its short commit or "unknown build", a link for every
-account to `/about`. That page shows the commit (linked into the repository
-when the build has one), the source link, the OPDS catalog's
-address and each format taiyaku writes, with its version and a line saying
-what it is, and links on to
-`/about/licence`, which gives taiyaku's licence and the fonts', each above
-its full text, under a list of contents linking to each. A page's
-**View** button holds the browse preferences that act there — layout, edition
-selector, panel and density on a series page, the continue strip and density
-on the library. The reader's own chrome has a `Library` button for the way
-back out. The binding is
-generated and gitignored, but install order does
-not decide whether `taiyaku-wasm` resolves: `taiyaku-wasm` is a `link:` symlink,
-and pnpm creates it whether or not `pkg/` exists yet, dangling until it does. The
-symlink is live — it reads through to whatever `pkg/` holds at the moment
-something follows it, not to whatever was there when it was created. Build first
-anyway, because `pnpm run dev` and `pnpm run build` follow that symlink as soon as
-they start: `pkg/` needs to hold the real package by then, not by the time
-`pnpm install` ran — see `web/README.md`, "The WASM dependency":
+account screen. A search runs over the library the page shows, every library on
+`/`, and replaces the grid with its hits while the box holds a query; an old
+`/search?q=` link lands there with its query. The sidebar lists the libraries
+under a **Libraries** heading that leads to all of them, as the wordmark above
+it does too, and keeps the theme and **More** at its foot: Proposals,
+Configuration and Account for an administrator, and for anyone else the account
+screen itself. Under More is the build's label, its short commit or "unknown
+build", a link for every account to `/about`. That page shows the commit
+(linked into the repository when the build has one), the source link, the OPDS
+catalog's address and each format taiyaku writes, with its version and a line
+saying what it is, and links on to `/about/licence`, which gives taiyaku's
+licence and the fonts', each above its full text, under a list of contents
+linking to each. A page's **View** button holds the browse preferences that act
+there — layout, edition selector, panel and density on a series page, the
+continue strip and density on the library. The reader's own chrome has a
+`Library` button for the way back out. The binding is generated and gitignored,
+but install order does not decide whether `taiyaku-wasm` resolves:
+`taiyaku-wasm` is a `link:` symlink, and pnpm creates it whether or not `pkg/`
+exists yet, dangling until it does. The symlink is live — it reads through to
+whatever `pkg/` holds at the moment something follows it, not to whatever was
+there when it was created. Build first anyway, because `pnpm run dev` and `pnpm
+run build` follow that symlink as soon as they start: `pkg/` needs to hold the
+real package by then, not by the time `pnpm install` ran — see `web/README.md`,
+"The WASM dependency":
 
 ```sh
 ./scripts/build-wasm.sh          # generates crates/taiyaku-wasm/pkg

@@ -202,12 +202,13 @@ export function Shell({ children }: { children: React.ReactNode }) {
   const wasOpen = useRef(false)
   const location = useLocation()
 
-  // Focus follows the drawer: to its first link on opening — not the Close
-  // button above it, which is one Shift+Tab away — back to ☰ on closing, and
-  // only on a close, so the first render moves nothing.
+  // Focus follows the drawer: to the navigation's first link on opening,
+  // the Libraries heading's, with Close one Shift+Tab back and the wordmark,
+  // which leads to the same place, one more; back to ☰ on closing, and only
+  // on a close, so the first render moves nothing.
   useEffect(() => {
     if (menuOpen) {
-      column.current?.querySelector<HTMLElement>('a[href]')?.focus()
+      column.current?.querySelector<HTMLElement>('nav a[href]')?.focus()
     } else if (wasOpen.current) {
       menuButton.current?.focus()
     }
@@ -311,7 +312,8 @@ export function Shell({ children }: { children: React.ReactNode }) {
                       <path d="M4 7h16M4 12h16M4 17h16" />
                     </svg>
                   </button>
-                  <Link to="/" className="home">
+                  {/* Named for where it goes, as the column's wordmark is. */}
+                  <Link to="/" className="home" aria-label="taiyaku, Libraries">
                     <Wordmark />
                   </Link>
                   {/* Search is the Library view's bar: this goes there, keeping
@@ -343,7 +345,15 @@ export function Shell({ children }: { children: React.ReactNode }) {
                   className="sidebar-column"
                   {...(menuOpen ? AS_DIALOG : {})}
                 >
-                  <Wordmark />
+                  {/* The way to `/`, as the Libraries heading is (the
+                      user's ruling of 2026-10-26), named for both. */}
+                  <Link
+                    to="/"
+                    className="wordmark-home"
+                    aria-label="taiyaku, Libraries"
+                  >
+                    <Wordmark />
+                  </Link>
                   <button
                     type="button"
                     className="menu-close"

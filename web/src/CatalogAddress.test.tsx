@@ -64,8 +64,8 @@ function region(host: HTMLElement): HTMLElement {
  */
 function shownWord(host: HTMLElement): string {
   const button = copyButton(host)
-  const words = button.querySelector<HTMLElement>('.catalog-address-words')
-  const results = button.querySelector<HTMLElement>('.catalog-address-results')
+  const words = button.querySelector<HTMLElement>('.copy-words')
+  const results = button.querySelector<HTMLElement>('.copy-results')
   if (!words || !results) return button.textContent
   switch (words.dataset.shows) {
     case undefined:

@@ -28,7 +28,7 @@
  * names (a field reorder silently comparing unequal objects as equal) is a
  * property of `JSON.stringify` itself, not of who controls the type.
  *
- * **Save is disabled while a preview is in flight, not only while saving.**
+ * **Save is held while a preview is in flight, not only while saving.**
  * The comparison above means something only against a preview that has
  * landed: for as long as `busy` is true, `predicted.current` still holds the
  * *previous* preview's impact. Clicking Save inside that window sends the
@@ -49,7 +49,7 @@
  * counter for the same reason.
  *
  * **A successful save re-previews the list it just saved, and Save stays
- * disabled until that lands.** Whole-branch review, I1. `save` does not
+ * held until that lands.** `save` does not
  * touch `preview`, so without this the button kept stating the *pre-save*
  * `works_rehomed` after the library had already been re-homed to match it —
  * and a second click sent an already-derived library through `apply` again,
@@ -102,7 +102,7 @@
  * **Both writers refuse rather than queue, in both directions** — spec §2.1
  * and O97's §1. Each writes the rule table, so by the time a queued one could
  * run the other's write has already happened. **Import needs two guards** for
- * the drag's reason: the button's `disabled` lands on a render, and the
+ * the drag's reason: the button's hold lands on a render, and the
  * hidden file input delivers whatever the button says, because a picker
  * opened before the write started is still open. **Save's second guard is now
  * defence rather than cover**, and O101 is why: the import gate used to be
@@ -123,12 +123,12 @@
  * function the reasoning was written for. A *failed* save keeps the edit and
  * puts its reason in `heldNotice` rather than `failure` — spec §5.1 — and a
  * *failed* import clears the gate on **all three** of its failure shapes,
- * without which one bad file would disable both writers for the rest of the
+ * without which one bad file would hold both writers for the rest of the
  * session. They are not one, and they are caught in **two** places: the
  * request's own rejection in `sendImport`'s `.catch`, and the other two in
  * `beginImport`'s. The **read**'s rejection exists only because the gate is
- * now taken before the read. And `importRules` is not `async` — it evaluates
- * `JSON.parse(doc)` as an argument, so a document that is not JSON throws
+ * taken before the read. And `importRules` is not `async` — it parses
+ * the document as an argument, so a document that is not JSON throws
  * *synchronously*, out of `sendImport` before its own chain is built; what
  * makes that a rejected promise rather than an escaped throw is that
  * `sendImport` is called inside a `.then`, so it lands in `beginImport`'s
@@ -140,7 +140,7 @@
  * mid-save left the follow-up preview's `rows` scoped to the rule that *was*
  * open while the form showed the new one. Nothing can change `selected`
  * during a save now — `RuleList` is frozen and `PreviewTabs`' two options
- * have been `disabled={busy || frozen}` since O95 — so a `selectedRef` would
+ * have been held on `busy || frozen` since O95 — so a `selectedRef` would
  * hide the invariant rather than state it. A new surface that sets `selected`
  * without a guard reopens the defect without touching `save`.
  */
@@ -148,10 +148,13 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ChangeEvent } from 'react'
 import { listRoots, type Root } from './config'
 import { listProposals, type Proposal } from './curation'
+import { HeldButton } from './HeldButton'
+import { useDrawnWait } from './hooks'
 import { PreviewTabs } from './PreviewTabs'
 import { RuleForm } from './RuleForm'
 import { RuleList } from './RuleList'
 import { DeriveSection } from './ScanReport'
+import { PageHeader, Section } from './settingsLayout'
 import {
   blankRule,
   type Impact,
@@ -166,7 +169,8 @@ import {
   saveRules,
   toDocument,
 } from './rules'
-import { messageOf } from './message'
+import { reasonOf } from './message'
+import { WaitWords } from './WaitWords'
 
 /**
  * Field-by-field, matching `RuleForm`'s own dirty-check comment. `Impact` is
@@ -268,6 +272,30 @@ export function RuleEditor() {
   /** Any write at all — what every frozen surface reads. */
   const frozen = writing !== undefined
   /**
+   * Save is held: a write is out, a preview is out (see this file's own top
+   * comment), or no preview stands to compare the save against. `save`
+   * turns a press down on this from the send; the button is drawn held
+   * from `saveHeldDrawn`.
+   */
+  const saveHeld = frozen || busy || preview === undefined
+  /**
+   * A write or a preview, once it has lasted long enough to be drawn. One
+   * wait and not two, because a save's answer starts the preview of what it
+   * saved in the same render: Save stays drawn held from the one to the
+   * other rather than flashing free between them.
+   */
+  const waitDrawn = useDrawnWait(frozen || busy)
+  /**
+   * No preview to save against is not a wait, so it is drawn held at once:
+   * on the first draw, before the first preview has landed, and after a
+   * preview has failed.
+   */
+  const saveHeldDrawn = waitDrawn || preview === undefined
+  /** A write, once it has lasted: Import's held look, and each one's words. */
+  const frozenDrawn = useDrawnWait(frozen)
+  /** A preview, once it has lasted: "Previewing…". */
+  const previewingDrawn = useDrawnWait(busy)
+  /**
    * A `RuleForm` commit that arrived while a save was in flight — O96.
    *
    * The list is frozen for the duration (`RuleList`'s `frozen` prop), so
@@ -301,13 +329,13 @@ export function RuleEditor() {
       .catch((err: unknown) => {
         if (seq !== latest.current) return
         setBusy(false)
-        setFailure(messageOf(err))
+        setFailure(`The rules were not previewed: ${reasonOf(err)}`)
         // I2: a failed preview describes nothing — leaving the last
-        // *successful* preview in place would keep Save enabled and stating
+        // *successful* preview in place would leave Save free and stating
         // a number computed for a rule list that is no longer the one on
-        // screen. `preview === undefined` is what the Save button's own
-        // `disabled` already checks, so invalidating both here is enough to
-        // disable it without a second condition to keep in sync.
+        // screen. `preview === undefined` is what `saveHeld` already reads,
+        // so invalidating both here is enough to hold Save without a second
+        // condition to keep in sync.
         setPreview(undefined)
         predicted.current = undefined
       })
@@ -322,7 +350,9 @@ export function RuleEditor() {
         setFailure(undefined)
         runPreview(listed.rules, undefined)
       })
-      .catch((err: unknown) => setFailure(messageOf(err)))
+      .catch((err: unknown) =>
+        setFailure(`The rules were not loaded: ${reasonOf(err)}`),
+      )
   }, [runPreview])
 
   /** Every editor gesture lands here: set the rules, then preview once. */
@@ -342,14 +372,19 @@ export function RuleEditor() {
   }
 
   const save = () => {
+    // A press on a held Save does nothing and says nothing, whether or not
+    // the hold is drawn yet: the button is `aria-disabled`, which keeps
+    // focus on it (`HeldButton`), so the press reaches this handler, and
+    // the hold is drawn only once the wait has lasted.
+    if (saveHeld) return
     if (writer.current !== undefined) {
-      // **Unreachable through the UI since O101, and kept** — see this file's
-      // own top comment. `beginImport` takes the gate inside the discrete
-      // change event, so `frozen` is already true by the time any click can
-      // be dispatched and React skips a click handler whose props say
-      // `disabled`. What is stated here is the invariant, not a path: a
-      // writer that took the gate outside a discrete event would reopen the
-      // window this closed, and would reopen it here rather than in `save`.
+      // **Two presses in one batch, before the render that holds Save.**
+      // `beginImport` takes the gate inside the discrete change event, so
+      // `frozen` and `saveHeld` are true by the time a click can be
+      // dispatched, and the import case below is not reachable through the
+      // UI (O101). What is stated is the invariant, not a path: a writer that
+      // took the gate outside a discrete event would reopen that window, and
+      // would reopen it here rather than in `save`.
       //
       // Only the import case says anything: a second Save during a save is the
       // same gesture twice and the person has nothing to act on, which is the
@@ -410,9 +445,9 @@ export function RuleEditor() {
         // I1: the button's number has to describe *this* saved list, not the
         // one a save ago — so a fresh preview runs for it here, through the
         // same seq-guarded `runPreview` every other gesture uses, and Save
-        // stays disabled (`busy`) until it lands. `selected` is not stale:
+        // stays held (`busy`) until it lands. `selected` is not stale:
         // O96 froze `RuleList`, and `PreviewTabs`' two options have been
-        // `disabled={busy || frozen}` since O95, so no surface can change it
+        // held on `busy || frozen` since O95, so no surface can change it
         // while a save is in flight. That is a property of *every* such
         // surface being guarded, not of this line — a new unguarded one
         // reopens the defect without touching `save`.
@@ -430,7 +465,7 @@ export function RuleEditor() {
         held.current = undefined
         if (pending === undefined) {
           // Unchanged: nothing follows this, so `failure` survives to be read.
-          setFailure(messageOf(err))
+          setFailure(`The rules were not saved: ${reasonOf(err)}`)
           return
         }
         // O96, spec §5.1: the save wrote nothing, so the list is still the
@@ -450,9 +485,9 @@ export function RuleEditor() {
         // the very call meant to apply the edit it describes. Both land in
         // one React batch and the last write wins.
         setHeldNotice(
-          `The save failed: ${messageOf(err)}. Your edit to rule ${pending.index + 1} ` +
-            'arrived while it was running — it is applied to the list on screen and is ' +
-            'unsaved.',
+          `The rules were not saved: ${reasonOf(err)}. Your edit to rule ` +
+            `${pending.index + 1} arrived while the save was running — it is applied ` +
+            'to the list on screen and is unsaved.',
         )
       })
   }
@@ -479,7 +514,7 @@ export function RuleEditor() {
     // it resolves.
     setImportNotice(undefined)
     // O96, and **the second of two guards**, for the reason the drag has two:
-    // the Import button is `disabled` while a write is in flight, but a file
+    // the Import button is held while a write is in flight, but a file
     // picker opened *before* that write started is still open and can still
     // deliver a file during it. This refuses rather than holds, and that is
     // forced rather than chosen — `POST .../rules/import` **writes the rule
@@ -528,7 +563,7 @@ export function RuleEditor() {
       // both writers dead for the session with a message and no way back.
       .catch((err: unknown) => {
         release()
-        setFailure(messageOf(err))
+        setFailure(`The rules were not imported: ${reasonOf(err)}`)
       })
   }
 
@@ -543,7 +578,7 @@ export function RuleEditor() {
   const sendImport = (text: string, release: () => void) =>
     // **`importRules` throws synchronously and no `.catch` of its own can see
     // it.** It is not `async`: its body is
-    // `expectBody(sendJson(..., JSON.parse(doc)))`, and `JSON.parse` runs as
+    // `expectBody(sendJson(..., documentOf(doc)))`, and the parse runs as
     // an *argument* — so a document that is not valid JSON throws out of the
     // call itself, before any promise exists for `.then`/`.catch` to attach
     // to. What catches it is that this call is made **inside** a `.then`,
@@ -585,13 +620,13 @@ export function RuleEditor() {
       .catch((err: unknown) => {
         // **The gate is cleared here too, and this is not symmetry for its
         // own sake.** A failed import that kept `writer.current` set would
-        // disable Save *and* Import for the rest of the session, with the
+        // hold Save *and* Import for the rest of the session, with the
         // screen showing only the server's sentence about the document — a
         // refused import is the ordinary case (`rules/import` rejects a
         // malformed document), so the leak would be reached by the first
         // person who picked the wrong file.
         release()
-        setFailure(messageOf(err))
+        setFailure(`The rules were not imported: ${reasonOf(err)}`)
       })
 
   const exportDoc = () => {
@@ -603,11 +638,10 @@ export function RuleEditor() {
       // checking against the current value fires again on the very next
       // render it causes — for as long as a rule names a root this library
       // does not have, which is exactly as long as this catch keeps being
-      // reached. React's own render-phase-update budget is not infinite: a
-      // bare `setFailure(messageOf(err))` here crashed the whole screen with
-      // "Too many re-renders" rather than showing the message, confirmed by
-      // a minimal reproduction of the same pattern outside this component.
-      const reason = messageOf(err)
+      // reached. React stops a render that keeps updating its own state with
+      // "Too many re-renders", which takes the whole screen down instead of
+      // saying why the rules cannot be exported.
+      const reason = `The rules cannot be exported: ${reasonOf(err)}`
       if (reason !== failure) setFailure(reason)
       return ''
     }
@@ -615,7 +649,7 @@ export function RuleEditor() {
 
   return (
     <section className="rule-editor">
-      <h2>Rules</h2>
+      <PageHeader title="Rules" />
       {failure !== undefined && <p role="alert">{failure}</p>}
       {saveMismatch !== undefined && (
         <p role="alert" className="save-mismatch">
@@ -635,59 +669,61 @@ export function RuleEditor() {
       )}
 
       <div className="editor-panes">
-        <RuleList
-          rules={rules}
-          selected={selected}
-          proposals={proposals}
-          overrideCount={preview?.overrides.length ?? 0}
-          frozen={frozen}
-          onSelect={(index) => {
-            // M1: the design runs a preview on selecting a *different*
-            // rule — `rows` is scoped to `selected`, and changing which is
-            // open is what repopulates it. Re-clicking the one already open
-            // changes nothing a preview could answer differently, so
-            // committing anyway paid another ~281 ms derivation under the
-            // write lock and cleared the "Saved:" line for no reason.
-            if (index !== selected) commit(rules, index)
-          }}
-          onToggle={(index) =>
-            commit(
-              rules.map((rule, i) =>
-                i === index ? { ...rule, enabled: !rule.enabled } : rule,
-              ),
-              selected,
-            )
-          }
-          onReorder={(from, to) => {
-            const next = renumber(moved(rules, from, to))
-            // The selected rule travels with the drag rather than staying at
-            // an index that now holds a different rule.
-            const open =
-              selected === undefined
-                ? undefined
-                : selected === from
-                  ? to
-                  : selected
-            commit(next, open)
-          }}
-          onAdd={() => {
-            const next = renumber([...rules, blankRule(rules.length + 1)])
-            commit(next, next.length - 1)
-          }}
-          onDelete={(index) => {
-            const next = renumber(rules.filter((_, i) => i !== index))
-            commit(
-              next,
-              selected === undefined || selected === index
-                ? undefined
-                : selected > index
-                  ? selected - 1
-                  : selected,
-            )
-          }}
-        />
+        <Section>
+          <RuleList
+            rules={rules}
+            selected={selected}
+            proposals={proposals}
+            overrideCount={preview?.overrides.length ?? 0}
+            frozen={frozen}
+            onSelect={(index) => {
+              // M1: the design runs a preview on selecting a *different*
+              // rule — `rows` is scoped to `selected`, and changing which is
+              // open is what repopulates it. Re-clicking the one already open
+              // changes nothing a preview could answer differently, so
+              // committing anyway paid another ~281 ms derivation under the
+              // write lock and cleared the "Saved:" line for no reason.
+              if (index !== selected) commit(rules, index)
+            }}
+            onToggle={(index) =>
+              commit(
+                rules.map((rule, i) =>
+                  i === index ? { ...rule, enabled: !rule.enabled } : rule,
+                ),
+                selected,
+              )
+            }
+            onReorder={(from, to) => {
+              const next = renumber(moved(rules, from, to))
+              // The selected rule travels with the drag rather than staying at
+              // an index that now holds a different rule.
+              const open =
+                selected === undefined
+                  ? undefined
+                  : selected === from
+                    ? to
+                    : selected
+              commit(next, open)
+            }}
+            onAdd={() => {
+              const next = renumber([...rules, blankRule(rules.length + 1)])
+              commit(next, next.length - 1)
+            }}
+            onDelete={(index) => {
+              const next = renumber(rules.filter((_, i) => i !== index))
+              commit(
+                next,
+                selected === undefined || selected === index
+                  ? undefined
+                  : selected > index
+                    ? selected - 1
+                    : selected,
+              )
+            }}
+          />
+        </Section>
 
-        <div className="editor-right">
+        <Section>
           {selected !== undefined && rules[selected] !== undefined ? (
             <RuleForm
               // Local draft state lives in the form; a new key is what makes
@@ -745,27 +781,40 @@ export function RuleEditor() {
               Pick a rule to edit it. The impact below is for the whole list.
             </p>
           )}
-        </div>
+        </Section>
       </div>
 
-      <PreviewTabs
-        preview={preview}
-        rules={rules}
-        selected={selected}
-        busy={busy}
-        frozen={frozen}
-        onReorder={(from, to) => {
-          const next = renumber(moved(rules, from, to))
-          commit(next, selected === from ? to : selected)
-        }}
-        // The same call `RuleList`'s own `onSelect` makes, guard included:
-        // "Edit rule 4" from an override row is selecting rule 4, so it
-        // costs one derivation, and selecting the rule already open costs
-        // none.
-        onSelectRule={(index) => {
-          if (index !== selected) commit(rules, index)
-        }}
-      />
+      <Section
+        title="Preview"
+        // On the heading's line, where there is room for it, and laid out
+        // unseen until the preview has lasted, so drawing it moves nothing:
+        // above the tabs' panel it would push what the panel shows down a
+        // line and back up.
+        actions={
+          <p className={previewingDrawn ? 'busy' : 'busy wait-unseen'}>
+            Previewing…
+          </p>
+        }
+      >
+        <PreviewTabs
+          preview={preview}
+          rules={rules}
+          selected={selected}
+          busy={busy}
+          frozen={frozen}
+          onReorder={(from, to) => {
+            const next = renumber(moved(rules, from, to))
+            commit(next, selected === from ? to : selected)
+          }}
+          // The same call `RuleList`'s own `onSelect` makes, guard included:
+          // "Edit rule 4" from an override row is selecting rule 4, so it
+          // costs one derivation, and selecting the rule already open costs
+          // none.
+          onSelectRule={(index) => {
+            if (index !== selected) commit(rules, index)
+          }}
+        />
+      </Section>
 
       {saved !== undefined && (
         <p className="saved">
@@ -792,37 +841,53 @@ export function RuleEditor() {
         // glance.
         <details className="save-derive">
           <summary>What this save's re-derive found</summary>
-          <DeriveSection derive={saved.derive} />
+          {/* h3, beside Preview beneath Rules: the save's report sits after
+              the preview's box, not in it, so it is not one of its parts. */}
+          <DeriveSection derive={saved.derive} level={3} />
         </details>
       )}
 
       <div className="editor-actions">
         {/*
-         * Disabled on `busy` too, not only `frozen` — see this file's own
-         * top comment. Without it, a click landing inside the ~300-500 ms a
-         * preview takes sends `rules` against a `predicted.current` that has
+         * Held on `busy` too, not only `frozen` — see this file's own top
+         * comment. Without it, a click landing while a preview is out
+         * sends `rules` against a `predicted.current` that has
          * not caught up yet, and the mismatch draws a warning that blames
-         * the server for a race the client caused.
+         * the server for a race the client caused. Its words and Import's
+         * keep the box of the wider of their two, so drawing a wait moves
+         * nothing beside them.
          */}
-        <button
+        <HeldButton
           type="button"
-          className="save"
-          disabled={frozen || busy || preview === undefined}
+          className="save keeps-wait-width"
+          held={saveHeldDrawn}
           onClick={save}
         >
-          {saving
-            ? 'Saving…'
-            : `Save — apply to ${preview?.impact.works_rehomed ?? 0} works`}
-        </button>
+          <WaitWords
+            drawn={saving && frozenDrawn}
+            words={`Save — apply to ${preview?.impact.works_rehomed ?? 0} works`}
+            wait="Saving…"
+          />
+        </HeldButton>
 
         <div className="import">
-          <button
+          <HeldButton
             type="button"
-            disabled={frozen}
-            onClick={() => fileInput.current?.click()}
+            className="keeps-wait-width"
+            held={frozenDrawn}
+            onClick={() => {
+              // Held from the send: a picker opened now would deliver a
+              // file `beginImport` can only refuse.
+              if (frozen) return
+              fileInput.current?.click()
+            }}
           >
-            {writing === 'import' ? 'Importing…' : 'Import'}
-          </button>
+            <WaitWords
+              drawn={writing === 'import' && frozenDrawn}
+              words="Import"
+              wait="Importing…"
+            />
+          </HeldButton>
           <p>
             Import replaces every rule with the document’s, minting fresh ids,
             which reopens every accepted proposal whose rule it replaces.

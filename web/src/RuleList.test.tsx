@@ -3,7 +3,9 @@ import { describe, expect, it, vi } from 'vitest'
 import type { Proposal } from './curation'
 import { RuleList } from './RuleList'
 import type { Rule } from './rules'
+import { holdOf } from './testing/held'
 import { mount, rerender } from './testing/mount'
+import { holdTheClock, pass, WAIT_DRAWN_AFTER_MS } from './testing/wait'
 
 const rule = (over: Partial<Rule> = {}): Rule => ({
   id: 1,
@@ -378,46 +380,64 @@ describe('RuleList', () => {
   })
 
   /**
-   * The five gestures O96 freezes, read **per element**. A whole-page check
-   * cannot tell "the row is frozen" from "the page rendered nothing".
+   * The five gestures O96 freezes, read **per element**, as how many times a
+   * press on each reached its handler and how each is drawn. A whole-page
+   * check cannot tell "the row is frozen" from "the page rendered nothing".
+   * Each is pressed before the hold is drawn, so it is the control's own
+   * handler that turns the press down, and read once the delay has passed,
+   * when a hold is drawn.
    */
-  const gestures = (host: HTMLElement) => ({
-    draggable: host
-      .querySelector<HTMLElement>('.rule-row')
-      ?.getAttribute('draggable'),
-    toggle: host.querySelector<HTMLInputElement>(
+  const gestures = (mounted: ReturnType<typeof render>) => {
+    const { host } = mounted
+    const toggle = host.querySelector(
       '.rule-row input[type="checkbox"]',
-    )?.disabled,
-    select: host.querySelector<HTMLButtonElement>('.rule-row button.select')
-      ?.disabled,
-    remove: host.querySelector<HTMLButtonElement>('.rule-row button.delete')
-      ?.disabled,
-    add: host.querySelector<HTMLButtonElement>('button.add-rule')?.disabled,
-  })
+    ) as HTMLInputElement
+    const select = host.querySelector(
+      '.rule-row button.select',
+    ) as HTMLButtonElement
+    const remove = host.querySelector(
+      '.rule-row button.delete',
+    ) as HTMLButtonElement
+    const add = host.querySelector('button.add-rule') as HTMLButtonElement
+    act(() => {
+      for (const control of [toggle, select, remove, add]) control.click()
+    })
+    pass(WAIT_DRAWN_AFTER_MS)
+    return {
+      draggable: host
+        .querySelector<HTMLElement>('.rule-row')
+        ?.getAttribute('draggable'),
+      toggle: [mounted.onToggle.mock.calls.length, holdOf(toggle)],
+      select: [mounted.onSelect.mock.calls.length, holdOf(select)],
+      remove: [mounted.onDelete.mock.calls.length, holdOf(remove)],
+      add: [mounted.onAdd.mock.calls.length, holdOf(add)],
+    }
+  }
 
   it('freezes every gesture while a save is in flight, and only while one is — O96', () => {
     // Both halves, because the positive alone passes against a component that
-    // hardcodes `disabled` — which is the mechanical mis-fix this item warns
-    // about, and it would freeze the list permanently.
-    expect(gestures(render({ frozen: true }).host)).toEqual({
+    // holds its controls always — which is the mechanical mis-fix this item
+    // warns about, and it would freeze the list permanently.
+    holdTheClock()
+    expect(gestures(render({ frozen: true }))).toEqual({
       draggable: 'false',
-      toggle: true,
-      select: true,
-      remove: true,
-      add: true,
+      toggle: [0, 'held'],
+      select: [0, 'held'],
+      remove: [0, 'held'],
+      add: [0, 'held'],
     })
-    expect(gestures(render({ frozen: false }).host)).toEqual({
+    expect(gestures(render({ frozen: false }))).toEqual({
       draggable: 'true',
-      toggle: false,
-      select: false,
-      remove: false,
-      add: false,
+      toggle: [1, 'free'],
+      select: [1, 'free'],
+      remove: [1, 'free'],
+      add: [1, 'free'],
     })
   })
 
   it('freezes the confirm dialog’s Delete and reopen too — O96, whole-branch review M2', () => {
     // The dialog can only be open across a save if it was opened before the
-    // save started, because the Delete that opens it is itself disabled — so
+    // save started, because the Delete that opens it is itself held — so
     // the *same* `rules` array is passed to both renders, or `RuleList`'s own
     // M3 effect closes the dialog and this asserts nothing.
     //
@@ -439,6 +459,7 @@ describe('RuleList', () => {
       onAdd: vi.fn(),
       onDelete: vi.fn(),
     }
+    holdTheClock()
     let host: HTMLElement | undefined
     act(() => {
       host = mount(<RuleList {...props} frozen={false} />)
@@ -448,17 +469,22 @@ describe('RuleList', () => {
       host?.querySelectorAll<HTMLElement>('.rule-row button.delete')[1].click()
     })
     expect(host.querySelector('[role="alertdialog"]')).not.toBeNull()
-    expect(
-      host.querySelector<HTMLButtonElement>('button.confirm-delete')?.disabled,
-    ).toBe(false)
+    const confirm = () =>
+      host?.querySelector('button.confirm-delete') as HTMLButtonElement
+    expect(holdOf(confirm())).toBe('free')
 
     act(() => {
       rerender(<RuleList {...props} frozen={true} />)
     })
+    // Pressed before the hold is drawn: its handler turns it down, so it
+    // deletes nothing and the dialog stays open.
+    act(() => {
+      confirm().click()
+    })
+    expect(props.onDelete).not.toHaveBeenCalled()
     expect(host.querySelector('[role="alertdialog"]')).not.toBeNull()
-    expect(
-      host.querySelector<HTMLButtonElement>('button.confirm-delete')?.disabled,
-    ).toBe(true)
+    pass(WAIT_DRAWN_AFTER_MS)
+    expect(holdOf(confirm())).toBe('held')
   })
 
   it('refuses a drop that lands while a save is in flight — O96', () => {

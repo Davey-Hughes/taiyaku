@@ -10,6 +10,7 @@ import { focused } from './testing/focused'
 import { licenceTextsLanded } from './testing/licence'
 import { mount } from './testing/mount'
 import {
+  areaOf,
   coarseRulesOn,
   fingerArea,
   near,
@@ -30,20 +31,20 @@ const overflow = (el: Element | null | undefined) =>
 /** How the texts are laid out, in the browser project because jsdom lays nothing out. */
 describe('Licence’s texts', () => {
   /**
-   * **At a phone's 390 px every text wraps inside its own card**, so nothing
-   * scrolls sideways: not a card's text, not the shell's `<main>`, which
+   * **At a phone's 390 px every text wraps inside its own box**, so nothing
+   * scrolls sideways: not a licence's text, not the shell's `<main>`, which
    * scrolls rather than widening the page, and not the page. A font
    * licence's first line runs its copyright notices and their addresses
-   * together, and every text is written to wider lines than a card has here.
+   * together, and every text is written to wider lines than a box has here.
    */
-  it('wrap inside their cards at 390px, and nothing scrolls sideways', async () => {
+  it('wrap inside their boxes at 390px, and nothing scrolls sideways', async () => {
     await page.viewport(390, 844)
     const host = await settle(inShell(<Licence />))
-    const cards = [...host.querySelectorAll('.about-card')]
+    const sections = [...host.querySelectorAll('.settings-section')]
     expect(
-      cards.map((card) => [
-        card.querySelector('h2')?.textContent,
-        overflow(card.querySelector('pre')),
+      sections.map((section) => [
+        section.querySelector('h2')?.textContent,
+        overflow(section.querySelector('.settings-box > pre')),
       ]),
     ).toEqual([
       ['taiyaku', 0],
@@ -56,11 +57,11 @@ describe('Licence’s texts', () => {
   })
 
   /**
-   * **At a desktop width the cards are About's width**, so the way down to
-   * the licence page and back again keeps one measure, and a text written
-   * to wider lines than that wraps inside its card, as at a phone's width.
-   * About is drawn beside the licence page to be measured against, once its
-   * request has answered, since until then it draws no card.
+   * **At a desktop width the sections are About's width**, so the way down
+   * to the licence page and back again keeps one measure, and a text
+   * written to wider lines than that wraps inside its box, as at a phone's
+   * width. About is drawn beside the licence page to be measured against,
+   * once its request has answered, since until then it draws no section.
    */
   it('are About’s width at a desktop width, wrap inside it, and nothing scrolls sideways', async () => {
     await page.viewport(1280, 800)
@@ -73,15 +74,15 @@ describe('Licence’s texts', () => {
         </>,
       ),
     )
-    const about = host.querySelector('.about:not(.licence) .about-card')
-    if (!about) throw new Error('no About card')
+    const about = host.querySelector('.about:not(.licence) .settings-section')
+    if (!about) throw new Error('no About section')
     const width = about.getBoundingClientRect().width
-    const cards = [...host.querySelectorAll('.licence .about-card')]
+    const sections = [...host.querySelectorAll('.licence .settings-section')]
     expect(
-      cards.map((card) => [
-        card.querySelector('h2')?.textContent,
-        card.getBoundingClientRect().width,
-        overflow(card.querySelector('pre')),
+      sections.map((section) => [
+        section.querySelector('h2')?.textContent,
+        section.getBoundingClientRect().width,
+        overflow(section.querySelector('.settings-box > pre')),
       ]),
     ).toEqual([
       ['taiyaku', width, 0],
@@ -94,7 +95,7 @@ describe('Licence’s texts', () => {
   })
 })
 
-/** The page's contents and the cards they lead to, by fragment and name. */
+/** The page's contents and the licences they lead to, by fragment and name. */
 const CONTENTS = [
   ['#taiyaku', 'taiyaku'],
   ['#shippori-mincho-b1', 'Shippori Mincho B1'],
@@ -128,18 +129,17 @@ async function loadedAt(width: number, fragment = ''): Promise<HTMLElement> {
 }
 
 /**
- * Where the card headed `name` is drawn against the top of `<main>`, which
- * scrolls at this width: its heading's top, less the `scroll-margin-top`
- * that puts it there, and the card's own top, which is in view when it is
- * not above `<main>`'s.
+ * Where the section headed `name` is drawn against the top of `<main>`,
+ * which scrolls at this width: its heading's top, less the
+ * `scroll-margin-top` that puts it there, and the heading's own top, which
+ * is below `<main>`'s when the margin keeps the page's top padding above it.
  */
 function landing(host: HTMLElement, name: string) {
   const main = host.querySelector('main')
-  const heading = [...host.querySelectorAll('.about-card h2')].find(
+  const heading = [...host.querySelectorAll('.settings-section h2')].find(
     (h2) => h2.textContent === name,
   )
-  const card = heading?.closest('.about-card')
-  if (!main || !heading || !card) throw new Error(`no card headed ${name}`)
+  if (!main || !heading) throw new Error(`no section headed ${name}`)
   const top = main.getBoundingClientRect().top
   return {
     heading: Math.round(
@@ -147,9 +147,54 @@ function landing(host: HTMLElement, name: string) {
         top -
         Number.parseFloat(getComputedStyle(heading).scrollMarginTop),
     ),
-    cardInView: card.getBoundingClientRect().top >= top,
+    headingBelowTop: heading.getBoundingClientRect().top > top,
   }
 }
+
+/** Where a licence draws Back to top: its heading's line, or its box's foot. */
+type Place = 'heading' | 'foot'
+
+/** The section headed `name`. */
+function sectionOf(host: HTMLElement, name: string): HTMLElement {
+  const found = [
+    ...host.querySelectorAll<HTMLElement>('.settings-section'),
+  ].find((each) => each.querySelector('h2')?.textContent === name)
+  if (!found) throw new Error(`no section headed "${name}"`)
+  return found
+}
+
+/** The Back to top link at `place` in the section headed `name`. */
+function toTop(host: HTMLElement, name: string, place: Place): HTMLElement {
+  const part = sectionOf(host, name).querySelector(
+    place === 'heading'
+      ? ':scope > .settings-section-head'
+      : ':scope > .settings-box',
+  )
+  const links = [...(part?.querySelectorAll<HTMLElement>('a') ?? [])].filter(
+    (link) => link.textContent?.endsWith('Back to top'),
+  )
+  if (links.length !== 1) {
+    throw new Error(`${links.length} Back to top links at "${name}"'s ${place}`)
+  }
+  return links[0] as HTMLElement
+}
+
+/** Where the content of `section`'s box ends, inside its edge and padding. */
+function contentEnd(section: HTMLElement): number {
+  const box = section.querySelector<HTMLElement>(':scope > .settings-box')
+  if (!box) throw new Error('no box')
+  const style = getComputedStyle(box)
+  return (
+    box.getBoundingClientRect().right -
+    Number.parseFloat(style.borderRightWidth) -
+    Number.parseFloat(style.paddingRight)
+  )
+}
+
+/** Every licence's name, and both places it draws Back to top. */
+const EVERY_TOP = CONTENTS.flatMap(([, name]) =>
+  (['heading', 'foot'] as const).map((place) => [name, place] as const),
+)
 
 describe('Licence’s contents', () => {
   /**
@@ -188,11 +233,11 @@ describe('Licence’s contents', () => {
   )
 
   /**
-   * **A link followed by a real click moves the view to its card and focus
-   * to its heading**, under the router the app runs, which leaves the
-   * fragment in the address. The card lands whole at the top of the view,
-   * its heading where its `scroll-margin-top` puts it. Focus is put on the
-   * way up first, so the click is not the frame's first input.
+   * **A link followed by a real click moves the view to its licence and
+   * focus to its heading**, under the router the app runs, which leaves the
+   * fragment in the address. The heading lands at the top of the view,
+   * below the page's top, where its `scroll-margin-top` puts it. Focus is
+   * put on the way up first, so the click is not the frame's first input.
    */
   it.each(CONTENTS)(
     'followed to %s by a click, puts %s at the top of the view and focus on its heading',
@@ -210,22 +255,227 @@ describe('Licence’s contents', () => {
       })
       await expect.poll(focused).toBe(name)
       expect(location.hash).toBe(fragment)
-      expect(landing(host, name)).toEqual({ heading: 0, cardInView: true })
+      expect(landing(host, name)).toEqual({ heading: 0, headingBelowTop: true })
     },
   )
 
   /**
-   * **A load of the page with a card's fragment lands on that card** once
-   * the texts have drawn it, as following its link does.
+   * **A load of the page with a licence's fragment lands on that licence**
+   * once the texts have drawn it, as following its link does.
    */
   it.each(CONTENTS)(
     'loaded with %s, puts %s at the top of the view and focus on its heading',
     async (fragment, name) => {
       const host = await loadedAt(1280, fragment)
       expect(focused()).toBe(name)
-      expect(landing(host, name)).toEqual({ heading: 0, cardInView: true })
+      expect(landing(host, name)).toEqual({ heading: 0, headingBelowTop: true })
     },
   )
+})
+
+/**
+ * **Back to top, on the heading's line or at the box's foot, pressed by a
+ * click or by Enter, puts the page's top in view and focus on its title**,
+ * from a load that landed on the last licence, far down the page. Both
+ * scrollers are back at their tops and the address keeps no fragment. The
+ * title is drawn landed on as a licence's heading is when a contents link,
+ * pressed the same way, lands on it: with the same ring, or none, whose
+ * look is read off that heading once the link has been followed.
+ */
+describe('Licence’s Back to top', () => {
+  /** The ring `el` is drawn with, as its outline. */
+  const ringOf = (el: Element) => {
+    const style = getComputedStyle(el)
+    return [
+      style.outlineStyle,
+      style.outlineWidth,
+      style.outlineColor,
+      style.outlineOffset,
+    ].join(' ')
+  }
+
+  it.each([
+    ['heading', 'a click'],
+    ['heading', 'Enter'],
+    ['foot', 'a click'],
+    ['foot', 'Enter'],
+  ] as const)(
+    'at the %s, pressed by %s at 1280 px, puts the page’s top in view and focus on its title, with a contents link’s landing ring and no fragment',
+    async (place, way) => {
+      const host = await loadedAt(1280, '#taiyaku-marks')
+      const main = host.querySelector('main')
+      const title = host.querySelector('h1')
+      if (!main || !title) throw new Error('no main or no title')
+      const press = async (link: HTMLElement) => {
+        if (way === 'a click') {
+          await act(async () => {
+            await userEvent.click(link)
+          })
+        } else {
+          await act(async () => link.focus())
+          await act(async () => {
+            await userEvent.keyboard('{Enter}')
+          })
+        }
+      }
+      // The case's premise: the load landed far down the page, so `<main>`,
+      // which scrolls at this width, is scrolled when the link is pressed.
+      expect(main.scrollTop).toBeGreaterThan(0)
+      await press(toTop(host, 'taiyaku marks', place))
+      const landed = {
+        focus: document.activeElement === title,
+        scrolled: [main.scrollTop, Math.round(scrollY)],
+        fragment: location.hash,
+        ring: ringOf(title),
+      }
+
+      const contents = host.querySelector<HTMLElement>(
+        'nav[aria-label="Contents"] a[href="#taiyaku"]',
+      )
+      if (!contents) throw new Error('no contents link to #taiyaku')
+      await press(contents)
+      await expect.poll(focused).toBe('taiyaku')
+      const heading = document.activeElement as Element
+      const ring = ringOf(heading)
+      // A landing is ringed where the key that made it was the keyboard's,
+      // as the browser draws `:focus-visible`; after a click neither is.
+      expect(getComputedStyle(heading).outlineStyle !== 'none').toBe(
+        way === 'Enter',
+      )
+      expect(landed).toEqual({
+        focus: true,
+        scrolled: [0, 0],
+        fragment: '',
+        ring,
+      })
+    },
+  )
+
+  it('names each link by its words, without the arrow drawn before them', async () => {
+    await page.viewport(1280, 844)
+    await settle(inShell(<Licence />))
+    const links = page.getByRole('link', { name: 'Back to top', exact: true })
+    expect(links.elements()).toHaveLength(8)
+    for (const link of links.elements()) {
+      await expect.element(link).toHaveAccessibleName('Back to top')
+    }
+  })
+
+  /**
+   * **Each is a finger's 44 px under a coarse pointer**, as the page's other
+   * links are: measured by hit testing along its middle row and column
+   * (`pressArea`), its target is its box grown about its middle to 44 px
+   * (`fingerArea`). Each is scrolled to the middle of the view first, since
+   * the texts above them are longer than the window. The fine case shows
+   * it is the coarse rules that reach 44.
+   */
+  // Coarse first at 1280: the fine case after it is what shows the coarse
+  // rules were switched back.
+  it.each([
+    [1280, 'coarse'],
+    [1280, 'fine'],
+    [390, 'coarse'],
+  ] as const)(
+    'are a finger’s 44 px at %i px with a %s pointer',
+    async (width, pointer) => {
+      if (pointer === 'coarse') onTestFinished(coarseRulesOn())
+      await page.viewport(width, 844)
+      const host = await settle(inShell(<Licence />))
+      await document.fonts.ready
+      for (const [name, place] of EVERY_TOP) {
+        const link = toTop(host, name, place)
+        link.scrollIntoView({ block: 'center' })
+        const said = `${name}, ${place}`
+        if (pointer === 'fine') {
+          expect
+            .soft(pressArea(link).height, `${said}: height`)
+            .toBeLessThan(44)
+        } else {
+          expect.soft(pressArea(link), said).toEqual(near(fingerArea(link)))
+        }
+      }
+    },
+  )
+
+  /**
+   * **The heading's Back to top sits at the end of the heading's line**,
+   * where the box's content ends below it, beside the heading's words and
+   * never over them, and never breaks them
+   * to make room: each heading's words take one line, as each name is
+   * shorter than the line. Neither the link nor the 44 px a finger has of
+   * it under a coarse pointer (`fingerArea`, its box grown about its
+   * middle) meets the words. At 390 and 1280 every name shares its line
+   * with the link, "Zen Kaku Gothic New", the longest, with the least room;
+   * at 320 the two longest do not fit beside it, so the link goes under the
+   * words, still at the end.
+   */
+  it.each([320, 390, 1280])(
+    'sits at the end of each heading’s line, beside its words and not over them, at %i px',
+    async (width) => {
+      await page.viewport(width, 844)
+      const host = await settle(inShell(<Licence />))
+      await document.fonts.ready
+      expect(
+        CONTENTS.map(([, name]) => {
+          const section = sectionOf(host, name)
+          const heading = section.querySelector('h2')
+          if (!heading) throw new Error(`no heading for ${name}`)
+          const link = toTop(host, name, 'heading')
+          const words = document.createRange()
+          words.selectNodeContents(heading)
+          const lines = new Set(
+            [...words.getClientRects()].map((rect) => Math.round(rect.top)),
+          ).size
+          const drawn = areaOf(words.getBoundingClientRect())
+          const box = link.getBoundingClientRect()
+          return {
+            name,
+            lines,
+            over: overlapOf(drawn, areaOf(box)),
+            reach: overlapOf(drawn, fingerArea(link)),
+            atEnd: Math.abs(box.right - contentEnd(section)) <= 1,
+          }
+        }),
+      ).toEqual(
+        CONTENTS.map(([, name]) => ({
+          name,
+          lines: 1,
+          over: 0,
+          reach: 0,
+          atEnd: true,
+        })),
+      )
+    },
+  )
+})
+
+/**
+ * **A licence's two Back to top links end on one edge**, the one on the
+ * heading's line and the one at the box's foot, a heading's length apart
+ * where one licence meets the next: the box's content's end, where every
+ * row of a box ends.
+ */
+describe('Licence’s two Back to top links', () => {
+  it.each([390, 1920])('end on one edge, at %i px', async (width) => {
+    const was = [window.innerWidth, window.innerHeight] as const
+    onTestFinished(() => page.viewport(...was))
+    await page.viewport(width, 844)
+    const host = await settle(inShell(<Licence />))
+    await document.fonts.ready
+    expect(
+      CONTENTS.map(([, name]) => {
+        const [heading, foot] = (['heading', 'foot'] as const).map((place) =>
+          Math.round(toTop(host, name, place).getBoundingClientRect().right),
+        )
+        return { name, heading, foot }
+      }),
+    ).toEqual(
+      CONTENTS.map(([, name]) => {
+        const end = Math.round(contentEnd(sectionOf(host, name)))
+        return { name, heading: end, foot: end }
+      }),
+    )
+  })
 })
 
 /**

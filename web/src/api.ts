@@ -227,13 +227,14 @@ export async function createKey(name: string): Promise<string> {
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ name }),
   })
-  if (!res.ok) throw new Error(`creating a key: ${res.status}`)
+  if (!res.ok) throw new Error(`/api/keys: ${res.status} ${await res.text()}`)
   return ((await res.json()) as { secret: string }).secret
 }
 
 export async function revokeKey(id: number): Promise<void> {
-  const res = await request(`/api/keys/${id}`, { method: 'DELETE' })
-  if (!res.ok) throw new Error(`revoking key ${id}: ${res.status}`)
+  const path = `/api/keys/${id}`
+  const res = await request(path, { method: 'DELETE' })
+  if (!res.ok) throw new Error(`${path}: ${res.status} ${await res.text()}`)
 }
 
 /**
@@ -254,7 +255,8 @@ export async function changePassword(
   })
   if (res.status === 403)
     throw new Error('That current password did not match.')
-  if (!res.ok) throw new Error(`changing the password: ${res.status}`)
+  if (!res.ok)
+    throw new Error(`/api/password: ${res.status} ${await res.text()}`)
 }
 
 /** One open session as the account screen lists it. */
@@ -275,16 +277,16 @@ export async function listSessions(): Promise<SessionRow[]> {
 }
 
 export async function revokeSession(id: string): Promise<void> {
-  const res = await request(`/api/sessions/${encodeURIComponent(id)}`, {
-    method: 'DELETE',
-  })
-  if (!res.ok) throw new Error(`revoking a session: ${res.status}`)
+  const path = `/api/sessions/${encodeURIComponent(id)}`
+  const res = await request(path, { method: 'DELETE' })
+  if (!res.ok) throw new Error(`${path}: ${res.status} ${await res.text()}`)
 }
 
 /** End this session. Answers 204 whether or not there was one. */
 export async function logout(): Promise<void> {
   const res = await fetch('/api/session', { method: 'DELETE' })
-  if (!res.ok) throw new Error(`signing out: ${res.status}`)
+  if (!res.ok)
+    throw new Error(`/api/session: ${res.status} ${await res.text()}`)
 }
 
 /**
@@ -594,9 +596,8 @@ export interface CorrectionRequest {
  * malformed-body `400` or a missing-`If-Match` `428` needs the status, not
  * just the server's prose. The body text still comes along too: on a `412`
  * it names the fresh `ETag`, which is what a caller needs to retry.
- * (`listKeys`, `createKey`, `revokeKey`, `changePassword`, `revokeSession`
- * and `logout` are the exceptions: they throw on status alone, because none
- * of their failure bodies carry anything a caller acts on.)
+ * (`listKeys` and `listSessions` throw on status alone: the account screen
+ * draws the last good list over a failed one and says nothing of it.)
  */
 export async function patchAlignment(
   work: string,

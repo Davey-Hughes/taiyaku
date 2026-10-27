@@ -15,6 +15,7 @@ import { deferred, settleUntil } from './testing/async'
 import { holdOf } from './testing/held'
 import { emptyDerive } from './testing/derive'
 import { counted, dir, idle, scanningIn } from './testing/libraries'
+import { typeInto } from './testing/input'
 import { mount, rerender } from './testing/mount'
 import * as usersApi from './users'
 
@@ -786,21 +787,31 @@ describe('an account’s page, held controls in a real browser', () => {
     expect(holdOf(role)).toBe('free')
   })
 
-  it('keeps focus in New password, submitted with Enter in it, through the drawn wait and a refusal; typing and Enter do nothing while it is held', async () => {
+  it('keeps focus in New password, submitted with Enter in it once Confirm password matches, through the drawn wait and a refusal; typing and Enter do nothing while it is held', async () => {
     const sent = deferred<usersApi.User>()
     vi.mocked(usersApi.patchUser).mockReturnValue(sent.promise)
     const host = await accountPage()
     const box = account<HTMLInputElement>(host, 'input[name="password"]')
+    const confirm = account<HTMLInputElement>(
+      host,
+      'input[name="confirm-password"]',
+    )
     const set = account(host, 'button[name="reset"]')
-    await focusFirst(summary(host), box)
+    await focusFirst(summary(host), confirm)
 
+    await keys('hunter22{Shift>}{Tab}{/Shift}')
+    expect(document.activeElement).toBe(box)
     await keys('hunter22{Enter}')
     expect(vi.mocked(usersApi.patchUser).mock.calls).toEqual([
       [2, { password: 'hunter22' }],
     ])
     await settle(WAIT_DRAWN_AFTER_MS + 100)
     expect(document.activeElement).toBe(box)
-    expect([holdOf(box), holdOf(set)]).toEqual(['held', 'held'])
+    expect([holdOf(box), holdOf(confirm), holdOf(set)]).toEqual([
+      'held',
+      'held',
+      'held',
+    ])
     await keys('{End}{Backspace}9{Enter}')
     expect(box.value).toBe('hunter22')
     expect(usersApi.patchUser).toHaveBeenCalledTimes(1)
@@ -810,7 +821,11 @@ describe('an account’s page, held controls in a real browser', () => {
     })
     await settle()
     expect(document.activeElement).toBe(box)
-    expect([holdOf(box), holdOf(set)]).toEqual(['free', 'free'])
+    expect([holdOf(box), holdOf(confirm), holdOf(set)]).toEqual([
+      'free',
+      'free',
+      'free',
+    ])
     await keys('9')
     expect(box.value).toBe('hunter229')
   })
@@ -822,7 +837,7 @@ describe('an account’s page, held controls in a real browser', () => {
     const box = account<HTMLInputElement>(host, 'input[name="password"]')
     const set = account(host, 'button[name="reset"]')
     await focusFirst(summary(host), box)
-    await keys('hunter22{Tab}')
+    await keys('hunter22{Tab}hunter22{Tab}')
     expect(document.activeElement).toBe(set)
 
     await keys('{Enter}')
@@ -841,14 +856,18 @@ describe('an account’s page, held controls in a real browser', () => {
     expect(holdOf(set)).toBe('free')
   })
 
-  it('puts focus in New password when a set pressed on Set password with Enter works, past its drawn wait, and empties the box', async () => {
+  it('puts focus in New password when a set pressed on Set password with Enter works, past its drawn wait, and empties both boxes', async () => {
     const sent = deferred<usersApi.User>()
     vi.mocked(usersApi.patchUser).mockReturnValue(sent.promise)
     const host = await accountPage()
     const box = account<HTMLInputElement>(host, 'input[name="password"]')
+    const confirm = account<HTMLInputElement>(
+      host,
+      'input[name="confirm-password"]',
+    )
     const set = account(host, 'button[name="reset"]')
     await focusFirst(summary(host), box)
-    await keys('hunter22{Tab}{Enter}')
+    await keys('hunter22{Tab}hunter22{Tab}{Enter}')
     expect(usersApi.patchUser).toHaveBeenCalledTimes(1)
     await settle(WAIT_DRAWN_AFTER_MS + 100)
     expect(document.activeElement).toBe(set)
@@ -861,13 +880,82 @@ describe('an account’s page, held controls in a real browser', () => {
       'Password set. sam is signed out everywhere.',
     )
     expect(document.activeElement).toBe(box)
-    expect([box.value, holdOf(box), holdOf(set)]).toEqual([
+    expect([box.value, confirm.value, holdOf(box), holdOf(set)]).toEqual([
+      '',
       '',
       'free',
       'disabled',
     ])
     await keys('x')
     expect(box.value).toBe('x')
+  })
+
+  it('holds Set password while the two passwords differ, says so under Confirm password for Enter in either box or on Set password, the confirm empty or not, and sends nothing then', async () => {
+    vi.mocked(usersApi.patchUser).mockResolvedValue(SAM)
+    const host = await accountPage()
+    const box = account<HTMLInputElement>(host, 'input[name="password"]')
+    const confirm = account<HTMLInputElement>(
+      host,
+      'input[name="confirm-password"]',
+    )
+    const set = account(host, 'button[name="reset"]')
+    const line = confirm
+      .closest('.settings-row')
+      ?.nextElementSibling?.querySelector(':scope > [role="status"]')
+    await focusFirst(summary(host), box)
+
+    await keys('hunter22{Enter}')
+    expect(line?.textContent).toBe('The two passwords do not match.')
+    await keys('{Tab}hunter')
+    expect(line?.textContent).toBe('')
+    await keys('{Enter}')
+    expect(line?.textContent).toBe('The two passwords do not match.')
+    await keys('{Backspace}d{Enter}')
+    expect(document.activeElement).toBe(confirm)
+    expect(holdOf(set)).toBe('held')
+    expect(line?.textContent).toBe('The two passwords do not match.')
+    // Set password, held, is reached on Tab, and keeps the focus Enter on
+    // it turns down.
+    await keys('{Tab}{Enter}')
+    expect(document.activeElement).toBe(set)
+    // The line lies over Set password and takes a press there, so the
+    // mouse reaches Set password once the line is quiet again, the confirm
+    // the start of the password: it keeps the focus that press turns down
+    // too, and the press says the line.
+    act(() => confirm.focus())
+    await keys('{End}{Backspace}')
+    expect(line?.textContent).toBe('')
+    await act(async () => {
+      await userEvent.click(set, { force: true })
+    })
+    expect(document.activeElement).toBe(set)
+    expect(line?.textContent).toBe('The two passwords do not match.')
+    expect(usersApi.patchUser).not.toHaveBeenCalled()
+
+    act(() => confirm.focus())
+    await keys('{End}r22{Enter}')
+    expect(line?.textContent).toBe('')
+    expect(vi.mocked(usersApi.patchUser).mock.calls).toEqual([
+      [2, { password: 'hunter22' }],
+    ])
+  })
+
+  it('keeps focus on Set password when a fill of Confirm password holds it while Set password has focus', async () => {
+    const host = await accountPage()
+    const box = account<HTMLInputElement>(host, 'input[name="password"]')
+    const confirm = account<HTMLInputElement>(
+      host,
+      'input[name="confirm-password"]',
+    )
+    const set = account(host, 'button[name="reset"]')
+    await focusFirst(summary(host), box)
+    await keys('hunter22{Tab}hunter22{Tab}')
+    expect(document.activeElement).toBe(set)
+
+    // As a password manager fills a box, with focus left where it was.
+    await typeInto(confirm, 'hunter2')
+    expect(holdOf(set)).toBe('held')
+    expect(document.activeElement).toBe(set)
   })
 
   it('keeps focus on a session’s Revoke, pressed with Enter, through the drawn wait and a refusal; Enter on it sends nothing while it is held', async () => {

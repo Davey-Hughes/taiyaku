@@ -57,7 +57,9 @@ the hand-built back link, title and `.actions` row each page draws today go.
 - **`PageHeader`**: an optional back link, the page title, an optional
   one-line muted description, and an optional slot for the page's actions.
 - **`Section`**: the heading, and an optional one-line description, outside
-  a bordered box that holds rows, or a table as its whole content.
+  a bordered box that holds rows, or a table as its whole content. An
+  optional slot at the end of the heading's line holds the section's own
+  actions, which end where the box's rows end.
 - **`Row`**: the label and its help on the left, the control on the right.
   It gives its control the ids for `htmlFor` and `aria-describedby`, so a
   checkbox toggles from its label and the help is read with the control. A
@@ -78,7 +80,8 @@ Licence keep a visible h1 title and have h2 sections. Size comes from the
 component's class, not the tag, so a section looks the same at either level.
 
 **Width:** every in-scope page uses the Configuration measure except Rules,
-whose two-pane editor keeps its own width; only its headings and boxes change.
+whose boxes are each as wide as what they hold (§4); only its headings and
+boxes change.
 
 ## 2. The look
 
@@ -96,6 +99,10 @@ A table in a box sits the box's padding in from all four sides, so a last
 row has space below it, and the selected row's background and accent strip
 are drawn inside that inset, not on the box's border (round 3, after the
 user's screenshot of a selected last row flush with the border).
+
+A box's rows are its padding and its edge in from its outer edge, one
+length (`--settings-box-inset`), and what lines up with them from outside
+the box is placed by that length: a heading's actions end on it.
 
 ## 3. Side by side
 
@@ -145,15 +152,21 @@ As built on the prototype, for the five pages it covers:
 
 - **An account** (Configuration → Users → a name): header with ‹ Users, the
   name, and a description line from data the page already loads (role, and
-  when it was last seen); the locked notice under it. Sections
-  Role & permissions (Role; Can download, Can stream and Can stamp, each a
-  row with its help), Libraries (the every-library or chosen-libraries
-  choice as a row, the grant list below it), Password (field and button on
-  one row; "Password set" is said from a polite live region, as "Password
-  changed" is on `/account` and in the reader's account panel), Sessions &
-  keys (the tally as the description; Revoke at each row's end); then the
-  removal box. The last-admin reason is two sentences, one beside Role and
-  one beside Remove….
+  when it was last seen); the locked notice under it. Sections Role &
+  permissions (Role; Can download, Can stream and Can stamp, each a row with
+  its help), Libraries (the every-library or chosen-libraries choice as a
+  row, the grant list below it), Password (New password, then Confirm
+  password, and Set password in a row of its own at the box's foot;
+  "Password set" is said from a polite live region, as "Password changed" is
+  on `/account` and in the reader's account panel), Sessions & keys (the
+  tally as the description; Revoke at each row's end; a Revoke whose row
+  goes with focus on it hands focus to the nearest row's Revoke in that
+  list, the next, else the one before, and with none left to the section's
+  heading); then the removal box. The last-admin reason is two sentences,
+  one beside Role and one beside Remove…. A write answered with no sentence
+  of the server's, such as a proxy's page for a 502, is said as what was not
+  done and the status: "A session for sam was not revoked: the server
+  answered 502".
 - **A directory** (a library → a directory): header with ‹ the library, the
   path as title, the watch, scan-every and last-scan facts as the
   description, and Scan directory · Move… as actions. Move… opens in a modal
@@ -192,7 +205,170 @@ As built on the prototype, for the five pages it covers:
 The rest follow the same pattern, with no prototype round of their own:
 the Libraries table, New library, New account (PR 2); Rules, `/account`,
 About and Licence (PR 3). On `/account`, About and Licence the existing
-cards become sections with the heading outside the box.
+cards become sections with the heading outside the box, under a visible
+h1 title. PR 3's pages, as built once the user had tried them
+(2026-10-25):
+
+- **Rules**: header "Rules" with no description, not at the settings measure
+  nor at any measure of the screen's: from the breakpoint up, where Rules is
+  wide enough for the list beside the rule's pane, each box is as wide as what
+  it holds, all starting where the other Configuration pages' content starts,
+  and the room past them is on the right (the user's rulings of 2026-10-26).
+  The list and the rule being edited are each an untitled box, side by side
+  where they fit. The list is as wide as its widest rule, up to
+  the settings measure, 40rem; a rule's name wraps between its words and after
+  a Rust path's `::` (`taiyaku_read::volume_number`), and inside a piece only
+  where the piece is wider than its whole line. The rule's pane is as wide as
+  its sentence while no rule is picked, or as its form once one is: the four
+  boxes under Sets side by side, each 12 characters wide, for the short values
+  they hold (a longer one scrolls in its box), and the pattern and the note
+  each on a row of their own, so the longest seeded rule's note is whole in
+  its box; no select gives the form width, since scope's options are absolute
+  paths. Where the screen is too narrow for both panes at their own width,
+  what gives way first depends on what the pane holds. With no rule picked,
+  the pane's sentence wraps first, the pane down to 20rem, and then the list.
+  With a rule picked, the list wraps its names first, so the form keeps its
+  own width, and then the pane gives way to whatever room the list leaves (the
+  user's ruling of 2026-10-26, which accepted that the list reflows when a
+  rule is picked). The list never gives way past its longest piece unless that
+  piece is too wide for the cap or to leave the rule's pane 14rem beside it,
+  and then the piece breaks inside. The preview is beneath both, in a box titled Preview,
+  at least as wide as the two together (the user's pick) and wider only where
+  a tab holds something wider, a table or a path, up to `main`'s width, where
+  a table scrolls in its box and a path breaks anywhere; the panes keep their
+  own width whatever the preview's. Its heading's line ends with "Previewing…"
+  once a preview has lasted 200 ms; until then the words are laid out unseen,
+  so drawing them moves nothing. What is said in sentences, but for the
+  pane's while no rule is picked, wraps at the width the boxes set, never
+  wider than a reading measure, and gives them no width of its own. The save's re-derive disclosure, then Save, Import and Export,
+  with Import's help under the three, follow at the foot, Export beside
+  Import, on their words' baseline wherever they share a line, each wrapping
+  whole. Below the breakpoint, and above it where Rules is narrower than
+  36rem, the boxes are one column, each as wide as the page's column: 36rem
+  holds the seeded rules' list whole, a gap and the rule's pane at 14rem,
+  under either pointer, from a 17px root font up (at 16px and below, the
+  breakpoint leaves Rules more room than the list needs), and a larger text size, which
+  widens the sidebar and what the boxes hold but not the breakpoint, leaves
+  Rules that room only on a wider window. A failure is said as what was not
+  done and why: "The rules were not saved: …", and the same for a load, a
+  preview and an import, "The rules cannot be exported: …", and for a picked
+  file that is not JSON, "The rules were not imported: the file is not a rules
+  document".
+- **`/account`**: header "Account"; sections Password (Current password, New
+  password, Confirm password, and Change password at the box's foot), API
+  keys (what a key is for as the description, the catalog's address with
+  Copy address where the boxes' other buttons are, at its row's end, or at
+  its start where a narrow box stacks its rows (the row is drawn empty while
+  the address is read, and says so where it could not be; wherever no Copy
+  address is drawn, an unseen one keeps its room, so in each state the row
+  is at least as tall as a line with Copy address in it), New key and Create
+  sharing the password boxes' column, then the one-time secret's box and a
+  row per key with Revoke) and Signed in (a row per session with Revoke, and
+  Sign out at the foot). The reader's account panel draws the same controls
+  in its own look, its confirm box labelled Confirm. What a create or a
+  password change says moves nothing: "Key made: `<name>`. …" and "Password
+  changed. …" are said from visually hidden polite regions in API keys and
+  in Password, and the key's line never says the secret. A made key's box
+  and its row are drawn together, by the listing after the create, which
+  holds Create until it lands, and revoking the shown key takes its box away
+  with its row, so each moves the page once. A listing of the keys or the
+  sessions that lands after a later one has been drawn is not drawn, since
+  it was read first; a later one that lands first does, in the render that
+  draws it, what each earlier one still out would have done beside its list.
+  The secret's caption names its key ("Key “tablet”: copy this now — …").
+  Where the clipboard can be written the secret's box is a button that
+  copies it, as Copy address does, and draws "Copied" on itself in its
+  caption's place for a moment, moving nothing; elsewhere it is text to
+  select. When a Revoke's row goes with focus on it, focus goes to the
+  Revoke of the nearest row left in that list, the next, else the one
+  before, passing over the current session's; with none left, to the New key
+  box or to Signed in's heading, so that in the panel it stays in the
+  dialog. A refused Create or Change password is said in a callout (below)
+  in the server's own sentence, such as "a key needs a name, so the right
+  one can be revoked later", or, for an answer with none, as what was not
+  done and the status ("The key was not made: the server answered 502"), or,
+  where no answer came, in the browser's words, such as "Failed to fetch",
+  and goes when a box of that form is edited, focus leaves the form, or the
+  next attempt is sent. A revocation's or a sign-out's failure is said above
+  the sections, always as what was not done and then why, in the server's
+  sentence, the status or the browser's words ("That key was not revoked: no
+  such key").
+- **Confirm password**, wherever a new password is typed: `/account` and the
+  panel, an account's page and New account. While the two differ, the button
+  that sends the password is held (below), and "The two passwords do not
+  match." is said in a callout under Confirm password once the confirm is
+  neither empty nor the start of the password, wherever focus is. A press of
+  that button, or Enter in a box, while the two differ sends nothing and
+  says the line too, though the confirm is empty or the start of the
+  password, until either box is edited; then the rule before holds again.
+  That needs a button a press can reach: Set password is `disabled` while
+  its New password is empty, and New account's Add while the name or the
+  password is empty, a name clashes, or the add waits, and there a press or
+  Enter says nothing. The line's callout takes a press, as a refusal's does,
+  so that a press on it reaches nothing beneath it, neither the held button
+  nor Role's select, which Tab still reaches (the user's ruling of
+  2026-10-26). The row under Confirm password that the line lies over,
+  Change password's on `/account` and in the panel and Set password's on an
+  account's page, keeps the room the line takes there, said or not, its
+  words drawn in it unseen: where they take more than one line, as on a
+  narrow phone or with larger text, that row is as much taller as they need,
+  so the line lies under Confirm password and over no box, a press on
+  Confirm password reaches it, and nothing moves when the line comes or
+  goes; where they take one, the row is no taller than its button makes it
+  (the user's ruling of 2026-10-26).
+- **Callouts** on these forms (the user's rulings of 2026-10-26; where a
+  refusal with no room under its row lies is the controller's call): a callout
+  is drawn right under the row of the control it answers and lies over the
+  rows of its section below that row, as far as its words need, covering each
+  row's content whole, so no control and no line of words is left half
+  covered, but for the foot of Role's help on New account (below). It stays
+  inside its box's content, a padding's width in from the box's sides and its
+  rows' own padding in from its top and foot, so a callout whose words fit in
+  the box never meets its edge nor the next section's heading. Where its
+  words would pass the last row's content, a refusal lies over the rows above
+  the row it answers instead, not over that row, whose box
+  is edited to take it away, except where they have no room, where it is laid
+  up over it; the line saying two passwords differ never is, since the row
+  under it keeps its room (above). So a refused Create lies over the shown
+  key's box, else the first key, and, with no key listed or too long for the
+  rows under New key, over the rows above New key, the address's row among
+  them; a refused Change password and the line lie over Change password, which
+  they cover whole, and a refusal too long for that room lies over the rows
+  above Confirm password instead; on an
+  account's page the line lies over Set password; and on New account it lies
+  over Role's select, centred on it, over no box: where the select is wide
+  enough for its words, on one line, over the select alone, with Role's label
+  and help, Add and Cancel in view; where its words take two lines, as on a
+  narrow phone or with larger text, over the foot of Role's help as well. A
+  refusal whose foot would be past the edge of the view, as in the panel on a
+  short window or on a phone, scrolls the page or the panel just far enough to
+  show it whole; elsewhere nothing scrolls. A control focused under a callout
+  has its focus ring drawn on the callout.
+- **About**: header "About"; sections This build (the commit, the source and
+  the catalog's address, a `dl` drawn as the box's rows), Formats (the table
+  in a box) and Licence: "taiyaku is GPL-3.0-or-later." and "Its fonts are
+  OFL-1.1.", a row each, each licence a link to its own on the licence page,
+  the fonts' to the first font's. A failed request is said as "This build’s
+  details were not loaded: …", in the server's sentence, or its status where
+  it has none, or the browser's words where no answer came.
+- **Licence**: header "Licence" with ‹ About; the contents under it; a
+  section per licence whose heading carries its fragment; "↑ Back to top" at
+  the end of each heading's line and at each box's foot, the two ending on
+  one edge where the box's rows end, which puts the page's top in view and
+  focus on its title, drawn landed on as a heading a contents link lands on
+  is. Texts that do not arrive are said as "The licence texts were not
+  loaded; reload the page to try again.", never in the browser's words,
+  which name the chunk's address.
+- **The sidebar's wordmark** (the user's ruling of 2026-10-26): a link to
+  `/`, where the sidebar's Libraries heading goes, named "taiyaku,
+  Libraries". At rest it is drawn as the plain wordmark was, where it was;
+  it takes the sidebar links' focus ring, and under the pointer its name is
+  underlined. The phone bar's wordmark is the same link, named the same. On
+  a coarse pointer each reaches 44px to the touch from a target centred on
+  it, drawn where it stood and over no other control. Opening the drawer
+  gives focus to the Libraries heading's link, with Close one Shift+Tab
+  back and the wordmark one more (the controller's calls). Login's wordmark
+  stays a heading's words.
 
 **Addresses are names** (the user's rulings during PR 2, 2026-10-21): a
 library's page is at `/config/libraries/<name>`, its directories' at
@@ -218,21 +394,30 @@ nothing. Four waits keep their own timing: the directory browser draws
 directory, Move… and Remove…, or a library's Scan library and Remove…,
 from the send, the picker's Add directory on a library's page is held from
 the send while its add is out, and the line saying a scan is running is
-drawn as soon as its start answers.
+drawn as soon as its start answers. PR 3's waits are drawn the same way:
+Rules' "Saving…", "Importing…" and "Previewing…", and the held look of
+`/account`'s Change password and Create.
 
 **A control that a wait or a hold takes while it has focus keeps focus**
-(the user's ruling of 2026-10-23), where a `disabled` control that has
-focus drops it to the page in Chromium. It is held by `aria-disabled`,
-through `HeldButton` for a button, and a press, a choice or an edit of it
-is turned down while it is held, as the account page's checkboxes and
-radios are held (O159). A held button, select or text box is drawn as a
-`disabled` one is, under forced colours too. An account's Remove… stays
-drawn and held while its confirm is open, as a library's and a
-directory's do. The exceptions are Save, Make the library and Add, their
-Cancels, the picker's Add directory, Set password once a set has emptied
-its box, and See what this would do once the library chosen leaves the
-list: these are held by `disabled`, and move the focus they had to the
-name, path or password box, or to Move to.
+(the user's ruling of 2026-10-23), where a `disabled` control that has focus
+drops it to the page in Chromium. It is held by `aria-disabled`, through
+`HeldButton` for a button, and a press, a choice or an edit of it is turned
+down while it is held, as the account page's checkboxes and radios are held
+(O159). A held button, select or text box is drawn as a `disabled` one is,
+under forced colours too. An account's Remove… stays drawn and held while
+its confirm is open, as a library's and a directory's do. The exceptions are
+Save, Make the library and Add, their Cancels, the picker's Add directory,
+Set password while its box is empty, as a set leaves it, and See what this
+would do once the library chosen leaves the list: these are held by
+`disabled`, and move the focus they had to the name, path or password box,
+or to Move to. While the two passwords differ, Change password, Set password
+and New account's Add are held by `aria-disabled`, through `HeldButton`, so
+that they keep focus and a press reaches them, a mouse's where the line does
+not lie over them, to be turned down and to say why (above), where nothing
+holds them by `disabled` first. New account's Add
+is held so for the mismatch alone: an empty name or password, a name clash,
+and the add's own wait still hold it by `disabled`, and the focus a clash or
+that wait takes goes to the name box.
 
 **Help text** may be shortened, moved beside the setting it explains, or
 folded into a disclosure, but every fact stays. The prototype's rewrites

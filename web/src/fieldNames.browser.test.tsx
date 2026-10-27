@@ -3,6 +3,7 @@ import { act } from 'react'
 import { MemoryRouter, Route, Routes } from 'react-router'
 import { describe, expect, it, onTestFinished, vi } from 'vitest'
 import { cdp, page } from 'vitest/browser'
+import { About } from './About'
 import { Account } from './Account'
 import * as api from './api'
 import * as backupApi from './backup'
@@ -11,6 +12,7 @@ import * as config from './config'
 import * as curation from './curation'
 import { GateContext } from './gate'
 import * as librariesApi from './libraries'
+import { Licence } from './Licence'
 // **Required.** The capitals this file is about are `admin.css`'s, which
 // reaches the app through `index.css`; without it every `.field` label is
 // drawn as written and each `.field` case's first assertion fails.
@@ -19,10 +21,13 @@ import { ProposalRow } from './ProposalRow'
 import { RootRow } from './RootRow'
 import { Libraries } from './Libraries'
 import { RuleForm } from './RuleForm'
+import * as rulesApi from './rules'
 import type { Rule } from './rules'
+import { answerAbout } from './testing/aboutPage'
 import { emptyDerive } from './testing/derive'
 import { fields } from './testing/fields'
 import { press } from './testing/input'
+import { licenceTextsLanded } from './testing/licence'
 import { mount } from './testing/mount'
 import * as usersApi from './users'
 import { Users } from './Users'
@@ -73,6 +78,7 @@ vi.mock('./backup', async (importOriginal) => ({
 
 vi.mock('./config', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./config')>()),
+  listRoots: vi.fn(),
   scanStatus: vi.fn(),
 }))
 
@@ -86,8 +92,16 @@ vi.mock('./libraries', async (importOriginal) => ({
 
 vi.mock('./curation', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./curation')>()),
+  listProposals: vi.fn(),
   proposalDetail: vi.fn(),
   resolution: vi.fn(),
+}))
+
+vi.mock('./rules', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./rules')>()),
+  listRules: vi.fn(),
+  previewRules: vi.fn(),
+  saveRules: vi.fn(),
 }))
 
 vi.mock('./users', async (importOriginal) => ({
@@ -386,10 +400,16 @@ describe('the name Chromium gives a control under a field label — O175', () =>
     vi.mocked(usersApi.listUsers).mockResolvedValue({ users: [] })
     vi.mocked(librariesApi.listLibraries).mockResolvedValue({ libraries: [] })
     const host = await shown(usersAt('/config/new-account'))
-    expect(rowWords(host)).toEqual(['Name', 'Password', 'Role'])
+    expect(rowWords(host)).toEqual([
+      'Name',
+      'Password',
+      'Confirm password',
+      'Role',
+    ])
     expect(await rowControls()).toEqual([
       ['textbox', 'Name'],
       ['textbox', 'Password'],
+      ['textbox', 'Confirm password'],
       ['combobox', 'Role'],
     ])
   })
@@ -405,6 +425,7 @@ describe('the name Chromium gives a control under a field label — O175', () =>
       'Can stream',
       'Can stamp',
       'New password',
+      'Confirm password',
     ])
     expect(await rowControls()).toEqual([
       ['combobox', 'Role'],
@@ -412,6 +433,7 @@ describe('the name Chromium gives a control under a field label — O175', () =>
       ['checkbox', 'Can stream'],
       ['checkbox', 'Can stamp'],
       ['textbox', 'New password'],
+      ['textbox', 'Confirm password'],
     ])
   })
 
@@ -503,21 +525,30 @@ describe('the name Chromium gives a control under a field label — O175', () =>
     ])
   })
 
-  it('names the account page’s password boxes as written', async () => {
+  it('names the account page’s boxes as written', async () => {
     vi.mocked(api.listKeys).mockResolvedValue([])
     vi.mocked(api.listSessions).mockResolvedValue([])
+    answerAbout()
     const host = await shown(
       <Account placement="page" onSignedOut={() => {}} />,
     )
-    expect(drawn(host)).toEqual([
-      ['Current', 'uppercase'],
-      ['New', 'uppercase'],
+    // `/api/about`'s answer, which draws the catalog's address's row, lands
+    // inside `act`.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+    expect(rowWords(host)).toEqual([
+      'Current password',
+      'New password',
+      'Confirm password',
+      'New key',
     ])
-    expect(await controls()).toEqual([
-      ['textbox', 'Current'],
-      ['textbox', 'New'],
-      // The key-name box: no `.field` wraps it, and its placeholder names it.
-      ['textbox', 'Which device is this for?'],
+    expect(await rowControls()).toEqual([
+      ['textbox', 'Current password'],
+      ['textbox', 'New password'],
+      ['textbox', 'Confirm password'],
+      // The key's name box, named by its label and not its placeholder.
+      ['textbox', 'New key'],
     ])
   })
 })
@@ -588,6 +619,39 @@ function answerPages() {
     users: [user(), user({ id: 2, name: 'sam', role: 'user' })],
   })
   vi.mocked(backupApi.listBackups).mockResolvedValue({ backups: [] })
+  vi.mocked(rulesApi.listRules).mockResolvedValue({
+    rules: [rule],
+    complaints: [],
+  })
+  vi.mocked(config.listRoots).mockResolvedValue({ roots: [root] })
+  vi.mocked(curation.listProposals).mockResolvedValue({
+    proposals: [],
+    counts: {},
+  })
+  vi.mocked(rulesApi.previewRules).mockResolvedValue({
+    impact: RULES_IMPACT,
+    rows: [],
+    rows_truncated: false,
+    overrides: [],
+  })
+  vi.mocked(rulesApi.saveRules).mockResolvedValue({
+    impact: RULES_IMPACT,
+    rules: [rule],
+    reopened_proposals: [],
+    complaints: [],
+    derive: emptyDerive,
+  })
+}
+
+/** What the Rules screen's preview and save say the rule list does. */
+const RULES_IMPACT: rulesApi.Impact = {
+  series_before: 2,
+  series_after: 1,
+  series_merged: 1,
+  works_rehomed: 3,
+  works_orphaned: 0,
+  proposals_reopened: 0,
+  proposals_raised: 0,
 }
 
 /**
@@ -638,6 +702,13 @@ describe('the headings of the Configuration pages, in Chromium’s own tree', ()
       [
         ['Backup', 2],
         ['Backups', 3],
+      ],
+    ],
+    [
+      '/config/rules',
+      [
+        ['Rules', 2],
+        ['Preview', 3],
       ],
     ],
   ])(
@@ -824,4 +895,104 @@ describe('the headings of the Configuration pages, in Chromium’s own tree', ()
       },
     ])
   })
+
+  it('reads a save’s re-derive report beside the preview, beneath Rules', async () => {
+    // The report is drawn after the preview's box, not in it, so it is not
+    // read as one of the preview's parts.
+    answerPages()
+    const host = await shown(configAt('/config/rules'))
+    await press(host.querySelector('button.save') as Element)
+    const details = host.querySelector(
+      'details.save-derive',
+    ) as HTMLDetailsElement
+    // Opened: what a closed disclosure holds is not in the tree.
+    await act(async () => {
+      details.open = true
+    })
+    expect(await treeOf(['heading'])).toEqual([
+      { role: 'heading', name: 'Configuration', level: 1 },
+      { role: 'heading', name: 'Rules', level: 2 },
+      { role: 'heading', name: 'Preview', level: 3 },
+      {
+        role: 'heading',
+        name: 'What derivation made of every library',
+        level: 3,
+      },
+    ])
+  })
+})
+
+/**
+ * `/account`, About and the licence page are pages of their own, not
+ * Configuration's, so each heads itself with a visible h1 and its sections
+ * one level below.
+ */
+describe('the headings of /account, About and the licence page, in Chromium’s own tree', () => {
+  it.each([
+    [
+      '/account',
+      () => {
+        vi.mocked(api.listKeys).mockResolvedValue([])
+        vi.mocked(api.listSessions).mockResolvedValue([])
+        answerAbout()
+        return <Account placement="page" onSignedOut={() => {}} />
+      },
+      // The two lists, and `/api/about`'s answer, which brings the
+      // catalog's address under API keys.
+      () =>
+        act(async () => {
+          await new Promise((resolve) => setTimeout(resolve, 0))
+        }),
+      [
+        ['Account', 1],
+        ['Password', 2],
+        ['API keys', 2],
+        ['Signed in', 2],
+      ],
+    ],
+    [
+      '/about',
+      () => {
+        answerAbout()
+        return <About />
+      },
+      // `/api/about`'s answer, which brings every section but the last.
+      () =>
+        act(async () => {
+          await new Promise((resolve) => setTimeout(resolve, 0))
+        }),
+      [
+        ['About', 1],
+        ['This build', 2],
+        ['Formats', 2],
+        ['Licence', 2],
+      ],
+    ],
+    [
+      '/about/licence',
+      () => <Licence />,
+      licenceTextsLanded,
+      [
+        ['Licence', 1],
+        ['taiyaku', 2],
+        ['Shippori Mincho B1', 2],
+        ['Zen Kaku Gothic New', 2],
+        ['taiyaku marks', 2],
+      ],
+    ],
+  ] as const)(
+    'reads %s as its own heading, and its sections beneath it',
+    async (_, draw, land, headings) => {
+      const host = await shown(<MemoryRouter>{draw()}</MemoryRouter>)
+      await land()
+      expect(
+        [...host.querySelectorAll('h1, h2, h3, h4, h5, h6')].map(
+          (h) => h.tagName,
+        ),
+      ).toEqual(headings.map(([, level]) => `H${level}`))
+      expect(await treeOf(['heading'])).toEqual(
+        headings.map(([name, level]) => ({ role: 'heading', name, level })),
+      )
+    },
+  )
 })

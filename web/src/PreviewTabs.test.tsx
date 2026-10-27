@@ -2,7 +2,9 @@ import { act } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 import { PreviewTabs } from './PreviewTabs'
 import type { Impact, Override, Preview, Row, Rule } from './rules'
+import { holdOf } from './testing/held'
 import { mount } from './testing/mount'
+import { holdTheClock, pass, WAIT_DRAWN_AFTER_MS } from './testing/wait'
 
 const impact = (over: Partial<Impact> = {}): Impact => ({
   series_before: 8,
@@ -371,25 +373,73 @@ describe('PreviewTabs', () => {
     // this branch. Since O97 `frozen` covers an import too, and that half is
     // covered in `RuleEditor.test.tsx` rather than here, because it needs a
     // real import in flight to produce it.
-    const { host, click } = render({
+    holdTheClock()
+    const { host, click, onReorder, onSelectRule } = render({
       preview: preview({ overrides: [anOverride()] }),
       ...flags,
     })
     click('Overrides')
-    expect(
-      host.querySelector<HTMLButtonElement>('button.reorder')?.disabled,
-    ).toBe(true)
-    expect(
-      host.querySelector<HTMLButtonElement>('button.edit-winner')?.disabled,
-    ).toBe(true)
+    const options = [
+      host.querySelector('button.reorder') as HTMLButtonElement,
+      host.querySelector('button.edit-winner') as HTMLButtonElement,
+    ]
+    // Pressed before the hold is drawn, so it is each one's own handler that
+    // turns the press down.
+    act(() => {
+      for (const option of options) option.click()
+    })
+    expect(onReorder).not.toHaveBeenCalled()
+    expect(onSelectRule).not.toHaveBeenCalled()
+    pass(WAIT_DRAWN_AFTER_MS)
+    expect(options.map(holdOf)).toEqual(['held', 'held'])
+  })
+
+  it('offers both options when nothing is in flight', () => {
+    // The control for the case above, which passes against options that are
+    // held always.
+    const { host, click, onReorder, onSelectRule } = render({
+      preview: preview({ overrides: [anOverride()] }),
+    })
+    click('Overrides')
+    const reorder = host.querySelector('button.reorder') as HTMLButtonElement
+    const edit = host.querySelector('button.edit-winner') as HTMLButtonElement
+    expect([reorder, edit].map(holdOf)).toEqual(['free', 'free'])
+    act(() => {
+      reorder.click()
+      edit.click()
+    })
+    expect(onReorder).toHaveBeenCalledWith(1, 0)
+    expect(onSelectRule).toHaveBeenCalledWith(1)
+  })
+
+  // "Previewing…" is drawn by `RuleEditor`, on the Preview heading's line;
+  // `RuleEditor.test.tsx` holds when.
+  it('holds both options only once the preview has lasted', () => {
+    holdTheClock()
+    const { host, click } = render({
+      preview: preview({ overrides: [anOverride()] }),
+      busy: true,
+    })
+    click('Overrides')
+    const drawn = () => [
+      holdOf(host.querySelector('button.reorder') as HTMLButtonElement),
+      holdOf(host.querySelector('button.edit-winner') as HTMLButtonElement),
+    ]
+    pass(WAIT_DRAWN_AFTER_MS - 1)
+    expect(drawn()).toEqual(['free', 'free'])
+    pass(1)
+    expect(drawn()).toEqual(['held', 'held'])
   })
 
   it('does not say there is no preview while one is in flight', () => {
     // Both are reachable at once on the screen's first load, and together they
-    // contradict: "Previewing…" above "No preview yet. Pick a rule, or edit
-    // one" tells someone to start what has already started.
+    // contradict: "Previewing…" over "No preview yet. Pick a rule, or edit
+    // one" tells someone to start what has already started. Read again once
+    // the wait's delay has passed, since "Previewing…" is drawn only then.
+    holdTheClock()
     const { host } = render({ preview: undefined, busy: true })
-    expect(host.textContent).toContain('Previewing')
+    expect(host.textContent).not.toContain('No preview yet')
+    pass(WAIT_DRAWN_AFTER_MS)
     expect(host.textContent).not.toContain('No preview yet')
   })
 
@@ -415,11 +465,6 @@ describe('PreviewTabs', () => {
     })
     click('Overrides')
     expect(host.textContent).not.toContain('disagree')
-  })
-
-  it('says it is working rather than drawing a stale answer', () => {
-    const { host } = render({ busy: true })
-    expect(host.textContent).toContain('Previewing')
   })
 
   it('says there is nothing yet before the first preview', () => {

@@ -47,6 +47,35 @@ describe('inView', () => {
     expect(inView(at(59, 20, '60px'))).toBe(true)
   })
 
+  it('judges the whole element where asked, as far as the window holds', () => {
+    expect(inView(at(740, 40), true)).toBe(true)
+    expect(inView(at(770, 40), true)).toBe(false)
+    expect(inView(at(0, 900), true)).toBe(true)
+    expect(inView(at(1, 900), true)).toBe(false)
+  })
+
+  it('is false outside the box of a panel that scrolls it, though in the window', () => {
+    const panel = document.createElement('div')
+    panel.getBoundingClientRect = () => ({ top: 100 }) as DOMRect
+    Object.defineProperty(panel, 'clientHeight', { value: 500 })
+    const el = document.createElement('p')
+    panel.append(el)
+    vi.spyOn(window, 'getComputedStyle').mockImplementation(
+      (of) =>
+        ({
+          scrollMarginTop: '0px',
+          overflowY: of === panel ? 'auto' : 'visible',
+        }) as CSSStyleDeclaration,
+    )
+    const placed = (top: number) => {
+      el.getBoundingClientRect = () => ({ top, height: 20 }) as DOMRect
+      return el
+    }
+    expect(inView(placed(120))).toBe(true)
+    expect(inView(placed(590))).toBe(false)
+    expect(inView(placed(90))).toBe(false)
+  })
+
   it('reads a margin that is not a length as none', () => {
     expect(inView(at(0, 20, ''))).toBe(true)
     expect(inView(at(-5, 20, 'auto'))).toBe(false)
@@ -92,6 +121,13 @@ describe('bringIntoView', () => {
 
   it('scrolls one below the window just far enough, not to the top', () => {
     const el = at(900, 20)
+    el.scrollIntoView = vi.fn()
+    bringIntoView(el)
+    expect(el.scrollIntoView).toHaveBeenCalledWith({ block: 'nearest' })
+  })
+
+  it('scrolls one whose head is in view and whose foot is not, so that it is seen whole', () => {
+    const el = at(700, 120)
     el.scrollIntoView = vi.fn()
     bringIntoView(el)
     expect(el.scrollIntoView).toHaveBeenCalledWith({ block: 'nearest' })

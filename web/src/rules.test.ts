@@ -339,6 +339,17 @@ describe('the client', () => {
     expect(init.method).toBe('POST')
     expect(JSON.parse(init.body as string)).toEqual([{ ordinal: 1 }])
   })
+
+  it('says a file that is not JSON is not a rules document, in its own words and not the parser’s, and sends nothing', () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+    const page = '<!doctype html>\n<html><body><h1>Rules</h1></body></html>'
+    // Thrown out of the call itself: the screen's import catches it as a
+    // synchronous throw (`RuleEditor.tsx`'s `sendImport`).
+    expect(() => importRules(page)).toThrow(
+      new Error('the file is not a rules document'),
+    )
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
 })
 
 // `aRule` spreads `blankRule(1)`, whose every optional field is `null` — not

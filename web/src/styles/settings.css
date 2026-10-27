@@ -111,8 +111,9 @@
   font-size: var(--text-h3);
 }
 
-/* Where a path may break (`PathWithBreaks`): a zero-width space, which a
-   line may break at, said as nothing and copied as nothing. */
+/* Where a path or a rule's name may break (`PathWithBreaks`,
+   `NameWithBreaks`): a zero-width space, which a line may break at, said as
+   nothing and copied as nothing. */
 .path-break::before {
   content: "\200b" / "";
 }
@@ -153,9 +154,13 @@
    inside the box rather than widening it past the column. Below Save, so a
    Save pressed at the window's foot leaves it under the fold, and it is
    brought into view with the breath `admin.css` gives a refusal beneath
-   its button. */
+   its button. The unseen copy of the line saying two passwords differ
+   (`DifferRoom`, below) takes the same box, so it takes the line's room. */
 .page-header-answer > [role="alert"],
-.page-header-answer > .name-clash:not(:empty) {
+.page-header-answer > .name-clash:not(:empty),
+.callout > [role="alert"],
+.callout > [role="status"]:not(:empty),
+.differ-room {
   margin: 0;
   padding: var(--space-2) var(--space-3);
   border: 1px solid var(--line-strong);
@@ -275,20 +280,53 @@
   margin-bottom: var(--space-2);
 }
 
+/* A heading with actions (`Section`'s `actions`) shares its line with them,
+   the actions at its end on the heading's baseline. Where the line is too
+   short for both, the actions wrap under the heading, still at the end, so
+   the heading is never broken to make room for them. The row gap keeps a
+   wrapped link's 44px target under a coarse pointer, which reaches 12px
+   above the link's own box, off the heading's words. The description, if
+   any, takes a line of its own below. */
+.settings-section-head:has(> .settings-section-actions) {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-3) var(--space-5);
+}
+
+/* The actions end where the box under the heading ends its rows, not at
+   the section's edge, so a link here and one at the end of the box's last
+   row are one column. */
+.settings-section-actions {
+  margin-inline-start: auto;
+  margin-inline-end: var(--settings-box-inset);
+}
+
 .settings-section .settings-section-title {
   margin: 0;
   font-size: var(--text-h3);
 }
 
+/* The line under the heading. Its basis is the head's whole width, so in a
+   head laid out with actions it takes a line of its own. */
 .settings-section-description {
+  flex-basis: 100%;
   margin: var(--space-1) 0 0;
   color: var(--muted);
   font-size: var(--text-ui);
 }
 
+/* How far a box's rows are in from its outer edge: its padding and its
+   1px edge. The box's padding is this less the edge, and whatever lines
+   up with a box's rows from outside it (a heading's actions) is placed by
+   it, so the two cannot drift apart. */
+:root {
+  --settings-box-inset: calc(var(--space-4) + 1px);
+}
+
 .settings-box {
   container: settings-box / inline-size;
-  padding: 0 var(--space-4);
+  padding: 0 calc(var(--settings-box-inset) - 1px);
   border: 1px solid var(--line-strong);
   border-radius: var(--radius-control);
 }
@@ -332,6 +370,65 @@
    after it is the first one seen. */
 .settings-group > .visually-hidden + * {
   border-top: 0;
+}
+
+/* A callout (`Callout.tsx`): what answers a form, laid over the rows of its
+   section that follow the row of the control it answers, or, for a refusal
+   with no room there, the rows above that row, so that neither its coming
+   nor its going moves anything. It is drawn straight after that row, where
+   it stands when nothing lays it out, and `Callout.tsx` sets its `top` and
+   `height` over whole rows, inside the box's content, which is a padding's
+   width inside its edge (the user's rulings of 2026-10-26). It is as wide
+   as the rows of its form or section, or, laid over one control alone, as
+   `Callout.tsx` sets it, and its words are centred on the height it is
+   given. Empty, it is nothing: no room, no edge. After the rules for a
+   box's and a group's parts, whose padding and line it puts aside with the
+   same weight.
+
+   A callout takes a press, so that a press on it reaches nothing beneath
+   it (the user's rulings of 2026-10-26): a refusal may lie over the
+   secret's box, which a press copies, or a key's Revoke, which asks
+   nothing first, and the line saying two passwords differ over the held
+   button that sends the password, which a press would answer, or Role's
+   select on New account, which a press would open. Tab still reaches what
+   it lies over. */
+:has(> .callout) {
+  position: relative;
+}
+
+.callout {
+  position: absolute;
+  inset-inline: 0;
+  z-index: 1;
+  display: flex;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.callout > :not(:empty) {
+  display: flex;
+  flex: 1;
+  align-items: center;
+}
+
+.callout > :empty {
+  margin: 0;
+}
+
+/* A control under a callout, such as the held button the line saying two
+   passwords differ lies over, keeps its focus beneath it, and the ring that
+   marks that focus is drawn on the callout, which is what is seen there
+   (`data-over-focus`, set by `Callout.tsx`); the control's own, outside its
+   edge, would show as a sliver beside the callout. Inside the callout's
+   edge, so that it stays inside the box as the callout does. */
+section:has(.callout[data-over-focus]) :focus-visible {
+  outline: none;
+}
+
+.callout[data-over-focus] > :not(:empty) {
+  outline: 2px solid var(--accent);
+  outline-offset: -4px;
 }
 
 /* Rows. */
@@ -452,6 +549,48 @@
   .settings-row-control
     :where(input:not([type="checkbox"], [type="radio"]), select, textarea) {
     width: 100%;
+  }
+}
+
+/* The row under Confirm password, which the line saying the two passwords
+   differ lies over, keeps the room that line takes there, said or not, so
+   that it lies under Confirm password's row and over no box however many
+   lines its words take, and nothing moves when it comes or goes (the
+   user's ruling of 2026-10-26). The line's words are drawn in that row
+   unseen (`DifferRoom`), in its button's cell and as wide as the line, so
+   they wrap where the line's do. Where they take one line the button is
+   the taller, so the row keeps the height it has without them. After
+   `.settings-actions`, whose flex row it puts aside for a grid. */
+.keeps-differ-room {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: start;
+}
+
+.keeps-differ-room > * {
+  grid-area: 1 / 1;
+}
+
+.differ-room {
+  justify-self: stretch;
+  visibility: hidden;
+}
+
+/* A box's row draws its line and its padding over its content, and the
+   line lies over them too, from Confirm password's row's foot: so the
+   words reach up over them, and the row's content holds the rest. */
+.settings-actions > .differ-room {
+  margin-block-start: calc(-1px - var(--space-3));
+}
+
+/* The button stays where a form's buttons are (`.settings-actions`). */
+.settings-actions.keeps-differ-room {
+  justify-items: end;
+}
+
+@container settings-box (width < 30rem) {
+  .settings-actions.keeps-differ-room {
+    justify-items: start;
   }
 }
 
@@ -930,8 +1069,11 @@
   border-bottom: 0;
 }
 
-/* A box with no heading of its own sits close under the page's header,
-   which names it. */
+/* A box with no heading of its own is named by the page's header. A page's
+   one box sits close under that header. Rules' two panes, its list and its
+   rule, sit side by side where they fit, so the rule's box is under no
+   header; there the Rules column's gap spaces the panes and the header,
+   and `admin.css` zeroes this margin. */
 .settings-untitled {
   margin-top: var(--space-4);
 }

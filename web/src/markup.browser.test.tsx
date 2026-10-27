@@ -223,7 +223,8 @@ describe('headings — §4.2', () => {
       await Promise.resolve()
       await Promise.resolve()
     })
-    const h1 = host?.querySelector('.account > h1')
+    // The page's header's title, `PageHeader` at level 1.
+    const h1 = host?.querySelector('.account > .page-header h1.page-title')
     if (!h1) throw new Error('no h1')
     expect(getComputedStyle(h1).fontSize).toBe(sizeOfAnH2Beside(h1))
   })

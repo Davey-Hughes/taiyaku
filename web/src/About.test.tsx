@@ -1,10 +1,13 @@
 import { act } from 'react'
-import { MemoryRouter } from 'react-router'
+import { MemoryRouter, Route, Routes } from 'react-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { About } from './About'
 import * as aboutApi from './about'
+import { Licence } from './Licence'
 import { ABOUT, UNKNOWN_BUILD } from './testing/about'
 import { clipboardContext } from './testing/clipboard'
+import { focused } from './testing/focused'
+import { licenceTextsLanded } from './testing/licence'
 import { mount } from './testing/mount'
 import { cellValue } from './testing/table'
 
@@ -93,10 +96,10 @@ describe('About', () => {
     async (_, build) => {
       vi.mocked(aboutApi.about).mockResolvedValue(build)
       const host = await settle()
-      const card = host.querySelector('.about-facts')
-      if (!card) throw new Error('no facts')
+      const facts = host.querySelector('.about-facts')
+      if (!facts) throw new Error('no facts')
       expect(
-        [...card.querySelectorAll('dt')].map((dt) => [
+        [...facts.querySelectorAll('dt')].map((dt) => [
           dt.textContent,
           dt.nextElementSibling?.tagName,
         ]),
@@ -106,7 +109,7 @@ describe('About', () => {
         ['OPDS catalog', 'DD'],
       ])
       expect(
-        [...card.querySelectorAll('a')].map((a) => a.getAttribute('href')),
+        [...facts.querySelectorAll('a')].map((a) => a.getAttribute('href')),
       ).toEqual([
         ...(build.commit === null
           ? []
@@ -117,11 +120,14 @@ describe('About', () => {
   )
 
   /**
-   * **The licence's card is drawn once the route has settled, last, either
+   * **The Licence section is drawn once the route has settled, last, either
    * way.** It uses nothing the route answers, so a failure keeps it, beside
    * the failure said; and it waits for the answer so that it never stands
-   * alone at the top of the page to be pushed down by the cards an answer
-   * brings.
+   * alone at the top of the page to be pushed down by the sections an
+   * answer brings. Each section is headed at h2, under the page's h1. Its
+   * two sentences, each a row of its own, link each licence they name to
+   * that licence on the licence page: taiyaku's to taiyaku's, and the
+   * fonts' to the first of the three fonts, which follow one another there.
    */
   it.each([
     [
@@ -137,40 +143,139 @@ describe('About', () => {
           .mocked(aboutApi.about)
           .mockRejectedValue(new Error('/api/about: 503 down')),
       ['Licence'],
-      ['/api/about: 503 down'],
+      ['This build’s details were not loaded: down'],
     ],
   ])(
-    'links to the licence page, naming taiyaku’s licence, in the last card, when the route %s',
-    async (_, answer, cards, alerts) => {
+    'links each licence it names to that licence on the licence page, in the last section, when the route %s',
+    async (_, answer, sections, alerts) => {
       answer()
       const host = await settle()
-      const drawn = [...host.querySelectorAll('.about-card')]
+      const drawn = [...host.querySelectorAll('.settings-section')]
+      expect(
+        drawn.map((el) => el.querySelector('.settings-section-title')?.tagName),
+      ).toEqual(sections.map(() => 'H2'))
       expect(drawn.map((el) => el.querySelector('h2')?.textContent)).toEqual(
-        cards,
+        sections,
       )
       expect(
         [...host.querySelectorAll('[role="alert"]')].map(
           (alert) => alert.textContent,
         ),
       ).toEqual(alerts)
-      const card = drawn.at(-1)
-      if (!(card instanceof HTMLElement)) throw new Error('no Licence card')
-      const licence = linkIn(card)
-      expect(licence.textContent).toBe('GPL-3.0-or-later')
-      expect(licence.getAttribute('href')).toBe('/about/licence')
-      expect(card.textContent).toBe(
-        'Licencetaiyaku is GPL-3.0-or-later, and its fonts are OFL-1.1.',
-      )
+      const section = drawn.at(-1)
+      if (!(section instanceof HTMLElement)) {
+        throw new Error('no Licence section')
+      }
+      const box = section.querySelector<HTMLElement>('.settings-box')
+      if (!box) throw new Error('no box in the Licence section')
+      expect(
+        [...box.children].map((sentence) => ({
+          tag: sentence.tagName,
+          text: sentence.textContent,
+          links: [...sentence.querySelectorAll('a')].map((link) => [
+            link.textContent,
+            link.getAttribute('href'),
+          ]),
+        })),
+      ).toEqual([
+        {
+          tag: 'P',
+          text: 'taiyaku is GPL-3.0-or-later.',
+          links: [['GPL-3.0-or-later', '/about/licence#taiyaku']],
+        },
+        {
+          tag: 'P',
+          text: 'Its fonts are OFL-1.1.',
+          links: [['OFL-1.1', '/about/licence#shippori-mincho-b1']],
+        },
+      ])
     },
   )
 
-  it('draws nothing under its title while the route has not answered', async () => {
+  /**
+   * **A failed request is said as a sentence**: what was not drawn, then
+   * why, in the server's own words where its answer carries some, by its
+   * status where the answer is a page of markup, and as thrown where nothing
+   * answered. Never as an address and a status with a body.
+   */
+  it.each([
+    [
+      'a sentence',
+      '/api/about: 503 the server is starting',
+      'This build’s details were not loaded: the server is starting',
+    ],
+    [
+      'markup',
+      '/api/about: 502 <html><body><h1>502 Bad Gateway</h1></body></html>',
+      'This build’s details were not loaded: the server answered 502',
+    ],
+    [
+      'nothing',
+      'Failed to fetch',
+      'This build’s details were not loaded: Failed to fetch',
+    ],
+  ])(
+    'says a request answered with %s as what was not loaded and why',
+    async (_, thrown, said) => {
+      vi.mocked(aboutApi.about).mockRejectedValue(new Error(thrown))
+      const host = await settle()
+      expect(
+        [...host.querySelectorAll('[role="alert"]')].map(
+          (alert) => alert.textContent,
+        ),
+      ).toEqual([said])
+    },
+  )
+
+  /**
+   * **Each licence link lands on its licence**, through the licence page's
+   * own landing on a fragment: followed under a router holding both pages,
+   * the licence page puts focus on the heading the link's fragment names.
+   * So a fragment the licence page does not draw fails here.
+   */
+  it.each([
+    ['GPL-3.0-or-later', 'taiyaku'],
+    ['OFL-1.1', 'Shippori Mincho B1'],
+  ])(
+    'followed, %s puts focus on the licence page’s heading %s',
+    async (words, heading) => {
+      let host: HTMLElement | undefined
+      await act(async () => {
+        host = mount(
+          <MemoryRouter initialEntries={['/about']}>
+            <Routes>
+              <Route path="/about" element={<About />} />
+              <Route path="/about/licence" element={<Licence />} />
+            </Routes>
+          </MemoryRouter>,
+        )
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+      const link = [...(host?.querySelectorAll('a') ?? [])].find(
+        (each) => each.textContent === words,
+      )
+      if (!link) throw new Error(`no link ${words}`)
+      act(() => {
+        link.click()
+      })
+      await licenceTextsLanded()
+      expect(focused()).toBe(heading)
+    },
+  )
+
+  it('draws nothing under its header while the route has not answered', async () => {
     vi.mocked(aboutApi.about).mockReturnValue(new Promise(() => {}))
     const host = await settle()
     const page = host.querySelector('section.about')
-    expect([...(page?.children ?? [])].map((el) => el.outerHTML)).toEqual([
-      '<h1>About</h1>',
+    expect([...(page?.children ?? [])].map((el) => el.className)).toEqual([
+      'page-header',
     ])
+    expect(
+      [...(page?.querySelectorAll('h1, h2, h3, h4, h5, h6') ?? [])].map(
+        (heading) => heading.outerHTML,
+      ),
+    ).toEqual(['<h1 class="page-title">About</h1>'])
   })
 
   it('shows the catalog’s address as this page’s origin before the path the route answers', async () => {
@@ -326,7 +431,9 @@ describe('About', () => {
     const host = await settle()
     const alerts = host.querySelectorAll('[role="alert"]')
     expect(alerts).toHaveLength(1)
-    expect(alerts[0]?.textContent).toBe('/api/about: 503 down')
+    expect(alerts[0]?.textContent).toBe(
+      'This build’s details were not loaded: down',
+    )
     expect(host.querySelector('.about-facts')).toBeNull()
     expect(host.querySelector('table')).toBeNull()
   })

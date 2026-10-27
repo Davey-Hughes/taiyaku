@@ -272,6 +272,10 @@ describe('admin.css carries a coarse-pointer floor', () => {
   // `settings.css`'s one coarse block: the floor for what the settings
   // components draw, which sits outside the `.field` labels this one names.
   const settingsCoarse = lastCoarseBlock(settingsSource)
+  // The text boxes and selects a settings row holds, as `settings.css`'s
+  // coarse rule names them.
+  const ROW_BOXES =
+    '.settings-row-control :where(input:not([type="checkbox"], [type="radio"]), select)'
 
   /**
    * A literal selector, escaped for use inside a regular expression — and
@@ -329,28 +333,24 @@ describe('admin.css carries a coarse-pointer floor', () => {
     // Every button on the six screens and `/about`, which is how the inbox's
     // pills, its kind tabs and its Dismiss/Reopen are reached.
     ':where(.proposals, .account, .config, .about) button:not(:where(.proposal-tabs, .preview-tabs) > button)',
-    // Every labelled control on them.
-    ':where(.proposals, .account, .config) .field :where(input, select, textarea)',
-    // And the one that no label wraps: `/account`'s key-name box, which the
-    // line above cannot reach and which would otherwise be the single input
-    // on that screen left at its desktop 35.6.
-    '.account .account-row input',
-    '.account-wide',
+    // Every labelled control on them, but `/account`'s, which are settings
+    // rows' controls, floored by `settings.css`.
+    ':where(.proposals, .config) .field :where(input, select, textarea)',
     // The link-shaped action the `button` line cannot reach, and which the
     // speculative `a.button` this list used to name did not reach either:
     // `/config/rules`'s Export, beside an Import button already at 44.
     '.editor-actions .export',
     // The `<details>` toggles, which no other rule styles.
-    ':where(.proposals, .account, .config) summary',
+    ':where(.proposals, .config) summary',
     // The inbox's checkbox row. Named at (0, 2, 1) rather than scoped with
     // `:where()`, because it carries `align-items` as well and the rule it
     // has to beat for that is (0, 2, 1).
     '.proposals .checks label',
-    // The box itself, scoped to the three roots rather than to `.checks`.
+    // The box itself, scoped to the admin roots rather than to `.checks`.
     // `.checks` holds one of these boxes and never held all of them — see
-    // `scopes the box to the three roots` below, which is the half of this
+    // `scopes the box to the admin roots` below, which is the half of this
     // that a second, narrower copy cannot satisfy.
-    ':where(.proposals, .account, .config) input[type="checkbox"]',
+    ':where(.proposals, .config) input[type="checkbox"]',
   ]) {
     it(`names ${subject}`, () => {
       expect(coarse).toMatch(inRule(subject))
@@ -373,24 +373,44 @@ describe('admin.css carries a coarse-pointer floor', () => {
     // And the box drawn over the label's end, a press beside it passing
     // through to the label.
     '.settings-row-check > .settings-row-control',
+    // A row's text box and select: every one on the settings pages and on
+    // `/account`, which no `.field` reaches.
+    ROW_BOXES,
   ]) {
     it(`names ${subject} in settings.css`, () => {
       expect(settingsCoarse).toMatch(inRule(subject))
     })
   }
 
+  /**
+   * **A row's text box and select are a finger's 44px, measured on the
+   * rendered box.** No other rule floors them: left out, `/account`'s key
+   * box would keep its desktop height beside controls that clear 44. The
+   * height is the coarse rule's; `border-box` is the row's base rule's, so
+   * the 44 includes the box's padding and border rather than adding them to
+   * 44 of content, which a text box, `content-box` by the UA's default,
+   * would otherwise draw at 54.
+   */
+  it('gives a row’s text box and select the 44px floor on the rendered box', () => {
+    expect(settingsCoarse).toMatch(inRule(ROW_BOXES, 'min-height:\\s*44px'))
+    expect(withoutComments(settingsSource)).toMatch(
+      inRule(
+        '.settings-row-control :where(input:not([type="checkbox"], [type="radio"]), select, textarea)',
+        'box-sizing:\\s*border-box',
+      ),
+    )
+  })
+
   it('gives every subject of the first rule the 44px row itself', () => {
     // The same shape as the two Criticals below, one rule up: `names` above
-    // is satisfied by any of these four sitting in a rule that declares
+    // is satisfied by either of these two sitting in a rule that declares
     // nothing. They share one rule today, and `inRule` reaches that rule's
     // own `{` wherever in the list a selector sits — and reaches a
     // *different* rule's if one of them is ever split out, which is how a
     // split that drops the declaration is caught.
     for (const subject of [
       ':where(.proposals, .account, .config, .about) button:not(:where(.proposal-tabs, .preview-tabs) > button)',
-      ':where(.proposals, .account, .config) .field :where(input, select, textarea)',
-      '.account .account-row input',
-      '.account-wide',
+      ':where(.proposals, .config) .field :where(input, select, textarea)',
     ]) {
       expect(coarse).toMatch(inRule(subject, 'min-height:\\s*44px'))
     }
@@ -474,9 +494,7 @@ describe('admin.css carries a coarse-pointer floor', () => {
   it('measures that 44 on the rendered box rather than on its content', () => {
     for (const subject of [
       ':where(.proposals, .account, .config, .about) button:not(:where(.proposal-tabs, .preview-tabs) > button)',
-      ':where(.proposals, .account, .config) .field :where(input, select, textarea)',
-      '.account .account-row input',
-      '.account-wide',
+      ':where(.proposals, .config) .field :where(input, select, textarea)',
     ]) {
       expect(coarse).toMatch(inRule(subject, 'box-sizing:\\s*border-box'))
     }
@@ -484,7 +502,7 @@ describe('admin.css carries a coarse-pointer floor', () => {
 
   /**
    * **And the same of any rule this floor grows later**, which the case
-   * above cannot say: its four selectors are a hand-kept list, so a fifth
+   * above cannot say: its two selectors are a hand-kept list, so a third
    * text box floored in a rule of its own would leave it green at 54. The
    * subject is what decides — a `<label>`, a `<summary>` or a checkbox row
    * carries no padding from the shared reset and is not the shape this is
@@ -508,8 +526,7 @@ describe('admin.css carries a coarse-pointer floor', () => {
     // to bump a number rather than to the loop that carries the meaning.
     expect(textBoxes.flatMap(({ prelude }) => selectors(prelude))).toEqual(
       expect.arrayContaining([
-        ':where(.proposals, .account, .config) .field :where(input, select, textarea)',
-        '.account .account-row input',
+        ':where(.proposals, .config) .field :where(input, select, textarea)',
       ]),
     )
     for (const rule of textBoxes) {
@@ -572,7 +589,7 @@ describe('admin.css carries a coarse-pointer floor', () => {
     // The `<details>` toggles — `RuleEditor`'s save-derive, the
     // removal-derives of `RemoveRoot`, `RemoveLibrary` and `MoveRoot`, and
     // `MoveRoot`'s move-volumes — which no other rule styles.
-    const summary = ':where(.proposals, .account, .config) summary'
+    const summary = ':where(.proposals, .config) summary'
     expect(coarse).toMatch(inRule(summary, 'min-height:\\s*44px'))
     // **`align-content`, not `align-items`, and that is the whole finding.**
     // A `<summary>` is `display: list-item`, so it takes `min-height` as it
@@ -586,7 +603,7 @@ describe('admin.css carries a coarse-pointer floor', () => {
     expect(coarse).not.toMatch(/summary[^{}]*\{[^}]*display:\s*(inline-)?flex/)
   })
 
-  it('scopes the box to the three roots, not to .checks', () => {
+  it('scopes the box to the admin roots, not to .checks', () => {
     // The `names` case above is satisfied by a `.checks`-scoped copy sitting
     // beside the widened rule just as well as by the widened rule alone, and
     // a copy is how this regressed the first time: the rule reached five of
@@ -668,13 +685,13 @@ describe('admin.css carries a coarse-pointer floor', () => {
    * whatever it is scoped to, so it wants the loose match the positives must
    * not have.
    */
-  const boxRule = ':where(.proposals, .account, .config) input[type="checkbox"]'
+  const boxRule = ':where(.proposals, .config) input[type="checkbox"]'
 
   it('gives the radios the ticks’ 24px box, in the one rule', () => {
     // A radio beside a tick drawn at 13px against 24 reads as a different
     // kind of row, and the grants hold both. They share the selector list, so
     // a copy of the rule for one cannot satisfy this.
-    const radio = ':where(.proposals, .account, .config) input[type="radio"]'
+    const radio = ':where(.proposals, .config) input[type="radio"]'
     expect(coarse).toMatch(
       new RegExp(
         `${escaped(boxRule)}\\s*,\\s*${escaped(radio)}\\s*\\{[^}]*inline-size:\\s*24px`,

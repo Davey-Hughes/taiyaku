@@ -148,15 +148,37 @@ export type SectionProps = {
       title: NonNullable<ReactNode>
       /** One line under the heading, outside the box. */
       description?: ReactNode
+      /**
+       * The heading's `id`, given where focus is sent to the heading: by a
+       * fragment link that leads to the section, or by a screen that finds
+       * it by this id, as a Revoke with no row left to take focus does
+       * (`useFocusAfterRevoke`). The heading then has `tabIndex` -1, so it
+       * takes that focus and is not a stop for Tab.
+       */
+      titleId?: string
+      /**
+       * Drawn at the end of the heading's line, outside the heading, so
+       * the heading keeps its own words; under it where the line is too
+       * short for both.
+       */
+      actions?: ReactNode
     }
   | {
-      /** Left out for a page's one box, which the page's own title names. */
+      /**
+       * Left out for a box the page's own title names: a page's one box,
+       * or each of the panes a page sets side by side, as Rules sets its
+       * list and its rule.
+       */
       title?: never
       /**
        * Not taken: an untitled box has no head for it to sit in, so it
        * would be dropped unseen. The page's header holds that line.
        */
       description?: never
+      /** Not taken: an untitled box has no heading for it to name. */
+      titleId?: never
+      /** Not taken: an untitled box has no heading line for them. */
+      actions?: never
     }
 )
 
@@ -179,6 +201,8 @@ function Frame({
   title,
   level = 3,
   description,
+  titleId,
+  actions,
   children,
   removal,
 }: SectionProps & { removal: boolean }) {
@@ -195,7 +219,16 @@ function Frame({
     >
       {title !== undefined && (
         <div className="settings-section-head">
-          <Tag className="settings-section-title">{title}</Tag>
+          <Tag
+            className="settings-section-title"
+            id={titleId}
+            tabIndex={titleId === undefined ? undefined : -1}
+          >
+            {title}
+          </Tag>
+          {actions !== undefined && (
+            <div className="settings-section-actions">{actions}</div>
+          )}
           {description !== undefined && (
             <p className="settings-section-description">{description}</p>
           )}

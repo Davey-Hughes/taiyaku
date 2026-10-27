@@ -32,6 +32,9 @@
  */
 import { useEffect, useState } from 'react'
 import type { Proposal } from './curation'
+import { HeldButton } from './HeldButton'
+import { useDrawnWait } from './hooks'
+import { NameWithBreaks } from './PathWithBreaks'
 import {
   PREVIEW_EXPENSIVE_ABOVE,
   type Rule,
@@ -61,6 +64,10 @@ export function RuleList({
    * this one, so a gesture made inside the window is applied, previewed and
    * then overwritten with nothing on screen saying so.
    *
+   * Frozen by `aria-disabled` and not `disabled`, so that a control with
+   * focus keeps it (`HeldButton`): each handler turns its gesture down from
+   * the send, and the buttons are drawn held once the write has lasted.
+   *
    * **A write, never `busy`:** a preview in flight is superseded by
    * `runPreview`'s sequence guard and is never lost, so a gesture during one
    * is correct and cheap. Freezing on `busy` would grey the list for ~281 ms
@@ -74,6 +81,8 @@ export function RuleList({
   onAdd: () => void
   onDelete: (index: number) => void
 }) {
+  /** The write, once it has lasted: the buttons' held look. */
+  const frozenDrawn = useDrawnWait(frozen)
   /** Which index is awaiting a confirmed delete, and the proposal it would reopen. */
   const [confirming, setConfirming] = useState<
     { index: number; proposal: number } | undefined
@@ -173,27 +182,36 @@ export function RuleList({
                 the label is a flex box that draws the box where it sat
                 before it had one. */}
             <label className="enable">
+              {/* Held from the send, as `AccountPage.tsx`'s boxes are
+                  (O159): `aria-disabled` draws nothing on a box, and the
+                  box is controlled, so React puts a refused tick back. */}
               <input
                 type="checkbox"
                 checked={rule.enabled}
-                disabled={frozen}
+                aria-disabled={frozen}
                 aria-label={`rule ${index + 1} enabled`}
-                onChange={() => onToggle(index)}
+                onChange={() => {
+                  if (!frozen) onToggle(index)
+                }}
               />
             </label>
-            <button
+            <HeldButton
               type="button"
               className="select"
-              disabled={frozen}
+              held={frozenDrawn}
               // O156: the selection is marked on the element that takes
               // focus, this button, rather than on the `<li>` around it.
               aria-current={selected === index ? 'true' : undefined}
               aria-label={`${ruleName(rule)} — ${ruleMechanism(rule)}`}
-              onClick={() => onSelect(index)}
+              onClick={() => {
+                if (!frozen) onSelect(index)
+              }}
             >
-              <span className="rule-name">{ruleName(rule)}</span>
+              <span className="rule-name">
+                <NameWithBreaks name={ruleName(rule)} />
+              </span>
               <span className="mechanism">{ruleMechanism(rule)}</span>
-            </button>
+            </HeldButton>
             {!rule.enabled && <span className="off">off</span>}
             {rule.id !== 0 && wroteRule.has(rule.id) && (
               <span
@@ -203,15 +221,17 @@ export function RuleList({
                 from a proposal
               </span>
             )}
-            <button
+            <HeldButton
               type="button"
               className="delete"
-              disabled={frozen}
+              held={frozenDrawn}
               aria-label={`delete rule ${index + 1}`}
-              onClick={() => askOrDelete(index)}
+              onClick={() => {
+                if (!frozen) askOrDelete(index)
+              }}
             >
               Delete
-            </button>
+            </HeldButton>
           </li>
         ))}
       </ol>
@@ -223,17 +243,18 @@ export function RuleList({
             {confirming.proposal}. Deleting it reopens that proposal — the
             question comes back to the inbox.
           </p>
-          <button
+          <HeldButton
             type="button"
             className="confirm-delete"
-            disabled={frozen}
+            held={frozenDrawn}
             onClick={() => {
+              if (frozen) return
               onDelete(confirming.index)
               setConfirming(undefined)
             }}
           >
             Delete and reopen
-          </button>
+          </HeldButton>
           <button type="button" onClick={() => setConfirming(undefined)}>
             Keep it
           </button>
@@ -261,14 +282,16 @@ export function RuleList({
         </p>
       )}
 
-      <button
+      <HeldButton
         type="button"
         className="add-rule"
-        disabled={frozen}
-        onClick={onAdd}
+        held={frozenDrawn}
+        onClick={() => {
+          if (!frozen) onAdd()
+        }}
       >
         + Add
-      </button>
+      </HeldButton>
     </div>
   )
 }

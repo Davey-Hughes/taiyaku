@@ -43,10 +43,13 @@
 import { type ReactNode, useEffect, useId, useRef, useState } from 'react'
 import { Link } from 'react-router'
 import { accountPath, USERS } from './configAddress'
+import { useConfirmPassword } from './confirmPassword'
 import { HeldButton } from './HeldButton'
 import { useDrawn, useDrawnWait, useFocusLeavesHeld } from './hooks'
 import type { Library } from './libraries'
-import { sentenceOf } from './message'
+import { reasonOf, refusalOf } from './message'
+import { DifferRoom, PasswordsDiffer } from './PasswordsDiffer'
+import { useFocusAfterRevoke } from './revokeFocus'
 import { PageHeader, RemovalSection, Row, Section } from './settingsLayout'
 import {
   lastSeen,
@@ -255,6 +258,15 @@ export function AccountPage({
   /** The account as this page knows it: the last answer, else the list's row. */
   const shown = applied ?? user
 
+  const sessionsId = useId()
+  // Focus that a Revoke's row would take with it to the page goes to the
+  // nearest row left in its list (`useFocusAfterRevoke`); with none left,
+  // to the heading of Sessions & keys.
+  const revokeFocus = useFocusAfterRevoke(
+    { sessions: shown.sessions, keys: shown.keys },
+    () => document.getElementById(sessionsId),
+  )
+
   const isSelf = actingAs === user.id
   const lastAdmin = onlyAdminWhoCanLogIn(users, shown)
 
@@ -305,15 +317,15 @@ export function AccountPage({
   /**
    * A write was refused. `late` says what was not done, for a refusal that
    * comes once this page has gone: the screen says it on the page the person
-   * is on, where nothing else names the account.
+   * is on, where nothing else names the account. On this page it is said
+   * too where the answer carries no sentence of the server's (`refusalOf`).
    */
   const failed = (late: string) => (err: unknown) => {
     inFlight.current = false
     setSaving(false)
     setRemoving(false)
-    const sentence = sentenceOf(err)
-    if (onScreen.current) setFailure(sentence)
-    else onLateRefusal?.(`${late} (${sentence}).`)
+    if (onScreen.current) setFailure(refusalOf(err, late))
+    else onLateRefusal?.(`${late} (${reasonOf(err)}).`)
   }
 
   const save = (patch: UserPatch, late: string, after?: () => void) => {
@@ -453,12 +465,19 @@ export function AccountPage({
   // person who pressed it: focus goes to the box, where the next one is
   // typed, and not to the page.
   useFocusLeavesHeld(nothingToSet, setButton, passwordBox)
+  const confirmation = useConfirmPassword(password)
+  const { differ, setConfirm } = confirmation
 
   const submitPassword = (e: React.FormEvent) => {
     e.preventDefault()
     if (password === '') return
+    if (differ) {
+      confirmation.heldPress()
+      return
+    }
     save({ password }, `A new password for ${shown.name} was not set`, () => {
       setPassword('')
+      setConfirm('')
       setWasReset(true)
     })
   }
@@ -473,11 +492,13 @@ export function AccountPage({
    * would report a failure for the thing the first had just done.
    */
   const revoke = (
+    row: { list: 'sessions' | 'keys'; id: number | string },
     send: () => Promise<void>,
     without: (held: User) => User,
     late: string,
   ) => {
     if (!begin()) return
+    revokeFocus.pressed(row.list, row.id)
     send()
       // **The row goes locally too, for `save`'s reason one path over.**
       // `settled` waits for the list read, and that read can fail or be
@@ -516,7 +537,12 @@ export function AccountPage({
       })
       .catch((err: unknown) => {
         if (seq !== latestCost.current) return
-        setCostFailure(sentenceOf(err))
+        setCostFailure(
+          refusalOf(
+            err,
+            `What removing ${shown.name} would take could not be counted`,
+          ),
+        )
       })
   }
 
@@ -905,18 +931,50 @@ export function AccountPage({
                     setPassword(e.target.value)
                   }}
                 />
-                <HeldButton
-                  ref={setButton}
-                  type="submit"
-                  name="reset"
-                  held={savingDrawn}
-                  disabled={nothingToSet}
-                >
-                  Set password
-                </HeldButton>
               </>
             )}
           </Row>
+          <Row label="Confirm password">
+            {(ids) => (
+              /* Held as New password is. */
+              <input
+                type="password"
+                id={ids.control}
+                name="confirm-password"
+                aria-label="Confirm password"
+                {...confirmation.confirmBox}
+                disabled={isSelf}
+                readOnly={saving}
+                aria-disabled={savingDrawn}
+                onChange={(e) => {
+                  if (inFlight.current) return
+                  confirmation.confirmBox.onChange(e)
+                }}
+              />
+            )}
+          </Row>
+          {/* Laid over the row below, Set password's, which it covers
+              whole, so drawing it moves nothing (`Callout`). */}
+          <PasswordsDiffer {...confirmation.line} />
+          {/* At the box's foot, after both boxes, where a form's submit is
+              looked for, as Change password is on the account screen. Not
+              beside Confirm password: that row would be the section's last,
+              with no row under it for the line saying the two differ to lie
+              over, which would then lie over the box being typed in. Kept as
+              tall as that line needs (`DifferRoom`). */}
+          <div className="settings-actions keeps-differ-room">
+            <DifferRoom />
+            <HeldButton
+              ref={setButton}
+              type="submit"
+              name="reset"
+              held={savingDrawn || differ}
+              onHeldPress={confirmation.heldPress}
+              disabled={nothingToSet}
+            >
+              Set password
+            </HeldButton>
+          </div>
           {/* Drawn with the form, empty, so that the sentence is read when
               it lands in it: a live region drawn together with what it says
               is often not read at all, and focus goes to the box, not here.
@@ -930,6 +988,7 @@ export function AccountPage({
 
       <Section
         title="Sessions & keys"
+        titleId={sessionsId}
         description={`${count(shown.sessions.length, 'session', 'sessions')}${JOINING_DOT}${count(shown.keys.length, 'API key', 'API keys')}`}
       >
         {shown.sessions.length === 0 ? (
@@ -960,10 +1019,12 @@ export function AccountPage({
                 >
                   <HeldButton
                     type="button"
+                    ref={revokeFocus.revokeRef('sessions', session.id)}
                     name={`revoke-session-${session.id}`}
                     held={savingDrawn}
                     onClick={() =>
                       revoke(
+                        { list: 'sessions', id: session.id },
                         () => revokeUserSession(user.id, session.id),
                         (held) => ({
                           ...held,
@@ -1000,10 +1061,12 @@ export function AccountPage({
                 >
                   <HeldButton
                     type="button"
+                    ref={revokeFocus.revokeRef('keys', key.id)}
                     name={`revoke-key-${key.id}`}
                     held={savingDrawn}
                     onClick={() =>
                       revoke(
+                        { list: 'keys', id: key.id },
                         () => revokeUserKey(user.id, key.id),
                         (held) => ({
                           ...held,

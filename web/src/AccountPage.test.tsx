@@ -116,6 +116,10 @@ const control = <T extends Element>(host: HTMLElement, selector: string): T => {
   return found
 }
 
+/** The password form's Confirm password, typed into wherever a set is sent. */
+const confirmBox = (host: HTMLElement) =>
+  control<HTMLInputElement>(host, 'input[name="confirm-password"]')
+
 async function choose(host: HTMLElement, selector: string, value: string) {
   const el = control<HTMLSelectElement>(host, selector)
   await act(async () => {
@@ -270,8 +274,10 @@ describe('the actor rule', () => {
     const me = user()
     const { host } = await show(me, [me, sam()], { actingAs: 1 })
     expect(
-      control<HTMLInputElement>(host, 'input[name="password"]').disabled,
-    ).toBe(true)
+      ['input[name="password"]', 'input[name="confirm-password"]'].map(
+        (box) => control<HTMLInputElement>(host, box).disabled,
+      ),
+    ).toEqual([true, true])
     const why = helpOf(row(host, 'New password'))
     if (!why) throw new Error('no help beside New password')
     expect(why.querySelector('code')?.textContent).toBe('/api/password')
@@ -293,6 +299,7 @@ describe('the actor rule', () => {
       setter?.call(box, 'hunter2')
       box.dispatchEvent(new Event('input', { bubbles: true }))
     })
+    await typeInto(confirmBox(host), 'hunter2')
     await click(control(host, 'button[name="reset"]'))
     expect(usersApi.patchUser).toHaveBeenCalledWith(2, { password: 'hunter2' })
     expect(changed).toHaveBeenCalled()
@@ -312,6 +319,7 @@ describe('the fields', () => {
     const box = control<HTMLInputElement>(host, 'input[name="password"]')
     const set = control<HTMLButtonElement>(host, 'button[name="reset"]')
     await typeInto(box, 'hunter2')
+    await typeInto(confirmBox(host), 'hunter2')
     act(() => set.focus())
     await click(set)
     expect(usersApi.patchUser).toHaveBeenCalledWith(2, { password: 'hunter2' })
@@ -333,6 +341,7 @@ describe('the fields', () => {
       control<HTMLInputElement>(host, 'input[name="password"]'),
       'hunter2',
     )
+    await typeInto(confirmBox(host), 'hunter2')
     await click(control(host, 'button[name="reset"]'))
     expect(usersApi.patchUser).toHaveBeenCalledWith(2, { password: 'hunter2' })
     expect(host.querySelector('form.reset [aria-live="polite"]')).toBe(region)
@@ -348,6 +357,7 @@ describe('the fields', () => {
     const box = control<HTMLInputElement>(host, 'input[name="password"]')
     const role = control<HTMLSelectElement>(host, 'select[name="role"]')
     await typeInto(box, 'hunter2')
+    await typeInto(confirmBox(host), 'hunter2')
     act(() => role.focus())
     await submit(control(host, 'form.reset'))
     expect(usersApi.patchUser).toHaveBeenCalledWith(2, { password: 'hunter2' })
@@ -370,6 +380,7 @@ describe('the fields', () => {
       setter?.call(box, 'hunter2')
       box.dispatchEvent(new Event('input', { bubbles: true }))
     })
+    await typeInto(confirmBox(host), 'hunter2')
     await click(control(host, 'button[name="reset"]'))
     expect(control(host, '.done').textContent).toBe(
       'Password set. sam is signed out everywhere.',
@@ -1218,6 +1229,7 @@ describe('the fields', () => {
       control<HTMLInputElement>(host, 'input[name="password"]'),
       'hunter2',
     )
+    await typeInto(confirmBox(host), 'hunter2')
     await act(async () => {
       control<HTMLElement>(host, 'button[name="reset"]').click()
       ;(second as HTMLElement).click()
@@ -1440,6 +1452,177 @@ describe('the fields', () => {
   })
 })
 
+/**
+ * Confirm password (the user's rulings of 2026-10-25): Set password is held
+ * while New password and Confirm password differ, and a callout laid under
+ * Confirm password's row, over Set password's at the form's foot (the
+ * user's rulings of 2026-10-26), says so whenever the confirm is neither
+ * empty nor the start of the new one, wherever focus is, and after a press
+ * of the held button.
+ */
+describe('an account’s Confirm password', () => {
+  /** Sam's page, seen by another administrator, and its password form. */
+  async function samsPassword() {
+    const me = user()
+    const other = user({ id: 2, name: 'sam', role: 'user' })
+    const { host } = await show(other, [me, other], { actingAs: 1 })
+    return {
+      host,
+      form: control<HTMLFormElement>(host, 'form.reset'),
+      box: control<HTMLInputElement>(host, 'input[name="password"]'),
+      confirm: confirmBox(host),
+      set: control<HTMLButtonElement>(host, 'button[name="reset"]'),
+    }
+  }
+
+  /**
+   * The status region in the callout drawn straight after Confirm
+   * password's row.
+   */
+  const lineAfter = (confirm: HTMLInputElement) => {
+    const callout = confirm.closest('.settings-row')?.nextElementSibling
+    expect(callout?.className).toBe('callout')
+    const region = callout?.querySelector(':scope > [role="status"]')
+    if (!(region instanceof HTMLElement)) throw new Error('no status region')
+    return region
+  }
+
+  it('holds Set password, by aria-disabled, while New password and Confirm password differ, and frees it when they match', async () => {
+    const { box, confirm, set } = await samsPassword()
+    await typeInto(box, 'hunter22')
+    expect(holdOf(set)).toBe('held')
+    await typeInto(confirm, 'hunter2')
+    expect(holdOf(set)).toBe('held')
+    await typeInto(confirm, 'hunter22')
+    expect(holdOf(set)).toBe('free')
+    await typeInto(confirm, 'hunter222')
+    expect(holdOf(set)).toBe('held')
+    await typeInto(box, 'hunter222')
+    expect(holdOf(set)).toBe('free')
+  })
+
+  it('says the two do not match for a press of Set password while they differ, the confirm empty or the start of the password, until a box is edited, and sends nothing', async () => {
+    const { form, box, confirm, set } = await samsPassword()
+    const region = lineAfter(confirm)
+    await typeInto(box, 'hunter22')
+    expect(region.textContent).toBe('')
+    await click(set)
+    expect([
+      region.textContent,
+      confirm.getAttribute('aria-invalid'),
+      confirm.getAttribute('aria-describedby'),
+    ]).toEqual(['The two passwords do not match.', 'true', region.id])
+
+    await typeInto(confirm, 'hunter')
+    expect(region.textContent).toBe('')
+    await click(set)
+    expect(region.textContent).toBe('The two passwords do not match.')
+    await typeInto(confirm, 'hunter2')
+    expect(region.textContent).toBe('')
+
+    // A submit that reaches the form another way says it too.
+    await submit(form)
+    expect(region.textContent).toBe('The two passwords do not match.')
+    expect(usersApi.patchUser).not.toHaveBeenCalled()
+  })
+
+  it('says the two do not match in a callout under Confirm password’s row, before Set password’s row and where Password set is said, in a status region drawn empty before it, for a typo and a longer confirm and not for the start of the password', async () => {
+    const { box, confirm } = await samsPassword()
+    const region = lineAfter(confirm)
+    const setRow = region.parentElement?.nextElementSibling
+    expect([
+      setRow?.querySelector(':scope > button[name="reset"]') !== null,
+      setRow?.nextElementSibling?.matches('.done'),
+    ]).toEqual([true, true])
+    expect(region.textContent).toBe('')
+    await typeInto(box, 'hunter22')
+    act(() => confirm.focus())
+    const said = async (typed: string) => {
+      await typeInto(confirm, typed)
+      expect(lineAfter(confirm)).toBe(region)
+      return region.textContent
+    }
+    expect(await said('hun')).toBe('')
+    expect(await said('hunx')).toBe('The two passwords do not match.')
+    expect(await said('hunter22')).toBe('')
+    expect(await said('hunter222')).toBe('The two passwords do not match.')
+    expect(await said('')).toBe('')
+  })
+
+  it('says the two do not match while they differ, wherever focus is', async () => {
+    const { host, box, confirm } = await samsPassword()
+    const region = lineAfter(confirm)
+    const role = control<HTMLSelectElement>(host, 'select[name="role"]')
+    // Filled while focus is in neither, as a password manager fills.
+    await typeInto(box, 'hunter22')
+    await typeInto(confirm, 'hunted')
+    expect(region.textContent).toBe('The two passwords do not match.')
+    for (const focused of [confirm, box, role]) {
+      act(() => focused.focus())
+      expect(region.textContent, focused.name).toBe(
+        'The two passwords do not match.',
+      )
+    }
+    await typeInto(confirm, 'hunter')
+    expect(region.textContent).toBe('')
+  })
+
+  it('names the line as Confirm password’s description, and marks the box invalid, only while the line is said', async () => {
+    const { box, confirm } = await samsPassword()
+    const region = lineAfter(confirm)
+    act(() => confirm.focus())
+    const marks = () => [
+      confirm.getAttribute('aria-invalid'),
+      confirm.getAttribute('aria-describedby'),
+    ]
+    await typeInto(box, 'hunter22')
+    await typeInto(confirm, 'hunter')
+    expect(marks()).toEqual([null, null])
+    await typeInto(confirm, 'hunted')
+    expect(region.id).not.toBe('')
+    expect(marks()).toEqual(['true', region.id])
+    await typeInto(confirm, 'hunter22')
+    expect(marks()).toEqual([null, null])
+  })
+
+  it('sends nothing for a submit while the two differ, and sends the new password once they match', async () => {
+    const { form, box, confirm } = await samsPassword()
+    await typeInto(box, 'hunter22')
+    await typeInto(confirm, 'hunter2')
+    await submit(form)
+    await typeInto(confirm, 'hunter23')
+    await submit(form)
+    expect(usersApi.patchUser).not.toHaveBeenCalled()
+    await typeInto(confirm, 'hunter22')
+    await submit(form)
+    expect(vi.mocked(usersApi.patchUser).mock.calls).toEqual([
+      [2, { password: 'hunter22' }],
+    ])
+  })
+
+  it('keeps focus on Set password when a change to the boxes holds it', async () => {
+    const { box, confirm, set } = await samsPassword()
+    await typeInto(box, 'hunter22')
+    await typeInto(confirm, 'hunter22')
+    act(() => set.focus())
+    expect(document.activeElement).toBe(set)
+    // A box filled while Set password has focus, as a password manager may
+    // fill one.
+    await typeInto(confirm, 'hunter2')
+    expect(holdOf(set)).toBe('held')
+    expect(document.activeElement).toBe(set)
+  })
+
+  it('empties New password and Confirm password once a set works', async () => {
+    const { box, confirm, set } = await samsPassword()
+    await typeInto(box, 'hunter22')
+    await typeInto(confirm, 'hunter22')
+    await click(set)
+    expect(usersApi.patchUser).toHaveBeenCalledTimes(1)
+    expect([box.value, confirm.value]).toEqual(['', ''])
+  })
+})
+
 describe('sessions and keys', () => {
   it('marks the browser doing the asking and revokes under this account', async () => {
     const other = user({
@@ -1567,6 +1750,83 @@ describe('a revocation that fails', () => {
   })
 })
 
+/**
+ * A proxy's own page for an upstream that did not answer, as the thrown
+ * message carries it after `path: status`.
+ */
+const PROXY_PAGE =
+  '502 <html>\r\n<head><title>502 Bad Gateway</title></head>\r\n<body>\r\n<center><h1>502 Bad Gateway</h1></center>\r\n</body>\r\n</html>\r\n'
+
+describe('a write answered with no sentence', () => {
+  const other = () =>
+    user({
+      id: 2,
+      name: 'sam',
+      role: 'user',
+      sessions: [
+        {
+          id: 'aaa',
+          created: '2026-09-01 10:00:00',
+          last_seen: '2026-09-06 09:00:00',
+          user_agent: 'Firefox',
+          ip: null,
+          current: false,
+        },
+      ],
+    })
+
+  it('says a revocation answered with a page of markup by what was not done and the status, and never the page', async () => {
+    vi.mocked(usersApi.revokeUserSession).mockRejectedValue(
+      new Error(`/api/library/users/2/sessions/aaa: ${PROXY_PAGE}`),
+    )
+    const { host } = await show(other(), [user(), other()], { actingAs: 1 })
+    await click(control(host, 'button[name="revoke-session-aaa"]'))
+    expect(host.querySelector('[role="alert"]')?.textContent).toBe(
+      'A session for sam was not revoked: the server answered 502',
+    )
+  })
+
+  it('says a dry run of a removal answered with a page of markup by what was not counted and the status, and never the page', async () => {
+    vi.mocked(usersApi.removalCost).mockRejectedValue(
+      new Error(`/api/library/users/2?dry_run=true: ${PROXY_PAGE}`),
+    )
+    const { host } = await show(other(), [user(), other()], { actingAs: 1 })
+    await click(control(host, 'button[name="remove"]'))
+    expect(
+      control(host, '.remove-user').querySelector('[role="alert"]')
+        ?.textContent,
+    ).toBe(
+      'What removing sam would take could not be counted: the server answered 502',
+    )
+  })
+
+  it('says a write answered with a page of markup once its page has gone by what was not done and the status, and never the page', async () => {
+    let refuse: ((err: Error) => void) | undefined
+    vi.mocked(usersApi.patchUser).mockImplementation(
+      () =>
+        new Promise((_, reject) => {
+          refuse = reject
+        }),
+    )
+    const late = vi.fn()
+    const { host } = await show(other(), [user(), other()], {
+      actingAs: 1,
+      onLateRefusal: late,
+    })
+    await click(control(host, 'input[name="can_stream"]'))
+    rerender(<p>another page</p>)
+    await act(async () => {
+      refuse?.(new Error(`/api/library/users/2: ${PROXY_PAGE}`))
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(late.mock.calls).toEqual([
+      ['Can stream for sam was not saved (the server answered 502).'],
+    ])
+  })
+})
+
 describe('a revocation whose reload brings nothing back', () => {
   it('drops the row it revoked, so no second press can 404 over it', async () => {
     // `settled` waits for the list read, and that read can fail or be
@@ -1672,6 +1932,112 @@ describe('a revocation answering after a fresher list', () => {
     expect(
       host.querySelector('button[name="revoke-session-ccc"]'),
     ).not.toBeNull()
+  })
+})
+
+/**
+ * Where focus goes when a Revoke's row goes with focus on it, which would
+ * drop it to the page: to the nearest row left in the same list, the next
+ * one, else the one before; with no row to go to, to the heading of
+ * Sessions & keys. Compared with `toBe`, since `toEqual` reads two Revokes
+ * of the same markup as equal.
+ */
+describe('focus after a Revoke', () => {
+  const session = (id: string, agent: string) => ({
+    id,
+    created: '2026-09-01 10:00:00',
+    last_seen: '2026-09-06 09:00:00',
+    user_agent: agent,
+    ip: null,
+    current: false,
+  })
+  const key = (id: number, name: string) => ({
+    id,
+    name,
+    created: '2026-08-01 10:00:00',
+    last_used: null,
+  })
+  const other = () =>
+    user({
+      id: 2,
+      name: 'sam',
+      role: 'user',
+      sessions: [
+        session('aaa', 'Firefox'),
+        session('bbb', 'Safari'),
+        session('ccc', 'Chrome'),
+      ],
+      keys: [key(9, 'the tablet'), key(10, 'the phone')],
+    })
+
+  /** Focus the Revoke named `name`, press it, and let what follows land. */
+  const pressRevoke = async (host: HTMLElement, name: string) => {
+    const button = control<HTMLButtonElement>(host, `button[name="${name}"]`)
+    act(() => button.focus())
+    await act(async () => {
+      button.click()
+      await new Promise((resolve) => {
+        setTimeout(resolve, 0)
+      })
+    })
+  }
+
+  const revokeNamed = (host: HTMLElement, name: string) =>
+    control<HTMLButtonElement>(host, `button[name="${name}"]`)
+
+  const sectionHeading = (host: HTMLElement) =>
+    control<HTMLElement>(
+      section(host, 'Sessions & keys'),
+      '.settings-section-title',
+    )
+
+  it('gives focus to the next session’s Revoke, else the one before’s, and with none left to the heading of Sessions & keys', async () => {
+    const { host } = await show(other(), [user(), other()], { actingAs: 1 })
+
+    await pressRevoke(host, 'revoke-session-bbb')
+    expect(document.activeElement).toBe(revokeNamed(host, 'revoke-session-ccc'))
+    await pressRevoke(host, 'revoke-session-ccc')
+    expect(document.activeElement).toBe(revokeNamed(host, 'revoke-session-aaa'))
+    await pressRevoke(host, 'revoke-session-aaa')
+    expect(document.activeElement).toBe(sectionHeading(host))
+    expect(sectionHeading(host).getAttribute('tabindex')).toBe('-1')
+    expect(vi.mocked(usersApi.revokeUserSession).mock.calls).toEqual([
+      [2, 'bbb'],
+      [2, 'ccc'],
+      [2, 'aaa'],
+    ])
+  })
+
+  it('gives focus to the next key’s Revoke, and with none left to the heading of Sessions & keys', async () => {
+    const { host } = await show(other(), [user(), other()], { actingAs: 1 })
+
+    await pressRevoke(host, 'revoke-key-9')
+    expect(document.activeElement).toBe(revokeNamed(host, 'revoke-key-10'))
+    await pressRevoke(host, 'revoke-key-10')
+    expect(document.activeElement).toBe(sectionHeading(host))
+    expect(vi.mocked(usersApi.revokeUserKey).mock.calls).toEqual([
+      [2, 9],
+      [2, 10],
+    ])
+  })
+
+  it('leaves focus where it was put when a Revoke’s row goes once focus has left it', async () => {
+    const answer = deferred<undefined>()
+    vi.mocked(usersApi.revokeUserSession).mockReturnValue(answer.promise)
+    const { host } = await show(other(), [user(), other()], { actingAs: 1 })
+    const button = revokeNamed(host, 'revoke-session-bbb')
+    act(() => button.focus())
+    await click(button)
+    const elsewhere = control<HTMLInputElement>(host, 'input[name="password"]')
+    act(() => elsewhere.focus())
+    await act(async () => {
+      answer.resolve(undefined)
+      await new Promise((resolve) => {
+        setTimeout(resolve, 0)
+      })
+    })
+    expect(host.querySelector('button[name="revoke-session-bbb"]')).toBeNull()
+    expect(document.activeElement).toBe(elsewhere)
   })
 })
 
@@ -2269,11 +2635,12 @@ describe('the waits, drawn only once each has lasted', () => {
     [
       'select[name="role"]',
       'input[name="password"]',
+      'input[name="confirm-password"]',
       'button[name="revoke-session-aaa"]',
       'button[name="revoke-key-9"]',
       'button[name="remove"]',
     ].map((selector) => holdOf(control(host, selector)))
-  const none = ['free', 'free', 'free', 'free', 'free']
+  const none = ['free', 'free', 'free', 'free', 'free', 'free']
 
   describe('a write on the page', () => {
     it('draws no control held for a write answered inside the wait’s delay', async () => {
@@ -2301,7 +2668,14 @@ describe('the waits, drawn only once each has lasted', () => {
       pass(WAIT_DRAWN_AFTER_MS - 1)
       expect(held(host)).toEqual(none)
       pass(1)
-      expect(held(host)).toEqual(['held', 'held', 'held', 'held', 'held'])
+      expect(held(host)).toEqual([
+        'held',
+        'held',
+        'held',
+        'held',
+        'held',
+        'held',
+      ])
     })
 
     // The password's form is submitted on its own as well as through a
@@ -2319,6 +2693,10 @@ describe('the waits, drawn only once each has lasted', () => {
             control<HTMLInputElement>(host, 'input[name="password"]'),
             'hunter22',
           ),
+      ],
+      [
+        'typing in Confirm password',
+        (host) => typeInto(confirmBox(host), 'hunter22'),
       ],
       [
         'a press of Set password',
@@ -2347,19 +2725,23 @@ describe('the waits, drawn only once each has lasted', () => {
       const { host } = await show(other(), [user(), other()], { actingAs: 1 })
       const password = control<HTMLInputElement>(host, 'input[name="password"]')
       await typeInto(password, 'hunter2')
+      await typeInto(confirmBox(host), 'hunter2')
       await click(control(host, 'input[name="can_stream"]'))
       pass(WAIT_DRAWN_AFTER_MS)
       expect([
         ...held(host),
         holdOf(control(host, 'button[name="reset"]')),
-      ]).toEqual(['held', 'held', 'held', 'held', 'held', 'held'])
+      ]).toEqual(['held', 'held', 'held', 'held', 'held', 'held', 'held'])
 
       await touch(host)
       expect(usersApi.patchUser).toHaveBeenCalledTimes(1)
       expect(
         control<HTMLSelectElement>(host, 'select[name="role"]').value,
       ).toBe('user')
-      expect(password.value).toBe('hunter2')
+      expect([password.value, confirmBox(host).value]).toEqual([
+        'hunter2',
+        'hunter2',
+      ])
       expect(usersApi.revokeUserSession).not.toHaveBeenCalled()
       expect(usersApi.revokeUserKey).not.toHaveBeenCalled()
       expect(usersApi.removalCost).not.toHaveBeenCalled()
@@ -2379,7 +2761,8 @@ describe('the waits, drawn only once each has lasted', () => {
       expect(usersApi.patchUser).toHaveBeenCalledTimes(1)
       const password = control<HTMLInputElement>(host, 'input[name="password"]')
       await typeInto(password, 'hunter2')
-      expect(password.value).toBe('')
+      await typeInto(confirmBox(host), 'hunter2')
+      expect([password.value, confirmBox(host).value]).toEqual(['', ''])
       await click(control(host, 'button[name="revoke-session-aaa"]'))
       await click(control(host, 'button[name="revoke-key-9"]'))
       expect(usersApi.revokeUserSession).not.toHaveBeenCalled()
@@ -2582,10 +2965,12 @@ describe('the field labels — O175', () => {
     ]
       .map((label) => ({ written: label.textContent, control: label.control }))
       .filter(({ control }) => control?.hasAttribute('aria-label'))
-    // Role and the new password. Named, because a loop over nothing passes.
+    // Role and the new password, twice. Named, because a loop over nothing
+    // passes.
     expect(labelled.map(({ written }) => written)).toEqual([
       'Role',
       'New password',
+      'Confirm password',
     ])
     for (const { written, control } of labelled) {
       expect(control?.getAttribute('aria-label'), written ?? '').toBe(written)

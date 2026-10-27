@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import adminSource from './admin.css?raw'
+import settingsSource from './settings.css?raw'
 import { rules, selectors, withoutComments } from '../testing/css'
 
 /**
@@ -33,6 +34,9 @@ function rulesWithSelector(
   )
 }
 
+/** The `.account` root as a class of its own, not `.account-page`'s prefix. */
+const ACCOUNT = /\.account(?![\w-])/
+
 /**
  * **Not vacuous, stated first.** Every count below is a filter over this
  * text, and an empty stylesheet makes each of them zero — the state this
@@ -40,92 +44,49 @@ function rulesWithSelector(
  * what separates "the rule is gone" from "the file never arrived".
  */
 it('reads admin.css at all', () => {
-  // `'.account-row {'` and not `'.account-row'`: the bare name is also a
-  // prefix of every other class that starts with it, so a renamed rule left
-  // this green. The brace makes it a rule, and one only this page's: the
-  // card and heading rules list About's classes beside the account's.
-  expect(adminSource).toContain('.account-row {')
+  // `'.account .secret {'` and not `'.account .secret'`: the brace makes it
+  // a rule, and one only this page draws with.
+  expect(adminSource).toContain('.account .secret {')
 })
 
 /**
- * **The 16 px floor's coupled lists agree** — O152's shape. `base.css.test.ts`
- * pairs an exposed rule with its coarse companion by *exact selector text*,
- * so a control subject added to the reset and not to the floor beneath it is
- * a size with no companion. That much `base.css.test.ts` does catch, proven
- * by hand on 2026-09-24: removing `.account .account-row input` from the coarse list
- * alone turns it red naming that selector. What it cannot see is a subject
- * missing from the *reset* — there is then no exposed rule for it at all —
- * which is why the membership is counted here too.
- *
- * **Three lists for a labelled field, two for a bare control.** `.account
- * .field` is the `<label>`, and it takes the block's base rule; as `.account
- * .field input` it takes the control reset and the coarse floor under it.
- * The key-name box has no label to wrap it — only a placeholder, and whether
- * it should have a real one is the accessibility pass's question, not this
- * file's — so `.account .account-row input` belongs to the two control lists and to
- * neither the label rule nor anything else.
- *
- * It was measured into those two rather than reasoned into them. Before
- * them the box drew **166px wide at 16px with `1px 2px` of padding**, beside
- * password boxes at 14px and `4px 8px`: `base.css`'s bare-control defaults,
- * because ⑤c's `.account .field input` cannot reach an input that no
- * `.field` wraps. `Account.browser.test.tsx` measures what those lists are
- * worth on screen; this file is what stops one of them being edited without
- * the other.
+ * **The page's boxes are settings rows' controls**, so `settings.css` sizes
+ * them, with its coarse-pointer floor beside the size it lifts. An entry
+ * for this page left in the shared `.field` block's coupled lists — the
+ * reset, the 16px floor, the 44px floor — would be a second size rule for
+ * a page box at another specificity, the shape that produced O151, and an
+ * entry left in one list and not the other is O152's. So none is left,
+ * neither the labels' entries nor the key box's.
  */
-describe('the account page joins the shared field block whole', () => {
-  it('puts the field label in all three coupled lists and nowhere else', () => {
-    const found = rulesWithSelector((s) => s.startsWith('.account .field'))
-    expect(found).toHaveLength(3)
-    // The pair ⑤c deleted rather than left beneath the new one: two rules at
-    // different specificities both setting a size on the same element is the
-    // shape that produced O151.
+describe('the account page leaves the shared field block whole', () => {
+  it('names the page’s labels in none of the field block’s lists', () => {
+    expect(
+      rulesWithSelector((s) => ACCOUNT.test(s) && /\.field(?![\w-])/.test(s)),
+    ).toEqual([])
+    // Nor a rule of the page's own beneath the field block: two rules at
+    // different specificities setting a size on the same box is O151's shape.
     expect(withoutComments(adminSource)).not.toMatch(/^\.account input\b/m)
   })
 
-  it('puts the unlabelled key-name box in both of the control lists', () => {
-    // The two coupled lists are the rules carrying *both* subjects. An
-    // intersection rather than "two rules somewhere": a second standalone
-    // copy of the reset, or the box named twice under the floor, would
-    // satisfy a bare count and neither would pair.
-    const coupled = rulesWithSelector(
-      (s) => s === '.account .account-row input',
-    ).filter(({ prelude }) =>
-      selectors(prelude).some((s) => s.startsWith('.account .field ')),
+  it('names the key box in none of the control lists', () => {
+    expect(rulesWithSelector((s) => /\.account-row(?![\w-])/.test(s))).toEqual(
+      [],
     )
-    expect(coupled).toHaveLength(2)
-    // One of them is the floor and the other is not — the pairing itself.
-    expect(
-      coupled.map(({ body }) =>
-        /font-size:\s*max\(\s*16px/.test(body) ? 'floor' : 'reset',
-      ),
-    ).toEqual(['reset', 'floor'])
-  })
-
-  it('gives that box the row’s remaining width, which no shared list can', () => {
-    // `.account-row` is a flex row shared with the Create button, so the
-    // reset's `min-width: 0` leaves the box at its intrinsic width and the
-    // rest of the row a hole — 399px of one, measured. The fill is a rule of
-    // its own because the shared lists reach five other screens, none of
-    // which puts a control in a flex row beside a button.
-    const fill = rulesWithSelector(
-      (s) => s === '.account .account-row input',
-    ).filter(({ body }) => /(?:^|;)\s*flex:\s*1\s*;/.test(body))
-    expect(fill).toHaveLength(1)
-    // And it is that rule alone: the shared reset must not grow a `flex`,
-    // which would reach the Configuration screens' fields as well.
-    expect(selectors(fill[0].prelude)).toEqual(['.account .account-row input'])
   })
 })
 
 describe('the account page’s h1 — O163', () => {
   it('stays at the h2 size it was drawn at before it was an h1', () => {
-    // `base.css` sizes an `h1` at `--text-h1` inside `.library`; this rule
-    // holds the page title where it was as an `h2`.
-    const bodies = rules(adminSource)
-      .filter(({ prelude }) => selectors(prelude).includes('.account > h1'))
+    // The title is `PageHeader`'s, and `settings.css` holds it at
+    // `--text-h2`, where `base.css` sizes an `h1` at `--text-h1` inside
+    // `.library`. No rule of this page's sizes it as well.
+    const bodies = rules(settingsSource)
+      .filter(({ prelude }) =>
+        selectors(prelude).includes('.page-header .page-title'),
+      )
       .map(({ body }) => body)
     expect(bodies).toHaveLength(1)
     expect(bodies[0]).toMatch(/(?:^|;)\s*font-size:\s*var\(--text-h2\)/)
+    expect(rulesWithSelector((s) => /\.account\s*>\s*h1\b/.test(s))).toEqual([])
   })
 })

@@ -261,6 +261,83 @@ describe('Section', () => {
     const empty = <Section title={null}>rows</Section>
     expect(empty.type).toBe(Section)
   })
+
+  it('gives its heading the titleId as its id, focusable out of the tab order, where one is given', () => {
+    const host = draw(
+      <Section title="taiyaku" level={2} titleId="taiyaku">
+        <p>rows</p>
+      </Section>,
+    )
+    const heading = one(host, HEADINGS)
+    expect(heading.id).toBe('taiyaku')
+    expect(heading.getAttribute('tabindex')).toBe('-1')
+    act(() => heading.focus())
+    expect(document.activeElement).toBe(heading)
+  })
+
+  it('gives its heading no id and leaves it unfocusable where no titleId is given', () => {
+    const host = draw(
+      <Section title="Sessions">
+        <p>rows</p>
+      </Section>,
+    )
+    const heading = one(host, HEADINGS)
+    expect(heading.hasAttribute('id')).toBe(false)
+    expect(heading.hasAttribute('tabindex')).toBe(false)
+  })
+
+  it('draws its actions on its heading’s line, outside the heading and outside the box', () => {
+    const host = draw(
+      <Section
+        title="taiyaku"
+        level={2}
+        titleId="taiyaku"
+        actions={<a href="/about/licence">Back to top</a>}
+      >
+        <p>rows</p>
+      </Section>,
+    )
+    const heading = one(host, HEADINGS)
+    const actions = one(host, '.settings-section-actions')
+    expect({
+      heading: [heading.textContent, heading.id],
+      inHead: actions.parentElement === one(host, '.settings-section-head'),
+      inHeading: heading.contains(actions),
+      inBox: actions.closest('.settings-box') !== null,
+      holds: one(actions, 'a').textContent,
+    }).toEqual({
+      heading: ['taiyaku', 'taiyaku'],
+      inHead: true,
+      inHeading: false,
+      inBox: false,
+      holds: 'Back to top',
+    })
+  })
+
+  it('draws no actions where it is given none', () => {
+    const host = draw(
+      <Section title="Sessions">
+        <p>rows</p>
+      </Section>,
+    )
+    expect(host.querySelector('.settings-section-actions')).toBeNull()
+  })
+
+  it('takes no actions without a title, which would have no heading line to sit on', () => {
+    // Held by `pnpm run typecheck`, as the cases above are.
+    const untitled = (
+      // @ts-expect-error An untitled box has no heading line to hold actions.
+      <Section actions={<button type="button">Go</button>}>rows</Section>
+    )
+    expect(untitled.type).toBe(Section)
+  })
+
+  it('takes no titleId without a title, which would have no heading to name', () => {
+    // Held by `pnpm run typecheck`, as the cases above are.
+    // @ts-expect-error A titleId names a heading, and an untitled box has none.
+    const untitled = <Section titleId="taiyaku">rows</Section>
+    expect(untitled.type).toBe(Section)
+  })
 })
 
 describe('Row', () => {

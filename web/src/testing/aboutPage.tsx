@@ -1,8 +1,9 @@
-// Shared by the browser tests that lay About and the licence page out as
-// `Shell` draws them: `About.browser.test.tsx`'s and
-// `Licence.browser.test.tsx`'s.
+// Shared by the browser tests that draw About and the licence page:
+// `About.browser.test.tsx` and `Licence.browser.test.tsx`, which lay them
+// out as `Shell` draws them, and `fieldNames.browser.test.tsx`, which reads
+// their headings.
 import { afterEach } from 'vitest'
-import { forgetAbout } from '../about'
+import { type About, forgetAbout } from '../about'
 import { ABOUT } from './about'
 
 /**
@@ -23,17 +24,17 @@ export function inShell(children: React.ReactNode) {
 const realFetch = globalThis.fetch
 
 /**
- * `fetch` answering `/api/about` with `ABOUT` and anything else with a 404,
- * so About draws from the real `about.ts`. Undone after each test by this
- * module's own hook, which puts `fetch` back and drops the answer `about.ts`
- * holds, so the next test asks again; nothing else a test stubbed is
- * touched.
+ * `fetch` answering `/api/about` with `answer`, `ABOUT` where it is left
+ * out, and anything else with a 404, so About draws from the real
+ * `about.ts`. Undone after each test by this module's own hook, which puts
+ * `fetch` back and drops the answer `about.ts` holds, so the next test asks
+ * again; nothing else a test stubbed is touched.
  */
-export function answerAbout(): void {
+export function answerAbout(answer: About = ABOUT): void {
   globalThis.fetch = ((input: RequestInfo | URL) =>
     Promise.resolve(
       String(input) === '/api/about'
-        ? new Response(JSON.stringify(ABOUT), {
+        ? new Response(JSON.stringify(answer), {
             status: 200,
             headers: { 'content-type': 'application/json' },
           })

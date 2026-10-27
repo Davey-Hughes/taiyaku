@@ -1,9 +1,10 @@
 /**
- * A refusal drawn beneath the control whose press it answers, and brought
- * into view when it is drawn (O209): a control at the foot of the window
- * leaves the sentence under it below the fold, and the page does not move by
- * itself. Each refusal slot is cleared when its press is made again, so a
- * second refusal in the same words is drawn anew and brought into view anew.
+ * A refusal drawn by the control whose press it answers, beneath it or in a
+ * callout laid over the rows around its row, and brought into view when it
+ * is drawn (O209): a control at the foot of the window leaves the sentence
+ * under it below the fold, and the page does not move by itself. Each
+ * refusal slot is cleared when its press is made again, so a second refusal
+ * in the same words is drawn anew and brought into view anew.
  */
 import { useEffect, useRef } from 'react'
 import { bringIntoView } from './reveal'

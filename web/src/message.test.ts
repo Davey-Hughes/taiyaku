@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { messageOf, sentenceOf, volumesOf } from './message'
+import {
+  messageOf,
+  reasonOf,
+  refusalOf,
+  sentenceOf,
+  volumesOf,
+} from './message'
 
 describe('messageOf', () => {
   it('reads an Error by its message rather than its toString', () => {
@@ -159,6 +165,61 @@ describe('volumesOf', () => {
       'Failed to fetch',
     ]) {
       expect(volumesOf(new Error(message))).toEqual([])
+    }
+  })
+})
+
+/** A proxy's own page for an upstream that did not answer. */
+const PROXY_PAGE =
+  '/api/keys: 502 <html>\r\n<head><title>502 Bad Gateway</title></head>\r\n</html>'
+
+describe('reasonOf', () => {
+  it('answers the status alone for a response whose body is a page of markup, empty, or no sentence', () => {
+    for (const [message, said] of [
+      [PROXY_PAGE, 'the server answered 502'],
+      ['/api/keys: 500 ', 'the server answered 500'],
+      ['/api/keys/1: 404 \n ', 'the server answered 404'],
+      ['/api/password: 400 {"error": ""}', 'the server answered 400'],
+      ['/api/session: 503 [1, 2]', 'the server answered 503'],
+    ] as const) {
+      expect(reasonOf(new Error(message))).toBe(said)
+    }
+  })
+
+  it('answers the sentence a body carries, and a failure that is not a response as it was thrown', () => {
+    for (const [message, said] of [
+      ['/api/keys/1: 404 no such key', 'no such key'],
+      ['/api/session: 403 {"error":"wrong origin"}', 'wrong origin'],
+      [
+        'That current password did not match.',
+        'That current password did not match.',
+      ],
+      ['Failed to fetch', 'Failed to fetch'],
+    ] as const) {
+      expect(reasonOf(new Error(message))).toBe(said)
+    }
+  })
+})
+
+describe('refusalOf', () => {
+  it('says what was not done before the status, for a response whose body carries no sentence', () => {
+    expect(refusalOf(new Error(PROXY_PAGE), 'The key was not made')).toBe(
+      'The key was not made: the server answered 502',
+    )
+  })
+
+  it('answers the sentence alone where the body carries one, and a failure that is not a response as it was thrown', () => {
+    for (const [message, said] of [
+      [
+        '/api/keys: 400 a key needs a name, so the right one can be revoked later',
+        'a key needs a name, so the right one can be revoked later',
+      ],
+      [
+        'That current password did not match.',
+        'That current password did not match.',
+      ],
+    ] as const) {
+      expect(refusalOf(new Error(message), 'The key was not made')).toBe(said)
     }
   })
 })

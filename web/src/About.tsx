@@ -2,13 +2,17 @@
  * `/about`: which build is running, where its source is, the OPDS catalog's
  * address, and each format taiyaku writes with its version and a sentence
  * saying what it is, all as `GET /api/about` answers them (`about.ts`);
- * and taiyaku's licence, a link to the licence page (`Licence.tsx`).
+ * and the licences, taiyaku's and its fonts', each a link to that licence
+ * on the licence page (`Licence.tsx`).
  *
- * **The licence's card is drawn once the request has settled, answered or
+ * **The Licence section is drawn once the request has settled, answered or
  * failed, and last.** It uses nothing the route says, so a failure keeps
  * it; it waits for the answer so that it is not drawn alone at the top of
- * the page and then pushed down by the cards the answer brings. While the
- * request is in flight the page is its title alone.
+ * the page and then pushed down by the sections the answer brings. While
+ * the request is in flight the page is its header alone.
+ *
+ * **The build's facts stay a `dl`**, not settings rows: a screen reader
+ * reads each as a term and its definition, and there is nothing to set.
  *
  * **The commit links to the repository's page for it only when there is
  * one.** A build that carries no commit says "unknown build" as plain text:
@@ -25,8 +29,14 @@ import { useEffect, useState } from 'react'
 import { Link } from 'react-router'
 import { type About as AboutAnswer, about, shortCommit } from './about'
 import { CatalogAddress } from './CatalogAddress'
-import { messageOf } from './message'
-import { FONT_LICENCE, TAIYAKU_LICENCE } from './spdx'
+import { reasonOf } from './message'
+import { PageHeader, Section } from './settingsLayout'
+import {
+  FONT_LICENCE,
+  FONTS_FRAGMENT,
+  TAIYAKU_FRAGMENT,
+  TAIYAKU_LICENCE,
+} from './spdx'
 
 export function About() {
   const [answer, setAnswer] = useState<AboutAnswer | undefined>()
@@ -39,7 +49,9 @@ export function About() {
         if (!cancelled) setAnswer(next)
       })
       .catch((err: unknown) => {
-        if (!cancelled) setFailure(messageOf(err))
+        if (!cancelled) {
+          setFailure(`This build’s details were not loaded: ${reasonOf(err)}`)
+        }
       })
     return () => {
       cancelled = true
@@ -48,13 +60,14 @@ export function About() {
 
   return (
     <section className="about" aria-label="About">
-      <h1>About</h1>
+      <PageHeader level={1} title="About" />
       {failure !== undefined && <p role="alert">{failure}</p>}
       {answer !== undefined && (
         <>
-          <section className="about-card">
-            <h2 className="about-heading">This build</h2>
-            <dl className="about-facts">
+          <Section level={2} title="This build">
+            {/* A group (`settings.css`): each fact is a row of the box, with
+                the box's line between one row and the next. */}
+            <dl className="about-facts settings-group">
               <div>
                 <dt>Commit</dt>
                 <dd>
@@ -80,9 +93,8 @@ export function About() {
                 </dd>
               </div>
             </dl>
-          </section>
-          <section className="about-card">
-            <h2 className="about-heading">Formats</h2>
+          </Section>
+          <Section level={2} title="Formats">
             <table className="config-table">
               <thead>
                 <tr>
@@ -113,17 +125,27 @@ export function About() {
                 ))}
               </tbody>
             </table>
-          </section>
+          </Section>
         </>
       )}
       {(answer !== undefined || failure !== undefined) && (
-        <section className="about-card">
-          <h2 className="about-heading">Licence</h2>
+        <Section level={2} title="Licence">
+          {/* Each link lands on its licence by the licence page's own
+              fragments, the fonts' on the first of the three fonts. A
+              sentence each, each a row of the box, so the two links are
+              never on lines close enough for a finger's targets to meet. */}
           <p className="about-licence">
-            taiyaku is <Link to="/about/licence">{TAIYAKU_LICENCE}</Link>, and
-            its fonts are {FONT_LICENCE}.
+            taiyaku is{' '}
+            <Link to={`/about/licence#${TAIYAKU_FRAGMENT}`}>
+              {TAIYAKU_LICENCE}
+            </Link>
+            .
           </p>
-        </section>
+          <p className="about-licence">
+            Its fonts are{' '}
+            <Link to={`/about/licence#${FONTS_FRAGMENT}`}>{FONT_LICENCE}</Link>.
+          </p>
+        </Section>
       )}
     </section>
   )

@@ -48,6 +48,8 @@
  * whole list.
  */
 import { type KeyboardEvent, useId, useRef, useState } from 'react'
+import { HeldButton } from './HeldButton'
+import { useDrawnWait } from './hooks'
 import {
   type Field,
   FIELDS,
@@ -111,18 +113,27 @@ export function PreviewTabs({
   preview: Preview | undefined
   rules: Rule[]
   selected: number | undefined
+  /**
+   * A preview is in flight. It holds the empty state back, and the two
+   * option buttons; "Previewing…" is the screen's to draw, on the Preview
+   * heading's line (`RuleEditor`).
+   */
   busy: boolean
   /**
    * A write is in flight — a save or an import. Separate from `busy` because
-   * they gate different things: `busy` also draws "Previewing…", which a
-   * write is not, while both make the two option buttons unsafe — see their
-   * own comment below.
+   * they gate different things: `busy` also holds the empty state back,
+   * which a write does not, while both make the two option buttons unsafe —
+   * see their own comment below.
    */
   frozen: boolean
   onReorder: (from: number, to: number) => void
   onSelectRule: (index: number) => void
 }) {
   const [tab, setTab] = useState<TabName>('Impact')
+  /** What holds the two option buttons, from the send: see their comment. */
+  const optionsHeld = busy || frozen
+  /** The same, once it has lasted: their held look. */
+  const optionsHeldDrawn = useDrawnWait(optionsHeld)
   /**
    * O156: tabs, because they switch what the pane below shows — not
    * navigation, which the `<nav>` they sat in claimed, since no URL moves.
@@ -207,16 +218,14 @@ export function PreviewTabs({
         ))}
       </div>
       <div role="tabpanel" id={panelId} aria-labelledby={tabId(tab)}>
-        {busy && <p className="busy">Previewing…</p>}
-
         {/*
         **The empty state is suppressed while a preview is in flight**, because
         the two are reachable together and contradict each other when they are.
         On the screen's very first load `busy` is true and `preview` is still
-        `undefined`, which drew "Previewing…" directly above "No preview yet.
-        Pick a rule, or edit one" — telling someone to start a thing that had
-        already started. Once a preview has landed the empty state is gone for
-        good, so this only ever suppresses the first one.
+        `undefined`, and "No preview yet. Pick a rule, or edit one" under
+        "Previewing…" would tell someone to start a thing that has already
+        started. Once a preview has landed the empty state is gone for good,
+        so this only ever suppresses the first one.
       */}
         {preview === undefined ? (
           busy ? null : (
@@ -439,10 +448,13 @@ export function PreviewTabs({
                         <p className="options">
                           Options:{' '}
                           {/*
-                          **Both are disabled while a preview or a write is in
+                          **Both are held while a preview or a write is in
                           flight**, because this row is drawn from the
                           *previous* preview and its indices need not still
-                          describe `rules`.
+                          describe `rules`. Held by `aria-disabled`, so the
+                          one pressed keeps focus through the preview it
+                          starts (`HeldButton`), and so each press is turned
+                          down here from the send.
 
                           The preview window: delete the last rule and press
                           either before the preview lands. "Edit rule N" sends
@@ -468,23 +480,27 @@ export function PreviewTabs({
                           second whole-branch review of this branch, in the
                           comment that claimed otherwise.
                         */}
-                          <button
+                          <HeldButton
                             type="button"
                             className="reorder"
-                            disabled={busy || frozen}
-                            onClick={() => onReorder(over.wins, over.first)}
+                            held={optionsHeldDrawn}
+                            onClick={() => {
+                              if (!optionsHeld) onReorder(over.wins, over.first)
+                            }}
                           >
                             Move rule {over.wins + 1} above rule{' '}
                             {over.first + 1}
-                          </button>{' '}
-                          <button
+                          </HeldButton>{' '}
+                          <HeldButton
                             type="button"
                             className="edit-winner"
-                            disabled={busy || frozen}
-                            onClick={() => onSelectRule(over.wins)}
+                            held={optionsHeldDrawn}
+                            onClick={() => {
+                              if (!optionsHeld) onSelectRule(over.wins)
+                            }}
                           >
                             Edit rule {over.wins + 1}
-                          </button>
+                          </HeldButton>
                         </p>
                       </li>
                     ))}

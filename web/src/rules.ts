@@ -297,8 +297,22 @@ export const importRules = (doc: string) =>
       rules: Rule[]
       complaints: string[]
       reopened_proposals: number[]
-    }>('/api/library/rules/import', 'POST', JSON.parse(doc) as unknown),
+    }>('/api/library/rules/import', 'POST', documentOf(doc)),
   )
+
+/**
+ * The picked file's text, parsed. A file that is not JSON is not an export
+ * document, and is said so in words that follow "The rules were not
+ * imported:"; the parser's own message quotes the file's first characters
+ * at the person.
+ */
+function documentOf(doc: string): unknown {
+  try {
+    return JSON.parse(doc) as unknown
+  } catch {
+    throw new Error('the file is not a rules document')
+  }
+}
 
 // --- the document converter, used in both directions ----------------------
 
