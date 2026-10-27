@@ -1622,11 +1622,11 @@ fn write_work(
     // saved here rather than re-derived from `work.content_key` after the
     // fact, which is what a caller with no memory of `held` would have to do.
     let mut rekeyed_from = None;
-    if let Some((_, _, held_key)) = &held {
-        if *held_key != crate::identity::content_key(&doc)? {
-            report.rekeyed += 1;
-            rekeyed_from = Some(held_key.clone());
-        }
+    if let Some((_, _, held_key)) = &held
+        && *held_key != crate::identity::content_key(&doc)?
+    {
+        report.rekeyed += 1;
+        rekeyed_from = Some(held_key.clone());
     }
     // The second identity probe: this work's address, for a work that has no
     // document to be addressed by. Without it, the changed files above would
@@ -1703,14 +1703,14 @@ fn write_work(
     // reported as an orphan. Waiting until here is what lets one derive do
     // what the store spec §4.4 asks of it, rather than needing a second pass
     // the way a brand-new work's hand document already does, above.
-    if let Some(old_key) = rekeyed_from {
-        if documents == Documents::Reconcile {
-            tx.commit()
-                .map_err(|e| format!("committing work {work_id} before its rekey: {e}"))?;
-            crate::hand::rename_for_rekey(conn, work_id, &old_key)?;
-            tx = crate::Nested::open(conn, "write_work")
-                .map_err(|e| format!("resuming work {work_id} after its rekey: {e}"))?;
-        }
+    if let Some(old_key) = rekeyed_from
+        && documents == Documents::Reconcile
+    {
+        tx.commit()
+            .map_err(|e| format!("committing work {work_id} before its rekey: {e}"))?;
+        crate::hand::rename_for_rekey(conn, work_id, &old_key)?;
+        tx = crate::Nested::open(conn, "write_work")
+            .map_err(|e| format!("resuming work {work_id} after its rekey: {e}"))?;
     }
 
     // The `work` columns the sidecar format has no field for, which are also

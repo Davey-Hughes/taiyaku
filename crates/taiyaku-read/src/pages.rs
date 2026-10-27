@@ -178,14 +178,14 @@ fn read_member(path: &Path) -> Result<Vec<Page>, String> {
 /// diagnosable rather than merely disappointing.
 fn skipped(path: &Path) -> String {
     let mut extensions: Vec<String> = Vec::new();
-    if path.is_dir() {
-        if let Ok(entries) = std::fs::read_dir(path) {
-            for entry in entries.flatten() {
-                if let Some(ext) = entry.path().extension().and_then(|e| e.to_str()) {
-                    let ext = ext.to_ascii_lowercase();
-                    if !extensions.contains(&ext) {
-                        extensions.push(ext);
-                    }
+    if path.is_dir()
+        && let Ok(entries) = std::fs::read_dir(path)
+    {
+        for entry in entries.flatten() {
+            if let Some(ext) = entry.path().extension().and_then(|e| e.to_str()) {
+                let ext = ext.to_ascii_lowercase();
+                if !extensions.contains(&ext) {
+                    extensions.push(ext);
                 }
             }
         }

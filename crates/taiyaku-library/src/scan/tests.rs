@@ -656,7 +656,7 @@ fn an_unchanged_container_is_not_reopened() {
     // four bytes, one short of the five-byte `%PDF-` signature `from_header`
     // needs, so the rewrite matches no signature at all — if the scan
     // re-sniffed it, `format` would follow the new bytes to NULL, not `pdf`.
-    // `std::fs::FileTimes` is stable since 1.75, under this workspace's 1.85.
+    // `std::fs::FileTimes` is stable since 1.75, below the workspace's rust-version.
     let tree = fixture();
     let archive = tree.path().join("truncated.cbz");
     std::fs::write(&archive, b"PK\x03\x04").expect("write");

@@ -60,8 +60,8 @@ fn lender_for(
         if edition == viewing || edition == authority {
             continue;
         }
-        if let Some(landed) = b.resolve(authority, edition, from.page, from.half) {
-            if b.index_of(
+        if let Some(landed) = b.resolve(authority, edition, from.page, from.half)
+            && b.index_of(
                 edition,
                 Slot {
                     page: landed.page,
@@ -69,9 +69,8 @@ fn lender_for(
                 },
             )
             .is_some()
-            {
-                return Some(edition.clone());
-            }
+        {
+            return Some(edition.clone());
         }
     }
     None

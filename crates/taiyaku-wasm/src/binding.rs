@@ -116,10 +116,11 @@ impl Binding {
     /// tables from their spreads, and, through the hub, recomposes the run
     /// list; see `Route`'s own doc comment in `route.rs`.
     fn cached_route(&self, from: &str, to: &str) -> Option<Route> {
-        if let Some(cached) = self.route_cache.borrow().as_ref() {
-            if cached.from == from && cached.to == to {
-                return Some(cached.route.clone());
-            }
+        if let Some(cached) = self.route_cache.borrow().as_ref()
+            && cached.from == from
+            && cached.to == to
+        {
+            return Some(cached.route.clone());
         }
         #[cfg(test)]
         self.route_builds.set(self.route_builds.get() + 1);

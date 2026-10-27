@@ -1744,10 +1744,10 @@ fn committing_the_real_transaction_branch_sends_no_savepoint_statement() {
 
     static SAVEPOINT_STATEMENTS: AtomicUsize = AtomicUsize::new(0);
     fn watch(event: rusqlite::trace::TraceEvent<'_>) {
-        if let rusqlite::trace::TraceEvent::Stmt(_, sql) = event {
-            if sql.contains("SAVEPOINT") {
-                SAVEPOINT_STATEMENTS.fetch_add(1, Ordering::SeqCst);
-            }
+        if let rusqlite::trace::TraceEvent::Stmt(_, sql) = event
+            && sql.contains("SAVEPOINT")
+        {
+            SAVEPOINT_STATEMENTS.fetch_add(1, Ordering::SeqCst);
         }
     }
 
@@ -1799,10 +1799,10 @@ fn committing_the_savepoint_branch_sends_no_rollback_to_savepoint_statement() {
 
     static ROLLBACK_TO_STATEMENTS: AtomicUsize = AtomicUsize::new(0);
     fn watch(event: rusqlite::trace::TraceEvent<'_>) {
-        if let rusqlite::trace::TraceEvent::Stmt(_, sql) = event {
-            if sql.contains("ROLLBACK TO SAVEPOINT") {
-                ROLLBACK_TO_STATEMENTS.fetch_add(1, Ordering::SeqCst);
-            }
+        if let rusqlite::trace::TraceEvent::Stmt(_, sql) = event
+            && sql.contains("ROLLBACK TO SAVEPOINT")
+        {
+            ROLLBACK_TO_STATEMENTS.fetch_add(1, Ordering::SeqCst);
         }
     }
 

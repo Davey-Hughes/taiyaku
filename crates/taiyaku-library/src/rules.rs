@@ -762,15 +762,15 @@ fn apply_captures(rule: &Rule, caps: &regex::Captures<'_>, resolved: &mut Resolv
     if let Some(m) = caps.name("title").filter(|m| !m.as_str().is_empty()) {
         resolved.set(Field::Title, rule.id, m.as_str().to_string());
     }
-    if let Some(m) = caps.name("volume") {
-        if let Ok(v) = m.as_str().parse::<f64>() {
-            resolved.set_number(Field::Volume, rule.id, v);
-        }
+    if let Some(m) = caps.name("volume")
+        && let Ok(v) = m.as_str().parse::<f64>()
+    {
+        resolved.set_number(Field::Volume, rule.id, v);
     }
-    if let Some(m) = caps.name("chapter") {
-        if let Ok(c) = m.as_str().parse::<f64>() {
-            resolved.set_number(Field::Chapter, rule.id, c);
-        }
+    if let Some(m) = caps.name("chapter")
+        && let Ok(c) = m.as_str().parse::<f64>()
+    {
+        resolved.set_number(Field::Chapter, rule.id, c);
     }
 }
 
@@ -851,23 +851,23 @@ pub(crate) fn fields_settable_by(rule: &Rule) -> std::collections::BTreeSet<Fiel
 /// decided this" is distinguishable from "nothing decided this" (no entry at
 /// all, left where [`Resolved::empty`] put it).
 fn apply_root_fallback(root: &Root, resolved: &mut Resolved) {
-    if resolved.edition_key.is_none() {
-        if let Some(v) = &root.edition_key {
-            resolved.edition_key = Some(v.clone());
-            resolved.provenance.insert(Field::EditionKey, ROOT_FALLBACK);
-        }
+    if resolved.edition_key.is_none()
+        && let Some(v) = &root.edition_key
+    {
+        resolved.edition_key = Some(v.clone());
+        resolved.provenance.insert(Field::EditionKey, ROOT_FALLBACK);
     }
-    if resolved.kind.is_none() {
-        if let Some(v) = &root.default_kind {
-            resolved.kind = Some(v.clone());
-            resolved.provenance.insert(Field::Kind, ROOT_FALLBACK);
-        }
+    if resolved.kind.is_none()
+        && let Some(v) = &root.default_kind
+    {
+        resolved.kind = Some(v.clone());
+        resolved.provenance.insert(Field::Kind, ROOT_FALLBACK);
     }
-    if resolved.language.is_none() {
-        if let Some(v) = &root.default_language {
-            resolved.language = Some(v.clone());
-            resolved.provenance.insert(Field::Language, ROOT_FALLBACK);
-        }
+    if resolved.language.is_none()
+        && let Some(v) = &root.default_language
+    {
+        resolved.language = Some(v.clone());
+        resolved.provenance.insert(Field::Language, ROOT_FALLBACK);
     }
 }
 

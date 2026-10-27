@@ -316,7 +316,7 @@ fn candidates(blk: &[f32]) -> Vec<Cand> {
 /// have.
 fn candidates_at(blk: &[f32], conf: f32) -> Vec<Cand> {
     let mut out = Vec::new();
-    for c in blk.chunks_exact(BLK_STRIDE) {
+    for c in blk.as_chunks::<BLK_STRIDE>().0 {
         let objectness = c[4];
         if objectness < conf {
             continue;

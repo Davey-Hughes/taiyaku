@@ -74,11 +74,9 @@ impl Resolution {
 /// nextest's threads besides — the alternative, a function that reads the
 /// environment itself, is untestable on both counts.
 ///
-/// `std::env::home_dir()` is deliberately not used. It was deprecated for
-/// years and un-deprecated in 1.85, which is this workspace's exact
-/// `rust-version`, and no 1.85 toolchain was available to check that against.
-/// Reading the variables is what the XDG base directory specification says to
-/// do regardless, so the question is avoided rather than answered.
+/// `std::env::home_dir()` is deliberately not used. Reading the variables is
+/// what the XDG base directory specification says to do, whatever
+/// `home_dir()`'s long deprecation history says about any given toolchain.
 pub(crate) fn cache_root(
     flag: Option<&Path>,
     xdg: Option<&OsStr>,

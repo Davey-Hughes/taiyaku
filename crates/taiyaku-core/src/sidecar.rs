@@ -1136,10 +1136,10 @@ impl Sidecar {
                 .filter(|&&(ps, pe, _)| ps <= end && pe >= start)
                 .map(|&(_, _, n)| n.to_string())
                 .collect();
-            if (start..=end).any(|s| changed.contains(&s)) {
-                if let Some(n) = note {
-                    notes.push(n.to_string());
-                }
+            if (start..=end).any(|s| changed.contains(&s))
+                && let Some(n) = note
+            {
+                notes.push(n.to_string());
             }
             let mut deduped: Vec<String> = Vec::new();
             for n in notes {

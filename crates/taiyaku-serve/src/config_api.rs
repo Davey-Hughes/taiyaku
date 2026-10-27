@@ -778,10 +778,10 @@ pub(crate) async fn create_rule(
 
     let created = tokio::task::spawn_blocking(move || {
         let conn = state.library.conn();
-        if let Some(root_id) = new_rule.root_id {
-            if !root_exists(&conn, root_id).map_err(NoAnswer::Failed)? {
-                return Err(NoAnswer::Unusable(format!("there is no root {root_id}")));
-            }
+        if let Some(root_id) = new_rule.root_id
+            && !root_exists(&conn, root_id).map_err(NoAnswer::Failed)?
+        {
+            return Err(NoAnswer::Unusable(format!("there is no root {root_id}")));
         }
         rules::create(&conn, &new_rule).map_err(NoAnswer::Failed)
     })
@@ -825,10 +825,10 @@ pub(crate) async fn patch_rule(
 
     let updated = tokio::task::spawn_blocking(move || {
         let conn = state.library.conn();
-        if let Some(Some(root_id)) = patch.root_id {
-            if !root_exists(&conn, root_id).map_err(NoAnswer::Failed)? {
-                return Err(NoAnswer::Unusable(format!("there is no root {root_id}")));
-            }
+        if let Some(Some(root_id)) = patch.root_id
+            && !root_exists(&conn, root_id).map_err(NoAnswer::Failed)?
+        {
+            return Err(NoAnswer::Unusable(format!("there is no root {root_id}")));
         }
         if let Some(complaint) =
             patched_pattern_complaint(&conn, id, &patch).map_err(NoAnswer::Failed)?
