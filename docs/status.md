@@ -5494,6 +5494,68 @@ mismatched pair said nothing at all.
 - **Art book linking**, if it is worth it — needs a different hash, and roughly one
   art book page in three has any manga counterpart at all.
 
+- **Every edition on screen at once, turned together.** Raised 2026-09-30.
+  The first design said L0 would unlock "whole-page swap and synchronised
+  side-by-side" (`2026-07-28-taiyaku-design.md`), and only the swap was
+  built: the reader draws one edition at a time. The ask is wider than the
+  pair that sentence imagined — two, three or four editions in panes across
+  the screen (the raw, the official release, a fan release, a colour
+  edition), with one page turn moving every pane to the same place. Much of
+  it exists already. `ReadingState` (`reading.ts`) keeps the `authority`, the
+  edition that owns the position, apart from the edition being viewed, so N
+  panes are N viewed editions over one authority; `display` says what an
+  edition draws for a slot, gap included; `withBorrow` (`borrow.ts`) says
+  what fills a gap; and `taiyaku_core::route::route` resolves any pair
+  through the hub. What does not exist is everything a one-pane reader never
+  had to decide. **Which pane drives**: an arrow steps by what is drawn, and
+  a joined spread in one edition is two pages in another, so "the same
+  place" is the driving pane's group projected into the others. **What a
+  follower shows at a gap**: `Gap`, a borrowed page, or an empty pane —
+  borrowing into a pane whose purpose is to show *this* edition may be
+  exactly wrong. **How it composes with two-page mode**: §8's pairing agrees
+  across editions, so N panes of two pages is well defined, and 2N pages is
+  not readable on a phone. **Whether L1's zoom follows across panes.** And
+  **what it costs**: N times the page fetches and prefetches, on the device
+  with the least memory. Each pane also needs its edition named to a screen
+  reader, not only placed on the screen. **Decided 2026-09-30: a phone shows
+  one edition at a time**, as it does now; panes are for the larger screens.
+
+- **Books: two editions side by side, and an apparatus set properly.** Raised
+  2026-09-30, and wider than §10's "project 3" row in
+  `2026-08-14-library-store-design.md`, which asks only for reflowable EPUB,
+  "a spine-and-CFI position model and a second reader". Two asks sit on top
+  of that. **Alignment**: two editions of one book — two translations in one
+  language, or the same book in two languages — to swap between or read side
+  by side, kept in step, as manga editions are. **Typesetting**: critical and
+  annotated editions whose notes, commentary and variants a reader can reach
+  without losing their place. A read-only survey of fourteen EPUBs on the NAS
+  (`docs/notes.md`, "Books: what the library's EPUBs hold") found four things
+  that shape both. **None marks its notes semantically**: each publisher
+  names its own classes, so a note is found by its links, not its markup.
+  **The apparatus comes in at least four shapes**, from linked footnotes to
+  commentary keyed only to line numbers printed in the text. **Some books
+  carry their own alignment**: verse line numbers on an original and its
+  translation, per-tercet links between them, print page lists. **And a table
+  of contents is not a skeleton to align on**: one of two translations of the
+  same novel leaves a chapter out of its contents and never marks the
+  chapter's heading as a heading, and paragraph counts are what found it.
+  That last is the manga problem again, one level down — structure is a hint,
+  and content is what aligns.
+  **Decided 2026-09-30, by the user.** Books make taiyaku an everyday reader
+  as well as a comparison one, with the comparison features behind settings
+  that turn them on and off. **Alignment is measured before the reader is
+  designed**, so the reader is built around what the measurement says a
+  block and an anchor must be. Same-language and cross-language pairs both
+  matter, and may be aligned by different means. The unit a reader keeps in
+  step is generally the paragraph, looser where a pair needs it. Scrolling
+  comes first and pagination after. Alignments are hand-correctable, as
+  manga's are. **PDF editions are in scope**, and for testing may enter as
+  page images; the two Emmas on the NAS are both scans — Cambridge's with no
+  text layer at all, Belknap's with an OCR one. **Phase 1, the measurement,
+  is designed** in
+  `docs/superpowers/specs/2026-09-30-book-alignment-measurement-design.md`
+  and not yet built.
+
 **L1 geometry left this list on 2026-08-08, and the line it left behind is kept
 rather than deleted.** It read:
 

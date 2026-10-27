@@ -26150,3 +26150,98 @@ the hand defects the tasks put back and watched fail.
 **Not measured:** the NAS; an OPDS client showing the Libraries level, which
 §13 of the spec names; a store whose `work.library_id` disagrees with its
 folders on real material.
+
+## Books: what the library's EPUBs hold (2026-09-30)
+
+A read-only survey for the "Books" entry under `docs/status.md`'s "Later",
+over `/mnt/user/media 1/Books/Literature` on the NAS, read through the NFS
+mount. Fourteen EPUBs, chosen for their apparatus or because a second
+edition of the same book sits beside them: Harry Potter 1 in English and in
+Korean (Pottermore), Moby-Dick (Norton Critical), Beowulf (Norton, Heaney,
+"Bilingual Edition"), Paradise Lost (Longman, Fowler), Hamlet (Arden Third
+Series), The Landmark Herodotus, Inferno (Anchor, Hollander), Infinite Jest,
+The Annotated Lolita, The New Annotated Sherlock Holmes vol. 1 (Klinger),
+Crime and Punishment in Oliver Ready's and in Pevear and Volokhonsky's
+translations, and Captain Blood (Standard Ebooks). A throwaway lxml script
+walked each spine; nothing was written to the NAS. A paragraph below is a
+non-empty `<p>`, and a chapter runs from one table-of-contents target to the
+next.
+
+**No file marks its notes semantically.** Ten are EPUB 2 and four EPUB 3.
+None of the fourteen carries an `epub:type` of `noteref`, `footnote` or
+`endnote`, or a `doc-noteref`, `doc-footnote` or `doc-endnote` role. Each
+publisher names its own classes instead: `fn-ref` and `fn` (Moby-Dick),
+`footnote`, `footnote1` and `footnote2` (Hamlet), `Annote` (Klinger), `note`
+(Paradise Lost), `notes` (Inferno), `x13-End-Note-Number` (Ready), and no
+class naming a note at all (Lolita, whose links are its only trace). Captain Blood, the one file with rich
+semantics, has no notes. Only Pevear and Volokhonsky mark page breaks
+semantically — 566 `pagebreak` elements behind a 566-entry page list; Ready
+has a 558-entry page list over bare `<span id="pageMap_…"/>` anchors.
+
+**Four shapes of apparatus.** *Linked notes*, a reference and a note that
+link to each other: 1430 of Moby-Dick's 1496 references point into their
+own file; Infinite Jest's endnotes carry sub-notes of their own (`fna`,
+lettered `a.` to `l.`), so a note can open another note. *Commentary keyed
+to line numbers, with no links*: in each of Paradise Lost's twelve books,
+all the verse comes first and all the notes after it, in the same file,
+each note a paragraph opening with a line number or range in italics —
+"*547–65*." — and the verse carries its own line numbers every five lines
+as text inside the line (`<p class="verse-lineno"><i>235</i> …`). *A tiered
+apparatus*: Hamlet's play text links into commentary kept in separate files
+at the back of the book (`part0034` to `part0038`), where
+`footnote` is a note on a line, `footnote1` a further lemma on the same
+line, and `footnote2` the textual variants in collation form (`90 return]
+return'd F`). *A facing-page text, flattened*: Beowulf's "bilingual" EPUB
+holds the whole Old English in three files, then the whole translation in
+three more, so the facing pages are gone; Inferno keeps its Italian and
+English in separate files.
+
+**Some books carry their own alignment.** Beowulf numbers both texts every
+ten lines, 10 to 3180, in a table cell beside the line — though the
+translation's cell changes class partway through (`sgc3`, then `num` from
+line 1600 on, in `part0012.html`), so a rule written for one class misses
+half the poem. Inferno links each Italian tercet to its English one by id
+(`c24-s01-i` to `c24-s01-e`), and carries the print page as an anchor
+(`<a id="page436"/>`). The two Crime and Punishment page lists do not align
+with each other — two translations paginate differently — but each is a
+citation key for its own edition.
+
+**Two translations in one language keep the original's paragraphing.**
+Across the first eighteen chapters, Part One I to Part Three IV, Ready and
+Pevear and Volokhonsky differ by at most three paragraphs a chapter (Part
+Three IV: 132 against 129), with character counts within 0.97–1.02 of each
+other. **Then they part, because Ready's table of contents has no Part Three
+VI** — and its text has no heading there either: the chapter opens with
+`<p class="Basic-Paragraph"><span id="pageMap_249"/><span
+class="x15-All-Caps">VI</span></p>`. So
+Ready's Part Three V holds 235 paragraphs against Pevear and Volokhonsky's
+164 + 70 = 234 for V and VI, and every chapter after it is off by one. Read
+one chapter along, the counts agree again: Part Four's six chapters are 128,
+111, 63, 186, 95 and 106 against 128, 111, 64, 186, 95 and 104.
+
+**A translation into another language does not.** Harry Potter 1 has
+seventeen chapters in both editions' contents, but the Korean splits
+paragraphs: 1.03 to 1.32 times as many a chapter, while its character count
+stays between 0.62 and 0.75 of the English. The English also puts each
+chapter's opening in a file of its own — 44 spine items against 28 — so the
+spine is no unit to align on either.
+
+**Every spine document parses as strict XML.** Adding Mandelbaum's Inferno
+to the fourteen, 763 spine documents across fifteen books went through lxml's
+strict parser with no failure, calibre's conversions included — so the
+extractor does not need an HTML parser on this evidence. One thing a naive
+reader of the package would get wrong: Captain Blood's manifest names a spine
+document with a `../` in its path, which must be resolved against the
+package document's directory before the archive is asked for it.
+
+**Four of the critical editions are PDF only**: Emma (Belknap, annotated),
+Ulysses (Cambridge Centenary), King Lear (Arden Third Series) and The
+Comedies of Machiavelli (bilingual).
+
+**Both Emmas are scans.** Cambridge's (677 pages, `pdfinfo` Creator
+`DuXiu/SuperStar`) yields no text at all from `pdftotext` on pages 20, 100,
+300 and 500; Belknap's (584 pages, Creator `Internet Archive`) carries an OCR
+text layer, 1856 to 3402 non-space characters on the same four pages. So a
+PDF edition enters taiyaku as page images, and aligning one against an EPUB
+by its text needs that text from somewhere — its own OCR layer where there is
+one, a recognition pass where there is not.
