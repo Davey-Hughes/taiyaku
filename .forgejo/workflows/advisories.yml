@@ -1,0 +1,191 @@
+name: advisories
+
+# `cargo deny check advisories` over the workspace's `Cargo.lock`, configured
+# by `deny.toml`, which gives the command to run it locally. **The one check
+# here that can go red with nothing merged**: what it compares the lockfile
+# against, the RustSec advisory database, is cloned fresh each run and moves on
+# its own. Advisories only — not licenses, bans or sources.
+#
+# **Its own workflow rather than a fifth job in `ci.yml`, and that is the
+# point of it.** `docker` there runs only once the four gate jobs pass, so a
+# job that fails whenever an advisory is published would hold up the image
+# build, the Sunday rebuild included, whose purpose is to ship fixes. Nothing in
+# `ci.yml` needs this workflow and nothing here needs `ci.yml`. Nor is it a
+# required status: branch protection names `ci.yml`'s four contexts.
+#
+# Accepting a finding has two routes, and they are not alternatives. **This is
+# the one place both are described**; `deny.toml` and docs/ci.md point here.
+#
+#  - **One advisory, the normal path**: an entry in `deny.toml`'s `ignore`
+#    list, `{ id = "RUSTSEC-…", reason = "…" }`, whose reason says why it is
+#    accepted — no fixed release, not reachable, or a fix behind a major bump —
+#    and when to revisit it. It goes through a pull request like any other
+#    change. Every run prints each accepted advisory as a note carrying its
+#    reason, so a green run still says what it let through. An entry that
+#    stops matching, because the crate moved past it or the advisory was
+#    withdrawn, prints `warning[advisory-not-detected]`: delete it then.
+#  - **Everything, for a while, the emergency path**: the `ADVISORIES_MODE`
+#    repository variable, set to `warn` under the repository's Settings →
+#    Actions → Variables. The job still runs and prints every finding exactly
+#    as it would fail, then passes, with a `WARN-ONLY MODE` line at the top of
+#    the step and another under any findings. Delete the variable to restore
+#    the gate. Unset, or any value but `warn`, means findings fail; a value
+#    that is set and is not `warn` is named in the log, so a typo cannot read
+#    as a working switch.
+#
+# `spike/Cargo.lock` is not checked; `deny.toml` says why. See docs/ci.md,
+# "The advisory check".
+
+on:
+  push:
+    branches: [main]
+  # **Pull requests only when they touch what decides the graph**: the
+  # manifests, `Cargo.lock`, `deny.toml`, the cargo config (which can change the
+  # resolved graph and the index source) or this file. Not `spike/Cargo.lock`,
+  # which is not checked, and not `rust-toolchain.toml`, which this job does not
+  # read. Unfiltered, an advisory published today would turn every open pull
+  # request red for a change none of them made. A push to `main`, the schedule
+  # and a dispatch stay unfiltered: they are what catch a new advisory against
+  # an unchanged lockfile.
+  #
+  # **That filter is also why this must never become a required status**: a
+  # pull request that touches none of these never reports it, so a required
+  # check would leave that pull request pending forever.
+  pull_request:
+    paths:
+      - "**/Cargo.toml"
+      - "Cargo.lock"
+      - "deny.toml"
+      - ".cargo/config.toml"
+      - ".cargo/config"
+      - ".forgejo/workflows/advisories.yml"
+  workflow_dispatch:
+  # **Weekly**, so an advisory published against an unchanged lockfile surfaces
+  # in a week when nothing merges. Mondays 15:00 UTC (08:00 PDT / 07:00 PST), a
+  # day clear of the Sunday image rebuild.
+  schedule:
+    - cron: "0 15 * * 1"
+
+# No `concurrency:` block, as in `ci.yml`, so no run of this workflow cancels
+# another — a push, the schedule and a dispatch on `main` included.
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  cargo-deny:
+    runs-on: docker
+    # Twice `ci.yml`'s bound. This job compiles nothing, so its only ways to
+    # hang are a stalled download — the release tarball, the advisory database,
+    # the crates `cargo metadata` reads — but those are cold every run: nothing
+    # is cached, and the fetch below measured 502 MB into an empty `CARGO_HOME`.
+    timeout-minutes: 20
+    container:
+      image: rust:1-bookworm
+    steps:
+      - name: Checkout
+        env:
+          TOKEN: ${{ secrets.FORGEJO_TOKEN }}
+        run: |
+          host="${FORGEJO_SERVER_URL#http://}"; host="${host#https://}"
+          scheme="${FORGEJO_SERVER_URL%%://*}"
+          git init -q .
+          git remote add origin "${scheme}://x-access-token:${TOKEN}@${host}/${FORGEJO_REPOSITORY}.git"
+          git fetch -q --depth 1 origin "$FORGEJO_REF"
+          git checkout -q FETCH_HEAD
+      - name: Use the image's own toolchain
+        # cargo-deny compiles nothing; it needs cargo and rustc for `cargo
+        # metadata` and nothing else. `rust-toolchain.toml` names `stable`, which
+        # this image carries under a version number instead (docs/ci.md,
+        # "Toolchain note"), so honouring it would download a second toolchain
+        # with rustfmt, clippy and the wasm32 target, for no use here. The
+        # image's toolchain is installed under `$RUST_VERSION` — its Dockerfile
+        # sets that variable and installs exactly that name, minimal profile — so
+        # `RUSTUP_TOOLCHAIN` points every later step at it and nothing is
+        # installed. `${RUST_VERSION:?}` fails this step rather than writing an
+        # empty override if the image ever stops setting it. The toolchain list
+        # is printed last, so a toolchain rustup installed behind the override's
+        # back would show up in the log.
+        run: |
+          echo "RUSTUP_TOOLCHAIN=${RUST_VERSION:?}" >> "$GITHUB_ENV"
+          RUSTUP_TOOLCHAIN="$RUST_VERSION" cargo --version
+          rustup toolchain list
+      - name: Install cargo-deny
+        # A prebuilt release binary, the precedent `ci.yml` sets for
+        # cargo-llvm-cov, nextest and wasm-pack: this job only runs the tool,
+        # never links against it. The musl build is static, so it runs on the
+        # glibc bookworm container.
+        #
+        # **The checksum is upstream's this time**, unlike those three. The
+        # release publishes `cargo-deny-0.20.2-x86_64-unknown-linux-musl.tar.gz.sha256`
+        # beside the tarball, and it matched both GitHub's own digest for the
+        # asset and a sha256sum of the downloaded file. It is still pinned here
+        # rather than fetched at run time, because whoever can replace a release
+        # asset in place can replace its `.sha256` too. Bump the version and the
+        # digest together.
+        run: |
+          curl -fsSL -o /tmp/cargo-deny.tar.gz \
+            https://github.com/EmbarkStudios/cargo-deny/releases/download/0.20.2/cargo-deny-0.20.2-x86_64-unknown-linux-musl.tar.gz
+          echo "9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f  /tmp/cargo-deny.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/cargo-deny.tar.gz -C /usr/local/bin --strip-components=1 \
+            cargo-deny-0.20.2-x86_64-unknown-linux-musl/cargo-deny
+          cargo deny --version
+      - name: Fetch the advisory database and the crate graph
+        # **Everything the check needs from the network, once**, in a step that
+        # fails on any error whatever the mode: the advisory database (`db`,
+        # cloned from github.com/RustSec/advisory-db) and the crates and index
+        # entries of the graph (`index`). The check below then runs `--offline`,
+        # cargo-deny 0.20's replacement for `check --disable-fetch`, so both of
+        # its runs are judged against this one database snapshot, and a fetch
+        # that fails halfway cannot pass for a finding. `fetch db` alone is not
+        # enough: measured, it downloads no crates, and an `--offline` check on
+        # a fresh `CARGO_HOME` then fails inside `cargo metadata`.
+        run: |
+          set -eu
+          cargo deny --log-level info --locked fetch db index
+          # Informational only, so it can never fail the step.
+          for db in "${CARGO_HOME:-$HOME/.cargo}"/advisory-dbs/*/; do
+            [ -d "$db/.git" ] && git -C "$db" log -1 --format='advisory database snapshot: %H (committed %cI)' || true
+          done
+      - name: Check advisories
+        # `--locked`, so the check reads the committed lockfile rather than a
+        # fresh resolve. The graph is set in `deny.toml` (`[graph] all-features`,
+        # the feature set `ci.yml` lints and tests under), so a local run checks
+        # the same one. `--log-level info` prints each accepted advisory as a
+        # note carrying its `deny.toml` reason.
+        #
+        # **Warn mode excuses findings and nothing else.** It runs the check as
+        # usual first, so the log shows every finding at the severity that
+        # fails it. Only when that fails does it run the same check again,
+        # quietly and just as offline, with `-W` for each kind of finding, which
+        # makes cargo-deny report findings as warnings: if that passes, findings
+        # were all that failed, and the step says so and passes. A broken
+        # `deny.toml` or a stale lockfile already failed the fetch step above,
+        # in either mode, so this step never runs on one; anything else that is
+        # not a finding fails the re-run. A switch that swallowed those too
+        # would turn "the check passed" into "the check may not have run".
+        #
+        # **Not `-W` on the only run.** Measured: it relabels the advisories
+        # `deny.toml` accepts as warnings too, and the log can no longer tell
+        # an accepted advisory from one that would fail.
+        #
+        # `set -eu` explicitly rather than the runner's implicit `-e`: the
+        # closing WARN-ONLY line must never print after a failed re-run.
+        env:
+          MODE: ${{ vars.ADVISORIES_MODE }}
+        run: |
+          set -eu
+          case "$MODE" in
+            warn) echo "WARN-ONLY MODE: ADVISORIES_MODE=warn, so findings below are reported but do not fail this step" ;;
+            '') ;;
+            *) echo "ADVISORIES_MODE is '$MODE', not 'warn', so findings fail this step as usual" ;;
+          esac
+          rc=0
+          cargo deny --log-level info --locked --offline check --show-stats advisories || rc=$?
+          if [ "$rc" -ne 0 ] && [ "$MODE" = warn ]; then
+            cargo deny --log-level error --locked --offline check \
+              -W vulnerability -W notice -W unmaintained -W unsound -W yanked advisories
+            echo "WARN-ONLY MODE: the check above failed, and passed again with every kind of finding demoted to a warning, so findings are all that failed it. This step passes only because ADVISORIES_MODE=warn; delete the variable to restore the gate."
+            rc=0
+          fi
+          exit "$rc"

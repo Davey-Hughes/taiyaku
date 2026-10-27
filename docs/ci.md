@@ -59,11 +59,16 @@ week. One rule, denied precisely.
 **It is cheap because `--no-deps` is doing the work**: documenting the
 workspace's own crates and nothing they depend on.
 
-### The one workflow that is not a job
+### The workflows that are not jobs
 
 `mutants.yml` is dispatched by hand and **gates nothing**. It is not in the table above,
 it is not in `check-all.sh`, and no pull request waits on it. See "Mutation
 testing, and why it cannot be a gate" below.
+
+`advisories.yml` runs `cargo deny check advisories` on pushes to `main`, a
+dispatch, a weekly schedule, and pull requests that touch the lockfile, the
+manifests or its own configuration. Nothing in `ci.yml` waits on it, so a newly
+published advisory cannot hold up the image. See "The advisory check" below.
 
 ## The local mirror, and the one thing it cannot mirror
 
@@ -1750,6 +1755,31 @@ build and the probe have passed; nothing is pushed.
 cold image build on the NAS, whose i7-9700K is slower per core than the
 workstation and carries other load. A first run also pulls three base images
 and installs the toolchain twice. Re-size the figure from the first real runs.
+
+## The advisory check
+
+`.forgejo/workflows/advisories.yml` checks the workspace's `Cargo.lock`
+against the RustSec database with cargo-deny 0.20.2, a pinned and checksummed
+release binary, in the same `rust:1-bookworm` container as the Rust gate jobs
+(lint, test, wasm), on the image's own toolchain. The database is cloned fresh
+each run, so this is the one check that can go red with nothing merged, and
+that is why it is a workflow of its own: an advisory published on a Saturday
+must not stop Sunday's rebuild, which exists to ship fixes. For the same reason
+it runs weekly, Mondays 15:00 UTC, and on every push to `main`. Pull requests
+run it only when they touch `Cargo.lock`, a manifest, `deny.toml`, the cargo
+config or the workflow, so a new advisory does not turn every open pull
+request red at once — which is also why it is not a required status: a pull
+request that touches none of those never reports it. `check-all.sh` does not
+run it: it is not one of the four `ci.yml` jobs the script mirrors.
+
+`deny.toml` gives the command that checks the same graph locally. How to
+accept a finding — an `ignore` entry for one advisory, or the `ADVISORIES_MODE`
+repository variable for all of them for a while — is described once, in the
+workflow's header. Every entry but paste's is zip or its zstd stack, and one
+move to zip 9 should clear them all.
+
+`spike/Cargo.lock` is not checked: `probe` never ships, and the `tract-onnx`
+it drives is checked through `taiyaku-cli`'s dev-dependency.
 
 ## Why the variables say Forgejo and not GitHub
 
