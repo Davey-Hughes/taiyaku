@@ -430,8 +430,11 @@ property and are not expected to agree.
 The repository builds one image: the server, with the web app it serves.
 CI pushes it as `forge.daveynet.xyz/davey/taiyaku:sha-<first 7 of the commit>`
 on every merge to `main` whose pipeline passes, and as `:latest` when that
-commit is main's tip. It listens on 8484
-and runs as uid 99, gid 100 (Unraid's `nobody:users`). It needs three mappings:
+commit is main's tip. Every Sunday, and on a manual dispatch on `main`, it
+rebuilds main's tip with a fresh `runtime` stage and re-pushes its `sha-` tag
+and `:latest`, so patched Debian packages ship in a week with no merge; a
+dispatch on another branch runs the checks and skips the image job. It listens
+on 8484 and runs as uid 99, gid 100 (Unraid's `nobody:users`). It needs three mappings:
 
 | Container | What | Back it up? |
 | --- | --- | --- |
@@ -577,7 +580,11 @@ for new lines, not old ones.
 
 Updates arrive through WUD watching `:latest` (labels `wud.watch=true`,
 `wud.watch.digest=true`, `wud.trigger.include=docker.redeploy`). To roll back,
-pin a `:sha-…` tag and remove the labels while it is pinned.
+pin a `:sha-…` tag and remove the labels while it is pinned. A `:sha-…` pin names
+the code, not one image: a refresh re-pushes the `sha-` tag of the commit it built
+(main's tip when it started) with patched packages, so a pin to the current tip
+can change under you. To freeze an image, pin its digest instead
+(`image: forge.daveynet.xyz/davey/taiyaku@sha256:…`).
 
 Rolling back across a database migration does not work by pinning alone: an
 older image refuses a database a newer taiyaku has written ("written by a newer

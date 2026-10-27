@@ -74,8 +74,11 @@ RUN --mount=type=cache,id=taiyaku-cargo-registry,sharing=locked,target=/usr/loca
 ########################  4. Runtime  ###########################################
 FROM debian:bookworm-slim AS runtime
 # `libsqlite3-0` is the one library the binary links that this image lacks;
-# `ureq`'s TLS roots are compiled in, so no `ca-certificates`.
+# `ureq`'s TLS roots are compiled in, so no `ca-certificates`. `apt-get
+# upgrade` first, so a rebuild ships Debian's security fixes before
+# `debian:bookworm-slim` is republished with them.
 RUN apt-get update \
+ && DEBIAN_FRONTEND=noninteractive apt-get upgrade -y \
  && apt-get install -y --no-install-recommends libsqlite3-0 \
  && rm -rf /var/lib/apt/lists/* \
  && mkdir -p /config /cache \

@@ -11,7 +11,7 @@ to `.github/workflows/`; using the Forgejo path keeps the intent unambiguous.
 | `test` | `cargo llvm-cov nextest --workspace` — runs the tests under nextest's per-test timeout *and* gates their aggregate coverage — then installs node and runs `scripts/coverage-floor.mjs` over a re-rendered JSON report for the per-file half |
 | `wasm` | builds `taiyaku-core` and `taiyaku-wasm` for `wasm32-unknown-unknown`, builds the browser package with `wasm-pack`, and runs `scripts/smoke-wasm.mjs` against the compiled module |
 | `web` | `pnpm install --frozen-lockfile`, `biome check` (formatting **and** lint), `tsc -b` typecheck, `vitest run --coverage` in `web/`, then `scripts/coverage-floor.mjs` for the per-file half |
-| `docker` | **on pushes to `main` only, after the four above pass**: builds the image in an isolated buildx builder, runs it until its health check passes, probes three paths and checks its binary holds the commit, then pushes `forge.daveynet.xyz/davey/taiyaku:sha-<7>`, and `:latest` when its commit is main's tip — see "The image job" |
+| `docker` | **on `main` only (a push, the weekly schedule or a dispatch), after the four above pass**: builds the image in an isolated buildx builder, runs it until its health check passes, probes three paths and checks its binary holds the commit, then pushes `forge.daveynet.xyz/davey/taiyaku:sha-<7>`, and `:latest` when its commit is main's tip (a refresh re-pushes, with patched packages, the `sha-<7>` of the commit it built and, at the tip, `:latest`) — see "The image job" |
 
 The `test` job's tests run with `TAIYAKU_COMMIT` set to the commit under test,
 so `about`'s route test compares the commit `/api/about` reports with a real
@@ -1678,10 +1678,17 @@ clone URL from the variable instead of hard-coding either name.
 
 ## The image job
 
-`docker` runs on pushes to `main` only, and only once `lint`, `test`, `wasm`
-and `web` have passed. It is never a required status: branch protection on
-`main` names the four `(pull_request)` contexts, and this job never runs on a
-pull request.
+`docker` runs on `main` only, and only once `lint`, `test`, `wasm` and `web`
+have passed: on a push, on a dispatch, and every Sunday at 10:45 UTC
+(03:45 PDT / 02:45 PST). The weekly run and a dispatch on `main` are
+refreshes, there so a week with no merge still ships patched Debian packages;
+a dispatch on another branch runs the four checks and skips this job. A
+refresh builds with `--no-cache-filter runtime`, which reruns the `runtime`
+stage's `apt-get upgrade` and `apt-get install`; the job's isolated builder
+resolves the base images on every build, so the compiled stages stay cached
+only while those are unchanged. It is never a required status: branch
+protection on `main` names the four `(pull_request)` contexts, and this job
+never runs on a pull request.
 
 **It sets no `container:`.** It needs a Docker CLI and the host's daemon, not
 a toolchain. The runner's default image has git and curl, and the runner
@@ -1730,7 +1737,9 @@ remote, under `timeout 30`) and compares it with its own commit. When they
 differ, or when the forge cannot be read, it pushes the `sha-<7>` tag alone and
 says so in the log. That keeps a stale build from taking `:latest` in nearly
 every case; a check followed by a push leaves a small window, in which a newer
-merge can land between the two.
+merge can land between the two. A refresh tags the same way: it re-pushes the
+`sha-<7>` of the commit it built, which is main's tip when the run started,
+with patched packages, and `:latest` only if that commit is still the tip.
 
 **Two secrets**, `REGISTRY_USER` and `REGISTRY_TOKEN`, hold a forge account and
 a token with package write access. Without them the job fails at

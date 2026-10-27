@@ -4,6 +4,15 @@ on:
   push:
     branches: [main]
   pull_request:
+  # **Weekly, Sundays 10:45 UTC (03:45 PDT / 02:45 PST), so the image picks
+  # up patched Debian packages in a week when nothing merges.** A dispatch on
+  # `main` refreshes the same way; one on another branch runs the four
+  # checks and skips `docker`. A push that lands during a refresh does not
+  # cancel it, since this workflow has no `concurrency:` block; see "Build,
+  # and load it" for what a refresh changes and what an overlap risks.
+  schedule:
+    - cron: "45 10 * * 0"
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
@@ -505,12 +514,15 @@ jobs:
         run: node scripts/coverage-floor.mjs
 
   # Builds the image, runs it until its health check passes, and pushes it —
-  # on `main` only, after the four jobs above pass. Never a required status:
-  # branch protection names the four `(pull_request)` contexts, and this job
-  # does not run on a pull request. See docs/ci.md, "The image job".
+  # on `main` only, after the four jobs above pass, for a push, the weekly
+  # schedule or a dispatch. Never a required status: branch protection names
+  # the four `(pull_request)` contexts, and this job does not run on a pull
+  # request. See docs/ci.md, "The image job".
   docker:
     needs: [lint, test, wasm, web]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: >-
+      (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+      && github.ref == 'refs/heads/main'
     runs-on: docker
     # Nothing has timed a cold image build on the NAS. Its i7-9700K is
     # slower per core than the workstation and carries other load, the wasm
@@ -569,13 +581,37 @@ jobs:
       # compiled in by the Dockerfile's server stage. The push below passes
       # the same value: it rebuilds, and without the argument it would publish
       # a server that is not the one probed here.
+      #
+      # **A refresh (the schedule or a dispatch) adds `--no-cache-filter
+      # runtime`, here and to the push.** The isolated builder set up above
+      # resolves the base images against the registry on every build, but
+      # with the base digest and the commit unchanged its cache would replay
+      # the old `apt-get upgrade` and `apt-get install` layer, which is the
+      # one thing a refresh exists to update. Only the `runtime` stage is
+      # rebuilt on purpose: the wasm, web and server stages stay cached only
+      # while their bases are unchanged, and rebuild cold when one moved.
+      # Both builds, so the probe runs an image built the way the pushed one
+      # is.
+      #
+      # With no `concurrency:` block, a refresh and a push run can overlap,
+      # and either job's opening `docker rm -f` of the shared builder can kill
+      # the other's build, as two close merges can. A refresh of the SAME
+      # commit as a push run still in `docker` (a dispatch right after a
+      # merge, or the cron firing while the tip's push run is still building)
+      # also shares `taiyaku-ci-$SHORT` and `taiyaku-ci:$SHORT`, so either
+      # run can fail the other.
       - name: Build, and load it under a throwaway tag
         env:
           SHORT: ${{ steps.t.outputs.short }}
           SHA: ${{ github.sha }}
+          EVENT: ${{ github.event_name }}
         run: |
+          set --
+          case "$EVENT" in
+            schedule|workflow_dispatch) set -- --no-cache-filter runtime ;;
+          esac
           docker buildx build --builder taiyaku-builder --load \
-            --provenance=false --sbom=false --build-arg "TAIYAKU_COMMIT=$SHA" \
+            --provenance=false --sbom=false --build-arg "TAIYAKU_COMMIT=$SHA" "$@" \
             -t "taiyaku-ci:$SHORT" .
       # The image is started here because nothing else ever starts it before
       # it is deployed: a health check that cannot pass would otherwise ship
@@ -626,10 +662,15 @@ jobs:
       # always safe, and a stale `:latest` is the thing being kept out. POSIX
       # `sh -e`: the failing command sits on the left of `||`, and no pipeline
       # carries the status that matters.
+      #
+      # **A refresh tags the same way as a push**: it re-pushes, with patched
+      # packages, the `sha-` tag of the commit it built (main's tip when the
+      # run started), and `:latest` only if that commit is still the tip.
       - name: Push
         env:
           SHORT: ${{ steps.t.outputs.short }}
           SHA: ${{ github.sha }}
+          EVENT: ${{ github.event_name }}
         run: |
           tips=$(timeout 30 git ls-remote origin refs/heads/main) || tips=""
           tip=${tips%%[[:space:]]*}
@@ -641,5 +682,8 @@ jobs:
           else
             echo "main has moved on (tip: $tip); pushing sha-$SHORT only, not :latest"
           fi
+          case "$EVENT" in
+            schedule|workflow_dispatch) set -- "$@" --no-cache-filter runtime ;;
+          esac
           docker buildx build --builder taiyaku-builder --push \
             --provenance=false --sbom=false --build-arg "TAIYAKU_COMMIT=$SHA" "$@" .
