@@ -5,8 +5,14 @@
  * one, a library's page and a directory's page each read the list this screen
  * holds and pick what they draw from it: a library by the name its address
  * spells, as `configAddress.ts` finds it, and a directory by its number. There
- * is no route that answers one library. The list is read when the screen
- * mounts, again on each move between its pages, and after every write.
+ * is no route that answers one library. The list is the read store's
+ * (`pageReads.ts`'s `LIBRARIES`): read when the screen mounts, again on each
+ * move between its pages but the one a rename makes, and after every write.
+ * Until it has been read, the table and a library's page draw their header
+ * and, after a while, "Loading…" in their body's place, a directory's
+ * address draws its library's page, and the make page draws its form at
+ * once. A library's page names itself from its address, and waits for its
+ * scan status too once the list has named the library (`LibraryPage`).
  *
  * **Two failure slots.** The list's failure is the screen's and is drawn on
  * whichever page is showing; a refusal is drawn in the form that was sent,
@@ -30,14 +36,24 @@
  * both screens: a removal's or a move's report, or the refusal of any write
  * whose page or form went before its answer came.
  *
- * **Reads carry a sequence number.** Several are routinely in flight, and
- * they need not answer in order.
+ * **The sidebar's status is read with the list** (`LIBRARY_STATUS`), so the
+ * sidebar's libraries follow the screen's (O200). The screen reads it as it
+ * arrives, from any tab, beside `usePage`'s read of the list; each read after
+ * that invalidates the two together, so they land in one step and follow
+ * every write: a removal whose re-read of the list fails has still removed
+ * the library. The invalidation is the store's, not the screen's, so an
+ * answer that comes once another tab has replaced the screen still moves the
+ * list a return to it draws (O222).
  *
- * **A read of the list that is still the latest when it answers asks the
- * shell to read the status again**, whether it lands or fails, so the
- * sidebar's libraries follow every write: a removal whose re-read of the list
- * fails has still removed the library. An older read, which the sequence
- * guard drops, asks nothing.
+ * **Every directory write marks the roots stale** (`ROOTS`), which Rules
+ * draws, so Rules arriving afterwards waits for them rather than drawing
+ * what the app knows is out of date. A make or a removal or move does it
+ * here; an add does it in `LibraryPage`, and a directory's settings in
+ * `RootRow`. A removal marks what the schema's cascades change with it as
+ * well: the rules scoped to its directories, which they delete, the
+ * accepted proposals that wrote those rules, and, for a library, the
+ * accounts' grants. A change of page marks none of these, so a visit that wrote
+ * nothing leaves Rules to draw at once.
  *
  * **What a write takes away is dropped from what is drawn at once**, and in
  * the same transition as the move to the page above it, so the page that
@@ -70,26 +86,29 @@ import {
   NEW_LIBRARY,
   nameAt,
 } from './configAddress'
-import { useLateAnswers } from './configPages'
+import { useLateAnswers, usePageKey } from './configPages'
 import { DirPage } from './DirPage'
-import {
-  type Created,
-  type Library,
-  listLibraries,
-  type MoveAnswer,
-  type Moved,
-} from './libraries'
+import type { Created, Library, MoveAnswer, Moved } from './libraries'
 import { LibraryPage } from './LibraryPage'
 import { LibraryTable } from './LibraryTable'
 import { Missing } from './Missing'
 import { MoveCounts } from './MoveCounts'
 import { sentenceOf } from './message'
 import { NewLibrary } from './NewLibrary'
+import {
+  ACCEPTED_PROPOSALS,
+  LIBRARIES as LIST,
+  LIBRARY_STATUS,
+  ROOTS,
+  RULES,
+  USERS as USER_LIST,
+} from './pageReads'
+import { entryOf, invalidate, readSet } from './reads'
 import { reveal } from './reveal'
 import { DeriveSection } from './ScanReport'
 import { PageHeader } from './settingsLayout'
-import { useStatusRefresh } from './shell'
 import { SideBySide } from './SideBySide'
+import { usePage } from './usePage'
 
 /** What a removal or a move found, whose it was, and the page it is drawn on. */
 interface Report {
@@ -114,47 +133,75 @@ function takeAnswer(answering: RefObject<boolean>) {
 }
 
 export function Libraries() {
-  const [libraries, setLibraries] = useState<Library[] | undefined>()
-  /**
-   * Why the list could not be read: an object for each failed read, so that
-   * one repeating a standing sentence is a new failure and is brought into
-   * view again where `reveal` says it is to be.
-   */
-  const [failure, setFailure] = useState<
-    { sentence: string; reveal: boolean } | undefined
-  >()
-  const failureEl = useRef<HTMLParagraphElement>(null)
-  const [probes, setProbes] = useState<Record<string, Probe>>({})
-  const latest = useRef(0)
+  const {
+    ready,
+    answers: [list],
+    // Why the list could not be read, once this visit has read it: no
+    // failure kept from an earlier visit is handed over.
+    failures: [failure],
+    loadingDrawn,
+  } = usePage<[{ libraries: Library[] }]>([LIST])
+  /** The store's list, once the page may draw it. */
+  const listed = ready ? list?.libraries : undefined
   const { pathname } = useLocation()
   const navigate = useNavigate()
+  /**
+   * The address a rename's answer is moving the person to, from the answer
+   * until the effect below sees the move drawn. The rename reads the list at
+   * once, and its answer may land before the move is drawn: drawn at the
+   * address that still spells the old name, it would name no library there.
+   */
+  const renamedTo = useRef<string | undefined>(undefined)
+  /**
+   * What is drawn: the store's list, with what a write's answer took away,
+   * renamed or made laid over it until the store holds another list. A read
+   * that fails leaves the store's list as it was, so what the write changed
+   * stays drawn.
+   */
+  const [libraries, setLibraries] = useState(listed)
+  const [drawnFrom, setDrawnFrom] = useState(listed)
+  if (
+    listed !== drawnFrom &&
+    (renamedTo.current === undefined || renamedTo.current === pathname)
+  ) {
+    setDrawnFrom(listed)
+    setLibraries(listed)
+  }
+  const failureEl = useRef<HTMLParagraphElement>(null)
+  const [probes, setProbes] = useState<Record<string, Probe>>({})
 
-  const refreshStatus = useStatusRefresh()
+  /**
+   * Whether the failure of the newest read is brought into view: not for a
+   * re-read `reread(true)` sent, which no press started (`quiet`).
+   */
+  const revealFailure = useRef(true)
+  /** Reads the list and the sidebar's status again, as one set. */
+  const reread = useCallback((quiet = false) => {
+    revealFailure.current = !quiet
+    void invalidate(LIST, LIBRARY_STATUS)
+  }, [])
 
-  /** `quiet`: no press started this read, so its failure is not scrolled to. */
-  const reload = useCallback(
-    (quiet = false) => {
-      const seq = ++latest.current
-      listLibraries()
-        .then((body) => {
-          if (seq !== latest.current) return
-          setLibraries(body.libraries)
-          refreshStatus()
-          setFailure(undefined)
-        })
-        .catch((err: unknown) => {
-          if (seq !== latest.current) return
-          setFailure({ sentence: sentenceOf(err), reveal: !quiet })
-          refreshStatus()
-        })
-    },
-    [refreshStatus],
-  )
-
-  // biome-ignore lint/correctness/useExhaustiveDependencies: `pathname` is the trigger: each page reads the list afresh.
+  // The status beside the arrival's read of the list, which is `usePage`'s.
+  // Not in that page's set, which would hold the screen's body until the
+  // sidebar's answer came. A read out for it already is joined; when both
+  // are drawn at once the shell's own joins this one, since a component's
+  // effects run before its parent's.
   useEffect(() => {
-    reload()
-  }, [reload, pathname])
+    void readSet([LIBRARY_STATUS])
+  }, [])
+
+  /** The page the effect below last saw. */
+  const pageSeen = useRef(pathname)
+  // Each page reads the list afresh, but for the one a rename moved the
+  // person to, which the rename read it for. The first page's read is
+  // `usePage`'s.
+  useEffect(() => {
+    if (pageSeen.current === pathname) return
+    pageSeen.current = pathname
+    const read = renamedTo.current === pathname
+    renamedTo.current = undefined
+    if (!read) reread()
+  }, [pathname, reread])
 
   const reportEl = useRef<HTMLDivElement>(null)
   const {
@@ -182,9 +229,9 @@ export function Libraries() {
 
   const changed = useCallback(
     (quiet?: boolean) => {
-      if (!answering.current) reload(quiet)
+      if (!answering.current) reread(quiet)
     },
-    [reload],
+    [reread],
   )
 
   /**
@@ -205,9 +252,9 @@ export function Libraries() {
         setLibraries((held) => held && drop(held))
         if (sent) navigate(line.at)
       })
-      if (!sent) reload(true)
+      if (!sent) reread(true)
     },
-    [place, setReport, navigate, reload],
+    [place, setReport, navigate, reread],
   )
 
   const remember = useCallback((added: Added[]) => {
@@ -237,6 +284,8 @@ export function Libraries() {
   const made = useCallback(
     (created: Created, sent: boolean) => {
       remember(created.added)
+      // Its directories are new roots, which Rules draws.
+      void invalidate(ROOTS)
       startTransition(() => {
         // Drawn from the create's own answer: if the read that follows
         // fails, the list still holds what was just made. It goes last; the
@@ -255,13 +304,17 @@ export function Libraries() {
           navigate(libraryPath(created.library.name))
         }
       })
-      if (!sent) reload(true)
+      if (!sent) reread(true)
     },
-    [remember, setReport, setArrival, navigate, reload],
+    [remember, setReport, setArrival, navigate, reread],
   )
 
   const libraryRemoved = useCallback(
     (from: string, id: number, name: string, answer: RemovalAnswer) => {
+      // The removal deleted the library's directories and, by the schema's
+      // cascades, the rules scoped to them, the rule each accepted proposal
+      // that wrote one names, and every account's grant of the library.
+      void invalidate(ROOTS, RULES, ACCEPTED_PROPOSALS, USER_LIST)
       answered(from, { at: LIBRARIES, name, derive: answer.derive }, (held) =>
         held.filter((one) => one.id !== id),
       )
@@ -283,6 +336,10 @@ export function Libraries() {
         libraryRemoved(from, id, library.name, answer)
         return
       }
+      // The removal deleted the directory and, by the schema's cascades, the
+      // rules scoped to it and the rule each accepted proposal that wrote
+      // one names.
+      void invalidate(ROOTS, RULES, ACCEPTED_PROPOSALS)
       answered(
         from,
         {
@@ -309,6 +366,10 @@ export function Libraries() {
   const dirMoved = useCallback(
     (from: string, id: number, path: string, answer: MoveAnswer) => {
       const gone = answer.moved.library_removed !== null
+      // Every directory write marks the roots stale, whatever fields their
+      // list carries: which it changed is the server's to know. A move that
+      // emptied its library removed it, and every account's grant of it.
+      void invalidate(ROOTS, ...(gone ? [USER_LIST] : []))
       const left = drawn.current?.find((one) => one.id === id)
       answered(
         from,
@@ -325,7 +386,8 @@ export function Libraries() {
             ),
           },
         },
-        // The directory is not drawn in its new library: the reload does that.
+        // The directory is not drawn in its new library: the read that
+        // follows does that.
         (held) =>
           gone
             ? held.filter((one) => one.id !== id)
@@ -349,14 +411,13 @@ export function Libraries() {
    * now names nothing. What the page says goes with it (`follow`), and so
    * does an answer still out from it. The list takes the new name in the
    * same transition, so the page is never drawn at an address the list
-   * cannot find, and a read sent before the rename is dropped, since it
-   * would say the old name. The list is read once: by the change of page, or
-   * here where there is none.
+   * cannot find. The list is read here, at once, so that a read sent before
+   * the rename, which would say the old name, is overtaken; the change of
+   * page this makes reads nothing more.
    */
   const libraryRenamed = useCallback(
     (id: number, name: string) => {
       takeAnswer(answering)
-      latest.current++
       const page = here.current
       const at = nameAt(page, LIBRARIES)
       const held = drawn.current
@@ -366,6 +427,11 @@ export function Libraries() {
         byName(held, at.name)?.id === id
       const to = libraryPath(name)
       const moves = named && `${to}${at.rest}` !== page
+      if (moves) renamedTo.current = `${to}${at.rest}`
+      reread()
+      // Each account's grants name the libraries it is granted, so Users
+      // keeps the old name until it reads them again.
+      void invalidate(USER_LIST)
       startTransition(() => {
         setLibraries((list) =>
           list?.map((one) => (one.id === id ? { ...one, name } : one)),
@@ -376,9 +442,8 @@ export function Libraries() {
           navigate(`${to}${at.rest}`, { replace: true })
         }
       })
-      if (!moves) reload()
     },
-    [here, follow, navigate, reload],
+    [here, follow, navigate, reread],
   )
 
   const reportLabel = useId()
@@ -386,11 +451,16 @@ export function Libraries() {
   // further down it is not looking there. A failed read is brought into view,
   // which does nothing where it already is, except the read at the end of any
   // scan: the page would move from under whoever is typing by then. Focus
-  // stays where it is.
+  // stays where it is. Each failed read lands as a new entry in the store,
+  // so one repeating a standing sentence is brought into view again; a mark
+  // of stale is a new entry too, and is not a read's answer. Run again when
+  // the failure is handed over, which may be a render after its entry came.
+  const entry = entryOf(LIST)
   useEffect(() => {
     const el = failureEl.current
-    if (failure?.reveal && el !== null) reveal(el)
-  }, [failure])
+    if (failure === undefined || entry?.stale !== false || el === null) return
+    if (revealFailure.current) reveal(el)
+  }, [entry, failure])
 
   const reportNode = shown !== undefined && (
     <div
@@ -425,8 +495,8 @@ export function Libraries() {
     failure !== undefined && (
       <p role="alert" ref={failureEl}>
         {libraries === undefined
-          ? failure.sentence
-          : `The libraries list could not be read again (${failure.sentence}), so what is drawn may be out of date.`}
+          ? sentenceOf(failure)
+          : `The libraries list could not be read again (${sentenceOf(failure)}), so what is drawn may be out of date.`}
       </p>
     ),
     reportNode,
@@ -468,6 +538,7 @@ export function Libraries() {
             <LibraryTable
               libraries={libraries}
               notices={notices}
+              loadingDrawn={loadingDrawn}
               arrived={arrived}
             />
           }
@@ -479,30 +550,33 @@ export function Libraries() {
           path=":name/*"
           element={
             <LibraryAt libraries={libraries} notices={notices}>
-              {(library) => (
+              {(library, key) => (
                 <SideBySide
                   list={
                     <LibraryPage
-                      // By id, so another library's page is a page of its own.
-                      key={library.id}
+                      // A page of its own for each library (`usePageKey`).
+                      key={key}
                       library={library}
+                      loadingDrawn={loadingDrawn}
                       libraries={libraries}
                       // The screen says each thing once: on the directory's
-                      // page where one is open.
-                      notices={dirOpen ? undefined : notices}
+                      // page where one is drawn, which needs its library.
+                      notices={
+                        dirOpen && library !== undefined ? undefined : notices
+                      }
                       arrived={arrived && !dirOpen}
                       onOpen={setArrival}
                       onAdded={remember}
                       onChanged={changed}
-                      onRenamed={(name) => libraryRenamed(library.id, name)}
+                      onRenamed={libraryRenamed}
                       onLateRefusal={say}
-                      onRemoved={(name, answer) =>
-                        libraryRemoved(pathname, library.id, name, answer)
+                      onRemoved={(id, name, answer) =>
+                        libraryRemoved(pathname, id, name, answer)
                       }
                     />
                   }
                   page={
-                    dirOpen ? (
+                    dirOpen && library !== undefined ? (
                       <Routes>
                         <Route
                           path="dirs/:did"
@@ -562,8 +636,10 @@ export function Libraries() {
 
 /**
  * The library whose name the path spells, or a page saying there is none,
- * whose line takes focus. Nothing is drawn while the list has not been read:
- * the failure, if it failed, is.
+ * whose line takes focus. `children` draws the library's page from the
+ * moment the screen is drawn, with the library `undefined` while the list is
+ * read or could not be, so that the header drawn then is the one kept
+ * (`usePageKey`).
  */
 function LibraryAt({
   libraries,
@@ -572,11 +648,15 @@ function LibraryAt({
 }: {
   libraries: Library[] | undefined
   notices: ReactNode
-  children: (library: Library) => ReactNode
+  children: (library: Library | undefined, key: number) => ReactNode
 }) {
   const at = nameAt(useLocation().pathname, LIBRARIES)
-  if (libraries === undefined) return notices
-  const library = at === undefined ? undefined : byName(libraries, at.name)
+  const library =
+    libraries === undefined || at === undefined
+      ? undefined
+      : byName(libraries, at.name)
+  const key = usePageKey(library?.id)
+  if (libraries === undefined) return children(undefined, key)
   if (library === undefined) {
     return (
       <div className="settings-page">
@@ -591,7 +671,7 @@ function LibraryAt({
       </div>
     )
   }
-  return children(library)
+  return children(library, key)
 }
 
 /**

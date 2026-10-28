@@ -15,11 +15,15 @@ import { Link } from 'react-router'
 import { accountPath, NEW_ACCOUNT } from './configAddress'
 import { JOINING_DOT } from './joiningDot'
 import { ROW_CELLS, useLineEnds } from './lineEnds'
-import { PageHeader, Section } from './settingsLayout'
+import { PageHeader, PageLoading, Section } from './settingsLayout'
 import { lastSeen, seesLine, type User } from './users'
 import { inUtc } from './utc'
 
 export interface UserTableProps {
+  /**
+   * `undefined` until a read of the list has answered, unless a make's
+   * answer has laid its account over the list first.
+   */
   users: User[] | undefined
   /** The account this browser is signed in as, where it is known. */
   actingAs?: number
@@ -27,6 +31,8 @@ export interface UserTableProps {
   opened?: number
   /** What the screen says above the table. */
   notices?: ReactNode
+  /** The screen's wait for its lists has held long enough to draw "Loading…". */
+  loadingDrawn?: boolean
   /**
    * The person was sent here by an action whose button went with the page
    * it was on, so the heading takes focus.
@@ -45,6 +51,7 @@ export function UserTable({
   actingAs,
   opened,
   notices,
+  loadingDrawn = false,
   arrived = false,
   onOpen,
 }: UserTableProps) {
@@ -69,6 +76,7 @@ export function UserTable({
         }
       />
       {notices}
+      {users === undefined && <PageLoading drawn={loadingDrawn} />}
       {users !== undefined && (
         <Section>
           <table ref={cellEnds} className="config-table">

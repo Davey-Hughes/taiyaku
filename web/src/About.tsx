@@ -9,7 +9,10 @@
  * failed, and last.** It uses nothing the route says, so a failure keeps
  * it; it waits for the answer so that it is not drawn alone at the top of
  * the page and then pushed down by the sections the answer brings. While
- * the request is in flight the page is its header alone.
+ * the page waits for its read it is its header alone, and "Loading…" once
+ * the wait has held (`usePage`). The answer is the read store's
+ * `ABOUT`, shared with the sidebar's label and `/account`, so a return to
+ * the page draws the kept answer at once and reads it again quietly.
  *
  * **The build's facts stay a `dl`**, not settings rows: a screen reader
  * reads each as a term and its definition, and there is nothing to set.
@@ -28,44 +31,38 @@
  * The OPDS catalog's address, and whether it can be copied, are
  * `CatalogAddress`'s.
  */
-import { useEffect, useState } from 'react'
 import { Link } from 'react-router'
-import { type About as AboutAnswer, about, shortCommit } from './about'
+import { type About as AboutAnswer, shortCommit } from './about'
 import { CatalogAddress } from './CatalogAddress'
 import { reasonOf } from './message'
-import { PageHeader, Section } from './settingsLayout'
+import { ABOUT } from './pageReads'
+import { PageHeader, PageLoading, Section } from './settingsLayout'
 import {
   FONT_LICENCE,
   FONTS_FRAGMENT,
   TAIYAKU_FRAGMENT,
   TAIYAKU_LICENCE,
 } from './spdx'
+import { usePage } from './usePage'
 
 export function About() {
-  const [answer, setAnswer] = useState<AboutAnswer | undefined>()
-  const [failure, setFailure] = useState<string | undefined>()
-
-  useEffect(() => {
-    let cancelled = false
-    about()
-      .then((next) => {
-        if (!cancelled) setAnswer(next)
-      })
-      .catch((err: unknown) => {
-        if (!cancelled) {
-          setFailure(`This build’s details were not loaded: ${reasonOf(err)}`)
-        }
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [])
+  const {
+    ready,
+    answers: [answer],
+    failures: [failed],
+    loadingDrawn,
+  } = usePage<[AboutAnswer]>([ABOUT])
+  const failure =
+    failed === undefined
+      ? undefined
+      : `This build’s details were not loaded: ${reasonOf(failed)}`
 
   return (
     <section className="about" aria-label="About">
       <PageHeader level={1} title="About" />
       {failure !== undefined && <p role="alert">{failure}</p>}
-      {answer !== undefined && (
+      {!ready && <PageLoading drawn={loadingDrawn} />}
+      {ready && answer !== undefined && (
         <>
           <Section level={2} title="This build">
             {/* A group (`settings.css`): each fact is a row of the box, with
@@ -134,7 +131,7 @@ export function About() {
           </Section>
         </>
       )}
-      {(answer !== undefined || failure !== undefined) && (
+      {ready && (
         <Section level={2} title="Licence">
           {/* Each link lands on its licence by the licence page's own
               fragments, the fonts' on the first of the three fonts. A

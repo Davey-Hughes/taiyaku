@@ -8,13 +8,18 @@
  * run belong to the account being administered. Each page reads the list
  * this screen holds and picks its account by the name its address spells, as
  * `configAddress.ts` finds it; there is no route that answers one account.
- * The list is read when the screen mounts, again on each move between its
- * pages, and after every write the server carries out.
+ * The list is the read store's (`pageReads.ts`'s `USERS`): read when the
+ * screen mounts, again on each move between its pages, and after every write
+ * the server carries out. Until it has been read, the table and an
+ * account's page draw their header and, after a while, "Loading…" in their
+ * body's place, and an account's page names itself from its address; the
+ * make page draws its form at once.
  *
- * **The libraries list is fetched here and handed down**, on mount and again
- * on each move between pages, as the list of accounts is. `libraries.ts`
- * already has the client — one client and two screens rather than a second
- * fetch that could disagree (§6.2). **A failed read is drawn**,
+ * **The libraries list is read here and handed down**, in one set with the
+ * list of accounts, so a page waits for both and an account's grant editor
+ * is never drawn before the list it offers. It is the store's `LIBRARIES`,
+ * the list Configuration → Libraries draws: one read for two screens rather
+ * than a second that could disagree (§6.2). **A failed read is drawn**,
  * because a grant editor with nothing to offer looks the same whether there
  * are no libraries or the list could not be read, and only one of those is
  * true.
@@ -65,16 +70,19 @@ import {
   nameAt,
   USERS,
 } from './configAddress'
-import { useLateAnswers } from './configPages'
+import { useLateAnswers, usePageKey } from './configPages'
 import { useGate } from './gate'
-import { type Library, listLibraries } from './libraries'
+import type { Library } from './libraries'
 import { sentenceOf } from './message'
 import { Missing } from './Missing'
 import { NewAccount } from './NewAccount'
+import { LIBRARIES, USERS as USER_LIST } from './pageReads'
+import { invalidate } from './reads'
 import { PageHeader } from './settingsLayout'
 import { SideBySide } from './SideBySide'
+import { usePage } from './usePage'
 import { UserTable } from './UserTable'
-import { listUsers, type User } from './users'
+import type { User } from './users'
 
 /**
  * The account the last removal took, and the page its line is drawn on: the
@@ -89,19 +97,49 @@ interface Gone {
 }
 
 export function Users() {
-  const [users, setUsers] = useState<User[] | undefined>()
-  const [libraries, setLibraries] = useState<Library[] | undefined>()
-  const [librariesFailure, setLibrariesFailure] = useState<string | undefined>()
-  /** Why the list could not be read. Separate from a form's refusal. */
-  const [failure, setFailure] = useState<string | undefined>()
-  /** The newest `listUsers` call — responses need not arrive in order. */
-  const latest = useRef(0)
+  const {
+    ready,
+    answers: [usersRead, librariesRead],
+    // Why each list could not be read, once this visit has read it: no
+    // failure kept from an earlier visit is handed over. The list's is apart
+    // from a form's refusal.
+    failures: [failure, librariesFailure],
+    loadingDrawn,
+  } = usePage<[{ users: User[] }, { libraries: Library[] }]>([
+    USER_LIST,
+    LIBRARIES,
+  ])
+  /** The store's list of accounts, once the page may draw it. */
+  const listed = ready ? usersRead?.users : undefined
+  /**
+   * What is drawn: the store's list, with what a write's answer made or took
+   * away laid over it until the store holds another list. A read that fails
+   * leaves the store's list as it was, so what the write changed stays
+   * drawn.
+   */
+  const [users, setUsers] = useState(listed)
+  const [drawnFrom, setDrawnFrom] = useState(listed)
+  if (listed !== drawnFrom) {
+    setDrawnFrom(listed)
+    setUsers(listed)
+  }
+  /**
+   * The libraries list, once the page may draw it. A read that fails takes
+   * the list an earlier one brought with it: the alert says the grant editor
+   * shows nothing, and the editor then says the list has not been read
+   * rather than offering libraries as they were.
+   */
+  const libraries =
+    ready && librariesFailure === undefined
+      ? librariesRead?.libraries
+      : undefined
   const gate = useGate()
   const { pathname } = useLocation()
   const navigate = useNavigate()
 
   /**
-   * Re-read the list, and **hand the promise back**.
+   * Re-read the list, and **hand the promise back**: the store's, which
+   * resolves once the read has landed.
    *
    * An account's page holds its own controls until the reload it triggered
    * has landed — `AccountPage`'s `settled` is the other end of this —
@@ -109,24 +147,16 @@ export function Users() {
    * its pre-write props with its controls live. Returning the promise is
    * what lets it wait without knowing anything about this screen's state.
    */
-  const reload = useCallback(() => {
-    const seq = ++latest.current
-    return listUsers()
-      .then((body) => {
-        if (seq !== latest.current) return
-        setUsers(body.users)
-        setFailure(undefined)
-      })
-      .catch((err: unknown) => {
-        if (seq !== latest.current) return
-        setFailure(sentenceOf(err))
-      })
-  }, [])
+  const reload = useCallback(() => invalidate(USER_LIST), [])
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: `pathname` is the trigger: each page reads the list afresh.
+  /** The page the effect below last saw. */
+  const pageSeen = useRef(pathname)
+  // Each page reads both lists afresh. The first page's read is `usePage`'s.
   useEffect(() => {
-    void reload()
-  }, [reload, pathname])
+    if (pageSeen.current === pathname) return
+    pageSeen.current = pathname
+    void invalidate(USER_LIST, LIBRARIES)
+  }, [pathname])
 
   const goneEl = useRef<HTMLParagraphElement>(null)
   const {
@@ -139,30 +169,6 @@ export function Users() {
     cancel,
     drawNotices,
   } = useLateAnswers<Gone>(USERS, goneEl)
-
-  // biome-ignore lint/correctness/useExhaustiveDependencies: `pathname` is the trigger: each page reads the list afresh.
-  useEffect(() => {
-    // A read a later page's read has replaced is dropped: the two need not
-    // answer in order.
-    let cancelled = false
-    listLibraries()
-      .then((body) => {
-        if (cancelled) return
-        setLibraries(body.libraries)
-        setLibrariesFailure(undefined)
-      })
-      .catch((err: unknown) => {
-        if (cancelled) return
-        // The list an earlier read brought goes too: the alert says the
-        // editor shows nothing, and the editor then says it has not been
-        // read rather than offering libraries as they were.
-        setLibraries(undefined)
-        setLibrariesFailure(sentenceOf(err))
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [pathname])
 
   /**
    * An account was made. The person is taken to its page only while the
@@ -216,18 +222,18 @@ export function Users() {
   )
 
   const notices = drawNotices(
-    failure !== undefined && <p role="alert">{failure}</p>,
+    failure !== undefined && <p role="alert">{sentenceOf(failure)}</p>,
     goneLine,
   )
   // Handed to an account's page alone: it speaks of the grant editor below,
-  // and no other page draws one.
+  // and no other page draws one, nor that page while it has no account.
   const grantNotices: ReactNode = (
     <>
       {notices}
-      {librariesFailure !== undefined && (
+      {librariesFailure !== undefined && users !== undefined && (
         <p role="alert">
-          The libraries list could not be read ({librariesFailure}), so the
-          grant editor below shows nothing rather than what there is.
+          The libraries list could not be read ({sentenceOf(librariesFailure)}
+          ), so the grant editor below shows nothing rather than what there is.
         </p>
       )}
     </>
@@ -264,6 +270,7 @@ export function Users() {
         list={
           <UserTable
             users={users}
+            loadingDrawn={loadingDrawn}
             actingAs={gate?.who.user_id}
             // The screen says each thing once: on the page open beside the
             // table where there is one.
@@ -289,23 +296,29 @@ export function Users() {
                 path=":name"
                 element={
                   <AccountAt
-                    users={users}
+                    // Once both lists are in: a make's answer may lay an
+                    // account over the list before the libraries list is.
+                    users={ready ? users : undefined}
                     account={account}
                     name={named?.name}
                     notices={notices}
                   >
-                    {(user, all) => (
+                    {(user, all, key) => (
                       <AccountPage
-                        key={user.name}
+                        // A page of its own for each account (`usePageKey`).
+                        key={key}
                         user={user}
                         users={all}
+                        loadingDrawn={loadingDrawn}
                         libraries={libraries}
                         actingAs={gate?.who.user_id}
                         notices={grantNotices}
                         arrived={arrived}
                         onChanged={reload}
                         onLateRefusal={say}
-                        onRemoved={(name) => removed(pathname, user.id, name)}
+                        onRemoved={
+                          user && ((name) => removed(pathname, user.id, name))
+                        }
                       />
                     )}
                   </AccountAt>
@@ -322,8 +335,11 @@ export function Users() {
 
 /**
  * The account's page, or a page saying there is none, whose line takes
- * focus. Nothing is drawn while the list has not been read: the failure, if
- * it failed, is.
+ * focus. `children` draws the account's page from the moment the screen is
+ * drawn, with the account `undefined` while the lists are read or no read
+ * of the list of accounts has answered, so that the header drawn then is the
+ * one kept (`usePageKey`). The page draws the list's failure under that
+ * header.
  */
 function AccountAt({
   users,
@@ -332,15 +348,24 @@ function AccountAt({
   notices,
   children,
 }: {
+  /**
+   * `undefined` while the page waits for the lists, or where no read of this
+   * one has answered.
+   */
   users: User[] | undefined
   /** The account `name` finds in `users`. */
   account: User | undefined
   /** The name the address spells, so another such address says so afresh. */
   name: string | undefined
   notices: ReactNode
-  children: (user: User, users: User[]) => ReactNode
+  children: (
+    user: User | undefined,
+    users: User[] | undefined,
+    key: number,
+  ) => ReactNode
 }) {
-  if (users === undefined) return notices
+  const key = usePageKey(account?.name)
+  if (users === undefined) return children(undefined, undefined, key)
   if (account === undefined) {
     return (
       <div className="settings-page">
@@ -355,5 +380,5 @@ function AccountAt({
       </div>
     )
   }
-  return children(account, users)
+  return children(account, users, key)
 }

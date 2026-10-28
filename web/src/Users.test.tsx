@@ -12,6 +12,7 @@ import type { Me } from './api'
 import { useFitsPair } from './fitsPair'
 import { GateContext } from './gate'
 import * as librariesApi from './libraries'
+import { LIBRARIES } from './pageReads'
 import { deferred, flush } from './testing/async'
 import { holdOf } from './testing/held'
 import { press } from './testing/input'
@@ -24,6 +25,7 @@ import {
   WAIT_DRAWN_AFTER_MS,
   watchDrawn,
 } from './testing/wait'
+import { usePage } from './usePage'
 import * as usersApi from './users'
 import { Users } from './Users'
 
@@ -82,7 +84,9 @@ const here = () => where
 /**
  * Draws the screen at `entry`, under the route `Config` gives it, signed in as
  * `signedInAs`, and lets the reads it starts answer. Another Configuration
- * tab's route sits beside it, so a test can leave the screen for one.
+ * tab's route sits beside it, so a test can leave the screen for one: the
+ * libraries tab, which draws the libraries list from the read store as
+ * Libraries does.
  */
 async function at(entry = TABLE, signedInAs: Me = who) {
   // Hands the router to the test, which is outside it. Declared here for the
@@ -93,6 +97,10 @@ async function at(entry = TABLE, signedInAs: Me = who) {
     steer = useNavigate()
     where = useLocation().pathname
     return null
+  }
+  function LibrariesTab() {
+    usePage([LIBRARIES])
+    return <p className="other-tab" />
   }
   let host: HTMLElement | undefined
   // One element for both routes, as `Config` gives it, so the screen stays
@@ -105,10 +113,7 @@ async function at(entry = TABLE, signedInAs: Me = who) {
           <Routes>
             <Route path={`${TABLE}/*`} element={screen} />
             <Route path={NEW} element={screen} />
-            <Route
-              path="/config/libraries"
-              element={<p className="other-tab" />}
-            />
+            <Route path="/config/libraries" element={<LibrariesTab />} />
           </Routes>
         </GateContext>
         <Steering />
@@ -492,6 +497,239 @@ describe('Users, the pages', () => {
       'Removed sam.',
     )
     expect(names(host)).toEqual(['davey'])
+  })
+})
+
+describe('Users, a first visit and a return', () => {
+  const sam = user({ id: 2, name: 'sam', role: 'user', every_library: false })
+  const manga = { id: 70, name: 'Manga', works: 0, books: 0, dirs: [] }
+
+  /** The "Loading…" line drawn in the body's place of the page `page`. */
+  const waitLine = (host: HTMLElement, page: string) =>
+    host.querySelector(`.${page} > p[role="status"]`)
+
+  /**
+   * An account's page as drawn: its title, its sections, the grant
+   * editor's line for a list it has not read, and its wait line.
+   */
+  const accountState = (host: HTMLElement) =>
+    JSON.stringify([
+      heading(host) ?? null,
+      sectionTitles(host),
+      host.querySelector('.account-page .unknown')?.textContent ?? null,
+      waitLine(host, 'account-page')?.textContent ?? null,
+    ])
+
+  it('heads the table at once on a first visit, draws Loading… in its body’s place from 200 ms, and the table in one step once both lists land', async () => {
+    holdTheClock()
+    const users = deferred<{ users: usersApi.User[] }>()
+    const libraries = deferred<{ libraries: librariesApi.Library[] }>()
+    vi.mocked(usersApi.listUsers).mockReturnValue(users.promise)
+    vi.mocked(librariesApi.listLibraries).mockReturnValue(libraries.promise)
+    const host = await at()
+    expect(host.querySelector('.user-table .page-title')?.textContent).toBe(
+      'Users',
+    )
+    pass(WAIT_DRAWN_AFTER_MS - 1)
+    expect(waitLine(host, 'user-table')).toBeNull()
+    pass(1)
+    expect(waitLine(host, 'user-table')?.textContent).toBe('Loading…')
+
+    const tableState = () =>
+      JSON.stringify([
+        names(host),
+        waitLine(host, 'user-table')?.textContent ?? null,
+      ])
+    const drawn = watchDrawn(tableState)
+    await flush(() => users.resolve({ users: [user(), sam] }))
+    expect(names(host)).toEqual([])
+    await flush(() => libraries.resolve({ libraries: [manga] }))
+    drawn.stop()
+    expect([...drawn.seen]).toEqual([
+      JSON.stringify([[], 'Loading…']),
+      JSON.stringify([['davey', 'sam'], null]),
+    ])
+  })
+
+  it('heads an account’s page with the name its address spells while the libraries list is read, and draws Loading… in its body’s place from 200 ms, not a grant editor that says the list is unread', async () => {
+    holdTheClock()
+    vi.mocked(usersApi.listUsers).mockResolvedValue({ users: [user(), sam] })
+    const libraries = deferred<{ libraries: librariesApi.Library[] }>()
+    vi.mocked(librariesApi.listLibraries).mockReturnValue(libraries.promise)
+    const host = await at('/config/users/sam')
+    expect(host.querySelector('.account-page .unknown')?.textContent).toBe(
+      undefined,
+    )
+    expect(heading(host)).toBe('sam')
+    expect(sectionTitles(host)).toEqual([])
+    expect(
+      link(host, '‹ Users').closest('.account-page > .page-header'),
+    ).not.toBeNull()
+    pass(WAIT_DRAWN_AFTER_MS - 1)
+    expect(waitLine(host, 'account-page')).toBeNull()
+    pass(1)
+    expect(waitLine(host, 'account-page')?.textContent).toBe('Loading…')
+
+    await flush(() => libraries.resolve({ libraries: [manga] }))
+    expect(waitLine(host, 'account-page')).toBeNull()
+    expect(
+      grants(host).querySelector('input[name="library-70"]'),
+    ).not.toBeNull()
+  })
+
+  it.each([
+    { first: 'the users list', usersFirst: true },
+    { first: 'the libraries list', usersFirst: false },
+  ])(
+    'draws an account’s page in one step once both lists have landed, $first first',
+    async ({ usersFirst }) => {
+      const users = deferred<{ users: usersApi.User[] }>()
+      const libraries = deferred<{ libraries: librariesApi.Library[] }>()
+      vi.mocked(usersApi.listUsers).mockReturnValue(users.promise)
+      vi.mocked(librariesApi.listLibraries).mockReturnValue(libraries.promise)
+      const host = await at('/config/users/sam')
+      const drawn = watchDrawn(() => accountState(host))
+      const usersLand = () => users.resolve({ users: [user(), sam] })
+      const librariesLand = () => libraries.resolve({ libraries: [manga] })
+      await flush(usersFirst ? usersLand : librariesLand)
+      await flush(usersFirst ? librariesLand : usersLand)
+      drawn.stop()
+      expect([...drawn.seen]).toEqual([
+        JSON.stringify(['sam', [], null, null]),
+        JSON.stringify([
+          'sam',
+          [
+            'Role & permissions',
+            'Libraries',
+            'Password',
+            'Sessions & keys',
+            'Removal',
+          ],
+          null,
+          null,
+        ]),
+      ])
+    },
+  )
+
+  it('keeps focus on an account’s page’s ‹ Users, taken while its reads are out, once they land, and heads it with the account’s own name: the header and the notices drawn while waiting are the page’s own', async () => {
+    const users = deferred<{ users: usersApi.User[] }>()
+    const libraries = deferred<{ libraries: librariesApi.Library[] }>()
+    vi.mocked(usersApi.listUsers).mockReturnValue(users.promise)
+    vi.mocked(librariesApi.listLibraries).mockReturnValue(libraries.promise)
+    const host = await at('/config/users/SAM')
+    expect(heading(host)).toBe('SAM')
+    const back = link(host, '‹ Users')
+    act(() => back.focus())
+    expect(document.activeElement).toBe(back)
+    // The screen's live region, drawn empty before any answer can come, is
+    // the drawn page's too.
+    const region = () =>
+      host.querySelector('.account-page > [aria-live="polite"]')
+    const waiting = region()
+    expect(waiting).not.toBeNull()
+
+    await flush(() => {
+      users.resolve({ users: [user(), sam] })
+      libraries.resolve({ libraries: [manga] })
+    })
+    expect(heading(host)).toBe('sam')
+    expect(sectionTitles(host)).toContain('Libraries')
+    expect(link(host, '‹ Users')).toBe(back)
+    expect(document.activeElement).toBe(back)
+    expect(region()).toBe(waiting)
+  })
+
+  it('draws the users list’s failure on an account’s page headed by its address, and no Loading… beside it, when the list cannot be read', async () => {
+    holdTheClock()
+    vi.mocked(usersApi.listUsers).mockRejectedValue(
+      new Error('/api/library/users: 503 {"error":"the store is locked"}'),
+    )
+    const host = await at('/config/users/sam')
+    expect(heading(host)).toBe('sam')
+    expect(
+      host.querySelector('.account-page > [role="alert"]')?.textContent,
+    ).toBe('the store is locked')
+    pass(WAIT_DRAWN_AFTER_MS)
+    expect(waitLine(host, 'account-page')).toBeNull()
+    expect(sectionTitles(host)).toEqual([])
+    expect(host.querySelector('.missing')).toBeNull()
+  })
+
+  it('says nothing of the libraries list on an account’s page whose users list could not be read', async () => {
+    vi.mocked(usersApi.listUsers).mockRejectedValue(
+      new Error('/api/library/users: 503 {"error":"the store is locked"}'),
+    )
+    vi.mocked(librariesApi.listLibraries).mockRejectedValue(unreadLibraries())
+    const host = await at('/config/users/sam')
+    expect(
+      [...host.querySelectorAll('.account-page > [role="alert"]')].map(
+        (alert) => alert.textContent,
+      ),
+    ).toEqual(['the store is locked'])
+  })
+
+  it('draws an account’s page at once on a return from another tab, reads both lists again, and draws their answers in one step', async () => {
+    holdTheClock()
+    vi.mocked(usersApi.listUsers).mockResolvedValue({ users: [user(), sam] })
+    vi.mocked(librariesApi.listLibraries).mockResolvedValue({
+      libraries: [manga],
+    })
+    const host = await at('/config/users/sam')
+    await go('/config/libraries')
+    expect(host.querySelector('.account-page')).toBeNull()
+    const users = deferred<{ users: usersApi.User[] }>()
+    const libraries = deferred<{ libraries: librariesApi.Library[] }>()
+    vi.mocked(usersApi.listUsers).mockClear()
+    vi.mocked(usersApi.listUsers).mockReturnValue(users.promise)
+    vi.mocked(librariesApi.listLibraries).mockClear()
+    vi.mocked(librariesApi.listLibraries).mockReturnValue(libraries.promise)
+
+    /** The page as drawn: its title, its body's tally and grant, its wait. */
+    const pageState = () => {
+      if (host.querySelector('.account-page') === null) return 'none'
+      const body = sectionTitles(host).includes('Libraries')
+      return JSON.stringify([
+        heading(host) ?? null,
+        body ? tally(host) : null,
+        body && grants(host).querySelector('input[name="library-70"]') !== null,
+        waitLine(host, 'account-page')?.textContent ?? null,
+      ])
+    }
+    const drawn = watchDrawn(pageState)
+    await go('/config/users/sam')
+    expect(pageState()).toBe(
+      JSON.stringify(['sam', '0 sessions\u00a0·\u00a00 API keys', true, null]),
+    )
+    expect(usersApi.listUsers).toHaveBeenCalledTimes(1)
+    expect(librariesApi.listLibraries).toHaveBeenCalledTimes(1)
+    pass(WAIT_DRAWN_AFTER_MS)
+    await flush(() => {
+      users.resolve({ users: [user(), { ...sam, sessions: [session] }] })
+      libraries.resolve({ libraries: [] })
+    })
+    drawn.stop()
+    expect([...drawn.seen]).toEqual([
+      'none',
+      JSON.stringify(['sam', '0 sessions\u00a0·\u00a00 API keys', true, null]),
+      JSON.stringify(['sam', '1 session\u00a0·\u00a00 API keys', false, null]),
+    ])
+  })
+
+  it('reads the libraries list once on arrival from the libraries tab, which drew it', async () => {
+    vi.mocked(usersApi.listUsers).mockResolvedValue({ users: [user(), sam] })
+    vi.mocked(librariesApi.listLibraries).mockResolvedValue({
+      libraries: [manga],
+    })
+    const host = await at('/config/libraries')
+    expect(librariesApi.listLibraries).toHaveBeenCalledTimes(1)
+    vi.mocked(librariesApi.listLibraries).mockClear()
+    vi.mocked(usersApi.listUsers).mockClear()
+
+    await go('/config/users/sam')
+    expect(heading(host)).toBe('sam')
+    expect(librariesApi.listLibraries).toHaveBeenCalledTimes(1)
+    expect(usersApi.listUsers).toHaveBeenCalledTimes(1)
   })
 })
 
@@ -1096,11 +1334,11 @@ describe('Users, making one', () => {
     expect(usersApi.addUser).not.toHaveBeenCalled()
   })
 
-  // `reload` runs on each change of page and after every write the server
-  // carries out, so two reads of the list are routinely in flight at once —
-  // and the server need not answer them in order. Without the sequence check
-  // the *older* answer wins, and the screen settles on the list as it was
-  // before the write that triggered the newer read.
+  // The list is read on each change of page and after every write the
+  // server carries out, so two reads of it are routinely in flight at once —
+  // and the server need not answer them in order. Unless only the newest
+  // read's answer is kept, the *older* answer wins, and the screen settles on
+  // the list as it was before the write that triggered the newer read.
   it('keeps the newer list when an older read answers after it', async () => {
     const first = deferred<{ users: usersApi.User[] }>()
     const second = deferred<{ users: usersApi.User[] }>()
@@ -1135,9 +1373,9 @@ describe('Users, making one', () => {
   })
 
   it('keeps the newer list when an older read *fails* after it', async () => {
-    // The catch needs its own guard for the same reason and does not get one
-    // for free: a stale rejection would put a red alert over a list that was
-    // read successfully a moment later.
+    // A failure is the newest read's only, for the same reason: a stale
+    // rejection would put a red alert over a list that was read successfully
+    // a moment later.
     const first = deferred<{ users: usersApi.User[] }>()
     const second = deferred<{ users: usersApi.User[] }>()
     vi.mocked(usersApi.listUsers)
@@ -1163,14 +1401,12 @@ describe('Users, making one', () => {
   })
 
   // The libraries list is read on each change of page too, and its reads
-  // need not answer in order either.
+  // need not answer in order either. The first page waits for its read, so
+  // the read left out is a later page's: sam's, overtaken by the table's and
+  // then sam's again.
   it('keeps the newer libraries list when an older read answers after it', async () => {
     const manga = { id: 70, name: 'Manga', works: 0, books: 0, dirs: [] }
     const comics = { id: 80, name: 'Comics', works: 0, books: 0, dirs: [] }
-    const first = deferred<{ libraries: librariesApi.Library[] }>()
-    vi.mocked(librariesApi.listLibraries)
-      .mockReturnValueOnce(first.promise)
-      .mockResolvedValue({ libraries: [manga, comics] })
     vi.mocked(usersApi.listUsers).mockResolvedValue({
       users: [
         user(),
@@ -1178,13 +1414,19 @@ describe('Users, making one', () => {
       ],
     })
     const host = await at()
+    const first = deferred<{ libraries: librariesApi.Library[] }>()
+    vi.mocked(librariesApi.listLibraries)
+      .mockReturnValueOnce(first.promise)
+      .mockResolvedValue({ libraries: [manga, comics] })
     await follow(host, 'sam')
-    expect(librariesApi.listLibraries).toHaveBeenCalledTimes(2)
+    await follow(host, '‹ Users')
+    await follow(host, 'sam')
+    expect(librariesApi.listLibraries).toHaveBeenCalledTimes(4)
     expect(
       grants(host).querySelector('input[name="library-80"]'),
     ).not.toBeNull()
 
-    // The table's read finally answers, with the list as it was before
+    // The held read finally answers, with the list as it was before
     // Comics was made. It is the stale one and must not be drawn.
     await flush(() => first.resolve({ libraries: [manga] }))
     expect(
@@ -1194,10 +1436,6 @@ describe('Users, making one', () => {
 
   it('keeps the newer libraries list when an older read *fails* after it', async () => {
     const manga = { id: 70, name: 'Manga', works: 0, books: 0, dirs: [] }
-    const first = deferred<{ libraries: librariesApi.Library[] }>()
-    vi.mocked(librariesApi.listLibraries)
-      .mockReturnValueOnce(first.promise)
-      .mockResolvedValue({ libraries: [manga] })
     vi.mocked(usersApi.listUsers).mockResolvedValue({
       users: [
         user(),
@@ -1205,8 +1443,14 @@ describe('Users, making one', () => {
       ],
     })
     const host = await at()
+    const first = deferred<{ libraries: librariesApi.Library[] }>()
+    vi.mocked(librariesApi.listLibraries)
+      .mockReturnValueOnce(first.promise)
+      .mockResolvedValue({ libraries: [manga] })
     await follow(host, 'sam')
-    expect(librariesApi.listLibraries).toHaveBeenCalledTimes(2)
+    await follow(host, '‹ Users')
+    await follow(host, 'sam')
+    expect(librariesApi.listLibraries).toHaveBeenCalledTimes(4)
 
     await flush(() => first.reject(unreadLibraries()))
     expect(host.textContent).not.toContain('libraries list could not be read')
@@ -1699,17 +1943,24 @@ describe('Users, an answer that comes after the person has moved on', () => {
       to: '/config/libraries',
     },
   ])(
-    'leaves the person $where when a make answers there, and reads the list once',
+    'leaves the person $where when a make answers there, and reads the list once where it is drawn',
     async ({ leave, to }) => {
       const { host, answer } = await making()
       await leave(host)
       await answer()
       expect(here()).toBe(to)
       // The one read is `added`'s own, for a make whose form has gone. On
-      // another tab it is sent though nothing draws its answer.
+      // another tab, which draws no list, it is the return's: the list is
+      // read once something draws it.
+      if (to === '/config/libraries') {
+        expect(usersApi.listUsers).not.toHaveBeenCalled()
+        await go(TABLE)
+      }
       expect(usersApi.listUsers).toHaveBeenCalledTimes(1)
       // What was made is in the list the page draws once that read lands.
-      if (to === TABLE) expect(names(host)).toEqual(['davey', 'kim', 'sam'])
+      if (to !== '/config/users/kim') {
+        expect(names(host)).toEqual(['davey', 'kim', 'sam'])
+      }
       if (to === '/config/users/kim') expect(heading(host)).toBe('kim')
     },
   )
@@ -2486,12 +2737,13 @@ describe('Users, addressed by name', () => {
     expect(marks(host)).toEqual([null, null, null, 'page'])
   })
 
-  it('draws no page for a name while the list is being read, and the account’s once it is', async () => {
+  it('draws no account and no missing line for a name while the list is being read, only the header its address spells, and keeps that header once it is read', async () => {
     const list = deferred<{ users: usersApi.User[] }>()
     vi.mocked(usersApi.listUsers).mockReturnValue(list.promise)
     const host = await at(`${TABLE}/sam`)
     expect(host.querySelector('.missing')).toBeNull()
-    expect(host.querySelector('.account-page')).toBeNull()
+    expect(heading(host)).toBe('sam')
+    expect(sectionTitles(host)).toEqual([])
     await flush(() =>
       list.resolve({
         users: [user(), user({ id: 2, name: 'sam', role: 'user' })],

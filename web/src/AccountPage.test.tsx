@@ -1,8 +1,18 @@
 import { act } from 'react'
 import { MemoryRouter } from 'react-router'
-import { beforeEach, describe, expect, it, type Mock, vi } from 'vitest'
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  type Mock,
+  vi,
+} from 'vitest'
+import { Account } from './Account'
 import { AccountPage } from './AccountPage'
 import type { Library } from './libraries'
+import { ABOUT } from './testing/about'
 import { deferred, flush } from './testing/async'
 import { holdOf } from './testing/held'
 import { submit, typeInto } from './testing/input'
@@ -193,6 +203,66 @@ beforeEach(() => {
   // `clearAllMocks` keeps an implementation, so a dry run one case made fail
   // would fail the next case's too.
   vi.mocked(usersApi.removalCost).mockReset()
+})
+
+describe('the page before its account is known', () => {
+  /**
+   * The page at an address spelling `SAM`, as the users screen draws it
+   * while its lists are read (`user` absent) and once they have found the
+   * account.
+   */
+  const at = (over: { user?: usersApi.User; loadingDrawn?: boolean }) => (
+    <MemoryRouter initialEntries={['/config/users/SAM']}>
+      <AccountPage
+        user={over.user}
+        users={over.user === undefined ? undefined : [user(), over.user]}
+        libraries={[MANGA, COMICS]}
+        loadingDrawn={over.loadingDrawn}
+        actingAs={1}
+        notices={<p className="screen-notice">From the screen.</p>}
+        onChanged={vi.fn()}
+      />
+    </MemoryRouter>
+  )
+  const title = (host: HTMLElement) =>
+    host.querySelector('.account-page > .page-header .page-title')?.textContent
+  const sections = (host: HTMLElement) =>
+    host.querySelectorAll('.account-page section.settings-section').length
+
+  it('heads itself with the name its address spells, draws the screen’s notices, and Loading… only once its wait is drawn, with no body', () => {
+    const host = mount(at({}))
+    expect(title(host)).toBe('SAM')
+    expect(
+      host.querySelector('.account-page > .screen-notice')?.textContent,
+    ).toBe('From the screen.')
+    expect(host.querySelector('.account-page > p[role="status"]')).toBeNull()
+    expect(sections(host)).toBe(0)
+
+    rerender(at({ loadingDrawn: true }))
+    expect(
+      host.querySelector('.account-page > p[role="status"]')?.textContent,
+    ).toBe('Loading…')
+    expect(sections(host)).toBe(0)
+  })
+
+  it('keeps its header, its notices and focus on ‹ Users when the account it waited for is drawn, and heads itself with the account’s own name', () => {
+    const host = mount(at({ loadingDrawn: true }))
+    const back = [...host.querySelectorAll('a')].find(
+      (a) => a.textContent === '‹ Users',
+    ) as HTMLAnchorElement
+    const notice = host.querySelector('.screen-notice')
+    act(() => back.focus())
+
+    rerender(at({ user: user({ id: 2, name: 'sam', role: 'user' }) }))
+    expect(title(host)).toBe('sam')
+    expect(sections(host)).toBeGreaterThan(0)
+    expect(host.querySelector('.account-page > p[role="status"]')).toBeNull()
+    expect(
+      [...host.querySelectorAll('a')].find((a) => a.textContent === '‹ Users'),
+    ).toBe(back)
+    expect(document.activeElement).toBe(back)
+    expect(host.querySelector('.screen-notice')).toBe(notice)
+  })
 })
 
 describe('the two invariants on the last administrator', () => {
@@ -2520,12 +2590,13 @@ describe('removal', () => {
     ).toBe(false)
   })
 
-  it('closes its own dialog rather than trusting the page to be unmounted', async () => {
-    // Nothing takes the page away here (no `onRemoved`), and the tombstone
-    // draws no dialog while it stands, so the case is the one after it: an
-    // account re-created under the name drops the tombstone, and a dialog
-    // left open would come back over it, working out a removal nothing asked
-    // for, with no *Remove…* button.
+  it('opens no dialog over an account re-created under a removed one’s name: the dialog went with the body the tombstone replaced', async () => {
+    // Nothing takes the page away here (no `onRemoved`). The removal's
+    // answer draws the tombstone in the body's place, and the body's open
+    // dialog goes with it. An account re-created under the name drops the
+    // tombstone and is drawn with a body of its own, so no dialog comes back
+    // over it, working out a removal nothing asked for, with no *Remove…*
+    // button.
     const me = user()
     const other = user({ id: 2, name: 'sam', role: 'user' })
     vi.mocked(usersApi.removalCost).mockResolvedValue({
@@ -2976,4 +3047,178 @@ describe('the field labels — O175', () => {
       expect(control?.getAttribute('aria-label'), written ?? '').toBe(written)
     }
   })
+})
+
+/**
+ * The caller's own keys and sessions are also the lists `/account` draws. A
+ * revocation on one's own account marks the list it changed stale, so
+ * `/account` arriving afterwards waits for it rather than drawing the
+ * revoked row with a live Revoke; one on another account changes neither.
+ */
+describe('a revocation, and the lists /account draws', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  const json = (body: unknown) =>
+    new Response(JSON.stringify(body), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })
+  const PHONE = {
+    id: 7,
+    name: 'phone',
+    created: '2026-08-01 10:00:00',
+    last_used: null,
+  }
+  const session = (id: string, agent: string, current: boolean) => ({
+    id,
+    created: '2026-08-01 10:00:00',
+    last_seen: '2026-09-02 10:00:00',
+    user_agent: agent,
+    ip: null,
+    current,
+  })
+  const FIREFOX = session('aa', 'Firefox', true)
+  const SAFARI = session('bb', 'Safari', false)
+
+  /**
+   * The caller's lists as the server holds them, less what a revocation of
+   * the caller's own took; `hold` keeps every later read of either list
+   * until the case lets them answer.
+   */
+  function callerServer() {
+    const gone = new Set<number | string>()
+    vi.mocked(usersApi.revokeUserKey).mockImplementation(async (id, kid) => {
+      if (id === 1) gone.add(kid)
+    })
+    vi.mocked(usersApi.revokeUserSession).mockImplementation(
+      async (id, sid) => {
+        if (id === 1) gone.add(sid)
+      },
+    )
+    const answer = (input: string) => {
+      if (input === '/api/keys')
+        return json([PHONE].filter((key) => !gone.has(key.id)))
+      if (input === '/api/sessions')
+        return json([FIREFOX, SAFARI].filter((one) => !gone.has(one.id)))
+      if (input === '/api/about') return json(ABOUT)
+      return new Response(null, { status: 404 })
+    }
+    const held: (() => void)[] = []
+    let holding = false
+    const fetch = vi.fn((input: string) =>
+      holding && input !== '/api/about'
+        ? new Promise<Response>((resolve) => {
+            held.push(() => resolve(answer(input)))
+          })
+        : Promise.resolve(answer(input)),
+    )
+    return {
+      fetch,
+      hold: () => {
+        holding = true
+      },
+      letAnswer: () => {
+        for (const one of held.splice(0)) one()
+      },
+    }
+  }
+
+  /** The label of each row of `/account` that ends in its Revoke. */
+  const revocable = (host: HTMLElement) =>
+    [...host.querySelectorAll('.settings-row')]
+      .filter(
+        (one) =>
+          one.querySelector(':scope > .settings-row-control > button')
+            ?.textContent === 'Revoke',
+      )
+      .map((one) => one.querySelector('.settings-row-label')?.textContent)
+
+  /** `/account` drawn, and its reads let answer. */
+  async function accountDrawn() {
+    const host = mount(<Account placement="page" onSignedOut={() => {}} />)
+    await flush()
+    return host
+  }
+
+  /**
+   * `/account` drawn and left, so the store keeps what it read; then the
+   * account's page of `whose`, where `button` is pressed; then `/account`
+   * again with its lists' reads held. Which rows it draws on arrival, its
+   * wait line once the wait has held, and which rows it draws once the
+   * reads land.
+   */
+  async function accountAfter(whose: usersApi.User, button: string) {
+    const answers = callerServer()
+    vi.stubGlobal('fetch', answers.fetch)
+    const before = await accountDrawn()
+    expect(revocable(before)).toEqual(['phone', 'Firefox (this one)', 'Safari'])
+    rerender(<div />)
+    const { host } = await show(whose, [user(), sam(), whose], {
+      actingAs: 1,
+    })
+    await click(control(host, button))
+    rerender(<div />)
+    holdTheClock()
+    answers.hold()
+    const again = mount(<Account placement="page" onSignedOut={() => {}} />)
+    await act(async () => {
+      await Promise.resolve()
+    })
+    const onArrival = revocable(again)
+    pass(WAIT_DRAWN_AFTER_MS)
+    const wait =
+      again.querySelector('section.account > p[role="status"]')?.textContent ??
+      null
+    await flush(() => answers.letAnswer())
+    return { onArrival, wait, landed: revocable(again) }
+  }
+
+  const own = () =>
+    user({
+      keys: [PHONE],
+      sessions: [FIREFOX, SAFARI],
+    })
+  const theirs = () =>
+    user({
+      id: 3,
+      name: 'kim',
+      role: 'user',
+      keys: [{ ...PHONE, id: 9 }],
+      sessions: [session('cc', 'Safari', false)],
+    })
+
+  it.each([
+    ['a key', 'button[name="revoke-key-7"]', ['Firefox (this one)', 'Safari']],
+    [
+      'a session',
+      'button[name="revoke-session-bb"]',
+      ['phone', 'Firefox (this one)'],
+    ],
+  ] as const)(
+    'makes /account wait for the list on a return after %s of one’s own is revoked on one’s account’s page',
+    async (_, button, left) => {
+      expect(await accountAfter(own(), button)).toEqual({
+        onArrival: [],
+        wait: 'Loading…',
+        landed: left,
+      })
+    },
+  )
+
+  it.each([
+    ['a key', 'button[name="revoke-key-9"]'],
+    ['a session', 'button[name="revoke-session-cc"]'],
+  ] as const)(
+    'draws /account at once on a return after %s is revoked on another account’s page',
+    async (_, button) => {
+      const all = ['phone', 'Firefox (this one)', 'Safari']
+      expect(await accountAfter(theirs(), button)).toEqual({
+        onArrival: all,
+        wait: null,
+        landed: all,
+      })
+    },
+  )
 })

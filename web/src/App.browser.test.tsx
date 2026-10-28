@@ -1058,8 +1058,6 @@ describe('every reader panel keeps Tab inside it, with real keys (spec 2026-09-2
     ['Account', 'A', 'Account'],
   ])('%s: neither Tab nor Shift+Tab leaves it', async (_name, key, label) => {
     await readerFocused(1440, 900)
-    // Dispatched inside an async `act`, so that Account's panel, which fetches
-    // its keys and sessions on opening, lands those updates inside it.
     await act(async () => {
       document.body.dispatchEvent(
         new KeyboardEvent('keydown', { key, bubbles: true }),
@@ -1067,7 +1065,15 @@ describe('every reader panel keeps Tab inside it, with real keys (spec 2026-09-2
     })
     const panel = () =>
       document.querySelector(`[role="dialog"][aria-label="${label}"]`)
-    await until(() => panel() !== null)
+    // Account's panel draws its body once its keys, its sessions and
+    // `/api/about` have been read, so it is waited for until its forms are
+    // drawn: the walk then crosses them, and the reads land inside `until`'s
+    // `act`.
+    await until(
+      () =>
+        panel() !== null &&
+        (label !== 'Account' || panel()?.querySelector('form') !== null),
+    )
     const escaped: string[] = []
     for (let i = 0; i < 40; i++) {
       await userEvent.tab()

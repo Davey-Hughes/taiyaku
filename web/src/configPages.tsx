@@ -271,3 +271,21 @@ export function useLateAnswers<Line extends Said>(
     drawNotices,
   }
 }
+
+/**
+ * A key for the page of one thing in a screen's list, a library or an
+ * account, that changes only when the page goes from one thing to another,
+ * so that one thing's page never inherits another's state. While the list
+ * is read `id` is `undefined`, and the page drawn then keeps its key once
+ * the list names the thing: its header is the drawn page's own, with
+ * whatever has focus in it.
+ */
+export function usePageKey<Id>(id: Id | undefined): number {
+  const [page, setPage] = useState({ id, key: 0 })
+  if (id !== undefined && id !== page.id) {
+    const key = page.id === undefined ? page.key : page.key + 1
+    setPage({ id, key })
+    return key
+  }
+  return page.key
+}

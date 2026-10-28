@@ -25,7 +25,12 @@ import { holdOf } from './testing/held'
 import { press, submit, typeInto } from './testing/input'
 import { boxOf, expectKept } from './testing/kept'
 import { mount, rerender } from './testing/mount'
-import { holdTheClock, pass, WAIT_DRAWN_AFTER_MS } from './testing/wait'
+import {
+  holdTheClock,
+  pass,
+  WAIT_DRAWN_AFTER_MS,
+  watchDrawn,
+} from './testing/wait'
 import { row, section } from './testing/settingsRows'
 import * as usersApi from './users'
 
@@ -756,9 +761,11 @@ describe('the Libraries screen in the real Shell', () => {
    * O200: the sidebar lists the libraries `/api/library/status` answers,
    * which the shell reads when it mounts. Both reads here answer what the
    * store holds, and the store has the library only once the form has made
-   * it, so the sidebar can learn of it only by asking again.
+   * it, so the sidebar can learn of it only by asking again. The move to
+   * the new library's page invalidates both addresses together, so each is
+   * read once.
    */
-  it('lists a library the form makes in the sidebar, with no reload', async () => {
+  it('lists a library the form makes in the sidebar and on its page, with no reload, from one read of each', async () => {
     const MADE: librariesApi.Library = {
       id: 3,
       name: 'Manga',
@@ -791,6 +798,8 @@ describe('the Libraries screen in the real Shell', () => {
       form.querySelector('input[name="path"]') as Element,
       '/srv/manga',
     )
+    vi.mocked(librariesApi.listLibraries).mockClear()
+    vi.mocked(library.status).mockClear()
     await click(form.querySelector('button[type="submit"]') as Element)
     await settle(200)
 
@@ -799,10 +808,16 @@ describe('the Libraries screen in the real Shell', () => {
     ]
     expect(links.map((a) => a.textContent)).toEqual(['Manga'])
     expect(links[0]?.getAttribute('href')).toBe('/?library=3')
+    expect(
+      host.querySelector('.library-page > .page-header .page-title')
+        ?.textContent,
+    ).toBe('Manga')
+    expect(librariesApi.listLibraries).toHaveBeenCalledTimes(1)
+    expect(library.status).toHaveBeenCalledTimes(1)
   })
 
   /** The same, for a rename: the library is listed by its new name. */
-  it('lists a renamed library by its new name in the sidebar, with no reload', async () => {
+  it('lists a renamed library by its new name in the sidebar and on its page, with no reload, from one read of each', async () => {
     const renamed = () =>
       vi.mocked(librariesApi.renameLibrary).mock.calls.length > 0
     vi.mocked(librariesApi.renameLibrary).mockResolvedValue({
@@ -821,6 +836,8 @@ describe('the Libraries screen in the real Shell', () => {
     }))
     const host = await shell(1280, 800, MANGA_PAGE)
     expect(sidebarNames(host)).toEqual(['Light novels', 'Manga'])
+    vi.mocked(librariesApi.listLibraries).mockClear()
+    vi.mocked(library.status).mockClear()
 
     await renameManga(host)
 
@@ -829,6 +846,32 @@ describe('the Libraries screen in the real Shell', () => {
         ?.textContent,
     ).toBe('Manga 2')
     expect(sidebarNames(host)).toEqual(['Light novels', 'Manga 2'])
+    expect(librariesApi.listLibraries).toHaveBeenCalledTimes(1)
+    expect(library.status).toHaveBeenCalledTimes(1)
+  })
+
+  /**
+   * A rename reads the list at once, and here the read answers before the
+   * move to the new address is drawn. Drawn at the old address, the new
+   * name would name no library there.
+   */
+  it('draws no “No such library” between a rename’s answer and the move to its new address', async () => {
+    vi.mocked(librariesApi.renameLibrary).mockResolvedValue({
+      id: 1,
+      name: 'Manga 2',
+    } as never)
+    listFollowingRename('Manga 2')
+    const host = await shell(1280, 800, MANGA_PAGE)
+    const missing = watchDrawn(() =>
+      String(host.querySelector('.missing') !== null),
+    )
+    await renameManga(host)
+    missing.stop()
+    expect([...missing.seen]).toEqual(['false'])
+    expect(
+      host.querySelector('.library-page > .page-header .page-title')
+        ?.textContent,
+    ).toBe('Manga 2')
   })
 
   it('saves the name on Enter in the box, focusing the title with no ring, and closes the editor on Escape from the box or Save with focus back on Rename…', async () => {

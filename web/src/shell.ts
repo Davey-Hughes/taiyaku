@@ -58,19 +58,3 @@ export const InboxRefreshContext = createContext<() => void>(() => {})
 export function useInboxRefresh(): () => void {
   return useContext(InboxRefreshContext)
 }
-
-/**
- * Ask the chrome to read `/api/library/status` again.
- *
- * The shell reads it when it mounts, and the sidebar lists the
- * libraries from it. Configuration → Libraries makes, renames, removes and
- * scans libraries under that same sidebar, so it asks for a read when it
- * reads the list: without one, a removed library stayed in the sidebar until
- * a reload (O200).
- */
-export const StatusRefreshContext = createContext<() => void>(() => {})
-
-/** Re-read the status after a write that moved it. */
-export function useStatusRefresh(): () => void {
-  return useContext(StatusRefreshContext)
-}

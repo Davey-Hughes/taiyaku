@@ -252,6 +252,10 @@ describe('a library’s page, held controls in a real browser', () => {
   })
 
   it('keeps focus on the removal’s confirm when a scan found under the open removal holds it; Enter on it sends nothing then', async () => {
+    // A return to the page: its body is drawn at once from the status its
+    // first visit kept, and the status read again answers late.
+    await libraryPage()
+    act(() => rerender(<div />))
     const status = deferred<librariesApi.LibraryScanStatus>()
     vi.mocked(librariesApi.libraryScanStatus).mockReturnValueOnce(
       status.promise,
@@ -266,8 +270,7 @@ describe('a library’s page, held controls in a real browser', () => {
     act(() => confirm.focus())
     expect(holdOf(confirm)).toBe('free')
 
-    // The page's own first read of the library's status answers late: a
-    // scan is running.
+    // The status read again on the return answers: a scan is running.
     await act(async () => {
       status.resolve({ ...idle(1), running: true, elapsed_secs: 4 })
     })

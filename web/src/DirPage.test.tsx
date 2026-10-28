@@ -17,6 +17,8 @@ import {
   scanningIn,
   tick,
 } from './testing/libraries'
+import { libraryScan } from './pageReads'
+import { entryOf, readSet, subscribe } from './reads'
 import { mount, rerender } from './testing/mount'
 import { expectRowsWired, row, section } from './testing/settingsRows'
 import { pass, WAIT_DRAWN_AFTER_MS } from './testing/wait'
@@ -394,6 +396,34 @@ describe('DirPage, scans and removals across its library exclude each other', ()
     expect(ownScanning(host)).toBeNull()
     expect(actionsHeld(host)).toEqual(['free', 'free', 'free'])
     expect(api.libraryScanStatus).toHaveBeenCalledTimes(1)
+  })
+
+  // §9's call 9: told, a library's page drawn beside this one would read the
+  // status, take the scan up and draw its report beside the row's own.
+  it('marks its library’s scan status in the store stale as its own scan starts, and tells no page drawing it', async () => {
+    vi.mocked(api.libraryScanStatus).mockImplementation((id) =>
+      Promise.resolve(idle(id)),
+    )
+    await readSet([libraryScan(7), libraryScan(8)])
+    const heard = vi.fn()
+    const off = subscribe(libraryScan(7).address, heard)
+    try {
+      const { host } = await shown()
+      vi.mocked(api.libraryScanStatus).mockClear()
+      vi.mocked(config.startScan).mockResolvedValue({
+        root_id: 2,
+        status_url: '/api/library/roots/2/scan',
+      })
+      await press(control(host, 'Scan directory'))
+      await flush()
+      expect(ownScanning(host)).not.toBeNull()
+      expect(entryOf(libraryScan(7))?.stale).toBe(true)
+      expect(entryOf(libraryScan(8))?.stale).toBe(false)
+      expect(heard).not.toHaveBeenCalled()
+      expect(api.libraryScanStatus).not.toHaveBeenCalled()
+    } finally {
+      off()
+    }
   })
 
   it('closes the directory’s open removal dialog when the page’s own first read finds a scan of the library under it, and asks its cost afresh once that ends', async () => {

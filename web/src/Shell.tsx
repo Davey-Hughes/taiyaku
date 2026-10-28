@@ -1,12 +1,13 @@
 /**
  * The library's chrome: the sidebar, and the `<main>` a screen draws into.
  *
- * **The status fetch lives here rather than in each screen**, because the
- * sidebar and the library page draw the same libraries list, and a fetch
- * apiece is a chance for them to disagree. `Library` reads it for its
- * library's name, §8's empty states and whether there is anything to
- * search, through `shell.ts`'s context rather than through a prop, so a
- * screen that does not care about it says nothing about it.
+ * **The status is read here and handed down**, because the sidebar and the
+ * library page draw the same libraries list. It comes from the read store
+ * (`pageReads.ts`'s `LIBRARY_STATUS`), so a write that invalidates it moves
+ * the sidebar too. `Library` reads it for its library's name, §8's empty
+ * states and whether there is anything to search, through `shell.ts`'s
+ * context rather than through a prop, so a screen that does not care about
+ * it says nothing about it.
  *
  * The theme's tokens throughout — see `styles/tokens.css`, and `Login.tsx`,
  * which once shipped a hardcoded `#111` on this app's front door.
@@ -23,17 +24,15 @@ import {
 import { INBOX_MIN_SCORE, inboxTotal, listProposals } from './curation'
 import { useGate } from './gate'
 import { usePrefsMap } from './hooks'
-import { type LibraryStatus, status as fetchStatus } from './library'
+import type { LibraryStatus } from './library'
 import { fieldChanged, sliceFor, sliceReset } from './module'
+import { LIBRARY_STATUS } from './pageReads'
 import { loadPrefs, resetPrefs, savePrefs } from './prefs'
-import {
-  InboxRefreshContext,
-  StatusContext,
-  StatusRefreshContext,
-} from './shell'
+import { InboxRefreshContext, StatusContext } from './shell'
 import { SEARCH_BOX_ID } from './searchHits'
 import { Sidebar } from './Sidebar'
 import { ThemeControl } from './ThemeControl'
+import { usePage } from './usePage'
 import { VersionLabel } from './VersionLabel'
 import { Wordmark } from './Wordmark'
 import { messageOf } from './message'
@@ -70,8 +69,16 @@ export function Shell({ children }: { children: React.ReactNode }) {
   // what an account may *see* is the server's to enforce, and this chooses
   // only what to draw.
   const admin = useGate()?.who.admin ?? false
-  const [status, setStatus] = useState<LibraryStatus | undefined>()
-  const [failure, setFailure] = useState<string | undefined>()
+  // **Not a page**, so nothing waits on it: the sidebar draws the status
+  // once it is known, and a failed read is said above the screen while the
+  // libraries already drawn stay. Read when the shell mounts, and again
+  // whenever Libraries reads it or a write invalidates it.
+  const {
+    answers: [status],
+    failures: [statusFailure],
+  } = usePage<[LibraryStatus]>([LIBRARY_STATUS])
+  const failure =
+    statusFailure === undefined ? undefined : messageOf(statusFailure)
 
   // **The reader's own preference machinery, via the reader's own hook.**
   // `hooks.ts`'s `usePrefsMap` is what `App.tsx` uses to load every reader
@@ -105,36 +112,6 @@ export function Shell({ children }: { children: React.ReactNode }) {
   }, [setMap])
   const controls = useMemo(() => ({ change, reset }), [change, reset])
 
-  // **Read on mount, and again whenever a screen under it asks** —
-  // `shell.ts`'s `useStatusRefresh`, which Configuration → Libraries calls
-  // when it reads its own list (O200). A re-read that fails is drawn as
-  // the first read's failure is, and the libraries already drawn stay.
-  const [statusReads, setStatusReads] = useState(0)
-  const refreshStatus = useCallback(() => setStatusReads((n) => n + 1), [])
-
-  // The inbox count's effect below carries the same suppression for the same
-  // shape: a dependency the body never reads, listed because its *change* is
-  // the signal. Removing it would leave the sidebar listing the libraries the
-  // shell read when it mounted, however many the screen beside it has since
-  // made or removed.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: `statusReads` is a trigger, not a closure read — the body reads nothing from it.
-  useEffect(() => {
-    let cancelled = false
-    fetchStatus()
-      .then((next) => {
-        if (cancelled) return
-        setStatus(next)
-        setFailure(undefined)
-      })
-      .catch((err: unknown) => {
-        if (cancelled) return
-        setFailure(messageOf(err))
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [statusReads])
-
   // **The open count on More and its Proposals entry — C3 §6, and the build
   // design's file-structure table.** The entry shipped without it, on the
   // ground that this component mounts around every screen and so a count is a
@@ -152,7 +129,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
   // adding one for a badge would be a route to keep in step with the list's
   // own filters for no measured gain.
   //
-  // **A failure is swallowed on purpose, unlike the status fetch above.** A
+  // **A failure is swallowed on purpose, unlike the status read above.** A
   // count is an ornament on a link that works without it; the link is drawn
   // either way, and putting a second `role="alert"` over every screen in the
   // library because a badge could not be fetched would be the failure
@@ -257,10 +234,9 @@ export function Shell({ children }: { children: React.ReactNode }) {
     <BrowsePrefsContext.Provider value={prefs}>
       <BrowseControlsContext.Provider value={controls}>
         <InboxRefreshContext.Provider value={refreshInbox}>
-          <StatusRefreshContext.Provider value={refreshStatus}>
-            <StatusContext.Provider value={status}>
-              <div className={classes}>
-                {/* O174: a sighted keyboard user's way past the sidebar. Focus
+          <StatusContext.Provider value={status}>
+            <div className={classes}>
+              {/* O174: a sighted keyboard user's way past the sidebar. Focus
                   moves by hand rather than by following `#content`, which
                   would put a fragment in the URL and a history entry for Back
                   to walk through. `preventScroll`, because at phone width the
@@ -274,128 +250,127 @@ export function Shell({ children }: { children: React.ReactNode }) {
                   here and comes off when focus leaves. While `main` holds that
                   focus a click on plain text inside it still lands on `main`,
                   until focus next moves. */}
-                {/* biome-ignore lint/a11y/useValidAnchor: a link and not a button — it has a destination, `#content`, and the handler goes there without leaving the fragment in the URL. */}
-                <a
-                  className="skip-link"
-                  href="#content"
-                  inert={menuOpen}
-                  onClick={(event) => {
-                    event.preventDefault()
-                    const main = mainRef.current
-                    if (!main) return
-                    main.tabIndex = -1
-                    main.addEventListener(
-                      'blur',
-                      () => {
-                        main.removeAttribute('tabindex')
-                      },
-                      { once: true },
-                    )
-                    main.focus({ preventScroll: true })
+              {/* biome-ignore lint/a11y/useValidAnchor: a link and not a button — it has a destination, `#content`, and the handler goes there without leaving the fragment in the URL. */}
+              <a
+                className="skip-link"
+                href="#content"
+                inert={menuOpen}
+                onClick={(event) => {
+                  event.preventDefault()
+                  const main = mainRef.current
+                  if (!main) return
+                  main.tabIndex = -1
+                  main.addEventListener(
+                    'blur',
+                    () => {
+                      main.removeAttribute('tabindex')
+                    },
+                    { once: true },
+                  )
+                  main.focus({ preventScroll: true })
+                }}
+              >
+                Skip to content
+              </a>
+              <header className="phone-bar" inert={menuOpen}>
+                <button
+                  ref={menuButton}
+                  type="button"
+                  className="menu-button"
+                  aria-label="Menu"
+                  aria-expanded={menuOpen}
+                  aria-controls="library-menu"
+                  onClick={() => {
+                    setMenuOpen(true)
                   }}
                 >
-                  Skip to content
-                </a>
-                <header className="phone-bar" inert={menuOpen}>
-                  <button
-                    ref={menuButton}
-                    type="button"
-                    className="menu-button"
-                    aria-label="Menu"
-                    aria-expanded={menuOpen}
-                    aria-controls="library-menu"
-                    onClick={() => {
-                      setMenuOpen(true)
-                    }}
-                  >
-                    <svg viewBox="0 0 24 24" aria-hidden="true">
-                      <path d="M4 7h16M4 12h16M4 17h16" />
-                    </svg>
-                  </button>
-                  {/* Named for where it goes, as the column's wordmark is. */}
-                  <Link to="/" className="home" aria-label="taiyaku, Libraries">
-                    <Wordmark />
-                  </Link>
-                  {/* Search is the Library view's bar: this goes there, keeping
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M4 7h16M4 12h16M4 17h16" />
+                  </svg>
+                </button>
+                {/* Named for where it goes, as the column's wordmark is. */}
+                <Link to="/" className="home" aria-label="taiyaku, Libraries">
+                  <Wordmark />
+                </Link>
+                {/* Search is the Library view's bar: this goes there, keeping
                     the library and the query when it is already on that
                     view, and the view focuses the box. Already there, the
                     box is focused here, inside the tap, so iOS raises its
                     keyboard. */}
-                  <Link
-                    to={{
-                      pathname: '/',
-                      search: location.pathname === '/' ? location.search : '',
-                    }}
-                    state={{ focusSearch: true }}
-                    className="search"
-                    aria-label="Search"
-                    onClick={() => {
-                      document.getElementById(SEARCH_BOX_ID)?.focus()
-                    }}
-                  >
-                    <svg viewBox="0 0 24 24" aria-hidden="true">
-                      <circle cx="11" cy="11" r="6" />
-                      <path d="M16 16l4 4" />
-                    </svg>
-                  </Link>
-                </header>
-                <div
-                  id="library-menu"
-                  ref={column}
-                  className="sidebar-column"
-                  {...(menuOpen ? AS_DIALOG : {})}
+                <Link
+                  to={{
+                    pathname: '/',
+                    search: location.pathname === '/' ? location.search : '',
+                  }}
+                  state={{ focusSearch: true }}
+                  className="search"
+                  aria-label="Search"
+                  onClick={() => {
+                    document.getElementById(SEARCH_BOX_ID)?.focus()
+                  }}
                 >
-                  {/* The way to `/`, as the Libraries heading is (the
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <circle cx="11" cy="11" r="6" />
+                    <path d="M16 16l4 4" />
+                  </svg>
+                </Link>
+              </header>
+              <div
+                id="library-menu"
+                ref={column}
+                className="sidebar-column"
+                {...(menuOpen ? AS_DIALOG : {})}
+              >
+                {/* The way to `/`, as the Libraries heading is (the
                       user's ruling of 2026-10-26), named for both. */}
-                  <Link
-                    to="/"
-                    className="wordmark-home"
-                    aria-label="taiyaku, Libraries"
-                  >
-                    <Wordmark />
-                  </Link>
-                  <button
-                    type="button"
-                    className="menu-close"
-                    aria-label="Close menu"
-                    onClick={() => {
-                      setMenuOpen(false)
-                    }}
-                  >
-                    <svg viewBox="0 0 24 24" aria-hidden="true">
-                      <path d="M6 6l12 12M18 6L6 18" />
-                    </svg>
-                  </button>
-                  <Sidebar libraries={status?.libraries ?? []} />
-                  {/* Theme last (the user's ruling of 2026-10-27): a
+                <Link
+                  to="/"
+                  className="wordmark-home"
+                  aria-label="taiyaku, Libraries"
+                >
+                  <Wordmark />
+                </Link>
+                <button
+                  type="button"
+                  className="menu-close"
+                  aria-label="Close menu"
+                  onClick={() => {
+                    setMenuOpen(false)
+                  }}
+                >
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M6 6l12 12M18 6L6 18" />
+                  </svg>
+                </button>
+                <Sidebar libraries={status?.libraries ?? []} />
+                {/* Theme last (the user's ruling of 2026-10-27): a
                       browser draws a hovered link's address over the
                       window's bottom-left corner, so Theme, which holds no
                       link, takes that corner, and the label and More stand
                       above it. */}
-                  <div className="sidebar-foot">
-                    <VersionLabel />
-                    <AccountMenu admin={admin} openProposals={openProposals} />
-                    <ThemeControl />
-                  </div>
+                <div className="sidebar-foot">
+                  <VersionLabel />
+                  <AccountMenu admin={admin} openProposals={openProposals} />
+                  <ThemeControl />
                 </div>
-                {menuOpen && (
-                  <button
-                    type="button"
-                    className="scrim"
-                    aria-label="Close menu"
-                    tabIndex={-1}
-                    onClick={() => {
-                      setMenuOpen(false)
-                    }}
-                  />
-                )}
-                <main id="content" ref={mainRef} inert={menuOpen}>
-                  {failure !== undefined && <p role="alert">{failure}</p>}
-                  {children}
-                </main>
               </div>
-            </StatusContext.Provider>
-          </StatusRefreshContext.Provider>
+              {menuOpen && (
+                <button
+                  type="button"
+                  className="scrim"
+                  aria-label="Close menu"
+                  tabIndex={-1}
+                  onClick={() => {
+                    setMenuOpen(false)
+                  }}
+                />
+              )}
+              <main id="content" ref={mainRef} inert={menuOpen}>
+                {failure !== undefined && <p role="alert">{failure}</p>}
+                {children}
+              </main>
+            </div>
+          </StatusContext.Provider>
         </InboxRefreshContext.Provider>
       </BrowseControlsContext.Provider>
     </BrowsePrefsContext.Provider>

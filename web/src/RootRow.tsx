@@ -83,10 +83,12 @@ import { HeldButton } from './HeldButton'
 import { useDrawn } from './hooks'
 import type { MoveAnswer } from './libraries'
 import { MoveRoot, type NamedLibrary } from './MoveRoot'
+import { invalidate } from './reads'
 import { RemoveRoot } from './RemoveRoot'
 import { ScanReport } from './ScanReport'
 import { messageOf, sentenceOf } from './message'
 import { useLineEnds } from './lineEnds'
+import { ROOTS } from './pageReads'
 import { PathWithBreaks } from './PathWithBreaks'
 import {
   type BackTo,
@@ -137,6 +139,13 @@ export interface RootRowProps {
   onChanged: (quiet?: boolean) => void
   /** Scan directory was pressed and a scan of this directory is being asked for. */
   onScan?: () => void
+  /**
+   * What the library's scan status said before now no longer holds: a scan
+   * of this directory was asked for, and again as it started or was answered
+   * 409, or the mount read took one up, or the poll found it over, or the
+   * row went while it ran and so will not see its end.
+   */
+  onScanMoved?: () => void
   /**
    * A write sent from this row was refused after the row had gone, with the
    * sentence that says so and names the directory: nothing of the row is left
@@ -315,6 +324,7 @@ export function RootRow({
   onMoved,
   onChanged,
   onScan,
+  onScanMoved,
   onLateRefusal,
 }: RootRowProps) {
   /**
@@ -427,6 +437,10 @@ export function RootRow({
   // Read by the edits sent as the row goes, which answer after it has.
   const late = useRef(onLateRefusal)
   late.current = onLateRefusal
+  // Held as `changed` is, for the mount read, the poll and its cleanup, and
+  // read by a start that answers once the row has gone.
+  const moved = useRef(onScanMoved)
+  moved.current = onScanMoved
   const drawn = useDrawn()
 
   /**
@@ -461,6 +475,9 @@ export function RootRow({
     patchRoot(root.id, patch)
       .then(() => {
         setFailure(undefined)
+        // The roots list carries a directory's settings, so the one Rules
+        // keeps is out of date.
+        void invalidate(ROOTS)
         onChanged()
       })
       .catch((err: unknown) => {
@@ -517,7 +534,10 @@ export function RootRow({
         // Only a *running* scan is adopted on mount. A finished one belongs to
         // whatever session started it, and drawing its report unasked would
         // put a stale wall of counts on the page each time it is opened.
-        if (status.running) absorb(status)
+        if (status.running) {
+          absorb(status)
+          moved.current?.()
+        }
       })
       .catch(() => {
         // Deliberately silent. A status read this row did not ask for must
@@ -545,7 +565,10 @@ export function RootRow({
         if (patch === undefined) continue
         const label = box.getAttribute('aria-label') ?? box.name
         patchRoot(row.id, patch).then(
-          () => changed.current(),
+          () => {
+            void invalidate(ROOTS)
+            changed.current()
+          },
           (err: unknown) => {
             late.current?.(
               `${label} for ${row.path} was not saved (${sentenceOf(err)}).`,
@@ -570,22 +593,30 @@ export function RootRow({
     setReport(null)
     setElapsed(undefined)
     misses.current = 0
+    // At the press, so a return while the start is out waits for a read sent
+    // after it; and again at the answer, for a read out across the start,
+    // which the server may have answered before it registered the scan.
+    moved.current?.()
     startScan(root.id)
       .then(() => {
         inFlight.current = false
         setStarting(false)
         setRunning(true)
+        moved.current?.()
       })
       .catch((err: unknown) => {
         inFlight.current = false
         setStarting(false)
+        const why = messageOf(err)
+        // A 409 is proof of a scan in flight, whether or not the row is
+        // still drawn to watch it.
+        if (statusOf(why) === 409) moved.current?.()
         if (!drawn.current) {
           onLateRefusal?.(
             `A scan of ${root.path} did not start (${sentenceOf(err)}).`,
           )
           return
         }
-        const why = messageOf(err)
         if (statusOf(why) === 409) setConflict(sentenceOf(err))
         else setFailure(sentenceOf(err))
         // **A 409 is positive proof a scan is in flight**, so it starts the
@@ -604,6 +635,8 @@ export function RootRow({
   useEffect(() => {
     if (!running) return
     let cancelled = false
+    /** Cleared once the poll stops: the scan has ended, or the polls failed. */
+    let watching = true
     const timer = setInterval(() => {
       scanStatus(root.id)
         .then((status) => {
@@ -611,6 +644,8 @@ export function RootRow({
           misses.current = 0
           absorb(status)
           if (status.running) return
+          watching = false
+          moved.current?.()
           setConflict(undefined)
           // **A `null` report on a stopped scan is not a clean finish.** The
           // registry is in memory, so a `serve` restarted mid-scan answers
@@ -629,6 +664,7 @@ export function RootRow({
           if (cancelled) return
           misses.current += 1
           if (misses.current < POLL_MISSES_ALLOWED) return
+          watching = false
           setRunning(false)
           // The 409's sentence is true while the scan it named is watched,
           // and nothing watches it now.
@@ -639,6 +675,9 @@ export function RootRow({
     return () => {
       cancelled = true
       clearInterval(timer)
+      // The row goes, or turns to another directory, while the scan runs:
+      // nothing here will see it end.
+      if (watching) moved.current?.()
     }
   }, [running, root.id, absorb])
 
@@ -821,6 +860,7 @@ export function RootRow({
                 patchRoot(root.id, { keeps_documents: next })
                   .then(() => {
                     setFailure(undefined)
+                    void invalidate(ROOTS)
                     onChanged()
                   })
                   .catch((err: unknown) => {

@@ -4,7 +4,7 @@ import * as backupApi from './backup'
 import { Backup } from './Backup'
 import { deferred, flush } from './testing/async'
 import { holdOf } from './testing/held'
-import { mount } from './testing/mount'
+import { mount, rerender } from './testing/mount'
 import { expectRowsWired, helpOf, section } from './testing/settingsRows'
 import {
   holdTheClock,
@@ -115,6 +115,95 @@ describe('Backup', () => {
     )
   })
 
+  /**
+   * What follows the header, in order: each box by its title, the
+   * disclosure by its summary, and the wait line by its words.
+   */
+  const parts = (host: HTMLElement) =>
+    JSON.stringify(
+      [
+        ...host.querySelectorAll(
+          '.backup > :is(section, details, p[role="status"])',
+        ),
+      ].map((part) =>
+        part.matches('p')
+          ? part.textContent
+          : part.querySelector(
+              ':scope > .settings-section-head > .settings-section-title, :scope > summary',
+            )?.textContent,
+      ),
+    )
+
+  it('heads itself at once on a first visit, draws Loading… in its body’s place from 200 ms, and Backups with How backups work in one step once the list lands', async () => {
+    holdTheClock()
+    const list = deferred<{ backups: backupApi.Backup[] }>()
+    vi.mocked(backupApi.listBackups).mockReturnValue(list.promise)
+    const host = await settle()
+    expect(host.querySelector('.backup .page-title')?.textContent).toBe(
+      'Backup',
+    )
+    expect(parts(host)).toBe(JSON.stringify([]))
+    pass(WAIT_DRAWN_AFTER_MS - 1)
+    expect(parts(host)).toBe(JSON.stringify([]))
+    pass(1)
+    expect(parts(host)).toBe(JSON.stringify(['Loading…']))
+
+    const drawn = watchDrawn(() => parts(host))
+    await flush(() => list.resolve({ backups: [entry()] }))
+    drawn.stop()
+    expect([...drawn.seen]).toEqual([
+      JSON.stringify(['Loading…']),
+      JSON.stringify(['Backups', 'How backups work']),
+    ])
+    expect(listed(host)).toHaveLength(1)
+  })
+
+  it('draws the list at once on a return, reads it again, and draws its answer in one step with no wait', async () => {
+    holdTheClock()
+    vi.mocked(backupApi.listBackups).mockResolvedValue({ backups: [entry()] })
+    await settle()
+    rerender(<div />)
+    const again = deferred<{ backups: backupApi.Backup[] }>()
+    vi.mocked(backupApi.listBackups).mockClear()
+    vi.mocked(backupApi.listBackups).mockReturnValue(again.promise)
+
+    rerender(<Backup />)
+    const host = document.querySelector('.backup')?.parentElement as HTMLElement
+    expect(parts(host)).toBe(JSON.stringify(['Backups', 'How backups work']))
+    expect(listed(host)).toHaveLength(1)
+    expect(backupApi.listBackups).toHaveBeenCalledTimes(1)
+    pass(WAIT_DRAWN_AFTER_MS)
+    const drawn = watchDrawn(() =>
+      JSON.stringify([parts(host), listed(host).length]),
+    )
+    await flush(() =>
+      again.resolve({
+        backups: [entry(), entry({ name: 'library-20260901T090000Z.db' })],
+      }),
+    )
+    drawn.stop()
+    expect([...drawn.seen]).toEqual([
+      JSON.stringify([JSON.stringify(['Backups', 'How backups work']), 1]),
+      JSON.stringify([JSON.stringify(['Backups', 'How backups work']), 2]),
+    ])
+  })
+
+  it('draws the list’s failure and no body, when the list cannot be read', async () => {
+    holdTheClock()
+    vi.mocked(backupApi.listBackups).mockRejectedValue(
+      new Error('/api/library/backups: 403 only an administrator may do this'),
+    )
+    const host = await settle()
+    await flush()
+    pass(WAIT_DRAWN_AFTER_MS)
+    expect(
+      [...host.querySelectorAll('.backup > [role="alert"]')].map(
+        (p) => p.textContent,
+      ),
+    ).toEqual(['/api/library/backups: 403 only an administrator may do this'])
+    expect(parts(host)).toBe(JSON.stringify([]))
+  })
+
   it('takes one and shows it without a page reload', async () => {
     vi.mocked(backupApi.takeBackup).mockResolvedValue(entry())
     vi.mocked(backupApi.listBackups)
@@ -128,9 +217,9 @@ describe('Backup', () => {
 
   it('keeps the newest list when a slower read lands after it', async () => {
     // Two reads are routinely in flight — the mount's and the one a finished
-    // POST fires — and nothing makes them answer in order. Without the
-    // sequence counter the mount's stale answer put the pre-backup list back
-    // over the file that had just been written.
+    // POST fires — and nothing makes them answer in order. The mount's
+    // answer, landing last, would put the pre-backup list back over the file
+    // that had just been written; the store keeps the newest request's.
     let settleMount:
       | ((body: { backups: backupApi.Backup[] }) => void)
       | undefined
@@ -174,10 +263,10 @@ describe('Backup', () => {
   })
 
   it('keeps the refusal when the list read that follows a take lands', async () => {
-    // One slot served both, and `reload`'s success path clears it — so the
-    // 409 this screen is written around was drawn and then wiped a moment
+    // The list read's answer must not clear the take's refusal: the 409
+    // this screen is written around would be drawn and then wiped a moment
     // later by a list read already in flight, leaving a screen that looks as
-    // though nothing happened. `Users.tsx` split its two for this reason.
+    // though nothing happened.
     let settleList:
       | ((body: { backups: backupApi.Backup[] }) => void)
       | undefined

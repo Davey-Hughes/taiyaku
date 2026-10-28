@@ -40,17 +40,33 @@
  * sent from here and nowhere else. `RemoveRoot`'s reasoning, on the route
  * `users_api` calls the second-most destructive in the product.
  */
-import { type ReactNode, useEffect, useId, useRef, useState } from 'react'
-import { Link } from 'react-router'
-import { accountPath, USERS } from './configAddress'
+import {
+  Fragment,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+} from 'react'
+import { Link, useLocation } from 'react-router'
+import { accountPath, nameAt, USERS } from './configAddress'
 import { useConfirmPassword } from './confirmPassword'
 import { HeldButton } from './HeldButton'
 import { useDrawn, useDrawnWait, useFocusLeavesHeld } from './hooks'
 import type { Library } from './libraries'
 import { reasonOf, refusalOf } from './message'
+import { KEYS, SESSIONS } from './pageReads'
 import { DifferRoom, PasswordsDiffer } from './PasswordsDiffer'
+import { invalidate } from './reads'
 import { useFocusAfterRevoke } from './revokeFocus'
-import { PageHeader, RemovalSection, Row, Section } from './settingsLayout'
+import {
+  PageHeader,
+  PageLoading,
+  RemovalSection,
+  Row,
+  Section,
+} from './settingsLayout'
 import {
   lastSeen,
   onlyAdminWhoCanLogIn,
@@ -69,23 +85,35 @@ import { JOINING_DOT } from './joiningDot'
 import { inUtc } from './utc'
 
 export interface AccountPageProps {
-  user: User
+  /**
+   * The account, or `undefined` while the screen reads the lists the page is
+   * drawn from, or where no read of the list of accounts has answered: the
+   * page then draws its header, named as its address spells it, and the
+   * screen's notices, and nothing of an account.
+   */
+  user: User | undefined
   /**
    * Every account, so the last-administrator rule is answered from the list
    * the screen already holds rather than by a request of its own.
+   * `undefined` with `user`.
    */
-  users: User[]
+  users: User[] | undefined
   /**
-   * Every library, for the grant editor — `undefined` where that list has
-   * not been read.
+   * The screen's wait for its lists has held long enough to draw "Loading…"
+   * for it: drawn while `user` is `undefined`.
+   */
+  loadingDrawn?: boolean
+  /**
+   * Every library, for the grant editor — `undefined` where that list could
+   * not be read. The screen hands the page its account only once this list
+   * has been read or has failed.
    *
-   * **Three states rather than two.** Reading an unread list as `[]` would
-   * draw "there are no libraries yet" while the read was still in flight and
-   * for ever after one that failed: a positive false claim, on the control
-   * that decides what an account sees. What the page can always say is what
-   * the account sees, because `user.every_library` says so and
-   * `user.libraries` carries the names; what it cannot do without the list is
-   * offer a library nobody granted yet.
+   * **Not read as `[]`.** That would draw "there are no libraries yet" after
+   * a read that failed: a positive false claim, on the control that decides
+   * what an account sees. What the page can always say is what the account
+   * sees, because `user.every_library` says so and `user.libraries` carries
+   * the names; what it cannot do without the list is offer a library nobody
+   * granted yet.
    */
   libraries?: Library[]
   /**
@@ -98,9 +126,9 @@ export interface AccountPageProps {
    * Re-read the screen's list of accounts.
    *
    * **Its answer is awaited when it gives one.** `Users.reload` returns the
-   * `listUsers` promise, and this page holds its controls until that settles
-   * — see `settled`. A caller that returns nothing is not wrong, only
-   * unheld.
+   * read store's promise for the re-read, and this page holds its controls
+   * until that settles — see `settled`. A caller that returns nothing is
+   * not wrong, only unheld.
    *
    * Typed `() => unknown` rather than as a union with `void`, which biome
    * refuses: what matters here is that a returned promise is awaited, not
@@ -145,9 +173,17 @@ function count(n: number, one: string, many: string): string {
   return `${n} ${n === 1 ? one : many}`
 }
 
+/**
+ * The page's frame, which is drawn from the moment the screen is, whether or
+ * not the account is known yet: its header and the screen's notices, keyed,
+ * so that each is the same element, with whatever has focus in it, once the
+ * account's body comes. What the header says of the account is held here
+ * too, since a write's answer changes it before the list does.
+ */
 export function AccountPage({
   user,
   users,
+  loadingDrawn = false,
   libraries,
   actingAs,
   onChanged,
@@ -160,7 +196,8 @@ export function AccountPage({
   useEffect(() => {
     if (arrived) heading.current?.focus()
   }, [arrived])
-  const [failure, setFailure] = useState<string | undefined>()
+  /** The name the address spells, which heads the page until it is drawn. */
+  const named = nameAt(useLocation().pathname, USERS)?.name
   /**
    * What the last write on this page was answered with.
    *
@@ -174,6 +211,156 @@ export function AccountPage({
    * arrives, because the list is the truth as soon as it catches up.
    */
   const [applied, setApplied] = useState<User | undefined>()
+  /**
+   * Whether this account is gone and the list has not caught up.
+   *
+   * **A terminal state rather than a closed dialog.** A closed dialog alone
+   * would put the plain *Remove…* back over a deleted account, and leave the
+   * role dropdown, all three capability boxes, the grants, the password form
+   * and every Revoke live against an id that answers "no account with id 2".
+   * It is the page's own guard, for a caller that leaves the page drawn once
+   * its account is gone. No production caller does: `Users` passes
+   * `onRemoved`, and takes the page away in the removal's own answer.
+   */
+  const [removed, setRemoved] = useState(false)
+  /** The `user` prop this page last drew — see `applied`. */
+  const drawn = useRef(user)
+
+  // Adjusted during render rather than in an effect: a new prop *is* the newer
+  // fact, so there is no frame in which both are held.
+  if (drawn.current !== user) {
+    drawn.current = user
+    if (applied !== undefined) setApplied(undefined)
+    // **The tombstone goes with it.** A prop other than `undefined` arriving
+    // for this page means an account of this name exists, and `Users` keys
+    // the page by name — so where the page outlives a removal, an account
+    // re-created under that name is handed this instance, and must not be
+    // drawn as removed, with no controls. That is the recycled-id hazard
+    // `Users.tsx`'s own doc comment describes, reached through the name
+    // instead.
+    if (removed) setRemoved(false)
+  }
+
+  /**
+   * Draws a write's answer as the account: `change` of the account as the
+   * page holds it when the answer comes, the last answer or else the newest
+   * prop, not as it was when the press was made. A list read landing during
+   * the write clears `applied` and brings a newer row, and a change made to
+   * a press-time copy would drop whatever that read brought.
+   */
+  const apply = useCallback((change: (held: User) => User) => {
+    setApplied((held) => {
+      const now = held ?? drawn.current
+      return now === undefined ? held : change(now)
+    })
+  }, [])
+
+  if (user === undefined || users === undefined) {
+    return (
+      <div className="settings-page account-page">
+        {/* Keyed, as in the drawn page, so that each is the same element
+            there whatever the drawn page puts between them. */}
+        <PageHeader
+          key="header"
+          back={{ to: USERS, label: 'Users' }}
+          title={named}
+          titleRef={heading}
+        />
+        <Fragment key="notices">{notices}</Fragment>
+        <PageLoading drawn={loadingDrawn} />
+      </div>
+    )
+  }
+
+  /** The account as this page knows it: the last answer, else the list's row. */
+  const shown = applied ?? user
+  const isSelf = actingAs === user.id
+  const seen = lastSeen(shown)
+  const summary = `${
+    shown.role === 'admin'
+      ? 'Administrator'
+      : shown.role === 'user'
+        ? 'User'
+        : shown.role
+  }${JOINING_DOT}${seen === undefined ? 'no session open' : `last seen ${inUtc(seen)}`}`
+
+  const back = { to: USERS, label: 'Users', closes: accountPath(user.name) }
+
+  if (removed) {
+    return (
+      <div className="settings-page account-page">
+        <PageHeader key="header" back={back} title={shown.name} />
+        <p className="gone">
+          Removed. The list has not caught up — this page is what is left of it,
+          and nothing here can be edited.
+        </p>
+      </div>
+    )
+  }
+
+  return (
+    <div className="settings-page account-page">
+      <PageHeader
+        key="header"
+        back={back}
+        title={
+          <>
+            {shown.name}
+            {isSelf && <span className="you"> — this is you</span>}
+          </>
+        }
+        description={summary}
+        titleRef={heading}
+      />
+      <Fragment key="notices">{notices}</Fragment>
+      <AccountBody
+        user={user}
+        shown={shown}
+        users={users}
+        libraries={libraries}
+        isSelf={isSelf}
+        onChanged={onChanged}
+        onRemoved={onRemoved}
+        onLateRefusal={onLateRefusal}
+        apply={apply}
+        onGone={() => setRemoved(true)}
+      />
+    </div>
+  )
+}
+
+/** What the page's body is drawn from, once the page knows its account. */
+interface AccountBodyProps
+  extends Pick<
+    AccountPageProps,
+    'libraries' | 'onChanged' | 'onRemoved' | 'onLateRefusal'
+  > {
+  user: User
+  /** The account as the page knows it (`applied`). */
+  shown: User
+  users: User[]
+  /** The account is the one this browser is signed in as. */
+  isSelf: boolean
+  /** Draws a write's answer as the account (`AccountPage`'s `apply`). */
+  apply: (change: (held: User) => User) => void
+  /** The account is gone: the page draws what is left of it instead. */
+  onGone: () => void
+}
+
+/** Everything under the page's header and notices. */
+function AccountBody({
+  user,
+  shown,
+  users,
+  libraries,
+  isSelf,
+  onChanged,
+  onRemoved,
+  onLateRefusal,
+  apply,
+  onGone,
+}: AccountBodyProps) {
+  const [failure, setFailure] = useState<string | undefined>()
   const [saving, setSaving] = useState(false)
   /**
    * `saving`, once it has gone on long enough to be drawn: the held look of
@@ -214,18 +401,6 @@ export function AccountPage({
   const [removing, setRemoving] = useState(false)
   const removingDrawn = useDrawnWait(removing)
   /**
-   * Whether this account is gone and the list has not caught up.
-   *
-   * **A terminal state rather than a closed dialog.** A closed dialog alone
-   * would put the plain *Remove…* back over a deleted account, and leave the
-   * role dropdown, all three capability boxes, the grants, the password form
-   * and every Revoke live against an id that answers "no account with id 2".
-   * It is the page's own guard, for a caller that leaves the page drawn once
-   * its account is gone. No production caller does: `Users` passes
-   * `onRemoved`, and takes the page away in the removal's own answer.
-   */
-  const [removed, setRemoved] = useState(false)
-  /**
    * Whether the real `DELETE` is already on its way.
    *
    * **A ref, for the reason `RemoveRoot`'s and `RootRow`'s are**: React
@@ -236,27 +411,8 @@ export function AccountPage({
   const inFlight = useRef(false)
   /** False once the page has gone, and a refusal has no page here to say it. */
   const onScreen = useDrawn()
-  /** The `user` prop this page last drew — see `applied`. */
-  const drawn = useRef(user)
   /** The newest dry run — see `askCost`. */
   const latestCost = useRef(0)
-
-  // Adjusted during render rather than in an effect: a new prop *is* the newer
-  // fact, so there is no frame in which both are held.
-  if (drawn.current !== user) {
-    drawn.current = user
-    if (applied !== undefined) setApplied(undefined)
-    // **The tombstone goes with it.** A prop arriving for this page means an
-    // account of this name exists, and `Users` keys the page by name — so
-    // where the page outlives a removal, an account re-created under that
-    // name is handed this instance, and must not be drawn as removed, with no
-    // controls. That is the recycled-id hazard `Users.tsx`'s own doc comment
-    // describes, reached through the name instead.
-    if (removed) setRemoved(false)
-  }
-
-  /** The account as this page knows it: the last answer, else the list's row. */
-  const shown = applied ?? user
 
   const sessionsId = useId()
   // Focus that a Revoke's row would take with it to the page goes to the
@@ -267,7 +423,6 @@ export function AccountPage({
     () => document.getElementById(sessionsId),
   )
 
-  const isSelf = actingAs === user.id
   const lastAdmin = onlyAdminWhoCanLogIn(users, shown)
 
   /**
@@ -332,7 +487,7 @@ export function AccountPage({
     if (!begin()) return
     patchUser(user.id, patch)
       .then((answer) => {
-        setApplied(answer)
+        apply(() => answer)
         settled(after)
       })
       .catch(failed(late))
@@ -507,12 +662,13 @@ export function AccountPage({
       // that is already gone. Third review pass, in the fix the second one
       // produced for exactly this shape.
       .then(() => {
-        // **Applied to whatever the page holds *now*, not to the snapshot the
-        // click was made from.** A list read landing during the `DELETE`
-        // clears `applied` and brings a newer row; writing back a click-time
-        // copy would drop whatever that read brought — a session opened since,
-        // or a role another administrator changed.
-        setApplied((held) => without(held ?? drawn.current))
+        // The caller's own keys and sessions are also `/account`'s and the
+        // reader panel's lists, which keep the revoked row until read again.
+        if (isSelf) void invalidate(row.list === 'keys' ? KEYS : SESSIONS)
+        // To the account as the page holds it *now* (`apply`): a session
+        // opened since the click, or a role another administrator changed,
+        // is kept.
+        apply(without)
         settled()
       })
       .catch(failed(late))
@@ -550,20 +706,12 @@ export function AccountPage({
     if (!begin()) return
     setRemoving(true)
     removeUser(user.id)
-      // **The dialog closes itself rather than trusting the page to go.**
-      // While `removed` holds, the tombstone draws no dialog. But where the
-      // page outlives the removal (no `onRemoved` takes it away), a prop of
-      // the same name drops the tombstone — an account re-created under the
-      // removed one's name — and a dialog left open would come back over
-      // that account, "working out what this would remove…" with nothing in
-      // flight and *Remove…* held under it.
+      // The body goes with the tombstone the page then draws, and its open
+      // dialog with it: where the page outlives the removal (no `onRemoved`
+      // takes it away), an account re-created under the removed one's name
+      // is drawn with a body of its own, and no dialog comes back over it.
       .then(() => {
-        settled(() => {
-          setRemoved(true)
-          setConfirming(false)
-          setCost(undefined)
-          setCostFailure(undefined)
-        })
+        settled(onGone)
         onRemoved?.(shown.name)
       })
       .catch(failed(`${shown.name} was not removed`))
@@ -581,43 +729,8 @@ export function AccountPage({
     ? `${shown.name} is the only administrator who can log in, so it cannot be removed. Give another account the admin role first.`
     : 'Asks first, with what it would take.'
 
-  const seen = lastSeen(shown)
-  const summary = `${
-    shown.role === 'admin'
-      ? 'Administrator'
-      : shown.role === 'user'
-        ? 'User'
-        : shown.role
-  }${JOINING_DOT}${seen === undefined ? 'no session open' : `last seen ${inUtc(seen)}`}`
-
-  const back = { to: USERS, label: 'Users', closes: accountPath(user.name) }
-
-  if (removed) {
-    return (
-      <div className="settings-page account-page">
-        <PageHeader back={back} title={shown.name} />
-        <p className="gone">
-          Removed. The list has not caught up — this page is what is left of it,
-          and nothing here can be edited.
-        </p>
-      </div>
-    )
-  }
-
   return (
-    <div className="settings-page account-page">
-      <PageHeader
-        back={back}
-        title={
-          <>
-            {shown.name}
-            {isSelf && <span className="you"> — this is you</span>}
-          </>
-        }
-        description={summary}
-        titleRef={heading}
-      />
-      {notices}
+    <>
       {failure !== undefined && <p role="alert">{failure}</p>}
 
       {!shown.can_log_in && (
@@ -1183,6 +1296,6 @@ export function AccountPage({
           </div>
         )}
       </RemovalSection>
-    </div>
+    </>
   )
 }

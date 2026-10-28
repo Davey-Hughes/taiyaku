@@ -8,7 +8,7 @@ import { Licence } from './Licence'
 import { answerAbout, inShell } from './testing/aboutPage'
 import { focused } from './testing/focused'
 import { licenceTextsLanded } from './testing/licence'
-import { mount } from './testing/mount'
+import { mount, rerender } from './testing/mount'
 import {
   areaOf,
   coarseRulesOn,
@@ -103,14 +103,44 @@ const CONTENTS = [
   ['#taiyaku-marks', 'taiyaku marks'],
 ] as const
 
+/** How many page modules of their own this file has imported. */
+let pagesOfTheirOwn = 0
+
+/**
+ * The licence page from a module of its own: the same file at an address
+ * with a query no other import gives it, which the browser loads as a
+ * module apart, with its own `loaded`.
+ */
+async function pageOfItsOwn(): Promise<typeof Licence> {
+  pagesOfTheirOwn += 1
+  const address = `./Licence.tsx?own=${pagesOfTheirOwn}`
+  const own = (await import(/* @vite-ignore */ address)) as {
+    Licence: typeof Licence
+  }
+  return own.Licence
+}
+
 /**
  * The licence page in the shell's `<main>`, under the router the app runs,
  * `BrowserRouter`, at this frame's own address with `fragment` on it, which
  * is taken off again when the test ends. `mount()`'s host gets the height
- * `#root` has in the app, so at a desktop width `<main>` is what scrolls.
- * The texts and the faces have landed when it returns.
+ * `#root` has in the app, so at a desktop width `<main>` is what scrolls,
+ * before the page is drawn in it. The texts and the faces have landed when
+ * it returns.
+ *
+ * `visit` is the tab's first visit to the page, whose texts land after it is
+ * drawn, or a return, which draws the texts the first visit loaded in its
+ * first render and puts the view where the fragment says as it draws them.
+ * Each is a page module of its own, whose kept texts no earlier case
+ * loaded, so a case runs the same path alone as in its file: imported at an
+ * address of its own (`pageOfItsOwn`), since `vi.resetModules()` leaves the
+ * browser's modules as they are.
  */
-async function loadedAt(width: number, fragment = ''): Promise<HTMLElement> {
+async function loadedAt(
+  width: number,
+  fragment = '',
+  visit: 'a first visit' | 'a return' = 'a first visit',
+): Promise<HTMLElement> {
   const before = location.href
   onTestFinished(() => {
     history.replaceState(null, '', before)
@@ -121,8 +151,21 @@ async function loadedAt(width: number, fragment = ''): Promise<HTMLElement> {
     `${location.pathname}${location.search}${fragment}`,
   )
   await page.viewport(width, 844)
-  const host = mount(<BrowserRouter>{inShell(<Licence />)}</BrowserRouter>)
+  const Page = await pageOfItsOwn()
+  const host = mount(null)
   host.style.height = '100%'
+  const drawn = <BrowserRouter>{inShell(<Page />)}</BrowserRouter>
+  if (visit === 'a return') {
+    rerender(drawn)
+    await licenceTextsLanded()
+    rerender(null)
+  }
+  rerender(drawn)
+  // The path the case says: the texts in the first render on a return only.
+  expect(
+    host.querySelector('nav.licence-contents') !== null,
+    'texts in the first render',
+  ).toBe(visit === 'a return')
   await licenceTextsLanded()
   await document.fonts.ready
   return host
@@ -271,6 +314,19 @@ describe('Licence’s contents', () => {
       expect(landing(host, name)).toEqual({ heading: 0, headingBelowTop: true })
     },
   )
+
+  /**
+   * **A return to the page with a licence's fragment lands on it too**, as
+   * it draws the texts the tab has kept, in its first render.
+   */
+  it('loaded with #taiyaku-marks on a return, puts taiyaku marks at the top of the view and focus on its heading', async () => {
+    const host = await loadedAt(1280, '#taiyaku-marks', 'a return')
+    expect(focused()).toBe('taiyaku marks')
+    expect(landing(host, 'taiyaku marks')).toEqual({
+      heading: 0,
+      headingBelowTop: true,
+    })
+  })
 })
 
 /**

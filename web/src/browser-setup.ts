@@ -1,5 +1,6 @@
 /**
- * Tells React it is running inside a test that uses `act`.
+ * Tells React it is running inside a test that uses `act`, and empties the
+ * read store (`reads.ts`) after each test.
  *
  * **The flag changes what React reports, not what `act` does.** Without it,
  * `act` still flushes the updates and effects it wraps before it returns —
@@ -21,6 +22,9 @@
  * picks its `agent` reporter instead, which hides it, when it detects an agent
  * running it — pass `--reporter=default` to see these.
  */
+import { afterEach } from 'vitest'
+import { emptyReads } from './reads'
+
 declare global {
   // eslint-disable-next-line no-var
   var IS_REACT_ACT_ENVIRONMENT: boolean
@@ -28,4 +32,8 @@ declare global {
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
 
-export {}
+// The read store is module-level, so it outlives a test's unmount; emptied
+// after every test, so one case's answers never reach the next.
+afterEach(() => {
+  emptyReads()
+})

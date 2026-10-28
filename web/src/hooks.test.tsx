@@ -170,6 +170,26 @@ describe('useDrawnWait', () => {
       vi.useRealTimers()
     }
   })
+
+  it('counts a wait that follows a drawn one from its own start', () => {
+    vi.useFakeTimers()
+    try {
+      const p = waits()
+      p.render({ waiting: true })
+      act(() => vi.advanceTimersByTime(WAIT_DRAWN_AFTER_MS))
+      expect(p.last()).toBe(true)
+      p.render({ waiting: false })
+
+      const next = p.seen.length
+      p.render({ waiting: true })
+      act(() => vi.advanceTimersByTime(WAIT_DRAWN_AFTER_MS - 1))
+      expect(p.seen.slice(next)).not.toContain(true)
+      act(() => vi.advanceTimersByTime(1))
+      expect(p.last()).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })
 
 describe('useConstant', () => {

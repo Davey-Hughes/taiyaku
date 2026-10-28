@@ -31,9 +31,10 @@
  * area hands it nothing, since `base.css` draws every button there.
  *
  * **Where the address could not be read (`catalog` is `null`), the row says
- * so in its place; while it is being read (`undefined`), the row is empty.**
- * With `keepsButtonRoom`, a row that draws no Copy address, for either of
- * those or for a clipboard that cannot be written, keeps the room one takes
+ * so in its place.** Each page draws the row only once `/api/about` has
+ * settled, so there is no state for a read still out. With
+ * `keepsButtonRoom`, a row that draws no Copy address, for an address not
+ * read or for a clipboard that cannot be written, keeps the room one takes
  * with an unseen button of the same words and look, so the row is in every
  * state at least as tall as a line holding Copy address, and what lies over
  * it, such as Account's refused Create, has that room.
@@ -44,9 +45,9 @@ import { type CopyResult, useCopy } from './copy'
 export type CatalogAddressProps = {
   /**
    * The catalog's path on this server, as `/api/about` answers it; `null`
-   * where it could not be read, and `undefined` while it is being read.
+   * where it could not be read.
    */
-  catalog: string | null | undefined
+  catalog: string | null
   /** The Copy address button's class. */
   className?: string
   /** Whether a row with no Copy address keeps the room one takes. */
@@ -106,8 +107,7 @@ export function CatalogAddress({
 }: CatalogAddressProps) {
   const { canCopy, said, shown, copy } = useCopy()
   const addressId = useId()
-  const address =
-    typeof catalog === 'string' ? `${location.origin}${catalog}` : undefined
+  const address = catalog === null ? undefined : `${location.origin}${catalog}`
 
   return (
     <div className="catalog-address">
@@ -115,9 +115,9 @@ export function CatalogAddress({
         <code id={addressId} className="catalog-address-text">
           {address}
         </code>
-      ) : catalog === null ? (
+      ) : (
         <span>{ADDRESS_UNREAD}</span>
-      ) : null}
+      )}
       {canCopy && address !== undefined ? (
         <>
           <button

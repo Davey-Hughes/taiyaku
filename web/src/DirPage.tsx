@@ -12,6 +12,14 @@
  * hold until `POLL_MISSES_ALLOWED` have failed in a row, as `RootRow`'s poll
  * keeps watching its scan. A scan of this directory, or of the whole library,
  * is `RootRow`'s own to see: the library's scan holds each directory's slot.
+ *
+ * **A scan of this directory marks its library's scan status stale in the
+ * store**, as the row reports it was asked for, started, was found running,
+ * ended or was left running, and tells no reader of it (spec §9's call 9).
+ * A library's page drawn later waits for its own read rather than draw a
+ * status from before the scan. One drawn beside this page keeps what it
+ * drew: told, it would read the status, take the scan up, and draw its
+ * report a second time beside the row's own.
  */
 import { type ReactNode, useCallback, useEffect, useState } from 'react'
 import {
@@ -24,6 +32,8 @@ import {
 import { dirPath, libraryPath } from './configAddress'
 import { type Library, libraryScanStatus, type MoveAnswer } from './libraries'
 import { sentenceOf } from './message'
+import { libraryScan } from './pageReads'
+import { markStale } from './reads'
 import { RootRow } from './RootRow'
 
 export interface DirPageProps {
@@ -148,6 +158,7 @@ export function DirPage({
         // A scan of this directory is a fresh start, and the sentence of a
         // hold given up says nothing of it.
         onScan={forget}
+        onScanMoved={() => markStale(libraryScan(library.id))}
         moveTo={{
           from: { id: library.id, name: library.name },
           targets: others,

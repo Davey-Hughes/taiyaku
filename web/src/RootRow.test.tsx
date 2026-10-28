@@ -1814,6 +1814,162 @@ describe('RootRow', () => {
   })
 })
 
+describe('RootRow, telling its page that the library’s scan status no longer holds (§9’s call 9)', () => {
+  /** The row with `onScanMoved` a mock, once its mount read has answered. */
+  async function settleTelling() {
+    const moved = vi.fn()
+    let host: HTMLElement | undefined
+    await act(async () => {
+      host = mount(
+        <RootRow root={root()} onChanged={vi.fn()} onScanMoved={moved} />,
+      )
+      await Promise.resolve()
+    })
+    if (!host) throw new Error('nothing mounted')
+    return { host, moved }
+  }
+
+  /** Lets what a press, a poll or an answer started settle. */
+  const settled = (work: () => void) =>
+    act(async () => {
+      work()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+  const scan = (host: HTMLElement) =>
+    settled(() => press(host, 'Scan directory').click())
+  const poll = () => settled(() => vi.advanceTimersByTime(config.SCAN_POLL_MS))
+
+  const running: config.ScanStatus = {
+    root_id: 3,
+    running: true,
+    elapsed_secs: 3,
+    report: null,
+    last_scan_at: null,
+    last_scan_status: null,
+  }
+  const over: config.ScanStatus = {
+    root_id: 3,
+    running: false,
+    report: { error: 'the scan panicked' },
+    last_scan_at: '2026-10-27 12:00:00',
+    last_scan_status: 'failed',
+  }
+  const conflict = () =>
+    new Error(
+      '/api/library/roots/3/scan: 409 {"error":"a scan of /srv/manga is already running"}',
+    )
+
+  it('tells it as its scan is asked for, before the start is answered, and again once it is', async () => {
+    const start = deferred<{ root_id: number; status_url: string }>()
+    vi.mocked(config.startScan).mockReturnValue(start.promise)
+    const { host, moved } = await settleTelling()
+    await scan(host)
+    expect(config.startScan).toHaveBeenCalledTimes(1)
+    expect(moved).toHaveBeenCalledTimes(1)
+    await settled(() =>
+      start.resolve({ root_id: 3, status_url: '/api/library/roots/3/scan' }),
+    )
+    expect(moved).toHaveBeenCalledTimes(2)
+  })
+
+  it.each([
+    {
+      what: 'tells it again of a start answered 409',
+      why: conflict,
+      calls: 2,
+    },
+    {
+      what: 'tells it nothing more of a start refused otherwise',
+      why: () =>
+        new Error('/api/library/roots/3/scan: 500 the store is locked'),
+      calls: 1,
+    },
+  ])('$what', async ({ why, calls }) => {
+    vi.mocked(config.startScan).mockRejectedValue(why())
+    const { host, moved } = await settleTelling()
+    await scan(host)
+    expect(moved).toHaveBeenCalledTimes(calls)
+  })
+
+  it('tells it of a 409 that answers once the row has gone', async () => {
+    const start = deferred<{ root_id: number; status_url: string }>()
+    vi.mocked(config.startScan).mockReturnValue(start.promise)
+    const { host, moved } = await settleTelling()
+    await scan(host)
+    await unmountRow()
+    expect(moved).toHaveBeenCalledTimes(1)
+    await settled(() => start.reject(conflict()))
+    expect(moved).toHaveBeenCalledTimes(2)
+  })
+
+  it.each([
+    {
+      what: 'tells it when its mount read takes up a running scan',
+      status: running,
+      calls: 1,
+    },
+    {
+      what: 'tells it nothing when its mount read finds the scan over',
+      status: over,
+      calls: 0,
+    },
+  ])('$what', async ({ status, calls }) => {
+    vi.mocked(config.scanStatus).mockResolvedValue(status)
+    const { moved } = await settleTelling()
+    expect(moved).toHaveBeenCalledTimes(calls)
+  })
+
+  it('tells it once when its poll finds the scan over, and not for a poll that finds it running', async () => {
+    const { host, moved } = await settleTelling()
+    vi.mocked(config.scanStatus).mockResolvedValue(running)
+    await scan(host)
+    expect(moved).toHaveBeenCalledTimes(2)
+    await poll()
+    expect(moved).toHaveBeenCalledTimes(2)
+
+    vi.mocked(config.scanStatus).mockResolvedValue(over)
+    await poll()
+    expect(host.querySelector('.scanning')).toBeNull()
+    expect(moved).toHaveBeenCalledTimes(3)
+    await poll()
+    await unmountRow()
+    expect(moved).toHaveBeenCalledTimes(3)
+  })
+
+  it('tells it when the row goes while its scan runs, and not when it goes with none running', async () => {
+    const idle = await settleTelling()
+    await unmountRow()
+    expect(idle.moved).not.toHaveBeenCalled()
+
+    vi.mocked(config.scanStatus).mockResolvedValue(running)
+    const { host, moved } = await settleTelling()
+    expect(moved).toHaveBeenCalledTimes(1)
+    expect(host.querySelector('.scanning')).not.toBeNull()
+    await unmountRow()
+    expect(moved).toHaveBeenCalledTimes(2)
+  })
+
+  it('tells it nothing more when its polls fail until it gives up, nor when it goes after that', async () => {
+    const { host, moved } = await settleTelling()
+    await scan(host)
+    expect(moved).toHaveBeenCalledTimes(2)
+
+    vi.mocked(config.scanStatus).mockRejectedValue(
+      new Error('/api/library/roots/3/scan: 500 the store is locked'),
+    )
+    for (let miss = 0; miss < config.POLL_MISSES_ALLOWED; miss++) await poll()
+    expect(host.querySelector('.scanning')).toBeNull()
+    expect(host.querySelector('.scan-notice')?.textContent).toBe(
+      'the store is locked',
+    )
+    expect(moved).toHaveBeenCalledTimes(2)
+    await unmountRow()
+    expect(moved).toHaveBeenCalledTimes(2)
+  })
+})
+
 /**
  * Type into a box and stay in it: the page then goes by a route that blurs
  * nothing, as the browser's Back does.

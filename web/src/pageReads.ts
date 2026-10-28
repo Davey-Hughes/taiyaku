@@ -1,0 +1,73 @@
+/**
+ * Every `Read` the pages draw from, each named once, so that two screens
+ * reading one address share its entry in `reads.ts`. The address is the one
+ * its client function sends, query included.
+ *
+ * **Each wraps its client call in an arrow**, `() => listLibraries()`, never
+ * `listLibraries` itself. The arrow looks the function up in its module when
+ * the store reads, not when this module is first evaluated, so whatever a
+ * test's `vi.mock` of the client module puts there is the function called.
+ * The client function is also what turns a 401 into a sign-out and a failure
+ * into the sentence the screen draws, which is why the store calls it rather
+ * than sending the `GET` itself.
+ */
+import { about } from './about'
+import { listKeys, listSessions } from './api'
+import { listBackups } from './backup'
+import { listRoots } from './config'
+import { listProposals } from './curation'
+import { libraryScanStatus, listLibraries } from './libraries'
+import { status } from './library'
+import { read } from './reads'
+import { listRules } from './rules'
+import { listUsers } from './users'
+
+/** Every library and its directories: Configuration → Libraries' list. */
+export const LIBRARIES = read('/api/library/libraries', () => listLibraries())
+
+/** The libraries this account may read, which the sidebar lists. */
+export const LIBRARY_STATUS = read('/api/library/status', () => status())
+
+/**
+ * Whether a scan of library `id`, or of one of its directories, is running:
+ * what a library's page draws in its first body, and what its poll reads.
+ */
+export const libraryScan = (id: number) =>
+  read(`/api/library/libraries/${id}/scan`, () => libraryScanStatus(id))
+
+/**
+ * Every account, with what it may do and what it sees: Configuration →
+ * Users' list, and what an account's page is drawn from.
+ */
+export const USERS = read('/api/library/users', () => listUsers())
+
+/** The backups the server holds: Configuration → Backup's list. */
+export const BACKUPS = read('/api/library/backups', () => listBackups())
+
+/** The rule list as stored: what Configuration → Rules edits. */
+export const RULES = read('/api/library/rules', () => listRules())
+
+/** Every directory a rule may be scoped to: Rules' choice of root. */
+export const ROOTS = read('/api/library/roots', () => listRoots())
+
+/**
+ * The accepted proposals, each naming the rule it wrote: what marks a rule
+ * on Rules as made from a proposal. A rules write changes which rule each
+ * names, or reopens it.
+ */
+export const ACCEPTED_PROPOSALS = read(
+  '/api/library/proposals?state=accepted',
+  () => listProposals({ state: 'accepted' }),
+)
+
+/** This account's API keys: `/account`'s and the reader panel's key list. */
+export const KEYS = read('/api/keys', () => listKeys())
+
+/** Where this account is signed in: their Signed in list. */
+export const SESSIONS = read('/api/sessions', () => listSessions())
+
+/**
+ * The build's facts, the catalog's path and the formats: what About draws,
+ * the sidebar's build label names, and `/account` takes the catalog from.
+ */
+export const ABOUT = read('/api/about', () => about())

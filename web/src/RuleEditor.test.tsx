@@ -7,7 +7,7 @@ import * as rulesApi from './rules'
 import type { Impact, Override, Preview, Rule, Saved } from './rules'
 import { deferred, flush } from './testing/async'
 import { holdOf } from './testing/held'
-import { mount } from './testing/mount'
+import { mount, rerender } from './testing/mount'
 import {
   holdTheClock,
   pass,
@@ -126,14 +126,37 @@ const derived = (over: Partial<config.Derived> = {}): config.Derived => ({
   ...over,
 })
 
+/** The two rules the suite loads. */
+const two = () => [rule(), rule({ id: 2, ordinal: 2, pattern: 'Colour/.*' })]
+
+/** A save's answer: by default the suite's two rules, as they were sent. */
 const savedBody = (over: Partial<Saved> = {}): Saved => ({
   impact: impact(),
-  rules: [rule()],
+  rules: two(),
   reopened_proposals: [],
   complaints: [],
   derive: derived(),
   ...over,
 })
+
+/**
+ * `listRules` as a server answers it: the rules the newest save or import
+ * that landed answered with, or `before` until one has. A save's or an
+ * import's answer is the list the server then holds, so the read each write
+ * is followed by agrees with it, whatever answer a case gives the write.
+ */
+const serve = (before: Rule[]) => () => {
+  const landed = [rulesApi.saveRules, rulesApi.importRules].flatMap((write) => {
+    const { settledResults, invocationCallOrder } = vi.mocked(write).mock
+    return settledResults.flatMap((settled, i) =>
+      settled.type === 'fulfilled'
+        ? [{ at: invocationCallOrder[i], rules: settled.value.rules }]
+        : [],
+    )
+  })
+  const newest = landed.sort((a, b) => b.at - a.at)[0]
+  return Promise.resolve({ rules: newest?.rules ?? before, complaints: [] })
+}
 
 async function render() {
   let host: HTMLElement | undefined
@@ -195,10 +218,7 @@ const pickersOpenedByPress = async (host: HTMLElement) => {
 
 beforeEach(() => {
   vi.clearAllMocks()
-  vi.mocked(rulesApi.listRules).mockResolvedValue({
-    rules: [rule(), rule({ id: 2, ordinal: 2, pattern: 'Colour/.*' })],
-    complaints: [],
-  })
+  vi.mocked(rulesApi.listRules).mockImplementation(serve(two()))
   vi.mocked(config.listRoots).mockResolvedValue({ roots: [] })
   vi.mocked(curation.listProposals).mockResolvedValue({
     proposals: [],
@@ -659,10 +679,9 @@ describe('RuleEditor', () => {
    * proposals for nothing.
    */
   const heldSave = async () => {
-    vi.mocked(rulesApi.listRules).mockResolvedValue({
-      rules: [rule(), rule({ id: 0, ordinal: 2, pattern: 'Colour/.*' })],
-      complaints: [],
-    })
+    vi.mocked(rulesApi.listRules).mockImplementation(
+      serve([rule(), rule({ id: 0, ordinal: 2, pattern: 'Colour/.*' })]),
+    )
     let resolveSave: (value: Saved) => void = () => {}
     let rejectSave: (why: unknown) => void = () => {}
     vi.mocked(rulesApi.saveRules).mockImplementation(
@@ -2160,5 +2179,468 @@ describe('RuleEditor’s failures, each said as what was not done and why', () =
   ] as const)('says %s', async (_, failing, said) => {
     const host = await failing()
     expect(alerts(host)).toEqual([said])
+  })
+})
+
+/**
+ * The page's reads: the rules, the roots and the accepted proposals, read
+ * through the store as one set. The body is drawn once all three are in,
+ * from the editor's working copy seeded in that render, and the preview
+ * pane holds its wait from the first render until the first preview answers.
+ */
+describe('RuleEditor’s reads', () => {
+  const PICK = 'Pick a rule to edit it. The impact below is for the whole list.'
+
+  /**
+   * Each part of the body that can say it is empty, by its words; whether a
+   * preview is drawn; and the wait line in the body's place.
+   */
+  const bodyState = (host: HTMLElement) =>
+    JSON.stringify([
+      host.querySelector('.rule-count')?.textContent ?? null,
+      host.querySelector('.editor-panes .empty')?.textContent ?? null,
+      host.querySelector('.preview [role="tabpanel"] > .empty')?.textContent ??
+        null,
+      host.querySelector('.preview-body') !== null,
+      host.querySelector('.rule-editor > p[role="status"]')?.textContent ??
+        null,
+    ])
+
+  /** Each rule row's name, top to bottom. */
+  const names = (host: HTMLElement) =>
+    [...host.querySelectorAll('.rule-row')].map(
+      (row) => row.querySelector('.rule-name')?.textContent,
+    )
+
+  /**
+   * Which of `words` a paragraph began with at any point while watched: put
+   * into the document, taken out of it, or with a text node directly inside
+   * it changed from them.
+   * A render that a later render in the same `act` took back is caught too,
+   * which a look at the document after the `act` would miss: a node taken
+   * out keeps its text, and a changed text node keeps its old value.
+   */
+  function everDrawn(...words: string[]) {
+    const seen = new Set<string>()
+    const said = (text: string | null | undefined) => {
+      for (const one of words) if (text?.startsWith(one)) seen.add(one)
+    }
+    const look = (node: Node) => {
+      if (!(node instanceof Element)) return
+      for (const p of [node, ...node.querySelectorAll('p')]) {
+        if (p.matches('p')) said(p.textContent)
+      }
+    }
+    const read = (records: MutationRecord[]) => {
+      for (const record of records) {
+        record.addedNodes.forEach(look)
+        record.removedNodes.forEach(look)
+        const p = record.target.parentElement
+        if (record.type === 'characterData' && p?.matches('p')) {
+          said(
+            [...p.childNodes]
+              .map((child) =>
+                child === record.target ? record.oldValue : child.textContent,
+              )
+              .join(''),
+          )
+        }
+      }
+    }
+    const observer = new MutationObserver(read)
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true,
+      characterData: true,
+      characterDataOldValue: true,
+    })
+    return () => {
+      read(observer.takeRecords())
+      observer.disconnect()
+      return [...seen]
+    }
+  }
+
+  /** Clicks rule `index + 1`'s enable box. */
+  const toggle = (host: HTMLElement, index: number) =>
+    flush(() =>
+      host
+        .querySelectorAll<HTMLInputElement>('.rule-row input[type="checkbox"]')
+        [index].click(),
+    )
+
+  /**
+   * Rules drawn, left for another page and drawn again, with the rules read
+   * the return sends and the preview it sends both held open.
+   */
+  async function returned() {
+    const host = await render()
+    await flush()
+    rerender(<div />)
+    const again = deferred<{ rules: Rule[]; complaints: string[] }>()
+    vi.mocked(rulesApi.listRules).mockClear()
+    vi.mocked(rulesApi.listRules).mockReturnValueOnce(again.promise)
+    const previewed = deferred<Preview>()
+    vi.mocked(rulesApi.previewRules).mockClear()
+    vi.mocked(rulesApi.previewRules).mockReturnValueOnce(previewed.promise)
+    rerender(<RuleEditor />)
+    return { host, again, previewed }
+  }
+
+  /** The two rules the suite loads, and a third the server holds since. */
+  const grown = () => ({
+    rules: [
+      rule(),
+      rule({ id: 2, ordinal: 2, pattern: 'Colour/.*' }),
+      rule({ id: 3, ordinal: 3, pattern: 'Art/.*', set_series: 'Art' }),
+    ],
+    complaints: [],
+  })
+
+  it('heads itself at once on a first visit, draws Loading… in its body’s place from 200 ms, and its list and form’s pane in one step once its reads land, with the preview’s wait', async () => {
+    holdTheClock()
+    const listed = deferred<{ rules: Rule[]; complaints: string[] }>()
+    vi.mocked(rulesApi.listRules).mockReturnValue(listed.promise)
+    const previewed = deferred<Preview>()
+    vi.mocked(rulesApi.previewRules).mockReturnValue(previewed.promise)
+    const host = await render()
+    expect(host.querySelector('.rule-editor .page-title')?.textContent).toBe(
+      'Rules',
+    )
+    const nothing = JSON.stringify([null, null, null, false, null])
+    expect(bodyState(host)).toBe(nothing)
+    pass(WAIT_DRAWN_AFTER_MS - 1)
+    expect(bodyState(host)).toBe(nothing)
+    pass(1)
+    const loading = JSON.stringify([null, null, null, false, 'Loading…'])
+    expect(bodyState(host)).toBe(loading)
+    expect(rulesApi.previewRules).not.toHaveBeenCalled()
+
+    const drawn = watchDrawn(() => bodyState(host))
+    await flush(() =>
+      listed.resolve({
+        rules: [rule(), rule({ id: 2, ordinal: 2, pattern: 'Colour/.*' })],
+        complaints: [],
+      }),
+    )
+    expect(rulesApi.previewRules).toHaveBeenCalledTimes(1)
+    await flush(() => previewed.resolve(previewBody()))
+    drawn.stop()
+    expect([...drawn.seen]).toEqual([
+      loading,
+      JSON.stringify(['2 rules', PICK, null, false, null]),
+      JSON.stringify(['2 rules', PICK, null, true, null]),
+    ])
+  })
+
+  it('draws no “0 rules” and no “No preview yet” in any render, from its first until its first preview answers', async () => {
+    const previewed = deferred<Preview>()
+    vi.mocked(rulesApi.previewRules).mockReturnValue(previewed.promise)
+    const drawn = everDrawn('0 rules', 'No preview yet')
+    const host = await render()
+    await flush()
+    expect(host.querySelector('.rule-count')?.textContent).toBe('2 rules')
+    expect(rulesApi.previewRules).toHaveBeenCalledTimes(1)
+    await flush(() => previewed.resolve(previewBody()))
+    expect(host.querySelector('.preview-body')).not.toBeNull()
+    expect(drawn()).toEqual([])
+  })
+
+  it('draws the failure and no body, when a read fails', async () => {
+    holdTheClock()
+    vi.mocked(config.listRoots).mockRejectedValue(
+      new Error('/api/library/roots: 403 only an administrator may do this'),
+    )
+    const host = await render()
+    await flush()
+    pass(WAIT_DRAWN_AFTER_MS)
+    expect(
+      [...host.querySelectorAll('.rule-editor > [role="alert"]')].map(
+        (p) => p.textContent,
+      ),
+    ).toEqual(['The rules were not loaded: only an administrator may do this'])
+    expect(bodyState(host)).toBe(
+      JSON.stringify([null, null, null, false, null]),
+    )
+    expect(rulesApi.previewRules).not.toHaveBeenCalled()
+  })
+
+  it('names the read that keeps the body from being drawn, on a return whose rules read fails with its answer kept and whose roots read fails with none kept', async () => {
+    vi.mocked(config.listRoots).mockRejectedValue(
+      new Error('/api/library/roots: 403 only an administrator may do this'),
+    )
+    const host = await render()
+    await flush()
+    rerender(<div />)
+    vi.mocked(rulesApi.listRules).mockRejectedValue(
+      new Error('/api/library/rules: 500 the rule table is locked'),
+    )
+    rerender(<RuleEditor />)
+    await flush()
+    expect(rulesApi.listRules).toHaveBeenCalledTimes(2)
+    expect(config.listRoots).toHaveBeenCalledTimes(2)
+    expect(
+      [...host.querySelectorAll('.rule-editor > [role="alert"]')].map(
+        (p) => p.textContent,
+      ),
+    ).toEqual(['The rules were not loaded: only an administrator may do this'])
+    expect(bodyState(host)).toBe(
+      JSON.stringify([null, null, null, false, null]),
+    )
+  })
+
+  it('draws its rules at once on a return, sends a preview, and takes a re-read that changes them while nothing is edited', async () => {
+    holdTheClock()
+    const { host, again, previewed } = await returned()
+    expect(names(host)).toEqual(['Series', 'Series'])
+    expect(bodyState(host)).toBe(
+      JSON.stringify(['2 rules', PICK, null, false, null]),
+    )
+    expect(rulesApi.listRules).toHaveBeenCalledTimes(1)
+    expect(rulesApi.previewRules).toHaveBeenCalledTimes(1)
+    await flush(() => previewed.resolve(previewBody()))
+    expect(host.querySelector('.preview-body')).not.toBeNull()
+    pass(WAIT_DRAWN_AFTER_MS)
+    expect(host.querySelector('.rule-editor > p[role="status"]')).toBeNull()
+
+    await flush(() => again.resolve(grown()))
+    expect(names(host)).toEqual(['Series', 'Series', 'Art'])
+    expect(rulesApi.previewRules).toHaveBeenCalledTimes(2)
+    expect(vi.mocked(rulesApi.previewRules).mock.calls[1][0]).toEqual(
+      grown().rules,
+    )
+  })
+
+  it('keeps an edited list when a re-read that changes the rules lands', async () => {
+    const { host, again } = await returned()
+    await flush()
+    await toggle(host, 0)
+    await flush(() => again.resolve(grown()))
+    expect(names(host)).toEqual(['Series', 'Series'])
+    expect(
+      [
+        ...host.querySelectorAll<HTMLInputElement>(
+          '.rule-row input[type="checkbox"]',
+        ),
+      ].map((box) => box.checked),
+    ).toEqual([false, true])
+  })
+
+  it('takes a re-read that changes the rules once an edit is undone, as a list the same as the stored one is not edited', async () => {
+    const { host, again } = await returned()
+    await flush()
+    await toggle(host, 0)
+    await toggle(host, 0)
+    await flush(() => again.resolve(grown()))
+    expect(names(host)).toEqual(['Series', 'Series', 'Art'])
+  })
+
+  it.each([
+    [
+      'a save',
+      async (host: HTMLElement) => {
+        await clickText(host, 'Save')
+      },
+    ],
+    [
+      'an import',
+      async (host: HTMLElement) => {
+        vi.mocked(rulesApi.importRules).mockResolvedValue({
+          rules: [rule()],
+          complaints: [],
+          reopened_proposals: [],
+        })
+        const input = host.querySelector(
+          'input[type="file"]',
+        ) as HTMLInputElement
+        Object.defineProperty(input, 'files', {
+          value: [{ text: () => Promise.resolve('[]') }],
+          configurable: true,
+        })
+        await flush(() =>
+          input.dispatchEvent(new Event('change', { bubbles: true })),
+        )
+      },
+    ],
+  ] as const)(
+    'reads the rules and the accepted proposals again on %s',
+    async (_, write) => {
+      const host = await render()
+      await flush()
+      vi.mocked(rulesApi.listRules).mockClear()
+      vi.mocked(config.listRoots).mockClear()
+      vi.mocked(curation.listProposals).mockClear()
+      await write(host)
+      await flush()
+      expect(rulesApi.listRules).toHaveBeenCalledTimes(1)
+      expect(curation.listProposals).toHaveBeenCalledTimes(1)
+      expect(curation.listProposals).toHaveBeenCalledWith({ state: 'accepted' })
+      expect(config.listRoots).not.toHaveBeenCalled()
+    },
+  )
+
+  /** Every alert on the page, by its words. */
+  const alerts = (host: HTMLElement) =>
+    [...host.querySelectorAll('[role="alert"]')].map((p) => p.textContent)
+
+  it.each([
+    ['the accepted proposals', () => vi.mocked(curation.listProposals)],
+    ['the rules', () => vi.mocked(rulesApi.listRules)],
+  ] as const)(
+    'says nothing when %s cannot be read again after a save, and keeps what it draws',
+    async (_, client) => {
+      const host = await render()
+      await flush()
+      client().mockClear()
+      client().mockRejectedValue(new Error('offline'))
+      await clickText(host, 'Save')
+      await flush()
+      await flush()
+      expect(client()).toHaveBeenCalledTimes(1)
+      expect(alerts(host)).toEqual([])
+      expect(host.querySelector('.saved')?.textContent).toContain('71')
+      expect(host.querySelector('.rule-count')).not.toBeNull()
+    },
+  )
+
+  it('says nothing when the rules cannot be read again on a return, and keeps drawing them', async () => {
+    const { host, again, previewed } = await returned()
+    await flush(() => previewed.resolve(previewBody()))
+    await flush(() => again.reject(new Error('offline')))
+    await flush()
+    expect(alerts(host)).toEqual([])
+    expect(names(host)).toEqual(['Series', 'Series'])
+  })
+
+  /** Opens rule `index + 1` in the form, as a click on its name does. */
+  const open = (host: HTMLElement, index: number) =>
+    flush(() =>
+      host
+        .querySelectorAll<HTMLElement>('.rule-row button.select')
+        [index].click(),
+    )
+
+  /** The open form's pattern box. */
+  const patternBox = (host: HTMLElement) =>
+    host.querySelector('input[name="pattern"]') as HTMLInputElement
+
+  /** Leaves the open form's pattern box, which is when the form commits. */
+  const leavePattern = (host: HTMLElement) =>
+    flush(() =>
+      patternBox(host).dispatchEvent(
+        new FocusEvent('focusout', { bubbles: true }),
+      ),
+    )
+
+  it('draws the open rule as a re-read that changed it left it, and a blur sends nothing back', async () => {
+    const { host, again, previewed } = await returned()
+    await flush(() => previewed.resolve(previewBody()))
+    await open(host, 0)
+    expect(patternBox(host).value).toBe('Manga/.*')
+    await flush(() =>
+      again.resolve({
+        rules: [
+          rule({ pattern: 'Manga/new/.*' }),
+          rule({ id: 2, ordinal: 2, pattern: 'Colour/.*' }),
+        ],
+        complaints: [],
+      }),
+    )
+    vi.mocked(rulesApi.previewRules).mockClear()
+    await leavePattern(host)
+    expect(rulesApi.previewRules).not.toHaveBeenCalled()
+    expect(patternBox(host).value).toBe('Manga/new/.*')
+  })
+
+  it('draws the open rule’s enable as the list toggled it, and a blur sends nothing back', async () => {
+    const host = await render()
+    await flush()
+    await open(host, 0)
+    await toggle(host, 0)
+    vi.mocked(rulesApi.previewRules).mockClear()
+    await leavePattern(host)
+    expect(rulesApi.previewRules).not.toHaveBeenCalled()
+    expect(
+      host.querySelectorAll<HTMLInputElement>(
+        '.rule-row input[type="checkbox"]',
+      )[0].checked,
+    ).toBe(false)
+  })
+
+  it('takes no stored list while a save is out, and keeps the saved list over one read before the save answered', async () => {
+    const { host, again, previewed } = await returned()
+    await flush(() => previewed.resolve(previewBody()))
+    await open(host, 1)
+    const saving = deferred<Saved>()
+    vi.mocked(rulesApi.saveRules).mockReturnValue(saving.promise)
+    await clickText(host, 'Save')
+    expect(rulesApi.saveRules).toHaveBeenCalledTimes(1)
+
+    // A shorter list, read before the save answered.
+    await flush(() => again.resolve({ rules: [rule()], complaints: [] }))
+    expect(names(host)).toEqual(['Series', 'Series'])
+    expect(patternBox(host).value).toBe('Colour/.*')
+
+    await flush(() => saving.resolve(savedBody()))
+    await flush()
+    expect(names(host)).toEqual(['Series', 'Series'])
+    expect(patternBox(host).value).toBe('Colour/.*')
+    expect(vi.mocked(rulesApi.previewRules).mock.calls.at(-1)?.[1]).toBe(1)
+  })
+
+  it('takes a re-read that changed the rules while the list was edited, once the edit is undone', async () => {
+    const { host, again } = await returned()
+    await flush()
+    await toggle(host, 0)
+    await flush(() => again.resolve(grown()))
+    expect(names(host)).toEqual(['Series', 'Series'])
+    await toggle(host, 0)
+    expect(names(host)).toEqual(['Series', 'Series', 'Art'])
+  })
+
+  it('takes no stored list while an import is out, and keeps the imported list over one read before the import answered', async () => {
+    const { host, again, previewed } = await returned()
+    await flush(() => previewed.resolve(previewBody()))
+    const importing = deferred<{
+      rules: Rule[]
+      complaints: string[]
+      reopened_proposals: number[]
+    }>()
+    vi.mocked(rulesApi.importRules).mockReturnValue(importing.promise)
+    const input = host.querySelector<HTMLInputElement>('input[type="file"]')
+    if (!input) throw new Error('no file input')
+    Object.defineProperty(input, 'files', {
+      value: [new File(['[]'], 'rules.json', { type: 'application/json' })],
+      configurable: true,
+    })
+    await flush(() =>
+      input.dispatchEvent(new Event('change', { bubbles: true })),
+    )
+    expect(rulesApi.importRules).toHaveBeenCalledTimes(1)
+
+    // A shorter list, read before the import answered.
+    await flush(() => again.resolve({ rules: [rule()], complaints: [] }))
+    expect(names(host)).toEqual(['Series', 'Series'])
+
+    // The import's own re-read of the rules is held, so what is drawn
+    // between its answer and that read is the import's list alone.
+    const imported = [
+      rule({ id: 11, set_series: 'Imported A' }),
+      rule({ id: 12, ordinal: 2, set_series: 'Imported B' }),
+    ]
+    const reread = deferred<{ rules: Rule[]; complaints: string[] }>()
+    vi.mocked(rulesApi.listRules).mockReturnValueOnce(reread.promise)
+    await flush(() =>
+      importing.resolve({
+        rules: imported,
+        complaints: [],
+        reopened_proposals: [],
+      }),
+    )
+    await flush()
+    expect(names(host)).toEqual(['Imported A', 'Imported B'])
+
+    await flush(() => reread.resolve({ rules: imported, complaints: [] }))
+    expect(names(host)).toEqual(['Imported A', 'Imported B'])
   })
 })

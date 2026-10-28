@@ -1829,6 +1829,10 @@ describe('the sidebar’s wordmark', () => {
     const { link, name } = wordmarkOf(host)
     const library = need(host, '.sidebar-libraries a')
     const column = need(host, '#library-menu')
+    // At rest: the pointer is where the last test left it, which may be over
+    // the wordmark, so it is put over the page's content first.
+    const main = need(host, 'main').getBoundingClientRect()
+    await mouse.moveTo(main.left + main.width / 2, main.top + main.height / 2)
     expect(getComputedStyle(link).color).toBe(getComputedStyle(column).color)
     expect(
       [link, name].map((el) => getComputedStyle(el).textDecorationLine),

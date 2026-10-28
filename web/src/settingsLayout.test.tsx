@@ -1,7 +1,13 @@
 import { act, createRef, type ReactNode } from 'react'
 import { MemoryRouter } from 'react-router'
 import { describe, expect, it } from 'vitest'
-import { PageHeader, RemovalSection, Row, Section } from './settingsLayout'
+import {
+  PageHeader,
+  PageLoading,
+  RemovalSection,
+  Row,
+  Section,
+} from './settingsLayout'
 import { mount, rerender } from './testing/mount'
 
 /** Mounted under a router, since a back link is a router `Link`. */
@@ -174,6 +180,21 @@ describe('PageHeader', () => {
       ['Rename…', true],
       ['Save', false],
     ])
+  })
+})
+
+describe('PageLoading', () => {
+  it('draws nothing while its wait is not drawn', () => {
+    const host = mount(<PageLoading drawn={false} />)
+    expect(host.childNodes.length).toBe(0)
+  })
+
+  it('draws one status line, Loading…, once its wait is drawn', () => {
+    const host = mount(<PageLoading drawn />)
+    expect(host.children.length).toBe(1)
+    const line = one(host, 'p')
+    expect(line.getAttribute('role')).toBe('status')
+    expect(line.textContent).toBe('Loading\u2026')
   })
 })
 

@@ -5,9 +5,12 @@
  *
  * **The texts arrive by `import()`**, so they are a chunk this page loads
  * and the entry chunk every page loads does not carry them. Until the chunk
- * arrives the page draws only its way up and its title; a chunk that fails
- * to load is said in an alert, as About says a failed request, but in a
- * fixed sentence (the effect below says why).
+ * arrives the page draws only its way up and its title, and "Loading…" once
+ * the wait has held (`useDrawnWait`), as a page waiting on its reads does; a
+ * chunk that fails to load is said in an alert, as About says a failed
+ * request, but in a fixed sentence (the effect below says why). The texts
+ * once loaded are kept for the tab (`loaded`), so a return to the page draws
+ * them in its first render.
  *
  * **The contents are drawn with the licences, not before them.** Drawn
  * while the chunk loads they would move nothing, since the licences come in
@@ -47,7 +50,8 @@ import {
   useLocation,
   useNavigationType,
 } from 'react-router'
-import { PageHeader, Section } from './settingsLayout'
+import { useDrawnWait } from './hooks'
+import { PageHeader, PageLoading, Section } from './settingsLayout'
 import {
   FONT_LICENCE,
   FONTS_FRAGMENT,
@@ -56,6 +60,13 @@ import {
 } from './spdx'
 
 type Texts = typeof import('./licenceTexts')
+
+/**
+ * The texts, once their chunk has loaded. Module-level, as the read store
+ * is, so that a return to the page within this tab draws them at once
+ * rather than waiting on an `import()` that has nothing left to fetch.
+ */
+let loaded: Texts | undefined
 
 const OFL = `the SIL Open Font License, version 1.1 (${FONT_LICENCE})`
 
@@ -161,8 +172,11 @@ function Licensed({
 }
 
 export function Licence() {
-  const [texts, setTexts] = useState<Texts | undefined>()
+  const [texts, setTexts] = useState<Texts | undefined>(loaded)
   const [failure, setFailure] = useState<string | undefined>()
+  const loadingDrawn = useDrawnWait(
+    texts === undefined && failure === undefined,
+  )
   const location = useLocation()
   const navigation = useNavigationType()
   const page = useRef<HTMLElement>(null)
@@ -177,18 +191,34 @@ export function Licence() {
     undefined,
   )
 
-  // No `cancelled` flag, unlike About's request: there is one load per mount
-  // and nothing to order, and React drops a state update made after unmount.
+  // No `cancelled` flag: there is at most one load per mount and nothing to
+  // order, and React drops a state update made after unmount. The texts are
+  // kept even so, for the next visit.
   //
   // A chunk that does not arrive is refused in the browser's own words,
   // which name the chunk's address and nothing a person can do; reloading
   // is what they can do, so the page says that instead.
+  //
+  // The texts may have come since this mount rendered without them: an
+  // earlier visit's import can land between a transition's commit and its
+  // effects, which run in a later task. Taken from `loaded`, they are drawn
+  // rather than waited on for good.
   useEffect(() => {
-    import('./licenceTexts').then(setTexts, () => {
-      setFailure(
-        'The licence texts were not loaded; reload the page to try again.',
-      )
-    })
+    if (loaded !== undefined) {
+      setTexts(loaded)
+      return
+    }
+    import('./licenceTexts').then(
+      (chunk) => {
+        loaded = chunk
+        setTexts(chunk)
+      },
+      () => {
+        setFailure(
+          'The licence texts were not loaded; reload the page to try again.',
+        )
+      },
+    )
   }, [])
 
   // The browser's own scroll restoration is off for the page's entries: on
@@ -290,6 +320,9 @@ export function Licence() {
         titleRef={title}
       />
       {failure !== undefined && <p role="alert">{failure}</p>}
+      {texts === undefined && failure === undefined && (
+        <PageLoading drawn={loadingDrawn} />
+      )}
       {texts !== undefined && (
         <>
           <nav className="licence-contents" aria-label="Contents">

@@ -8,18 +8,31 @@ import {
   useNavigate,
 } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import type { Me } from './api'
 import * as config from './config'
+import * as curation from './curation'
 import { useFitsPair } from './fitsPair'
+import { GateContext } from './gate'
 import { emptyDerive } from './testing/derive'
 import { Libraries } from './Libraries'
 import * as api from './libraries'
+import * as status from './library'
+import {
+  ACCEPTED_PROPOSALS,
+  LIBRARY_STATUS,
+  ROOTS,
+  RULES,
+  USERS as USER_LIST,
+} from './pageReads'
+import { RuleEditor } from './RuleEditor'
+import * as rulesApi from './rules'
 import { deferred, flush } from './testing/async'
 import './testing/dialog'
 import { holdOf } from './testing/held'
 import { press, submit, typeInto } from './testing/input'
 import { changesIn } from './testing/liveRegion'
-import { dir, idle, scanningIn } from './testing/libraries'
-import { mount } from './testing/mount'
+import { dir, idle, scanningIn, tick } from './testing/libraries'
+import { mount, rerender } from './testing/mount'
 import { expectRowsWired, helpOf, row, section } from './testing/settingsRows'
 import { cellValue } from './testing/table'
 import {
@@ -28,7 +41,9 @@ import {
   WAIT_DRAWN_AFTER_MS,
   watchDrawn,
 } from './testing/wait'
-import { StatusRefreshContext } from './shell'
+import { usePage } from './usePage'
+import * as usersApi from './users'
+import { Users } from './Users'
 
 // Whether the list and an open page fit side by side is the width's, which
 // jsdom does not lay out. Narrow by default, as the real hook answers in
@@ -36,11 +51,31 @@ import { StatusRefreshContext } from './shell'
 vi.mock('./fitsPair', () => ({ useFitsPair: vi.fn(() => false) }))
 vi.mock('./config', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./config')>()),
+  listRoots: vi.fn(),
   patchRoot: vi.fn(),
   removalCost: vi.fn(),
   removeRoot: vi.fn(),
   scanStatus: vi.fn(),
   startScan: vi.fn(),
+}))
+// Rules, which draws the roots a directory write changes.
+vi.mock('./rules', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./rules')>()),
+  listRules: vi.fn(),
+  previewRules: vi.fn(),
+  saveRules: vi.fn(),
+}))
+vi.mock('./curation', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./curation')>()),
+  listProposals: vi.fn(),
+}))
+vi.mock('./users', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./users')>()),
+  listUsers: vi.fn(),
+}))
+vi.mock('./library', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./library')>()),
+  status: vi.fn(),
 }))
 vi.mock('./libraries', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./libraries')>()),
@@ -75,9 +110,6 @@ const twoAndOne = () => [
   library(2, 'Comics', ['/media/Comics']),
 ]
 
-/** The shell's status read, which the sidebar's libraries are drawn from. */
-const refreshed = vi.fn()
-
 let steer: NavigateFunction | undefined
 let where = ''
 
@@ -98,22 +130,30 @@ async function at(entry = TABLE) {
     where = useLocation().pathname
     return null
   }
+  /**
+   * Draws from the status as the shell's sidebar does, beside every tab, so
+   * an invalidation of it is read at once (`status.status`'s calls).
+   */
+  function Sidebar() {
+    usePage([LIBRARY_STATUS])
+    return null
+  }
   let host: HTMLElement | undefined
   // One element for both routes, as `Config` gives it, so the screen stays
   // mounted between the make page and the pages beneath the table.
   const screen = <Libraries />
   await act(async () => {
     host = mount(
-      <StatusRefreshContext.Provider value={refreshed}>
-        <MemoryRouter initialEntries={[entry]}>
-          <Routes>
-            <Route path={`${TABLE}/*`} element={screen} />
-            <Route path={NEW_LIBRARY} element={screen} />
-            <Route path="/config/users" element={<p className="other-tab" />} />
-          </Routes>
-          <Steering />
-        </MemoryRouter>
-      </StatusRefreshContext.Provider>,
+      <MemoryRouter initialEntries={[entry]}>
+        <Routes>
+          <Route path={`${TABLE}/*`} element={screen} />
+          <Route path={NEW_LIBRARY} element={screen} />
+          <Route path="/config/users" element={<p className="other-tab" />} />
+          <Route path="/config/rules" element={<RuleEditor />} />
+        </Routes>
+        <Steering />
+        <Sidebar />
+      </MemoryRouter>,
     )
     await Promise.resolve()
     await Promise.resolve()
@@ -278,6 +318,49 @@ const missingPage = (host: HTMLElement) =>
 const locked = () =>
   new Error('/api/library/libraries: 500 {"error":"the store is locked"}')
 
+/** Directory `id`'s own status: its scan running, or ended with a report. */
+const ownStatus = (id: number, running: boolean): config.ScanStatus => ({
+  root_id: id,
+  running,
+  elapsed_secs: running ? 3 : undefined,
+  report: running ? null : { error: 'the scan panicked' },
+  last_scan_at: running ? null : '2026-10-27 12:00:00',
+  last_scan_status: running ? null : 'failed',
+})
+
+/**
+ * What a library's page draws of a scan: Scan library's hold, the first
+ * directory's Last scan cell, whether the running line is drawn, and how
+ * many reports. `null` for what is not drawn, as while the page waits.
+ */
+const scanState = (host: HTMLElement) => {
+  const scanButton = host.querySelector(
+    '.library-page button[name="scan-library"]',
+  )
+  const firstCell = host
+    .querySelector('.library-page .dir-table tbody tr')
+    ?.querySelectorAll('td')[2]
+  return JSON.stringify([
+    scanButton === null ? null : holdOf(scanButton),
+    firstCell === undefined ? null : cellValue(firstCell),
+    host.querySelector('.library-page > .scanning') !== null,
+    host.querySelectorAll('.library-page .scan-report').length,
+  ])
+}
+
+/** A library's page waiting for its scan status, or not drawn. */
+const NO_SCAN_DRAWN = JSON.stringify([null, null, false, 0])
+
+/** Scan directory pressed on the directory's page drawn, and its start answered. */
+async function scanDrawnDir(host: HTMLElement, id: number) {
+  vi.mocked(config.startScan).mockResolvedValue({
+    root_id: id,
+    status_url: `/api/library/roots/${id}/scan`,
+  })
+  await press(button(host, 'Scan directory'))
+  await flush()
+}
+
 const removal = (lost = 0, dry_run = false): config.RemovalAnswer => ({
   removed: { works: 0, positions: 0, notes: 0, left_with_no_library: [] },
   derive: { ...emptyDerive, lost_positions: lost },
@@ -311,6 +394,10 @@ const movedAnswer = (
 beforeEach(() => {
   vi.clearAllMocks()
   vi.mocked(api.listLibraries).mockResolvedValue({ libraries: [] })
+  vi.mocked(status.status).mockResolvedValue({
+    libraries: [],
+    restricted: false,
+  })
   vi.mocked(api.libraryScanStatus).mockImplementation((id) =>
     Promise.resolve({
       library_id: id,
@@ -513,6 +600,412 @@ describe('Libraries, the table', () => {
       host.querySelector('.library-table > [role="alert"]')?.textContent,
     ).toBe('the store is locked')
   })
+})
+
+describe('Libraries, a first visit and a return', () => {
+  /** The "Loading…" line drawn in the body's place of the page `page`. */
+  const waitLine = (host: HTMLElement, page: string) =>
+    host.querySelector(`.${page} > p[role="status"]`)
+
+  /** The table as drawn: whether it is, its rows, and its wait line. */
+  const tableState = (host: HTMLElement) =>
+    JSON.stringify([
+      host.querySelector('.library-table') !== null,
+      names(host),
+      waitLine(host, 'library-table')?.textContent ?? null,
+    ])
+
+  it('heads the table at once on a first visit, draws Loading… in its body’s place from 200 ms, and the table in one step once the list lands', async () => {
+    holdTheClock()
+    const list = deferred<{ libraries: api.Library[] }>()
+    vi.mocked(api.listLibraries).mockReturnValue(list.promise)
+    const host = await at()
+    expect(tableHeading(host)?.textContent).toBe('Libraries')
+    expect(host.querySelector('.library-table .settings-box')).toBeNull()
+    pass(WAIT_DRAWN_AFTER_MS - 1)
+    expect(waitLine(host, 'library-table')).toBeNull()
+    pass(1)
+    expect(waitLine(host, 'library-table')?.textContent).toBe('Loading…')
+
+    const drawn = watchDrawn(() => tableState(host))
+    await flush(() => list.resolve({ libraries: twoAndOne() }))
+    drawn.stop()
+    expect([...drawn.seen]).toEqual([
+      JSON.stringify([true, [], 'Loading…']),
+      JSON.stringify([true, ['Manga', 'Comics'], null]),
+    ])
+  })
+
+  it('draws the table at once on a return from another tab, reads the list again, and draws its answer in one step with no wait', async () => {
+    holdTheClock()
+    vi.mocked(api.listLibraries).mockResolvedValue({ libraries: twoAndOne() })
+    const host = await at()
+    await go('/config/users')
+    const again = deferred<{ libraries: api.Library[] }>()
+    vi.mocked(api.listLibraries).mockClear()
+    vi.mocked(api.listLibraries).mockReturnValue(again.promise)
+
+    const drawn = watchDrawn(() => tableState(host))
+    await go(TABLE)
+    expect(names(host)).toEqual(['Manga', 'Comics'])
+    expect(api.listLibraries).toHaveBeenCalledTimes(1)
+    pass(WAIT_DRAWN_AFTER_MS)
+    await flush(() =>
+      again.resolve({ libraries: [library(2, 'Comics', ['/media/Comics'])] }),
+    )
+    drawn.stop()
+    expect([...drawn.seen]).toEqual([
+      JSON.stringify([false, [], null]),
+      JSON.stringify([true, ['Manga', 'Comics'], null]),
+      JSON.stringify([true, ['Comics'], null]),
+    ])
+  })
+
+  /**
+   * O200: the sidebar lists the libraries the status names, so the screen
+   * reads it as it arrives, beside the list, whichever tab the person came
+   * from; the shell stays drawn between Configuration's tabs. A read already
+   * out for it is joined; when both are drawn at once, the sidebar's own
+   * joins the screen's, whose effect runs first.
+   */
+  it('reads the sidebar’s status as it arrives from another tab, once, beside one read of the list', async () => {
+    vi.mocked(api.listLibraries).mockResolvedValue({ libraries: twoAndOne() })
+    const host = await at()
+    expect(status.status).toHaveBeenCalledTimes(1)
+    await go('/config/users')
+    vi.mocked(status.status).mockClear()
+    vi.mocked(api.listLibraries).mockClear()
+
+    await go(TABLE)
+    expect(names(host)).toEqual(['Manga', 'Comics'])
+    expect(status.status).toHaveBeenCalledTimes(1)
+    expect(api.listLibraries).toHaveBeenCalledTimes(1)
+  })
+
+  it('heads a library’s page with the name its address spells while the list is read, and draws Loading… in its body’s place from 200 ms', async () => {
+    holdTheClock()
+    const list = deferred<{ libraries: api.Library[] }>()
+    vi.mocked(api.listLibraries).mockReturnValue(list.promise)
+    const host = await at(`${TABLE}/Light%20novels`)
+    expect(libraryTitle(host)).toBe('Light novels')
+    expect(
+      link(host, '‹ Libraries').closest('.library-page > .page-header'),
+    ).not.toBeNull()
+    expect(host.querySelector('.missing')).toBeNull()
+    expect(paths(host)).toEqual([])
+    pass(WAIT_DRAWN_AFTER_MS - 1)
+    expect(waitLine(host, 'library-page')).toBeNull()
+    pass(1)
+    expect(waitLine(host, 'library-page')?.textContent).toBe('Loading…')
+
+    await flush(() =>
+      list.resolve({
+        libraries: [library(4, 'Light novels', ['/media/Novels'])],
+      }),
+    )
+    expect(libraryTitle(host)).toBe('Light novels')
+    expect(paths(host)).toEqual(['/media/Novels'])
+    expect(waitLine(host, 'library-page')).toBeNull()
+  })
+
+  /** A library's page as drawn: its paths, its running scan, its wait line. */
+  const libraryState = (host: HTMLElement) =>
+    JSON.stringify([
+      paths(host),
+      host.querySelector('.library-page > .scanning')?.textContent ?? null,
+      waitLine(host, 'library-page')?.textContent ?? null,
+    ])
+
+  it('keeps Loading… in a library’s page’s body’s place while its scan status is read once the list has found it, and draws its body with the running scan in one step', async () => {
+    holdTheClock()
+    const list = deferred<{ libraries: api.Library[] }>()
+    const scan = deferred<api.LibraryScanStatus>()
+    vi.mocked(api.listLibraries).mockReturnValue(list.promise)
+    vi.mocked(api.libraryScanStatus).mockReturnValue(scan.promise)
+    const host = await at(`${TABLE}/Manga`)
+    pass(WAIT_DRAWN_AFTER_MS)
+    expect(waitLine(host, 'library-page')?.textContent).toBe('Loading…')
+
+    const libraries = twoAndOne()
+    await flush(() => list.resolve({ libraries }))
+    expect(libraryTitle(host)).toBe('Manga')
+    expect(libraryState(host)).toBe(JSON.stringify([[], null, 'Loading…']))
+    expect(api.libraryScanStatus).toHaveBeenCalledTimes(1)
+    expect(api.libraryScanStatus).toHaveBeenCalledWith(1)
+
+    const drawn = watchDrawn(() => libraryState(host))
+    await flush(() => scan.resolve(scanningIn(libraries[0], 11)))
+    drawn.stop()
+    expect([...drawn.seen]).toEqual([
+      JSON.stringify([[], null, 'Loading…']),
+      JSON.stringify([
+        ['/media/Manga/Volumes', '/media/Manga/Chapters'],
+        'A scan is running in this library… 3s',
+        null,
+      ]),
+    ])
+  })
+
+  /**
+   * §9's call 9, where the two do not fit: the library's page is not drawn
+   * while the directory's is, and what it kept is from before the
+   * directory's own scan, so a return waits for its read.
+   */
+  describe('a return to a library’s page after its directory’s own scan', () => {
+    it('waits for the status on a return from a directory’s page whose scan started, where the status kept said none was running, then draws the scan running', async () => {
+      const libraries = twoAndOne()
+      vi.mocked(api.listLibraries).mockResolvedValue({ libraries })
+      const host = await at(`${TABLE}/Manga`)
+      expect(scanState(host)).toBe(JSON.stringify(['free', 'Never', false, 0]))
+      await follow(host, '/media/Manga/Volumes')
+      await scanDrawnDir(host, 10)
+      expect(host.querySelector('.dir-page > .scanning')).not.toBeNull()
+
+      const read = deferred<api.LibraryScanStatus>()
+      vi.mocked(api.libraryScanStatus).mockReturnValue(read.promise)
+      const drawn = watchDrawn(() => scanState(host))
+      await follow(host, '‹ Manga')
+      expect(libraryTitle(host)).toBe('Manga')
+      expect(scanState(host)).toBe(NO_SCAN_DRAWN)
+      await flush(() => read.resolve(scanningIn(libraries[0], 10)))
+      drawn.stop()
+      expect([...drawn.seen]).toEqual([
+        NO_SCAN_DRAWN,
+        JSON.stringify(['held', 'Scanning…', true, 0]),
+      ])
+    })
+
+    it('waits for the status on a return made while its directory’s scan was still being started, then draws the scan running', async () => {
+      const libraries = twoAndOne()
+      vi.mocked(api.listLibraries).mockResolvedValue({ libraries })
+      const host = await at(`${TABLE}/Manga`)
+      expect(scanState(host)).toBe(JSON.stringify(['free', 'Never', false, 0]))
+      await follow(host, '/media/Manga/Volumes')
+      const start = deferred<{ root_id: number; status_url: string }>()
+      vi.mocked(config.startScan).mockReturnValue(start.promise)
+      await press(button(host, 'Scan directory'))
+      expect(config.startScan).toHaveBeenCalledTimes(1)
+
+      const read = deferred<api.LibraryScanStatus>()
+      vi.mocked(api.libraryScanStatus).mockReturnValue(read.promise)
+      const drawn = watchDrawn(() => scanState(host))
+      await follow(host, '‹ Manga')
+      expect(libraryTitle(host)).toBe('Manga')
+      expect(scanState(host)).toBe(NO_SCAN_DRAWN)
+      await flush(() => read.resolve(scanningIn(libraries[0], 10)))
+      await flush(() =>
+        start.resolve({
+          root_id: 10,
+          status_url: '/api/library/roots/10/scan',
+        }),
+      )
+      drawn.stop()
+      expect([...drawn.seen]).toEqual([
+        NO_SCAN_DRAWN,
+        JSON.stringify(['held', 'Scanning…', true, 0]),
+      ])
+    })
+
+    it('waits for the status on a return from a directory’s page that saw its scan end, where the status kept said it was running, and draws no scan and no report', async () => {
+      vi.useFakeTimers({
+        toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'],
+      })
+      const libraries = twoAndOne()
+      vi.mocked(api.listLibraries).mockResolvedValue({ libraries })
+      vi.mocked(api.libraryScanStatus).mockResolvedValue(
+        scanningIn(libraries[0], 10),
+      )
+      vi.mocked(config.scanStatus).mockImplementation((id) =>
+        Promise.resolve(ownStatus(id, id === 10)),
+      )
+      const host = await at(`${TABLE}/Manga`)
+      expect(scanState(host)).toBe(
+        JSON.stringify(['held', 'Scanning…', true, 0]),
+      )
+      await follow(host, '/media/Manga/Volumes')
+      expect(host.querySelector('.dir-page > .scanning')).not.toBeNull()
+
+      vi.mocked(config.scanStatus).mockImplementation((id) =>
+        Promise.resolve(ownStatus(id, false)),
+      )
+      vi.mocked(api.libraryScanStatus).mockResolvedValue(idle(1))
+      await tick()
+      expect(host.querySelector('.dir-page > .scanning')).toBeNull()
+      expect(host.querySelectorAll('.dir-page .scan-report')).toHaveLength(1)
+
+      const read = deferred<api.LibraryScanStatus>()
+      vi.mocked(api.libraryScanStatus).mockReturnValue(read.promise)
+      const drawn = watchDrawn(() => scanState(host))
+      await follow(host, '‹ Manga')
+      expect(libraryTitle(host)).toBe('Manga')
+      expect(scanState(host)).toBe(NO_SCAN_DRAWN)
+      await flush(() => read.resolve(idle(1)))
+      await flush()
+      drawn.stop()
+      expect([...drawn.seen]).toEqual([
+        NO_SCAN_DRAWN,
+        JSON.stringify(['free', 'Never', false, 0]),
+      ])
+    })
+
+    it('waits for the status on a return after its directory’s page was left for another screen while its scan ran, and the scan then ended', async () => {
+      const libraries = twoAndOne()
+      vi.mocked(api.listLibraries).mockResolvedValue({ libraries })
+      const host = await at(`${TABLE}/Manga`)
+      await follow(host, '/media/Manga/Volumes')
+      await scanDrawnDir(host, 10)
+      expect(host.querySelector('.dir-page > .scanning')).not.toBeNull()
+      await go('/config/users')
+      expect(host.querySelector('.other-tab')).not.toBeNull()
+
+      // The scan ends with nothing drawn to see it.
+      vi.mocked(config.scanStatus).mockImplementation((id) =>
+        Promise.resolve(ownStatus(id, false)),
+      )
+      const read = deferred<api.LibraryScanStatus>()
+      vi.mocked(api.libraryScanStatus).mockReturnValue(read.promise)
+      await go(`${TABLE}/Manga`)
+      expect(libraryTitle(host)).toBe('Manga')
+      expect(scanState(host)).toBe(NO_SCAN_DRAWN)
+      await flush(() => read.resolve(idle(1)))
+      expect(scanState(host)).toBe(JSON.stringify(['free', 'Never', false, 0]))
+    })
+
+    it('waits for the status on a return from a directory’s page whose first read took up a scan the status kept did not have, then draws the scan running', async () => {
+      const libraries = twoAndOne()
+      vi.mocked(api.listLibraries).mockResolvedValue({ libraries })
+      const host = await at(`${TABLE}/Manga`)
+      expect(scanState(host)).toBe(JSON.stringify(['free', 'Never', false, 0]))
+      // The directory's scan began elsewhere: another tab, or the command
+      // line.
+      vi.mocked(config.scanStatus).mockImplementation((id) =>
+        Promise.resolve(ownStatus(id, id === 10)),
+      )
+      vi.mocked(api.libraryScanStatus).mockResolvedValue(
+        scanningIn(libraries[0], 10),
+      )
+      await follow(host, '/media/Manga/Volumes')
+      expect(host.querySelector('.dir-page > .scanning')).not.toBeNull()
+
+      const read = deferred<api.LibraryScanStatus>()
+      vi.mocked(api.libraryScanStatus).mockReturnValue(read.promise)
+      const drawn = watchDrawn(() => scanState(host))
+      await follow(host, '‹ Manga')
+      expect(libraryTitle(host)).toBe('Manga')
+      expect(scanState(host)).toBe(NO_SCAN_DRAWN)
+      await flush(() => read.resolve(scanningIn(libraries[0], 10)))
+      drawn.stop()
+      expect([...drawn.seen]).toEqual([
+        NO_SCAN_DRAWN,
+        JSON.stringify(['held', 'Scanning…', true, 0]),
+      ])
+    })
+  })
+
+  it('keeps focus on a library’s page’s ‹ Libraries, taken while its reads are out, once they land: the header and the notices drawn while waiting are the page’s own', async () => {
+    const list = deferred<{ libraries: api.Library[] }>()
+    const scan = deferred<api.LibraryScanStatus>()
+    vi.mocked(api.listLibraries).mockReturnValue(list.promise)
+    vi.mocked(api.libraryScanStatus).mockReturnValue(scan.promise)
+    const host = await at(`${TABLE}/Manga`)
+    const back = link(host, '‹ Libraries')
+    act(() => back.focus())
+    expect(document.activeElement).toBe(back)
+    // The screen's live region, drawn empty before any answer can come, is
+    // the drawn page's too.
+    const region = () =>
+      host.querySelector('.library-page > [aria-live="polite"]')
+    const waiting = region()
+    expect(waiting).not.toBeNull()
+
+    await flush(() => list.resolve({ libraries: twoAndOne() }))
+    expect(document.activeElement).toBe(back)
+    await flush(() => scan.resolve(idle(1)))
+    expect(paths(host)).toEqual([
+      '/media/Manga/Volumes',
+      '/media/Manga/Chapters',
+    ])
+    expect(link(host, '‹ Libraries')).toBe(back)
+    expect(document.activeElement).toBe(back)
+    expect(region()).toBe(waiting)
+  })
+
+  it('names a library’s waiting page as the list does once the list has found it, not as its address spells it', async () => {
+    const list = deferred<{ libraries: api.Library[] }>()
+    vi.mocked(api.listLibraries).mockReturnValue(list.promise)
+    vi.mocked(api.libraryScanStatus).mockReturnValue(new Promise(() => {}))
+    const host = await at(`${TABLE}/manga`)
+    expect(libraryTitle(host)).toBe('manga')
+
+    await flush(() => list.resolve({ libraries: twoAndOne() }))
+    expect(paths(host)).toEqual([])
+    expect(libraryTitle(host)).toBe('Manga')
+  })
+
+  it('draws the list’s failure under a library’s page’s header, and no Loading… beside it, and reads no scan status, when the list cannot be read', async () => {
+    holdTheClock()
+    vi.mocked(api.listLibraries).mockRejectedValue(locked())
+    const host = await at(`${TABLE}/Manga`)
+    expect(libraryTitle(host)).toBe('Manga')
+    expect(
+      host.querySelector('.library-page > [role="alert"]')?.textContent,
+    ).toBe('the store is locked')
+    pass(WAIT_DRAWN_AFTER_MS)
+    expect(waitLine(host, 'library-page')).toBeNull()
+    expect(paths(host)).toEqual([])
+    expect(api.libraryScanStatus).not.toHaveBeenCalled()
+  })
+
+  /**
+   * O222: a write sent from the screen, whose answer lands once Users has
+   * replaced the screen. The screen drawn on a return is a new one, and the
+   * answer marks the list stale in the store: read at once if the return has
+   * drawn it, and by the return otherwise. So whichever comes first, the
+   * return or the answer, the list drawn is the one the write left.
+   */
+  it.each([
+    { order: 'the return, then the answer', answerFirst: false },
+    { order: 'the answer, then the return', answerFirst: true },
+  ])(
+    'draws the list as a write sent from the screen left it, with no change of page, after another tab replaced the screen and $order — O222',
+    async ({ answerFirst }) => {
+      let held = ['/media/Manga/Volumes', '/media/Manga/Chapters']
+      vi.mocked(api.listLibraries).mockImplementation(async () => ({
+        libraries: [
+          library(1, 'Manga', held),
+          library(2, 'Comics', ['/media/Comics']),
+        ],
+      }))
+      const removed = deferred<config.RemovalAnswer>()
+      vi.mocked(config.removeRoot).mockReturnValue(removed.promise)
+      const host = await at(`${TABLE}/Manga/dirs/11`)
+      await press(button(host, 'Remove…'))
+      await press(host.querySelector('.remove-root .confirm') as Element)
+      expect(config.removeRoot).toHaveBeenCalledTimes(1)
+      await go('/config/users')
+      const answer = () =>
+        flush(() => {
+          held = ['/media/Manga/Volumes']
+          removed.resolve(removal(4))
+        })
+      const both = ['/media/Manga/Volumes', '/media/Manga/Chapters']
+      if (answerFirst) await answer()
+      const drawn = watchDrawn(() => JSON.stringify(paths(host)))
+      await go(`${TABLE}/Manga`)
+      if (!answerFirst) {
+        expect(paths(host)).toEqual(both)
+        await answer()
+      }
+      await flush()
+      drawn.stop()
+      expect(here()).toBe(`${TABLE}/Manga`)
+      expect(paths(host)).toEqual(['/media/Manga/Volumes'])
+      // The list the answer made stale is never drawn on the return.
+      if (answerFirst) {
+        expect([...drawn.seen]).not.toContain(JSON.stringify(both))
+      }
+    },
+  )
 })
 
 describe('Libraries, the pages', () => {
@@ -861,7 +1354,7 @@ describe('Libraries, an answer that comes after the person has moved on', () => 
     }
     const answer = async () => {
       vi.mocked(api.listLibraries).mockClear()
-      refreshed.mockClear()
+      vi.mocked(status.status).mockClear()
       await flush(() =>
         kind === 'removal'
           ? removed.resolve(removal(4))
@@ -990,7 +1483,7 @@ describe('Libraries, an answer that comes after the person has moved on', () => 
   )
 
   it.each(['removal', 'move'] as const)(
-    'leaves the person on another Configuration tab when a directory’s %s answers there, and reads the list once',
+    'leaves the person on another Configuration tab when a directory’s %s answers there, reads the sidebar’s status once, and the list on the return',
     async (kind) => {
       const { host, answer } = await started(kind)
       await go('/config/users')
@@ -998,9 +1491,12 @@ describe('Libraries, an answer that comes after the person has moved on', () => 
       await answer()
       expect(here()).toBe('/config/users')
       expect(host.querySelector('.other-tab')).not.toBeNull()
+      // The sidebar's libraries follow the write from any page; the list,
+      // which nothing draws here, is read once something draws it.
+      expect(status.status).toHaveBeenCalledTimes(1)
+      expect(api.listLibraries).not.toHaveBeenCalled()
+      await go(TABLE)
       expect(api.listLibraries).toHaveBeenCalledTimes(1)
-      // The sidebar's libraries follow the write from any page.
-      expect(refreshed).toHaveBeenCalledTimes(1)
     },
   )
 
@@ -1168,7 +1664,7 @@ describe('Libraries, making one', () => {
       to: '/config/users',
     },
   ])(
-    'leaves the person at $to when a make answers while they are $where, and reads the list once',
+    'leaves the person at $to when a make answers while they are $where, and reads the sidebar’s status once and the list once where it is drawn',
     async ({ leave, to }) => {
       const comics = library(2, 'Comics', ['/media/Comics'])
       const made = library(1, 'Manga', ['/media/Manga'])
@@ -1183,13 +1679,17 @@ describe('Libraries, making one', () => {
         libraries: [comics, made],
       })
       vi.mocked(api.listLibraries).mockClear()
-      refreshed.mockClear()
+      vi.mocked(status.status).mockClear()
       await flush(() => create.resolve({ library: made, added: [] }))
       await flush()
       expect(here()).toBe(to)
-      expect(api.listLibraries).toHaveBeenCalledTimes(1)
-      // The sidebar's libraries follow the make from any page.
-      expect(refreshed).toHaveBeenCalledTimes(1)
+      // The sidebar's libraries follow the make from any page. The list is
+      // read where a page of the screen draws it, and on another tab once
+      // the person is back.
+      expect(status.status).toHaveBeenCalledTimes(1)
+      expect(api.listLibraries).toHaveBeenCalledTimes(
+        to === '/config/users' ? 0 : 1,
+      )
       if (to === TABLE) expect(names(host)).toEqual(['Comics', 'Manga'])
       if (to === '/config/libraries/Manga') {
         expect(libraryTitle(host)).toBe('Manga')
@@ -2300,12 +2800,14 @@ describe('Libraries, a library’s removal', () => {
     expect(host.querySelector('.library-page .scanning')).not.toBeNull()
 
     // Straight from one library's page to the other's, as a typed address
-    // goes, so the page is not unmounted between them. Manga's own read of its
-    // status is held open: what is drawn until it answers is a page of its
-    // own, not Comics' carried over.
+    // goes, so the screen is not unmounted between them. Manga's own read of
+    // its status is held open: what is drawn until it answers is a page of
+    // its own, not Comics' carried over, and so is the body it draws once
+    // that read says nothing is running there.
+    const mangaStatus = deferred<api.LibraryScanStatus>()
     vi.mocked(api.libraryScanStatus).mockImplementation((id) =>
       id === 1
-        ? new Promise(() => {})
+        ? mangaStatus.promise
         : Promise.resolve({
             library_id: id,
             running: true,
@@ -2315,6 +2817,11 @@ describe('Libraries, a library’s removal', () => {
     )
     await go('/config/libraries/Manga')
     expect(libraryTitle(host)).toBe('Manga')
+    expect(held()).toEqual([])
+    expect(host.querySelector('.library-page .scanning')).toBeNull()
+
+    await flush(() => mangaStatus.resolve(idle(1)))
+    expect(paths(host)).toEqual(['/media/Manga'])
     expect(held()).toEqual([])
     expect(host.querySelector('.library-page .scanning')).toBeNull()
   })
@@ -2680,6 +3187,104 @@ describe('Libraries, side by side', () => {
       null,
     ])
   })
+
+  // §9's call 9: the directory's page marks the library's status stale and
+  // tells no reader, so the library's page beside it draws what it drew
+  // before, where a re-read would take the scan up and draw its report a
+  // second time beside the directory's own.
+  it('leaves the library’s page drawn beside its directory’s as it was through the directory’s own scan and its end: it reads no status, holds nothing, and draws no report of its own', async () => {
+    vi.useFakeTimers({
+      toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'],
+    })
+    vi.mocked(useFitsPair).mockReturnValue(true)
+    const libraries = twoAndOne()
+    vi.mocked(api.listLibraries).mockResolvedValue({ libraries })
+    const host = await at(`${TABLE}/Manga/dirs/10`)
+    expect(dirTitle(host)).toBe('/media/Manga/Volumes')
+    expect(libraryTitle(host)).toBe('Manga')
+    const libraryHeld = () =>
+      JSON.stringify(
+        ['scan-library', 'remove-library'].map((name) =>
+          holdOf(
+            host.querySelector(
+              `.library-page button[name="${name}"]`,
+            ) as Element,
+          ),
+        ),
+      )
+    const held = watchDrawn(libraryHeld)
+    vi.mocked(api.libraryScanStatus).mockClear()
+    // A read of the library's status would find the directory scanning.
+    vi.mocked(api.libraryScanStatus).mockResolvedValue(
+      scanningIn(libraries[0], 10),
+    )
+    vi.mocked(config.scanStatus).mockImplementation((id) =>
+      Promise.resolve(ownStatus(id, id === 10)),
+    )
+    await scanDrawnDir(host, 10)
+    expect(host.querySelector('.dir-page > .scanning')).not.toBeNull()
+    await tick()
+    expect(host.querySelector('.dir-page > .scanning')).not.toBeNull()
+
+    vi.mocked(config.scanStatus).mockImplementation((id) =>
+      Promise.resolve(ownStatus(id, false)),
+    )
+    vi.mocked(api.libraryScanStatus).mockResolvedValue(idle(1))
+    await tick()
+    await tick()
+    await flush()
+    held.stop()
+    expect(host.querySelector('.dir-page > .scanning')).toBeNull()
+    expect(host.querySelectorAll('.scan-report')).toHaveLength(1)
+    expect(host.querySelector('.dir-page .scan-report')).not.toBeNull()
+    expect([...held.seen]).toEqual([JSON.stringify(['free', 'free'])])
+    expect(api.libraryScanStatus).not.toHaveBeenCalled()
+  })
+
+  // The library's read is out as the directory's mount read takes up the
+  // scan, and answers as the server did before the scan began: the page
+  // drawing it is answered, and a page arriving once it has gone waits.
+  it('makes the library’s page wait on its next arrival when its read, out as the directory’s page beside it took up a scan, answered from before the scan', async () => {
+    vi.useFakeTimers({
+      toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'],
+    })
+    vi.mocked(useFitsPair).mockReturnValue(true)
+    const libraries = twoAndOne()
+    vi.mocked(api.listLibraries).mockResolvedValue({ libraries })
+    const before: ReturnType<typeof deferred<api.LibraryScanStatus>>[] = []
+    vi.mocked(api.libraryScanStatus).mockImplementation(() => {
+      const read = deferred<api.LibraryScanStatus>()
+      before.push(read)
+      return read.promise
+    })
+    vi.mocked(config.scanStatus).mockImplementation((id) =>
+      Promise.resolve(ownStatus(id, id === 10)),
+    )
+    const host = await at(`${TABLE}/Manga/dirs/10`)
+    expect(host.querySelector('.dir-page > .scanning')).not.toBeNull()
+    await flush(() => {
+      for (const read of before) read.resolve(idle(1))
+    })
+    expect(scanState(host)).toBe(JSON.stringify(['free', 'Never', false, 0]))
+
+    // The directory's page gives up after a run of failed polls, so nothing
+    // it does marks the status again.
+    vi.mocked(config.scanStatus).mockRejectedValue(
+      new Error('/api/library/roots/10/scan: 500 the store is locked'),
+    )
+    for (let poll = 0; poll < config.POLL_MISSES_ALLOWED; poll++) await tick()
+    expect(host.querySelector('.dir-page > .scanning')).toBeNull()
+
+    await go('/config/users')
+    const read = deferred<api.LibraryScanStatus>()
+    vi.mocked(api.libraryScanStatus).mockReturnValue(read.promise)
+    await go(`${TABLE}/Manga`)
+    expect(libraryTitle(host)).toBe('Manga')
+    expect(scanState(host)).toBe(NO_SCAN_DRAWN)
+    await flush(() => read.resolve(scanningIn(libraries[0], 10)))
+    expect(scanState(host)).toBe(JSON.stringify(['held', 'Scanning…', true, 0]))
+  })
+
   it('opens a library’s page on its own where a page would fit beside the table, as a library is not the end of its tree', async () => {
     vi.mocked(useFitsPair).mockReturnValue(true)
     vi.mocked(api.listLibraries).mockResolvedValue({ libraries: twoAndOne() })
@@ -2858,16 +3463,6 @@ describe('Libraries, addressed by name', () => {
     expect(link(host, '‹ Tom & Jerry/Extras?').getAttribute('href')).toBe(
       `${TABLE}/Tom%20%26%20Jerry%2FExtras%3F`,
     )
-  })
-
-  it('draws no page for a name while the list is being read, and the library’s once it is', async () => {
-    const list = deferred<{ libraries: api.Library[] }>()
-    vi.mocked(api.listLibraries).mockReturnValue(list.promise)
-    const host = await at(`${TABLE}/Manga`)
-    expect(host.querySelector('.missing')).toBeNull()
-    expect(host.querySelector('.library-page')).toBeNull()
-    await flush(() => list.resolve({ libraries: twoAndOne() }))
-    expect(libraryTitle(host)).toBe('Manga')
   })
 
   it('replaces the address with the new name as a rename lands, so Back goes past the old one, which then names nothing', async () => {
@@ -3154,5 +3749,558 @@ describe('Libraries, addressed by name', () => {
     expect(here()).toBe(`${TABLE}/Light%20novels`)
     expect(libraryTitle(host)).toBe('Light novels')
     expect(document.activeElement).toBe(libraryHeading(host))
+  })
+})
+
+/**
+ * Rules draws the roots, which a directory write can change. A write here
+ * marks them stale, so Rules arriving afterwards waits for them rather than
+ * drawing roots the app knows are out of date; a visit that wrote nothing
+ * leaves Rules to draw at once.
+ */
+describe('Libraries, a directory write and the roots Rules draws', () => {
+  beforeEach(() => {
+    vi.mocked(api.listLibraries).mockResolvedValue({ libraries: twoAndOne() })
+    vi.mocked(rulesApi.listRules).mockResolvedValue({
+      rules: [],
+      complaints: [],
+    })
+    vi.mocked(config.listRoots).mockResolvedValue({ roots: [] })
+    vi.mocked(curation.listProposals).mockResolvedValue({
+      proposals: [],
+      counts: {},
+    })
+    vi.mocked(rulesApi.previewRules).mockResolvedValue({
+      impact: {
+        series_before: 0,
+        series_after: 0,
+        series_merged: 0,
+        works_rehomed: 0,
+        works_orphaned: 0,
+        proposals_reopened: 0,
+        proposals_raised: 0,
+      },
+      rows: [],
+      rows_truncated: false,
+      overrides: [],
+    })
+    vi.mocked(config.patchRoot).mockResolvedValue(undefined)
+    vi.mocked(config.removalCost).mockResolvedValue(removal(0, true))
+    vi.mocked(config.removeRoot).mockResolvedValue(removal())
+  })
+
+  /** Whether Rules' body is drawn: its rule count is part of it. */
+  const rulesDrawn = (host: HTMLElement) =>
+    host.querySelector('.rule-editor .rule-count') !== null
+
+  /** Rules drawn, so the store keeps what it read; then `to`. */
+  async function fromRules(to: string) {
+    const host = await at('/config/rules')
+    expect(rulesDrawn(host)).toBe(true)
+    await go(to)
+    return host
+  }
+
+  /**
+   * Back to Rules with the roots' read held: whether its body is drawn on
+   * arrival, its wait line once the wait has held, the roots' reads sent,
+   * and whether the body is drawn once they land.
+   */
+  async function backToRules(host: HTMLElement) {
+    holdTheClock()
+    const roots = deferred<{ roots: config.Root[] }>()
+    vi.mocked(config.listRoots).mockClear()
+    vi.mocked(config.listRoots).mockReturnValue(roots.promise)
+    await go('/config/rules')
+    const onArrival = rulesDrawn(host)
+    pass(WAIT_DRAWN_AFTER_MS)
+    const wait =
+      host.querySelector('.rule-editor > p[role="status"]')?.textContent ?? null
+    const reads = vi.mocked(config.listRoots).mock.calls.length
+    await flush(() => roots.resolve({ roots: [] }))
+    return { onArrival, wait, reads, landed: rulesDrawn(host) }
+  }
+
+  it('draws Rules at once on a return after a visit that wrote nothing, moving between pages', async () => {
+    const host = await fromRules('/config/libraries/Manga/dirs/10')
+    await follow(host, '‹ Manga')
+    await follow(host, '‹ Libraries')
+    expect(await backToRules(host)).toEqual({
+      onArrival: true,
+      wait: null,
+      reads: 1,
+      landed: true,
+    })
+  })
+
+  it.each([
+    [
+      'a directory’s setting is saved as its box is left',
+      '/config/libraries/Manga/dirs/10',
+      async (host: HTMLElement) => {
+        const box = host.querySelector(
+          'input[name="default_language"]',
+        ) as HTMLInputElement
+        await typeInto(box, 'ja')
+        // React's `onBlur` listens for `focusout`.
+        await flush(() =>
+          box.dispatchEvent(new FocusEvent('focusout', { bubbles: true })),
+        )
+        return vi.mocked(config.patchRoot)
+      },
+    ],
+    [
+      'a directory’s setting typed is sent as its page is left',
+      '/config/libraries/Manga/dirs/10',
+      async (host: HTMLElement) => {
+        await typeInto(
+          host.querySelector(
+            'input[name="default_language"]',
+          ) as HTMLInputElement,
+          'ja',
+        )
+        await follow(host, '‹ Manga')
+        return vi.mocked(config.patchRoot)
+      },
+    ],
+    [
+      'a directory’s documents are kept',
+      '/config/libraries/Manga/dirs/10',
+      async (host: HTMLElement) => {
+        await press(
+          host.querySelector('input[name="keeps_documents"]') as Element,
+        )
+        await flush()
+        return vi.mocked(config.patchRoot)
+      },
+    ],
+    [
+      'a directory is added',
+      '/config/libraries/Manga',
+      async (host: HTMLElement) => {
+        vi.mocked(api.addDir).mockResolvedValue({
+          root: dir(9, '/media/Manga/Extras'),
+          watching: true,
+          watch_reason: null,
+          interval_secs: 900,
+        })
+        await press(host.querySelector('button[name="add-dir"]') as Element)
+        const picker = section(host, 'Directories').querySelector(
+          ':scope > .settings-box > .add-root',
+        ) as HTMLElement
+        await typeInto(
+          picker.querySelector('input[name="path"]') as HTMLInputElement,
+          '/media/Manga/Extras',
+        )
+        await press(picker.querySelector('button[name="pick"]') as Element)
+        await flush()
+        return vi.mocked(api.addDir)
+      },
+    ],
+    [
+      'a directory is removed',
+      '/config/libraries/Manga/dirs/11',
+      async (host: HTMLElement) => {
+        await removeDrawnDir(host)
+        return vi.mocked(config.removeRoot)
+      },
+    ],
+    [
+      'a library is made',
+      NEW_LIBRARY,
+      async (host: HTMLElement) => {
+        const made = library(3, 'Extras', ['/media/Extras'])
+        vi.mocked(api.createLibrary).mockResolvedValue({
+          library: made,
+          added: [
+            {
+              root: made.dirs[0],
+              watching: true,
+              watch_reason: null,
+              interval_secs: 900,
+            },
+          ],
+        })
+        await makeOne(host, 'Extras', '/media/Extras')
+        return vi.mocked(api.createLibrary)
+      },
+    ],
+    [
+      'a directory is moved',
+      '/config/libraries/Manga/dirs/11',
+      async (host: HTMLElement) => {
+        vi.mocked(api.moveCost).mockResolvedValue(movedAnswer({}, true))
+        vi.mocked(api.moveDir).mockResolvedValue(movedAnswer())
+        await moveDrawnDir(host, '2')
+        return vi.mocked(api.moveDir)
+      },
+    ],
+    [
+      'a library is removed',
+      '/config/libraries/Comics',
+      async (host: HTMLElement) => {
+        await removeDrawnLibrary(host)
+        return vi.mocked(api.removeLibrary)
+      },
+    ],
+  ] as const)(
+    'makes Rules wait for the roots on a return after %s',
+    async (_, to, write) => {
+      const host = await fromRules(to)
+      const sent = await write(host)
+      expect(sent).toHaveBeenCalledTimes(1)
+      expect(await backToRules(host)).toEqual({
+        onArrival: false,
+        wait: 'Loading…',
+        reads: 1,
+        landed: true,
+      })
+    },
+  )
+})
+
+/**
+ * A removal deletes more than its directories: the schema's cascades take
+ * the rules scoped to them, the accepted proposals' rules with those, and a
+ * library's grants. A page drawing any of them when the answer lands reads
+ * it again at once; a move marks only the roots, and the grants where it
+ * emptied its library.
+ */
+describe('Libraries, what a removal or a move makes out of date', () => {
+  beforeEach(() => {
+    vi.mocked(api.listLibraries).mockResolvedValue({ libraries: twoAndOne() })
+    vi.mocked(rulesApi.listRules).mockResolvedValue({
+      rules: [],
+      complaints: [],
+    })
+    vi.mocked(config.listRoots).mockResolvedValue({ roots: [] })
+    vi.mocked(curation.listProposals).mockResolvedValue({
+      proposals: [],
+      counts: {},
+    })
+    vi.mocked(usersApi.listUsers).mockResolvedValue({ users: [] })
+    vi.mocked(config.removalCost).mockResolvedValue(removal(0, true))
+    vi.mocked(config.removeRoot).mockResolvedValue(removal())
+  })
+
+  /** A page drawing every read a removal or a move can make out of date. */
+  function Drawing() {
+    usePage([ROOTS, RULES, ACCEPTED_PROPOSALS, USER_LIST])
+    return null
+  }
+
+  /** How many times each was read since the counts were cleared. */
+  const readAgain = () => ({
+    roots: vi.mocked(config.listRoots).mock.calls.length,
+    rules: vi.mocked(rulesApi.listRules).mock.calls.length,
+    proposals: vi.mocked(curation.listProposals).mock.calls.length,
+    users: vi.mocked(usersApi.listUsers).mock.calls.length,
+  })
+
+  it.each([
+    [
+      'a directory is removed',
+      '/config/libraries/Manga/dirs/11',
+      async (host: HTMLElement) => {
+        await removeDrawnDir(host)
+        return vi.mocked(config.removeRoot)
+      },
+      { roots: 1, rules: 1, proposals: 1, users: 0 },
+    ],
+    [
+      'a library’s last directory is removed, which removes the library',
+      '/config/libraries/Comics/dirs/20',
+      async (host: HTMLElement) => {
+        await removeDrawnDir(host)
+        return vi.mocked(config.removeRoot)
+      },
+      { roots: 1, rules: 1, proposals: 1, users: 1 },
+    ],
+    [
+      'a library is removed',
+      '/config/libraries/Comics',
+      async (host: HTMLElement) => {
+        await removeDrawnLibrary(host)
+        return vi.mocked(api.removeLibrary)
+      },
+      { roots: 1, rules: 1, proposals: 1, users: 1 },
+    ],
+    [
+      'a directory is moved',
+      '/config/libraries/Manga/dirs/11',
+      async (host: HTMLElement) => {
+        vi.mocked(api.moveCost).mockResolvedValue(movedAnswer({}, true))
+        vi.mocked(api.moveDir).mockResolvedValue(movedAnswer())
+        await moveDrawnDir(host, '2')
+        return vi.mocked(api.moveDir)
+      },
+      { roots: 1, rules: 0, proposals: 0, users: 0 },
+    ],
+    [
+      'a directory is moved out of a library it empties, which removes the library',
+      '/config/libraries/Comics/dirs/20',
+      async (host: HTMLElement) => {
+        const emptied = { library_id: 1, library: 'Manga' }
+        vi.mocked(api.moveCost).mockResolvedValue(
+          movedAnswer({ ...emptied, library_removed: 'Comics' }, true),
+        )
+        vi.mocked(api.moveDir).mockResolvedValue(
+          movedAnswer({ ...emptied, library_removed: 'Comics' }),
+        )
+        await moveDrawnDir(host, '1')
+        return vi.mocked(api.moveDir)
+      },
+      { roots: 1, rules: 0, proposals: 0, users: 1 },
+    ],
+  ] as const)(
+    'has a page drawing what it changed read it again, once %s',
+    async (_, to, write, reads) => {
+      mount(<Drawing />)
+      const host = await at(to)
+      vi.mocked(config.listRoots).mockClear()
+      vi.mocked(rulesApi.listRules).mockClear()
+      vi.mocked(curation.listProposals).mockClear()
+      vi.mocked(usersApi.listUsers).mockClear()
+      const sent = await write(host)
+      expect(sent).toHaveBeenCalledTimes(1)
+      await flush()
+      expect(readAgain()).toEqual(reads)
+    },
+  )
+})
+
+/**
+ * Each account's grants name the libraries it is granted, so a rename
+ * changes the users list Users draws. The rename marks that list stale, so
+ * Users arriving afterwards waits for it rather than drawing the old name.
+ */
+describe('Libraries, a rename and the users list Users draws', () => {
+  const ADMIN: Me = {
+    user_id: 1,
+    admin: true,
+    can_download: true,
+    can_stream: true,
+    can_stamp: false,
+  }
+
+  /** An account limited to the library whose name the list says now. */
+  const grantedTo = (name: string): usersApi.User => ({
+    id: 2,
+    name: 'sam',
+    role: 'user',
+    can_download: false,
+    can_stream: false,
+    can_stamp: false,
+    can_log_in: true,
+    sessions: [],
+    keys: [],
+    every_library: false,
+    libraries: [{ id: 1, name }],
+  })
+
+  beforeEach(() => {
+    let renamed = false
+    vi.mocked(api.listLibraries).mockImplementation(async () => ({
+      libraries: [library(1, renamed ? 'Manga 2' : 'Manga', ['/media/Manga'])],
+    }))
+    vi.mocked(api.renameLibrary).mockImplementation(async () => {
+      renamed = true
+      return { id: 1, name: 'Manga 2' }
+    })
+    vi.mocked(usersApi.listUsers).mockImplementation(async () => ({
+      users: [grantedTo(renamed ? 'Manga 2' : 'Manga')],
+    }))
+  })
+
+  /** Users drawn in a root of its own, as Configuration's other tab. */
+  async function usersDrawn() {
+    let host: HTMLElement | undefined
+    await act(async () => {
+      host = mount(
+        <MemoryRouter initialEntries={['/config/users']}>
+          <GateContext value={{ who: ADMIN, signOut: () => undefined }}>
+            <Routes>
+              <Route path="/config/users/*" element={<Users />} />
+            </Routes>
+          </GateContext>
+        </MemoryRouter>,
+      )
+      await Promise.resolve()
+    })
+    if (!host) throw new Error('nothing mounted')
+    return host
+  }
+
+  /** What the table's Libraries column says, row by row. */
+  const sees = (host: HTMLElement) =>
+    [...host.querySelectorAll('.user-table tbody td.wraps')].map(cellValue)
+
+  /** Users drawn, so the store keeps what it read; then left. */
+  async function usersLeft() {
+    const host = await usersDrawn()
+    await flush()
+    expect(sees(host)).toEqual(['Manga'])
+    rerender(<div />)
+  }
+
+  /**
+   * Back to Users with the users list's read held: what its Libraries
+   * column says on arrival, its wait line once the wait has held, the reads
+   * of the list sent, and what the column says once the read lands.
+   */
+  async function backToUsers() {
+    holdTheClock()
+    const read = deferred<{ users: usersApi.User[] }>()
+    const answer = await usersApi.listUsers()
+    vi.mocked(usersApi.listUsers).mockClear()
+    vi.mocked(usersApi.listUsers).mockReturnValueOnce(read.promise)
+    const host = await usersDrawn()
+    const onArrival = sees(host)
+    pass(WAIT_DRAWN_AFTER_MS)
+    const wait =
+      host.querySelector('.user-table > p[role="status"]')?.textContent ?? null
+    const reads = vi.mocked(usersApi.listUsers).mock.calls.length
+    await flush(() => read.resolve(answer))
+    return { onArrival, wait, reads, landed: sees(host) }
+  }
+
+  it('makes Users wait for the users list on a return after a library is renamed', async () => {
+    await usersLeft()
+    const host = await at(`${TABLE}/Manga`)
+    await press(button(host, 'Rename…'))
+    await typeInto(
+      host.querySelector(
+        'form.rename-library input[name="library-name"]',
+      ) as HTMLInputElement,
+      'Manga 2',
+    )
+    await submit(host.querySelector('form.rename-library') as Element)
+    await flush()
+    expect(api.renameLibrary).toHaveBeenCalledTimes(1)
+    expect(await backToUsers()).toEqual({
+      onArrival: [],
+      wait: 'Loading…',
+      reads: 1,
+      landed: ['Manga 2'],
+    })
+  })
+
+  it('draws Users at once on a return after a visit to a library’s page that renamed nothing', async () => {
+    await usersLeft()
+    await at(`${TABLE}/Manga`)
+    expect(api.renameLibrary).not.toHaveBeenCalled()
+    expect(await backToUsers()).toEqual({
+      onArrival: ['Manga'],
+      wait: null,
+      reads: 1,
+      landed: ['Manga'],
+    })
+  })
+})
+
+/**
+ * A Rules save derives the library again, which can fold works or make
+ * them, so it changes the works Libraries counts for each library. The save
+ * marks the list stale, so Libraries arriving afterwards waits for it.
+ */
+describe('Rules, a save and the libraries list Libraries draws', () => {
+  const IMPACT = {
+    series_before: 0,
+    series_after: 0,
+    series_merged: 0,
+    works_rehomed: 0,
+    works_orphaned: 0,
+    proposals_reopened: 0,
+    proposals_raised: 0,
+  }
+
+  beforeEach(() => {
+    vi.mocked(api.listLibraries).mockResolvedValue({ libraries: twoAndOne() })
+    vi.mocked(rulesApi.listRules).mockResolvedValue({
+      rules: [],
+      complaints: [],
+    })
+    vi.mocked(config.listRoots).mockResolvedValue({ roots: [] })
+    vi.mocked(curation.listProposals).mockResolvedValue({
+      proposals: [],
+      counts: {},
+    })
+    vi.mocked(rulesApi.previewRules).mockResolvedValue({
+      impact: IMPACT,
+      rows: [],
+      rows_truncated: false,
+      overrides: [],
+    })
+    vi.mocked(rulesApi.saveRules).mockResolvedValue({
+      impact: IMPACT,
+      rules: [],
+      reopened_proposals: [],
+      complaints: [],
+      derive: emptyDerive,
+    })
+  })
+
+  /** What the table's Works column says, row by row. */
+  const works = (host: HTMLElement) =>
+    [...host.querySelectorAll('.library-table tbody tr')].map((tr) =>
+      cellValue(tr.querySelectorAll('td')[2]),
+    )
+
+  /**
+   * The table drawn, so the store keeps the list; then Rules, where `write`
+   * is done; then the table again with the list's read held. What the
+   * table draws on arrival, its wait line once the wait has held, the reads
+   * of the list sent, and what it draws once the read lands.
+   */
+  async function tableAfter(write: (host: HTMLElement) => Promise<void>) {
+    const host = await at(TABLE)
+    expect(names(host)).toEqual(['Manga', 'Comics'])
+    await go('/config/rules')
+    expect(host.querySelector('.rule-editor .rule-count')).not.toBeNull()
+    await write(host)
+    holdTheClock()
+    const read = deferred<{ libraries: api.Library[] }>()
+    vi.mocked(api.listLibraries).mockClear()
+    vi.mocked(api.listLibraries).mockReturnValueOnce(read.promise)
+    await go(TABLE)
+    const onArrival = names(host)
+    pass(WAIT_DRAWN_AFTER_MS)
+    const wait =
+      host.querySelector('.library-table > p[role="status"]')?.textContent ??
+      null
+    const reads = vi.mocked(api.listLibraries).mock.calls.length
+    const [manga, comics] = twoAndOne()
+    await flush(() =>
+      read.resolve({ libraries: [{ ...manga, works: 5 }, comics] }),
+    )
+    return { onArrival, wait, reads, landed: works(host) }
+  }
+
+  it('makes Libraries wait for the list on a return after the rules are saved', async () => {
+    expect(
+      await tableAfter(async (host) => {
+        await press(host.querySelector('button.save') as Element)
+        await flush()
+        expect(rulesApi.saveRules).toHaveBeenCalledTimes(1)
+      }),
+    ).toEqual({
+      onArrival: [],
+      wait: 'Loading…',
+      reads: 1,
+      landed: ['5 works', '0 works'],
+    })
+  })
+
+  it('draws Libraries at once on a return after a visit to Rules that saved nothing', async () => {
+    expect(
+      await tableAfter(async () => {
+        expect(rulesApi.saveRules).not.toHaveBeenCalled()
+      }),
+    ).toEqual({
+      onArrival: ['Manga', 'Comics'],
+      wait: null,
+      reads: 1,
+      landed: ['5 works', '0 works'],
+    })
   })
 })

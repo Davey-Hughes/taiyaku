@@ -127,6 +127,8 @@ import {
 } from './curation'
 import { debounce } from './debounce'
 import { messageOf } from './message'
+import { ACCEPTED_PROPOSALS, RULES } from './pageReads'
+import { invalidate } from './reads'
 
 /**
  * The two `rules::RuleKind` values a rule written from a proposal can take.
@@ -260,6 +262,9 @@ export function AcceptForm({
     setFailure(undefined)
     acceptProposal(id, candidate)
       .then(() => {
+        // The accept wrote a rule and moved this proposal to accepted, so
+        // the rules and the accepted proposals Rules draws are out of date.
+        void invalidate(RULES, ACCEPTED_PROPOSALS)
         // **Deliberately not re-enabled here, and re-ordering the two lines
         // would not have been the fix.** `onAccepted` is `Proposals`'
         // `reload`, which returns as soon as it has bumped a counter — the

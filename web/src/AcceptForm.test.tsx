@@ -1,9 +1,16 @@
 import { act } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AcceptForm } from './AcceptForm'
+import * as config from './config'
 import * as curation from './curation'
+import { WAIT_DRAWN_AFTER_MS } from './hooks'
+import { ACCEPTED_PROPOSALS } from './pageReads'
+import { RuleEditor } from './RuleEditor'
+import * as rulesApi from './rules'
+import { deferred } from './testing/async'
 import { fields } from './testing/fields'
 import { mount, rerender } from './testing/mount'
+import { usePage } from './usePage'
 
 // `ProposalRow.test.tsx`'s `vi.mock` shape, for the reason its own comment
 // gives: `screen`/`userEvent` are not dependencies of this repository, so the
@@ -17,6 +24,17 @@ vi.mock('./curation', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./curation')>()),
   resolution: vi.fn(),
   acceptProposal: vi.fn(),
+  listProposals: vi.fn(),
+}))
+// Rules, which draws the rule an accept writes and the proposal it accepts.
+vi.mock('./rules', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./rules')>()),
+  listRules: vi.fn(),
+  previewRules: vi.fn(),
+}))
+vi.mock('./config', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./config')>()),
+  listRoots: vi.fn(),
 }))
 
 /**
@@ -993,5 +1011,124 @@ describe('AcceptForm', () => {
     const heading = host.querySelector('.accept-form > h2.lab')
     expect(heading?.textContent).toBe('The rule this writes')
     expect(heading?.getAttribute('aria-label')).toBe(heading?.textContent)
+  })
+})
+
+/**
+ * An accept writes a rule and moves its proposal to accepted, so Rules,
+ * which draws both, waits on arrival for both to be read again rather than
+ * draw what it kept from before the accept.
+ */
+describe('AcceptForm, and what Rules draws', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.clearAllMocks()
+    vi.mocked(curation.resolution).mockResolvedValue(clear())
+    vi.mocked(curation.acceptProposal).mockResolvedValue({ rule_id: 91 })
+    vi.mocked(curation.listProposals).mockResolvedValue({
+      proposals: [],
+      counts: {},
+    })
+    vi.mocked(rulesApi.listRules).mockResolvedValue({
+      rules: [],
+      complaints: [],
+    })
+    vi.mocked(config.listRoots).mockResolvedValue({ roots: [] })
+    vi.mocked(rulesApi.previewRules).mockResolvedValue({
+      impact: {
+        series_before: 0,
+        series_after: 0,
+        series_merged: 0,
+        works_rehomed: 0,
+        works_orphaned: 0,
+        proposals_reopened: 0,
+        proposals_raised: 0,
+      },
+      rows: [],
+      rows_truncated: false,
+      overrides: [],
+    })
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  /** Lets the reads a mount sent land, and what they start. */
+  const land = () =>
+    act(async () => {
+      for (let turn = 0; turn < 6; turn++) await Promise.resolve()
+    })
+
+  /** Rules drawn, then left, so the store keeps what it read. */
+  async function rulesLeft() {
+    const host = mount(<RuleEditor />)
+    await land()
+    expect(host.querySelector('.rule-count')).not.toBeNull()
+    rerender(<div />)
+  }
+
+  /**
+   * Rules drawn again with the rules read held: whether its body is drawn
+   * on arrival, its wait line once the wait has held, and the rules reads
+   * sent.
+   */
+  async function rulesAgain() {
+    const listed = deferred<{ rules: rulesApi.Rule[]; complaints: string[] }>()
+    vi.mocked(rulesApi.listRules).mockClear()
+    vi.mocked(rulesApi.listRules).mockReturnValue(listed.promise)
+    const host = mount(<RuleEditor />)
+    await land()
+    const onArrival = host.querySelector('.rule-count') !== null
+    await act(async () => {
+      vi.advanceTimersByTime(WAIT_DRAWN_AFTER_MS)
+    })
+    const wait =
+      host.querySelector('.rule-editor > p[role="status"]')?.textContent ?? null
+    return {
+      onArrival,
+      wait,
+      reads: vi.mocked(rulesApi.listRules).mock.calls.length,
+    }
+  }
+
+  it('makes Rules arriving after an accept wait for what it reads', async () => {
+    await rulesLeft()
+    const { host } = await ready()
+    await click(accept(host))
+    expect(curation.acceptProposal).toHaveBeenCalledTimes(1)
+    rerender(<div />)
+    expect(await rulesAgain()).toEqual({
+      onArrival: false,
+      wait: 'Loading…',
+      reads: 1,
+    })
+  })
+
+  it('draws Rules at once on arriving after the form was left with nothing accepted', async () => {
+    await rulesLeft()
+    await ready()
+    rerender(<div />)
+    expect(curation.acceptProposal).not.toHaveBeenCalled()
+    expect(await rulesAgain()).toEqual({
+      onArrival: true,
+      wait: null,
+      reads: 1,
+    })
+  })
+
+  it('reads the accepted proposals again at once where they are drawn, on an accept', async () => {
+    function Drawing() {
+      usePage([ACCEPTED_PROPOSALS])
+      return null
+    }
+    mount(<Drawing />)
+    await land()
+    const { host } = await ready()
+    vi.mocked(curation.listProposals).mockClear()
+    await click(accept(host))
+    await land()
+    expect(curation.listProposals).toHaveBeenCalledTimes(1)
+    expect(curation.listProposals).toHaveBeenCalledWith({ state: 'accepted' })
   })
 })

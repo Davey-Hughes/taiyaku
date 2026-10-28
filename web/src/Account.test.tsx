@@ -1,14 +1,25 @@
 import { act } from 'react'
+import { MemoryRouter, Route, Routes } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { forgetAbout } from './about'
+import { About } from './About'
 import { Account } from './Account'
+import type { Me } from './api'
+import { GateContext } from './gate'
 import { ABOUT } from './testing/about'
-import { deferred } from './testing/async'
+import { deferred, flush } from './testing/async'
 import { clipboardContext } from './testing/clipboard'
 import { fields } from './testing/fields'
 import { holdOf } from './testing/held'
 import { mount, rerender } from './testing/mount'
 import { expectRowsWired, helpOf, row, section } from './testing/settingsRows'
+import {
+  holdTheClock,
+  pass,
+  WAIT_DRAWN_AFTER_MS,
+  watchDrawn,
+} from './testing/wait'
+import { Users } from './Users'
+import { VersionLabel } from './VersionLabel'
 
 const noop = () => {}
 
@@ -325,9 +336,6 @@ const PASSWORD_CHANGED =
 describe('Account', () => {
   afterEach(() => {
     vi.restoreAllMocks()
-    // `about()` holds an answer for the page's life, and the servers here
-    // that answer every GET with a list would hand the next test that.
-    forgetAbout()
   })
 
   it('renders nothing when not visible, and asks for nothing', () => {
@@ -1712,6 +1720,67 @@ describe('Account', () => {
   })
 
   /**
+   * **A list whose first read fails is drawn as nothing, and the rest of the
+   * screen is drawn as ever** (spec 2026-10-27 §4.6 as corrected, and §5):
+   * a reader whose keys could not be read can still change a password and
+   * end a session. Nothing says the failure: the screen says none of its
+   * lists' failures (`Account.tsx`), and before a first good listing there
+   * is none to keep on screen in the list's place.
+   */
+  for (const placement of ['page', 'panel'] as const) {
+    for (const failed of ['keys', 'sessions'] as const) {
+      it(`draws the whole screen, with no row for the ${failed} and no alert, when the ${failed}’ first read fails, as a ${placement}`, async () => {
+        const keyRows = [
+          { id: 1, name: 'Panels', created: 'then', last_used: null },
+        ]
+        const sessionRows = [
+          {
+            id: 'aa',
+            created: 'then',
+            last_seen: 'today',
+            user_agent: 'Firefox',
+            ip: null,
+            current: true,
+          },
+        ]
+        const refused = () => new Response(null, { status: 500 })
+        vi.stubGlobal(
+          'fetch',
+          server({
+            '/api/keys': failed === 'keys' ? refused : () => json(keyRows),
+            '/api/sessions':
+              failed === 'sessions' ? refused : () => json(sessionRows),
+            '/api/about': () => json(ABOUT),
+          }),
+        )
+        const host = mountAs(placement)
+        await settle()
+        await flush()
+        const passwordForm = host.querySelector(PASSWORD_FORM)
+        expect(
+          [...(passwordForm?.querySelectorAll('input[type="password"]') ?? [])]
+            .length,
+        ).toBe(3)
+        expect(buttonSaying(host, 'Change password')).toBeDefined()
+        expect(host.querySelector(`${KEY_FORM} input[placeholder]`)).not.toBe(
+          null,
+        )
+        expect(buttonSaying(host, 'Create')).toBeDefined()
+        expect(buttonSaying(host, 'Sign out')).toBeDefined()
+        expect([
+          rowListed(host, 'Panels'),
+          [...host.querySelectorAll('li, .reader-section-head')].some(
+            (row) =>
+              (row.textContent ?? '').includes('Firefox') &&
+              row.querySelector('button')?.textContent === 'Revoke',
+          ),
+        ]).toEqual([failed !== 'keys', failed !== 'sessions'])
+        expect(host.querySelector('[role="alert"]')).toBeNull()
+      })
+    }
+  }
+
+  /**
    * Every field carries what was typed into the call, which the form-submitting
    * tests above cannot show: they submit empty forms, so a component that
    * dropped its inputs on the floor would pass all of them.
@@ -2339,7 +2408,7 @@ describe('Account', () => {
         expect(host.querySelector('[role="alert"]')).toBeNull()
       })
 
-      it(`draws the address’s row while /api/about is being read, with nothing in it but an unseen Copy address keeping its room, as a ${placement}`, async () => {
+      it(`draws no body, and so no address’s row, while /api/about is being read, as a ${placement}`, async () => {
         clipboardContext(true, { writeText: vi.fn() })
         const listing = server(lists)
         vi.stubGlobal(
@@ -2352,11 +2421,9 @@ describe('Account', () => {
         )
         const host = placed(placement)
         await settle()
-        const next = afterLine(host, placement)
-        expect(next?.className).toBe('catalog-address')
-        expect(next?.children).toHaveLength(1)
-        expect(roomKeeper(next, placement)).toBe(true)
-        expect(next?.nextElementSibling?.tagName).toBe('FORM')
+        await flush()
+        expect(host.querySelector('.catalog-address')).toBeNull()
+        expect(host.querySelector('form')).toBeNull()
       })
     }
   })
@@ -2370,7 +2437,6 @@ describe('Account', () => {
 describe('Account’s keys, answered late', () => {
   afterEach(() => {
     vi.unstubAllGlobals()
-    forgetAbout()
   })
 
   // The defect the close effect's comment names, reached through a create
@@ -2401,18 +2467,30 @@ describe('Account’s keys, answered late', () => {
     expect(host.querySelector('.secret')).toBeNull()
     expect(host.textContent).not.toContain('tyk_first')
     expect(keyRegion(host).textContent).toBe('')
+    // Create is free again: what waited on that listing ran as the panel
+    // opened, though the listing landed while nothing drew it.
+    const again = host.querySelector<HTMLInputElement>('input[placeholder]')
+    if (!again) throw new Error('no key name box')
+    type(again, 'tablet')
+    await submitted(host.querySelector(KEY_FORM))
+    expect(host.querySelector('.secret')?.textContent).toContain('tyk_second')
   })
 
   for (const placement of ['page', 'panel'] as const) {
     it(`draws a made key’s box with the key list alone, and frees Create, while the list of sessions has not answered, as a ${placement}`, async () => {
       const keys = madeInTurn()
+      // The screen's first read answers, so its body is drawn; every listing
+      // of the sessions after it is left unanswered.
+      let sessionReads = 0
       vi.stubGlobal(
         'fetch',
-        vi.fn((input: string, init?: RequestInit) =>
-          input === '/api/sessions'
-            ? new Promise<Response>(() => {})
-            : keys.fetch(input, init),
-        ),
+        vi.fn((input: string, init?: RequestInit) => {
+          if (input !== '/api/sessions') return keys.fetch(input, init)
+          sessionReads += 1
+          return sessionReads === 1
+            ? Promise.resolve(json([]))
+            : new Promise<Response>(() => {})
+        }),
       )
       const host = mountAs(placement)
       await settle()
@@ -2634,7 +2712,10 @@ describe('Account’s keys, answered late', () => {
     })
   }
 
-  it('keeps a failed revocation’s alert in a panel opened again, through the list change of a revocation pressed before the close', async () => {
+  // The lists a revocation pressed before the close made stale are read
+  // before a panel opened again draws its body, so what that revocation
+  // does alongside them has run before anything in the panel can fail.
+  it('waits, in a panel opened again, for the lists a revocation pressed before the close made stale, and keeps the alert of a revocation that fails after them', async () => {
     const revokes = failsSomeRevokes()
     vi.stubGlobal('fetch', revokes.fetch)
     const host = mount(<Account visible onClose={noop} onSignedOut={noop} />)
@@ -2644,6 +2725,12 @@ describe('Account’s keys, answered late', () => {
     await settle()
     rerender(<Account visible onClose={noop} onSignedOut={noop} />)
     await settle()
+    expect(rowListed(host, 'Panels')).toBe(false)
+    await revokes.land()
+    expect([rowListed(host, 'Panels'), rowListed(host, 'Chunky')]).toEqual([
+      true,
+      false,
+    ])
 
     await revoke(host, 'Panels')
     await revokes.land()
@@ -2695,10 +2782,37 @@ describe('Account’s keys, answered late', () => {
 
     it(`drops a listing of the keys that lands after a later one, so that a made key’s box keeps its row, as a ${placement}`, async () => {
       const keys = madeInTurn()
-      const mountListing = deferred<void>()
-      keys.holdKeyRead(1, mountListing.promise)
-      vi.stubGlobal('fetch', keys.fetch)
+      const returnListing = deferred<void>()
+      // The first visit's listing is the first; the return's, the second.
+      keys.holdKeyRead(2, returnListing.promise)
+      // `/api/about` answered, so the return has every answer kept and
+      // draws them at once rather than waiting on its reads.
+      vi.stubGlobal(
+        'fetch',
+        vi.fn((input: string, init?: RequestInit) =>
+          input === '/api/about'
+            ? Promise.resolve(json(ABOUT))
+            : keys.fetch(input, init),
+        ),
+      )
       const host = mountAs(placement)
+      await settle()
+      rerender(
+        placement === 'page' ? (
+          <div />
+        ) : (
+          <Account visible={false} onClose={noop} onSignedOut={noop} />
+        ),
+      )
+      await settle()
+      // The return draws the lists kept at once, and reads them again.
+      rerender(
+        placement === 'page' ? (
+          <Account placement="page" onSignedOut={noop} />
+        ) : (
+          <Account visible onClose={noop} onSignedOut={noop} />
+        ),
+      )
       await settle()
       const keyName = host.querySelector<HTMLInputElement>('input[placeholder]')
       if (!keyName) throw new Error('no key name box')
@@ -2709,9 +2823,9 @@ describe('Account’s keys, answered late', () => {
         rowListed(host, 'phone'),
       ]).toEqual([expect.stringContaining('tyk_first'), true])
 
-      // Asked as the screen was drawn, before phone was made.
+      // Asked as the screen was drawn again, before phone was made.
       await act(async () => {
-        mountListing.resolve()
+        returnListing.resolve()
         await new Promise((resolve) => {
           setTimeout(resolve, 0)
         })
@@ -2805,7 +2919,7 @@ describe('Account’s keys, answered late', () => {
       expect(drawn()).toEqual(once)
     })
 
-    it(`runs a made key's box with its own listing, not with an earlier one that lands first, so that the box comes with its row and goes when its key is revoked, as a ${placement}`, async () => {
+    it(`runs a made key's box with its own listing, not with an earlier one that lands first and is dropped, so that the box comes with its row and goes when its key is revoked, as a ${placement}`, async () => {
       const revokes = failsSomeRevokes()
       vi.stubGlobal('fetch', revokes.fetch)
       const host = mountAs(placement)
@@ -2822,9 +2936,9 @@ describe('Account’s keys, answered late', () => {
         host.querySelector('.secret')?.textContent,
       ]
       // Chunky's two listings, the keys' asked before Kobo was made, so
-      // without Kobo.
+      // without Kobo; dropped, since Kobo's were asked after them.
       await revokes.landFirst(2)
-      expect(drawn()).toEqual([false, false, undefined])
+      expect(drawn()).toEqual([true, false, undefined])
       await revokes.land()
       expect(drawn()).toEqual([
         false,
@@ -2837,7 +2951,7 @@ describe('Account’s keys, answered late', () => {
       expect(drawn()).toEqual([false, false, undefined])
     })
 
-    it(`runs a made key's box with its own listing, not with a later one that fails first, so that the box comes with its row and goes when its key is revoked, as a ${placement}`, async () => {
+    it(`draws a made key's box, with its secret, when a later listing of the keys fails first, and drops its own listing landing after it, as a ${placement}`, async () => {
       const revokes = failsSomeRevokes()
       vi.stubGlobal('fetch', revokes.fetch)
       const host = mountAs(placement)
@@ -2849,18 +2963,19 @@ describe('Account’s keys, answered late', () => {
       await submitted(host.querySelector(KEY_FORM))
       await revoke(host, 'Chunky')
       const drawn = () => [
+        rowListed(host, 'Chunky'),
         rowListed(host, 'Kobo'),
         host.querySelector('.secret')?.textContent,
       ]
-      // Chunky's listing of the keys, asked after Kobo's, fails first.
+      expect(drawn()).toEqual([true, false, undefined])
+      // Chunky's listing of the keys, asked after Kobo's, fails first: the
+      // newest read of the keys has failed, so the list kept is drawn and
+      // the box with it, its key unknown.
       await revokes.failLast(1)
-      expect(drawn()).toEqual([false, undefined])
+      const once = [true, false, expect.stringContaining('tyk_kobo')]
+      expect(drawn()).toEqual(once)
       await revokes.land()
-      expect(drawn()).toEqual([true, expect.stringContaining('tyk_kobo')])
-
-      await revoke(host, 'Kobo')
-      await revokes.land()
-      expect(drawn()).toEqual([false, undefined])
+      expect(drawn()).toEqual(once)
     })
 
     it(`drops a listing of the sessions that lands after a later one, so that an ended session is not listed again, as a ${placement}`, async () => {
@@ -2990,7 +3105,6 @@ function failsSomeRevokes() {
 describe('Account’s focus after a Revoke', () => {
   afterEach(() => {
     vi.unstubAllGlobals()
-    forgetAbout()
   })
 
   /** The Revoke in the row of a list that names `name`. */
@@ -3154,7 +3268,6 @@ describe('Account’s focus after a Revoke', () => {
 describe('Account’s refusals of Create and Change password', () => {
   afterEach(() => {
     vi.unstubAllGlobals()
-    forgetAbout()
   })
 
   /** Create and Change password are refused while `refusing` holds. */
@@ -3579,7 +3692,6 @@ describe('Account’s refusals of Create and Change password', () => {
 describe('Account’s Confirm password', () => {
   afterEach(() => {
     vi.unstubAllGlobals()
-    forgetAbout()
   })
 
   /** A server that answers a password change, and counts each one sent. */
@@ -3785,6 +3897,229 @@ describe('Account’s Confirm password', () => {
 })
 
 /**
+ * What the screen reads before it draws its body: the keys, the sessions
+ * and `/api/about`, as one set (spec 2026-10-27 §5). The body is drawn once
+ * all three are in, in one step, so a list still being read is never drawn
+ * as an empty one; the page draws Loading… in its place after 200 ms and
+ * the panel draws no wait line; a panel opened again draws the lists kept
+ * at once; and one `/api/about` is sent for the screen and the build label
+ * beside it, and for About and the label.
+ */
+describe('Account’s reads', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  const KEY_ROWS = [{ id: 1, name: 'Panels', created: 'then', last_used: null }]
+  const SESSION_ROWS = [
+    {
+      id: 'aa',
+      created: 'then',
+      last_seen: 'today',
+      user_agent: 'Firefox',
+      ip: null,
+      current: true,
+    },
+  ]
+
+  /**
+   * A server whose first listing of each list waits for the case to answer
+   * it, and whose later ones answer at once; `/api/about` answers at once.
+   */
+  function heldFirstListings() {
+    const keys = deferred<void>()
+    const sessions = deferred<void>()
+    const asked = { keys: 0, sessions: 0 }
+    const fetch = vi.fn((input: string) => {
+      if (input === '/api/keys') {
+        asked.keys += 1
+        const now = json(KEY_ROWS)
+        return asked.keys === 1 ? keys.promise.then(() => now) : now
+      }
+      if (input === '/api/sessions') {
+        asked.sessions += 1
+        const now = json(SESSION_ROWS)
+        return asked.sessions === 1 ? sessions.promise.then(() => now) : now
+      }
+      if (input === '/api/about') return Promise.resolve(json(ABOUT))
+      return Promise.resolve(new Response(null, { status: 404 }))
+    })
+    vi.stubGlobal('fetch', fetch)
+    return { keys, sessions, fetch }
+  }
+
+  /** The rows each list draws, by the name each row starts with. */
+  const lists = (host: HTMLElement) =>
+    JSON.stringify({
+      keys: rowListed(host, 'Panels'),
+      sessions: listsBrowser(host, 'Firefox'),
+      body: sectionTitles(host),
+    })
+
+  /** Whether Signed in lists a session from `browser`, with its Revoke. */
+  const listsBrowser = (host: HTMLElement, browser: string) =>
+    [...host.querySelectorAll('li, .reader-section-head')].some(
+      (row) =>
+        (row.textContent ?? '').includes(browser) &&
+        row.querySelector('button')?.textContent === 'Revoke',
+    )
+
+  /** The title of each section drawn, in either placement. */
+  const sectionTitles = (host: HTMLElement) =>
+    [
+      ...host.querySelectorAll(
+        '.settings-section-title, .reader-panel-heading',
+      ),
+    ].map((title) => title.textContent)
+
+  const NOTHING = JSON.stringify({ keys: false, sessions: false, body: [] })
+  const EVERYTHING = JSON.stringify({
+    keys: true,
+    sessions: true,
+    body: ['Password', 'API keys', 'Signed in'],
+  })
+
+  for (const placement of ['page', 'panel'] as const) {
+    for (const first of ['keys', 'sessions'] as const) {
+      it(`draws no body while either list is unread, the ${first} landing first, and both lists in one step once both land, as a ${placement}`, async () => {
+        const held = heldFirstListings()
+        const host = mountAs(placement)
+        await settle()
+        const drawn = watchDrawn(() => lists(host))
+        await flush(() => {
+          held[first].resolve()
+        })
+        expect(lists(host)).toBe(NOTHING)
+        await flush(() => {
+          held[first === 'keys' ? 'sessions' : 'keys'].resolve()
+        })
+        drawn.stop()
+        expect([...drawn.seen]).toEqual([NOTHING, EVERYTHING])
+      })
+    }
+  }
+
+  it('heads the page at once, and draws Loading… in its body’s place from 200 ms until its reads land', async () => {
+    holdTheClock()
+    const held = heldFirstListings()
+    const host = mountAs('page')
+    await settle()
+    const page = pageScreen(host)
+    const parts = () =>
+      [...page.children].map((part) =>
+        part.matches('[role="status"]') ? part.textContent : part.className,
+      )
+    expect(page.querySelector('.page-title')?.textContent).toBe('Account')
+    expect(parts()).toEqual(['page-header'])
+    pass(WAIT_DRAWN_AFTER_MS - 1)
+    expect(parts()).toEqual(['page-header'])
+    pass(1)
+    expect(parts()).toEqual(['page-header', 'Loading…'])
+    await flush(() => {
+      held.keys.resolve()
+      held.sessions.resolve()
+    })
+    expect(lists(host)).toBe(EVERYTHING)
+    expect(parts()).not.toContain('Loading…')
+  })
+
+  it('draws no Loading… in the panel, whose head is drawn at once', async () => {
+    holdTheClock()
+    heldFirstListings()
+    const host = mountAs('panel')
+    await settle()
+    const panel = host.querySelector('[role="dialog"]')
+    if (!panel) throw new Error('no panel drawn')
+    /** Each part of the panel's head, and each status in the panel, by its words. */
+    const drawn = () =>
+      JSON.stringify({
+        head: [...panel.querySelectorAll('.reader-panel-head > *')].map(
+          (part) => part.textContent,
+        ),
+        statuses: [...panel.querySelectorAll('[role="status"]')].map(
+          (status) => status.textContent,
+        ),
+      })
+    const headAlone = JSON.stringify({
+      head: ['Account', 'Close'],
+      statuses: [],
+    })
+    expect(drawn()).toBe(headAlone)
+    expect(lists(host)).toBe(NOTHING)
+    pass(WAIT_DRAWN_AFTER_MS)
+    expect(drawn()).toBe(headAlone)
+    expect(lists(host)).toBe(NOTHING)
+  })
+
+  it('draws its lists at once when the panel is opened again, and reads them again', async () => {
+    const held = heldFirstListings()
+    const host = mount(<Account visible onClose={noop} onSignedOut={noop} />)
+    await settle()
+    await flush(() => {
+      held.keys.resolve()
+      held.sessions.resolve()
+    })
+    rerender(<Account visible={false} onClose={noop} onSignedOut={noop} />)
+    await settle()
+    const asked = held.fetch.mock.calls.length
+    held.fetch.mockImplementation(() => new Promise<Response>(() => {}))
+
+    rerender(<Account visible onClose={noop} onSignedOut={noop} />)
+    expect(lists(host)).toBe(EVERYTHING)
+    await settle()
+    expect(
+      held.fetch.mock.calls.slice(asked).map(([address]) => address),
+    ).toEqual(['/api/keys', '/api/sessions', '/api/about'])
+  })
+
+  it('sends one /api/about between the page and the build label drawn beside it', async () => {
+    const fetchMock = server({
+      '/api/keys': () => json([]),
+      '/api/sessions': () => json([]),
+      '/api/about': () => json(ABOUT),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const host = mount(
+      <MemoryRouter>
+        <VersionLabel />
+        <Account placement="page" onSignedOut={noop} />
+      </MemoryRouter>,
+    )
+    await settle()
+    await flush()
+    expect(host.querySelector('.version-label a')?.textContent).toBe('5ee5159')
+    expect(afterOpdsLine(host)?.querySelector('code')?.textContent).toBe(
+      `${location.origin}${ABOUT.catalog}`,
+    )
+    expect(
+      fetchMock.mock.calls.filter(([address]) => address === '/api/about'),
+    ).toHaveLength(1)
+  })
+
+  it('sends one /api/about between About and the build label drawn beside it', async () => {
+    const fetchMock = server({ '/api/about': () => json(ABOUT) })
+    vi.stubGlobal('fetch', fetchMock)
+    const host = mount(
+      <MemoryRouter>
+        <VersionLabel />
+        <About />
+      </MemoryRouter>,
+    )
+    await settle()
+    await flush()
+    expect(host.querySelector('.version-label a')?.textContent).toBe('5ee5159')
+    expect(host.querySelector('.about-facts')).not.toBeNull()
+    expect(
+      fetchMock.mock.calls.filter(([address]) => address === '/api/about'),
+    ).toHaveLength(1)
+  })
+
+  /** The catalog's address, the page's first row under API keys. */
+  const afterOpdsLine = (host: HTMLElement) =>
+    host.querySelector('.account .catalog-address')
+})
+
+/**
  * **The page placement holds no colour and no `opacity`, and that is the half
  * of this screen a stylesheet cannot be asked about.** `/account`'s quiet text
  * was four inline `opacity` dims — 0.8, 0.85 and two at 0.6 — and the pair at
@@ -3821,5 +4156,192 @@ describe('Account.tsx carries no inline style', () => {
     const code = source.replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, ' ')
     expect(code.match(/style=\{/g) ?? []).toEqual([])
     expect(code.match(/\bopacity\b/g) ?? []).toEqual([])
+  })
+})
+
+/**
+ * An administrator's own row in the users list carries their keys and
+ * sessions, so each write here changes what Users draws. It marks that list
+ * stale, so Users arriving afterwards waits for it rather than drawing the
+ * keys and sessions from before the write.
+ */
+describe('Account, and the users list Users draws', () => {
+  const ADMIN: Me = {
+    user_id: 1,
+    admin: true,
+    can_download: true,
+    can_stream: true,
+    can_stamp: false,
+  }
+  const me = {
+    id: 1,
+    name: 'davey',
+    role: 'admin',
+    can_download: true,
+    can_stream: true,
+    can_stamp: false,
+    can_log_in: true,
+    sessions: [],
+    keys: [],
+    every_library: true,
+    libraries: [],
+  }
+  const session = (id: string, agent: string, current: boolean) => ({
+    id,
+    created: 'then',
+    last_seen: 'today',
+    user_agent: agent,
+    ip: null,
+    current,
+  })
+
+  /**
+   * A server that answers each write these cases make on `/account`, and
+   * the two lists Users reads; `holdUsers` keeps every later read of the
+   * users list until the case lets it answer.
+   */
+  function accountsServer() {
+    const routes: Record<string, () => Response> = {
+      'GET /api/keys': () =>
+        json([{ id: 7, name: 'phone', created: 'then', last_used: null }]),
+      'GET /api/sessions': () =>
+        json([session('aa', 'Firefox', true), session('bb', 'Safari', false)]),
+      'GET /api/about': () => json(ABOUT),
+      'POST /api/keys': () => json({ secret: 'tyk_the-only-copy' }),
+      'DELETE /api/keys/7': () => new Response(null, { status: 204 }),
+      'DELETE /api/sessions/bb': () => new Response(null, { status: 204 }),
+      'PUT /api/password': () => new Response(null, { status: 204 }),
+      'GET /api/library/users': () => json({ users: [me] }),
+      'GET /api/library/libraries': () => json({ libraries: [] }),
+    }
+    const held: (() => void)[] = []
+    let holding = false
+    const fetch = vi.fn((input: string, init?: RequestInit) => {
+      const asked = `${init?.method ?? 'GET'} ${input}`
+      const answer = routes[asked]
+      if (answer === undefined)
+        return Promise.resolve(new Response(null, { status: 404 }))
+      if (holding && asked === 'GET /api/library/users')
+        return new Promise<Response>((resolve) => {
+          held.push(() => resolve(answer()))
+        })
+      return Promise.resolve(answer())
+    })
+    return {
+      fetch,
+      holdUsers: () => {
+        holding = true
+      },
+      letUsersAnswer: () => {
+        for (const one of held.splice(0)) one()
+      },
+      usersReads: () =>
+        fetch.mock.calls.filter(([address]) => address === '/api/library/users')
+          .length,
+    }
+  }
+
+  /** Users drawn in a root of its own, as a Configuration tab. */
+  async function usersDrawn() {
+    const host = mount(
+      <MemoryRouter initialEntries={['/config/users']}>
+        <GateContext value={{ who: ADMIN, signOut: noop }}>
+          <Routes>
+            <Route path="/config/users/*" element={<Users />} />
+          </Routes>
+        </GateContext>
+      </MemoryRouter>,
+    )
+    await settle()
+    return host
+  }
+
+  /** Whether the table's rows are drawn. */
+  const tableDrawn = (host: HTMLElement) =>
+    host.querySelector('.user-table tbody tr') !== null
+
+  /**
+   * Users drawn and left, so the store keeps what it read; then `/account`,
+   * where `write` is done; then Users again with the users list's read held.
+   * What Users draws on arrival, its wait line once the wait has held, the
+   * reads of the list the return sent, and whether the table is drawn once
+   * the read lands.
+   */
+  async function usersAfter(write: (host: HTMLElement) => Promise<void>) {
+    const answers = accountsServer()
+    vi.stubGlobal('fetch', answers.fetch)
+    const before = await usersDrawn()
+    await flush()
+    expect(tableDrawn(before)).toBe(true)
+    rerender(<div />)
+    const account = mount(<Account placement="page" onSignedOut={noop} />)
+    await settle()
+    await flush()
+    expect(rowListed(account, 'phone')).toBe(true)
+    await write(account)
+    rerender(<div />)
+    holdTheClock()
+    answers.holdUsers()
+    const readsBefore = answers.usersReads()
+    const host = await usersDrawn()
+    const onArrival = tableDrawn(host)
+    pass(WAIT_DRAWN_AFTER_MS)
+    const wait =
+      host.querySelector('.user-table > p[role="status"]')?.textContent ?? null
+    const reads = answers.usersReads() - readsBefore
+    await flush(() => answers.letUsersAnswer())
+    return { onArrival, wait, reads, landed: tableDrawn(host) }
+  }
+
+  it.each([
+    [
+      'a key is made',
+      async (host: HTMLElement) => {
+        await submitted(host.querySelector(KEY_FORM))
+        expect(host.querySelector('.secret')?.textContent).toContain(
+          'tyk_the-only-copy',
+        )
+      },
+    ],
+    [
+      'a key is revoked',
+      async (host: HTMLElement) => {
+        await revoke(host, 'phone')
+        expect(alertIn(host)).toBeUndefined()
+      },
+    ],
+    [
+      'a session is revoked',
+      async (host: HTMLElement) => {
+        await revoke(host, 'Safari')
+        expect(alertIn(host)).toBeUndefined()
+      },
+    ],
+    [
+      'the password is changed',
+      async (host: HTMLElement) => {
+        await submitted(host.querySelector(PASSWORD_FORM))
+        expect(passwordRegion(host).textContent).toBe(PASSWORD_CHANGED)
+      },
+    ],
+  ] as const)(
+    'makes Users wait for the users list on a return after %s',
+    async (_, write) => {
+      expect(await usersAfter(write)).toEqual({
+        onArrival: false,
+        wait: 'Loading…',
+        reads: 1,
+        landed: true,
+      })
+    },
+  )
+
+  it('draws Users at once on a return after a visit to /account that wrote nothing', async () => {
+    expect(await usersAfter(async () => {})).toEqual({
+      onArrival: true,
+      wait: null,
+      reads: 1,
+      landed: true,
+    })
   })
 })

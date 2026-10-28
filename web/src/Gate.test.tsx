@@ -14,6 +14,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { getJson, type Me } from './api'
 import { Gate } from './Gate'
 import { useGate } from './gate'
+import { entryOf, read, readSet } from './reads'
 import { mount } from './testing/mount'
 
 const ADMIN: Me = {
@@ -227,6 +228,38 @@ describe('the sign-in gate', () => {
     })
     await settle()
     expect(guarded(host)).toBe('7/true')
+  })
+
+  /** Spec §3.9: what the store keeps was read for the account that read it. */
+  it('empties the read store on signing out', async () => {
+    server(ADMIN)
+    const host = await show()
+    const kept = read('/api/kept', () => Promise.resolve('an answer'))
+    await readSet([kept])
+    expect(entryOf(kept)?.answer).toBe('an answer')
+
+    await click(host, 'sign-out')
+    expect(form(host), 'the sign-in form').not.toBeNull()
+    expect(entryOf(kept)).toBeUndefined()
+  })
+
+  it('empties the read store on signing in', async () => {
+    server(ADMIN)
+    const host = await show()
+    await click(host, 'sign-out')
+    const kept = read('/api/kept', () => Promise.resolve('an answer'))
+    await readSet([kept])
+    expect(entryOf(kept)?.answer).toBe('an answer')
+
+    await act(async () => {
+      form(host)?.dispatchEvent(
+        new Event('submit', { bubbles: true, cancelable: true }),
+      )
+      await Promise.resolve()
+    })
+    await settle()
+    expect(guarded(host)).toBe('7/true')
+    expect(entryOf(kept)).toBeUndefined()
   })
 
   it('logs a failure that is not a 401, and still offers the sign-in screen', async () => {

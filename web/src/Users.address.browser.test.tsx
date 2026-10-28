@@ -1,7 +1,9 @@
+import { act } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 // **Required**, the same reason `Config.browser.test.tsx` gives.
 import './index.css'
 import * as librariesApi from './libraries'
+import { deferred } from './testing/async'
 import { click, linkIn, openedAt } from './testing/typedAddress'
 import * as usersApi from './users'
 
@@ -184,5 +186,31 @@ describe('an account’s address, through the app’s own router', () => {
     expect(host.querySelector('.new-account form')).not.toBeNull()
     expect(host.querySelector('.user-table')).toBeNull()
     expect(currentTab(host)).toBe('Users')
+  })
+})
+
+describe('an account’s page while its lists are read, through the app’s own router', () => {
+  it('heads the page with its address as typed, keeps focus on ‹ Users taken while the libraries list is read, and takes the account’s own name once it lands', async () => {
+    const libraries = deferred<{ libraries: librariesApi.Library[] }>()
+    vi.mocked(librariesApi.listLibraries).mockReturnValue(libraries.promise)
+    const host = await openedAt('/config/users/sam%20jones', who, 390)
+    const title = () =>
+      host.querySelector('.account-page .page-title')?.textContent
+    const back = () =>
+      linkIn(host.querySelector('.account-page .back') as Element, '‹ Users')
+    expect(title()).toBe('sam jones')
+    expect(host.querySelector('.account-page .settings-section')).toBeNull()
+    const waiting = back()
+    act(() => waiting.focus())
+    expect(document.activeElement).toBe(waiting)
+
+    await act(async () => {
+      libraries.resolve({ libraries: [] })
+      await new Promise((r) => setTimeout(r, 120))
+    })
+    expect(title()).toBe('Sam Jones')
+    expect(host.querySelector('.account-page .settings-section')).not.toBeNull()
+    expect(back()).toBe(waiting)
+    expect(document.activeElement).toBe(waiting)
   })
 })

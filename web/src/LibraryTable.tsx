@@ -14,9 +14,10 @@ import { lastScan } from './config'
 import { libraryPath, NEW_LIBRARY } from './configAddress'
 import type { Library } from './libraries'
 import { ROW_CELLS, useLineEnds } from './lineEnds'
-import { PageHeader, Section } from './settingsLayout'
+import { PageHeader, PageLoading, Section } from './settingsLayout'
 
 export interface LibraryTableProps {
+  /** `undefined` while the list has not been read, or could not be. */
   libraries: Library[] | undefined
   /**
    * What the screen says above the table: a list that could not be read, a
@@ -24,6 +25,8 @@ export interface LibraryTableProps {
    * asked from had gone.
    */
   notices?: ReactNode
+  /** The list's wait has held long enough to draw "Loading…" for it. */
+  loadingDrawn?: boolean
   /**
    * The person was sent here by an action whose button went with the page
    * it was on, so the heading takes focus.
@@ -46,6 +49,7 @@ function latestScanned(library: Library) {
 export function LibraryTable({
   libraries,
   notices,
+  loadingDrawn = false,
   arrived = false,
 }: LibraryTableProps) {
   const heading = useRef<HTMLHeadingElement>(null)
@@ -67,6 +71,7 @@ export function LibraryTable({
         }
       />
       {notices}
+      {libraries === undefined && <PageLoading drawn={loadingDrawn} />}
       {libraries !== undefined && (
         <Section>
           {libraries.length === 0 ? (

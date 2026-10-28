@@ -167,8 +167,9 @@ export default defineConfig({
         // above, for the same reason: a handful of lines binding `Labeller`
         // to the real ports and calling `createRoot`, nothing to assert.
         'src/label.tsx',
-        // The act-environment setup the `browser` and `jsdom` projects load,
-        // not application code.
+        // The setup the `browser` and `jsdom` projects load, which sets the
+        // act environment and empties the read store after each test: not
+        // application code.
         'src/browser-setup.ts',
         // The shared mount/rerender helper: test harness, the same category
         // `browser-setup.ts` is excluded for. Counting it would put test

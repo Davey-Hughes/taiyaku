@@ -3,7 +3,7 @@
 // out as `Shell` draws them, and `fieldNames.browser.test.tsx`, which reads
 // their headings.
 import { afterEach } from 'vitest'
-import { type About, forgetAbout } from '../about'
+import type { About } from '../about'
 import { ABOUT } from './about'
 
 /**
@@ -27,8 +27,9 @@ const realFetch = globalThis.fetch
  * `fetch` answering `/api/about` with `answer`, `ABOUT` where it is left
  * out, and anything else with a 404, so About draws from the real
  * `about.ts`. Undone after each test by this module's own hook, which puts
- * `fetch` back and drops the answer `about.ts` holds, so the next test asks
- * again; nothing else a test stubbed is touched.
+ * `fetch` back; nothing else a test stubbed is touched. The answer the read
+ * store keeps is dropped after each test by `browser-setup.ts`, so the next
+ * test asks again.
  */
 export function answerAbout(answer: About = ABOUT): void {
   globalThis.fetch = ((input: RequestInfo | URL) =>
@@ -44,5 +45,4 @@ export function answerAbout(answer: About = ABOUT): void {
 
 afterEach(() => {
   globalThis.fetch = realFetch
-  forgetAbout()
 })

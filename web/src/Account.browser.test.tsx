@@ -9,7 +9,6 @@ import {
   vi,
 } from 'vitest'
 import { cdp, page, userEvent } from 'vitest/browser'
-import { forgetAbout } from './about'
 import { Account } from './Account'
 import { RESULT_SHOWN_MS } from './copy'
 import './index.css'
@@ -881,9 +880,6 @@ const NEEDS_A_NAME = 'a key needs a name, so the right one can be revoked later'
 /** What the address's row says where `/api/about` did not answer with it. */
 const ADDRESS_UNREAD = 'The catalog’s address could not be read.'
 
-/** What Chromium's `fetch` throws when no answer comes: one line wherever. */
-const NO_ANSWER = 'Failed to fetch'
-
 /** A network failure's words: a refusal long enough to take several lines. */
 const RESET =
   'NetworkError when attempting to fetch resource: the connection to the server was reset before an answer came back.'
@@ -1039,28 +1035,24 @@ async function eachCalloutInItsSection(
  * keys: never over the New key box, which is edited to take it away, nor
  * Create. `opened` draws the screen once the server lists no key.
  *
- * The address's row is that row in each state it can be in, and in each
- * it gives at least the room of a line with Copy address in it: `about`
- * `'failed'` answers `/api/about` with a proxy's page, so that the row says
- * the address could not be read; `'reading'` holds the answer, so that the
- * row is still empty; and `clipboard` false takes the Clipboard API away,
- * so that a read address has no Copy address beside it. Where no Copy
- * address is drawn, an unseen one, drawn as the placement's buttons are,
- * keeps that room, and the row shows only its words. `oneLine` refuses
- * Create with a network failure's words, which take one line at every
- * width, where the server's sentence takes two at a phone's: an empty
- * row's room is one line.
+ * The address's row is that row in each state it can be in once the
+ * screen is drawn, which is not before `/api/about` has settled, and in
+ * each it gives at least the room of a line with Copy address in it:
+ * `about` `'failed'` answers `/api/about` with a proxy's page, so that the
+ * row says the address could not be read; and `clipboard` false takes the
+ * Clipboard API away, so that a read address has no Copy address beside
+ * it. Where no Copy address is drawn, an unseen one, drawn as the
+ * placement's buttons are, keeps that room, and the row shows only its
+ * words.
  */
 async function createRefusedAboveItsRow(
   opened: () => Promise<HTMLElement>,
   {
     about = 'answered',
     clipboard = true,
-    oneLine = false,
   }: {
-    about?: 'answered' | 'failed' | 'reading'
+    about?: 'answered' | 'failed'
     clipboard?: boolean
-    oneLine?: boolean
   } = {},
 ) {
   if (!clipboard) clipboardContext(false)
@@ -1070,18 +1062,13 @@ async function createRefusedAboveItsRow(
     vi.fn((input: string, init?: RequestInit) => {
       const asked = `${init?.method ?? 'GET'} ${input}`
       if (asked === 'POST /api/keys') {
-        return oneLine
-          ? Promise.reject(new TypeError(NO_ANSWER))
-          : Promise.resolve(new Response(NEEDS_A_NAME, { status: 400 }))
+        return Promise.resolve(new Response(NEEDS_A_NAME, { status: 400 }))
       }
       if (asked === 'GET /api/keys') return Promise.resolve(json([]))
       if (about === 'failed' && asked === 'GET /api/about') {
         return Promise.resolve(
           new Response('<html>Bad gateway</html>', { status: 502 }),
         )
-      }
-      if (about === 'reading' && asked === 'GET /api/about') {
-        return new Promise<Response>(() => {})
       }
       return rest(input, init)
     }),
@@ -1093,9 +1080,6 @@ async function createRefusedAboveItsRow(
   const addressRow = screen.querySelector<HTMLElement>('.catalog-address')
   if (about === 'failed') {
     expect(addressRow?.firstElementChild?.textContent).toBe(ADDRESS_UNREAD)
-  } else if (about === 'reading') {
-    // Drawn, and with nothing a person can read in it.
-    expect(addressRow?.innerText).toBe('')
   } else {
     expect(addressRow?.querySelector('code')?.textContent).toBe(
       `${location.origin}${ABOUT.catalog}`,
@@ -1108,7 +1092,6 @@ async function createRefusedAboveItsRow(
   const address = `${location.origin}${ABOUT.catalog}`
   const shown = {
     failed: ADDRESS_UNREAD,
-    reading: '',
     answered: clipboard ? `${address} Copy address` : address,
   }[about]
   expect(
@@ -1137,7 +1120,7 @@ async function createRefusedAboveItsRow(
   await keys('{Enter}')
   await landed()
   const refused = screen.querySelector<HTMLElement>('.callout > [role="alert"]')
-  expect(refused?.textContent).toBe(oneLine ? NO_ANSWER : NEEDS_A_NAME)
+  expect(refused?.textContent).toBe(NEEDS_A_NAME)
   await expectCallout(refused as Element, newKeyRow(screen), { above: true })
   expect([
     liesOver(refused as Element, box),
@@ -1515,7 +1498,6 @@ describe('the account panel', () => {
 
   afterEach(() => {
     vi.unstubAllGlobals()
-    forgetAbout()
     // Beside the global cleanup rather than at the end of the one case that
     // sets it: removed after the assertion, a failed assertion left `paper`
     // on the document for every case after it, and each of those resolves
@@ -1866,14 +1848,6 @@ describe('the account panel', () => {
       await createRefusedAboveItsRow(panel, { about: 'failed' })
     })
 
-    it(`lays a one-line refused Create over the empty row the catalog’s address is drawn in, while /api/about is still being read and no key is listed, over neither the New key box nor Create, at ${width}px`, async () => {
-      await page.viewport(width, height)
-      await createRefusedAboveItsRow(panel, {
-        about: 'reading',
-        oneLine: true,
-      })
-    })
-
     it(`lays a refused Create over the catalog’s address with no Copy address, where the clipboard cannot be written and no key is listed, over neither the New key box nor Create, at ${width}px`, async () => {
       await page.viewport(width, height)
       await createRefusedAboveItsRow(panel, { clipboard: false })
@@ -1973,7 +1947,6 @@ describe('the account page', () => {
 
   afterEach(() => {
     vi.unstubAllGlobals()
-    forgetAbout()
   })
 
   const pageUi = () => (
@@ -2252,14 +2225,6 @@ describe('the account page', () => {
     it(`lays a refused Create over the row saying the catalog’s address could not be read, where /api/about failed and no key is listed, over neither the New key box nor Create, at ${width}px`, async () => {
       await page.viewport(width, height)
       await createRefusedAboveItsRow(accountPage, { about: 'failed' })
-    })
-
-    it(`lays a one-line refused Create over the empty row the catalog’s address is drawn in, while /api/about is still being read and no key is listed, over neither the New key box nor Create, at ${width}px`, async () => {
-      await page.viewport(width, height)
-      await createRefusedAboveItsRow(accountPage, {
-        about: 'reading',
-        oneLine: true,
-      })
     })
 
     it(`lays a refused Create over the catalog’s address with no Copy address, where the clipboard cannot be written and no key is listed, over neither the New key box nor Create, at ${width}px`, async () => {

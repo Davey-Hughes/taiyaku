@@ -10,18 +10,16 @@ import {
   useRef,
   useState,
 } from 'react'
+import type { About } from './about'
 import {
   changePassword,
   createKey,
-  listKeys,
-  listSessions,
   logout,
   revokeKey,
   revokeSession,
   type ApiKey,
   type SessionRow,
 } from './api'
-import { about } from './about'
 import { CatalogAddress, CopyWords } from './CatalogAddress'
 import { Callout } from './Callout'
 import { useConfirmPassword } from './confirmPassword'
@@ -31,10 +29,13 @@ import { HeldButton } from './HeldButton'
 import { focusLeaves } from './focusLeaves'
 import { useDrawnWait } from './hooks'
 import { reasonOf, refusalOf } from './message'
+import { ABOUT, KEYS, SESSIONS, USERS } from './pageReads'
 import { DifferRoom, PasswordsDiffer } from './PasswordsDiffer'
+import { entryOf, invalidate, type Read, subscribe } from './reads'
 import { Refusal } from './Refusal'
 import { useFocusAfterRevoke } from './revokeFocus'
-import { PageHeader, Row, Section } from './settingsLayout'
+import { PageHeader, PageLoading, Row, Section } from './settingsLayout'
+import { usePage } from './usePage'
 
 /**
  * The account screen: change a password, hold API keys, see what is signed in.
@@ -185,53 +186,34 @@ interface ShownKey {
 }
 
 /**
- * One list's listings: how many have been asked for, the latest of them
- * drawn, and, for each listing that has not landed, what it does alongside
- * its list.
+ * What a write does alongside one of the lists once that list has been read
+ * since the write: handed the listing, or `undefined` where the read failed.
  */
-interface Listings<Row> {
-  asked: number
-  drawn: number
-  waiting: Map<number, (listed: Row[] | undefined) => void>
-}
+type Alongside<Row> = (listed: Row[] | undefined) => void
 
 /**
- * Lands listing `nth` of a list.
- *
- * A listing later than any drawn yet is drawn, and in the same render runs
- * what waits alongside it and alongside each earlier listing still out.
- * Each of those was asked for once its press's write had answered, so a
- * list read later answers that press as well: a made key's box comes with
- * the row it belongs to, and an alert a revocation takes away goes with
- * that row, so what is below moves once. What waits alongside a later
- * listing still out waits for it: this list was read before that press's
- * write. A listing that lands after a later one has been drawn is not
- * drawn: it was read first, so it would list again a key or a session the
- * later one no longer holds, or take a made key's row from under its box;
- * and what waited alongside it ran with the later one. A failed listing
- * draws nothing, and runs only what waits alongside it, with `undefined`;
- * what waits alongside an earlier listing still out waits for that one.
+ * Runs, and lets go of, everything in `waiting` once `list` has been read
+ * since the writes that queued it, which is once its entry is no longer
+ * stale. Each write marks the entry stale as it queues (`refresh`), and the
+ * store keeps only the newest read's outcome, so the listing handed over is
+ * from a read sent after the write, its own or a later one. One that lands
+ * after a later one is dropped, so it never lists again a key or a session
+ * the later one no longer holds, nor takes a made key's row from under its
+ * box.
  */
-function landListing<Row>(
-  list: Listings<Row>,
-  nth: number,
-  listed: Row[] | undefined,
-  draw: (listed: Row[]) => void,
-) {
-  if (listed !== undefined && nth > list.drawn) {
-    list.drawn = nth
-    draw(listed)
-    for (const [each, alongside] of list.waiting) {
-      if (each > nth) continue
-      list.waiting.delete(each)
-      alongside(listed)
-    }
-    return
-  }
-  const own = list.waiting.get(nth)
-  list.waiting.delete(nth)
-  own?.(listed)
+function landWaiting<Row>(list: Read<Row[]>, waiting: Alongside<Row>[]) {
+  if (waiting.length === 0) return
+  const entry = entryOf(list)
+  if (entry === undefined || entry.stale) return
+  const listed = entry.failure === undefined ? entry.answer : undefined
+  for (const alongside of waiting.splice(0)) alongside(listed)
 }
+
+/** A list no read has answered yet, drawn as empty. */
+const NONE: never[] = []
+
+/** What the screen draws from. */
+const SCREEN_READS = [KEYS, SESSIONS, ABOUT] as const
 
 export type AccountProps = {
   /** Called after signing out, so the gate can show the login screen. */
@@ -258,8 +240,29 @@ export function Account(props: AccountProps) {
   const look = LOOKS[props.placement ?? 'panel']
   const panelRef = useRef<HTMLDivElement>(null)
   usePanelFocus(panelRef, props.placement !== 'page' && visible)
-  const [keys, setKeys] = useState<ApiKey[]>([])
-  const [sessions, setSessions] = useState<SessionRow[]>([])
+  /**
+   * The body is drawn once all three have settled, so neither list is drawn
+   * empty while it is still being read. A list that fails is drawn as
+   * nothing, or as its last good listing, and says nothing of it; the
+   * catalog's address says its own failure in its row. A closed panel names
+   * no read, so nothing reads for it; what a write answered since does
+   * alongside a list waits for the read the panel sends as it opens. Opened
+   * again it draws what the store kept at once, as a return to a page does,
+   * unless a write has marked a read stale since, or a read kept holds only
+   * a failure.
+   */
+  const {
+    ready,
+    answers: [keysRead, sessionsRead, aboutRead],
+    loadingDrawn,
+  } = usePage<[ApiKey[], SessionRow[], About]>(visible ? SCREEN_READS : [])
+  const keys = keysRead ?? NONE
+  const sessions = sessionsRead ?? NONE
+  /**
+   * The OPDS catalog's path, or `null` where `/api/about` failed to answer
+   * with it: the body that draws it waits for that read to settle.
+   */
+  const catalog = aboutRead?.catalog ?? null
   const [keyName, setKeyName] = useState('')
   const [shown, setShown] = useState<ShownKey | null>(null)
   /** A write of the secret was refused, so it is drawn to copy by hand. */
@@ -301,11 +304,6 @@ export function Account(props: AccountProps) {
   const [busy, setBusy] = useState(false)
   const busyDrawn = useDrawnWait(busy)
   /**
-   * The OPDS catalog's path, once `/api/about` has answered with it, or
-   * `null` once it has failed to.
-   */
-  const [catalog, setCatalog] = useState<string | null | undefined>()
-  /**
    * How many times the panel has closed. The panel keeps its state while it
    * is hidden, and the close takes away what the screen drew, so an answer
    * that lands after a close draws nothing in a panel opened since: not a
@@ -327,14 +325,11 @@ export function Account(props: AccountProps) {
    * since is a later revocation's or sign-out's, and still true.
    */
   const failures = useRef(0)
-  /** Each list's listings, as `landListing` lands them. */
-  const listings = useRef<{
-    keys: Listings<ApiKey>
-    sessions: Listings<SessionRow>
-  }>({
-    keys: { asked: 0, drawn: 0, waiting: new Map() },
-    sessions: { asked: 0, drawn: 0, waiting: new Map() },
-  })
+  /** What each write does alongside each list, until `landWaiting` runs it. */
+  const waiting = useRef<{
+    keys: Alongside<ApiKey>[]
+    sessions: Alongside<SessionRow>[]
+  }>({ keys: [], sessions: [] })
   const keyNameRef = useRef<HTMLInputElement>(null)
   const signedInId = useId()
   // Focus that a Revoke's row would take with it, out of the panel's
@@ -346,75 +341,86 @@ export function Account(props: AccountProps) {
   )
 
   /**
-   * Re-read both lists, each drawn as it lands, and the keys with what
-   * `alongside.keys` sets, the sessions with what `alongside.sessions` sets,
-   * in one render: a key made or revoked changes its box and the key list
-   * together, and a password change says it worked with the sessions it
-   * signed out gone, so what is below them moves once (the user's rulings
-   * of 2026-10-25). Neither list waits for the other, since a create or a
-   * key's revocation never changes the sessions. Each list's promise is
-   * returned, for a create to hold Create until its box is drawn, and a
-   * change to hold Change password until its line is said.
+   * After a write that answered: marks both lists stale, to be read again
+   * now while the screen is drawn, or as it is drawn again, and runs what
+   * `alongside.keys` sets with the keys, and what `alongside.sessions` sets
+   * with the sessions, in the render that draws each list read since: a key
+   * made or revoked changes its box and the key list together, and a
+   * password change says it worked with the sessions it signed out gone, so
+   * what is below them moves once (the user's rulings of 2026-10-25).
    *
-   * One function for the effect *and* every action that changes them, rather
-   * than the effect carrying its own copy: two copies of "reload the panel" is
-   * how one of them comes to reload only half of it. A failure leaves the last
-   * good list on screen — a reader whose keys did not reload can still change a
-   * password, and an empty list would claim they have none. `alongside.keys`
-   * is handed the keys' listing, or `undefined` where it failed. Each
-   * `alongside` runs once, with the listing that draws its list first, which
-   * may be a later one (`landListing`), since what it does answers its own
-   * press: a create's box holds the only copy of its secret.
+   * Both lists after every write, whichever it changed: a write is a
+   * request of this session, which moves its last seen in Signed in. Each
+   * list is read again on its own, so neither waits for the other: what a
+   * key's write does alongside the keys never waits on the sessions. Each
+   * list's promise is returned, for a create to hold Create until its box is
+   * drawn, and a change to hold Change password until its line is said.
+   *
+   * A failure leaves the last good list on screen — a reader whose keys did
+   * not reload can still change a password, and an empty list would claim
+   * they have none. `alongside.keys` is handed the keys' listing, or
+   * `undefined` where it failed. Each `alongside` runs once, with the
+   * listing that draws its list first, which may be a later write's
+   * (`landWaiting`), since what it does answers its own press: a create's
+   * box holds the only copy of its secret.
    */
   const refresh = useCallback(
-    (
-      alongside: {
-        keys?: (listed: ApiKey[] | undefined) => void
-        sessions?: () => void
-      } = {},
-    ) => {
-      /** Asks for a listing of `list`, and lands it as it answers. */
-      const ask = <Row,>(
-        list: Listings<Row>,
-        read: () => Promise<Row[]>,
-        draw: (listed: Row[]) => void,
-        also: ((listed: Row[] | undefined) => void) | undefined,
-      ) => {
-        list.asked += 1
-        const nth = list.asked
-        if (also !== undefined) list.waiting.set(nth, also)
-        return read()
-          .catch(() => undefined)
-          .then((listed) => {
-            landListing(list, nth, listed, draw)
+    (alongside: { keys?: Alongside<ApiKey>; sessions?: () => void } = {}) => {
+      void invalidate(SESSIONS)
+      void invalidate(KEYS)
+      // An administrator's own row in the users list carries their keys and
+      // sessions: their account's page draws both, and Users the last seen
+      // of the sessions.
+      void invalidate(USERS)
+      const queued = <Row,>(
+        list: Alongside<Row>[],
+        also: Alongside<Row> | undefined,
+      ) =>
+        new Promise<void>((resolve) => {
+          list.push((listed) => {
+            also?.(listed)
+            resolve()
           })
+        })
+      return {
+        keys: queued(waiting.current.keys, alongside.keys),
+        sessions: queued(waiting.current.sessions, alongside.sessions),
       }
-      const { keys: keyList, sessions: sessionList } = listings.current
-      const sessions = ask(
-        sessionList,
-        listSessions,
-        setSessions,
-        alongside.sessions,
-      )
-      const keys = ask(keyList, listKeys, setKeys, alongside.keys)
-      return { keys, sessions }
     },
     [],
   )
 
+  /** Runs what waits on each list that has been read since its write. */
+  const landEachWaiting = useCallback(() => {
+    landWaiting(KEYS, waiting.current.keys)
+    landWaiting(SESSIONS, waiting.current.sessions)
+  }, [])
+
+  // Told of each list's every change alongside the page itself, so what a
+  // write does with a list is set in the same batch the store's answer is
+  // drawn in. Only while the screen is drawn: a list read while the panel is
+  // closed is handed over as it opens again, when what a create or a change
+  // does finds the panel closed since its press (`openSincePress`) and draws
+  // nothing, and what a revocation does finds nothing the close left.
   useEffect(() => {
-    if (visible) {
-      void refresh()
-      return
+    if (!visible) return
+    landEachWaiting()
+    const offs = [KEYS, SESSIONS].map((list) =>
+      subscribe(list.address, landEachWaiting),
+    )
+    return () => {
+      for (const off of offs) off()
     }
+  }, [visible, landEachWaiting])
+
+  useEffect(() => {
+    if (visible) return
     // **Closing is not unmounting.** `App` renders this element
     // unconditionally, so `return null` below hides it while React keeps every
     // hook's state — and `shown` held the one-time API key secret, which
-    // was redisplayed to anyone who reopened the panel for the rest of the
-    // page's life. The doc comment above claimed it "goes when the panel
-    // closes" and the copy beside it says the key "cannot be shown again";
-    // both were false. The typed passwords survived a failed attempt the same
-    // way. Found by the whole-branch review, 2026-08-18.
+    // would be redisplayed to anyone who reopened the panel for the rest of
+    // the page's life. The typed passwords would survive a failed attempt the
+    // same way.
     closes.current += 1
     setShown(null)
     setCurrent('')
@@ -425,7 +431,7 @@ export function Account(props: AccountProps) {
     setKeyRefusal(null)
     setPasswordRefusal(null)
     setFailure(null)
-  }, [visible, refresh, setConfirm])
+  }, [visible, setConfirm])
 
   // The box drawn in place of the one a refused write was pressed on takes
   // its focus, with the secret selected, so that it is copied by hand where
@@ -436,24 +442,6 @@ export function Account(props: AccountProps) {
     const secret = secretRef.current
     if (secret !== null) window.getSelection()?.selectAllChildren(secret)
   }, [copyRefused])
-
-  useEffect(() => {
-    if (!visible) return
-    let cancelled = false
-    // A failure is said in the address's row rather than in an alert: the
-    // address helps beside the OPDS line, and this screen's alerts are for
-    // what the reader did.
-    about()
-      .then((answer) => {
-        if (!cancelled) setCatalog(answer.catalog)
-      })
-      .catch(() => {
-        if (!cancelled) setCatalog(null)
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [visible])
 
   if (!visible) return null
 
@@ -471,8 +459,8 @@ export function Account(props: AccountProps) {
     const stillOpen = openSincePress()
     // The box is drawn with the first listing drawn after the create, its
     // own or a later one, so the box and the made key's row come together,
-    // and Create is held until its own has landed. Not after a close: the
-    // close took this screen's secret away.
+    // and Create is held until then. Not after a close: the close took this
+    // screen's secret away.
     createKey(sent)
       .then(
         (secret) =>
@@ -518,10 +506,10 @@ export function Account(props: AccountProps) {
     const stillOpen = openSincePress()
     // The line is said with the listing of the sessions that follows the
     // change, where the sessions it signed out are gone, and Change
-    // password is held until then. The lists are read after a close too,
-    // since a reopen's listing may have been read before the change signed
-    // those sessions out; but the close emptied this form, and what is
-    // typed since is not this change's to empty.
+    // password is held until then. The lists are marked to be read again
+    // after a close too, since a reopen's listing may have been read before
+    // the change signed those sessions out; but the close emptied this form,
+    // and what is typed since is not this change's to empty.
     changePassword(current, next)
       .then(() => {
         if (stillOpen()) {
@@ -846,113 +834,119 @@ export function Account(props: AccountProps) {
         <PageHeader level={1} title="Account" />
         {failureAlert}
 
-        <Section level={2} title="Password">
-          <form
-            onSubmit={change}
-            onBlur={leavingPasswordForm}
-            className="settings-group"
-          >
-            {/* O175: each `aria-label` is its row label's words as
+        {!ready ? (
+          <PageLoading drawn={loadingDrawn} />
+        ) : (
+          <>
+            <Section level={2} title="Password">
+              <form
+                onSubmit={change}
+                onBlur={leavingPasswordForm}
+                className="settings-group"
+              >
+                {/* O175: each `aria-label` is its row label's words as
                 written, so the name keeps their case whatever case a
                 stylesheet draws the label in. */}
-            <Row label="Current password">
-              {(ids) => (
-                <input
-                  id={ids.control}
-                  aria-label="Current password"
-                  {...currentBox}
-                />
-              )}
-            </Row>
-            <Row label="New password">
-              {(ids) => (
-                <input
-                  id={ids.control}
-                  aria-label="New password"
-                  {...nextBox}
-                />
-              )}
-            </Row>
-            <Row label="Confirm password">
-              {(ids) => (
-                <input
-                  id={ids.control}
-                  aria-label="Confirm password"
-                  {...confirmBox}
-                />
-              )}
-            </Row>
-            {differLine}
-            {passwordRefusalCallout}
-            {/* At the box's foot, after the last field, where a form's
+                <Row label="Current password">
+                  {(ids) => (
+                    <input
+                      id={ids.control}
+                      aria-label="Current password"
+                      {...currentBox}
+                    />
+                  )}
+                </Row>
+                <Row label="New password">
+                  {(ids) => (
+                    <input
+                      id={ids.control}
+                      aria-label="New password"
+                      {...nextBox}
+                    />
+                  )}
+                </Row>
+                <Row label="Confirm password">
+                  {(ids) => (
+                    <input
+                      id={ids.control}
+                      aria-label="Confirm password"
+                      {...confirmBox}
+                    />
+                  )}
+                </Row>
+                {differLine}
+                {passwordRefusalCallout}
+                {/* At the box's foot, after the last field, where a form's
                 submit is looked for; the row the line lies over, kept as
                 tall as it needs (`DifferRoom`). */}
-            <div className="settings-actions keeps-differ-room">
-              <DifferRoom />
-              {changeButton}
-            </div>
-          </form>
-          {passwordRegion}
-        </Section>
+                <div className="settings-actions keeps-differ-room">
+                  <DifferRoom />
+                  {changeButton}
+                </div>
+              </form>
+              {passwordRegion}
+            </Section>
 
-        <Section level={2} title="API keys" description={KEYS_ARE_FOR}>
-          {address}
-          <form
-            onSubmit={create}
-            onBlur={leavingKeyForm}
-            className="settings-group key-form"
-          >
-            <Row label="New key">
-              {(ids) => (
-                <>
-                  <input
-                    id={ids.control}
-                    aria-label="New key"
-                    {...keyNameBox}
-                  />
-                  {createButton}
-                </>
+            <Section level={2} title="API keys" description={KEYS_ARE_FOR}>
+              {address}
+              <form
+                onSubmit={create}
+                onBlur={leavingKeyForm}
+                className="settings-group key-form"
+              >
+                <Row label="New key">
+                  {(ids) => (
+                    <>
+                      <input
+                        id={ids.control}
+                        aria-label="New key"
+                        {...keyNameBox}
+                      />
+                      {createButton}
+                    </>
+                  )}
+                </Row>
+                {keyRefusalCallout}
+                {keyRegions}
+              </form>
+              {secretBox}
+              {keys.length === 0 ? null : (
+                <ul className="settings-group">
+                  {keys.map((key) => (
+                    <li key={key.id}>
+                      <Row label={key.name} help={keyUse(key)}>
+                        {revokeKeyButton(key)}
+                      </Row>
+                    </li>
+                  ))}
+                </ul>
               )}
-            </Row>
-            {keyRefusalCallout}
-            {keyRegions}
-          </form>
-          {secretBox}
-          {keys.length === 0 ? null : (
-            <ul className="settings-group">
-              {keys.map((key) => (
-                <li key={key.id}>
-                  <Row label={key.name} help={keyUse(key)}>
-                    {revokeKeyButton(key)}
-                  </Row>
-                </li>
-              ))}
-            </ul>
-          )}
-        </Section>
+            </Section>
 
-        <Section level={2} title="Signed in" titleId={signedInId}>
-          {sessions.length === 0 ? null : (
-            <ul className="settings-group">
-              {sessions.map((session) => (
-                <li key={session.id}>
-                  <Row
-                    label={
-                      <>
-                        {browserOf(session)}
-                        {thisOne(session)}
-                      </>
-                    }
-                    help={lastSeen(session)}
-                  >
-                    {revokeSessionButton(session)}
-                  </Row>
-                </li>
-              ))}
-            </ul>
-          )}
-          <div className="settings-actions">{signOutButton}</div>
-        </Section>
+            <Section level={2} title="Signed in" titleId={signedInId}>
+              {sessions.length === 0 ? null : (
+                <ul className="settings-group">
+                  {sessions.map((session) => (
+                    <li key={session.id}>
+                      <Row
+                        label={
+                          <>
+                            {browserOf(session)}
+                            {thisOne(session)}
+                          </>
+                        }
+                        help={lastSeen(session)}
+                      >
+                        {revokeSessionButton(session)}
+                      </Row>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <div className="settings-actions">{signOutButton}</div>
+            </Section>
+          </>
+        )}
       </section>
     )
   }
@@ -981,86 +975,94 @@ export function Account(props: AccountProps) {
 
         {failureAlert}
 
-        <section className={look.section}>
-          <h3 className={look.heading}>Password</h3>
-          <form onSubmit={change} onBlur={leavingPasswordForm}>
-            {/* No class on the labels: a reader panel puts the word above
+        {ready && (
+          <>
+            <section className={look.section}>
+              <h3 className={look.heading}>Password</h3>
+              <form onSubmit={change} onBlur={leavingPasswordForm}>
+                {/* No class on the labels: a reader panel puts the word above
                 the box as plain text, one short word each, where the page
                 says Current password, New password and Confirm password.
                 O175: each box carries its label's words as its `aria-label`
                 all the same, as the page's do. */}
-            <label>
-              Current
-              <input
-                className={look.field}
-                aria-label="Current"
-                {...currentBox}
-              />
-            </label>
-            <label>
-              New
-              <input className={look.field} aria-label="New" {...nextBox} />
-            </label>
-            <label>
-              Confirm
-              <input
-                className={look.field}
-                aria-label="Confirm"
-                {...confirmBox}
-              />
-            </label>
-            {differLine}
-            {passwordRefusalCallout}
-            {/* The row the line lies over, kept as tall as it needs
+                <label>
+                  Current
+                  <input
+                    className={look.field}
+                    aria-label="Current"
+                    {...currentBox}
+                  />
+                </label>
+                <label>
+                  New
+                  <input className={look.field} aria-label="New" {...nextBox} />
+                </label>
+                <label>
+                  Confirm
+                  <input
+                    className={look.field}
+                    aria-label="Confirm"
+                    {...confirmBox}
+                  />
+                </label>
+                {differLine}
+                {passwordRefusalCallout}
+                {/* The row the line lies over, kept as tall as it needs
                 (`DifferRoom`). */}
-            <div className="keeps-differ-room">
-              <DifferRoom />
-              {changeButton}
-            </div>
-          </form>
-          {passwordRegion}
-        </section>
+                <div className="keeps-differ-room">
+                  <DifferRoom />
+                  {changeButton}
+                </div>
+              </form>
+              {passwordRegion}
+            </section>
 
-        <section className={look.section}>
-          <h3 className={look.heading}>API keys</h3>
-          <p className={look.meta}>{KEYS_ARE_FOR}</p>
-          {address}
-          <form onSubmit={create} onBlur={leavingKeyForm} className={look.row}>
-            <input className={look.field} {...keyNameBox} />
-            {createButton}
-            {keyRegions}
-          </form>
-          {/* After the form, which lays its parts out in a row, so that the
+            <section className={look.section}>
+              <h3 className={look.heading}>API keys</h3>
+              <p className={look.meta}>{KEYS_ARE_FOR}</p>
+              {address}
+              <form
+                onSubmit={create}
+                onBlur={leavingKeyForm}
+                className={look.row}
+              >
+                <input className={look.field} {...keyNameBox} />
+                {createButton}
+                {keyRegions}
+              </form>
+              {/* After the form, which lays its parts out in a row, so that the
               callout lies under the whole row. */}
-          {keyRefusalCallout}
-          {secretBox}
-          {keys.map((key) => (
-            <div key={key.id} className={look.row}>
-              <span>
-                {key.name}
-                <span className={look.meta}> — {keyUse(key)}</span>
-              </span>
-              {revokeKeyButton(key)}
-            </div>
-          ))}
-        </section>
+              {keyRefusalCallout}
+              {secretBox}
+              {keys.map((key) => (
+                <div key={key.id} className={look.row}>
+                  <span>
+                    {key.name}
+                    <span className={look.meta}> — {keyUse(key)}</span>
+                  </span>
+                  {revokeKeyButton(key)}
+                </div>
+              ))}
+            </section>
 
-        <section className={look.section}>
-          <h3 className={look.heading} id={signedInId} tabIndex={-1}>
-            Signed in
-          </h3>
-          {sessions.map((session) => (
-            <div key={session.id} className={look.row}>
-              <span>
-                {browserOf(session)}
-                <span className={look.meta}> — {lastSeen(session)}</span>
-                {thisOne(session)}
-              </span>
-              {revokeSessionButton(session)}
-            </div>
-          ))}
-          {signOutButton}
-        </section>
+            <section className={look.section}>
+              <h3 className={look.heading} id={signedInId} tabIndex={-1}>
+                Signed in
+              </h3>
+              {sessions.map((session) => (
+                <div key={session.id} className={look.row}>
+                  <span>
+                    {browserOf(session)}
+                    <span className={look.meta}> — {lastSeen(session)}</span>
+                    {thisOne(session)}
+                  </span>
+                  {revokeSessionButton(session)}
+                </div>
+              ))}
+              {signOutButton}
+            </section>
+          </>
+        )}
       </div>
     </div>
   )

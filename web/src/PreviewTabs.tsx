@@ -221,11 +221,11 @@ export function PreviewTabs({
         {/*
         **The empty state is suppressed while a preview is in flight**, because
         the two are reachable together and contradict each other when they are.
-        On the screen's very first load `busy` is true and `preview` is still
-        `undefined`, and "No preview yet. Pick a rule, or edit one" under
-        "Previewing…" would tell someone to start a thing that has already
-        started. Once a preview has landed the empty state is gone for good,
-        so this only ever suppresses the first one.
+        `RuleEditor` holds `busy` from its first render until its first preview
+        answers, with `preview` still `undefined`, and "No preview yet. Pick a
+        rule, or edit one" under "Previewing…" would tell someone to start a
+        thing that has already started. So the empty state is drawn only where
+        no preview stands and none is out: after a preview has failed.
       */}
         {preview === undefined ? (
           busy ? null : (

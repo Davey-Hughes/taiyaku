@@ -115,11 +115,13 @@ export const WAIT_DRAWN_AFTER_MS = 200
  */
 export function useDrawnWait(waiting: boolean): boolean {
   const [long, setLong] = useState(false)
+  // Reset while rendering, not in an effect: React renders the caller again
+  // before its children, so the render that ends a drawn wait is the only
+  // one its children see. From an effect, a page whose body replaces its
+  // "Loading…" would draw that body twice (`usePage`).
+  if (!waiting && long) setLong(false)
   useEffect(() => {
-    if (!waiting) {
-      setLong(false)
-      return
-    }
+    if (!waiting) return
     const timer = setTimeout(() => setLong(true), WAIT_DRAWN_AFTER_MS)
     return () => clearTimeout(timer)
   }, [waiting])

@@ -43,6 +43,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { Unauthenticated, me, whenSignedOut, type Me } from './api'
 import { GateContext } from './gate'
 import { Login } from './Login'
+import { emptyReads } from './reads'
 
 export interface GateProps {
   children: ReactNode
@@ -66,7 +67,11 @@ export function Gate({ children }: GateProps) {
     const id = asked.current
     me()
       .then((account) => {
-        if (asked.current === id) setWho(account)
+        if (asked.current !== id) return
+        // The read store outlives the unmount below the gate, and what it
+        // keeps was read for the account that read it.
+        emptyReads()
+        setWho(account)
       })
       .catch((why: unknown) => {
         if (asked.current !== id) return
@@ -78,7 +83,10 @@ export function Gate({ children }: GateProps) {
       })
   }, [])
 
+  // The one sign-out path, a 401's included: emptied here, so an answer still
+  // in flight for the account signing out is dropped when it lands.
   const signOut = useCallback(() => {
+    emptyReads()
     setWho(null)
   }, [])
 

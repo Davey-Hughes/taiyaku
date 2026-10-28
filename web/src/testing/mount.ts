@@ -2,27 +2,36 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach } from 'vitest'
 
-// One root and one host per test, torn down after each. Extracted from
-// `PageView.browser.test.tsx`, which had this inline, so the `jsdom` and
-// `browser` projects mount identically. Deliberately not
+// A root and a host per mount, every one torn down after each test.
+// Extracted from `PageView.browser.test.tsx`, which had this inline, so the
+// `jsdom` and `browser` projects mount identically. Deliberately not
 // `@testing-library/react`: this repository's rule is that a dev-only
 // dependency needs a stated reason, and a second mounting API earns nothing
 // over the lines already working here.
+//
+// Every mount, not only the last: a test that mounts twice would otherwise
+// leave the first drawn after it ends, still subscribed to the read store
+// (`reads.ts`), whose emptying after the test (`browser-setup.ts`) would then
+// draw it again outside `act`.
+let mounted: { root: Root; host: HTMLElement }[] = []
+/** The newest mount's root, which `rerender` draws onto. */
 let root: Root | undefined
-let host: HTMLElement | undefined
 
 afterEach(() => {
-  act(() => root?.unmount())
-  host?.remove()
+  act(() => {
+    for (const one of mounted) one.root.unmount()
+  })
+  for (const one of mounted) one.host.remove()
+  mounted = []
   root = undefined
-  host = undefined
 })
 
 /** Mount a component and hand back its host element. */
 export function mount(ui: React.ReactNode): HTMLElement {
-  host = document.createElement('div')
+  const host = document.createElement('div')
   document.body.append(host)
   root = createRoot(host)
+  mounted.push({ root, host })
   act(() => root?.render(ui))
   return host
 }

@@ -8,9 +8,11 @@ import * as curation from './curation'
 import { GateContext } from './gate'
 import * as library from './library'
 import { Library } from './Library'
+import { LIBRARY_STATUS } from './pageReads'
+import { invalidate } from './reads'
 import { Series } from './Series'
 import { Shell } from './Shell'
-import { useInboxRefresh, useLibraryStatus, useStatusRefresh } from './shell'
+import { useInboxRefresh, useLibraryStatus } from './shell'
 import { ABOUT } from './testing/about'
 import { deferred, flush } from './testing/async'
 import { mount } from './testing/mount'
@@ -126,18 +128,23 @@ function recountProbe() {
 }
 
 /**
- * A child that asks the chrome to read the status again, on demand.
+ * A child that invalidates the status, on demand.
  *
  * Declared inside a function for `reporter()`'s reason. This stands in for
- * `Libraries.tsx`, which calls the same hook from its `reload`;
+ * `Libraries.tsx`, which invalidates it after every write;
  * `Libraries.shell.browser.test.tsx` owns the half where a made or removed
- * library makes the call.
+ * library does.
  */
 function rereadProbe() {
   function Probe() {
-    const reread = useStatusRefresh()
     return (
-      <button type="button" data-testid="reread" onClick={reread}>
+      <button
+        type="button"
+        data-testid="reread"
+        onClick={() => {
+          void invalidate(LIBRARY_STATUS)
+        }}
+      >
         reread
       </button>
     )
@@ -161,7 +168,7 @@ const ONE_SERIES: library.SeriesCard = {
 const sidebarLibraries = (host: HTMLElement) =>
   [...host.querySelectorAll('.sidebar-libraries a')].map((a) => a.textContent)
 
-/** Presses `rereadProbe()`'s button and lets the read it asks for land. */
+/** Presses `rereadProbe()`'s button and lets the read it sets off land. */
 async function reread(host: HTMLElement) {
   const button = host.querySelector<HTMLElement>('[data-testid="reread"]')
   if (!button) throw new Error('no reread control rendered')
@@ -543,12 +550,12 @@ describe('Shell', () => {
   })
 
   /**
-   * `fetchStatus().catch` reads `message.ts`'s `messageOf`, and every other
-   * test in this file that reaches the `catch` rejects with a real `Error` —
-   * so its `String(err)` half runs here and nowhere else on this screen. A
-   * `fetch` rejection is not always an `Error`: a request `AbortController`
-   * cancels, or a mock in another test, can reject with anything at all, and
-   * this is what the reader sees when it does.
+   * The shell says the status's failure through `message.ts`'s `messageOf`,
+   * and every other test in this file that fails the read rejects with a
+   * real `Error`, so its `String(err)` half runs here and nowhere else on
+   * this screen. A `fetch` rejection is not always an `Error`: a request
+   * `AbortController` cancels, or a mock in another test, can reject with
+   * anything at all, and this is what the reader sees when it does.
    */
   it('stringifies a rejection that is not an Error, rather than losing it', async () => {
     vi.mocked(library.status).mockRejectedValue('offline')
@@ -566,7 +573,7 @@ describe('Shell', () => {
    * The second answer differs from the first, so "it asked again" and "it
    * drew the first answer twice" are told apart.
    */
-  it('re-reads the status when a screen under it says a write moved the libraries', async () => {
+  it('re-reads the status when a write under it invalidates it', async () => {
     vi.mocked(library.status)
       .mockResolvedValueOnce({
         libraries: [{ id: 1, name: 'Manga', scanned: true }],

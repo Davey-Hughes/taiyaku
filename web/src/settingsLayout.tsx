@@ -122,6 +122,16 @@ export function PageHeader({
 }
 
 /**
+ * The body's place while a page waits; draws nothing until `drawn`, which a
+ * page takes from `usePage`'s `loadingDrawn` (Licence, which reads nothing,
+ * from its own `useDrawnWait`), so a wait answered within
+ * `WAIT_DRAWN_AFTER_MS` draws no line at all.
+ */
+export function PageLoading({ drawn }: { drawn: boolean }) {
+  return drawn ? <p role="status">Loading…</p> : null
+}
+
+/**
  * A component of its own so that only a page with a way up reads the
  * router's location: a page without one is drawn outside a router too.
  */

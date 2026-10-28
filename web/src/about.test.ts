@@ -1,5 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { about, forgetAbout, shortCommit } from './about'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { about, shortCommit } from './about'
 import { Unauthenticated, whenSignedOut } from './api'
 import { ABOUT as ANSWER } from './testing/about'
 
@@ -9,35 +9,29 @@ const json = (body: unknown) =>
     headers: { 'content-type': 'application/json' },
   })
 
-beforeEach(() => {
-  forgetAbout()
-})
-
 afterEach(() => {
   vi.unstubAllGlobals()
   whenSignedOut(() => undefined)
 })
 
 describe('about', () => {
-  it('asks the route once, and answers a later call without a request', async () => {
-    const fetchMock = vi.fn().mockImplementation(() => json(ANSWER))
+  // The read store shares a request and keeps the answer (`ABOUT` in
+  // `pageReads.ts`); an answer held here would come back to its re-reads.
+  it('sends a request to the route for every call, and holds no answer', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockImplementationOnce(() => json(ANSWER))
+      .mockImplementation(() => json({ ...ANSWER, commit: null }))
     vi.stubGlobal('fetch', fetchMock)
     expect(await about()).toEqual(ANSWER)
-    expect(await about()).toEqual(ANSWER)
-    expect(fetchMock).toHaveBeenCalledTimes(1)
-    expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/about')
+    expect(await about()).toEqual({ ...ANSWER, commit: null })
+    expect(fetchMock.mock.calls.map(([address]) => address)).toEqual([
+      '/api/about',
+      '/api/about',
+    ])
   })
 
-  it('sends one request for two callers asking before it answers', async () => {
-    const fetchMock = vi.fn().mockImplementation(() => json(ANSWER))
-    vi.stubGlobal('fetch', fetchMock)
-    const [first, second] = await Promise.all([about(), about()])
-    expect(first).toEqual(ANSWER)
-    expect(second).toEqual(ANSWER)
-    expect(fetchMock).toHaveBeenCalledTimes(1)
-  })
-
-  it('asks again after a failure, and answers with the second request', async () => {
+  it('fails in the route’s words, and answers the next call', async () => {
     const fetchMock = vi
       .fn()
       .mockImplementationOnce(() => new Response('down', { status: 503 }))

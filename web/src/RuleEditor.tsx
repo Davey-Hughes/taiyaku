@@ -45,8 +45,8 @@
  * order.** Several commits can be in flight — a blur that starts a preview,
  * then a click on another rule before it lands — and without this an earlier
  * response arriving later would write a stale impact under a Save button that
- * states a number from it. `Libraries.tsx` and `searchHits.ts` carry the same
- * counter for the same reason.
+ * states a number from it. `searchHits.ts` carries the same counter for the
+ * same reason.
  *
  * **A successful save re-previews the list it just saved, and Save stays
  * held until that lands.** `save` does not
@@ -139,27 +139,29 @@
  * of the guards rather than of this file.** It used to be: selecting a rule
  * mid-save left the follow-up preview's `rows` scoped to the rule that *was*
  * open while the form showed the new one. Nothing can change `selected`
- * during a save now — `RuleList` is frozen and `PreviewTabs`' two options
- * have been held on `busy || frozen` since O95 — so a `selectedRef` would
- * hide the invariant rather than state it. A new surface that sets `selected`
+ * during a save now — `RuleList` is frozen, `PreviewTabs`' two options
+ * have been held on `busy || frozen` since O95, and a stored list is not
+ * taken while a write is out — so a `selectedRef` would hide the invariant
+ * rather than state it. A new surface that sets `selected`
  * without a guard reopens the defect without touching `save`.
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ChangeEvent } from 'react'
-import { listRoots, type Root } from './config'
-import { listProposals, type Proposal } from './curation'
+import type { Root } from './config'
+import type { Inbox } from './curation'
 import { HeldButton } from './HeldButton'
 import { useDrawnWait } from './hooks'
+import { ACCEPTED_PROPOSALS, LIBRARIES, ROOTS, RULES } from './pageReads'
 import { PreviewTabs } from './PreviewTabs'
+import { invalidate } from './reads'
 import { RuleForm } from './RuleForm'
 import { RuleList } from './RuleList'
 import { DeriveSection } from './ScanReport'
-import { PageHeader, Section } from './settingsLayout'
+import { PageHeader, PageLoading, Section } from './settingsLayout'
 import {
   blankRule,
   type Impact,
   importRules,
-  listRules,
   moved,
   type Preview,
   previewRules,
@@ -170,6 +172,7 @@ import {
   toDocument,
 } from './rules'
 import { reasonOf } from './message'
+import { usePage } from './usePage'
 import { WaitWords } from './WaitWords'
 
 /**
@@ -180,9 +183,16 @@ import { WaitWords } from './WaitWords'
 const impactChanged = (a: Impact, b: Impact) =>
   (Object.keys(a) as (keyof Impact)[]).some((k) => a[k] !== b[k])
 
-/** Only accepted proposals carry a `created_rule_id` — the badge's whole input. */
-const acceptedProposals = () =>
-  listProposals({ state: 'accepted' }).then((inbox) => inbox.proposals)
+/**
+ * Whether two rule lists hold the same rules in the same order, compared as
+ * `RuleForm` compares a draft with its rule: field by field and by value, so
+ * a rule edited back to what it was is the same rule.
+ */
+const sameRules = (a: readonly Rule[], b: readonly Rule[]) =>
+  a.length === b.length && a.every((rule, i) => sameRule(rule, b[i]))
+
+const sameRule = (a: Rule, b: Rule) =>
+  (Object.keys(a) as (keyof Rule)[]).every((k) => a[k] === b[k])
 
 /**
  * Which write is in flight, if any. Both writers on this screen — Save and
@@ -199,20 +209,79 @@ const acceptedProposals = () =>
 type Writer = 'save' | 'import' | undefined
 
 export function RuleEditor() {
-  const [rules, setRules] = useState<Rule[]>([])
-  const [roots, setRoots] = useState<Root[]>([])
-  const [proposals, setProposals] = useState<Proposal[]>([])
+  const { ready, answers, failures, loadingDrawn } = usePage<
+    [{ rules: Rule[] }, { roots: Root[] }, Inbox]
+  >([RULES, ROOTS, ACCEPTED_PROPOSALS])
+  const [stored, rootsRead, acceptedRead] = answers
+  /**
+   * The stored rules, once the body may be drawn: all three reads in. A read
+   * that failed with nothing kept leaves no body, only its failure.
+   */
+  const listed =
+    ready && rootsRead !== undefined && acceptedRead !== undefined
+      ? stored?.rules
+      : undefined
+  const roots = rootsRead?.roots ?? []
+  /** Only accepted proposals carry a `created_rule_id` — the badge's whole input. */
+  const proposals = acceptedRead?.proposals ?? []
+  /**
+   * Why the body cannot be drawn: the failure of a read that failed with
+   * nothing kept, the first in read order if more than one did. A read that
+   * failed beside a kept answer is not what holds the body back. A re-read
+   * that fails with the body drawn says nothing: what is drawn stays, and
+   * the next write reads again.
+   */
+  const unread =
+    listed === undefined
+      ? failures.find((why, i) => why !== undefined && answers[i] === undefined)
+      : undefined
   const [selected, setSelected] = useState<number | undefined>()
+  /** The working copy: what the editor draws, previews and saves. */
+  const [rules, setRules] = useState<Rule[]>(listed ?? [])
+  /**
+   * The list the server last answered with, as the editor took it: the
+   * store's, or a write's answer. **The working copy is edited while it is
+   * not the same as this** (`sameRules`): a gesture that changed nothing,
+   * or one undone, leaves nothing edited.
+   */
+  const [base, setBase] = useState(listed)
+  const edited = base !== undefined && !sameRules(rules, base)
+  /**
+   * The stored list the working copy last took or found the same, or that
+   * a write's answer superseded: a stored list other than this is taken,
+   * or found the same, once nothing is edited and no write is out.
+   */
+  const [seen, setSeen] = useState(listed)
+  /** `listed` as last drawn, for a write's answer to supersede. */
+  const listedNow = useRef(listed)
+  listedNow.current = listed
+  /**
+   * The stored list the working copy was last taken from, with the rule
+   * then open: each is previewed once it is drawn.
+   */
+  const [taken, setTaken] = useState<
+    { rules: Rule[]; open: number | undefined } | undefined
+  >(listed === undefined ? undefined : { rules: listed, open: undefined })
+  /**
+   * Part of the form's key: counts the times the open rule changed other
+   * than through the form's own commit, so the form draws the rule it shows
+   * rather than a draft seeded from the one before, which a blur would
+   * write back.
+   */
+  const [formMade, setFormMade] = useState(0)
   const [preview, setPreview] = useState<Preview | undefined>()
-  const [busy, setBusy] = useState(false)
+  /**
+   * A preview is out. True from the first render: the first preview is sent
+   * once the body is drawn, and until it answers the pane draws no "No
+   * preview yet", and "Previewing…" once the wait has held.
+   */
+  const [busy, setBusy] = useState(true)
   const [failure, setFailure] = useState<string | undefined>()
   /**
-   * Which proposals the last import reopened, if any. Separate from
-   * `failure` for the reason `Libraries.tsx`'s `createFailure` is separate from its
-   * `failure`, and read that file's own doc comment on the pair: `sendImport`
-   * fires a follow-up `runPreview` right after landing, and that preview's
-   * success path unconditionally clears `failure` — so a notice stored there
-   * was wiped by the very call that had just populated it, almost always
+   * Which proposals the last import reopened, if any. A slot of its own,
+   * not `failure`: `sendImport` previews the imported list once it lands
+   * (`commit`), and a preview that succeeds clears `failure`, so a notice
+   * stored there would be wiped by the call that follows it, almost always
    * before a person could read it. Naming which proposals reopened is the
    * whole reason the import route reports them at all; it needs a slot
    * `runPreview` does not touch. Cleared only by the next import.
@@ -271,6 +340,29 @@ export function RuleEditor() {
   const saving = writing === 'save'
   /** Any write at all — what every frozen surface reads. */
   const frozen = writing !== undefined
+  // Taken while rendering, so the render that first draws the body draws
+  // the stored rules rather than an empty list. A later stored list that
+  // differs replaces the working copy only while nothing is edited, since
+  // an edit is the person's and Save is how it reaches the store, and only
+  // while no write is out, whose answer replaces the list itself. One that
+  // came while either held is taken once neither does, unless a write's
+  // answer marked it seen (the spec's §9, known limit 5).
+  if (listed !== undefined && listed !== seen && !edited && !frozen) {
+    setSeen(listed)
+    if (base === undefined || !sameRules(listed, rules)) {
+      const open =
+        selected !== undefined && selected < listed.length
+          ? selected
+          : undefined
+      if (open !== undefined && !sameRule(rules[open], listed[open])) {
+        setFormMade((made) => made + 1)
+      }
+      setRules(listed)
+      setBase(listed)
+      setSelected(open)
+      setTaken({ rules: listed, open })
+    }
+  }
   /**
    * Save is held: a write is out, a preview is out (see this file's own top
    * comment), or no preview stands to compare the save against. `save`
@@ -342,18 +434,8 @@ export function RuleEditor() {
   }, [])
 
   useEffect(() => {
-    Promise.all([listRules(), listRoots(), acceptedProposals()])
-      .then(([listed, rootList, accepted]) => {
-        setRules(listed.rules)
-        setRoots(rootList.roots)
-        setProposals(accepted)
-        setFailure(undefined)
-        runPreview(listed.rules, undefined)
-      })
-      .catch((err: unknown) =>
-        setFailure(`The rules were not loaded: ${reasonOf(err)}`),
-      )
-  }, [runPreview])
+    if (taken !== undefined) runPreview(taken.rules, taken.open)
+  }, [taken, runPreview])
 
   /** Every editor gesture lands here: set the rules, then preview once. */
   const commit = (next: Rule[], open: number | undefined) => {
@@ -436,6 +518,11 @@ export function RuleEditor() {
                   : rule,
               )
         setRules(next)
+        setBase(answer.rules)
+        // A stored list read before this answer is taken to be older than
+        // it, though another writer between can make it newer (the spec's
+        // §9, known limit 5).
+        setSeen(listedNow.current)
         if (pending !== undefined)
           setHeldNotice(
             `Your edit to rule ${pending.index + 1} arrived while the save was running, so ` +
@@ -454,9 +541,10 @@ export function RuleEditor() {
         runPreview(next, selected)
         // The list just changed under every accepted proposal's
         // `created_rule_id`, so the badges are re-read rather than assumed.
-        acceptedProposals()
-          .then(setProposals)
-          .catch(() => {})
+        void invalidate(RULES, ACCEPTED_PROPOSALS)
+        // The save derived the library again, which can fold works or make
+        // them, so the works Libraries counts for each library are re-read.
+        void invalidate(LIBRARIES)
       })
       .catch((err: unknown) => {
         writer.current = undefined
@@ -509,9 +597,9 @@ export function RuleEditor() {
    * to cover.
    */
   const beginImport = (file: { text: () => Promise<string> }) => {
-    // Cleared up front, the same as `Libraries.tsx`'s `createFailure` — so a stale
-    // notice from a previous import cannot outlive this one, whichever way
-    // it resolves.
+    // Cleared up front, so a notice from a previous import cannot outlive
+    // this one, whichever way it resolves: a refused import sets no notice
+    // of its own.
     setImportNotice(undefined)
     // O96, and **the second of two guards**, for the reason the drag has two:
     // the Import button is held while a write is in flight, but a file
@@ -594,6 +682,11 @@ export function RuleEditor() {
         // last save, preview once), so it goes through the same funnel
         // rather than repeating it.
         commit(answer.rules, undefined)
+        setBase(answer.rules)
+        setSeen(listedNow.current)
+        // The import replaced every rule and reopened the accepted proposals
+        // whose rules it replaced.
+        void invalidate(RULES, ACCEPTED_PROPOSALS)
         // I3: `POST .../rules/import` writes the rule table and derives
         // nothing — the CLI's own `library rules --import` prints exactly
         // this warning for the identical route (`library.rs`). This screen
@@ -650,6 +743,9 @@ export function RuleEditor() {
   return (
     <section className="rule-editor">
       <PageHeader title="Rules" />
+      {unread !== undefined && (
+        <p role="alert">{`The rules were not loaded: ${reasonOf(unread)}`}</p>
+      )}
       {failure !== undefined && <p role="alert">{failure}</p>}
       {saveMismatch !== undefined && (
         <p role="alert" className="save-mismatch">
@@ -667,256 +763,266 @@ export function RuleEditor() {
           {refused}
         </p>
       )}
+      {listed === undefined && <PageLoading drawn={loadingDrawn} />}
 
-      <div className="editor-panes">
-        <Section>
-          <RuleList
-            rules={rules}
-            selected={selected}
-            proposals={proposals}
-            overrideCount={preview?.overrides.length ?? 0}
-            frozen={frozen}
-            onSelect={(index) => {
-              // M1: the design runs a preview on selecting a *different*
-              // rule — `rows` is scoped to `selected`, and changing which is
-              // open is what repopulates it. Re-clicking the one already open
-              // changes nothing a preview could answer differently, so
-              // committing anyway paid another ~281 ms derivation under the
-              // write lock and cleared the "Saved:" line for no reason.
-              if (index !== selected) commit(rules, index)
-            }}
-            onToggle={(index) =>
-              commit(
-                rules.map((rule, i) =>
-                  i === index ? { ...rule, enabled: !rule.enabled } : rule,
-                ),
-                selected,
-              )
-            }
-            onReorder={(from, to) => {
-              const next = renumber(moved(rules, from, to))
-              // The selected rule travels with the drag rather than staying at
-              // an index that now holds a different rule.
-              const open =
-                selected === undefined
-                  ? undefined
-                  : selected === from
-                    ? to
-                    : selected
-              commit(next, open)
-            }}
-            onAdd={() => {
-              const next = renumber([...rules, blankRule(rules.length + 1)])
-              commit(next, next.length - 1)
-            }}
-            onDelete={(index) => {
-              const next = renumber(rules.filter((_, i) => i !== index))
-              commit(
-                next,
-                selected === undefined || selected === index
-                  ? undefined
-                  : selected > index
-                    ? selected - 1
-                    : selected,
-              )
-            }}
-          />
-        </Section>
-
-        <Section>
-          {selected !== undefined && rules[selected] !== undefined ? (
-            <RuleForm
-              // Local draft state lives in the form; a new key is what makes
-              // selecting a different rule redraw rather than keep the last
-              // one's half-typed text.
-              key={`${selected}:${rules[selected].id}`}
-              rule={rules[selected]}
-              roots={roots}
-              onCommit={(edited) => {
-                // O96: `RuleForm` is deliberately not frozen — disabling a
-                // focused input makes the browser fire `blur`, and this form
-                // commits on blur, so the mechanical guard would itself
-                // commit the half-typed edit into the very window the item is
-                // about. So the field stays live and the *commit* waits.
-                if (writer.current === 'save') {
-                  held.current = { index: selected, rule: edited }
-                  return
-                }
-                if (writer.current === 'import') {
-                  // **Discarded, not held**, and forced rather than chosen.
-                  //
-                  // The last clause of the notice is deliberately
-                  // outcome-neutral. An earlier version promised that the
-                  // import's rules would replace the list — true when it
-                  // lands, and a promise this screen breaks when it does not.
-                  // A refused document is the ordinary failure here, so the
-                  // sentence has to hold for both endings. (**That the edit
-                  // is discarded even when the import fails is a real
-                  // asymmetry with O96's failed *save*, which keeps it** —
-                  // the reasoning below only holds for an import that
-                  // succeeded. It is left as it is rather than fixed here:
-                  // holding across an import is a behaviour change, not a
-                  // wording one.)
-                  // Holding works for a save because `answer.rules` is
-                  // positionally aligned to the list that was sent. An
-                  // import's answer is aligned to nothing — it replaces every
-                  // rule and mints fresh ids — so this index does not name the
-                  // rule being edited and applying the edit there would
-                  // overwrite an unrelated rule with it.
-                  setRefused(
-                    `An import was running, so your edit to rule ${selected + 1} was not ` +
-                      'applied — an import replaces every rule, so there is no row left to ' +
-                      'apply it to. Make the edit again once the import has finished.',
+      {listed !== undefined && (
+        <>
+          <div className="editor-panes">
+            <Section>
+              <RuleList
+                rules={rules}
+                selected={selected}
+                proposals={proposals}
+                overrideCount={preview?.overrides.length ?? 0}
+                frozen={frozen}
+                onSelect={(index) => {
+                  // M1: the design runs a preview on selecting a *different*
+                  // rule — `rows` is scoped to `selected`, and changing which is
+                  // open is what repopulates it. Re-clicking the one already open
+                  // changes nothing a preview could answer differently, so
+                  // committing anyway paid another ~281 ms derivation under the
+                  // write lock and cleared the "Saved:" line for no reason.
+                  if (index !== selected) commit(rules, index)
+                }}
+                onToggle={(index) => {
+                  if (index === selected) setFormMade((made) => made + 1)
+                  commit(
+                    rules.map((rule, i) =>
+                      i === index ? { ...rule, enabled: !rule.enabled } : rule,
+                    ),
+                    selected,
                   )
-                  return
-                }
-                commit(
-                  rules.map((rule, i) => (i === selected ? edited : rule)),
-                  selected,
-                )
+                }}
+                onReorder={(from, to) => {
+                  const next = renumber(moved(rules, from, to))
+                  // The selected rule travels with the drag rather than staying at
+                  // an index that now holds a different rule.
+                  const open =
+                    selected === undefined
+                      ? undefined
+                      : selected === from
+                        ? to
+                        : selected
+                  commit(next, open)
+                }}
+                onAdd={() => {
+                  const next = renumber([...rules, blankRule(rules.length + 1)])
+                  commit(next, next.length - 1)
+                }}
+                onDelete={(index) => {
+                  const next = renumber(rules.filter((_, i) => i !== index))
+                  commit(
+                    next,
+                    selected === undefined || selected === index
+                      ? undefined
+                      : selected > index
+                        ? selected - 1
+                        : selected,
+                  )
+                }}
+              />
+            </Section>
+
+            <Section>
+              {selected !== undefined && rules[selected] !== undefined ? (
+                <RuleForm
+                  // Local draft state lives in the form; a new key is what makes
+                  // selecting a different rule redraw rather than keep the last
+                  // one's half-typed text, and what makes the open rule changed
+                  // from elsewhere (`formMade`) redraw rather than keep a draft
+                  // of what it was.
+                  key={`${formMade}:${selected}:${rules[selected].id}`}
+                  rule={rules[selected]}
+                  roots={roots}
+                  onCommit={(edited) => {
+                    // O96: `RuleForm` is deliberately not frozen — disabling a
+                    // focused input makes the browser fire `blur`, and this form
+                    // commits on blur, so the mechanical guard would itself
+                    // commit the half-typed edit into the very window the item is
+                    // about. So the field stays live and the *commit* waits.
+                    if (writer.current === 'save') {
+                      held.current = { index: selected, rule: edited }
+                      return
+                    }
+                    if (writer.current === 'import') {
+                      // **Discarded, not held**, and forced rather than chosen.
+                      //
+                      // The last clause of the notice is deliberately
+                      // outcome-neutral. An earlier version promised that the
+                      // import's rules would replace the list — true when it
+                      // lands, and a promise this screen breaks when it does not.
+                      // A refused document is the ordinary failure here, so the
+                      // sentence has to hold for both endings. (**That the edit
+                      // is discarded even when the import fails is a real
+                      // asymmetry with O96's failed *save*, which keeps it** —
+                      // the reasoning below only holds for an import that
+                      // succeeded. It is left as it is rather than fixed here:
+                      // holding across an import is a behaviour change, not a
+                      // wording one.)
+                      // Holding works for a save because `answer.rules` is
+                      // positionally aligned to the list that was sent. An
+                      // import's answer is aligned to nothing — it replaces every
+                      // rule and mints fresh ids — so this index does not name the
+                      // rule being edited and applying the edit there would
+                      // overwrite an unrelated rule with it.
+                      setRefused(
+                        `An import was running, so your edit to rule ${selected + 1} was not ` +
+                          'applied — an import replaces every rule, so there is no row left to ' +
+                          'apply it to. Make the edit again once the import has finished.',
+                      )
+                      return
+                    }
+                    commit(
+                      rules.map((rule, i) => (i === selected ? edited : rule)),
+                      selected,
+                    )
+                  }}
+                />
+              ) : (
+                <p className="empty">
+                  Pick a rule to edit it. The impact below is for the whole
+                  list.
+                </p>
+              )}
+            </Section>
+          </div>
+
+          <Section
+            title="Preview"
+            // On the heading's line, where there is room for it, and laid out
+            // unseen until the preview has lasted, so drawing it moves nothing:
+            // above the tabs' panel it would push what the panel shows down a
+            // line and back up.
+            actions={
+              <p className={previewingDrawn ? 'busy' : 'busy wait-unseen'}>
+                Previewing…
+              </p>
+            }
+          >
+            <PreviewTabs
+              preview={preview}
+              rules={rules}
+              selected={selected}
+              busy={busy}
+              frozen={frozen}
+              onReorder={(from, to) => {
+                const next = renumber(moved(rules, from, to))
+                commit(next, selected === from ? to : selected)
+              }}
+              // The same call `RuleList`'s own `onSelect` makes, guard included:
+              // "Edit rule 4" from an override row is selecting rule 4, so it
+              // costs one derivation, and selecting the rule already open costs
+              // none.
+              onSelectRule={(index) => {
+                if (index !== selected) commit(rules, index)
               }}
             />
-          ) : (
-            <p className="empty">
-              Pick a rule to edit it. The impact below is for the whole list.
+          </Section>
+
+          {saved !== undefined && (
+            <p className="saved">
+              Saved: {saved.impact.works_rehomed} works re-homed,{' '}
+              {saved.impact.series_merged} series merged.
+              {saved.reopened_proposals.length > 0 &&
+                ` Reopened proposals ${saved.reopened_proposals.join(', ')}.`}
             </p>
           )}
-        </Section>
-      </div>
-
-      <Section
-        title="Preview"
-        // On the heading's line, where there is room for it, and laid out
-        // unseen until the preview has lasted, so drawing it moves nothing:
-        // above the tabs' panel it would push what the panel shows down a
-        // line and back up.
-        actions={
-          <p className={previewingDrawn ? 'busy' : 'busy wait-unseen'}>
-            Previewing…
-          </p>
-        }
-      >
-        <PreviewTabs
-          preview={preview}
-          rules={rules}
-          selected={selected}
-          busy={busy}
-          frozen={frozen}
-          onReorder={(from, to) => {
-            const next = renumber(moved(rules, from, to))
-            commit(next, selected === from ? to : selected)
-          }}
-          // The same call `RuleList`'s own `onSelect` makes, guard included:
-          // "Edit rule 4" from an override row is selecting rule 4, so it
-          // costs one derivation, and selecting the rule already open costs
-          // none.
-          onSelectRule={(index) => {
-            if (index !== selected) commit(rules, index)
-          }}
-        />
-      </Section>
-
-      {saved !== undefined && (
-        <p className="saved">
-          Saved: {saved.impact.works_rehomed} works re-homed,{' '}
-          {saved.impact.series_merged} series merged.
-          {saved.reopened_proposals.length > 0 &&
-            ` Reopened proposals ${saved.reopened_proposals.join(', ')}.`}
-        </p>
-      )}
-      {saved?.complaints.map((complaint) => (
-        <p className="complaint" key={complaint}>
-          {complaint}
-        </p>
-      ))}
-      {saved !== undefined && (
-        // Context: the save's own re-derive touches `<root>/.taiyaku/`, the
-        // one place on disk this route writes, and `Impact` says nothing
-        // about it — a save that could not write a hand document used to
-        // answer with only a rehome count and silence. `DeriveSection` is
-        // the renderer `ScanReport.tsx` already has for this exact struct,
-        // reused rather than a second, narrower vocabulary invented here;
-        // collapsed by default the same way `RemoveRoot` reuses it, since
-        // most saves have nothing in these fields worth a person's first
-        // glance.
-        <details className="save-derive">
-          <summary>What this save's re-derive found</summary>
-          {/* h3, beside Preview beneath Rules: the save's report sits after
+          {saved?.complaints.map((complaint) => (
+            <p className="complaint" key={complaint}>
+              {complaint}
+            </p>
+          ))}
+          {saved !== undefined && (
+            // Context: the save's own re-derive touches `<root>/.taiyaku/`, the
+            // one place on disk this route writes, and `Impact` says nothing
+            // about it — a save that could not write a hand document used to
+            // answer with only a rehome count and silence. `DeriveSection` is
+            // the renderer `ScanReport.tsx` already has for this exact struct,
+            // reused rather than a second, narrower vocabulary invented here;
+            // collapsed by default the same way `RemoveRoot` reuses it, since
+            // most saves have nothing in these fields worth a person's first
+            // glance.
+            <details className="save-derive">
+              <summary>What this save's re-derive found</summary>
+              {/* h3, beside Preview beneath Rules: the save's report sits after
               the preview's box, not in it, so it is not one of its parts. */}
-          <DeriveSection derive={saved.derive} level={3} />
-        </details>
+              <DeriveSection derive={saved.derive} level={3} />
+            </details>
+          )}
+
+          <div className="editor-actions">
+            {/*
+             * Held on `busy` too, not only `frozen` — see this file's own top
+             * comment. Without it, a click landing while a preview is out
+             * sends `rules` against a `predicted.current` that has
+             * not caught up yet, and the mismatch draws a warning that blames
+             * the server for a race the client caused. Its words and Import's
+             * keep the box of the wider of their two, so drawing a wait moves
+             * nothing beside them.
+             */}
+            <HeldButton
+              type="button"
+              className="save keeps-wait-width"
+              held={saveHeldDrawn}
+              onClick={save}
+            >
+              <WaitWords
+                drawn={saving && frozenDrawn}
+                words={`Save — apply to ${preview?.impact.works_rehomed ?? 0} works`}
+                wait="Saving…"
+              />
+            </HeldButton>
+
+            <div className="import">
+              <HeldButton
+                type="button"
+                className="keeps-wait-width"
+                held={frozenDrawn}
+                onClick={() => {
+                  // Held from the send: a picker opened now would deliver a
+                  // file `beginImport` can only refuse.
+                  if (frozen) return
+                  fileInput.current?.click()
+                }}
+              >
+                <WaitWords
+                  drawn={writing === 'import' && frozenDrawn}
+                  words="Import"
+                  wait="Importing…"
+                />
+              </HeldButton>
+              <p>
+                Import replaces every rule with the document’s, minting fresh
+                ids, which reopens every accepted proposal whose rule it
+                replaces.
+              </p>
+              {importNotice !== undefined && <p role="alert">{importNotice}</p>}
+              <input
+                ref={fileInput}
+                type="file"
+                accept="application/json"
+                hidden
+                onChange={(e: ChangeEvent<HTMLInputElement>) => {
+                  const file = e.target.files?.[0]
+                  e.target.value = ''
+                  if (file === undefined) return
+                  // The whole gesture, file and all — `beginImport` takes the
+                  // gate before it reads, so this handler owns no part of it.
+                  beginImport(file)
+                }}
+              />
+            </div>
+
+            <a
+              className="export"
+              download="rules.json"
+              href={`data:application/json,${encodeURIComponent(exportDoc())}`}
+            >
+              Export
+            </a>
+          </div>
+        </>
       )}
-
-      <div className="editor-actions">
-        {/*
-         * Held on `busy` too, not only `frozen` — see this file's own top
-         * comment. Without it, a click landing while a preview is out
-         * sends `rules` against a `predicted.current` that has
-         * not caught up yet, and the mismatch draws a warning that blames
-         * the server for a race the client caused. Its words and Import's
-         * keep the box of the wider of their two, so drawing a wait moves
-         * nothing beside them.
-         */}
-        <HeldButton
-          type="button"
-          className="save keeps-wait-width"
-          held={saveHeldDrawn}
-          onClick={save}
-        >
-          <WaitWords
-            drawn={saving && frozenDrawn}
-            words={`Save — apply to ${preview?.impact.works_rehomed ?? 0} works`}
-            wait="Saving…"
-          />
-        </HeldButton>
-
-        <div className="import">
-          <HeldButton
-            type="button"
-            className="keeps-wait-width"
-            held={frozenDrawn}
-            onClick={() => {
-              // Held from the send: a picker opened now would deliver a
-              // file `beginImport` can only refuse.
-              if (frozen) return
-              fileInput.current?.click()
-            }}
-          >
-            <WaitWords
-              drawn={writing === 'import' && frozenDrawn}
-              words="Import"
-              wait="Importing…"
-            />
-          </HeldButton>
-          <p>
-            Import replaces every rule with the document’s, minting fresh ids,
-            which reopens every accepted proposal whose rule it replaces.
-          </p>
-          {importNotice !== undefined && <p role="alert">{importNotice}</p>}
-          <input
-            ref={fileInput}
-            type="file"
-            accept="application/json"
-            hidden
-            onChange={(e: ChangeEvent<HTMLInputElement>) => {
-              const file = e.target.files?.[0]
-              e.target.value = ''
-              if (file === undefined) return
-              // The whole gesture, file and all — `beginImport` takes the
-              // gate before it reads, so this handler owns no part of it.
-              beginImport(file)
-            }}
-          />
-        </div>
-
-        <a
-          className="export"
-          download="rules.json"
-          href={`data:application/json,${encodeURIComponent(exportDoc())}`}
-        >
-          Export
-        </a>
-      </div>
     </section>
   )
 }

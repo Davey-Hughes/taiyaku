@@ -1,7 +1,8 @@
 import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
-import { act } from 'react'
+import { act, startTransition, useLayoutEffect } from 'react'
+import { createRoot } from 'react-dom/client'
 import {
   type Location,
   MemoryRouter,
@@ -12,8 +13,15 @@ import {
 import { describe, expect, it, vi } from 'vitest'
 import { Licence } from './Licence'
 import { focused } from './testing/focused'
+import { settleUntil } from './testing/async'
 import { licenceTextsLanded } from './testing/licence'
-import { mount } from './testing/mount'
+import { mount, rerender } from './testing/mount'
+import {
+  holdTheClock,
+  pass,
+  WAIT_DRAWN_AFTER_MS,
+  watchDrawn,
+} from './testing/wait'
 
 /**
  * Each licence file as the disk holds it, read here rather than through the
@@ -28,6 +36,23 @@ const GPL = local('../../LICENSE')
 const SHIPPORI = read(resolve('@fontsource/shippori-mincho-b1/LICENSE'))
 const ZEN = read(resolve('@fontsource/zen-kaku-gothic-new/LICENSE'))
 const MARKS = local('./styles/fonts/OFL.txt')
+
+/** What the page draws after its header and contents: a section per work. */
+const WORKS_DRAWN = [
+  'settings-section',
+  'settings-section',
+  'settings-section',
+  'settings-section',
+]
+
+/**
+ * The licence page as a first visit in this tab draws it: a module of its
+ * own, whose texts no earlier case has loaded.
+ */
+async function firstVisit() {
+  vi.resetModules()
+  return (await import('./Licence')).Licence
+}
 
 /** Mounts `Page` at `entry` and lets its texts land. */
 async function settle(
@@ -263,10 +288,11 @@ describe('Licence', () => {
     ])
   })
 
-  it('draws no contents until the texts have drawn the licences it leads to', () => {
+  it('draws no contents until the texts have drawn the licences it leads to', async () => {
+    const FirstVisit = await firstVisit()
     const host = mount(
       <MemoryRouter initialEntries={['/about/licence']}>
-        <Licence />
+        <FirstVisit />
       </MemoryRouter>,
     )
     expect(host.querySelector('h1')?.textContent).toBe('Licence')
@@ -274,11 +300,58 @@ describe('Licence', () => {
     expect(host.querySelector('nav')).toBeNull()
   })
 
+  it('draws Loading… in its body’s place from 200 ms on a first visit, until the texts land', async () => {
+    const FirstVisit = await firstVisit()
+    holdTheClock()
+    const host = mount(
+      <MemoryRouter initialEntries={['/about/licence']}>
+        <FirstVisit />
+      </MemoryRouter>,
+    )
+    const page = host.querySelector('section.licence')
+    const parts = () =>
+      [...(page?.children ?? [])].map((part) =>
+        part.matches('[role="status"]') ? part.textContent : part.className,
+      )
+    expect(parts()).toEqual(['page-header'])
+    pass(WAIT_DRAWN_AFTER_MS - 1)
+    expect(parts()).toEqual(['page-header'])
+    pass(1)
+    expect(parts()).toEqual(['page-header', 'Loading…'])
+    vi.useRealTimers()
+    await licenceTextsLanded()
+    expect(parts()).toEqual(['page-header', 'licence-contents', ...WORKS_DRAWN])
+  })
+
+  it('draws its texts in its first render on a return, with no wait', async () => {
+    await settle()
+    rerender(<div />)
+    const drawn = watchDrawn(() =>
+      JSON.stringify(
+        [...document.querySelectorAll('section.licence > *')].map(
+          (part) => part.className,
+        ),
+      ),
+    )
+    rerender(
+      <MemoryRouter initialEntries={['/about/licence']}>
+        <Licence />
+      </MemoryRouter>,
+    )
+    drawn.stop()
+    expect([...drawn.seen]).toEqual([
+      JSON.stringify([]),
+      JSON.stringify(['page-header', 'licence-contents', ...WORKS_DRAWN]),
+    ])
+  })
+
   /**
    * **A load of the page with a licence's fragment lands on that licence**
    * once the texts have drawn it: before then the browser finds nothing the
    * fragment names, so the page goes there itself. Focus goes to the
-   * licence's heading, as following its link from the contents puts it.
+   * licence's heading, as following its link from the contents puts it. On
+   * a first visit the texts land after the page is drawn; on a return they
+   * are drawn in its first render, which lands as it draws them.
    */
   it.each([
     ['#taiyaku', 'taiyaku'],
@@ -286,9 +359,23 @@ describe('Licence', () => {
     ['#zen-kaku-gothic-new', 'Zen Kaku Gothic New'],
     ['#taiyaku-marks', 'taiyaku marks'],
   ])(
-    'loaded with %s, puts focus on the heading of %s',
+    'loaded with %s, puts focus on the heading of %s, on a first visit and on a return',
     async (fragment, name) => {
-      const host = await settle(Licence, `/about/licence${fragment}`)
+      const Page = await firstVisit()
+      const at = `/about/licence${fragment}`
+      const host = await settle(Page, at)
+      expect(focused()).toBe(name)
+      expect(
+        document.activeElement === section(host, name).querySelector('h2'),
+      ).toBe(true)
+
+      rerender(<div />)
+      expect(focused()).toBe('body')
+      rerender(
+        <MemoryRouter initialEntries={[at]}>
+          <Page />
+        </MemoryRouter>,
+      )
       expect(focused()).toBe(name)
       expect(
         document.activeElement === section(host, name).querySelector('h2'),
@@ -529,4 +616,140 @@ describe('Licence', () => {
       vi.doUnmock('./licenceTexts')
     }
   })
+
+  /**
+   * **A refused chunk is not kept**: a return to the page asks for it again,
+   * and draws the texts once they come.
+   */
+  it('asks for the texts again on a return after a refused import, and draws them', async () => {
+    const real = await realTexts()
+    const { Page, chunk } = await pageWithHeldChunk()
+    try {
+      // biome-ignore lint/suspicious/noThenProperty: a thenable, as `pageWithHeldChunk` says
+      chunk.then = (_landed, refused) => {
+        refused(new TypeError('Failed to fetch dynamically imported module'))
+      }
+      const host = await settle(Page)
+      expect(
+        [...host.querySelectorAll('[role="alert"]')].map((p) => p.textContent),
+      ).toEqual([
+        'The licence texts were not loaded; reload the page to try again.',
+      ])
+
+      rerender(<div />)
+      // biome-ignore lint/suspicious/noThenProperty: as above
+      chunk.then = (landed) => {
+        landed(real)
+      }
+      rerender(
+        <MemoryRouter initialEntries={['/about/licence']}>
+          <Page />
+        </MemoryRouter>,
+      )
+      await licenceTextsLanded()
+      expect(host.querySelector('[role="alert"]')).toBeNull()
+      expect(host.querySelector('nav.licence-contents')).not.toBeNull()
+      expect(host.querySelectorAll('.settings-section')).toHaveLength(4)
+    } finally {
+      vi.doUnmock('./licenceTexts')
+    }
+  })
+
+  /**
+   * **A return the texts land under, between its render and its effects,
+   * draws them.** A visit left while the chunk was still coming loads it for
+   * the tab when it comes. A return drawn in a transition, as
+   * `BrowserRouter` draws each change of page, runs its effects in a later
+   * task than its commit, so the chunk can land in between: the return has
+   * rendered without the texts, and its effect finds them kept.
+   */
+  it('draws the texts on a return that an earlier visit’s chunk lands under, between its commit and its effects', async () => {
+    const real = await realTexts()
+    const { Page, chunk } = await pageWithHeldChunk()
+    let land: (() => void) | undefined
+    // biome-ignore lint/suspicious/noThenProperty: a thenable, as `pageWithHeldChunk` says
+    chunk.then = (landed) => {
+      land = () => {
+        landed(real)
+      }
+    }
+    const actEnvironment = globalThis.IS_REACT_ACT_ENVIRONMENT
+    const host = document.createElement('div')
+    document.body.append(host)
+    const root = createRoot(host)
+    try {
+      // The first visit, whose chunk is held, left before it comes.
+      mount(
+        <MemoryRouter initialEntries={['/about/licence']}>
+          <Page />
+        </MemoryRouter>,
+      )
+      await settleUntil(
+        'the first visit’s import',
+        () => land !== undefined,
+        1000,
+      )
+      rerender(<div />)
+
+      // The return, in a transition outside `act`, so that its effects run
+      // in a task after its commit; the chunk lands at the commit.
+      globalThis.IS_REACT_ACT_ENVIRONMENT = false
+      function LandsAtCommit() {
+        useLayoutEffect(() => {
+          land?.()
+        }, [])
+        return null
+      }
+      startTransition(() => {
+        root.render(
+          <MemoryRouter initialEntries={['/about/licence']}>
+            <LandsAtCommit />
+            <Page />
+          </MemoryRouter>,
+        )
+      })
+      const until = performance.now() + 1000
+      while (
+        host.querySelector('nav.licence-contents') === null &&
+        performance.now() < until
+      ) {
+        await new Promise((done) => {
+          setTimeout(done, 10)
+        })
+      }
+      expect(host.querySelector('.page-title')?.textContent).toBe('Licence')
+      expect(host.querySelector('nav.licence-contents')).not.toBeNull()
+      expect(host.querySelectorAll('.settings-section')).toHaveLength(4)
+    } finally {
+      root.unmount()
+      host.remove()
+      globalThis.IS_REACT_ACT_ENVIRONMENT = actEnvironment
+      vi.doUnmock('./licenceTexts')
+    }
+  })
 })
+
+/** The texts as the chunk holds them, from the real module. */
+const realTexts = () =>
+  vi.importActual<typeof import('./licenceTexts')>('./licenceTexts')
+
+/**
+ * A licence page of its own, as `firstVisit` makes one, whose chunk of texts
+ * is a module with a `then`, which `import()` adopts as it adopts any
+ * thenable: each import of the chunk settles as `chunk.then` settles it,
+ * which the case sets once the mock is made, since vitest waits on a
+ * factory's answer that has one. The case undoes the mock.
+ */
+async function pageWithHeldChunk() {
+  const chunk: {
+    then?: (
+      landed: (texts: unknown) => void,
+      refused: (err: unknown) => void,
+    ) => void
+  } = {}
+  vi.resetModules()
+  vi.doMock('./licenceTexts', () => chunk)
+  await import('./licenceTexts')
+  const { Licence: Page } = await import('./Licence')
+  return { Page, chunk }
+}

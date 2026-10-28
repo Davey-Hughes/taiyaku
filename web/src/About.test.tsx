@@ -8,8 +8,15 @@ import { ABOUT, DIRTY_BUILD, UNKNOWN_BUILD } from './testing/about'
 import { clipboardContext } from './testing/clipboard'
 import { focused } from './testing/focused'
 import { licenceTextsLanded } from './testing/licence'
-import { mount } from './testing/mount'
+import { deferred, flush } from './testing/async'
+import { mount, rerender } from './testing/mount'
 import { cellValue } from './testing/table'
+import {
+  holdTheClock,
+  pass,
+  WAIT_DRAWN_AFTER_MS,
+  watchDrawn,
+} from './testing/wait'
 
 // `shortCommit` stays real: the commit link's text is checked against it.
 vi.mock('./about', async (importOriginal) => ({
@@ -290,6 +297,69 @@ describe('About', () => {
       expect(focused()).toBe(heading)
     },
   )
+
+  /** Each part of the page, in order: the header by its class, each section by its title, and the wait line by its words. */
+  const parts = (host: HTMLElement) =>
+    [...host.querySelectorAll('section.about > *')].map((part) =>
+      part.matches('[role="status"]')
+        ? part.textContent
+        : (part.querySelector('.settings-section-title')?.textContent ??
+          part.className),
+    )
+
+  it('heads itself at once, and draws Loading… in its body’s place from 200 ms until the route answers', async () => {
+    holdTheClock()
+    const answer = deferred<aboutApi.About>()
+    vi.mocked(aboutApi.about).mockReturnValue(answer.promise)
+    const host = await settle()
+    expect(parts(host)).toEqual(['page-header'])
+    pass(WAIT_DRAWN_AFTER_MS - 1)
+    expect(parts(host)).toEqual(['page-header'])
+    pass(1)
+    expect(parts(host)).toEqual(['page-header', 'Loading…'])
+    const drawn = watchDrawn(() => JSON.stringify(parts(host)))
+    await flush(() => {
+      answer.resolve(ABOUT)
+    })
+    drawn.stop()
+    expect([...drawn.seen]).toEqual([
+      JSON.stringify(['page-header', 'Loading…']),
+      JSON.stringify(['page-header', 'This build', 'Formats', 'Licence']),
+    ])
+  })
+
+  it('draws the answer kept at once on a return, reads it again, and draws a new answer in one step with no wait', async () => {
+    holdTheClock()
+    await settle()
+    rerender(<div />)
+    const again = deferred<aboutApi.About>()
+    vi.mocked(aboutApi.about).mockClear()
+    vi.mocked(aboutApi.about).mockReturnValue(again.promise)
+
+    rerender(
+      <MemoryRouter>
+        <About />
+      </MemoryRouter>,
+    )
+    const host = document.querySelector('section.about')
+      ?.parentElement as HTMLElement
+    const sections = ['page-header', 'This build', 'Formats', 'Licence']
+    expect(parts(host)).toEqual(sections)
+    expect(fact(host, 'Commit').textContent).toBe('5ee5159')
+    expect(aboutApi.about).toHaveBeenCalledTimes(1)
+    pass(WAIT_DRAWN_AFTER_MS)
+    const drawn = watchDrawn(() =>
+      JSON.stringify([parts(host), fact(host, 'Commit').textContent]),
+    )
+    await flush(() => {
+      again.resolve(DIRTY_BUILD)
+    })
+    drawn.stop()
+    expect([...drawn.seen]).toEqual([
+      JSON.stringify([sections, '5ee5159']),
+      JSON.stringify([sections, '5ee5159 with uncommitted changes']),
+    ])
+  })
 
   it('draws nothing under its header while the route has not answered', async () => {
     vi.mocked(aboutApi.about).mockReturnValue(new Promise(() => {}))

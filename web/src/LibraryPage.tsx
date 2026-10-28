@@ -7,12 +7,39 @@
  * its removal are sent from here. A directory's settings, its own scan, its
  * move and its removal are `RootRow`'s, on `DirPage`.
  *
- * **It asks the library's status once on mount**, for `RootRow`'s reason: a
- * scan started before this page was drawn is still running. The status says
- * whether any directory of the library is scanning, so a directory's own scan,
- * started on its page, holds this page's Scan library and Remove… as
- * a scan of the library does. The directories it names as running say
- * "Scanning…" in the table.
+ * **Its body waits for the library's scan status** (`pageReads.ts`'s
+ * `libraryScan`), for `RootRow`'s reason: a scan started before this page was
+ * drawn is still running, and the first body of a first visit says so (spec
+ * §4.5). A return draws its body at once from the status kept, and reads it
+ * again (below), where that status is not stale; where it is, the return
+ * waits for its read as a first visit does. A press of Scan library answered
+ * once the page had gone leaves it stale, and so does a directory's own
+ * scan, which the directory's page marks (`DirPage`). While the body waits,
+ * and while the screen reads the list that names the library, the page draws
+ * its header, named as its address spells it until the list names the
+ * library and as the list does then, and "Loading…" in its body's place
+ * once the wait has held. That header is the one the drawn page keeps, so
+ * whatever has focus in it keeps it as the body comes. A status that cannot
+ * be read, with none kept, is drawn as no scan running, as `RootRow`'s is:
+ * pressing Scan library is what surfaces a real fault; a failed re-read keeps
+ * the status kept. The status says whether any directory of the library is
+ * scanning, so a directory's own scan, in a status this page reads, holds
+ * its Scan library and Remove… as a scan of the library does, and the
+ * directories it names as running say "Scanning…" in the table. A page
+ * drawn beside the directory's is not told of that scan and reads nothing
+ * for it, so it keeps both free: told, it would take the scan up and draw
+ * its report a second time beside the directory's own (spec §9's call 9).
+ *
+ * **A running scan is polled through the store, one read at a time.** The
+ * next read is sent a poll's interval after the last has answered: the store
+ * keeps only the newest request's answer, so polls that overlapped could each
+ * be overtaken and leave the kept status behind. The status read again on a
+ * return lands whole, in one step: a scan it finds is taken up as one found
+ * on arrival is, and one the kept status said was running is drawn ended or
+ * further on, as it says. An end that this visit's first read of the status
+ * finds draws no report and reads no list: that scan ended before this
+ * visit, and `RootRow`'s mount read adopts only a running scan. A scan the
+ * page started itself is followed by its poll alone.
  *
  * **A 409 from Scan library is proof a scan is in flight**, of the library or
  * of one directory, so the page draws the sentence and polls. The sentence goes
@@ -33,8 +60,15 @@
  * draws its paths without links while it is open: a directory's page offers
  * Scan directory, Move… and Remove… on a directory the removal is taking.
  */
-import { type ReactNode, useEffect, useId, useRef, useState } from 'react'
-import { NavLink } from 'react-router'
+import {
+  Fragment,
+  type ReactNode,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+} from 'react'
+import { NavLink, useLocation } from 'react-router'
 import {
   type Added,
   humanInterval,
@@ -46,7 +80,7 @@ import {
   scanStatus,
   statusOf,
 } from './config'
-import { dirPath, LIBRARIES, libraryNameClash } from './configAddress'
+import { dirPath, LIBRARIES, libraryNameClash, nameAt } from './configAddress'
 import { DirPicker } from './DirPicker'
 import { HeldButton } from './HeldButton'
 import { useDrawn, useDrawnWait, useFocusLeavesHeld } from './hooks'
@@ -54,23 +88,41 @@ import {
   addDir,
   type Library,
   type LibraryScanStatus,
-  libraryScanStatus,
   renameLibrary,
   startLibraryScan,
 } from './libraries'
 import { messageOf, sentenceOf } from './message'
 import { NameClash } from './NameClash'
+import { libraryScan, ROOTS } from './pageReads'
 import { PathWithBreaks } from './PathWithBreaks'
 import { Refusal } from './Refusal'
+import { entryOf, invalidate, readNow, readSet } from './reads'
 import { bringIntoView } from './reveal'
 import { RemoveLibrary } from './RemoveLibrary'
 import { ScanReport } from './ScanReport'
-import { PageHeader, RemovalSection, Row, Section } from './settingsLayout'
+import {
+  PageHeader,
+  PageLoading,
+  RemovalSection,
+  Row,
+  Section,
+} from './settingsLayout'
+import { usePage } from './usePage'
 import { WaitWords } from './WaitWords'
 import { ROW_CELLS, useLineEnds } from './lineEnds'
 
 export interface LibraryPageProps {
-  library: Library
+  /**
+   * `undefined` while the screen reads the list that names the library, or
+   * could not read it.
+   */
+  library: Library | undefined
+  /**
+   * The list's wait has held long enough to draw "Loading…" for it: drawn
+   * while `library` is `undefined`. The wait for the scan status is the
+   * page's own.
+   */
+  loadingDrawn?: boolean
   /**
    * Every library the list holds, this one among them, so that a rename to
    * a name another holds is refused as it is typed; `undefined` while the
@@ -96,15 +148,17 @@ export interface LibraryPageProps {
    */
   onChanged: (quiet?: boolean) => void
   /**
-   * The library was renamed to `name`, the server's answer, called just
+   * Library `id` was renamed to `name`, the server's answer, called just
    * before `onChanged`: its address is its name, which the screen follows.
+   * The page names its library, since the screen draws the page before the
+   * list it finds the library in has been read.
    */
-  onRenamed?: (name: string) => void
+  onRenamed?: (id: number, name: string) => void
   /**
-   * The library is gone. Its re-derive's report is the screen's to keep, since
-   * this page is not drawn once the library is gone.
+   * Library `id`, called `name`, is gone. Its re-derive's report is the
+   * screen's to keep, since this page is not drawn once the library is gone.
    */
-  onRemoved: (name: string, answer: RemovalAnswer) => void
+  onRemoved: (id: number, name: string, answer: RemovalAnswer) => void
   /**
    * A write sent from this page was refused after the page had gone, with
    * the sentence that says so and names the library or the directory.
@@ -115,6 +169,18 @@ export interface LibraryPageProps {
    * takes focus, since the link that had it may be hidden beside it.
    */
   onOpen?: (to: string) => void
+}
+
+/**
+ * A scan the page watches, numbered from 1, and what it learnt of it from:
+ * `kept`, the status an earlier visit kept, which a return draws its body
+ * from at once, until a read of this visit finds the scan still running;
+ * `status`, a status this visit read; or `press`, its own press of Scan
+ * library (the start, or a 409).
+ */
+interface Watch {
+  readonly n: number
+  readonly from: 'kept' | 'status' | 'press'
 }
 
 /** The directories a library's status names as scanning, by id. */
@@ -134,6 +200,7 @@ const SAVING = 'Saving…'
 
 export function LibraryPage({
   library,
+  loadingDrawn = false,
   libraries,
   notices,
   arrived = false,
@@ -151,6 +218,11 @@ export function LibraryPage({
     if (arrived) heading.current?.focus()
   }, [arrived])
   const drawn = useDrawn()
+  /**
+   * The name the address spells, which heads the page until the list names
+   * the library.
+   */
+  const named = nameAt(useLocation().pathname, LIBRARIES)?.name
 
   /** Why the page's last scan could not start, or its poll failed. */
   const [failure, setFailure] = useState<string | undefined>()
@@ -174,10 +246,14 @@ export function LibraryPage({
   // biome-ignore lint/correctness/useExhaustiveDependencies: `library.name` is the trigger: the list has been read again, and its name is the one to draw.
   useEffect(() => {
     setRenamed(undefined)
-  }, [library.name])
-  const title = renamed?.from === library.name ? renamed.to : library.name
+  }, [library?.name])
   const [adding, setAdding] = useState(false)
-  const [name, setName] = useState(library.name)
+  /**
+   * What the name box holds once Rename… has opened it, and the library's
+   * own name before that: the page is drawn before the list names it.
+   */
+  const [typed, setName] = useState<string | undefined>()
+  const name = typed ?? library?.name ?? ''
   const [saving, setSaving] = useState(false)
   /** `saving`, once it has gone on long enough to be drawn. */
   const savingDrawn = useDrawnWait(saving)
@@ -186,7 +262,7 @@ export function LibraryPage({
    * is held at once while there is one, since it is no wait: the server
    * still judges every save, against a list another admin may have changed.
    */
-  const clash = libraryNameClash(name, libraries ?? [], library.id)
+  const clash = libraryNameClash(name, libraries ?? [], library?.id)
   /**
    * The clash as it is said: not while a refusal in the same words is
    * drawn, which an edit takes away, so that one sentence is never said
@@ -206,7 +282,17 @@ export function LibraryPage({
   useEffect(() => {
     for (const id of scanning) covered.current.add(id)
   }, [scanning])
-  /** Bumped when a scan this page watched ends. */
+  /**
+   * The scan the page watches. While it came from a status, kept or read,
+   * each newer status is taken whole; one the page started is followed by
+   * its poll alone.
+   */
+  const [watch, setWatch] = useState<Watch>({ n: 0, from: 'status' })
+  /**
+   * The number of the watched scan that last ended. A number rather than a
+   * count, so that a scan the store and the poll both say has ended ends
+   * once.
+   */
   const [ended, setEnded] = useState(0)
   /** What each directory's status held when the scan this page watched ended. */
   const [reports, setReports] = useState<
@@ -220,70 +306,172 @@ export function LibraryPage({
   const startingRef = useRef(false)
   const writing = useRef(false)
   const misses = useRef(0)
+  /** The poll's reads sent by this mount, for a read the poll overtook. */
+  const pollsSent = useRef(0)
   // Held in refs for the reason `RootRow` holds its own: the poll's interval
   // must not restart each time the parent hands over a fresh closure, nor
   // each time the list reads again.
   const changed = useRef(onChanged)
   changed.current = onChanged
-  const dirs = useRef(library.dirs)
-  dirs.current = library.dirs
+  const watchNow = useRef(watch)
+  watchNow.current = watch
+  const dirs = useRef(library?.dirs ?? [])
+  dirs.current = library?.dirs ?? []
 
-  useEffect(() => {
-    let cancelled = false
-    libraryScanStatus(library.id)
-      .then((status) => {
-        if (cancelled || !status.running) return
+  const libraryId = library?.id
+  // Its address is known only once the list has named the library (§4.5),
+  // and the body waits for it.
+  const {
+    ready,
+    answers: [status],
+    loadingDrawn: statusWaitDrawn,
+  } = usePage<[LibraryScanStatus]>([
+    libraryId === undefined ? undefined : libraryScan(libraryId),
+  ])
+  /**
+   * The page waited for this visit's read of its scan status, so the status
+   * its body is first drawn from is one this visit read, not one an earlier
+   * visit kept.
+   */
+  const [waited, setWaited] = useState(false)
+  if (library !== undefined && !ready && !waited) setWaited(true)
+  /**
+   * Ends `ending` once, whichever of the store and the poll says so first.
+   * A scan taken up from a kept status and found over by this visit's first
+   * read of it ended before this visit: it is drawn as not running, with no
+   * report and no read of the list, as `RootRow`'s mount read adopts only a
+   * running scan.
+   */
+  const endWatch = (ending: Watch) => {
+    setRunning(false)
+    setConflict(undefined)
+    if (ending.from !== 'kept') setEnded(ending.n)
+  }
+  /**
+   * The scan status the page last took. The one its body is first drawn
+   * from says whether a scan is running, and so does each read after it:
+   * the read a return sends, and each of the poll's, which comes here
+   * through the store as well as to the poll. A scan it finds is watched;
+   * one watched from a status is drawn as each newer status says, ended or
+   * further on, in the render that status lands. An answer in the words of
+   * the status taken keeps the answer the store holds, the same object, so
+   * it comes here not at all.
+   */
+  const [taken, setTaken] = useState<LibraryScanStatus | undefined>()
+  if (ready && status !== taken) {
+    setTaken(status)
+    if (running && watch.from !== 'press') {
+      if (status !== undefined) {
         setElapsed(status.elapsed_secs)
         setScanning(runningIds(status))
-        setRunning(true)
+        if (!status.running) endWatch(watch)
+        else if (watch.from === 'kept') setWatch({ ...watch, from: 'status' })
+      }
+    } else if (status?.running === true && !running) {
+      setElapsed(status.elapsed_secs)
+      setScanning(runningIds(status))
+      setRunning(true)
+      setWatch({
+        n: watch.n + 1,
+        // The first status of a return that did not wait is the kept one.
+        from: !waited && taken === undefined ? 'kept' : 'status',
       })
-      .catch(() => {
-        // Silent, as `RootRow`'s mount read is: pressing Scan library is what
-        // surfaces a real fault.
-      })
-    return () => {
-      cancelled = true
     }
-  }, [library.id])
+  }
 
+  /** The watched scan's number while it is one taken up from a kept status. */
+  const keptWatch = watch.from === 'kept' ? watch.n : undefined
+  // This visit saw a scan taken up from a kept status running once its read
+  // of the status has settled saying so. An answer in the kept status's own
+  // words keeps the answer the store holds, the same object, so `taken`
+  // cannot see it; the read is joined here instead. It is out, as
+  // `usePage`'s effect sent it in the commit that took the scan up, so
+  // joining it sends nothing. A read that failed saw nothing, and so did
+  // one the store dropped for a newer request: while the watch is kept only
+  // the poll sends one, so a poll sent since the join means the entry is
+  // not this read's answer. One that found the scan over ends it through
+  // `taken` with no report, which a move made here before that render
+  // would turn into a report.
   useEffect(() => {
-    if (!running) return
+    if (keptWatch === undefined || libraryId === undefined) return
+    const scan = libraryScan(libraryId)
+    const pollsBefore = pollsSent.current
+    let gone = false
+    void readSet([scan]).then(() => {
+      const entry = entryOf(scan)
+      if (
+        gone ||
+        pollsSent.current !== pollsBefore ||
+        entry?.failure !== undefined ||
+        entry?.answer?.running !== true
+      ) {
+        return
+      }
+      setWatch((was) =>
+        was.n === keptWatch && was.from === 'kept'
+          ? { ...was, from: 'status' }
+          : was,
+      )
+    })
+    return () => {
+      gone = true
+    }
+  }, [keptWatch, libraryId])
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `endWatch` is made anew each render and calls only state setters, which never change.
+  useEffect(() => {
+    if (!running || libraryId === undefined) return
     let cancelled = false
-    const timer = setInterval(() => {
-      libraryScanStatus(library.id)
-        .then((status) => {
-          if (cancelled) return
-          misses.current = 0
-          setElapsed(status.elapsed_secs)
-          setScanning(runningIds(status))
-          if (status.running) return
-          setRunning(false)
-          setConflict(undefined)
-          changed.current(true)
-          setEnded((n) => n + 1)
-        })
-        .catch((err: unknown) => {
-          if (cancelled) return
-          misses.current += 1
-          if (misses.current < POLL_MISSES_ALLOWED) return
-          setRunning(false)
-          setScanning(new Set())
-          // The 409's sentence is true while the scan it named is watched,
-          // and nothing watches it now.
-          setConflict(undefined)
-          setFailure(sentenceOf(err))
-        })
-    }, SCAN_POLL_MS)
+    let timer: ReturnType<typeof setTimeout> | undefined
+    // Called as the watch starts and once the last read has answered, never
+    // on a clock of its own.
+    const next = () => {
+      timer = setTimeout(() => {
+        pollsSent.current += 1
+        readNow(libraryScan(libraryId))
+          .then((now) => {
+            if (cancelled) return
+            misses.current = 0
+            setElapsed(now.elapsed_secs)
+            setScanning(runningIds(now))
+            if (now.running) {
+              setWatch((was) =>
+                was.from === 'kept' ? { ...was, from: 'status' } : was,
+              )
+              next()
+              return
+            }
+            endWatch(watchNow.current)
+          })
+          .catch((err: unknown) => {
+            if (cancelled) return
+            misses.current += 1
+            if (misses.current < POLL_MISSES_ALLOWED) {
+              next()
+              return
+            }
+            setRunning(false)
+            setScanning(new Set())
+            // The 409's sentence is true while the scan it named is watched,
+            // and nothing watches it now.
+            setConflict(undefined)
+            setFailure(sentenceOf(err))
+          })
+      }, SCAN_POLL_MS)
+    }
+    next()
     return () => {
       cancelled = true
-      clearInterval(timer)
+      clearTimeout(timer)
     }
-  }, [running, library.id])
+  }, [running, libraryId])
 
-  // A read that fails draws no report for that directory: the table still says
-  // when it was last scanned.
+  // The list is read again for what the scan changed, quietly: no press
+  // started that read. A read that fails draws no report for that directory:
+  // the table still says when it was last scanned.
   useEffect(() => {
     if (ended === 0) return
+    changed.current(true)
     let cancelled = false
     const scanned = covered.current
     Promise.all(
@@ -307,89 +495,6 @@ export function LibraryPage({
       cancelled = true
     }
   }, [ended])
-
-  const scan = () => {
-    if (startingRef.current) return
-    startingRef.current = true
-    setStarting(true)
-    setFailure(undefined)
-    setConflict(undefined)
-    setReports(undefined)
-    covered.current = new Set()
-    misses.current = 0
-    startLibraryScan(library.id)
-      .then(() => {
-        startingRef.current = false
-        setStarting(false)
-        setScanning(new Set(library.dirs.map((root) => root.id)))
-        setRunning(true)
-      })
-      .catch((err: unknown) => {
-        startingRef.current = false
-        setStarting(false)
-        if (!drawn.current) {
-          onLateRefusal?.(
-            `A scan of ${library.name} did not start (${sentenceOf(err)}).`,
-          )
-          return
-        }
-        if (statusOf(messageOf(err)) === 409) {
-          setConflict(sentenceOf(err))
-          setRunning(true)
-        } else {
-          setFailure(sentenceOf(err))
-        }
-      })
-  }
-
-  const rename = (e: React.FormEvent) => {
-    e.preventDefault()
-    if (name === '' || clash !== undefined || writing.current) return
-    writing.current = true
-    setSaving(true)
-    setRenameFailure(undefined)
-    renameLibrary(library.id, name)
-      .then((answer) => {
-        writing.current = false
-        setSaving(false)
-        setRenamed({ from: library.name, to: answer.name })
-        closedBy.current = 'save'
-        setRenaming(false)
-        onRenamed?.(answer.name)
-        onChanged()
-      })
-      .catch((err: unknown) => {
-        writing.current = false
-        setSaving(false)
-        const sentence = sentenceOf(err)
-        if (drawn.current) setRenameFailure(sentence)
-        else
-          onLateRefusal?.(
-            `${library.name} was not renamed to ${name} (${sentence}).`,
-          )
-      })
-  }
-
-  /** Rejects on a refusal, which is what keeps the picker's typed path. */
-  const add = (path: string) => {
-    setAddFailure(undefined)
-    return addDir(library.id, path).then(
-      (added) => {
-        setAdding(false)
-        onAdded([added])
-        onChanged()
-      },
-      (err: unknown) => {
-        const sentence = sentenceOf(err)
-        if (drawn.current) setAddFailure(sentence)
-        else
-          onLateRefusal?.(
-            `${path} was not added to ${library.name} (${sentence}).`,
-          )
-        throw err
-      },
-    )
-  }
 
   const renameForm = useId()
   const nameBox = useRef<HTMLInputElement>(null)
@@ -426,22 +531,6 @@ export function LibraryPage({
     if (by === 'cancel' && back !== null && !back.disabled) back.focus()
     else show(heading.current)
   }, [renaming])
-  // Held from the moment a save is sent, before Cancel is drawn held, so
-  // that nothing closes the editor under a save on its way.
-  const closeRename = () => {
-    if (writing.current) return
-    setRenameFailure(undefined)
-    closedBy.current = 'cancel'
-    setRenaming(false)
-  }
-  /** Escape from the box, Save or Cancel closes the editor, as Cancel does. */
-  const closeOnEscape = (e: React.KeyboardEvent) => {
-    // An Escape that closes an input method's candidates is that method's,
-    // not the editor's.
-    if (e.key !== 'Escape' || e.nativeEvent.isComposing) return
-    e.preventDefault()
-    closeRename()
-  }
 
   const addRoot = useRef<HTMLDivElement>(null)
   const addingWas = useRef(adding)
@@ -472,9 +561,142 @@ export function LibraryPage({
     removeButton.current?.focus()
   }, [removing])
 
+  if (library === undefined || !ready) {
+    return (
+      <div className="library-page">
+        {/* Keyed, as in the drawn page, so that each is the same element
+            there whatever the drawn page puts between them. */}
+        <PageHeader
+          key="header"
+          back={{ to: LIBRARIES, label: 'Libraries' }}
+          title={library?.name ?? named}
+          titleRef={heading}
+        />
+        <Fragment key="notices">{notices}</Fragment>
+        <PageLoading
+          drawn={library === undefined ? loadingDrawn : statusWaitDrawn}
+        />
+      </div>
+    )
+  }
+
+  const title = renamed?.from === library.name ? renamed.to : library.name
+
+  const scan = () => {
+    if (startingRef.current) return
+    startingRef.current = true
+    setStarting(true)
+    setFailure(undefined)
+    setConflict(undefined)
+    setReports(undefined)
+    covered.current = new Set()
+    misses.current = 0
+    // A start, or a 409, which is proof of a scan, leaves the status the
+    // store keeps saying none is running until it is read again, and a
+    // return before the first poll would draw that.
+    const keptStatusStale = () => void invalidate(libraryScan(library.id))
+    startLibraryScan(library.id)
+      .then(() => {
+        keptStatusStale()
+        startingRef.current = false
+        setStarting(false)
+        setScanning(new Set(library.dirs.map((root) => root.id)))
+        setRunning(true)
+        setWatch((was) => ({ n: was.n + 1, from: 'press' }))
+      })
+      .catch((err: unknown) => {
+        startingRef.current = false
+        setStarting(false)
+        const conflict = statusOf(messageOf(err)) === 409
+        if (conflict) keptStatusStale()
+        if (!drawn.current) {
+          onLateRefusal?.(
+            `A scan of ${library.name} did not start (${sentenceOf(err)}).`,
+          )
+          return
+        }
+        if (conflict) {
+          setConflict(sentenceOf(err))
+          setRunning(true)
+          setWatch((was) => ({ n: was.n + 1, from: 'press' }))
+        } else {
+          setFailure(sentenceOf(err))
+        }
+      })
+  }
+
+  const rename = (e: React.FormEvent) => {
+    e.preventDefault()
+    if (name === '' || clash !== undefined || writing.current) return
+    writing.current = true
+    setSaving(true)
+    setRenameFailure(undefined)
+    renameLibrary(library.id, name)
+      .then((answer) => {
+        writing.current = false
+        setSaving(false)
+        setRenamed({ from: library.name, to: answer.name })
+        closedBy.current = 'save'
+        setRenaming(false)
+        onRenamed?.(library.id, answer.name)
+        onChanged()
+      })
+      .catch((err: unknown) => {
+        writing.current = false
+        setSaving(false)
+        const sentence = sentenceOf(err)
+        if (drawn.current) setRenameFailure(sentence)
+        else
+          onLateRefusal?.(
+            `${library.name} was not renamed to ${name} (${sentence}).`,
+          )
+      })
+  }
+
+  /** Rejects on a refusal, which is what keeps the picker's typed path. */
+  const add = (path: string) => {
+    setAddFailure(undefined)
+    return addDir(library.id, path).then(
+      (added) => {
+        setAdding(false)
+        onAdded([added])
+        // A new root, which Rules draws.
+        void invalidate(ROOTS)
+        onChanged()
+      },
+      (err: unknown) => {
+        const sentence = sentenceOf(err)
+        if (drawn.current) setAddFailure(sentence)
+        else
+          onLateRefusal?.(
+            `${path} was not added to ${library.name} (${sentence}).`,
+          )
+        throw err
+      },
+    )
+  }
+
+  // Held from the moment a save is sent, before Cancel is drawn held, so
+  // that nothing closes the editor under a save on its way.
+  const closeRename = () => {
+    if (writing.current) return
+    setRenameFailure(undefined)
+    closedBy.current = 'cancel'
+    setRenaming(false)
+  }
+  /** Escape from the box, Save or Cancel closes the editor, as Cancel does. */
+  const closeOnEscape = (e: React.KeyboardEvent) => {
+    // An Escape that closes an input method's candidates is that method's,
+    // not the editor's.
+    if (e.key !== 'Escape' || e.nativeEvent.isComposing) return
+    e.preventDefault()
+    closeRename()
+  }
+
   return (
     <div className="library-page">
       <PageHeader
+        key="header"
         back={{ to: LIBRARIES, label: 'Libraries' }}
         title={title}
         titleRef={heading}
@@ -594,7 +816,7 @@ export function LibraryPage({
           {elapsed === null ? '' : ` ${Math.round(elapsed)}s`}
         </p>
       )}
-      {notices}
+      <Fragment key="notices">{notices}</Fragment>
       {failure !== undefined && <p role="alert">{failure}</p>}
       {conflict !== undefined && <p role="alert">{conflict}</p>}
 
@@ -722,7 +944,7 @@ export function LibraryPage({
             }}
             onRemoved={(answer) => {
               setRemoving(false)
-              onRemoved(library.name, answer)
+              onRemoved(library.id, library.name, answer)
             }}
             onLateRefusal={onLateRefusal}
           />
