@@ -29,7 +29,7 @@ const licenceAllow = [licenceFile, `${licenceFile}?raw`]
 
 // The browser tests that need a scrollbar to take its width: see the
 // `browser` project's `instances`.
-const SHOWN_SCROLLBARS = 'src/**/*.scrollbars.browser.test.tsx'
+const SHOWN_SCROLLBARS = 'tests/**/*.scrollbars.browser.test.tsx'
 
 // The reader is served from Vite in development and talks to `taiyaku serve`
 // on another port. Proxying rather than enabling CORS on the server: CORS
@@ -70,8 +70,8 @@ export default defineConfig({
         extends: true,
         test: {
           name: 'node',
-          include: ['src/**/*.test.ts'],
-          exclude: ['src/**/*.browser.test.*'],
+          include: ['tests/**/*.test.ts'],
+          exclude: ['tests/**/*.browser.test.*'],
           // Vitest's default `css: false` stubs every CSS import — `?raw`
           // included — to an empty string. The tests that read stylesheet
           // text rather than render it (jsdom resolves neither `light-dark()`
@@ -100,17 +100,17 @@ export default defineConfig({
           // The same flag the `browser` project sets. Without it React says
           // nothing about a state update made outside `act`, so a test making
           // one passes in silence — see `browser-setup.ts`'s own doc.
-          setupFiles: ['./src/browser-setup.ts'],
-          include: ['src/**/*.test.tsx'],
-          exclude: ['src/**/*.browser.test.tsx'],
+          setupFiles: ['./tests/support/browser-setup.ts'],
+          include: ['tests/**/*.test.tsx'],
+          exclude: ['tests/**/*.browser.test.tsx'],
         },
       },
       {
         extends: true,
         test: {
           name: 'browser',
-          include: ['src/**/*.browser.test.tsx'],
-          setupFiles: ['./src/browser-setup.ts'],
+          include: ['tests/**/*.browser.test.tsx'],
+          setupFiles: ['./tests/support/browser-setup.ts'],
           browser: {
             enabled: true,
             // A factory, not a string: `browser.provider` changed shape in
@@ -158,8 +158,6 @@ export default defineConfig({
       provider: 'v8',
       include: ['src/**/*.ts', 'src/**/*.tsx'],
       exclude: [
-        'src/**/*.test.ts',
-        'src/**/*.test.tsx',
         'src/**/*.d.ts',
         // Entry point: ten lines that call createRoot. Nothing to assert.
         'src/main.tsx',
@@ -167,17 +165,6 @@ export default defineConfig({
         // above, for the same reason: a handful of lines binding `Labeller`
         // to the real ports and calling `createRoot`, nothing to assert.
         'src/label.tsx',
-        // The setup the `browser` and `jsdom` projects load, which sets the
-        // act environment and empties the read store after each test: not
-        // application code.
-        'src/browser-setup.ts',
-        // The shared mount/rerender helper: test harness, the same category
-        // `browser-setup.ts` is excluded for. Counting it would put test
-        // infrastructure inside an application-coverage number, and its
-        // `rerender` half is reachable only from the `browser` project, which
-        // this gate does not run — so it would sit permanently short of 100%
-        // for a structural reason rather than an untested one.
-        'src/testing/**',
       ],
       reporter: ['text', 'json-summary'],
       // **Set at the end, at what was achieved, minus two points.** Not chosen
@@ -242,7 +229,7 @@ export default defineConfig({
     // them already, since the themed colour tokens are `light-dark()` pairs:
     // spec 2026-09-17 §3 gives the Safari figure. `build.target`, which the
     // scripts are built for, is not set.
-    // `src/builtStylesheet.test.ts` builds the stylesheet and holds it.
+    // `tests/builtStylesheet.test.ts` builds the stylesheet and holds it.
     cssTarget: ['chrome123', 'edge123', 'firefox120', 'safari17.5', 'ios17.5'],
     rollupOptions: {
       // Two entries. Without this Vite takes index.html alone and the

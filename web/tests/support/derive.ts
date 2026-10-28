@@ -1,0 +1,46 @@
+import type { Derived } from '../../src/config'
+
+/**
+ * A whole `DeriveReport` that found nothing. Whole, because the dialogs
+ * that take one draw every field, and a cast over `{}` would lie about that.
+ */
+export const emptyDerive: Derived = {
+  series: 0,
+  works: 0,
+  editions: 0,
+  members: 0,
+  unattached_chapter_dirs: 0,
+  unreadable: {
+    total: 0,
+    refused_format: 0,
+    by_format: {},
+    uncounted: [],
+    vanished: [],
+    no_pages: 0,
+  },
+  suppressed: 0,
+  rekeyed: 0,
+  kept_editions: 0,
+  emptied_works: 0,
+  unfolded_works: 0,
+  unfoldable: [],
+  unreadable_hand: [],
+  repaired_documents: 0,
+  unwritable_documents: [],
+  orphan_documents: [],
+  declined_documents: [],
+  stale_documents: [],
+  moved_positions: 0,
+  lost_positions: 0,
+  moved_notes: 0,
+  dropped_notes: 0,
+  moved_truth_pages: 0,
+  moved_truth_collisions: 0,
+  discarded_rows: 0,
+  uncarried_alignments: 0,
+  series_holding_no_work: 0,
+  merged: 0,
+  unrecognised_kinds: 0,
+  raised: 0,
+  root_removed_mid_derive: 0,
+}

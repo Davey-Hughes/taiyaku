@@ -367,7 +367,7 @@ because an unproven gate is indistinguishable from no gate.
 
 | | aggregate step | per-file step | set in |
 | --- | -------------- | ------------- | ------ |
-| web | four thresholds — `statements`/`branches`/`functions`/`lines` | four floors, and ≥108 files in the report | `web/vite.config.ts`; `scripts/coverage-floor.mjs` |
+| web | four thresholds — `statements`/`branches`/`functions`/`lines` | four floors, and ≥161 files in the report | `web/vite.config.ts`; `scripts/coverage-floor.mjs` |
 | Rust | `--fail-under-lines 93` | one floor, on lines, and ≥40 files in the report | `ci.yml` and `check-all.sh`; `scripts/coverage-floor.mjs` |
 
 Four steps, but **three kinds of failure**, and it is worth being plain about
@@ -381,9 +381,9 @@ which catches what, because each is invisible to the others:
   see either, because a file that is absent is a file nothing visits. Only the
   count sees a collapse, and only the count catches a one-character edit to a
   glob taking 14 files out of the gate for less than half a point on every
-  metric — and, three times now, doing it without tripping the count either:
-  until 2026-08-14 at `minFiles: 50`, again until 2026-09-11 at 59, and again
-  until 2026-09-19 at 101.
+  metric — and, four times now, doing it without tripping the count either:
+  until 2026-08-14 at `minFiles: 50`, again until 2026-09-11 at 59, again
+  until 2026-09-19 at 101, and again until 2026-10-28 at 108.
 
 Neither gate is a separate job. `cargo llvm-cov nextest` *runs* the tests, so it
 replaced the `test` job's `cargo test`; `vitest --coverage` runs the same two
@@ -444,7 +444,7 @@ signal a re-measurement was owed.*
 | web | lines, aggregate | 99.31% | 97 | `web/vite.config.ts` |
 | Rust | lines, aggregate | 93.64% | 93 | `--fail-under-lines`, in `ci.yml` **and** `check-all.sh` |
 | Rust | lines, **per file** | 74.48%, `taiyaku-serve/src/lib.rs` | 57 | `scripts/coverage-floor.mjs` |
-| web | **files in the report** | 109 | 101 | `scripts/coverage-floor.mjs` |
+| web | **files in the report** | 168 (2026-10-28) | 161 | `scripts/coverage-floor.mjs` |
 | Rust | **files in the report** | 82 | 40 | `scripts/coverage-floor.mjs` |
 
 **The four web *aggregate* rows are measured 2026-09-12, on the branch that
@@ -701,7 +701,7 @@ That is why `include` is set explicitly and why exclusions are named one at a
 time with a reason, never as a wildcard. It is also why the gate grew a minimum
 file count: no threshold *value* can defend against `0/0`, because `0/0` is not a
 number that failed a comparison — it is a comparison that never happened. See
-"Why `minFiles` is 108, and was 59 for too long — three times now" below.
+"Why `minFiles` is 161, and was 59 for too long — four times now" below.
 
 **The `.tsx` half of that glob is inert, and was assumed rather than measured
 until 2026-08-10.** `include` reads `['src/**/*.ts', 'src/**/*.tsx']`, and the
@@ -824,16 +824,16 @@ from the `viewport.test.ts` run:
 *(Those last three lines sat orphaned at the end of the next section until
 2026-08-10, detached from the run that produced them. Rejoined here, unchanged.)*
 
-### Why `minFiles` is 108, and was 59 for too long — three times now
+### Why `minFiles` is 161, and was 59 for too long — four times now
 
 The collapse to zero files is not the only failure a file count has to catch, and
 picking the number for the collapse alone would have left the interesting one
 through. **Deleting one `*` from the include glob is a one-character edit.**
-Measured by making it, three times, and reading
-`web/coverage/coverage-summary.json` rather than the text table. The three rows
-were first run 2026-08-14, **re-run unchanged on 2026-09-11**, and **re-run
-again on 2026-09-19** (the whole-branch review of style pass ③), at the counts
-the larger tree gives:
+The table is the 2026-09-19 run of such edits, by the whole-branch review of
+style pass ③: each edit made, and `web/coverage/coverage-summary.json` read rather
+than the text table. The same three rows were first run 2026-08-14 and
+**re-run unchanged on 2026-09-11**, and the counts below are the ones the
+2026-09-19 tree gave:
 
 | `coverage.include` | files | vitest | at 50 | at 59 | at 101 | at 108 |
 | ------------------ | ----- | ------ | :--: | :--: | :--: | :--: |
@@ -842,7 +842,7 @@ the larger tree gives:
 | `['src/**/*.ts']` | 115 *(was 108, was 66)* | 97.78 / 94.15 / 99.19 / 99.33, unchanged | 0 | 0 | 0 | 0 |
 
 **The middle row is the one that fixes the number, and it has now been the row
-that showed the number had stopped working on three separate occasions.** One
+that showed the number had stopped working on four separate occasions.** One
 deleted `*` drops all 14 files of `src/modules` — `annotations`, `borrow`,
 `credits`, `direction`, `fit`, `help`, `layout`, `motion`, `prefetch`,
 `readouts`, `registry`, `regroup`, `settings` and `zoom` — out of the gate
@@ -868,40 +868,47 @@ and `readerTitle.ts`, plus unrelated growth on `main` since 2026-09-11), and too
 the near miss from 94 to **101** — exactly the floor set for it, and `101 < 101`
 is false, so the middle row above passed a third time, on 2026-09-19, printing
 *"101 files (floor requires 101), all above the per-file floor"*. That third
-staleness is this branch's whole-branch review, and the interval since O98 was
-just over a week.
+staleness was found by the whole-branch review of style pass ③ (#165), and the
+interval since O98 was just over a week.
 
-So 108 rather than 101: seven of margin over the 115 measured, which is enough
-for a deliberate exclusion — beside the three test-and-declaration patterns, the
-`exclude` list names `main.tsx`, `label.tsx`, `browser-setup.ts` and the
-`src/testing/**` directory, each with a reason — and not so much that dropping a
-directory passes. The right-hand columns above are the proof, re-run at all four
-values.
+**At `minFiles: 108` the count did not either, a fourth time.** By 2026-10-28
+the clean report held 168 files and the near miss **154**, so 108 tolerated 60
+files leaving the gate rather than seven, and the middle row passed a fourth
+time, vitest green on all four thresholds and `coverage-floor` printing *"154
+files (floor requires 108), all above the per-file floor"*. That fourth
+staleness was found in review on the web tests tree's branch.
 
-**108 is derived, not scaled.** Scaling 59 by 115/66 gives 103, which would
-catch 101 — but with two files of room rather than seven, a margin nobody
-measured, the same shortfall scaling gave last time. The measured derivation is
-the same arithmetic as every time before: clean tree 115, near miss 101, and the
-fourteen between them split seven and seven. That it lands on the same split as
-2026-08-14 and 2026-09-11 is structural rather than lucky — the near miss *is*
+So 161 rather than 108: seven of margin over the 168 measured, which is enough
+for a deliberate exclusion — the `exclude` list gives each file it names a
+reason — and not so much that dropping a directory passes. At 161 the middle
+row fails, *"lists 154 file(s) for web/src, fewer than the 161 this gate
+requires"*, and the clean tree passes at *"168 files (floor requires 161)"*;
+the right-hand columns above are the same proof at 2026-09-19's counts.
+
+**161 is derived, not scaled.** Scaling an older floor by the tree's growth
+leaves whatever room the ratio happens to give between the near miss and the
+floor, a margin nobody measured. The measured derivation is the same arithmetic
+as every time before: clean tree 168, near miss 154, and the fourteen between
+them split seven and seven. That it lands on the same split as 2026-08-14,
+2026-09-11 and 2026-09-19 is structural rather than lucky — the near miss *is*
 `src/modules` leaving the gate, and that directory held 14 files then and holds
 14 now, so the gap it opens has not widened with the tree, only the tree around
-it has. `src/modules` is also the only subdirectory of `src` in the report
-(`src/testing` is excluded, `__screenshots__` holds no source), so "drop a
-directory" has exactly one meaning here.
+it has. `src/modules` is also the only subdirectory of `src` in the report, so
+"drop a directory" has exactly one meaning here.
 
 **A fixed count against a growing tree loosens on its own**, which is the one
 thing the original derivation got wrong — it said "growth only ever moves the
 count the safe way", and that is true of the count and false of the *gap* between
 the count and the number under it. Re-run the three rows when web/src grows by
 roughly ten files, and check the property ("the near miss still trips it") rather
-than the reading ("the count is still above the floor"). Three times now the
+than the reading ("the count is still above the floor"). Four times now the
 count was above the floor at the moment the floor had stopped working, and the
-third time took a more dangerous shape than the first two: at 2026-08-14 and
-2026-09-11 the near miss cleared the stale floor comfortably (52 against 50,
-then 94 against 59), but at 2026-09-19 it landed exactly on the stale floor (101
-against 101) — one file's difference from tripping it, and nothing about a
-green exit code says which side of that line a run is on.
+third time took a more dangerous shape than the others: at 2026-08-14,
+2026-09-11 and 2026-10-28 the near miss cleared the stale floor comfortably (52
+against 50, 94 against 59, then 154 against 108), but at 2026-09-19 it landed
+exactly on the stale floor (101 against 101) — one file's difference from
+tripping it, and nothing about a green exit code says which side of that line a
+run is on.
 **If a deliberate exclusion ever does trip this, that is the check working**:
 re-derive the number beside the exclusion rather than widening it on reflex.
 
@@ -1036,7 +1043,7 @@ minimums:
 
 | format | files measured | `minFiles` |
 | ------ | -------------: | ---------: |
-| istanbul (web) | 115 | 108 |
+| istanbul (web) | 168 | 161 |
 | llvm-cov (Rust) | 82 | 40 |
 
 **A fifth column, because the fourth stopped being true and nothing said so.**
@@ -1133,11 +1140,16 @@ every push.
 What `jsdom` structurally cannot see stays in the `browser` project and stays
 outside the gate: it has no layout engine, so `getBoundingClientRect` returns
 zeroes, and no real `HTMLImageElement.decode()` — the seam the whole page-turn
-mechanism is built on. `check-all.sh` runs those six tests locally and names
-them as unmeasured when no Chromium is present. `src/testing/**` is excluded
-from coverage for the matching reason: its `rerender` half is reachable only
-from the `browser` project, so counting it would park test infrastructure
-permanently short of 100% for a structural reason rather than an untested one.
+mechanism is built on. `check-all.sh` runs those tests locally and names them
+as unmeasured when no Chromium is present.
+
+The three projects find their files in `web/tests/`, which mirrors `web/src/`,
+and a file's suffix picks its project: `node` runs `*.test.ts`, `jsdom` runs
+`*.test.tsx`, and `browser` runs `*.browser.test.tsx`, with
+`*.scrollbars.browser.test.tsx` in a second Chromium launch that shows
+scrollbars. A test file under `src/` would match none of them and never run,
+so `tests/srcHoldsNoTests.test.ts` fails while one is there, naming it.
+Coverage measures `src/` alone, so nothing under `tests/` is counted as source.
 
 ## The one documentation claim a gate can check
 
@@ -1237,8 +1249,9 @@ The Rust half has always been checked — `cargo fmt --all -- --check` exits 1 o
 mangled Rust, also measured — so the gap was one-sided and nothing said so.
 
 `biome` now covers both halves of the `web` job's first step: `pnpm -C web run
-lint` is `biome check ./src`, which is formatting *and* lint in one command, so
-the CI step needed no change. `oxlint` is gone, along with `.oxlintrc.json`.
+lint` is `biome check ./src ./tests`, which is formatting *and* lint in one
+command, so the CI step needed no change. `oxlint` is gone, along with
+`.oxlintrc.json`.
 
 **The config file is `biome.jsonc`, and the extension is load-bearing.** A
 `biome.json` containing comments is silently discarded — biome falls back to its
@@ -1340,8 +1353,10 @@ left it alone.
 `web` runs on `node:26-bookworm`, not one of the dual-toolchain images below,
 and that is the point. Everything the job tests is pure TypeScript: the
 reading model sits behind a `Resolver` interface, and only `resolver.ts`
-imports `taiyaku-wasm` **as a value** — no test imports `resolver.ts` at all,
-so `vitest` never loads it. `reading.ts` and `fixtures.ts` import only
+imports `taiyaku-wasm` **as a value**. The one test that loads `resolver.ts`,
+`resolver.test.ts`, mocks `taiyaku-wasm` before it does, and the tests that
+would reach it through `App.tsx` mock `resolver.ts` or `App.tsx` itself, so
+`vitest` never loads the binding. `reading.ts` and `fixtures.ts` import only
 `resolver.ts`'s *types* (`import type`), which is enough for `typecheck` to
 need the file but not enough to need the value it wraps. Building the binding
 here would still mean adding a dual-toolchain image or a `cargo install

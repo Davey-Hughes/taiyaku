@@ -7993,8 +7993,8 @@ the fingerprint cache rather than decoding anything:
 
 populates `.taiyaku-cache` for a pair; with the cache warm, the shift scan and
 the parity simulation are arithmetic over `taiyaku.json` and those hashes.
-`web/src/alignedPairs.test.ts` pins the derivation itself, and
-`web/src/cohort.test.ts` the barrier.
+`web/tests/alignedPairs.test.ts` pins the derivation itself, and
+`web/tests/cohort.test.ts` the barrier.
 
 ## Why page turns were slow, and the two things that were not the cause
 
@@ -17287,9 +17287,10 @@ asks for there was not looked into. *(Looked into under O113, below: it is not.
 Fit-whole asks for `?w=1024` there, and the `?w=1536` page was a superseded
 decode drawn after `0`.)*
 
-Each now ends in an `act`-scoped settle — `flush()` from `testing/async.ts` in
-the route tests, the file's own `settle()` in the reader tests — with nothing
-asserted after it, so no verdict can move; the table's last row is its effect.
+Each now ends in an `act`-scoped settle — `flush()` from
+`tests/support/async.ts` in the route tests, the file's own `settle()` in the
+reader tests — with nothing asserted after it, so no verdict can move; the
+table's last row is its effect.
 *(O113 has since given one of the seven, "= and - and 0", an assertion after
 its settle: see below.)*
 
@@ -23972,7 +23973,7 @@ is marked as the lane's.
 
 **O158: what the scan reads.** `classNames.test.ts` reads the non-test
 `.tsx` files as text, comments stripped with the same tokenising pattern as
-`colourLiterals.test.ts`, and the stylesheets through `testing/css.ts`'s
+`colourLiterals.test.ts`, and the stylesheets through `tests/support/css.ts`'s
 `rules()`. The lane's count of what it reads, outside comments: 447
 `className` attributes in 49 non-test `.tsx` files, 416 of them
 `className="…"` and 31 `className={…}`. A plain `rg -c className` gives 450
@@ -24306,7 +24307,7 @@ account page. Each first asserts that every `.field` label it mounts computes
 `text-transform: uppercase`, then the list of roles and names. A jsdom case
 beside each of the seven components — two for `Account`, page and panel —
 holds each control's `aria-label` to its label's own words through
-`testing/fields.ts`.
+`tests/support/fields.ts`.
 
 **Watched failing**, by the lane's script run again on `7b8c1bb8`:
 
@@ -25868,7 +25869,7 @@ and back read 54 px of the rail moved and turned no page, the press carried
 in from outside read 1 px, and a click turned to its tile.
 
 **A real flick in a test.** Chromium stamps a mouse event with the time it
-is sent with, so `web/src/testing/mouse.ts` can clock a flick: its moves are
+is sent with, so `web/tests/support/mouse.ts` can clock a flick: its moves are
 15 px each and stamped 15 ms apart whatever the machine does, the speed the
 page reads is 1 px a millisecond, and the cases hold 325 px on to 2 px. The same review
 put a 300 ms stall before the release and 80 ms between moves, and the
@@ -25993,7 +25994,7 @@ set by writing `data-theme` on `<html>`, not through the app's own control. A
 screenshot of each was kept; the Chromium one with `paper` under a light
 colour scheme was looked at, and shows dark bars with light text.
 
-**The test.** `web/src/builtStylesheet.test.ts` builds `src/index.css` alone
+**The test.** `web/tests/builtStylesheet.test.ts` builds `src/index.css` alone
 with the project's config and reads the one stylesheet that comes out: each of
 the thirteen tokens `tokens.css` writes as a pair is declared once, as a
 `light-dark()`, and the file names neither switch property. A plugin logging

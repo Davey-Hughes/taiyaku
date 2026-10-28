@@ -364,9 +364,9 @@ else
 fi
 
 # --- the `web` job ---
-# The job this script did not have until 2026-08-07. `pnpm -C web run lint` is `biome check ./src`,
-# which is formatting *and* lint in one command — see `docs/ci.md`, "Formatting, and the tool that
-# checks it".
+# The job this script did not have until 2026-08-07. `pnpm -C web run lint` is
+# `biome check ./src ./tests`, which is formatting *and* lint in one command — see `docs/ci.md`,
+# "Formatting, and the tool that checks it".
 #
 # **The lockfile *is* checked here, and it did not used to be.** `docs/ci.md` carried this as a
 # permanent gap: CI's install builds `node_modules` from nothing, while running the same command
@@ -422,7 +422,7 @@ else
     # They exist for what neither `node` nor `jsdom` can answer: `jsdom` has no
     # layout engine and no real `HTMLImageElement.decode()`, and every defect
     # this reader has shipped in the page area was visual. See
-    # `web/src/PageView.browser.test.tsx`.
+    # `web/tests/PageView.browser.test.tsx`.
     if [ ! -d "${HOME}/.cache/ms-playwright" ]; then
       note_skip "the browser tests (no Chromium — run \`pnpm -C web exec playwright install chromium\`)"
     else

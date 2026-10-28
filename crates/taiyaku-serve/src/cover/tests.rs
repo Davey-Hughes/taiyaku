@@ -925,7 +925,7 @@ fn long_edge_of(bytes: &[u8]) -> u32 {
 /// None of them can see its *values* change.
 ///
 /// `web/src/tileSize.ts`'s `TILE_LADDER` is documented to hold the same three
-/// numbers, and `web/src/tileSize.test.ts` pins its half the same way this
+/// numbers, and `web/tests/tileSize.test.ts` pins its half the same way this
 /// test pins this side. Nothing before this test pinned this side, so the two
 /// could drift and every test on both sides would stay green: a rung present
 /// on one side only is not rejected — `routes.rs::get_thumb`'s `tile_edge`

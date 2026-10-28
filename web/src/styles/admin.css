@@ -2625,7 +2625,7 @@
    coarse)` and reports no `(pointer: fine)` at all, so this block was live
    while they were read. The project's vitest browser project is not that
    context; a test there can still switch this block on in place, as
-   `testing/pointer.ts`'s `coarseRulesOn` does, to measure it. */
+   `tests/support/pointer.ts`'s `coarseRulesOn` does, to measure it. */
 @media (pointer: coarse) {
   /* **This block carried the repo's only CSS `biome-ignore` until ⑤c's
      whole-branch review, and the review removed the need for it.** The
@@ -2775,7 +2775,7 @@
      drawn box. `docs/notes.md` (O157) measured each grown box against the
      other controls' drawn boxes for all three rows in a touch context at
      390px, and `Config.browser.test.tsx` switches this block on in place
-     (`testing/pointer.ts`'s `coarseRulesOn`) and measures the
+     (`tests/support/pointer.ts`'s `coarseRulesOn`) and measures the
      configuration tabs' targets against the way up beneath them.
 
      **The way up from a page beneath a table or from the licence page, the

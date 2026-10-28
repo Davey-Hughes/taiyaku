@@ -12,11 +12,17 @@ From this directory:
 pnpm install --frozen-lockfile
 pnpm run build      # tsc -b && vite build
 pnpm run typecheck  # tsc -b, no bundling — what CI runs
-pnpm run test       # vitest run
+pnpm run test       # vitest run --project node: the node project alone
 ```
 
 From the repository root, the same commands take `-C web` — which is the form
 `scripts/check-all.sh` and the CI workflow use, since they run from there.
+
+The tests are in `tests/`, which mirrors `src/`: `src/reads.ts` is tested in
+`tests/reads.test.ts`, and the helpers only tests use are in `tests/support/`.
+A file's suffix picks the vitest project that runs it (`vite.config.ts`), and
+`tests/srcHoldsNoTests.test.ts` fails if a test file is left in `src/`, where
+none of them would find it.
 
 `pnpm run dev` proxies `/api` and `/opds` to `taiyaku serve` (default
 `http://127.0.0.1:8080`, override with `TAIYAKU_SERVE`) — see `vite.config.ts`.
@@ -88,8 +94,10 @@ creating a dangling symlink rather than failing or copying stale content. See
 `file:` and what the latter did instead.
 
 This is also why CI does not need a Rust or wasm toolchain: `resolver.ts` is
-the only file that imports `taiyaku-wasm` as a *value*, and no test imports
-`resolver.ts` at all. `pnpm run typecheck` does still open
+the only file that imports `taiyaku-wasm` as a *value*, and no test loads the
+binding. `resolver.test.ts` mocks `taiyaku-wasm` before it imports
+`resolver.ts`, and the tests that would reach it through `App.tsx` mock
+`resolver.ts` or `App.tsx` itself. `pnpm run typecheck` does still open
 `resolver.ts` — other modules import its *types* — but its one `taiyaku-wasm`
 import is marked `@ts-ignore` for exactly the case where `pkg/` doesn't exist
 yet, so a missing package degrades the typecheck rather than failing it. See
