@@ -19,7 +19,8 @@
  * **The series is read through the store** (`usePage`), so a return draws
  * what was kept in its first render and reads it again, and a move to a
  * series not kept draws nothing of the one left while it loads. The chosen
- * edition is `?edition=` (spec 2026-10-28 §5.1), so that Back brings it back.
+ * edition is `?edition=` (spec `2026-10-28-loading-library-design.md` §5.1), so
+ * that Back brings it back.
  */
 import { useRef, useState } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router'

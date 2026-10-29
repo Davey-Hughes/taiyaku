@@ -14,12 +14,12 @@
  * further key.
  *
  * **This is the one place a view bends `usePage`'s first-visit rule** (spec
- * 2026-10-28 §6.2). While a typed query waits or is out, what was drawn when
- * it was sent stays drawn, with no wait line, so a key never blanks the
- * hits; the next query's hits replace them in one step. An arrival draws
- * nothing of the query before it, as a first visit draws nothing of another
- * page: what is kept for it, in the render it arrives in, or nothing and
- * then `Loading…`.
+ * `2026-10-28-loading-library-design.md` §6.2). While a typed query waits or is
+ * out, what was drawn when it was sent stays drawn, with no wait line, so a key
+ * never blanks the hits; the next query's hits replace them in one step. An
+ * arrival draws nothing of the query before it, as a first visit draws nothing
+ * of another page: what is kept for it, in the render it arrives in, or nothing
+ * and then `Loading…`.
  *
  * **What the tokeniser makes possible here**, and what it does not: migration
  * 8's `trigram` index answers any substring of three characters or more in

@@ -36,8 +36,9 @@ import { useDocumentTitle } from './title'
 /**
  * The reader, keyed by the slug in the URL. Its exits (the top bar's
  * Library button, its key, and the failed load's way back) return to the
- * last Library view drawn in this tab, at its scroll (spec 2026-10-28
- * §5.2), and to the top of `/` where none was.
+ * last Library view drawn in this tab, at its scroll (spec
+ * `2026-10-28-loading-library-design.md` §5.2), and to the top of `/` where
+ * none was.
  */
 function Reader() {
   const { work } = useParams()

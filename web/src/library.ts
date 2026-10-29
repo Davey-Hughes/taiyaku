@@ -301,7 +301,7 @@ export function sorted(series: SeriesCard[], sort: Sort): SeriesCard[] {
 /**
  * The Library view's chip and sort, which its address holds as `?show=` and
  * `?sort=` so that Back, a link and the sidebar's library switch bring them
- * back (spec 2026-10-28 §5.1).
+ * back (spec `2026-10-28-loading-library-design.md` §5.1).
  */
 export interface View {
   chip: Chip

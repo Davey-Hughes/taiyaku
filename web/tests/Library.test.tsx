@@ -722,9 +722,9 @@ describe('the library screen', () => {
   })
 
   /**
-   * **The grid and home are read through the store** (spec 2026-10-28
-   * §6.1): a first visit waits for both, a return draws what was kept and
-   * reads it again.
+   * **The grid and home are read through the store** (spec
+   * `2026-10-28-loading-library-design.md` §6.1): a first visit waits for both,
+   * a return draws what was kept and reads it again.
    */
   describe('the view, read through the store', () => {
     /**
@@ -1002,9 +1002,9 @@ describe('the library screen', () => {
   })
 
   /**
-   * **The chip and the sort are in the address** (spec 2026-10-28 §5.1):
-   * `?show=` and `?sort=`, the defaults left out, each press written with
-   * `replace`.
+   * **The chip and the sort are in the address** (spec
+   * `2026-10-28-loading-library-design.md` §5.1): `?show=` and `?sort=`, the
+   * defaults left out, each press written with `replace`.
    */
   describe('the chip and the sort, in the address', () => {
     /** The address, its navigation state and how it was arrived at. */
@@ -2093,9 +2093,10 @@ describe('the search bar — spec §2', () => {
   })
 
   /**
-   * **The hits are read through the store** (spec 2026-10-28 §6.2): an
-   * arrival draws what is kept at once and reads it again, or reads at once
-   * with nothing kept; typing keeps its delay and the hits drawn.
+   * **The hits are read through the store** (spec
+   * `2026-10-28-loading-library-design.md` §6.2): an arrival draws what is kept
+   * at once and reads it again, or reads at once with nothing kept; typing
+   * keeps its delay and the hits drawn.
    */
   describe('the hits, read through the store', () => {
     /**

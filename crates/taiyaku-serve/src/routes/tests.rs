@@ -5007,7 +5007,8 @@ fn cache_control(headers: &axum::http::HeaderMap) -> &str {
 /// `COVER_CACHE_CONTROL` must say, checked as directives rather than against
 /// the constant, which a comparison with itself can never catch changing.
 /// `private` because a cover is answered only to an account whose grants show
-/// it, so a shared cache must not hold it (spec 2026-10-28 §4.5).
+/// it, so a shared cache must not hold it (spec
+/// `2026-10-28-loading-library-design.md` §4.5).
 fn assert_kept_for_good_privately(policy: &str, what: &str) {
     let directives: Vec<&str> = policy.split(',').map(str::trim).collect();
     for present in ["private", "immutable", "max-age=31536000"] {

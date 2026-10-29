@@ -1,8 +1,8 @@
 /**
  * Back to the Library view or a series page lands at the scroll it was left
  * at, and the reader's way out returns to the last Library view at its
- * scroll (spec 2026-10-28 §5.2). The two views call `useKeptScroll`; the
- * reader's exits read `lastLibraryAddress`.
+ * scroll (spec `2026-10-28-loading-library-design.md` §5.2). The two views call
+ * `useKeptScroll`; the reader's exits read `lastLibraryAddress`.
  *
  * **Kept per history entry**, by react-router's `location.key`, in memory
  * for the tab: a reload starts at the top. A position is saved as the

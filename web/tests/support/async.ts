@@ -3,13 +3,12 @@ import { act } from 'react'
 /**
  * A promise with its settlement handed back, for holding a request open.
  *
- * **Why these screens need one.** Every list screen here guards its `.then`
- * with `if (cancelled) return` or `if (seq !== latest.current) return`,
- * because two reads are routinely in flight and the server need not answer
- * them in order. A mock that resolves immediately can never stage the case
- * those guards exist for: the answers arrive in call order, the guard is
- * never true, and the branch is never taken. Holding the *first* call open
- * and settling it last is the only way to reach it.
+ * Two reads can be in flight at once and the server need not answer them in
+ * order, so the code guards against an answer that is no longer wanted
+ * (`if (cancelled) return`, `if (seq !== latest.current) return`). A mock
+ * that resolves at once answers in call order, so the guard is never true
+ * and its branch never taken: holding the *first* call open and settling it
+ * last is the only way to reach it.
  */
 export function deferred<T>(): {
   promise: Promise<T>

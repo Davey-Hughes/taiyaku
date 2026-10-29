@@ -22,8 +22,9 @@ import { mount } from './support/mount'
  * Back to the Library view or a series page, and the reader's way out,
  * with real scrolling, under the router the app runs (`BrowserRouter`), at
  * a desktop's width, where `<main>` scrolls, and a phone's, where the
- * document does (spec 2026-10-28 §5.2). Every offset is read from both
- * scrollers, so a case says which of the two moved as well as how far.
+ * document does (spec `2026-10-28-loading-library-design.md` §5.2). Every
+ * offset is read from both scrollers, so a case says which of the two moved as
+ * well as how far.
  *
  * The app's routes are the real ones; the reader is a stand-in whose one
  * button is the exit the top bar's Library button, its key and the failed

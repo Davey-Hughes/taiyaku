@@ -21,16 +21,16 @@
  * page says there is no such library.
  *
  * **Beside the Library view, a library's link keeps its chip and sort**
- * (spec 2026-10-28 §5.1): the link is a push to that library's page, which
- * would otherwise open at All and Title, so a switch of library would drop
- * what the reader chose. Nothing else is carried: a query belongs to the
- * library searched. The heading opens the defaults.
+ * (spec `2026-10-28-loading-library-design.md` §5.1): the link is a push to
+ * that library's page, which would otherwise open at All and Title, so a switch
+ * of library would drop what the reader chose. Nothing else is carried: a query
+ * belongs to the library searched. The heading opens the defaults.
  *
  * **Every link lands at the top**, the view already drawn included (spec
- * 2026-10-28 §1 and §5.2). A link to the address shown is a replace, so a
- * click adds no entry for Back, and the scroll keeper leaves a replace's
- * scroll where it is, as a chip's press needs; so each link marks its
- * navigation `TO_TOP`.
+ * `2026-10-28-loading-library-design.md` §1 and §5.2). A link to the address
+ * shown is a replace, so a click adds no entry for Back, and the scroll keeper
+ * leaves a replace's scroll where it is, as a chip's press needs; so each link
+ * marks its navigation `TO_TOP`.
  */
 import { Link, useLocation, useSearchParams } from 'react-router'
 import {

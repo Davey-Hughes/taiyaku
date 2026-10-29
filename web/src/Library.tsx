@@ -17,11 +17,11 @@
  * The chips filter and sort **client-side**, over data already held: §7's
  * numbers make a round trip to the server a request for something the browser
  * does instantly. They are in the address all the same, as `?show=` and
- * `?sort=` (spec 2026-10-28 §5.1), so that Back and the sidebar's library
- * switch bring them back; the server is never asked for them. `?library=` is
- * sent to the server for the opposite reason — it changes which rows exist,
- * and which rows exist is the grant's business. It narrows the grid and the
- * continue strip alike (spec F §3).
+ * `?sort=` (spec `2026-10-28-loading-library-design.md` §5.1), so that Back and
+ * the sidebar's library switch bring them back; the server is never asked for
+ * them. `?library=` is sent to the server for the opposite reason — it changes
+ * which rows exist, and which rows exist is the grant's business. It narrows
+ * the grid and the continue strip alike (spec F §3).
  *
  * **The grid and the home lists are read through the store** (`usePage`), as
  * one set, so a return draws what was kept in its first render and reads it

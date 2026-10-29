@@ -535,12 +535,13 @@ describe('Series, the work-level editor', () => {
   })
 
   /**
-   * **A title saved marks the Library views stale** (spec 2026-10-28 §6.4):
-   * the series page drawing the work reads its series again at once, and the
-   * grid, home and search kept beside it are marked, to be read on their next
-   * arrival. Only once the save has answered, and only when it has
-   * succeeded, whether or not it reached the library's documents: a read sent
-   * before would answer with the title from before the save.
+   * **A title saved marks the Library views stale** (spec
+   * `2026-10-28-loading-library-design.md` §6.4): the series page drawing the
+   * work reads its series again at once, and the grid, home and search kept
+   * beside it are marked, to be read on their next arrival. Only once the save
+   * has answered, and only when it has succeeded, whether or not it reached the
+   * library's documents: a read sent before would answer with the title from
+   * before the save.
    */
   describe('a title saved', () => {
     const renamed = 'Go-Toubun no Hanayome, volume 1'
@@ -1064,17 +1065,16 @@ describe('Series, the edition selector', () => {
   })
 
   /**
-   * I8 of the whole-branch review: `Cover.tsx` remembers a failed cover *by
-   * `src`* rather than as a boolean, precisely so a series whose cover URL
-   * changes is retried rather than left broken for the life of the page.
-   * `Series.tsx` feeds the shown edition's `cover` into a `Cover` kept
-   * mounted across an edition change by the `<li key={w.slug}>` above it, so
-   * here the URL changes under a live `Cover` instance, and the
-   * discriminating mutation (`if (failed === src)` → `if (failed !==
-   * undefined)`) leaves the placeholder up forever once any cover has ever
-   * failed, regardless of a later `src` change — so this test must check
-   * both directions: the placeholder appears on failure, and a *different*
-   * URL clears it again.
+   * `Cover.tsx` remembers a failed cover *by `src`* rather than as a
+   * boolean, so a series whose cover URL changes is retried rather than left
+   * broken for the life of the page. `Series.tsx` feeds the shown edition's
+   * `cover` into a `Cover` kept mounted across an edition change by the
+   * `<li key={w.slug}>` above it, so here the URL changes under a live
+   * `Cover` instance, and the discriminating mutation (`if (failed === src)`
+   * → `if (failed !== undefined)`) leaves the placeholder up forever once any
+   * cover has ever failed, regardless of a later `src` change — so this test
+   * must check both directions: the placeholder appears on failure, and a
+   * *different* URL clears it again.
    */
   it('retries a volume cover under a new edition’s URL rather than leaving it broken forever', async () => {
     const host = await settleWith({ editionSelector: true })
@@ -1251,8 +1251,9 @@ describe('Series, the edition selector', () => {
   })
 
   /**
-   * **The chosen edition is in the address** (spec 2026-10-28 §5.1):
-   * `?edition=<key>`, "all" left out, each change written with `replace`.
+   * **The chosen edition is in the address** (spec
+   * `2026-10-28-loading-library-design.md` §5.1): `?edition=<key>`, "all" left
+   * out, each change written with `replace`.
    */
   describe('in the address', () => {
     /** The address and how it was arrived at. */
@@ -1833,9 +1834,10 @@ describe('Series, a load for a series the reader has already left', () => {
 })
 
 /**
- * **The series is read through the store** (spec 2026-10-28 §6.3): a return
- * draws what was kept and reads it again, and a move to a series not kept
- * draws nothing of the one left while the next loads.
+ * **The series is read through the store** (spec
+ * `2026-10-28-loading-library-design.md` §6.3): a return draws what was kept
+ * and reads it again, and a move to a series not kept draws nothing of the one
+ * left while the next loads.
  */
 describe('Series, read through the store', () => {
   const seven: SeriesPage = {
