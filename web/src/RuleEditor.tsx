@@ -45,8 +45,7 @@
  * order.** Several commits can be in flight — a blur that starts a preview,
  * then a click on another rule before it lands — and without this an earlier
  * response arriving later would write a stale impact under a Save button that
- * states a number from it. `searchHits.ts` carries the same counter for the
- * same reason.
+ * states a number from it.
  *
  * **A successful save re-previews the list it just saved, and Save stays
  * held until that lands.** `save` does not
@@ -151,7 +150,13 @@ import type { Root } from './config'
 import type { Inbox } from './curation'
 import { HeldButton } from './HeldButton'
 import { useDrawnWait } from './hooks'
-import { ACCEPTED_PROPOSALS, LIBRARIES, ROOTS, RULES } from './pageReads'
+import {
+  ACCEPTED_PROPOSALS,
+  invalidateLibraryViews,
+  LIBRARIES,
+  ROOTS,
+  RULES,
+} from './pageReads'
 import { PreviewTabs } from './PreviewTabs'
 import { invalidate } from './reads'
 import { RuleForm } from './RuleForm'
@@ -543,8 +548,10 @@ export function RuleEditor() {
         // `created_rule_id`, so the badges are re-read rather than assumed.
         void invalidate(RULES, ACCEPTED_PROPOSALS)
         // The save derived the library again, which can fold works or make
-        // them, so the works Libraries counts for each library are re-read.
+        // them, so the works Libraries counts for each library are re-read,
+        // and the Library views, which draw those works, are marked.
         void invalidate(LIBRARIES)
+        invalidateLibraryViews()
       })
       .catch((err: unknown) => {
         writer.current = undefined

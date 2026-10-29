@@ -8,31 +8,44 @@
 import { createContext, useContext } from 'react'
 import type { LibraryStatus } from './library'
 
+/** What `StatusContext` holds where the status read failed, none kept. */
+export const STATUS_FAILED = 'failed'
+
 /**
  * `undefined` where no shell sits above the reader of this context, and
  * **also while the shell's own fetch is still in flight** — the two are
  * deliberately one value. A screen that has to tell them apart is a screen
  * asking the chrome a question the chrome cannot answer.
  *
- * **`Library` does not wait for it.** Its empty-state branch, but for a
- * `?library=` that is no library id, only fires once both `gridData` and
- * `status` are defined; until then it falls through to the plain
- * `<ul className="grid">`, which — with no rows yet — renders empty. That was
- * already true before this shell existed: `gridData` alone used to gate that
- * branch, and was `undefined` for exactly as long, which is why the
- * `gridData?.unfiled` optional chaining still in that branch exists — it
- * dates from when the branch had to tolerate being read before any data had
- * arrived. This shell only widens that window, for the case where the
- * status request is slower than the grid request. That is acceptable because
- * an empty `<ul>` and a not-yet-rendered empty state look identical — both
- * are nothing on screen — and the empty state is drawn as soon as the status
- * lands.
+ * **`Library`'s grid does not wait for it.** It draws `PageLoading` until its
+ * own reads have answered. Its empty-state branch, but for a `?library=` that
+ * is no library id, only fires once `status` is defined too, so a grid that
+ * answers with no rows while the status is still out falls through to the
+ * plain `<ul className="grid">`, which renders empty. That is acceptable
+ * because an empty `<ul>` and a not-yet-rendered empty state look identical —
+ * both are nothing on screen — and the empty state is drawn as soon as the
+ * status lands.
+ *
+ * **`STATUS_FAILED` where the shell's read failed with no status kept.** It
+ * holds until a read of the status answers, so a screen waiting on the
+ * status, such as `Library`'s search area before it offers the box, stops
+ * waiting rather than wait on a read that may never be sent; `useStatusFailed`
+ * tells it so. `useLibraryStatus` reads it as `undefined`, so a screen that
+ * only draws the status sees the three states as one.
  */
-export const StatusContext = createContext<LibraryStatus | undefined>(undefined)
+export const StatusContext = createContext<
+  LibraryStatus | typeof STATUS_FAILED | undefined
+>(undefined)
 
 /** The libraries this account may read, and whether each has been scanned, once known. */
 export function useLibraryStatus(): LibraryStatus | undefined {
-  return useContext(StatusContext)
+  const status = useContext(StatusContext)
+  return status === STATUS_FAILED ? undefined : status
+}
+
+/** The shell's status read failed, and no status is kept to draw. */
+export function useStatusFailed(): boolean {
+  return useContext(StatusContext) === STATUS_FAILED
 }
 
 /**

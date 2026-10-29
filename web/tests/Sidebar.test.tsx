@@ -1,7 +1,8 @@
 import { act } from 'react'
-import { MemoryRouter } from 'react-router'
+import { MemoryRouter, useLocation, useNavigationType } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AccountMenu } from '../src/AccountMenu'
+import { SCROLL_TO_TOP } from '../src/scrollKeeper'
 import { Sidebar } from '../src/Sidebar'
 import { mount, rerender } from './support/mount'
 
@@ -64,6 +65,103 @@ describe('the sidebar', () => {
     // More stands in for the screens behind it (`AccountMenu.tsx`).
     expect(current(on('/config/libraries'))).toEqual([])
     expect(current(on('/series/3'))).toEqual([])
+  })
+
+  it('marks every link SCROLL_TO_TOP, and makes the one to the address shown a replace', async () => {
+    // The keeper keeps a replace's scroll, as a chip's press needs; the mark
+    // is what lands a click on the view already drawn at the top.
+    function Where() {
+      const location = useLocation()
+      const type = useNavigationType()
+      return (
+        <output>
+          {JSON.stringify([
+            type,
+            location.pathname + location.search,
+            location.state,
+          ])}
+        </output>
+      )
+    }
+    const host = at(
+      <>
+        <Sidebar
+          libraries={[
+            { id: 4, name: 'Manga', scanned: true },
+            { id: 9, name: 'Comics', scanned: true },
+          ]}
+        />
+        <Where />
+      </>,
+      '/?library=9&show=unread',
+    )
+    const follow = async (selector: string) => {
+      await act(async () => {
+        host.querySelector<HTMLAnchorElement>(selector)?.click()
+      })
+      return JSON.parse(host.querySelector('output')?.textContent ?? 'null')
+    }
+    const top = { [SCROLL_TO_TOP]: true }
+    expect([
+      await follow('a[href="/?library=9&show=unread"]'),
+      await follow('h2 a'),
+      await follow('h2 a'),
+      await follow('a[href="/?library=4"]'),
+    ]).toEqual([
+      ['REPLACE', '/?library=9&show=unread', top],
+      ['PUSH', '/', top],
+      ['REPLACE', '/', top],
+      ['PUSH', '/?library=4', top],
+    ])
+  })
+
+  describe('beside the Library view, its chip and sort on each library’s link', () => {
+    const on = (path: string) =>
+      at(
+        <Sidebar
+          libraries={[
+            { id: 4, name: 'Manga', scanned: true },
+            { id: 9, name: 'Comics', scanned: true },
+          ]}
+        />,
+        path,
+      )
+    const hrefs = (host: HTMLElement) =>
+      [...host.querySelectorAll('.sidebar-libraries a')].map((a) =>
+        a.getAttribute('href'),
+      )
+    const heading = (host: HTMLElement) =>
+      host.querySelector('h2.sidebar-heading a')?.getAttribute('href')
+
+    it('carries ?show= and ?sort= to each library, and nothing to the heading', () => {
+      const multi = on('/?show=multi')
+      expect(hrefs(multi)).toEqual([
+        '/?library=4&show=multi',
+        '/?library=9&show=multi',
+      ])
+      expect(heading(multi)).toBe('/')
+      const both = on('/?library=9&show=unread&sort=added&q=oshi')
+      expect(hrefs(both)).toEqual([
+        '/?library=4&show=unread&sort=added',
+        '/?library=9&show=unread&sort=added',
+      ])
+      expect(heading(both)).toBe('/')
+    })
+
+    it('carries no value that names no chip or sort, and nothing from a screen that is not the Library view', () => {
+      expect(hrefs(on('/?show=bogus&sort=added'))).toEqual([
+        '/?library=4&sort=added',
+        '/?library=9&sort=added',
+      ])
+      expect(hrefs(on('/?show=multi&sort=bogus'))).toEqual([
+        '/?library=4&show=multi',
+        '/?library=9&show=multi',
+      ])
+      expect(hrefs(on('/series/3?show=multi&sort=added'))).toEqual([
+        '/?library=4',
+        '/?library=9',
+      ])
+    })
   })
 })
 
@@ -168,7 +266,7 @@ describe('More, at the sidebar’s foot', () => {
 
   it('draws no count at all until one has been read', () => {
     // Never fetched, still in flight and failed are one value, as
-    // `StatusContext`'s doc explains for the same three states.
+    // `useLibraryStatus` reads them for the same three states.
     const host = at(<AccountMenu admin={true} />)
     expect(moreButton(host).querySelector('.count')).toBeNull()
     const proposals = openMore(host).querySelector('a[href="/proposals"]')

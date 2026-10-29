@@ -257,10 +257,18 @@ async fn a_series_that_does_not_exist_is_a_404() {
 #[tokio::test]
 async fn one_series_carries_the_series_and_its_works() {
     let (router, state, _fixture) = test_support::router_over_a_scanned_work_in_a_series();
-    let series_id: i64 = {
+    let (series_id, slug, key, sha256): (i64, String, String, String) = {
         let conn = state.library.conn();
-        conn.query_row("SELECT id FROM series LIMIT 1", [], |row| row.get(0))
-            .expect("reads the series")
+        conn.query_row(
+            "SELECT w.series_id, w.slug, e.key, m.sha256
+               FROM work w JOIN edition e ON e.work_id = w.id
+               JOIN member m ON m.edition_id = e.id
+              WHERE m.pages > 0
+              ORDER BY w.volume, w.id, e.key, m.ordinal LIMIT 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .expect("reads the series and its first page's member")
     };
 
     let body = get_json(&router, &format!("/api/library/series/{series_id}")).await;
@@ -268,7 +276,10 @@ async fn one_series_carries_the_series_and_its_works() {
     assert_eq!(body["series"]["title"], "Scanned");
     assert_eq!(
         body["series"]["cover"],
-        format!("/api/library/series/{series_id}/cover")
+        format!(
+            "/api/works/{slug}/{key}/pages/0/thumb?v={}",
+            crate::cover::cover_version(&sha256, 0)
+        )
     );
 
     let works = body["works"].as_array().expect("works");
@@ -1354,5 +1365,228 @@ async fn no_browse_route_stalls_the_runtime() {
     assert!(
         stalled_on.is_empty(),
         "these took the library on the async worker: {stalled_on:?}"
+    );
+}
+
+/// `address` asked for at the smallest cover size, as the web client's
+/// `coverSources` adds `w` to it.
+fn at_a_cover_size(address: &str) -> String {
+    let join = if address.contains('?') { '&' } else { '?' };
+    format!("{address}{join}w=256")
+}
+
+/// **Every cover address the list answers carry is kept for good by the
+/// thumbnail route**: fetched at a cover size, each is a `200` sent
+/// `COVER_CACHE_CONTROL`, which the route sends only for a `v` equal to the
+/// version of the page it serves. So the hash and the offset an answer
+/// versions its address by are the ones the route locates page 0 in.
+///
+/// The grid's row, a series page's own row, a search hit, and every edition
+/// card of the series page and of home's `added` list. A series row's address
+/// is the `307`'s target with the version added.
+///
+/// Over a scanned library, so the hashes are the scan's and the served
+/// registry is projected from the rows the answers read.
+#[tokio::test]
+async fn every_cover_address_the_list_answers_carry_is_kept_for_good_by_the_thumbnail_route() {
+    let (router, state, _fixture) =
+        test_support::router_over_two_scanned_volumes_of_decodable_pages();
+    let series_id: i64 = {
+        let conn = state.library.conn();
+        conn.query_row("SELECT id FROM series", [], |row| row.get(0))
+            .expect("the fixture's one series")
+    };
+    let grid = get_json(&router, "/api/library/series").await;
+    let one = get_json(&router, &format!("/api/library/series/{series_id}")).await;
+    let hits = get_json(&router, "/api/library/search?q=Hanayome").await;
+    let home = get_json(&router, "/api/library/home").await;
+
+    let address = |what: &str, value: &serde_json::Value| -> (String, String) {
+        let address = value
+            .as_str()
+            .unwrap_or_else(|| panic!("{what}: a cover address, not {value}"));
+        (what.to_string(), address.to_string())
+    };
+    let rows = [
+        address("the grid's row", &grid["series"][0]["cover"]),
+        address("the series page's own row", &one["series"]["cover"]),
+        address("the search hit", &hits["series"][0]["cover"]),
+    ];
+    let mut cards = Vec::new();
+    for (list, works) in [
+        ("the series page", &one["works"]),
+        ("home's added", &home["added"]),
+    ] {
+        let works = works.as_array().unwrap_or_else(|| panic!("{list}: works"));
+        assert_eq!(works.len(), 2, "{list}: both volumes");
+        for work in works {
+            for edition in work["editions"].as_array().expect("editions") {
+                let what = format!("{list}: {} {}", work["slug"], edition["key"]);
+                cards.push(address(&what, &edition["cover"]));
+            }
+        }
+    }
+    assert_eq!(cards.len(), 4, "one edition of each volume, in each list");
+
+    let redirect = get(&router, &format!("/api/library/series/{series_id}/cover")).await;
+    assert_eq!(
+        redirect.status(),
+        axum::http::StatusCode::TEMPORARY_REDIRECT
+    );
+    let target = redirect.headers()[axum::http::header::LOCATION]
+        .to_str()
+        .expect("ascii")
+        .to_string();
+    for (what, address) in &rows {
+        assert_eq!(
+            address.split_once("?v=").map(|(path, _)| path),
+            Some(target.as_str()),
+            "{what}: the 307's target, versioned"
+        );
+    }
+
+    for (what, address) in rows.iter().chain(&cards) {
+        let uri = at_a_cover_size(address);
+        let response = get(&router, &uri).await;
+        let status = response.status();
+        let cache = response
+            .headers()
+            .get(axum::http::header::CACHE_CONTROL)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
+        assert_eq!(
+            (status, cache.as_str()),
+            (
+                axum::http::StatusCode::OK,
+                crate::routes::COVER_CACHE_CONTROL
+            ),
+            "{what}: {uri}"
+        );
+    }
+}
+
+/// A cover address's segments are encoded as `encodeURIComponent` encodes a
+/// component, which leaves `-_.!~*'()` as they are, and its `v` is the cover
+/// version of page 0 of the member named.
+#[test]
+fn a_cover_address_encodes_its_segments_as_encode_uri_component_does() {
+    assert_eq!(
+        super::cover_address("a b_c.d-e", "en (scan)/é!*'~", "abc"),
+        format!(
+            "/api/works/a%20b_c.d-e/en%20(scan)%2F%C3%A9!*'~/pages/0/thumb?v={}",
+            crate::cover::cover_version("abc", 0)
+        )
+    );
+}
+
+/// A member's `sha256` is what its sidecar says, so the version is encoded as
+/// a segment is: a hash holding `&`, `+`, a space or `#` would otherwise end
+/// `v`, or the query, early, or read as other text.
+#[test]
+fn a_cover_address_encodes_its_version() {
+    let version = crate::cover::cover_version("x&y+z #", 0);
+    assert_eq!(
+        super::cover_address("w", "en", "x&y+z #"),
+        format!(
+            "/api/works/w/en/pages/0/thumb?v={}",
+            version
+                .replace('&', "%26")
+                .replace('+', "%2B")
+                .replace(' ', "%20")
+                .replace('#', "%23")
+        )
+    );
+}
+
+/// The address `cover_address`, which the answers call, builds for a hash
+/// that is not hex, as an imported sidecar may hold, is one the thumbnail
+/// route keeps for good.
+#[tokio::test]
+async fn a_cover_address_for_a_hash_that_is_not_hex_is_kept_for_good() {
+    let (state, _fixture) = test_support::state_with_tall_pages_hashed("x&y+z");
+    let router = test_support::authenticating(crate::build_router(state.clone()), &state.library);
+    let uri = at_a_cover_size(&super::cover_address("w", "a", "x&y+z"));
+    let response = get(&router, &uri).await;
+    let cache = response
+        .headers()
+        .get(axum::http::header::CACHE_CONTROL)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    assert_eq!(
+        (response.status(), cache.as_str()),
+        (
+            axum::http::StatusCode::OK,
+            crate::routes::COVER_CACHE_CONTROL
+        ),
+        "{uri}"
+    );
+}
+
+/// A series row's `cover` is null when the series has no cover edition, or
+/// when that edition holds no page; an edition card's is null when it holds no
+/// page. Otherwise each is its page 0's address.
+#[test]
+fn a_cover_with_no_page_zero_is_null() {
+    use taiyaku_library::browse::{CoverTarget, EditionCard, SeriesCard, WorkCard};
+    let target = |page: Option<&str>| CoverTarget {
+        work_id: 7,
+        slug: "w".into(),
+        edition: "en".into(),
+        page_zero_sha256: page.map(str::to_string),
+    };
+    let row = |cover: Option<CoverTarget>| SeriesCard {
+        id: 1,
+        title: "S".into(),
+        works: 1,
+        editions: 1,
+        aligned: 0,
+        cover_work: None,
+        added: 7,
+        unread: 1,
+        cover,
+    };
+    assert_eq!(
+        super::series_json(&row(None))["cover"],
+        serde_json::Value::Null
+    );
+    assert_eq!(
+        super::series_json(&row(Some(target(None))))["cover"],
+        serde_json::Value::Null
+    );
+    assert_eq!(
+        super::series_json(&row(Some(target(Some("abc")))))["cover"],
+        super::cover_address("w", "en", "abc")
+    );
+
+    let card = |key: &str, page: Option<&str>| EditionCard {
+        key: key.into(),
+        label: key.into(),
+        members: 1,
+        pages: 2,
+        missing: 0,
+        page_zero_sha256: page.map(str::to_string),
+    };
+    let work = WorkCard {
+        id: 7,
+        slug: "w".into(),
+        title: "W".into(),
+        volume: Some(1.0),
+        editions: vec![
+            card("en", None),
+            card("fr", Some("abc")),
+            card("raw", Some("def")),
+        ],
+        aligned: false,
+        pages: 2,
+        opens: "en".into(),
+    };
+    let editions = &super::work_json(&work)["editions"];
+    assert_eq!(editions[0]["cover"], serde_json::Value::Null);
+    assert_eq!(editions[1]["cover"], super::cover_address("w", "fr", "abc"));
+    assert_eq!(
+        editions[2]["cover"],
+        super::cover_address("w", "raw", "def")
     );
 }

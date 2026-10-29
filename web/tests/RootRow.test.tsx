@@ -8,6 +8,7 @@ import { deferred, flush } from './support/async'
 import './support/dialog'
 import { holdOf } from './support/held'
 import { mount, rerender } from './support/mount'
+import { keptGrid } from './support/reads'
 import { helpOf, row, section } from './support/settingsRows'
 
 vi.mock('../src/libraries', async (importOriginal) => ({
@@ -678,6 +679,68 @@ describe('RootRow', () => {
     expect(changed).toHaveBeenCalledTimes(1)
     expect(changed).toHaveBeenCalledWith(true)
   })
+
+  // What a scan found changes what the Library views draw; one the server
+  // has no record of may have written some of it before a restart.
+  it.each([
+    [
+      'reports what it found',
+      {
+        scan: {
+          root: '/srv/manga',
+          dirs: 1,
+          files: 2,
+          added: 2,
+          updated: 0,
+          gone: 0,
+          refused: null,
+          unreadable_dirs: [],
+          excluded_dirs: [],
+          excluded_files: 0,
+          bad_exclude_patterns: [],
+          forgotten_by_exclusion: 0,
+        },
+        derive: emptyDerive,
+      } as config.ScanOutcome,
+      false,
+    ],
+    ['the server has no record of', null, true],
+  ] as const)(
+    'marks the Library views stale when its scan ends, as one that %s',
+    async (_, report, noRecord) => {
+      vi.mocked(config.scanStatus).mockResolvedValue({
+        root_id: 3,
+        running: false,
+        elapsed_secs: 2,
+        report,
+        last_scan_at: null,
+        last_scan_status: null,
+      })
+      const grid = await keptGrid()
+      const host = await settle()
+      await act(async () => {
+        press(host, 'Scan directory').click()
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+      expect(host.querySelector('.scanning')).not.toBeNull()
+      expect(grid.stale()).toBe(false)
+      await act(async () => {
+        vi.advanceTimersByTime(config.SCAN_POLL_MS)
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+      expect(host.querySelector('.scanning')).toBeNull()
+      // Which of the two ends the poll took.
+      expect(
+        [...host.querySelectorAll('[role="alert"]')].some((p) =>
+          p.textContent?.includes('no record'),
+        ),
+      ).toBe(noRecord)
+      expect(grid.stale()).toBe(true)
+      expect(grid.sent()).toBe(1)
+    },
+  )
 
   it('keeps a 409’s sentence through a poll that finds the scan still running', async () => {
     vi.mocked(config.startScan).mockRejectedValue(

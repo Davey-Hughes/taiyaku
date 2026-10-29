@@ -332,9 +332,10 @@ export const pageUrl = (
  * rung there would fetch 320 to fix nothing), and what an account that may not
  * stream is given whatever it asks for.
  *
- * `library.ts`'s `workCover` does **not** come through here at all: it builds
- * its own URL against the same tile route and `coverSources` adds a cover-size
- * `?w=` to it. Two callers of one route, sized by two different ladders.
+ * A library cover does **not** come through here at all: the server sends its
+ * address on the same tile route, `?v=` included, and `library.ts`'s
+ * `coverSources` adds a cover-size `w` to it. Two callers of one route, sized
+ * by two different ladders.
  */
 export const thumbUrl = (
   work: string,
@@ -486,8 +487,24 @@ export async function getProgress(
  * bytes of JSON, well under the keepalive request's ~64 KiB total-body
  * budget, so there is no reason to reserve this flag for only the unload
  * path — every write gets the same resilience.
+ *
+ * Each save is held in `savesOut` until it settles, so `progressSaved` can
+ * wait for it.
  */
-export async function putProgress(
+export function putProgress(
+  work: string,
+  progress: StoredProgress,
+): Promise<void> {
+  const save = sendProgress(work, progress)
+  savesOut.add(save)
+  const settled = () => {
+    savesOut.delete(save)
+  }
+  void save.then(settled, settled)
+  return save
+}
+
+async function sendProgress(
   work: string,
   progress: StoredProgress,
 ): Promise<void> {
@@ -499,6 +516,25 @@ export async function putProgress(
   })
   if (!res.ok)
     throw new Error(`writing progress: ${res.status} ${await res.text()}`)
+}
+
+/** The progress saves sent and not yet settled. */
+const savesOut = new Set<Promise<void>>()
+
+/**
+ * Settles once every progress save sent before the call has settled; never
+ * rejects. The Library view's reads wait on it, so a read after reading
+ * answers with the position just saved rather than the one before it; a
+ * failed save has nothing more to wait for, and a save sent after the call
+ * is not this read's to wait for.
+ */
+export async function progressSaved(): Promise<void> {
+  await Promise.allSettled([...savesOut])
+}
+
+/** How many progress saves are out: exported for its tests. */
+export function progressSavesOut(): number {
+  return savesOut.size
 }
 
 /** The notes document and the validator a write has to be conditional on. */

@@ -55,6 +55,15 @@
  * accounts' grants. A change of page marks none of these, so a visit that wrote
  * nothing leaves Rules to draw at once.
  *
+ * **A removal or a move marks the Library views stale**
+ * (`invalidateLibraryViews`), so a Library view arriving afterwards waits
+ * for its own read: a removal takes works out of them, and a move takes
+ * works from one library's views to another's. A make adds directories
+ * that hold no works until they are scanned, and a rename changes a name no
+ * view's answer carries, so neither marks them. A change
+ * of page marks none of them, which is why each write marks them and
+ * `reread` does not.
+ *
  * **What a write takes away is dropped from what is drawn at once**, and in
  * the same transition as the move to the page above it, so the page that
  * asked is never drawn over a library or directory that is gone.
@@ -97,6 +106,7 @@ import { sentenceOf } from './message'
 import { NewLibrary } from './NewLibrary'
 import {
   ACCEPTED_PROPOSALS,
+  invalidateLibraryViews,
   LIBRARIES as LIST,
   LIBRARY_STATUS,
   ROOTS,
@@ -315,6 +325,7 @@ export function Libraries() {
       // cascades, the rules scoped to them, the rule each accepted proposal
       // that wrote one names, and every account's grant of the library.
       void invalidate(ROOTS, RULES, ACCEPTED_PROPOSALS, USER_LIST)
+      invalidateLibraryViews()
       answered(from, { at: LIBRARIES, name, derive: answer.derive }, (held) =>
         held.filter((one) => one.id !== id),
       )
@@ -340,6 +351,7 @@ export function Libraries() {
       // rules scoped to it and the rule each accepted proposal that wrote
       // one names.
       void invalidate(ROOTS, RULES, ACCEPTED_PROPOSALS)
+      invalidateLibraryViews()
       answered(
         from,
         {
@@ -370,6 +382,7 @@ export function Libraries() {
       // list carries: which it changed is the server's to know. A move that
       // emptied its library removed it, and every account's grant of it.
       void invalidate(ROOTS, ...(gone ? [USER_LIST] : []))
+      invalidateLibraryViews()
       const left = drawn.current?.find((one) => one.id === id)
       answered(
         from,

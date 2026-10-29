@@ -20,6 +20,7 @@ import {
 import { libraryScan } from '../src/pageReads'
 import { entryOf, readSet, subscribe } from '../src/reads'
 import { mount, rerender } from './support/mount'
+import { keptGrid } from './support/reads'
 import { expectRowsWired, row, section } from './support/settingsRows'
 import { pass, WAIT_DRAWN_AFTER_MS } from './support/wait'
 
@@ -695,5 +696,38 @@ describe('DirPage, scans and removals across its library exclude each other', ()
     await tick()
     await tick()
     expect(api.libraryScanStatus).toHaveBeenCalledTimes(1)
+  })
+})
+
+/**
+ * What a scan found changes what the Library views draw. A scan of another
+ * directory that this page saw running marks them stale once a poll finds
+ * it over; a first read that finds none running saw no scan end, and marks
+ * nothing.
+ */
+describe('DirPage, another directory’s scan and the Library views', () => {
+  it('marks them stale when a sibling’s scan it saw running ends', async () => {
+    const grid = await keptGrid()
+    vi.mocked(api.libraryScanStatus).mockResolvedValue(scanningIn(manga(), 1))
+    const { host } = await shown()
+    expect(actionsHeld(host)).toEqual(['held', 'held', 'held'])
+    await tick()
+    expect(api.libraryScanStatus).toHaveBeenCalledTimes(2)
+    expect(grid.stale()).toBe(false)
+
+    vi.mocked(api.libraryScanStatus).mockResolvedValue(idle(7))
+    await tick()
+    expect(actionsHeld(host)).toEqual(['free', 'free', 'free'])
+    expect(grid.stale()).toBe(true)
+    expect(grid.sent()).toBe(1)
+  })
+
+  it('marks none of them stale when its first read finds no other directory scanning', async () => {
+    const grid = await keptGrid()
+    const { host } = await shown()
+    await tick()
+    expect(actionsHeld(host)).toEqual(['free', 'free', 'free'])
+    expect(api.libraryScanStatus).toHaveBeenCalledTimes(1)
+    expect(grid.stale()).toBe(false)
   })
 })

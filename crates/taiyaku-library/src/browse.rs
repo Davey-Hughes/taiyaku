@@ -156,6 +156,11 @@ pub struct SeriesCard {
     /// `unread > 0` was the alternative and leaves a 14-volume series in the
     /// chip forever after volume 1.
     pub unread: i64,
+    /// The work and edition this series' cover is drawn from, chosen as
+    /// [`cover_work`] chooses it for the access the listing reads, which a
+    /// `library` narrows; `None` when no edition of the series holds a member
+    /// that access may see.
+    pub cover: Option<CoverTarget>,
 }
 
 /// One edition of one work, as a series page or a work page shows it.
@@ -168,6 +173,9 @@ pub struct EditionCard {
     /// How many of `members` no longer exist on disk — spec C1 §8's empty
     /// state. See [`missing_by_edition`].
     pub missing: usize,
+    /// The `sha256` of the member holding this edition's page 0, or `None` when
+    /// none of its members holds a page. See [`page_zero_hash`].
+    pub page_zero_sha256: Option<String>,
 }
 
 /// One work, with only the editions this caller may see.
@@ -438,6 +446,61 @@ fn aligned_clause(access: &Access) -> String {
     format!("EXISTS (SELECT 1 FROM alignment a WHERE a.work_id = w.id AND {pair})")
 }
 
+/// The id of series `s`'s cover edition for this caller, as a scalar subquery:
+/// NULL when no edition of the series holds a member the caller may see.
+///
+/// **One ordering for both of [`cover_work`]'s steps.** Only editions with a
+/// visible member are ranked, so a hand-set cover the grant hides is not a
+/// candidate; the hand-set work's editions rank first, then the lowest
+/// `volume`, `w.id` as the tiebreak so volume-less works answer the same row
+/// every time, then the first key. [`series`] and [`cover_target`] both read
+/// this, so for one access the grid and the `307` cannot choose different
+/// covers; a grid narrowed by `library` reads a narrower access, and its
+/// cover can differ from the `307`'s.
+///
+/// Requires `s` in scope, and is placed where the caller has no `cs`, `w`, `e`
+/// or `m` of its own, since it names its own. Contributes one
+/// [`member_clause`] group.
+///
+/// **The `ORDER BY` reads its own `series cs`, never the caller's `s`.**
+/// SQLite 3.40, the version CI and the image link, cannot resolve an outer
+/// column in a subquery's `ORDER BY` and refuses the statement with `no such
+/// column`; later versions accept it, so a local run does not show it.
+fn cover_edition(access: &Access) -> String {
+    let joined = member_clause(access);
+    format!(
+        "(SELECT e.id FROM series cs
+           JOIN work w ON w.series_id = cs.id
+           JOIN edition e ON e.work_id = w.id
+          WHERE cs.id = s.id
+            AND EXISTS (SELECT 1 FROM member m WHERE m.edition_id = e.id{joined})
+          ORDER BY (w.id IS cs.cover_work_id) DESC, w.volume, w.id, e.key
+          LIMIT 1)"
+    )
+}
+
+/// The `sha256` of the member holding edition `alias`'s page 0, as a scalar
+/// subquery: NULL when none of its members holds a page.
+///
+/// Page 0 is in the first member by `ordinal` that holds pages, where
+/// `Edition::locate` finds it for the page routes, so a cover address
+/// versioned by this hash names the bytes the thumbnail route serves.
+///
+/// **No grant filter.** The page routes locate page 0 in the whole edition
+/// once the edition is visible, so it can sit in a member under a directory
+/// the caller is not granted; a hash read through the grant would version the
+/// address by a member the route does not serve it from.
+///
+/// `pm`, not `m`: [`editions_by_work`] has a `member m` in scope (see
+/// [`root_clause`]). `alias` is a literal at every call site.
+fn page_zero_hash(alias: &str) -> String {
+    format!(
+        "(SELECT pm.sha256 FROM member pm
+           WHERE pm.edition_id = {alias}.id AND pm.pages > 0
+           ORDER BY pm.ordinal LIMIT 1)"
+    )
+}
+
 /// Every series this caller may see, with its counts, ordered by title.
 ///
 /// `is_primary` picks the display title; `series_title` holds several names per
@@ -467,14 +530,22 @@ pub fn series(
     };
     let aligned = aligned_clause(&access);
     let clause = root_clause(&access);
+    let cover = cover_edition(&access);
+    let page = page_zero_hash("ce");
     // Placeholders bind in text order, all anonymous — three groups of the
-    // directory list and then `user_id`:
+    // directory list, `user_id`, and a fourth group:
     //
     //   1. the `aligned` count's from side (`fe`), in the `SELECT` list, which
     //      is the earliest text a parameter can appear in;
     //   2. its to side (`te`);
     //   3. the edition join's `{clause}`;
-    //   4. `user_id`, in the progress join below.
+    //   4. `user_id`, in the progress join below;
+    //   5. the cover edition's `{cover}`, joined to each grouped row `g`.
+    //
+    // The cover is joined outside the grouping, so its subquery runs once per
+    // series rather than once per joined work, edition, position and title, and
+    // the `w`, `e` and `m` it names shadow none of the grouping's (see
+    // `root_clause` on why a shadowed alias is avoided).
     //
     // The progress join sits *after* the edition join: as a `SELECT`-list
     // subquery its parameter would bind ahead of every group above, and the
@@ -487,23 +558,27 @@ pub fn series(
     // and it multiplied every grouped row by the number of alignments, which
     // only `COUNT(DISTINCT …)` everywhere else was hiding.
     let sql = format!(
-        "SELECT s.id,
-                COALESCE(MAX(CASE WHEN st.is_primary = 1 THEN st.title END),
-                         (SELECT title FROM series_title WHERE series_id = s.id
-                           ORDER BY rowid LIMIT 1),
-                         s.sort_title),
-                COUNT(DISTINCT w.id),
-                COUNT(DISTINCT e.id),
-                COUNT(DISTINCT CASE WHEN {aligned} THEN w.id END),
-                s.cover_work_id,
-                MAX(w.id),
-                COUNT(DISTINCT CASE WHEN p.work_id IS NULL THEN w.id END)
-           FROM series s
-           JOIN work w ON w.series_id = s.id
-           JOIN edition e ON e.work_id = w.id{clause}
-           LEFT JOIN progress p ON p.work_id = w.id AND p.user_id = ?
-           LEFT JOIN series_title st ON st.series_id = s.id
-          GROUP BY s.id
+        "SELECT g.id, g.title, g.works, g.editions, g.aligned, s.cover_work_id, g.added,
+                g.unread, cw.id, cw.slug, ce.key, {page}
+           FROM (SELECT s.id AS id,
+                        COALESCE(MAX(CASE WHEN st.is_primary = 1 THEN st.title END),
+                                 (SELECT title FROM series_title WHERE series_id = s.id
+                                   ORDER BY rowid LIMIT 1),
+                                 s.sort_title) AS title,
+                        COUNT(DISTINCT w.id) AS works,
+                        COUNT(DISTINCT e.id) AS editions,
+                        COUNT(DISTINCT CASE WHEN {aligned} THEN w.id END) AS aligned,
+                        MAX(w.id) AS added,
+                        COUNT(DISTINCT CASE WHEN p.work_id IS NULL THEN w.id END) AS unread
+                   FROM series s
+                   JOIN work w ON w.series_id = s.id
+                   JOIN edition e ON e.work_id = w.id{clause}
+                   LEFT JOIN progress p ON p.work_id = w.id AND p.user_id = ?
+                   LEFT JOIN series_title st ON st.series_id = s.id
+                  GROUP BY s.id) g
+           JOIN series s ON s.id = g.id
+           LEFT JOIN edition ce ON ce.id = {cover}
+           LEFT JOIN work cw ON cw.id = ce.work_id
           ORDER BY 2 COLLATE NOCASE"
     );
     let mut params: Vec<i64> = Vec::new();
@@ -511,6 +586,7 @@ pub fn series(
         params.extend(access.bound().iter().copied());
     }
     params.push(user_id);
+    params.extend(access.bound().iter().copied());
 
     let mut stmt = prepare(conn, &sql).map_err(|e| format!("preparing the series listing: {e}"))?;
     let rows = stmt
@@ -524,6 +600,7 @@ pub fn series(
                 cover_work: row.get(5)?,
                 added: row.get(6)?,
                 unread: row.get(7)?,
+                cover: cover_at(row, 8)?,
             })
         })
         .map_err(|e| format!("listing series: {e}"))?;
@@ -570,8 +647,10 @@ fn editions_by_work(
     let joined = member_clause(access);
     let clause = root_clause(access);
     let wanted = holes(work_ids.len());
+    let page = page_zero_hash("e");
     let sql = format!(
-        "SELECT e.work_id, e.id, e.key, e.label, COUNT(m.id), COALESCE(SUM(m.pages), 0)
+        "SELECT e.work_id, e.id, e.key, e.label, COUNT(m.id), COALESCE(SUM(m.pages), 0),
+                {page}
            FROM edition e
            LEFT JOIN member m ON m.edition_id = e.id{joined}
           WHERE 1 = 1{clause} AND e.work_id IN ({wanted})
@@ -599,6 +678,7 @@ fn editions_by_work(
                     members: row.get(4)?,
                     pages: row.get(5)?,
                     missing: 0,
+                    page_zero_sha256: row.get(6)?,
                 },
             ))
         })
@@ -1305,6 +1385,10 @@ pub fn home(
 /// A hand-set cover still has to survive the filter: a reader granted one root
 /// must not be handed a cover generated from a root they cannot see.
 ///
+/// Both steps are one ordering, [`cover_edition`]'s, which [`series`] reads
+/// too, so a grid row's `cover` and this one are the same edition for the
+/// same access; a grid narrowed by `library` reads a narrower one.
+///
 /// # Errors
 ///
 /// Returns an error if the query fails.
@@ -1319,25 +1403,10 @@ pub fn cover_work(
     // while `/series/9999` answers 404 is an enumeration oracle — exactly the
     // distinction `one_series` goes out of its way not to expose. Found by the
     // whole-branch review.
-    let set: Option<i64> = query_row(
-        conn,
-        "SELECT cover_work_id FROM series WHERE id = ?",
-        rusqlite::params![series_id],
-        |row| row.get(0),
-    )
-    .optional()
-    .map_err(|e| format!("reading the cover of series {series_id}: {e}"))?
-    .flatten();
-
-    // A hand-set cover must still survive the filter — a reader granted one
-    // root must not be handed a cover generated from a root they cannot see —
-    // so it is probed through the same visibility query rather than trusted.
-    if let Some(chosen) = set
-        && let Some(target) = cover_target(conn, access, series_id, Some(chosen))?
-    {
-        return Ok(Some(target));
-    }
-    cover_target(conn, access, series_id, None)
+    cover_target(conn, access, series_id)
+        .optional()
+        .map(Option::flatten)
+        .map_err(|e| format!("reading the cover of series {series_id}: {e}"))
 }
 
 /// Which work and which of its editions a cover comes from.
@@ -1353,6 +1422,9 @@ pub struct CoverTarget {
     /// The first edition of that work this caller may see, never `work.hub`
     /// unless the two coincide.
     pub edition: String,
+    /// The `sha256` of the member holding that edition's page 0, or `None`
+    /// when none of its members holds a page. See [`page_zero_hash`].
+    pub page_zero_sha256: Option<String>,
 }
 
 /// One query for the cover, rather than building every `WorkCard` in the
@@ -1365,45 +1437,44 @@ pub struct CoverTarget {
 /// one query rather than by building every `WorkCard` is what this function is
 /// still for.
 ///
-/// `wanted` pins a specific work (the hand-set cover); `None` takes the
-/// lowest-volume visible one, with `w.id` as the tiebreak so a series of
-/// volume-less works answers the same row every time.
+/// One row for a series that exists, holding no cover where [`cover_edition`]
+/// finds none, and no row for one that does not.
 fn cover_target(
     conn: &Connection,
     access: &Access,
     series_id: i64,
-    wanted: Option<i64>,
-) -> Result<Option<CoverTarget>, String> {
-    let joined = member_clause(access);
-    let pin = if wanted.is_some() {
-        " AND w.id = ?"
-    } else {
-        ""
-    };
+) -> rusqlite::Result<Option<CoverTarget>> {
+    let cover = cover_edition(access);
+    let page = page_zero_hash("ce");
     let sql = format!(
-        "SELECT w.id, w.slug, e.key
-           FROM work w
-           JOIN edition e ON e.work_id = w.id
-          WHERE w.series_id = ?
-            AND EXISTS (SELECT 1 FROM member m
-                         WHERE m.edition_id = e.id{joined}){pin}
-          ORDER BY w.volume, w.id, e.key
-          LIMIT 1"
+        "SELECT cw.id, cw.slug, ce.key, {page}
+           FROM series s
+           LEFT JOIN edition ce ON ce.id = {cover}
+           LEFT JOIN work cw ON cw.id = ce.work_id
+          WHERE s.id = ?"
     );
-    let mut params: Vec<&dyn rusqlite::ToSql> = vec![&series_id];
-    params.extend(access.bound().iter().map(|r| r as &dyn rusqlite::ToSql));
-    if let Some(id) = wanted.as_ref() {
-        params.push(id);
-    }
-    query_row(conn, &sql, params.as_slice(), |row| {
-        Ok(CoverTarget {
-            work_id: row.get(0)?,
-            slug: row.get(1)?,
-            edition: row.get(2)?,
-        })
-    })
-    .optional()
-    .map_err(|e| format!("reading the cover of series {series_id}: {e}"))
+    let mut params: Vec<&dyn rusqlite::ToSql> = access
+        .bound()
+        .iter()
+        .map(|r| r as &dyn rusqlite::ToSql)
+        .collect();
+    params.push(&series_id);
+    query_row(conn, &sql, params.as_slice(), |row| cover_at(row, 0))
+}
+
+/// The [`CoverTarget`] in the four columns from `at`: the work's id and slug,
+/// the edition's key and [`page_zero_hash`]. `None` where the work's id is
+/// NULL, as a `LEFT JOIN` to no cover edition leaves it.
+fn cover_at(row: &rusqlite::Row<'_>, at: usize) -> rusqlite::Result<Option<CoverTarget>> {
+    let Some(work_id) = row.get::<_, Option<i64>>(at)? else {
+        return Ok(None);
+    };
+    Ok(Some(CoverTarget {
+        work_id,
+        slug: row.get(at + 1)?,
+        edition: row.get(at + 2)?,
+        page_zero_sha256: row.get(at + 3)?,
+    }))
 }
 
 /// Whether `slug`'s `edition` holds a member this caller may see.

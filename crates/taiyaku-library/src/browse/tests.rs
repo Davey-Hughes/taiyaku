@@ -2395,3 +2395,459 @@ fn a_series_with_no_primary_title_is_shown_by_its_first_title_not_its_scanned_na
          sorts first, nor `Go-Toubun no Hanayome`, which the series no longer holds"
     );
 }
+
+/// One series in one directory whose volume 2 was scanned and derived before
+/// volume 1 was written, so volume 1 holds the lower `volume` and the higher
+/// `work.id`.
+fn a_lower_volume_added_after() -> (Library, crate::tests::TempDir) {
+    let dir = crate::tests::tempdir("browse-lower-volume-after");
+    write_pages(&dir.path().join("Series").join("Series - v02"), 2);
+    let library = Library::open_in_memory().expect("in-memory");
+    {
+        let conn = library.conn();
+        let root = scan::add_root(&conn, dir.path()).expect("adds the root");
+        scan::scan_root(&conn, &root).expect("scans volume 2");
+        derive::derive(&conn).expect("derives volume 2");
+        write_pages(&dir.path().join("Series").join("Series - v01"), 3);
+        scan::scan_root(&conn, &root).expect("scans volume 1");
+        derive::derive(&conn).expect("derives volume 1");
+    }
+    (library, dir)
+}
+
+/// One series of two volumes in one library, volume 1 under one directory and
+/// volume 2 under another, so a grant on either directory hides the other
+/// volume whole. Both directories take the default edition key.
+fn two_volumes_across_two_roots() -> (
+    Library,
+    i64,
+    i64,
+    crate::tests::TempDir,
+    crate::tests::TempDir,
+) {
+    let first = crate::tests::tempdir("browse-across-v01");
+    write_pages(&first.path().join("Series").join("Series - v01"), 2);
+    let second = crate::tests::tempdir("browse-across-v02");
+    write_pages(&second.path().join("Series").join("Series - v02"), 3);
+    let library = Library::open_in_memory().expect("in-memory");
+    let (first_id, second_id) = {
+        let conn = library.conn();
+        let a = scan::add_root_in(&conn, first.path(), scan::InLibrary::Named("Manga"))
+            .expect("adds volume 1's directory");
+        let b = scan::add_root_in(&conn, second.path(), scan::InLibrary::Named("Manga"))
+            .expect("adds volume 2's directory");
+        scan::scan_root(&conn, &a).expect("scans volume 1");
+        scan::scan_root(&conn, &b).expect("scans volume 2");
+        derive::derive(&conn).expect("derives");
+        (a.id, b.id)
+    };
+    (library, first_id, second_id, first, second)
+}
+
+/// The work holding `volume`.
+fn work_of_volume(conn: &Connection, volume: f64) -> i64 {
+    conn.query_row("SELECT id FROM work WHERE volume = ?1", [volume], |row| {
+        row.get(0)
+    })
+    .unwrap_or_else(|e| panic!("the work of volume {volume}: {e}"))
+}
+
+/// The one series a fixture holds.
+fn the_series(conn: &Connection) -> i64 {
+    conn.query_row("SELECT id FROM series", [], |row| row.get(0))
+        .expect("the fixture's one series")
+}
+
+fn hand_set_cover(conn: &Connection, series_id: i64, work_id: i64) {
+    conn.execute(
+        "UPDATE series SET cover_work_id = ?1 WHERE id = ?2",
+        [work_id, series_id],
+    )
+    .expect("hand-sets the cover");
+}
+
+/// The grid lists `want`'s series in its order, each with the cover work and
+/// edition `want` names, and each cover is the one `cover_work` gives the `307`
+/// for the same caller.
+///
+/// Both, because the grid and the `307` read one fragment: agreeing with
+/// `cover_work` alone passes when the fragment itself chooses wrongly, and the
+/// expected pair alone passes when the two read different rules that happen to
+/// meet on a fixture.
+fn assert_grid_covers(conn: &Connection, access: &Access, want: &[(i64, Option<(i64, &str)>)]) {
+    let grid = series(conn, access, 1, None).expect("lists series");
+    assert_eq!(
+        grid.iter().map(|card| card.id).collect::<Vec<_>>(),
+        want.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+        "{access:?}: the series listed"
+    );
+    for (card, (id, expected)) in grid.iter().zip(want) {
+        let chosen = card
+            .cover
+            .as_ref()
+            .map(|cover| (cover.work_id, cover.edition.as_str()));
+        assert_eq!(
+            chosen, *expected,
+            "series {id}, {access:?}: the grid's cover"
+        );
+        let redirect = cover_work(conn, access, *id).expect("reads the 307's cover");
+        assert_eq!(
+            card.cover, redirect,
+            "series {id}, {access:?}: the grid and the 307 choose one cover"
+        );
+    }
+}
+
+/// A hand-set cover on volume 2 is the grid's cover and the `307`'s, where
+/// the order alone would choose volume 1.
+#[test]
+fn a_hand_set_cover_is_the_grids_cover_as_it_is_the_307s() {
+    let (library, root_id, _dir) = two_volume_library();
+    let conn = library.conn();
+    let series_id = the_series(&conn);
+    let (v1, v2) = (work_of_volume(&conn, 1.0), work_of_volume(&conn, 2.0));
+
+    for access in [Access::Every, Access::Only(vec![root_id])] {
+        assert_grid_covers(&conn, &access, &[(series_id, Some((v1, "raw")))]);
+    }
+    hand_set_cover(&conn, series_id, v2);
+    for access in [Access::Every, Access::Only(vec![root_id])] {
+        assert_grid_covers(&conn, &access, &[(series_id, Some((v2, "raw")))]);
+    }
+}
+
+/// A hand-set cover whose work the grant hides gives way to the lowest volume
+/// the grant shows, in the grid as in the `307`.
+#[test]
+fn a_hand_set_cover_the_grant_hides_gives_way_in_the_grid_as_in_the_307() {
+    let (library, first, second, _a, _b) = two_volumes_across_two_roots();
+    let conn = library.conn();
+    let series_id = the_series(&conn);
+    let (v1, v2) = (work_of_volume(&conn, 1.0), work_of_volume(&conn, 2.0));
+
+    assert_grid_covers(&conn, &Access::Every, &[(series_id, Some((v1, "raw")))]);
+    assert_grid_covers(
+        &conn,
+        &Access::Only(vec![second]),
+        &[(series_id, Some((v2, "raw")))],
+    );
+    hand_set_cover(&conn, series_id, v2);
+    assert_grid_covers(&conn, &Access::Every, &[(series_id, Some((v2, "raw")))]);
+    assert_grid_covers(
+        &conn,
+        &Access::Only(vec![first]),
+        &[(series_id, Some((v1, "raw")))],
+    );
+    assert_grid_covers(
+        &conn,
+        &Access::Only(vec![second]),
+        &[(series_id, Some((v2, "raw")))],
+    );
+}
+
+/// A volume 1 scanned after volume 2 holds the higher `work.id` and is still
+/// the cover, in the grid as in the `307`: the order is by `volume` first.
+#[test]
+fn a_lower_volume_added_after_is_the_cover_in_the_grid_as_in_the_307() {
+    let (library, _dir) = a_lower_volume_added_after();
+    let conn = library.conn();
+    let series_id = the_series(&conn);
+    let (v1, v2) = (work_of_volume(&conn, 1.0), work_of_volume(&conn, 2.0));
+    assert!(
+        v1 > v2,
+        "the fixture's premise: volume 1, added after, holds the higher id ({v1} against {v2})"
+    );
+
+    assert_grid_covers(&conn, &Access::Every, &[(series_id, Some((v1, "raw")))]);
+}
+
+/// Of a work's several editions the grid takes the first by key that the
+/// grant shows, as the `307` does, with a hand-set cover or without one.
+#[test]
+fn the_grid_takes_the_edition_the_307_takes_of_a_work_with_several() {
+    let (library, _en, _raw) = library_with_volumes(2);
+    let conn = library.conn();
+    let root = |key: &str| -> i64 {
+        conn.query_row("SELECT id FROM root WHERE edition_key = ?1", [key], |row| {
+            row.get(0)
+        })
+        .expect("the directory of that edition")
+    };
+    let (en, raw) = (root("en"), root("raw"));
+    let series_id = the_series(&conn);
+    let (v1, v2) = (work_of_volume(&conn, 1.0), work_of_volume(&conn, 2.0));
+
+    for (access, key) in [
+        (Access::Every, "en"),
+        (Access::Only(vec![en]), "en"),
+        (Access::Only(vec![raw]), "raw"),
+    ] {
+        assert_grid_covers(&conn, &access, &[(series_id, Some((v1, key)))]);
+    }
+    hand_set_cover(&conn, series_id, v2);
+    for (access, key) in [
+        (Access::Every, "en"),
+        (Access::Only(vec![en]), "en"),
+        (Access::Only(vec![raw]), "raw"),
+    ] {
+        assert_grid_covers(&conn, &access, &[(series_id, Some((v2, key)))]);
+    }
+}
+
+/// A series with no edition holding a member the caller may see has no cover:
+/// not listed under a grant that hides it, and listed with none where every
+/// edition it holds has lost its members, and the `307` answers none for both.
+#[test]
+fn a_series_with_no_visible_cover_has_none_in_the_grid_as_in_the_307() {
+    let store = two_library_store();
+    let manga = series_of(&store.library, store.manga);
+    let comics = series_of(&store.library, store.comics);
+    let conn = store.library.conn();
+    assert_eq!(manga.len(), 1, "Manga holds one series");
+    let shown = Access::Only(vec![store.en_root]);
+    let grid = series(&conn, &shown, 1, None).expect("lists series");
+    assert_eq!(
+        grid.iter().map(|card| card.id).collect::<Vec<_>>(),
+        manga,
+        "only Manga's series is listed"
+    );
+    assert!(grid[0].cover.is_some(), "the listed series has a cover");
+    for id in comics {
+        assert_eq!(
+            cover_work(&conn, &shown, id).expect("reads"),
+            None,
+            "series {id} is hidden, and so is its cover"
+        );
+    }
+
+    let (library, _root, _dir) = two_volume_library();
+    let conn = library.conn();
+    let series_id = the_series(&conn);
+    conn.execute("DELETE FROM member", [])
+        .expect("every edition loses its members");
+    assert_grid_covers(&conn, &Access::Every, &[(series_id, None)]);
+}
+
+/// The members of the fixture's one edition, by `ordinal`: id, root, sha256.
+fn members_by_ordinal(conn: &Connection) -> Vec<(i64, i64, String)> {
+    conn.prepare("SELECT id, root_id, sha256 FROM member ORDER BY ordinal")
+        .expect("prepares")
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .expect("reads")
+        .collect::<rusqlite::Result<_>>()
+        .expect("reads")
+}
+
+/// The sha256 of the member the page routes read edition `key`'s page 0 from:
+/// `Edition::locate` over the projected sidecar, which is what the served
+/// registry holds.
+fn page_zero_as_located(conn: &Connection, work_id: i64, key: &str) -> Option<String> {
+    let sidecar = crate::project::sidecar(conn, work_id).expect("projects the work");
+    let edition = &sidecar.editions[key];
+    edition
+        .locate(0)
+        .map(|(position, _)| edition.members[position].sha256.clone())
+}
+
+/// Every place an answer reads page 0's member from, for the fixture's one
+/// series, one work and one edition: the edition card, the grid's cover and
+/// the `307`'s.
+fn page_zero_read(conn: &Connection, access: &Access) -> [Option<String>; 3] {
+    let slug: String = conn
+        .query_row("SELECT slug FROM work", [], |row| row.get(0))
+        .expect("the one work");
+    let detail = work(conn, access, 1, &slug)
+        .expect("reads the work")
+        .expect("the work is visible");
+    assert_eq!(detail.card.editions.len(), 1, "one edition");
+    let grid = series(conn, access, 1, None).expect("lists series");
+    assert_eq!(grid.len(), 1, "one series");
+    let cover = cover_work(conn, access, grid[0].id)
+        .expect("reads the cover")
+        .expect("a cover");
+    [
+        detail.card.editions[0].page_zero_sha256.clone(),
+        grid[0]
+            .cover
+            .as_ref()
+            .expect("the grid's cover")
+            .page_zero_sha256
+            .clone(),
+        cover.page_zero_sha256,
+    ]
+}
+
+/// An edition whose first member holds no pages takes page 0, and so its
+/// cover's version, from the next member, as `Edition::locate` does; and one
+/// none of whose members holds a page has no page 0 at all.
+#[test]
+fn an_edition_whose_first_member_has_no_pages_takes_page_zero_from_the_next() {
+    let (library, _a, _b, _da, _db) = merged_edition_library();
+    let conn = library.conn();
+    let members = members_by_ordinal(&conn);
+    assert_eq!(members.len(), 2, "the merged edition's two members");
+    conn.execute("UPDATE member SET pages = 0 WHERE id = ?1", [members[0].0])
+        .expect("the first member holds no pages");
+    let (work_id, key): (i64, String) = conn
+        .query_row("SELECT work_id, key FROM edition", [], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
+        .expect("the one edition");
+    let located = page_zero_as_located(&conn, work_id, &key);
+    assert_eq!(
+        located.as_deref(),
+        Some(members[1].2.as_str()),
+        "the fixture's premise: the page routes read page 0 from the second member"
+    );
+
+    assert_eq!(
+        page_zero_read(&conn, &Access::Every),
+        [located.clone(), located.clone(), located],
+        "the edition card, the grid's cover and the 307's"
+    );
+
+    conn.execute("UPDATE member SET pages = 0", [])
+        .expect("no member holds a page");
+    assert_eq!(page_zero_as_located(&conn, work_id, &key), None);
+    assert_eq!(page_zero_read(&conn, &Access::Every), [None, None, None]);
+}
+
+/// Page 0 is read from the whole edition whatever the grant, as the page
+/// routes read it once the edition is visible, so a reader granted only the
+/// directory of a merged edition's second member is handed the version of the
+/// first member's page: the bytes the thumbnail route serves them.
+#[test]
+fn page_zero_is_read_from_the_whole_edition_whatever_the_grant() {
+    let (library, _a, _b, _da, _db) = merged_edition_library();
+    let conn = library.conn();
+    let members = members_by_ordinal(&conn);
+    assert_eq!(members.len(), 2, "the merged edition's two members");
+    assert_ne!(members[0].1, members[1].1, "under two directories");
+    assert_ne!(members[0].2, members[1].2, "holding different bytes");
+    let (work_id, key): (i64, String) = conn
+        .query_row("SELECT work_id, key FROM edition", [], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
+        .expect("the one edition");
+    let located = page_zero_as_located(&conn, work_id, &key);
+    assert_eq!(located.as_deref(), Some(members[0].2.as_str()));
+
+    for access in [
+        Access::Every,
+        Access::Only(vec![members[0].1]),
+        Access::Only(vec![members[1].1]),
+    ] {
+        assert_eq!(
+            page_zero_read(&conn, &access),
+            [located.clone(), located.clone(), located.clone()],
+            "{access:?}: the edition card, the grid's cover and the 307's"
+        );
+    }
+}
+
+/// Each edition card of each work names the member its page 0 is located in:
+/// over two works of two editions each, so a hash read from another edition
+/// or work is a different one, and over an edition of two members, so one read
+/// from the wrong member is too.
+#[test]
+fn every_edition_card_names_the_member_its_page_zero_is_located_in() {
+    let (library, _en, _raw) = library_with_volumes(2);
+    assert_each_edition_card_names_its_page_zero(&library, 2, 2);
+    let (merged, _a, _b, _da, _db) = merged_edition_library();
+    assert_each_edition_card_names_its_page_zero(&merged, 1, 1);
+    let conn = merged.conn();
+    assert_eq!(
+        members_by_ordinal(&conn).len(),
+        2,
+        "the merged edition's two members"
+    );
+}
+
+fn assert_each_edition_card_names_its_page_zero(library: &Library, works: usize, editions: usize) {
+    let conn = library.conn();
+    let series_id = the_series(&conn);
+    let (_card, cards) = one_series(&conn, &Access::Every, 1, series_id)
+        .expect("reads")
+        .expect("the series is visible");
+    assert_eq!(cards.len(), works, "the works");
+    for card in &cards {
+        assert_eq!(
+            card.editions.len(),
+            editions,
+            "the editions of {}",
+            card.slug
+        );
+        for edition in &card.editions {
+            let located = page_zero_as_located(&conn, card.id, &edition.key);
+            assert!(
+                located.is_some(),
+                "{} {} has a page 0",
+                card.slug,
+                edition.key
+            );
+            assert_eq!(
+                edition.page_zero_sha256, located,
+                "{} {}: the member page 0 is located in",
+                card.slug, edition.key
+            );
+        }
+    }
+}
+
+/// A grid narrowed to a library takes its cover from what that library's
+/// directories show, as `cover_work` chooses it for an account granted only
+/// them: the narrowing's rule for every count on the row.
+///
+/// The one work keeps `en` under the English directory's library and `raw`
+/// under `Raws`, so the unnarrowed grid's cover is `en`, by key, and the one
+/// narrowed to `Raws` is `raw`.
+#[test]
+fn a_grid_narrowed_to_a_library_takes_the_cover_its_directories_show() {
+    let (library, _en_id, raw_id, _en, _raw) = two_root_library();
+    let raws = raw_in_a_library_of_its_own(&library, raw_id);
+    let conn = library.conn();
+    let series_id = the_series(&conn);
+    let work_id = work_of_volume(&conn, 1.0);
+
+    assert_grid_covers(&conn, &Access::Every, &[(series_id, Some((work_id, "en")))]);
+    let narrowed = series(&conn, &Access::Every, 1, Some(raws)).expect("lists series");
+    assert_eq!(narrowed.len(), 1, "the series is in Raws too");
+    assert_eq!(
+        narrowed[0].cover,
+        cover_work(&conn, &Access::Only(vec![raw_id]), series_id).expect("reads the cover"),
+        "the cover an account granted only Raws' directory is given"
+    );
+    assert_eq!(
+        narrowed[0]
+            .cover
+            .as_ref()
+            .map(|cover| cover.edition.as_str()),
+        Some("raw")
+    );
+}
+
+/// Two works of one series sharing a volume, or both without one, are ordered
+/// by `work.id` before their editions' keys, in the grid as in the `307`.
+///
+/// The lower id's only edition is keyed `raw` and the higher's `en`, so an
+/// order that consulted the key first, or never reached the id, would choose
+/// the other work.
+#[test]
+fn works_sharing_a_volume_take_the_cover_by_id_before_key() {
+    let (library, _root, _dir) = two_volume_library();
+    let conn = library.conn();
+    let series_id = the_series(&conn);
+    let (first, second) = (work_of_volume(&conn, 1.0), work_of_volume(&conn, 2.0));
+    assert!(
+        first < second,
+        "the fixture's premise: volume 1 has the lower id"
+    );
+    conn.execute("UPDATE edition SET key = 'en' WHERE work_id = ?1", [second])
+        .expect("keys the higher id's edition before the lower's");
+
+    for volume in [Some(1.0), None] {
+        conn.execute("UPDATE work SET volume = ?1", [volume])
+            .expect("gives both works one volume");
+        assert_grid_covers(&conn, &Access::Every, &[(series_id, Some((first, "raw")))]);
+    }
+}

@@ -173,7 +173,9 @@ pub fn page_cache_path(dir: &Path, sha256: &str, offset: u32, long_edge: u32) ->
 /// new resize filter, regenerated every cached page on the server under an
 /// unchanged tag, so a browser holding an old rendering would be answered
 /// `304` once its copy went stale, and keep it. A parameter added here reaches
-/// both.
+/// both. One that is not the long edge belongs in `cover_version` too, or a
+/// cover's versioned address goes on being kept for good over bytes it no
+/// longer names.
 pub(crate) fn page_key(sha256: &str, offset: u32, long_edge: u32) -> String {
     page_key_at(sha256, offset, long_edge, PAGE_FORMAT_VERSION)
 }
@@ -182,6 +184,22 @@ pub(crate) fn page_key(sha256: &str, offset: u32, long_edge: u32) -> String {
 /// reason: a test can vary the version without a second copy of the constant.
 fn page_key_at(sha256: &str, offset: u32, long_edge: u32, format_version: u32) -> String {
     format!("{sha256}-p{offset}-r{long_edge}v{format_version}")
+}
+
+/// What a cover's `ETag` is made of but its long edge: so it changes exactly
+/// when the `ETag` of any cover size would.
+///
+/// Without the edge because one address per edition carries it and the client
+/// adds the size, one per screen density. Its alphabet is free:
+/// `cover_address` encodes it into the query string.
+pub(crate) fn cover_version(sha256: &str, offset: u32) -> String {
+    cover_version_at(sha256, offset, PAGE_FORMAT_VERSION)
+}
+
+/// `cover_version`, with the format version as an argument, for `page_key_at`'s
+/// reason.
+fn cover_version_at(sha256: &str, offset: u32, format_version: u32) -> String {
+    format!("{sha256}-{offset}-{format_version}")
 }
 
 /// `FORMAT_VERSION`'s counterpart for reading-sized pages, versioned separately

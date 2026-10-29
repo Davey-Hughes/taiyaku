@@ -21719,6 +21719,90 @@ new route tests now cover properly.
 
 Tests: Rust 2231 (+4), web node 1,204 (+3), jsdom 1,000, browser 37.
 
+## The cover version: covers the browser keeps (2026-10-29)
+
+The loading work's second PR (spec `2026-10-28-loading-library-design.md`,
+§4) gives each library cover an address that names its bytes, so the
+browser keeps it and a return to the grid asks for no cover. It closes
+O224.
+
+**What the version is made of.** `cover::cover_version(sha256, offset)` is
+`{sha256}-{offset}-{PAGE_FORMAT_VERSION}`: what a cover's `ETag` is made of
+(`cover::page_key`, through `routes::page_etag`) but its long edge, so it
+changes exactly when the `ETag` of any cover size would. One address per
+edition carries it, and the client adds the size per screen density.
+
+**The answers that carry it.** A series row's `cover`, in the grid, search
+and a series page's own row, and each edition card's `cover`, are
+`/api/works/{work}/{edition}/pages/0/thumb?v=…`, built by
+`library_api.rs`'s `cover_address` with each segment and the version
+encoded as `encodeURIComponent` would (`uri_component`). `coverSources`
+adds `w`. The series cover `307` is unchanged, and the web client no
+longer asks for it.
+
+**The route's three answers to `?v=`**, read on a cover alone (page 0 at
+one of `cover::COVER_LONG_EDGES`) and decided in `routes.rs::serve_page`
+against the page it locates:
+- a version equal to that page's: the `200` and the `304` both carry
+  `COVER_CACHE_CONTROL`, `private, max-age=31536000, immutable`;
+- any other version, such as one from a list read before the member
+  changed: the current image with `PAGE_CACHE_CONTROL`,
+  `private, no-cache`, so no address is kept for good over bytes it does
+  not name;
+- no version: `PAGE_CACHE_CONTROL`, as before. A tile with a `v` is the
+  tile.
+
+**Why this answers O1's reason for declining `immutable`.** O1 declined it
+because a page's URL names a work, an edition and an index, none of which
+move when an archive is replaced, so an entry the browser never
+revalidates would keep the old bytes ("`immutable` is not shipped either",
+above). A versioned cover address names the bytes: a replaced member or a
+new `PAGE_FORMAT_VERSION` gives the cover a new address, the next list read
+carries it, and the old one is not asked for again. Pages, tiles and an
+unversioned cover keep `private, no-cache`.
+
+**O224's evidence, on the user's iPhone** over the tailnet, 2026-10-29
+00:18:46–00:20:04, against a release build of the branch over a scratch
+copy of the test library. The user agent read `Mozilla/5.0 (iPhone; CPU
+iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko)
+Version/27.0.1 Mobile/15E148 Safari/604.1`, Safari 27.0.1. The user went
+Back from a series page to the grid, Back from the reader to One Piece's
+series page, and used the reader's Library button, and said "yes these all
+go back to where I was". The phone's 269 requests held no `307`, no `304`
+and no `/cover` path, and no cover or thumbnail address was asked for
+twice. Its lines for those returns, from the server's request log, as the
+check recorded them with its notes beside them:
+
+```
+00:19:02.045 GET 200 /api/library/series            (Back from series/23 to the grid; next image 8.6 s later, a first-time cover from scrolling on)
+00:19:02.045 GET 200 /api/library/home
+00:19:24.291 PUT 204 /api/works/one-piece---v007--2005--cbz/progress   started 1793258364291277, 497 µs
+00:19:24.298 GET 200 /api/library/series/91          started 1793258364298300 (after the PUT's end 1793258364291774); Back from the reader
+00:19:28.902 GET 200 /api/library/series            (Back from series/91 to the grid; no image request follows)
+00:19:28.902 GET 200 /api/library/home
+00:19:35.519 GET 200 /api/library/series            (to the grid from series/79; no image request follows)
+00:19:49.393 GET 200 /api/library/series?library=1  (to the grid from series/13; no image request follows)
+00:19:57.825 PUT 204 /api/works/oshi-no-ko----v01-cbz/progress  (last save, ends 1793258397825397)
+00:19:59.339 GET 200 /api/library/series?library=1  (the reader's Library button; no image request follows)
+00:20:04.190 GET 200 /api/library/series?library=1  (the Library button again, from Goblin Slayer Gaiden 2 v01; no image request follows)
+```
+
+**In Chromium**, on the same build, Back from Jigokuraku to the grid at
+1280 px kept a scroll of 2000 with 18 of 18 covers complete at the first
+frame, and the server's log held `series?library=1`, `home?library=1` and
+the favicon's `304`, with no thumbnail, `/cover` or `307`. **The exception
+is O230's.** After One Piece's 111 thumbnails and three visits to the
+reader, Back from Nana to the grid showing Unread, sorted by Added, kept
+its scroll of 2500 at React's commit with 1 of 18 visible covers complete,
+and 18 of 18 at +590 ms. About 70 thumbnails were read again from the
+browser's HTTP cache (`transferSize` 0, `private, max-age=31536000,
+immutable`), and the server's log has none of them, only
+`series?library=1` and `home?library=1`: the browser's in-memory image
+cache had dropped them. The reader's Library button returned to a scroll
+of 4762 with 1 of 18 covers complete at its commit, the same effect. In
+that browser, animation frames ran at about one a second from the first
+reader visit on, so the readings were taken at React's commit.
+
 ## Style pass ③: the reader — 2026-09-19
 
 What §8 of `docs/superpowers/specs/2026-09-17-style-pass-design.md` promised,
@@ -24454,7 +24538,9 @@ container write neither `.taiyaku/` nor the watch probe's file at the root.
   cache a response marked `private`, `no-store` or `no-cache`, and every guarded
   response carries one (`per_reader_by_default` in `routes.rs` adds
   `private, no-store` where none is set; pages and downloads send
-  `private, no-cache`: `PAGE_CACHE_CONTROL`, and `download.rs`). Content-hashed
+  `private, no-cache`: `PAGE_CACHE_CONTROL`, and `download.rs`; and since
+  the loading work's second PR a cover whose `?v=` names its bytes sends
+  `private, max-age=31536000, immutable`: `COVER_CACHE_CONTROL`). Content-hashed
   `/assets/*` are cached at the edge, which is fine because they are
   immutable.
 - The NAS trial happens after merge, on the image CI builds and pushes. No

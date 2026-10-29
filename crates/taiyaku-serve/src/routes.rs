@@ -217,23 +217,39 @@ pub(crate) fn if_none_match_hits(headers: &HeaderMap, tag: &str) -> bool {
 /// really is unchanged comes back as a bodiless `304`. The cost is one
 /// conditional request per page rather than none; the alternative is a client
 /// that cannot be told it is looking at the wrong book.
+///
+/// A cover whose address carries the version of the bytes it serves is the
+/// one exception: `COVER_CACHE_CONTROL`.
 pub(crate) const PAGE_CACHE_CONTROL: &str = "private, no-cache";
+
+/// A library cover whose `?v=` is the `cover::cover_version` of the bytes it
+/// serves: kept for good, never revalidated.
+///
+/// `PAGE_CACHE_CONTROL`'s reason for `no-cache` is that its URL does not name
+/// its bytes. This address does: the version is the cover's `ETag` without the
+/// size, so a replaced member or a new `PAGE_FORMAT_VERSION` gives the cover a
+/// new address, and the kept one is not asked for again. A `v` that names
+/// other bytes than these is answered with `PAGE_CACHE_CONTROL`, so no address
+/// is kept for good over bytes it does not name. `private` keeps it out of a
+/// shared cache: a cover is answered only to an account whose grants show it.
+pub(crate) const COVER_CACHE_CONTROL: &str = "private, max-age=31536000, immutable";
 
 /// The reply to a validator that already matches: the tag, and no body —
 /// sending the very bytes the header exists to avoid transferring would
 /// defeat the entire point of a `304`.
 ///
-/// **`freshness` is a parameter rather than a constant, and the four callers
-/// do not agree on it.** RFC 9111 §4.3.4 has a client update its stored
-/// response from a `304`'s headers, so whatever this sends is what the client
-/// believes until it asks again. For a page that is `PAGE_CACHE_CONTROL`:
-/// omitting it would leave the entry exactly as stale as it was and cost a
-/// round trip on the very next read, so a revalidation that carries no
-/// freshness buys one response and no more. For a sidecar or a notes document
-/// it is `None`, and that is not a smaller version of the same thing — those
-/// two are rewritten by `PATCH /alignments` and `PUT /notes`, so a freshness
-/// lifetime on either says a reader may go a day without seeing a correction
-/// they made themselves.
+/// **`freshness` is a parameter rather than a constant, and its callers do not
+/// agree on it.** RFC 9111 §4.3.4 has a client update its stored response from
+/// a `304`'s headers, so whatever this sends is what the client believes until
+/// it asks again. For a page that is `PAGE_CACHE_CONTROL`: omitting it would
+/// leave the entry exactly as stale as it was and cost a round trip on the very
+/// next read, so a revalidation that carries no freshness buys one response and
+/// no more. For a cover whose `?v=` names its bytes it is `COVER_CACHE_CONTROL`,
+/// or the `304` would put a cover kept for good back to asking on every visit.
+/// For a sidecar or a notes document it is `None`, and that is not a smaller
+/// version of the same thing — those two are rewritten by `PATCH /alignments`
+/// and `PUT /notes`, so a freshness lifetime on either says a reader may go a
+/// day without seeing a correction they made themselves.
 ///
 /// Written as an argument each caller must supply rather than a default one
 /// of them overrides, because the first version of this took the page constant
@@ -899,7 +915,7 @@ async fn get_page(
         .filter(|edge| *edge > 1)
         .map(|edge| edge.min(crate::cover::MAX_FIT_LONG_EDGE));
 
-    serve_page(state, id, edition, index, long_edge, &headers).await
+    serve_page(state, id, edition, index, long_edge, None, &headers).await
 }
 
 /// A page, at `long_edge` or as the archive holds it, after whatever refusals
@@ -910,12 +926,18 @@ async fn get_page(
 /// without one (O133). One body, so the cover a download-only account sees is
 /// exactly the image, the cache file and the validator the page route would
 /// have given it.
+///
+/// `version` is a cover's `?v=`, and only `get_thumb`'s cover passes one: a
+/// version equal to the `cover::cover_version` of the page located here makes
+/// both the `200` and the `304` `COVER_CACHE_CONTROL`, and any other `200` or
+/// `304` is `PAGE_CACHE_CONTROL`.
 async fn serve_page(
     state: Arc<ServeState>,
     id: String,
     edition: String,
     index: u32,
     long_edge: Option<u32>,
+    version: Option<&str>,
     headers: &HeaderMap,
 ) -> Response {
     // O1: the validator comes from what the sidecar already holds in
@@ -934,8 +956,18 @@ async fn serve_page(
         Err(message) => return not_found(message),
     };
     let tag = page_etag(&sha256, offset, long_edge);
+    // Compared against the page just located, so a `v` from a list read
+    // before its member changed is answered `PAGE_CACHE_CONTROL`, and its
+    // address is never kept over the new bytes. The `304` carries the same
+    // policy as the `200`: RFC 9111 §4.3.4 has the client store a `304`'s
+    // headers as its answer's.
+    let freshness = if version.is_some_and(|v| v == crate::cover::cover_version(&sha256, offset)) {
+        COVER_CACHE_CONTROL
+    } else {
+        PAGE_CACHE_CONTROL
+    };
     if if_none_match_hits(headers, &tag) {
-        return not_modified(&tag, Some(PAGE_CACHE_CONTROL));
+        return not_modified(&tag, Some(freshness));
     }
 
     // Reading a page blocks: a zip decompression from disk, or an HTTP round
@@ -980,7 +1012,7 @@ async fn serve_page(
             [
                 (header::CONTENT_TYPE, page.content_type),
                 (header::ETAG, tag),
-                (header::CACHE_CONTROL, PAGE_CACHE_CONTROL.to_string()),
+                (header::CACHE_CONTROL, freshness.to_string()),
             ],
             page.bytes,
         )
@@ -1061,6 +1093,11 @@ fn tile_edge(w: Option<&str>) -> Option<u32> {
 /// tile. Since O134, a `w` at one of `cover::TILE_LONG_EDGES` on any page is
 /// that tile at that size, for a caller that may stream (`tile_edge`); every
 /// other `w` is still the 160 px tile.
+///
+/// **`?v=` is read on a cover alone**, and `serve_page` decides whether it
+/// names the bytes. A cover's version is made from `serve_page`'s rendering
+/// (`cover::cover_version`), so it names no tile's bytes, and a tile with a `v`
+/// is the tile.
 async fn get_thumb(
     State(state): State<Arc<ServeState>>,
     AxPath((id, edition, raw)): AxPath<(String, String, String)>,
@@ -1076,7 +1113,8 @@ async fn get_thumb(
         Err(refusal) => return refusal.into_response(),
     };
     if let Some(edge) = cover_edge(index, first_query_value(&query, "w")) {
-        return serve_page(state, id, edition, index, Some(edge), &headers).await;
+        let version = first_query_value(&query, "v");
+        return serve_page(state, id, edition, index, Some(edge), version, &headers).await;
     }
     // O134. Below `cover_edge` deliberately: page 0 at a *cover* size stays
     // O133's cover — the page route's own answer, validator and all — and a
@@ -2987,13 +3025,12 @@ pub(crate) fn build_router_serving(
         // that makes most proxies decline to cache an authenticated response.
         //
         // A response that has already set `Cache-Control` keeps it: the page and
-        // thumbnail routes state their own `private, no-cache` with a lifetime
-        // and mean it. Everything else gets `private, no-store`, so a proxy —
-        // which spec A2 §11 puts in front — cannot store one reader's notes,
-        // position or catalogue and replay them to another. RFC 9111's bar on
-        // caching authenticated responses keys on `Authorization`, which the
-        // browser cookie path never sends. Found by the third whole-branch
-        // review.
+        // thumbnail routes state their own, `PAGE_CACHE_CONTROL` or a versioned
+        // cover's `COVER_CACHE_CONTROL`, and mean it. Everything else gets
+        // `private, no-store`, so a proxy — which spec A2 §11 puts in front —
+        // cannot store one reader's notes, position or catalogue and replay
+        // them to another. RFC 9111's bar on caching authenticated responses
+        // keys on `Authorization`, which the browser cookie path never sends.
         .layer(axum::middleware::from_fn(per_reader_by_default));
 
     // Merged *after* the guard is applied, which is the whole reason these two

@@ -26,16 +26,17 @@ import { coverSources } from './library'
  * failure-by-`src` rule and the empty `alt` are the kind of detail that
  * survives in one file and drifts in two.
  *
- * **`src` is a cover URL that takes `?w=`**, and the image is offered at
+ * **`src` is a cover address the server sent**, and the image is offered at
  * three sizes, one per screen density (`library.ts`'s `coverSources`, O133):
  * the browser fetches 256 px on a 1× screen and 768 px on a 3× phone. The
- * failure is still remembered by that URL: the browser fetches one of the
- * three, and if it fails the placeholder stands in for the cover, whichever
- * size it was.
+ * failure is still remembered by that address: the browser fetches one of
+ * the three, and if it fails the placeholder stands in for the cover,
+ * whichever size it was. A `null` one is no cover at all, so the placeholder
+ * is drawn at once and no image is asked for.
  */
-export function Cover({ src, title }: { src: string; title: string }) {
+export function Cover({ src, title }: { src: string | null; title: string }) {
   const [failed, setFailed] = useState<string>()
-  if (failed === src)
+  if (src === null || failed === src)
     return (
       <span className="cover-missing" aria-hidden="true">
         {title}

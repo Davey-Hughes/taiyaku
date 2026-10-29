@@ -27,22 +27,32 @@ import { useGate } from './gate'
 import { Library } from './Library'
 import { Licence } from './Licence'
 import { Proposals } from './Proposals'
+import { lastLibraryAddress, RESTORE_SCROLL } from './scrollKeeper'
 import { Search } from './Search'
 import { Series } from './Series'
 import { Shell } from './Shell'
 import { useDocumentTitle } from './title'
 
-/** The reader, keyed by the slug in the URL. */
+/**
+ * The reader, keyed by the slug in the URL. Its exits (the top bar's
+ * Library button, its key, and the failed load's way back) return to the
+ * last Library view drawn in this tab, at its scroll (spec 2026-10-28
+ * §5.2), and to the top of `/` where none was.
+ */
 function Reader() {
   const { work } = useParams()
   const navigate = useNavigate()
   if (!work) return <Navigate to="/" replace />
+  const leave = () =>
+    void navigate(lastLibraryAddress() ?? '/', {
+      state: { [RESTORE_SCROLL]: true },
+    })
   // `.reader-route` blacks out the page from the first frame (spec 2026-09-17
   // §8.2): `App` draws nothing until its load answers, so its own `.reader`
   // root is not there for `styles/reader.css`'s ground rule until then.
   return (
     <div className="reader-route">
-      <App key={work} work={work} onLeave={() => void navigate('/')} />
+      <App key={work} work={work} onLeave={leave} />
     </div>
   )
 }

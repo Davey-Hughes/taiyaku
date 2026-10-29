@@ -66,30 +66,28 @@
  * button reads as a suggestion rather than as a refusal.
  *
  * **It is disabled while the answer in hand is not this rule's, too.** Each
- * edit does two things, and `searchHits.ts`'s own comment is where both are
- * written down: it clears the resolution on screen, *and* it bumps the
- * sequence number so a sweep already in flight for the rule being replaced is
- * discarded rather than rendered. This file shipped only the first of the two,
- * and the second is what a widening actually needs: the mount sweep goes out a
- * quarter-second after the panel opens, so a person who widens the pattern
- * while it is still out had the narrow rule's "move 14 works" land under the
- * widened one with Accept live. The server does not backstop that — a widening
- * whose extra matches are the subjects of other open proposals lands in
- * `also_resolves`, not `collateral`, so no refusal fires and `accept_with`
- * writes the wide rule against the narrow rule's numbers.
+ * edit does two things: it clears the resolution on screen, *and* it bumps
+ * the sequence number so a sweep already in flight for the rule being
+ * replaced is discarded rather than rendered. The second is what a widening
+ * needs: the mount sweep goes out a quarter-second after the panel opens,
+ * and a pattern widened while it is out would otherwise draw the narrow
+ * rule's counts under the wide rule with Accept live. The server does not
+ * backstop that: a widening whose extra matches are the subjects of other
+ * open proposals lands in `also_resolves`, not `collateral`, so no refusal
+ * fires and `accept_with` writes the wide rule against the narrow rule's
+ * numbers.
  *
  * **That guard covers a stale `Resolution` and nothing else — in particular
  * not a stale `rule`, which is a different failure and is not fixed here.**
- * The paragraph above used to read as though it closed both. The five
- * controls seed from `rule` with `useState`, which runs once per mount, and
- * `candidate` spreads the *current* `rule` prop over them — so an instance
- * mounted against one offered rule and re-rendered against another sends a
- * splice: `pattern`, `kind` and the three `set_*` fields from the rule it
- * mounted with, `root_id`, `match_on`, `set_series` and `note` from the one
- * it is now being handed. Nothing in this file can see that; the fix is that
- * `ProposalRow` clears `detail` when the row collapses, so the form is
- * unmounted rather than kept across two different answers. This paragraph is
- * here so that the guarantee is not re-read out of the one above it.
+ * The five controls seed from `rule` with `useState`, which runs once per
+ * mount, and `candidate` spreads the *current* `rule` prop over them — so an
+ * instance mounted against one offered rule and re-rendered against another
+ * sends a splice: `pattern`, `kind` and the three `set_*` fields from the
+ * rule it mounted with, `root_id`, `match_on`, `set_series` and `note` from
+ * the one it is now being handed. Nothing in this file can see that; the fix
+ * is that `ProposalRow` clears `detail` when the row collapses, so the form
+ * is unmounted rather than kept across two different answers. This paragraph
+ * is here so that the guarantee is not re-read out of the one above it.
  *
  * **And the reason it is disabled is attached to it, not merely near it.**
  * Whichever of the four states the form is in — still sweeping, refused,
@@ -202,14 +200,12 @@ export function AcceptForm({
 
   /**
    * One debounced sweep for the life of the component — a fresh one per
-   * render would have nothing pending to collapse into, which is `Search`'s
-   * reason for the same `useMemo`.
+   * render would have nothing pending to collapse into.
    *
    * The candidate is an argument rather than a closure read, so the call that
    * survives the debounce carries the rule that was standing when the typing
-   * stopped. The sequence number is `Search`'s too: three sweeps in flight
-   * may return in any order, and `cancelled` flags solve unmount rather than
-   * overtaking.
+   * stopped. A sequence number, because three sweeps in flight may return in
+   * any order, and `cancelled` flags solve unmount rather than overtaking.
    */
   const ask = useMemo(
     () =>
@@ -230,14 +226,12 @@ export function AcceptForm({
   )
 
   useEffect(() => {
-    // **Two acts, not one** — `searchHits.ts`'s `q === ''` branch is where the
-    // pair is written down, and this file originally copied half of it.
-    // Bumping the sequence invalidates the sweep *already sent* for the rule
-    // being replaced: without it that sweep still satisfied
-    // `seq === latest.current` when it answered, and rendered the previous
-    // rule's measurement — its consequence sentence, its counts and an
-    // enabled Accept — under the candidate that had replaced it. Clearing is
-    // the other half, and covers the window before anything is sent at all.
+    // **Two acts, not one.** Bumping the sequence invalidates the sweep
+    // *already sent* for the rule being replaced: without it that sweep still
+    // satisfied `seq === latest.current` when it answered, and rendered the
+    // previous rule's measurement — its consequence sentence, its counts and
+    // an enabled Accept — under the candidate that had replaced it. Clearing
+    // is the other half, and covers the window before anything is sent at all.
     //
     // Every fetch effect on this screen carries some version of clear-then-
     // request; this is the one where the missing half was not a flicker but a
@@ -265,6 +259,10 @@ export function AcceptForm({
         // The accept wrote a rule and moved this proposal to accepted, so
         // the rules and the accepted proposals Rules draws are out of date.
         void invalidate(RULES, ACCEPTED_PROPOSALS)
+        // It marks no Library view: an accept changes no series or edition.
+        // The rule it writes changes them only when the library is derived
+        // again, by a scan or a Rules save, and the screens that see either
+        // end mark the views themselves.
         // **Deliberately not re-enabled here, and re-ordering the two lines
         // would not have been the fix.** `onAccepted` is `Proposals`'
         // `reload`, which returns as soon as it has bumped a counter — the

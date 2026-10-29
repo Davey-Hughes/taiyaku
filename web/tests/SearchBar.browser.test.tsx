@@ -50,7 +50,7 @@ const series = (id: number, title: string): library.SeriesCard => ({
   aligned: 0,
   added: id,
   unread: 3,
-  cover: `/api/library/series/${id}/cover`,
+  cover: `/api/works/series-${id}-v01/raw/pages/0/thumb?v=c0ffee-0-1`,
 })
 
 /** Forty series, so each commit of the view has a grid's worth to draw. */

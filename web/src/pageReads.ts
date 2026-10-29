@@ -12,13 +12,13 @@
  * than sending the `GET` itself.
  */
 import { about } from './about'
-import { listKeys, listSessions } from './api'
+import { listKeys, listSessions, progressSaved } from './api'
 import { listBackups } from './backup'
 import { listRoots } from './config'
 import { listProposals } from './curation'
 import { libraryScanStatus, listLibraries } from './libraries'
-import { status } from './library'
-import { read } from './reads'
+import { grid, home, narrowedTo, oneSeries, search, status } from './library'
+import { invalidatePrefix, read } from './reads'
 import { listRules } from './rules'
 import { listUsers } from './users'
 
@@ -34,6 +34,60 @@ export const LIBRARY_STATUS = read('/api/library/status', () => status())
  */
 export const libraryScan = (id: number) =>
   read(`/api/library/libraries/${id}/scan`, () => libraryScanStatus(id))
+
+// The four reads of the Library views each wait for the progress saves sent
+// before them: a read sent as the reader closes would otherwise answer with
+// the position from before its last page turn, and since a progress save
+// marks nothing stale, the view drawn from that answer would not be read
+// again to correct it.
+
+/** A library's series grid, or every library's: the Library view's grid. */
+export const gridRead = (library: number | undefined) =>
+  read(narrowedTo('/api/library/series', library), async () => {
+    await progressSaved()
+    return grid(library)
+  })
+
+/** A library's Continue and Recently added lists, or every library's. */
+export const homeRead = (library: number | undefined) =>
+  read(narrowedTo('/api/library/home', library), async () => {
+    await progressSaved()
+    return home(library)
+  })
+
+/** Series `id` and its works: a series page's body. */
+export const seriesRead = (id: number) =>
+  read(`/api/library/series/${id}`, async () => {
+    await progressSaved()
+    return oneSeries(id)
+  })
+
+/** The hits for `q` in a library, or in every library: search's body. */
+export const searchRead = (q: string, library: number | undefined) =>
+  read(
+    narrowedTo(`/api/library/search?q=${encodeURIComponent(q)}`, library),
+    async () => {
+      await progressSaved()
+      return search(q, library)
+    },
+  )
+
+/**
+ * The prefixes of every address the four reads above name, for
+ * `invalidatePrefix`. `/api/library/series` covers a series page as well as
+ * the grid. No cover is here: a cover is an image the browser keeps by its
+ * versioned address, not an entry of the store.
+ */
+export const LIBRARY_VIEWS: readonly string[] = [
+  '/api/library/series',
+  '/api/library/home',
+  '/api/library/search',
+]
+
+/** Marks every Library view address kept stale, and reads now the ones drawn. */
+export function invalidateLibraryViews(): void {
+  invalidatePrefix(...LIBRARY_VIEWS)
+}
 
 /**
  * Every account, with what it may do and what it sees: Configuration →

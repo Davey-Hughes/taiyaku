@@ -88,7 +88,7 @@ const series = (
   aligned: 0,
   added: id,
   unread: works,
-  cover: `/api/library/series/${id}/cover`,
+  cover: `/api/works/series-${id}-v01/raw/pages/0/thumb?v=c0ffee-0-1`,
 })
 
 const edition = (key: string, label: string): library.EditionCard => ({
@@ -97,6 +97,7 @@ const edition = (key: string, label: string): library.EditionCard => ({
   members: 1,
   pages: 180,
   missing: 0,
+  cover: `/api/works/work/${key}/pages/0/thumb?v=c0ffee-0-1`,
 })
 
 const work = (

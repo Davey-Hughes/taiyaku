@@ -41,6 +41,18 @@ export async function flush(work?: () => void): Promise<void> {
 }
 
 /**
+ * Let the reads sent so far land and be drawn, with no time passing: a
+ * Library view read waits for the progress saves sent before it, and the
+ * store applies an answer some microtask turns after its client call
+ * settles, which is more than one `flush` lets run.
+ */
+export async function land(): Promise<void> {
+  await flush()
+  await flush()
+  await flush()
+}
+
+/**
  * Lets the clock run, inside `act`, until `drawn` holds, so that a test waits
  * on what it needs rather than on a guess at how long that takes. In slices,
  * each its own `act`, since `act` draws what an update set only as it ends.

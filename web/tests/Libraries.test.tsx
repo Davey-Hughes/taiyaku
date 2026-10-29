@@ -33,6 +33,7 @@ import { press, submit, typeInto } from './support/input'
 import { changesIn } from './support/liveRegion'
 import { dir, idle, scanningIn, tick } from './support/libraries'
 import { mount, rerender } from './support/mount'
+import { keptGrid } from './support/reads'
 import { expectRowsWired, helpOf, row, section } from './support/settingsRows'
 import { cellValue } from './support/table'
 import {
@@ -4067,6 +4068,107 @@ describe('Libraries, what a removal or a move makes out of date', () => {
       expect(readAgain()).toEqual(reads)
     },
   )
+})
+
+/**
+ * A removal takes works out of the Library views, and a move takes works
+ * from one library's views to another's. Each marks them stale once it is
+ * answered, so a Library view arriving afterwards waits for its own read; a
+ * refused write and a change of page change nothing, and mark nothing.
+ */
+describe('Libraries, a write and the Library views', () => {
+  beforeEach(() => {
+    vi.mocked(api.listLibraries).mockResolvedValue({ libraries: twoAndOne() })
+    vi.mocked(usersApi.listUsers).mockResolvedValue({ users: [] })
+  })
+
+  it.each([
+    [
+      'a library is removed',
+      '/config/libraries/Comics',
+      async (host: HTMLElement) => {
+        await removeDrawnLibrary(host)
+        return vi.mocked(api.removeLibrary)
+      },
+    ],
+    [
+      'a directory is removed',
+      '/config/libraries/Manga/dirs/11',
+      async (host: HTMLElement) => {
+        await removeDrawnDir(host)
+        return vi.mocked(config.removeRoot)
+      },
+    ],
+    [
+      'a library’s last directory is removed, which removes the library',
+      '/config/libraries/Comics/dirs/20',
+      async (host: HTMLElement) => {
+        await removeDrawnDir(host)
+        return vi.mocked(config.removeRoot)
+      },
+    ],
+    [
+      'a directory is moved',
+      '/config/libraries/Manga/dirs/11',
+      async (host: HTMLElement) => {
+        vi.mocked(api.moveCost).mockResolvedValue(movedAnswer({}, true))
+        vi.mocked(api.moveDir).mockResolvedValue(movedAnswer())
+        await moveDrawnDir(host, '2')
+        return vi.mocked(api.moveDir)
+      },
+    ],
+    [
+      'a directory is moved out of a library it empties, which removes the library',
+      '/config/libraries/Comics/dirs/20',
+      async (host: HTMLElement) => {
+        const emptied = {
+          library_id: 1,
+          library: 'Manga',
+          library_removed: 'Comics',
+        }
+        vi.mocked(api.moveCost).mockResolvedValue(movedAnswer(emptied, true))
+        vi.mocked(api.moveDir).mockResolvedValue(movedAnswer(emptied))
+        await moveDrawnDir(host, '1')
+        return vi.mocked(api.moveDir)
+      },
+    ],
+  ] as const)('marks them stale once %s', async (_, to, write) => {
+    const grid = await keptGrid()
+    const host = await at(to)
+    expect(grid.stale()).toBe(false)
+    const sent = await write(host)
+    expect(sent).toHaveBeenCalledTimes(1)
+    expect(grid.stale()).toBe(true)
+    expect(grid.sent()).toBe(1)
+  })
+
+  it('marks none of them stale when a move is refused', async () => {
+    const grid = await keptGrid()
+    const host = await at('/config/libraries/Manga/dirs/11')
+    vi.mocked(api.moveCost).mockResolvedValue(movedAnswer({}, true))
+    vi.mocked(api.moveDir).mockRejectedValue(
+      new Error(
+        '/api/library/roots/11/move: 409 {"error":"`Comics` already holds volumes of /media/Manga/Chapters"}',
+      ),
+    )
+    await moveDrawnDir(host, '2')
+    expect(api.moveDir).toHaveBeenCalledTimes(1)
+    expect(
+      host.querySelector('.move-root [role="alert"]')?.textContent,
+    ).toContain('already holds')
+    expect(grid.stale()).toBe(false)
+  })
+
+  it('marks none of them stale for a visit that wrote nothing, moving between pages', async () => {
+    const grid = await keptGrid()
+    const host = await at('/config/libraries/Manga/dirs/10')
+    await follow(host, '‹ Manga')
+    await follow(host, '‹ Libraries')
+    await follow(host, 'Comics')
+    expect(here()).toBe('/config/libraries/Comics')
+    expect(libraryTitle(host)).toBe('Comics')
+    expect(grid.stale()).toBe(false)
+  })
 })
 
 /**

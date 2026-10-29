@@ -25,6 +25,13 @@ export interface EditionCard {
    * goes missing; never negative and never greater than `members`.
    */
   missing: number
+  /**
+   * Page 0's cover address, `/api/works/{work}/{edition}/pages/0/thumb?v=…`,
+   * as the server builds it: `v` names the bytes, which lets the route mark
+   * the image `immutable`, and `coverSources` adds the size. `null`: the
+   * edition has no page.
+   */
+  cover: string | null
 }
 
 /** One edition pair's alignment — only `work()` carries these. */
@@ -70,7 +77,13 @@ export interface SeriesCard {
   added: number
   /** Works with no position for this reader. */
   unread: number
-  cover: string
+  /**
+   * The cover address of the edition the series' cover is taken from, as
+   * `EditionCard.cover`. `null`: no edition of the series is visible to this
+   * caller, or the one the cover is taken from has no page; the tile draws
+   * the missing-cover box and asks for nothing.
+   */
+  cover: string | null
 }
 
 /**
@@ -146,8 +159,11 @@ export function libraryParam(
   return /^[1-9]\d*$/.test(raw) ? Number(raw) : 'invalid'
 }
 
-/** `path` narrowed to one library, or as it is for every library. */
-const narrowedTo = (path: string, library?: number) =>
+/**
+ * `path` narrowed to one library, or as it is for every library. Exported for
+ * `pageReads.ts`, whose store addresses must be the paths these calls send.
+ */
+export const narrowedTo = (path: string, library?: number) =>
   library === undefined
     ? path
     : `${path}${path.includes('?') ? '&' : '?'}library=${library}`
@@ -162,25 +178,6 @@ export const oneSeries = (id: number) =>
   getJson<{ series: SeriesDetail; works: WorkCard[] }>(
     `/api/library/series/${id}`,
   )
-
-/**
- * A volume's cover: page 0 of one of its editions, through the tile route the
- * filmstrip already uses. Without `?w=` it is the 160 px filmstrip tile; at a
- * `w` from `COVER_LONG_EDGES` below — `coverSources` adds one — it is page 0
- * at that size (O133). The tile route rather than the page route, because the
- * page route refuses an account without `can_stream` and every account must
- * see its shelf (`routes.rs::refuse_if_cannot_stream`).
- *
- * **Not a `/api/library/…` route, and there is deliberately no such thing.**
- * `/api/library/series/{id}/cover?w=` is a 307 to exactly this URL at that
- * size — see `library_api.rs::cover`, whose whole argument is that a series
- * cover *is* an edition cover and a second pipeline would be a second
- * implementation of caching, guarding and `Cache-Control`. A volume tile
- * already knows which edition it is showing, so it needs no redirect to find
- * out.
- */
-export const workCover = (slug: string, edition: string) =>
-  `/api/works/${encodeURIComponent(slug)}/${encodeURIComponent(edition)}/pages/0/thumb`
 
 /**
  * The long edges a library cover is offered at, one per screen density — O133.
@@ -198,7 +195,10 @@ export const workCover = (slug: string, edition: string) =>
  */
 const COVER_LONG_EDGES = [256, 512, 768] as const
 
-/** A cover URL at each of `COVER_LONG_EDGES`, for an `<img>`'s `src` and `srcSet`. */
+/**
+ * A cover address at each of `COVER_LONG_EDGES`, for an `<img>`'s `src` and
+ * `srcSet`. The server's addresses carry `?v=`, so the size goes after it.
+ */
 export function coverSources(url: string): { src: string; srcSet: string } {
   const at = (edge: number) => `${url}${url.includes('?') ? '&' : '?'}w=${edge}`
   return {
@@ -296,4 +296,45 @@ export function sorted(series: SeriesCard[], sort: Sort): SeriesCard[] {
   return [...series].sort((a, b) =>
     sort === 'added' ? b.added - a.added : a.title.localeCompare(b.title),
   )
+}
+
+/**
+ * The Library view's chip and sort, which its address holds as `?show=` and
+ * `?sort=` so that Back, a link and the sidebar's library switch bring them
+ * back (spec 2026-10-28 §5.1).
+ */
+export interface View {
+  chip: Chip
+  sort: Sort
+}
+
+/**
+ * The chip and the sort `params` name. A value missing, or naming no chip or
+ * sort, is the default, All or Title: an address cannot select what the
+ * buttons do not offer.
+ */
+export function viewIn(params: URLSearchParams): View {
+  const show = params.get('show')
+  return {
+    chip: show === 'multi' || show === 'unread' ? show : 'all',
+    sort: params.get('sort') === 'added' ? 'added' : 'title',
+  }
+}
+
+/**
+ * A copy of `params` naming `view`, every other parameter kept. A default is
+ * left out, so choosing All or Title gives the address the view had before
+ * anything was chosen. The parameters are put in the order of their names,
+ * so one view has one address whichever was pressed first: the sidebar's
+ * link to the view shown, which this writes too, is then the address shown,
+ * and React Router makes it a replace, which adds no entry.
+ */
+export function withView(params: URLSearchParams, view: View): URLSearchParams {
+  const next = new URLSearchParams(params)
+  if (view.chip === 'all') next.delete('show')
+  else next.set('show', view.chip)
+  if (view.sort === 'title') next.delete('sort')
+  else next.set('sort', view.sort)
+  next.sort()
+  return next
 }

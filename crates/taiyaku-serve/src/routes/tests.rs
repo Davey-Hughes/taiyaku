@@ -2199,6 +2199,11 @@ async fn a_thumb_route_answers_a_jpeg_and_404s_a_page_that_does_not_exist() {
 /// response from the `304`'s headers, so omitting it here would leave the
 /// entry exactly as stale as it was and cost a round trip on the very
 /// next read.
+///
+/// **Every address here is one without a `?v=`**, and the claim is about those.
+/// A cover address whose `v` names its bytes does name them, and is the one
+/// answer kept for good:
+/// `a_cover_whose_version_matches_is_kept_for_good_on_the_200_and_the_304`.
 #[tokio::test]
 async fn every_route_serving_a_member_s_bytes_makes_the_client_revalidate() {
     let (state, _fixture) = crate::test_support::state_with_real_pages();
@@ -4987,6 +4992,242 @@ async fn a_sized_cover_answers_its_own_validator_with_a_304() {
         decoded.width().max(decoded.height()),
         768,
         "the first `w` decides the size"
+    );
+}
+
+/// An answer's `Cache-Control`, or `""` when it has none.
+fn cache_control(headers: &axum::http::HeaderMap) -> &str {
+    headers
+        .get(header::CACHE_CONTROL)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+}
+
+/// That `policy` keeps an answer for good in the reader's browser alone: what
+/// `COVER_CACHE_CONTROL` must say, checked as directives rather than against
+/// the constant, which a comparison with itself can never catch changing.
+/// `private` because a cover is answered only to an account whose grants show
+/// it, so a shared cache must not hold it (spec 2026-10-28 §4.5).
+fn assert_kept_for_good_privately(policy: &str, what: &str) {
+    let directives: Vec<&str> = policy.split(',').map(str::trim).collect();
+    for present in ["private", "immutable", "max-age=31536000"] {
+        assert!(
+            directives.contains(&present),
+            "{what}: `{present}` missing from {policy:?}"
+        );
+    }
+    for absent in ["public", "no-cache", "no-store"] {
+        assert!(
+            !directives.contains(&absent),
+            "{what}: `{absent}` in {policy:?}"
+        );
+    }
+}
+
+/// A cover address whose `?v=` names the bytes it serves is kept for good, at
+/// every cover size, with the `ETag` and the bytes the same address sends
+/// without a `v`.
+///
+/// **The `304` too** (O1's lesson): RFC 9111 §4.3.4 has the client take a
+/// `304`'s headers into its stored answer, so a `304` sending
+/// `PAGE_CACHE_CONTROL` would put a kept cover back to asking on every visit.
+/// The addresses are in the shape the lists carry, `v` first and the client's
+/// `w` after it. The header is compared with `COVER_CACHE_CONTROL` and its
+/// directives are checked too, since the comparison alone passes whatever the
+/// constant says.
+#[tokio::test]
+async fn a_cover_whose_version_matches_is_kept_for_good_on_the_200_and_the_304() {
+    let (state, _fixture) = crate::test_support::state_with_tall_pages();
+    let app = build_router(state);
+    let v = crate::cover::cover_version("tall", 0);
+
+    for edge in crate::cover::COVER_LONG_EDGES {
+        let (_, plain_headers, plain_body) = fetch(
+            &app,
+            &format!("/api/works/w/a/pages/0/thumb?w={edge}"),
+            None,
+        )
+        .await;
+        let uri = format!("/api/works/w/a/pages/0/thumb?v={v}&w={edge}");
+        let (status, headers, body) = fetch(&app, &uri, None).await;
+        assert_eq!(status, StatusCode::OK, "{uri}");
+        assert_eq!(cache_control(&headers), COVER_CACHE_CONTROL, "{uri}");
+        assert_kept_for_good_privately(cache_control(&headers), &uri);
+        let tag = headers
+            .get(header::ETAG)
+            .expect("a cover carries an ETag")
+            .to_str()
+            .expect("ascii")
+            .to_owned();
+        assert_eq!(
+            Some(tag.as_str()),
+            plain_headers
+                .get(header::ETAG)
+                .and_then(|value| value.to_str().ok()),
+            "{uri}: the ETag the address sends without a v"
+        );
+        assert_eq!(body, plain_body, "{uri}: the same bytes");
+        assert_eq!(long_edge_of(&body), edge, "{uri}: page 0 at {edge} px");
+
+        let (again, headers, body) = fetch(&app, &uri, Some(&tag)).await;
+        assert_eq!(again, StatusCode::NOT_MODIFIED, "{uri}");
+        assert!(body.is_empty(), "{uri}: a 304 sends no body");
+        assert_eq!(
+            cache_control(&headers),
+            COVER_CACHE_CONTROL,
+            "{uri}: the 304's headers replace the kept answer's"
+        );
+        assert_kept_for_good_privately(cache_control(&headers), &format!("{uri}, the 304"));
+        assert_eq!(headers[header::ETAG], tag.as_str(), "{uri}");
+    }
+}
+
+/// A `v` that does not name what the route serves (the image changed after the
+/// list that carried the address was read) is answered with the current image
+/// under `PAGE_CACHE_CONTROL`, on the `200` and on the `304`, so no address is
+/// kept for good over bytes other than the ones it names.
+///
+/// Another member's version, this member's at another offset, the right one
+/// with more after it, an empty one and one that is not a version at all; and
+/// the right one given second, since the first `v` decides as the first `w`
+/// does.
+#[tokio::test]
+async fn a_cover_whose_version_does_not_match_is_the_current_image_revalidated() {
+    let (state, _fixture) = crate::test_support::state_with_tall_pages();
+    let app = build_router(state);
+    let (_, plain_headers, plain_body) =
+        fetch(&app, "/api/works/w/a/pages/0/thumb?w=512", None).await;
+    let current = plain_headers[header::ETAG]
+        .to_str()
+        .expect("ascii")
+        .to_owned();
+    let v = crate::cover::cover_version("tall", 0);
+    let stale = crate::cover::cover_version(
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        0,
+    );
+    let other_offset = crate::cover::cover_version("tall", 1);
+
+    for query in [
+        format!("v={stale}"),
+        format!("v={other_offset}"),
+        format!("v={v}0"),
+        "v=".to_owned(),
+        "v=abc".to_owned(),
+        format!("v={stale}&v={v}"),
+    ] {
+        let uri = format!("/api/works/w/a/pages/0/thumb?{query}&w=512");
+        let (status, headers, body) = fetch(&app, &uri, None).await;
+        assert_eq!(status, StatusCode::OK, "{uri}");
+        assert_eq!(cache_control(&headers), PAGE_CACHE_CONTROL, "{uri}");
+        assert_eq!(headers[header::ETAG], current.as_str(), "{uri}");
+        assert_eq!(body, plain_body, "{uri}: the current image");
+
+        let (again, headers, _) = fetch(&app, &uri, Some(&current)).await;
+        assert_eq!(again, StatusCode::NOT_MODIFIED, "{uri}");
+        assert_eq!(
+            cache_control(&headers),
+            PAGE_CACHE_CONTROL,
+            "{uri}: a 304 must not make the address kept for good either"
+        );
+    }
+}
+
+/// With no `v`, a cover is revalidated as every page is: any cover address
+/// without a version, the `307`'s target at a cover size among them, is sent
+/// `PAGE_CACHE_CONTROL` on both.
+#[tokio::test]
+async fn a_cover_without_a_version_is_revalidated_on_the_200_and_the_304() {
+    let (state, _fixture) = crate::test_support::state_with_tall_pages();
+    let app = build_router(state);
+
+    for edge in crate::cover::COVER_LONG_EDGES {
+        let uri = format!("/api/works/w/a/pages/0/thumb?w={edge}");
+        let (status, headers, _) = fetch(&app, &uri, None).await;
+        assert_eq!(status, StatusCode::OK, "{uri}");
+        assert_eq!(cache_control(&headers), PAGE_CACHE_CONTROL, "{uri}");
+        let tag = headers[header::ETAG].to_str().expect("ascii").to_owned();
+
+        let (again, headers, _) = fetch(&app, &uri, Some(&tag)).await;
+        assert_eq!(again, StatusCode::NOT_MODIFIED, "{uri}");
+        assert_eq!(cache_control(&headers), PAGE_CACHE_CONTROL, "{uri}");
+    }
+}
+
+/// `v` is a cover's alone: page 0 at one of `cover::COVER_LONG_EDGES` on the
+/// tile route. Anywhere else it is ignored, and the answer is the one the same
+/// address gives without it, headers and bytes alike.
+///
+/// Each `v` here is the one that address's own page would have, so a route
+/// that honoured a matching `v` anywhere but a cover would be caught, not only
+/// one that honoured any `v`.
+#[tokio::test]
+async fn a_version_anywhere_but_a_cover_is_ignored() {
+    let (state, _fixture) = crate::test_support::state_with_tall_pages();
+    let app = build_router(state);
+    let v0 = crate::cover::cover_version("tall", 0);
+    let v1 = crate::cover::cover_version("tall", 1);
+
+    for (plain, with_v) in [
+        (
+            "/api/works/w/a/pages/0/thumb",
+            format!("/api/works/w/a/pages/0/thumb?v={v0}"),
+        ),
+        (
+            "/api/works/w/a/pages/0/thumb?w=320",
+            format!("/api/works/w/a/pages/0/thumb?v={v0}&w=320"),
+        ),
+        (
+            "/api/works/w/a/pages/0/thumb?w=700",
+            format!("/api/works/w/a/pages/0/thumb?v={v0}&w=700"),
+        ),
+        (
+            "/api/works/w/a/pages/1/thumb?w=256",
+            format!("/api/works/w/a/pages/1/thumb?v={v1}&w=256"),
+        ),
+        (
+            "/api/works/w/a/pages/0?w=256",
+            format!("/api/works/w/a/pages/0?v={v0}&w=256"),
+        ),
+        (
+            "/api/works/w/a/pages/0",
+            format!("/api/works/w/a/pages/0?v={v0}"),
+        ),
+    ] {
+        let (plain_status, plain_headers, plain_body) = fetch(&app, plain, None).await;
+        let (status, headers, body) = fetch(&app, &with_v, None).await;
+        assert_eq!(status, StatusCode::OK, "{with_v}");
+        assert_eq!(cache_control(&headers), PAGE_CACHE_CONTROL, "{with_v}");
+        assert_eq!(status, plain_status, "{with_v}");
+        assert_eq!(headers, plain_headers, "{with_v}: the answer {plain} gives");
+        assert_eq!(body, plain_body, "{with_v}: the bytes {plain} gives");
+    }
+}
+
+/// O133: an account that may download but not read here sees its shelf's
+/// covers, and with a matching `v` keeps them as any account does, at every
+/// cover size. The page route still refuses it with a `v`, as it does without
+/// one (`a_download_only_account_sees_covers_at_every_size_and_still_no_pages`).
+#[tokio::test]
+async fn a_download_only_account_keeps_its_covers_with_a_matching_version_and_still_no_pages() {
+    let (state, _fixture) = crate::test_support::state_with_tall_pages();
+    without_can_stream(&state);
+    let app = crate::test_support::authenticating(build_router(state.clone()), &state.library);
+    let v = crate::cover::cover_version("tall", 0);
+
+    for edge in crate::cover::COVER_LONG_EDGES {
+        let uri = format!("/api/works/w/a/pages/0/thumb?v={v}&w={edge}");
+        let (status, headers, body) = fetch(&app, &uri, None).await;
+        assert_eq!(status, StatusCode::OK, "{uri}");
+        assert_eq!(long_edge_of(&body), edge, "{uri}: page 0 at {edge} px");
+        assert_eq!(cache_control(&headers), COVER_CACHE_CONTROL, "{uri}");
+    }
+
+    let (status, _, _) = fetch(&app, &format!("/api/works/w/a/pages/0?v={v}&w=256"), None).await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "the page route still refuses to show this account a page"
     );
 }
 

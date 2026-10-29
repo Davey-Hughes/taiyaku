@@ -2725,13 +2725,66 @@ async fn every_route_declares_its_grant_posture() {
     );
     proven_filters.insert("/api/library/home");
 
-    // `/api/library/series` (the grid) and `/api/library/search` both carry
-    // only an *edition count* per series, not per-work detail —
-    // `SeriesCard` has no field for either. The count is still the exact
-    // number the whole-branch review found wrong before 2026-08-21
-    // (`browse`'s module header, `aligned_clause`'s history), so both are
-    // proven by asserting it reads 1 (the visible `en`) rather than 2 (`en`
-    // and the withheld `raw`).
+    // `/api/library/series` (the grid) and `/api/library/search` carry per
+    // series an edition count and a `cover` address naming one work and one
+    // of its editions, and both must be read through the grant: the count
+    // reads 1 (the visible `en`), not 2, and the `cover` names the split
+    // work's `en`.
+    //
+    // **The cover needs a candidate the grant must refuse.** The split work
+    // alone cannot fail without the filter: its visible `en` sorts before the
+    // withheld `raw`, so the unfiltered choice is the right one too. So a
+    // second work is filed under the series with its one edition under the
+    // withheld root, and is hand-set as the series' cover, which ranks it
+    // first wherever it is a candidate. It is removed after the search proof,
+    // so the proofs below read the fixture as built.
+    let withheld_work: i64 = {
+        let conn = split_state.library.conn();
+        let doc = taiyaku_core::Sidecar::from_json(&format!(
+            r#"{{
+              "taiyaku": 1,
+              "work": {{ "title": "Withheld", "reading": "rtl" }},
+              "editions": {{
+                "raw": {{ "label": "Raw", "members": [
+                  {{ "path": "{}/raw/w1.cbz", "sha256": "w", "pages": 2 }}
+                ], "spreads": [] }}
+              }},
+              "hub": "raw",
+              "alignments": []
+            }}"#,
+            tmp3.path().display()
+        ))
+        .expect("the withheld work's sidecar parses");
+        let id = taiyaku_library::import::scanned(&conn, &doc, None).expect("import as a scan");
+        conn.execute(
+            "UPDATE member SET root_id = 2 WHERE edition_id IN \
+             (SELECT id FROM edition WHERE work_id = ?1)",
+            [id],
+        )
+        .expect("files its edition under the withheld root");
+        conn.execute(
+            "UPDATE work SET series_id = 1, volume = 2.0 WHERE id = ?1",
+            [id],
+        )
+        .expect("files it under the split series");
+        conn.execute("UPDATE series SET cover_work_id = ?1 WHERE id = 1", [id])
+            .expect("hand-sets it as the series' cover");
+        id
+    };
+    let withheld_slug: String = split_state
+        .library
+        .conn()
+        .query_row(
+            "SELECT slug FROM work WHERE id = ?1",
+            [withheld_work],
+            |r| r.get(0),
+        )
+        .expect("the withheld work's slug");
+    // The split work's `en` member is `p` (`one_work_two_editions_split_across_roots`).
+    let visible_cover = format!(
+        "/api/works/{split_slug}/en/pages/0/thumb?v={}",
+        crate::cover::cover_version("p", 0)
+    );
     let grid_response = split_router
         .clone()
         .oneshot(
@@ -2756,6 +2809,12 @@ async fn every_route_declares_its_grant_posture() {
         grid_series["editions"].as_i64(),
         Some(1),
         "/api/library/series counted an edition outside the grant: {grid_body}"
+    );
+    assert_eq!(
+        grid_series["cover"].as_str(),
+        Some(visible_cover.as_str()),
+        "/api/library/series named a cover outside the grant (`{withheld_slug}`, \
+         or `raw`): {grid_body}"
     );
     proven_filters.insert("/api/library/series");
 
@@ -2784,7 +2843,20 @@ async fn every_route_declares_its_grant_posture() {
         Some(1),
         "/api/library/search counted an edition outside the grant: {search_body}"
     );
+    assert_eq!(
+        search_series["cover"].as_str(),
+        Some(visible_cover.as_str()),
+        "/api/library/search named a cover outside the grant (`{withheld_slug}`, \
+         or `raw`): {search_body}"
+    );
     proven_filters.insert("/api/library/search");
+    {
+        let conn = split_state.library.conn();
+        conn.execute("UPDATE series SET cover_work_id = NULL WHERE id = 1", [])
+            .expect("unsets the hand-set cover");
+        conn.execute("DELETE FROM work WHERE id = ?1", [withheld_work])
+            .expect("removes the withheld work");
+    }
 
     // `/opds/v1.2/works` names no edition at all — only a count. That count
     // was `sidecar.editions.len()`, unfiltered by any round before Finding

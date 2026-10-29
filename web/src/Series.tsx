@@ -15,27 +15,34 @@
  * `WorkCard.aligned` is one bool per volume and no list route carries more;
  * the verdict and the paired count come from `/api/library/works/{slug}` and
  * from nowhere else, which is what the panel is for.
+ *
+ * **The series is read through the store** (`usePage`), so a return draws
+ * what was kept in its first render and reads it again, and a move to a
+ * series not kept draws nothing of the one left while it loads. The chosen
+ * edition is `?edition=` (spec 2026-10-28 §5.1), so that Back brings it back.
  */
-import { useEffect, useRef, useState } from 'react'
-import { Link, useParams } from 'react-router'
+import { useRef, useState } from 'react'
+import { Link, useParams, useSearchParams } from 'react-router'
 import { MetadataEditor } from './MetadataEditor'
-import { patchWork } from './metadata'
+import { type PatchResult, patchWork, type WorkEdit } from './metadata'
 import { type BrowsePrefs, useBrowsePrefs } from './browseModule'
 import { useGate } from './gate'
 import { Cover } from './Cover'
 import {
   type AlignmentCard,
   type EditionCard,
-  oneSeries as fetchSeries,
   type SeriesCard,
   unreadable,
   work as fetchWork,
   type WorkCard,
   editionDownload,
-  workCover,
 } from './library'
 import { messageOf } from './message'
+import { invalidateLibraryViews, seriesRead } from './pageReads'
+import { useKeptScroll } from './scrollKeeper'
+import { PageLoading } from './settingsLayout'
 import { useDocumentTitle } from './title'
+import { usePage } from './usePage'
 import { ViewMenu } from './ViewMenu'
 
 /** What this page's View panel offers: the four preferences that act here. */
@@ -81,6 +88,33 @@ function editionColumns(works: WorkCard[]): { key: string; label: string }[] {
     }
   }
   return [...seen].map(([key, label]) => ({ key, label }))
+}
+
+/**
+ * The edition `?edition=` names, or `'all'` where it names none that one of
+ * `works` holds. Edition keys collide across series, `'en'` exists in most of
+ * them, so a key is read against this series' own editions: a leftover one
+ * that this series lacks dims nothing, and one it has is the reader's choice
+ * however it arrived.
+ */
+function editionIn(params: URLSearchParams, works: WorkCard[]): string {
+  const key = params.get('edition')
+  return key !== null && editionColumns(works).some((c) => c.key === key)
+    ? key
+    : 'all'
+}
+
+/**
+ * `patchWork`, then every Library view address marked stale: this page's
+ * series is read again at once, so the volume's title follows the save, and
+ * the grid, home and search kept for a later arrival are read then. Only once
+ * the save has answered, and succeeded: a read sent before would answer with
+ * the title from before it.
+ */
+async function saveWork(slug: string, fields: WorkEdit): Promise<PatchResult> {
+  const saved = await patchWork(slug, fields)
+  invalidateLibraryViews()
+  return saved
 }
 
 /**
@@ -311,7 +345,8 @@ function AlignmentPanel({
  * a readable volume (inside a `<Link>`) and an unreadable one (inside a plain
  * `<span>`, below). Factored out rather than written twice: a copy in each
  * branch is exactly the kind of drift I1 found in `unreadable` itself, one
- * level up.
+ * level up. With no `shown`, the volume lacks the chosen edition and is drawn
+ * dimmed, over the cover of the edition it leads with.
  */
 function VolumeCover({
   w,
@@ -322,10 +357,7 @@ function VolumeCover({
 }) {
   return (
     <span className="cover-box">
-      <Cover
-        src={workCover(w.slug, (shown ?? w.editions[0])?.key ?? '')}
-        title={w.title}
-      />
+      <Cover src={(shown ?? w.editions[0])?.cover ?? null} title={w.title} />
       {w.aligned && (
         <span className="aligned" title="has an aligned edition">
           ⇄
@@ -368,16 +400,16 @@ export function Series() {
   // "simplify" by dropping one half.
   const mayStamp = useGate()?.who.can_stamp === true
   const { id } = useParams()
-  // **Parsed before the effect, not inside it.** `Number('not-a-number')` is
-  // `NaN`, and `/api/library/series/NaN` is a request the server answers with
-  // a 400 that says nothing useful to the person who mistyped a URL.
+  // **Parsed before it is read.** `Number('not-a-number')` is `NaN`, and
+  // `/api/library/series/NaN` is a request the server answers with a 400
+  // that says nothing useful to the person who mistyped a URL.
   //
   // **Digits alone are not enough.** `/^\d+$/` accepts a string of any
   // length, but `Number` on one longer than `Number.MAX_SAFE_INTEGER`'s 16
   // digits either rounds to a *different*, wrong-but-plausible integer
   // (`Number('9007199254740993') === 9007199254740992`) or, further out,
   // loses integer shape entirely (`Number('9'.repeat(26)) === 1e+26`) — the
-  // latter would even reach `fetchSeries` and produce a request to
+  // latter would even reach `seriesRead` and produce a request to
   // `/api/library/series/1e+26`. Real ids are small auto-increment integers,
   // so this only guards against an id no server could have issued; the
   // `Number.isSafeInteger` check turns that into the same honest "is not a
@@ -388,14 +420,37 @@ export function Series() {
       ? Number(id)
       : undefined
 
-  const [loaded, setLoaded] = useState<Loaded | undefined>()
+  // **Only the series the address names is drawn**, and only once its read
+  // is in hand: `usePage` answers for the address it is given, so a move to
+  // another series draws nothing of the one left, neither its volumes nor its
+  // failure, while a move to one kept in this tab draws it at once.
+  const {
+    ready,
+    answers: [answer],
+    failures: [failed],
+    loadingDrawn,
+  } = usePage<[Loaded]>(seriesId === undefined ? [] : [seriesRead(seriesId)])
+  const loaded = ready ? answer : undefined
   useDocumentTitle(loaded?.series.title)
-  const [failure, setFailure] = useState<string | undefined>()
-  // **`'all'` rather than the first edition**, so the page with the selector
-  // on renders identically to the page with it off until the reader chooses.
-  // A default of "the first edition" would silently dim every volume the hub
-  // does not cover, on a screen nobody had touched.
-  const [chosen, setChosen] = useState('all')
+  useKeptScroll(ready)
+  const failure =
+    seriesId === undefined
+      ? `${id ?? ''} is not a series`
+      : failed === undefined
+        ? undefined
+        : messageOf(failed)
+  const [params, setParams] = useSearchParams()
+  /**
+   * Writes a chosen edition into the address with `replace`, as the Library
+   * view writes its chip: a choice adds no entry for Back to walk out of.
+   * Every other parameter stays; "all" is left out.
+   */
+  const choose = (key: string) => {
+    const next = new URLSearchParams(params)
+    if (key === 'all') next.delete('edition')
+    else next.set('edition', key)
+    setParams(next, { replace: true })
+  }
 
   const [open, setOpen] = useState<string | undefined>()
   // Keyed by slug and kept for the life of the page. **The cache is what makes
@@ -404,10 +459,7 @@ export function Series() {
   // is cached too, as its own message — retrying on every re-render would turn
   // a 500 into a request loop.
   //
-  // **Not reset when the series changes**, unlike `chosen` above. `chosen`
-  // holds an *edition key*, and edition keys collide across series — `'en'`
-  // exists in most of them — so a leftover `chosen` from series A can silently
-  // select a real edition in series B. `open` and `detail` are keyed by
+  // **Not reset when the series changes.** `open` and `detail` are keyed by
   // *slug*, and slugs are per-work, not per-series-position, so a leftover
   // `open` from series A never matches a `w.slug` in series B's list: the
   // panel simply renders as already closed, which is the state a fresh view
@@ -449,6 +501,17 @@ export function Series() {
   // reach alignment detail at all is a deferred gap, tracked separately —
   // this comment does not claim otherwise.)
   const showEditionSelector = editionSelector && layout !== 'table'
+  // **`'all'` rather than the first edition**, so the page with the selector
+  // on renders identically to the page with it off until the reader chooses.
+  // A default of "the first edition" would silently dim every volume the hub
+  // does not cover, on a screen nobody had touched.
+  //
+  // **Not applied while the selector is hidden**: nothing on the page would
+  // then say why volumes are dimmed or which edition's covers are drawn. The
+  // address keeps `?edition=`, so switching the selector on brings it back.
+  const chosen = showEditionSelector
+    ? editionIn(params, loaded?.works ?? [])
+    : 'all'
 
   const reveal = (slug: string) => {
     setOpen(slug)
@@ -468,35 +531,6 @@ export function Series() {
       })
   }
 
-  useEffect(() => {
-    // A changing series must also forget which edition the reader had
-    // chosen for the *previous* one, or a selector built from series A's
-    // edition list lingers into series B's. Unreachable today — the only
-    // link to `/series/:id` comes from a different route, so `Series`
-    // always remounts — but it is the same class of bug `Routes.tsx`'s
-    // `key={work}` already guards against elsewhere, and Task 10 adds a
-    // search screen whose results link here without a remount in between.
-    setChosen('all')
-    if (seriesId === undefined) {
-      setFailure(`${id ?? ''} is not a series`)
-      return
-    }
-    let cancelled = false
-    fetchSeries(seriesId)
-      .then((next) => {
-        if (cancelled) return
-        setLoaded(next)
-        setFailure(undefined)
-      })
-      .catch((err: unknown) => {
-        if (cancelled) return
-        setFailure(messageOf(err))
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [seriesId, id])
-
   return (
     <>
       {/* O163: one h1 on this screen in every state. Until the series has
@@ -504,6 +538,7 @@ export function Series() {
           heading is hidden and says what the screen is. */}
       {!loaded && <h1 className="visually-hidden">Series</h1>}
       {failure !== undefined && <p role="alert">{failure}</p>}
+      {!ready && <PageLoading drawn={loadingDrawn} />}
       {loaded && (
         <>
           <div className="page-head">
@@ -516,7 +551,7 @@ export function Series() {
               <select
                 value={chosen}
                 onChange={(e) => {
-                  setChosen(e.target.value)
+                  choose(e.target.value)
                 }}
               >
                 <option value="all">All editions</option>
@@ -670,17 +705,13 @@ export function Series() {
                       // this is the surface a volume already opens. There is
                       // no metadata screen to navigate to, by design.
                       //
-                      // The page's own `w.title` is not re-fetched after a
-                      // save; the editor shows the server's re-projected
-                      // title itself, so the corrected name is on screen
-                      // either way. Refreshing the whole series behind it is
-                      // a larger change than this task, and O67's own case —
-                      // a title wrong about its own contents — is answered
-                      // by the edit landing, not by the list re-sorting.
+                      // A save reads the series again (`saveWork`), so the
+                      // tile's title follows it; the editor shows the
+                      // server's re-projected title itself meanwhile.
                       <MetadataEditor
                         slug={w.slug}
                         title={w.title}
-                        onPatch={patchWork}
+                        onPatch={saveWork}
                         canStamp={mayStamp}
                       />
                     )}

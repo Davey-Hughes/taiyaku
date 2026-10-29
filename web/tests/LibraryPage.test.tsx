@@ -20,6 +20,7 @@ import {
   tick,
 } from './support/libraries'
 import { mount, rerender } from './support/mount'
+import { keptGrid } from './support/reads'
 import { expectRowsWired, row, section } from './support/settingsRows'
 import { cellValue } from './support/table'
 import { watchDrawn } from './support/wait'
@@ -998,6 +999,22 @@ describe('LibraryPage, a library and its directories', () => {
     expect(host.querySelector('.library-page > .scanning')).toBeNull()
     expect(onChanged).toHaveBeenCalledTimes(1)
     expect(onChanged).toHaveBeenCalledWith(true)
+  })
+
+  it('marks the Library views stale when the library’s own scan ends', async () => {
+    const grid = await keptGrid()
+    vi.mocked(api.libraryScanStatus).mockResolvedValue({
+      ...idle(7),
+      running: true,
+      elapsed_secs: 3,
+    })
+    const { host } = await shown()
+    expect(grid.stale()).toBe(false)
+    vi.mocked(api.libraryScanStatus).mockResolvedValue(idle(7))
+    await tick()
+    expect(host.querySelector('.library-page > .scanning')).toBeNull()
+    expect(grid.stale()).toBe(true)
+    expect(grid.sent()).toBe(1)
   })
 
   it('frees the library once the directory’s scan has ended', async () => {
@@ -2073,6 +2090,26 @@ describe('LibraryPage, the status read on a return', () => {
     expect(reportedPaths(host)).toEqual([])
     expect(config.scanStatus).not.toHaveBeenCalled()
     expect(onChanged).not.toHaveBeenCalled()
+  })
+
+  it('marks no Library view stale for a scan the kept status said was running and the read on a return finds over', async () => {
+    vi.mocked(api.libraryScanStatus).mockResolvedValue(kept())
+    const { again } = await returned()
+    const grid = await keptGrid()
+    expect(scanDrawn()).toBe(
+      JSON.stringify([
+        'A scan is running in this library… 9s',
+        ['Never', 'Never'],
+        'held',
+        'held',
+      ]),
+    )
+    await flush(() => again.resolve(idle(7)))
+    await tick()
+    expect(scanDrawn()).toBe(
+      JSON.stringify([null, ['Never', 'Never'], 'free', 'free']),
+    )
+    expect(grid.stale()).toBe(false)
   })
 
   it('draws no report for a scan the kept status said was running when the poll’s read is the first of this visit to find it over', async () => {

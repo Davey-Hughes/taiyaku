@@ -44,6 +44,7 @@ import { Unauthenticated, me, whenSignedOut, type Me } from './api'
 import { GateContext } from './gate'
 import { Login } from './Login'
 import { emptyReads } from './reads'
+import { forgetScroll } from './scrollKeeper'
 
 export interface GateProps {
   children: ReactNode
@@ -68,9 +69,10 @@ export function Gate({ children }: GateProps) {
     me()
       .then((account) => {
         if (asked.current !== id) return
-        // The read store outlives the unmount below the gate, and what it
-        // keeps was read for the account that read it.
+        // The read store and the scroll keeper outlive the unmount below the
+        // gate, and what they keep was the account's that read it.
         emptyReads()
+        forgetScroll()
         setWho(account)
       })
       .catch((why: unknown) => {
@@ -87,6 +89,7 @@ export function Gate({ children }: GateProps) {
   // in flight for the account signing out is dropped when it lands.
   const signOut = useCallback(() => {
     emptyReads()
+    forgetScroll()
     setWho(null)
   }, [])
 

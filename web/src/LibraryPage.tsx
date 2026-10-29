@@ -37,9 +37,9 @@
  * return lands whole, in one step: a scan it finds is taken up as one found
  * on arrival is, and one the kept status said was running is drawn ended or
  * further on, as it says. An end that this visit's first read of the status
- * finds draws no report and reads no list: that scan ended before this
- * visit, and `RootRow`'s mount read adopts only a running scan. A scan the
- * page started itself is followed by its poll alone.
+ * finds draws no report, reads no list and marks no Library view: that scan
+ * ended before this visit, and `RootRow`'s mount read adopts only a running
+ * scan. A scan the page started itself is followed by its poll alone.
  *
  * **A 409 from Scan library is proof a scan is in flight**, of the library or
  * of one directory, so the page draws the sentence and polls. The sentence goes
@@ -93,7 +93,7 @@ import {
 } from './libraries'
 import { messageOf, sentenceOf } from './message'
 import { NameClash } from './NameClash'
-import { libraryScan, ROOTS } from './pageReads'
+import { invalidateLibraryViews, libraryScan, ROOTS } from './pageReads'
 import { PathWithBreaks } from './PathWithBreaks'
 import { Refusal } from './Refusal'
 import { entryOf, invalidate, readNow, readSet } from './reads'
@@ -468,10 +468,12 @@ export function LibraryPage({
 
   // The list is read again for what the scan changed, quietly: no press
   // started that read. A read that fails draws no report for that directory:
-  // the table still says when it was last scanned.
+  // the table still says when it was last scanned. What the scan found
+  // changes what the Library views draw, so they are marked too.
   useEffect(() => {
     if (ended === 0) return
     changed.current(true)
+    invalidateLibraryViews()
     let cancelled = false
     const scanned = covered.current
     Promise.all(

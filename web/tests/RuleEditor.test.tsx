@@ -8,6 +8,7 @@ import type { Impact, Override, Preview, Rule, Saved } from '../src/rules'
 import { deferred, flush } from './support/async'
 import { holdOf } from './support/held'
 import { mount, rerender } from './support/mount'
+import { keptGrid } from './support/reads'
 import {
   holdTheClock,
   pass,
@@ -402,6 +403,20 @@ describe('RuleEditor', () => {
     expect(host.querySelector('.saved')?.textContent).toContain('71')
   })
 
+  it('marks the Library views stale once a save is answered', async () => {
+    const saved = deferred<Saved>()
+    vi.mocked(rulesApi.saveRules).mockReturnValue(saved.promise)
+    const grid = await keptGrid()
+    const host = await render()
+    await clickText(host, 'Save')
+    expect(rulesApi.saveRules).toHaveBeenCalledTimes(1)
+    expect(grid.stale()).toBe(false)
+    await flush(() => saved.resolve(savedBody()))
+    expect(host.querySelector('.saved')?.textContent).toContain('71')
+    expect(grid.stale()).toBe(true)
+    expect(grid.sent()).toBe(1)
+  })
+
   it('states the proposals a save reopened, by id', async () => {
     vi.mocked(rulesApi.saveRules).mockResolvedValue(
       savedBody({
@@ -440,6 +455,22 @@ describe('RuleEditor', () => {
     expect(host.querySelector('[role="alert"]')?.textContent).toContain(
       'no such rule exists to keep',
     )
+  })
+
+  it('marks no Library view stale when a save is refused', async () => {
+    vi.mocked(rulesApi.saveRules).mockRejectedValue(
+      new Error(
+        '/api/library/rules: 400 rule 9999: no such rule exists to keep',
+      ),
+    )
+    const grid = await keptGrid()
+    const host = await render()
+    await clickText(host, 'Save')
+    expect(rulesApi.saveRules).toHaveBeenCalledTimes(1)
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain(
+      'no such rule exists to keep',
+    )
+    expect(grid.stale()).toBe(false)
   })
 
   it('draws the server’s own sentence when a non-admin loads it', async () => {

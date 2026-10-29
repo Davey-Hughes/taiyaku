@@ -10,11 +10,13 @@
  * browser actually takes.
  */
 import { act } from 'react'
+import { MemoryRouter } from 'react-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { getJson, type Me } from '../src/api'
 import { Gate } from '../src/Gate'
 import { useGate } from '../src/gate'
 import { entryOf, read, readSet } from '../src/reads'
+import { lastLibraryAddress, useKeptScroll } from '../src/scrollKeeper'
 import { mount } from './support/mount'
 
 const ADMIN: Me = {
@@ -110,6 +112,23 @@ const show = async () => {
   const host = mount(<Gate>{probe()}</Gate>)
   await settle()
   return host
+}
+
+/**
+ * A Library view's scroll keeper, drawn at `/?show=multi` in a router of its
+ * own beside the gate, which makes that the last Library view's address.
+ * Declared inside a function for the reason `probe` gives.
+ */
+function keepALibraryView() {
+  function Kept() {
+    useKeptScroll(true, { library: true })
+    return null
+  }
+  mount(
+    <MemoryRouter initialEntries={['/?show=multi']}>
+      <Kept />
+    </MemoryRouter>,
+  )
 }
 
 const form = (host: HTMLElement) => host.querySelector('form')
@@ -260,6 +279,36 @@ describe('the sign-in gate', () => {
     await settle()
     expect(guarded(host)).toBe('7/true')
     expect(entryOf(kept)).toBeUndefined()
+  })
+
+  /** The scroll keeper's address and scrolls were the account's too. */
+  it('forgets the last Library view on signing out', async () => {
+    server(ADMIN)
+    const host = await show()
+    keepALibraryView()
+    expect(lastLibraryAddress()).toBe('/?show=multi')
+
+    await click(host, 'sign-out')
+    expect(form(host), 'the sign-in form').not.toBeNull()
+    expect(lastLibraryAddress()).toBeUndefined()
+  })
+
+  it('forgets the last Library view on signing in', async () => {
+    server(ADMIN)
+    const host = await show()
+    await click(host, 'sign-out')
+    keepALibraryView()
+    expect(lastLibraryAddress()).toBe('/?show=multi')
+
+    await act(async () => {
+      form(host)?.dispatchEvent(
+        new Event('submit', { bubbles: true, cancelable: true }),
+      )
+      await Promise.resolve()
+    })
+    await settle()
+    expect(guarded(host)).toBe('7/true')
+    expect(lastLibraryAddress()).toBeUndefined()
   })
 
   it('logs a failure that is not a 401, and still offers the sign-in screen', async () => {

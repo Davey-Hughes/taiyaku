@@ -844,6 +844,57 @@ fn changing_any_rendering_parameter_changes_the_page_key() {
     }
 }
 
+/// A cover's version changes exactly when the `ETag` of a cover size would,
+/// whatever the size: it is what lets `routes::COVER_CACHE_CONTROL` keep an
+/// address for good, so an input the tags have and the version lacks would
+/// keep old bytes under an address that no longer names them.
+///
+/// Every pair of inputs below is compared both ways at every cover size: the
+/// two tags differ if and only if the two versions do. Each input changes on
+/// its own, for `changing_any_rendering_parameter_changes_the_page_key`'s
+/// reason. The size is not an argument, so the three sizes of one page share
+/// one version.
+///
+/// **Hex and `-` only** over a real digest. `cover_address` encodes it all
+/// the same, since an imported sidecar's hash need not be hex.
+#[test]
+fn a_cover_version_changes_exactly_when_a_cover_tag_does_at_every_size() {
+    let sha = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
+    let other_sha = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+    let current = cover_version_at(sha, 0, PAGE_FORMAT_VERSION);
+    assert_eq!(
+        current,
+        cover_version(sha, 0),
+        "cover_version must use the real constant, not a copy of it"
+    );
+    assert!(
+        current.chars().all(|c| c.is_ascii_hexdigit() || c == '-'),
+        "hex and `-` only: {current}"
+    );
+
+    let inputs = [
+        ("as it is", sha, 0, PAGE_FORMAT_VERSION),
+        ("sha256", other_sha, 0, PAGE_FORMAT_VERSION),
+        ("offset", sha, 1, PAGE_FORMAT_VERSION),
+        ("format version", sha, 0, PAGE_FORMAT_VERSION + 1),
+    ];
+    for (a_name, a_sha, a_offset, a_format) in inputs {
+        for (b_name, b_sha, b_offset, b_format) in inputs {
+            let versions_differ = cover_version_at(a_sha, a_offset, a_format)
+                != cover_version_at(b_sha, b_offset, b_format);
+            for edge in COVER_LONG_EDGES {
+                let tags_differ = page_key_at(a_sha, a_offset, edge, a_format)
+                    != page_key_at(b_sha, b_offset, edge, b_format);
+                assert_eq!(
+                    versions_differ, tags_differ,
+                    "{a_name} against {b_name} at {edge} px: the tags differ \
+                     {tags_differ}, the versions differ {versions_differ}"
+                );
+            }
+        }
+    }
+}
+
 /// Two different outputs must never share one path. `page_cache_path` and
 /// `thumb_cache_path` can be asked for the same sha, offset and long edge —
 /// a tile cropped to a strip, and the whole page — and a content-addressed

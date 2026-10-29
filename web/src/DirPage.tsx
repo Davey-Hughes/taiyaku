@@ -12,6 +12,11 @@
  * hold until `POLL_MISSES_ALLOWED` have failed in a row, as `RootRow`'s poll
  * keeps watching its scan. A scan of this directory, or of the whole library,
  * is `RootRow`'s own to see: the library's scan holds each directory's slot.
+ * Once a poll finds over a scan of another directory that the page saw
+ * running, the Library views are marked stale, as `RootRow`'s and
+ * `LibraryPage`'s polls mark them: what the scan found changes what they
+ * draw. A first read that finds none running, and a hold given up on failed
+ * polls, saw no scan end and mark nothing.
  *
  * **A scan of this directory marks its library's scan status stale in the
  * store**, as the row reports it was asked for, started, was found running,
@@ -32,7 +37,7 @@ import {
 import { dirPath, libraryPath } from './configAddress'
 import { type Library, libraryScanStatus, type MoveAnswer } from './libraries'
 import { sentenceOf } from './message'
-import { libraryScan } from './pageReads'
+import { invalidateLibraryViews, libraryScan } from './pageReads'
 import { markStale } from './reads'
 import { RootRow } from './RootRow'
 
@@ -83,11 +88,15 @@ function useOtherScan(
         .then((status) => {
           if (cancelled) return
           misses = 0
+          const wasHolding = holding
           holding = status.dirs.some(
             (one) => one.running && one.root_id !== rootId,
           )
           setOther(holding)
           if (holding) timer = setTimeout(ask, SCAN_POLL_MS)
+          // The scan this page saw running is over, and what it found
+          // changes what the Library views draw.
+          else if (wasHolding) invalidateLibraryViews()
         })
         .catch((err: unknown) => {
           if (cancelled) return

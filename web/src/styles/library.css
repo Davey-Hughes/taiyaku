@@ -140,9 +140,13 @@
   background: var(--surface);
 }
 
+/* A block, as the placeholder is: inline, the image sits on a line and its
+ * box carries the line's descender, so a cover that failed would draw a
+ * shorter tile than one that loaded (`Cover.browser.test.tsx`). */
 .grid img,
 .volumes img,
 .continue img {
+  display: block;
   object-fit: cover;
 }
 

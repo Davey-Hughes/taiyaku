@@ -18,6 +18,13 @@
  * page on screen is to take up: a page drawing it keeps drawing it, and one
  * arriving later waits for a read of its own, as after `invalidate`.
  *
+ * **What nothing draws is kept up to a count.** The Library view's addresses
+ * carry a library, a series or a query, so a long session would keep one
+ * entry per series and search visited. Past `IDLE_KEPT` entries nothing
+ * draws, the one drawn least recently goes; its next arrival is a first
+ * visit. An entry something draws, or one whose request is out, is never
+ * dropped: the first is on screen, and the second's answer would be lost.
+ *
  * No React here: `usePage` subscribes through `useSyncExternalStore` on
  * `subscribe` and `entryOf`, which is why an entry is the same object until
  * something in it changes, and why an answer with the same text as the kept
@@ -76,6 +83,12 @@ interface Request {
 }
 
 interface Slot {
+  /**
+   * The `Read` the latest request here was started from: how
+   * `invalidatePrefix` reads again an address it knows only as a key of
+   * `slots`.
+   */
+  read: Read<unknown>
   entry: Entry<unknown> | undefined
   /** `JSON.stringify(entry.answer)`: a new answer's text is compared to it. */
   text: string | undefined
@@ -96,26 +109,70 @@ interface Slot {
   settledBeforeMark: boolean
 }
 
+/** Entries kept that nothing draws, past which the least recently drawn goes. */
+export const IDLE_KEPT = 50
+
+/**
+ * In the order last drawn, oldest first: a slot is put at the end as its
+ * last listener goes, and one never drawn stays where it was first read.
+ */
 const slots = new Map<string, Slot>()
 const listeners = new Map<string, Set<() => void>>()
 
-function slotOf(address: string): Slot {
-  let slot = slots.get(address)
+function slotOf(r: Read<unknown>): Slot {
+  let slot = slots.get(r.address)
   if (slot === undefined) {
     slot = {
+      read: r,
       entry: undefined,
       text: undefined,
       newest: undefined,
       told: undefined,
       settledBeforeMark: false,
     }
-    slots.set(address, slot)
+    slots.set(r.address, slot)
   }
   return slot
 }
 
 function drawn(address: string): boolean {
   return (listeners.get(address)?.size ?? 0) > 0
+}
+
+/**
+ * Drops the slots drawn least recently until at most `IDLE_KEPT` that nothing
+ * draws remain. A drawn slot is neither dropped nor counted; one whose newest
+ * request is not yet applied is counted but kept, since dropping it would
+ * drop the answer its reader waits for.
+ */
+function trim(): void {
+  let idle = 0
+  for (const address of slots.keys()) if (!drawn(address)) idle += 1
+  for (const [address, slot] of slots) {
+    if (idle <= IDLE_KEPT) return
+    const out = slot.newest !== undefined && !slot.newest.applied
+    if (drawn(address) || out) continue
+    slots.delete(address)
+    idle -= 1
+  }
+}
+
+let trimDue = false
+
+/**
+ * `trim` once the work running now is done, for the last unsubscribe. React
+ * runs a commit's effect cleanups before its mount effects, so a page leaving
+ * lets go of its addresses before the page arriving, drawn already from what
+ * is kept, subscribes to its own: trimming at once could drop the entry the
+ * arriving page has just drawn.
+ */
+function trimSoon(): void {
+  if (trimDue) return
+  trimDue = true
+  queueMicrotask(() => {
+    trimDue = false
+    trim()
+  })
 }
 
 /**
@@ -142,7 +199,9 @@ function start(r: Read<unknown>): Request {
     applied: false,
     beforeMark: false,
   }
-  slotOf(r.address).newest = request
+  const slot = slotOf(r)
+  slot.read = r
+  slot.newest = request
   return request
 }
 
@@ -215,6 +274,7 @@ async function land(
   requests.forEach((q, i) => {
     apply(q, outcomes[i])
   })
+  trim()
   tell(addresses)
 }
 
@@ -224,8 +284,9 @@ export function entryOf<T>(r: Read<T>): Entry<T> | undefined {
 
 /**
  * Per address; the count of listeners is what "drawn" means to
- * `invalidate` and `markStale`. The last to go marks stale an entry settled
- * by a request out at a `markStale` (`Slot.settledBeforeMark`).
+ * `invalidate`, `markStale` and the bound. The last to go makes its entry the
+ * one drawn most recently, and marks it stale if a request out at a
+ * `markStale` settled it (`Slot.settledBeforeMark`).
  */
 export function subscribe(address: string, listener: () => void): () => void {
   let set = listeners.get(address)
@@ -236,12 +297,25 @@ export function subscribe(address: string, listener: () => void): () => void {
   set.add(listener)
   return () => {
     set.delete(listener)
-    if (set.size > 0) return
+    // An unsubscribe called again after its set was let go finds a later
+    // listener's set, or none, and must not take that one away.
+    if (set.size > 0 || listeners.get(address) !== set) return
+    listeners.delete(address)
     const slot = slots.get(address)
-    if (slot?.entry === undefined || !slot.settledBeforeMark) return
-    slot.settledBeforeMark = false
-    markEntry(slot)
+    if (slot === undefined) return
+    slots.delete(address)
+    slots.set(address, slot)
+    if (slot.entry !== undefined && slot.settledBeforeMark) {
+      slot.settledBeforeMark = false
+      markEntry(slot)
+    }
+    trimSoon()
   }
+}
+
+/** How many addresses have a slot, and a listener: exported for its tests. */
+export function heldCounts(): { slots: number; listened: number } {
+  return { slots: slots.size, listened: listeners.size }
 }
 
 /**
@@ -278,6 +352,29 @@ export function invalidate(...reads: readonly Read<unknown>[]): Promise<void> {
     }
   }
   return land(requests, named.keys())
+}
+
+/** Whether `address` is `prefix`, or continues it with a query or a path. */
+function under(address: string, prefix: string): boolean {
+  return (
+    address === prefix ||
+    address.startsWith(`${prefix}?`) ||
+    address.startsWith(`${prefix}/`)
+  )
+}
+
+/**
+ * `invalidate` for every kept address equal to a prefix or continuing it with
+ * `?` or `/`: for a write that changes addresses carrying ids and queries it
+ * cannot name one by one. `/api/library/series` covers `?library=2` and `/17`,
+ * not `/api/library/seriesX`. An address never read, or dropped by the bound,
+ * is not read: its next arrival reads it anyway.
+ */
+export function invalidatePrefix(...prefixes: readonly string[]): void {
+  const matching = [...slots]
+    .filter(([address]) => prefixes.some((p) => under(address, p)))
+    .map(([, slot]) => slot.read)
+  void invalidate(...matching)
 }
 
 /**
@@ -318,6 +415,7 @@ export async function readNow<T>(r: Read<T>): Promise<T> {
   const request = start(r)
   const outcome = await request.outcome
   apply(request, outcome)
+  trim()
   tell([r.address])
   if (!outcome.answered) throw outcome.failure
   return outcome.answer as T

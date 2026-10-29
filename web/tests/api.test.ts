@@ -18,6 +18,8 @@ import {
   me,
   pageUrl,
   patchAlignment,
+  progressSaved,
+  progressSavesOut,
   revokeKey,
   revokeSession,
   whenSignedOut,
@@ -26,6 +28,7 @@ import {
   putTruth,
   thumbUrl,
 } from '../src/api'
+import { deferred } from './support/async'
 
 describe('url building', () => {
   it('addresses a page by flat index', () => {
@@ -784,5 +787,172 @@ describe('being signed out is routed once, from one place', () => {
       await call().catch(() => undefined)
       expect(signedOut, `${name} did not route its 401`).toHaveBeenCalled()
     }
+  })
+})
+
+describe('progressSaved', () => {
+  /**
+   * Settles whatever a test left held, so a save a failing test left out is
+   * not one the next test's `progressSaved` waits for.
+   */
+  const loose: (() => void)[] = []
+
+  afterEach(async () => {
+    for (const settle of loose.splice(0)) settle()
+    await progressSaved().catch(() => undefined)
+    vi.unstubAllGlobals()
+  })
+
+  /** A `fetch` whose answers the test gives, one per call, in call order. */
+  function heldFetch() {
+    const answers: ReturnType<typeof deferred<Response>>[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => {
+        const answer = deferred<Response>()
+        answers.push(answer)
+        loose.push(() => answer.resolve(new Response(null, { status: 204 })))
+        return answer.promise
+      }),
+    )
+    return answers
+  }
+
+  /** Whether `p` has settled once everything already settled has run. */
+  async function settledYet(p: Promise<unknown>): Promise<boolean> {
+    let settled = false
+    p.then(
+      () => {
+        settled = true
+      },
+      () => {
+        settled = true
+      },
+    )
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    return settled
+  }
+
+  const save = (slot: number) => putProgress('w', { edition: 'raw', slot })
+  const saved = () => new Response(null, { status: 204 })
+
+  it('settles at once with no save out', async () => {
+    expect(await settledYet(progressSaved())).toBe(true)
+  })
+
+  it('settles only once a save sent before it has settled', async () => {
+    const answers = heldFetch()
+    const sent = save(1)
+    const waited = progressSaved()
+    expect(await settledYet(waited)).toBe(false)
+
+    answers[0].resolve(saved())
+    await sent
+    expect(await settledYet(waited)).toBe(true)
+  })
+
+  it('settles once a failing save has failed, not while it is still reading the failure, and does not reject', async () => {
+    const answers = heldFetch()
+    const sent = save(1)
+    const failed = expect(sent).rejects.toThrow(
+      'writing progress: 503 the server is down',
+    )
+    const waited = progressSaved()
+    let body!: ReadableStreamDefaultController<Uint8Array>
+    answers[0].resolve(
+      new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            body = controller
+            loose.push(() => {
+              try {
+                controller.close()
+              } catch {
+                // Closed by the test already.
+              }
+            })
+          },
+        }),
+        { status: 503 },
+      ),
+    )
+    expect(await settledYet(waited)).toBe(false)
+
+    body.enqueue(new TextEncoder().encode('the server is down'))
+    body.close()
+    await failed
+    expect(await settledYet(waited)).toBe(true)
+    await expect(waited).resolves.toBeUndefined()
+  })
+
+  it('waits for every save sent before it, though an earlier one fails first', async () => {
+    const answers = heldFetch()
+    const first = save(1).catch(() => undefined)
+    const second = save(2)
+    const waited = progressSaved()
+
+    answers[0].reject(new TypeError('Failed to fetch'))
+    await first
+    expect(await settledYet(waited)).toBe(false)
+
+    answers[1].resolve(saved())
+    await second
+    expect(await settledYet(waited)).toBe(true)
+  })
+
+  it('does not wait for a save sent after it', async () => {
+    const answers = heldFetch()
+    const waited = progressSaved()
+    const later = save(1)
+    expect(await settledYet(waited)).toBe(true)
+
+    answers[0].resolve(saved())
+    await later
+  })
+
+  it('waits for an earlier save still out, though a later one has settled', async () => {
+    const answers = heldFetch()
+    const earlier = save(1)
+    const later = save(2)
+    const waited = progressSaved()
+
+    answers[1].resolve(saved())
+    await later
+    expect(await settledYet(waited)).toBe(false)
+
+    answers[0].resolve(saved())
+    await earlier
+    expect(await settledYet(waited)).toBe(true)
+  })
+
+  it('settles once the saves sent before it have, though one sent after it is still out', async () => {
+    const answers = heldFetch()
+    const before = save(1)
+    const waited = progressSaved()
+    const after = save(2)
+
+    answers[0].resolve(saved())
+    await before
+    expect(await settledYet(waited)).toBe(true)
+
+    answers[1].resolve(saved())
+    await after
+  })
+
+  it('lets go of each save once it has settled, answered or failed', async () => {
+    const answers = heldFetch()
+    const answered = save(1)
+    const failed = save(2).catch(() => undefined)
+    expect(progressSavesOut()).toBe(2)
+
+    answers[0].resolve(saved())
+    await answered
+    await settledYet(answered)
+    expect(progressSavesOut()).toBe(1)
+
+    answers[1].reject(new TypeError('Failed to fetch'))
+    await failed
+    await settledYet(failed)
+    expect(progressSavesOut()).toBe(0)
   })
 })

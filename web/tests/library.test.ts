@@ -13,9 +13,9 @@ import {
   sorted,
   status,
   unreadable,
+  withView,
   work,
   type WorkCard,
-  workCover,
 } from '../src/library'
 
 const edition = (over: Partial<EditionCard> = {}): EditionCard => ({
@@ -24,6 +24,7 @@ const edition = (over: Partial<EditionCard> = {}): EditionCard => ({
   members: 1,
   pages: 180,
   missing: 0,
+  cover: '/api/works/gotoubun-v01/raw/pages/0/thumb?v=c0ffee-0-1',
   ...over,
 })
 
@@ -47,7 +48,7 @@ const card = (over: Partial<SeriesCard> = {}): SeriesCard => ({
   aligned: 0,
   added: 10,
   unread: 3,
-  cover: '/api/library/series/1/cover',
+  cover: '/api/works/a-series-v01/raw/pages/0/thumb?v=c0ffee-0-1',
   ...over,
 })
 
@@ -263,6 +264,23 @@ describe('the browse client', () => {
   })
 })
 
+describe('withView', () => {
+  it('writes one address for one view, whichever parameter came first', () => {
+    const view = { chip: 'unread', sort: 'added' } as const
+    expect(
+      [
+        new URLSearchParams({ library: '1' }),
+        new URLSearchParams('library=1&sort=added'),
+        new URLSearchParams('sort=title&show=multi&q=x&library=1'),
+      ].map((params) => withView(params, view).toString()),
+    ).toEqual([
+      'library=1&show=unread&sort=added',
+      'library=1&show=unread&sort=added',
+      'library=1&q=x&show=unread&sort=added',
+    ])
+  })
+})
+
 /**
  * `?library=` as every screen reads it: an id is a positive decimal integer
  * with no leading zero, the form the sidebar's links write, and anything else
@@ -303,21 +321,23 @@ describe('libraryParam', () => {
  * fivefold.
  */
 describe('cover sources', () => {
-  it('offers a cover at 256, 512 and 768 px, for one, two and three device pixels per CSS pixel', () => {
-    expect(coverSources('/api/library/series/7/cover')).toEqual({
-      src: '/api/library/series/7/cover?w=256',
+  it('adds 256, 512 and 768 px to the address the server sends, after its version, for one, two and three device pixels per CSS pixel', () => {
+    expect(
+      coverSources(
+        '/api/works/go%20toubun/raw%2Fen/pages/0/thumb?v=c0ffee-0-1',
+      ),
+    ).toEqual({
+      src: '/api/works/go%20toubun/raw%2Fen/pages/0/thumb?v=c0ffee-0-1&w=256',
       srcSet:
-        '/api/library/series/7/cover?w=256 1x, /api/library/series/7/cover?w=512 2x, /api/library/series/7/cover?w=768 3x',
+        '/api/works/go%20toubun/raw%2Fen/pages/0/thumb?v=c0ffee-0-1&w=256 1x, /api/works/go%20toubun/raw%2Fen/pages/0/thumb?v=c0ffee-0-1&w=512 2x, /api/works/go%20toubun/raw%2Fen/pages/0/thumb?v=c0ffee-0-1&w=768 3x',
     })
   })
 
-  it('adds its size to a URL that already carries a query', () => {
-    expect(coverSources('/cover?root=2').src).toBe('/cover?root=2&w=256')
-  })
-
-  it('draws a volume from page 0 of the edition it shows, through the tile route', () => {
-    expect(workCover('go toubun', 'raw/en')).toBe(
-      '/api/works/go%20toubun/raw%2Fen/pages/0/thumb',
-    )
+  it('starts the query on an address that carries none', () => {
+    expect(coverSources('/api/works/w/raw/pages/0/thumb')).toEqual({
+      src: '/api/works/w/raw/pages/0/thumb?w=256',
+      srcSet:
+        '/api/works/w/raw/pages/0/thumb?w=256 1x, /api/works/w/raw/pages/0/thumb?w=512 2x, /api/works/w/raw/pages/0/thumb?w=768 3x',
+    })
   })
 })

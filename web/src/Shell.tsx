@@ -28,7 +28,8 @@ import type { LibraryStatus } from './library'
 import { fieldChanged, sliceFor, sliceReset } from './module'
 import { LIBRARY_STATUS } from './pageReads'
 import { loadPrefs, resetPrefs, savePrefs } from './prefs'
-import { InboxRefreshContext, StatusContext } from './shell'
+import { InboxRefreshContext, STATUS_FAILED, StatusContext } from './shell'
+import { TO_TOP } from './scrollKeeper'
 import { SEARCH_BOX_ID } from './searchHits'
 import { Sidebar } from './Sidebar'
 import { ThemeControl } from './ThemeControl'
@@ -72,7 +73,9 @@ export function Shell({ children }: { children: React.ReactNode }) {
   // **Not a page**, so nothing waits on it: the sidebar draws the status
   // once it is known, and a failed read is said above the screen while the
   // libraries already drawn stay. Read when the shell mounts, and again
-  // whenever Libraries reads it or a write invalidates it.
+  // whenever Libraries reads it or a write invalidates it. A failed read with
+  // no status kept is handed down as `STATUS_FAILED`, so a screen waiting on
+  // the status stops waiting.
   const {
     answers: [status],
     failures: [statusFailure],
@@ -134,7 +137,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
   // either way, and putting a second `role="alert"` over every screen in the
   // library because a badge could not be fetched would be the failure
   // reporting more than the failure costs. `undefined` — never fetched, still
-  // in flight, or failed — draws no badge, which is `StatusContext`'s own
+  // in flight, or failed — draws no badge, which is `useLibraryStatus`'s own
   // rule for the same three states.
   const [openProposals, setOpenProposals] = useState<number | undefined>()
   const [inboxReads, setInboxReads] = useState(0)
@@ -234,7 +237,12 @@ export function Shell({ children }: { children: React.ReactNode }) {
     <BrowsePrefsContext.Provider value={prefs}>
       <BrowseControlsContext.Provider value={controls}>
         <InboxRefreshContext.Provider value={refreshInbox}>
-          <StatusContext.Provider value={status}>
+          <StatusContext.Provider
+            value={
+              status ??
+              (statusFailure === undefined ? undefined : STATUS_FAILED)
+            }
+          >
             <div className={classes}>
               {/* O174: a sighted keyboard user's way past the sidebar. Focus
                   moves by hand rather than by following `#content`, which
@@ -288,8 +296,14 @@ export function Shell({ children }: { children: React.ReactNode }) {
                     <path d="M4 7h16M4 12h16M4 17h16" />
                   </svg>
                 </button>
-                {/* Named for where it goes, as the column's wordmark is. */}
-                <Link to="/" className="home" aria-label="taiyaku, Libraries">
+                {/* Named for where it goes, and landing at its top, as the
+                    column's wordmark is. */}
+                <Link
+                  to="/"
+                  state={TO_TOP}
+                  className="home"
+                  aria-label="taiyaku, Libraries"
+                >
                   <Wordmark />
                 </Link>
                 {/* Search is the Library view's bar: this goes there, keeping
@@ -322,9 +336,12 @@ export function Shell({ children }: { children: React.ReactNode }) {
                 {...(menuOpen ? AS_DIALOG : {})}
               >
                 {/* The way to `/`, as the Libraries heading is (the
-                      user's ruling of 2026-10-26), named for both. */}
+                      user's ruling of 2026-10-26), named for both. It lands
+                      at the top as the heading does, `/` already drawn
+                      included, so it carries the heading's `TO_TOP`. */}
                 <Link
                   to="/"
+                  state={TO_TOP}
                   className="wordmark-home"
                   aria-label="taiyaku, Libraries"
                 >

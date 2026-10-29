@@ -19,9 +19,28 @@
  * page, whose path is not `/`, marks neither. Nor does a `?library=` that
  * `library.ts`'s `libraryParam` reads as no library id, where the library
  * page says there is no such library.
+ *
+ * **Beside the Library view, a library's link keeps its chip and sort**
+ * (spec 2026-10-28 §5.1): the link is a push to that library's page, which
+ * would otherwise open at All and Title, so a switch of library would drop
+ * what the reader chose. Nothing else is carried: a query belongs to the
+ * library searched. The heading opens the defaults.
+ *
+ * **Every link lands at the top**, the view already drawn included (spec
+ * 2026-10-28 §1 and §5.2). A link to the address shown is a replace, so a
+ * click adds no entry for Back, and the scroll keeper leaves a replace's
+ * scroll where it is, as a chip's press needs; so each link marks its
+ * navigation `TO_TOP`.
  */
 import { Link, useLocation, useSearchParams } from 'react-router'
-import { type LibraryEntry, libraryParam } from './library'
+import {
+  type LibraryEntry,
+  libraryParam,
+  type View,
+  viewIn,
+  withView,
+} from './library'
+import { TO_TOP } from './scrollKeeper'
 
 export interface SidebarProps {
   libraries: LibraryEntry[]
@@ -34,11 +53,17 @@ export function Sidebar({ libraries }: SidebarProps) {
   // with no library named.
   const shown =
     pathname === '/' ? libraryParam(params.get('library')) : undefined
+  const view: View =
+    pathname === '/' ? viewIn(params) : { chip: 'all', sort: 'title' }
+  /** Library `id`'s page, at the chip and sort the Library view shows. */
+  const pageOf = (id: number) =>
+    `/?${withView(new URLSearchParams({ library: String(id) }), view)}`
   return (
     <nav className="sidebar" aria-label="Library">
       <h2 className="sidebar-heading">
         <Link
           to="/"
+          state={TO_TOP}
           aria-current={
             pathname === '/' && shown === undefined ? 'page' : undefined
           }
@@ -51,7 +76,8 @@ export function Sidebar({ libraries }: SidebarProps) {
           {libraries.map((library) => (
             <li key={library.id}>
               <Link
-                to={`/?library=${library.id}`}
+                to={pageOf(library.id)}
+                state={TO_TOP}
                 aria-current={shown === library.id ? 'page' : undefined}
               >
                 {library.name}

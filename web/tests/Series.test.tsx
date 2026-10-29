@@ -1,5 +1,13 @@
 import { act } from 'react'
-import { MemoryRouter, Route, Routes, useNavigate } from 'react-router'
+import {
+  MemoryRouter,
+  type MemoryRouterProps,
+  Route,
+  Routes,
+  useLocation,
+  useNavigate,
+  useNavigationType,
+} from 'react-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Me } from '../src/api'
 import {
@@ -9,15 +17,51 @@ import {
 } from '../src/browseModule'
 import { GateContext } from '../src/gate'
 import * as library from '../src/library'
+import * as metadata from '../src/metadata'
+import {
+  gridRead,
+  homeRead,
+  invalidateLibraryViews,
+  searchRead,
+} from '../src/pageReads'
+import { entryOf, type Read, readSet } from '../src/reads'
 import { Series } from '../src/Series'
 import { deferred, flush } from './support/async'
-import { mount } from './support/mount'
+import { FirstCommit } from './support/firstCommit'
+import { submit, typeInto } from './support/input'
+import { mount, rerender } from './support/mount'
+import {
+  holdTheClock,
+  pass,
+  WAIT_DRAWN_AFTER_MS,
+  watchDrawn,
+} from './support/wait'
 
 vi.mock('../src/library', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../src/library')>()),
   oneSeries: vi.fn(),
   work: vi.fn(),
+  // For the grid, home and search a title save marks stale: read into the
+  // store beside the page, never drawn by it.
+  grid: vi.fn(),
+  home: vi.fn(),
+  search: vi.fn(),
 }))
+
+vi.mock('../src/metadata', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/metadata')>()),
+  patchWork: vi.fn(),
+}))
+
+/** What `oneSeries` answers: a series page's body. */
+type SeriesPage = { series: library.SeriesDetail; works: library.WorkCard[] }
+
+/**
+ * The address the server sends for page 0 of `slug`'s `key` edition. Its
+ * version is opaque to the client, which hands it back untouched.
+ */
+const coverOf = (slug: string, key: string) =>
+  `/api/works/${slug}/${key}/pages/0/thumb?v=c0ffee-0-1`
 
 const edition = (
   over: Partial<library.EditionCard> = {},
@@ -27,6 +71,7 @@ const edition = (
   members: 1,
   pages: 180,
   missing: 0,
+  cover: coverOf('gotoubun-v01', over.key ?? 'raw'),
   ...over,
 })
 
@@ -37,7 +82,7 @@ const work = (over: Partial<library.WorkCard> = {}): library.WorkCard => ({
   volume: 1,
   aligned: false,
   pages: 180,
-  editions: [edition()],
+  editions: [edition({ cover: coverOf(over.slug ?? 'gotoubun-v01', 'raw') })],
   opens: 'raw',
   ...over,
 })
@@ -61,14 +106,15 @@ const card = (
   aligned: 1,
   added: 3,
   unread: 2,
-  cover: '/api/library/series/7/cover',
+  cover: coverOf('gotoubun-v01', 'raw'),
   titles: [{ title: 'Go-Toubun no Hanayome', kind: 'romaji', primary: true }],
   ...over,
 })
 
 /**
- * Mount at `/series/7` and let the load settle — two flushes, as
- * `Library.test.tsx` explains.
+ * Mount at `/series/7` and let the series' read settle: the store calls the
+ * mocked `oneSeries` once the progress saves sent before it have settled, so
+ * the answer is drawn some microtask turns after the mount.
  *
  * `Series` takes its three switches from `BrowsePrefsContext` rather than as
  * props (§11 step 8), so `props` here is layered over `browseModule.defaults`
@@ -185,11 +231,17 @@ describe('Series, grid layout', () => {
     ])
   })
 
-  it('draws each volume cover from its own edition rather than the series redirect', async () => {
+  it('draws each volume cover from its own edition rather than the series cover', async () => {
     const host = await settle()
-    expect(host.querySelector('.volumes img')?.getAttribute('src')).toBe(
-      '/api/works/gotoubun-v01/raw/pages/0/thumb?w=256',
-    )
+    expect(
+      [...host.querySelectorAll('.volumes li')].map((li) =>
+        li.querySelector('img')?.getAttribute('src'),
+      ),
+    ).toEqual([
+      '/api/works/gotoubun-v01/raw/pages/0/thumb?v=c0ffee-0-1&w=256',
+      '/api/works/gotoubun-v03/raw/pages/0/thumb?v=c0ffee-0-1&w=256',
+      '/api/works/gotoubun-v08/raw/pages/0/thumb?v=c0ffee-0-1&w=256',
+    ])
   })
 
   it('says so when the series cannot be read', async () => {
@@ -481,6 +533,186 @@ describe('Series, the work-level editor', () => {
     expect(host.querySelector('.metadata-editor')).not.toBeNull()
     expect(host.querySelector('.stamp-comicinfo')).toBeNull()
   })
+
+  /**
+   * **A title saved marks the Library views stale** (spec 2026-10-28 §6.4):
+   * the series page drawing the work reads its series again at once, and the
+   * grid, home and search kept beside it are marked, to be read on their next
+   * arrival. Only once the save has answered, and only when it has
+   * succeeded, whether or not it reached the library's documents: a read sent
+   * before would answer with the title from before the save.
+   */
+  describe('a title saved', () => {
+    const renamed = 'Go-Toubun no Hanayome, volume 1'
+    const saved = (persisted: boolean): metadata.PatchResult => ({
+      taiyaku_library: 1,
+      updated: '2026-10-28T00:00:00Z',
+      title: renamed,
+      persisted,
+      ...(persisted ? {} : { why: ['read-only file system'] }),
+    })
+
+    /** The other Library views' reads, kept in the store beside the page. */
+    const views = (): Read<unknown>[] => [
+      gridRead(undefined),
+      homeRead(undefined),
+      searchRead('gotoubun', undefined),
+    ]
+    /** Each kept view's address, and whether it is marked stale. */
+    const marked = () => views().map((r) => [r.address, entryOf(r)?.stale])
+    const allMarked = (stale: boolean) => views().map((r) => [r.address, stale])
+
+    beforeEach(() => {
+      vi.clearAllMocks()
+      vi.mocked(library.work).mockResolvedValue({ ...work(), alignments: [] })
+      vi.mocked(library.grid).mockResolvedValue({ series: [], unfiled: [] })
+      vi.mocked(library.home).mockResolvedValue({
+        continuing: [],
+        added: [],
+        read: [],
+      })
+      vi.mocked(library.search).mockResolvedValue({
+        series: [],
+        unfiled: [],
+        query: 'gotoubun',
+      })
+      // Reset, not only cleared: a once-answer a case left unused would
+      // otherwise answer the next case's first call.
+      vi.mocked(metadata.patchWork).mockReset()
+      vi.mocked(library.oneSeries).mockReset()
+      vi.mocked(library.oneSeries).mockResolvedValue({
+        series: card(),
+        works: [work()],
+      })
+    })
+
+    /**
+     * The page with the first volume's panel open and a title typed into its
+     * editor, the other views read into the store beside it, and every mock's
+     * calls cleared.
+     */
+    const editing = async () => {
+      await readSet(views())
+      expect(marked()).toEqual(allMarked(false))
+      const host = await settleWith({ panel: 'button' }, who({ admin: true }))
+      await flush(() => {
+        host.querySelector<HTMLButtonElement>('.panel-open')?.click()
+      })
+      const box = host.querySelector<HTMLInputElement>(
+        '.metadata-editor input[name="title"]',
+      )
+      if (!box) throw new Error('no title box')
+      await typeInto(box, renamed)
+      vi.mocked(library.oneSeries).mockClear()
+      vi.mocked(library.grid).mockClear()
+      vi.mocked(library.home).mockClear()
+      vi.mocked(library.search).mockClear()
+      return host
+    }
+
+    /** Every alert drawn, by its words. */
+    const alerts = (host: HTMLElement) =>
+      [...host.querySelectorAll('[role="alert"]')].map((a) => a.textContent)
+
+    const form = (host: HTMLElement) => {
+      const found = host.querySelector('.metadata-editor')
+      if (!found) throw new Error('no editor')
+      return found
+    }
+
+    it('reads the series again once and marks the other views stale once the save answers, not before', async () => {
+      const save = deferred<metadata.PatchResult>()
+      vi.mocked(metadata.patchWork).mockReturnValueOnce(save.promise)
+      const host = await editing()
+      await submit(form(host))
+      await flush()
+      expect(vi.mocked(metadata.patchWork).mock.calls).toEqual([
+        ['gotoubun-v01', { title: renamed }],
+      ])
+      expect(vi.mocked(library.oneSeries).mock.calls).toEqual([])
+      expect(marked()).toEqual(allMarked(false))
+
+      vi.mocked(library.oneSeries).mockResolvedValue({
+        series: card(),
+        works: [work({ title: renamed })],
+      })
+      await flush(() => save.resolve(saved(true)))
+      await flush()
+      await flush()
+      expect(vi.mocked(library.oneSeries).mock.calls).toEqual([[7]])
+      expect(
+        host.querySelector('.volumes a[href="/read/gotoubun-v01"] .title')
+          ?.textContent,
+      ).toBe(renamed)
+      expect(marked()).toEqual(allMarked(true))
+      // Marked, not read: nothing draws them.
+      expect(vi.mocked(library.grid).mock.calls).toEqual([])
+      expect(vi.mocked(library.home).mock.calls).toEqual([])
+      expect(vi.mocked(library.search).mock.calls).toEqual([])
+    })
+
+    it('reads the series again and marks the other views when the save answers that it did not reach the library’s documents', async () => {
+      vi.mocked(metadata.patchWork).mockResolvedValueOnce(saved(false))
+      vi.mocked(library.oneSeries).mockResolvedValue({
+        series: card(),
+        works: [work({ title: renamed })],
+      })
+      const host = await editing()
+      await submit(form(host))
+      await flush()
+      await flush()
+      expect(host.querySelector('.metadata-editor .unwritten')).not.toBeNull()
+      expect(vi.mocked(library.oneSeries).mock.calls).toEqual([[7]])
+      expect(
+        host.querySelector('.volumes a[href="/read/gotoubun-v01"] .title')
+          ?.textContent,
+      ).toBe(renamed)
+      expect(marked()).toEqual(allMarked(true))
+    })
+
+    it('keeps the series it drew, and the editor open, beside the alert when the re-read after a save fails', async () => {
+      vi.mocked(metadata.patchWork).mockResolvedValueOnce(saved(true))
+      const host = await editing()
+      expect(alerts(host)).toEqual([])
+      vi.mocked(library.oneSeries).mockRejectedValueOnce(
+        new Error('/api/library/series/7: 500'),
+      )
+      await submit(form(host))
+      await flush()
+      await flush()
+      expect(vi.mocked(library.oneSeries).mock.calls).toEqual([[7]])
+      expect(alerts(host)).toEqual(['/api/library/series/7: 500'])
+      expect(host.querySelector('h1')?.textContent).toBe(
+        'Go-Toubun no Hanayome',
+      )
+      expect(
+        host.querySelector('.volumes a[href="/read/gotoubun-v01"] .title')
+          ?.textContent,
+      ).toBe('Go-Toubun no Hanayome v01')
+      expect(
+        host.querySelector('.metadata-editor input[name="title"]'),
+      ).not.toBeNull()
+      expect(host.querySelector('.metadata-editor .current')?.textContent).toBe(
+        renamed,
+      )
+    })
+
+    it('reads nothing again and marks nothing when the save fails', async () => {
+      vi.mocked(metadata.patchWork).mockRejectedValueOnce(
+        new Error('/api/library/works/gotoubun-v01: 500'),
+      )
+      const host = await editing()
+      await submit(form(host))
+      await flush()
+      await flush()
+      expect(vi.mocked(metadata.patchWork)).toHaveBeenCalledTimes(1)
+      expect(host.querySelector('p.failure')?.textContent).toBe(
+        '/api/library/works/gotoubun-v01: 500',
+      )
+      expect(vi.mocked(library.oneSeries).mock.calls).toEqual([])
+      expect(marked()).toEqual(allMarked(false))
+    })
+  })
 })
 
 describe('Series, table layout', () => {
@@ -749,7 +981,14 @@ describe('Series, the edition selector', () => {
           slug: 'gotoubun-v03',
           title: 'Go-Toubun no Hanayome v03',
           volume: 3,
-          editions: [edition({ key: 'raw', label: 'Manga (RAW)', pages: 190 })],
+          editions: [
+            edition({
+              key: 'raw',
+              label: 'Manga (RAW)',
+              pages: 190,
+              cover: coverOf('gotoubun-v03', 'raw'),
+            }),
+          ],
         }),
       ],
     })
@@ -768,16 +1007,26 @@ describe('Series, the edition selector', () => {
     expect(host.querySelector('.edition-selector')).toBeNull()
   })
 
-  it('draws the chosen edition’s cover', async () => {
+  it('draws each volume from the cover address of the edition it shows, and redraws it when another is chosen', async () => {
     const host = await settleWith({ editionSelector: true })
+    const covers = () =>
+      [...host.querySelectorAll('.volumes li')].map((li) =>
+        li.querySelector('img')?.getAttribute('src'),
+      )
+    expect(covers()).toEqual([
+      '/api/works/gotoubun-v01/raw/pages/0/thumb?v=c0ffee-0-1&w=256',
+      '/api/works/gotoubun-v03/raw/pages/0/thumb?v=c0ffee-0-1&w=256',
+    ])
     const select = host.querySelector('select') as HTMLSelectElement
     act(() => {
       select.value = 'en'
       select.dispatchEvent(new Event('change', { bubbles: true }))
     })
-    expect(host.querySelector('.volumes img')?.getAttribute('src')).toBe(
-      '/api/works/gotoubun-v01/en/pages/0/thumb?w=256',
-    )
+    expect(covers()).toEqual([
+      '/api/works/gotoubun-v01/en/pages/0/thumb?v=c0ffee-0-1&w=256',
+      // v03 has no `en`: it is dimmed, and drawn from the edition it leads with.
+      '/api/works/gotoubun-v03/raw/pages/0/thumb?v=c0ffee-0-1&w=256',
+    ])
   })
 
   it('dims a volume the chosen edition does not cover, rather than hiding it', async () => {
@@ -805,7 +1054,7 @@ describe('Series, the edition selector', () => {
       select.dispatchEvent(new Event('change', { bubbles: true }))
     })
     expect(host.querySelector('.volumes img')?.getAttribute('src')).toBe(
-      '/api/works/gotoubun-v01/raw/pages/0/thumb?w=256',
+      '/api/works/gotoubun-v01/raw/pages/0/thumb?v=c0ffee-0-1&w=256',
     )
     expect(
       [...host.querySelectorAll('.volumes li')].some((li) =>
@@ -818,15 +1067,14 @@ describe('Series, the edition selector', () => {
    * I8 of the whole-branch review: `Cover.tsx` remembers a failed cover *by
    * `src`* rather than as a boolean, precisely so a series whose cover URL
    * changes is retried rather than left broken for the life of the page.
-   * Until this branch nothing could exercise that rule — a series tile's
-   * `cover` never changes — but `Series.tsx` now feeds `workCover(w.slug,
-   * chosen)` into a `Cover` kept mounted across an edition change by the
-   * `<li key={w.slug}>` above it. This is the first place the URL changes
-   * under a live `Cover` instance, and the discriminating mutation (`if
-   * (failed === src)` → `if (failed !== undefined)`) leaves the placeholder
-   * up forever once any cover has ever failed, regardless of a later `src`
-   * change — so this test must check both directions: the placeholder
-   * appears on failure, and a *different* URL clears it again.
+   * `Series.tsx` feeds the shown edition's `cover` into a `Cover` kept
+   * mounted across an edition change by the `<li key={w.slug}>` above it, so
+   * here the URL changes under a live `Cover` instance, and the
+   * discriminating mutation (`if (failed === src)` → `if (failed !==
+   * undefined)`) leaves the placeholder up forever once any cover has ever
+   * failed, regardless of a later `src` change — so this test must check
+   * both directions: the placeholder appears on failure, and a *different*
+   * URL clears it again.
    */
   it('retries a volume cover under a new edition’s URL rather than leaving it broken forever', async () => {
     const host = await settleWith({ editionSelector: true })
@@ -839,7 +1087,7 @@ describe('Series, the edition selector', () => {
     const firstLi = host.querySelectorAll('.volumes li')[0] as HTMLElement
     const imgBefore = firstLi.querySelector('img')
     expect(imgBefore?.getAttribute('src')).toBe(
-      '/api/works/gotoubun-v01/raw/pages/0/thumb?w=256',
+      '/api/works/gotoubun-v01/raw/pages/0/thumb?v=c0ffee-0-1&w=256',
     )
 
     // jsdom loads no images at all, so the failure has to be delivered the
@@ -860,21 +1108,17 @@ describe('Series, the edition selector', () => {
     // remembered for the old `src` must not apply to this one.
     expect(firstLi.querySelector('.cover-missing')).toBeNull()
     expect(firstLi.querySelector('img')?.getAttribute('src')).toBe(
-      '/api/works/gotoubun-v01/en/pages/0/thumb?w=256',
+      '/api/works/gotoubun-v01/en/pages/0/thumb?v=c0ffee-0-1&w=256',
     )
   })
 
   /**
-   * Unreachable through today's routes — the only link to `/series/:id`
-   * comes from a different route, so `Series` always remounts and `chosen`'s
-   * `useState('all')` initialiser runs fresh. But Task 10 adds a search
-   * screen whose results link into `/series/:id`, at which point navigating
-   * from one series to another *reuses* this `Series` instance the same way
+   * A link from one series to another reuses this `Series` instance, as
    * `Routes.test.tsx`'s "navigating from one work to another" test reuses
-   * `Reader` when nothing keys it — so this drives a real `useNavigate()`
+   * `Reader` when nothing keys it, so this drives a real `useNavigate()`
    * rather than a second `mount()`, which would hand back a fresh instance
-   * regardless of any fix and could not tell "the state reset" from "there
-   * was never any state to carry over".
+   * whatever the page carried over. The chosen edition is `?edition=`, which
+   * the link to the next series does not carry.
    */
   it('forgets the chosen edition when the reader navigates to a different series', async () => {
     vi.mocked(library.oneSeries).mockImplementation((id) =>
@@ -949,6 +1193,278 @@ describe('Series, the edition selector', () => {
         li.classList.contains('without'),
       ),
     ).toBe(false)
+  })
+
+  /**
+   * Under a chosen edition each tile draws that edition's `cover`, which is
+   * `null` for an edition with no page, and a volume without the chosen
+   * edition draws the cover of the edition it leads with, `editions[0]`.
+   */
+  it('draws the missing-cover box for a chosen edition with no page, and a volume without it from the edition it leads with', async () => {
+    vi.mocked(library.oneSeries).mockResolvedValue({
+      series: card(),
+      works: [
+        work({
+          editions: [
+            edition({ key: 'raw', label: 'Manga (RAW)', pages: 180 }),
+            edition({ key: 'en', label: 'Manga', pages: 0, cover: null }),
+          ],
+        }),
+        work({
+          id: 2,
+          slug: 'gotoubun-v03',
+          title: 'Go-Toubun no Hanayome v03',
+          volume: 3,
+          editions: [
+            edition({ key: 'raw', cover: coverOf('gotoubun-v03', 'raw') }),
+            edition({
+              key: 'fan',
+              label: 'Fan',
+              cover: coverOf('gotoubun-v03', 'fan'),
+            }),
+          ],
+        }),
+      ],
+    })
+    const host = await settleWith({ editionSelector: true })
+    const select = host.querySelector('select') as HTMLSelectElement
+    act(() => {
+      select.value = 'en'
+      select.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+    expect(
+      [...host.querySelectorAll('.volumes li')].map((li) => [
+        li.querySelector('.title')?.textContent,
+        li.querySelector('img')?.getAttribute('src') ?? null,
+        li.querySelector('.cover-missing')?.textContent ?? null,
+        li.classList.contains('without'),
+      ]),
+    ).toEqual([
+      ['Go-Toubun no Hanayome v01', null, 'Go-Toubun no Hanayome v01', false],
+      [
+        'Go-Toubun no Hanayome v03',
+        '/api/works/gotoubun-v03/raw/pages/0/thumb?v=c0ffee-0-1&w=256',
+        null,
+        true,
+      ],
+    ])
+  })
+
+  /**
+   * **The chosen edition is in the address** (spec 2026-10-28 §5.1):
+   * `?edition=<key>`, "all" left out, each change written with `replace`.
+   */
+  describe('in the address', () => {
+    /** The address and how it was arrived at. */
+    function Where() {
+      const location = useLocation()
+      const type = useNavigationType()
+      const navigate = useNavigate()
+      return (
+        <>
+          <output data-testid="where">
+            {JSON.stringify({
+              at: location.pathname + location.search,
+              type,
+            })}
+          </output>
+          <button
+            type="button"
+            data-testid="back"
+            onClick={() => {
+              void navigate(-1)
+            }}
+          >
+            back
+          </button>
+        </>
+      )
+    }
+
+    const where = (host: HTMLElement) =>
+      JSON.parse(
+        host.querySelector('[data-testid="where"]')?.textContent ?? 'null',
+      ) as { at: string; type: string }
+
+    /**
+     * The page at the second of `entries`, the first standing before it, for
+     * an account that may download. Drawn again with another `editionSelector`
+     * through `rerender`, the router keeps its place in the history.
+     */
+    const page = (
+      entries: MemoryRouterProps['initialEntries'],
+      editionSelector: boolean,
+    ) => (
+      <BrowsePrefsContext.Provider
+        value={{ ...browseModule.defaults, editionSelector }}
+      >
+        <GateContext.Provider value={{ who: who(), signOut: () => {} }}>
+          <MemoryRouter initialEntries={entries} initialIndex={1}>
+            <Routes>
+              <Route path="/series/:id" element={<Series />} />
+              <Route path="*" element={null} />
+            </Routes>
+            <Where />
+          </MemoryRouter>
+        </GateContext.Provider>
+      </BrowsePrefsContext.Provider>
+    )
+
+    const mountAt = async (
+      entries: MemoryRouterProps['initialEntries'],
+      editionSelector = true,
+    ) => {
+      let host!: HTMLElement
+      await act(async () => {
+        host = mount(page(entries, editionSelector))
+      })
+      await flush()
+      await flush()
+      return host
+    }
+
+    /** Each tile by its cover's `src` and whether it is dimmed. */
+    const tiles = (host: HTMLElement) =>
+      [...host.querySelectorAll('.volumes li')].map((li) => [
+        li.querySelector('img')?.getAttribute('src'),
+        li.classList.contains('without'),
+      ])
+
+    /** Each tile's download, by its address, `null` where it offers none. */
+    const downloads = (host: HTMLElement) =>
+      [...host.querySelectorAll('.volumes li')].map(
+        (li) => li.querySelector('a.get')?.getAttribute('href') ?? null,
+      )
+
+    const choose = (host: HTMLElement, key: string) =>
+      act(async () => {
+        const select = host.querySelector('select') as HTMLSelectElement
+        select.value = key
+        select.dispatchEvent(new Event('change', { bubbles: true }))
+      })
+
+    /** Every tile drawn from the edition it leads with, none dimmed. */
+    const leading = [
+      ['/api/works/gotoubun-v01/raw/pages/0/thumb?v=c0ffee-0-1&w=256', false],
+      ['/api/works/gotoubun-v03/raw/pages/0/thumb?v=c0ffee-0-1&w=256', false],
+    ]
+    const leadingDownloads = [
+      '/api/works/gotoubun-v01/raw/download',
+      '/api/works/gotoubun-v03/raw/download',
+    ]
+
+    it('draws every tile as with no ?edition= while the selector is off, and leaves the address as it is', async () => {
+      const host = await mountAt(['/before', '/series/7?edition=en'], false)
+      expect(host.querySelector('.edition-selector')).toBeNull()
+      expect(tiles(host)).toEqual(leading)
+      expect(downloads(host)).toEqual(leadingDownloads)
+      expect(where(host)).toEqual({ at: '/series/7?edition=en', type: 'POP' })
+    })
+
+    it('keeps an edition chosen on the page in the address while the selector is switched off, and applies it again once it is back on', async () => {
+      const entries = ['/before', '/series/7']
+      const host = await mountAt(entries, true)
+      await choose(host, 'en')
+      const chosen = [
+        ['/api/works/gotoubun-v01/en/pages/0/thumb?v=c0ffee-0-1&w=256', false],
+        ['/api/works/gotoubun-v03/raw/pages/0/thumb?v=c0ffee-0-1&w=256', true],
+      ]
+      expect(where(host)).toEqual({
+        at: '/series/7?edition=en',
+        type: 'REPLACE',
+      })
+      expect(tiles(host)).toEqual(chosen)
+
+      rerender(page(entries, false))
+      await flush()
+      expect(host.querySelector('.edition-selector')).toBeNull()
+      expect(tiles(host)).toEqual(leading)
+      expect(downloads(host)).toEqual(leadingDownloads)
+      expect(where(host)).toEqual({
+        at: '/series/7?edition=en',
+        type: 'REPLACE',
+      })
+
+      rerender(page(entries, true))
+      await flush()
+      expect((host.querySelector('select') as HTMLSelectElement).value).toBe(
+        'en',
+      )
+      expect(tiles(host)).toEqual(chosen)
+      expect(where(host)).toEqual({
+        at: '/series/7?edition=en',
+        type: 'REPLACE',
+      })
+      await act(async () => {
+        host.querySelector<HTMLButtonElement>('[data-testid="back"]')?.click()
+      })
+      expect(where(host).at).toBe('/before')
+    })
+
+    it('applies ?edition= again once the selector is switched back on', async () => {
+      const entries = ['/before', '/series/7?edition=en']
+      const host = await mountAt(entries, false)
+      expect(tiles(host)).toEqual(leading)
+      rerender(page(entries, true))
+      expect((host.querySelector('select') as HTMLSelectElement).value).toBe(
+        'en',
+      )
+      expect(tiles(host)).toEqual([
+        ['/api/works/gotoubun-v01/en/pages/0/thumb?v=c0ffee-0-1&w=256', false],
+        ['/api/works/gotoubun-v03/raw/pages/0/thumb?v=c0ffee-0-1&w=256', true],
+      ])
+      expect(downloads(host)).toEqual([
+        '/api/works/gotoubun-v01/en/download',
+        null,
+      ])
+      expect(where(host)).toEqual({ at: '/series/7?edition=en', type: 'POP' })
+    })
+
+    it('selects the edition ?edition= names on arrival', async () => {
+      const host = await mountAt(['/before', '/series/7?edition=en'])
+      expect((host.querySelector('select') as HTMLSelectElement).value).toBe(
+        'en',
+      )
+      expect(tiles(host)).toEqual([
+        ['/api/works/gotoubun-v01/en/pages/0/thumb?v=c0ffee-0-1&w=256', false],
+        ['/api/works/gotoubun-v03/raw/pages/0/thumb?v=c0ffee-0-1&w=256', true],
+      ])
+    })
+
+    it('reads an ?edition= this series does not have as All', async () => {
+      const host = await mountAt(['/before', '/series/7?edition=fan'])
+      expect((host.querySelector('select') as HTMLSelectElement).value).toBe(
+        'all',
+      )
+      expect(tiles(host)).toEqual([
+        ['/api/works/gotoubun-v01/raw/pages/0/thumb?v=c0ffee-0-1&w=256', false],
+        ['/api/works/gotoubun-v03/raw/pages/0/thumb?v=c0ffee-0-1&w=256', false],
+      ])
+    })
+
+    it('writes each choice with replace, keeping every other parameter, and leaves All out', async () => {
+      const host = await mountAt(['/before', '/series/7?other=1'])
+      await choose(host, 'en')
+      expect(where(host)).toEqual({
+        at: '/series/7?other=1&edition=en',
+        type: 'REPLACE',
+      })
+      expect(tiles(host)).toEqual([
+        ['/api/works/gotoubun-v01/en/pages/0/thumb?v=c0ffee-0-1&w=256', false],
+        ['/api/works/gotoubun-v03/raw/pages/0/thumb?v=c0ffee-0-1&w=256', true],
+      ])
+      await choose(host, 'all')
+      expect(where(host)).toEqual({ at: '/series/7?other=1', type: 'REPLACE' })
+      expect(tiles(host)).toEqual([
+        ['/api/works/gotoubun-v01/raw/pages/0/thumb?v=c0ffee-0-1&w=256', false],
+        ['/api/works/gotoubun-v03/raw/pages/0/thumb?v=c0ffee-0-1&w=256', false],
+      ])
+
+      await act(async () => {
+        host.querySelector<HTMLButtonElement>('[data-testid="back"]')?.click()
+      })
+      expect(where(host).at).toBe('/before')
+    })
   })
 })
 
@@ -1237,17 +1753,18 @@ describe('Series, the alignment panel', () => {
 })
 
 /**
- * **The effect's two `cancelled` guards, which no test had reached.**
+ * **A read for a series the reader has left, answering late.**
  *
- * The load re-fires on `[seriesId, id]`, and since Task 10's search screen a
- * link from one series to another reuses this instance rather than remounting
- * it — the same thing the edition-selector test above drives. So two loads are
- * outstanding, and the store need not answer them in order. The cleanup's
- * `cancelled = true` is what stops the *departed* series being drawn under the
- * heading of the one the reader asked for.
+ * A link from one series to another reuses this instance rather than
+ * remounting it, the same thing the edition-selector test above drives, so
+ * the departed series' read can still be out, and the server need not answer
+ * in order. The store keeps each answer under its own series' address, and
+ * the page draws only the address it names now, so the departed series'
+ * answer or failure, landing late, is never drawn under the heading of the
+ * one the reader asked for.
  *
  * `deferred` rather than two `mockResolvedValueOnce`s: mocked promises resolve
- * in call order, the guard is never true, and the branch is never taken.
+ * in call order, so no answer would land after its series was left.
  */
 describe('Series, a load for a series the reader has already left', () => {
   const twoSeries = async (
@@ -1312,6 +1829,198 @@ describe('Series, a load for a series the reader has already left', () => {
     await flush(() => first.reject(new Error('/api/library/series/7: 500')))
     expect(host.querySelector('[role="alert"]')).toBeNull()
     expect(host.querySelector('h1')?.textContent).toBe('A Different Series')
+  })
+})
+
+/**
+ * **The series is read through the store** (spec 2026-10-28 §6.3): a return
+ * draws what was kept and reads it again, and a move to a series not kept
+ * draws nothing of the one left while the next loads.
+ */
+describe('Series, read through the store', () => {
+  const seven: SeriesPage = {
+    series: card(),
+    works: [
+      work(),
+      work({
+        id: 2,
+        slug: 'gotoubun-v03',
+        title: 'Go-Toubun no Hanayome v03',
+        volume: 3,
+      }),
+    ],
+  }
+  const nine: SeriesPage = {
+    series: card({ id: 9, title: 'A Different Series' }),
+    works: [
+      work({
+        id: 4,
+        slug: 'different-v01',
+        title: 'A Different Series v01',
+      }),
+    ],
+  }
+
+  /**
+   * Each heading by its words and class, the wait line by its words, and
+   * each volume tile by its title and its cover's `src`, `null` where it
+   * draws none.
+   */
+  const drawn = (host: HTMLElement) =>
+    JSON.stringify({
+      headings: [...host.querySelectorAll('h1')].map((h) => [
+        h.textContent,
+        h.className,
+      ]),
+      waiting: [...host.querySelectorAll('[role="status"]')].map(
+        (line) => line.textContent,
+      ),
+      volumes: [...host.querySelectorAll('.volumes li')].map((li) => [
+        li.querySelector('.title')?.textContent,
+        li.querySelector('img')?.getAttribute('src') ?? null,
+      ]),
+    })
+
+  const sevenDrawn = JSON.stringify({
+    headings: [['Go-Toubun no Hanayome', '']],
+    waiting: [],
+    volumes: [
+      [
+        'Go-Toubun no Hanayome v01',
+        '/api/works/gotoubun-v01/raw/pages/0/thumb?v=c0ffee-0-1&w=256',
+      ],
+      [
+        'Go-Toubun no Hanayome v03',
+        '/api/works/gotoubun-v03/raw/pages/0/thumb?v=c0ffee-0-1&w=256',
+      ],
+    ],
+  })
+  const nineDrawn = JSON.stringify({
+    headings: [['A Different Series', '']],
+    waiting: [],
+    volumes: [
+      [
+        'A Different Series v01',
+        '/api/works/different-v01/raw/pages/0/thumb?v=c0ffee-0-1&w=256',
+      ],
+    ],
+  })
+  const nothing = JSON.stringify({
+    headings: [['Series', 'visually-hidden']],
+    waiting: [],
+    volumes: [],
+  })
+  const waiting = JSON.stringify({
+    headings: [['Series', 'visually-hidden']],
+    waiting: ['Loading…'],
+    volumes: [],
+  })
+
+  let navigate: ReturnType<typeof useNavigate> | undefined
+  function Nav() {
+    navigate = useNavigate()
+    return (
+      <Routes>
+        <Route path="/series/:id" element={<Series />} />
+      </Routes>
+    )
+  }
+  /** A series page at `path`, with `after` drawn after it. */
+  const screenAt = (path: string, after?: React.ReactNode) => (
+    <BrowsePrefsContext.Provider value={browseModule.defaults}>
+      <MemoryRouter initialEntries={[path]}>
+        <Nav />
+        {after}
+      </MemoryRouter>
+    </BrowsePrefsContext.Provider>
+  )
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('draws the kept series in its first render on a remount, each tile with the cover it had, and reads it again once', async () => {
+    vi.mocked(library.oneSeries).mockResolvedValue(seven)
+    let host!: HTMLElement
+    await act(async () => {
+      host = mount(screenAt('/series/7'))
+    })
+    await flush()
+    await flush()
+    expect(drawn(host)).toBe(sevenDrawn)
+
+    rerender(<div />)
+    vi.mocked(library.oneSeries).mockClear()
+    vi.mocked(library.oneSeries).mockReturnValueOnce(
+      deferred<SeriesPage>().promise,
+    )
+    const first: { drawn?: string } = {}
+    rerender(
+      screenAt(
+        '/series/7',
+        <FirstCommit read={() => drawn(host)} into={first} />,
+      ),
+    )
+    expect(first.drawn).toBe(sevenDrawn)
+    expect(drawn(host)).toBe(sevenDrawn)
+    await flush()
+    await flush()
+    expect(drawn(host)).toBe(sevenDrawn)
+    expect(vi.mocked(library.oneSeries).mock.calls).toEqual([[7]])
+  })
+
+  it('draws nothing of a kept series marked stale before a return, and draws its re-read once it lands', async () => {
+    vi.mocked(library.oneSeries).mockResolvedValue(seven)
+    let host!: HTMLElement
+    await act(async () => {
+      host = mount(screenAt('/series/7'))
+    })
+    await flush()
+    await flush()
+    expect(drawn(host)).toBe(sevenDrawn)
+
+    rerender(<div />)
+    invalidateLibraryViews()
+    vi.mocked(library.oneSeries).mockClear()
+    const again = deferred<SeriesPage>()
+    vi.mocked(library.oneSeries).mockReturnValueOnce(again.promise)
+    rerender(screenAt('/series/7'))
+    expect(drawn(host)).toBe(nothing)
+    await flush(() => again.resolve(seven))
+    await flush()
+    expect(drawn(host)).toBe(sevenDrawn)
+    expect(vi.mocked(library.oneSeries).mock.calls).toEqual([[7]])
+  })
+
+  it('draws nothing of the series left on a move to one not kept, Loading… from 200 ms, and the next series in one step once it lands', async () => {
+    holdTheClock()
+    const next = deferred<SeriesPage>()
+    vi.mocked(library.oneSeries).mockImplementation((id) =>
+      id === 7 ? Promise.resolve(seven) : next.promise,
+    )
+    let host!: HTMLElement
+    await act(async () => {
+      host = mount(screenAt('/series/7'))
+    })
+    await flush()
+    await flush()
+    expect(drawn(host)).toBe(sevenDrawn)
+
+    await flush(() => {
+      void navigate?.('/series/9')
+    })
+    expect(drawn(host)).toBe(nothing)
+    pass(WAIT_DRAWN_AFTER_MS - 1)
+    expect(drawn(host)).toBe(nothing)
+    pass(1)
+    expect(drawn(host)).toBe(waiting)
+    expect(vi.mocked(library.oneSeries).mock.calls).toEqual([[7], [9]])
+
+    const seen = watchDrawn(() => drawn(host))
+    await flush(() => next.resolve(nine))
+    await flush()
+    seen.stop()
+    expect([...seen.seen]).toEqual([waiting, nineDrawn])
   })
 })
 

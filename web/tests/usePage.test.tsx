@@ -7,7 +7,13 @@
  */
 import { act, useEffect } from 'react'
 import { beforeEach, describe, expect, it } from 'vitest'
-import { entryOf, invalidate, type Read } from '../src/reads'
+import {
+  entryOf,
+  IDLE_KEPT,
+  invalidate,
+  type Read,
+  readSet,
+} from '../src/reads'
 import { PageHeader, PageLoading } from '../src/settingsLayout'
 import { mount, rerender } from './support/mount'
 import { address } from './support/reads'
@@ -504,5 +510,36 @@ describe('usePage', () => {
     pass(WAIT_DRAWN_AFTER_MS)
     expect(shape(host)).toEqual([HEADER, 'body: '])
     expect(drawn).not.toContain('loading')
+  })
+
+  it('keeps drawing a kept answer that was the oldest of the idle ones when it replaces a page whose going puts one past the bound', async () => {
+    // Nothing draws `arriving`, and it was read first: of the IDLE_KEPT + 1
+    // idle entries once `leaving` goes, it is the oldest, the one the bound
+    // would drop. The swap is one commit, whose cleanups (`leaving` let go)
+    // run before its mount effects (`arriving` subscribed), after `arriving`
+    // has drawn from what is kept.
+    const arriving = address<string>('/api/arriving')
+    const read = readSet([arriving.read])
+    arriving.requests[0].resolve('kept')
+    await read
+    for (let i = 0; i < IDLE_KEPT - 1; i++) {
+      const idle = address<string>(`/api/idle/${i}`)
+      const one = readSet([idle.read])
+      idle.requests[0].resolve(`idle ${i}`)
+      await one
+    }
+    const leaving = address<string>('/api/leaving')
+    const host = mount(<TestPage key="leaving" reads={[leaving.read]} />)
+    leaving.requests[0].resolve('leaving')
+    await land()
+    expect(shape(host)).toEqual([HEADER, 'body: /api/leaving "leaving"'])
+    drawn = []
+
+    rerender(<TestPage key="arriving" reads={[arriving.read]} />)
+    expect(shape(host)).toEqual([HEADER, 'body: /api/arriving "kept"'])
+    await land()
+    expect(shape(host)).toEqual([HEADER, 'body: /api/arriving "kept"'])
+    expect(entryOf(arriving.read)?.answer).toBe('kept')
+    expect(new Set(drawn)).toEqual(new Set(['body']))
   })
 })

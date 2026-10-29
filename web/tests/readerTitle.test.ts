@@ -16,6 +16,7 @@ const detail = (over: Partial<WorkDetail> = {}): WorkDetail => ({
       members: 1,
       pages: 207,
       missing: 0,
+      cover: '/api/works/dandadan-v01/raw/pages/0/thumb?v=c0ffee-0-1',
     },
     {
       key: 'en',
@@ -23,6 +24,7 @@ const detail = (over: Partial<WorkDetail> = {}): WorkDetail => ({
       members: 1,
       pages: 200,
       missing: 0,
+      cover: '/api/works/dandadan-v01/en/pages/0/thumb?v=c0ffee-0-1',
     },
   ],
   opens: 'raw',

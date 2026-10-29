@@ -82,8 +82,48 @@ fn work_json(w: &browse::WorkCard) -> serde_json::Value {
             "members": e.members,
             "pages": e.pages,
             "missing": e.missing,
+            "cover": e.page_zero_sha256.as_deref()
+                .map(|sha256| cover_address(&w.slug, &e.key, sha256)),
         })).collect::<Vec<_>>(),
     })
+}
+
+/// `/api/works/{work}/{edition}/pages/0/thumb?v=…`, each segment and the
+/// version encoded by [`uri_component`].
+///
+/// `v` is the cover version of page 0, offset 0 of the member `sha256` names,
+/// which the thumbnail route answers `COVER_CACHE_CONTROL` for while it serves
+/// that member's page. Encoded although a scan's hash is hex: an imported
+/// sidecar's `sha256` is its own text, and a `&` or `+` left as it is would cut
+/// `v` short or change it.
+fn cover_address(work: &str, edition: &str, sha256: &str) -> String {
+    format!(
+        "/api/works/{}/{}/pages/0/thumb?v={}",
+        uri_component(work),
+        uri_component(edition),
+        uri_component(&crate::cover::cover_version(sha256, 0)),
+    )
+}
+
+/// `text` as JavaScript's `encodeURIComponent` writes it: every byte of its
+/// UTF-8 as `%XX` but ASCII letters, digits and `-_.!~*'()`.
+///
+/// `encodeURIComponent`'s set because the web client builds a work's page
+/// addresses with it, so the server's and the client's addresses for one
+/// work spell its segments alike. `opds::percent_encode` escapes `!*'()` too.
+fn uri_component(text: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut out = String::with_capacity(text.len());
+    for byte in text.bytes() {
+        if byte.is_ascii_alphanumeric() || b"-_.!~*'()".contains(&byte) {
+            out.push(char::from(byte));
+        } else {
+            out.push('%');
+            out.push(char::from(HEX[usize::from(byte >> 4)]));
+            out.push(char::from(HEX[usize::from(byte & 0x0f)]));
+        }
+    }
+    out
 }
 
 /// One series tile.
@@ -96,7 +136,14 @@ fn series_json(s: &browse::SeriesCard) -> serde_json::Value {
         "aligned": s.aligned,
         "added": s.added,
         "unread": s.unread,
-        "cover": format!("/api/library/series/{}/cover", s.id),
+        // `null` draws the missing-cover box, with no request: no edition of
+        // the series is visible, or the one its cover is drawn from has no page.
+        "cover": s.cover.as_ref().and_then(|cover| {
+            cover
+                .page_zero_sha256
+                .as_deref()
+                .map(|sha256| cover_address(&cover.slug, &cover.edition, sha256))
+        }),
     })
 }
 

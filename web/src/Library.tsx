@@ -15,12 +15,19 @@
  * chapter-organised edition, and it should be produced rather than imagined.
  *
  * The chips filter and sort **client-side**, over data already held: §7's
- * numbers make a `?sort=` round trip a request for something the browser does
- * instantly. `?library=` is a query parameter for the opposite reason — it
- * changes which rows exist, and which rows exist is the grant's business. It
- * narrows the grid and the continue strip alike (spec F §3).
+ * numbers make a round trip to the server a request for something the browser
+ * does instantly. They are in the address all the same, as `?show=` and
+ * `?sort=` (spec 2026-10-28 §5.1), so that Back and the sidebar's library
+ * switch bring them back; the server is never asked for them. `?library=` is
+ * sent to the server for the opposite reason — it changes which rows exist,
+ * and which rows exist is the grant's business. It narrows the grid and the
+ * continue strip alike (spec F §3).
+ *
+ * **The grid and the home lists are read through the store** (`usePage`), as
+ * one set, so a return draws what was kept in its first render and reads it
+ * again, and a first visit draws both in one step.
  */
-import { useEffect, useState } from 'react'
+import { useEffect } from 'react'
 import {
   Link,
   useLocation,
@@ -33,25 +40,29 @@ import { type EmptyKind, EmptyState } from './EmptyState'
 import {
   type Chip,
   type Grid,
-  grid as fetchGrid,
-  home as fetchHome,
   type HomeLists,
   type LibraryStatus,
   libraryParam,
   matchesChip,
-  type Sort,
   sorted,
   unreadable,
+  type View,
+  viewIn,
   type WorkCard,
-  workCover,
+  withView,
 } from './library'
+import { useDrawnWait } from './hooks'
+import { gridRead, homeRead } from './pageReads'
 import { SeriesGrid } from './SeriesGrid'
-import { useLibraryStatus } from './shell'
+import { PageLoading } from './settingsLayout'
+import { useLibraryStatus, useStatusFailed } from './shell'
 import { useDocumentTitle } from './title'
 import { messageOf } from './message'
 import { ViewMenu } from './ViewMenu'
 import { SearchBar } from './SearchBar'
-import { SEARCH_BOX_ID, useSearchHits } from './searchHits'
+import { useKeptScroll } from './scrollKeeper'
+import { boxStateOf, SEARCH_BOX_ID, useSearchHits } from './searchHits'
+import { usePage } from './usePage'
 
 /** What this page's View panel offers: the two preferences that act here. */
 const LIBRARY_VIEW: readonly (keyof BrowsePrefs)[] = [
@@ -75,7 +86,10 @@ const CHIPS: { id: Chip; label: string }[] = [
 function ContinueCard({ w }: { w: WorkCard }) {
   return (
     <>
-      <Cover src={workCover(w.slug, w.opens)} title={w.title} />
+      <Cover
+        src={w.editions.find((e) => e.key === w.opens)?.cover ?? null}
+        title={w.title}
+      />
       <span className="title">{w.title}</span>
       {w.volume !== null && <span className="meta">Vol. {w.volume}</span>}
     </>
@@ -108,20 +122,13 @@ function emptyKind(
   return status.libraries.some((l) => l.scanned) ? 'no-matches' : 'not-scanned'
 }
 
-/**
- * What the last load to land found, and for which library: the grid and the
- * home lists, or why they could not be read. One value, so a failure takes
- * the place of the rows drawn before it rather than standing beside them.
- */
-type Loaded =
-  | { library: number | undefined; grid: Grid; home: HomeLists }
-  | { library: number | undefined; failure: string }
-
 export function Library() {
   const prefs = useBrowsePrefs()
-  const [params] = useSearchParams()
+  const [params, setParams] = useSearchParams()
   /** `'invalid'` is no library: the page says so, and asks the server nothing. */
   const library = libraryParam(params.get('library'))
+  const view = viewIn(params)
+  const { chip, sort } = view
 
   const status = useLibraryStatus()
   /** The library this page is narrowed to, once the status names it. */
@@ -129,19 +136,26 @@ export function Library() {
     typeof library === 'number'
       ? status?.libraries.find((l) => l.id === library)
       : undefined
-  const [loaded, setLoaded] = useState<Loaded | undefined>()
-  const [chip, setChip] = useState<Chip>('all')
-  const [sort, setSort] = useState<Sort>('title')
   useDocumentTitle(entry?.name ?? 'Library')
 
-  // **Only what was loaded for the library now asked for is drawn.** The
-  // effect's `cancelled` drops an answer that lands after its library was
-  // left; this keeps the last library's rows, and its failure, off the next
-  // library's page until that page's own load lands.
-  const current = loaded?.library === library ? loaded : undefined
-  const gridData = current && 'grid' in current ? current.grid : undefined
-  const home = current && 'home' in current ? current.home : undefined
-  const failure = current && 'failure' in current ? current.failure : undefined
+  // **Only what was read for the library now asked for is drawn**, and only
+  // once both its reads are in hand: `usePage` answers for the addresses it
+  // is given, so a switch draws nothing of the library left, neither its
+  // rows nor its failure, while a switch to a library kept in this tab draws
+  // it at once. Where both reads fail the grid's failure is the one said,
+  // since the grid is what the view is for.
+  const {
+    ready,
+    answers: [gridAnswer, homeAnswer],
+    failures: [gridFailure, homeFailure],
+    loadingDrawn,
+  } = usePage<[Grid, HomeLists]>(
+    library === 'invalid' ? [] : [gridRead(library), homeRead(library)],
+  )
+  const gridData = ready ? gridAnswer : undefined
+  const home = ready ? homeAnswer : undefined
+  const failed = gridFailure ?? homeFailure
+  const failure = failed === undefined ? undefined : messageOf(failed)
 
   // **The box follows what the grid shows.** Its scope is the library the
   // view shows (spec §2), so where the grid's empty state says there is
@@ -174,13 +188,38 @@ export function Library() {
   // never draws the tabs and the grid first. The call does wait, until the
   // box is offered: a `?q=` the page arrives with (the redirect from
   // `/search` keeps one) sends nothing whose answer — "Nothing matched" — the
-  // empty state above would then contradict.
+  // empty state above would then contradict. That holds for an arrival's
+  // query too, which is read at once rather than after the typing delay.
   const q = unsearchable ? '' : (params.get('q') ?? '')
   const searching = q !== ''
-  const { hits, failure: searchFailure } = useSearchHits(
+  const location = useLocation()
+  const arrival = useNavigationType()
+  // The box writes `?q=` with `replace` and its tag (O223). Back or Forward
+  // restores an entry with the tag it was left with, a push is never the
+  // box's, and a replace without the tag is someone else's, as the redirect
+  // from `/search` is: so only a replace carrying the tag is a key typed.
+  const typed = arrival === 'REPLACE' && boxStateOf(location.state) !== null
+  const {
+    hits,
+    failure: searchFailure,
+    waiting: searchWaiting,
+  } = useSearchHits(
     offered ? q : '',
     typeof library === 'number' ? library : undefined,
+    typed,
   )
+  // Where the hits go, the view waits for the box to be offered (for the
+  // status, or for rows) and then for the search: one wait over both, so a
+  // line drawn before the query is sent stays drawn after it. A failed read
+  // ends the wait before the offer, and the failure holds until a read of it
+  // answers: the failure is what the page says meanwhile.
+  const statusFailed = useStatusFailed()
+  const searchWait =
+    (!offered && failure === undefined && !statusFailed) || searchWaiting
+  const searchLoadingDrawn = useDrawnWait(searching && searchWait)
+  // The scroll is put back once the body this address draws is there: the
+  // hits where a query is, the grid where none is.
+  useKeptScroll(searching ? !searchWait : ready, { library: true })
   const placeholder =
     typeof library !== 'number'
       ? 'Search every library'
@@ -194,8 +233,6 @@ export function Library() {
   // state stays on the history entry, so Back or Forward to it (a `POP`) is
   // a return to the grid and focuses nothing: a focus there would raise the
   // phone's keyboard over what the reader came back to.
-  const location = useLocation()
-  const arrival = useNavigationType()
   const focusSearch =
     (location.state as { focusSearch?: boolean } | null)?.focusSearch === true
   // biome-ignore lint/correctness/useExhaustiveDependencies: `location.key` is a trigger — each push or replace arrival focuses the box once.
@@ -205,22 +242,19 @@ export function Library() {
     }
   }, [location.key])
 
-  useEffect(() => {
-    if (library === 'invalid') return
-    let cancelled = false
-    Promise.all([fetchGrid(library), fetchHome(library)])
-      .then(([grid, home]) => {
-        if (cancelled) return
-        setLoaded({ library, grid, home })
-      })
-      .catch((err: unknown) => {
-        if (cancelled) return
-        setLoaded({ library, failure: messageOf(err) })
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [library])
+  /**
+   * Writes a pressed chip or sort into the address with `replace`, as the
+   * search box writes `?q=`: a press adds no entry for Back to walk out of.
+   * Every other parameter stays, and so does the box's tag (O223). The rest
+   * of the navigation's state is for an arrival, as `focusSearch` is:
+   * carried over a press, it would focus the box again.
+   */
+  const choose = (next: View) => {
+    setParams(withView(params, next), {
+      replace: true,
+      state: boxStateOf(location.state),
+    })
+  }
 
   const visible = gridData
     ? sorted(
@@ -243,12 +277,13 @@ export function Library() {
       {searching ? (
         <div className="search-hits">
           {searchFailure !== undefined && <p role="alert">{searchFailure}</p>}
-          {hits &&
-            (hits.series.length === 0 && hits.unfiled.length === 0 ? (
-              <EmptyState kind="no-matches" query={hits.query} />
-            ) : (
-              <SeriesGrid series={hits.series} unfiled={hits.unfiled} />
-            ))}
+          {hits === undefined ? (
+            <PageLoading drawn={searchLoadingDrawn} />
+          ) : hits.series.length === 0 && hits.unfiled.length === 0 ? (
+            <EmptyState kind="no-matches" query={hits.query} />
+          ) : (
+            <SeriesGrid series={hits.series} unfiled={hits.unfiled} />
+          )}
         </div>
       ) : (
         <>
@@ -292,7 +327,7 @@ export function Library() {
                   key={c.id}
                   type="button"
                   aria-pressed={chip === c.id}
-                  onClick={() => setChip(c.id)}
+                  onClick={() => choose({ ...view, chip: c.id })}
                 >
                   {c.label}
                 </button>
@@ -302,13 +337,17 @@ export function Library() {
               type="button"
               className="sort"
               aria-pressed={sort === 'added'}
-              onClick={() => setSort(sort === 'added' ? 'title' : 'added')}
+              onClick={() =>
+                choose({ ...view, sort: sort === 'added' ? 'title' : 'added' })
+              }
             >
               Added
             </button>
           </div>
           {library === 'invalid' ? (
             <EmptyState kind="no-library" />
+          ) : !ready ? (
+            <PageLoading drawn={loadingDrawn} />
           ) : gridData &&
             status &&
             visible.length === 0 &&

@@ -485,6 +485,12 @@ pub(crate) fn state_with_real_pages() -> (std::sync::Arc<ServeState>, Fixture) {
 /// served. `work_with_real_pages`' 16×16 page fits inside every one of them
 /// and comes back untouched, which cannot tell them apart.
 pub(crate) fn state_with_tall_pages() -> (std::sync::Arc<ServeState>, Fixture) {
+    state_with_tall_pages_hashed("tall")
+}
+
+/// [`state_with_tall_pages`], its one member recorded with `sha256` as its
+/// hash: a sidecar's hash is its own text, which need not be hex.
+pub(crate) fn state_with_tall_pages_hashed(sha256: &str) -> (std::sync::Arc<ServeState>, Fixture) {
     let fixture = Fixture::new("tall-pages");
     let root = fixture.path();
     let page = png(image::RgbImage::from_pixel(
@@ -503,23 +509,26 @@ pub(crate) fn state_with_tall_pages() -> (std::sync::Arc<ServeState>, Fixture) {
     }
     zip.finish().unwrap();
 
-    let json = r#"{
+    let json = format!(
+        r#"{{
           "taiyaku": 1,
-          "work": { "title": "T", "reading": "rtl" },
-          "editions": {
-            "a": { "label": "A", "members": [
-              { "path": "a1.cbz", "sha256": "tall", "pages": 2 }
-            ], "spreads": [] }
-          },
+          "work": {{ "title": "T", "reading": "rtl" }},
+          "editions": {{
+            "a": {{ "label": "A", "members": [
+              {{ "path": "a1.cbz", "sha256": {sha256}, "pages": 2 }}
+            ], "spreads": [] }}
+          }},
           "hub": "a",
           "alignments": []
-        }"#;
+        }}"#,
+        sha256 = serde_json::to_string(sha256).expect("a hash as JSON")
+    );
     let path = root.join("taiyaku.json");
-    std::fs::write(&path, json).unwrap();
+    std::fs::write(&path, &json).unwrap();
     let work = Work::new(
         "w".into(),
         path,
-        taiyaku_core::Sidecar::from_json(json).unwrap(),
+        taiyaku_core::Sidecar::from_json(&json).unwrap(),
     );
     (local_state(work, &fixture), fixture)
 }
@@ -1688,6 +1697,39 @@ pub(crate) fn router_over_two_scanned_volumes_of_one_series()
     });
     let router = authenticating(crate::build_router(state.clone()), &state.library);
     (router, state, fixture)
+}
+
+/// [`router_over_two_scanned_volumes_of_one_series`]'s tree, with pages that
+/// decode: a 16×16 PNG each, every one different so no two members share a
+/// `sha256`.
+///
+/// A cover size is a resize, and the route must read a page's dimensions to
+/// size it, which [`write_pages`]' text is not an image to give; at 16 px every
+/// page fits each of `cover::COVER_LONG_EDGES` and is served as it is.
+///
+/// # Panics
+///
+/// Panics if the tree cannot be written, or if the scan or the derive fails.
+pub(crate) fn router_over_two_scanned_volumes_of_decodable_pages()
+-> (axum::Router, std::sync::Arc<ServeState>, Fixture) {
+    let fixture = Fixture::new("two-volumes-decodable");
+    let title = "Go-Toubun no Hanayome";
+    for (pages, volume) in (2_u8..).zip(["v01", "v02"]) {
+        let dir = fixture
+            .join("tree")
+            .join(title)
+            .join(format!("{title} - {volume}"));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        for page in 0..pages {
+            let colour = image::Rgb([pages, page, 200]);
+            std::fs::write(
+                dir.join(format!("{page:03}.png")),
+                png(image::RgbImage::from_pixel(16, 16, colour)),
+            )
+            .expect("write");
+        }
+    }
+    router_over_a_written_tree(fixture)
 }
 
 /// Two scanned volumes of one series, each rooted under its own directory —

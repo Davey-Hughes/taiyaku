@@ -41,7 +41,7 @@ export interface AccountMenuProps {
    * Open proposals at `curation.ts`'s `INBOX_MIN_SCORE`, once known.
    *
    * `undefined` covers never fetched, still in flight and failed alike — the
-   * same three-states-as-one `StatusContext` uses — and draws no badge.
+   * same three-states-as-one `useLibraryStatus` uses — and draws no badge.
    * Zero is *not* that: an inbox somebody has emptied is worth saying.
    */
   openProposals?: number

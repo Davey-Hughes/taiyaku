@@ -11,13 +11,11 @@
  */
 import { useEffect, useRef, useState } from 'react'
 import { useLocation, useSearchParams } from 'react-router'
-import { SEARCH_BOX_ID } from './searchHits'
+import { boxStateOf, SEARCH_BOX_ID } from './searchHits'
 
 /** The tag a navigation the box made carries in its state, if it has one. */
-const tagOf = (state: unknown): string | undefined => {
-  const tag = (state as { searchBox?: unknown } | null)?.searchBox
-  return typeof tag === 'string' ? tag : undefined
-}
+const tagOf = (state: unknown): string | undefined =>
+  boxStateOf(state)?.searchBox
 
 export function SearchBar({ placeholder }: { placeholder: string }) {
   const [params, setParams] = useSearchParams()

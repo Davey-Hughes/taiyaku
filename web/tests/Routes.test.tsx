@@ -55,6 +55,14 @@ vi.mock('../src/library', async (importOriginal) => ({
   // draws (`a link to /search`, below).
   coverSources: (await importOriginal<typeof import('../src/library')>())
     .coverSources,
+  // The real readers and writers of the Library view's address, pure
+  // functions too: the view and the sidebar beside it read `?show=` and
+  // `?sort=` through them, and the view's reads name their addresses with
+  // `narrowedTo`.
+  viewIn: (await importOriginal<typeof import('../src/library')>()).viewIn,
+  withView: (await importOriginal<typeof import('../src/library')>()).withView,
+  narrowedTo: (await importOriginal<typeof import('../src/library')>())
+    .narrowedTo,
   home: vi.fn().mockResolvedValue({ continuing: [], added: [], read: [] }),
   grid: vi.fn().mockResolvedValue({ series: [], unfiled: [] }),
   status: vi.fn().mockResolvedValue({ libraries: [] }),

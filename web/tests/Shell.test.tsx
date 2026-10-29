@@ -12,7 +12,11 @@ import { LIBRARY_STATUS } from '../src/pageReads'
 import { invalidate } from '../src/reads'
 import { Series } from '../src/Series'
 import { Shell } from '../src/Shell'
-import { useInboxRefresh, useLibraryStatus } from '../src/shell'
+import {
+  useInboxRefresh,
+  useLibraryStatus,
+  useStatusFailed,
+} from '../src/shell'
 import { ABOUT } from './support/about'
 import { deferred, flush } from './support/async'
 import { mount } from './support/mount'
@@ -161,12 +165,33 @@ const ONE_SERIES: library.SeriesCard = {
   aligned: 1,
   added: 10,
   unread: 3,
-  cover: '/api/library/series/7/cover',
+  cover: '/api/works/a-series-v01/raw/pages/0/thumb?v=c0ffee-0-1',
 }
 
 /** The names the sidebar's libraries list draws, in its order. */
 const sidebarLibraries = (host: HTMLElement) =>
   [...host.querySelectorAll('.sidebar-libraries a')].map((a) => a.textContent)
+
+/**
+ * A child that reports what a screen under the shell is told of the status:
+ * whether its read failed with none kept, and how many libraries it names.
+ * Declared inside a function for the reason `reporter()` gives.
+ */
+function failedProbe() {
+  function Probe() {
+    const failed = useStatusFailed()
+    const status = useLibraryStatus()
+    return (
+      <p data-testid="status-failed">
+        {JSON.stringify({
+          failed,
+          libraries: status?.libraries.length ?? null,
+        })}
+      </p>
+    )
+  }
+  return <Probe />
+}
 
 /** Presses `rereadProbe()`'s button and lets the read it sets off land. */
 async function reread(host: HTMLElement) {
@@ -666,6 +691,45 @@ describe('Shell', () => {
       '/api/library/status: 500',
     )
     expect(sidebarLibraries(host)).toEqual(['Manga'])
+  })
+
+  /**
+   * A screen waiting on the status (the Library view, before it offers its
+   * search box) must hear that the read failed, since nothing else will
+   * answer it; once a status is kept, a failed re-read leaves it drawn.
+   */
+  it('tells the screens under it that the status read failed only while no status is kept', async () => {
+    const first = deferred<library.LibraryStatus>()
+    vi.mocked(library.status)
+      .mockReturnValueOnce(first.promise)
+      .mockResolvedValueOnce({
+        libraries: [{ id: 1, name: 'Manga', scanned: true }],
+        restricted: false,
+      })
+      .mockRejectedValueOnce(new Error('/api/library/status: 500'))
+    const told = (host: HTMLElement) =>
+      JSON.parse(
+        host.querySelector('[data-testid="status-failed"]')?.textContent ??
+          'null',
+      )
+    const host = await settle(
+      <Shell>
+        {failedProbe()}
+        {rereadProbe()}
+      </Shell>,
+    )
+    // In flight is not failed: a screen waiting on the status keeps waiting.
+    expect(told(host)).toEqual({ failed: false, libraries: null })
+    await flush(() => first.reject(new Error('/api/library/status: 500')))
+    await flush()
+    expect(told(host)).toEqual({ failed: true, libraries: null })
+    await reread(host)
+    expect(told(host)).toEqual({ failed: false, libraries: 1 })
+    await reread(host)
+    expect(host.querySelector('[role="alert"]')?.textContent).toBe(
+      '/api/library/status: 500',
+    )
+    expect(told(host)).toEqual({ failed: false, libraries: 1 })
   })
 
   /**

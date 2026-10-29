@@ -1,5 +1,12 @@
 import { act } from 'react'
-import { Link, MemoryRouter, useLocation, useNavigate } from 'react-router'
+import {
+  Link,
+  MemoryRouter,
+  type MemoryRouterProps,
+  useLocation,
+  useNavigate,
+  useNavigationType,
+} from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Me } from '../src/api'
 import { BrowseControlsContext } from '../src/browseModule'
@@ -7,10 +14,19 @@ import { GateContext } from '../src/gate'
 import * as library from '../src/library'
 import type { LibraryStatus } from '../src/library'
 import { Library } from '../src/Library'
-import { StatusContext } from '../src/shell'
+import { invalidateLibraryViews } from '../src/pageReads'
+import { SEARCH_BOX_ID } from '../src/searchHits'
+import { STATUS_FAILED, StatusContext } from '../src/shell'
 import { Sidebar } from '../src/Sidebar'
-import { deferred, flush } from './support/async'
+import { deferred, flush, land } from './support/async'
+import { FirstCommit } from './support/firstCommit'
 import { mount, rerender } from './support/mount'
+import {
+  holdTheClock,
+  pass,
+  WAIT_DRAWN_AFTER_MS,
+  watchDrawn,
+} from './support/wait'
 
 vi.mock('../src/library', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../src/library')>()),
@@ -18,6 +34,13 @@ vi.mock('../src/library', async (importOriginal) => ({
   grid: vi.fn(),
   search: vi.fn(),
 }))
+
+/**
+ * The address the server sends for page 0 of `slug`'s `key` edition. Its
+ * version is opaque to the client, which hands it back untouched.
+ */
+const coverOf = (slug: string, key: string) =>
+  `/api/works/${slug}/${key}/pages/0/thumb?v=c0ffee-0-1`
 
 const series = (
   over: Partial<library.SeriesCard> = {},
@@ -29,7 +52,7 @@ const series = (
   aligned: 1,
   added: 10,
   unread: 3,
-  cover: '/api/library/series/1/cover',
+  cover: coverOf('a-series-v01', 'raw'),
   ...over,
 })
 
@@ -40,7 +63,16 @@ const work = (over: Partial<library.WorkCard> = {}): library.WorkCard => ({
   volume: 1,
   aligned: true,
   pages: 180,
-  editions: [{ key: 'raw', label: 'Raw', members: 1, pages: 180, missing: 0 }],
+  editions: [
+    {
+      key: 'raw',
+      label: 'Raw',
+      members: 1,
+      pages: 180,
+      missing: 0,
+      cover: coverOf(over.slug ?? 'a-series-v01', 'raw'),
+    },
+  ],
   opens: 'raw',
   ...over,
 })
@@ -60,13 +92,13 @@ const twoLibraries: LibraryStatus = {
 }
 
 /**
- * Mount at `path` and let the two loads settle. A library's page is
+ * Mount at `path` and let the two reads settle. A library's page is
  * `/?library=N`.
  *
- * Two flushes, not one: the effect fires a `Promise.all` over two mocked
- * promises and *then* sets state, so a single microtask turn lands between the
- * resolution and the re-render and the assertions run against a screen that has
- * not drawn yet.
+ * A second `act` after the mount's: each read waits for the progress saves
+ * sent before it, then calls its mocked client function, and the store
+ * applies the two answers as one set once the last has settled, so the
+ * screen is drawn from them only some microtask turns after the mount.
  *
  * **The gate's context is supplied here rather than the gate itself.** `Gate`
  * would bring `me()`, `Login` and a real `fetch` along with it, none of which
@@ -181,7 +213,14 @@ describe('the library screen', () => {
         work({
           slug: 'imported-01',
           editions: [
-            { key: 'raw', label: 'Raw', members: 1, pages: 180, missing: 2 },
+            {
+              key: 'raw',
+              label: 'Raw',
+              members: 1,
+              pages: 180,
+              missing: 2,
+              cover: coverOf('imported-01', 'raw'),
+            },
           ],
         }),
       ],
@@ -201,8 +240,22 @@ describe('the library screen', () => {
           slug: 'imported-01',
           opens: 'en',
           editions: [
-            { key: 'raw', label: 'Raw', members: 1, pages: 180, missing: 2 },
-            { key: 'en', label: 'En', members: 1, pages: 178, missing: 0 },
+            {
+              key: 'raw',
+              label: 'Raw',
+              members: 1,
+              pages: 180,
+              missing: 2,
+              cover: coverOf('imported-01', 'raw'),
+            },
+            {
+              key: 'en',
+              label: 'En',
+              members: 1,
+              pages: 178,
+              missing: 0,
+              cover: coverOf('imported-01', 'en'),
+            },
           ],
         }),
       ],
@@ -224,8 +277,22 @@ describe('the library screen', () => {
           slug: 'half-read-v02',
           opens: 'raw',
           editions: [
-            { key: 'raw', label: 'Raw', members: 1, pages: 180, missing: 2 },
-            { key: 'en', label: 'En', members: 1, pages: 178, missing: 0 },
+            {
+              key: 'raw',
+              label: 'Raw',
+              members: 1,
+              pages: 180,
+              missing: 2,
+              cover: coverOf('half-read-v02', 'raw'),
+            },
+            {
+              key: 'en',
+              label: 'En',
+              members: 1,
+              pages: 178,
+              missing: 0,
+              cover: coverOf('half-read-v02', 'en'),
+            },
           ],
         }),
       ],
@@ -286,7 +353,14 @@ describe('the library screen', () => {
         work({
           slug: 'half-read-v02',
           editions: [
-            { key: 'raw', label: 'Raw', members: 1, pages: 180, missing: 2 },
+            {
+              key: 'raw',
+              label: 'Raw',
+              members: 1,
+              pages: 180,
+              missing: 2,
+              cover: coverOf('half-read-v02', 'raw'),
+            },
           ],
         }),
       ],
@@ -309,8 +383,22 @@ describe('the library screen', () => {
           slug: 'half-read-v02',
           opens: 'en',
           editions: [
-            { key: 'raw', label: 'Raw', members: 1, pages: 180, missing: 2 },
-            { key: 'en', label: 'En', members: 1, pages: 178, missing: 0 },
+            {
+              key: 'raw',
+              label: 'Raw',
+              members: 1,
+              pages: 180,
+              missing: 2,
+              cover: coverOf('half-read-v02', 'raw'),
+            },
+            {
+              key: 'en',
+              label: 'En',
+              members: 1,
+              pages: 178,
+              missing: 0,
+              cover: coverOf('half-read-v02', 'en'),
+            },
           ],
         }),
       ],
@@ -443,20 +531,20 @@ describe('the library screen', () => {
   })
 
   it('a failed load followed by a successful retry clears the stale failure banner', async () => {
-    // Only `grid` is made to fail — `Promise.all` rejects on the first
-    // rejection regardless of the other, which is the same shape a real
-    // failure takes. `mockRejectedValueOnce` overrides the `beforeEach`
-    // default for exactly one call; the retry below falls through to that
-    // default (`{ series: [], unfiled: [] }`), which is enough to prove the
-    // *second* load succeeded — the failing banner's own text is the pin.
+    // Only `grid` is made to fail, which is enough here: the view says the
+    // failure of either read, and home's alone is pinned in "says the failure
+    // of home alone", below. `mockRejectedValueOnce` overrides the
+    // `beforeEach` default for exactly one call; the retry below falls
+    // through to that default (`{ series: [], unfiled: [] }`), which is
+    // enough to prove the *second* load succeeded — the failing banner's own
+    // text is the pin.
     vi.mocked(library.grid).mockRejectedValueOnce(new Error('offline'))
 
-    // The effect re-fires on `library` alone (`Library.tsx`'s own dependency
-    // array), and nothing inside `Library` changes it here. A sibling link
-    // inside the same `MemoryRouter`, changing only the `?library=` query
-    // parameter `Library` reads via `useSearchParams`, is what stands in for
-    // "the reader retried" without inventing a retry control this task did
-    // not ask for.
+    // The view reads again when it is asked for another library, and nothing
+    // inside `Library` changes the library here, so a sibling link inside the
+    // same `MemoryRouter`, changing only the `?library=` query parameter
+    // `Library` reads via `useSearchParams`, stands in for a second read of
+    // another library.
     let host!: HTMLElement
     await act(async () => {
       host = mount(
@@ -513,17 +601,17 @@ describe('the library screen', () => {
   /**
    * **What is drawn when the library changes under a load.**
    *
-   * The effect re-fires on `library`, so switching library while the first
-   * load is still in flight leaves two `Promise.all`s outstanding, and the
-   * store need not answer them in order. The cleanup's `cancelled = true`
-   * drops the *departed* library's answer when it lands late, which would
-   * otherwise replace the answer for the library on screen. While the next
-   * library's own load is in flight, and after it fails, the page draws only
-   * what was loaded for that library: nothing of the one it left.
+   * Switching library while the first library's reads are in flight leaves
+   * them outstanding, and the server need not answer in order. The store
+   * keeps each answer under its own library's address, and the view draws
+   * only the addresses it names now, so the *departed* library's answer,
+   * landing late, never takes the place of the one on screen. While the next
+   * library's own reads are in flight, and after one fails, the page draws
+   * only what was read for that library: nothing of the one it left.
    *
-   * The tests hold a load open with `deferred` rather than ordering two
-   * `mockResolvedValueOnce`s: mocked promises resolve in call order, so the
-   * guard is never true and the branch is never taken.
+   * The tests hold a read open with `deferred` rather than ordering two
+   * `mockResolvedValueOnce`s: mocked promises resolve in call order, so no
+   * answer would land after its library was left.
    */
   describe('a load for a library that has since been left', () => {
     /** Library 1's page, with a link to library 2's beside it. */
@@ -634,6 +722,452 @@ describe('the library screen', () => {
   })
 
   /**
+   * **The grid and home are read through the store** (spec 2026-10-28
+   * §6.1): a first visit waits for both, a return draws what was kept and
+   * reads it again.
+   */
+  describe('the view, read through the store', () => {
+    /**
+     * The view at `path`, with a link to each of the two libraries, and
+     * `after` drawn after it.
+     */
+    const screenAt = (path: string, after?: React.ReactNode) => (
+      <MemoryRouter initialEntries={[path]}>
+        <StatusContext.Provider value={twoLibraries}>
+          <div>
+            <Link to="/?library=1">one</Link>
+            <Link to="/?library=2">two</Link>
+            <Library />
+            {after}
+          </div>
+        </StatusContext.Provider>
+      </MemoryRouter>
+    )
+
+    /**
+     * What the view draws below its heading row: the wait line by its words,
+     * each Continue card and each grid tile by its title and its cover's
+     * `src`, `null` where it draws none.
+     */
+    const drawn = (host: HTMLElement) =>
+      JSON.stringify({
+        waiting: [...host.querySelectorAll('[role="status"]')].map(
+          (line) => line.textContent,
+        ),
+        continuing: [
+          ...host.querySelectorAll('[data-testid="continue"] li'),
+        ].map((card) => [
+          card.querySelector('.title')?.textContent,
+          card.querySelector('img')?.getAttribute('src') ?? null,
+        ]),
+        grid: [...host.querySelectorAll('ul.grid li')].map((tile) => [
+          tile.querySelector('.title')?.textContent,
+          tile.querySelector('img')?.getAttribute('src') ?? null,
+        ]),
+      })
+
+    const nothing = JSON.stringify({ waiting: [], continuing: [], grid: [] })
+    const waiting = JSON.stringify({
+      waiting: ['Loading…'],
+      continuing: [],
+      grid: [],
+    })
+    const oneDrawn = JSON.stringify({
+      waiting: [],
+      continuing: [
+        ['One v01', '/api/works/one-v01/raw/pages/0/thumb?v=c0ffee-0-1&w=256'],
+      ],
+      grid: [
+        ['One', '/api/works/one-v01/raw/pages/0/thumb?v=c0ffee-0-1&w=256'],
+        ['Two', null],
+      ],
+    })
+    const oneGrid: library.Grid = {
+      series: [
+        series({ id: 1, title: 'One', cover: coverOf('one-v01', 'raw') }),
+        series({ id: 2, title: 'Two', cover: null }),
+      ],
+      unfiled: [],
+    }
+    const oneHome: library.HomeLists = {
+      continuing: [
+        work({
+          slug: 'one-v01',
+          title: 'One v01',
+          editions: [
+            {
+              key: 'raw',
+              label: 'Raw',
+              members: 1,
+              pages: 180,
+              missing: 0,
+              cover: coverOf('one-v01', 'raw'),
+            },
+          ],
+        }),
+      ],
+      added: [],
+      read: [],
+    }
+
+    it('draws Loading… in the grid’s place from 200 ms on a first visit, and the Continue strip with the grid in one step once both have landed', async () => {
+      holdTheClock()
+      const grid = deferred<library.Grid>()
+      const home = deferred<library.HomeLists>()
+      vi.mocked(library.grid).mockReturnValueOnce(grid.promise)
+      vi.mocked(library.home).mockReturnValueOnce(home.promise)
+      let host!: HTMLElement
+      await act(async () => {
+        host = mount(screenAt('/'))
+      })
+      await flush()
+      expect(drawn(host)).toBe(nothing)
+      pass(WAIT_DRAWN_AFTER_MS - 1)
+      expect(drawn(host)).toBe(nothing)
+      pass(1)
+      expect(drawn(host)).toBe(waiting)
+      expect(
+        host.querySelector('.library-chips + [role="status"]')?.textContent,
+      ).toBe('Loading…')
+
+      const seen = watchDrawn(() => drawn(host))
+      await flush(() => grid.resolve(oneGrid))
+      await flush()
+      await flush(() => home.resolve(oneHome))
+      await flush()
+      seen.stop()
+      expect([...seen.seen]).toEqual([waiting, oneDrawn])
+    })
+
+    it('draws the kept grid and Continue strip in its first render on a return, each tile with the cover it had, and reads each again once', async () => {
+      vi.mocked(library.grid).mockResolvedValue(oneGrid)
+      vi.mocked(library.home).mockResolvedValue(oneHome)
+      let host!: HTMLElement
+      await act(async () => {
+        host = mount(screenAt('/'))
+      })
+      await flush()
+      await flush()
+      expect(drawn(host)).toBe(oneDrawn)
+
+      rerender(<div />)
+      vi.mocked(library.grid).mockClear()
+      vi.mocked(library.home).mockClear()
+      const grid = deferred<library.Grid>()
+      const home = deferred<library.HomeLists>()
+      vi.mocked(library.grid).mockReturnValueOnce(grid.promise)
+      vi.mocked(library.home).mockReturnValueOnce(home.promise)
+      const first: { drawn?: string } = {}
+      rerender(
+        screenAt('/', <FirstCommit read={() => drawn(host)} into={first} />),
+      )
+      expect(first.drawn).toBe(oneDrawn)
+      expect(drawn(host)).toBe(oneDrawn)
+      await flush()
+      await flush()
+      expect(drawn(host)).toBe(oneDrawn)
+      expect(vi.mocked(library.grid).mock.calls).toEqual([[undefined]])
+      expect(vi.mocked(library.home).mock.calls).toEqual([[undefined]])
+    })
+
+    it('draws a library kept in this tab at once on a switch back to it, and reads it again', async () => {
+      vi.mocked(library.grid).mockImplementation(async (id) =>
+        id === 1
+          ? oneGrid
+          : { series: [series({ id: 3, title: 'Three' })], unfiled: [] },
+      )
+      vi.mocked(library.home).mockImplementation(async (id) =>
+        id === 1 ? oneHome : { continuing: [], added: [], read: [] },
+      )
+      let host!: HTMLElement
+      await act(async () => {
+        host = mount(screenAt('/?library=1'))
+      })
+      await flush()
+      await flush()
+      expect(drawn(host)).toBe(oneDrawn)
+      const follow = (to: string) =>
+        act(async () => {
+          host.querySelector<HTMLAnchorElement>(`a[href="${to}"]`)?.click()
+        })
+      await follow('/?library=2')
+      await flush()
+      await flush()
+      expect(host.querySelector('h1')?.textContent).toBe('Comics')
+      expect(
+        [...host.querySelectorAll('ul.grid .title')].map((t) => t.textContent),
+      ).toEqual(['Three'])
+
+      vi.mocked(library.grid).mockClear()
+      vi.mocked(library.home).mockClear()
+      vi.mocked(library.grid).mockReturnValueOnce(
+        deferred<library.Grid>().promise,
+      )
+      vi.mocked(library.home).mockReturnValueOnce(
+        deferred<library.HomeLists>().promise,
+      )
+      await follow('/?library=1')
+      expect(host.querySelector('h1')?.textContent).toBe('Manga')
+      expect(drawn(host)).toBe(oneDrawn)
+      await flush()
+      await flush()
+      expect(drawn(host)).toBe(oneDrawn)
+      expect(vi.mocked(library.grid).mock.calls).toEqual([[1]])
+      expect(vi.mocked(library.home).mock.calls).toEqual([[1]])
+    })
+
+    /** Mount the view at `/` and let both reads land. */
+    const landed = async () => {
+      let host!: HTMLElement
+      await act(async () => {
+        host = mount(screenAt('/'))
+      })
+      await flush()
+      await flush()
+      expect(drawn(host)).toBe(oneDrawn)
+      return host
+    }
+
+    /** Each alert the view draws, by its words. */
+    const alerts = (host: HTMLElement) =>
+      [...host.querySelectorAll('[role="alert"]')].map((a) => a.textContent)
+
+    it('draws neither the grid nor the Continue strip on an arrival at answers marked stale, until they are read again', async () => {
+      vi.mocked(library.grid).mockResolvedValue(oneGrid)
+      vi.mocked(library.home).mockResolvedValue(oneHome)
+      const host = await landed()
+      rerender(<div />)
+      invalidateLibraryViews()
+      const grid = deferred<library.Grid>()
+      const home = deferred<library.HomeLists>()
+      vi.mocked(library.grid).mockReturnValueOnce(grid.promise)
+      vi.mocked(library.home).mockReturnValueOnce(home.promise)
+      rerender(screenAt('/'))
+      await flush()
+      expect(drawn(host)).toBe(nothing)
+      expect(host.querySelector('[data-testid="continue"]')).toBeNull()
+      expect(host.querySelector('ul.grid')).toBeNull()
+
+      // The same answers as those kept: what is pinned is the re-read
+      // clearing the mark, not a change of rows.
+      await flush(() => grid.resolve(oneGrid))
+      await flush(() => home.resolve(oneHome))
+      await flush()
+      expect(drawn(host)).toBe(oneDrawn)
+    })
+
+    it('says the failure of home alone, and draws the grid that was read', async () => {
+      vi.mocked(library.grid).mockResolvedValue(oneGrid)
+      vi.mocked(library.home).mockRejectedValue(new Error('home: 500'))
+      let host!: HTMLElement
+      await act(async () => {
+        host = mount(screenAt('/'))
+      })
+      await flush()
+      await flush()
+      expect(alerts(host)).toEqual(['home: 500'])
+      expect(drawn(host)).toBe(
+        JSON.stringify({
+          ...JSON.parse(oneDrawn),
+          continuing: [],
+        }),
+      )
+    })
+
+    it('says the grid’s failure where both reads fail', async () => {
+      vi.mocked(library.grid).mockRejectedValue(new Error('grid: 500'))
+      vi.mocked(library.home).mockRejectedValue(new Error('home: 500'))
+      let host!: HTMLElement
+      await act(async () => {
+        host = mount(screenAt('/'))
+      })
+      await flush()
+      await flush()
+      expect(alerts(host)).toEqual(['grid: 500'])
+    })
+
+    it('keeps the rows it drew beside the alert when a re-read fails', async () => {
+      vi.mocked(library.grid).mockResolvedValue(oneGrid)
+      vi.mocked(library.home).mockResolvedValue(oneHome)
+      const host = await landed()
+      expect(alerts(host)).toEqual([])
+      rerender(<div />)
+      vi.mocked(library.grid).mockRejectedValueOnce(new Error('grid: 500'))
+      rerender(screenAt('/'))
+      await flush()
+      await flush()
+      expect(alerts(host)).toEqual(['grid: 500'])
+      expect(drawn(host)).toBe(oneDrawn)
+    })
+  })
+
+  /**
+   * **The chip and the sort are in the address** (spec 2026-10-28 §5.1):
+   * `?show=` and `?sort=`, the defaults left out, each press written with
+   * `replace`.
+   */
+  describe('the chip and the sort, in the address', () => {
+    /** The address, its navigation state and how it was arrived at. */
+    function Where() {
+      const location = useLocation()
+      const type = useNavigationType()
+      const navigate = useNavigate()
+      return (
+        <>
+          <output data-testid="where">
+            {JSON.stringify({
+              at: location.pathname + location.search,
+              state: location.state,
+              type,
+            })}
+          </output>
+          <button
+            type="button"
+            data-testid="back"
+            onClick={() => {
+              void navigate(-1)
+            }}
+          >
+            back
+          </button>
+        </>
+      )
+    }
+
+    const where = (host: HTMLElement) =>
+      JSON.parse(
+        host.querySelector('[data-testid="where"]')?.textContent ?? 'null',
+      ) as { at: string; state: unknown; type: string }
+
+    /** The view at the second of `entries`, the first standing before it. */
+    const mountAt = async (entries: MemoryRouterProps['initialEntries']) => {
+      let host!: HTMLElement
+      await act(async () => {
+        host = mount(
+          <MemoryRouter initialEntries={entries} initialIndex={1}>
+            <StatusContext.Provider value={defaultStatus}>
+              <Library />
+              <Where />
+            </StatusContext.Provider>
+          </MemoryRouter>,
+        )
+      })
+      await flush()
+      await flush()
+      return host
+    }
+
+    /** Each chip and the sort, by its words and whether it is pressed. */
+    const pressed = (host: HTMLElement) =>
+      [...host.querySelectorAll('.library-chips button')].map((b) => [
+        b.textContent,
+        b.getAttribute('aria-pressed'),
+      ])
+
+    const press = (host: HTMLElement, words: string) =>
+      act(async () => {
+        ;[...host.querySelectorAll<HTMLButtonElement>('.library-chips button')]
+          .find((b) => b.textContent === words)
+          ?.click()
+      })
+
+    const titles = (host: HTMLElement) =>
+      [...host.querySelectorAll('ul.grid .title')].map((t) => t.textContent)
+
+    beforeEach(() => {
+      vi.mocked(library.grid).mockResolvedValue({
+        series: [
+          series({ id: 1, title: 'Alpha', added: 1, works: 3, unread: 3 }),
+          series({ id: 2, title: 'Beta', added: 9, works: 3, unread: 3 }),
+          series({ id: 3, title: 'Gamma', added: 5, works: 3, unread: 1 }),
+        ],
+        unfiled: [],
+      })
+    })
+
+    it('draws the chip and the sort ?show= and ?sort= name on arrival', async () => {
+      const host = await mountAt(['/before', '/?show=unread&sort=added'])
+      expect(pressed(host)).toEqual([
+        ['All', 'false'],
+        ['Multi-edition', 'false'],
+        ['Unread', 'true'],
+        ['Added', 'true'],
+      ])
+      expect(titles(host)).toEqual(['Beta', 'Alpha'])
+    })
+
+    it('reads a ?show= or ?sort= that names neither as All and Title', async () => {
+      const host = await mountAt(['/before', '/?show=bogus&sort=bogus'])
+      expect(pressed(host)).toEqual([
+        ['All', 'true'],
+        ['Multi-edition', 'false'],
+        ['Unread', 'false'],
+        ['Added', 'false'],
+      ])
+      expect(titles(host)).toEqual(['Alpha', 'Beta', 'Gamma'])
+    })
+
+    it('writes each press with replace, keeping every other parameter and the search box’s tag', async () => {
+      const host = await mountAt([
+        '/before',
+        {
+          pathname: '/',
+          search: '?library=1&q=',
+          state: { searchBox: 'elsewhere:1' },
+        },
+      ])
+      await press(host, 'Unread')
+      expect(where(host)).toEqual({
+        at: '/?library=1&q=&show=unread',
+        state: { searchBox: 'elsewhere:1' },
+        type: 'REPLACE',
+      })
+      await press(host, 'Added')
+      expect(where(host)).toEqual({
+        at: '/?library=1&q=&show=unread&sort=added',
+        state: { searchBox: 'elsewhere:1' },
+        type: 'REPLACE',
+      })
+      expect(pressed(host)).toEqual([
+        ['All', 'false'],
+        ['Multi-edition', 'false'],
+        ['Unread', 'true'],
+        ['Added', 'true'],
+      ])
+      expect(titles(host)).toEqual(['Beta', 'Alpha'])
+      await press(host, 'All')
+      await press(host, 'Added')
+      expect(where(host).at).toBe('/?library=1&q=')
+      expect(pressed(host)).toEqual([
+        ['All', 'true'],
+        ['Multi-edition', 'false'],
+        ['Unread', 'false'],
+        ['Added', 'false'],
+      ])
+
+      await act(async () => {
+        host.querySelector<HTMLButtonElement>('[data-testid="back"]')?.click()
+      })
+      expect(where(host).at).toBe('/before')
+    })
+
+    it('carries no focusSearch over a press, so the press does not focus the search box', async () => {
+      const host = await mountAt([
+        '/before',
+        { pathname: '/', search: '', state: { focusSearch: true } },
+      ])
+      expect(document.activeElement?.id).not.toBe(SEARCH_BOX_ID)
+      await press(host, 'Multi-edition')
+      expect(where(host)).toEqual({
+        at: '/?show=multi',
+        state: null,
+        type: 'REPLACE',
+      })
+      expect(document.activeElement?.id).not.toBe(SEARCH_BOX_ID)
+    })
+  })
+
+  /**
    * **One reading of `?library=` for the page and the sidebar beside it**:
    * `library.ts`'s `libraryParam`, which Search reads the value through too.
    * A value that is no library id is no library's page, so the page says so
@@ -731,15 +1265,58 @@ describe('the library screen', () => {
     it('leaves a cover that loads alone', async () => {
       const host = await withCover()
       expect(host.querySelector('img')?.getAttribute('src')).toBe(
-        '/api/library/series/1/cover?w=256',
+        '/api/works/a-series-v01/raw/pages/0/thumb?v=c0ffee-0-1&w=256',
       )
       // O133: the browser picks the size for its screen's density — 768 px on
       // a 3× phone, where the 160 px filmstrip tile used to be upscaled.
       expect(host.querySelector('img')?.getAttribute('srcset')).toBe(
-        '/api/library/series/1/cover?w=256 1x, /api/library/series/1/cover?w=512 2x, /api/library/series/1/cover?w=768 3x',
+        '/api/works/a-series-v01/raw/pages/0/thumb?v=c0ffee-0-1&w=256 1x, /api/works/a-series-v01/raw/pages/0/thumb?v=c0ffee-0-1&w=512 2x, /api/works/a-series-v01/raw/pages/0/thumb?v=c0ffee-0-1&w=768 3x',
       )
       expect(host.querySelector('.cover-missing')).toBeNull()
     })
+  })
+
+  /**
+   * The server sends `cover: null` for a series none of whose editions this
+   * caller may see, or whose cover edition has no page: there is no address
+   * to ask for, so the tile is the placeholder from its first render.
+   */
+  it('draws a series with no cover as the placeholder, never as an image', async () => {
+    vi.mocked(library.grid).mockResolvedValue({
+      series: [
+        series({ id: 1, title: 'Alpha' }),
+        series({ id: 2, title: 'Beta', cover: null }),
+      ],
+      unfiled: [],
+    })
+    // The `src` of every `img` the page held at any moment: an image drawn
+    // and then swapped for the placeholder would already have asked for its
+    // address. Removed nodes as well as added ones, because a record is read
+    // after the fact, when an added subtree may have lost the image again.
+    const held = new Set<string | null>()
+    const record = (records: MutationRecord[]) => {
+      for (const { addedNodes, removedNodes } of records)
+        for (const node of [...addedNodes, ...removedNodes])
+          if (node instanceof Element)
+            for (const img of [node, ...node.querySelectorAll('img')])
+              if (img.tagName === 'IMG') held.add(img.getAttribute('src'))
+    }
+    const watch = new MutationObserver(record)
+    watch.observe(document.body, { childList: true, subtree: true })
+    const host = await show()
+    record(watch.takeRecords())
+    watch.disconnect()
+
+    const tile = (id: number) => host.querySelector(`a[href="/series/${id}"]`)
+    expect(tile(2)?.querySelector('img')).toBeNull()
+    expect(tile(2)?.querySelector('.cover-missing')?.textContent).toBe('Beta')
+    expect(tile(1)?.querySelector('img')?.getAttribute('src')).toBe(
+      '/api/works/a-series-v01/raw/pages/0/thumb?v=c0ffee-0-1&w=256',
+    )
+    expect(tile(1)?.querySelector('.cover-missing')).toBeNull()
+    expect([...held]).toEqual([
+      '/api/works/a-series-v01/raw/pages/0/thumb?v=c0ffee-0-1&w=256',
+    ])
   })
 
   it('the Added button reorders the grid, not merely toggles its own label', async () => {
@@ -780,8 +1357,22 @@ describe('the library screen', () => {
           slug: 'half-read-v02',
           opens: 'en',
           editions: [
-            { key: 'raw', label: 'Raw', members: 1, pages: 180, missing: 0 },
-            { key: 'en', label: 'En', members: 1, pages: 178, missing: 0 },
+            {
+              key: 'raw',
+              label: 'Raw',
+              members: 1,
+              pages: 180,
+              missing: 0,
+              cover: coverOf('half-read-v02', 'raw'),
+            },
+            {
+              key: 'en',
+              label: 'En',
+              members: 1,
+              pages: 178,
+              missing: 0,
+              cover: coverOf('half-read-v02', 'en'),
+            },
           ],
         }),
       ],
@@ -791,8 +1382,57 @@ describe('the library screen', () => {
     const host = await show()
     const strip = host.querySelector('[data-testid="continue"]')
     expect(strip?.querySelector('img')?.getAttribute('src')).toBe(
-      '/api/works/half-read-v02/en/pages/0/thumb?w=256',
+      '/api/works/half-read-v02/en/pages/0/thumb?v=c0ffee-0-1&w=256',
     )
+  })
+
+  it('draws the missing-cover box on a continue card whose opening edition has no page, and no other edition’s cover', async () => {
+    vi.mocked(library.home).mockResolvedValue({
+      continuing: [
+        work({
+          slug: 'pageless-v02',
+          title: 'Pageless v02',
+          opens: 'en',
+          editions: [
+            {
+              key: 'raw',
+              label: 'Raw',
+              members: 1,
+              pages: 180,
+              missing: 0,
+              cover: coverOf('pageless-v02', 'raw'),
+            },
+            {
+              key: 'en',
+              label: 'En',
+              members: 1,
+              pages: 0,
+              missing: 0,
+              cover: null,
+            },
+          ],
+        }),
+        work({ slug: 'paged-v01', title: 'Paged v01' }),
+      ],
+      added: [],
+      read: [],
+    })
+    const host = await show()
+    const cards = [...host.querySelectorAll('[data-testid="continue"] li')]
+    expect(
+      cards.map((card) => [
+        card.querySelector('.title')?.textContent,
+        card.querySelector('img')?.getAttribute('src') ?? null,
+        card.querySelector('.cover-missing')?.textContent ?? null,
+      ]),
+    ).toEqual([
+      ['Pageless v02', null, 'Pageless v02'],
+      [
+        'Paged v01',
+        '/api/works/paged-v01/raw/pages/0/thumb?v=c0ffee-0-1&w=256',
+        null,
+      ],
+    ])
   })
 
   it('says which volume a continue card is, and nothing where it has no number', async () => {
@@ -818,7 +1458,14 @@ describe('the library screen', () => {
         work({
           slug: 'gone-v01',
           editions: [
-            { key: 'raw', label: 'Raw', members: 1, pages: 180, missing: 1 },
+            {
+              key: 'raw',
+              label: 'Raw',
+              members: 1,
+              pages: 180,
+              missing: 1,
+              cover: coverOf('gone-v01', 'raw'),
+            },
           ],
         }),
       ],
@@ -976,9 +1623,10 @@ describe('the search bar — spec §2', () => {
 
   beforeEach(() => {
     vi.useFakeTimers()
-    // Call history, not just the resolved value: each test counts its own
-    // searches.
-    vi.mocked(library.search).mockClear()
+    // Call history and queued answers, not just the resolved value: each
+    // test counts its own searches, and an answer queued `Once` that an
+    // earlier test never asked for must not answer this one's.
+    vi.mocked(library.search).mockReset()
     vi.mocked(library.search).mockResolvedValue({
       series: [hit()],
       unfiled: [],
@@ -1000,16 +1648,21 @@ describe('the search bar — spec §2', () => {
   })
 
   /**
-   * The view at `path` under `status`, with the URL drawn beside it. A
-   * `rerender` of it with another status is the shell's fetch landing under
-   * a view already drawn: `MemoryRouter` reads `initialEntries` once, so the
-   * URL stays where the box put it.
+   * The view at `path` under `status`, with the URL drawn beside it and
+   * `after` after that. A `rerender` of it with another status is the
+   * shell's fetch landing under a view already drawn: `MemoryRouter` reads
+   * `initialEntries` once, so the URL stays where the box put it.
    */
-  const tree = (path: string, status: LibraryStatus | undefined) => (
+  const tree = (
+    path: string,
+    status: LibraryStatus | typeof STATUS_FAILED | undefined,
+    after?: React.ReactNode,
+  ) => (
     <MemoryRouter initialEntries={[path]}>
       <StatusContext.Provider value={status}>
         <Library />
         {locationProbe()}
+        {after}
       </StatusContext.Provider>
     </MemoryRouter>
   )
@@ -1437,5 +2090,417 @@ describe('the search bar — spec §2', () => {
       { ...waiting, hits: ['五等分の花嫁'], searches: 1 },
     ])
     expect(host.querySelector('.search-hits')).not.toBeNull()
+  })
+
+  /**
+   * **The hits are read through the store** (spec 2026-10-28 §6.2): an
+   * arrival draws what is kept at once and reads it again, or reads at once
+   * with nothing kept; typing keeps its delay and the hits drawn.
+   */
+  describe('the hits, read through the store', () => {
+    /**
+     * What the view draws where the hits go: `null` with no hits area, and
+     * otherwise its wait line by its words and each hit by its title.
+     */
+    const hitsDrawn = (host: HTMLElement) => {
+      const area = host.querySelector('.search-hits')
+      return JSON.stringify(
+        area === null
+          ? null
+          : {
+              waiting: [...area.querySelectorAll('[role="status"]')].map(
+                (line) => line.textContent,
+              ),
+              hits: [...area.querySelectorAll('.title')].map(
+                (title) => title.textContent,
+              ),
+            },
+      )
+    }
+    const showing = (...hits: string[]) => JSON.stringify({ waiting: [], hits })
+    const empty = JSON.stringify({ waiting: [], hits: [] })
+    const loading = JSON.stringify({ waiting: ['Loading…'], hits: [] })
+
+    const answer = (title: string): library.SearchHits => ({
+      series: [hit({ title })],
+      unfiled: [],
+      query: title,
+    })
+
+    it('sends the query an arrival names at once, not after the typing delay', async () => {
+      let host!: HTMLElement
+      await act(async () => {
+        host = mount(tree('/?q=%E8%8A%B1%E5%AB%81', twoLibraries))
+      })
+      await land()
+      expect(vi.mocked(library.search).mock.calls).toEqual([
+        ['花嫁', undefined],
+      ])
+      expect(hitsDrawn(host)).toBe(showing('五等分の花嫁'))
+    })
+
+    it('sends at once the query Back returns to, though the box set it, and the one a link names', async () => {
+      function Back() {
+        const navigate = useNavigate()
+        return (
+          <button
+            type="button"
+            data-testid="back"
+            onClick={() => void navigate(-1)}
+          >
+            Back
+          </button>
+        )
+      }
+      vi.mocked(library.search).mockImplementation(async (q) => answer(q))
+      let host!: HTMLElement
+      await act(async () => {
+        host = mount(
+          <MemoryRouter
+            initialEntries={[
+              // What the box leaves on an entry it typed into: its tag.
+              { pathname: '/', search: '?q=old', state: { searchBox: 'x:1' } },
+              '/',
+            ]}
+            initialIndex={1}
+          >
+            <StatusContext.Provider value={twoLibraries}>
+              <Back />
+              <Link to="/?q=linked">linked</Link>
+              <Library />
+            </StatusContext.Provider>
+          </MemoryRouter>,
+        )
+      })
+      await land()
+      expect(vi.mocked(library.search)).not.toHaveBeenCalled()
+      await act(async () => {
+        host.querySelector<HTMLButtonElement>('[data-testid="back"]')?.click()
+      })
+      await land()
+      expect(vi.mocked(library.search).mock.calls).toEqual([['old', undefined]])
+      expect(hitsDrawn(host)).toBe(showing('old'))
+      await act(async () => {
+        host.querySelector<HTMLAnchorElement>('a[href="/?q=linked"]')?.click()
+      })
+      await land()
+      expect(vi.mocked(library.search).mock.calls).toEqual([
+        ['old', undefined],
+        ['linked', undefined],
+      ])
+      expect(hitsDrawn(host)).toBe(showing('linked'))
+    })
+
+    it('draws the hits kept for a search in its first render on a return, and reads them again once', async () => {
+      vi.mocked(library.search).mockResolvedValue(answer('kept'))
+      let host!: HTMLElement
+      await act(async () => {
+        host = mount(tree('/?q=kept', twoLibraries))
+      })
+      await land()
+      expect(hitsDrawn(host)).toBe(showing('kept'))
+
+      rerender(<div />)
+      vi.mocked(library.search).mockClear()
+      const again = deferred<library.SearchHits>()
+      vi.mocked(library.search).mockReturnValueOnce(again.promise)
+      const seen = watchDrawn(() => hitsDrawn(host))
+      const first: { drawn?: string } = {}
+      await act(async () => {
+        rerender(
+          tree(
+            '/?q=kept',
+            twoLibraries,
+            <FirstCommit read={() => hitsDrawn(host)} into={first} />,
+          ),
+        )
+      })
+      await land()
+      expect(first.drawn).toBe(showing('kept'))
+      expect(vi.mocked(library.search).mock.calls).toEqual([
+        ['kept', undefined],
+      ])
+      seen.stop()
+      expect([...seen.seen]).toEqual(['null', showing('kept')])
+      await flush(() => again.resolve(answer('kept, read again')))
+      await land()
+      expect(hitsDrawn(host)).toBe(showing('kept, read again'))
+    })
+
+    it('draws Loading… where the hits go from 200 ms on an arrival with none kept, and the hits once they land', async () => {
+      const found = deferred<library.SearchHits>()
+      vi.mocked(library.search).mockReturnValueOnce(found.promise)
+      let host!: HTMLElement
+      await act(async () => {
+        host = mount(tree('/?q=new', twoLibraries))
+      })
+      await land()
+      expect(vi.mocked(library.search).mock.calls).toEqual([['new', undefined]])
+      expect(hitsDrawn(host)).toBe(empty)
+      pass(WAIT_DRAWN_AFTER_MS - 1)
+      expect(hitsDrawn(host)).toBe(empty)
+      pass(1)
+      expect(hitsDrawn(host)).toBe(loading)
+      await flush(() => found.resolve(answer('new')))
+      await land()
+      expect(hitsDrawn(host)).toBe(showing('new'))
+    })
+
+    it('keeps the hits drawn while the next typed query waits and is out, with no Loading…, and draws its hits in one step', async () => {
+      vi.mocked(library.search).mockResolvedValueOnce(answer('fo'))
+      const host = await viewAt('/')
+      await type(host, 'fo')
+      await land()
+      expect(hitsDrawn(host)).toBe(showing('fo'))
+
+      const foo = deferred<library.SearchHits>()
+      vi.mocked(library.search).mockReturnValueOnce(foo.promise)
+      const seen = watchDrawn(() => hitsDrawn(host))
+      await setValue(host, 'foo')
+      await land()
+      // Typing waits out its delay before it sends.
+      expect(vi.mocked(library.search)).toHaveBeenCalledTimes(1)
+      pass(250)
+      await land()
+      expect(vi.mocked(library.search)).toHaveBeenCalledTimes(2)
+      expect(vi.mocked(library.search)).toHaveBeenLastCalledWith(
+        'foo',
+        undefined,
+      )
+      pass(WAIT_DRAWN_AFTER_MS * 5)
+      expect(hitsDrawn(host)).toBe(showing('fo'))
+      await flush(() => foo.resolve(answer('foo')))
+      await land()
+      seen.stop()
+      expect([...seen.seen]).toEqual([showing('fo'), showing('foo')])
+    })
+
+    it('sends the query an arrival names once the box is offered, at once, and nothing before', async () => {
+      const rows = deferred<library.Grid>()
+      vi.mocked(library.grid).mockReturnValue(rows.promise)
+      let host!: HTMLElement
+      await act(async () => {
+        host = mount(tree('/?q=Series', undefined))
+      })
+      await land()
+      pass(1000)
+      await land()
+      expect(boxOf(host)).toBeNull()
+      expect(vi.mocked(library.search)).not.toHaveBeenCalled()
+      // Rows offer the box with the status still out.
+      await flush(() => rows.resolve({ series: [series()], unfiled: [] }))
+      await land()
+      expect(boxOf(host)).not.toBeNull()
+      expect(vi.mocked(library.search).mock.calls).toEqual([
+        ['Series', undefined],
+      ])
+    })
+
+    // An arrival waits for the box to be offered, by rows or by the status,
+    // and then for its search: the wait line counts from the arrival, and
+    // stays drawn as the query is sent.
+    for (const by of ['rows', 'the status'] as const) {
+      it(`draws Loading… from 200 ms while the box waits for ${by}, sends nothing until it is offered, and keeps the line until the hits land`, async () => {
+        const rows = deferred<library.Grid>()
+        vi.mocked(library.grid).mockReturnValue(
+          by === 'rows'
+            ? rows.promise
+            : Promise.resolve({ series: [], unfiled: [] }),
+        )
+        const found = deferred<library.SearchHits>()
+        vi.mocked(library.search).mockReturnValueOnce(found.promise)
+        let host!: HTMLElement
+        await act(async () => {
+          host = mount(tree('/?q=Series', undefined))
+        })
+        await land()
+        expect(hitsDrawn(host)).toBe(empty)
+        pass(WAIT_DRAWN_AFTER_MS - 1)
+        expect(hitsDrawn(host)).toBe(empty)
+        pass(1)
+        expect(hitsDrawn(host)).toBe(loading)
+        expect(vi.mocked(library.search)).not.toHaveBeenCalled()
+
+        const seen = watchDrawn(() => hitsDrawn(host))
+        if (by === 'rows') {
+          await flush(() => rows.resolve({ series: [series()], unfiled: [] }))
+        } else {
+          await act(async () => {
+            rerender(tree('/?q=Series', twoLibraries))
+          })
+        }
+        await land()
+        expect(vi.mocked(library.search).mock.calls).toEqual([
+          ['Series', undefined],
+        ])
+        expect(hitsDrawn(host)).toBe(loading)
+        await flush(() => found.resolve(answer('Series')))
+        await land()
+        seen.stop()
+        expect([...seen.seen]).toEqual([loading, showing('Series')])
+      })
+    }
+
+    /** Each alert and each wait line the whole view draws, by its words. */
+    const said = (host: HTMLElement) => ({
+      alerts: [...host.querySelectorAll('[role="alert"]')].map(
+        (alert) => alert.textContent,
+      ),
+      waiting: [...host.querySelectorAll('[role="status"]')].map(
+        (line) => line.textContent,
+      ),
+    })
+
+    it('stops waiting for the box once the grid’s read fails, and says that failure alone', async () => {
+      const rows = deferred<library.Grid>()
+      vi.mocked(library.grid).mockReturnValue(rows.promise)
+      let host!: HTMLElement
+      await act(async () => {
+        host = mount(tree('/?q=Series', undefined))
+      })
+      await land()
+      pass(WAIT_DRAWN_AFTER_MS)
+      expect(said(host)).toEqual({ alerts: [], waiting: ['Loading…'] })
+      await flush(() => rows.reject(new Error('grid: 500')))
+      await land()
+      pass(1000)
+      expect(said(host)).toEqual({ alerts: ['grid: 500'], waiting: [] })
+      expect(vi.mocked(library.search)).not.toHaveBeenCalled()
+    })
+
+    it('stops waiting for the box once the status read fails with no status kept and the grid has no rows', async () => {
+      vi.mocked(library.grid).mockResolvedValue({ series: [], unfiled: [] })
+      let host!: HTMLElement
+      await act(async () => {
+        host = mount(tree('/?q=Series', undefined))
+      })
+      await land()
+      pass(WAIT_DRAWN_AFTER_MS)
+      expect(said(host)).toEqual({ alerts: [], waiting: ['Loading…'] })
+      await act(async () => {
+        rerender(tree('/?q=Series', STATUS_FAILED))
+      })
+      await land()
+      pass(1000)
+      // The shell says the status's failure above the screen.
+      expect(said(host)).toEqual({ alerts: [], waiting: [] })
+      expect(vi.mocked(library.search)).not.toHaveBeenCalled()
+    })
+
+    it('draws the alert alone, with no hits, where a typed query fails with nothing kept for it', async () => {
+      vi.mocked(library.search)
+        .mockResolvedValueOnce(answer('fo'))
+        .mockRejectedValueOnce(new Error('/api/library/search: 500'))
+      const host = await viewAt('/')
+      await type(host, 'fo')
+      await land()
+      expect(hitsDrawn(host)).toBe(showing('fo'))
+      await type(host, 'foo')
+      await land()
+      // Long past the wait line's delay: a failure is no wait.
+      pass(WAIT_DRAWN_AFTER_MS * 5)
+      const area = host.querySelector('.search-hits')
+      expect(
+        [...(area?.querySelectorAll('[role="alert"]') ?? [])].map(
+          (alert) => alert.textContent,
+        ),
+      ).toEqual(['/api/library/search: 500'])
+      expect(
+        [...(area?.querySelectorAll('.title') ?? [])].map(
+          (title) => title.textContent,
+        ),
+      ).toEqual([])
+      expect(
+        [...(area?.querySelectorAll('[role="status"]') ?? [])].map(
+          (line) => line.textContent,
+        ),
+      ).toEqual([])
+    })
+
+    it('reads the library Back returns to under the same words, and draws its hits, not those of the library left', async () => {
+      function Back() {
+        const navigate = useNavigate()
+        return (
+          <button
+            type="button"
+            data-testid="back"
+            onClick={() => void navigate(-1)}
+          >
+            Back
+          </button>
+        )
+      }
+      vi.mocked(library.search).mockImplementation(async (q, scope) =>
+        answer(`${q} in ${scope ?? 'every library'}`),
+      )
+      let host!: HTMLElement
+      await act(async () => {
+        host = mount(
+          <MemoryRouter
+            initialEntries={[
+              '/?q=foo',
+              // Library 2's view, where the box typed `foo`.
+              {
+                pathname: '/',
+                search: '?library=2&q=foo',
+                state: { searchBox: 'x:1' },
+              },
+            ]}
+            initialIndex={1}
+          >
+            <StatusContext.Provider value={twoLibraries}>
+              <Back />
+              <Library />
+            </StatusContext.Provider>
+          </MemoryRouter>,
+        )
+      })
+      await land()
+      expect(hitsDrawn(host)).toBe(showing('foo in 2'))
+      await act(async () => {
+        host.querySelector<HTMLButtonElement>('[data-testid="back"]')?.click()
+      })
+      await land()
+      expect(vi.mocked(library.search).mock.calls).toEqual([
+        ['foo', 2],
+        ['foo', undefined],
+      ])
+      expect(hitsDrawn(host)).toBe(showing('foo in every library'))
+    })
+
+    it('sends at once a query set by a replace that carries no tag of the box’s', async () => {
+      function Replace() {
+        const navigate = useNavigate()
+        return (
+          <button
+            type="button"
+            data-testid="replace"
+            onClick={() => void navigate('/?q=x', { replace: true })}
+          >
+            Replace
+          </button>
+        )
+      }
+      let host!: HTMLElement
+      await act(async () => {
+        host = mount(
+          <MemoryRouter initialEntries={['/']}>
+            <StatusContext.Provider value={twoLibraries}>
+              <Replace />
+              <Library />
+            </StatusContext.Provider>
+          </MemoryRouter>,
+        )
+      })
+      await land()
+      expect(vi.mocked(library.search)).not.toHaveBeenCalled()
+      await act(async () => {
+        host
+          .querySelector<HTMLButtonElement>('[data-testid="replace"]')
+          ?.click()
+      })
+      await land()
+      expect(vi.mocked(library.search).mock.calls).toEqual([['x', undefined]])
+    })
   })
 })

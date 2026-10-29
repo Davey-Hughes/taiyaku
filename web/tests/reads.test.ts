@@ -6,8 +6,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   emptyReads,
   entryOf,
+  heldCounts,
+  IDLE_KEPT,
   invalidate,
+  invalidatePrefix,
   markStale,
+  type Read,
   read,
   readNow,
   readSet,
@@ -36,6 +40,29 @@ function listenUntilOff(path: string, listener: () => void = vi.fn()) {
 
 /** Lets every request already settled run its handlers. */
 const landed = () => new Promise((resolve) => setTimeout(resolve, 0))
+
+/** Reads `path` and lands its own path as the answer: kept, and drawn by nothing. */
+async function kept(path: string) {
+  const a = address<string>(path)
+  const done = readSet([a.read])
+  a.requests[0].resolve(path)
+  await done
+  return a
+}
+
+/** `count` addresses under `/api/idle/<tag>/`, each read and kept, oldest first. */
+async function keptMany(tag: string, count: number) {
+  const all: Awaited<ReturnType<typeof kept>>[] = []
+  for (let i = 0; i < count; i++) all.push(await kept(`/api/idle/${tag}/${i}`))
+  return all
+}
+
+/** Each of `reads` still holds the answer it landed: its own address. */
+function expectKept(reads: readonly { read: Read<unknown> }[]) {
+  for (const { read: r } of reads) {
+    expect(entryOf(r)?.answer, r.address).toBe(r.address)
+  }
+}
 
 afterEach(() => {
   for (const off of subscriptions.splice(0)) off()
@@ -612,5 +639,211 @@ describe('the read store', () => {
       stale: false,
     })
     await expect(readNow(a)).rejects.toBe(thrown)
+  })
+})
+
+describe('the bound on entries nothing draws (IDLE_KEPT)', () => {
+  it('is 50', () => {
+    expect(IDLE_KEPT).toBe(50)
+  })
+
+  it('keeps IDLE_KEPT entries nothing draws, drops the one drawn least recently at one more, and a later read of it sends a request', async () => {
+    const idle = await keptMany('a', IDLE_KEPT)
+    expectKept(idle)
+
+    const last = await kept('/api/idle/one-more')
+    expect(entryOf(idle[0].read)).toBeUndefined()
+    expectKept([...idle.slice(1), last])
+
+    const again = readSet([idle[0].read])
+    expect(idle[0].fetch).toHaveBeenCalledTimes(2)
+    expect(entryOf(idle[0].read)).toBeUndefined()
+    idle[0].requests[1].resolve('read again')
+    await again
+    expect(entryOf(idle[0].read)?.answer).toBe('read again')
+  })
+
+  it('counts a poll’s answer against the bound as a set’s', async () => {
+    const idle = await keptMany('a', IDLE_KEPT)
+    const poll = address<string>('/api/idle/polled')
+    const polled = readNow(poll.read)
+    poll.requests[0].resolve('polled')
+    await polled
+    expect(entryOf(idle[0].read)).toBeUndefined()
+    expectKept(idle.slice(1))
+    expect(entryOf(poll.read)?.answer).toBe('polled')
+  })
+
+  it('counts an entry as drawn last when its last listener goes, so the one dropped is the one drawn least recently', async () => {
+    const early = address<string>('/api/early')
+    const offFirst = listenUntilOff('/api/early')
+    const offSecond = listenUntilOff('/api/early')
+    const first = readSet([early.read])
+    early.requests[0].resolve('early')
+    await first
+    const idle = await keptMany('a', IDLE_KEPT)
+    expectKept(idle)
+
+    // One listener left: still drawn, so nothing moves and nothing is dropped.
+    offFirst()
+    expectKept(idle)
+    expect(entryOf(early.read)?.answer).toBe('early')
+
+    // Read first but drawn last: the oldest of the rest goes in its place.
+    offSecond()
+    await landed()
+    expect(entryOf(early.read)?.answer).toBe('early')
+    expect(entryOf(idle[0].read)).toBeUndefined()
+    expectKept(idle.slice(1))
+  })
+
+  it('keeps the oldest idle entry when something subscribes to it in the same task as the last listener of another goes', async () => {
+    // A commit's effect cleanups run before its mount effects: the page
+    // leaving lets go of its address before the page arriving, drawn already
+    // from what is kept, subscribes to its own.
+    const arriving = await kept('/api/arriving')
+    const idle = await keptMany('a', IDLE_KEPT - 1)
+    const leaving = address<string>('/api/leaving')
+    const offLeaving = listenUntilOff('/api/leaving')
+    const first = readSet([leaving.read])
+    leaving.requests[0].resolve('leaving')
+    await first
+
+    offLeaving()
+    listen('/api/arriving')
+    await landed()
+    expect(entryOf(arriving.read)?.answer).toBe('/api/arriving')
+    expectKept(idle)
+    expect(entryOf(leaving.read)?.answer).toBe('leaving')
+  })
+
+  it('never drops an entry something draws, however many are idle, and does not count it against the bound', async () => {
+    const shown = address<string>('/api/shown')
+    listen('/api/shown')
+    const first = readSet([shown.read])
+    shown.requests[0].resolve('shown')
+    await first
+
+    const idle = await keptMany('a', IDLE_KEPT)
+    expectKept(idle)
+    expect(entryOf(shown.read)?.answer).toBe('shown')
+
+    const more = await keptMany('b', IDLE_KEPT)
+    expectKept(more)
+    expect(entryOf(shown.read)?.answer).toBe('shown')
+  })
+
+  it('keeps an address whose request is out until it lands, dropping the oldest of the rest instead, and applies its answer', async () => {
+    const out = address<string>('/api/out')
+    const pending = readSet([out.read])
+    const idle = await keptMany('a', IDLE_KEPT)
+    expect(entryOf(idle[0].read)).toBeUndefined()
+    expectKept(idle.slice(1))
+
+    out.requests[0].resolve('landed')
+    await pending
+    expect(entryOf(out.read)?.answer).toBe('landed')
+    expect(out.fetch).toHaveBeenCalledTimes(1)
+    expectKept(idle.slice(1))
+  })
+})
+
+describe('the listeners kept per address', () => {
+  it('lets go of an address’s listeners once the last of them goes', () => {
+    const offFirst = listenUntilOff('/api/a')
+    const offSecond = listenUntilOff('/api/a')
+    expect(heldCounts().listened).toBe(1)
+    offFirst()
+    expect(heldCounts().listened).toBe(1)
+    offSecond()
+    expect(heldCounts().listened).toBe(0)
+  })
+
+  it('takes nothing off a later listener when a spent unsubscribe is called again', async () => {
+    const a = address<string>('/api/a')
+    const off = listenUntilOff('/api/a')
+    const first = readSet([a.read])
+    a.requests[0].resolve('one')
+    await first
+    off()
+
+    listen('/api/a')
+    off()
+    void invalidate(a.read)
+    expect(a.fetch).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('invalidatePrefix', () => {
+  const PREFIX = '/api/library/series'
+  const UNDER = ['/api/library/series?library=2', '/api/library/series/17']
+  const NOT_UNDER = ['/api/library/seriesX', '/api/library/home']
+
+  /** Each of `paths` read and kept with its own path as the answer. */
+  const keptAll = (paths: readonly string[]) => Promise.all(paths.map(kept))
+
+  it('re-reads now every drawn address equal to the prefix or under it, and leaves one that only starts with it alone', async () => {
+    const paths = [PREFIX, ...UNDER, ...NOT_UNDER]
+    for (const path of paths) listen(path)
+    const all = await keptAll(paths)
+    const under = all.slice(0, 3)
+    const notUnder = all.slice(3)
+    const untouched = notUnder.map((a) => entryOf(a.read))
+
+    invalidatePrefix(PREFIX)
+    for (const a of under) {
+      expect(a.fetch, a.read.address).toHaveBeenCalledTimes(2)
+      expect(entryOf(a.read)?.stale, a.read.address).toBe(true)
+    }
+    notUnder.forEach((a, i) => {
+      expect(a.fetch, a.read.address).toHaveBeenCalledTimes(1)
+      expect(entryOf(a.read), a.read.address).toBe(untouched[i])
+      expect(entryOf(a.read)?.stale, a.read.address).toBe(false)
+    })
+
+    for (const a of under) a.requests[1].resolve(`${a.read.address}!`)
+    await landed()
+    for (const a of under) {
+      expect(entryOf(a.read), a.read.address).toMatchObject({
+        answer: `${a.read.address}!`,
+        stale: false,
+      })
+    }
+  })
+
+  it('marks stale, and sends nothing for, each address under the prefix nothing draws, and leaves one that only starts with it alone', async () => {
+    const all = await keptAll([...UNDER, ...NOT_UNDER])
+    const under = all.slice(0, 2)
+    const notUnder = all.slice(2)
+    const untouched = notUnder.map((a) => entryOf(a.read))
+
+    invalidatePrefix(PREFIX)
+    await landed()
+    for (const a of under) {
+      expect(a.fetch, a.read.address).toHaveBeenCalledTimes(1)
+      expect(entryOf(a.read), a.read.address).toMatchObject({
+        answer: a.read.address,
+        stale: true,
+      })
+    }
+    notUnder.forEach((a, i) => {
+      expect(a.fetch, a.read.address).toHaveBeenCalledTimes(1)
+      expect(entryOf(a.read), a.read.address).toBe(untouched[i])
+    })
+  })
+
+  it('takes several prefixes at once, and does nothing for one with nothing kept under it', async () => {
+    const paths = [
+      '/api/library/series?library=2',
+      '/api/library/home?library=2',
+      '/api/library/status',
+    ]
+    for (const path of paths) listen(path)
+    const [series, home, status] = await keptAll(paths)
+
+    invalidatePrefix('/api/library/series', '/api/library/home', '/api/none')
+    expect(series.fetch).toHaveBeenCalledTimes(2)
+    expect(home.fetch).toHaveBeenCalledTimes(2)
+    expect(status.fetch).toHaveBeenCalledTimes(1)
   })
 })

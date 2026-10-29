@@ -88,7 +88,7 @@ import { RemoveRoot } from './RemoveRoot'
 import { ScanReport } from './ScanReport'
 import { messageOf, sentenceOf } from './message'
 import { useLineEnds } from './lineEnds'
-import { ROOTS } from './pageReads'
+import { invalidateLibraryViews, ROOTS } from './pageReads'
 import { PathWithBreaks } from './PathWithBreaks'
 import {
   type BackTo,
@@ -659,6 +659,10 @@ export function RootRow({
             )
           }
           changed.current(true)
+          // What the scan found changes what the Library views draw, and a
+          // scan the server has no record of may have written some of it
+          // before the restart.
+          invalidateLibraryViews()
         })
         .catch((err: unknown) => {
           if (cancelled) return
