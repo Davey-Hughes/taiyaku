@@ -7,9 +7,9 @@ export interface Debounced<Args extends unknown[]> {
    * made since the last one fired (naturally or via a previous `flush`), or
    * because the wrapped function has already run for the latest arguments.
    *
-   * This exists for exactly one reason: `App.tsx`'s `visibilitychange`/
-   * `pagehide` handlers call it so a pending write survives the page going
-   * away — see `debounce.ts`'s module doc. The ordinary,
+   * `hooks.ts`'s `useFlushOnHide` calls it on `visibilitychange` and
+   * `pagehide`, so a pending write survives the page going away, and
+   * `App.tsx` calls it when the note editor closes. The ordinary,
    * timer-fires-naturally case must not be double-sent by a `flush` that
    * runs afterwards (e.g. `pagehide` following a `visibilitychange` that
    * already flushed), which is exactly what clearing the pending state below

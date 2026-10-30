@@ -64,11 +64,10 @@ const ARROWS: Record<string, string> = {
  * raw name until someone edits this function. The fallback is why that is
  * survivable rather than merely accepted: every printable single character is
  * already its own label, and the multi-character names in this vocabulary
- * (`Tab`, `Escape`, `Enter`, `Home`) are words a reader can read. Across the
- * 28 keys the two tables declare today — 14 in `READER_KEYS`, 12 across the
- * registry, 2 in `helpModule` above — exactly three do not render as
- * themselves: `' '`, `ArrowLeft` and `ArrowRight`. `Tab` is the only other
- * name of more than one character, and it needs nothing.
+ * (`Tab`, `Escape`, `Enter`, `Home`) are words a reader can read. Of the keys
+ * the two tables declare, only `' '`, `ArrowLeft` and `ArrowRight` do not
+ * render as themselves. `Tab` is the only other name of more than one
+ * character, and it needs nothing.
  */
 export function keyLabel(key: string): string {
   if (key === ' ') return 'Space'
@@ -135,32 +134,28 @@ export interface HelpGroup {
  * **A module's rows are keyed by intent, not by key.** Two bindings with one
  * intent are one thing a reader can do, and one row is what says so;
  * `helpModule` above is the case — `?` and `h` are a single line reading
- * `? / h`, not two lines saying `help:toggle` twice. It is the only module
- * with that shape today (`annotations` declares five distinct intents, `zoom`
- * three, the rest one each), so this rule is exercised exactly once, by the
- * module in this file.
+ * `? / h`, not two lines saying `help:toggle` twice.
  *
  * **A row says the binding's `label`, and falls back to its `intent`.**
- * `module.ts` gained that optional field for this screen and says why: the
+ * `module.ts` has that optional field for this screen and says why: the
  * intent strings were written to be dispatched on, and `annotations:reveal`
  * and `annotations:review` are one letter apart while naming different
- * things. All 14 bindings the registry declares carry one today — checked,
- * not assumed — so the fallback is currently reached by no module at all; it
- * stays because a new binding that forgets a label should be a jargon row and
- * not a build error, which is the property `module.ts` chose when it made the
- * field optional. Where two bindings share an intent the first label wins,
- * since one row can only say one thing; declaring two different labels for
- * one intent would be declaring two descriptions of a single action, and the
- * one that loses is the later one.
+ * things. Every binding the registry declares carries one, so the fallback is
+ * reached by no module at all; it stays because a new binding that forgets a
+ * label should be a jargon row and not a build error, which is the property
+ * `module.ts` chose when it made the field optional. Where two bindings share
+ * an intent the first label wins, since one row can only say one thing;
+ * declaring two different labels for one intent would be declaring two
+ * descriptions of a single action, and the one that loses is the later one.
  *
  * **`reader` is a parameter with a default** rather than a straight import of
  * `READER_KEYS`, so the tests can feed a table of their own and check the
  * derivation instead of only the current data. Every caller uses the default.
  *
  * A module declaring no keys is skipped rather than given an empty heading —
- * `motion`, `prefetch`, `readouts` and `fit` are all tuned in settings and
- * pressed never, and four empty sections would be four invitations to look
- * for a key that does not exist.
+ * `motion`, `prefetch`, `readouts` and `fit`, among others, are tuned in
+ * settings and pressed never, and an empty section would be an invitation to
+ * look for a key that does not exist.
  */
 export function helpGroups(
   modules: ReaderModule<unknown>[],
@@ -175,13 +170,13 @@ export function helpGroups(
   //
   // Only the pairing flips. `READER_KEYS` still owns both strings, so nothing
   // here has to know what "next page" says.
-  // Paired by what a row *does*, not by where it sits. The first version
-  // filtered rows whose key started with `Arrow` and reversed that list, which
-  // is a swap for exactly two and nonsense for three — and `ARROWS` above
-  // already names `ArrowUp`/`ArrowDown` ahead of a caller, so the breaking
-  // case is one this file anticipates. Asking `resolve` what a row turns, and
-  // `stepFor` what the physical key does under this reading, pairs them by
-  // meaning and does not care how many there are.
+  // Paired by what a row *does*, not by where it sits. Filtering the rows whose
+  // key starts with `Arrow` and reversing that list is a swap for exactly two
+  // and nonsense for three — and `ARROWS` above already names
+  // `ArrowUp`/`ArrowDown` ahead of a caller, so the breaking case is one this
+  // file anticipates. Asking `resolve` what a row turns, and `stepFor` what the
+  // physical key does under this reading, pairs them by meaning and does not
+  // care how many there are.
   const stepOf = (b: ReaderBinding): 1 | -1 | undefined => {
     const intent = b.resolve(b.keys[0] ?? '', [])
     return intent?.kind === 'step' ? intent.by : undefined
@@ -234,14 +229,13 @@ export function helpGroups(
  *
  * **`enabled` is a convention, not a field of the contract, and a module
  * without one is treated as always on.** That is the honest reading rather
- * than a safe-looking one: 9 of the 12 registered modules have no such
- * preference (only `prefetch`, `zoom` and `help` do), so the alternative —
- * treating an absent flag as off — would empty the overlay of `d`, `b`, `s`,
- * `C` and all five annotation keys, every one of which works. The other
- * alternative was widening `ReaderModule` with a required `enabled`, which
- * `module.ts` asks to be a decision rather than a habit and which would mean
- * `settings` gaining an off switch that hides `s` — a reader can then no
- * longer reach the panel that would turn it back on.
+ * than a safe-looking one: most registered modules have no such preference, so
+ * the alternative — treating an absent flag as off — would empty the overlay
+ * of `d`, `b`, `s`, `C` and all five annotation keys, every one of which
+ * works. The other alternative was widening `ReaderModule` with a required
+ * `enabled`, which `module.ts` asks to be a decision rather than a habit and
+ * which would mean `settings` gaining an off switch that hides `s` — a reader
+ * can then no longer reach the panel that would turn it back on.
  *
  * What the convention costs, stated because it is a real gap and not a
  * theoretical one: `credits` gates `C` on a preference called `panel`, not

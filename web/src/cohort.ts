@@ -5,22 +5,15 @@
  * `decode.ts`'s gate is per image: a `PageView` never shows a source until that
  * source has decoded, which is what stops a page turn landing on a blank or
  * half-painted frame. It says nothing about *two* images, and `two` mode draws
- * two — so an ordinary pair's halves each presented the moment their own decode
- * settled, leaving one new page beside one old page for as long as the slower
- * of the two took. Measured in the browser against `gotoubun-v01` with a warm
- * cache: a median of 89.7 ms between the two cells' `src` changes at a slow
- * reading pace, 158.4 ms at worst, and **every one of eight turns tore by more
- * than a frame**. Flicking at 120 ms between turns took the median to 213.8 ms
- * and the worst case to 1.28 s.
+ * two — so without a barrier an ordinary pair's halves would each present the
+ * moment their own decode settled, leaving one new page beside one old page for
+ * as long as the slower of the two took.
  *
- * `App.tsx` used to carry a comment arguing the other way — that gating the two
- * together would make the faster half wait on the slower one, "for a mismatch
- * nothing has measured a reader noticing". The measurement above is that
- * measurement, and it was a reader who asked for it. The latency the old
- * comment was protecting is real and is paid: a pair now appears when its
- * slower half is ready. What it buys is that the pair appears *as a pair*, and
- * the wait was always going to happen anyway — the reader was already looking
- * at the slower half's old page for exactly that long.
+ * Gating the two together makes the faster half wait on the slower one. That
+ * latency is real and is paid: a pair appears when its slower half is ready.
+ * What it buys is that the pair appears *as a pair*, and the wait was always
+ * going to happen anyway — the reader was already looking at the slower half's
+ * old page for exactly that long.
  *
  * **Membership closes at the end of the current task, not on a count**, because
  * nothing here knows how many images a turn will change. React flushes a

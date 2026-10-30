@@ -8,8 +8,9 @@
  * Separate from `library.ts` for the same reason that module is separate
  * from `api.ts`: these routes are admin-only and write the library's
  * organisation, where `library.ts` only ever reads what a reader may
- * browse. All three share `getJson` (and now `sendJson`), so the 401 rule
- * stays one rule across every module that talks to the server.
+ * browse. All three share `getJson`, and this module writes through
+ * `sendJson`, so the 401 rule stays one rule across every module that talks
+ * to the server.
  */
 import { getJson, sendJson } from './api'
 
@@ -40,16 +41,14 @@ export interface Proposal {
 /**
  * One inbox row *as the list sends it*: a `Proposal` plus the titles of the
  * series it names. `GET /api/library/proposals` is the only route that sends
- * these — the detail route's `subject`/`target` carry their own titles
- * already.
+ * these — the detail route's `subject`/`target` carry their own titles already.
  *
  * **The collapsed row's only means of saying which proposal it is.** C3 §3
- * chose a scannable list over a triage loop so a person can see that 29 of
- * 37 rows ask one question and answer it once; that needs rows told apart at
- * a glance. The row drew `reason` alone before this, which *looked* like it
- * named the subject because every `raise_*` in the store happens to open its
- * sentence with the subject's quoted title — measured at 700px, the column
- * is ten characters wide and every `Edition Of` row reads `"Monster - `.
+ * chose a scannable list over a triage loop so a person can see that many rows
+ * ask one question and answer it once; that needs rows told apart at a glance.
+ * `reason` alone only *looks* like it names the subject, because every
+ * `raise_*` in the store happens to open its sentence with the subject's
+ * quoted title, which a narrow column truncates.
  */
 export interface ListedProposal extends Proposal {
   subject_title: string
@@ -65,9 +64,8 @@ export interface FirstVolume {
   /**
    * Every distinct format across the edition's members, ascending.
    *
-   * A list, not a rendered sentence: the store used to join these into one
-   * string and stopped, so the client shows each entry as it arrives rather
-   * than parsing a sentence back apart.
+   * A list, not a rendered sentence, so the client shows each entry as it
+   * arrives rather than parsing a sentence back apart.
    */
   formats: string[]
   /**
@@ -84,14 +82,13 @@ export interface Side {
   /**
    * Every directory this side's material sits in, distinct and ascending.
    *
-   * A list, for the same reason `FirstVolume.formats` above is: it used to
-   * arrive as a single rendered sentence and stopped.
+   * A list, for the same reason `FirstVolume.formats` above is.
    *
    * **Empty where nothing currently resolves to this series' title** — not
    * only "never scanned". An edited rule, or a series a document minted under
    * a title no rule resolves, can leave a series with a real `volume_count`
-   * and `first_volume` while nothing in the live rule set resolves to it any
-   * more.
+   * and `first_volume` while nothing in the live rule set resolves to it
+   * any more.
    */
   directories: string[]
   volume_count: number
@@ -206,7 +203,7 @@ export const listProposals = (filter: ProposalsFilter = {}) =>
 /**
  * §6.1's score threshold, as the inbox arrives at it.
  *
- * Here rather than in `Proposals.tsx` because two screens now ask the same
+ * Here rather than in `Proposals.tsx` because two screens ask the same
  * question at it: the inbox itself, and the sidebar's open count. A badge
  * counting one set and a screen listing another is a badge that sends
  * somebody to an empty list, and the only way that cannot happen is for the
@@ -318,10 +315,8 @@ export type ProposalState = (typeof PROPOSAL_STATES)[number]['state']
  * the two certain kinds sit at 3. So 0 is no signal, which is C3 §4's named
  * false positive and what `INBOX_MIN_SCORE` hides; 1 is one signal, which
  * `proposals.rs` calls "exactly the coin flip"; 2 and up is strong, as the
- * curation build spec set it. Until 2026-09-25 this answered `weak` for 1 as
- * well, so the inbox's default view chipped 13 of its 17 rows `weak`
- * directly beneath an unticked "Show weak proposals". With the third word,
- * "weak" means exactly what that box reveals.
+ * curation build spec set it. "weak" means exactly what the "Show weak
+ * proposals" box reveals.
  */
 export const strength = (score: number): 'strong' | 'maybe' | 'weak' =>
   score >= 2 ? 'strong' : score >= 1 ? 'maybe' : 'weak'
@@ -372,30 +367,22 @@ export const relation = (kind: string): string =>
  *
  * States the consequence in the terms that bite, and states the *absence*
  * of one too: nothing on disk is touched, which is the difference between
- * this accept and the ComicInfo write-back C3 §6 keeps deliberately
- * separate.
+ * this accept and the ComicInfo write-back C3 §6 keeps deliberately separate.
  *
  * `set_language` is omitted when null rather than rendered as "language
  * unknown" — the form offers it, and an accept that did not set it made no
  * claim about language at all.
  *
  * **It says "from N works" rather than "move N works", because nothing on
- * disk moves.** This read `move ${works_moved} works` until a reproduction
- * from a clean database — scan a scratch tree of four archives, accept,
- * rescan — showed the two matched volumes arriving as the new edition of the
- * target's works *and* their original works still standing under the old
- * series over the same files: six `member` rows over four files. That was
- * O73; `works_moved`'s own doc comment in `proposals.rs` already argues that
- * a wrong number in this line "is a false statement to the person deciding",
- * and a wrong *verb* is the same thing, so the sentence was fixed on the spot
- * rather than waiting on the store. [`THE_FOLD`] is the other half, and the
- * panel draws it beneath this — it once named the duplication O73 was about;
- * now that the fold closes it on the next scan, it names what the fold moves,
+ * disk moves** (O73). `works_moved`'s own doc comment in `proposals.rs`
+ * argues that a wrong number in this line "is a false statement to the person
+ * deciding", and a wrong *verb* is the same thing. [`THE_FOLD`] is the other
+ * half, and the panel draws it beneath this: it names what the fold moves,
  * what it cannot, and what it discards.
  *
- * **And it says when.** The same reproduction showed the accept changing no
- * `edition` row at all: it writes the rule and marks the proposal accepted,
- * and the next scan is what derives anything from it.
+ * **And it says when.** An accept changes no `edition` row: it writes the rule
+ * and marks the proposal accepted, and the next scan is what derives anything
+ * from it.
  */
 export function consequence(
   target: { title: string },
@@ -421,35 +408,29 @@ export function consequence(
  *
  * A separate line rather than another clause of that sentence, because it is
  * not part of what accepting is *for*: the new edition is created and is
- * correct — measured, with `edition.kind` following the rule since
- * `derive::write_edition_metadata` — and folding the now-superseded works
- * away is a second effect nobody asked for in so many words. "Accepting
- * will:" is a statement of intent, and this belongs outside it.
+ * correct — with `edition.kind` following the rule — and folding the
+ * superseded works away is a second effect nobody asked for in so many words.
+ * "Accepting will:" is a statement of intent, and this belongs outside it.
  *
  * **No count in it, deliberately.** The number is already in the sentence
  * above and reading `works_moved` twice is two places for it to be wrong;
  * this line names the *kind* of thing that happens, which does not vary with
  * how many works are in reach.
  *
- * **Rewritten when O73 closed, 2026-08-27, because the fact changed rather
- * than the wording.** Until then this line named O73 — the duplication left
- * behind by a scan that created the new edition and emptied nothing. The fold
- * built to close it (`derive::superseded`, `fold::absorb`) now removes the
- * superseded works on that same scan and carries a reader's position, notes
- * and marked pages onto the surviving edition, proved against real archives
- * in `docs/notes.md`. What the sentence could not promise before it closed —
- * that the fold always succeeds — it still cannot: `fold::absorb` refuses
- * per work, leaving it standing, wherever moving a reader's own state would
- * not be safe (an edition key nothing maps, a note id one reader holds on
- * both works in two copies that differ — two copies identical in every
- * column are one note, and since O78 the fold keeps the surviving work's and
- * goes ahead). That refusal is the rarer path now rather than the only one,
- * which is why it is named here in a clause rather than carrying its own
- * line.
+ * The fold (`derive::superseded`, `fold::absorb`) removes the superseded works
+ * on the same scan and carries a reader's position, notes and marked pages
+ * onto the surviving edition, proved against real archives in `docs/notes.md`.
+ * What the sentence cannot promise is that the fold always succeeds:
+ * `fold::absorb` refuses per work, leaving it standing, wherever moving a
+ * reader's own state would not be safe (an edition key nothing maps, a note id
+ * one reader holds on both works in two copies that differ — two copies
+ * identical in every column are one note, and per O78 the fold keeps the
+ * surviving work's and goes ahead). That refusal is the rarer outcome, which
+ * is why it is named here in a clause rather than carrying its own line.
  *
- * **"Moves onto this edition instead" was an unqualified promise the store
- * has never made, and the qualification is the point of this control.** This
- * is what *causes* the fold, so `works_moved`'s own doc in `proposals.rs`
+ * **"Moves onto this edition instead" would be an unqualified promise the
+ * store has never made, and the qualification is the point of this control.**
+ * This is what *causes* the fold, so `works_moved`'s own doc in `proposals.rs`
  * governs it — "a wrong number in this line is a false statement to the
  * person deciding" — and three of `fold::Moved`'s own fields exist because
  * three things do not move. `collisions`: a page the surviving edition
@@ -457,28 +438,22 @@ export function consequence(
  * work. `lost_positions`: when both sides hold a place in one edition the
  * older is destroyed. `discarded`: the work's `work_tag` rows and its
  * `collection_item` places — a reader's own curation — and its `credit` rows.
- * All three states are constructed by this branch's own tests, so none is a
- * hypothesis. Two clauses therefore replace the promise: the move is what the
- * fold *can* move, and what it cannot carry is named rather than left to be
- * discovered.
+ * So the sentence carries two clauses: the move is what the fold *can* move,
+ * and what it cannot carry is named rather than left to be discovered.
  *
- * **Alignments move now, and the sentence says which one wins — O76,
- * 2026-09-15.** Until then `discarded` took every `alignment` row, a hand
- * correction among them, and this line named "any alignment corrected by
- * hand" among the discards. `fold::absorb` carries an alignment wherever each
- * of its spans covers the same pages and halves on this edition, and counts
- * those it leaves in `uncarried_alignments`: one it cannot place exactly, a
- * hand-corrected one that would align an edition with itself once two become
- * one, and a hand-corrected one whose pair this work already answers with a
- * hand-corrected alignment of its own. **And the refusal clause widened with
- * O121**: a fold that would leave a place or a note — on the volumes, or
- * already on this edition — or an alignment already on this edition naming a
- * different page refuses rather than moving it, because a slot is an index
- * into one edition's spreads and the fold places it by page and half. An
- * alignment of the volumes' own that it cannot place is left rather than
- * refused over, which is the clause before it. The first version of the
- * sentence said the refusal covered "anything it carries", which left out the
- * rows already on this edition.
+ * **Alignments move, and the sentence says which one wins — O76.**
+ * `fold::absorb` carries an alignment wherever each of its spans covers the
+ * same pages and halves on this edition, and counts those it leaves in
+ * `uncarried_alignments`: one it cannot place exactly, a hand-corrected one
+ * that would align an edition with itself once two become one, and a
+ * hand-corrected one whose pair this work already answers with a
+ * hand-corrected alignment of its own. **The refusal clause reaches past what
+ * the fold carries — O121**: a fold that would leave a place or a note — on
+ * the volumes, or already on this edition — or an alignment already on this
+ * edition naming a different page refuses rather than moving it, because a
+ * slot is an index into one edition's spreads and the fold places it by page
+ * and half. An alignment of the volumes' own that it cannot place is left
+ * rather than refused over, which is the clause before it.
  */
 export const THE_FOLD =
   'Accepting folds these works together on the next scan: the volumes named above are removed as their own works, and the reader positions, notes, marked pages and alignments on them move onto this edition wherever they can — a page this edition already has marked keeps its own marks, where both sides hold a place in one edition only the newer survives, and where both sides align the same two editions a hand-corrected alignment wins over one that is not, and otherwise this edition keeps its own. What the fold cannot carry it discards with the works: their tags, their places in reading lists, and any alignment it cannot place exactly on these pages, one that would align an edition with itself, and a hand-corrected one this edition’s own hand-corrected alignment outranks. A fold that cannot move a reader’s own state safely, or would leave a place or note on either side, or an alignment already on this edition, naming a different page, refuses instead, leaving the volumes standing rather than losing anything.'

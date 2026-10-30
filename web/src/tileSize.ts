@@ -1,11 +1,9 @@
 /**
  * How large a filmstrip tile to ask the server for — O134.
  *
- * The strip's tiles were one size, `cover.rs`'s `THUMB_LONG_EDGE` of 160 px,
- * whatever screen drew them: 1.8× upscaled on the 3× phone the row was opened
- * from, where the tile is drawn 96 CSS px tall. The server now makes a tile at
- * any rung of `TILE_LADDER` (`cover.rs`'s `TILE_LONG_EDGES` — the same three),
- * and this is the client half: which rung a given screen should ask for.
+ * The server makes a tile at any rung of `TILE_LADDER` (`cover.rs`'s
+ * `TILE_LONG_EDGES` — the same three), and this is the client half: which rung
+ * a given screen should ask for.
  *
  * **The same shape as `pageSize.ts`, with two rules deliberately inverted.**
  * Read that module first; the differences are marked below and each one is
@@ -43,8 +41,7 @@ export const STRIP_TILE_PX = { wide: 160, narrow: 96 } as const
  * The height an *inbox* page tile is drawn at — the proposals evidence
  * panel's, not the reader's strip, whose two sizes are `STRIP_TILE_PX` above.
  * Both are restatements of a stylesheet in TypeScript and both live here so
- * that each can be pinned against the file that draws it; `STRIP_TILE_PX` has
- * been since ③ and this one was not, which is O148.
+ * that each can be pinned against the file that draws it.
  *
  * From `styles/admin.css`'s
  * `.proposal-detail .pages img`: `width: 4.5rem` at `aspect-ratio: 2 / 3`, so
@@ -58,14 +55,11 @@ export const STRIP_TILE_PX = { wide: 160, narrow: 96 } as const
  * 74×110. 108 is right: it is the box the artwork is scaled into, and the
  * number `requestedTileEdge` picks a rung for.
  *
- * At 3× this box wants 324 px and was being sent 160 (O134, closing O133's
- * "the proposals inbox's page tiles keep the 160 px tile").
+ * At 3× this box wants 324 px (O134).
  *
  * **Pinned against the stylesheet by `styles/admin-proposals.css.test.ts`**
- * (O148). It was not, and setting this to `1` passed the entire suite:
- * `devicePixelRatio` is 1 in jsdom and every height from 1 to 160 rounds to
- * the same bottom rung there. The reader's filmstrip has carried the same
- * guard since ③; this is the asymmetry that row was about.
+ * (O148). In jsdom `devicePixelRatio` is 1 and every height from 1 to 160
+ * rounds to the same bottom rung, so `1` here passes the other tests.
  */
 export const TILE_HEIGHT_PX = 108
 
@@ -85,7 +79,7 @@ export const TILE_HEIGHT_PX = 108
  * rung** — the opposite direction from `requestedLongEdge`, which falls to the
  * original. A wrong size is invisible either way, so each falls toward its own
  * cheap failure: a soft page is unreadable, where a soft tile is a thumbnail
- * nobody reads, and there are 237 of them.
+ * nobody reads.
  */
 export function requestedTileEdge(tileHeightCss: number, dpr: number): number {
   const usable = (value: number) => Number.isFinite(value) && value > 0
@@ -109,9 +103,9 @@ export interface TileView {
  * **`matchMedia` rather than the drawn height**, for the reason
  * `STRIP_TILE_PX` gives: this is called during the first render, before there
  * is an element to measure. Optional because jsdom does not implement
- * `matchMedia` at all — probed on 2026-09-21: it is `undefined`, not a stub
- * that answers `false` — so every component test in that project takes the
- * missing branch, and it has to mean "the wide tile" rather than throw.
+ * `matchMedia` at all — it is `undefined`, not a stub that answers `false` —
+ * so every component test in that project takes the missing branch, and it has
+ * to mean "the wide tile" rather than throw.
  */
 export function stripTileEdge(view: TileView | undefined): number {
   const query = view?.matchMedia?.(`(width < ${STRIP_BREAKPOINT_PX}px)`)

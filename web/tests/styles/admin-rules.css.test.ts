@@ -157,10 +157,11 @@ describe('the preview tables', () => {
   it('wraps the pinned path rather than cutting its end off', () => {
     // The end is what tells these rows apart. Against the library this was
     // built on, all 1,915 file paths are distinct in full and only 762 stay
-    // distinct once cut to 36 characters (a sharp edge — 757 at 35, 824 at
-    // 37; see `admin.css` for why 36) — so an ellipsis would have
-    // made 1,153 of them, 60%, read identically in the one column that is
-    // pinned so a reader can tell which row they are on.
+    // distinct once cut to 36 characters (a sharp edge — 757 at 35, 824 at 37;
+    // the `admin.css` entry above `.preview .table-scroll th:first-child,` in
+    // `docs/superpowers/notes/2026-10-29-code-history-web-src.md` has why 36) —
+    // so an ellipsis would have made 1,153 of them, 60%, read identically in
+    // the one column that is pinned so a reader can tell which row they are on.
     for (const prelude of [
       '.preview .table-scroll th:first-child',
       '.preview .table-scroll td:first-child',

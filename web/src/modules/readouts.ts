@@ -219,17 +219,15 @@ export function healthLine(
  * `healthLine`, for the edition currently on screen against the hub.
  *
  * Always computed from `(hub, viewing)`, not gated on whether a swap is in
- * progress. The toolbar badge this readout replaces only spoke up while
- * `state.viewing !== state.authority` — but `reading.ts`'s `navigate` moves
- * `authority` to wherever `viewing` was, so a reader who has stepped into a
- * spoke edition and kept reading stays there, `viewing === authority`, for
- * the rest of the session. A readout gated on "mid-swap" would go silent
- * exactly then — while the reader is settled on a spoke, which is the one
- * time this readout matters most. `(hub, viewing)` instead of `(authority,
- * viewing)` for the same reason: `authority` can wander to any edition, but
- * "how much can the edition on screen be trusted against the canonical
- * source" is a question about `hub`, not about wherever the reader's
- * position happens to be currently recorded.
+ * progress. A readout gated on `state.viewing !== state.authority` would go
+ * silent while the reader is settled on a spoke, which is the one time this
+ * readout matters most: `reading.ts`'s `navigate` moves `authority` to wherever
+ * `viewing` was, so a reader who has stepped into a spoke edition and kept
+ * reading stays there, `viewing === authority`, for the rest of the session.
+ * `(hub, viewing)` instead of `(authority, viewing)` for the same reason:
+ * `authority` can wander to any edition, but "how much can the edition on
+ * screen be trusted against the canonical source" is a question about `hub`,
+ * not about wherever the reader's position happens to be currently recorded.
  *
  * `undefined` while `viewing` is the hub itself: there is no cross-edition
  * pairing to report on, and calling `verdictFor` on the hub against itself
@@ -239,21 +237,17 @@ export function healthLine(
  *
  * `hasCounterpart` is passed as `true` unconditionally, and **what makes that
  * safe is the call site's own `shown.kind === 'at'` guard, not anything about
- * when `Chrome` mounts.** This paragraph used to say the latter — that a gap
- * was handled by `Gap.tsx` before `Chrome` was ever rendered, so this could
- * not be called from one. That was true until O25 closed, and O25's fix is
- * exactly the removal of it: `Chrome` now mounts in a gap, and `App.tsx`
- * chooses between this function and `gapHealth` on `shown.kind` instead.
+ * when `Chrome` mounts.** `Chrome` mounts in a gap, and `readoutLines`
+ * chooses between this function and `gapHealth` on `shown.kind`.
  *
  * The distinction is load-bearing rather than pedantic. Anyone folding
  * `gapHealth` back into this function — the hub-vs-authority question the
- * design deliberately left open is the likely reason to try — would, on the
- * old reasoning, believe a counterpart always exists here. It does not: a
- * `sound` pairing with a gap at the slot on screen would then take
- * `healthLine`'s one silent branch, and the readout row would go quiet
- * directly beneath `Gap`'s own verdict sentence. That is the regression
- * `gapHealth` exists to prevent, and no test would catch it — the row simply
- * says less.
+ * design deliberately left open is the likely reason to try — must not assume
+ * a counterpart always exists here. It does not: a `sound` pairing with a gap
+ * at the slot on screen would then take `healthLine`'s one silent branch, and
+ * the readout row would go quiet directly beneath `Gap`'s own verdict sentence.
+ * That is the regression `gapHealth` exists to prevent, and no test would
+ * catch it — the row simply says less.
  *
  * `healthLine` still takes the flag explicitly rather than this function
  * assuming it away, so its own contract does not depend on this one caller's
@@ -284,10 +278,10 @@ export function healthReadout(
  * **`Gap` is usually not on screen when this runs, and the rule survives
  * that.** With `modules/borrow.ts` at its default a borrowed page stands where
  * the gap would have been, and this line still reports the `from`↔`viewing`
- * pairing — which is now the row's *only* statement that the position is
- * unpaired at all, since nothing in the page area says so until the mark is
- * pressed and `Gap` appears. The two must agree the moment it is, and reaching
- * for `healthReadout` here because "there is no `Gap` to contradict" would put
+ * pairing — which is the row's *only* statement that the position is unpaired
+ * at all, since nothing in the page area says so until the mark is pressed and
+ * `Gap` appears. The two must agree the moment it is, and reaching for
+ * `healthReadout` here because "there is no `Gap` to contradict" would put
  * silence under exactly the screen that needs the sentence most.
  *
  * `hasCounterpart` is `false` unconditionally, which is what a gap *is* — and
@@ -330,9 +324,9 @@ function minutesLabel(ms: number): string {
  *
  * The elapsed figure is a plain duration. The remainder is a projection from
  * a recent, noisy rate (see `pagesPerMinute`), so it is always marked `~`
- * and never claims more precision than "at this pace" — the brief's "not
- * shown to the minute" is this: a bare `22m` reads as a deadline, `~22m`
- * reads as a guess, and only the second is honest about what the number is.
+ * and never claims more precision than "at this pace": a bare `22m` reads as a
+ * deadline, `~22m` reads as a guess, and only the second is honest about what
+ * the number is.
  *
  * Omits the estimate entirely — no `~` anywhere in the string — rather than
  * dividing by a rate of zero, which is exactly the state before a second
@@ -358,7 +352,7 @@ export function timeLine({
  *
  * `turns` is the caller's own rolling window of page-turn timestamps (ms);
  * this makes no claim about how large that window should be, only how to
- * turn whatever span it covers into a rate — `App.tsx` is what decides how
+ * turn whatever span it covers into a rate — `nextTurns` is what decides how
  * many recent turns to keep, since that is a UI-tuning choice, not a
  * derivation this pure function should own.
  *
@@ -382,16 +376,14 @@ const TURN_HISTORY_LIMIT = 10
 /**
  * The reading-time readout's turn history, advanced by one call.
  *
- * `skip` exists for exactly one caller — `App.tsx`'s turn-recording effect,
+ * `skip` exists for exactly one caller — `hooks.ts`'s `useReadingClock`,
  * on the first run after a session loads. Recording session-load itself as a
- * "turn" makes the interval between mount and the sidecar/wasm finishing to
- * load look like a page turn: the very first estimate this project ever
- * rendered was `~6m left`, derived entirely from load latency, before a
- * single arrow key had been pressed — caught by driving a real browser, not
- * by any test, since nothing exercised this arithmetic directly. `skip` true
- * returns `turns` unchanged, so that first call leaves no trace; `App.tsx`
- * still owns *deciding* when a call is the one to skip (its own
- * `restoredTurn` ref), since that is effect wiring, not arithmetic.
+ * "turn" would make the interval between mount and the sidecar/wasm finishing
+ * to load look like a page turn, and the first estimate would be derived
+ * entirely from load latency, before a single arrow key had been pressed.
+ * `skip` true returns `turns` unchanged, so that first call leaves no trace;
+ * `useReadingClock` still owns *deciding* when a call is the one to skip (its
+ * own `restored` ref), since that is effect wiring, not arithmetic.
  *
  * Capped at the ten most recent turns otherwise — `pagesPerMinute` wants a
  * *recent* pace, not a session-wide average that a reader who paused for an
@@ -406,7 +398,11 @@ export function nextTurns(
   return [...turns, now].slice(-TURN_HISTORY_LIMIT)
 }
 
-/** The readout row's four possible segments, already gated by whichever `ReadoutsPrefs` a reader has enabled — `undefined` for a disabled or silent one. */
+/**
+ * The readout row's five possible segments, already gated by whichever
+ * `ReadoutsPrefs` a reader has enabled — `undefined` for a disabled or
+ * silent one.
+ */
 export interface RowLines {
   position?: string
   time?: string
@@ -418,8 +414,8 @@ export interface RowLines {
 
 /**
  * The readout row's text, in the fixed order position / health / time /
- * chapter — regardless of which fields `lines` sets or in what order the
- * caller built it.
+ * chapter / notes — regardless of which fields `lines` sets or in what order
+ * the caller built it.
  *
  * This is what keeps the row from reflowing as values change: the *order*
  * segments could appear in never depends on which ones currently have
@@ -434,7 +430,7 @@ export interface RowLines {
  * Health sits second, not last. `Chrome.tsx`'s `overflow: hidden` +
  * `text-overflow: ellipsis` clips from the end of this joined string, so
  * whatever is ordered last is the first thing a narrow viewport silently
- * drops — and on a narrow viewport with all four readouts on and worst-case
+ * drops — and on a narrow viewport with all five readouts on and worst-case
  * values (a long marked chapter code, a full time estimate, `fragmented
  * pair · no counterpart here`), something has to go. Health is the one
  * segment this project cannot afford to lose first: it is the only readout
@@ -470,7 +466,7 @@ export function readoutRow(lines: RowLines): string {
  * edition's slot and slot count while the reader is looking at another, and
  * `positionLine` prefixes the edition to say so. `Gap.tsx` says the same thing
  * in words directly above the row — where a gap is what is on screen, which
- * since `modules/borrow.ts` is no longer the common case (see below).
+ * with `modules/borrow.ts` is not the common case (see below).
  *
  * **`Display` has three arms and this has two, and what makes that sound is a
  * property of the third rather than of this function.** `withBorrow` copies a

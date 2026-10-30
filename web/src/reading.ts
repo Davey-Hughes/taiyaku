@@ -52,8 +52,7 @@ export interface ReadingState {
  * - The stored edition still exists but the slot is out of its range (the
  *   edition shrunk, or the slot was never valid) — stay on that edition,
  *   since it still exists, but at slot 0 rather than clamped to whatever its
- *   new last slot is, which would be just as silent a move as the one this
- *   fixes.
+ *   new last slot is, which would be just as silent a wrong page.
  */
 export function restore(
   progress: StoredProgress | undefined,

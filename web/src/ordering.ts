@@ -10,10 +10,10 @@
  * but never "newer" from "older". Only the component issuing the requests knows
  * their order.
  *
- * It lived in `PageView` first, and that put the one property keeping the flick
- * safe inside a component Vitest cannot reach — so the guarantee rested on a
- * browser measurement and nothing else. Extracting it is what makes it
- * testable, which is the whole reason this file exists.
+ * Inside `PageView`, a component Vitest cannot reach, the one property keeping
+ * the flick safe would rest on a browser measurement and nothing else. A
+ * module of its own is what makes it testable, which is the whole reason this
+ * file exists.
  *
  * **The hazard it closes is real, not theoretical.** `createDecodeQueue` runs
  * up to `maxConcurrent` jobs at once; three decodes in flight settle in

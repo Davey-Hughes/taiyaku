@@ -1,13 +1,13 @@
 /**
  * The sign-in gate: the one place a 401 is noticed, above the router.
  *
- * **This used to live inside `App`, and that is exactly why it had to move.**
- * `main.tsx` renders `<AppRoutes>` since spec C1 §11 step 2, and `/` is the
- * library rather than the reader — so a signed-out visitor landing on `/`
- * reached a screen that had never registered `api.ts`'s `whenSignedOut` hook,
- * saw `library.ts`'s 401 turn into "not signed in" in an alert banner, and had
- * nowhere to go: `<Navigate to="/" replace/>` sends every unknown path back to
- * the same place, and the only `<Login>` in the app was mounted inside a reader
+ * **The gate sits above the router, not inside `App`.** `main.tsx` renders
+ * `<AppRoutes>`, and `/` is the library rather than the reader — so a
+ * signed-out visitor landing on `/` would reach a screen that had never
+ * registered `api.ts`'s `whenSignedOut` hook, see `library.ts`'s 401 turn into
+ * "not signed in" in an alert banner, and have nowhere to go:
+ * `<Navigate to="/" replace/>` sends every unknown path back to the same
+ * place, and the only `<Login>` in the app would be mounted inside a reader
  * you had to already know a slug to reach. Spec C1 §5 says a 401 routes to the
  * login screen; §10's test list names it too.
  *
@@ -15,20 +15,18 @@
  * inside a screen:
  *
  * - **One registration of `whenSignedOut`.** That hook is a single module-level
- *   slot (see its doc for the bug that made it module-level in the first
- *   place), so two components registering means the last one to mount silently
- *   wins. One gate above every route is the only shape where that cannot
- *   happen.
- * - **Signing out unmounts everything below.** `App` used to reset thirteen
- *   pieces of reader state by hand on sign-out, and cancel two debounced
- *   writers — three whole-branch reviews found items missing from that list,
- *   the last of them three at once, among them a pending correction that would
- *   have written the previous reader's pairing into the shared sidecar under
- *   the next reader's session. An unmount cannot forget a field.
- *   The two debounced writers, which unmounting alone would leave armed, are
- *   flushed by `hooks.ts`'s `useFlushOnHide` cleanup — at the unmount commit,
- *   which is before any next account can possibly have signed in, and against
- *   a session the server has just ended.
+ *   slot (see its doc for why), so two components registering means the last
+ *   one to mount silently wins. One gate above every route is the only shape
+ *   where that cannot happen.
+ * - **Signing out unmounts everything below.** Resetting the reader's state by
+ *   hand on sign-out would mean keeping a list of every field and every
+ *   debounced writer to cancel, and an item missing from it — a pending
+ *   correction, say — would write the previous reader's pairing into the
+ *   shared sidecar under the next reader's session. An unmount cannot forget a
+ *   field. The debounced writers, which unmounting alone would leave armed,
+ *   are flushed by `hooks.ts`'s `useFlushOnHide` cleanup — at the unmount
+ *   commit, which is before any next account can possibly have signed in, and
+ *   against a session the server has just ended.
  * - **`me()` is asked once per page load, not once per screen.** Its answer is
  *   also the account's capabilities, which is what `Library` reads to decide
  *   whether the roots list belongs on screen at all.

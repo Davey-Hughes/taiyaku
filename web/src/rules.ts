@@ -1,6 +1,6 @@
 /**
  * The `/api/library/rules*` API and the rule editor's pure helpers — spec C4
- * §1 and §6, over the routes that shipped in #105 and PR B's own `PUT`.
+ * §1 and §6.
  *
  * **Separate from `config.ts`** for the reason `config.ts` gives for being
  * separate from `library.ts`: the two share a session and nothing else. The
@@ -15,8 +15,8 @@
  *
  * **Nothing here validates a pattern.** A regex that compiles in JS is not the
  * regex the store compiles, and the server owns the answer — the build
- * design's §8. What a bad pattern produces is a `complaints` entry from the
- * save, which is the only route that reports one.
+ * design's §8. What a bad pattern produces is a `complaints` entry, which
+ * `saveRules`, `listRules` and `importRules` all carry.
  */
 import { getJson, sendJson } from './api'
 import type { Derived, Root } from './config'
@@ -36,10 +36,8 @@ export const MATCH_ONS = ['path', 'name', 'parent'] as const
  * Where the editor says a preview is getting expensive.
  *
  * **Forty, and it is a guess.** The overrides term is quadratic in the number
- * of proposed rules — measured in a debug build on a one-work fixture: 10
- * extra rules 47 ms, 40 → 401 ms, 80 → 1.34 s, 160 → 5.01 s. This is anchored
- * to that curve's knee, not to a measurement of this screen. The preview route
- * itself refuses past 200.
+ * of proposed rules, and this is anchored to that curve's knee, not to a
+ * measurement of this screen. The preview route itself refuses past 200.
  */
 export const PREVIEW_EXPENSIVE_ABOVE = 40
 
@@ -108,19 +106,17 @@ export interface Row {
  * One field where a later enabled rule replaces an earlier one's different
  * answer.
  *
- * **An observation, not a complaint — O95.** This was `Conflict` until
- * 2026-09-05, and the word made the editor offer a reorder as the fix: on the
- * shipped seeded defaults, rule 4 overriding rule 1's series is what folds a
- * colour edition into its main series, and the reorder is the one thing that
- * breaks it. The store finds exactly what it always found; only the noun and
- * what the screen does with it changed.
+ * **An observation, not a complaint — O95.** Calling it a conflict would make
+ * the editor offer a reorder as the fix: on the shipped seeded defaults, rule
+ * 4 overriding rule 1's series is what folds a colour edition into its main
+ * series, and the reorder is the one thing that breaks it.
  *
- * *(Since O89, 2026-09-16: only where the directory does not qualify the
- * filename's series. A qualifying directory such as `Death Note (Colored
- * Council)` is its own series, not an override — `docs/status.md`, O89.
- * The one known exception is O128: a user series rule placed between the
- * directory rule and a later capture still draws a row, crediting the capture
- * with the directory's restored value.)*
+ * *(Only where the directory does not qualify the filename's series. A
+ * qualifying directory such as `Death Note (Colored Council)` is its own
+ * series, not an override — `docs/status.md`, O89. The one known exception is
+ * O128: a user series rule placed between the directory rule and a later
+ * capture still draws a row, crediting the capture with the directory's
+ * restored value.)*
  *
  * `first` and `wins` are positions in the request's `rules` array, the same
  * boundary `Decided` holds. `others` counts the disagreements `first` does not
@@ -173,10 +169,7 @@ export type Field = (typeof FIELDS)[number]
  *
  * **A field the root default decided counts as set.** "root default" is an
  * answer the table draws; only a field *nothing* decided is the column of
- * dashes this exists to drop. Measured on the real library: on 2026-09-22,
- * with rule 1 selected, `edition_key`, `kind`, `language` and `title` were
- * decided in 0 of 224 rows; on 2026-09-23, at 390px, those four columns
- * were 248px of a 614px table in a 343px box.
+ * dashes this exists to drop.
  */
 export function unsetFields(rows: Row[]): Field[] {
   return FIELDS.filter((field) =>
@@ -213,13 +206,13 @@ export function unsetSentence(
 /**
  * `PUT /api/library/rules`'s answer.
  *
- * **`derive`, whole — whole-branch review, I5/config_api's own
- * `derive_report_json`.** `impact` describes the database's own structure
- * and nothing past it; a save that could not write a hand document (a
- * read-only root, `hand::save`'s own `persisted: false` path) used to answer
- * with a rehome count and silence about it. Carried as the same `Derived`
- * shape `ScanReport.tsx` already renders, not copied field by field, so this
- * type cannot drift from that one the moment a field is added to either.
+ * **`derive`, whole — `config_api`'s own `derive_report_json`.** `impact`
+ * describes the database's own structure and nothing past it, so a save that
+ * could not write a hand document (a read-only root, `hand::save`'s own
+ * `persisted: false` path) would answer with a rehome count and silence about
+ * it. Carried as the same `Derived` shape `ScanReport.tsx` already renders,
+ * not copied field by field, so this type cannot drift from that one the
+ * moment a field is added to either.
  */
 export interface Saved {
   impact: Impact
@@ -421,16 +414,15 @@ function firstNamed(...values: Array<string | null>): string | undefined {
 /**
  * What a rule is called in the list.
  *
- * **`note` leads**, which it did not until ⑤a: the chain ran
- * `set_series ?? … ?? pattern || 'new rule'` and never consulted it, so a
- * `builtin-volume` or `builtin-chapter` rule — empty pattern, setting
- * nothing — read `new rule` permanently while carrying a perfectly good
- * note. Two of the four seeded rules did.
+ * **`note` leads**, so a `builtin-volume` or `builtin-chapter` rule — empty
+ * pattern, setting nothing — is named by its note. Without `note` in the
+ * chain, such a rule would read `new rule` permanently while carrying a
+ * perfectly good note.
  *
  * **Empty strings fall through, not just `null`.** A `??` chain cannot see
- * `''`, and the old one's trailing `|| 'new rule'` caught it for the last
- * item only — so an empty note would have skipped the pattern and landed on
- * `new rule`. `firstNamed` treats the two the same the whole way down.
+ * `''`, and a trailing `|| 'new rule'` would catch it for the last item only
+ * — so an empty note would skip the pattern and land on `new rule`.
+ * `firstNamed` treats the two the same the whole way down.
  */
 export function ruleName(rule: Rule): string {
   return (

@@ -30,23 +30,23 @@ export interface SettingsProps {
    * no index signature, so it structurally satisfies `object` but not
    * `Record<string, unknown>` — TypeScript requires an explicit index
    * signature for the latter, which no module declares and none should have
-   * to just to be handed to this panel. `FieldControl`'s own read narrows
-   * with a cast at the one place a key is actually looked up by name.
+   * to just to be handed to this panel. `Settings`'s own `modulePrefs` read
+   * narrows with a cast at the one place a key is actually looked up by name.
    */
   prefs: Record<string, object>
   /**
    * One sentence about a module's own situation on this work, keyed by
    * `ReaderModule.id`, shown below that module's fields as secondary text.
    *
-   * A caller-computed map rather than something this file derives, the same
-   * way `App.tsx`'s `<CreditsPanel>` a few lines below its `<Settings>` call
-   * is handed `work`/`edition`/`pages` rather than working them out itself:
-   * this panel is generated from every module's `defaults` and must stay
-   * ignorant of what any one module's fields *mean*, so a module whose toggle
-   * can be a no-op for reasons specific to the work being read (`modules/borrow.ts`'s
-   * `borrowNote`, today) hands the finished sentence in rather than this file
-   * learning that module's id. A module with no entry here renders exactly as
-   * it always has — this is additive, not a replacement for any field.
+   * A caller-computed map rather than something this file derives, the same way
+   * `App.tsx`'s `<CreditsPanel>` a few lines below its `<Settings>` call is
+   * handed `work`/`edition`/`pages` rather than working them out itself: this
+   * panel is generated from every module's `defaults` and must stay ignorant of
+   * what any one module's fields *mean*, so a module whose toggle can be a
+   * no-op for reasons specific to the work being read (`modules/borrow.ts`'s
+   * `borrowNote`) hands the finished sentence in rather than this file learning
+   * that module's id. A module with no entry here renders no note — this is
+   * additive, not a replacement for any field.
    */
   notes?: Record<string, string>
   /** One field changed for one module — `raw` is whatever the control's own change event handed back; `settingsPanel.ts`'s `withFieldValue` is what a caller coerces it with. */
@@ -55,7 +55,7 @@ export interface SettingsProps {
   onReset: (id: string) => void
   /**
    * Close the panel. Its own button because ⚙ opens it by pointer (spec
-   * 2026-09-17 §8.3), and `s` — the only other way out — is a key.
+   * 2026-09-17 §8.3); `s`, Escape and a press on the scrim close it too.
    */
   onClose: () => void
 }
@@ -63,15 +63,14 @@ export interface SettingsProps {
 /**
  * The settings panel: one section per registered module, one control per
  * key of that module's `defaults`, both generated from `settingsPanel.ts`'s
- * pure inference rather than named per module here. A seventh module needs
- * no edit to this file — only a `defaults` shape for `fieldsOf` to read.
+ * pure inference rather than named per module here. A new module needs no
+ * edit to this file — only a `defaults` shape for `fieldsOf` to read.
  *
  * A module whose `defaults` has no fields (`modules/settings.ts`'s own
- * `settingsModule`, today) renders no section at all: `fieldsOf` reports an
- * empty list, and a heading over zero controls would be a blank shelf
- * asking to be filled by something nobody built. That's a deliberate
- * consequence of generation, not a special case written for this one
- * module's id.
+ * `settingsModule`) renders no section at all: `fieldsOf` reports an empty
+ * list, and a heading over zero controls would be a blank shelf asking to be
+ * filled by something nobody built. That's a deliberate consequence of
+ * generation, not a special case written for this one module's id.
  */
 export function Settings({
   visible,
@@ -90,45 +89,40 @@ export function Settings({
   usePanelFocus(panelRef, visible)
   if (!visible) return null
   return (
-    // The scrim dismisses on a press that goes down *and* comes up on its
-    // own scrim (spec §9.2). Measured on 2026-09-20: this element's box is
-    // the whole viewport, so the tap ④ gives every other panel — a press on
-    // the page area, which `gestures.ts` answers with `close-panels` —
-    // cannot reach the page at all while this is open. Without this,
-    // Settings is the one panel that tap cannot reach. Its Close button below
-    // is already a pointer exit and has been since style pass ③; what it
-    // lacked was the tap-outside ④ gives every other panel.
+    // The scrim dismisses on a press that goes down *and* comes up on its own
+    // scrim (spec §9.2). This element's box is the whole viewport, so the tap ④
+    // gives every other panel — a press on the page area, which `gestures.ts`
+    // answers with `close-panels` — cannot reach the page at all while this is
+    // open. Without this, Settings is the one panel that tap cannot reach. Its
+    // Close button below is already a pointer exit; the scrim adds the
+    // tap-outside ④ gives every other panel.
     //
-    // **Both ends are recorded from `pointerdown`/`pointerup` rather than
-    // read off `click`.** *Fixed 2026-09-20, I4 of the whole-branch review.*
-    // A DOM `click` fires on the nearest common ancestor of the down and up
-    // targets, which for *either* mixed direction — down on a control and up
-    // on the scrim, or down on the scrim and up on a control — is this
-    // element either way, so `click`'s own target cannot tell the two
+    // **Both ends are recorded from `pointerdown`/`pointerup` rather than read
+    // off `click`.** A DOM `click` fires on the nearest common ancestor of the
+    // down and up targets, which for *either* mixed direction — down on a
+    // control and up on the scrim, or down on the scrim and up on a control —
+    // is this element either way, so `click`'s own target cannot tell the two
     // apart. A press that begins on a control and releases on the scrim is
-    // correctly refused by `fromScrim` alone, but nothing was guarding the
-    // reverse: a press down on the scrim and up on a control closed the
-    // dialog and lost the panel under it. `fromScrim` and `upOnScrim` are
-    // each set from the real `pointerdown`/`pointerup` target — which does
-    // not go through `click`'s ancestor collapse — and `onClick` requires
-    // both before it dismisses.
+    // correctly refused by `fromScrim` alone, but `fromScrim` alone would not
+    // guard the reverse: a press down on the scrim and up on a control would
+    // close the dialog and lose the panel under it. `fromScrim` and `upOnScrim`
+    // are each set from the real `pointerdown`/`pointerup` target — which does
+    // not go through `click`'s ancestor collapse — and `onClick` requires both
+    // before it dismisses.
     //
     // **`upOnScrim` cannot be read off `pointerup`'s target, and the obvious
     // form above — `event.target === event.currentTarget`, exactly like
-    // `fromScrim` — is wrong on a touch screen.** *Fixed 2026-09-20, I1 of
-    // the second whole-branch review.* A touch pointer gets implicit pointer
-    // capture on `pointerdown`, so the browser dispatches every later event
-    // for that pointer — `pointerup` included — at the *capture* element
-    // rather than at whatever is really under the finger. For a press down
-    // on the scrim and up over the panel, `pointerup`'s target is still the
-    // scrim on a touch screen, so the obvious form reads `upOnScrim` as true
-    // and I4's press — down on the dim background, sweep onto the panel,
-    // lift — still closes the dialog and loses the panel under it. A mouse
-    // does not retarget, which is why a mouse-shaped test for this passed and
-    // could not see it. `upOnScrim` is instead read by a hit test against
-    // where the pointer actually is on release, which capture does not
-    // move — measured in Chromium with touch emulation to return the panel
-    // even while `pointerup`'s own `target` is the scrim.
+    // `fromScrim` — is wrong on a touch screen.** A touch pointer gets implicit
+    // pointer capture on `pointerdown`, so the browser dispatches every later
+    // event for that pointer — `pointerup` included — at the *capture* element
+    // rather than at whatever is really under the finger. For a press down on
+    // the scrim and up over the panel, `pointerup`'s target is still the scrim
+    // on a touch screen, so the obvious form reads `upOnScrim` as true and that
+    // press — down on the dim background, sweep onto the panel, lift — would
+    // still close the dialog and lose the panel under it. A mouse does not
+    // retarget, so only a touch-shaped test can see this. `upOnScrim` is
+    // instead read by a hit test against where the pointer actually is on
+    // release, which capture does not move.
     //
     // biome-ignore lint/a11y/useKeyWithClickEvents: the keyboard's ways out are the panel's own Close button, Escape and s (keyPlan, spec 2026-09-26 §3.3).
     <div

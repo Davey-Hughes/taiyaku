@@ -1,6 +1,5 @@
 /**
- * The `/api/library/users*` client — spec C4 §4 and the build design's §6,
- * over the routes that shipped in #106.
+ * The `/api/library/users*` client — spec C4 §4 and the build design's §6.
  *
  * **Separate from `config.ts`** for the reason that file gives for being
  * separate from `library.ts`: the two share a session and nothing else. What
@@ -64,8 +63,8 @@ export interface User {
    * this row is read as `admin || column` by `Principal::from_account`; this
    * one is the column alone — the documented exception to O86, because it
    * decides whether an account may rewrite archives taiyaku does not own
-   * rather than widening what it may read. Default 0, so nobody gained it on
-   * the upgrade that added it.
+   * rather than widening what it may read. Default 0, so the upgrade that
+   * adds the column grants it to nobody.
    */
   can_stamp: boolean
 }
@@ -173,9 +172,8 @@ export async function patchUser(id: number, patch: UserPatch): Promise<User> {
  * What removing account `id` would cost, without removing anything.
  *
  * **`?dry_run=true` spelled exactly.** `DeleteUserQuery` carries
- * `deny_unknown_fields`, so a misspelled key is refused rather than dropped —
- * which on the roots route, before that attribute, meant `?dryrun=true`
- * answered 200 and ran the real removal.
+ * `deny_unknown_fields`, so a misspelled key is refused rather than dropped:
+ * a dropped `dry_run` would run the real removal.
  *
  * **The rehearsal runs the refusal too**: removing the last administrator is
  * refused here as well as at the commit, so a person is never shown five

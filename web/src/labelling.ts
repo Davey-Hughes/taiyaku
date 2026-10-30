@@ -58,8 +58,7 @@ const clampFraction = (v: number) => Math.min(Math.max(v, 0), 1)
  * on-page box through it turns a stored `w` of `0.3` into
  * `0.30000000000000004`. This form touches the extent only when the drag
  * actually left the page, so a box drawn wholly on it is stored exactly as
- * drawn — across 1,500 boxes that is the difference between a clamp and a
- * quiet rewrite of every label.
+ * drawn — the difference between a clamp and a quiet rewrite of every label.
  */
 function onPage(
   near: number,
@@ -88,19 +87,18 @@ function onPage(
  * extents, and a box with a negative width fails every containment test
  * downstream while looking fine in the JSON.
  *
- * **Clamped to the page**, which normalising alone does not do and the
- * labeller once left undone. `PageView` letterboxes the page, so a drag that
- * starts or ends beside the image — natural when boxing a caption that bleeds
- * to the page edge — reads as a fraction outside `0..1`, and an unclamped box
- * stores area that is not on the page at all. `score.rs`'s
- * `classify_single_cover` divides by exactly that area (`inter / (t.w *
- * t.h)`), so an inflated truth box dilutes its own coverage: a genuine 1:1
- * demotes to `Fragment` or `Missed`, and its prediction becomes `spurious`.
- * Both terms of the promotion rule move, in the punishing direction, and
- * nothing anywhere prints a word about it. `pointInSlot`'s own doc already
- * named the rule this restores — "a point in the letterbox reads as outside
- * `0..1`, and `regionFromDrag` is what clamps a whole drag once both ends are
- * known" — and the labeller called nothing of the sort.
+ * **Clamped to the page**, which normalising alone does not do. `PageView`
+ * letterboxes the page, so a drag that starts or ends beside the image —
+ * natural when boxing a caption that bleeds to the page edge — reads as a
+ * fraction outside `0..1`, and an unclamped box would store area that is not
+ * on the page at all. `score.rs`'s `classify_single_cover` divides by exactly
+ * that area (`inter / (t.w * t.h)`), so an inflated truth box dilutes its own
+ * coverage: a genuine 1:1 demotes to `Fragment` or `Missed`, and its
+ * prediction becomes `spurious`. Both terms of the promotion rule move, in the
+ * punishing direction, and nothing anywhere prints a word about it.
+ * `pointInSlot`'s own doc names the rule this follows — "a point in the
+ * letterbox reads as outside `0..1`, and `regionFromDrag` is what clamps a
+ * whole drag once both ends are known".
  *
  * A drag with no area at all is refused rather than stored: a click that
  * missed, or one that lay wholly in the letterbox and clamped down to nothing.
@@ -121,17 +119,6 @@ export function normaliseRect(rect: Rect): Rect | undefined {
   return { x, y, w, h }
 }
 
-/**
- * A fresh box from a dragged rectangle, or `undefined` when nothing survives
- * normalisation — a drag wholly in the letterbox, or one with no extent.
- *
- * Returns the box rather than an array with it appended, because the caller
- * needs its `id`. A box is selected the moment it is drawn, so the kind and
- * axis keys land on it without a click or a `Tab` first: over ~900 boxes that
- * is one deliberate action per box rather than two, and the two-step version
- * has a failure mode the one-step version cannot have — tagging the box you
- * drew *before* this one.
- */
 export interface BoxDefaults {
   kind: Kind
   axis: BoxAxis
@@ -147,6 +134,17 @@ export interface BoxDefaults {
  */
 export const FIRST_BOX: BoxDefaults = { kind: 'dialogue', axis: 'v' }
 
+/**
+ * A fresh box from a dragged rectangle, or `undefined` when nothing survives
+ * normalisation — a drag wholly in the letterbox, or one with no extent.
+ *
+ * Returns the box rather than an array with it appended, because the caller
+ * needs its `id`. A box is selected the moment it is drawn, so the kind and
+ * axis keys land on it without a click or a `Tab` first: that is one
+ * deliberate action per box rather than two, and the two-step version has a
+ * failure mode the one-step version cannot have — tagging the box you drew
+ * *before* this one.
+ */
 export function newBox(
   rect: Rect,
   defaults: BoxDefaults = FIRST_BOX,

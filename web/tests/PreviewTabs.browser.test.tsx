@@ -35,11 +35,11 @@ import { mount } from './support/mount'
  * because `FIELDS` said so.
  *
  * **The app's own numbers, against a real library, are different — and are
- * the app's, not this fixture's.** `admin.css`'s own comment on
- * `.table-scroll` records `.provenance` rendering 524px and `.matched`
- * 393px there against a 375px client width, 165px and 34px of overflow.
- * Two different pages, two different measurements; neither stands in for
- * the other.
+ * the app's, not this fixture's.** The `admin.css` entry for `.table-scroll {`
+ * in `docs/superpowers/notes/2026-10-29-code-history-web-src.md` records
+ * `.provenance` rendering 524px and `.matched` 393px there against a 375px
+ * client width, 165px and 34px of overflow. Two different pages, two
+ * different measurements; neither stands in for the other.
  *
  * **Longer than the shortest strings that name this scenario**, and with an
  * underscored release-group filename rather than a spaced one, on purpose:

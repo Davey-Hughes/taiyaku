@@ -1,6 +1,5 @@
 /**
- * The `/api/library/works/{slug}/stamp-comicinfo` client — spec C3 §6, over
- * the two routes that shipped in #114.
+ * The `/api/library/works/{slug}/stamp-comicinfo` client — spec C3 §6.
  *
  * **Its own module rather than `metadata.ts`'s**, mirroring the split
  * `taiyaku-serve/src/stamp.rs` made one layer down and for the reason C3 §6
@@ -58,7 +57,7 @@ export interface Stamped {
    * work's identity exactly where it was.
    *
    * Typed `string | null` rather than `string` because nothing else would
-   * catch the lie: `getJson`/`sendJson` cast, so the screen rendered "this
+   * catch the lie: `getJson`/`sendJson` cast, so the screen would render "this
    * work's content_key is now ." for every one of those works.
    */
   content_key: string | null
@@ -92,14 +91,13 @@ const route = (slug: string) =>
  *
  * **No empty-204 guard, unlike `performStamp` below**, and the asymmetry is
  * the answer rather than an omission. Every guard of that shape in this tree
- * — `metadata.ts`, `config.ts`, `users.ts`, `rules.ts`, `curation.ts`,
- * `backup.ts` — sits on `sendJson`, which answers `T | undefined` because a
- * 204 is a real answer on a write route and a caller handed `undefined` would
- * render it. `getJson` answers `T`, no GET client here carries one, and this
- * route has a single success shape: "nothing to do" is a 200 whose `archives`
- * is empty, which is what `StampPlan` above documents and what `stamp.rs`
- * answers. A 204 here would be a server contradicting its own contract, and
- * it surfaces as `getJson`'s `SyntaxError` rather than a sentence of ours.
+ * sits on `sendJson`, which answers `T | undefined` because a 204 is a real
+ * answer on a write route and a caller handed `undefined` would render it.
+ * `getJson` answers `T`, no GET client here carries one, and this route has a
+ * single success shape: "nothing to do" is a 200 whose `archives` is empty,
+ * which is what `StampPlan` above documents and what `stamp.rs` answers. A 204
+ * here would be a server contradicting its own contract, and it surfaces as
+ * `getJson`'s `SyntaxError` rather than a sentence of ours.
  *
  * The alternative — a bespoke `fetch` in this module, or a 204 branch inside
  * the shared `getJson` — buys a better message for a case no route produces,

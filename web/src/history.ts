@@ -8,10 +8,8 @@
  * whole thing per step costs nothing measurable and cannot disagree with the
  * change it is meant to undo.
  *
- * This exists because writes became automatic. With a Save button, the button
- * *was* the undo: you could abandon anything by not pressing it. Once every
- * change lands on its own, a reader needs a way back that does not depend on
- * having hesitated.
+ * This exists because writes are automatic: every change lands on its own, so
+ * a reader needs a way back that does not depend on having hesitated.
  */
 export interface History<T> {
   /** Every state kept, oldest first. `at` indexes the one in force. */

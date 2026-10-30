@@ -9,13 +9,12 @@
  * screen.
  *
  * **No admin guard here, deliberately.** `Routes.tsx` puts none on
- * `/proposals` either, and `api.ts`'s `getJson` was changed during C3
- * precisely so a non-admin who types that URL is shown *the server's own
- * sentence* rather than a bare status. A `<RequireAdmin>` wrapper would put a
- * second opinion about who may administer into the client, months after O93
- * closed by making `session::administering_or_forbidden` the only function in
- * `taiyaku-serve` that holds one. A client that draws a screen it should not
- * is cosmetic; a client that *decides* is the shape O93 was.
+ * `/proposals` either, and `api.ts`'s `getJson` shows a non-admin who types
+ * that URL *the server's own sentence* rather than a bare status. A
+ * `<RequireAdmin>` wrapper would put a second opinion about who may administer
+ * into the client; O93 made `session::administering_or_forbidden` the only
+ * function in `taiyaku-serve` that holds one. A client that draws a screen it
+ * should not is cosmetic; a client that *decides* is the shape O93 was.
  *
  * **The child routes are declared here rather than in `Routes.tsx`.** `TABS`
  * is the list, and a tab whose route lived in another file could exist in the
@@ -107,9 +106,8 @@ export function Config() {
         />
         {/*
           `Routes.tsx` matches `/config/*` before its own catch-all, so a bad
-          sub-path never reaches that one — `/config/rules` drew the sub-nav
-          over a blank pane with nothing said, and PR B adding that tab is
-          exactly when somebody types it. Whole-branch review, 2026-09-04.
+          sub-path never reaches that one and would draw the sub-nav over a
+          blank pane with nothing said.
         */}
         <Route
           path="*"

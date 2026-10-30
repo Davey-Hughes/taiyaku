@@ -1,12 +1,12 @@
 /**
  * A scan's two reports, rendered whole — spec C4 §3.
  *
- * **Two sections, because the server already sends two objects.** The walk
- * and the derivation are two different passes over the library, and keeping
- * them apart is what lets this draw "what the walk found" and "what
- * derivation made of it" rather than making a reader work out which of
- * forty-two keys came from which pass. `finished_scan_json`'s own doc
- * comment makes the same argument from the other side.
+ * **Two sections, because the server already sends two objects.** The walk and
+ * the derivation are two different passes over the library, and keeping them
+ * apart is what lets this draw "what the walk found" and "what derivation made
+ * of it" rather than making a reader work out which key came from which pass.
+ * `finished_scan_json`'s own doc comment makes the same argument from the
+ * other side.
  *
  * **Every field is drawn, including the collections that are empty this
  * time.** The route destructures both structs with no `..` so a field cannot
@@ -160,10 +160,10 @@ function Declines({ declined }: { declined: Declined[] }) {
 /**
  * Why derivation made nothing of an entry: the total, then each cause — O90.
  *
- * **One number used to stand for four causes**, and "13 unreadable" could
- * not tell twelve RAR archives from one archive of JPEG XL pages. Each cause
- * is its own row with its own `data-field`, drawn at zero too, for this
- * file's rule that an empty row is a fact rather than a row to skip.
+ * **One number cannot stand for four causes**, and a bare total cannot tell
+ * RAR archives from an archive of JPEG XL pages. Each cause is its own row
+ * with its own `data-field`, drawn at zero too, for this file's rule that an
+ * empty row is a fact rather than a row to skip.
  *
  * A refused format is a count per token, because one loop repacks every
  * archive of a kind. The files that are each faulty on their own are named,
@@ -304,11 +304,10 @@ function WalkSection({ walk, level }: { walk: Walk; level: ReportLevel }) {
  * What derivation made of a pass, on its own.
  *
  * **Exported, because a root removal re-derives too.** `RemovalAnswer` carries
- * a whole `DeriveReport` — the server's own whole-branch review added the key
- * so that "nothing a removal's re-derive found ever reached a caller" would
- * stop being true — and `RemoveRoot` rendering only its three counts put that
- * straight back. One component, two callers, rather than a second rendering of
- * thirty-one fields that could drift from this one.
+ * a whole `DeriveReport`, and `RemoveRoot` rendering only its three counts
+ * would mean nothing a removal's re-derive found ever reached a caller. One
+ * component for every caller, rather than a second rendering of its fields
+ * that could drift from this one.
  */
 export function DeriveSection({
   derive,

@@ -8,12 +8,12 @@ export interface AnnotationsPrefs {
   /**
    * Show every annotated region on this page — the box and the words in it.
    *
-   * One switch, not two. The words briefly had their own (`labels`, `t`), on
-   * the argument that a tint and a text block draw different amounts over the
-   * artwork; in use that was a distinction without a decision, because the
-   * margin tabs already say *where* the notes are without drawing on the page
-   * at all. So what this answers is the only question left: show me what they
-   * say, or get out of the way.
+   * One switch, not two. A separate one for the words, on the argument that a
+   * tint and a text block draw different amounts over the artwork, would be a
+   * distinction without a decision, because the margin tabs already say
+   * *where* the notes are without drawing on the page at all. So what this
+   * answers is the only question left: show me what they say, or get out of
+   * the way.
    */
   reveal: boolean
   /**
@@ -22,8 +22,7 @@ export interface AnnotationsPrefs {
    *
    * `auto` answers by the width of the window — beside the page where there is
    * margin for it, under the page where there is not. A reader whose screen
-   * `auto` guesses wrong on can say so rather than living with it, which is
-   * what makes this the module contract's first declared-options setting.
+   * `auto` guesses wrong on can say so rather than living with it.
    */
   notesList: string
 }
@@ -39,7 +38,7 @@ export const UNDO_INTENT = 'annotations:undo'
 export const REDO_INTENT = 'annotations:redo'
 
 /**
- * Notes on the page, and the three gestures they need.
+ * Notes on the page, and the gestures they need.
  *
  * `travel` defaults on because a note written on the raw being readable while
  * reading the English is the entire feature — the one thing no other reader
@@ -47,11 +46,10 @@ export const REDO_INTENT = 'annotations:redo'
  * off: always-tinted regions are intrusive on a busy page, which is why the
  * reveal is a key rather than a permanent state.
  *
- * Five keys where every other module claims at most one, because these are
- * distinct acts rather than settings — writing, looking, finding, and stepping
- * back and forth through what has been written — each something a reader does
- * mid-read without wanting the settings panel. Tunability stays in `defaults`,
- * as everywhere else.
+ * Five keys, because these are distinct acts rather than settings — writing,
+ * looking, finding, and stepping back and forth through what has been
+ * written — each something a reader does mid-read without wanting the
+ * settings panel. Tunability stays in `defaults`, as everywhere else.
  *
  * `z`/`Z` rather than the usual `ctrl+z`: `intentOf` yields any key carrying a
  * modifier, deliberately, so that a reader's own browser and OS shortcuts

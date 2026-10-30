@@ -8,29 +8,26 @@
  * warning does not — an override hidden behind a tab nobody clicked — so the
  * count is on the tab strip itself, visible from wherever you are.
  *
- * **The fourth tab states, and does not correct — O95.** It read "Conflicts"
- * until 2026-09-05, and its single action read "Move rule 4 above rule 1".
- * On a library holding nothing but the four rules migration 3 seeds, the one
- * row it draws is rule 4 reading a series from the filename over rule 1
- * reading it from the directory — which is **what folds a colour edition into
- * its main series**, and pressing that button is the one thing that breaks it.
- * The detection was right and the remedy was wrong. So the row states what
+ * **The fourth tab states, and does not correct — O95.** On a library holding
+ * nothing but the four rules migration 3 seeds, the one row it draws is rule 4
+ * reading a series from the filename over rule 1 reading it from the directory
+ * — which is **what folds a colour edition into its main series**, and moving
+ * rule 4 above rule 1 is the one thing that breaks it. So the row states what
  * happens, draws the two values it happened between, and offers reorder and
  * edit as *options* rather than as fixes: that reads right for a deliberate
  * layering and for a genuine mistake both, and no detector can tell those
  * apart, because the difference is intent.
  *
- * *(Since O89, 2026-09-16: only where the directory does not qualify the
- * filename's series. A qualifying directory such as `Death Note (Colored
- * Council)` is its own series, not an override — `docs/status.md`, O89.
- * The one known exception is O128: a user series rule placed between the
- * directory rule and a later capture still draws a row, crediting the capture
- * with the directory's restored value.)*
+ * *(O89: only where the directory does not qualify the filename's series. A
+ * qualifying directory such as `Death Note (Colored Council)` is its own
+ * series, not an override — `docs/status.md`, O89. The one known exception is
+ * O128: a user series rule placed between the directory rule and a later
+ * capture still draws a row, crediting the capture with the directory's
+ * restored value.)*
  *
  * **Matched files and Provenance read one array.** `rows` is scoped to the
- * selected rule and arrives in one request; the two tabs are two readings of
- * it — one down the file list, one across the fields some row decided
- * (O149).
+ * selected rule and arrives in one request; the two tabs are two readings of it
+ * — one down the file list, one across the fields some row decided (O149).
  *
  * **Every rule named here is named by position.** `Decided`, `Override.first`
  * and `Override.wins` are indices into the list the request carried, and the
@@ -135,12 +132,11 @@ export function PreviewTabs({
   /** The same, once it has lasted: their held look. */
   const optionsHeldDrawn = useDrawnWait(optionsHeld)
   /**
-   * O156: tabs, because they switch what the pane below shows — not
-   * navigation, which the `<nav>` they sat in claimed, since no URL moves.
-   * One panel, labelled by whichever tab is selected. The keys are the ARIA
-   * guide's for tabs: only the selected tab is a `Tab` stop, and ←, →, Home
-   * and End move the selection with the focus, since every panel draws from
-   * the preview already held.
+   * O156: tabs, because they switch what the pane below shows — not navigation,
+   * since no URL moves. One panel, labelled by whichever tab is selected. The
+   * keys are the ARIA guide's for tabs: only the selected tab is a `Tab` stop,
+   * and ←, →, Home and End move the selection with the focus, since every panel
+   * draws from the preview already held.
    */
   const ids = useId()
   const tabId = (name: TabName) => `${ids}-tab-${TABS.indexOf(name)}`
@@ -170,8 +166,7 @@ export function PreviewTabs({
   const overrides = preview?.overrides ?? []
   /**
    * O149: the Provenance table draws a column only for a field some row
-   * decided, and names the rest in one line above it. With rule 1 selected
-   * on the real library, four of the seven were decided in none of 224 rows.
+   * decided, and names the rest in one line above it.
    */
   // Annotated: without it the empty branch types as `never[]`, and
   // `includes` on the union then takes `never`.
@@ -179,9 +174,8 @@ export function PreviewTabs({
   const drawn = FIELDS.filter((field) => !unset.includes(field))
   /**
    * Drawn on both tabs that list files, so neither stops silently at 500 —
-   * and above the table on both, where it is read before the rows it
-   * qualifies rather than after them. The user's decision of 2026-09-26,
-   * for the same reason O149's line sits above.
+   * and above the table on both, where it is read before the rows it qualifies
+   * rather than after them, for the same reason O149's line sits above.
    */
   const capped = (
     <p className="truncated">
@@ -396,9 +390,9 @@ export function PreviewTabs({
                           as `''` rather than `null`, and an empty pattern
                           matches everything, so a freshly added rule is
                           *especially* likely to be one half of an override. A
-                          `??` here left a blank where the pattern belongs, in
-                          the one place whose whole job is saying which rule is
-                          which.
+                          `??` here would leave a blank where the pattern
+                          belongs, in the one place whose whole job is saying
+                          which rule is which.
                         */}
                           <li>
                             rule {over.first + 1}{' '}
@@ -414,16 +408,14 @@ export function PreviewTabs({
                         {/*
                         **"in at least one of these files", not "here"** —
                         `others` is a *maximum* across every entry sharing this
-                        row's `(field, first, wins)` triple
-                        (`entry.others = entry.others.max(others)` in
-                        `preview.rs`), so it is a claim about the group and not
-                        about the one file named above it. The first wording of
-                        this read "2 other rules disagree here.", sitting
+                        row's `(field, first, wins)` triple (`entry.others =
+                        entry.others.max(others)` in `preview.rs`), so it is a
+                        claim about the group and not about the one file named
+                        above it. Wording it "2 other rules disagree here.",
                         directly under that path and its two values, which are
-                        explicitly that file's own — and it is false of the
-                        named file whenever a *later* entry is the one with the
-                        longer chain. Found by the third whole-branch review of
-                        this branch.
+                        explicitly that file's own, would be false of the named
+                        file whenever a *later* entry is the one with the
+                        longer chain.
                       */}
                         {over.others > 0 && (
                           <p className="others">
@@ -436,14 +428,13 @@ export function PreviewTabs({
                         )}
                         {/*
                         **"Options:", and two of them** — O95. One button under
-                        a sentence in the grammar of a warning is an
-                        instruction whatever it says, and the instruction this
-                        row used to give was wrong on the shipped defaults.
-                        "Edit rule N" narrows nothing by itself: narrowing
-                        means editing a regex, which no button can guess. What
-                        it does is put the winning rule in the form, which is
-                        `RuleList`'s own `onSelect` — so it costs exactly one
-                        derivation, the same as clicking that rule in the list.
+                        a sentence in the grammar of a warning is an instruction
+                        whatever it says. "Edit rule N" narrows nothing by
+                        itself: narrowing means editing a regex, which no button
+                        can guess. What it does is put the winning rule in the
+                        form, which is `RuleList`'s own `onSelect` — so it costs
+                        exactly one derivation, the same as clicking that rule
+                        in the list.
                       */}
                         <p className="options">
                           Options:{' '}
@@ -465,20 +456,15 @@ export function PreviewTabs({
                           — `moved()` splices `undefined` in and `renumber`
                           turns it into a phantom `{ordinal: n}` rule.
 
-                          **The write window is the wider one, and this used to
-                          say Save covered it.** It does not: `save()` sets
-                          `writer.current` (which `frozen` reads), never
-                          `busy`, and Save's own guard is
-                          `frozen || busy || preview === undefined` — so these
-                          two buttons were live for the seconds a save takes
-                          on a real library while Save was not. A reorder
-                          pressed inside it is applied, and then silently
-                          discarded by the save's own `setRules(answer.rules)`;
-                          "Edit rule N" leaves the form on one rule while the
-                          Matched-files and Provenance tabs stay scoped to the
-                          `selected` captured before the click. Found by the
-                          second whole-branch review of this branch, in the
-                          comment that claimed otherwise.
+                          **The write window is the wider one.** `save()` sets
+                          `writer.current` (which `frozen` reads), never `busy`,
+                          so `busy` alone would leave these two buttons live for
+                          the whole of a save. A reorder pressed inside it would
+                          be applied, and then silently discarded by the save's
+                          own `setRules(answer.rules)`; "Edit rule N" would
+                          leave the form on one rule while the Matched-files and
+                          Provenance tabs stay scoped to the `selected` captured
+                          before the click.
                         */}
                           <HeldButton
                             type="button"

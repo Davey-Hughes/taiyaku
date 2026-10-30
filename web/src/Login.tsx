@@ -25,11 +25,10 @@ import { Wordmark } from './Wordmark'
 // on the overlay, so what stays inline here is layout — and the accent on the
 // one button that submits.
 //
-// History worth keeping: this screen shipped a hardcoded dark palette (`#111`,
-// `#ffb4a8`) when it only ever appeared over the reader, and handed a
-// light-preference reader a dark screen once it fronted the library.
-// `colourLiterals.test.ts` now refuses any colour literal or system colour
-// the guard counts in this file — a colour named in words would pass it.
+// A hardcoded dark palette would hand a light-preference reader a dark
+// screen, so `colourLiterals.test.ts` refuses any colour literal or system
+// colour the guard counts in this file — a colour named in words would
+// pass it.
 const overlayStyle: CSSProperties = {
   position: 'fixed',
   inset: 0,
@@ -48,8 +47,8 @@ const panelStyle: CSSProperties = {
 }
 
 // The wordmark draws itself (`Wordmark.tsx`, `styles/shell.css`); the
-// heading around it drops its margin, and since O163 made it the screen's
-// h1, holds the h2 size `base.css` gave it before.
+// heading around it drops its margin and, as the screen's h1 (O163), holds
+// the h2 size.
 const headingStyle: CSSProperties = {
   margin: 0,
   fontSize: 'var(--text-h2)',
@@ -127,13 +126,12 @@ export function Login({ onSignedIn }: LoginProps) {
             compared byte for byte.** `user.name` is `TEXT NOT NULL UNIQUE`
             with no `COLLATE NOCASE`, so SQLite matches it under the default
             BINARY collation and `account::by_name`'s `WHERE name = ?1` finds
-            nothing for `Local` when the account is `local` — verified
-            against a real library, 1 row against 0.
+            nothing for `Local` when the account is `local`.
 
             iOS defaults a text input to `autocapitalize="sentences"`, which
             capitalises the first letter of an empty field. So every iPhone
-            typed a name that could not match, on the one screen a reader
-            cannot get past. Reported from a device pass, 2026-09-23.
+            would type a name that could not match, on the one screen a reader
+            cannot get past.
           */}
           <input
             style={fieldStyle}

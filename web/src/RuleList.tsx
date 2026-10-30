@@ -23,11 +23,11 @@
  *
  * **Every gesture here is frozen while a save is in flight — O96.** Not
  * politeness: `RuleEditor::save` replaces the whole list with `answer.rules`
- * when it lands, so a reorder, a toggle, an add or a delete committed during
- * the ~281 ms it takes is applied, previewed, and then silently thrown away.
- * The freeze is also what keeps the positional identity above *true across a
- * save* — `answer.rules` is aligned to the list that was sent, and a list that
- * moved under the request has no correspondence to it at all. `RuleForm` is
+ * when it lands, so a reorder, a toggle, an add or a delete committed while it
+ * is out would be applied, previewed, and then silently thrown away. The freeze
+ * is also what keeps the positional identity above *true across a save* —
+ * `answer.rules` is aligned to the list that was sent, and a list that moved
+ * under the request has no correspondence to it at all. `RuleForm` is
  * deliberately **not** frozen; that half is in `RuleEditor.tsx`'s own comment.
  */
 import { useEffect, useState } from 'react'
@@ -69,10 +69,10 @@ export function RuleList({
    * the send, and the buttons are drawn held once the write has lasted.
    *
    * **A write, never `busy`:** a preview in flight is superseded by
-   * `runPreview`'s sequence guard and is never lost, so a gesture during one
-   * is correct and cheap. Freezing on `busy` would grey the list for ~281 ms
-   * after every gesture, which is the rhythm the build design's §5.3 costed
-   * out and kept.
+   * `runPreview`'s sequence guard and is never lost, so a gesture during one is
+   * correct and cheap. Freezing on `busy` would grey the list for as long as a
+   * preview takes after every gesture, which is the rhythm the build design's
+   * §5.3 costed out and kept.
    */
   frozen: boolean
   onSelect: (index: number) => void
@@ -89,8 +89,8 @@ export function RuleList({
   >()
 
   /**
-   * M3: close the dialog on any list mutation, rather than let it keep
-   * holding a stale index.
+   * Close the dialog on any list mutation, rather than let it keep holding a
+   * stale index.
    *
    * Addressing a rule by its position is right for this list — the doc
    * comment above says why an id cannot do the job — but *holding* a
@@ -171,16 +171,14 @@ export function RuleList({
           >
             <span className="ordinal">{index + 1}</span>
             {/* **A label of its own, with no words — O157.** The box has no
-                visible label, only its `aria-label`, so under a coarse
-                pointer the 24px box was the whole tap target. `admin.css`
-                grows this label to 44×44 and leaves the box drawn at its
-                own size; the `aria-label` stays the box's name. The size
-                is all it leaves alone: the label takes its 44px of the
-                row's layout, so the rule's name has less width beside it
-                and a long one can wrap one line more — measured at 390px,
-                and accepted by the user on 2026-09-26. At a fine pointer
-                the label is a flex box that draws the box where it sat
-                before it had one. */}
+                visible label, only its `aria-label`, so under a coarse pointer
+                the 24px box would be the whole tap target. `admin.css` grows
+                this label to 44×44 and leaves the box drawn at its own size;
+                the `aria-label` stays the box's name. The size is all it leaves
+                alone: the label takes its 44px of the row's layout, so the
+                rule's name has less width beside it and a long one can wrap one
+                line more. At a fine pointer the label is a flex box that draws
+                the box where it would sit without one. */}
             <label className="enable">
               {/* Held from the send, as `AccountPage.tsx`'s boxes are
                   (O159): `aria-disabled` draws nothing on a box, and the

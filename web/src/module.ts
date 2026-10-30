@@ -8,13 +8,12 @@ export interface KeyBinding {
    * What this key does, in words a reader can read.
    *
    * Optional, and the help screen falls back to `intent` without it, so no
-   * existing declaration breaks. **Added 2026-08-08, and widening this
-   * contract is meant to be a decision rather than a habit** — see this
-   * file's own note that a ninth module needing a new extension point is a
-   * signal to revisit. The signal here was the help screen: `intent` strings
-   * were written as internal identifiers and two of them, `annotations:reveal`
-   * and `annotations:review`, differ by one letter while naming different
-   * things. Rendering those to a reader is not documentation, it is a leak.
+   * existing declaration breaks. **Widening this contract is meant to be a
+   * decision rather than a habit.** The reason here was the help screen:
+   * `intent` strings were written as internal identifiers and two of them,
+   * `annotations:reveal` and `annotations:review`, differ by one letter while
+   * naming different things. Rendering those to a reader is not
+   * documentation, it is a leak.
    *
    * The alternative was stripping the `namespace:` prefix in the overlay,
    * which fixes half of them and relies on a naming convention nothing
@@ -47,13 +46,9 @@ export interface ReaderModule<P> {
    * The values a `string` preference is allowed to take, keyed by preference
    * name — which turns its control from a free-text box into a choice.
    *
-   * `settingsPanel.ts` has carried a note since M5b that this is "what the
-   * design calls for once a module declares one with options; none does yet,
-   * and the contract carries no field to declare options against, so that path
-   * is not built ahead of a case that exists only in the design". The case now
-   * exists: `annotations` has to let a reader place the note list beside the
-   * page or below it, and a text box for that is a control that invites a typo
-   * and answers with nothing.
+   * `annotations` has to let a reader place the note list beside the page or
+   * below it, and a text box for that is a control that invites a typo and
+   * answers with nothing.
    */
   options?: Record<string, string[]>
 }
@@ -170,10 +165,9 @@ export function withSlice<P extends object>(
  * One module's slice changed, given its current value.
  *
  * The shape every preference-writing key press has: read this module's slice
- * out of the map, apply one rule to it, put it back. Six sites wrote that by
- * hand — and `direction.ts` extracted `setOverride` precisely because one of
- * them forgot to spread and would have wiped every other edition's saved
- * override.
+ * out of the map, apply one rule to it, put it back. In `direction.ts`, a
+ * hand-written copy that forgot to spread would wipe every other edition's
+ * saved override, which `setOverride` exists to prevent.
  */
 export function changeSlice<P extends object>(
   map: Record<string, object>,

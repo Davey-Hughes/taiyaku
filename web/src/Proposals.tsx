@@ -4,11 +4,11 @@
  * **A scannable list, not a one-at-a-time queue.** With dozens of proposals
  * that are mostly one kind, the point of this screen is letting a person
  * *see* that — the per-kind tab counts are the overview spec C3 chose over a
- * triage loop, so 29 of 37 questions can be answered once, as a widened rule,
- * instead of 37 times. The tabs read `counts` from `curation.ts`'s `Inbox`,
- * which is computed within whichever state this screen asks for and *not*
- * narrowed by the `kind` filter — each tab counts its own total regardless of
- * which one is currently selected.
+ * triage loop, so the question most of them ask can be answered once, as a
+ * widened rule, instead of once per proposal. The tabs read `counts` from
+ * `curation.ts`'s `Inbox`, which is computed within whichever state this
+ * screen asks for and *not* narrowed by the `kind` filter — each tab counts
+ * its own total regardless of which one is currently selected.
  *
  * **Open by default, and the other two states one press away (O72).** An
  * inbox is exactly the set of proposals still waiting on a decision, so
@@ -16,9 +16,7 @@
  * that list would leave nothing to sort them apart by. Spec C3 §4 asks for
  * the rest all the same — "accepted and dismissed proposals stay listed under
  * their own filters. A dismissal you disagree with later is a thing you have
- * to be able to find." The state control is those filters. Until it existed
- * this screen sent `state: 'open'` and nothing else, so §4 was met at the
- * store and the API and nowhere a person could reach.
+ * to be able to find." The state control is those filters.
  *
  * **The header, the tab counts and the empty states all read within the
  * state the list on screen was fetched for**, because `counts` does: the
@@ -27,8 +25,8 @@
  * dismissed list says nothing has been dismissed rather than that there is
  * nothing to answer. **That is the answer's state, not the pressed
  * control's**, and the two differ for as long as a request is on its way:
- * reading the control, pressing Dismissed over 37 open proposals drew "37
- * dismissed" above the open rows until the dismissed list landed. The
+ * reading the control, pressing Dismissed over 37 open proposals would draw
+ * "37 dismissed" above the open rows until the dismissed list landed. The
  * alternative — emptying the list the moment a state is pressed — was not
  * taken: it blanks the screen on every switch, and its header would still
  * need a word for "nothing loaded", where this one only ever describes rows
@@ -74,19 +72,19 @@
  *
  * **The list, the counts and the state they were asked for are one piece of
  * state, `undefined` until the first answer lands.** They arrive in one
- * response and describe one moment, so holding them apart let them be set
- * apart; and an `[]`/`{}` pair cannot
- * be told from an inbox that answered with nothing in it, which is exactly
- * the distinction the empty state below rests on. `searchHits.ts`'s `hits` and
- * `Library.tsx`'s `gridData` are the same shape for the same reason: neither
- * draws an empty state until it has heard back.
+ * response and describe one moment, so holding them apart lets them be set
+ * apart; and an `[]`/`{}` pair cannot be told from an inbox that answered
+ * with nothing in it, which is exactly the distinction the empty state below
+ * rests on. `searchHits.ts`'s `hits` and `Library.tsx`'s `gridData` are the
+ * same shape for the same reason: neither draws an empty state until it has
+ * heard back.
  *
  * **A kind with nothing open is absent from `counts`, not zero**, because
  * `counts` comes from a SQL `GROUP BY`. Answering the last proposal of the
- * selected kind therefore used to take its tab out of the row *underneath the
- * person's own selection*: the list went blank, no tab read pressed, the
- * header still said "N open", and nothing said what had happened or how to
- * get back.
+ * selected kind would therefore take its tab out of the row *underneath the
+ * person's own selection*: the list would go blank, no tab would read
+ * pressed, the header would still say "N open", and nothing would say what
+ * had happened or how to get back.
  *
  * **The selected kind keeps its tab, at zero, and the screen says so.** The
  * other defensible answer — fall back to `All` — was rejected deliberately:
@@ -140,9 +138,9 @@ export function Proposals() {
     setReloads((n) => n + 1)
   }
 
-  // `hooks.ts`'s `useScrollFollow` carries the same suppression for the same
-  // shape: a dependency the body never reads, listed because its *change* is
-  // the signal.
+  // `hooks.ts`'s `useScrollToCurrent` carries the same suppression for the
+  // same shape: a dependency the body never reads, listed because its
+  // *change* is the signal.
   // biome-ignore lint/correctness/useExhaustiveDependencies: `reloads` is a trigger, not a closure read — the body reads only `state`, `kind` and `showWeak`. Removing it, which is what this rule suggests, would leave an accept, a dismiss or a reopen showing a stale list until a filter was touched.
   useEffect(() => {
     let cancelled = false
@@ -213,11 +211,8 @@ export function Proposals() {
         ))}
       </div>
       {/* One-of-N, so it wears the underlined tab look `config-nav` and the
-          rule preview wear (§12.3). It could not until O150: the score
-          threshold used to sit in this row wearing the same pill as a kind,
-          and ②'s review found the two drawing the same accent underline side
-          by side. Named as a group, as the state row is, so a pressed button
-          sits inside a filter that has a name (O156). */}
+          rule preview wear (§12.3). Named as a group, as the state row is, so
+          a pressed button sits inside a filter that has a name (O156). */}
       <div className="proposal-tabs" role="group" aria-label="Kind">
         <button
           type="button"
@@ -239,19 +234,17 @@ export function Proposals() {
           </button>
         ))}
       </div>
-      {/* **The label does not flip.** It read "Show weak proposals" or "Hide
-          weak proposals" while `aria-pressed` said the same thing beside it —
-          the same fact twice, disagreeing for as long as a click was in
-          flight. A checkbox says its state with its box.
+      {/* **The label does not flip.** A label reading "Show weak proposals" or
+          "Hide weak proposals" would say the same fact twice beside
+          `aria-pressed`, disagreeing for as long as a click was in flight. A
+          checkbox says its state with its box.
 
           It also takes a coupling out of `EmptyState`. That component names
-          "Show weak proposals" in its copy, and the two agreed only because
-          the branches happened to line up: `inbox-weak-hidden` and
-          `decided-weak-hidden` are chosen on `!showWeak` below, which was
-          exactly when the button read "Show". An unconditional label stays
-          true however those branches move later. (An earlier version of this
-          comment claimed the copy had *disagreed* with the control; it never
-          could — ⑤c's Task 3 review traced the branches.) */}
+          "Show weak proposals" in its copy, and the two would agree only
+          because the branches happen to line up: `inbox-weak-hidden` and
+          `decided-weak-hidden` are chosen on `!showWeak` below, which is
+          exactly when a flipping label would read "Show". An unconditional
+          label stays true however those branches move later. */}
       <div className="checks weak-check">
         <label>
           <input

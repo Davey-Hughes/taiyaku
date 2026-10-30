@@ -28,8 +28,8 @@
 @import "@fontsource/zen-kaku-gothic-new/700.css";
 
 /* Tabular digits for tables. Zen Kaku Gothic New's digits are proportional —
- * its Latin subset advances them 383 to 509 units and has no `tnum` feature,
- * read with fontTools on 2026-09-17 — so a column of page counts would jitter.
+ * its Latin subset advances them 383 to 509 units and has no `tnum` feature —
+ * so a column of page counts would jitter.
  * This face covers the ten digits only, from whichever tabular system sans the
  * device has; every other character falls through to `--font-ui`. */
 @font-face {
@@ -41,11 +41,8 @@
 }
 
 /* A backtick with a width (O179). Zen Kaku Gothic New's Latin files class
- * seven spacing characters — ` ¨ ´ ¸ ˆ ˚ ˜ — as marks in GDEF: read with
- * fontTools on 2026-10-02 in @fontsource/zen-kaku-gothic-new 5.3.0, the
- * latest published. HarfBuzz gives a GDEF mark no advance, so in Chromium
- * 151 and Firefox 153 each of the seven measured 0 px at 400, 500 and 700,
- * and ``no work `nope` `` was drawn as "no work ǹopè".
+ * seven spacing characters — ` ¨ ´ ¸ ˆ ˚ ˜ — as marks in GDEF, and HarfBuzz
+ * gives a GDEF mark no advance, so each of the seven is drawn at no width.
  *
  * These faces are the same seven glyphs from the same package's Latin files,
  * one per weight imported above, with the three layout tables dropped so
@@ -55,11 +52,10 @@
  *     --unicodes=U+0060,U+00A8,U+00B4,U+00B8,U+02C6,U+02DA,U+02DC
  *     --drop-tables+=GDEF,GPOS,GSUB '--name-IDs=*'
  *
- * (fontTools 4.66.1). Outlines and advances are unchanged — the backtick's is
- * 352, 365 and 375 units — and the files are 916, 928 and 964 bytes. The
- * licence is the face's own, `fonts/OFL.txt`. `font-display: swap`, as the
- * @fontsource faces imported above have it: while a file loads, its characters are
- * drawn in Zen Kaku, at no width, rather than not drawn. */
+ * (fontTools 4.66.1). Outlines and advances are unchanged. The licence is the
+ * face's own, `fonts/OFL.txt`. `font-display: swap`, as the @fontsource faces
+ * imported above have it: while a file loads, its characters are drawn in Zen
+ * Kaku, at no width, rather than not drawn. */
 @font-face {
   font-family: "taiyaku marks";
   font-weight: 400;
@@ -136,8 +132,8 @@
 /* The reader keeps the palette and sizes it was designed with. It is dark in
  * both themes and draws over artwork, and the Ink lift above was made for the
  * library's grounds (`--bg`, `--surface`, `--field`), not for a panel over a
- * page. Each pair here is the Paper half unchanged and the Ink half as it was
- * before the lift. Written as `rgb()`, not hex: `index.css.test.ts` and
+ * page. Each pair here is the Paper half unchanged and the Ink half without
+ * the lift. Written as `rgb()`, not hex: `index.css.test.ts` and
  * `AcceptForm.browser.test.tsx` take every `light-dark(#…, #…)` in this file
  * for the theme's own pair, and `index.css.test.ts` reads these as the
  * reader's. `builtStylesheet.test.ts` allows this rule, and no other, to
@@ -171,26 +167,21 @@
  * Orange because the interior pages are greyscale line art, so a saturated hue
  * cannot be mistaken for the page the way any grey can.
  *
- * **Covers are not.** An earlier version of this note claimed the corpus was
- * white paper throughout, which the first screenshot of page 0 disproved — it
- * is a full-colour cover, pink and orange and red, and an orange box on it has
- * no hue advantage at all. That case is carried by the dark outline instead,
- * which is the reason this is three parts rather than one: no single signal
- * survives both a white gutter and a saturated cover. */
+ * **Covers are not.** A cover may be full-colour, pink and orange and red, and
+ * an orange box on it has no hue advantage at all. That case is carried by the
+ * dark outline instead, which is the reason this is three parts rather than
+ * one: no single signal survives both a white gutter and a saturated cover. */
 :root {
   --box-line: #4a2400;
   --box-edge: rgba(255, 236, 210, 0.85);
   --box-fill: rgba(255, 145, 0, 0.2);
   --box-fill-strong: rgba(255, 145, 0, 0.42);
 
-  /* The selected box's inner line, and the ignore hatch — ⑤c, which found
-     both still written as literals in `annotations.css` while four of that
-     file's six colours already came from here.
+  /* The selected box's inner line, and the ignore hatch.
 
-     `--box-hatch` is `--box-line` at half alpha: 74, 36, 0 is `#4a2400`. It
-     was a hand-copied duplicate two lines above a `var(--box-fill)` in the
-     same declaration, so changing `--box-line` would have moved the outline
-     and left the hatch behind, with nothing to catch it.
+     `--box-hatch` is `--box-line` at half alpha: 74, 36, 0 is `#4a2400`. It is
+     a hand copy, so changing `--box-line` would move the outline and leave
+     the hatch behind, with nothing to catch it.
 
      `--box-edge-bright` is white rather than `--box-edge`'s warm pale: it
      marks the selected box, and the point of it is to read against the
@@ -200,9 +191,10 @@
 }
 
 /* The reader's own three (spec 2026-09-17 §2 and §8.2). Fixed, like the box
- * palette and unlike the pairs above: the reader is dark in both themes. Each
- * is an Ink value from those pairs — `--bg` #15130f and `--text` #ece4d4 — at
- * the opacity §2 gives it, and `index.css.test.ts` holds them to the pairs. */
+ * palette and unlike the pairs above: the reader is dark in both themes.
+ * `--reader-ground` is black; the other two are Ink values from those pairs —
+ * `--bg` #15130f and `--text` #ece4d4 — at the opacity §2 gives them, and
+ * `index.css.test.ts` holds them to the pairs. */
 :root {
   --reader-ground: #000;
   --reader-panel: rgb(21 19 15 / 0.92);
@@ -214,9 +206,7 @@
 }
 
 /* What the notes overlay draws on artwork (spec 2026-09-17 §8.5): fixed, for
- * the box palette's reason — the artwork does not follow the theme — and at
- * exactly the values `Annotations.tsx` and `NoteList.tsx` drew before they
- * became tokens. */
+ * the box palette's reason — the artwork does not follow the theme. */
 :root {
   /* A note number's digit on its coloured tab or chip. */
   --art-ink: rgba(20, 20, 20, 0.9);

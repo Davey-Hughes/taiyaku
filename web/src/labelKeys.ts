@@ -8,10 +8,10 @@
  *
  * `keys.ts` states the rule this follows, and it is worth restating because it
  * is the whole point of the shape: *a second list of what the keys do is a
- * copy of a rule, and this project has repeatedly found copies of rules
- * drifting from the rules.* The legend at the foot of the labeller is
- * generated from this table — so a binding that changes what it does cannot
- * keep an old description, because there is only one description.
+ * copy of a rule, and copies of rules drift from the rules.* The legend at the
+ * foot of the labeller is generated from this table — so a binding that
+ * changes what it does cannot keep an old description, because there is only
+ * one description.
  */
 import {
   type BoxAxis,
@@ -111,11 +111,11 @@ export const LABEL_KEYS: readonly LabelBinding[] = [
 /**
  * How a row's keys are written on screen: `1-6` rather than `1 2 3 4 5 6`.
  *
- * Only a **contiguous** run collapses. Length alone is not the test, and
- * treating it as one printed the axis row as `v-n` — which reads as a range
- * from `v` to `n`, a span that is backwards, four keys wide and includes
- * neither `h` nor anything else anybody could press. `v h n` is three
- * unrelated keys and is written as three.
+ * Only a **contiguous** run collapses. Length alone is not the test: treating
+ * it as one would print the axis row as `v-n` — which reads as a range from
+ * `v` to `n`, a span that is backwards, four keys wide and includes neither
+ * `h` nor anything else anybody could press. `v h n` is three unrelated keys
+ * and is written as three.
  */
 export function keysOf(binding: LabelBinding): string {
   const contiguous = binding.keys.every(

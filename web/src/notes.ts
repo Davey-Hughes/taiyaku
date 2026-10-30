@@ -6,40 +6,28 @@ import type { Resolver } from './resolver'
  * A rectangle marked on a note's slot, in fractions of the **page** that slot
  * is drawn on — never pixels.
  *
- * *Corrected on 2026-08-08. Every "slot fractions" in this file said slot and
- * meant page, from M5c until L1 needed the two told apart; the code has
- * measured against the drawn page throughout.* `App.tsx`'s `pointOn` is where
- * the numbers are made and says so — it reads the `<img>`'s own
- * `getBoundingClientRect()` through `paintedBox` below — and
+ * `App.tsx`'s `pointOn` is where the numbers are made — it reads the `<img>`'s
+ * own `getBoundingClientRect()` through `paintedBox` below — and
  * `Annotations.tsx` positions every marker as a percentage of that same
  * painted box.
  *
- * **The two readings differ on exactly one thing: a joined spread.**
+ * **Slot and page differ on exactly one thing: a joined spread.**
  * `pairing.ts`'s `groups` draws a spread's two slots as one wide image and
  * `tiles.ts` says the group "stands for *both* halves as a single wide tile
  * and has no one half to name", so slots `4L` and `4R` are expressed against
  * the same page and a region anchored to either can name any part of it.
- * Everywhere else a slot is a page and the two coincide, which is why nothing
- * has gone wrong under the old wording.
+ * Everywhere else a slot is a page and the two coincide.
  *
- * **The consequence belonged to L1, and L1 discharged it on 2026-08-08.**
- * Where one edition joins a spread and the other splits it, getting a reader
- * to the right half is the transform's job — the slot model gets them to the
- * right *page* and stops. `viewport.ts`'s `Drawn` now carries a `half` for
- * exactly that: `mapView` takes the rect out of `halfBox`'s box on the way in
- * and puts it back on the way out, and hands `mapRect` the half's own frame
- * rather than the spread's. Note *regions* still do not travel — that was
- * never L1's scope — but the transform they would travel through no longer has
- * this hole in it.
- *
- * *Until then this paragraph read "L1 did not discharge it" and described the
- * failure: `mapView` was handed each side's drawn image and nothing about
- * halves, and `mapRect` derives everything from the two aspects, so it read
- * the spread's extra width as margin at both edges and mapped its central band
- * onto the single page rather than the half the reader was on. Kept rather
- * than deleted, because it is the sharpest case of what the correction at the
- * top of this comment is about — everywhere else a slot is a page, and a
- * spread is where the difference is actually paid.*
+ * **Where one edition joins a spread and the other splits it, the transform
+ * finds the half.** The slot model gets a reader to the right *page* and
+ * stops. `viewport.ts`'s `Drawn` carries a `half` for exactly that: `mapView`
+ * takes the rect out of `halfBox`'s box on the way in and puts it back on the
+ * way out, and hands `mapRect` the half's own frame rather than the spread's.
+ * Were `mapView` handed each side's drawn image and nothing about halves,
+ * `mapRect`, which derives everything from the two aspects, would read the
+ * spread's extra width as margin at both edges and map its central band onto
+ * the single page rather than the half the reader is on. Note *regions* do not
+ * travel, but the transform they would travel through has no such hole in it.
  */
 export interface Region {
   x: number
@@ -87,16 +75,10 @@ export interface NoteHere {
    * Drawing the box at an untransformed position would put it over the wrong
    * panel, which is the reader lying about what it knows.
    *
-   * *Updated 2026-08-08.* This said "transforming one correctly is L1
-   * geometry, a *Later* item". L1 landed, and the transform now exists —
-   * `viewport.ts`'s `mapRect`, measured over the corpus. What has not been
-   * built is drawing a region through it, which L1's design put out of scope
-   * by name so the milestone stayed one shippable thing
-   * (`docs/superpowers/specs/2026-08-07-l1-geometry-design.md`, "What L1 is
-   * for"). So the behaviour here is unchanged and the reason for it has
-   * moved: not "no transform exists" but "nothing draws through the one that
-   * does" — which is cheaper than it was, not free, since the transform is
-   * shared and the drawing is not.
+   * The transform exists (`viewport.ts`'s `mapRect`), but nothing draws a
+   * region through it: L1's design put that out of scope by name
+   * (`docs/superpowers/specs/2026-08-07-l1-geometry-design.md`, "What L1
+   * is for").
    */
   travelled: boolean
 }
@@ -124,10 +106,8 @@ export interface ReviewEntry {
  * viewed edition corresponds to.
  *
  * **Resolved outward from the viewed edition, once per edition — not once per
- * note.** The two directions agree: measured over the real sidecar and a
- * composed three-edition route, every slot that lands round-trips to exactly
- * where it started — 193 of 193 on Go-Toubun v01 and 28 of 28 composed through
- * the hub, no disagreement either way (see the M5c plan's "What the prototype
+ * note.** The two directions agree: every slot that lands round-trips to
+ * exactly where it started (see the M5c plan's "What the prototype
  * measured"). Resolving this way holds `from` fixed for the whole scan, which
  * is what `Binding`'s single-pair route memo is built for; resolving per note
  * would alternate pairs and thrash it, the case O14's entry names as its
@@ -218,9 +198,9 @@ export function reviewList(
  *
  * The same question `notesHere` answers, asked once for the whole edition
  * instead of once per slot — which is what continuous-scroll mode needs, since
- * it mounts every group at once and would otherwise scan the note list 195
- * times on the primary corpus volume, resolving on each. This costs one
- * resolve per *note*, of which a work has a handful, whatever its length.
+ * it mounts every group at once and would otherwise scan the note list once
+ * per slot, resolving on each. This costs one resolve per *note*, of which a
+ * work has a handful, whatever its length.
  *
  * Built on `reviewList`, so it is the same walk rather than a third
  * implementation of travel — and `notes.test.ts` pins that it agrees with
@@ -350,33 +330,21 @@ export interface Box {
  * wrong frame of reference rather than a rounding error, however small the
  * inset happens to be on any one page.
  *
- * **The element is now routinely far larger than the artwork, in both axes,
- * and until `upscaleToFit` it never was.** *2026-08-08.* This doc used to say
- * "downscaled to fit", and while a page was sized to its own content — `width`
- * and `height` `auto` under both `max-*` at 100%, which is still what
- * `pageStyle` emits with the setting off — the two boxes were the same box.
- * `pageStyle`'s own doc says so: with `auto`, `contain` "has nothing to
- * reconcile, since box and content coincide". This function was an identity
- * for the whole of its life, describing a distinction that had not arrived.
+ * **The element can be far larger than the artwork, in both axes.** While a
+ * page is sized to its own content — `width` and `height` `auto` under both
+ * `max-*` at 100%, which is what `pageStyle` emits with `upscaleToFit` off —
+ * the two boxes are the same box. `pageStyle`'s own doc says so: with `auto`,
+ * `contain` "has nothing to reconcile, since box and content coincide".
  * `upscaleToFit` sets both to `100%`, so the element is the whole cell and the
- * art is whatever `contain` fits inside it. Measured in a browser on
- * `gotoubun-v01`, single mode at fit-whole, 2026-08-08: a 1385x475 element
- * holding **334x475** of artwork, inset **526px** each side, from a 2147x3056
- * scan. The arithmetic below needed nothing for that — `Math.min` of the two
- * ratios is scale-free and was already right in both directions — but a caller
- * that read the element instead of asking this went from exactly right to
- * 526px out, which is where `Annotations` was until this became its
- * measurement too.
+ * art is whatever `contain` fits inside it. The arithmetic below needs nothing
+ * for that — `Math.min` of the two ratios is scale-free — but a caller that
+ * read the element instead of asking this would be out by the inset.
  *
- * **`hug` is the half that did need arithmetic.** `pageStyle` emits
+ * **`hug` is the half that needs arithmetic.** `pageStyle` emits
  * `object-position`, and `contain` puts the leftover wherever that says: `0%`
- * against the left edge, `100%` against the right, and the `50%` this used to
- * assume split evenly. The two cells of a real two-page pair hug the seam, so
- * an evenly split inset is wrong there by half the leftover. Measured the same
- * session, two-page mode: this answered 179 for the left cell and the same 179
- * for the right — 179 and 872 across the page area — where the artwork was
- * actually at **359** and **693**. Each 692.5px cell holds 334px of art, so
- * the 359px of leftover was being halved instead of pushed to one side.
+ * against the left edge, `100%` against the right, and `50%` splits it evenly.
+ * The two cells of a real two-page pair hug the seam, so an evenly split inset
+ * would be wrong there by half the leftover.
  *
  * **Only the horizontal is ever hugged.** `pageStyle` writes `50%` for the
  * vertical component of all three positions — `0% 50%`, `100% 50%`, `50% 50%`
@@ -412,7 +380,7 @@ export function paintedBox(
  * Where a page's painted artwork sits in the coordinates of the element that
  * hosts the overlay — that host's own top-left, not the `<img>`'s.
  *
- * Two rects go in, not one, because since `upscaleToFit` the `<img>` is
+ * Two rects go in, not one, because under `upscaleToFit` the `<img>` is
  * routinely not the host: `PageAnnotations` overlays a sibling `<div>` sized
  * to the page area, and the image inside it can sit at a different screen
  * position from that area even though one contains the other. `outer` is the
@@ -424,12 +392,11 @@ export function paintedBox(
  * **With matching origins, every wrong order and sign gives the same
  * answer.** Swap `inner`/`outer`, or subtract the other way, and
  * `inner.left - outer.left` still comes out 0 whenever the two rects start at
- * the same point — which is the ordinary fixture in a test, and even the
- * ordinary page before `upscaleToFit` gave the element and the image the same
- * box. Only a host offset from its image — scrolled, or inset by layout —
- * makes the four ways of combining these disagree, which is exactly why this
- * is its own function with its own tests rather than arithmetic inlined
- * where every caller's rects happen to coincide.
+ * the same point — which is the ordinary fixture in a test. Only a host
+ * offset from its image — scrolled, or inset by layout — makes the four ways
+ * of combining these disagree, which is exactly why this is its own function
+ * with its own tests rather than arithmetic inlined where every caller's
+ * rects happen to coincide.
  */
 export function artOffset(
   outer: { left: number; top: number },
@@ -445,10 +412,9 @@ export function artOffset(
 /**
  * A point in an element's pixels, as fractions of the painted page.
  *
- * The name says slot and the doc says page, which is the whole of `Region`'s
- * correction in one identifier. Kept rather than renamed: it is exported,
- * called from `App.tsx`'s `pointOn` and named by its own tests, and this pass
- * changes comments only.
+ * The name says slot and the doc says page: `Region`'s doc explains why the
+ * two coincide everywhere but a joined spread. The name stays because it is
+ * exported, called from `App.tsx`'s `pointOn` and named by its own tests.
  *
  * Deliberately **not** clamped: a point in the letterbox reads as outside
  * `0..1`, and `regionFromDrag` is what clamps a whole drag once both ends are
@@ -541,10 +507,9 @@ export type Gesture =
 /**
  * What a press on the page area means while the editor is open.
  *
- * Extracted from `App.tsx` because it is the most-changed rule of this
- * milestone and lived where nothing could test it: grab-any-box, innermost
- * first, background-finishes, and the two guards that keep a press on the
- * facing page of a spread from being read as either.
+ * A rule of its own, apart from `App.tsx`, so that it can be tested:
+ * grab-any-box, innermost first, background-finishes, and the two guards that
+ * keep a press on the facing page of a spread from being read as either.
  *
  * The order matters and is the rule:
  *
@@ -615,9 +580,8 @@ export interface DragStart {
  * Whether a press pans the page rather than reaching `gestureFor` above.
  *
  * Asked *before* `gestureFor` rather than as a fifth case inside it. That
- * function is described in its own doc as "the most-changed rule of this
- * milestone and lived where nothing could test it", and rewriting it to carry
- * the pan would spend exactly the testability that comment records.
+ * function is a rule of its own so that it can be tested, and rewriting it to
+ * carry the pan would spend exactly that testability.
  *
  * **`zoomable` is one flag, not two**: the module being on *and* something
  * being drawn to move the rect over. It is the same predicate the three zoom
@@ -639,21 +603,18 @@ export interface DragStart {
  * text in the note list pans the manga underneath it, and so does a drag begun
  * on a tab.
  *
- * *This was "the press is on a page image" until 2026-08-08*, which excluded
- * the same controls by being narrower still. That was the narrowest test true
- * of the page and false of a button — and it also made the letterbox around
- * the page dead to a drag, which a reader trying it said so of. The cost had
- * been judged acceptable on the reasoning that the letterbox shrinks as the
- * zoom grows; what that missed is that a reader reaches for the nearest grey
- * to drag from, and being ignored there reads as the pan being broken rather
- * than as a boundary. Excluding controls also means the next component added
+ * Requiring that the press be on a page image would be the narrowest test true
+ * of the page and false of a button, but it would also make the letterbox
+ * around the page dead to a drag: a reader reaches for the nearest grey to
+ * drag from, and being ignored there reads as the pan being broken rather than
+ * as a boundary. Excluding controls also means the next component added
  * inside the page area is included by default and has to opt out, which is the
  * right way round for a background gesture. The caller's `onControl` has to be
  * **ancestor-aware** for that: a press on a note-list entry lands on the
  * *text*, so a target-only test answers `false` for exactly the case the image
- * test was protecting against.
+ * test would protect against.
  *
- * `stopPropagation` on every child was the other candidate and lost again: it
+ * `stopPropagation` on every child is the other candidate and is not used: it
  * would put "and this is why the manga does not pan" in `NoteList.tsx` and
  * `Annotations.tsx`, where nobody looking for the pan rule would find it.
  *
@@ -697,10 +658,10 @@ export function regionUnderDrag(
  * A click rather than a drag, while drawing, plants a point instead.
  *
  * A one-pixel rectangle would be a marker a reader could never find again, and
- * discarding it — which is what this used to do — meant a click on the page
- * did nothing at all and the only way to mark a panel was to draw a box round
- * it. A *move* is exempt: clicking once inside a region without moving it is a
- * no-op that must not delete the region it landed on.
+ * discarding it would mean a click on the page did nothing at all and the only
+ * way to mark a panel was to draw a box round it. A *move* is exempt: clicking
+ * once inside a region without moving it is a no-op that must not delete the
+ * region it landed on.
  */
 export function anchorFrom(
   intent: 'draw' | 'move',
@@ -739,8 +700,8 @@ export function editsToWrite(
  *
  * What a stale-validator retry sends. Notes belonging to ids this reader did
  * not touch survive exactly as the other device wrote them, which is the part
- * that matters; a note both devices edited takes this reader's copy, which is
- * last-write-wins and always was.
+ * that matters; a note both devices edited takes this reader's copy; the
+ * merge is last-write-wins.
  */
 export function mergeOver(theirs: Note[], mine: Note[]): Note[] {
   return mine.reduce(withNote, theirs)
@@ -778,9 +739,9 @@ export function withoutNote(notes: Note[], id: string): Note[] {
  *
  * One record with eight transitions rather than three states written three
  * setters at a time. The argument for it is `nothingOpen` below: closing the
- * editor is the same three-field move made from four different places, and it
- * was written out twice in `App.tsx` before this existed — which is exactly
- * how a fourth exit ends up clearing two of the three.
+ * editor is the same three-field move made from four different places, and
+ * written out at each of them it is exactly how a fourth exit ends up
+ * clearing two of the three.
  *
  * `edits` is a map rather than one draft, because the editor is an **edit
  * mode**: while it is open every region on the page can be grabbed and moved,
@@ -828,12 +789,12 @@ export function shownNote(draft: Draft): Note | undefined {
 /**
  * `n`: always a brand-new note, however many the slot already holds.
  *
- * One note per panel is the ordinary case, and this key used to *reopen* the
- * note already there — which made a second note on a page impossible, since
- * nothing else creates one. The reasoning for reopening was to stop `n`
- * pressed twice leaving duplicates, and it protected against nothing: a draft
- * is not a note until it is written, so a second press only ever replaced an
- * unsaved one. Reopening an existing note is what its margin tab is for.
+ * One note per panel is the ordinary case, and reopening the note already
+ * there would make a second note on a page impossible, since nothing else
+ * creates one. Reopening to stop `n` pressed twice leaving duplicates would
+ * protect against nothing: a draft is not a note until it is written, so a
+ * second press only ever replaces an unsaved one. Reopening an existing note
+ * is what its margin tab is for.
  *
  * The colour is the next one nobody on **this page** is using, so two notes on
  * one page come out different without a reader choosing — picked from `here`
@@ -943,16 +904,13 @@ export function anchorNote(
 /**
  * `a`: show the review list, or close it if that is what is open.
  *
- * **It cannot reach a reader mid-edit, and this comment used to say it did.**
- * This function has a second arm, where `panel: 'edit'` becomes `'review'`,
- * and no keypress gets to it: `keyplan.ts` returns no plan at all for
- * anything but `Escape` while the editor is open, because the editor is a
- * dialog that takes text and a keystroke there means the note. That is the
- * behaviour a reader typing a note wants, so it is the comment that was
- * wrong rather than the guard — the arm is reachable only by a caller that
- * does not exist. The edits are left alone: swapping surfaces is not
- * finishing, and a reader who presses `a` mid-session has not asked to drop
- * what they have touched.
+ * **It cannot reach a reader mid-edit.** This function has a second arm, where
+ * `panel: 'edit'` becomes `'review'`, and no keypress gets to it: `keyplan.ts`
+ * returns no plan at all for anything but `Escape` while the editor is open,
+ * because the editor is a dialog that takes text and a keystroke there means
+ * the note. The arm is reachable only by a caller that does not exist. The
+ * edits are left alone: swapping surfaces is not finishing, and a reader who
+ * presses `a` mid-session has not asked to drop what they have touched.
  */
 export function toggleReview(draft: Draft): Draft {
   return { ...draft, panel: draft.panel === 'review' ? undefined : 'review' }

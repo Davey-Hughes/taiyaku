@@ -1,14 +1,7 @@
 /* The library's own filter row, as underlined tabs — the mockup the user
  * chose (spec 2026-09-17 §7.2): the pressed one in the text colour over the
  * accent, the rest muted. "Added" (`.sort`) sits at the row's far end,
- * because it sorts where the others filter.
- *
- * **This was `.chips.library-chips` until ⑤c.** The bare `.chips` it
- * qualified held the proposals inbox's pills — two consumers, both in
- * `Proposals.tsx` — and lived here for as long as that screen was unstyled.
- * ⑤c gave the inbox its own rules in `admin.css`, so the co-class had nothing
- * left to qualify and the four declarations this rule used to inherit from it
- * are written out below. */
+ * because it sorts where the others filter. */
 .library-chips {
   display: flex;
   flex-wrap: wrap;
@@ -18,7 +11,7 @@
 }
 
 /* The filters' group (O156): a flex row of its own carrying the row's
- * gaps, so each button sits where it did before the group existed —
+ * gaps, so each button sits where it would if the group did not exist —
  * `Shell.browser.test.tsx` measures that. Not `display: contents`, whose
  * element browsers have at times left out of the accessibility tree, and
  * the group's name with it. */
@@ -52,12 +45,11 @@
 /* The continue strip — spec 2026-09-17 §7.2: a row of cover cards under a
  * heading with a hairline after it. The row scrolls sideways inside itself,
  * so the page never does. `.tile-unreadable` is the same card with no link,
- * for a work whose files have left the disk — O62, applied here for the
- * reason I1 of the whole-branch review names this strip: the reader was
- * mid-read when the files went. The list pads itself by `--space-1` on the
- * top and sides, and pulls its margin back by as much there, so a cover's
- * hairline and a card's focus ring are not clipped at its edge; the
- * bottom's `--space-2` keeps the cards clear of a scrollbar. */
+ * for a work whose files have left the disk — O62, applied here because the
+ * reader may be mid-read when the files go. The list pads itself by
+ * `--space-1` on the top and sides, and pulls its margin back by as much
+ * there, so a cover's hairline and a card's focus ring are not clipped at its
+ * edge; the bottom's `--space-2` keeps the cards clear of a scrollbar. */
 .continue h2 {
   display: flex;
   align-items: center;
@@ -108,9 +100,9 @@
  * unfiled-work tiles render the identical cover/title box whether or not the
  * volume is still readable — see `Series.tsx`'s `VolumeCover` and
  * `SeriesGrid.tsx` — and the only difference is whether it sits inside a
- * `<Link>` or a plain `<span>`. `color: inherit` was already the rule here
- * rather than `--accent`, so this needs no separate colour: the readable
- * case already reads as plain text, not an accent-coloured link. */
+ * `<Link>` or a plain `<span>`. `color: inherit` is the rule here rather than
+ * `--accent`, so this needs no separate colour: the readable case already
+ * reads as plain text, not an accent-coloured link. */
 .grid li a,
 .volumes li a,
 .grid li .tile-unreadable,
@@ -220,13 +212,11 @@
 }
 
 /* §3 puts the alignment mark **on the cover**, which needs a positioned box
- * around it — Plan A shipped it below the title and its ledger carried that
- * forward as this plan's to fix.
+ * around it.
  *
  * `--bg`/`--text` rather than a translucent black: a mark over artwork
  * has to stay legible against a white gutter and a saturated cover alike,
- * which is the same requirement `--box-*` exists for above and the same one
- * `Login.tsx`'s hardcoded `#111` failed. */
+ * which is the same requirement `tokens.css`'s `--box-*` exists for. */
 .cover-box {
   position: relative;
   display: block;
@@ -248,8 +238,8 @@
 /* §3's preset B, in a box that scrolls sideways (spec 2026-09-17 §7.2). The
  * table takes the UI face and gives the figures face back to its page-count
  * cells only: `base.css` puts the figures face on every table, and here that
- * drew the digits inside a volume's file name heavier than its title. Its
- * headings are `base.css`'s — muted, 500. */
+ * would draw the digits inside a volume's file name heavier than its title.
+ * Its headings are `base.css`'s — muted, 500. */
 .table-scroll {
   max-width: 100%;
   overflow-x: auto;
@@ -286,14 +276,14 @@
 /* The download control in a cell — spec C2 §8, as the addendum's §2.1 resolves
  * it for this layout: the page count *is* the link, so no column is added.
  *
- * **`--accent` is wrong here even though these are links**, which a browser
- * pass caught and no test could. `.editions a` above paints the Volume cell,
- * which navigates to the reader; painting the page counts the same colour
- * made every number in the table read as the same kind of thing as that,
- * when one opens a volume and the other downloads 334 MB of it. §2.1's
- * argument was that linking the number "adds no element to the layout at
- * all" — true of the DOM and false of the visual weight, so the colour stays
- * the cell's own and a dotted underline carries the affordance instead. */
+ * **`--accent` is wrong here even though these are links.** `.editions a`
+ * above paints the Volume cell, which navigates to the reader; painting the
+ * page counts the same colour would make every number in the table read as
+ * the same kind of thing as that, when one opens a volume and the other
+ * downloads it. §2.1's argument was that linking the number "adds no element
+ * to the layout at all" — true of the DOM and false of the visual weight, so
+ * the colour stays the cell's own and a dotted underline carries the
+ * affordance instead. */
 .editions a.get {
   color: inherit;
   text-decoration: underline dotted;
@@ -307,8 +297,8 @@
 /* A dashed border, because the cell means "this edition is not here" and a
  * fade alone reads as "loading" against a screen whose covers arrive one at a
  * time. The dash is `--muted` rather than the text colour at `opacity: 0.55`,
- * which measured 3.60:1 on Paper's ground (spec 2026-09-17 §5 ②): the token
- * clears 4.5:1 in both themes, and the border stays at full `--line-strong`.
+ * which is 3.60:1 on Paper's ground (spec 2026-09-17 §5 ②): the token clears
+ * 4.5:1 in both themes, and the border stays at full `--line-strong`.
  * `index.css.test.ts` holds both. */
 .editions td.missing {
   border: 1px dashed var(--line-strong);
@@ -335,33 +325,26 @@
 
 /* Dimmed, not hidden — see the component's own note.
  *
- * **On the cover, not the whole tile.** Opacity on the `<li>` also dimmed
+ * **On the cover, not the whole tile.** Opacity on the `<li>` would also dim
  * `.title` and the `i` button — legible text and a control the reader can
  * still use (the link still navigates, the button still opens the panel;
- * neither is disabled) faded to a fail: measured (Chromium system colours,
- * whole-`<li>` opacity composited against the page's `Canvas` backdrop)
- * `.title` at **3.98:1 light**, the button at **3.71:1 light / 3.01:1
- * dark** — all below WCAG AA's 4.5:1. What the dimming is meant to say is
- * "the edition you picked does not cover this volume", which is a fact about
- * the artwork, so the opacity now scopes to `.cover-box` and leaves the
- * title and button at full opacity: measured after, `.title` on `Canvas` is
- * **21.00:1 light / 18.73:1 dark** and the button's `CanvasText` on
- * `ButtonFace` is **18.26:1 light / 5.33:1 dark** — both comfortably clear.
+ * neither is disabled) — to a contrast below WCAG AA's 4.5:1. What the dimming
+ * is meant to say is "the edition you picked does not cover this volume",
+ * which is a fact about the artwork, so the opacity scopes to `.cover-box` and
+ * leaves the title and button at full opacity.
  *
- * **Opacity *and* greyscale, because opacity alone is ambiguous here.** A
- * cover at reduced opacity on a screen whose covers arrive one at a time
- * reads as "still loading"; draining the colour out of the artwork as well
- * reads as a deliberate state, because nothing about loading makes an image
- * monochrome. The two together say "this volume exists and the edition you
- * picked does not cover it", which is the fact §3 wants shown rather than
- * hidden.
+ * **Opacity *and* greyscale, because opacity alone is ambiguous here.** A cover
+ * at reduced opacity on a screen whose covers arrive one at a time reads as
+ * "still loading"; draining the colour out of the artwork as well reads as a
+ * deliberate state, because nothing about loading makes an image monochrome.
+ * The two together say "this volume exists and the edition you picked does not
+ * cover it", which is the fact §3 wants shown rather than hidden.
  *
  * **`.cover-missing` as well as `img`.** `Cover.tsx` calls a cold cover "the
- * common first-run case, not an edge one", and when it fails to load it
- * renders that placeholder span instead of an `<img>` at all. Greyscale on
- * `img` alone left a dimmed volume with a failed cover at opacity by itself
- * — the one cue this rule's own comment above says reads as "still
- * loading". */
+ * common first-run case, not an edge one", and when it fails to load it renders
+ * that placeholder span instead of an `<img>` at all. Greyscale on `img` alone
+ * would leave a dimmed volume with a failed cover at opacity by itself — the
+ * one cue this rule's own comment above says reads as "still loading". */
 .volumes li.without .cover-box {
   opacity: 0.5;
 }
@@ -375,13 +358,12 @@
  * sits in the same place under a tile and must not look like a different
  * kind of thing.
  *
- * **An inline display is load-bearing, not tidying** — `inline-flex` since
- * the style pass, so its 24 px box centres the arrow. `.volumes li a`
- * (above) sets `display: flex; flex-direction: column` on every anchor in
- * a tile — written when the tile's own `<Link>` was the only anchor that had
- * ever been in one. Without this override the control stretches to the full
- * tile width and stacks. jsdom computes no layout, so `Series.test.tsx`
- * passes either way and only a browser sees it. */
+ * **An inline display is load-bearing, not tidying** — `inline-flex`, so its
+ * 24 px box centres the arrow. `.volumes li a` (above) sets `display: flex`
+ * and `flex-direction: column` on every anchor in a tile. Without this
+ * override the control stretches to the full tile width and stacks. jsdom
+ * computes no layout, so `Series.test.tsx` passes either way and only a
+ * browser sees it. */
 .volumes a.get {
   display: inline-flex;
   align-items: center;
@@ -439,17 +421,16 @@
 /* `178 of 180` is the number this panel exists to show, so it must clear
  * WCAG AA (4.5:1) as text, not merely as decoration. `ButtonFace` is a
  * mid-grey in dark and near-white in light, so the same opacity lands at two
- * very different ratios: measured (Chromium system colours, `CanvasText` at
- * this opacity over `ButtonFace`) at the previous `0.75`, **3.81:1 dark /
- * 9.63:1 light** — dark fails. At `0.9`, **4.69:1 dark / 15.46:1 light** —
- * both clear 4.5:1, with headroom rather than sitting on the boundary. */
+ * very different ratios. At `0.9` they are 4.69:1 dark and 15.46:1 light, both
+ * clearing 4.5:1 with headroom rather than sitting on the boundary; `0.75`
+ * fails in dark. */
 .alignment-panel .paired {
   opacity: 0.9;
 }
 
-/* The field on `--field` like every input `base.css` draws — it overrode that
- * with `--bg` until the style pass — at most 24 rem wide, and the whole row on
- * a phone. Its border, corners, colour and font are `base.css`'s. */
+/* The field on `--field` like every input `base.css` draws, at most 24 rem
+ * wide, and the whole row on a phone. Its border, corners, colour and font
+ * are `base.css`'s. */
 .search-box {
   display: flex;
   align-items: center;
@@ -488,9 +469,9 @@
   overflow-wrap: anywhere;
 }
 
-/* The empty states (`EmptyState.tsx`), which had no rules of their own: the
- * heading is `base.css`'s, the prose muted, the command in a box of its own
- * that scrolls rather than widening the page. */
+/* The empty states (`EmptyState.tsx`): the heading is `base.css`'s, the prose
+ * muted, the command in a box of its own that scrolls rather than widening
+ * the page. */
 .empty p {
   max-width: 40rem;
   color: var(--muted);

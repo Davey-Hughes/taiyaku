@@ -58,9 +58,9 @@ export type WriteGate<T = NotesDoc> =
 
 /**
  * The sentence a reader sees when their notes have stopped reaching the
- * server. It names the consequence first, because that is the part that was
- * missing: the reader could see the editor, the notes, the undo history and
- * no sign at all that any of it was still being saved.
+ * server. It names the consequence first, because otherwise a reader sees the
+ * editor, the notes, the undo history and no sign at all that any of it is
+ * still being saved.
  */
 const NO_VALIDATOR =
   'These notes are not being saved: this device has no current copy of them ' +
@@ -76,25 +76,24 @@ const NO_VALIDATOR =
  * driving a debounce is a decision nothing tests.
  *
  * **A missing validator refuses out loud; only a missing document is silent.**
- * These were one branch — `if (!notesDoc || notesEtag === undefined) return` —
- * and the pair of them being the same branch is what made the defect
- * invisible. Two things reach "document, no validator", and neither is exotic:
- * a load whose notes read failed (`startup.ts`'s `Opened.notesEtag`, absent by
- * design so that a failed read can never become an unconditional write), and a
- * write whose response carried no `ETag` — `api.ts`'s `putNotes` reports that
- * as `etag: undefined` and `App.tsx` stores it. Either one killed every later
- * write for the rest of the session while the editor went on accepting
- * keystrokes, and nothing anywhere said so.
+ * One branch for both — `if (!notesDoc || notesEtag === undefined) return` —
+ * would make the defect invisible. Two things reach "document, no validator",
+ * and neither is exotic: a load whose notes read failed (`startup.ts`'s
+ * `Opened.notesEtag`, absent by design so that a failed read can never become
+ * an unconditional write), and a write whose response carried no `ETag` —
+ * `api.ts`'s `putNotes` reports that as `etag: undefined` and `App.tsx` stores
+ * it. Either one would kill every later write for the rest of the session
+ * while the editor went on accepting keystrokes, and nothing anywhere would
+ * say so.
  *
  * The principle is §4.1a's, taken from the 412 path rather than invented here:
- * **refuse rather than write without a validator, and tell the reader.** The
- * refusal was already right. What was missing was the second half.
+ * **refuse rather than write without a validator, and tell the reader.**
  *
- * `notice` defaults to `NO_VALIDATOR` — every existing call site names only
- * `doc` and `etag`, and gets the notes wording it always got. A caller
- * writing a different kind of document (`truthWrite.ts`'s `saveTruth`) passes
- * its own sentence, so a reader who cannot save their labels is not told
- * "these notes are not being saved".
+ * `notice` defaults to `NO_VALIDATOR`, the notes wording, so a call site that
+ * names only `doc` and `etag` gets it. A caller writing a different kind of
+ * document (`truthWrite.ts`'s `saveTruth`) passes its own sentence, so a
+ * reader who cannot save their labels is not told "these notes are not being
+ * saved".
  */
 export function writeGate<T>(
   doc: T | undefined,
@@ -124,8 +123,7 @@ export type SaveOutcome =
     }
   /**
    * Nothing landed. `notice` is what the reader is shown; `error` carries a
-   * failed re-read for the caller to log, which is what `App.tsx`'s
-   * `console.error(rereadErr)` did with it.
+   * failed re-read for the caller to log.
    */
   | { kind: 'refused'; notice: string; error?: unknown }
 
@@ -144,34 +142,21 @@ const KEPT_ON_TOP =
  * over what arrived by id, and write that. Retried once and once only.
  *
  * **On a stale validator it re-reads and re-applies rather than asking the
- * reader to try again.** With a Save button, a `412` could stop and say
- * "somebody else wrote; press Save again" — the reader was standing there with
- * their finger on it. Writes are automatic now, so there is nobody to ask: the
- * honest thing is to take the other device's document, lay this reader's own
- * notes back over it by id, and write that. Notes belonging to *other* ids
- * survive untouched, which is the part that matters; two devices editing the
- * same note is still last-write-wins, and always was.
+ * reader to try again.** Writes are automatic, so there is nobody to ask
+ * "somebody else wrote; press Save again": the honest thing is to take the
+ * other device's document, lay this reader's own notes back over it by id, and
+ * write that. Notes belonging to *other* ids survive untouched, which is the
+ * part that matters; two devices editing the same note is last-write-wins.
  *
  * Retried once and once only. A second failure is not a race, it is something
  * wrong, and a loop would hammer the server with a reader watching nothing
  * happen.
  *
- * **The retry writes against the validator the re-read returned.** Stated here
- * because the version this replaced did not. `App.tsx:1962` recursed, and the
- * recursive call re-read `notesEtag` from the render closure at 1939/1942 —
- * which `setNotesEtag(fresh.etag)` at 1959 does not update, because a
- * `useState` setter does not change the `const` the current render bound. So
- * the second write always re-sent the validator that had just been refused,
- * always 412'd, and — with `retry` now `false` — fell to `setNotesNotice` at
- * 1971 and returned *normally*. Control resumed in the outer call at 1963,
- * which overwrote that refusal with "yours were kept on top". **The merge
- * never landed and the reader was told it had.**
+ * **The retry writes against the validator the re-read returned.** Re-sending
+ * the validator that had just been refused would always 412, so the merge
+ * would never land.
  *
- * Nothing threw, so the `console.error` never fired; `App.tsx` is at 0%
- * coverage, so no test ran the path; and reaching it needs a real concurrent
- * writer, which no manual pass ever set up. `notesWrite.test.ts` is the four
- * cases that hold it shut, and they were watched failing against a faithful
- * port of the code above before this was written.
+ * `notesWrite.test.ts` has the cases that hold it shut.
  */
 export async function saveNotes(
   work: string,
@@ -190,16 +175,15 @@ export async function saveNotes(
     try {
       fresh = await ports.get(work)
     } catch (rereadErr) {
-      // `App.tsx:1967–1971`: the re-read's own failure is logged by the
-      // caller and the reader is shown the original refusal.
+      // The re-read's own failure is logged by the caller and the reader is
+      // shown the original refusal.
       return { kind: 'refused', notice: message, error: rereadErr }
     }
     // A server old enough to answer this route without an `ETag` leaves
     // nothing to write conditionally against, and there is no unconditional
     // write anywhere in this reader. Refusing is what the load path already
     // does when the notes read fails; inventing a write here would be the one
-    // place that guessed. Unreachable from the code this replaced, which read
-    // the closure's validator instead of this one.
+    // place that guessed.
     if (fresh.etag === undefined) return { kind: 'refused', notice: message }
     try {
       const landed = await ports.put(work, fresh.etag, {

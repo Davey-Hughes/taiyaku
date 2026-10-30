@@ -8,13 +8,13 @@
  *
  * **It asks the status route once on mount, and that is not optional.** The
  * server keeps `ServeState.scans` precisely so a client can poll a scan across
- * requests; a row that only ever polled after pressing its own button showed
- * nothing at all to an admin who navigated away during a scan and came back —
- * no progress, no eventual report, and an enabled "Scan directory" whose only
- * answer was a 409 about the scan they had started themselves. Whole-branch
- * review, 2026-09-04. The cost is one request per root per mount, against an
- * in-memory registry lookup plus one indexed row — far below the dry-run
- * counts, which stay lazy because each of those is a real derivation.
+ * requests; a row that only ever polled after pressing its own button would
+ * show nothing at all to an admin who navigated away during a scan and came
+ * back — no progress, no eventual report, and an enabled "Scan directory"
+ * whose only answer would be a 409 about the scan they had started themselves.
+ * The cost is one request per root per mount, against an in-memory registry
+ * lookup plus one indexed row — far below the dry-run counts, which stay lazy
+ * because each of those is a real derivation.
  *
  * **A field is patched on blur, and only the field the admin actually
  * edited** — an absent key means "leave this column alone" to
@@ -23,23 +23,20 @@
  * column to `null`, not to `''`**: the schema's nullable columns mean "nothing
  * set", and an empty string is a value nothing in the store ever means.
  *
- * **"Edited" is an `input` event, not a value comparison, and getting there
- * took three rounds of one review.** The obvious rule — write when the box
- * differs from what the row holds — could not work for `exclude_globs`, whose
- * value the row did not report, so `from` answered `''` forever and an admin
- * who set a pattern then emptied the box hit `'' === ''` and wrote nothing
- * (pass 1). Comparing against the last value *this row* had sent fixed that
- * only within a single mount, since that state starts empty on every load
- * (pass 3). Treating the column's value as *unknown* instead removed the
- * guard altogether, so a bare focus-and-tab-away sent `{exclude_globs: null}`
- * and silently deleted a stored pattern (pass 4). Whether somebody typed in
- * the box is the fact all three were reaching for, and it is the one the DOM
- * already reports. **That rule is unchanged now that the row does report the
- * column** — an edit is still what sends, and the equality guard is still the
- * second check rather than the first. What did go is `from`'s `undefined`
- * arm, which existed only to say "this row cannot describe this column".
+ * **"Edited" is an `input` event, not a value comparison.** The obvious rule —
+ * write when the box differs from what the row holds — would fail for a column
+ * whose value the row does not report: `from` would answer `''` forever, and
+ * an admin who set a pattern then emptied the box would hit `'' === ''` and
+ * write nothing. Comparing against the last value *this row* had sent would
+ * fix that only within a single mount, since that state starts empty on every
+ * load. Treating the column's value as *unknown* instead would remove the
+ * guard altogether, so a bare focus-and-tab-away would send
+ * `{exclude_globs: null}` and silently delete a stored pattern. Whether
+ * somebody typed in the box is the fact all three reach for, and it is the one
+ * the DOM already reports. An edit is what sends, and the equality guard is
+ * the second check rather than the first.
  *
- * **`exclude_globs` is read, patched, and applied — O92 is closed.** The
+ * **`exclude_globs` is read, patched, and applied (O92).** The
  * column ships in migration 1, `scan::update_root` patches it, `GET
  * /api/library/roots` sends it back, and `scan::scan_root` reads it and
  * excludes what it matches. It is drawn as a `<textarea>` rather than the
@@ -162,7 +159,7 @@ export interface RootRowProps {
  * `{ [x: string]: string | null }`, which is not a `RootPatch` — TypeScript
  * widens a computed key even when the key's type is a union of literals — so
  * the alternative was a cast, and a cast here would silently accept a field
- * name `RootPatch` does not have. Four three-line builders cost less than one
+ * name `RootPatch` does not have. Four one-line builders cost less than one
  * `as` that turns a typo into a 400.
  */
 interface TextField {
@@ -179,12 +176,9 @@ interface TextField {
   /**
    * What the `root` row says this column holds.
    *
-   * **Every column answers, including `exclude_globs`.** It used to be the
-   * exception — the list route did not send it, so `from` could only answer
-   * `undefined` and the blur guard had to let an unreadable column always
-   * send. O92's readable half closed that: `root_json` carries the column,
-   * so an edit back to the stored string writes nothing here exactly as it
-   * does for the other three.
+   * **Every column answers, including `exclude_globs`**: `root_json` carries
+   * it, so an edit back to the stored string writes nothing here exactly as it
+   * does for the other three (O92).
    */
   from: (root: Root) => string
   patch: (value: string | null) => RootPatch
@@ -201,16 +195,15 @@ interface TextField {
    * The row's help, beside the label, drawn only when set.
    *
    * **`exclude_globs` alone, because it alone hides a trap the matcher's own
-   * correctness makes invisible.** Measured against the `ignore` crate,
-   * 2026-09-09: `**\/extras/**` does not exclude the `extras` directory it
-   * names, only files under it — so a scan still descends into every
-   * `extras`, still records one as a scan entry, and reports "Directories
-   * excluded: 0", which reads to an admin as "my pattern did nothing" when
-   * gitignore did exactly what was asked. The label already says what the
-   * syntax is; this says what one shape of it does that has no equivalent
-   * trap on the other three fields, and it is silent about validation on
-   * purpose — the server rejects a dangling `\` and an unclosed `{` and
-   * accepts everything else, and this line must not imply otherwise.
+   * correctness makes invisible.** With the `ignore` crate, `**\/extras/**`
+   * does not exclude the `extras` directory it names, only files under it — so
+   * a scan descends into every `extras`, records one as a scan entry, and
+   * reports "Directories excluded: 0", which reads to an admin as "my pattern
+   * did nothing" when gitignore did exactly what was asked. The label already
+   * says what the syntax is; this says what one shape of it does that has no
+   * equivalent trap on the other three fields, and it is silent about
+   * validation on purpose — the server rejects a dangling `\` and an unclosed
+   * `{` and accepts everything else, and this line must not imply otherwise.
    */
   help?: string
 }
@@ -242,11 +235,10 @@ const TEXT_FIELDS: TextField[] = [
   },
   {
     name: 'exclude_globs',
-    // O92 is closed: the scanner applies this now. The label says what the
-    // syntax is, because gitignore's is not what "globs" alone implies —
-    // `!` negates, a leading `/` anchors, a trailing `/` means the
-    // directory. It does *not* claim the pattern is checked: the server
-    // rejects a dangling `\` and an unclosed `{` and accepts everything
+    // The label says what the syntax is, because gitignore's is not what
+    // "globs" alone implies — `!` negates, a leading `/` anchors, a trailing
+    // `/` means the directory. It does *not* claim the pattern is checked: the
+    // server rejects a dangling `\` and an unclosed `{` and accepts everything
     // else, which is a guard against two typos rather than a verification.
     label: 'Exclude globs (one gitignore pattern per line)',
     title: 'Exclude globs',
@@ -388,16 +380,13 @@ export function RootRow({
    * entry with the row instead.
    *
    * **A write happens because somebody edited a box, never because its value
-   * differs from something.** Two rounds of C4 PR A tried to decide it by
-   * comparison and both were wrong, in opposite directions: comparing against
-   * the row meant `exclude_globs` — whose stored value the row could not then
-   * report — could never be cleared, and treating its value as *unknown*
-   * instead meant a bare focus-and-tab-away sent `{exclude_globs: null}` and
-   * silently deleted a stored pattern. Editing is the fact both were reaching
-   * for, and an `input` event is what says it happened. Whole-branch review
-   * passes 1, 3 and 4. **The row does report the column now** (O92's readable
-   * half) and the rule is unchanged: this guard still runs first, and the
-   * equality check against the row is still the second.
+   * differs from something.** Deciding it by comparison would go wrong in
+   * opposite directions: comparing against the row would leave a column whose
+   * stored value the row does not report unclearable, and treating the value
+   * as *unknown* instead would let a bare focus-and-tab-away send
+   * `{exclude_globs: null}` and silently delete a stored pattern. Editing is
+   * the fact both reach for, and an `input` event is what says it happened.
+   * This guard runs first; the equality check against the row is the second.
    */
   const edited = useRef<Map<string, HTMLInputElement | HTMLTextAreaElement>>(
     new Map(),
@@ -409,20 +398,20 @@ export function RootRow({
    * The checkbox's own value, because it has to be able to go back.
    *
    * **Controlled, where the four text boxes are not.** An uncontrolled
-   * checkbox cannot be reset by a reloaded prop, so a refused `PATCH` left it
-   * asserting the opposite of what migration 012 actually holds for the root —
-   * and clicking it again sent the value the server already had, so the only
-   * way back was two more clicks. A text box at least keeps the admin's typed
-   * text as a retry target; a tick reads as settled. Review pass 2.
+   * checkbox cannot be reset by a reloaded prop, so a refused `PATCH` would
+   * leave it asserting the opposite of what migration 012 actually holds for
+   * the root — and clicking it again would send the value the server already
+   * has, so the only way back would be two more clicks. A text box at least
+   * keeps the admin's typed text as a retry target; a tick reads as settled.
    */
   const [keepsDocuments, setKeepsDocuments] = useState(root.keeps_documents)
 
   // **Follow the row when it changes underneath.** The state is seeded once,
   // so a value changed from anywhere but this row — another admin, another
-  // tab — left the tick asserting the opposite of what migration 012 holds,
-  // and the next click then sent the value the server already had, taking two
-  // clicks to get back. That is the same shape pass 2 fixed for the refused-
-  // PATCH path. Pass 4, 2026-09-04.
+  // tab — would leave the tick asserting the opposite of what migration 012
+  // holds, and the next click would then send the value the server already
+  // has, taking two clicks to get back. It is the same shape as the
+  // refused-`PATCH` case in the state's doc comment above.
   useEffect(() => {
     setKeepsDocuments(root.keeps_documents)
   }, [root.keeps_documents])
@@ -458,15 +447,15 @@ export function RootRow({
   /**
    * Consecutive failed polls. Reset by any answer.
    *
-   * **A single failure must not abandon a live scan.** The `.catch` used to
-   * `setRunning(false)`, which tore the interval down for good — so one blip
+   * **A single failure must not abandon a live scan.** A `.catch` that ran
+   * `setRunning(false)` would tear the interval down for good — so one blip
    * (a proxy 502, a `SQLITE_BUSY` while the scan's own writes hold the file)
-   * produced no progress, no eventual report, and a re-enabled "Scan directory"
-   * whose only answer is a 409 about the scan still running: exactly the state
-   * the mount read above exists to prevent, reached by another door. Review
-   * pass 2, 2026-09-04. Three is chosen, not measured — long enough to ride
-   * out a blip at one second apiece, short enough that a genuinely broken
-   * route says so rather than polling for ever.
+   * would produce no progress, no eventual report, and a re-enabled "Scan
+   * directory" whose only answer is a 409 about the scan still running:
+   * exactly the state the mount read above exists to prevent, reached by
+   * another door. Three is chosen, not measured — long enough to ride out a
+   * blip at one second apiece, short enough that a genuinely broken route says
+   * so rather than polling for ever.
    */
   const misses = useRef(0)
 
@@ -580,9 +569,9 @@ export function RootRow({
   }, [])
 
   const begin = useCallback(() => {
-    // Guarded synchronously, not by the hold alone: that left two rapid
-    // presses both sending, and the second's 409 — about the admin's own scan
-    // — landed in the alert slot while that scan ran fine.
+    // Guarded synchronously, not by the hold alone: that would let two rapid
+    // presses both send, and the second's 409 — about the admin's own scan —
+    // would land in the alert slot while that scan ran fine.
     if (inFlight.current) return
     inFlight.current = true
     onScan?.()
@@ -620,11 +609,11 @@ export function RootRow({
         if (statusOf(why) === 409) setConflict(sentenceOf(err))
         else setFailure(sentenceOf(err))
         // **A 409 is positive proof a scan is in flight**, so it starts the
-        // poll rather than only complaining. Without this the row stayed
+        // poll rather than only complaining. Without this the row would stay
         // blind after any route back to a re-enabled button — three failed
         // polls, say — showing no progress, no report and no reload when the
         // scan finished, and answering every retry with the same 409: exactly
-        // the state `misses` above exists to prevent. Pass 3.
+        // the state `misses` above exists to prevent.
         if (statusOf(why) === 409) {
           misses.current = 0
           setRunning(true)
@@ -649,8 +638,8 @@ export function RootRow({
           setConflict(undefined)
           // **A `null` report on a stopped scan is not a clean finish.** The
           // registry is in memory, so a `serve` restarted mid-scan answers
-          // exactly this — and writing it through silently cleared "Scanning…"
-          // and drew nothing, which reads as success. Whole-branch review.
+          // exactly this — and writing it through would silently clear
+          // "Scanning…" and draw nothing, which reads as success.
           if (status.report === null) {
             setScanNotice(
               'This server has no record of that scan. It was most likely ' +

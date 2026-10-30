@@ -111,18 +111,12 @@ const ensureWasmInit = once(init)
  * initialisation is shared, not the parse.
  *
  * The returned `WasmSidecar` (`sc`) is freed by the returned `dispose`, not
- * implicitly. It used to be true that nothing in this reader tore one down
- * early — there was no navigation between works or volumes that kept the
- * page alive, so the browser reclaimed the whole WASM linear memory, `sc`
- * included, on unload, and `dispose` would have been dead code. The
- * correction UI reached the condition that doc predicted, by a different
- * door than the one it named: not swapping volumes, but swapping *documents*
- * — every correction that lands, and every stale-`ETag` re-read, calls
- * `wasmResolver` again and replaces the resolver in state, which strands the
- * previous call's `sc` (and, since it also caches a `Route`, more than just
- * the base handle) for as long as the tab stays open. `App.tsx` now calls
- * the outgoing resolver's `dispose?.()` at both of those call sites, before
- * installing the new one.
+ * implicitly. Every correction that lands, and every stale-`ETag` re-read,
+ * calls `wasmResolver` again and replaces the resolver in state, which would
+ * strand the previous call's `sc` (and, since it also caches a `Route`, more
+ * than just the base handle) for as long as the tab stays open. `App.tsx`
+ * calls the outgoing resolver's `dispose?.()` at both of those call sites,
+ * before installing the new one.
  *
  * `slotAt` and `resolveSlot` each return a fresh `WasmPosition`/`WasmSlot` —
  * unlike `sc`, these are called once per resolution rather than once per

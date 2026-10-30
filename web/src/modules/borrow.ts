@@ -14,11 +14,10 @@ export interface BorrowPrefs {
  * than toggling it mid-read — `readouts`' and `prefetch`'s reasoning, against
  * `direction`'s `d` and `regroup`'s `b`.
  *
- * Defaults on, matching `zoom`, `prefetch` and `help`. Since the authority
- * stopped lending it governs only borrowing from a *third* edition, so on a
- * work with two editions it changes nothing — the switch is honest rather
- * than useless, and `Gap` is what a reader sees either way. Since
- * `borrow-lender-and-arrows` that honesty is on screen and not just in this
+ * Defaults on, matching `zoom`, `prefetch` and `help`. It governs only
+ * borrowing from a *third* edition, so on a work with two editions it changes
+ * nothing — the switch is honest rather than useless, and `Gap` is what a
+ * reader sees either way. That honesty is on screen and not just in this
  * comment: `borrowNote` below says so under the toggle itself.
  */
 export const borrowModule: ReaderModule<BorrowPrefs> = {
@@ -38,21 +37,19 @@ export const borrowModule: ReaderModule<BorrowPrefs> = {
  * **Nothing lends where no third edition does.** The authority is skipped like
  * the viewed edition, and there is no fallback to it: `applyIntent`'s toggle
  * goes to `state.authority` whenever `viewing !== authority` — true of every
- * gap — so lending it drew a page one keypress away, and drew it without
- * arrows, annotations, zoom or prefetch, in place of the `Gap` view that
- * explains the state. Measured at 228 of 276 corpus borrows before it was
- * removed; see the 2026-08-13 design, §2. A two-edition work therefore never
- * borrows at all, which is most of the corpus.
+ * gap — so lending it would draw a page one keypress away, and draw it
+ * without arrows, annotations, zoom or prefetch, in place of the `Gap` view
+ * that explains the state. See §2 of
+ * `docs/superpowers/specs/2026-08-13-borrow-lender-and-arrows-design.md`. A
+ * two-edition work therefore never borrows at all.
  *
- * **Which third edition lends, where more than one could, is still
- * imperfect.** The order among candidates is `order`'s own — hub first, then
- * alphabetical — and nothing distinguishes a same-language edition from a
- * raw: the sidecar's `editions` block carries a free-text `label` and no
- * language or kind field. So an alphabetically-earlier raw can lend over a
- * same-language edition that would have been the more useful page, decided
- * by nothing meaningful. No corpus work has more than three editions, so
- * this has never actually had two candidates to choose between. See the
- * design's §2.
+ * **Which third edition lends, where more than one could, is imperfect.** The
+ * order among candidates is `order`'s own — hub first, then alphabetical —
+ * and nothing distinguishes a same-language edition from a raw: the sidecar's
+ * `editions` block carries a free-text `label` and no language or kind field.
+ * So an alphabetically-earlier raw can lend over a same-language edition that
+ * would have been the more useful page, decided by nothing meaningful. See
+ * the design's §2.
  */
 export function lenderFor(
   state: ReadingState,

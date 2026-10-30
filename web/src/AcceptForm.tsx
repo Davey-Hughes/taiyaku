@@ -227,15 +227,11 @@ export function AcceptForm({
 
   useEffect(() => {
     // **Two acts, not one.** Bumping the sequence invalidates the sweep
-    // *already sent* for the rule being replaced: without it that sweep still
-    // satisfied `seq === latest.current` when it answered, and rendered the
+    // *already sent* for the rule being replaced: without it that sweep would
+    // still satisfy `seq === latest.current` when it answered, and render the
     // previous rule's measurement — its consequence sentence, its counts and
     // an enabled Accept — under the candidate that had replaced it. Clearing
     // is the other half, and covers the window before anything is sent at all.
-    //
-    // Every fetch effect on this screen carries some version of clear-then-
-    // request; this is the one where the missing half was not a flicker but a
-    // rule written against numbers measured for a different rule.
     latest.current += 1
     setPreview(undefined)
     setPreviewFailure(undefined)
@@ -263,8 +259,7 @@ export function AcceptForm({
         // The rule it writes changes them only when the library is derived
         // again, by a scan or a Rules save, and the screens that see either
         // end mark the views themselves.
-        // **Deliberately not re-enabled here, and re-ordering the two lines
-        // would not have been the fix.** `onAccepted` is `Proposals`'
+        // **Deliberately not re-enabled here.** `onAccepted` is `Proposals`'
         // `reload`, which returns as soon as it has bumped a counter — the
         // list it re-asks for is still in flight when this handler returns,
         // and this row stays on screen for the whole of that round trip.
@@ -395,13 +390,10 @@ export function AcceptForm({
           </ul>
         ) : (
           /* Two paragraphs, inside the same block Accept is
-             `aria-describedby` — the fold this accept sets off is a
+             `aria-describedby` — the fold this accept sets off (O73) is a
              consequence of pressing the button, so a screen reader reading
              the control reads it, and it sits below the sentence rather than
-             inside it because `consequence` says what accepting is *for*.
-             It read "what an accept leaves behind" while the accept left a
-             duplicate standing; the fold closed that (O73) and the framing
-             went with it. */
+             inside it because `consequence` says what accepting is *for*. */
           <>
             <p className="consequence">
               {consequence(target, candidate, preview)}

@@ -5,12 +5,11 @@ import { noteColour } from './palette'
 /**
  * The notes on the page being read, as a list beside it or under it.
  *
- * **Why a second place to read a note at all.** A note's words used to live
- * only inside the region they marked, which fails twice: a small region holds
- * a line or two before clipping, and a *point* has no area to hold anything.
- * The list is where the words always fit, and the number on each row is the
- * number on its marker, so reading one here tells you which mark on the page
- * it belongs to.
+ * **Why a second place to read a note at all.** A note's words inside the
+ * region they mark would fail twice: a small region holds a line or two before
+ * clipping, and a *point* has no area to hold anything. The list is where the
+ * words always fit, and the number on each row is the number on its marker, so
+ * reading one here tells you which mark on the page it belongs to.
  *
  * Numbered by position in `here`, which is the order the markers themselves
  * are drawn in — so the list reads down the page, and the same note keeps the
@@ -32,12 +31,12 @@ const sideStyle: CSSProperties = {
   top: 'var(--panel-top)',
   right: 'calc(var(--space-4) + var(--safe-right))',
   // Height from what it holds, not from the page. Pinning `bottom` as well as
-  // `top` stretched the panel down the whole margin however few notes were in
-  // it, so two rows sat at the top of a column of empty background — a box
-  // that looked like it had lost its contents. `maxHeight` keeps a long list
-  // scrolling between the bars rather than under them, floored at 8rem the
-  // same way `.docked-panel` is in `styles/reader.css`, for a window too
-  // short to fit both bars with anything left between them.
+  // `top` would stretch the panel down the whole margin however few notes were
+  // in it, so two rows would sit at the top of a column of empty background — a
+  // box that would look like it had lost its contents. `maxHeight` keeps a long
+  // list scrolling between the bars rather than under them, floored at 8rem the
+  // same way `.docked-panel` is in `styles/reader.css`, for a window too short
+  // to fit both bars with anything left between them.
   maxHeight: 'max(8rem, calc(100% - var(--panel-top) - var(--panel-bottom)))',
   width: 240,
   overflowY: 'auto',

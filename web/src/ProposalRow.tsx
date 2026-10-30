@@ -2,11 +2,10 @@
  * One inbox row: the line it shows collapsed, and the evidence it opens —
  * spec C3 §2.
  *
- * **The evidence is fetched when the row opens, not with the list.** The
- * inbox asks for every open proposal at once and a panel costs two sides of
- * pages, paths, facts and reasons; fetching all of them up front would pay
- * for 37 panels to show one. The row that is open is the row that is being
- * judged.
+ * **The evidence is fetched when the row opens, not with the list.** The inbox
+ * asks for every open proposal at once and a panel costs two sides of pages,
+ * paths, facts and reasons; fetching all of them up front would pay for every
+ * panel to show one. The row that is open is the row that is being judged.
  *
  * **A cover *and* two interior pages per side, which is a decision rather
  * than decoration.** C3 §2: a colour edition's cover is a different image
@@ -34,10 +33,10 @@
  * has not run.
  *
  * **Three fields arrive as lists and are drawn as lists.** `directories`,
- * `formats` and `volumes` were each a rendered sentence in the store once and
- * stopped being one, so nothing here parses a sentence back apart:
- * `directories` renders as the one path, the first plus a count, or the state
- * where nothing resolves to this series at all.
+ * `formats` and `volumes` are lists in the store rather than rendered
+ * sentences, so nothing here parses a sentence back apart: `directories`
+ * renders as the one path, the first plus a count, or the state where nothing
+ * resolves to this series at all.
  *
  * **`rule: null` is not "this proposal cannot be accepted".** The server
  * checks state before it previews anything, so every accepted and every
@@ -49,19 +48,18 @@
  * target — so that is where `AcceptForm` is mounted, and there is no second
  * state check beside it.
  *
- * **And that line names no causes, which is a correction.** It used to offer
- * three — a subject spanning more than one directory, a renamed target, a
- * kind nothing can be accepted for — joined by "or", which reads as the whole
- * list. `offered_rule` has at least six refusals: those three, plus a subject
- * sitting under the same directory name in more than one root, plus a suffix
- * that slugifies to nothing, plus a proposal that is not `open`. Worse, the
- * first of the three was drawn *against* the panel four inches above it:
- * `evidence` hands `offered_rule` the same paths it hands `side`, so a
- * subject with no directories at all makes `common_directory_pattern` refuse
- * — and the row then said "Nothing on disk resolves to this series today"
- * and "its subject spans more than one directory" at once. The store already
- * words each refusal; a summary here that had to stay in step with six of
- * them would go stale, so this says only what it knows.
+ * **And that line names no causes.** `offered_rule` has at least six refusals:
+ * a subject spanning more than one directory, a renamed target, a kind nothing
+ * can be accepted for, a subject sitting under the same directory name in more
+ * than one root, a suffix that slugifies to nothing, and a proposal that is not
+ * `open`. A few causes joined by "or" would read as the whole list, and the
+ * first of them would be drawn *against* the panel above it: `evidence` hands
+ * `offered_rule` the same paths it hands `side`, so a subject with no
+ * directories at all makes `common_directory_pattern` refuse — and the row
+ * would say "Nothing on disk resolves to this series today" and "its subject
+ * spans more than one directory" at once. The store already words each refusal;
+ * a summary here that had to stay in step with six of them would go stale, so
+ * this says only what it knows.
  *
  * **The line's own control follows the proposal's `state`, not the screen's
  * filter.** An open proposal is dismissed from here, a dismissed one is
@@ -73,16 +71,16 @@
  *
  * **Both writes share one runner, and it holds a ref as well as `disabled`.**
  * `disabled` only takes effect once React has re-rendered, so two presses in
- * one frame both reached the handler; a reopen sent twice answers the second
- * with a 409 about a proposal the first had already reopened.
+ * one frame both reach the handler; a reopen sent twice answers the second with
+ * a 409 about a proposal the first has already reopened.
  *
  * **The collapsed line names both series** — spec C3 §3's scannability is a
- * person seeing that 29 of 37 rows ask the same question, and rows that
- * cannot be told apart are not a list, they are a queue with a scrollbar.
- * `ListedProposal`'s two title fields are what the line reads; it drew the
- * `reason` sentence alone before, which only looked like an identity because
- * every `raise_*` in the store happens to open with the subject's quoted
- * title, and which named the target at no width at all.
+ * person seeing that many rows ask the same question, and rows that cannot be
+ * told apart are not a list, they are a queue with a scrollbar.
+ * `ListedProposal`'s two title fields are what the line reads, not the `reason`
+ * sentence, which only looks like an identity because every `raise_*` in the
+ * store happens to open with the subject's quoted title, and which names the
+ * target at no width at all.
  */
 import { useEffect, useRef, useState } from 'react'
 import { AcceptForm } from './AcceptForm'
@@ -168,7 +166,7 @@ function SidePanel({ side, which }: { side: Side; which: Which }) {
               only removes neighbours: at that length every pair is a
               neighbouring pair, so the two cannot collide. A store that ever
               returned three would have to sort them, or this has to move to
-              `key={at}` the way `.volume-list` did. */}
+              `key={at}` the way `.volume-list` does. */}
           {first.interior.map((index) => (
             <PageTile
               key={index}
@@ -246,8 +244,8 @@ function Evidence({
         )}
       </div>
       {/* O182: the `aria-label` repeats the heading's words because `.lab`
-          draws them in capitals, and Chromium's accessibility tree named the
-          heading in those capitals. */}
+          draws them in capitals, and Chromium's accessibility tree would name
+          the heading in those capitals. */}
       <h2 className="lab" aria-label="Why this was proposed">
         Why this was proposed
       </h2>
@@ -320,19 +318,19 @@ export function ProposalRow({
   useEffect(() => {
     if (!expanded) {
       // **Cleared, not merely left unread.** A collapsed row draws nothing
-      // from `detail`, so keeping it looked free — and it was not.
-      // Re-expanding renders the *previous* detail for one commit while the
-      // new request is in flight, which mounts `AcceptForm` against the rule
-      // that detail carried; the form seeds all five of its controls with
-      // `useState`, which runs once per mount, so the fresh rule arriving
-      // underneath it changes only the fields with no control
-      // (`set_series`, `note`, `root_id`, `match_on`) and the rule the
-      // button then sends is spliced from two different answers — with the
-      // half that changed invisible. `offered_rule` genuinely re-derives per
-      // request, off live `scan_entry` rows and the target's current title,
-      // so another accept, a background scan or a rename between two expands
-      // is enough. C3 §7 is "the client shows the rule, the server writes
-      // what it was shown", and a spliced rule is neither.
+      // from `detail`, so keeping it only looks free. Re-expanding renders
+      // the *previous* detail for one commit while the new request is in
+      // flight, which mounts `AcceptForm` against the rule that detail
+      // carried; the form seeds all five of its controls with `useState`,
+      // which runs once per mount, so the fresh rule arriving underneath it
+      // changes only the fields with no control (`set_series`, `note`,
+      // `root_id`, `match_on`) and the rule the button then sends is spliced
+      // from two different answers — with the half that changed invisible.
+      // `offered_rule` genuinely re-derives per request, off live
+      // `scan_entry` rows and the target's current title, so another accept,
+      // a background scan or a rename between two expands is enough. C3 §7 is
+      // "the client shows the rule, the server writes what it was shown", and
+      // a spliced rule is neither.
       //
       // Clearing costs a second "Reading the evidence…" on a re-expand. That
       // is the honest state: the answer on screen would otherwise be one
@@ -431,12 +429,12 @@ export function ProposalRow({
       )}
       {expanded && (
         <div className="proposal-detail">
-          {/* The one place the `reason` sentence is drawn. The collapsed
-              line above names the two series instead: `reason` opens with the
+          {/* The one place the `reason` sentence is drawn. The collapsed line
+              above names the two series instead: `reason` opens with the
               subject's title in quotes — that is how every `raise_*` in the
               store words one — so beside a column that names the subject it
-              was the same words twice, and the part that differs is past
-              character sixty, which no width reached. */}
+              would be the same words twice, and the part that differs is past
+              character sixty, which no width reaches. */}
           <p className="full-reason">{proposal.reason}</p>
           {failure !== undefined ? (
             <p className="evidence-failure" role="alert">

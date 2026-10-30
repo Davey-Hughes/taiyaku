@@ -6,9 +6,8 @@
  * source whose format it supports, and every browser that parses
  * `light-dark()` — which every colour token needs, so Safari 17.5 and later —
  * supports woff2, so the second is never fetched. Vite emits whatever a `url()`
- * names all the same: before this, 574 `.woff` files, 18,148,448 bytes of the
- * built `dist`, that no browser the UI supports would ask for. The user chose
- * to strip them on 2026-09-18.
+ * names all the same, so without this the `.woff` files, which no browser the
+ * UI supports would ask for, are built into `dist`.
  *
  * Wired in through `vite.config.ts`'s `css.postcss`. Vite runs its own
  * `@import` inlining before the plugins listed there and its `url()` rewriting

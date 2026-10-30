@@ -12,11 +12,10 @@ import type { Cell, Drawn, Frame, MapKind } from './viewport'
  * one decode later, and everything in between is a decision about which of
  * those two states the reader is in.
  *
- * Not folded into `viewport.ts`: that file is what a rect *means* — `mapRect`'s
- * doc alone is sixty lines of measurement. This is *when to ask it*. Not folded
- * into `modules/zoom.ts` either: it takes no `ZoomPrefs` beyond the `MapKind`
- * that module already derives, and it is the one part of the geometry that is
- * a state machine rather than arithmetic.
+ * Not folded into `viewport.ts`: that file is what a rect *means*. This is
+ * *when to ask it*. Not folded into `modules/zoom.ts` either: it takes no
+ * `ZoomPrefs` beyond the `MapKind` that module already derives, and it is the
+ * one part of the geometry that is a state machine rather than arithmetic.
  *
  * A wrong answer here displaces the view by half a group and carries the
  * displacement forward through every later swap, until the reader presses `0`.
@@ -93,8 +92,8 @@ export interface CarriedSwap {
  * swap onto a gap and for one pressed faster than a page decodes.
  *
  * `hug` is carried too: the artwork is pulled to the seam in two-page mode, and
- * a swap that measured it as centred was the one consumer of that fact still
- * asking the wrong question — see `Drawn.hug`.
+ * a swap that measured it as centred would ask the wrong question —
+ * see `Drawn.hug`.
  */
 export function carrySwap(
   drawn: DrawnPage | undefined,
@@ -171,7 +170,7 @@ export type SwapStep =
  * `stillCurrent` is "the carry this call is about is still the one held" read
  * at the call site. It is a parameter rather than a check the caller makes
  * before calling, so the "finished but do not clear" rule is inside the tested
- * module rather than in the four lines of `App` that survive it.
+ * module rather than in `App`.
  *
  * `to`, `frame` and `box` are read fresh on every attempt rather than captured
  * when the swap was recorded. `to` in particular: a switch between single and

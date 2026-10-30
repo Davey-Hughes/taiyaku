@@ -906,8 +906,7 @@ describe('a tab row and a pill row stay two different rows', () => {
     // `.chips` was the selector that reached both kinds. Its absence is the
     // fact, not its replacement: a `.chips` written again would draw the
     // inbox's three controls alike whatever the rules below say. Comments
-    // are stripped first: `admin.css` and `library.css` both explain in
-    // prose what `.chips` was, and should keep being able to.
+    // are stripped first, so a comment may still name `.chips`.
     expect(withoutComments(cssSource)).not.toContain('.chips')
   })
 })

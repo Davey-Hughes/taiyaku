@@ -3,10 +3,8 @@ import { thumbUrl } from './api'
 import { usePanelFocus } from './focus'
 
 // The panel is `.docked-panel` in `styles/reader.css`, shared with `Help` and
-// the notes panel (spec 2026-09-17 §8.5). This comment used to record that the
-// reason for copying it had expired at four copies: three copies of this docked
-// shell are one class now, and `Settings`' own — the fourth this comment
-// counted — is `.reader-dialog-panel`.
+// the notes panel (spec 2026-09-17 §8.5). The `Settings` panel is
+// `.reader-dialog-panel` instead.
 
 const rowStyle: CSSProperties = {
   display: 'flex',
@@ -25,8 +23,8 @@ const rowStyle: CSSProperties = {
 
 // A credits card is recognisable at a glance and unrecognisable from its page
 // number alone, which is the whole reason the list carries thumbnails. Small,
-// because the list is short — four pages on the primary corpus volume — and
-// this is for telling a donation card from a staff page, not for reading it.
+// because the list is short and this is for telling a donation card from a
+// staff page, not for reading it.
 const thumbStyle: CSSProperties = {
   height: 56,
   width: 'auto',
@@ -67,18 +65,15 @@ export interface CreditsPanelProps {
  * skipped while they are on it, so it belongs to a group like any other.
  *
  * **No labels.** The sidecar records page indices and nothing else. Which of
- * these is a donation card and which is a staff-credits page is something
- * `docs/status.md` §4 established by looking at them — four pages on the
- * primary volume, three the same donation card and one naming three people —
- * not something the format carries. A panel that named them would be inventing
- * a distinction the document cannot support, so it shows the page and lets a
- * reader see.
+ * these is a donation card and which is a staff-credits page is not something
+ * the format carries (`docs/status.md` §4). A panel that named them would be
+ * inventing a distinction the document cannot support, so it shows the page
+ * and lets a reader see.
  *
  * The empty case is a sentence rather than an empty box, following
  * `chapterLine`'s rule that "an empty readout reads as a bug, a labelled one
  * reads as a fact about this particular work". It is the common case: a raw
- * edition has no scanlation credits at all, and no sidecar in the corpus has
- * had `taiyaku credits --write` run against it yet.
+ * edition has no scanlation credits at all.
  */
 export function CreditsPanel({
   visible,

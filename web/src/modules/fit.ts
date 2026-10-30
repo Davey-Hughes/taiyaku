@@ -6,24 +6,20 @@ import type { Cell } from '../viewport'
  * Page geometry: how large a page is drawn in its own box, and how far apart
  * the two pages of a spread sit.
  *
- * `docs/superpowers/specs/2026-08-02-reader-m5-design.md` specified this module
- * two milestones ago with four settings and built none of them. Two ship here
- * — the two a reader asked for — and `trim` and `fillWidth`/`fillHeight` stay
- * unbuilt with their reasoning intact in that document. `gap` is new and joins
- * them because a seam is geometry, which is the line that design draws
- * between `fit` and `filters`.
+ * `docs/superpowers/specs/2026-08-02-reader-m5-design.md` specifies this
+ * module with four settings, of which `trim` and `fillWidth`/`fillHeight` are
+ * unbuilt, with their reasoning in that document. `gap` joins `upscaleToFit`
+ * and `upscaleFilter` because a seam is geometry, which is the line that
+ * design draws between `fit` and `filters`.
  *
  * **`upscaleToFit` defaults on, and that reverses the M5 design.** That
  * document chose off and argued it well: a low-resolution scan on a large
  * monitor is "a small page marooned in a large letterbox", so the enlargement
- * should be asked for. What it could not know is how the default would read.
- * Measured on this corpus and recorded in
- * `docs/superpowers/specs/2026-08-08-fit-seam-and-help-design.md` §1:
- * `gotoubun-v01`'s `raw-mono` is 685x1024 and its `en-mono` 2147x3056
- * (`docs/notes.md` records the same figure; the *cover* alone is 2146 wide,
- * which is what an earlier draft of this comment quoted), so in a 1400x1263 page area the English fills the
- * height and the Japanese sits at 1:1 with 239px unused. The first reader to
- * meet that reported a bug in the images, not a setting they had not found.
+ * should be asked for. What it could not know is how the default would read:
+ * beside a high-resolution edition that fills the page area's height, a
+ * low-resolution one sits at 1:1 with space unused, and that reads as a bug
+ * in the images, not a setting a reader had not found. The figures are in
+ * `docs/superpowers/specs/2026-08-08-fit-seam-and-help-design.md` §1.
  *
  * `upscaleFilter` ships with it rather than after it. Enlarging line art with
  * a smoothing filter reads as mush; nearest-neighbour keeps the line crisp and
@@ -65,8 +61,8 @@ export type ArtworkHug = 'centre' | 'left-edge' | 'right-edge'
  * `PageView`s `GroupView` draws, the marker overlay that measures one of them,
  * and `pointOn`'s drag arithmetic. Written out at each of the three, a copy
  * that fell out of step would draw the page one way and measure it another — a
- * region landing about 180px from where the reader swept it out, `paintedBox`
- * having the measurement.
+ * region landing away from where the reader swept it out, `paintedBox` having
+ * the measurement.
  *
  * **The *first* cell hugs its right edge**, because that is the side the seam
  * is on; `ArtworkHug` above has the whole naming argument. Which physical slot
@@ -103,14 +99,12 @@ export function hugForCell(cell: Cell): ArtworkHug {
  * enlarged, which is why `crisp` is ignored while `upscaleToFit` is off.
  *
  * **`hug` is what closes the two-page seam, and while `upscaleToFit` is on
- * nothing that moves the element can.** Measured on `gotoubun-v01` in two-page
- * mode with the defaults, in a browser on 2026-08-08: the two `<img>`
- * *elements* already touched — 0px between them — while their artwork sat
- * **359px apart**. Upscaling makes the element fill its whole cell, and
- * `objectFit: contain` then draws the art inside that element wherever
- * `object-position` says, which unset is `50% 50%`. `100% 50%` on the left
- * cell and `0% 50%` on the right took that 359px to **0px**, measured the same
- * way. `seamStyle`'s doc records what was there before and why it did nothing.
+ * nothing that moves the element can.** With `object-position` unset, the two
+ * `<img>` *elements* touch while their artwork sits apart: upscaling makes the
+ * element fill its whole cell, and `objectFit: contain` then draws the art
+ * inside that element wherever `object-position` says, which unset is
+ * `50% 50%`. `100% 50%` on the left cell and `0% 50%` on the right put the art
+ * against the seam.
  *
  * The centred case writes `50% 50%` out rather than omitting the declaration.
  * That is the opposite choice from `imageRendering` above and for a different
@@ -124,9 +118,7 @@ export function hugForCell(cell: Cell): ArtworkHug {
  * **The hug only bites while `upscaleToFit` is on**, which is the default.
  * With it off the element is sized to its own content, so box and art coincide
  * and `object-position` has no free space to distribute — the pages then sit
- * centred in their halves, `PageView`'s wrapper doing the centring, exactly as
- * they did before this parameter existed. Read off these declarations rather
- * than measured: the browser pass above ran with the default on.
+ * centred in their halves, `PageView`'s wrapper doing the centring.
  */
 export function pageStyle(
   prefs: FitPrefs,
@@ -161,23 +153,15 @@ export function pageStyle(
  * Half the gap goes on each cell so the pair stays centred in the page area;
  * putting the whole gap on one side would shift the spread.
  *
- * **This also emitted `display: flex` with `justifyContent: flex-end` on the
- * first cell and `flex-start` on the second, and both were dead.** *Removed
- * 2026-08-08.* The reasoning was the one above — a cell justifying its page
- * toward the seam is what collects the letterbox outside — and it was written
- * for markup that does not exist. `PageView` renders a `width: 100%` wrapper
+ * **A cell sets no `display: flex` with `justifyContent`, because it would do
+ * nothing.** A cell justifying its page toward the seam is what would collect
+ * the letterbox outside, but `PageView` renders a `width: 100%` wrapper
  * `<div>` around its `<img>`, so the cell's only child always exactly fills
  * whatever content box the padding leaves, in flex or block layout alike, and
- * there is no free space for `justify-content` to distribute. Confirmed in a
- * browser on 2026-08-08, on a static fixture of the cell → wrapper → `<img>`
- * nesting and then on `gotoubun-v01` itself: swapping the two values, or
- * dropping `display: flex` altogether, left the geometry identical. No test
- * could have caught that — `justify-content` on a non-flex box, or on one with
- * a single full-width child, is silently inert, so an assertion can only see
- * that the declaration is present, which is exactly what the assertion in
- * `fit.test.ts` used to do. The seam these cells were not closing measured
- * 359px; `pageStyle`'s doc has that measurement and the fix that took it to
- * zero.
+ * there is no free space for `justify-content` to distribute. No test could
+ * catch it — `justify-content` on a non-flex box, or on one with a single
+ * full-width child, is silently inert, so an assertion can only see that the
+ * declaration is present.
  *
  * `cell` is screen position and not reading order. `cellsFor` has already
  * applied the work's direction by the time these cells exist, so the first is

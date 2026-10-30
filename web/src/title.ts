@@ -1,7 +1,6 @@
 /**
  * What a browser tab, its history and a screen reader's page announcement
- * call a screen (O173). Until this, every screen was `index.html`'s one
- * title.
+ * call a screen (O173).
  *
  * **Every routed screen calls `useDocumentTitle`, so none restores the title
  * it replaced when it unmounts**: the screen that mounts next sets its own.

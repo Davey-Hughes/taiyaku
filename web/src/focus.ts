@@ -108,12 +108,11 @@ export function focusStop(root: ParentNode, to: RingStop): void {
  * A reader panel's focus — spec 2026-09-26 §3.3, O161.
  *
  * On opening, focus moves onto the panel itself, so a screen reader names the
- * panel rather than the button that opened it (the audit heard ⚙'s own
- * *"settings, expanded"*); a panel that wants focus further in — the note
- * editor's textarea — moves it there from its own, later effect. On closing,
- * focus goes back to what held it when the panel opened, or to the page if
- * that has gone or was `<body>`. While open, `Tab` wraps at either end
- * rather than leaving.
+ * panel rather than the button that opened it; a panel that wants focus
+ * further in — the note editor's textarea — moves it there from its own, later
+ * effect. On closing, focus goes back to what held it when the panel opened,
+ * or to the page if that has gone or was `<body>`. While open, `Tab` wraps at
+ * either end rather than leaving.
  *
  * **Call it before any effect of the panel's own that moves focus.** Effects
  * in one component run in declaration order, and this one records what held

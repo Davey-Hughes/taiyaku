@@ -10,7 +10,7 @@
  * stay one rule across every module that talks to the server, rather than
  * three that can drift.
  *
- * # The wire contract, as the server actually answers — not as planned
+ * # The wire contract, as the server actually answers
  *
  * Every route answers the re-projected `LibraryDoc` — what the store now
  * holds, not what the caller sent — merged with two more fields:
@@ -42,22 +42,12 @@
  * doc comment on `sendJson` for why every write in this codebase throws that
  * way.
  *
- * # Disagreements with Task 8's own brief
- *
- * The brief (and the plan it was copied from) predates the server's shipped
- * shape and sketches `Promise<LibraryDoc & { persisted: boolean }>` with no
- * `why` at all, and its illustrative tests never exercise a `why` or a 409.
- * Both are wrong in the same direction: `why` is not always present, so it is
- * modelled here as optional (`why?: string[]`) rather than a bare
+ * `why` is modelled as optional (`why?: string[]`) rather than as a bare
  * `LibraryDoc & { persisted: boolean }` with `why` unmentioned, or worse,
- * defaulted to `[]` — either would tell a caller a lie about the ordinary
- * case (no writes ever land as `why: []`; see `worst_case` and
- * `merge_worst_case` in `crates/taiyaku-serve/src/metadata.rs`, which build
- * this fact into the response body directly). The two tests the brief did
- * not carry — an absent `why` and a bare-string 409 — are added below,
- * since a client that only ever saw an array `why` or a JSON error body in
- * its own tests is a client that breaks on first contact with the real
- * server.
+ * defaulted to `[]`: either would tell a caller a lie about the ordinary case
+ * (no writes ever land as `why: []`; see `worst_case` and `merge_worst_case`
+ * in `crates/taiyaku-serve/src/metadata.rs`, which build this fact into the
+ * response body directly).
  */
 import { sendJson } from './api'
 import type { Direction } from './modules/direction'
@@ -113,8 +103,8 @@ export interface EditionMeta {
 /**
  * A closed set — `member.chapter_source` in `librarydoc.rs`. Never sent by
  * this client: [`MemberEdit`] has no such field, since only the server may
- * choose `hand` for a hand-set chapter — see this module's own note on
- * [`patchMember`].
+ * choose `hand` for a hand-set chapter — see this module's own note
+ * on [`MemberEdit`].
  */
 export type ChapterSource = 'comicinfo' | 'filename' | 'hand'
 
@@ -276,8 +266,8 @@ export const patchEdition = (
  * parsed one, and a client that could send `chapter_source: "comicinfo"`
  * alongside a number a person typed could launder the one into the other.
  * `chapter` absent leaves the member's existing chapter and source alone;
- * `patch_member` had a defect where an absent `chapter` erased both, which
- * is exactly the failure "send only what changed" exists to prevent.
+ * erasing both when `chapter` is absent is exactly the failure "send only
+ * what changed" exists to prevent.
  */
 export interface MemberEdit {
   chapter?: number

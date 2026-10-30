@@ -19,8 +19,8 @@ export interface GapProps {
   /**
    * Which way the work reads. The two offers point the way the pages go: in a
    * right-to-left work the earlier page is to the right, and an unconditional
-   * `←`/`→` sent a reader the wrong way on the one screen they reach by being
-   * lost.
+   * `←`/`→` would send a reader the wrong way on the one screen they reach by
+   * being lost.
    */
   reading: Direction
   /** The edition with no counterpart — the one being looked at. */

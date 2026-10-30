@@ -982,23 +982,21 @@ describe('windowing', () => {
   // O140's fix: the scroll handler re-anchors once a *spacer* comes within a
   // quarter of the rail's width of the visible rail, read via
   // `getBoundingClientRect` on the rail and on each rendered spacer — not on
-  // a count of tiles the focus has drifted (see the handler's own doc in
-  // `Filmstrip.tsx` for why a drift-based rule was replaced: it assumed the
-  // viewport straddles the focus tile, when the focus is the rail's leading
-  // edge and the viewport extends forward from it, which cost a 321 px gap
-  // at 1440 px), and not on the first/last *rendered tile's* box either — an
-  // earlier version of this fix tried that, checking both ends of the DOM
+  // a count of tiles the focus has drifted (a drift-based rule was replaced: it
+  // assumed the viewport straddles the focus tile, when the focus is the rail's
+  // leading edge and the viewport extends forward from it, which cost a 321 px
+  // gap at 1440 px), and not on the first/last *rendered tile's* box either —
+  // an earlier version of this fix tried that, checking both ends of the DOM
   // order against both ends of the rail on the reasoning that checking both
   // made it agnostic to reading direction. It did not: the rail is
-  // `row-reverse` under `rtl`, so the last tile in the DOM sits at the left
-  // of the screen, not the right, and checking both ends of the DOM order
-  // makes one of the two checks true on nearly every frame instead. Measured
-  // driving a 1.2 s flick at 390×844 under 4× CPU throttle: 71 re-anchors
-  // across 182 frames, worse than the 65 the drift-based rule produced and
-  // worse than the 24 the spacer rule below achieves. A spacer reaching the
-  // visible strip *is* the blank gap this guard exists to prevent, which is
-  // symmetric under either flex direction with no reading-direction
-  // arithmetic needed.
+  // `row-reverse` under `rtl`, so the last tile in the DOM sits at the left of
+  // the screen, not the right, and checking both ends of the DOM order makes
+  // one of the two checks true on nearly every frame instead. Measured driving
+  // a 1.2 s flick at 390×844 under 4× CPU throttle: 71 re-anchors across 182
+  // frames, worse than the 65 the drift-based rule produced and worse than the
+  // 24 the spacer rule below achieves. A spacer reaching the visible strip *is*
+  // the blank gap this guard exists to prevent, which is symmetric under either
+  // flex direction with no reading-direction arithmetic needed.
   //
   // jsdom has no layout engine — every element's `getBoundingClientRect`
   // reports all-zero by default — so the rail's and the spacers' boxes are

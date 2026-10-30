@@ -1,6 +1,5 @@
 /**
- * The `/api/library/backups*` client — spec C4 §5 and the build design's §6.3,
- * over the routes that shipped in #106.
+ * The `/api/library/backups*` client — spec C4 §5 and the build design's §6.3.
  *
  * **There is no restore here and no schedule here**, and neither is an
  * omission: C4 §5 puts restore out of band (stop the server, move the file,

@@ -3,9 +3,8 @@
  * rows split by faint lines, the label and its help at the start and the
  * control at the end. The box's edge is what tells one section from the
  * next, so it is drawn in `--line-strong`: `--line` on `--bg` is 1.38:1 in
- * Paper and 1.62:1 in Ink, which is the separation that was missing. The
- * rows inside one box are split in `--line`, quieter than the edge, so the
- * box reads as one thing before its rows do. */
+ * Paper and 1.62:1 in Ink. The rows inside one box are split in `--line`,
+ * quieter than the edge, so the box reads as one thing before its rows do. */
 
 .settings-page {
   max-width: var(--config-measure);

@@ -5,8 +5,8 @@ import { helpGroups } from './modules/help'
 import type { ReaderModule } from './module'
 
 // The panel is `.docked-panel` in `styles/reader.css`, where `CreditsPanel`
-// and the notes panel dock too: one class for what was three copies of one
-// inline object, which this comment used to count (spec 2026-09-17 §8.5).
+// and the notes panel dock too: one class rather than a copy of one inline
+// object in each (spec 2026-09-17 §8.5).
 
 const rowStyle: CSSProperties = {
   display: 'flex',
@@ -56,25 +56,21 @@ export interface HelpProps {
  * **Nothing here is written down.** Both groups come out of `helpGroups`,
  * which reads `keys.ts`'s `READER_KEYS` and the modules' own `keys`
  * declarations — the same two tables `intentOf` walks to decide what a
- * keypress meant. A hand-written list would have been a second copy of a
- * rule, and it would have been wrong the first time a binding changed without
- * anyone thinking of this file; `keys.ts` says the same thing where the table
- * is declared, and that table exists in its current shape for this reason.
- * This project has corrected a copy of a rule that drifted from the rule nine
- * times, and the fix each time was to delete the copy.
+ * keypress meant. A hand-written list would be a second copy of a rule, and
+ * it would be wrong the first time a binding changed without anyone thinking
+ * of this file; `keys.ts` says the same thing where the table is declared,
+ * and that table exists in its current shape for this reason.
  *
  * What the reader sees is therefore only as good as the declarations, and
- * both of the two places that showed have since been answered in the
- * declarations rather than here:
+ * the two places where that shows are answered in the declarations rather
+ * than here:
  *
- * - The module rows said each binding's `intent` string, which was written to
- *   be dispatched on rather than read — `zoom:in` reads well enough, but
- *   `annotations:reveal` and `annotations:review` are one letter apart and
- *   name different things. `KeyBinding` gained an optional `label` for this,
- *   which widened the module contract deliberately (`module.ts` records the
- *   decision and what it beat), and `helpGroups` prefers it. The prose was
- *   already written; it was sitting on the intent constants' doc comments
- *   where nothing at runtime could reach it.
+ * - The module rows would say each binding's `intent` string, which is
+ *   written to be dispatched on rather than read — `zoom:in` reads well
+ *   enough, but `annotations:reveal` and `annotations:review` are one letter
+ *   apart and name different things. `KeyBinding` has an optional `label`
+ *   for this, which widened the module contract deliberately (`module.ts`
+ *   records the decision and what it beat), and `helpGroups` prefers it.
  * - A module switched off in settings would still have its keys listed, since
  *   a `ReaderModule` carries no notion of being currently on — that lives in
  *   `App.tsx`'s preference map. So the caller filters: `modules/help.ts`'s
@@ -83,9 +79,7 @@ export interface HelpProps {
  *
  * No state of its own, `null` when not visible, and a close button:
  * `CreditsPanel`'s shape, for the same reason it has that shape. `Escape`
- * closes both, and Settings, since the accessibility pass (spec 2026-09-26
- * §3.3): until then only this one closed on it, and no reason for the other
- * two was ever recorded.
+ * closes this panel and `CreditsPanel`, and Settings (spec 2026-09-26 §3.3).
  */
 export function Help({ visible, modules, reading, onClose }: HelpProps) {
   const panelRef = useRef<HTMLDivElement>(null)

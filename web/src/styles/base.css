@@ -29,16 +29,15 @@ body {
 }
 
 /* **Everything below is scoped to `.library` and `.login`, and, deliberately,
- * still not the reader** — the style pass has now reached it (style pass ③),
- * and it is excluded on purpose rather than by omission. The reader's own
- * surfaces are styled in `reader.css`, with inline styles that set some
- * properties and leave the rest to the browser, so a document-wide `button`
- * rule would change a filmstrip tile's border or a panel button's padding
- * under geometry `reader.css` and the reader's components set on their own
- * terms, and it would reach the page's own controls too, which are never this
- * style pass's to restyle. `:where()` on both halves keeps every rule here at
- * zero specificity, so each class rule in `shell.css`, `library.css`,
- * `admin.css` and `reader.css` still wins exactly as it did.
+ * not the reader**: it is excluded on purpose rather than by omission. The
+ * reader's own surfaces are styled in `reader.css`, with inline styles that set
+ * some properties and leave the rest to the browser, so a document-wide
+ * `button` rule would change a filmstrip tile's border or a panel button's
+ * padding under geometry `reader.css` and the reader's components set on their
+ * own terms, and it would reach the page's own controls too, which these rules
+ * are never to restyle. `:where()` on both halves keeps every rule here at zero
+ * specificity, so each class rule in `shell.css`, `library.css`, `admin.css`
+ * and `reader.css` still wins, as it would without these rules.
  * `base.css.test.ts` holds the scope. */
 :where(.library, .login) :where(h1, h2, h3) {
   font-family: var(--font-title);
@@ -69,11 +68,9 @@ body {
 }
 
 /* iOS Safari zooms the whole document when a text field smaller than 16px
-   takes focus, and the zoom stays after the field is gone. Measured on the
-   user's iPhone on 2026-09-20 during style pass ④'s device pass: signing in
-   left the library and the reader zoomed, and a pinch was the only way back.
-   The fields inherit `--text-ui` (0.875rem, 14px) from their label through
-   the `font: inherit` above, which is two pixels under the threshold.
+   takes focus, and the zoom stays after the field is gone. The fields inherit
+   `--text-ui` (0.875rem, 14px) from their label through the `font: inherit`
+   above, which is two pixels under the threshold.
 
    A floor, not a size: only fields that would compute below 16px change, and
    only where a finger is the pointer, so the desk's typography is untouched. */
@@ -181,13 +178,12 @@ body {
    Ink, and no property reaches that edge. `--line-strong` is 3:1 or more on
    every ground the theme draws (WCAG 1.4.11; `index.css.test.ts`). Checked,
    the box is filled with the accent and ticked in `--on-accent`, and the
-   radio is ringed and dotted in the accent, as `accent-color` had the
-   browser draw them. The size is the browser's, so nothing beside them
-   moves. A held one takes O201's dashed edge, as a held button does, and a
-   held checked one O201's ground as well (below). Under forced colours the
-   browser's own control comes back, with nothing drawn over it: the
-   system's palette replaces these grounds, and would paint the tick and the
-   dot in its Canvas, over the browser's own. */
+   radio is ringed and dotted in the accent. The size is the browser's, so
+   nothing beside them moves. A held one takes O201's dashed edge, as a held
+   button does, and a held checked one O201's ground as well (below). Under
+   forced colours the browser's own control comes back, with nothing drawn
+   over it: the system's palette replaces these grounds, and would paint the
+   tick and the dot in its Canvas, over the browser's own. */
 :where(.library, .login) :where(input[type="checkbox"], input[type="radio"]) {
   appearance: none;
   position: relative;

@@ -31,8 +31,7 @@ const previewMaxHeight = '55vh'
 
 // The bottom bar (spec 2026-09-17 §8.4): one full-width band docked to the
 // reader's bottom edge — the strip, the progress line and the readout row,
-// padded by the safe areas. It replaced a strip floating 16 px in from each
-// side over a readout band of its own.
+// padded by the safe areas.
 //
 // `position: absolute` against `App.tsx`'s root, which carries `position:
 // relative` for exactly this, rather than a flex child of the page-area
@@ -120,16 +119,13 @@ function alongTheVolume(share: RailShare): number {
 // The hover preview: a page-sized look at the tile under the pointer, while
 // correcting. Centred horizontally and standing 8 px clear of the bottom bar,
 // so a reader's eye travels the shortest distance between the candidate and
-// the page they are comparing it against. Before style pass ③ this band also
-// held the `Library` button (O65), which is why that button stood down while
-// correcting; it is in the top bar now.
+// the page they are comparing it against.
 //
-// `zIndex: 3`, matching the two bars (this file's `bottomBarStyle`, above):
-// the bars were raised to 3 to clear `Annotations`' overlay at 2, but this
-// preview — drawn over the page while correcting, the one surface here that
-// most needs to stand clear of everything else on it — was left at `auto`
-// until the whole-branch review found note tints, tabs and the side list
-// drawing over the page it shows.
+// `zIndex: 3`, matching the two bars (this file's `bottomBarStyle`, above),
+// which stand at 3 to clear `Annotations`' overlay at 2. This preview is drawn
+// over the page while correcting, the one surface here that most needs to
+// stand clear of everything else on it: at `auto`, note tints, tabs and the
+// side list would draw over the page it shows.
 const previewStyle: CSSProperties = {
   position: 'absolute',
   left: 'var(--space-4)',
@@ -228,14 +224,12 @@ export interface ChromeProps extends FilmstripProps {
  * screen to animate out. The unmount is also what keeps a reader who never
  * presses `Tab` from ever fetching a single filmstrip thumbnail — not
  * `Filmstrip`'s `loading="lazy"` on those thumbnails, which does the same
- * job for a strip that's already on screen (see `Filmstrip.tsx`) but was
- * measured directly, on this project, to not defer a thumbnail's request at
- * all in the environment tested (docs/status.md, "the tiles'
- * `loading=\"lazy\"` does not defer thumbnail requests"). So keeping
- * `Chrome` mounted and fading its opacity to zero instead would trade the
- * unmount's real protection for `loading="lazy"`'s measured-absent one.
+ * job for a strip that's already on screen (see `Filmstrip.tsx`) but bounds
+ * a cold strip's burst only partly (O140). So keeping `Chrome` mounted and
+ * fading its opacity to zero instead would trade the unmount's whole
+ * protection for `loading="lazy"`'s partial one.
  * If this is revisited, what would settle it is a network trace comparing
- * today's `Tab`-press burst against a mounted-with-`opacity: 0` prototype.
+ * the `Tab`-press burst against a mounted-with-`opacity: 0` prototype.
  *
  * **While correcting, the top bar is not drawn**: `CorrectionBanner` takes
  * the top edge (§8.3). That keeps O65's rule that the way back to the
@@ -310,8 +304,8 @@ export function Chrome({
   // schedules the frame that flips `shown` to `true` a moment after the
   // render below first paints at `opacity: 0`, which is what gives the
   // already-declared `transition` something to animate. Its returned cleanup
-  // is what makes a rapid re-toggle safe. Extracted to `motion.ts` so it can
-  // be tested directly against a stubbed `requestAnimationFrame` — see
+  // is what makes a rapid re-toggle safe. It lives in `motion.ts` so it can be
+  // tested directly against a stubbed `requestAnimationFrame` — see
   // `motion.test.ts`.
   useEffect(
     () => scheduleFade(visible, animating, setShown),
@@ -410,9 +404,9 @@ export function Chrome({
             style={markStyle}
           />
         </div>
-        {/* Not a live region since spec 2026-09-26 §3.5: `App.tsx`'s own
-            region speaks the position once, and this row would also have
-            announced every change to the reading-time readout. */}
+        {/* Not a live region (spec 2026-09-26 §3.5): `App.tsx`'s own region
+            speaks the position once, and this row would also announce every
+            change to the reading-time readout. */}
         <div className="reader-readout" style={readoutStyle}>
           {row}
         </div>

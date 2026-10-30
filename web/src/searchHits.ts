@@ -1,6 +1,6 @@
 /**
- * The search a box asks for, over the endpoint that shipped in #81 — spec C1
- * §11 step 9. The Library view draws the box and the hits (`SearchBar.tsx`,
+ * The search a box asks for, over the search endpoint — spec C1 §11 step 9.
+ * The Library view draws the box and the hits (`SearchBar.tsx`,
  * `Library.tsx`); this is the request half.
  *
  * **Read through the store** (`searchRead`, `usePage`), one address per
@@ -21,11 +21,10 @@
  * of another page: what is kept for it, in the render it arrives in, or nothing
  * and then `Loading…`.
  *
- * **What the tokeniser makes possible here**, and what it does not: migration
- * 8's `trigram` index answers any substring of three characters or more in
- * either script, and `browse::search` answers shorter ones with `LIKE`. So
- * 花嫁 finds 五等分の花嫁 — which the shipped `unicode61` index could not do
- * at any query length, because it held the title as a single token.
+ * **What the tokeniser makes possible here**, and what it does not:
+ * migration 8's `trigram` index answers any substring of three characters or
+ * more in either script, and `browse::search` answers shorter ones with `LIKE`.
+ * So 花嫁 finds 五等分の花嫁.
  */
 import { useEffect, useRef, useState } from 'react'
 import type { SearchHits } from './library'

@@ -21,41 +21,21 @@ export const prefetchModule: ReaderModule<PrefetchPrefs> = {
   id: 'prefetch',
   label: 'Prefetch',
   // **One turn each way, and reaching further makes the reader slower.** These
-  // count *groups* now (`groupWindow` below), so `ahead: 1` is the next thing
-  // that will be drawn rather than the next slot — which in `two` mode is what
-  // `ahead: 2` used to half-cover, reaching the next pair's first slot and
-  // stopping short of its second.
+  // count *groups* (`groupWindow` below), so `ahead: 1` is the next thing that
+  // will be drawn rather than the next slot.
   //
-  // The depths came down when the unit changed, and that is a measurement
-  // rather than arithmetic. A decoded `en-mono` page is 2147×3056×4 ≈ 26 MB,
-  // and a joined spread twice that, so a wide window churns the browser's own
-  // decoded-bitmap cache and evicts the pages the reader is about to arrive
-  // at — prefetch competing with itself. Measured in the browser against
-  // `gotoubun-v01` `en-mono`, keypress to both halves on screen, 20 turns per
-  // setting:
+  // A decoded `en-mono` page is 2147×3056×4 ≈ 26 MB, and a joined spread twice
+  // that, so a wide window churns the browser's own decoded-bitmap cache and
+  // evicts the pages the reader is about to arrive at — prefetch competing with
+  // itself. Raising `maxConcurrent` does the same: more decode in flight is
+  // more eviction, not more readiness. The 26 MB is a full-size decode: one
+  // fetched at 1024 decodes to about 6 MB (the `pageSize.ts` table in
+  // `docs/superpowers/notes/2026-10-29-code-history-web-src.md`), and neither
+  // depth nor `maxConcurrent` has been measured against the smaller decode.
   //
-  // | window | median | p90 | worst | turns over 100 ms |
-  // | ------ | -----: | --: | ----: | ----------------: |
-  // | `ahead: 2, behind: 1` — 6 slots | 14 ms | 232 ms | 335 ms | 29% |
-  // | `ahead: 1, behind: 0` — 2 slots |  4 ms | 125 ms | 182 ms | 10% |
-  // | `ahead: 1, behind: 1` — 4 slots |  4 ms |  70 ms | 216 ms |  5–20% |
-  //
-  // The same effect from the other side: raising `maxConcurrent` from 3 to 6,
-  // so more of that window decodes at once, made it *worse* (5 slow turns in 16
-  // against 3 in 14) rather than better. More decode in flight is more
-  // eviction, not more readiness.
-  //
-  // **All of those runs warmed pages at full size.** Prefetch built its URLs
-  // with no long edge until O110 closed on 2026-09-14, so each `en-mono` page
-  // it warmed decoded to about 26 MB, where one fetched at 1024 decodes to
-  // about 6 MB (`pageSize.ts`'s table). Neither depth nor `maxConcurrent` has
-  // been measured against the smaller decode.
-  //
-  // `behind: 1` rather than `0`, though the two measure alike forward: a
-  // reversal is the single most likely correction after a forward press, and
-  // the run above that reversed every fourth turn is the one `behind` exists
-  // for. `window`'s own "both zero" test is what actually turns the module off,
-  // not either depth alone.
+  // `behind: 1` rather than `0`: a reversal is the single most likely
+  // correction after a forward press, and `behind` exists for it. Neither
+  // depth alone turns the module off; `enabled` does.
   //
   // Direction does not enter into it. `keys.ts` reports `ArrowRight` as
   // `{ kind: 'step', by: 1 }` whatever the work's reading direction, and slot
@@ -71,10 +51,7 @@ export const prefetchModule: ReaderModule<PrefetchPrefs> = {
  * nothing to prefetch.
  *
  * Nearest-first by interleaving the two directions one distance at a time
- * (behind before ahead at each tier — not matching the module's own
- * forward-asymmetric default above, which is about *depth*, `ahead` being
- * the larger of the two, not per-tier order; the reason to reach behind
- * first at each tier is that a reversal is the single most likely
+ * (behind before ahead at each tier — a reversal is the single most likely
  * correction right after a forward press, so the page just left is worth
  * fetching before the next page further ahead) rather than emitting every
  * `behind` slot and then every `ahead` slot: a flick that reverses or stops
@@ -123,34 +100,22 @@ export interface SlotGroup {
  * `ahead` groups after the reader's and the `behind` groups before it, nearest
  * group first, with the group they are standing in left out.
  *
- * **`window` above counts the wrong unit in `two` mode, and that is a defect a
- * reader felt rather than a refinement.** An arrow steps by what is *drawn* —
- * `pairing.ts`'s `stepToGroup` — and in `two` mode a group is two slots, so a
- * slot-space window centred on the group's first slot reaches the next group's
- * first half and stops one short of its second. Measured on `gotoubun-v01`
- * `en-mono` with the shipped defaults (`ahead: 2, behind: 1`), watching
- * `PerformanceObserver` resource entries: **every forward turn requested exactly
- * one page only after the keypress**, and it was the second half of the group
- * being turned to, every time — 16,17 then 18,19 then 20,21 then 22,23, cold on
- * 17, 19, 21, 23. Median time from keypress to the pair on screen was 110 ms
- * against 9–14 ms for a turn whose pages were both warm.
+ * **`window` above counts the wrong unit in `two` mode.** An arrow steps by
+ * what is *drawn* — `pairing.ts`'s `stepToGroup` — and in `two` mode a group is
+ * two slots, so a slot-space window centred on the group's first slot reaches
+ * the next group's first half and stops one short of its second.
  *
- * That one cold half is also where the *first* complaint about this reader came
- * from. Before `cohort.ts` the warm half painted immediately and the cold one
- * arrived ~90 ms later, which is precisely the tear that was measured and fixed;
- * gating the pair together turned the same missing fetch into a wait instead. One
- * defect, two symptoms, and prefetching the whole group is the end of both.
+ * `cohort.ts` gates a pair together, so one half's missing fetch holds the
+ * whole pair up; prefetching the whole group is what avoids that.
  *
- * `single` and `scroll` put one slot per group, so this is identical to `window`
- * there and the defaults keep their old meaning. In `two` mode `ahead: 2` now
- * means two *turns* ahead rather than one turn and one orphaned half, which is
- * what the module's own doc above always claimed it meant.
+ * `single` and `scroll` put one slot per group, so this is identical to
+ * `window` there. In `two` mode `ahead: 2` means two *turns* ahead.
  *
- * Nearest-first by the same interleaving `window` uses and for the same reason —
- * behind before ahead at each tier, since a reversal is the likeliest correction
- * right after a forward press — except that the tiers are groups, so each one
- * contributes all of its slots at once. A group is drawn as a unit and is
- * useless half-fetched, which is the whole point.
+ * Nearest-first by the same interleaving `window` uses and for the same
+ * reason — behind before ahead at each tier, since a reversal is the likeliest
+ * correction right after a forward press — except that the tiers are groups, so
+ * each one contributes all of its slots at once. A group is drawn as a unit and
+ * is useless half-fetched, which is the whole point.
  *
  * The reader's own group is excluded entirely, not just the slot they are
  * standing on: in `two` mode both of its slots are already on screen.

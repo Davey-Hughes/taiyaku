@@ -8,9 +8,9 @@
  * way to make one of those from outside a mounted component.
  *
  * Cases 2, 3, 4 and 9 were written against the *correct* semantics and watched
- * failing against the faithful port of today's `App.tsx:1935–1977`, before the
- * fix existed. The other six are controls that must pass on both sides of it:
- * the fix changes the validator the retry writes against, and nothing else.
+ * failing against a faithful port of the save path `App.tsx` had. The other
+ * six are controls that must pass on both sides of the fix: the fix changes
+ * the validator the retry writes against, and nothing else.
  */
 import { describe, expect, it } from 'vitest'
 import type { FetchedNotes } from '../src/api'
@@ -278,7 +278,7 @@ describe('saveNotes', () => {
     })
   })
 
-  // 6 — a control. "Retried once and once only" (App.tsx:1931–1933), pinned.
+  // 6 — a control. "Retried once and once only" (`saveNotes`'s doc), pinned.
   it('retries once and once only', async () => {
     const s = scripted({
       put: (_call, attempt) => Promise.reject(stale(`v${attempt + 1}`)),

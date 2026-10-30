@@ -1,11 +1,10 @@
 /* The reader — spec 2026-09-17 §8.
  *
  * Dark in both themes: `color-scheme: dark` on `.reader` resolves every
- * `light-dark()` token to its Ink half inside the reader — measured in
- * Chromium 151 and Firefox 153 (§8) — so the bars and panels draw from the
- * ordinary tokens and nothing here keeps a second palette. `--reader-ground`,
- * `--reader-panel` and `--reader-hair` (`tokens.css`) are the three values §2
- * gives the reader alone.
+ * `light-dark()` token to its Ink half inside the reader (§8), so the bars and
+ * panels draw from the ordinary tokens and nothing here keeps a second
+ * palette. `--reader-ground`, `--reader-panel` and `--reader-hair`
+ * (`tokens.css`) are the three values §2 gives the reader alone.
  *
  * That holds only while the build ships `light-dark()` as written, which
  * `vite.config.ts`'s `build.cssTarget` sees to (O218).
@@ -25,14 +24,12 @@
 :root:has(.reader-route, .reader),
 :root:has(.reader-route, .reader) body {
   background: var(--reader-ground);
-  /* No rubber band, and no pull-to-refresh, while a page is being read.
-   * Reported by the user on their iPhone during style pass ④'s device pass:
-   * a horizontal swipe that drifts vertically drags the whole document up
-   * and down, which reads as the reader coming loose. Measured in Chromium
-   * at 390×844 first, to be sure there was nothing real to scroll: the
-   * document's scroll height equals its client height, the page area is
-   * `overflow: hidden`, and it carries `touch-action: manipulation` — so the
-   * only vertical movement left is the overscroll this turns off.
+  /* No rubber band, and no pull-to-refresh, while a page is being read. A
+   * horizontal swipe that drifts vertically drags the whole document up and
+   * down, which reads as the reader coming loose. There is nothing real to
+   * scroll: the page area is `overflow: hidden`, and it carries
+   * `touch-action: manipulation` — so the only vertical movement left is the
+   * overscroll this turns off.
    *
    * Scoped to the reader's own root, so the library and the labeller keep
    * the platform's scrolling, and it lapses the moment the reader unmounts.
@@ -44,41 +41,36 @@
 .reader {
   --reader-top-bar: 52px;
   /* The strip's tiles. 160 px is `cover.rs`'s `THUMB_LONG_EDGE`, a tile's
-   * natural height, which a manual pass asked for; below the breakpoint 96,
-   * so a phone shows about five pages and the two bars cover about 27% of a
-   * 390×844 screen rather than 35% (§8.1) — computed from the mockup, not
-   * measured in the app. Not raised further for a bigger
-   * strip: `THUMB_LONG_EDGE` is folded into the cache path, so raising it
-   * invalidates every cached tile and multiplies the 1.12 MiB per edition
-   * O11 records. The hover preview (`Chrome.tsx`'s `previewMaxHeight`) is
-   * the cheaper answer for the one case that needs more. */
+   * natural height; below the breakpoint 96, so a phone shows about five pages
+   * and the two bars cover about 27% of a 390×844 screen rather than 35% (§8.1,
+   * computed from the mockup). Not raised further for a bigger strip:
+   * `THUMB_LONG_EDGE` is folded into the cache path, so raising it invalidates
+   * every cached tile and multiplies the per-edition size O11 records. The
+   * hover preview (`Chrome.tsx`'s `previewMaxHeight`) is the cheaper answer
+   * for the one case that needs more. */
   --strip-tile: 160px;
   /* One nominal page-width in the strip, and the two figures the rail's own
    * geometry is made of. `--strip-unit` is **a starting value, not the last
-   * word**: it is the width a one-page tile's image drew at this breakpoint,
-   * read on the running app with no scrollbar on the rail (O138,
-   * 2026-10-11). `Filmstrip.tsx`'s mount
-   * effect measures the tiles that have actually drawn and overwrites this
-   * value on the rail element itself. **The median of them, not one of them**
-   * (`tiles.ts`'s `medianTileWidth` and `refinedStripUnit`): a double-page
-   * scan the sidecar never marked `spread: true` is a one-unit tile drawing
-   * at two, so taking whichever tile loaded first could set this to double.
-   * Every loaded tile contributes, normalised to one unit, which is what
-   * keeps a sample available in `two` mode — where every group is a pair and
-   * a one-unit-only rule found nothing to measure. This figure is what the
-   * very first paint and any tile that has not drawn yet still use.
-   * A tile's `minWidth` floor is this value **plus its two borders**
-   * (`--strip-tile-border` on each side, added explicitly in
-   * `Filmstrip.tsx`'s tile style), not this value alone: the button is
-   * `box-sizing: border-box`, so a floor of `--strip-unit` by itself left
-   * the image's content box 4 px narrower than this figure says (Task 2a,
-   * 2026-09-21, fixed after driving the app found it). With the borders
-   * added on top of the floor, the image's own content box is
-   * `--strip-unit` again, which is what makes the sentence above true. A
-   * tile is given this floor explicitly so the rail can be windowed:
-   * `tiles.ts`'s `spacerWidth` sums it over the tiles a spacer stands in
-   * for, and nothing has to measure a tile to know where the next one
-   * starts. */
+   * word**: it is the width a one-page tile's image drew at this breakpoint
+   * (O138). `Filmstrip.tsx`'s mount effect measures the tiles that have
+   * actually drawn and overwrites this value on the rail element itself.
+   * **The median of them, not one of them** (`tiles.ts`'s `medianTileWidth`
+   * and `refinedStripUnit`): a double-page scan the sidecar never marked
+   * `spread: true` is a one-unit tile drawing at two, so taking whichever tile
+   * loaded first could set this to double. Every loaded tile contributes,
+   * normalised to one unit, which is what keeps a sample available in `two`
+   * mode — where every group is a pair and a one-unit-only rule would find
+   * nothing to measure. This figure is what the very first paint and any tile
+   * that has not drawn yet still use. A tile's `minWidth` floor is this value
+   * **plus its two borders** (`--strip-tile-border` on each side, added
+   * explicitly in `Filmstrip.tsx`'s tile style), not this value alone: the
+   * button is `box-sizing: border-box`, so a floor of `--strip-unit` by itself
+   * would leave the image's content box 4 px narrower than this figure says.
+   * With the borders added on top of the floor, the image's own content box is
+   * `--strip-unit`, which is what makes the sentence above true. A tile is
+   * given this floor explicitly so the rail can be windowed: `tiles.ts`'s
+   * `spacerWidth` sums it over the tiles a spacer stands in for, and nothing
+   * has to measure a tile to know where the next one starts. */
   --strip-unit: 107px;
   --strip-gap: 6px;
   --strip-tile-border: 2px;
@@ -87,8 +79,6 @@
   --strip-height: calc(var(--strip-tile) + 16px);
   /* Spec 2026-09-17 §8.4's own figure, "a 2 px progress line". */
   --progress-height: 2px;
-  /* `Chrome.tsx`'s old `readoutHeight` constant, carried over rather than
-   * re-picked when the readout row moved into this bar. */
   --readout-height: 32px;
   /* The bottom bar above the safe area: its 1 px rule, the strip, the
    * progress line and the readout row. */
@@ -315,10 +305,9 @@
 }
 
 /* The docked panels — Help, Credits and the notes panel (spec 2026-09-17
- * §8.5): one class for what was four copies of one inline object. 16 px below
- * the top bar's line and above the bottom bar's, whether or not the bars are
- * shown, so a panel never moves; a long one scrolls inside itself, and a
- * window too short for the bars still gets 8rem. */
+ * §8.5). 16 px below the top bar's line and above the bottom bar's, whether or
+ * not the bars are shown, so a panel never moves; a long one scrolls inside
+ * itself, and a window too short for the bars still gets 8rem. */
 .docked-panel {
   position: absolute;
   top: var(--panel-top);
@@ -410,15 +399,11 @@
 
 /* A row in a *stack* of them, which the class above on its own is not.
  *
- * ③'s panels draw one head per section — a title and a button, under the
- * section's own `margin-top` and rule — so no head there has ever sat
- * beneath another one and `.reader-section-head` carries no margin. ⑤c's
- * account panel is the first that stacks them: the create form, then a row
- * per API key; a row per session. Each of those rows carried
- * `marginTop: 8` as an inline style until ⑤c, and dropping it closed every
- * boundary between one row and the row above it — four of them measured at
- * 1280 x 900, all four at 0 px, each row's top exactly on the previous
- * row's bottom.
+ * The other panels draw one head per section — a title and a button, under the
+ * section's own `margin-top` and rule — so `.reader-section-head` carries no
+ * margin. The account panel stacks them: the create form, then a row per API
+ * key; a row per session. Without a margin of its own, each row's top would sit
+ * exactly on the previous row's bottom.
  *
  * **Applied at each site rather than written as `+ .reader-section-head`.**
  * A stacked row is not always preceded by another row: the create form
@@ -453,9 +438,8 @@
   margin: var(--space-1) 0 0;
 }
 
-/* A panel's own button — Close, Reset, Export, Delete, a gap's offers — which
- * until style pass ③ was the browser's own: `base.css`'s element rules reach
- * only `.library` and `.login`. */
+/* A panel's own button — Close, Reset, Export, Delete, a gap's offers.
+ * `base.css`'s element rules reach only `.library` and `.login`. */
 .reader-button {
   padding: var(--space-1) var(--space-3);
   border: 1px solid var(--line-strong);
@@ -499,29 +483,26 @@
  * the position is what keeps Biome's `noDescendingSpecificity` quiet
  * without a suppression. Either alone would hold today; both together
  * make moving this rule a lint error rather than a silent regression. */
-/* **The same 16 px floor `base.css` gives the library, which never reached
+/* **The same 16 px floor `base.css` gives the library, which never reaches
  * here** — O151.
  *
  * That floor is `@media (pointer: coarse) { :where(.library, .login)
  * :where(input, select, textarea) { … } }`, written because a text field
  * under 16 px makes iOS Safari zoom the whole document on focus and the zoom
- * outlives the field: the user reported signing in left the page zoomed with
- * a pinch the only way back (④'s device pass). **The reader is neither
+ * outlives the field, with a pinch the only way back. **The reader is neither
  * `.library` nor `.login`**, so the panel above — `font-size: var(--text-ui)`,
- * 14 px, handed to every control by the `font: inherit` beside it — kept
+ * 14 px, handed to every control by the `font: inherit` beside it — would keep
  * doing exactly what that floor exists to stop. `settingsFields.tsx` fills it
- * with `type="number"` boxes for prefetch and motion. **Confirmed on the
- * reporter's iPhone on 2026-09-23**: tapping one zooms the document.
+ * with `type="number"` boxes for prefetch and motion, and tapping one would
+ * zoom the document.
  *
- * **It wins on specificity now, not on source order, and that change is
- * this floor's second defect rather than a tidy-up.** The first version was
- * (0,1,0) — the same as the rule it corrects — and won the tie only by
- * sitting after it. ⑤c then put the Account panel's controls on
- * `.reader-field`, whose `font: inherit` is *also* (0,1,0) and sits ~100
- * lines *later* in this file, so it took the tie and the panel's three text
- * boxes rendered at **14 px measured in Chromium at 390x844 with
- * `hasTouch`**, under the floor O151 exists to hold. A floor that depends on
- * being last is a floor that the next rule silently removes.
+ * **It wins on specificity, not on source order.** A floor at (0,1,0) — the
+ * same as the rule it corrects — would win the tie only by sitting after it,
+ * and `.reader-field`, whose `font: inherit` is *also* (0,1,0) and sits later
+ * in this file than that rule, would take the tie on the Account panel's
+ * controls and render its three text boxes at 14 px, under the floor O151
+ * exists to hold. A floor that depends on being last is a floor that the next
+ * rule silently removes.
  *
  * So the second prelude names `.reader-field` explicitly at (0,2,0), which
  * beats it wherever either sits. `:where()` keeps the first prelude at
@@ -539,10 +520,8 @@
   }
 }
 
-/* A field that spans the panel, and the label above it. ③'s own panels put
- * their controls at the right-hand end of a `.reader-section-head` row —
- * none of them asks anybody to type, so this is the first panel that needs
- * a form shape. ⑤c's account panel is the first (spec §12.5). */
+/* A field that spans the panel, and the label above it: the form shape the
+ * account panel needs (spec §12.5). */
 .reader-field-block {
   display: block;
   width: 100%;
@@ -560,11 +539,10 @@
 
 /* The one-time API key secret. `admin.css`'s `.account .secret` is the
  * page's copy — the same idea drawn as the settings area draws things, not
- * the same box. Three differences, not one: it rounds its corners 4px where
- * this one takes no radius at all, like the dialog it sits in; it spaces
- * itself in rems (`0.6rem`, `0.6rem 0.75rem`) where this one takes the space
- * tokens; and its border is `--line-strong` against this one's
- * `--reader-hair`. Only the last is a matter of ground. */
+ * the same box. It rounds its corners by `--radius-control` where this one
+ * takes no radius at all, like the dialog it sits in, and its border is
+ * `--line-strong` against this one's `--reader-hair`. Only the last is a
+ * matter of ground. */
 .reader-secret {
   margin-top: var(--space-2);
   padding: var(--space-2) var(--space-3);
@@ -634,13 +612,9 @@ button.reader-secret:hover {
   background: var(--reader-ground);
 }
 
-/* `.reader-field` joins the floor `.reader-button` has carried since ③.
- * **It was left out rather than not needed**: the note body has worn this
- * class since ③ (`NotePanel.tsx`, 333b3ab4) and ④'s touch pass did not pick
- * it up, so it has been a control under a finger at its desktop height for
- * two style passes. ⑤c's account panel adds three more — Current, New and
- * the key name. Every wearer is an `<input>` or a `<textarea>`, never a
- * label, so a `min-height` is the control's own. */
+/* `.reader-field` joins the floor `.reader-button` carries, so a control under
+ * a finger is not left at its desktop height. Every wearer is an `<input>` or
+ * a `<textarea>`, never a label, so a `min-height` is the control's own. */
 @media (pointer: coarse) {
   .reader-button,
   .reader-field {

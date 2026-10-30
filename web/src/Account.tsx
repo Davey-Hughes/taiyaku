@@ -40,17 +40,14 @@ import { usePage } from './usePage'
 /**
  * The account screen: change a password, hold API keys, see what is signed in.
  *
- * **No user administration** (§9): creating accounts, granting roots and
- * setting capabilities are spec C4's configuration UI, and the CLI covers them
- * in between. Everything here is about *this* account, which is why no route it
+ * **No user administration** (§9): creating accounts, granting libraries and
+ * setting capabilities are spec C4's configuration UI, and the CLI covers
+ * them. Everything here is about *this* account, which is why no route it
  * calls names another one.
  *
  * **Two placements, one component** — O94. `'panel'` is the reader's: `App`
  * renders it over the page and `A` opens it. `'page'` is `/account`, drawn in
- * `Shell`'s `<main>` beside the library's sidebar. The panel was the only one
- * from spec A2 until then, so the one screen where an account changes its own
- * password could not be reached without opening a work, and C4's users screen
- * had to tell an administrator to "open any work and press A".
+ * `Shell`'s `<main>` beside the library's sidebar.
  *
  * **The two share their state, their handlers, their controls and what each
  * section holds, in one order; each frames them in its own markup.** The
@@ -107,9 +104,8 @@ const LOOKS: Record<'panel' | 'page', Look> = {
     failure: 'reader-failure',
     // Both halves at every site. `.reader-section-head` is ③'s row, which
     // has no margin because no panel of ③'s ever stacked two of them; the
-    // modifier is the 8 px each of this panel's rows carried as an inline
-    // style. See `reader.css` for why an adjacent-sibling rule cannot stand
-    // in for it here.
+    // modifier is the margin each of this panel's rows has. See `reader.css`
+    // for why an adjacent-sibling rule cannot stand in for it here.
     row: 'reader-section-head reader-section-head-stacked',
     meta: 'reader-meta',
     button: 'reader-button',
@@ -742,11 +738,10 @@ export function Account(props: AccountProps) {
       className={look.button}
       onClick={() => {
         revokeFocus.pressed('keys', key.id)
-        // Said rather than swallowed, and `refresh` only on success:
-        // a revocation that did not happen looked exactly like one
-        // that did — the row stayed, no alert appeared, and a reader
-        // believed the lost device's key was dead when it still
-        // worked. Found by the third whole-branch review.
+        // Said rather than swallowed, and `refresh` only on success: a
+        // revocation that did not happen would look exactly like one that did
+        // — the row would stay, no alert would appear, and a reader would
+        // believe the lost device's key was dead when it still worked.
         const stillOpen = openSincePress()
         const failureGoes = failureGoesWithPress()
         void revokeKey(key.id)

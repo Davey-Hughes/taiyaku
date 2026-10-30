@@ -7,9 +7,9 @@
  * reads a series. They share `getJson`, so the 401 rule is one rule.
  *
  * The chip and sort helpers are here rather than in a component because
- * §7 declines a `?sort=` round trip on measured numbers (127 series), which
- * makes "which series does this chip keep" a pure function over data the
- * browser already holds — and a pure function is the part worth testing.
+ * §7 declines a `?sort=` round trip, which makes "which series does this chip
+ * keep" a pure function over data the browser already holds — and a pure
+ * function is the part worth testing.
  */
 import { getJson } from './api'
 import type { SeriesTitle } from './metadata'
@@ -145,12 +145,9 @@ export interface LibraryStatus {
  *
  * **Every screen that reads the parameter reads it through this**, the
  * library page, the sidebar's mark and Search's narrowing alike, so that no
- * two of them take one URL to mean different things: the library page once
- * read the value with `Number` while the sidebar compared its text, so `01`
- * was library 1 on the page and no library in the sidebar. An id is a
- * positive decimal integer with no leading zero, the form the sidebar's
- * links write; `Number` would read `01` as 1, an empty value as 0 and `abc`
- * as `NaN`.
+ * two of them take one URL to mean different things. An id is a positive
+ * decimal integer with no leading zero, the form the sidebar's links write;
+ * `Number` would read `01` as 1, an empty value as 0 and `abc` as `NaN`.
  */
 export function libraryParam(
   raw: string | null,
@@ -184,9 +181,7 @@ export const oneSeries = (id: number) =>
  *
  * A tile is drawn about 256 CSS px on its long edge (a phone's two-column
  * grid; a desktop tile is a little smaller), so 256, 512 and 768 are what one,
- * two and three device pixels per CSS pixel draw it at. Covers came from the
- * filmstrip's tile until O133, 160 px on its long edge — upscaled nearly
- * fivefold on a 3× phone.
+ * two and three device pixels per CSS pixel draw it at.
  *
  * **The server holds the same three** (`cover.rs`'s `COVER_LONG_EDGES`): the
  * tile route sizes page 0 to those and to nothing else, and answers any other
@@ -215,7 +210,7 @@ export function coverSources(url: string): { src: string; srcSet: string } {
  * **A URL, not a fetch.** The series page links to it with a plain
  * `<a download>`: an anchor navigation carries the session cookie like every
  * other browser request, and the browser's own download manager takes the
- * file, where a `fetch`-to-blob would buffer a 1.49 GB volume in the tab.
+ * file, where a `fetch`-to-blob would buffer the whole volume in the tab.
  */
 export const editionDownload = (slug: string, edition: string) =>
   `/api/works/${encodeURIComponent(slug)}/${encodeURIComponent(edition)}/download`
@@ -237,22 +232,20 @@ export const status = () => getJson<LibraryStatus>('/api/library/status')
  * **Here, not on a component**, for the same reason `matchesChip` and
  * `sorted` are below: every reader link in the browse screens is offered
  * from a `WorkCard` a caller already holds, so this is a pure function over
- * data already in memory rather than a fetch, and it is shared because four
- * places now need to agree on it — `Series.tsx`'s grid and table, the
+ * data already in memory rather than a fetch, and it is shared because these
+ * places need to agree on it — `Series.tsx`'s grid and table, the
  * per-edition download beside each, `Library.tsx`'s Continue strip, and
  * `SeriesGrid.tsx`'s unfiled works. A copy in each would drift the moment one
- * of them "simplified" the guard below without touching its siblings; a
- * whole-branch review already found the guard undefended in the *one* place
- * it lived, so five undefended copies is worse, not better.
+ * of them "simplified" the guard below without touching its siblings.
  *
- * **The edition that opens, not every edition — O84.** This asked
- * `editions.every(missing > 0)` until then, which is right about the case it
- * was written for (one edition loses its files, a sibling stays intact, the
- * volume is still readable through the sibling) and wrong about the volume
- * whose *own* opening edition is the broken one. `w.opens` is the server's
- * answer to "which edition will this caller's reader open", computed from the
- * same rule `reading.ts::restore` applies — the stored position's edition, or
- * the hub. So the guard can ask the only question that matters.
+ * **The edition that opens, not every edition — O84.** Asking
+ * `editions.every(missing > 0)` is right about the case where one edition
+ * loses its files and a sibling stays intact, so the volume is still readable
+ * through the sibling, and wrong about the volume whose *own* opening edition
+ * is the broken one. `w.opens` is the server's answer to "which edition will
+ * this caller's reader open", computed from the same rule `reading.ts::restore`
+ * applies — the stored position's edition, or the hub. So the guard can ask
+ * the only question that matters.
  *
  * **Asking the hub instead would have been cheaper and wrong**, and the
  * Continue strip is where it shows: a reader part-way through the intact
@@ -262,8 +255,7 @@ export const status = () => getJson<LibraryStatus>('/api/library/status')
  * **An `opens` naming no edition here is not unreadable-by-missing-files.**
  * That happens when the grant hides the hub itself, which leaves the reader
  * broken for an unrelated reason — the resolver has no slots for an edition
- * it was never sent — and is neither this guard's question nor a regression
- * from the `every` form, which offered that work too.
+ * it was never sent — and is not this guard's question.
  */
 export function unreadable(w: WorkCard): boolean {
   const opening = w.editions.find((e) => e.key === w.opens)

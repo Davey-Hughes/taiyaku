@@ -40,12 +40,10 @@ export const regroupModule: ReaderModule<RegroupPrefs> = {
  * Toggle one edition's break at a slot, leaving every other edition's list
  * alone.
  *
- * Mirrors `direction.ts`'s `setOverride`: the same per-edition merge shape
- * that already bit once in this project (`App.tsx` used to inline it for
- * direction, untested, and a forgotten spread there would have silently
- * wiped every other edition's saved override). `App.tsx` is legitimately
- * Vitest-unreachable, so this is extracted here rather than inlined into the
- * `b` key handler, where nothing could catch a regression.
+ * Mirrors `direction.ts`'s `setOverride`: the same per-edition merge shape,
+ * where a forgotten spread would silently wipe every other edition's saved
+ * override. This is extracted here rather than inlined into the `b` key
+ * handler so that a test can pin it without mounting `App.tsx`.
  */
 export function toggleEditionBreak(
   prefs: RegroupPrefs,

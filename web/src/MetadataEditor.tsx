@@ -12,21 +12,20 @@
  * with no data it does not already have.** `metadata.ts`'s `PatchWork`,
  * `patchSeries`, `patchEdition` and `patchMember` also cover volume number,
  * series membership, edition label/kind/language/credits and a member's
- * chapter — none of those are wired to a screen yet. See this branch's own
- * task report for why: a title correction from a volume's row needs only the
- * slug `library.ts` already hands the page, but the sibling entry point the
- * spec also asks for — a series page correcting its own title — would have
- * to replace `LibraryDoc.series.titles` wholesale (`librarydoc::set_series_titles`
- * in `taiyaku-library`, which `patch_series` calls, replaces a series' whole
- * title set rather than merging into it), and until O83 closed nothing the
- * browse API returned for a series carried that array back — `SeriesCard.title`
- * is one display string, the primary title, never the underlying
- * `{ title, kind, primary }` entries, so wiring it up would have silently
- * dropped a series' native/alt titles the moment anyone corrected the romaji
- * one. **The read path exists now and no screen uses it:** `library.ts`'s
- * `oneSeries` answers `SeriesDetail.titles` in the shape `patchSeries` sends,
- * but this component edits one string and hands `onPatch` a `WorkEdit`, so a
- * series page that edits its own titles is still to be built.
+ * chapter — none of those are wired to a screen yet. A title correction from
+ * a volume's row needs only the slug `library.ts` already hands the page, but
+ * the sibling entry point the spec also asks for — a series page correcting
+ * its own title — would have to replace `LibraryDoc.series.titles` wholesale
+ * (`librarydoc::set_series_titles` in `taiyaku-library`, which `patch_series`
+ * calls, replaces a series' whole title set rather than merging into it).
+ * `SeriesCard.title` is one display string, the primary title, never the
+ * underlying `{ title, kind, primary }` entries, so wiring it up from that
+ * would silently drop a series' native/alt titles the moment anyone
+ * corrected the romaji one. **The read path exists (O83) and no screen uses
+ * it:** `library.ts`'s `oneSeries` answers `SeriesDetail.titles` in the shape
+ * `patchSeries` sends, but this component edits one string and hands
+ * `onPatch` a `WorkEdit`, so a series page that edits its own titles is
+ * still to be built.
  *
  * **`persisted: false` is stated, not hidden, and it is not an alarm.**
  * `metadata.ts`'s own module doc is explicit that this answer is not a
@@ -50,30 +49,26 @@ import {
 import { messageOf } from './message'
 
 /**
- * How many archives, as one phrase. Four places print this count — the plan's
- * total, the confirm control's own label, the line that says a rewrite is
- * running, and the completion — and three of them are about the same number.
- * A helper rather than four inline ternaries so a singular cannot be right in
- * one of them and wrong in the next.
+ * How many archives, as one phrase. A helper rather than an inline ternary at
+ * each place that prints this count, so a singular cannot be right in one of
+ * them and wrong in the next.
  */
 const archiveCount = (n: number) => `${n} ${n === 1 ? 'archive' : 'archives'}`
 
 /**
  * What the ComicInfo section is doing, as one value.
  *
- * **This exists because three review passes found the same defect three
- * times.** Every control and every status line in this section used to state
- * its own condition over six independent variables (`plan`, `asking`,
- * `planFailure`, `stamped`, `sending`, `stampFailure`) plus two refs; each
- * round's fix moved one of those conditions and left the others disagreeing
- * with it, and three separate comments arguing which combinations were
- * reachable were each proven false by the next pass. So the combination is
- * computed once, in `phaseOf` below, and everything renders from the answer.
+ * **This exists so that no two conditions in the section can disagree.** A
+ * control or status line that stated its own condition over six independent
+ * variables (`plan`, `asking`, `planFailure`, `stamped`, `writing`,
+ * `stampFailure`) plus two refs would leave each fix moving one condition and
+ * the others disagreeing with it. So the combination is computed once, in
+ * `phaseOf` below, and everything renders from the answer.
  *
- * **A discriminated union rather than a bare string union.** Four of the eight
+ * **A discriminated union rather than a bare string union.** Five of the eight
  * phases have something to draw — the plan they are about, or the sentence a
  * server sent — and a string would leave every reader reaching back into the
- * raw state for it, which is exactly the shape being removed. The cost is that
+ * raw state for it, which is exactly what the phase avoids. The cost is that
  * the union has to be constructed rather than compared; that is one function.
  */
 type StampPhase =
@@ -93,9 +88,9 @@ type StampPhase =
    * **`plan` is the plan being written, held apart from the plan slot.** A
    * re-read pressed in the same React batch as the confirm blanks that slot
    * while the POST is still out, and what is being rewritten right now is a
-   * fact about the write rather than about the slot — which is the whole of
-   * pass 3's finding 3: with the slot blanked, the only thing on screen was
-   * "Working out which archives would change…", naming the read.
+   * fact about the write rather than about the slot: with the slot blanked,
+   * the only thing on screen would be "Working out which archives would
+   * change…", naming the read.
    */
   | { kind: 'writing'; plan: StampPlan }
   /**
@@ -118,10 +113,9 @@ type StampPhase =
  * failure at the press and supersedes any plan read in flight, so a read
  * cannot outlive the stamp that follows it. That leaves `refused` beside a
  * plan slot as the only combination that really occurs, which is why that
- * phase carries one. The chain still names every state: this file has been
- * wrong three times about which combinations occur, and a total order costs a
- * line each where a fourth argument about reachability costs another review
- * pass.
+ * phase carries one. The chain still names every state: a total order costs
+ * a line each where an argument about which combinations occur costs a
+ * review pass.
  *
  * **A write in flight is tested first** because a rewrite with no undo
  * outranks anything else this section could be saying.
@@ -129,13 +123,12 @@ type StampPhase =
  * **`plan` is tested before `asking`, deliberately.** The two cannot both be
  * set — `askPlan` blanks the slot at the press — so in correct code the order
  * is unobservable, and the reason for it is what a *broken* version shows.
- * Measured, by deleting `askPlan`'s `setPlan(undefined)` with the chain both
- * ways round: this order fails two tests, including the one that names the
- * frame — `blanks the refused plan and its confirm control while the re-read
- * is out`; the other order fails one, because a stale plan hides behind
- * "Working out which archives would change…" until the read settles. The
- * deletion is caught either way. What this order buys is the test that
- * describes the frame still being the test that sees it.
+ * With `askPlan`'s `setPlan(undefined)` deleted, this order fails the test
+ * that names the frame — `blanks the refused plan and its confirm control
+ * while the re-read is out` — and the other order does not, because a stale
+ * plan hides behind "Working out which archives would change…" until the
+ * read settles. The deletion is caught either way. What this order buys is
+ * the test that describes the frame still being the test that sees it.
  */
 const phaseOf = (state: {
   plan: StampPlan | undefined
@@ -162,38 +155,35 @@ const phaseOf = (state: {
 /**
  * A phase this file has not been taught to draw, refused at compile time.
  *
- * **The first exhaustiveness guard in `web/src`, so this comment says what one
- * is for.** Compiler-enforced coverage is the whole argument for making the
- * phase a discriminated union, and until this call neither switch over it had
- * any: `phaseBody` carries no `default`, and a `switch` whose arms all
+ * **Compiler-enforced coverage is the whole argument for making the phase a
+ * discriminated union**, and neither `switch` over it, `phaseBody`'s or
+ * `confirmablePlan`'s, gets any without this call. A `switch` whose arms all
  * `return` and which names eight kinds of nine just infers `undefined` into
- * its return type — a legal thing for a renderer to return; `confirmablePlan`
- * carried `default: return undefined`, which swallows an unnamed kind and
- * answers with the same value it gives five named ones. So a ninth phase used
- * to compile at both sites, drawing nothing and dropping the confirm at the
- * same moment: an empty status region beside the read control alone, which is
- * pass 3's finding 1 exactly. Naming the five explicitly below is what lets a
- * `default` mean "nothing reaches here" rather than "everything else".
+ * its return type — a legal thing for a renderer to return — and a
+ * `default: return undefined` swallows an unnamed kind and answers with the
+ * same value it gives five named ones. So a ninth phase would compile at
+ * both sites, drawing nothing and dropping the confirm at the same moment:
+ * an empty status region beside the read control alone. Naming the five
+ * explicitly below is what lets a `default` mean "nothing reaches here"
+ * rather than "everything else".
  *
  * **A `never` parameter rather than a return-type annotation**, which is the
  * alternative a reader reaches for first and which catches neither site:
  * `undefined` is assignable to `ReactNode`, and `confirmablePlan` is already
  * annotated `StampPlan | undefined`. Assigning the narrowed value to `never`
- * is the only spelling that makes the missing case an error — verified by
- * adding a ninth kind to `StampPhase`, which fails `tsc` at both call sites
- * and nowhere else.
+ * is the only spelling that makes the missing case an error.
  *
- * **It draws nothing rather than throwing, and that is a reversal.** Throwing
- * was the first spelling, on the argument that a section absent altogether
- * cannot be pressed where a half-drawn confirmation for a rewrite with no undo
- * can. What that argument missed is the blast radius: there is no error
- * boundary anywhere in `web/src`, and `main.tsx` renders through a plain
- * `createRoot`, so a throw here unmounts the whole tree under `#root` — the
- * nav, the gate and every route — rather than this section. Returning
- * `undefined` costs nothing the compiler was giving us, since the `never`
- * parameter above is what makes a missing case an error; it only changes
- * which failure the already-impossible branch lands on. The `console.error`
- * is there so "impossible" stays observable instead of silent.
+ * **It draws nothing rather than throwing.** A section absent altogether
+ * cannot be pressed where a half-drawn confirmation for a rewrite with no
+ * undo can, which is the argument for throwing. What that argument misses is
+ * the blast radius: there is no error boundary anywhere in `web/src`, and
+ * `main.tsx` renders through a plain `createRoot`, so a throw here unmounts
+ * the whole tree under `#root` — the nav, the gate and every route — rather
+ * than this section. Returning `undefined` costs nothing the compiler
+ * gives, since the `never` parameter above is what makes a missing case an
+ * error; it only changes which failure the already-impossible branch lands
+ * on. The `console.error` is there so "impossible" stays observable instead
+ * of silent.
  */
 const unhandledPhase = (phase: never): undefined => {
   console.error('unhandled stamp phase', phase)
@@ -205,12 +195,8 @@ const unhandledPhase = (phase: never): undefined => {
  * none to send.
  *
  * **One function, so the control, its label and the body cannot disagree.**
- * The confirm control used to be gated on a spelling of "the plan has
- * archives" that the block around it no longer implied, and then on
- * `stamped === undefined` besides — a gate whose comment claimed every plan
- * reachable after a rewrite predated it. That claim was false (see
- * `confirmStamp`), and the phase it produced rendered a total, an archive
- * list, an irreversible warning and **no controls at all**.
+ * A confirm gated apart from the body can leave a phase that renders a
+ * total, an archive list, an irreversible warning and **no controls at all**.
  *
  * An `empty` plan is deliberately not confirmable: there is nothing to write.
  */
@@ -282,7 +268,7 @@ export function MetadataEditor({
    * The six pieces of state the stamp section holds. **None of them is read
    * by the JSX**: `phaseOf` above folds them into one phase, and everything
    * below renders from that. A control gated on one of these directly is the
-   * defect this section has now had fixed four times.
+   * defect that fold removes.
    *
    * `plan` is the answer to the last read that landed and was not superseded;
    * `asking` tells "nothing read yet" from "a read is out", since both leave
@@ -295,12 +281,12 @@ export function MetadataEditor({
   /**
    * The confirmation's own three.
    *
-   * **`writing` holds the plan being written rather than a boolean.** It was
-   * `sending: boolean`, and the count it could not carry was then read off
-   * the plan slot — which a re-read blanks — so the one place that said a
-   * rewrite was running was a button that two reachable states did not
-   * render. The plan is what the POST was given; a boolean is that fact with
-   * the useful half thrown away.
+   * **`writing` holds the plan being written rather than a boolean.** A
+   * boolean cannot carry the count, which would then be read off the plan
+   * slot — which a re-read blanks — so the one place that said a rewrite was
+   * running would be a button that two reachable states did not render. The
+   * plan is what the POST was given; a boolean is that fact with the useful
+   * half thrown away.
    */
   const [stamped, setStamped] = useState<Stamped>()
   const [writing, setWriting] = useState<StampPlan>()
@@ -310,12 +296,9 @@ export function MetadataEditor({
    * Whether a plan read is already out — the same ref, for the same reason,
    * as `inFlight` below.
    *
-   * **The comment this replaces was false.** It said a second press was "only
-   * reachable after a failure, by which time the first has already settled",
-   * and offered that as why no guard was needed. React batches state, so two
-   * presses dispatched before the next render both run this function with
-   * `asking` still `false` and the control still in the DOM — verified: it
-   * sent two `stampPlan`s. Nothing about a failure enters into it.
+   * React batches state, so two presses dispatched before the next render
+   * both run this function with `asking` still `false` and the control still
+   * in the DOM: without this ref, two `stampPlan`s would go out.
    */
   const planInFlight = useRef(false)
   /**
@@ -323,14 +306,10 @@ export function MetadataEditor({
    * its reason: whichever read was asked for last is the one whose answer may
    * draw, so a slow earlier answer cannot land on top of a newer one.
    *
-   * **It is load-bearing now, which it was not when it was written.** Its own
-   * comment used to record that nothing was ever discarded through it,
-   * because the control that starts a read was gone while `asking`. Two
-   * things changed: the read control is now rendered in every phase (disabled
-   * while a request is out) rather than conditionally absent, and
-   * `confirmStamp` bumps this counter to supersede a plan read that a stamp
-   * has overtaken. Both are answers that must not draw, and this is what
-   * discards them.
+   * **It is load-bearing.** The read control is rendered in every phase
+   * (disabled while a request is out), and `confirmStamp` bumps this counter
+   * to supersede a plan read that a stamp has overtaken. Each leaves an
+   * answer that must not draw, and this is what discards it.
    */
   const latestPlan = useRef(0)
 
@@ -380,7 +359,7 @@ export function MetadataEditor({
     // The confirm and this control are on screen together in the `ready` and
     // `refused` phases and React batches state, so one press of each inside a
     // single batch reaches both handlers with the DOM unchanged; without this
-    // the GET went out while the stamp was on the wire and answered with a
+    // the GET would go out while the stamp was on the wire and answer with a
     // library caught mid-rewrite, which is neither the plan that was
     // confirmed nor the one that follows it. `confirmStamp` carries no
     // matching `planInFlight` guard because its POST needs none: it sends the
@@ -424,9 +403,9 @@ export function MetadataEditor({
    * **The plan comes in as an argument rather than off the closure**, and it
    * is the one the phase drew: the control that calls this is rendered from
    * `confirmablePlan(phase)` and hands that same value back, so the body
-   * posted is by construction the plan the person was looking at. `plan`
-   * being read here instead is how a confirm came to send a body the block
-   * around it was no longer describing.
+   * posted is by construction the plan the person was looking at.
+   * Reading `plan` here instead could send a body the block around it was no
+   * longer describing.
    */
   const confirmStamp = (sending: StampPlan) => {
     if (inFlight.current) return
@@ -447,11 +426,10 @@ export function MetadataEditor({
     // since that discard returns before releasing the ref, the release
     // happens here instead.
     //
-    // The alternative — drawing that answer — is what this file used to do,
-    // and it is where two of pass 3's three findings came from: the plan it
-    // drew described archives this write was in the middle of rewriting, and
-    // the section reported either "Nothing to write" or a fresh plan with
-    // every control gated off.
+    // The alternative — drawing that answer — would draw a plan describing
+    // archives this write is in the middle of rewriting, and the section
+    // would report either "Nothing to write" or a fresh plan with every
+    // control gated off.
     planInFlight.current = false
     latestPlan.current += 1
     setAsking(false)
@@ -517,16 +495,16 @@ export function MetadataEditor({
   /**
    * The formats this work holds that a stamp will not write.
    *
-   * **One definition, drawn from whichever plan is being shown.** It rendered
-   * inside the non-empty branch alone, so a work whose every archive is a
-   * `.cbr` was told "nothing to write" and never told that the rar is why —
-   * two situations the server had already told the screen apart, collapsed
-   * into one sentence. It reads "this work holds" rather than "also holds"
-   * for the same reason: in the empty branch there is no *also*.
+   * **One definition, drawn from whichever plan is being shown.** Rendered
+   * inside the non-empty branch alone, it would leave a work whose every
+   * archive is a `.cbr` told "nothing to write" and never told that the rar
+   * is why — two situations the server has already told the screen apart,
+   * collapsed into one sentence. It reads "this work holds" rather than
+   * "also holds" for the same reason: in the empty branch there is no *also*.
    *
    * **What it says about those formats is the rule, not a claim about
-   * reading them.** It used to read "which taiyaku reads and never writes",
-   * which is false for every token it can print but `dir`:
+   * reading them.** Saying they are formats "which taiyaku reads and never
+   * writes" would be false for every token it can print but `dir`:
    * `Format::is_readable` is `Dir | Zip` alone, and `pages.rs`'s
    * `unsupported_container` refuses rar, 7z, tar and PDF outright. What is
    * true of all nine tokens is the write rule, so that is what this states,
@@ -624,16 +602,16 @@ export function MetadataEditor({
             the next time it is asked for;
           </li>
           {/*
-           * **A forecast weakened to what the outcome copy can report.** This
-           * read "and its <content_key>.library.json moves with it when it
-           * does", promising as certain the one thing `key-moved-alone` below
-           * then has to take back: `hand::rename_for_rekey` answers `false`
-           * for five causes, and two of them — a file already at the new
-           * address, and a root that refuses the rename — leave the document
-           * stranded at the old key. Both paragraphs are on screen together
-           * after a stamp, so the promise was contradicted in place; and it
-           * was made before the person agreed to something with no undo,
-           * which is the half that matters.
+           * **A forecast weakened to what the outcome copy can report.** It
+           * does not promise that `<content_key>.library.json` moves with the
+           * key, the one thing `key-moved-alone` below has to take back:
+           * `hand::rename_for_rekey` answers `false` for five causes, and two
+           * of them — a file already at the new address, and a root that
+           * refuses the rename — leave the document stranded at the old key.
+           * Both paragraphs are on screen together after a stamp, so such a
+           * promise would be contradicted in place; and it would be made
+           * before the person agreed to something with no undo, which is the
+           * half that matters.
            */}
           <li>
             this work's content_key changes if any archive above belongs to its
@@ -684,14 +662,14 @@ export function MetadataEditor({
         return (
           <>
             {/*
-             * **The disjunct that used to end this sentence is gone.** It
-             * read "…, or this work has no zip archive at all", which was
-             * false above "Rewrote 2 archives." and above a 409 saying the
-             * work's archives had changed — both states this section reaches
-             * with an empty plan on screen. It was also unnecessary: "every
-             * zip archive already holds it" is true of a work with none, so
-             * the universal covers the case the disjunct was added for, and
-             * the `.skipped` note under it says what the work holds instead.
+             * **The sentence carries no disjunct for a work with no zip
+             * archive at all.** ", or this work has no zip archive at all"
+             * would be false above "Rewrote 2 archives." and above a 409
+             * saying the work's archives had changed — both states this
+             * section reaches with an empty plan on screen. It is also
+             * unnecessary: "every zip archive already holds it" is true of a
+             * work with none, so the universal covers that case, and the
+             * `.skipped` note under it says what the work holds instead.
              */}
             <p className="nothing">
               Nothing to write: every zip archive in this work already holds the
@@ -706,13 +684,13 @@ export function MetadataEditor({
         return (
           <>
             {/*
-             * **At the section's level, not inside the confirm control.** The
-             * one place "a rewrite is running" reached the DOM was that
-             * button's label, and the button was gated on the plan slot — so
-             * with the slot blanked by a re-read the section said "Working
-             * out which archives would change…" while archives were being
-             * irreversibly rewritten. The phase carries the plan being
-             * written, so this sentence can be drawn whatever the slot holds.
+             * **At the section's level, not inside the confirm control.** A
+             * "rewrite is running" that reached the DOM only as that button's
+             * label, gated on the plan slot, would let a re-read blank the
+             * slot and the section say "Working out which archives would
+             * change…" while archives were being irreversibly rewritten. The
+             * phase carries the plan being written, so this sentence can be
+             * drawn whatever the slot holds.
              */}
             <p className="writing">
               Rewriting {archiveCount(phase.plan.archives.length)} — the
@@ -793,10 +771,8 @@ export function MetadataEditor({
            * keep the assertive `role="alert"` they need without a second live
            * role wrapping them.
            *
-           * The comment was copied from `AcceptForm` and its test was not, so
-           * deleting this attribute cost nothing until pass 4.
-           * `MetadataEditor.test.tsx` now pins it the way
-           * `AcceptForm.test.tsx` pins its own.
+           * `MetadataEditor.test.tsx` pins it the way `AcceptForm.test.tsx`
+           * pins its own.
            */}
           <div className="stamp-state" aria-live="polite">
             {/*
@@ -809,23 +785,22 @@ export function MetadataEditor({
              * being considered next.
              *
              * **Inside the region because success is otherwise announced
-             * nowhere.** A failure carries `role="alert"`; this does not, and
-             * it sat outside every live region until pass 4 — so a screen
-             * reader heard "Rewriting 2 archives — the originals are being
-             * replaced now", then that paragraph was removed (silent under the
-             * default `aria-relevant`), and the outcome of the irreversible act
-             * was inserted in silence. The alternative — `role="status"` on
+             * nowhere.** A failure carries `role="alert"`; this does not.
+             * Outside every live region, a screen reader would hear
+             * "Rewriting 2 archives — the originals are being replaced now",
+             * then that paragraph would be removed (silent under the default
+             * `aria-relevant`), and the outcome of the irreversible act
+             * inserted in silence. The alternative — `role="status"` on
              * `.stamped` itself — announces nothing, for `AcceptForm`'s own
              * reason: a region declared on the message is created at the moment
              * its content appears, and a region has to exist before what it
-             * announces is put into it. The wrapper this now sits inside is
+             * announces is put into it. The wrapper this sits inside is
              * rendered in all eight phases, from the first render.
              *
-             * It rendered inside `plan.archives.length > 0` two rounds ago,
-             * where a fresh empty plan — the likely answer, since the stamp had
-             * just written every archive — replaced "Rewrote 2 archives" and
-             * the whole O81 stranded-document paragraph with "Nothing to
-             * write".
+             * Inside `plan.archives.length > 0`, a fresh empty plan — the
+             * likely answer, since the stamp has just written every archive —
+             * would replace "Rewrote 2 archives" and the whole O81
+             * stranded-document paragraph with "Nothing to write".
              */}
             {stamped !== undefined && (
               <div className="stamped">
@@ -835,13 +810,12 @@ export function MetadataEditor({
                 {/*
                  * Three outcomes, not two. `content_key` is `null` whenever
                  * the work's identity did not move — `identity::content_key`
-                 * hashes the hub edition's member digests alone — and the
-                 * paragraph this replaces printed that `null` into the
-                 * sentence and then explained the absent key with "it had no
-                 * document on disk to move", which is a claim
-                 * `stamp::apply` never makes: it hard-codes `document_moved`
-                 * false when the key did not move, without asking whether a
-                 * document exists.
+                 * hashes the hub edition's member digests alone — and a
+                 * paragraph that printed that `null` into the sentence and
+                 * explained the absent key with "it had no document on disk
+                 * to move" would claim what `stamp::apply` never does: it
+                 * hard-codes `document_moved` false when the key did not
+                 * move, without asking whether a document exists.
                  */}
                 {stamped.content_key === null ? (
                   <p className="key-held">
@@ -899,13 +873,13 @@ export function MetadataEditor({
             </button>
           )}
           {/*
-           * **One read control, one label, in every phase.** There were two —
-           * "What would this change?" gated on there being no plan, and "What
-           * would this change now?" gated on a refusal — with the same
-           * handler, and after a failed read beside a refused stamp both drew
-           * at once. Rendering it always, disabled while a request is out,
-           * also answers the phase that had no controls at all: whatever this
-           * section is showing, there is a way to ask again.
+           * **One read control, one label, in every phase.** Two — "What
+           * would this change?" gated on there being no plan, and "What would
+           * this change now?" gated on a refusal — with the same handler would
+           * both draw at once after a failed read beside a refused stamp.
+           * Rendering it always, disabled while a request is out, also leaves
+           * no phase without controls: whatever this section is showing, there
+           * is a way to ask again.
            */}
           <button
             type="button"

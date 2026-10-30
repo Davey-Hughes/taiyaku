@@ -6,10 +6,10 @@ import type { Resolver } from './resolver'
  *
  * Carrying `page` here — not just the authority-space `slot` a caller
  * navigates to — is what lets a caller skip resolving the same slot a
- * second time. `App.tsx` used to call `session.ts`'s `resolveOffered` on
- * whichever slot this scan had just found resolving, which is one more
- * `Binding::resolve` per offer for an answer this function already had.
- * `docs/status.md`'s O14 entry has the measured cost of a redundant resolve.
+ * second time: `session.ts`'s `resolveOffered` on whichever slot this scan
+ * found resolving would be one more `Binding::resolve` per offer for an answer
+ * this function already has. `docs/status.md`'s O14 entry has the measured cost
+ * of a redundant resolve.
  */
 export interface NearestOffer {
   /** Authority-space — what `onTake`/`takeOffered` expects. */
@@ -52,12 +52,12 @@ export interface NearestOffer {
  *
  * **This is `docs/status.md`'s O40.** `skip` is carried out by handing the
  * skipped slots to `groups`, so every path through `groups`/`stepToGroup`
- * honoured it and this one — the arrow out of a gap or a borrowed page, which
- * reaches here instead — did not: a reader whose nearest resolving neighbour
- * was a credit page landed on it anyway. Both of `App.tsx`'s call sites pass
- * the same set, so the arrow and the offer buttons on the `Gap` screen cannot
- * name different destinations. Empty by default, so every caller that does not
- * skip is unaffected and pays nothing — the same default `groups` takes.
+ * honours it; this one — the arrow out of a gap or a borrowed page, which
+ * reaches here instead — takes the set, or a reader whose nearest resolving
+ * neighbour is a credit page would land on it anyway. `App.tsx`'s call sites
+ * pass the same set, so the arrow and the `Gap` screen's offer buttons cannot
+ * name different destinations. Empty by default, so a caller that does not skip
+ * is unaffected and pays nothing — the same default `groups` takes.
  */
 export function nearestPaired(
   state: ReadingState,

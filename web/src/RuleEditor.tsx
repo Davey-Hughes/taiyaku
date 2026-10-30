@@ -2,17 +2,16 @@
  * The rule editor — spec C4 §1, and the build design's §5. The one screen
  * Komga structurally cannot have.
  *
- * **It previews on commit and never while typing.** A preview costs a median
- * 281 ms on a real library (130 series, 1858 works) and 495 ms with a rule
- * appended, with the diff 1.3 ms of it — the derivation is the entire cost.
- * So a preview runs on: a field blur or Enter, an enable toggle, a
- * drag-reorder, an add, a delete, and selecting a different rule. The last is
- * the one that is not obvious: `rows` is scoped to the selected rule, so
- * changing which rule is open is the only way to populate the Matched files
- * and Provenance tabs for it — and it is one gesture, not a stream. A person
- * clicking down a five-rule list pays five derivations; a person typing a
- * regex pays none. The alternatives — an explicit Preview button, a long
- * typing debounce — are weighed and refused in the build design's §5.3.
+ * **It previews on commit and never while typing.** A preview is expensive on a
+ * real library, and the derivation is the entire cost. So a preview runs on: a
+ * field blur or Enter, an enable toggle, a drag-reorder, an add, a delete, and
+ * selecting a different rule. The last is the one that is not obvious: `rows`
+ * is scoped to the selected rule, so changing which rule is open is the only
+ * way to populate the Matched files and Provenance tabs for it — and it is one
+ * gesture, not a stream. A person clicking down a five-rule list pays five
+ * derivations; a person typing a regex pays none. The alternatives — an
+ * explicit Preview button, a long typing debounce — are weighed and refused in
+ * the build design's §5.3.
  *
  * **Nothing is written until Save**, per C4 §1, and the button states what it
  * will do from the live preview's `works_rehomed`. Because the preview is
@@ -47,44 +46,40 @@
  * response arriving later would write a stale impact under a Save button that
  * states a number from it.
  *
- * **A successful save re-previews the list it just saved, and Save stays
- * held until that lands.** `save` does not
- * touch `preview`, so without this the button kept stating the *pre-save*
- * `works_rehomed` after the library had already been re-homed to match it —
- * and a second click sent an already-derived library through `apply` again,
- * where every `Impact` field comes back `0` against a `predicted.current`
- * that still held the first save's number. That mismatch drew "the save
- * differs from the preview it was made from", blaming the server for a race
- * the client caused, one click after the in-flight-preview fix closed the
- * same failure for every other gesture. The mismatch warning itself is kept
- * off `failure` and in its own `saveMismatch` slot for the identical reason
- * `importNotice` is kept off it: the follow-up preview this fix triggers
- * clears `failure` on landing, and a warning stored there would be wiped by
- * the very preview run to produce the number it is standing next to.
+ * **A successful save re-previews the list it just saved, and Save stays held
+ * until that lands.** `save` does not touch `preview`, so without this the
+ * button would keep stating the *pre-save* `works_rehomed` after the library
+ * has been re-homed to match it — and a second click would send an
+ * already-derived library through `apply` again, where every `Impact` field
+ * comes back `0` against a `predicted.current` that still held the first save's
+ * number. That mismatch would draw "the save differs from the preview it was
+ * made from", blaming the server for a race the client caused. The mismatch
+ * warning itself is kept off `failure` and in its own `saveMismatch` slot for
+ * the identical reason `importNotice` is kept off it: the follow-up preview
+ * clears `failure` on landing, and a warning stored there would be wiped by the
+ * very preview run to produce the number it is standing next to.
  *
  * **A failed preview invalidates `preview` and `predicted.current`, not only
- * `busy`.** Whole-branch review, I2. Without this, a preview that failed —
- * a network blip, a 500, the 400 the store raises for a rule id another
- * admin's edit just deleted — left both at whatever the *last successful*
- * preview computed, for a rule list that is no longer the one on screen. The
- * button stayed enabled, stated that stale number, and a click sent the
- * current (unpreviewed) list to `apply` — which then disagreed with the
- * stale `predicted.current` and drew the same "something changed the
- * library" warning, again blaming the server for a client-side gap.
+ * `busy`.** Without this, a preview that failed — a network blip, a 500, the
+ * 400 the store raises for a rule id another admin's edit just deleted — would
+ * leave both at whatever the *last successful* preview computed, for a rule
+ * list that is no longer the one on screen. The button would stay enabled,
+ * state that stale number, and a click would send the current (unpreviewed)
+ * list to `apply` — which would then disagree with the stale
+ * `predicted.current` and draw the same "something changed the library"
+ * warning, again blaming the server for a client-side gap.
  *
- * **One writer at a time — O96, then O97.** This screen has two writers of
- * the rule table, Save and Import, and `writer` is the single gate both take:
- * a `'save' | 'import' | undefined` ref, read synchronously, mirrored into
- * `writing` for the render. It is three-valued rather than a boolean each
- * because `saving && importing` must never exist, and O96 is what two
- * booleans agreeing by hand cost — it guarded an import during a save and
- * left a save during an import, which became O97.
+ * **One writer at a time — O96, O97.** This screen has two writers of the rule
+ * table, Save and Import, and `writer` is the single gate both take: a `'save'
+ * | 'import' | undefined` ref, read synchronously, mirrored into `writing` for
+ * the render. It is three-valued rather than a boolean each because `saving &&
+ * importing` must never exist.
  *
  * **Every write's answer replaces the whole list**, so a gesture committed
- * inside either window was applied, previewed and silently discarded.
+ * inside either window would be applied, previewed and silently discarded.
  * `RuleList` and `PreviewTabs`' two override options freeze on `frozen`
- * (`writing !== undefined`), which is why the prop is not called `saving`:
- * it is true during an import too, and a name that stopped being true is the
+ * (`writing !== undefined`), which is why the prop is not called `saving`: it
+ * is true during an import too, and a name that stopped being true is the
  * staleness the open-items table exists to avoid.
  *
  * **`RuleForm` is deliberately not frozen**, because `disabled` on a focused
@@ -98,50 +93,47 @@
  * *discarded*, and that is forced rather than chosen: an import mints fresh
  * ids and replaces every rule, so no index carries the edit across.
  *
- * **Both writers refuse rather than queue, in both directions** — spec §2.1
- * and O97's §1. Each writes the rule table, so by the time a queued one could
- * run the other's write has already happened. **Import needs two guards** for
- * the drag's reason: the button's hold lands on a render, and the
- * hidden file input delivers whatever the button says, because a picker
- * opened before the write started is still open. **Save's second guard is now
- * defence rather than cover**, and O101 is why: the import gate used to be
- * taken inside `file.text()`'s `.then`, a microtask after the change event
- * returned, so a click could reach Save with the button still drawn enabled.
- * `beginImport` takes it inside the discrete event itself, which React
- * flushes synchronously, so `frozen` and `writer.current` change together and
- * no click can land between them. The check stays — the invariant is what is
- * being stated, and a writer that took the gate outside a discrete event
- * would reopen the gap without touching `save` — but nothing exercises it,
- * and its message is unreachable with it.
+ * **Both writers refuse rather than queue, in both directions** — spec §2.1 and
+ * O97's §1. Each writes the rule table, so by the time a queued one could run
+ * the other's write has already happened. **Import needs two guards** for the
+ * drag's reason: the button's hold lands on a render, and the hidden file input
+ * delivers whatever the button says, because a picker opened before the write
+ * started is still open. **Save's second guard is defence rather than cover**,
+ * and O101 is why: `beginImport` takes the import gate inside the discrete
+ * event itself, which React flushes synchronously, so `frozen` and
+ * `writer.current` change together and no click can land between them. A gate
+ * taken a microtask later, as inside `file.text()`'s `.then`, would let a click
+ * reach Save with the button still drawn enabled. The check stays — the
+ * invariant is what is being stated, and a writer that took the gate outside a
+ * discrete event would reopen the gap without touching `save` — but nothing
+ * exercises it, and its message is unreachable with it.
  *
- * **Every refusal goes to `refused`**, which `commit` does not clear:
- * a refused save, a form commit discarded by an import, and — since O100 —
- * an import refused because a write was already in flight. That last one
- * lived in `importNotice` and was erased by the running import's own answer,
- * which is precisely the failure `refused` was created to prevent, in the
- * function the reasoning was written for. A *failed* save keeps the edit and
+ * **Every refusal goes to `refused`**, which `commit` does not clear: a
+ * refused save, a form commit discarded by an import, and an import refused
+ * because a write was already in flight (O100). In `importNotice` that last
+ * one would be erased by the running import's own answer, which is precisely
+ * the failure `refused` exists to prevent. A *failed* save keeps the edit and
  * puts its reason in `heldNotice` rather than `failure` — spec §5.1 — and a
  * *failed* import clears the gate on **all three** of its failure shapes,
  * without which one bad file would hold both writers for the rest of the
  * session. They are not one, and they are caught in **two** places: the
  * request's own rejection in `sendImport`'s `.catch`, and the other two in
  * `beginImport`'s. The **read**'s rejection exists only because the gate is
- * taken before the read. And `importRules` is not `async` — it parses
- * the document as an argument, so a document that is not JSON throws
+ * taken before the read. And `importRules` is not `async` — it parses the
+ * document as an argument, so a document that is not JSON throws
  * *synchronously*, out of `sendImport` before its own chain is built; what
  * makes that a rejected promise rather than an escaped throw is that
  * `sendImport` is called inside a `.then`, so it lands in `beginImport`'s
  * `.catch` too. Picking a file that is not JSON is the most ordinary way to
  * reach it, and the O97 test that drives one is what keeps it caught.
  *
- * **`selected` in `save`'s closure is no longer stale, and that is a property
- * of the guards rather than of this file.** It used to be: selecting a rule
- * mid-save left the follow-up preview's `rows` scoped to the rule that *was*
- * open while the form showed the new one. Nothing can change `selected`
- * during a save now — `RuleList` is frozen, `PreviewTabs`' two options
- * have been held on `busy || frozen` since O95, and a stored list is not
- * taken while a write is out — so a `selectedRef` would hide the invariant
- * rather than state it. A new surface that sets `selected`
+ * **`selected` in `save`'s closure is not stale, and that is a property of the
+ * guards rather than of this file.** Were it to change mid-save, the follow-up
+ * preview's `rows` would be scoped to the rule that *was* open while the form
+ * showed the new one. Nothing can change `selected` during a save — `RuleList`
+ * is frozen, `PreviewTabs`' two options are held on `busy || frozen` (O95), and
+ * a stored list is not taken while a write is out — so a `selectedRef` would
+ * hide the invariant rather than state it. A new surface that sets `selected`
  * without a guard reopens the defect without touching `save`.
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
@@ -205,11 +197,9 @@ const sameRule = (a: Rule, b: Rule) =>
  *
  * **One three-valued variable rather than a boolean each.** Two booleans admit
  * `saving && importing`, a state that must never exist and that four separate
- * conditions would then have to agree about. O96 shipped two guards that
- * agreed by hand and O97 is what that cost — a save started during an import,
- * which no condition was asked about. This is #115's `phaseOf` lesson one size
- * down: when every fix moves one condition and the gates then disagree, the
- * defect is the absence of a single source of truth, not the gates.
+ * conditions would then have to agree about (O97). When every fix moves one
+ * condition and the gates then disagree, the defect is the absence of a single
+ * source of truth, not the gates.
  */
 type Writer = 'save' | 'import' | undefined
 
@@ -295,33 +285,31 @@ export function RuleEditor() {
   /**
    * Set when a landed save's own impact differs from the preview it was made
    * from. Separate from `failure` for the reason this file's own top comment
-   * gives on I1: the follow-up preview `save` triggers on landing clears
-   * `failure` when it succeeds, and a warning stored there would be wiped by
-   * the very preview run to produce a true number for it. Cleared only by
-   * the next save.
+   * gives: the follow-up preview `save` triggers on landing clears `failure`
+   * when it succeeds, and a warning stored there would be wiped by the very
+   * preview run to produce a true number for it. Cleared only by the next save.
    */
   const [saveMismatch, setSaveMismatch] = useState<string | undefined>()
   /**
    * Set when a `RuleForm` commit arrives while a save is in flight. Its own
    * slot for the reason `saveMismatch` and `importNotice` each have one: the
    * follow-up preview clears `failure` when it succeeds, and a notice stored
-   * there is wiped by the very call that follows it. Cleared only by the next
-   * save. Spec §5, and §5.1 for why the *failed*-save reason lands here too.
+   * there is wiped by the very call that follows it. Cleared by the next save
+   * and by `commit`. Spec §5, and §5.1 for why the *failed*-save reason lands
+   * here too.
    */
   const [heldNotice, setHeldNotice] = useState<string | undefined>()
   /**
    * A gesture refused or discarded because a write was in flight.
    *
-   * **Its own slot, because neither existing one can hold it.** `heldNotice`
-   * is cleared by `commit`, by design and with its own comment saying why —
-   * and the import's success path calls `commit`, so a refusal written there
-   * is wiped by the very event it has to outlive. `importNotice` is cleared up
+   * **Its own slot, because neither existing one can hold it.** `heldNotice` is
+   * cleared by `commit`, by design and with its own comment saying why — and
+   * the import's success path calls `commit`, so a refusal written there is
+   * wiped by the very event it has to outlive. `importNotice` is cleared up
    * front by `beginImport` and overwritten by `sendImport`'s answer, so a
    * refusal written there survives until the import lands and then disappears,
    * leaving the person told the import worked and never told their own gesture
-   * did nothing. **That is not hypothetical and it shipped**: `beginImport`'s
-   * own refusal for a second pick lived in `importNotice` until O100, and was
-   * erased by the running import's answer every time.
+   * did nothing (O100).
    *
    * This is the fourth notice on this screen needing a slot `runPreview` does
    * not touch, after `importNotice`, `saveMismatch` and `heldNotice`, and the
@@ -402,11 +390,9 @@ export function RuleEditor() {
    * the minted id survives.
    *
    * **The form is not the only surface left live — Import is too, and it is
-   * *refused* rather than held.** An earlier version of this comment claimed
-   * the form was the only one, which was the guard-that-does-not-exist shape
-   * O95's third review pass kept finding. An import cannot be held: it has
-   * already written the rule table by the time anything here could apply it,
-   * so it refuses inside the window and says so — in `refused`, since O100.
+   * *refused* rather than held.** An import cannot be held: it has already
+   * written the rule table by the time anything here could apply it, so it
+   * refuses inside the window and says so — in `refused` (O100).
    */
   const held = useRef<{ index: number; rule: Rule } | undefined>(undefined)
   /** The hidden file input the Import button triggers. */
@@ -427,11 +413,11 @@ export function RuleEditor() {
         if (seq !== latest.current) return
         setBusy(false)
         setFailure(`The rules were not previewed: ${reasonOf(err)}`)
-        // I2: a failed preview describes nothing — leaving the last
-        // *successful* preview in place would leave Save free and stating
-        // a number computed for a rule list that is no longer the one on
-        // screen. `preview === undefined` is what `saveHeld` already reads,
-        // so invalidating both here is enough to hold Save without a second
+        // A failed preview describes nothing — leaving the last *successful*
+        // preview in place would leave Save free and stating a number
+        // computed for a rule list that is no longer the one on screen.
+        // `preview === undefined` is what `saveHeld` already reads, so
+        // invalidating both here is enough to hold Save without a second
         // condition to keep in sync.
         setPreview(undefined)
         predicted.current = undefined
@@ -447,13 +433,13 @@ export function RuleEditor() {
     setRules(next)
     setSelected(open)
     setSaved(undefined)
-    // O96: the held-edit notice names a rule by *position* — "your edit to
-    // rule 4" — and says it is the list on screen. Any mutation can make both
-    // halves false: delete rule 2 and rule 4 is a different rule. This is
-    // `RuleList`'s own M3 for its confirm dialog, which closes on every list
-    // change rather than re-deriving where the row went, and for the same
-    // reason. The failed-save path below deliberately sets the notice *after*
-    // calling this, so its own message survives the clear.
+    // O96: the held-edit notice names a rule by *position* — "your edit to rule
+    // 4" — and says it is the list on screen. Any mutation can make both halves
+    // false: delete rule 2 and rule 4 is a different rule. `RuleList`'s confirm
+    // dialog does the same, closing on every list change rather than
+    // re-deriving where the row went, and for the same reason. The failed-save
+    // path below deliberately sets the notice *after* calling this, so its own
+    // message survives the clear.
     setHeldNotice(undefined)
     runPreview(next, open)
   }
@@ -474,8 +460,7 @@ export function RuleEditor() {
       // would reopen it here rather than in `save`.
       //
       // Only the import case says anything: a second Save during a save is the
-      // same gesture twice and the person has nothing to act on, which is the
-      // behaviour O96 shipped and this keeps.
+      // same gesture twice and the person has nothing to act on.
       if (writer.current === 'import')
         setRefused(
           'An import was still running, so the save was not sent — nothing was saved ' +
@@ -534,15 +519,15 @@ export function RuleEditor() {
               'it is not in the save reported below — it is applied to the list on screen ' +
               'and is unsaved. Save again to apply it.',
           )
-        // I1: the button's number has to describe *this* saved list, not the
-        // one a save ago — so a fresh preview runs for it here, through the
-        // same seq-guarded `runPreview` every other gesture uses, and Save
-        // stays held (`busy`) until it lands. `selected` is not stale:
-        // O96 froze `RuleList`, and `PreviewTabs`' two options have been
-        // held on `busy || frozen` since O95, so no surface can change it
-        // while a save is in flight. That is a property of *every* such
-        // surface being guarded, not of this line — a new unguarded one
-        // reopens the defect without touching `save`.
+        // The button's number has to describe *this* saved list, not the one a
+        // save ago — so a fresh preview runs for it here, through the same
+        // seq-guarded `runPreview` every other gesture uses, and Save stays
+        // held (`busy`) until it lands. `selected` is not stale: `RuleList` is
+        // frozen (O96), and `PreviewTabs`' two options are held on `busy ||
+        // frozen` (O95), so no surface can change it while a save is in
+        // flight. That is a property of *every* such surface being guarded,
+        // not of this line — a new unguarded one reopens the defect without
+        // touching `save`.
         runPreview(next, selected)
         // The list just changed under every accepted proposal's
         // `created_rule_id`, so the badges are re-read rather than assumed.
@@ -559,7 +544,7 @@ export function RuleEditor() {
         const pending = held.current
         held.current = undefined
         if (pending === undefined) {
-          // Unchanged: nothing follows this, so `failure` survives to be read.
+          // Nothing follows this, so `failure` survives to be read.
           setFailure(`The rules were not saved: ${reasonOf(err)}`)
           return
         }
@@ -588,15 +573,14 @@ export function RuleEditor() {
   }
 
   /**
-   * The whole import gesture, from the picked file rather than from its text
-   * — **the gate is taken before the read, not after it** (O101). It used to
-   * be taken inside a `file.text().then(...)`, so between picking a file and
-   * its bytes arriving Import was still enabled and `writer` was still free:
-   * a microtask on a small document, and however long the read takes on a
-   * large one, with nothing on screen saying the gesture had started. That is
-   * also the route by which a second pick reaches a gate meant to be held.
-   * Taking it earlier means the read's *own* failure has to release it, which
-   * is the third instance on this screen of a gate that must not leak.
+   * The whole import gesture, from the picked file rather than from its text —
+   * **the gate is taken before the read, not after it** (O101). Taken inside a
+   * `file.text().then(...)`, it would leave Import enabled and `writer` free
+   * between picking a file and its bytes arriving: a microtask on a small
+   * document, and however long the read takes on a large one, with nothing on
+   * screen saying the gesture had started. That is also the route by which a
+   * second pick reaches a gate meant to be held. Taking it earlier means the
+   * read's *own* failure has to release it.
    *
    * Typed by what it needs — `text()` — rather than as `File`. The gesture
    * does not care where the bytes come from, and the narrower type is what
@@ -622,17 +606,14 @@ export function RuleEditor() {
     // every proposal a second time.
     //
     // **Both refusals go to `refused`, and the import case is why** (O100).
-    // They used to go to `importNotice`, which is the slot the *running*
-    // import's own success path overwrites — so the sentence saying a second
-    // pick was refused was replaced, milliseconds later, by one saying an
-    // import had worked, and the person was left believing the file they
-    // picked second was the one in the store. That is the failure §5 of the
-    // build design names as its whole reason for creating `refused`, reached
-    // in the function that reasoning was written for. The save case survived
-    // in `importNotice` by luck rather than by design — nothing in `save`
-    // writes that state — and is moved with it, because a message about a
-    // gesture that did *not* happen cannot live in a slot owned by the
-    // gesture that did.
+    // `importNotice` is the slot the *running* import's own success path
+    // overwrites, so a sentence there saying a second pick was refused would be
+    // replaced, milliseconds later, by one saying an import had worked, and the
+    // person would be left believing the file they picked second was the one in
+    // the store. That is the failure §5 of the build design names as its whole
+    // reason for creating `refused`. The save case goes there with it, because
+    // a message about a gesture that did *not* happen cannot live in a slot
+    // owned by the gesture that did.
     if (writer.current !== undefined) {
       setRefused(
         writer.current === 'save'
@@ -653,7 +634,7 @@ export function RuleEditor() {
     file
       .text()
       .then((text) => sendImport(text, release))
-      // **The read's own failure**, which only exists because the gate is now
+      // **The read's own failure**, which only exists because the gate is
       // taken before it: a file the browser cannot read would otherwise leave
       // both writers dead for the session with a message and no way back.
       .catch((err: unknown) => {
@@ -677,10 +658,9 @@ export function RuleEditor() {
     // an *argument* — so a document that is not valid JSON throws out of the
     // call itself, before any promise exists for `.then`/`.catch` to attach
     // to. What catches it is that this call is made **inside** a `.then`,
-    // where a synchronous throw is a rejected promise; the `try` this used to
-    // need went with the restructure, and the O97 test that drives a
-    // non-JSON file through the input is what keeps it caught if anyone moves
-    // the call back out of the chain.
+    // where a synchronous throw is a rejected promise; the O97 test that
+    // drives a non-JSON file through the input is what keeps it caught if
+    // anyone moves the call out of the chain.
     importRules(text)
       .then((answer) => {
         release()
@@ -694,16 +674,13 @@ export function RuleEditor() {
         // The import replaced every rule and reopened the accepted proposals
         // whose rules it replaced.
         void invalidate(RULES, ACCEPTED_PROPOSALS)
-        // I3: `POST .../rules/import` writes the rule table and derives
-        // nothing — the CLI's own `library rules --import` prints exactly
-        // this warning for the identical route (`library.rs`). This screen
-        // used to say nothing at all, which left the imported list looking
-        // applied the moment it appeared, when in fact the library's
-        // structure is still the old rules' until something derives — the
-        // exact state this branch exists to make unreachable, reached
-        // through the editor's own Import button. The remedy named here is
-        // Save, not a scan command: on this screen Save is the thing that
-        // derives.
+        // `POST .../rules/import` writes the rule table and derives nothing —
+        // the CLI's own `library rules --import` prints exactly this warning
+        // for the identical route (`library.rs`). Saying nothing would leave
+        // the imported list looking applied the moment it appeared, when in
+        // fact the library's structure is still the old rules' until something
+        // derives. The remedy named here is Save, not a scan command: on this
+        // screen Save is the thing that derives.
         const reopened =
           answer.reopened_proposals.length > 0
             ? ` It also reopened ${answer.reopened_proposals.length} accepted ` +
@@ -783,12 +760,12 @@ export function RuleEditor() {
                 overrideCount={preview?.overrides.length ?? 0}
                 frozen={frozen}
                 onSelect={(index) => {
-                  // M1: the design runs a preview on selecting a *different*
-                  // rule — `rows` is scoped to `selected`, and changing which is
-                  // open is what repopulates it. Re-clicking the one already open
+                  // The design runs a preview on selecting a *different* rule —
+                  // `rows` is scoped to `selected`, and changing which is open
+                  // is what repopulates it. Re-clicking the one already open
                   // changes nothing a preview could answer differently, so
-                  // committing anyway paid another ~281 ms derivation under the
-                  // write lock and cleared the "Saved:" line for no reason.
+                  // committing anyway would pay another derivation under the
+                  // write lock and clear the "Saved:" line for no reason.
                   if (index !== selected) commit(rules, index)
                 }}
                 onToggle={(index) => {
@@ -855,23 +832,18 @@ export function RuleEditor() {
                       // **Discarded, not held**, and forced rather than chosen.
                       //
                       // The last clause of the notice is deliberately
-                      // outcome-neutral. An earlier version promised that the
-                      // import's rules would replace the list — true when it
-                      // lands, and a promise this screen breaks when it does not.
-                      // A refused document is the ordinary failure here, so the
-                      // sentence has to hold for both endings. (**That the edit
-                      // is discarded even when the import fails is a real
-                      // asymmetry with O96's failed *save*, which keeps it** —
-                      // the reasoning below only holds for an import that
-                      // succeeded. It is left as it is rather than fixed here:
-                      // holding across an import is a behaviour change, not a
-                      // wording one.)
-                      // Holding works for a save because `answer.rules` is
-                      // positionally aligned to the list that was sent. An
-                      // import's answer is aligned to nothing — it replaces every
-                      // rule and mints fresh ids — so this index does not name the
-                      // rule being edited and applying the edit there would
-                      // overwrite an unrelated rule with it.
+                      // outcome-neutral: a refused document is the ordinary
+                      // failure here, so the sentence has to hold for both
+                      // endings. (**That the edit is discarded even when the
+                      // import fails is a real asymmetry with O96's failed
+                      // *save*, which keeps it** — the reasoning below only
+                      // holds for an import that succeeded.) Holding works for
+                      // a save because `answer.rules` is positionally aligned
+                      // to the list that was sent. An import's answer is
+                      // aligned to nothing — it replaces every rule and mints
+                      // fresh ids — so this index does not name the rule being
+                      // edited and applying the edit there would overwrite an
+                      // unrelated rule with it.
                       setRefused(
                         `An import was running, so your edit to rule ${selected + 1} was not ` +
                           'applied — an import replaces every rule, so there is no row left to ' +
@@ -940,15 +912,15 @@ export function RuleEditor() {
             </p>
           ))}
           {saved !== undefined && (
-            // Context: the save's own re-derive touches `<root>/.taiyaku/`, the
-            // one place on disk this route writes, and `Impact` says nothing
-            // about it — a save that could not write a hand document used to
-            // answer with only a rehome count and silence. `DeriveSection` is
-            // the renderer `ScanReport.tsx` already has for this exact struct,
-            // reused rather than a second, narrower vocabulary invented here;
-            // collapsed by default the same way `RemoveRoot` reuses it, since
-            // most saves have nothing in these fields worth a person's first
-            // glance.
+            // Context: the save's own re-derive touches `<root>/.taiyaku/`,
+            // the one place on disk this route writes, and `Impact` says
+            // nothing about it, so a save that could not write a hand document
+            // would answer with only a rehome count and silence.
+            // `DeriveSection` is the renderer `ScanReport.tsx` already has for
+            // this exact struct, reused rather than a second, narrower
+            // vocabulary invented here; collapsed by default the same way
+            // `RemoveRoot` reuses it, since most saves have nothing in these
+            // fields worth a person's first glance.
             <details className="save-derive">
               <summary>What this save's re-derive found</summary>
               {/* h3, beside Preview beneath Rules: the save's report sits after

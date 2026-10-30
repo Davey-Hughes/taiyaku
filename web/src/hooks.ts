@@ -30,8 +30,7 @@ import type { Mode } from './pairing'
  * primitives a reading position is made of rather than the session holding
  * them — which is what keeps the dependency arrays honest: with the triggers
  * passed in as scalars, most of these need no `useExhaustiveDependencies`
- * suppression at all, where the same effects inline in `App.tsx` needed one
- * each to say "the session is a trigger, not a closure read".
+ * suppression at all.
  */
 
 /**
@@ -41,9 +40,9 @@ import type { Mode } from './pairing'
  * `App.tsx` subscribes its keydown listener once per load — deliberately, so
  * that a keypress does not tear the listener down and put it back — which
  * freezes that closure's view of every piece of state at the moment of
- * subscription. Six of them are read by the handler's guards, and this is
- * how each one reaches it: written in an effect after every commit, read
- * through `.current` when a key is actually pressed.
+ * subscription. This is how each one the handler's guards read reaches it:
+ * written in an effect after every commit, read through `.current` when a key
+ * is actually pressed.
  *
  * The initial value is `value` itself rather than a separate seed, so there
  * is no window — however brief — where the ref disagrees with the render it
@@ -60,12 +59,11 @@ export function useLatest<T>(value: T): { readonly current: T } {
 /**
  * A value built on the first render and kept for the component's life.
  *
- * `useRef(create())` is the shape this replaces and the shape that is wrong:
- * a `useRef` argument is not lazy the way `useState`'s initializer is, so it
- * evaluates `create()` on *every* render and throws all but the first away.
- * For the two debounced writers `App.tsx` builds that is not merely wasteful
- * — each allocation carries its own timer variable, and only the retained
- * one's timer is ever armed.
+ * `useRef(create())` is the wrong shape: a `useRef` argument is not lazy the
+ * way `useState`'s initializer is, so it evaluates `create()` on *every*
+ * render and throws all but the first away. For the two debounced writers
+ * `App.tsx` builds that is not merely wasteful — each allocation carries its
+ * own timer variable, and only the retained one's timer is ever armed.
  *
  * `useState(create)[0]` would also work and is rejected for what it implies:
  * a state slot advertises that something may set it, and nothing ever sets
@@ -194,19 +192,17 @@ export interface DrawnSrcs {
  * Held here rather than inside `GroupView` because a two → scroll → two
  * excursion unmounts and remounts everything at that position: as component
  * state the record would come back empty and the layout would key on the
- * turn's target for as long as it took both cells to report, which is the
- * flicker this record was introduced to stop.
+ * turn's target for as long as it took both cells to report, which flickers.
  *
  * **A report that changes nothing returns the same object.** Every
  * `PageView` reports on every present, including the ones that present what
  * they were already drawing, and a fresh object for each would re-render the
  * whole page area for no visible change.
  *
- * The setter is rebuilt on every render rather than memoised, which is what
- * the inline handlers this replaced also did — `GroupView` passes it down to
- * two `PageView`s that wrap it in fresh closures of their own regardless, so
- * a stable identity here would buy nothing and would change how often
- * anything downstream re-runs.
+ * The setter is rebuilt on every render rather than memoised: `GroupView`
+ * passes it down to two `PageView`s that wrap it in fresh closures of their
+ * own regardless, so a stable identity here would buy nothing and would
+ * change how often anything downstream re-runs.
  */
 export function useDrawnSrcs(): [
   DrawnSrcs,
@@ -310,25 +306,20 @@ interface Flushable {
  * here that cannot be recomputed from anything.
  *
  * **The cleanup flushes as well as unsubscribing, which is the third way the
- * reader leaves.** Until 2026-08-09 it only removed the two listeners, so a
- * pending write survived its own component: `App.tsx`'s two debounces were
- * left armed and could fire `putProgress` or `putNotes` up to 700 ms after the
- * thing that scheduled them had gone. It surfaced as a stray `putProgress`
- * arriving in a *later test* than the one that caused it, under coverage
- * instrumentation slow enough to let a 400 ms timer outlive its `afterEach`.
+ * reader leaves.** Without the flush a pending write would survive its own
+ * component: `App.tsx`'s two debounces would be left armed and could fire
+ * `putProgress` or `putNotes` up to 700 ms after the thing that scheduled
+ * them had gone.
  *
- * **`App` unmounts for three ordinary reasons now, and this cleanup is what
- * covers all three.** It was the SPA root when the paragraph above was
- * written, so no reader could meet the case; since spec C1 §11 step 2 it is
- * one route of four. Leaving the reader for the library unmounts it, so does
+ * **`App` unmounts for three ordinary reasons, and this cleanup is what
+ * covers all three.** Leaving the reader for the library unmounts it, so does
  * moving between works — `Routes.tsx`'s `<App key={work}>` — and so does
  * signing out, which is `Gate.tsx` dropping everything below it. That last one
- * is the one with teeth: `App` used to cancel both writers by hand on a
- * sign-out, and the reason was that a timer firing afterwards would write the
+ * is the one with teeth: a timer firing after a sign-out would write the
  * previous reader's work under whoever had signed in by then. Flushing here
- * closes that without a second list to keep complete, because the flush
- * happens *at* the unmount commit — the account cannot have changed yet, and
- * the session the write goes out under is the one that just ended.
+ * closes that without a separate list of writers to keep complete, because the
+ * flush happens *at* the unmount commit — the account cannot have changed
+ * yet, and the session the write goes out under is the one that just ended.
  *
  * **Flush and not cancel, at both call sites, for two different reasons.** For
  * the position, cancelling would drop the last turn a reader made and reopen
@@ -382,14 +373,13 @@ export function useFlushOnHide(position: Flushable, notes: Flushable): void {
  * silently lose a real page turn.
  *
  * **The three parts of the position are passed as scalars, and that is what
- * makes the dependency array honest.** Inline in a component this took the
- * whole session and needed an `useExhaustiveDependencies` suppression to
- * explain that the session must *not* join the array — a session's identity
- * changes on every swap too, and a swap is not a navigation (it assigns
- * `viewing` and nothing else), so depending on the object would write
- * progress every time a reader merely peeked at another edition. With the
- * three fields handed in there is no object to be tempted by and no
- * suppression to read past.
+ * makes the dependency array honest.** Taking the whole session would need an
+ * `useExhaustiveDependencies` suppression to explain that the session must
+ * *not* join the array — a session's identity changes on every swap too, and
+ * a swap is not a navigation (it assigns `viewing` and nothing else), so
+ * depending on the object would write progress every time a reader merely
+ * peeked at another edition. With the three fields handed in there is no
+ * object to be tempted by and no suppression to read past.
  */
 export function useProgressWrite(
   work: string | undefined,
@@ -421,13 +411,12 @@ export interface ReadingClock {
  * The reading-time readout's raw material: a start, a log of turns, and the
  * heartbeat that makes an estimate derived from them actually tick.
  *
- * **The first run is skipped, measured rather than assumed.** Recording the
- * session load itself as a turn makes the interval between mount and the
- * sidecar finishing to load look like a page turn, and the very first
- * estimate this project ever rendered was `~6m left` derived entirely from
- * load latency, before a single arrow key had been pressed. `nextTurns` —
- * pure, and covered by `readouts.test.ts` — is what actually skips; this
- * only decides when to ask.
+ * **The first run is skipped.** Recording the session load itself as a turn
+ * makes the interval between mount and the sidecar finishing to load look
+ * like a page turn, so the estimate would be derived entirely from load
+ * latency before a single arrow key had been pressed. `nextTurns` — pure, and
+ * covered by `readouts.test.ts` — is what actually skips; this only decides
+ * when to ask.
  *
  * **A swap is not a turn.** Only the authority's edition and slot are
  * passed, so peeking at another edition records nothing: `swap` assigns

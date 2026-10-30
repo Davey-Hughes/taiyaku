@@ -16,48 +16,32 @@ import {
 
 /**
  * One page, drawn through `fit.ts`'s `pageStyle` — what the CSS values are
- * and why now lives on that function's own doc comment, not here.
+ * and why lives on that function's own doc comment, not here.
  *
  * **Two different mechanisms decide how large a page is drawn, and only one of
- * them is here.** *Corrected on 2026-08-08, when L1 shipped zoom.* This
- * paragraph read "upscaling past 100% is a `fit` module setting in M5b and is
- * off until then", which was already wrong about M5b — it came and went with
- * no `fit` module, deferred by name in
- * `docs/superpowers/plans/2026-08-03-m5b-modules.md` — and zoom has since made
- * it incomplete as well. What each mechanism does:
+ * them is here.** What each mechanism does:
  *
  * - **This component governs how one page sits in its own box** — the cell
- *   `App.tsx` draws it into, which in `two` mode is half the group. *Corrected
- *   on 2026-08-08, when Task 2 of
- *   `docs/superpowers/plans/2026-08-08-fit-seam-and-help.md` wired this
- *   component to `pageStyle`.* This bullet used to say the box's ceiling was
- *   fixed — "`max-width`/`max-height` at 100% is the ceiling and this
- *   milestone did not raise it" — and that `upscaleToFit` was "still an
- *   unbuilt `fit` module setting". Both are false now: `pageStyle`, in
- *   `fit.ts`, is what draws the image below, and its `upscaleToFit` is the
- *   setting that raises the ceiling.
- * - **`Viewport` scales the group around it.** L1 puts a single CSS transform
- *   on a wrapper above `renderGroup`'s output, so a zoomed page is painted
- *   past its natural size with no declaration here changing — a transform
- *   scales this box along with everything else in the group, and changes
- *   nothing about layout size. That is the route by which a page now exceeds
- *   100%, and `Viewport.tsx`'s own doc is why it sits above `PageView` rather
- *   than resizing the images underneath.
+ *   `App.tsx` draws it into, which in `two` mode is half the group.
+ *   `pageStyle`, in `fit.ts`, is what draws the image below, and its
+ *   `upscaleToFit` is the setting that raises the box's ceiling.
+ * - **`Viewport` scales the group around it.** It puts a single CSS transform
+ *   on a wrapper above `renderGroup`'s output, so a zoomed page is painted past
+ *   its natural size with no declaration here changing — a transform scales
+ *   this box along with everything else in the group, and changes nothing about
+ *   layout size. That is the route by which a page exceeds 100%, and
+ *   `Viewport.tsx`'s own doc is why it sits above `PageView` rather than
+ *   resizing the images underneath.
  *
  * Scroll mode has neither: `App.tsx` wraps only the single and two-page branch
  * in `Viewport`, so `pageStyle`'s rule is still the whole story there.
  *
- * The letterbox around the page is background, and since M5c it is where the
- * annotation margin tabs live. **In two-page mode that letterbox is now
- * one-sided.** *Added 2026-08-08, with `hug`.* This paragraph used to say only
- * the first sentence, which was true of a page centred in its box and stopped
- * being true the moment a pair's two halves started hugging the seam: there is
- * no margin left on a page's seam side, so the left page's tabs — drawn at
- * `left: 100%` in `Annotations.tsx` — now land on the facing page's artwork.
- * `docs/superpowers/specs/2026-08-08-fit-seam-and-help-design.md` specifies the
- * fix (the tab moves to the margin *away* from the seam, single and scroll mode
- * unchanged) and it is not built here; this comment is the pointer, not the
- * repair.
+ * The letterbox around the page is background, and it is where the annotation
+ * margin tabs live. **In two-page mode that letterbox is one-sided.** A
+ * pair's two halves hug the seam: there is no margin left on a page's seam
+ * side, so the left page's tabs are drawn in the margin *away* from the seam
+ * (`Annotations.tsx`'s `tabSide`), as
+ * `docs/superpowers/specs/2026-08-08-fit-seam-and-help-design.md` specifies.
  */
 
 /** `() => new Image()` — a detached, off-DOM `HTMLImageElement`. Kept out of `decode.ts` so that module stays free of every DOM reference; this is the one place a real one is ever constructed. */
@@ -71,26 +55,32 @@ export interface PageViewProps {
    * only once ready, or is shown the plain way — set straight onto the one
    * `<img>`, exactly as this component worked before this module existed.
    *
-   * `App.tsx` passes `false` in scroll mode. That is not an oversight: scroll
-   * mode mounts every group in the edition at once, each `PageView`'s `src`
-   * fixed for the component's whole lifetime (it is `loading="lazy"`,
+   * `App.tsx` passes `false` in scroll mode. That is not an oversight:
+   * scroll mode mounts every group in the edition at once, each `PageView`'s
+   * `src` fixed for the component's whole lifetime (it is `loading="lazy"`,
    * below, that bounds *that* burst, not this flag, which only ever matters
    * when a *mounted* component's `src` prop changes under it — single and
    * two-page mode's whole reason for existing, where the same `PageView`
    * instance is reused across a page turn rather than remounted). Decoding
    * every one of scroll mode's images off-screen through the shared
    * `decodeQueue` the moment each mounts would force them all to fetch
-   * immediately regardless of `loading="lazy"`'s own (measured, see
-   * `docs/status.md`) effect — reintroducing the very burst that attribute
-   * was added to bound, just by a different route. See `App.tsx`'s own
-   * comment where this is threaded through for the full reasoning.
+   * immediately regardless of `loading="lazy"`'s own effect (see
+   * `docs/status.md`) — reintroducing the very burst that attribute exists
+   * to bound, just by a different route. See `App.tsx`'s own comment where
+   * this is threaded through for the full reasoning.
    */
   buffered: boolean
   /** Caps concurrent decodes across every mounted `PageView` that shares one — `App.tsx` builds a swap queue sized from `prefetchModule`'s `maxConcurrent` and hands it to every instance, so a fast flick's several swap decodes (up to one per mounted `PageView`) draw from one pool rather than each capping itself independently. Deliberately a *different* queue instance from the one `App.tsx`'s prefetch window uses — see its `swapQueue`/`prefetchQueue` doc — so a page turn's own decode can never queue behind prefetch jobs for slots the reader has already moved past. Ignored when `buffered` is false. Defaults to an uncapped queue so this component works standalone. */
   decodeQueue?: DecodeQueue
   /** Builds the off-screen probe image a swap decodes into before presenting — a real, detached `<img>` by default (`newImage`, above); a future test of this component would hand in a fake, the same seam `decode.test.ts` already exercises directly against `presentWhenDecoded`. */
   makeImage?: ImageFactory
-  /** Presents this page in the same frame as every other `PageView` whose `src` changed in the same commit — `two` mode's pair, in practice. `App.tsx` builds one instance and hands it to every cell, so the two halves of a spread stop appearing one after the other; see `cohort.ts` for the measurement and for why membership is decided by tick rather than by count. Ignored when `buffered` is false. Defaults to `noCohort`, which is what this component did before the barrier existed. */
+  /** Presents this page in the same frame as every other `PageView` whose `src` changed in the same commit — `two` mode's pair, in practice.
+   * `App.tsx` builds one instance and hands it to every cell, so the two halves
+   * of a spread do not appear one after the other; see `cohort.ts` for why
+   * membership is decided by tick rather than by count, and its entry in
+   * `docs/superpowers/notes/2026-10-29-code-history-web-src.md` for the
+   * measurement. Ignored when `buffered` is false. Defaults to `noCohort`.
+   */
   cohort?: Cohort
   /**
    * Called with the source this cell is actually drawing, whenever that
@@ -100,9 +90,8 @@ export interface PageViewProps {
    * Exists so `App.tsx` can derive the *geometry* of a two-page group from what
    * is on screen rather than from where the reader has moved to. Those two
    * diverge under a fast flick — state moves per keypress, a cell's picture
-   * waits for its decode — and the visible result was the cell widths
-   * oscillating between one wide page and two half-width ones three times in
-   * 114 ms while the artwork sat still. Reported as flickering.
+   * waits for its decode — so the cell widths would oscillate between one wide
+   * page and two half-width ones while the artwork stays still.
    */
   onShown?: (src: string) => void
   /**
@@ -115,38 +104,36 @@ export interface PageViewProps {
   /**
    * Which edge of this box the page's artwork hugs — `pageStyle`'s own
    * parameter, threaded through unchanged. Defaults to `'centre'`, so single
-   * mode, scroll mode and any standalone use draw exactly what they drew
-   * before it existed; only the two cells of a real two-page pair ask for
-   * anything else, and only `App.tsx` knows which cell it is drawing. See
-   * `ArtworkHug` for why the left cell passes `right-edge`.
+   * mode, scroll mode and any standalone use draw the artwork centred; only the
+   * two cells of a real two-page pair ask for anything else, and only `App.tsx`
+   * knows which cell it is drawing. See `ArtworkHug` for why the left cell
+   * passes `right-edge`.
    */
   hug?: ArtworkHug
 }
 
 /**
- * One page. `buffered` false shows `src` the plain way, unchanged from
- * before this module existed. `buffered` true never shows a source until
- * `decode.ts`'s `presentWhenDecoded` says it is ready to paint, so a page
- * turn — this component's `src` prop changing under an instance React keeps
- * mounted across it, rather than a fresh `<img>` remounting — never lands on
- * a blank or half-painted frame.
+ * One page. `buffered` false shows `src` the plain way. `buffered` true never
+ * shows a source until `decode.ts`'s `presentWhenDecoded` says it is ready to
+ * paint, so a page turn — this component's `src` prop changing under an
+ * instance React keeps mounted across it, rather than a fresh `<img>`
+ * remounting — never lands on a blank or half-painted frame.
  *
- * Only one `<img>` is ever in the returned tree at a time; the second
- * "buffer" the mechanism is named for is `makeImage`'s off-screen probe, alive
- * only for the span of one decode and never inserted into the document. A
- * pair of permanently-mounted, role-swapping `<img>` nodes was the first
- * design tried here and rejected: under a fast flick, a second `src` prop
- * change can arrive before the first swap's decode has settled, and if both
- * targeted the *same* reused buffer node, the second would overwrite the
- * first's `src` mid-decode on a DOM element that might by then already be the
- * visible one — a race that could flash a stale frame onto screen after the
- * reader had already moved past it, which is precisely the bug this
- * component exists to close. A fresh probe per attempt has no such shared
+ * Only one `<img>` is ever in the returned tree at a time; the second "buffer"
+ * the mechanism is named for is `makeImage`'s off-screen probe, alive only for
+ * the span of one decode and never inserted into the document. A pair of
+ * permanently-mounted, role-swapping `<img>` nodes would not do: under a fast
+ * flick, a second `src` prop change can arrive before the first swap's decode
+ * has settled, and if both targeted the *same* reused buffer node, the second
+ * would overwrite the first's `src` mid-decode on a DOM element that might by
+ * then already be the visible one — a race that could flash a stale frame onto
+ * screen after the reader had already moved past it, which is precisely the bug
+ * this component exists to close. A fresh probe per attempt has no such shared
  * mutable node to race over. Which settled decode may then touch the one real
  * `<img>`'s `src` is decided by `ordering.ts`, not by `presentWhenDecoded`'s
- * `stale()` check: since #35 that function presents a superseded decode too,
- * so a flick shows pages on the way, and this component hands it `inOrder`,
- * which draws an attempt only if nothing newer has been drawn (O113).
+ * `stale()` check: that function presents a superseded decode too, so a flick
+ * shows pages on the way, and this component hands it `inOrder`, which draws an
+ * attempt only if nothing newer has been drawn (O113).
  */
 export function PageView({
   src,
@@ -187,15 +174,15 @@ export function PageView({
     const attempt = order.next()
     // **A `src` that starts no decode takes a number too, and is drawn under
     // it.** Two cases start none: a return to the page already drawn, and the
-    // unbuffered path. Both used to return without a number, which left
-    // `ordering.ts` nothing newer to drop a decode still in flight against. A
-    // reader who turned and turned back before the page they left had decoded
-    // got that page drawn over the one they came back to, and kept it until
-    // `src` next changed; `=` then `0` inside the zoomed decode left the zoomed
-    // rung drawn at fit-whole, and `-` then `=` left the lower rung drawn
-    // zoomed. `decode.ts` shows a superseded decode on the promise that it "can
-    // never paint over a newer one", and a return is the newest request there
-    // is. Measured and tested under O113 in `docs/notes.md`.
+    // unbuffered path. Without a number, `ordering.ts` would have nothing newer
+    // to drop a decode still in flight against. A reader who turned and turned
+    // back before the page they left had decoded would get that page drawn over
+    // the one they came back to, and keep it until `src` next changed; `=` then
+    // `0` inside the zoomed decode would leave the zoomed rung drawn at
+    // fit-whole, and `-` then `=` would leave the lower rung drawn zoomed.
+    // `decode.ts` shows a superseded decode on the promise that it "can never
+    // paint over a newer one", and a return is the newest request there is. See
+    // O113 in `docs/notes.md`.
     //
     // Unbuffered, this is also what keeps `shown` from going stale —
     // `displayed` below ignores it in this branch (it reads `src` directly),

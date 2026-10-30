@@ -92,29 +92,21 @@ const resolvedTileStyle: CSSProperties = {
  * How many tiles the rail builds either side of the anchor the window is
  * centred on.
  *
- * The scroll handler below no longer moves the anchor on a count of tiles
- * the focus has drifted — it re-anchors once the *rendered* tiles run out
+ * The scroll handler below re-anchors once the *rendered* tiles run out
  * against the visible rail, read straight from the DOM (see that handler's
- * own doc). `windowMargin` still has to be wide enough that the rendered
- * tiles reach past whatever the viewport shows, because the rebuild that
- * check triggers takes a frame to land while the reader keeps scrolling.
+ * own doc). `windowMargin` has to be wide enough that the rendered tiles reach
+ * past whatever the viewport shows, because the rebuild that check triggers
+ * takes a frame to land while the reader keeps scrolling.
  *
  * 16 rather than some smaller number: `focusAtFraction` returns the tile at
  * the rail's *leading* edge for the current scroll fraction, and the
  * viewport extends about a dozen tiles forward from there at the widest
  * supported width (1440 px, over a tile's nominal outer width and the gap
- * beside it: `--strip-unit`, two borders and `--strip-gap`) — not ~7 either
- * side of the focus, which an earlier version of this margin assumed in
- * order to justify a fixed tile-count drift before re-anchoring. That
- * assumption was wrong, and cost real frames: measured at 1440×900 during a
- * fast scroll, a spacer stood inside the visible strip on 7 frames, the
- * worst one a 321 px gap in a 1440 px rail. 16 leaves a few tiles of slack
- * over the reach the viewport has, kept as a round number rather than
- * shaved to the exact minimum.
+ * beside it: `--strip-unit`, two borders and `--strip-gap`). 16 leaves a few
+ * tiles of slack over the reach the viewport has, kept as a round number
+ * rather than shaved to the exact minimum.
  *
- * A 237-tile rail with `windowMargin` at 12 built about 25 tiles per change
- * (O140: 237 tiles cost 274 ms, 20 tiles 38 ms); at 16 a change builds about
- * 33 — a larger window per rebuild, paid for by far fewer rebuilds than
+ * A larger window per rebuild is paid for by far fewer rebuilds than
  * rebuilding on every scroll frame would cost.
  */
 const windowMargin = 16
@@ -166,17 +158,15 @@ export interface FilmstripProps {
   /**
    * Which way the rail runs.
    *
-   * A right-to-left work is read right-to-left, and a strip that always ran
-   * the other way put page 1 on the left while the pages beside it put page 1
-   * on the right — measured on `gotoubun-v01`, whose raw is `rtl`: tile order
-   * was page 1 at x 26 through page 10 at x 939, unchanged when the direction
-   * was flipped. A reader hunting a page had to read the strip backwards from
-   * the reader.
+   * A right-to-left work is read right-to-left, and a strip that ran the other
+   * way would put page 1 on the left while the pages beside it put page 1 on
+   * the right. A reader hunting a page would have to read the strip backwards
+   * from the reader.
    *
-   * `row-reverse` rather than reversing the array, so a tile's index still
-   * means what it meant — `stepToGroup`, the current-tile border and the
+   * `row-reverse` rather than reversing the array, so a tile's index means the
+   * same in both directions — `stepToGroup`, the current-tile border and the
    * correction picker all address tiles by index, and reversing the data would
-   * have made every one of them wrong in a way no type could catch.
+   * make every one of them wrong in a way no type could catch.
    */
   reading: Direction
   work: string
@@ -198,7 +188,7 @@ export interface FilmstripProps {
    * A slot of `edition` to centre the rail on when nothing is current.
    *
    * Set whenever the viewed edition has no slot for the reader's position at
-   * all — a gap, or the borrowed page `modules/borrow.ts` now draws in place
+   * all — a gap, or the borrowed page `modules/borrow.ts` draws in place
    * of one — where there is no current tile to centre on, and the nearest slot
    * that does resolve is the closest thing to "where the reader is". With that
    * module at its default the borrowed case is the ordinary one and the gap
@@ -256,9 +246,10 @@ export interface FilmstripProps {
    *
    * Reported upward rather than previewed here because the preview has to
    * escape this strip's own `overflow: hidden`; `Chrome` renders it as a
-   * sibling. A thumbnail is 160px on its long edge, which is enough to
-   * recognise a page and not enough to decide whether two drawings are the
-   * same drawing — which is exactly what a correction asks.
+   * sibling. A tile is drawn at most 160px tall (`tileSize.ts`'s
+   * `STRIP_TILE_PX`), which is enough to recognise a page and not enough to
+   * decide whether two drawings are the same drawing — which is exactly what
+   * a correction asks.
    */
   onPreview?: (tile: { page: number; half?: 'L' | 'R' } | undefined) => void
   /**
@@ -288,17 +279,15 @@ export interface FilmstripProps {
  * `resolvedTileStyle`. Regroup (dragging a tile to fix a pairing) is absent
  * — a later milestone's job.
  *
- * The rail is `overflowX: auto` with one tile per group — 187 of them for
- * `en-mono` — and nothing used to keep the current one on screen. Opening the
- * chrome at slot 150 showed tiles 0 through about 15, with the `aria-current`
- * tile off-screen and, since its
- * thumbnail is lazy-loaded, not even requested. `currentRef` is attached to
- * whichever tile is current and centred into view whenever that changes or
- * the strip becomes visible. `pairedRef` plays the same role for the dashed
- * tile, and `anchorRef` for the neighbourhood of a position this edition has
- * no slot for. At most one of the three is ever attached at a time — `App.tsx`
- * sets `anchor` only in a gap or on the borrowed page that now stands in for
- * one, where `currentIndex` is `-1` and nothing is correcting, and `isAnchor`
+ * The rail is `overflowX: auto` with one tile per group, so the current one
+ * can be off-screen when the chrome opens — and, since its thumbnail is
+ * lazy-loaded, not even requested. `currentRef` is attached to whichever tile
+ * is current and centred into view whenever that changes or the strip becomes
+ * visible. `pairedRef` plays the same role for the dashed tile, and
+ * `anchorRef` for the neighbourhood of a position this edition has no slot
+ * for. At most one of the three is ever attached at a time — `App.tsx` sets
+ * `anchor` only in a gap or on the borrowed page that stands in for one,
+ * where `currentIndex` is `-1` and nothing is correcting, and `isAnchor`
  * below re-tests that rather than assuming it — so centring on "whichever is
  * attached" is exactly the tile a reader needs on screen for the state they
  * are in: the one to disagree with while correcting, and the nearest page
@@ -340,8 +329,8 @@ export function Filmstrip({
   // rendered yet — the same reason `pendingRecentre` retries.
   const followFocus = useRef(false)
 
-  // O134. The rung every tile in this strip asks the server for, read once at
-  // mount.
+  // O134. The rung every tile in this strip asks the server for, read once
+  // at mount.
   //
   // **Lazy state rather than an effect**, so the very first render already
   // carries it: setting it afterwards would mean every visible tile fetched at
@@ -355,14 +344,13 @@ export function Filmstrip({
   //
   // A mount is not a reading session: `Chrome` returns `null` while hidden, so
   // this strip unmounts on every chrome hide and reads the rung again on the
-  // next show. (O140 windowed the rail rather than keeping it mounted — the
-  // mount-once candidate is O143, which the user declined.) That costs
-  // nothing: the rung is a pure function of the viewport and the density, so a
-  // re-read on an unchanged screen yields the same URLs and the browser cache
-  // answers them. What it does mean is that a reader who hides the chrome,
-  // drags the window across 900 px and shows it again *does* get the right
-  // rung — the stale case this comment guards against is narrower than it
-  // looks, and is only ever within one showing of the bars.
+  // next show. (The mount-once candidate is O143, which the user declined.)
+  // That costs nothing: the rung is a pure function of the viewport and the
+  // density, so a re-read on an unchanged screen yields the same URLs and the
+  // browser cache answers them. What it does mean is that a reader who hides
+  // the chrome, drags the window across 900 px and shows it again *does* get
+  // the right rung — the stale case this comment guards against is narrower
+  // than it looks, and is only ever within one showing of the bars.
   const [tileEdge] = useState(() =>
     stripTileEdge(typeof window === 'undefined' ? undefined : window),
   )
@@ -381,10 +369,8 @@ export function Filmstrip({
     anchor === undefined || currentIndex !== -1 || correcting
       ? -1
       : groups.findIndex((g) => g.slots.includes(anchor))
-  // Named `primaryFocus` rather than `focus` because Task 4 adds a second
-  // source — where the reader has scrolled to — and `focus` becomes the
-  // choice between them. Naming it now means Task 4 adds a line rather than
-  // renaming one.
+  // Named `primaryFocus` rather than `focus` because `focus` below is the
+  // choice between this and where the reader has scrolled to.
   const primaryFocus =
     currentIndex >= 0
       ? currentIndex
@@ -407,7 +393,7 @@ export function Filmstrip({
   // Set whenever the tile to centre on may have moved out of the *rendered*
   // window — cleared once `recenter` (below) actually finds a ref to scroll
   // to. See the two effects that follow for why a single synchronous
-  // attempt is not enough (C1, whole-branch review).
+  // attempt is not enough.
   const pendingRecentre = useRef(false)
 
   // Stops a glide that a let-go drag has left carrying the rail on. The drag's
@@ -437,13 +423,13 @@ export function Filmstrip({
     // tile that had focus is still in this render's DOM.
     followFocus.current =
       railRef.current?.contains(document.activeElement) ?? false
-    // fix-round review, finding D: read before `setScrolledTo` below
-    // schedules clearing it — reading `scrolledTo` again after that call
-    // would only ever see `undefined`, which is exactly the render this
-    // effect runs on, not the one before it. This is what tells "the window
-    // this render started with was already the settled one" apart from "a
-    // flick had left it stale", which the success of `recenter()` just below
-    // cannot tell apart on its own — see that call's own comment.
+    // Read before `setScrolledTo` below schedules clearing it — reading
+    // `scrolledTo` again after that call would only ever see `undefined`,
+    // which is exactly the render this effect runs on, not the one before it.
+    // This is what tells "the window this render started with was already the
+    // settled one" apart from "a flick had left it stale", which the success
+    // of `recenter()` just below cannot tell apart on its own — see that
+    // call's own comment.
     const resetPending = scrolledTo !== undefined
     setScrolledTo(undefined)
     pendingRecentre.current = true
@@ -453,52 +439,46 @@ export function Filmstrip({
     // than only ever relying on the flush effect below, is what makes the
     // ordinary case cost nothing extra.
     //
-    // C1 (whole-branch review): when the reader *had* flicked the rail
-    // elsewhere, this attempt runs against the *stale* window — the one
-    // built from the `scrolledTo` this same call is resetting, not yet the
-    // one rebuilt around the new focus, because `setScrolledTo` only
-    // schedules that rebuild rather than applying it inline — so
-    // `currentRef`/`pairedRef`/`anchorRef` can all be null here even though
-    // the tile they should point at is about to exist. A page turn after a
-    // flick reproduced exactly this: the window correctly rebuilt around
-    // the new current tile a moment later, but nothing had ever called
-    // `scrollIntoView` on it, so the rail sat scrolled to wherever the
-    // flick left it with nothing rendered there — a blank strip. Leaving the
-    // flag set when this attempt fails is what lets the second effect below
-    // retry once that rebuild has actually landed.
+    // When the reader *had* flicked the rail elsewhere, this attempt runs
+    // against the *stale* window — the one built from the `scrolledTo` this
+    // same call is resetting, not yet the one rebuilt around the new focus,
+    // because `setScrolledTo` only schedules that rebuild rather than
+    // applying it inline — so `currentRef`/`pairedRef`/`anchorRef` can all be
+    // null here even though the tile they should point at is about to exist.
+    // A page turn after a flick would then rebuild the window around the new
+    // current tile a moment later with nothing having called `scrollIntoView`
+    // on it, and the rail would sit scrolled to wherever the flick left it
+    // with nothing rendered there — a blank strip. Leaving the flag set when
+    // this attempt fails is what lets the second effect below retry once that
+    // rebuild has actually landed.
     //
-    // fix-round review, finding D: leaving the flag set when this attempt
-    // *succeeds* matters too, whenever `resetPending` is true. `recenter()`
-    // can find a ref and scroll to it against the stale window — the new
-    // current tile can simply already have been inside it — but the reset
-    // this same call scheduled has not rebuilt the window yet, so the tile
-    // has only landed to the accuracy of the stale window's spacer
-    // arithmetic, not the rebuilt one's. Clearing the flag here would stop
-    // the retry effect below from ever correcting that. In the ordinary
-    // case `resetPending` is already false (nothing had scrolled the rail
-    // away since the last render), so this changes nothing there — the flag
-    // still clears on this first success exactly as before.
+    // Leaving the flag set when this attempt *succeeds* matters too,
+    // whenever `resetPending` is true. `recenter()` can find a ref and scroll
+    // to it against the stale window — the new current tile can simply
+    // already have been inside it — but the reset this same call scheduled has
+    // not rebuilt the window yet, so the tile has only landed to the accuracy
+    // of the stale window's spacer arithmetic, not the rebuilt one's.
+    // Clearing the flag here would stop the retry effect below from ever
+    // correcting that. In the ordinary case `resetPending` is already false
+    // (nothing had scrolled the rail away since the last render), so this
+    // changes nothing there — the flag clears on this first success.
     if (recenter() && !resetPending) pendingRecentre.current = false
-    // A tile's `minWidth` floor (Task 2a, 2026-09-21) gives it its full
-    // nominal width before its image has decoded, so a tile's on-screen
-    // position no longer depends on load order — the attempt above is
-    // enough on its own, and nothing needs to re-run once thumbnails start
-    // arriving.
+    // A tile's `minWidth` floor gives it its full nominal width before its
+    // image has decoded, so a tile's on-screen position does not depend on
+    // load order — the attempt above is enough on its own, and nothing needs
+    // to re-run once thumbnails start arriving.
     //
-    // This effect used to also attach a capture-phase `load` listener on the
-    // rail (`load` does not bubble, so a descendant thumbnail's load had to
-    // be caught on the way down) and re-run `recenter` whenever one fired,
-    // to catch a tile that grows past its floor once its image decodes — a
-    // double-page scan the sidecar never marked `spread: true`. Windowing
-    // is what turned that listener into the bug this fixes: scrolling the
-    // rail renders new tiles, whose images then load, so the listener fired
-    // continuously while the reader was mid-flick and kept dragging the
-    // rail back to the current tile — reported from a real iPhone as a
-    // flick that swipes and then returns to the current page within about a
-    // second, which made the rail impossible to make progress on. The
-    // floor's growth is small enough on the common case that losing the
-    // listener trades away only the rare, cosmetic case of an unmarked
-    // spread for a rail that can be scrolled at all.
+    // No capture-phase `load` listener on the rail re-runs `recenter` when a
+    // thumbnail loads (`load` does not bubble, so catching a descendant's
+    // would take the capture phase). Scrolling the rail renders new tiles,
+    // whose images then load, so such a listener would fire continuously while
+    // the reader is mid-flick and keep dragging the rail back to the current
+    // tile, which would make the rail impossible to make progress on. It would
+    // only catch a tile that grows past its floor once its image decodes — a
+    // double-page scan the sidecar never marked `spread: true` — and that
+    // growth is small enough on the common case that going without the
+    // listener trades away only the rare, cosmetic case of an unmarked spread
+    // for a rail that can be scrolled at all.
   }, [currentIndex, visible, correcting?.pairedIndex, anchor])
 
   // The follow the effect above asks for. No dependency list, so it retries on
@@ -521,8 +501,8 @@ export function Filmstrip({
   // every render: ordinary scrolling also re-renders this component (via
   // `setScrolledTo` in the windowing effect further down), and re-centring
   // on every one of those renders would drag the rail out from under the
-  // reader's finger mid-flick — the exact regression the removed `load`
-  // listener above caused, from a different trigger. Only the effect above
+  // reader's finger mid-flick — the failure a `load` listener re-centring
+  // would cause, from a different trigger. Only the effect above
   // ever sets the flag, and a scroll changes none of its dependencies — so a
   // flick cannot arm this, which is the property that matters. What can:
   // a page turn, a new correction, a new anchor, and also the mount itself
@@ -535,7 +515,7 @@ export function Filmstrip({
   // Refines `--strip-unit` from real tiles' drawn widths, once, the first
   // time enough qualifying tiles have actually loaded (`medianTileWidth`'s
   // own minimum sample — see `tiles.ts`). See `reader.css`'s own comment on
-  // `--strip-unit` for what the constant is now: a starting estimate for the
+  // `--strip-unit` for what the constant is: a starting estimate for the
   // first paint and for any tile that has not drawn yet, refined here once
   // real geometry exists.
   //
@@ -555,34 +535,31 @@ export function Filmstrip({
     // not a measurement of anything real), and takes the *median* of their
     // widths rather than the first one found.
     //
-    // C2 (whole-branch review): a double-page scan the sidecar never marked
-    // `spread: true` is itself a one-slot group, so `tileUnits` correctly
-    // calls it one unit and it carries the same one-unit `minWidth` floor as
-    // an ordinary tile — while drawing at roughly twice the nominal width.
-    // Nothing here can tell that tile apart from an ordinary one by
-    // `minWidth` alone, because there is nothing to tell apart: both are
-    // genuinely one-unit by the sidecar's own account. Taking whichever tile
-    // happened to load first — the previous rule — accepted that tile's
-    // width outright whenever it won the race, corrupting `--strip-unit`
-    // (and with it every tile floor and every spacer) to about double the
-    // true value. `medianTileWidth` (`tiles.ts`) is what a handful of such
-    // outliers among an edition's ordinary pages cannot move.
+    // A double-page scan the sidecar never marked `spread: true` is itself a
+    // one-slot group, so `tileUnits` correctly calls it one unit and it
+    // carries the same one-unit `minWidth` floor as an ordinary tile — while
+    // drawing at roughly twice the nominal width. Nothing here can tell that
+    // tile apart from an ordinary one by `minWidth` alone, because there is
+    // nothing to tell apart: both are genuinely one-unit by the sidecar's own
+    // account. Taking whichever tile happened to load first would accept that
+    // tile's width outright whenever it won the race, corrupting
+    // `--strip-unit` (and with it every tile floor and every spacer) to about
+    // double the true value. `medianTileWidth` (`tiles.ts`) is what a handful
+    // of such outliers among an edition's ordinary pages cannot move.
     //
-    // fix-round review, finding A: every loaded tile contributes to the
-    // sample now, not only one-unit ones — `normalizedTileWidth` (`tiles.ts`)
-    // rescales a two-unit tile's own outer width back to what a one-unit
-    // tile of the same per-unit width would have measured, so a `two`-mode
-    // pair or a genuine `spread: true` tile joins the same sample a one-unit
-    // tile does rather than being excluded from it. `two` mode gives every
-    // group but a break singleton two slots (`pairing.ts`), so a 33-tile
-    // window could hold as few as zero one-unit tiles under the old filter —
-    // `medianTileWidth` could then never reach its minimum sample, which
-    // left `--strip-unit` unrefined and this effect's `load` listener below
-    // attached for the component's whole life. A tile's unit count is read
-    // back from its own `minWidth` by the same equality check the old
-    // one-unit-only filter already made against `tileMinWidth(1)` — extended
-    // to also recognise `tileMinWidth(2)` — rather than a second parser for
-    // the `calc()` string itself.
+    // Every loaded tile contributes to the sample, not only one-unit ones —
+    // `normalizedTileWidth` (`tiles.ts`) rescales a two-unit tile's own outer
+    // width back to what a one-unit tile of the same per-unit width would
+    // have measured, so a `two`-mode pair or a genuine `spread: true` tile
+    // joins the same sample a one-unit tile does rather than being excluded
+    // from it. `two` mode gives every group but a break singleton two slots
+    // (`pairing.ts`), so a 33-tile window could hold as few as zero one-unit
+    // tiles under a one-unit-only filter — `medianTileWidth` could then never
+    // reach its minimum sample, which would leave `--strip-unit` unrefined
+    // and this effect's `load` listener below attached for the component's
+    // whole life. A tile's unit count is read back from its own `minWidth` by
+    // an equality check against `tileMinWidth(1)` or `tileMinWidth(2)` rather
+    // than a second parser for the `calc()` string itself.
     //
     // Marks `unitMeasuredRef` only once `medianTileWidth` has enough loaded
     // tiles to answer at all (its own minimum sample, not merely "whether a
@@ -626,21 +603,21 @@ export function Filmstrip({
       unitMeasuredRef.current = true
     }
 
-    // fix-round review, finding A: the *other* way this has to terminate.
-    // `attempt` only ever sets `unitMeasuredRef` once `medianTileWidth`
-    // reaches its minimum sample — but a rail with fewer tiles than that (a
-    // work with fewer than `minSample` groups, say) can never reach it, and
-    // relying on the ref alone would leave the `load` listener below
-    // attached for the component's whole life, re-running `querySelectorAll`
-    // and a forced `getBoundingClientRect` read on every future thumbnail
-    // load — exactly the per-load cost windowing exists to remove. Once
-    // every tile *currently* rendered has loaded, no further `load` event on
-    // this window can add anything `attempt` has not already seen, so there
-    // is nothing left to wait for. Neither condition is enough on its own:
-    // the ref alone never fires below the minimum sample, and this check
-    // alone — with no ref to short-circuit it — would wait for every one of
-    // a 33-tile window's images before ever measuring, which is the
-    // early-exit the ref exists to provide in the ordinary case.
+    // The *other* way this has to terminate. `attempt` only ever sets
+    // `unitMeasuredRef` once `medianTileWidth` reaches its minimum sample —
+    // but a rail with fewer tiles than that (a work with fewer than
+    // `minSample` groups, say) can never reach it, and relying on the ref
+    // alone would leave the `load` listener below attached for the
+    // component's whole life, re-running `querySelectorAll` and a forced
+    // `getBoundingClientRect` read on every future thumbnail load — exactly
+    // the per-load cost windowing exists to remove. Once every tile
+    // *currently* rendered has loaded, no further `load` event on this window
+    // can add anything `attempt` has not already seen, so there is nothing
+    // left to wait for. Neither condition is enough on its own: the ref alone
+    // never fires below the minimum sample, and this check alone — with no
+    // ref to short-circuit it — would wait for every one of a 33-tile
+    // window's images before ever measuring, which is the early-exit the ref
+    // exists to provide in the ordinary case.
     const doneForNow = () =>
       unitMeasuredRef.current ||
       [...rail.querySelectorAll('button')].every(
@@ -657,18 +634,16 @@ export function Filmstrip({
     }
 
     // Capture phase: `load` does not bubble, so a descendant `<img>`'s load
-    // has to be caught on the way down — the same reason the centring
-    // effect's own, now-removed load listener above used capture (see that
-    // effect's comment). That listener re-ran `scrollIntoView` on every
-    // descendant load and fought a mid-flick scroll; this one only ever
-    // calls `attempt`, which writes a CSS custom property at most once and
-    // never scrolls, and it detaches itself once either termination
-    // condition above is met — so it fires at most as many times as it
-    // takes to get there, not once per tile for the component's whole life,
-    // and cannot reproduce that bug. Listening on the rail rather than on
-    // one specific tile's image is deliberate too: lazy-loaded images
-    // resolve out of DOM order, so no fixed set of tiles' images can be
-    // counted on to be the ones that load.
+    // has to be caught on the way down. A listener that re-ran
+    // `scrollIntoView` on every descendant load would fight a mid-flick
+    // scroll (see the centring effect's comment); this one only ever calls
+    // `attempt`, which writes a CSS custom property at most once and never
+    // scrolls, and it detaches itself once either termination condition above
+    // is met — so it fires at most as many times as it takes to get there, not
+    // once per tile for the component's whole life, and cannot cause that.
+    // Listening on the rail rather than on one specific tile's image is
+    // deliberate too: lazy-loaded images resolve out of DOM order, so no fixed
+    // set of tiles' images can be counted on to be the ones that load.
     const onLoad = (event: Event) => {
       if (!(event.target instanceof HTMLImageElement)) return
       attempt()
@@ -694,19 +669,18 @@ export function Filmstrip({
   // frame it handles, so a ref updated after every render gives it that
   // without resubscribing.
   //
-  // `onFocusIn` below used to read a `lo` ref kept the same way, added to
-  // whichever position the focused tile held among the rendered buttons. It
-  // no longer does: a ref synced by an effect with no dependency list is
-  // only as current as the *previous* commit's effects by the time an
-  // *earlier* effect in the *same* commit fires a synchronous DOM event —
-  // which is exactly what the focus-follow effect above can do, calling
-  // `.focus()` on a tile within the very commit that first renders it. Read
-  // there, the `lo` ref still held the prior window's value, so the rebuild
-  // it triggered landed on the wrong absolute tile and unmounted the one
-  // focus-follow had just focused. `onFocusIn` now reads the tile's own
-  // `data-group` (see the tile `<button>`'s own attribute) instead, which
-  // the same render that put the tile in the DOM already wrote — nothing
-  // for it to lag behind.
+  // `onFocusIn` below reads the tile's own `data-group` (see the tile
+  // `<button>`'s own attribute) and not a `lo` ref kept the same way, added
+  // to whichever position the focused tile held among the rendered buttons: a
+  // ref synced by an effect with no dependency list is only as current as the
+  // *previous* commit's effects by the time an *earlier* effect in the *same*
+  // commit fires a synchronous DOM event — which is exactly what the
+  // focus-follow effect above can do, calling `.focus()` on a tile within the
+  // very commit that first renders it. Read there, the `lo` ref would still
+  // hold the prior window's value, so the rebuild it triggered would land on
+  // the wrong absolute tile and unmount the one focus-follow had just
+  // focused. The attribute is written by the same render that put the tile in
+  // the DOM, so there is nothing for it to lag behind.
   const unitsRef = useRef(units)
   useEffect(() => {
     unitsRef.current = units
@@ -792,56 +766,34 @@ export function Filmstrip({
   // scrolling a reversed flex row moves `scrollLeft` negative in this
   // engine, and the distance along the rail is the same either way.
   //
-  // The rAF throttle above cuts a scroll's *event* rate, but a 1.2 s flick
-  // still produced 65 window rebuilds across 181 throttled frames measured
-  // this way (O140), because the focus itself moves by roughly a tile on
-  // nearly every frame of a fast flick — a rebuild for every tile of drift
-  // is expensive on its own. A first fix held the anchor still until the
-  // focus had drifted a fixed tile count from it, sized so that count plus
-  // the viewport's own reach stayed inside `windowMargin`. That reasoning
-  // was wrong: it assumed the viewport straddles the focus tile roughly
-  // evenly, when `focusAtFraction` actually returns the tile at the rail's
-  // *leading* edge for the scroll fraction, and the viewport extends forward
-  // from there — about a dozen tiles at 1440 px, not ~7 either side. Measured
-  // at 1440×900 during a fast scroll, that mistake showed up as a spacer
-  // inside the visible strip on 7 frames, the worst one a 321 px gap in a
-  // 1440 px rail.
+  // Read where the rail's own spacers sit against the visible rail, from the
+  // DOM, and rebuild once one of them is within a quarter of the rail's width
+  // of it — early enough that the window is rebuilt while there is still
+  // something drawn where the reader is about to look (O140). This is right
+  // regardless of viewport width, unlike a tile-count constant that has to be
+  // re-derived — and can be wrong — for every width the rail is shown at.
   //
-  // What replaces it: read where the rail's own spacers sit against the
-  // visible rail, from the DOM, and rebuild once one of them is within a
-  // quarter of the rail's width of it — early enough that the window is
-  // rebuilt while there is still something drawn where the reader is about
-  // to look. This is right regardless of viewport width, unlike a
-  // tile-count constant that has to be re-derived — and can be wrong — for
-  // every width the rail is shown at.
-  //
-  // A first attempt at this read the first and last *rendered tile's* box
-  // instead, and checked both against both ends of the rail, reasoning that
-  // checking both made it agnostic to reading direction. It did not: the
-  // rail is `row-reverse` for a right-to-left work, so DOM order and visual
-  // order are opposite there, and the last tile in the DOM sits at the
-  // *left* of the screen, not the right. Checking both ends of the DOM
-  // order against both ends of the rail does not cancel that out — it means
-  // one of the two checks is true on nearly every frame, in whichever
-  // direction the reading direction did not intend. Measured driving a
-  // 1.2 s flick at 390×844 under 4× CPU throttle: 71 re-anchors across 182
-  // frames, worse than the 65 the drift-based rule above produced and worse
-  // than the 24 the spacer rule below achieves. A spacer reaching the
-  // visible strip *is* the blank gap this guard exists to prevent, and
-  // testing for that directly is symmetric under either flex direction with
-  // no arithmetic about reading direction needed at all.
+  // Reading the first and last *rendered tile's* box instead, and checking
+  // both against both ends of the rail, does not work: the rail is
+  // `row-reverse` for a right-to-left work, so DOM order and visual order are
+  // opposite there, and the last tile in the DOM sits at the *left* of the
+  // screen, not the right. Checking both ends of the DOM order against both
+  // ends of the rail does not cancel that out — it means one of the two
+  // checks is true on nearly every frame, in whichever direction the reading
+  // direction did not intend. A spacer reaching the visible strip *is* the
+  // blank gap this guard exists to prevent, and testing for that directly is
+  // symmetric under either flex direction with no arithmetic about reading
+  // direction needed at all.
   //
   // Attached once per mount (empty deps) rather than re-attached whenever
   // `groups` changes: `groups` is a new array on every `App` re-render (see
-  // `unitsRef` above), so keying off it tore both listeners down and
-  // reattached them on essentially every render already — exactly the
-  // per-render churn this branch exists to remove, not the "only when tiles
-  // actually changed" the old comment here claimed. `units` and `lo` are
-  // both read through refs, so nothing render-scoped is captured and one
-  // mount's listeners stay correct for the component's whole lifetime.
-  // `Filmstrip` itself is unmounted and remounted whenever the chrome is
-  // toggled (`Chrome` returns `null` rather than hiding it in place — see
-  // the `visible` prop's doc), which is what makes per-mount the right
+  // `unitsRef` above), so keying off it would tear both listeners down and
+  // reattach them on essentially every render. `units` is read through
+  // `unitsRef`, so nothing render-scoped is captured and one mount's
+  // listeners stay correct for the component's whole lifetime. `Filmstrip`
+  // itself is unmounted and remounted whenever the chrome is toggled
+  // (`Chrome` returns `null` rather than hiding it in place — see the
+  // `visible` prop's doc), which is what makes per-mount the right
   // granularity rather than per-app-lifetime.
   useEffect(() => {
     const rail = railRef.current
@@ -859,13 +811,11 @@ export function Filmstrip({
         // which depends on scroll speed and render time rather than viewport
         // width alone, so a purely proportional guard under-provides on narrow
         // screens where render time is longest. The guard is at least a quarter
-        // of the rail's width, but no less than 200 px — measured at 390×844
-        // under 4× CPU throttle a 97 px guard (390/4) leaves a spacer briefly
-        // visible for 3 frames, up to 18 px, while 1440×900 sees none with its
-        // 360 px proportional guard. Asked of the spacers rather than the
-        // first/last rendered tile — see this effect's own doc above for why a
-        // tile-ends test silently inverts under `row-reverse` and a spacer-ends
-        // test does not.
+        // of the rail's width, but no less than 200 px: under 4× CPU throttle a
+        // 97 px guard (390/4) leaves a spacer briefly visible on a 390 px
+        // screen. Asked of the spacers rather than the first/last rendered
+        // tile — see this effect's own doc above for why a tile-ends test
+        // silently inverts under `row-reverse` and a spacer-ends test does not.
         const guard = Math.max(rb.width / 4, 200)
         let nearAGap = false
         for (const spacer of rail.querySelectorAll(
@@ -1239,9 +1189,7 @@ export function Filmstrip({
         ...railStyle,
         // Derived from `stepFor` rather than re-deciding what `rtl` means:
         // the rail runs the way a forward step goes, which is the same rule
-        // the arrows and the help ask. This read `reading === 'rtl'` until a
-        // review pointed out that the section claiming three consumers of one
-        // rule had two, and the third was this line.
+        // the arrows and the help ask.
         flexDirection: stepFor(1, reading) === 1 ? 'row' : 'row-reverse',
       }}
     >
@@ -1278,9 +1226,9 @@ export function Filmstrip({
           group.slots.includes(anchor)
         // The strip is one stop in the reader's ring (spec 2026-09-26 §3.2):
         // the tile the reader stands on, or the anchor where they stand on
-        // nothing this edition has. While correcting, every tile is a stop,
-        // as before — picking one is the correction's whole task, and nothing
-        // is current then. VoiceOver swipes to every tile either way.
+        // nothing this edition has. While correcting, every tile is a stop —
+        // picking one is the correction's whole task, and nothing is current
+        // then. VoiceOver swipes to every tile either way.
         const isStop = correcting !== undefined || isCurrent || isAnchor
         return (
           <button
@@ -1355,11 +1303,8 @@ export function Filmstrip({
                 A joined spread's two correction tiles share one thumbnail —
                 `thumbUrl` is page-indexed and the two halves are one page —
                 so without a visible mark a sighted reader has only position
-                to tell them apart. Position is exactly what misleads here:
-                tiles lay out in DOM order while slots are in reading order,
-                so under `rtl` the *left* tile is the `R` half. The `alt` text
-                above already carries this for a screen reader; this is the
-                same fact on screen.
+                to tell them apart. The `alt` text above already carries the
+                half for a screen reader; this is the same fact on screen.
 
                 Only ever rendered while correcting, because that is the only
                 time `tilePages` splits a spread into two tiles at all — see

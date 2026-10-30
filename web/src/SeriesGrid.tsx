@@ -11,10 +11,9 @@ function volumeCount(works: number): string {
  * The library's tiles: series, then the works that belong to none.
  *
  * **One component because the Library view draws the same thing twice.** Its
- * grid and its search hits both answer with §5.4's `{ series, unfiled }`
- * shape — deliberately, so one component renders either — and two copies of
- * a cover fallback is two places for the `⇄` mark to end up in different
- * positions, which is exactly what Plan A's ledger carried forward.
+ * grid and its search hits both answer with §5.4's `{ series, unfiled }` shape
+ * — deliberately, so one component renders either — and two copies of a cover
+ * fallback is two places for the `⇄` mark to end up in different positions.
  */
 export function SeriesGrid({
   series,
@@ -40,11 +39,10 @@ export function SeriesGrid({
       {unfiled.map((w) => (
         <li key={w.slug}>
           {unreadable(w) ? (
-            // **O62 — the link is the treatment, not a badge.** I1 of the
-            // whole-branch review: this component draws the grid's and the
-            // search hits' unfiled works, and the reader link carried none
-            // of the guard `Series.tsx`'s `Table` already had. The volume
-            // keeps its name, same as there.
+            // **O62 — the link is the treatment, not a badge.** This component
+            // draws the grid's and the search hits' unfiled works, which need
+            // the same guard as `Series.tsx`'s `Table`. The volume keeps its
+            // name, same as there.
             <span className="tile-unreadable">
               <span className="title">{w.title}</span>{' '}
               <span className="unreadable">

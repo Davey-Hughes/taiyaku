@@ -12,9 +12,8 @@
  * needs no comparator, then 80 bits of randomness, which is what separates two
  * ids minted in the same millisecond.
  *
- * Written here rather than taken as a dependency: the whole implementation is
- * the thirty lines below, and `docs/status.md` states this project's
- * dependency list as a standing claim.
+ * Written here rather than taken as a dependency: `docs/status.md` states
+ * this project's dependency list as a standing claim.
  */
 const ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ'
 

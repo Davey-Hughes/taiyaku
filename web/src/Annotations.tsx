@@ -59,8 +59,9 @@ export interface Box {
 /**
  * How far apart two tabs must sit, as a fraction of the page's height.
  *
- * A tab is 26px tall; on a page drawn around 530px high that is roughly 0.05,
- * so this leaves a hair of daylight between two that would otherwise touch.
+ * A tab is 22px tall; on a page drawn around 530px high that is about
+ * 0.04, so this leaves a few pixels of daylight between two that would
+ * otherwise touch.
  */
 const TAB_MIN_GAP = 0.055
 
@@ -74,17 +75,13 @@ const TAB_MIN_GAP = 0.055
  * mirror, `right: 100%` with the same offset, and exists for one caller — the
  * first cell of a real two-page pair.
  *
- * **The design's guarantee this used to rest on now has a hole in it.** M5
- * argued "fit-whole guarantees the side margins the tabs live in on every
- * portrait page", and that was true of a page centred in its box: `contain`
- * leaves the same letterbox on both sides, so either would do and the right
- * was picked. `fit.ts`'s `hug` then closed the two-page seam by pushing each
- * half's artwork against it — 359px of gap to 0px, measured, see `pageStyle`
- * — and it pays for that with the whole of one margin per page. In `two` mode
- * the guarantee holds on the outer side of each page and nowhere else, so
- * *which* margin stopped being a free choice and became this parameter.
- * Single mode and scroll mode never hug, so nothing there changed, which is
- * what the default keeps free.
+ * **In `two` mode a margin is guaranteed on the outer side of each page and
+ * nowhere else.** `contain` leaves the same letterbox on both sides of a page
+ * centred in its box, so either side would do and the right is the default.
+ * `fit.ts`'s `hug` closes the two-page seam by pushing each half's artwork
+ * against it, and pays for that with the whole of one margin per page. Which
+ * margin is therefore this parameter. Single mode and scroll mode never hug,
+ * which is what the default keeps free.
  *
  * Two alternatives, both rejected:
  *
@@ -99,23 +96,16 @@ const TAB_MIN_GAP = 0.055
  *   nuisance; being on the wrong page is the reader lying about what it knows.
  *
  * This layer is anchored to the artwork itself (regions are fractions of the
- * page, so it has to be), which makes `right: 2` mean two pixels *inside* the
- * artwork rather than two pixels from the edge of the reader: a 10px
- * translucent sliver on the page's own right margin, against 609px of empty
- * background beside it. Reported as not being able to see the markers at all,
- * and fair — it was hiding on the page.
+ * page, so it has to be), which would make `right: 2` mean two pixels *inside*
+ * the artwork rather than two pixels from the edge of the reader.
  *
  * The assumption this rests on is the design's own: a portrait page in a
  * landscape viewport leaves margin. Where it does not — a page as wide as the
  * box it is drawn in — the tab sits outside the page area's own `overflow:
- * hidden` and is clipped. **`upscaleToFit` made every page's `<img>` exactly
- * that wide**, and until `PageAnnotations` below started measuring the
- * artwork rather than the element, this layer was that element: the 1385px
- * element recorded on `paintedBox` fills a 1385px page area, so `left: 100%`
- * plus 4px was 4px outside it. Read off `App.tsx`'s `overflow` and that
- * measurement rather than seen on screen — the controller's browser pass is
- * what confirms it. Measuring the artwork is what puts the tab back in the
- * 526px of real background beside the page.
+ * hidden` and is clipped. **`upscaleToFit` makes every page's `<img>` exactly
+ * that wide**, so this layer is anchored to the artwork that `PageAnnotations`
+ * below measures rather than to the element, which puts the tab in the real
+ * background beside the page.
  */
 const tabStyle = (
   offset: number,
@@ -157,19 +147,19 @@ const tabStyle = (
  *
  * **This is a deliberate departure from the design**, which chose margin tabs
  * precisely so that "nothing is ever drawn over artwork" and left the body in
- * the panel. Asked for directly: a box drawn around a panel with no hint of
- * what it says is a marker you have to go and interrogate, and the whole point
- * of anchoring a note to a region is that the two are read together. The
- * design's concern is answered rather than ignored — the text is backed only
- * behind itself, not across the region, so the art inside the box stays
- * visible; it appears only where a region is already being shown (revealed, or
- * being edited), never while merely reading; and it is clipped to its own box
- * rather than spilling across the page.
+ * the panel. A box drawn around a panel with no hint of what it says is a
+ * marker you have to go and interrogate, and the whole point of anchoring a
+ * note to a region is that the two are read together. The design's concern is
+ * answered rather than ignored — the text is backed only behind itself, not
+ * across the region, so the art inside the box stays visible; it appears only
+ * where a region is already being shown (revealed, or being edited), never
+ * while merely reading; and it is clipped to its own box rather than spilling
+ * across the page.
  *
  * Clipped rather than scrolled or wrapped indefinitely: a region is sized by
  * what a reader drew around, not by how much they wrote, so a long note in a
- * small box shows its first lines and the rest stays in the panel. `title` on
- * the tab and the review list are both still whole.
+ * small box shows its first lines and the rest stays in the panel. The tab's
+ * popover and the review list are both still whole.
  */
 const bodyStyle: CSSProperties = {
   position: 'absolute',
@@ -229,16 +219,15 @@ const tintStyle = (region: Region, colour: NoteColour): CSSProperties => ({
  * exception: `reveal` answers "show me every region on this page", a question
  * about notes that already exist. A rectangle a reader is dragging out this
  * second is not a stored region being revealed, it is the direct feedback for
- * the gesture in progress — and without it the drag is invisible, which is
- * exactly how this shipped and was reported.
+ * the gesture in progress — and without it the drag is invisible.
  *
  * **Darker while the pointer is down, light once it settles**, because the two
  * moments want opposite things. A manga page is mostly white, so a pale wash
- * over it was reported as hard to see while drawing; a dark fill reads at a
- * glance against exactly that background. But the same dark fill sitting on a
- * settled region would obscure the artwork the note is *about*, which is the
- * one thing a marker must not do. So the fill drops away the moment the drag
- * ends and the box stays as a dashed outline.
+ * over it is hard to see while drawing; a dark fill reads at a glance against
+ * exactly that background. But the same dark fill sitting on a settled region
+ * would obscure the artwork the note is *about*, which is the one thing a
+ * marker must not do. So the fill drops away the moment the drag ends and the
+ * box stays as a dashed outline.
  *
  * The outline is double — a dark line under a bright one — so the edge holds
  * against both a white page and a black panel border, rather than picking one
@@ -251,10 +240,8 @@ const pendingStyle = (
 ): CSSProperties =>
   // **A point being edited has to be drawn as a point.** As a rectangle it is
   // zero by zero — an outline around nothing, which is invisible, and a reader
-  // cannot take hold of something they cannot see. That is why a point could
-  // not be moved: not the grab test, which had slop for exactly this, but that
-  // there was nothing on screen to aim at. Same ring the saved ones use, dashed
-  // to say it is not written yet.
+  // cannot take hold of something they cannot see. Same ring the saved ones
+  // use, dashed to say it is not written yet.
   isPoint(region)
     ? {
         position: 'absolute',
@@ -287,9 +274,8 @@ const pendingStyle = (
  * from whichever margin the tab is in — the same `side` `tabStyle` takes. A
  * popover outside a right-margin tab runs off the edge of the reader. Outside
  * a left-margin tab it has only whatever the outer letterbox happens to be,
- * which is 359px in the two-page geometry `paintedBox` records against this
- * box's fixed 240px — room there, and nothing promising it at another window
- * size. Into the page is the one side that is always as wide as the page.
+ * with nothing promising it holds this box's fixed 240px. Into the page is the
+ * one side that is always as wide as the page.
  *
  * Its look is `.reader-popover`'s, the panels' (spec 2026-09-17 §8.5).
  */
@@ -300,13 +286,12 @@ const popoverStyle = (
   position: 'absolute',
   // Just inside the page's own edge, beside the tab that summoned it.
   //
-  // It used to be placed at `right: calc(100% + 8px)` — outside the layer
-  // entirely — and an absolutely positioned box given only a `right` offset
-  // takes its width from the space left of that offset, which here was none.
-  // So it shrank to the narrowest thing that could hold a character and the
-  // text came out one letter per line, read as "completely vertical". A fixed
-  // `width` rather than `maxWidth` is the other half: shrink-to-fit is exactly
-  // what went wrong, so nothing here is left to it.
+  // Placed outside the layer, an absolutely positioned box given only a
+  // `right` offset takes its width from the space left of that offset, which
+  // would be none: it would shrink to the narrowest thing that could hold a
+  // character and the text would come out one letter per line. A fixed
+  // `width` rather than `maxWidth` is the other half: shrink-to-fit is
+  // exactly what would go wrong, so nothing here is left to it.
   ...(side === 'left' ? { left: 6 } : { right: 6 }),
   top: `${offset * 100}%`,
   transform: 'translateY(-50%)',
@@ -326,11 +311,11 @@ export interface AnnotationsProps {
    * (`notes.ts`'s `Region`) and everything around the artwork — inside the
    * element or outside it — is letterbox.
    *
-   * `undefined` before the first measurement, and for one frame only — the
-   * layer renders nothing rather than falling back to the page area, since
-   * that fallback is exactly the wrong-by-a-letterbox placement this prop
-   * exists to fix, and a fallback that looks nearly right is worse than a
-   * frame of nothing.
+   * `undefined` before the first measurement, which waits for the image to
+   * decode — the layer renders nothing rather than falling back to the page
+   * area, since that fallback is exactly the wrong-by-a-letterbox placement
+   * this prop exists to fix, and a fallback that looks nearly right is worse
+   * than a frame of nothing.
    */
   box: Box | undefined
   /** The notes on this slot — `notes.ts`'s `notesHere`, already filtered for travel. */
@@ -352,9 +337,9 @@ export interface AnnotationsProps {
   /**
    * Which margin the note tabs sit in — see `tabStyle`, which has the whole
    * argument. `'right'` by default, so single mode, scroll mode and every
-   * existing call site draw exactly what they drew before this existed; only
-   * the first cell of a real two-page pair asks for `'left'`, because the seam
-   * has taken its right margin.
+   * call site that passes nothing draw the right margin; only the first cell
+   * of a real two-page pair asks for `'left'`, because the seam has taken its
+   * right margin.
    */
   tabSide?: 'left' | 'right'
   onOpen: (id: string) => void
@@ -442,9 +427,8 @@ export function Annotations({
               Styled rather than the browser's `title`, which appears after a
               delay a reader has usually given up on, cannot be styled to say
               which edition a travelled note came from, and never shows at all
-              on a touch screen. `title` is gone rather than kept alongside, so
-              there is one answer to hovering a tab and not two arriving a
-              second apart.
+              on a touch screen. No `title` is kept alongside, so there is one
+              answer to hovering a tab and not two arriving a second apart.
             */}
               {hovering && h.note.body && (
                 <span
@@ -473,10 +457,10 @@ export function Annotations({
                     current === h.note.id ? undefined : current,
                   )
                 }
-                // The body is the title as well as the label: a reader hovering a
-                // tab wants the note, not a description of the tab. An empty body
-                // — a note saved before anything was typed — says so rather than
-                // showing a blank tooltip that reads as a broken one.
+                // The body is the label: a reader who reaches a tab wants
+                // the note, not a description of the tab. An empty body — a
+                // note saved before anything was typed — says so rather than
+                // leaving a blank label that reads as a broken one.
                 aria-label={
                   h.travelled
                     ? `Note written on ${h.note.edition}: ${h.note.body || 'empty'}`
@@ -500,25 +484,20 @@ export function Annotations({
  * a fraction of the **page**, not of the area around it. That distinction is
  * the whole reason this exists: a region is fractions of a slot, and a
  * portrait page in a landscape viewport leaves letterbox down both sides that
- * is background rather than page. Placing markers against the area drew them
- * offset and over-scaled, reported as corners that do not line up with the
- * pointer.
+ * is background rather than page. Placing markers against the area would draw
+ * them offset and over-scaled.
  *
- * **There are two letterboxes now, and this holds the artwork's box rather
- * than the element's.** *2026-08-08, with `upscaleToFit` on by default.* The
- * `<img>` fills its cell and `object-fit: contain` draws the page inside it,
- * so the element carries letterbox of its own — 526px each side of a 334px
- * page in the geometry recorded on `notes.ts`'s `paintedBox` — on top of
- * whatever the cell leaves around the element. Measuring the element was
- * right while the two coincided and is wrong in every mode now; `paintedBox`
- * is the rule, applied inside `measure` so a zoom, a pan, a resize and a
- * decode all go back through it.
+ * **There are two letterboxes, and this holds the artwork's box rather than
+ * the element's.** With `upscaleToFit` on by default, the `<img>` fills its
+ * cell and `object-fit: contain` draws the page inside it, so the element
+ * carries letterbox of its own on top of whatever the cell leaves around the
+ * element. Measuring the element is wrong in every mode; `notes.ts`'s
+ * `paintedBox` is the rule, applied inside `measure` so a zoom, a pan, a
+ * resize and a decode all go back through it.
  *
  * Self-measuring rather than measured by `App.tsx`, because the three reading
  * modes hold their pages in different boxes and continuous scroll holds one
- * per group. A component that finds its own page works in all three; a bespoke
- * effect in `App.tsx` worked in two and left scroll mode with no markers at
- * all.
+ * per group. A component that finds its own page works in all three.
  *
  * `match` names which image to measure by URL suffix, for the boxes that hold
  * more than one — a two-page spread draws two, and only one of them is the
@@ -535,9 +514,8 @@ export function Annotations({
  * mode replaces it: single mode draws a bare `PageView`, two-page mode wraps
  * two of them in cells, scroll mode mounts one per group. Without a remount
  * the observer goes on watching an image React has already removed, fires once
- * with a zero-sized rect, and never finds its replacement — measured directly,
- * as an overlay collapsed to nothing in the top-left corner after switching
- * single → two.
+ * with a zero-sized rect, and never finds its replacement, so the overlay
+ * collapses to nothing in the top-left corner after switching single → two.
  */
 export function PageAnnotations({
   match,
@@ -589,15 +567,13 @@ export function PageAnnotations({
       // be found by a fresh mount (see `key` at the call sites), and until then
       // the markers stay where the page last was rather than jumping to 0,0.
       if (inner.width === 0 || inner.height === 0) return
-      // **The element's rect is not the page**, and this took the element's
-      // rect until 2026-08-08. `fit.ts`'s `upscaleToFit` (default on) makes
-      // the `<img>` fill its whole cell and `object-fit: contain` then draws
-      // the artwork somewhere inside it: measured on `gotoubun-v01` in single
-      // mode, a 1385x475 element holding 334x475 of artwork inset 526px, so a
-      // marker at 25% of the page was drawn about 263px from the art it names.
-      // `paintedBox` is that arithmetic — the same call `App.tsx`'s `pointOn`
-      // measures a drag through, so the overlay and the gesture cannot come to
-      // different answers about where the page is.
+      // **The element's rect is not the page.** `fit.ts`'s `upscaleToFit`
+      // (default on) makes the `<img>` fill its whole cell and `object-fit:
+      // contain` then draws the artwork somewhere inside it, so a marker at 25%
+      // of the page would be drawn off the art it names. `paintedBox` is that
+      // arithmetic — the same call `App.tsx`'s `pointOn` measures a drag
+      // through, so the overlay and the gesture cannot come to different
+      // answers about where the page is.
       //
       // Undecoded, `naturalWidth` is 0 and `paintedBox` answers "the whole
       // element", which is precisely the placement this is here to correct.
@@ -629,7 +605,7 @@ export function PageAnnotations({
     observer.observe(img)
     observer.observe(host)
     // A decode is the third thing that moves this box, and neither of the
-    // other two triggers can see it: the measurement now reads `naturalWidth`,
+    // other two triggers can see it: the measurement reads `naturalWidth`,
     // which is 0 until the image decodes, while the *element* is `100%` by
     // `100%` under `upscaleToFit` and so changes no layout size for the
     // `ResizeObserver` to fire on. `version` only changes on a zoom or a pan.
@@ -656,8 +632,7 @@ export function PageAnnotations({
     // own below.
   }, [match, hug])
 
-  // Re-measuring, which is a different event from re-subscribing and used to
-  // be the same one.
+  // Re-measuring, which is a different event from re-subscribing.
   //
   // `version` is not read below. It is a trigger: a `ResizeObserver` never
   // fires on a CSS transform, because a transform changes nothing about layout
@@ -668,13 +643,13 @@ export function PageAnnotations({
   // stale overlay looks exactly like a wrong transform, which is why it is
   // threaded down rather than left to be noticed.
   //
-  // It was a dependency of the effect above until it got its own, which meant
-  // the observer was constructed and disconnected once per view change —
-  // sixty times a second for the length of a drag, to watch the same two
-  // elements it was already watching. The element being observed changes when
-  // `match` does; the measurement has to be redone far more often than that.
+  // Were `version` a dependency of the effect above, the observer would be
+  // constructed and disconnected once per view change — sixty times a second
+  // for the length of a drag, to watch the same two elements it was already
+  // watching. The element being observed changes when `match` does; the
+  // measurement has to be redone far more often than that.
   //
-  // What the split gives up: a `version` change no longer re-resolves *which*
+  // What the split gives up: a `version` change does not re-resolve *which*
   // `<img>` is being watched, only re-measures the one already found. Nothing
   // needs it to — React reconciles `PageView`'s single image in place, so the
   // element changes only when `match` does or when the `key` at the call site

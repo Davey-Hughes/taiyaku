@@ -6,10 +6,7 @@
  * anything is written, because nothing undoes a correction short of making
  * another one.
  *
- * The write is not pure and takes its three calls as ports. It was `App.tsx`'s
- * `confirmCorrection` — 102 lines with a nested `try`/`catch`, three distinct
- * outcomes and a `dispose` ordering that a parse failure must not break — and
- * being in `App.tsx` it was covered by typecheck alone. `resolve` is
+ * The write is not pure and takes its three calls as ports. `resolve` is
  * `wasmResolver` injected, for the reason `startup.ts`'s own doc gives: this
  * module must never value-import `resolver.ts`.
  */
@@ -102,10 +99,10 @@ export function counterpartPick(
  * a person reads. Sharing one function between the two would mean the wire
  * format and the banner drifting together the next time either is changed.
  *
- * Lives here rather than in `App.tsx` so it can be tested: `App.tsx` is
- * deliberately unreachable from Vitest (it imports `resolver.ts` as a value),
- * and this is a boundary conversion — the 1-based rule, and the half suffix —
- * that is exactly the kind of thing worth pinning.
+ * Lives here rather than in `App.tsx` so it can be tested without mocking
+ * `resolver.ts`, which `App.tsx` imports as a value. This is a boundary
+ * conversion — the 1-based rule, and the half suffix — that is exactly the
+ * kind of thing worth pinning.
  */
 export function describePosition(at: Position): string {
   const displayPage = at.page + 1

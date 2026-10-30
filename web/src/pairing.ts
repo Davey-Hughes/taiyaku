@@ -22,8 +22,8 @@ export interface Group {
  * and **a joined spread interrupts that pairing**: it forms its own group and
  * pairing restarts after it. Without that, every page after the first spread
  * pairs one slot out of phase, which is the parity break the `regroup` module
- * lets a reader fix by hand in M5b — this handles only the case the format
- * already states, where `spreads` makes the break derivable.
+ * lets a reader fix by hand — this handles only the case the format already
+ * states, where `spreads` makes the break derivable.
  *
  * Reading direction does not appear in the grouping. It decides which slot of
  * a pair is drawn on the right, which is the renderer's business, and the slot
@@ -44,12 +44,10 @@ export interface Group {
  * out of the reading flow. **It is honoured here rather than by filtering the
  * result**, and the difference is the whole of whether `skip` works in `two`
  * mode. A filter over finished groups can only drop a group whose every slot
- * is skipped, and on the primary corpus that is none of them: each of
- * `en-fan`'s four credit pages sits at a chapter's end and so pairs with an
- * ordinary page, measured at 122 tiles with `skip` on and 122 with it off.
- * Deciding *while pairing* lets the partner search step past a skipped slot,
- * so its neighbour pairs forward instead of being stranded beside a page the
- * reader asked to set aside.
+ * is skipped, and a credit page at a chapter's end pairs with an ordinary
+ * page, so its group is not wholly skipped. Deciding *while pairing* lets the
+ * partner search step past a skipped slot, so its neighbour pairs forward
+ * instead of being stranded beside a page the reader asked to set aside.
  *
  * **Slot numbers are untouched either way.** `Group.slots` holds indices into
  * the unfiltered `slots` array, so skipping changes which slots are drawn and
@@ -102,13 +100,11 @@ export function groups(
     }
     // **The partner is the next slot that is not set aside**, not simply
     // `index + 1`. Pairing around a skipped slot rather than over it is what
-    // makes `skip` mean anything in `two` mode at all: measured on the primary
-    // corpus, every one of `en-fan`'s four credit pages sits at a chapter's
-    // end and so pairs with an ordinary page, so a rule that only dropped
-    // wholly-skipped pairs dropped none of them — 122 tiles with `skip` on and
-    // 122 with it off. Skipping past the slot re-pairs its neighbour forward
-    // instead, which is what a reader who asked for those pages to be set
-    // aside meant.
+    // makes `skip` mean anything in `two` mode at all: credit pages at a
+    // chapter's end pair with ordinary pages, so a rule that only dropped
+    // wholly-skipped pairs would drop none of them. Skipping past the slot
+    // re-pairs its neighbour forward instead, which is what a reader who asked
+    // for those pages to be set aside meant.
     let partner = index + 1
     while (partner < slots.length && skipped.has(partner)) partner += 1
     const at = slots[partner]
@@ -167,12 +163,12 @@ const NOTHING_SKIPPED: Set<number> = new Set()
  * reader picking a counterpart has to be able to name any one slot,
  * including one half of a joined spread or one slot of a two-page pair, and
  * a tile standing for more than one slot has no way to say which was meant.
- * The M5d review's I4 found this concretely: the filmstrip could only ever
- * assert `group.slots[0]`, so half of every spread — and, in `two` mode,
- * half of every ordinary pair — was simply unaddressable, and worse, if the
- * alignment already resolved to the *other* half, the spread's one tile was
- * the one marked "this is what it resolves to," so clicking it (the obvious
- * "yes, this one" gesture) silently asserted the wrong half.
+ * The filmstrip can only assert `group.slots[0]`, so with `groups` half of
+ * every spread — and, in `two` mode, half of every ordinary pair — would be
+ * unaddressable, and worse, if the alignment already resolved to the *other*
+ * half, the spread's one tile would be the one marked "this is what it
+ * resolves to," so clicking it (the obvious "yes, this one" gesture) would
+ * silently assert the wrong half.
  *
  * `App.tsx` uses this in place of `groups` for exactly the filmstrip's
  * `groups` prop while `correcting` is set, and only there — the page area
@@ -196,16 +192,16 @@ export interface Cells {
    * image and cannot be drawn any other way. A slot that is merely *alone* —
    * no pairing partner, because a break or a skipped neighbour left it
    * unpartnered — is an ordinary page and keeps an ordinary cell, with the
-   * other left empty. See `cellsFor` for what conflating the two cost.
+   * other left empty. See `cellsFor` for why the two are kept apart.
    */
   wide: boolean
   /**
    * Whether `second` names a real second slot or is `first` mirrored into it.
    *
    * `App.tsx` hides the cell either way; this is what tells it apart from a
-   * pair, now that `wide` no longer does. A mirrored cell is drawing the same
-   * URL as its neighbour, which is why it must not also be *counted* as a page
-   * on screen.
+   * pair, since `wide` does not. A mirrored cell is drawing the same URL as
+   * its neighbour, which is why it must not also be *counted* as a page on
+   * screen.
    */
   alone: boolean
   first: number
@@ -220,21 +216,20 @@ export interface Cells {
  *
  * This exists so a turn that changes group *shape* — a spread interrupting
  * or resuming ordinary pairing, a hand-inserted break doing the same — never
- * changes the *element type* React sees at either position. `App.tsx` used
- * to render a pair as a `<div>` wrapping two `<PageView>`s but a spread or
- * solo group as a single `<PageView>` directly: the position's element type
- * flipped between `div` and `PageView` on exactly the turns that mattered,
- * which forces React to unmount the outgoing subtree and mount a fresh one
- * rather than update props on what was already there. A freshly-mounted
- * `PageView` has nothing decoded yet — `decode.ts`'s whole gate only ever
- * applies to a `src` prop changing on an instance that survives, see
- * `presentWhenDecoded`'s doc — so that remount was the actual mechanism
- * behind a blank frame flashing on a two-page turn onto or off a spread,
- * the defect `prefetch`/`decode.ts` exist to remove. Two fixed positions,
- * always present, is what lets `App.tsx` render the *same* wrapping
- * `<div>` and the *same* two child `<PageView>`s across the change, so
- * React reconciles by position and only updates `src` props — exactly the
- * case the decode gate already handles.
+ * changes the *element type* React sees at either position. Rendering a pair
+ * as a `<div>` wrapping two `<PageView>`s but a spread or solo group as a
+ * single `<PageView>` directly would flip the position's element type between
+ * `div` and `PageView` on exactly the turns that mattered, which forces React
+ * to unmount the outgoing subtree and mount a fresh one rather than update
+ * props on what was already there. A freshly-mounted `PageView` has nothing
+ * decoded yet — `decode.ts`'s whole gate only ever applies to a `src` prop
+ * changing on an instance that survives, see `presentWhenDecoded`'s doc — so
+ * that remount would be the actual mechanism behind a blank frame flashing on
+ * a two-page turn onto or off a spread, the defect `prefetch`/`decode.ts`
+ * exist to remove. Two fixed positions, always present, is what lets
+ * `App.tsx` render the *same* wrapping `<div>` and the *same* two child
+ * `<PageView>`s across the change, so React reconciles by position and only
+ * updates `src` props — exactly the case the decode gate already handles.
  *
  * `second` mirrors `first` (`group.slots[1] ?? group.slots[0]`) whenever
  * `group` has no real second slot — every `wide` group, spread or solo
@@ -251,24 +246,20 @@ export interface Cells {
  *
  * `reading` only reorders which physical slot lands in `first` vs. `second`
  * for an ordinary pair; a `wide` group has no left/right to reorder — its
- * one visible image is `first` regardless of reading direction, the same as
- * `App.tsx`'s original spread rendering did.
+ * one visible image is `first` regardless of reading direction.
  */
 export function cellsFor(group: Group, reading: 'rtl' | 'ltr'): Cells {
   const spread = group.spread === true
   const alone = spread || group.slots.length === 1
   const [a, b = a] = group.slots
-  // **`wide` is the spread alone, and separating it from `alone` is what
-  // stopped the layout flickering.** Both used to collapse the second cell and
-  // draw one full-width page, which is right for a spread — it is one image
-  // twice as wide — and wrong for a page that merely has no partner. The
-  // aligned pairing (`alignedPairs.ts`) produces a handful of those per
-  // volume, four in `gotoubun-v01`'s `en-mono` and clustered near the front
-  // matter, so reading across them collapsed the layout to one wide page and
-  // back on consecutive turns. Measured at 700 ms per turn: `2/1`, `3 [wide]`,
-  // `4 [wide]`, `5 [wide]`, `7/6` — three consecutive full-width frames, one a
-  // real spread and two only unpartnered. An unpartnered page now keeps its
-  // own cell and leaves the other empty, so the geometry changes at genuine
+  // **`wide` is the spread alone, and keeping it apart from `alone` is what
+  // keeps the layout from flickering.** Collapsing the second cell and drawing
+  // one full-width page is right for a spread — it is one image twice as wide
+  // — and wrong for a page that merely has no partner. The aligned pairing
+  // (`alignedPairs.ts`) produces a handful of those per volume, clustered near
+  // the front matter, so reading across them would collapse the layout to one
+  // wide page and back on consecutive turns. An unpartnered page keeps its own
+  // cell and leaves the other empty, so the geometry changes at genuine
   // spreads and nowhere else.
   if (alone) return { wide: spread, alone: true, first: a, second: b }
   const [first, second] = reading === 'rtl' ? [b, a] : [a, b]
@@ -288,11 +279,11 @@ export function cellsFor(group: Group, reading: 'rtl' | 'ltr'): Cells {
  *
  * `alone` governs whether the second cell is *visible*, and that does follow
  * the pixels. State moves on the keypress and the pictures wait for their
- * decode, so keying this on the target is what made the layout flap —
- * measured at three changes in 114 ms during a flick, with the artwork never
- * changing at all. `cellsFor` gives both cells the same URL exactly when a
- * group has one page to draw, so "both cells are drawing the same source" *is*
- * that question, asked of the screen instead of predicted.
+ * decode, so keying this on the target would make the layout flap during a
+ * flick, with the artwork never changing at all. `cellsFor` gives both cells
+ * the same URL exactly when a group has one page to draw, so "both cells are
+ * drawing the same source" *is* that question, asked of the screen instead of
+ * predicted.
  *
  * Until both cells have reported something, there is nothing on screen to read
  * and the target's own answer stands. That is the state a freshly mounted
@@ -340,15 +331,14 @@ export function cellOf(
   // **`wide`, not `alone`, and the distinction is geometric rather than
   // linguistic.** `Cell` is consumed by `viewport.ts`'s `cellBox`, where
   // `'only'` means *the page fills the group* — it returns `WHOLE`. That is
-  // true of a joined spread and, since an unpartnered page stopped spanning
-  // the group, false of one: it occupies the first cell, half the width.
+  // true of a joined spread and false of an unpartnered page: it occupies the
+  // first cell, half the width.
   //
-  // An earlier version of this keyed on `alone` and reasoned that an
-  // unpartnered page "is still the only page in the group, and `'only'` is what
-  // says so". That is the wrong sense of the word for this consumer: a zoom on
-  // such a page would have been mapped against the whole group while the page
-  // covered half of it, putting a swap's rect about twice as far across as it
-  // belonged. Caught in review of the change that introduced it.
+  // Keying on `alone` would reason that an unpartnered page "is still the only
+  // page in the group, and `'only'` is what says so". That is the wrong sense
+  // of the word for this consumer: a zoom on such a page would be mapped
+  // against the whole group while the page covered half of it, putting a
+  // swap's rect about twice as far across as it belonged.
   if (cells.wide) return 'only'
   return cells.first === slot ? 'first' : 'second'
 }
@@ -361,67 +351,58 @@ export function cellOf(
  * — so a reader pressing an arrow expects the next group, not the next slot.
  * Where the two differ, stepping by slot redraws what is already there and
  * the press appears to do nothing: a joined spread is two slots and one wide
- * image, so crossing one took two presses, and in `two` mode a press advanced
- * the pair by one, redrawing half of what was on screen. Reported from a
- * manual pass as "I have to right arrow twice to go by it".
+ * image, so crossing one would take two presses, and in `two` mode a press
+ * would advance the pair by one, redrawing half of what was on screen.
  *
- * **It lands on the group's first slot, and that fixes a second thing.** Both
+ * **It lands on the group's first slot, and that does a second job.** Both
  * halves of a joined spread draw the same image but resolve *differently* —
- * `route.rs`'s `resolve_slot` exists for exactly that, and on the primary
- * corpus one half of `en-mono`'s page 4 pairs with raw 5 while the other
- * pairs with nothing. So a reader who could not see which half they were on
- * got one of two different answers on a swap, from a screen that looked
- * identical either way. Always standing on the group's first slot makes the
- * swap predictable from what is visible.
+ * `route.rs`'s `resolve_slot` exists for exactly that. So a reader who could
+ * not see which half they were on would get one of two different answers on a
+ * swap, from a screen that looked identical either way. Always standing on the
+ * group's first slot makes the swap predictable from what is visible.
  *
- * **What it costs:** the second half of a joined spread is no longer
- * reachable with an arrow key, so neither is its own distinct swap answer.
- * That half is still addressable where addressing it is the point — the
- * correction filmstrip puts one tile per slot (`correctionTiles`), and `two`
- * mode draws the halves in separate cells. What is given up is reaching it by
- * arrow in a mode that cannot show you which one you are on.
+ * **What it costs:** the second half of a joined spread is not reachable with
+ * an arrow key, so neither is its own distinct swap answer. That half is
+ * addressable where addressing it is the point — the correction filmstrip
+ * puts one tile per slot (`correctionTiles`), and `two` mode draws the halves
+ * in separate cells. What is given up is reaching it by arrow in a mode that
+ * cannot show you which one you are on.
  *
  * **An arrow with nowhere to go leaves the slot alone**, at both ends of the
  * volume. Where `here + by` falls outside the group range the slot comes back
- * unchanged. The older clamp — `Math.min(Math.max(here + by, 0), all.length -
- * 1)` — kept the reader in the group they were already in, and the first-slot
- * landing above then moved them to its start; standing on that group's
- * *second* slot, that is backward on a forward press, which was O28. Not a
- * `two`-mode quirk: measured with nothing skipped, `two` `[[0,1],[2,3],[4,5]]`
- * answered 4 going forward from slot 5, and any volume ending in a joined
- * spread did the same in `single` and `scroll`.
+ * unchanged. Clamping `here + by` into range instead —
+ * `Math.min(Math.max(here + by, 0), all.length - 1)` — would keep the reader
+ * in the group they were already in, and the first-slot landing above would
+ * then move them to its start; standing on that group's *second* slot, that
+ * is backward on a forward press (O28). Not a `two`-mode quirk: any volume
+ * ending in a joined spread would do the same in `single` and `scroll`.
  *
  * **The first-slot rule governs where an arrow lands when it moves, not what
- * it does when it cannot**, and that is the distinction the clamp lost. None
- * of these presses changed the picture — a group is one image and both slots
- * were inside it — so what they silently changed was which slot a swap, a note
- * or a written position answers from.
+ * it does when it cannot**, and that is the distinction a clamp would lose.
+ * None of those presses would change the picture — a group is one image and
+ * both slots are inside it — so what they would silently change is which slot
+ * a swap, a note or a written position answers from.
  *
- * **The start of the volume held the mirror of it**, which O28's own entry got
- * wrong: it recorded that backward at the start "already returns the slot
- * unchanged", and that is true only from a group's *first* slot. Measured from
- * the second half of a leading joined spread, backward answered 0 — the same
+ * **The start of the volume is the mirror of it.** Under a clamp, backward at
+ * the start would return the slot unchanged only from a group's *first* slot;
+ * from the second half of a leading joined spread it would answer 0 — the same
  * invisible move, in the same direction the reader had pressed, which is why
- * it read as correct. One rule now covers both ends rather than two rules
- * meeting in the middle, which is how this was missed in the first place.
+ * it would read as correct. One rule covers both ends rather than two rules
+ * meeting in the middle.
  *
- * `stepToGroup` itself still cannot *put* a reader on a second slot — that is
- * the cost named above — but a swap, a confirmed correction or a restored
- * progress record can, and an arrow now leaves them there rather than moving
- * them off it in whichever direction the nearest boundary happens to face.
+ * `stepToGroup` itself cannot *put* a reader on a second slot — that is the
+ * cost named above — but a swap, a confirmed correction or a restored
+ * progress record can, and an arrow leaves them there rather than moving them
+ * off it in whichever direction the nearest boundary happens to face.
  *
- * **That is no longer the whole story for an arrow.** Out of a gap or a
- * borrowed page, `session.ts`'s `applyIntent` `step` case bypasses this
- * function entirely: it takes `nearestPaired`'s offer through `takeOffered`,
- * which navigates to `resolveOffered`'s `landed.slot` verbatim, and that slot
- * can be a group's second slot. An arrow *can* now put a reader on a second
- * slot — never through `stepToGroup`'s own path, whose first-slot rule above
- * is unchanged, but through the offered move instead. That exposure is not
- * new: `Gap`'s offer buttons have called `takeOffered` since the offers
- * shipped, so a click could always land a reader on a second slot — the
- * paragraph above was already incomplete in naming only a swap, a correction
- * and a restored progress record as the ways there. What changed is that a
- * key reaches it too.
+ * **An arrow does not always come through here.** Out of a gap or a borrowed
+ * page, `session.ts`'s `applyIntent` `step` case bypasses this function
+ * entirely: it takes `nearestPaired`'s offer through `takeOffered`, which
+ * navigates to `resolveOffered`'s `landed.slot` verbatim, and that slot can be
+ * a group's second slot. So an arrow *can* put a reader on a second slot —
+ * never through `stepToGroup`'s own path, whose first-slot rule above holds,
+ * but through the offered move instead, as `Gap`'s offer buttons do with a
+ * click.
  *
  * A slot no group claims goes to the nearest group in the direction of travel
  * (`nearestGroup` below) rather than staying put. **That branch is a backstop,
@@ -431,9 +412,6 @@ export function cellOf(
  * the reader can hold. It is kept because the invariant lives in another
  * module and a caller that passed a skipped set without the exemption would
  * otherwise strand a reader with no way out but the panel that put them there.
- * *An earlier version of this paragraph said the opposite — that such a slot
- * stayed put — and then, when `skipped` arrived, that the state was ordinary.
- * Neither is true now.*
  */
 export function stepToGroup(all: Group[], slot: number, by: 1 | -1): number {
   const here = all.findIndex((group) => group.slots.includes(slot))
@@ -446,7 +424,7 @@ export function stepToGroup(all: Group[], slot: number, by: 1 | -1): number {
 /**
  * Where an arrow goes from a slot no group holds.
  *
- * **Unreachable as the reader is wired today, and deliberately kept.**
+ * **Unreachable as the reader is wired, and deliberately kept.**
  * `modules/credits.ts`'s `skippedApartFrom` takes the page the reader stands
  * on out of the skipped set, so every position they can hold is in some group
  * and `stepToGroup`'s `findIndex` never answers `-1`. The three routes onto a
@@ -469,21 +447,19 @@ export function stepToGroup(all: Group[], slot: number, by: 1 | -1): number {
  */
 function nearestGroup(all: Group[], slot: number, by: 1 | -1): number {
   // **Tested on the group's whole span, not on its first or last slot alone.**
-  // A group used to be a contiguous run, so either end stood for all of it.
-  // The `skipped` partner search broke that: `[2, 4]` is one tile with slot 3
-  // set aside between its halves, and it *straddles* the slot a reader on 3 is
+  // A group is not always a contiguous run, so neither end stands for all of
+  // it. The `skipped` partner search makes `[2, 4]` one tile with slot 3 set
+  // aside between its halves, and it *straddles* the slot a reader on 3 is
   // standing at. Asking only whether its first slot is past 3 (forward) or its
-  // last is before 3 (backward) says no both ways, and the arrow passes over
-  // the one tile adjacent in either direction — measured as `←` giving 0 and
-  // `→` giving 5 where 2 was right.
+  // last is before 3 (backward) says no both ways, and the arrow would pass
+  // over the one tile adjacent in either direction.
   //
   // With slots 1 and 3 both set aside (`[[0, 2], [4, 5]]`, reader on 1) the
-  // two directions failed differently, and only one was stuck: `←` returned 1
-  // and did nothing, while `→` returned 4 — it moved, but over slot 2, which
-  // *is* drawn, as half of the tile `[0, 2]`. The span test changes `→` to 0,
-  // which is that same tile. So this is not only an unsticking: it reverses
-  // the forward answer, and the case for it is that landing on the tile
-  // holding slot 2 shows content that jumping to 4 skipped past.
+  // first-or-last test would stick going `←`, which returns 1, and go over
+  // slot 2 going `→`, which returns 4: slot 2 *is* drawn, as half of the tile
+  // `[0, 2]`. The span test answers 0 for `→`, which is that same tile, since
+  // landing on the tile holding slot 2 shows content that jumping to 4 skips
+  // past.
   if (by === 1) {
     const ahead = all.find(
       (group) => group.slots[group.slots.length - 1] > slot,

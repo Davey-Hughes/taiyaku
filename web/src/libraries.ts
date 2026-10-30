@@ -5,8 +5,8 @@
  * **A library that exists is addressed by its id.** A name is sent only to
  * make one or to rename one.
  *
- * **A directory's own routes are still `config.ts`'s.** A library's card holds
- * a `RootRow` per directory, and that row patches, scans and removes its
+ * **A directory's own routes are `config.ts`'s.** A library's card holds a
+ * `RootRow` per directory, and that row patches, scans and removes its
  * directory through `/api/library/roots/{id}`. What a library does whole is
  * here, and so is moving a directory from one library to another.
  */

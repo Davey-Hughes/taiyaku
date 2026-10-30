@@ -59,10 +59,9 @@ export interface DecodeQueue {
  * one: a small queue for `PageView`'s own swap decodes and a separate one
  * for the prefetch window, so a page turn's decode can never be stuck behind
  * prefetch jobs queued for slots the reader has already moved past — see
- * `App.tsx`'s `swapQueue`/`prefetchQueue` doc for why sharing one queue
- * between the two was the actual bug a review found here. Nothing in this
- * function assumes how many callers a given instance has; each `max` is a
- * cap on that one instance's own concurrency, nothing more.
+ * `App.tsx`'s `swapQueue`/`prefetchQueue` doc. Nothing in this function
+ * assumes how many callers a given instance has; each `max` is a cap on that
+ * one instance's own concurrency, nothing more.
  *
  * FIFO beyond the cap, deliberately: `prefetch.ts`'s `window` already orders
  * its slots nearest-first, and a queue that ran jobs in any other order
@@ -75,9 +74,8 @@ export interface DecodeQueue {
  * negative: nothing ever starts, forever, with no error and no diagnostic —
  * every caller's `run` promise simply hangs) or always-false (`NaN`: the cap
  * silently stops capping anything). Both are reachable in practice, not just
- * in theory: the documented way to tune this module today is hand-editing
- * `taiyaku.prefs.prefetch.maxConcurrent` in storage (see `prefetch.ts`), and
- * `prefs.ts`'s `loadPrefs` merges whatever shape is stored without
+ * in theory: the settings panel accepts any finite number for `maxConcurrent`,
+ * and `prefs.ts`'s `loadPrefs` merges whatever shape is stored without
  * validating the values inside it.
  */
 export function createDecodeQueue(max: number): DecodeQueue {
@@ -106,11 +104,11 @@ export function createDecodeQueue(max: number): DecodeQueue {
           // rejected promise instead, so `.finally` below still runs and
           // still frees the slot — without deferring the *ordinary* case to
           // an extra microtask the way routing every call through
-          // `Promise.resolve().then(job)` would have. Unreachable today —
-          // the one caller (`presentWhenDecoded`, below) always passes an
-          // `async` function, which never throws synchronously by
-          // construction — but a two-line guard against a caller that stops
-          // being true.
+          // `Promise.resolve().then(job)` would have. `presentWhenDecoded`
+          // (below) passes an `async` function, which never throws
+          // synchronously by construction; `App.tsx`'s prefetch effect passes
+          // a job that calls `stale()` before it returns a promise — a
+          // two-line guard against that call, or a later caller, throwing.
           let result: Promise<T>
           try {
             result = job()
@@ -130,18 +128,15 @@ export function createDecodeQueue(max: number): DecodeQueue {
 
 /**
  * Decode `src` off-screen — a fresh image from `makeImage`, run through
- * `queue` — and, once it settles, hand it to `present` unless `stale()` says
- * a later request has already superseded this one.
+ * `queue` — and hand it to `present` once decoded; a job `stale()` calls
+ * superseded, with newer work queued behind it, is skipped before it decodes.
  *
  * This is the mechanism `PageView.tsx` swaps its one visible `<img>`
  * through: nothing is ever presented until decode has resolved, so a `src`
  * prop changing on an already-mounted `PageView` instance never shows a
- * blank or half-painted frame — and, because `stale` is evaluated only once
- * decode settles, not when this was called, a fast flick's intermediate
- * targets never flash onto screen after the reader has already moved past
- * them. `stale` is a callback rather than a value captured at call time for
- * exactly that reason: the answer can only be known at the moment decode
- * finishes, against whatever request is current *then*.
+ * blank or half-painted frame. `stale` is a callback rather than a value
+ * captured at call time because it is asked when the queue reaches the job,
+ * against whatever request is current *then*.
  *
  * That guarantee is scoped to one mounted instance, deliberately: this
  * function has no say over whether a caller keeps the *same* `PageView`
@@ -149,27 +144,22 @@ export function createDecodeQueue(max: number): DecodeQueue {
  * `src` prop changes. A caller that remounts a fresh instance instead gets
  * none of the above — `useState(src)`'s initial value is the new, undecoded
  * source, with no decode gate in the way of the first paint. `App.tsx`'s
- * two-page layout used to do exactly that on any turn that changed a
- * group's shape (a joined spread interrupting or resuming pairing); see
- * `pairing.ts`'s `cellsFor` for how it now keeps the same instances mounted
- * across that change instead.
+ * two-page layout keeps the same instances mounted across a turn that changes
+ * a group's shape (a joined spread interrupting or resuming pairing); see
+ * `pairing.ts`'s `cellsFor`.
  *
  * `makeImage` is called fresh on every invocation rather than once and
  * reused, so two overlapping requests (the ordinary case mid-flick, before
  * the cap in `queue` even matters) each decode into their own image instead
  * of one clobbering the other's `src` while its decode is still pending.
  *
- * **`stale` is asked twice, and the first time is what makes a fast flick
- * survivable.** It was only ever asked at the end — "has the reader moved on
- * while this decoded?" — which decides whether to *show* a finished decode and
- * does nothing about starting one nobody wants. Under a flick that is most of
- * the work: measured in the browser on `gotoubun-v01` `en-mono`, sixteen
- * presses 25 ms apart need **two** pages and requested **twenty-nine** — every
- * page from 3 to 31 — with twenty-one of those requests issued *after* the
- * reader had already stopped pressing. Each one fetched 1.8 MB and spent ~77 ms
- * decoding a page that was discarded on arrival, while the page the reader was
- * actually looking at waited its turn behind them: **1595 ms** to catch up,
- * against 0 ms on `raw-mono`, whose pages decode fast enough never to queue.
+ * **`stale` is asked once, inside the job, which is what makes a fast flick
+ * survivable.** Asked only at the end — "has the reader moved on while this
+ * decoded?" — it would decide whether to *show* a finished decode and do
+ * nothing about starting one nobody wants. Under a flick that is most of the
+ * work: each such request would fetch and decode a page that is discarded on
+ * arrival, while the page the reader is actually looking at waits its turn
+ * behind them.
  *
  * Asking inside the job rather than before `queue.run` is the whole point: the
  * question has to be answered when the queue *reaches* this job, not when it
@@ -179,23 +169,18 @@ export function createDecodeQueue(max: number): DecodeQueue {
  * assignment means no request.
  *
  * Skipped jobs still resolve rather than hanging, so `cohort` releases and the
- * `.then` below runs — where the second `stale` check finds the same answer and
- * presents nothing. One superseded request, two chances to notice, and the
- * expensive half is the one that is now skipped.
+ * `.then` below runs — where `decoded` is false and nothing is presented.
  *
- * **`cohort` is what makes two of these present together**, and it is the one
- * guarantee this function did not used to offer: the gate above is per call, so
- * `two` mode's pair each presented as its own decode settled. Running the queue
- * *inside* the cohort rather than the other way round is what keeps the two
- * jobs doing different things — the queue still caps how many decodes are in
- * flight, the cohort only holds back the presentation of the ones that have
- * finished. See `cohort.ts` for the measurement that put it here and for why
- * membership closes on a tick rather than a count. Defaults to `noCohort`, so a
- * caller that has not been threaded one behaves exactly as before.
- *
- * `stale` is still checked after the barrier, not before it, for the same
- * reason it was always checked late: the question is whether this request is
- * current at the moment it would be shown.
+ * **`cohort` is what makes two of these present together**: the gate above is
+ * per call, so without it `two` mode's pair would each present as its own
+ * decode settled. Running the queue *inside* the cohort rather than the other
+ * way round is what keeps the two jobs doing different things — the queue
+ * still caps how many decodes are in flight, the cohort only holds back the
+ * presentation of the ones that have finished. See `cohort.ts` for why
+ * membership closes on a tick rather than a count, and its entry in
+ * `docs/superpowers/notes/2026-10-29-code-history-web-src.md` for the
+ * measurement that put it here. Defaults to `noCohort`, so a caller that has
+ * not been threaded one presents each image as its own decode settles.
  */
 export function presentWhenDecoded(
   makeImage: ImageFactory,
@@ -219,16 +204,16 @@ export function presentWhenDecoded(
         // and jumping. With newer work queued it would be obsolete before it
         // appeared, and the decode is pure cost.
         //
-        // Self-tuning: at reading size a page decodes in ~10 ms, the queue
-        // drains about as fast as a reader can press, and most frames get
-        // through. Zoomed to full resolution a decode is ~75 ms, the queue
-        // stays backed up, and the same test skips nearly everything.
+        // Self-tuning: at reading size a page decodes quickly, the queue drains
+        // about as fast as a reader can press, and most frames get through.
+        // Zoomed to full resolution a decode is slow, the queue stays backed
+        // up, and the same test skips nearly everything.
         // Decided once per cohort, not once per cell. Two halves of one turn
         // asking this question moments apart could otherwise get different
         // answers — one skipping while the other decodes — and the pair would
         // show two generations at once. `decideOnce` makes them skip together
         // or decode together, which is what turns "they move together in
-        // practice" back into "they cannot do otherwise".
+        // practice" into "they cannot do otherwise".
         if (member.decideOnce(() => stale() && queue.pending() > 0))
           return false
         await decodeTo(makeImage(), src)
@@ -239,10 +224,10 @@ export function presentWhenDecoded(
       // Only a job that actually decoded has anything to show; a skipped one
       // would hand `present` a source no image was ever pointed at.
       //
-      // **`stale` deliberately does not gate this**, which is the change that
-      // makes a flick visible. Ordering is `present`'s responsibility now:
-      // `PageView` hands in a callback that ignores anything older than what it
-      // is already drawing, so a frame the reader has moved past can be shown
+      // **`stale` deliberately does not gate this**, which is what makes a
+      // flick visible. Ordering is `present`'s responsibility: `PageView`
+      // hands in a callback that ignores anything older than what it is
+      // already drawing, so a frame the reader has moved past can be shown
       // *on the way* and can never paint over a newer one. That guard belongs
       // there rather than here, because ordering needs a sequence and this
       // function only ever sees opaque `src` strings.

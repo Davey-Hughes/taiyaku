@@ -46,7 +46,7 @@ export interface SidecarInfo {
    *
    * The *id* beside it is derived from the sidecar's filename stem, and every
    * sidecar across this corpus is named `taiyaku.json` — so the picker reads
-   * `taiyaku` for all four works, and a server restarted onto a different
+   * `taiyaku` for every work, and a server restarted onto a different
    * volume looks exactly like one that was never restarted. That is the whole
    * reason this field is carried: it is the only thing on screen that changes
    * when the work does.
@@ -317,8 +317,8 @@ export interface ImageMeasure {
  * `image` is `undefined` when nothing has decoded yet, or when this is the
  * standalone editor with no page loaded at all — every keybinding and drag
  * test in `Labeller.test.tsx`/`Labeller.browser.test.tsx` drives it that way
- * — and the fallback is the plain element-relative arithmetic this always
- * used before a real page existed to letterbox against.
+ * — and the fallback is the plain element-relative arithmetic, with no page
+ * to letterbox against.
  */
 export function pointOnPage(
   container: RectLike,

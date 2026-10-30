@@ -54,20 +54,19 @@ const TRUTH_DEBOUNCE_MS = 700
  * pixels.
  *
  * **This is what makes a box selectable.** Capturing the pointer on
- * `pointerdown` — which the previous version did, so that a drag running off
- * the page still finished on the element that started it — retargets the
- * compatibility mouse events to the capturing element for the life of the
- * capture. `click` is one of them. So every click on a box was delivered to
- * the page instead of to the box, `RegionOverlay`'s `onSelect` never fired,
- * and nothing could be selected by pointer at all: the only way in was `Tab`,
- * which reads the cursor ref rather than a click. Reported from a labelling
- * session as "I can't edit any box I create".
+ * `pointerdown`, so that a drag running off the page still finishes on the
+ * element that started it, retargets the compatibility mouse events to the
+ * capturing element for the life of the capture. `click` is one of them. So
+ * every click on a box would be delivered to the page instead of to the box,
+ * `RegionOverlay`'s `onSelect` would never fire, and nothing could be selected
+ * by pointer at all: the only way in would be `Tab`, which reads the cursor
+ * ref rather than a click.
  *
- * Capturing on the first *move past this distance* keeps both behaviours,
- * because the two gestures no longer overlap: a click never captures, and a
- * drag has always moved. The slop is what separates them — a mouse jitters by
- * a pixel or two under a real finger, and treating that as a drag would put
- * the bug straight back for anyone with an unsteady hand.
+ * Capturing on the first *move past this distance* keeps both the capture
+ * and the click, because the two gestures do not overlap: a click never
+ * captures, and a drag has always moved. The slop is what separates them — a
+ * mouse jitters by a pixel or two under a real finger, and treating that as a
+ * drag would put the capture back onto clicks for an unsteady hand.
  */
 const DRAG_SLOP = 4
 
@@ -113,7 +112,7 @@ export interface LabellerProps {
   /**
    * The server ports, and the work/edition/page picker they drive.
    *
-   * `undefined` is what every keybinding and drag test in this file uses:
+   * `undefined` is what the keybinding and drag tests of this component use:
    * the standalone box editor, no fetch, no picker — the same shape
    * `PageView`'s own `decodeQueue`/`makeImage` default for a caller that has
    * not been wired up, so a test gets the plain behaviour rather than a
@@ -152,10 +151,10 @@ export function Labeller({
    * Whether this gesture has passed `DRAG_SLOP` and become a drag.
    *
    * Gates all three of the preview, the capture and the box that gets
-   * committed — a press that never moved must leave nothing behind. It used to
-   * gate none of them, so a click on a box to select it also created a box two
-   * pixels wide wherever the hand wobbled, and those specks go into the ground
-   * truth like any other label.
+   * committed — a press that never moved must leave nothing behind. A click on
+   * a box to select it would otherwise also create a box two pixels wide
+   * wherever the hand wobbled, and those specks would go into the ground truth
+   * like any other label.
    */
   const dragging = useRef(false)
   /**
@@ -317,27 +316,21 @@ export function Labeller({
    *
    * Landing is not labelling. `setPage(0)` below fires on mount and again on
    * every work or edition change, so without this the act of opening the
-   * labeller — or switching from `raw-mono` to `en-mono` — wrote a present,
-   * empty key for page 0. That key is a claim, and a strong one: the
+   * labeller — or switching from `raw-mono` to `en-mono` — would write a
+   * present, empty key for page 0. That key is a claim, and a strong one: the
    * absent/empty distinction reads a present `[]` as *"a person looked at this
    * page and there is no text on it"*.
    *
-   * Measured against the real dev set, that is nine phantom pages against 45
-   * real ones — one per edition a labeller opens. `score` counts every
-   * prediction on a page whose truth is empty as **spurious**, and page 0 is a
-   * cover, which carries a title logo and an author's name. So nine covers'
-   * worth of *correct* detections would have been charged against every
-   * candidate, in the one term — `spurious_per_page` — that the promotion rule
-   * states per page rather than as a raw count.
+   * `score` counts every prediction on a page whose truth is empty as
+   * **spurious**, and page 0 is a cover, which carries a title logo and an
+   * author's name. So the *correct* detections on each cover opened would be
+   * charged against every candidate, in the one term — `spurious_per_page` —
+   * that the promotion rule states per page rather than as a raw count.
    */
   const deliberate = useRef(false)
 
   // A different work or a different edition's page 40 is not the page the
   // reader was just looking at.
-  // `work`/`edition` are triggers rather than closure reads: the body always
-  // does the same thing, and must do it exactly when either changes. The
-  // suppression that used to sit here went stale once `settled` was added and
-  // biome stopped asking, so it is gone rather than left saying nothing.
   useEffect(() => {
     // The first time these settle is the restore, not a change: `work` and
     // `edition` go from `undefined` to real values one round trip after mount,
@@ -365,10 +358,10 @@ export function Labeller({
   //
   // `hasDoc` is `shownDoc`, not `doc`: it goes false the instant the reader
   // picks a different work and true again only once *that* work's document has
-  // arrived. Keyed on `doc` alone it fired in between, filling the editor with
-  // the previous work's boxes under the new work's name — and since the
-  // persistence effect below runs on every `boxes` change, that reload was
-  // itself enough to schedule a save of one work's labels against another.
+  // arrived. Keyed on `doc` alone it would fire in between, filling the editor
+  // with the previous work's boxes under the new work's name — and since the
+  // persistence effect below runs on every `boxes` change, that reload would
+  // itself be enough to schedule a save of one work's labels against another.
   const hasDoc = shownDoc !== undefined
   // biome-ignore lint/correctness/useExhaustiveDependencies: `shownDoc` is read fresh from the closure below but deliberately excluded from the array — the persistence effect two below writes `doc` on every edit, and depending on it here would reload `boxes` from that very write and fight the reader mid-edit. `hasDoc` is the real trigger: this work's document arriving.
   useEffect(() => {
@@ -383,14 +376,13 @@ export function Labeller({
   // page visited: the effect above calls `setBoxes` on arrival even when the
   // page held nothing, so this fires and writes a present `[]` key for a page
   // the reader opened and left untouched. A page never navigated to never
-  // reaches this effect at all — the absent/empty distinction Task 10 exists
-  // to preserve.
+  // reaches this effect at all — the absent/empty distinction.
   // biome-ignore lint/correctness/useExhaustiveDependencies: `ports`/`work`/`edition`/`page`/`shownDoc`/`sidecarInfo`/`etag` are read fresh from the closure, not tracked — the trigger is `boxes` changing. Tracking `doc` here would also fire this on the `setDoc` two lines below, looping forever.
   useEffect(() => {
     if (!ports || !work || !edition || !shownDoc) return
     // An automatic landing on an empty page this document has never keyed
-    // writes nothing — see `deliberate` above for the nine phantom pages this
-    // is here to keep out of the ground truth.
+    // writes nothing — see `deliberate` above for the present, empty keys
+    // this is here to keep out of the ground truth.
     //
     // `alreadyKeyed` is the third term rather than a redundant one: once a box
     // has been drawn here the page *is* keyed, and deleting that last box must
@@ -410,8 +402,7 @@ export function Labeller({
     setDoc(next)
     // The work and the validator are handed to the debounce **here**, beside
     // the document they belong to, rather than read off the latest render when
-    // the timer eventually fires. See `loadedWork` above for what a fired
-    // timer used to do to a reader who switched works inside the 700 ms.
+    // the timer eventually fires.
     scheduleSave(next, work, etag)
   }, [boxes])
 
@@ -433,9 +424,9 @@ export function Labeller({
   //
   // The work and the etag, unlike `ports`, are **arguments** rather than
   // closure reads. They describe the edit rather than the moment the write
-  // happens, and reading them off the latest render is what let a burst of
-  // edits in one work be written into whichever work was on screen 700 ms
-  // later.
+  // happens, and reading them off the latest render would let a burst of
+  // edits in one work be written into whichever work was on screen when the
+  // timer fired.
   const performSaveRef = useRef<
     | ((
         next: TruthDoc,
@@ -531,17 +522,15 @@ export function Labeller({
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       // **A modifier means the keystroke is not ours** — the same guard
-      // `keys.ts`'s `intentOf` has carried for the reader since spec A2, and
-      // which this handler never got.
+      // `keys.ts`'s `intentOf` carries for the reader.
       //
-      // Two distinct costs, reported by the labeller's own user. `Tab` is
-      // `preventDefault`ed unconditionally below, so **Alt+Tab and Cmd+Tab
-      // were swallowed** and the window did not switch. And every other
-      // binding matches on a bare `event.key`, so **Cmd+1 through Cmd+6,
-      // Cmd+V, Cmd+H, Cmd+N and Cmd+I silently retagged the selected box**
-      // while the browser shortcut also fired — a label changed by a
-      // keystroke nobody aimed at this page, in the instrument that produces
-      // this project's ground truth.
+      // `Tab` is `preventDefault`ed unconditionally below, so **Alt+Tab and
+      // Cmd+Tab would be swallowed** and the window would not switch. And every
+      // other binding matches on a bare `event.key`, so **Cmd+1 through Cmd+6,
+      // Cmd+V, Cmd+H, Cmd+N and Cmd+I would silently retag the selected box**
+      // while the browser shortcut also fired — a label changed by a keystroke
+      // nobody aimed at this page, in the instrument that produces this
+      // project's ground truth.
       //
       // Shift is deliberately not here, for the reason `keyPlan`'s own
       // comment gives: it is a character modifier, and a shifted key is
@@ -609,9 +598,9 @@ export function Labeller({
             </select>
           </label>
           {/*
-            The title, because the id beside it cannot tell the four works
-            apart: it is the sidecar's filename stem, and every sidecar in this
-            corpus is `taiyaku.json`. Restarting `serve` onto the next volume
+            The title, because the id beside it cannot tell the works apart:
+            it is the sidecar's filename stem, and every sidecar in this corpus
+            is `taiyaku.json`. Restarting `serve` onto the next volume
             mid-session therefore leaves the picker looking identical, and
             labelling ten pages into the wrong volume is not noticed until the
             page numbers stop making sense. This is the one thing on screen
@@ -799,12 +788,11 @@ export function Labeller({
       <div className="labeller-readout">
         <span data-testid="box-count">{boxes.length}</span>
         {/*
-          The kind, beside the axis, because pressing `1`-`6` otherwise
-          produced no confirmation of any sort: nothing styled `data-kind` and
-          nothing printed it, so 1,500 boxes would have been tagged blind
-          against the one input this instrument has. `index.css` carries the
-          other half — a per-kind border and a letter badge on the box itself,
-          which is where a labeller is actually looking.
+          The kind, beside the axis, because without it and its other half,
+          pressing `1`-`6` would give no confirmation of any sort.
+          `styles/annotations.css` carries that other half — a per-kind
+          border and a badge naming the kind on the box itself, which is
+          where a labeller is actually looking.
         */}
         <span data-testid="kind-readout">{selectedBox?.kind ?? ''}</span>
         <span data-testid="axis-readout">

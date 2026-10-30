@@ -3,13 +3,11 @@
  *
  * **Three of §8's five, and the other two are elsewhere by their own nature.**
  * "A series with no cover" is a per-tile placeholder rather than a screen, so it
- * lives in `Library.tsx` beside the `<img>` it replaces; "a work whose members
- * are missing from disk" needed a fact §5.5 left to spec C3, and C3 built it —
- * `browse::missing_by_edition`, `EditionCard.missing`, and `library.ts`'s
- * `unreadable`. It still draws no screen of its own here, though: the
- * treatment lives per-work, withholding the reader link and the download
- * wherever a `WorkCard` renders, rather than as a sixth `EmptyKind` in this
- * catalogue.
+ * lives in `Cover.tsx` beside the `<img>` it replaces; "a work whose members
+ * are missing from disk" is treated per-work (`browse::missing_by_edition`,
+ * `EditionCard.missing`, and `library.ts`'s `unreadable`), withholding the
+ * reader link and the download wherever a `WorkCard` renders, rather than as
+ * an `EmptyKind` in this catalogue.
  *
  * **None of them is a `null` return.** "No library" and "a library, its
  * directories not yet scanned" are told apart by `/api/library/status` and by

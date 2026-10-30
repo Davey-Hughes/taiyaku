@@ -9,8 +9,7 @@
  * context rather than through a prop, so a screen that does not care about
  * it says nothing about it.
  *
- * The theme's tokens throughout — see `styles/tokens.css`, and `Login.tsx`,
- * which once shipped a hardcoded `#111` on this app's front door.
+ * The theme's tokens throughout — see `styles/tokens.css`.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useLocation } from 'react-router'
@@ -40,11 +39,7 @@ import { messageOf } from './message'
 
 /**
  * `browseRegistry.all()`, hoisted once. `usePrefsMap`'s persistence effect
- * depends on `modules` by identity (`[modules, map, save]`, `hooks.ts`), and
- * `browseRegistry.all()` returns a new array on every call — handed in
- * inline, that would re-fire the effect, and re-`savePrefs`, on every
- * render. `App.tsx` hoists `registry.all()` at module scope for its own
- * `usePrefsMap` call for the same reason.
+ * depends on `modules` by identity (`[modules, map, save]`, `hooks.ts`).
  */
 const BROWSE_MODULES = browseRegistry.all()
 
@@ -87,12 +82,11 @@ export function Shell({ children }: { children: React.ReactNode }) {
   // `hooks.ts`'s `usePrefsMap` is what `App.tsx` uses to load every reader
   // module's slice once and persist it from an effect after every commit; this
   // is that same hook, over `browseRegistry`'s one module instead of the
-  // reader's several. `fieldChanged` and `sliceReset` (`module.ts`) are still
-  // generic over whatever registry they are handed — which is what §4 means
-  // by "a second registry, not a second implementation" — but the state and
-  // its persistence are the hook's now, not a hand-rolled `useState` that
-  // persisted from inside `setMap`'s own updater. That mattered: an updater
-  // must stay pure (React may invoke it more than once).
+  // reader's several. `fieldChanged` and `sliceReset` (`module.ts`) are
+  // generic over whatever registry they are handed — which is what §4 means by
+  // "a second registry, not a second implementation" — but the state and its
+  // persistence are the hook's. An updater must stay pure (React may invoke it
+  // more than once), so nothing persists from inside `setMap`'s own updater.
   const [map, setMap] = usePrefsMap(BROWSE_MODULES, loadPrefs, savePrefs)
   const prefs = sliceFor(map, browseModule)
 
@@ -116,21 +110,17 @@ export function Shell({ children }: { children: React.ReactNode }) {
   const controls = useMemo(() => ({ change, reset }), [change, reset])
 
   // **The open count on More and its Proposals entry — C3 §6, and the build
-  // design's file-structure table.** The entry shipped without it, on the
-  // ground that this component mounts around every screen and so a count is a
-  // request on every page load. Measured, that request is the cheap one:
-  // `GET /api/library/proposals` reads `proposal` — joined to `series` twice
-  // for the two titles a row draws, and grouped for the counts — and it
-  // neither compiles the rule set nor walks `scan_entry`, which is what the
-  // detail and dry-run routes both do. So it is flat where those two cost
-  // 1.1–1.2 µs per entry: 0.10 ms at 8 rows and 0.23 ms at 25,008
-  // (`notes.md`, 2026-08-26). It is admin-only on top of that, so a reader
-  // pays nothing.
+  // design's file-structure table.** This component mounts around every
+  // screen, so a count is a request on every page load. That request is the
+  // cheap one: `GET /api/library/proposals` reads `proposal` — joined to
+  // `series` twice for the two titles a row draws, and grouped for the counts
+  // — and it neither compiles the rule set nor walks `scan_entry`, which is
+  // what the detail and dry-run routes both do. It is admin-only on top of
+  // that, so a reader pays nothing.
   //
-  // **It uses `counts` and throws the rows away**, which is worth saying
-  // rather than leaving to be discovered: there is no counts-only route, and
-  // adding one for a badge would be a route to keep in step with the list's
-  // own filters for no measured gain.
+  // **It uses `counts` and throws the rows away**: there is no counts-only
+  // route, and adding one for a badge would be a route to keep in step with
+  // the list's own filters for a request that is already cheap.
   //
   // **A failure is swallowed on purpose, unlike the status read above.** A
   // count is an ornament on a link that works without it; the link is drawn
@@ -144,7 +134,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
   const refreshInbox = useCallback(() => setInboxReads((n) => n + 1), [])
 
   // `Proposals.tsx` carries the same suppression for the same shape, and
-  // `hooks.ts`'s `useScrollFollow` is where it is written down: a dependency
+  // `hooks.ts`'s `useScrollToCurrent` is where it is written down: a dependency
   // the body never reads, listed because its *change* is the signal.
   // Removing it — which is what this rule suggests — would leave the badge at
   // whatever it read when the shell mounted, however many proposals the

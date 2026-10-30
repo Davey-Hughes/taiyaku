@@ -2,11 +2,9 @@
  * `openWork`, and the two things about a load that only a port seam can see:
  * the *order* the four reads happen in, and which of them is allowed to fail.
  *
- * Both were untestable while this was a `useEffect` in `App.tsx` — not because
- * an effect is hard to drive, but because that file value-imports
- * `resolver.ts` and so is unreachable from Vitest at all. The resolver arrives
- * here as `ports.resolve`, which is what lets `fakeResolver` stand in for the
- * wasm one.
+ * Both are pinned here rather than through `App.tsx`, which a test can mount
+ * only with `resolver.ts` mocked. The resolver arrives here as `ports.resolve`,
+ * which is what lets `fakeResolver` stand in for the wasm one.
  */
 import { describe, expect, it, vi } from 'vitest'
 import { bSlots, fakeResolver, whole } from './support/fixtures'

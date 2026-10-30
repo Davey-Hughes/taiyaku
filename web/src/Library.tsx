@@ -2,17 +2,17 @@
  * The library screen: the search bar, the continue strip, the filter chips,
  * and the grid of series and unfiled works, which a search's hits replace.
  *
- * **The sidebar is `Shell`'s and the tiles are `SeriesGrid`'s.** This file drew
- * both until Plan B: the sidebar and the `/api/library/status` fetch moved to
- * `Shell` so every screen under it shares them, and the tiles moved to
- * `SeriesGrid` so the grid and the search hits cannot disagree about them.
- * What is left here is the part that is only the library's — which chips
- * exist, what they filter, and which empty state an empty grid is.
+ * **The sidebar is `Shell`'s and the tiles are `SeriesGrid`'s.** The sidebar
+ * and the `/api/library/status` fetch are `Shell`'s, so every screen under it
+ * shares them, and the tiles are `SeriesGrid`'s, so the grid and the search
+ * hits cannot disagree about them. What is here is the part that is only the
+ * library's — which chips exist, what they filter, and which empty state an
+ * empty grid is.
  *
- * Spec C1 §2 and §11 step 6. **No virtualisation** — §7's measured numbers are
- * 127 series and 111 volumes in the largest series, and covers carry
- * `loading="lazy"`, which is free. The figure that would change that is a
- * chapter-organised edition, and it should be produced rather than imagined.
+ * Spec C1 §2 and §11 step 6. **No virtualisation** — §7's numbers do not call
+ * for it, and covers carry `loading="lazy"`, which is free. The figure that
+ * would change that is a chapter-organised edition, and it should be produced
+ * rather than imagined.
  *
  * The chips filter and sort **client-side**, over data already held: §7's
  * numbers make a round trip to the server a request for something the browser
@@ -294,13 +294,12 @@ export function Library() {
                 {home.continuing.map((w) => (
                   <li key={w.slug}>
                     {unreadable(w) ? (
-                      // **O62 — the link is the treatment, not a badge.** I1 of
-                      // the whole-branch review names this strip as the
-                      // likeliest place to meet a work whose files just
-                      // vanished: the reader was mid-read when they went, so
-                      // this is exactly where an unguarded link would send them
-                      // back into a page that cannot load. The volume keeps its
-                      // name, same as `Series.tsx`'s `Table`.
+                      // **O62 — the link is the treatment, not a badge.** This
+                      // strip is the likeliest place to meet a work whose files
+                      // just vanished: the reader was mid-read when they went,
+                      // so this is exactly where an unguarded link would send
+                      // them back into a page that cannot load. The volume
+                      // keeps its name, same as `Series.tsx`'s `Table`.
                       <span className="tile-unreadable">
                         <ContinueCard w={w} />
                         <span className="unreadable">

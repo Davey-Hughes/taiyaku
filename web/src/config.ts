@@ -1,6 +1,6 @@
 /**
  * The `/api/library/roots*` and scan-control API, and the settings area's own
- * tab list — spec C4 §2 and §3, over the routes that shipped in #105.
+ * tab list — spec C4 §2 and §3.
  *
  * **Separate from `library.ts`** for the reason that file gives for being
  * separate from `api.ts`: the two share a session and nothing else. Every
@@ -79,7 +79,7 @@ export interface Root {
   /**
    * Patterns a scan skips, one gitignore pattern per line — **stored, read
    * back and applied.** `scan_root_inner` compiles them into an `Excluder`
-   * and `measure_dir` consults it before descending: O92, closed 2026-09-09.
+   * and `measure_dir` consults it before descending: O92.
    */
   exclude_globs: string | null
   scan_interval_secs: number | null
@@ -322,9 +322,8 @@ export const patchRoot = (id: number, patch: RootPatch) =>
  * What removing root `id` would cost, without removing anything.
  *
  * **`?dry_run=true` spelled exactly.** The server refuses an unknown query
- * key rather than dropping it — `deny_unknown_fields`, added after a
- * whole-branch review found `?dryrun=true` answering 200 and running the
- * real, committed removal.
+ * key rather than dropping it — `deny_unknown_fields` — since a dropped
+ * `?dryrun=true` would answer 200 and run the real, committed removal.
  */
 export const removalCost = (id: number): Promise<RemovalAnswer> =>
   expectBody(
@@ -356,11 +355,9 @@ export const scanStatus = (id: number) =>
  * How often `RootRow` asks a running scan how it is doing.
  *
  * **One second, and it is a guess.** The route reads an in-memory registry
- * entry plus one indexed row, so a second is generous rather than tight; the
- * walk it is watching is measured in tens of seconds at best. Nothing has
- * measured what a full scan of a real root costs — the build design's §10, and
- * spec B carries the same gap — so this is chosen against the cost of asking
- * rather than against the thing being asked about.
+ * entry plus one indexed row, so a second is generous rather than tight. The
+ * interval is chosen against the cost of asking rather than against the scan
+ * being watched, whose cost O210 records.
  */
 export const SCAN_POLL_MS = 1000
 
@@ -421,12 +418,6 @@ export function lastScan(
  * the two routes that add a directory run the probe, so a directory loaded from
  * the list has no watch state at all — and "watching" would be a claim, while
  * "not watching" would be a different one.
- *
- * **Replaces the former `regimeLine`, not beside it.** That function's only
- * production caller was the `<p className="regime">` this function's caller
- * now draws as a `<dl>`, and nothing else in this codebase read its return
- * value. A function kept alive only by tests that exercise it directly would
- * be alive on the strength of its own tests.
  */
 export function regimeFacts(
   root: Root,
@@ -464,12 +455,12 @@ export function regimeFacts(
  *
  * `api.ts` throws `` `${path}: ${status} ${body}` ``, and a caller that needs
  * to act on the status — a directory's row treats a 409 from `startScan` as
- * proof a scan is running — was matching `message.includes('409')`, which is
- * satisfied by a 409 *anywhere*: removing root 409 from another tab produced
- * a 404 whose body reads `there is no directory 409`, and the screen entered a
- * fake running state on the strength of the id. Anchored to the start, where
- * the path (which never contains a space) is followed by `: ` and the status.
- * Whole-branch review pass 4, 2026-09-04.
+ * proof a scan is running — would be fooled by `message.includes('409')`,
+ * which is satisfied by a 409 *anywhere*: removing root 409 from another tab
+ * produces a 404 whose body reads `there is no directory 409`, and the screen
+ * would enter a fake running state on the strength of the id. Anchored to the
+ * start, where the path (which never contains a space) is followed by `: ` and
+ * the status.
  */
 export function statusOf(message: string): number | undefined {
   const found = /^\S+: (\d{3})\b/.exec(message)

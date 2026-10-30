@@ -183,13 +183,14 @@ import {
   type CarriedSwap,
   type DrawnPage,
 } from './swapView'
-// This file must never become Vitest-reachable: `wasmResolver` imports
-// `resolver.ts` as a value, and that module's `taiyaku-wasm` import only
-// resolves once `./scripts/build-wasm.sh` has generated the gitignored
-// `crates/taiyaku-wasm/pkg/`. A test importing App.tsx would pass locally
-// (after that script has run) and break CI or a fresh clone (where it
-// hasn't) — see docs/ci.md's `web` job notes and the global no-resolver-in-
-// tests constraint.
+// A test reaches this file only with `vi.mock('../src/resolver')`, as
+// `App.test.tsx` does: `wasmResolver` imports `resolver.ts` as a value, and
+// that module's `taiyaku-wasm` import only resolves once
+// `./scripts/build-wasm.sh` has generated the gitignored
+// `crates/taiyaku-wasm/pkg/`. A test importing App.tsx without that mock
+// would pass locally (after that script has run) and break CI or a fresh
+// clone (where it hasn't) — see docs/ci.md's `web` job notes and the global
+// no-resolver-in-tests constraint.
 import { wasmResolver } from './resolver'
 import {
   applyIntent,
@@ -243,6 +244,12 @@ const READING_TICK_MS = 30_000
  */
 const NOTES_PORTS: NotesPorts = { put: putNotes, get: getNotes }
 
+const CORRECTION_PORTS: CorrectionPorts = {
+  patch: patchAlignment,
+  sidecar: getSidecarWithEtag,
+  resolve: wasmResolver,
+}
+
 /**
  * The four reads a load makes, bound once at module level — the same reasoning
  * `NOTES_PORTS` above carries, applied to a function called exactly once.
@@ -250,12 +257,6 @@ const NOTES_PORTS: NotesPorts = { put: putNotes, get: getNotes }
  * importing so that its own tests can run at all (Rule 1: nothing but this
  * file value-imports `resolver.ts`).
  */
-const CORRECTION_PORTS: CorrectionPorts = {
-  patch: patchAlignment,
-  sidecar: getSidecarWithEtag,
-  resolve: wasmResolver,
-}
-
 const STARTUP_PORTS: StartupPorts = {
   sidecar: getSidecarWithEtag,
   resolve: wasmResolver,
@@ -272,12 +273,12 @@ const STARTUP_PORTS: StartupPorts = {
  * can diverge from `authority`, and `display` really can report `'gap'`:
  * landing, after a swap, on a slot with no counterpart in the edition just
  * swapped to. That state is drawn in place of the page area rather than by an
- * early return out of this whole function (that was O25) — by `Borrowed` where
- * `withBorrow` below found an edition to lend the page, and by `Gap` where it
- * did not or where the reader has switched `borrow` off. Neither has a slot to
- * draw or a group to belong to, but `Chrome`, `Settings` and the note panel
- * below still mount, so `at` (below) is what the rest of this function narrows
- * on wherever a slot is actually needed.
+ * early return out of `App` (that was O25) — by `Borrowed` where `withBorrow`
+ * below found an edition to lend the page, and by `Gap` where it did not or
+ * where the reader has switched `borrow` off. Neither has a slot to draw or a
+ * group to belong to, but `Chrome`, `Settings` and the note panel below still
+ * mount, so `at` (below) is what the rest of `App` narrows on wherever a slot
+ * is actually needed.
  */
 export interface AppProps {
   /** The slug in the URL. `<App key={work}>` is what makes a change remount. */
@@ -296,16 +297,14 @@ function App({ work, onLeave }: AppProps) {
   // it, from beside the `if (!session) return null` far below: the first
   // place a second render path can sit with no hook after it.
   const [failure, setFailure] = useState<LoadFailure>()
-  // The reading mode is a preference, not component state: it was a
-  // `useState` until 2026-08-08 and so was forgotten on every reload, which a
-  // reader who works in two-page mode met every time they opened the reader.
-  // `layoutModule` holds it now, which is what makes it load, save and reach
-  // the settings panel; `setMode` writes that slice and nothing else changes,
-  // because every read below still reads a `Mode`.
+  // The reading mode is a preference, not component state. `layoutModule`
+  // holds it, which is what makes it load, save and reach the settings panel;
+  // `setMode` writes that slice and nothing else changes, because every read
+  // below reads a `Mode`.
   // The part of the drawn group the reader is looking at. `WHOLE` is
-  // fit-whole, which is what every mode did before zoom existed and what
-  // scroll mode still does — see the `Viewport` wrapper below, which is only
-  // mounted for the two modes that draw one group into a fixed box.
+  // fit-whole, which is what scroll mode does — see the `Viewport` wrapper
+  // below, which is only mounted for the two modes that draw one group into a
+  // fixed box.
   //
   // Every rect held here satisfies `w === h`; `Rect`'s own doc says why that
   // is load-bearing and which functions may break it. The four that write
@@ -354,13 +353,13 @@ function App({ work, onLeave }: AppProps) {
   // Whether a correction is on the wire right now.
   //
   // A correction is irreversible, and the confirm banner is the one moment a
-  // reader is asked to trust that. Without this, three things went wrong while
-  // a `PATCH` was in flight: a second `Confirm` click started a second,
-  // concurrent write against the same `etag`; `Escape` and `Cancel` cleared
-  // `pending` and took the banner away, telling the reader nothing had
-  // happened while the write was still going to land; and the completion
-  // handler then navigated the reader — or, if they had pressed `c` again in
-  // the meantime, silently replaced the correction they had just started.
+  // reader is asked to trust that. Without this, three things would go wrong
+  // while a `PATCH` was in flight: a second `Confirm` click would start a
+  // second, concurrent write against the same `etag`; `Escape` and `Cancel`
+  // would clear `pending` and take the banner away, telling the reader nothing
+  // had happened while the write was still going to land; and the completion
+  // handler would then navigate the reader — or, if they had pressed `c` again
+  // in the meantime, silently replace the correction they had just started.
   //
   // Disabling all three exits for the duration closes every one of those by
   // construction: there is no way to reach a second `pending` while the first
@@ -368,9 +367,8 @@ function App({ work, onLeave }: AppProps) {
   const [submitting, setSubmitting] = useState(false)
   // The keydown effect subscribes once at load, so its closure cannot see
   // this — same staleness `sessionRef` and `pendingRef` exist to route around.
-  // `useLatest` (`hooks.ts`) is that mirror, written once and used six times
-  // here; the argument for why a listener frozen at subscription needs one is
-  // in its own doc.
+  // `useLatest` (`hooks.ts`) is that mirror; the argument for why a listener
+  // frozen at subscription needs one is in its own doc.
   const submittingRef = useLatest(submitting)
   // The sidecar's `ETag`, as of the last successful read or write — what a
   // correction's `If-Match` is checked against. Kept alongside `session`
@@ -398,9 +396,9 @@ function App({ work, onLeave }: AppProps) {
   const [notesDoc, setNotesDoc] = useState<NotesDoc>()
   const [notesEtag, setNotesEtag] = useState<string>()
   // Whether a note write is on the wire — `submitting`'s role, for the same
-  // reasons: a second Save would race the first against one validator, and an
-  // exit taken mid-write would tell the reader nothing had happened while it
-  // was still going to land.
+  // reasons: a second write would race the first against one validator, and
+  // an exit taken mid-write would tell the reader nothing had happened while
+  // it was still going to land.
   const [notesBusy, setNotesBusy] = useState(false)
   // Every state of the notes this session has written, and where the reader
   // stands in it. Seeded on load, so the document as it arrived is the floor
@@ -411,10 +409,9 @@ function App({ work, onLeave }: AppProps) {
   const [notesNotice, setNotesNotice] = useState<string>()
   // Which surface the note panel is showing, every note this editing session
   // has changed, and which of them the panel is showing — one `useState`,
-  // because they are one thing: `notes.ts`'s `Draft`, whose eight transitions
-  // hold the rules that used to be written three setters at a time here. `n`
-  // opens the editor on a fresh note, a margin tab opens it on an existing
-  // one, `a` toggles the review list, `Escape` closes either.
+  // because they are one thing: `notes.ts`'s `Draft`, whose transitions hold
+  // the rules. `n` opens the editor on a fresh note, a margin tab opens it on
+  // an existing one, `a` toggles the review list, `Escape` closes either.
   //
   // Every transition is applied through the functional updater rather than
   // from this render's value, which is what lets the keydown effect — frozen
@@ -449,8 +446,7 @@ function App({ work, onLeave }: AppProps) {
   // Built once, from `registry.all()`, the same source `Settings.tsx` reads
   // to generate the panel itself — a module that is registered is
   // preferences-wired for free, the claim `Settings.tsx`'s own doc makes
-  // about the panel now also true of the state underneath it. Loaded once,
-  // like `directionPrefs` and `regroupPrefs` used to be individually: there
+  // about the panel also true of the state underneath it. Loaded once: there
   // is exactly one `work` for this component's lifetime (no work-switcher
   // exists yet), so there is nothing to reload against.
   //
@@ -466,16 +462,14 @@ function App({ work, onLeave }: AppProps) {
     savePrefs,
   )
 
-  // Typed reads of each module's own slice — `sliceFor` (`module.ts`)
-  // restores the `P` a plain `Record<string, object>` can't carry, so every
-  // site below keeps the same typed shape `directionPrefs`/`motionPrefs`/etc.
-  // had as their own `useState` values. Derived on every render rather than
-  // memoised: each is a cheap property lookup with a fallback, not a
-  // computation worth caching.
+  // Typed reads of each module's own slice — `sliceFor` (`module.ts`) restores
+  // the `P` a plain `Record<string, object>` can't carry, so every site below
+  // is typed. Derived on every render rather than memoised: each is a cheap
+  // property lookup with a fallback, not a computation worth caching.
   const mode = sliceFor(prefsMap, layoutModule).mode
   // `changeSlice`, not a hand-written spread of the map and of the slice —
-  // `LayoutPrefs` has one field today, so writing it out would work and would
-  // be exactly the bug `direction.ts` extracted `setOverride` to prevent.
+  // `LayoutPrefs` has one field, so writing it out would work and would be
+  // exactly the bug `direction.ts`'s `setOverride` exists to prevent.
   const setMode = (next: Mode) =>
     setPrefsMap((map) =>
       changeSlice(map, layoutModule, (prefs) => ({ ...prefs, mode: next })),
@@ -494,27 +488,27 @@ function App({ work, onLeave }: AppProps) {
   // created after that guard is not in scope for either.
   const zoomPrefs = sliceFor(prefsMap, zoomModule)
 
-  // Two decode queues, not one — a review found that sharing a single queue
-  // between the live page turn and the prefetch window let stale prefetch
-  // work starve the decode the reader is actually waiting on: every slot
-  // change enqueues several prefetch jobs plus one swap job, and a FIFO
-  // queue with no cancellation runs them in the order they arrived, so a
-  // fast flick's *last* keypress — the slot the reader actually lands on —
-  // could queue behind a handful of prefetch jobs for slots already left
-  // behind. Each job holds a concurrency slot for a full round trip, so at
-  // any real network latency the reader could be staring at the page they
-  // started from well after they stopped pressing keys.
+  // Two decode queues, not one: sharing a single queue between the live page
+  // turn and the prefetch window would let stale prefetch work starve the
+  // decode the reader is actually waiting on. Every slot change enqueues
+  // several prefetch jobs plus one swap job, and a FIFO queue with no
+  // cancellation runs them in the order they arrived, so a fast flick's
+  // *last* keypress — the slot the reader actually lands on — could queue
+  // behind a handful of prefetch jobs for slots already left behind. Each job
+  // holds a concurrency slot for a full round trip, so at any real network
+  // latency the reader could be staring at the page they started from well
+  // after they stopped pressing keys.
   //
-  // The fix taken is separate queues rather than priority or cancellation:
-  // `swapQueue` is what every mounted `PageView` decodes through (passed as
-  // `decodeQueue` below), `prefetchQueue` is what the prefetch effect
-  // further down decodes through, and neither can ever hold a slot the
-  // other needs. Cancelling a stale prefetch job's underlying fetch was the
-  // alternative the review named, but `decode.ts` has no such hook —
-  // `<img>.decode()` cannot be aborted mid-flight without discarding the
-  // element and losing whatever bytes it already has, which trades one
-  // defect for a different one (re-fetching from zero on every supersede).
-  // Two independent, already-existing queues need no new capability at all.
+  // Separate queues rather than priority or cancellation: `swapQueue` is what
+  // every mounted `PageView` decodes through (passed as `decodeQueue` below),
+  // `prefetchQueue` is what the prefetch effect further down decodes through,
+  // and neither can ever hold a slot the other needs. Cancelling a stale
+  // prefetch job's underlying fetch is the alternative, but `decode.ts` has
+  // no such hook — `<img>.decode()` cannot be aborted mid-flight without
+  // discarding the element and losing whatever bytes it already has, which
+  // trades one defect for a different one (re-fetching from zero on every
+  // supersede). Two independent, already-existing queues need no new
+  // capability at all.
   //
   // Both built lazily and *rebuilt* whenever `prefetchPrefs.maxConcurrent`
   // changes, which is `hooks.ts`'s `useDecodeQueue` — where the argument for
@@ -526,22 +520,22 @@ function App({ work, onLeave }: AppProps) {
 
   // What makes `two` mode's pair appear as a pair. Every `PageView` decodes
   // through `swapQueue` and presents through this, so the halves of a turn
-  // become visible in one frame instead of one at a time — see `cohort.ts` for
-  // the measurement that put it here and for why one shared instance is right
-  // rather than one per group. Built once and never rebuilt: unlike the queues
-  // above it has no setting to track, since a cohort's membership is decided by
-  // when its members join rather than by any number a reader can tune.
+  // become visible in one frame instead of one at a time. `cohort.ts` says why
+  // one shared instance is right rather than one per group, and its entry in
+  // `docs/superpowers/notes/2026-10-29-code-history-web-src.md` holds the
+  // measurement that put it here. Built once and never rebuilt: unlike the
+  // queues above it has no setting to track, since a cohort's membership is
+  // decided by when its members join, not by any number a reader can tune.
   const [pageCohort] = useState<Cohort>(() => createCohort())
 
   // What the two cells of `two` mode are actually drawing, reported by each
   // `PageView` as it presents. The *geometry* below is derived from this rather
-  // than from `current`, and that is the whole of the fix for the flicker: a
-  // keypress moves state at once while a cell's picture waits for its decode,
-  // so a layout keyed on state flapped between one wide page and two half-width
-  // ones — measured at three changes in 114 ms during a flick, with the artwork
-  // never changing at all. `cellsFor` gives both cells the same URL exactly
-  // when a group is `wide` (a joined spread's two slots share one page, a solo
-  // slot is mirrored into the second cell), so "both cells are drawing the same
+  // than from `current`: a keypress moves state at once while a cell's picture
+  // waits for its decode, so a layout keyed on state would flap between one
+  // wide page and two half-width ones during a flick, with the artwork never
+  // changing at all. `cellsFor` gives both cells the same URL exactly when a
+  // group is `wide` (a joined spread's two slots share one page, a solo slot
+  // is mirrored into the second cell), so "both cells are drawing the same
   // source" *is* wide, read off the screen instead of predicted.
   //
   // The record itself is `hooks.ts`'s `useDrawnSrcs` — including why a report
@@ -551,10 +545,8 @@ function App({ work, onLeave }: AppProps) {
 
   // The keydown effect below subscribes once, after load (see its own comment),
   // so its closure's `session` is frozen at that instant — reading a module
-  // key's action (currently just direction's `d`) needs the edition
-  // currently being viewed, which changes on every swap. This ref is kept
-  // current across every render instead, the same role `restored` plays for
-  // other state the effect can't close over live.
+  // key's action needs the edition currently being viewed, which changes on
+  // every swap. This ref is kept current across every render instead.
   const sessionRef = useLatest(session)
 
   // `Escape` has to read the *current* `pending` inside the same keydown
@@ -652,12 +644,11 @@ function App({ work, onLeave }: AppProps) {
   // rather than the image inside it: the wheel subscription (which must be
   // non-passive, see its own comment) and the swap, which measures both
   // pages' natural sizes out of it and takes the box's aspect to fit against.
+  // `leave-bars` also moves focus onto it.
   //
-  // A `pageAreaRef` stood here before and was removed as O27, because it was
-  // read by nothing: the annotation overlay measures the `<img>` it sits over,
-  // not the area around it, and that distinction is the fix `notes.md` records
-  // under "The annotation overlay was placed on the page area, not on the
-  // page". Nothing here disturbs that — the region drag still reads its
+  // The annotation overlay measures the `<img>` it sits over, not the area
+  // around it, as `notes.md` records under "The annotation overlay was placed
+  // on the page area, not on the page" (O27). The region drag reads its
   // geometry off the `<img>` via `draftImage`/`pointOn`. What this ref is for
   // is the box zoom is expressed in fractions *of*, which is the page area and
   // could not be the page.
@@ -679,10 +670,6 @@ function App({ work, onLeave }: AppProps) {
   // reason that hook's own doc gives.
   const viewportWidth = useWindowWidth(NO_WINDOW_WIDTH)
 
-  // Where a region drag started. Declared here with the other refs, ahead of
-  // the `if (!session) return null` below, because hooks must run in the same
-  // order on every render — the handlers that use it are defined further down,
-  // where the page geometry they read is in scope.
   // The notes on the page right now, for the keydown handler — `n` picks the
   // next unused colour, which needs to know what is already here. Assigned
   // during render like `groupedRef`, for the same reason.
@@ -704,10 +691,14 @@ function App({ work, onLeave }: AppProps) {
     () => undefined,
   )
   // The notes writer, reachable from `closeEditor` above the point it is built:
-  // the debounce is built four hundred lines below, so naming it directly there
-  // would be a use before its declaration.
+  // the debounce is built further down, so naming it directly there would be
+  // a use before its declaration.
   const saveNotesRef = useRef<Debounced<[Note[]]> | null>(null)
 
+  // Where a region drag started. Declared here with the other refs, ahead of
+  // the `if (!session) return null` below, because hooks must run in the same
+  // order on every render — the handlers that use it are defined further down,
+  // where the page geometry they read is in scope.
   const dragRef = useRef<DragStart | null>(null)
   /**
    * The press in progress, as `gestures.ts` reads it on release. Beside
@@ -726,7 +717,7 @@ function App({ work, onLeave }: AppProps) {
   const panRef = useRef<{ x: number; y: number } | null>(null)
   // The rectangle under the pointer right now. State rather than a ref,
   // because the whole point is that it re-renders: a drag with no live
-  // feedback is invisible, which is how the region gesture first shipped.
+  // feedback is invisible.
   const [dragging, setDragging] = useState<Region>()
 
   /**
@@ -740,16 +731,11 @@ function App({ work, onLeave }: AppProps) {
    * nothing saying why — the one failure `api.ts`'s `Unauthenticated` cannot
    * reach.
    *
-   * What stood here instead was `forgetTheReader`: a `useCallback` resetting
-   * thirteen pieces of state and cancelling two debounced writers, registered
-   * as `api.ts`'s `whenSignedOut` handler and called by the account panel's
-   * Sign out. It reached thirteen because each of three consecutive
-   * whole-branch reviews found more it had missed — the second one thing,
-   * unsaved note bodies drawn to the next account and then `PUT` under their
-   * session; the third three at once, the pending correction whose Confirm
-   * wrote the previous reader's pairing into the shared sidecar and the two
-   * fields beside it. A list of setters cannot be kept complete by review, and
-   * every new piece of state is one more chance to forget one. The gate
+   * A hand-written reset, a list of setters, cannot be kept complete by
+   * review, and every new piece of state is one more chance to forget one: a
+   * missed one leaks into the next account, as unsaved note bodies drawn to it
+   * and then `PUT` under its session, or a pending correction whose Confirm
+   * writes the previous reader's pairing into the shared sidecar. The gate
    * unmounts this whole component instead, which cannot.
    *
    * **The one thing an unmount does not cover on its own is the two debounced
@@ -776,8 +762,7 @@ function App({ work, onLeave }: AppProps) {
     let cancelled = false
     openWork(STARTUP_PORTS, work)
       .then((opened) => {
-        // Logged whether or not this load was superseded, exactly as it was
-        // when the `catch` sat inside the load itself: a notes read that
+        // Logged whether or not this load was superseded: a notes read that
         // failed did so, and a teardown racing it does not make that untrue.
         if (opened.notesError !== undefined) console.error(opened.notesError)
         if (cancelled) return
@@ -803,8 +788,7 @@ function App({ work, onLeave }: AppProps) {
         console.error(err)
         // O176. Anything else is a work that will not open — a slug the
         // library does not hold, a server that did not answer, a sidecar
-        // naming no hub — and it used to end at the line above, with the
-        // route left black. Below the `cancelled` check with everything else
+        // naming no hub. Below the `cancelled` check with everything else
         // here, so a load that was superseded says nothing.
         //
         // O179. The sidecar read's 404 is told apart by its type, as the 401
@@ -837,10 +821,9 @@ function App({ work, onLeave }: AppProps) {
     const { resolver, editions } = session
     function onKeyDown(event: KeyboardEvent) {
       // Every guard is `keyplan.ts`'s, computed from the mirror refs and the
-      // derived ones assigned during render. `intentOf` and
-      // `controlKind` are both pure, so calling them for every key
-      // rather than only inside the branch that used to need them costs a
-      // property read and buys one place where the decision is made.
+      // derived ones assigned during render. `intentOf` and `controlKind` are
+      // both pure, so calling them for every key costs a property read and
+      // buys one place where the decision is made.
       const plan = keyPlan(
         event.key,
         intentOf(event, editions, registry.all()),
@@ -995,12 +978,10 @@ function App({ work, onLeave }: AppProps) {
     /**
      * `n`: always a brand-new note, however many the slot already holds.
      *
-     * This key used to *reopen* the note already there, which made a second
-     * note on a page impossible since nothing else creates one. The reasoning
-     * for reopening was to stop `n` pressed twice leaving duplicates, and it
-     * protected against nothing: a draft is not a note until it is written, so
-     * a second press only ever replaced an unsaved draft. Reopening an
-     * existing note is what its margin tab is for.
+     * Reopening the note already there instead would make a second note on a
+     * page impossible, since nothing else creates one. A draft is not a note
+     * until it is written, so a second press only ever replaces an unsaved
+     * draft. Reopening an existing note is what its margin tab is for.
      *
      * Nothing is needed here to stop `n` replacing a draft mid-write: no
      * module key reaches this at all while the editor is open (`keyPlan`'s
@@ -1024,14 +1005,13 @@ function App({ work, onLeave }: AppProps) {
      * `a`: the review list. Toggles, like `s` does — open it, or close it if
      * it is what is already open.
      *
-     * **It cannot reach a reader mid-edit, and this comment used to say it
-     * did.** `toggleReview` has a second arm, where `panel: 'edit'` becomes
-     * `'review'`, and no keypress gets to it: `keyplan.ts` returns no plan at
-     * all for anything but `Escape` while the editor is open, because the
-     * editor is a dialog that takes text and a keystroke there means the note.
-     * That is the behaviour a reader typing a note wants, so it is the comment
-     * that was wrong rather than the guard — the arm is reachable only by a
-     * caller that does not exist.
+     * **It cannot reach a reader mid-edit.** `toggleReview` has a second arm,
+     * where `panel: 'edit'` becomes `'review'`, and no keypress gets to it:
+     * `keyplan.ts` returns no plan at all for anything but `Escape` while the
+     * editor is open, because the editor is a dialog that takes text and a
+     * keystroke there means the note. That is the behaviour a reader typing
+     * a note wants, and the arm is reachable only by a caller that does
+     * not exist.
      */
     function reviewNotes() {
       setEditing(toggleReview)
@@ -1110,12 +1090,11 @@ function App({ work, onLeave }: AppProps) {
       }
       setSession((prev) => {
         if (!prev) return prev
-        // An arrow is a *physical* key and `intentOf` reports it as one; which
-        // page that reaches depends on the work. `stepFor` is the single rule
-        // (`modules/direction.ts`), shared with the filmstrip's layout and the
-        // help's labels, so the three cannot disagree about which way is
-        // forward — which they did until 2026-08-08, when the strip ran
-        // left-to-right under a right-to-left work.
+        // An arrow is a *physical* key and `intentOf` reports it as one;
+        // which page that reaches depends on the work. `stepFor` is the
+        // single rule (`modules/direction.ts`), shared with the filmstrip's
+        // layout and the help's labels, so the three cannot disagree about
+        // which way is forward.
         const turned: ReadingIntent =
           intent.kind === 'step'
             ? { ...intent, by: stepFor(intent.by, readingRef.current) }
@@ -1182,10 +1161,8 @@ function App({ work, onLeave }: AppProps) {
   /**
    * Notes reach the server on their own, a moment after the last change.
    *
-   * There is no Save button any more. A reader writing a note has already
-   * decided to write it, and the button's only real job was to be the thing
-   * you *didn't* press when you changed your mind — which undo now does
-   * properly, without asking anyone to hesitate.
+   * There is no Save button. A reader writing a note has already decided to
+   * write it, and changing their mind is what undo is for.
    *
    * Debounced for the same reason the reading position is: typing a sentence
    * is one write, not forty. Longer than the position's 400 ms, because a
@@ -1231,10 +1208,9 @@ function App({ work, onLeave }: AppProps) {
   // The reading-time readout's raw material — when this session started, the
   // page turns it has seen, and the 30s heartbeat that makes an estimate
   // derived from them tick rather than only updating on the next turn. All
-  // three are `hooks.ts`'s `useReadingClock`, which is also where the
-  // measured reason for skipping the first run lives (`~6m left`, derived
-  // entirely from load latency, before a key had been pressed) and why only
-  // the authority's position reaches it — a swap is not a page turn.
+  // three are `hooks.ts`'s `useReadingClock`, which is also where the reason
+  // for skipping the first run lives and why only the authority's position
+  // reaches it — a swap is not a page turn.
   const clock = useReadingClock(
     session?.state.authority,
     session?.state.slot,
@@ -1274,9 +1250,7 @@ function App({ work, onLeave }: AppProps) {
   // Declared here, ahead of the `if (!session) return null` below, because the
   // prefetch effect that follows builds its URLs from it, just as every cell
   // does, and the two have to match: the browser caches a page once per `?w=`,
-  // so a page warmed at any other size warms nothing the reader draws. Until
-  // O110 prefetch asked for every page at full size, and a first visit fetched
-  // every page it drew twice, once whole and once at reading size.
+  // so a page warmed at any other size warms nothing the reader draws (O110).
   const pageLongEdge = requestedLongEdge(
     pageBoxLongEdge(viewportWidth, window.innerHeight, mode),
     window.devicePixelRatio,
@@ -1369,15 +1343,13 @@ function App({ work, onLeave }: AppProps) {
   //
   // React registers `wheel` on the root container as a **passive** listener —
   // `react-dom`'s `addTrappedEventListener` passes `passive: true` for exactly
-  // `touchstart`, `touchmove` and `wheel`, checked in
-  // `node_modules/react-dom/cjs/react-dom-client.development.js` at this
-  // version (19.2) — and `preventDefault()` inside a passive listener does
-  // nothing except log a console error, once per notch. Zoom has to stop the
-  // browser acting on the same wheel: a trackpad pinch arrives here as a
-  // `wheel` with `ctrlKey` set, and left alone it zooms the whole page's chrome
-  // instead of the manga. So this is `{ passive: false }` on the page area
-  // itself. The same event serving both gestures is why the design's table
-  // lists "wheel / pinch" as one row.
+  // `touchstart`, `touchmove` and `wheel` — and `preventDefault()` inside a
+  // passive listener does nothing except log a console error, once per notch.
+  // Zoom has to stop the browser acting on the same wheel: a trackpad pinch
+  // arrives here as a `wheel` with `ctrlKey` set, and left alone it zooms the
+  // whole page's chrome instead of the manga. So this is `{ passive: false }`
+  // on the page area itself. The same event serving both gestures is why the
+  // design's table lists "wheel / pinch" as one row.
   //
   // Declared ahead of the `if (!session) return null` below, like the two
   // effects above it, which is why `loaded` is in the dependencies: the page
@@ -1392,8 +1364,8 @@ function App({ work, onLeave }: AppProps) {
     if (!host || !zoomPrefs.enabled || mode === 'scroll') return
     function onWheel(event: WheelEvent) {
       if (!host) return
-      // Inert wherever the three zoom keys are, for the reason the
-      // `ZOOM_IN_INTENT` case above states in full. Checked inside the handler
+      // Inert wherever the three zoom keys are, for the reason `keyplan.ts`'s
+      // `ZOOM_IN_INTENT` case states in full. Checked inside the handler
       // rather than beside `zoomPrefs.enabled` above, because `drawnRef` is
       // assigned during render and none of this effect's dependencies changes
       // when it flips: the page area still renders where the viewed edition
@@ -1509,12 +1481,12 @@ function App({ work, onLeave }: AppProps) {
   ])
 
   // O176: the load failed, so there is no reader to draw — `ReaderFailed`
-  // says so and offers the way out, where this returned `null` for good.
-  // Here and not higher, for the reason every hook above gives for being
-  // above: this is the first line after the last of them. `!session` is part
-  // of the test so that a session, once there is one, always draws. What is
-  // asked of `failure` is whether there is one, and never what it holds: an
-  // `Error` may carry no message, and that one is drawn with an empty alert.
+  // says so and offers the way out. Here and not higher, for the reason every
+  // hook above gives for being above: this is the first line after the last of
+  // them. `!session` is part of the test so that a session, once there is one,
+  // always draws. What is asked of `failure` is whether there is one, and
+  // never what it holds: an `Error` may carry no message, and that one is
+  // drawn with an empty alert.
   if (!session && failure !== undefined) {
     return <ReaderFailed failure={failure} onLeave={onLeave} />
   }
@@ -1534,13 +1506,13 @@ function App({ work, onLeave }: AppProps) {
     borrowPrefs,
   )
 
-  // The one entry `<Settings>`'s `notes` map carries today — `editions.length`
-  // is exactly the count `lenderFor`'s candidates come from (`editions` minus
+  // The one entry `<Settings>`'s `notes` map carries — `editions.length` is
+  // exactly the count `lenderFor`'s candidates come from (`editions` minus
   // the edition being viewed minus the authority), so this is computed here,
   // beside `shown`, from the same `editions` `withBorrow` was just handed.
-  // `borrowNote` returns `undefined` at three editions or more, which is what
-  // keeps `borrow` out of this object entirely rather than in it with an empty
-  // string.
+  // `borrowNote` returns `undefined` at three editions or more, which is
+  // what keeps `borrow` out of this object entirely rather than in it with
+  // an empty string.
   const borrowingNote = borrowNote(editions.length)
   const settingsNotes = borrowingNote
     ? { [borrowModule.id]: borrowingNote }
@@ -1548,14 +1520,12 @@ function App({ work, onLeave }: AppProps) {
 
   // The page-drawing half of `Display`, or `undefined` while showing a gap.
   //
-  // Narrowed here rather than by a branch that returns early. The early return
-  // was O25: it handed back `Gap` *instead of* the reader's own tree, so
-  // `Chrome`, `Settings` and the mode toolbar were never rendered while a gap
-  // was showing — the keys fired, the state flipped, and nothing appeared. The
-  // note panel was mounted inside that branch during M5c as a second copy,
-  // which is the shape that let the credits panel be forgotten as well. After
-  // this there is one mount site, so a panel added later is reachable in a gap
-  // because there is nowhere else to put it.
+  // Narrowed here rather than by a branch that returns early (O25), which
+  // would hand back `Gap` *instead of* the reader's own tree, so `Chrome`,
+  // `Settings` and the mode toolbar would never render while a gap was showing
+  // — the keys would fire, the state flip, and nothing appear. There is one
+  // mount site, so a panel added later is reachable in a gap because there is
+  // nowhere else to put it.
   const at = shown.kind === 'at' ? shown : undefined
 
   // Takes one of `Gap`'s offered moves: `slot` is authority-space (what
@@ -1625,7 +1595,7 @@ function App({ work, onLeave }: AppProps) {
         // validator and resolver to confirm against, not a retried write.
         // Both or neither: the two arrive together from one document, and
         // installing a resolver beside the alignments of an older one is the
-        // drift `alignmentsOf` was added to close.
+        // drift `alignmentsOf` closes.
         const { resolver: next, alignments: fresh, etag: freshEtag } = outcome
         if (next && fresh) {
           resolver.dispose?.()
@@ -1655,17 +1625,12 @@ function App({ work, onLeave }: AppProps) {
 
   // The debounce built once at first render calls through here, so it always
   // reaches the current closure rather than the one that existed then.
-  //
-  // *Two sentences were deleted here on 2026-08-09.* They said the write "does
-  // not silently retry" and that "the draft survives a 412 untouched", which
-  // stopped being true when the re-read-and-merge landed: it does retry, and
-  // `notesWrite.ts` is where that now lives and is described.
   writeNotesLatestRef.current = (notes: Note[]) => writeNotes(notes)
 
   /**
    * Finish editing: send anything still pending, and put the page back.
    *
-   * One function because there are now three ways to arrive here — `Escape`,
+   * One function because there are three ways to arrive here — `Escape`,
    * a click on the background around the page, and the review list's own
    * close — and "finished" has to mean the same thing whichever was used.
    */
@@ -1687,25 +1652,19 @@ function App({ work, onLeave }: AppProps) {
    * The write itself — including the stale-validator re-read and merge — is
    * `notesWrite.ts`'s `saveNotes`, which takes its two calls as ports so that
    * its 412 path can be tested at all. Whether there is anything to write at
-   * all is that module's `writeGate`, which moved out of here for the same
-   * reason and on the same day it stopped being silent about a missing
-   * validator. What is left is what only a component can do: the busy flag,
-   * and turning one outcome into the five pieces of state a reader sees.
+   * all is that module's `writeGate`. What is left is what only a component
+   * can do: the busy flag, and turning one outcome into the five pieces of
+   * state a reader sees.
    *
-   * **`notesBusy` is now set once around the whole call.** The version this
-   * replaced set it `false` at 1961 immediately before its recursive retry set
-   * it `true` again at 1940, with no `await` between the two — so under React
-   * 19's automatic batching both landed in one continuation and no un-busy
-   * frame was ever committed. The pair of updates is gone; the frames are the
-   * same.
+   * **`notesBusy` is set once around the whole call.**
    */
   async function writeNotes(notes: Note[]): Promise<void> {
     const gate = writeGate(notesDoc, notesEtag)
     // A validator that never arrived, or one a write's response did not carry
-    // back, is the end of saving for this session — and it used to be a silent
-    // `return`, so the reader went on typing into an editor that could no
-    // longer save a word of it. `writeGate` is where that decision and its
-    // wording now live and are tested.
+    // back, is the end of saving for this session, and the reader has to be
+    // told, or they would go on typing into an editor that could no longer
+    // save a word of it. `writeGate` is where that decision and its wording
+    // live and are tested.
     if (gate.kind === 'refuse') return setNotesNotice(gate.notice)
     if (gate.kind !== 'write') return
     setNotesBusy(true)
@@ -1728,10 +1687,7 @@ function App({ work, onLeave }: AppProps) {
       setNotesDoc(outcome.doc)
       setNotesEtag(outcome.etag)
       // `written` and `merged` both mean this document is what the server
-      // holds now, so both are a step a reader can come back to. The version
-      // this replaced recorded only the first: its retry never landed, so
-      // there was nothing on the server for a step to point at — the
-      // recursive call's own `record` ran on a success it never had.
+      // holds now, so both are a step a reader can come back to.
       setNotesHistory((h) => record(h, outcome.doc.notes, sameNotes))
       setNotesNotice(outcome.kind === 'merged' ? outcome.notice : undefined)
     } finally {
@@ -1805,10 +1761,9 @@ function App({ work, onLeave }: AppProps) {
 
   // The review list is built whatever `display` resolved to. A gap has no slot
   // to draw notes on, but the work still has notes and a reader in a gap is
-  // exactly who asks where they are — found by driving this against the real
-  // corpus, where pressing `a` on a gap opened nothing at all. Every row in
-  // the list already carries its own "not reachable from here" marking, which
-  // is the marking this state exists for.
+  // exactly who asks where they are. Every row in the list already carries its
+  // own "not reachable from here" marking, which is the marking this state
+  // exists for.
   const allNotes = notesDoc?.notes ?? []
   const entries: ReviewEntry[] =
     panelMode === 'review' ? reviewList(allNotes, shown.edition, resolver) : []
@@ -1828,8 +1783,7 @@ function App({ work, onLeave }: AppProps) {
 
   // `editions[0]` is the hub — `orderedEditions` (`session.ts`) always places
   // it first, and `Session.editions` is built from exactly that. Bound here,
-  // above the grouping, rather than beside the readouts further down where it
-  // used to sit alone: `alignedBreaks` needs it too, and two bindings of one
+  // above the grouping: `alignedBreaks` needs it too, and two bindings of one
   // fixed value is one more place for them to disagree.
   const hub = editions[0]
 
@@ -1855,19 +1809,18 @@ function App({ work, onLeave }: AppProps) {
   const creditPages = resolver.credits(shown.edition)
   // Those page indices, converted to this edition's slots exactly once per
   // render. Empty — and so free — whenever `skip` is off or the sidecar names
-  // no credit pages, which is every edition in the corpus today.
-  // `at?.slot` is the exemption: a reader who took a credit page from the
-  // panel is standing on it deliberately, so that one page is drawn while the
-  // rest stay set aside. See `skippedApartFrom` for what went wrong without
-  // it.
+  // no credit pages. `at?.slot` is the exemption: a reader who took a credit
+  // page from the panel is standing on it deliberately, so that one page is
+  // drawn while the rest stay set aside. See `skippedApartFrom` for what went
+  // wrong without it.
   const skippedSlots = creditsPrefs.skip
     ? skippedApartFrom(creditSlotsIn(slots, creditPages), slots, at?.slot)
     : EMPTY_SLOTS
   // Where this edition has to restart its pairing so the pairs it draws are the
-  // hub's, mapped across — see `alignedPairs.ts` for the measurement that put
-  // it here and for the solo groups it costs. Cached through a ref rather than
-  // `useMemo` because every hook in this component has to sit above the
-  // `if (!session) return null` far above, and all four of these are bound
+  // hub's, mapped across — see `alignedPairs.ts` for the solo groups it costs,
+  // and `docs/notes.md` ("off by 1") for the measurement. Cached through a ref
+  // rather than `useMemo` because every hook in this component has to sit above
+  // the `if (!session) return null` far above, and all four of these are bound
   // below it; `alignedBreaksCached` is that memo written out, with tests.
   // `effectiveReading` is this edition's, which `groups` does not read; it is
   // threaded rather than dropped so that a grouping rule which does start
@@ -1915,12 +1868,11 @@ function App({ work, onLeave }: AppProps) {
   // `-1` in a gap: there is no group of the viewed edition the reader is
   // standing on, and `-1` is already `Filmstrip`'s "mark nothing" — the same
   // value correction mode passes, for the same reason.
-  // No `Math.max(…, 0)` clamp. That was harmless while every slot belonged to
-  // some group, and became a trap once `skip` could remove one: `findIndex`
-  // answering `-1` was clamped to `0`, so the page area drew the volume's
-  // first group — the cover — while the readout correctly reported where the
-  // reader was. `skippedApartFrom` is what keeps `-1` from arising at all;
-  // this draws nothing rather than something wrong if it ever does.
+  // No `Math.max(…, 0)` clamp: it would turn `findIndex`'s `-1` into `0`, so
+  // the page area would draw the volume's first group — the cover — while the
+  // readout correctly reported where the reader was. `skippedApartFrom` is
+  // what keeps `-1` from arising at all; this draws nothing rather than
+  // something wrong if it ever does.
   const currentIndex = at
     ? grouped.findIndex((g) => g.slots.includes(at.slot))
     : -1
@@ -1943,13 +1895,9 @@ function App({ work, onLeave }: AppProps) {
 
   // The four readout lines, computed here from `modules/readouts.ts`'s pure
   // functions and handed to `Chrome` as plain strings — see that module for
-  // every branch below; this is wiring, not derivation. This supersedes the
-  // old toolbar badge that used to show `${verdict} alignment` only while
-  // `state.viewing !== state.authority`: that badge went silent the moment a
-  // reader navigated (not merely swapped) into a spoke edition, since
-  // `navigate` moves `authority` to match `viewing` — `healthReadout` below
-  // has no such blind spot, because it checks the edition on screen against
-  // the hub, not against wherever `authority` happens to have wandered.
+  // every branch below; this is wiring, not derivation. `healthReadout` below
+  // checks the edition on screen against the hub, not against wherever
+  // `authority` happens to have wandered.
   // The notes on the slot being drawn. `visibleNotes` and `notesHere` are both
   // `notes.ts`'s — stored notes with this session's edits over them, filtered
   // to the viewed edition when `travel` is off, then resolved once per edition
@@ -1974,8 +1922,7 @@ function App({ work, onLeave }: AppProps) {
   // one resolve per note rather than one per page. Built only in that mode:
   // single and two-page draw one group and `here` above already answers it.
   //
-  // And only on a page. The gap branch used to return before this line; now
-  // that it does not, `at` is what keeps a gap from paying one resolve per
+  // And only on a page: `at` is what keeps a gap from paying one resolve per
   // note on every render to build a map nothing consumes — the page area draws
   // `Borrowed` there (or `Gap`, where nothing can lend), and neither mounts a
   // group to read it. A borrowed page is drawn solo in every mode, `scroll`
@@ -1985,7 +1932,6 @@ function App({ work, onLeave }: AppProps) {
       ? notesBySlot(notesForHere, at.edition, resolver)
       : new Map<number, NoteHere[]>()
 
-  // Opening a note from its margin tab, shared by every mode's overlay.
   /**
    * Every stored note with this session's edits applied — what a write sends.
    *
@@ -2000,6 +1946,7 @@ function App({ work, onLeave }: AppProps) {
     return editsToWrite(allNotes, edits)
   }
 
+  // Opening a note from its margin tab, shared by every mode's overlay.
   /**
    * Show a note in the editor, bringing it into this session's edits.
    *
@@ -2119,8 +2066,7 @@ function App({ work, onLeave }: AppProps) {
               : 'only',
           half: slots[at.slot].half,
           // Carried so the swap measures the page where it is drawn rather
-          // than where a centred page would be — `Drawn.hug` records why this
-          // was missing.
+          // than where a centred page would be (see `Drawn.hug`).
           hug: shownHug,
         }
       : undefined
@@ -2133,10 +2079,10 @@ function App({ work, onLeave }: AppProps) {
   // (measured-ineffective, `docs/status.md`) mitigation for a guaranteed-
   // eager one. Single and two-page mode mount only the current group, so
   // there is nothing for `loading="lazy"` to defer there — see
-  // `PageView.tsx`'s original comment on that, unchanged — and decode-gating
-  // is what closes the flicker on the page turn itself. `prefetchPrefs.enabled`
-  // gates it too: disabling the module must revert `PageView` to exactly its
-  // pre-M5b behaviour, since that reversion is what makes the flicker
+  // `PageView.tsx`'s comment on that — and decode-gating is what closes the
+  // flicker on the page turn itself. `prefetchPrefs.enabled` gates it too:
+  // disabling the module must revert `PageView` to exactly its behaviour
+  // without decode-gating, since that reversion is what makes the flicker
   // measurement in `docs/notes.md` a comparison rather than a memory.
   const buffered = mode !== 'scroll' && prefetchPrefs.enabled
 
@@ -2177,22 +2123,20 @@ function App({ work, onLeave }: AppProps) {
   /**
    * Where a pointer event falls, in fractions of the page it is over.
    *
-   * **The hug is what `paintedBox` cannot infer from the two rects.**
-   * *2026-08-08, closing what the previous version of this comment recorded
-   * and did not fix.* Left to its default, that function splits the letterbox
-   * evenly, which is what `object-fit: contain` does under `object-position`'s
-   * own `50% 50%`. The two cells of a real pair pass a hug instead, so their
-   * art sits flush against the seam — and a drag measured as though it were
-   * centred lands the whole rectangle about 180px sideways of where it was
-   * swept out, which is half of the 359px seam that closing it moved
-   * (`paintedBox` has both measurements). Nothing changes where the fit is
-   * width-bound and there is no horizontal letterbox left to distribute.
+   * **The hug is what `paintedBox` cannot infer from the two rects.** Left to
+   * its default, that function splits the letterbox evenly, which is what
+   * `object-fit: contain` does under `object-position`'s own `50% 50%`. The two
+   * cells of a real pair pass a hug instead, so their art sits flush against
+   * the seam — and a drag measured as though it were centred would land the
+   * whole rectangle sideways of where it was swept out (`paintedBox` has the
+   * measurements). Nothing changes where the fit is width-bound and there is no
+   * horizontal letterbox left to distribute.
    *
-   * `el` always comes from `draftImage`, which returns nothing without a
-   * draft, so the `'centre'` below is unreachable rather than a third case.
-   * Written out rather than asserted on: the cost of being wrong here is a
-   * region 180px from where it was drawn, not a crash, and this file would
-   * rather draw the centred page than throw at a reader mid-drag.
+   * `el` always comes from `draftImage`, which returns nothing without a draft,
+   * so the `'centre'` below is unreachable rather than a third case. Written
+   * out rather than asserted on: the cost of being wrong here is a region off
+   * from where it was drawn, not a crash, and this file would rather draw the
+   * centred page than throw at a reader mid-drag.
    *
    * `PageAnnotations` measures the same page through the same `paintedBox`, so
    * the rectangle a reader sweeps out and the marker drawn over it afterwards
@@ -2285,37 +2229,30 @@ function App({ work, onLeave }: AppProps) {
     }
     const el = draftImage(event.target)
     // On an image, and on the *painted* page rather than in the letterbox
-    // `object-fit: contain` leaves inside the same element. Measured on
-    // 2026-09-20: the `<img>` fills the page area at every size tested, so
-    // "on an image" alone is true of every press in the reader and
-    // `gestureFor`'s rule 1 — looking away finishes the note — could never
-    // fire. `pointInSlot` is unclamped for exactly this reason.
+    // `object-fit: contain` leaves inside the same element. The `<img>` fills
+    // the page area at every size tested, so "on an image" alone is true of
+    // every press in the reader and `gestureFor`'s rule 1 — looking away
+    // finishes the note — could never fire. `pointInSlot` is unclamped for
+    // exactly this reason.
     //
-    // `pointOn` only makes sense against the image it was given: `el`'s own
-    // hug (`hugFor(current, draft.slot)`), painted inside `el`'s own rect. In
-    // `two` mode `event.target` is often the *facing* cell — a sibling image
-    // with the opposite hug and, in general, a different rect — so judging
-    // it against the draft's painted box is a wrong frame of reference, not
-    // an approximation: it can place genuine artwork outside `0..1` and
-    // genuine letterbox inside it. A press on any image that is not the
-    // draft's own is on the page regardless of where it falls, because rule
-    // 2 (`onTheDraftsPage: false`) answers `ignore` for the whole of it —
+    // `pointOn` only makes sense against the image it was given: `el`'s own hug
+    // (`hugFor(current, draft.slot)`), painted inside `el`'s own rect. In `two`
+    // mode `event.target` is often the *facing* cell — a sibling image with the
+    // opposite hug and, in general, a different rect — so judging it against
+    // the draft's painted box is a wrong frame of reference, not an
+    // approximation: it can place genuine artwork outside `0..1` and genuine
+    // letterbox inside it. A press on any image that is not the draft's own is
+    // on the page regardless of where it falls, because rule 2
+    // (`onTheDraftsPage: false`) answers `ignore` for the whole of it —
     // `onAnImage` only has to be right about images `pointOn` was not given.
-    // *Fixed 2026-09-20, C1 of the whole-branch review*: this used to read
-    // `event.target` here, which is exactly the wrong-frame-of-reference call
-    // this paragraph now warns against — an artwork press on the facing cell
-    // computed as outside `0..1` and closed the note, the failure
-    // `gestureFor`'s own doc exists to prevent.
     //
-    // Before the image has decoded, `naturalWidth` is 0 and `paintedBox`
-    // hands back the whole element box, so the fraction `pointInSlot`
-    // computes lands in `0..1` for any press the element could have received
-    // — `inside` reads it as on the page. That is the behaviour that exists
-    // today and is left unchanged: there is no letterbox to be in yet. (In
-    // jsdom, where an unmeasured element's box is zero-area as well, the
-    // fraction is `{x: 0, y: 0}` by `pointInSlot`'s own zero-box arm; the
-    // answer is the same by a different route, which is why no test can tell
-    // the two apart.)
+    // Before the image has decoded, `naturalWidth` is 0 and `paintedBox` hands
+    // back the whole element box, so the fraction `pointInSlot` computes lands
+    // in `0..1` for any press the element could have received — `inside` reads
+    // it as on the page, as there is no letterbox to be in yet. (In jsdom,
+    // where an unmeasured element's box is zero-area as well, the fraction is
+    // `{x: 0, y: 0}` by `pointInSlot`'s own zero-box arm; the answer is the
+    // same by a different route, which is why no test can tell the two apart.)
     const onPage =
       event.target instanceof HTMLImageElement &&
       (el === undefined || inside(pointOn(el, event.clientX, event.clientY)))
@@ -2415,36 +2352,32 @@ function App({ work, onLeave }: AppProps) {
   }
 
   /**
-   * A pointer that left the page area: finish whatever it was doing, the
-   * same as `endRegion` alone always has, and — unlike before I2's fix —
-   * drop the press record with it, when it is this pointer's own record to
-   * drop.
+   * A pointer that left the page area: finish whatever it was doing, the same
+   * as `endRegion` alone, and drop the press record with it, when it is this
+   * pointer's own record to drop.
    *
-   * A pointer that left the area finished no *gesture*, which is why this
-   * stays off `gestureOfPress` and `endPress`'s classification entirely. But
-   * leaving `pressRef.current` set behind it left a stale record for a later
+   * A pointer that left the area finished no *gesture*, which is why this stays
+   * off `gestureOfPress` and `endPress`'s classification entirely. But leaving
+   * `pressRef.current` set behind it would leave a stale record for a later
    * `pointerup` to be paired with — see `endPress`'s own doc for what that
-   * caused. **Gated on `pointerId`, the same as `endPress` and
-   * `onPointerCancel`.** *Fixed 2026-09-20, the second whole-branch review*:
-   * this used to clear `pressRef.current` unconditionally, which could drop
-   * a record that was not this pointer's own to drop.
+   * causes. **Gated on `pointerId`, the same as `endPress` and
+   * `onPointerCancel`**, so that clearing it cannot drop a record that was not
+   * this pointer's own to drop.
    *
-   * **Corrected here, fix round 3, 2026-09-20: the paragraph above had the
-   * direction backwards.** It is not reachable for a *second* finger's leave
-   * to drop a *first* finger's record — `beginRegion` assigns
-   * `pressRef.current` unconditionally on every `pointerdown`, so a second
-   * finger's own press has already overwritten the first finger's record
-   * before either one's leave or cancel can run; there is no earlier record
-   * left by then for a later leave to drop. What *is* reachable, and what
-   * this guard actually repairs, in a multi-touch press: finger A down
-   * (record = A); finger B down (record = B, overwriting A); A lifts —
-   * `endPress` refuses it, the ids do not match, B's record is left alone;
-   * **A's own `pointerout`/`pointerleave`, arriving right after A's own
-   * release, is what used to wipe the slot unconditionally** — dropping B's
-   * still-open record, though it was never A's own to drop — so B's later
-   * release found nothing to pair itself with. The guard below stops
-   * exactly that: A's leave carries A's `pointerId`, which by then no
-   * longer matches the record it would be clearing.
+   * It is not reachable for a *second* finger's leave to drop a *first*
+   * finger's record — `beginRegion` assigns `pressRef.current` unconditionally
+   * on every `pointerdown`, so a second finger's own press has already
+   * overwritten the first finger's record before either one's leave or cancel
+   * can run; there is no earlier record left by then for a later leave to drop.
+   * What *is* reachable, and what this guard actually repairs, in a multi-touch
+   * press: finger A down (record = A); finger B down (record = B, overwriting
+   * A); A lifts — `endPress` refuses it, the ids do not match, B's record is
+   * left alone; **A's own `pointerout`/`pointerleave`, arriving right after A's
+   * own release, would wipe the slot if it cleared unconditionally** — dropping
+   * B's still-open record, though it was never A's own to drop — so B's later
+   * release would find nothing to pair itself with. The guard below stops
+   * exactly that: A's leave carries A's `pointerId`, which by then no longer
+   * matches the record it would be clearing.
    */
   function leaveRegion(event: React.PointerEvent) {
     endRegion(event)
@@ -2457,63 +2390,55 @@ function App({ work, onLeave }: AppProps) {
    * A press released on the page area: finish whatever it was doing, then ask
    * `gestures.ts` what it meant.
    *
-   * Bound to `onPointerUp` only, and only for the pointer that began the
-   * press it is about to classify. **The bars are siblings of the page
-   * area, drawn over it, not children of it** — so a press that goes down on
-   * the page and is released over a bar reaches no `onPointerUp` here at all
-   * *with a mouse*, where the release lands wherever the pointer really is;
-   * `onPointerLeave` sees it instead. **A touch pointer does not take that
-   * path.** Implicit pointer capture — the same mechanism `Settings.tsx`'s
-   * own scrim guard has to work around, fix round 2's I1 — delivers
-   * `pointerup` to the page area regardless of where the finger actually
-   * lifts, bar or no bar, so this function does run for that release on a
-   * touch screen. **Corrected here, fix round 3, 2026-09-20: the comment
-   * this replaced called that "benign", which is false.** A release this
-   * close to its own down is not travel for `swipe` to judge at all — it is
-   * a *tap* (rule 3 of spec §9.2, `Math.abs(dx) <= TAP_SLOP &&
-   * Math.abs(dy) <= TAP_SLOP && …TAP_HOLD`), classified against where the
-   * press went *down*, not where it came up. A finger that lands on the
-   * page a few pixels above the bar and lifts onto it is exactly such a
-   * tap, so it **turns or toggles**, the same as if it had lifted where it
-   * landed. Only a longer travel reaches `swipe` at all, and a slip onto a
-   * bar is refused there by `SWIPE_MIN`: it moves ~0 px *across* the page,
-   * so `swipe` returns `none` on `Math.abs(dx) < SWIPE_MIN` before the axis
-   * test is ever evaluated — that test only decides a drag already at least
-   * `SWIPE_MIN` across. Zoomed in it never reaches that line at all, because
-   * `!press.atWhole` refuses it on the guard above. Measured in Chromium at
-   * 390×844 with `hasTouch`: a 6, 8 and 10 px vertical slip from the page
-   * onto the bar all still classify against the down position and turn or
-   * toggle. The browser's own touch-scroll slop is what ends the window, and
-   * `TAP_SLOP` is 10, so every slip this rule calls a tap is well short of
-   * it and is never cancelled first. **The figure, its emulation and how an
-   * earlier wrong one arose are in O142** (`docs/status.md`), dated, rather
-   * than here: it is a browser constant under a browser version nobody pins,
-   * and a source comment is not where anyone would re-measure it.
-   * **The mouse does not share this**: its
-   * `pointerup` lands wherever the cursor really is — over the bar — so
-   * `onPointerLeave` sees it instead of this function, and the same slip
-   * does nothing. This follows from "where the press went down decides",
-   * §9.2's own rule, rather than being a bug in it — filed as O142
-   * (`docs/status.md`) rather than changed, since a reader who aimed at the
-   * outer third and slipped onto the bar asked for a turn and gets one.
+   * Bound to `onPointerUp` only, and only for the pointer that began the press
+   * it is about to classify. **The bars are siblings of the page area, drawn
+   * over it, not children of it** — so a press that goes down on the page and
+   * is released over a bar reaches no `onPointerUp` here at all *with a mouse*,
+   * where the release lands wherever the pointer really is; `onPointerLeave`
+   * sees it instead. **A touch pointer does not take that path.** Implicit
+   * pointer capture — the same mechanism `Settings.tsx`'s own scrim guard has
+   * to work around — delivers `pointerup` to the page area regardless of where
+   * the finger actually lifts, bar or no bar, so this function does run for
+   * that release on a touch screen. A release this close to its own down is not
+   * travel for `swipe` to judge at all — it is a *tap* (rule 3 of spec §9.2,
+   * `Math.abs(dx) <= TAP_SLOP && Math.abs(dy) <= TAP_SLOP && …TAP_HOLD`),
+   * classified against where the press went *down*, not where it came up. A
+   * finger that lands on the page a few pixels above the bar and lifts onto it
+   * is exactly such a tap, so it **turns or toggles**, the same as if it had
+   * lifted where it landed. Only a longer travel reaches `swipe` at all, and a
+   * slip onto a bar is refused there by `SWIPE_MIN`: it moves ~0 px *across*
+   * the page, so `swipe` returns `none` on `Math.abs(dx) < SWIPE_MIN` before
+   * the axis test is ever evaluated — that test only decides a drag already at
+   * least `SWIPE_MIN` across. Zoomed in it never reaches that line at all,
+   * because `!press.atWhole` refuses it on the guard above. The browser's own
+   * touch-scroll slop is what ends the window, and `TAP_SLOP` is 10, so every
+   * slip this rule calls a tap is well short of it and is never cancelled
+   * first. **That slop's figure and its emulation are in O142**
+   * (`docs/status.md`), rather than here: it is a browser constant under a
+   * browser version nobody pins, and a source comment is not where anyone would
+   * re-measure it. **The mouse does not share this**: its `pointerup` lands
+   * wherever the cursor really is — over the bar — so `onPointerLeave` sees it
+   * instead of this function, and the same slip does nothing. This follows from
+   * "where the press went down decides", §9.2's own rule, rather than being a
+   * bug in it — filed as O142 (`docs/status.md`) rather than changed, since a
+   * reader who aimed at the outer third and slipped onto the bar asked for a
+   * turn and gets one.
    *
-   * `leaveRegion` (above) is what a release over a bar means for the record
-   * on a mouse, where that path is actually taken: it clears
-   * `pressRef.current`, so a *later*, unrelated `pointerup` on the page area
-   * — one with no `pointerdown` of its own — finds nothing to pair itself
-   * with rather than being classified against wherever the abandoned press
-   * began. Verified with a control: without that clear, injecting exactly
-   * such an unpaired `pointerup` after a `pointerleave` turned a page.
+   * `leaveRegion` (above) is what a release over a bar means for the record on
+   * a mouse, where that path is actually taken: it clears `pressRef.current`,
+   * so a *later*, unrelated `pointerup` on the page area — one with no
+   * `pointerdown` of its own — finds nothing to pair itself with rather than
+   * being classified against wherever the abandoned press began.
    * `onPointerCancel` clears it too, for the same reason, when the browser
    * takes the pointer away instead of a release ever arriving.
    *
    * **All three — this function, `leaveRegion` and `onPointerCancel` — gate
    * that clear on `event.pointerId`.** Two presses can be live at once (a
-   * second finger, mid-drag, in a multi-touch press), and only one
-   * `pressRef` slot exists to hold either. A release, a leave or a cancel
-   * that is not the one this record belongs to must leave the record alone
-   * — it may yet be finished by its own pointer's `pointerup` — rather than
-   * being spent on an id it was never a press of.
+   * second finger, mid-drag, in a multi-touch press), and only one `pressRef`
+   * slot exists to hold either. A release, a leave or a cancel that is not the
+   * one this record belongs to must leave the record alone — it may yet be
+   * finished by its own pointer's `pointerup` — rather than being spent on an
+   * id it was never a press of.
    */
   function endPress(event: React.PointerEvent) {
     endRegion(event)
@@ -2565,8 +2490,8 @@ function App({ work, onLeave }: AppProps) {
 
   /**
    * One group, drawn — `GroupView.tsx`, which is where the reconciliation
-   * invariant that keeps `PageView`'s decode gate alive across a turn now
-   * lives, with a test over it.
+   * invariant that keeps `PageView`'s decode gate alive across a turn lives,
+   * with a test over it.
    *
    * `drawnSrcs` stays here rather than moving inside that component. It is
    * written by the two `PageView` callbacks this passes and read by nothing
@@ -2574,8 +2499,8 @@ function App({ work, onLeave }: AppProps) {
    * in different arms of the same ternary, so a reader going two -> scroll ->
    * two unmounts and remounts everything at that position. As `App` state this
    * record survives that; as component state it would come back empty and the
-   * layout would key on the target for as long as it took both cells to
-   * report, which is the flicker the record was introduced to stop.
+   * layout would key on the target for as long as it took both cells to report,
+   * which is the flicker the record exists to stop.
    */
   const drawGroup = (group: Group) => (
     <GroupView
@@ -2652,15 +2577,12 @@ function App({ work, onLeave }: AppProps) {
   // resolver three times for one slot is the shape that lets those answers
   // disagree.
   //
-  // There is one arm `lenderFor` can return through now, and the assertion
-  // holds for it: a resolved lender's slot came back from `indexOf`, which
-  // only answers when the position it was asked about actually exists. (It
-  // used to hold for a second arm too — the authority fallback carried the
-  // slot `lenderFor` had already proved exists before it returned anything at
-  // all — but Task 2 removed that arm, not the reason the assertion is sound.)
-  // Taken as parameters rather than read off `shown`, so the narrowing the
-  // caller has already done is what types them — `gapView`'s shape,
-  // immediately above, for the same reason.
+  // There is one arm `lenderFor` can return through, and the assertion holds
+  // for it: a resolved lender's slot came back from `indexOf`, which only
+  // answers when the position it was asked about actually exists. Taken as
+  // parameters rather than read off `shown`, so the narrowing the caller has
+  // already done is what types them — `gapView`'s shape, immediately above, for
+  // the same reason.
   const borrowedView = (
     edition: string,
     from: { edition: string; slot: number },
@@ -2721,7 +2643,7 @@ function App({ work, onLeave }: AppProps) {
     // `position: relative` is what `Chrome` positions itself against —
     // `position: absolute` removes it from this flex column's layout flow
     // entirely, so it can overlay the page area without the page area's own
-    // size changing when the bars mount or unmount. A `<main>` since O163: the
+    // size changing when the bars mount or unmount. A `<main>` (O163): the
     // reader's one landmark.
     <main
       className="reader"
@@ -2748,23 +2670,22 @@ function App({ work, onLeave }: AppProps) {
           // and scrolling are untouched — `touch-action: none` would take
           // both, and §9.2 keeps the pinch the browser's.
           touchAction: 'manipulation',
-          // What `Annotations`' `inset: 0` is measured against — the page
-          // area, not the whole reader. The two share a top edge now that the
-          // layout row is gone; they differ at the bottom, where the root
-          // also holds the note list placed below the page in flow
-          // (`<NoteList placement="below">`, after this page area) — a
-          // margin tab measured against the root could reach into that list
+          // What `Annotations`' `inset: 0` is measured against — the page area,
+          // not the whole reader. The two share a top edge; they differ at the
+          // bottom, where the root also holds the note list placed below the
+          // page in flow (`<NoteList placement="below">`, after this page area)
+          // — a margin tab measured against the root could reach into that list
           // instead of stopping at the page.
           position: 'relative',
           // Scroll mode's `scrollIntoView({ block: 'start' })` (`hooks.ts`'s
           // `useScrollToCurrent`) puts the current group's top at the page
-          // area's own top edge — which the top bar now draws over while it
-          // is shown. `scrollPaddingTop` moves the *target* down to clear the
-          // bar without moving the page area itself, so its size stays what
-          // O112 needs it to stay. Conditional on `chromeVisible` rather than
-          // set unconditionally: with the chrome hidden there is no bar to
-          // clear, and a fixed offset would move the scroll target for no
-          // reason the moment the bars come down.
+          // area's own top edge — which the top bar draws over while it is
+          // shown. `scrollPaddingTop` moves the *target* down to clear the bar
+          // without moving the page area itself, so its size stays what O112
+          // needs it to stay. Conditional on `chromeVisible` rather than set
+          // unconditionally: with the chrome hidden there is no bar to clear,
+          // and a fixed offset would move the scroll target for no reason the
+          // moment the bars come down.
           scrollPaddingTop: chromeVisible
             ? 'calc(var(--safe-top) + var(--reader-top-bar))'
             : undefined,
@@ -2833,14 +2754,14 @@ function App({ work, onLeave }: AppProps) {
             // The tab goes in the margin the hug leaves. `right-edge` is the
             // left cell of a real pair and only that: its artwork is against
             // the seam, so the outside is the only margin it has. Everything
-            // else keeps the default and is unchanged. Derived from the hug
-            // rather than asking `cellOf` a second time, so the two cannot
-            // come to different conclusions about which cell this is.
+            // else keeps the default. Derived from the hug rather than asking
+            // `cellOf` a second time, so the two cannot come to different
+            // conclusions about which cell this is.
             tabSide={shownHug === 'right-edge' ? 'left' : 'right'}
             // The live rectangle while dragging, and the settled one after the
-            // pointer is released but before Save — so a reader can see what
-            // they drew, and see it again when they reopen the note. Only
-            // while the editor is open on *this* slot.
+            // pointer is released — so a reader can see what they drew, and
+            // see it again when they reopen the note. Only while the editor is
+            // open on *this* slot.
             pending={
               panelMode === 'edit' &&
               draft?.edition === shown.edition &&
@@ -2892,9 +2813,8 @@ function App({ work, onLeave }: AppProps) {
                   scrolling exactly as it is in the other two modes. The notes
                   for every slot are resolved once for the whole edition
                   (`notesBySlot`) rather than once per group, which is one
-                  resolve per note instead of one per page — 195 pages on the
-                  primary corpus volume would otherwise scan the note list 195
-                  times.
+                  resolve per note instead of one per page — resolving per group
+                  would scan the note list once per page.
                 */}
                 <PageAnnotations
                   key={`${mode}:${i}`}
@@ -2920,13 +2840,13 @@ function App({ work, onLeave }: AppProps) {
           </div>
         ) : (
           current && (
-            // Scroll mode's branch above is untouched: it mounts every group
-            // at once and keeps fit-whole, which is the spec's scope decision
-            // rather than an oversight. `WHOLE` while the module is disabled
-            // rather than unmounting the wrapper, so turning zoom off does not
-            // change what React reconciles here — a changed element type at
-            // this position is what `cellsFor`'s doc records forcing a remount
-            // and throwing away `PageView`'s decode gate.
+            // Scroll mode's branch above mounts every group at once and keeps
+            // fit-whole, which is the spec's scope decision rather than an
+            // oversight. `WHOLE` while the module is disabled rather than
+            // unmounting the wrapper, so turning zoom off does not change what
+            // React reconciles here — a changed element type at this position
+            // is what `cellsFor`'s doc records forcing a remount and throwing
+            // away `PageView`'s decode gate.
             <Viewport rect={zoomPrefs.enabled ? view : WHOLE}>
               {drawGroup(current)}
             </Viewport>
@@ -3009,23 +2929,19 @@ function App({ work, onLeave }: AppProps) {
         />
       )}
       {/*
-        One panel, both states. The gap branch used to mount a second copy
-        that forced `mode` to `'review'` and stubbed every write handler; this
-        is the survivor, and `'edit'` is unreachable in a gap by two guards
-        rather than by that forcing.
+        One panel, both states. `'edit'` is unreachable in a gap by two guards.
 
         **They are complementary, not redundant — neither alone is enough**,
         because they cover disjoint routes. `NEW_INTENT` returns early on
         `shown.kind !== 'at'`, which stops an editor being *opened* in a gap;
         `panelModeRef.current === 'edit'` in the dispatch guard stops an
-        already-open one being *carried* into one. Remove the second and this
-        is reachable: open an editor on a page, let a refused save drop focus
-        to `<body>` (the state the dispatch guard's own comment records as
-        measured, not hypothetical), then press Space. `toggle` calls `swap`,
-        which changes only `viewing`, and on a slot the viewed edition has no
-        counterpart for that is a gap — with `mode='edit'` rendering beside
-        `Gap`, on a draft anchored to an edition no longer on screen, its
-        region drag dead because `draftImage` requires
+        already-open one being *carried* into one. Remove the second and this is
+        reachable: open an editor on a page, let a refused save drop focus to
+        `<body>` (a state the dispatch guard's own comment records), then press
+        Space. `toggle` calls `swap`, which changes only `viewing`, and on a
+        slot the viewed edition has no counterpart for that is a gap — with
+        `mode='edit'` rendering beside `Gap`, on a draft anchored to an edition
+        no longer on screen, its region drag dead because `draftImage` requires
         `draft.edition === shown.edition`. Remove the first instead and `n`
         opens an editor in a gap directly, which the second cannot see because
         `panelModeRef.current` is still `undefined` when `n` is pressed.
@@ -3059,9 +2975,9 @@ function App({ work, onLeave }: AppProps) {
           }))
         }
         // Every note this session touched, not only the one on show — the
-        // point of an edit mode is that a reader can nudge three boxes and
-        // save once, and a Save that wrote only the last one they happened to
-        // click would silently drop the other two.
+        // point of an edit mode is that a reader can nudge three boxes, and a
+        // write that sent only the last one they happened to click would
+        // silently drop the other two.
         onDelete={(id) => {
           // Deleting is deliberate and irreversible-looking, so it goes now
           // rather than in 700 ms — and it cancels whatever the debounce was
@@ -3111,8 +3027,8 @@ function App({ work, onLeave }: AppProps) {
         so this map does not need to be recomputed as a reader turns pages,
         only as editions themselves change. `undefined` from `borrowNote`
         (three editions or more) leaves `settingsNotes` with no entry for
-        `borrowModule.id`, and `Settings` renders that module's section
-        exactly as it always has.
+        `borrowModule.id`, and `Settings` renders that module's section with
+        no note.
       */}
       <Settings
         visible={settingsVisible}
@@ -3133,10 +3049,9 @@ function App({ work, onLeave }: AppProps) {
           // The panel deals in pages, the reader in slots. Converted through
           // `creditSlotsIn` rather than a `findIndex` of its own, so this file
           // holds no second page-to-slot rule: that function is the one place
-          // the two spaces meet, which is the whole point of replacing the
-          // expansion `creditSlots` used to do here. A joined spread yields
-          // both its slots and the first is where to land, since its two slots
-          // are one image and `groups` puts that one first.
+          // the two spaces meet. A joined spread yields both its slots and the
+          // first is where to land, since its two slots are one image and
+          // `groups` puts that one first.
           const [slot] = creditSlotsIn(slots, [page])
           if (slot === undefined) return
           goToSlot(slot)

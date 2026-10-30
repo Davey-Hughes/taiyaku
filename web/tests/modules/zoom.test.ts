@@ -243,8 +243,8 @@ describe('panStep', () => {
 
 describe('swapMapKind', () => {
   // The measured default. `'content'` means "map through whichever derived
-  // transform wins", and `mapRect`'s corpus measurement says that is
-  // `'pillarbox'` — not the `'letterbox'` this line held until 2026-08-08.
+  // transform wins", and the corpus measurement `mapRect` points at says that
+  // is `'pillarbox'`.
   it('maps content through pillarbox', () => {
     expect(swapMapKind({ ...prefs, onSwap: 'content' })).toBe('pillarbox')
   })

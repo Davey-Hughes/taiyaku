@@ -15,22 +15,14 @@ export const WHOLE_INTENT = 'zoom:whole'
 /**
  * Zoom and pan, and what a swap does with them.
  *
- * **Declared ahead of its own experiment, and the experiment has since run.**
  * `onSwap: 'content'` means "map through whichever derived transform wins" —
- * `viewport.ts`'s `mapRect` — and this module landed before the corpus
- * measurement scheduled as Task 8 of
- * `docs/superpowers/plans/2026-08-07-l1-geometry.md` had said which that was.
- * `'content'` was the right default even then, on the design's own promotion
- * rule (`docs/superpowers/specs/2026-08-07-l1-geometry-design.md` §4):
- * `'reset'` is what ships if no candidate beats throwing the view away, not a
- * default to assume ahead of a result.
- *
- * The result, `docs/notes.md`'s "Which derived transform maps a rect between
- * editions", left this line alone and changed the one it points at: neither
- * candidate the design named won, `mapRect`'s `'pillarbox'` did, and every one
- * of the three beat throwing the view away. So `'content'` is now a
- * measurement rather than a bet, and `mapRect`'s doc carries the figures. A
- * reader who disagrees with the default can still say so.
+ * `viewport.ts`'s `mapRect`. It is the default because every candidate
+ * transform beat throwing the view away (`docs/notes.md`, "Which derived
+ * transform maps a rect between editions", carries the figures), and the
+ * design's own promotion rule
+ * (`docs/superpowers/specs/2026-08-07-l1-geometry-design.md` §4) is that
+ * `'reset'` ships only if no candidate does. A reader who disagrees with the
+ * default can still say so.
  *
  * **`maxScale` and `step` are guesses, not measurements.** 8x on a
  * 1200px-tall page puts a single line of dialogue across the viewport, which
@@ -42,8 +34,7 @@ export const WHOLE_INTENT = 'zoom:whole'
  * `0` is safe to claim and cannot become an edition jump later: `keys.ts`'s
  * `READER_KEYS` answers `1`..`9` and deliberately leaves `0` alone, and says
  * so where it is declared, so a tenth edition would need a different key
- * regardless of what this module does. *This cited `intentOf`'s `/^[1-9]$/`
- * until 2026-08-08, when that test became a table row.*
+ * regardless of what this module does.
  */
 export interface ZoomPrefs {
   enabled: boolean
@@ -70,32 +61,22 @@ export const zoomModule: ReaderModule<ZoomPrefs> = {
 }
 
 /**
- * Which of `viewport.ts`'s derived transforms `onSwap: 'content'` maps
- * through.
+ * Which of `viewport.ts`'s derived transforms `onSwap: 'content'` maps through.
  *
- * **A result, and it said this line was wrong.** It read `'letterbox'` until
- * 2026-08-08, on the guess that a letterbox "is centred by construction" — the
- * rule that took Tongari v09 from 98 runs to 7 — and that framing differences
- * between packagings arise the same way. The corpus says the reasoning was
- * sound about letterboxing and wrong about these editions: the shared artwork
- * is as tall as the taller page, and the wider one carries margin at its
- * sides, not its top and bottom.
+ * `'pillarbox'`, because in the corpus the shared artwork is as tall as the
+ * taller page, and the wider one carries margin at its sides, not its top and
+ * bottom. A letterbox map corrects nothing on the axis that needs it and adds
+ * error on the axis that does not, so it loses to doing nothing at all;
+ * `'identity'` is exactly right on the vertical and uncorrected on the
+ * horizontal, which `'pillarbox'` corrects. `docs/notes.md`, "Which derived
+ * transform maps a rect between editions", is the measurement and carries the
+ * figures. None of these is what `mapView` corrects most visibly — that is the
+ * fit-whole letterbox *inside* the page area, which `paintedIn` removes
+ * whichever one is chosen.
  *
- * `docs/notes.md`, "Which derived transform maps a rect between editions", is
- * the measurement — 288 slots over twelve corpus volumes, `raw-mono` against
- * `en-mono` — and `mapRect`'s own doc carries the figures beside the
- * arithmetic. What `'pillarbox'` beat, in order: `'letterbox'`, which corrects
- * nothing on the axis that needs it and adds four times the error on the axis
- * that does not, so it loses to doing nothing at all; `'identity'`, which is
- * exactly right on the vertical and uncorrected on the horizontal, where
- * `'pillarbox'` cuts the median residual from 0.0296 of page width to 0.0195;
- * and `'reset'`, a half-page bound rather than a residual. None of the three
- * is what `mapView` corrects most visibly — that is the fit-whole letterbox
- * *inside* the page area, which `paintedIn` removes whichever one is chosen.
- *
- * Still the seam rather than the decision: had no candidate beaten throwing
- * the view away, the design's §4 promotion rule ships reset-on-swap, which is
- * a change to `defaults.onSwap` above and not to this constant.
+ * This is the seam rather than the decision: were no candidate to beat
+ * throwing the view away, the design's §4 promotion rule ships reset-on-swap,
+ * which is a change to `defaults.onSwap` above and not to this constant.
  */
 const CONTENT_MAP: MapKind = 'pillarbox'
 
@@ -145,13 +126,13 @@ export function anchorIn(
  * Whether the rect can be moved at all right now: the module is on **and**
  * something is drawn to move it over.
  *
- * One predicate, because it is asked in four places that must agree — the
- * three zoom keys and the pan press. `drawn` rather than `mode !== 'scroll'`
- * for the reason the press's own guard gives: what the page area is drawing is
- * already absent in scroll mode *and* where the viewed edition has no slot,
- * whether that is filled by `Gap` or by `Borrowed`, either of which would
- * otherwise pan a rect nobody is drawing. The borrowed case is the one worth
- * stating: a page really is on screen there, and it is still not zoomable.
+ * One predicate, because the three zoom keys and the pan press all ask it and
+ * must agree. `drawn` rather than `mode !== 'scroll'` for the reason the
+ * press's own guard gives: what the page area is drawing is already absent in
+ * scroll mode *and* where the viewed edition has no slot, whether that is
+ * filled by `Gap` or by `Borrowed`, either of which would otherwise pan a rect
+ * nobody is drawing. The borrowed case is the one worth stating: a page really
+ * is on screen there, and it is still not zoomable.
  *
  * This is `notes.ts`'s `pressTakesPan`'s `zoomable` field, and the two must
  * stay one rule: the *decision* to pan is part of what a press on the page
@@ -202,10 +183,9 @@ export function zoomStep(
  * view alone" — see `anchorIn` for what dividing by a zero box costs.
  *
  * Proportional to the delta and normalised across `deltaMode` first;
- * `wheelBy`'s doc has that rule and names every constant it guesses at. What
- * this replaced was `deltaY < 0 ? step : 1 / step`, a full step per event
- * whatever its size, which at the defaults let a single trackpad flick pin the
- * view at `maxScale`.
+ * `wheelBy`'s doc has that rule and names every constant it guesses at. A full
+ * step per event whatever its size (`deltaY < 0 ? step : 1 / step`) would, at
+ * the defaults, let a single trackpad flick pin the view at `maxScale`.
  */
 export function wheelStep(
   rect: Rect,

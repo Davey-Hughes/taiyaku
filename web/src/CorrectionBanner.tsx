@@ -22,11 +22,11 @@ export interface CorrectionBannerProps {
  * The one screen a reader confirms an irreversible write from.
  *
  * Two states, and the second is the whole reason this is a component worth
- * testing rather than eighty lines of JSX inside `App.tsx`: before a
- * counterpart is picked it is a prompt, and after one is picked it has to say
- * *what is being asserted* and *what that costs* on the same screen, with two
- * buttons whose `disabled` is the only thing standing between a reader and a
- * second concurrent write against one validator.
+ * testing rather than JSX inside `App.tsx`: before a counterpart is picked it
+ * is a prompt, and after one is picked it has to say *what is being asserted*
+ * and *what that costs* on the same screen, with two buttons whose `disabled`
+ * is the only thing standing between a reader and a second concurrent write
+ * against one validator.
  *
  * `role="status"` rather than `alert`: this appears because the reader pressed
  * `c`, so it is not an interruption, and an assertive live region would make a
@@ -72,12 +72,11 @@ export function CorrectionBanner({
       ) : (
         <>
           {/* The assertion itself, restated at the moment of confirming.
-              Without this the banner swapped the "pick a page" prompt for
-              the consequence line alone, so the one screen a reader
-              confirms an irreversible write from never said what was
-              being asserted — found by driving this against the real
-              corpus, where the strip has 235 tiles and the picked one
-              scrolls out of view as easily as not. */}
+              Without it the banner would swap the "pick a page" prompt for
+              the consequence line alone, and the one screen a reader
+              confirms an irreversible write from would never say what was
+              being asserted; the picked tile can scroll out of view in
+              the strip. */}
           <p style={{ margin: 0 }}>
             Pair <strong>{pending.from}</strong> {describePosition(pending.a)}{' '}
             with <strong>{pending.to}</strong> {describePosition(pending.b)}?

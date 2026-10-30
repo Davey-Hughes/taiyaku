@@ -21,11 +21,11 @@ export interface ReaderFailedProps {
 /**
  * What the reader draws when its work never loads — O176.
  *
- * `App` drew nothing in this state: its load effect logged the failure and
- * `if (!session) return null` held for good, which left `Routes.tsx`'s black
- * `.reader-route` with no message, no heading, no landmark and no way back but
- * the browser's own. A typed `/read/…` for a slug the library does not hold
- * gets here, and so does a server that does not answer.
+ * Without this screen `App` would draw nothing in this state:
+ * `if (!session) return null` holds for good, which would leave `Routes.tsx`'s
+ * black `.reader-route` with no message, no heading, no landmark and no way
+ * back but the browser's own. A typed `/read/…` for a slug the library does
+ * not hold gets here, and so does a server that does not answer.
  *
  * **One failure is said in this screen's own words, and every other is shown
  * as it was thrown** — either way in a `<p role="alert">`, which is where
@@ -41,9 +41,7 @@ export interface ReaderFailedProps {
  * the account's grant hides; and for a work the library does hold and this
  * server process has not loaded — `ServeState`'s `works` is a snapshot taken
  * at startup, so a volume a scan has just derived is in the library's own
- * answers and is a 404 to the reader. Driven on a scratch library: the
- * screen first read "This library has no work named" over a slug that
- * `/api/library/home` had just named.
+ * answers and is a 404 to the reader.
  *
  * For `thrown` the alert is the message — for a read the server refused,
  * `api.ts`'s sentence with the status and the body, and for anything else

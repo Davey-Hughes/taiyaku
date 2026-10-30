@@ -46,7 +46,7 @@ export function RegionOverlay({
           // `null` is a real axis — a radial sound effect has no reading
           // direction — so it gets a value of its own rather than an absent
           // attribute, which would be indistinguishable from a box predating
-          // the field. `index.css` draws all three.
+          // the field. `styles/annotations.css` draws all three.
           data-axis={box.axis ?? 'none'}
           data-ignore={String(box.ignore)}
           data-selected={String(box.id === selectedId)}

@@ -45,8 +45,9 @@ describe('window', () => {
 describe('prefetchModule', () => {
   // One group each way, not two — these count groups since `groupWindow`, and
   // reaching further measured *slower*: a decoded page is ~26 MB, so a wide
-  // window evicts the pages the reader is arriving at. See the module's own
-  // doc for the table.
+  // window evicts the pages the reader is arriving at. The table is the
+  // `prefetch.ts` entry in
+  // `docs/superpowers/notes/2026-10-29-code-history-web-src.md`.
   it('defaults to enabled, one group either side, and a capped decode concurrency', () => {
     expect(prefetchModule.defaults).toEqual({
       enabled: true,

@@ -121,8 +121,7 @@ describe('the inbox draws a filter and a tab differently', () => {
   it('gives the two rows no shared treatment', () => {
     // The regression ② shipped: one selector matching both rows, drawing
     // them alike. `.chips` was that selector and is gone from this app.
-    // Comments are stripped first — this file's head comment tells the
-    // story of `.chips` and must go on being allowed to.
+    // Comments are stripped first, so a comment may still name `.chips`.
     expect(withoutComments(adminSource)).not.toContain('.chips')
   })
 
@@ -716,9 +715,9 @@ describe('admin.css carries a coarse-pointer floor', () => {
     // padding at 8px and moves the content up 1.5px, which takes that offset
     // to 0.0 on all three; `Dismissed`, the one word with no descender, lands
     // 16.5/16.5. Measured in Chromium at 390x844 with `hasTouch` against the
-    // built stylesheet — `admin.css`'s own comment carries the table, and why
-    // the first version of this rule (`0 6px`) overcorrected by reading a
-    // descender as skew.
+    // built stylesheet; the table is the `admin.css` entry for `.state` in
+    // `docs/superpowers/notes/2026-10-29-code-history-web-src.md`, and
+    // `admin.css`'s own comment says why `0 6px` would overcorrect.
     //
     // Pinned as the asymmetry, not as the literal: what must not come back is
     // a symmetric `padding-block`, which is what the floor inherits without

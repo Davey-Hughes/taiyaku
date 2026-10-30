@@ -6,16 +6,12 @@ import type { Position, Resolver } from './resolver'
  * a work draws the same pairs as every other.
  *
  * **The defect this closes.** `pairing.ts`'s `groups` anchors `two` mode's
- * pairing at slot 0 of whatever edition it is handed, and nothing carried that
- * choice across a swap. Editions disagree about how many pages precede the
- * story, and every joined spread present in one and not another flips the
- * relative parity again from that point on — so the same reading position drew
- * pages `(n-1, n)` in one edition and `(n, n+1)` in the next. One page on
- * screen was right and the other was its neighbour. Measured on
- * `gotoubun-v01`, over every ordered pair of its three editions, **206 of 580
- * swaps kept the pair intact**; between the two English editions, the pair a
- * reader is likeliest to compare, roughly seven groups in ten were torn.
- * Reported from real reading as the editions getting "off by 1 page".
+ * pairing at slot 0 of whatever edition it is handed, so without this nothing
+ * carries that choice across a swap. Editions disagree about how many pages
+ * precede the story, and every joined spread present in one and not another
+ * flips the relative parity again from that point on — so the same reading
+ * position would draw pages `(n-1, n)` in one edition and `(n, n+1)` in the
+ * next. One page on screen would be right and the other its neighbour.
  *
  * **Pair boundaries are a property of the work, not of an edition.** That is
  * the whole idea here. A joined spread is one image and `groups` gives it its
@@ -27,17 +23,12 @@ import type { Position, Resolver } from './resolver'
  * takes its breaks from that one grouping. The result is one boundary sequence
  * that all editions share.
  *
- * **A simpler rule was tried first and is not enough.** Deriving each *spoke's*
- * parity from the hub's own natural grouping, leaving the hub alone, takes the
- * same measurement to 572 of 598 — and then fails exactly where a spoke's
- * spreads force boundaries the hub has no way to follow. `en-mono` joins pages
- * 45 and 46 back to back, which raw splits into four ordinary pages; standing
- * on that spread and swapping showed raw 47–48 where 48–49 was right, reported
- * from reading as slot 48. Unioning the forced boundaries fixes that case and
- * scores **581 of 590** — and, because the hub can now move too, it needs
- * *fewer* solo groups to do it: `en-mono` 14 → 4, `en-fan` 12 → 6. Better on
- * both axes at once, which is why the simpler rule is recorded here as rejected
- * rather than kept as an option.
+ * **Deriving each *spoke's* parity from the hub's own natural grouping, and
+ * leaving the hub alone, is not enough.** It fails where a spoke's spreads
+ * force boundaries the hub has no way to follow: `en-mono` joins pages 45 and
+ * 46 back to back, which raw splits into four ordinary pages. Unioning the
+ * forced boundaries fixes that case and, because the hub can move too, needs
+ * *fewer* solo groups to do it.
  *
  * **The hub, and not the authority**, as the space the boundaries are unioned
  * in: `ReadingState.authority` moves to whichever edition the reader last
@@ -48,14 +39,12 @@ import type { Position, Resolver } from './resolver'
  *
  * **What it costs, stated rather than hidden.** Each position where the parity
  * genuinely has to change costs one group drawn alone, because that is what
- * restarting a pair means, and a reader who never swaps pays it too. On
- * `gotoubun-v01` that is 4 solo groups added to `en-mono`, 2 to `en-fan` and 2
- * to `raw-mono`. It is the honest arrangement: a solo page says "there is
- * nothing here to pair this with", where a silently mismatched pair said
- * nothing at all.
+ * restarting a pair means, and a reader who never swaps pays it too. It is the
+ * honest arrangement: a solo page says "there is nothing here to pair this
+ * with", where a silently mismatched pair says nothing at all.
  *
  * Returns `[]` for any edition the resolver cannot describe, which leaves that
- * edition grouping exactly as it did before this existed.
+ * edition grouping as it would without this function.
  *
  * **Costly enough to memoise** — it walks every slot of every edition, each a
  * call across the WASM boundary. `alignedBreaksCached` is the memo, and
@@ -235,14 +224,13 @@ export function emptyBreaksCache(): DerivedBreaksCache {
 /**
  * `alignedBreaks`, computed once per distinct set of inputs.
  *
- * The walk is a resolver call per slot of *every* edition — around 1,300
- * crossings of the wasm boundary on the primary corpus — and `App.tsx`
- * re-renders on every keypress, every hover over the chrome and every settings
- * change, none of which move the hub or the edition. `useMemo` would be the
- * obvious tool and is unavailable: every hook in that component has to sit
- * above its `if (!session) return null`, and the hub, the viewed edition and
- * the effective reading direction are all bound below it. So the memo is
- * written out, over a cache the caller keeps in a ref.
+ * The walk is a resolver call per slot of *every* edition, each a crossing of
+ * the wasm boundary, and `App.tsx` re-renders on every keypress, every hover
+ * over the chrome and every settings change, none of which move the hub or the
+ * edition. `useMemo` would be the obvious tool and is unavailable: every hook
+ * in that component has to sit above its `if (!session) return null`, and the
+ * hub, the viewed edition and the effective reading direction are all bound
+ * below it. So the memo is written out, over a cache the caller keeps in a ref.
  *
  * The resolver is compared by identity rather than by name, deliberately: a
  * correction or a stale-`ETag` re-read replaces the resolver while the work,

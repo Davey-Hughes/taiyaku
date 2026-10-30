@@ -1,13 +1,13 @@
 /**
  * One rule's fields — spec C4 §1's right-hand pane, top half.
  *
- * **It commits on blur or Enter, never on keystroke.** A preview costs a
- * median 281 ms on a real library and the derivation is the entire cost, so
- * deriving to answer a question about a pattern nobody has finished writing
- * holds the write lock repeatedly for nothing — and a half-typed regex is a
- * rule that matches nothing, so the answer would be wrong as well as
- * expensive. The build design's §5.3, where the alternatives (a debounce, an
- * explicit Preview button) are weighed and refused.
+ * **It commits on blur or Enter, never on keystroke.** A preview is
+ * expensive and the derivation is the entire cost, so deriving to answer a
+ * question about a pattern nobody has finished writing holds the write lock
+ * repeatedly for nothing — and a half-typed regex is a rule that matches
+ * nothing, so the answer would be wrong as well as expensive. The build
+ * design's §5.3, where the alternatives (a debounce, an explicit Preview
+ * button) are weighed and refused.
  *
  * **A blur that changed nothing commits nothing.** Tabbing through the form
  * is one gesture to a person and would otherwise be six derivations.
@@ -68,8 +68,8 @@ export function RuleForm({
   }
 
   // O175: every control here carries its label's words in an `aria-label`,
-  // because `.field` draws them in capitals and Chromium's accessibility
-  // tree named the control in those capitals.
+  // because `.field` draws them in capitals and Chromium's accessibility tree
+  // would name the control in those capitals.
   const text = (
     name:
       | 'pattern'
@@ -144,9 +144,9 @@ export function RuleForm({
 
       {text('pattern', 'pattern')}
 
-      {/* O182: the `aria-label` repeats the legend's words because
-          `admin.css` draws them in capitals, and Chromium's accessibility
-          tree named the group in those capitals. */}
+      {/* O182: the `aria-label` repeats the legend's words because `admin.css`
+          draws them in capitals, and Chromium's accessibility tree would name
+          the group in those capitals. */}
       <fieldset className="rule-sets" aria-label="sets">
         <legend>sets</legend>
         {text('set_series', 'series')}

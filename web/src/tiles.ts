@@ -85,10 +85,9 @@ export function tileUnits(group: Group): 1 | 2 {
  * definition both the tile style and the runtime `--strip-unit` measurement
  * below read — rather than each holding its own copy of the `calc()`
  * string, which would let the two silently drift apart the next time either
- * one changed. The measurement effect has to recognise a *one-unit* tile
- * (as opposed to a two-unit spread or pair, whose floor is double) by
- * matching a rendered tile's `style.minWidth` back against `tileMinWidth(1)`
- * — see `Filmstrip.tsx`'s mount effect.
+ * one changed. The measurement effect reads a rendered tile's unit count
+ * back by matching its `style.minWidth` against `tileMinWidth(1)` and
+ * `tileMinWidth(2)` — see `Filmstrip.tsx`'s mount effect.
  */
 export function tileMinWidth(units: 1 | 2): string {
   return `calc(var(--strip-unit) * ${units} + var(--strip-tile-border) * 2)`
@@ -109,20 +108,18 @@ export function tileMinWidth(units: 1 | 2): string {
  * `refinedStripUnit`'s `outerWidth` parameter that consumes it, already
  * meant, rather than a bare per-unit price that would need both of those to
  * change what they expect. For a one-unit tile this is the identity:
- * `(outerWidth - border*2) / 1 + border*2` is `outerWidth` again, so this
- * changes nothing for the samples that already worked.
+ * `(outerWidth - border*2) / 1 + border*2` is `outerWidth` again.
  *
  * **Why every loaded tile needs to contribute at all.** In `two` mode every
  * group but a break singleton is two slots (`pairing.ts`), so a 33-tile
- * window can hold as few as zero loaded one-unit tiles — under the old
- * one-unit-only filter, `medianTileWidth` could never reach a sample there,
- * which left `--strip-unit` unrefined and `Filmstrip.tsx`'s `load` listener
- * attached for the component's whole life (see that effect's own comment).
- * A two-unit tile answers the same question a one-unit tile does — what one
- * unit measures on this platform, right now — once its own border and unit
- * count are divided back out, so `two` mode gets a sample from its own
- * tiles rather than needing a one-unit tile to happen to be in the window
- * at all.
+ * window can hold as few as zero loaded one-unit tiles. Restricted to those,
+ * `medianTileWidth` could then never reach a sample, which would leave
+ * `--strip-unit` unrefined and `Filmstrip.tsx`'s `load` listener attached for
+ * the component's whole life (see that effect's own comment). A two-unit tile
+ * answers the same question a one-unit tile does — what one unit measures on
+ * this platform, right now — once its own border and unit count are divided
+ * back out, so `two` mode gets a sample from its own tiles rather than
+ * needing a one-unit tile to happen to be in the window at all.
  */
 export function normalizedTileWidth(
   outerWidth: number,
@@ -138,13 +135,13 @@ export function normalizedTileWidth(
  * that writing one would be noise.
  *
  * `outerWidth` is expected to be a loaded tile's `getBoundingClientRect()
- * .width` — or, since C2 (whole-branch review), `medianTileWidth`'s median
- * of several loaded tiles' — a border-box width either way, because the
- * tile `<button>` is `box-sizing: border-box` (`Filmstrip.tsx`'s
- * `tileStyle`). Subtracting both borders back out is what recovers the same
- * `--strip-unit` the CSS floor and the spacers already build on top of —
- * see `reader.css`'s own comment on `--strip-unit` for why that figure is a
- * content width, not the tile's full outer width.
+ * .width` — or `medianTileWidth`'s median of several loaded tiles' — a
+ * border-box width either way, because the tile `<button>` is
+ * `box-sizing: border-box` (`Filmstrip.tsx`'s `tileStyle`). Subtracting both
+ * borders back out is what recovers the same `--strip-unit` the CSS floor and
+ * the spacers already build on top of — see `reader.css`'s own comment on
+ * `--strip-unit` for why that figure is a content width, not the tile's full
+ * outer width.
  *
  * **The `tolerance` (0.5 px default) is what lets `Filmstrip`'s effect call
  * this at most once per mount and still converge.** Setting `--strip-unit`
@@ -174,60 +171,50 @@ export function refinedStripUnit(
  * tile of the same per-unit width would have measured at — or `undefined`
  * when there are fewer than `minSample` of them to trust.
  *
- * **Why a median, not the first qualifying tile (C2, whole-branch
- * review).** A double-page scan the sidecar never marked `spread: true` is a
- * one-slot group, so `tileUnits` correctly calls it one unit and it carries
- * the one-unit `minWidth` floor — while drawing at roughly twice the nominal
- * width, the same way a genuine `spread: true` tile does. `Filmstrip`'s
- * measurement effect cannot tell that tile apart from an ordinary one by its
- * `minWidth` alone, because there is nothing to tell apart: both are
- * one-unit by the sidecar's own (wrong, in this case) account. Accepting
- * whichever tile happened to load first — the previous rule — corrupted
- * `--strip-unit`, and with it every tile floor and every spacer, to about
- * double the true value whenever that tile won the race. This is not a
- * hypothetical: `docs/notes.md` records six such pages on
- * `akame-ga-kill----v01--2015--cbz`, and a stubbed double-width tile
- * reproduced `--strip-unit` taking that tile's width instead of the true
- * ~64 — `tiles.test.ts` and `Filmstrip.test.tsx` carry the exact figures,
- * which is where to read them rather than from a number repeated here. A median survives
- * this **when the outliers are a minority of the sample**, whatever their
- * own width is: they sort to one end and cannot reach the middle. That is a
- * weaker guarantee than "rare in the edition", and deliberately stated as
- * the weaker one — the sample is only the tiles loaded around where the
- * reader is, and `docs/notes.md` records the six unmarked scans on
- * `akame-ga-kill…v01` as a *run*, so a chrome opened inside that run is
- * exactly the case an appeal to edition-wide rarity would wave away. With
- * three of five samples against it the median gives the outlier outright.
- * What bounds the damage then is that every tile contributes, so the sample
- * is as wide as the window rather than as narrow as the run.
+ * **Why a median, not the first qualifying tile.** A double-page scan the
+ * sidecar never marked `spread: true` is a one-slot group, so `tileUnits`
+ * correctly calls it one unit and it carries the one-unit `minWidth` floor —
+ * while drawing at roughly twice the nominal width, the same way a genuine
+ * `spread: true` tile does. `Filmstrip`'s measurement effect cannot tell that
+ * tile apart from an ordinary one by its `minWidth` alone, because there is
+ * nothing to tell apart: both are one-unit by the sidecar's own (wrong, in
+ * this case) account. Accepting whichever tile happened to load first would
+ * corrupt `--strip-unit`, and with it every tile floor and every spacer, to
+ * about double the true value whenever that tile won the race. A median
+ * survives this **when the outliers are a minority of the sample**, whatever
+ * their own width is: they sort to one end and cannot reach the middle. That
+ * is a weaker guarantee than "rare in the edition", and deliberately stated
+ * as the weaker one — the sample is only the tiles loaded around where the
+ * reader is, and a chrome opened among unmarked scans that sit together
+ * (`docs/notes.md` records unmarked scans on `akame-ga-kill…v01`) is exactly
+ * the case an appeal to edition-wide rarity would wave away. With three of
+ * five samples against it the median gives the outlier outright. What bounds
+ * the damage then is that every tile contributes, so the sample is as wide
+ * as the window rather than as narrow as the cluster.
  *
- * **Why every loaded tile, not only one-unit ones (fix-round review,
- * finding A).** The measurement used to filter its sample down to one-unit
- * tiles before ever reaching this function. In `two` mode every group but a
- * break singleton is two slots, so a 33-tile window could hold as few as
- * zero qualifying tiles, `minSample` could then never be reached, and the
- * `load` listener reading this never detached — it kept re-scanning the
- * rail and forcing a layout read on every thumbnail that loaded, for the
- * life of the mount, on the branch whose whole purpose was removing that
- * per-load cost. `normalizedTileWidth` is what lets a two-unit tile answer
- * the same question a one-unit tile does, so `widths` here now draws from
- * the whole rendered window rather than a subset of it that can be empty.
+ * **Why every loaded tile, not only one-unit ones.** Filtered down to
+ * one-unit tiles, the sample in `two` mode, where every group but a break
+ * singleton is two slots, could hold as few as zero qualifying tiles in a
+ * 33-tile window. `minSample` could then never be reached, and the `load`
+ * listener reading this would never detach: it would keep re-scanning the
+ * rail and forcing a layout read on every thumbnail that loaded, for the life
+ * of the mount. `normalizedTileWidth` is what lets a two-unit tile answer the
+ * same question a one-unit tile does, so `widths` here draws from the whole
+ * rendered window rather than a subset of it that can be empty.
  *
  * **Why a minimum sample at all.** The same asymmetry runs the other way on
  * a small sample: with one loaded tile, the "median" of one value is that
  * value, and if it happens to be the one unmarked double-page scan in the
  * window, nothing in the arithmetic would say so. `minSample` (3 by
- * default, lowered from 5 now that every loaded tile contributes rather
- * than only one-unit ones) is what an early render — the first frame or
- * two, before most of the window's thumbnails have decoded — cannot yet
- * satisfy, so this declines to answer rather than let one tile of either
- * kind decide the measurement. Reaching this floor is not the only way
- * `Filmstrip`'s `load` listener stops, though: a rail with fewer tiles than
- * `minSample` altogether — a work with fewer than `minSample` groups, say —
- * can never reach it, which is why that listener also detaches once every
- * tile it could ever measure has loaded, whether or not this function ever
- * answered. See that effect's own comment for why neither condition alone
- * is enough.
+ * default) is what an early render — the first frame or two, before most of
+ * the window's thumbnails have decoded — cannot yet satisfy, so this declines
+ * to answer rather than let one tile of either kind decide the measurement.
+ * Reaching this floor is not the only way `Filmstrip`'s `load` listener
+ * stops, though: a rail with fewer tiles than `minSample` altogether — a work
+ * with fewer than `minSample` groups, say — can never reach it, which is why
+ * that listener also detaches once every tile it could ever measure has
+ * loaded, whether or not this function ever answered. See that effect's own
+ * comment for why neither condition alone is enough.
  */
 export function medianTileWidth(
   widths: number[],
@@ -248,23 +235,15 @@ export function medianTileWidth(
  * **Not `to - from` (a tile count).** A joined spread is two units in one
  * group (see `tileUnits`), so a spacer sized by counting groups rather than
  * summing `tileUnits` across them comes up one unit short per spread outside
- * the window. `Filmstrip.test.tsx` does build `spread: true` fixtures, in two
- * of its tile-floor tests — but each is only 1–2 groups, small enough that
- * the rail's 33-tile window renders the whole thing: `lo` stays 0 and `hi`
- * stays `groups.length`, so neither spacer's `lo > 0` / `hi < groups.length`
- * guard ever fires and this function is never reached with a spread group in
- * range. That file's *windowing* fixtures, the ones that do produce a
- * non-empty range on both sides, are all singleton groups with no spread —
- * and so is `Filmstrip.browser.test.tsx`'s own 120-tile fixture. `tiles.test.ts`
- * below is what actually exercises a `spread: true` group inside a summed
- * range.
+ * the window. A window that renders the whole rail leaves both spacer guards
+ * (`lo > 0`, `hi < groups.length`) unfired, so this function is not reached
+ * with a spread group in range there; `tiles.test.ts` is what exercises a
+ * `spread: true` group inside a summed range.
  *
- * Lives here rather than as a closure inside `Filmstrip.tsx` (where it
- * started, as `unitsIn`) for the same reason every other pure function in
- * this module does: a component file can only export components
- * (`style/useComponentExportOnlyModules` in `biome.jsonc`), and a closure
- * that never left `Filmstrip.tsx` had no test of its own — the summation was
- * only ever exercised through fixtures where it agreed with a tile count.
+ * Lives here rather than as a closure inside `Filmstrip.tsx` for the same
+ * reason every other pure function in this module does: a component file can
+ * only export components (`style/useComponentExportOnlyModules` in
+ * `biome.jsonc`), and a closure inside it would have no test of its own.
  */
 export function unitsBetween(
   groups: Group[],

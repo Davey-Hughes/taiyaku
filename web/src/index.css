@@ -1,6 +1,5 @@
 /* The stylesheet, by area — spec 2026-09-17 §4. Vite inlines every import at
- * build time. The order is the order the rules had when this was one file,
- * which matters wherever two rules tie on specificity. */
+ * build time. The order matters wherever two rules tie on specificity. */
 @import "./styles/base.css";
 @import "./styles/tokens.css";
 @import "./styles/annotations.css";

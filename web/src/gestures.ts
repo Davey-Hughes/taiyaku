@@ -13,8 +13,8 @@
  * **What this does not decide** is anything a press does while it is still
  * down. Panning is `pressTakesPan`'s; drawing a region, moving one and
  * finishing a note are `gestureFor`'s; the wheel and the trackpad pinch it
- * carries are `App.tsx`'s own listener's. None of them changes, and a press
- * one of them has already spent arrives here marked `consumed`.
+ * carries are `App.tsx`'s own listener's. A press one of them has already
+ * spent arrives here marked `consumed`.
  */
 
 /** Where and when a press was, in the page area's own pixels and in milliseconds. */
@@ -59,8 +59,8 @@ export type PageGesture =
  *
  * These four numbers are **chosen, not measured** (spec §9.2). A thumb on a
  * phone is what says whether 10 px is too tight to hold still for and whether
- * 40 px is far enough to be deliberate; ④'s device pass is where that is
- * asked, and a figure it changes is changed here and in §9.2 together.
+ * 40 px is far enough to be deliberate; a figure that changes is changed here
+ * and in §9.2 together.
  */
 export const TAP_SLOP = 10
 

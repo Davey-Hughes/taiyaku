@@ -28,11 +28,11 @@ const rowStyle: CSSProperties = {
 }
 
 // `PanelMode` — what the panel is showing, or nothing at all — is declared in
-// `notes.ts` and imported above. It used to be declared here, which made a
-// module that must not import React take its own state's type from a `.tsx`.
-// Imported rather than re-exported because `useComponentExportOnlyModules`
-// refuses an `export type { … }` specifier from a file that exports a
-// component, the same rule `tiles.ts` exists for.
+// `notes.ts` and imported above. Declared here, it would make a module that
+// must not import React take its own state's type from a `.tsx`. Imported
+// rather than re-exported because `useComponentExportOnlyModules` refuses an
+// `export type { … }` specifier from a file that exports a component, the same
+// rule `tiles.ts` exists for.
 
 export interface NotePanelProps {
   mode: PanelMode | undefined
@@ -106,17 +106,13 @@ export function NotePanel({
   const panelRef = useRef<HTMLDivElement>(null)
   usePanelFocus(panelRef, mode !== undefined)
 
-  // Focus the editor whenever it opens on a note, and put the caret at the
-  // end.
+  // Focus the editor whenever it opens on a note, and put the caret at the end.
   //
-  // **`autoFocus` alone was not enough, and the failure was worse than a
-  // missing focus ring.** It applies when React first inserts the element, and
-  // measured directly: the first `n` of a session focused the textarea, and
-  // every `n` after a save left focus on `<body>` — so a reader writing a
-  // second note was typing into the page, where `s` opens the settings panel
-  // and a digit jumps edition. Exactly the defect the keydown rule's
-  // `textarea` case was added for, reached by a different door, and only
-  // visible if you write two notes in a row.
+  // **`autoFocus` alone is not enough.** It applies when React first inserts
+  // the element, so the first `n` of a session would focus the textarea, and
+  // every `n` after a save would leave focus on `<body>` — so a reader writing
+  // a second note would be typing into the page, where `s` opens the settings
+  // panel and a digit jumps edition.
   //
   // Keyed on the note's id rather than on `mode`, so reopening a *different*
   // note refocuses while an ordinary re-render (typing a character, picking a
@@ -135,9 +131,7 @@ export function NotePanel({
     // `busy` is in the deps for the failed-write case: a save that is refused
     // leaves the editor open with the reader's text still in it, and focus on
     // whatever they clicked — so the next thing they type goes to the page
-    // instead of the note. Measured, with a stale server rejecting the write:
-    // the notice appeared, focus sat on `<body>`, and typing opened the
-    // settings panel. A successful save closes the editor, so this never
+    // instead of the note. A successful save closes the editor, so this never
     // fights a reader who is done.
   }, [mode, draft?.id, busy])
 
@@ -223,22 +217,17 @@ export function NotePanel({
             No Save and no Done: changes reach the server on their own, and
             being finished is not an act a reader performs.
 
-            **There is a Close, since O137.** This comment used to argue
-            against one — "`Escape`, or a click on the background around the
-            page, is what closes this. Buttons for both would be asking the
-            reader to tell the reader something it can see." That holds for a
-            keyboard and a mouse and fails on a phone, where both of the exits
-            it named are missing: a tap on the page while the editor is open
-            is region drawing's gesture, so the user's iPhone found Delete as
-            the only way out of a note (spec 2026-09-17 §9.3). The two old
-            exits still work and are unchanged; this is the third, and the
-            only one a finger can always reach.
+            **There is a Close (O137).** `Escape`, or a click on the background
+            around the page, closes this. That holds for a keyboard and a mouse
+            and fails on a phone, where both are missing: a tap on the page
+            while the editor is open is region drawing's gesture, so Delete
+            would be the only way out of a note (spec 2026-09-17 §9.3). Close is
+            the third exit, and the only one a finger can always reach.
 
-            Every exit is disabled while the write is on the wire, the same
-            rule the correction banner follows — Delete especially, since it
-            is the control that most looks like it undoes the save it is
-            racing, and now Close, since a close racing a write is the same
-            ordering.
+            Every exit is disabled while the write is on the wire, the same rule
+            the correction banner follows — Delete especially, since it is the
+            control that most looks like it undoes the save it is racing, and
+            Close, since a close racing a write is the same ordering.
           */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <button

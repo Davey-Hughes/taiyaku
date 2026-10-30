@@ -35,7 +35,7 @@ import { mount } from './support/mount'
  * the row reflows at either way. At 1100px `.library` is still the fixed
  * 14rem sidebar plus `main`'s 1.5rem padding, so the list is 828px there —
  * either side of the 32rem container query that reflows the row.
- * `styles/admin.css` says the same thing from the other end.
+ * The `@container inbox` comment in `styles/admin.css` says why it is 32rem.
  *
  * CI does not run this project (see `vite.config.ts`: no Chromium), so
  * nothing here is a gate. It is the measurement, kept runnable, so the next

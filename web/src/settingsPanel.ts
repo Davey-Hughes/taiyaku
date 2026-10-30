@@ -7,11 +7,8 @@
  * this value's type want" logic the design calls out by name as pure and
  * testable without a DOM — the same reasoning `decode.ts` and
  * `modules/motion.ts`'s `scheduleFade` already apply to their own pieces of
- * `App.tsx`/`Chrome.tsx` wiring, and for the same cost: nothing in
- * `web/package.json` pulls in `jsdom` or a testing-library, so a `.tsx`
- * component is not reachable from Vitest at all. Putting the inference here
- * is what lets it be pinned by a fast, DOM-free test rather than only ever
- * exercised by hand in a browser.
+ * `App.tsx`/`Chrome.tsx` wiring. Putting the inference here is what lets it
+ * be pinned by a fast, DOM-free test.
  */
 
 /** What kind of control a preference key's current value wants. */
@@ -28,10 +25,8 @@ export interface Field {
 /**
  * Classify a preference value by its runtime type, the way `Settings.tsx`
  * turns a module's `defaults` into controls: `boolean` → checkbox, `number`
- * → numeric input, `string` → text (a select once a module has occasion to
- * declare options — none does today, and `ReaderModule` carries no field to
- * declare them against, so building that path now would be speculative
- * against a case that does not exist).
+ * → numeric input, `string` → text (a select where the module declares
+ * `options` for the key, which `fieldsOf` decides, not this).
  *
  * Everything else — a nested `Record` such as `direction`'s `override` or
  * `regroup`'s `breaks`, but also `null`, `undefined` and an array, none of
@@ -55,8 +50,8 @@ export function fieldKind(value: unknown): FieldKind {
  * reads, with nothing here free to reorder them.
  *
  * Empty for a module whose `defaults` is `{}` (`modules/settings.ts`'s own
- * `settingsModule`, today), which is what lets `Settings.tsx` skip a section
- * with nothing to show instead of rendering an empty one.
+ * `settingsModule`), which is what lets `Settings.tsx` skip a section with
+ * nothing to show instead of rendering an empty one.
  */
 export function fieldsOf<P extends object>(
   defaults: P,

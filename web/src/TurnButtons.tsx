@@ -2,10 +2,10 @@ import type { CSSProperties } from 'react'
 import { stepFor, type Direction } from './modules/direction'
 
 // Over one outer third of the page area, drawing nothing. `pointer-events:
-// none`, so a finger or a mouse still reaches the page area and `gestures.ts`
-// exactly as before. VoiceOver's double-tap is *assumed* to press the button
-// element itself (spec 2026-09-26 §3.4); that is not confirmed on a device,
-// and the one observation so far had the bars come up instead (O162).
+// none`, so a finger or a mouse reaches the page area and `gestures.ts` as if
+// these were not there. VoiceOver's double-tap is *assumed* to press the
+// button element itself (spec 2026-09-26 §3.4); that is not confirmed on a
+// device (O162).
 const turnStyle: CSSProperties = {
   position: 'absolute',
   top: 0,
@@ -26,9 +26,9 @@ export interface TurnButtonsProps {
 
 /**
  * "Previous page" and "Next page" for a screen reader — spec 2026-09-26
- * §3.4, O162. With the bars hidden the page image was the only thing
- * VoiceOver could reach, and its double-tap lands in the middle third, which
- * shows the bars; nothing on the page could turn it.
+ * §3.4, O162. Without these, the page image is the only thing VoiceOver can
+ * reach with the bars hidden, and its double-tap lands in the middle third,
+ * which shows the bars; nothing on the page can turn it.
  *
  * Out of the ring (`tabIndex={-1}`), because the keyboard has its arrows.
  * Named by what the step does, placed by where a sighted tap does it: in a

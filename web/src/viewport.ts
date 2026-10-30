@@ -4,8 +4,7 @@ import type { ArtworkHug } from './modules/fit'
  * What part of the drawn group the reader is looking at.
  *
  * Fractions of the group, not pixels and not fractions of a page: `WHOLE` is
- * fit-whole, which is what the reader did before zoom existed, and every
- * other rect is a window into it.
+ * fit-whole, and every other rect is a window into it.
  *
  * A rect rather than a scale plus a centre. A swap has to preserve what was
  * *visible*, and a clamp has to bound it; both of those are statements about
@@ -51,9 +50,7 @@ import type { ArtworkHug } from './modules/fit'
  * `inner` scale both axes alike and come back unchanged, which is exactly what
  * `cellBox('only')` hands them — so `imageToGroup(rect, 'only')` preserves the
  * invariant while `imageToGroup(rect, 'first')` does not. `into`'s own doc
- * already hedges this correctly; an earlier draft of this paragraph said the
- * three "deliberately do not preserve it", which overclaimed against the very
- * warning it was written to generalise.
+ * hedges this correctly.
  *
  * Each of the three says, at its own return, that its result is not fit to
  * hold as this state and needs `fitRect` first. This paragraph is the general
@@ -102,30 +99,22 @@ export function isWhole(rect: Rect): boolean {
  * larger than the group cannot slide anywhere, and is reduced to the group's
  * own extent on that axis.
  *
- * **What the second case is actually for**, since this comment got it wrong
- * once: it is `zoomAt` reaching full size. `zoomAt` caps each axis at `1` and
- * *then* solves an origin from the anchor, which at full size can be any
- * number at all — and at full size there is exactly one position the axis can
- * occupy. Reducing to `{start: 0, size: 1}` is what puts it there. Nothing
- * else in this module produces a size above `1`.
+ * **What the second case is actually for**: it is `zoomAt` reaching full size.
+ * `zoomAt` caps each axis at `1` and *then* solves an origin from the anchor,
+ * which at full size can be any number at all — and at full size there is
+ * exactly one position the axis can occupy. Reducing to `{start: 0, size: 1}`
+ * is what puts it there. `mapView` reaches it too: `mapRect`'s `'pillarbox'`
+ * and `fitRect` can both grow a rect past `1`.
  *
- * It said "a group is two slots wide or one — a gap draws one, an odd tail
- * draws one — so a rect carried across a page turn from a pair onto a
- * singleton addresses space that does not exist" until 2026-08-07, and that
- * is false. It described an earlier model in which group space was the *drawn
- * content*, whose width really did change with the slot count. Group space is
- * the **page-area box**, which is the same box in every group — so a rect
- * carried across a turn is already inside it, and `App.tsx`'s clamp on a turn
- * is defensive rather than load-bearing, as that call site now says. The
- * correction outlived the comment because a wrong justification for correct
- * code has nothing to fail against.
+ * Group space is the **page-area box**, which is the same box in every group —
+ * so a rect carried across a turn is already inside it, and `App.tsx`'s clamp
+ * on a turn is defensive rather than load-bearing, as that call site says.
  *
- * Each axis is still clamped independently. Not for the reason above — the
- * two axes of the page-area box change together, on a window resize — but
- * because `into`, `outOf` and `mapRect` all scale the axes by different
- * factors, so a rect arriving here can overhang on one axis alone, and
- * clamping them together would move a reader vertically for a horizontal
- * reason.
+ * Each axis is clamped independently, though the two axes of the page-area box
+ * change together, on a window resize. The reason is that `into`, `outOf` and
+ * `mapRect` all scale the axes by different factors, so a rect arriving here
+ * can overhang on one axis alone, and clamping them together would move a
+ * reader vertically for a horizontal reason.
  */
 export function clampRect(rect: Rect): Rect {
   const axis = (start: number, size: number) => {
@@ -141,12 +130,12 @@ export function clampRect(rect: Rect): Rect {
  * A rect grown to the viewport's shape, about its own centre.
  *
  * "The content, fitted" — the spec's §2. The mapped rect is generally not the
- * viewport's shape, because editions differ in aspect (measured: Kaguya's raw
- * is 0.703 against the English 0.667, `docs/notes.md`), and something has to
- * give. This grows, never shrinks, so a swap shows a little extra rather than
- * hiding a sliver that was visible a moment ago. Hiding it is the failure that
- * makes the feature untrustworthy; showing extra is harmless, and it is the
- * same conservative direction the composition loss is described as taking.
+ * viewport's shape, because editions differ in aspect (`docs/notes.md`), and
+ * something has to give. This grows, never shrinks, so a swap shows a little
+ * extra rather than hiding a sliver that was visible a moment ago. Hiding it is
+ * the failure that makes the feature untrustworthy; showing extra is harmless,
+ * and it is the same conservative direction the composition loss is described
+ * as taking.
  *
  * Both aspects are width over height. `groupAspect` converts the rect's
  * fractions into real proportions — a rect half as wide and half as tall as a
@@ -201,7 +190,7 @@ export function fitRect(
  * ceiling is different in kind: reaching the whole group's extent on an axis
  * leaves exactly one position on that axis, `0`, so the clamp below discards
  * the solved origin outright rather than sliding it — there is nowhere else
- * to put it. Measured by hand:
+ * to put it. For example:
  * `zoomAt({x:0.1,y:0.1,w:0.9,h:0.9}, {x:0.15,y:0.15}, 0.5, 8)` hits the
  * ceiling on both axes (`0.9 / 0.5 = 1.8`, capped to `1`) and returns `WHOLE`
  * — the anchor sat at fraction ~0.056 of the old rect on both axes and lands
@@ -212,17 +201,15 @@ export function fitRect(
  * reaching full size. Clamping on the way out handles that without a second
  * rule for it: it is what puts an overhanging rect back inside, and where the
  * clamp has to slide the rect, the anchor gives way with it — the
- * alternative is showing background that is not part of the page. Measured
- * by hand: `zoomAt({x:0.7,y:0.7,w:0.3,h:0.3}, {x:0.85,y:0.85}, 0.5, 8)`
+ * alternative is showing background that is not part of the page. For
+ * instance, `zoomAt({x:0.7,y:0.7,w:0.3,h:0.3}, {x:0.85,y:0.85}, 0.5, 8)`
  * returns `{x:0.4,y:0.4,w:0.6,h:0.6}` — the anchor sat at fraction 0.5 of the
  * old rect on both axes and sits at fraction 0.75 of the new one, a visible
  * slide.
  *
  * **Both worked examples above sit flush against the same corner of the
  * group**, and saying so is the point: where the rect is placed is not what
- * separates them. Only whether the zoom reached full size is. An earlier
- * draft of this comment called one an edge case and the other a corner case,
- * which named a difference the two do not have.
+ * separates them. Only whether the zoom reached full size is.
  */
 export function zoomAt(
   rect: Rect,
@@ -278,10 +265,9 @@ const PAGES = 2
  * `pinch` is a guess with nothing behind it at all. A trackpad pinch reaches a
  * `wheel` listener as `ctrlKey` with pixel deltas an order of magnitude
  * smaller than a scroll's, so reading it at 100 px to the notch would make a
- * full-hand pinch worth a fraction of one notch — as useless as the defect
- * this function replaced, in the other direction. 10 is one order of
- * magnitude, chosen because that is the size of the discrepancy and for no
- * better reason. The browser pass is where it gets a number.
+ * full-hand pinch worth a fraction of one notch. 10 is one order of magnitude,
+ * chosen because that is the size of the discrepancy and for no better reason.
+ * The browser pass is where it gets a number.
  */
 const PER_NOTCH = { pixels: 100, lines: 3, pages: 1, pinch: 10 }
 
@@ -314,13 +300,13 @@ const MAX_PINCH_NOTCHES = 1
  * trackpad, which emits tens of small events per gesture, comes out as tens of
  * small factors that multiply to about the same thing over the same movement.
  *
- * **The alternative it beats is `deltaY < 0 ? step : 1 / step`**, which is what
- * this replaced: one full notch per event whatever its size. That discards the
- * magnitude, and the cost is arithmetic rather than taste — at the defaults
- * `step` 1.15 and `maxScale` 8, `1.15 ** 15 ≈ 8.14`, so any gesture emitting
- * fifteen events pins the view at maximum zoom. That a trackpad emits tens of
- * events per gesture is the claim behind calling fifteen a low bar, and it is
- * received rather than counted here.
+ * **The alternative it beats is `deltaY < 0 ? step : 1 / step`**: one full
+ * notch per event whatever its size. That discards the magnitude, and the cost
+ * is arithmetic rather than taste — at the defaults `step` 1.15 and `maxScale`
+ * 8, `1.15 ** 15 ≈ 8.14`, so any gesture emitting fifteen events pins the view
+ * at maximum zoom. That a trackpad emits tens of events per gesture is the
+ * claim behind calling fifteen a low bar, and it is received rather than
+ * counted here.
  *
  * **A raw `deltaY` is not comparable across `deltaMode`s**, so it is
  * normalised to notches first. One detent is `100` in pixel mode and `3` in
@@ -331,9 +317,8 @@ const MAX_PINCH_NOTCHES = 1
  * Here rather than in a module of its own, and here rather than inline in
  * `App.tsx`'s listener: its only output is `zoomAt`'s `by` and its only input
  * besides the event is `step`, so it has nothing to say that is not about the
- * zoom directly above it — and `App.tsx` value-imports the resolver and is
- * unreachable from Vitest, so a rule left inline there is covered by typecheck
- * alone.
+ * zoom directly above it — and a rule left inline there could be tested only
+ * by mounting `App.tsx`, which needs `resolver.ts` mocked.
  *
  * Takes the fields it reads rather than a `WheelEvent`, so this module stays
  * free of DOM types and a test can hand it a plain object.
@@ -463,8 +448,8 @@ export function groupToImage(rect: Rect, cell: Cell): Rect {
  * they are the same rule stated in the two units each caller already has.
  *
  * This is what stops the swap being wrong by exactly the letterbox. Group
- * space is the page-area box, but `PageView` drew fit-whole until the `fit` module shipped, so a portrait
- * page in a landscape viewport is inset with background down both sides. A
+ * space is the page-area box, and a page drawn fit-whole in it — a portrait
+ * page in a landscape viewport — is inset with background down both sides. A
  * swap maps between *page* frames, so the inset comes out on the way in and
  * goes back on the way out.
  *
@@ -550,12 +535,10 @@ export interface Frame {
 /**
  * How a rect on one edition's page becomes a rect on another's.
  *
- * `'reset'` is the baseline the others were measured against, and would have
- * been the fallback had none of them beaten it: throw the view away and show
- * the whole page. A transform that does not beat discarding the zoom is not
- * worth having. Every candidate did — each landed inside 5% of a page against
- * reset's half-page bound — and `mapRect` below carries the measurement that
- * picked between them, the ones it beat, and what each cost.
+ * `'reset'` is the baseline the others are measured against: throw the view
+ * away and show the whole page. A transform that does not beat discarding the
+ * zoom is not worth having. `mapRect` below points at the write-up of the
+ * measurement that picked between them.
  */
 export type MapKind = 'identity' | 'pillarbox' | 'reset'
 
@@ -572,52 +555,7 @@ export type MapKind = 'identity' | 'pillarbox' | 'reset'
  *
  * **A measurement put it here, not an argument.** `docs/notes.md`, "Which
  * derived transform maps a rect between editions", is the write-up and the
- * authority for every figure below. 288 slots were sampled from twelve corpus
- * volumes across four series — `raw-mono` against `en-mono`, the one edition
- * pair all twelve carry — and for each, a grid search over per-axis scale and
- * offset found the best rect-to-rect map, scored with the solver's own
- * `similarity` rather than with a metric invented for the question. That best
- * map's vertical scale is the identity map to within the search's own final
- * resolution, and its horizontal scale tracks `aFrom / aTo` in twelve volumes
- * of twelve, sign included. Residuals below are how far a candidate puts a
- * point that the best map puts somewhere else, in fractions of the target
- * page, over the 284 slots whose search settled; median then p90, across then
- * down.
- *
- * **Both candidates the design named lost, and this rule was not one of them.**
- * What it beat and what each cost, the winner's own figures first:
- *
- * - `'pillarbox'` leaves 0.0195 / 0.0276 across and 0.0041 / 0.0116 down. It
- *   beats `'identity'` on the horizontal in 10 volumes of 12; the two it does
- *   not are the two whose aspects nearly match already, where there is almost
- *   nothing for either rule to correct.
- * - `'identity'` costs 0.0296 / 0.0405 across for the same 0.0041 / 0.0116
- *   down — exactly right on the vertical, uncorrected on the horizontal.
- * - `'letterbox'` is what this function shipped as until 2026-08-08, and is
- *   renamed rather than kept beside `'pillarbox'` because the measurement found
- *   it wrong and not merely beaten. It took the **max** of the two aspects as
- *   the content's, which is this rule with its axes swapped: it never rescaled
- *   the horizontal, so it inherited `'identity'`'s horizontal residual whole,
- *   and then added a vertical one four times `'identity'`'s at the median
- *   (0.0162 against 0.0041). Correcting nothing on the axis that needed it and
- *   adding error to the axis that did not is worse than doing nothing.
- * - `'reset'` is a bound rather than a residual: the reader sees the whole page
- *   and has to re-find the balloon, so up to half of one. Unmeasured, and it
- *   does not need measuring while every candidate above is inside 5% of a page.
- *
- * **The horizontal finding is the one that could have been an artefact**, and
- * which experiments exclude it is the difference between a result and a number.
- * `fingerprint` resizes every crop to one fixed grid, so a search can buy
- * similarity by squaring two renderings up rather than by locating artwork, and
- * `sx/sy ≈ aFrom/aTo` is exactly what that would look like. Two runs exclude it
- * between them, and neither would do it alone. The same search against a
- * resample of the source page — where the aspect difference is fully present
- * and the true answer is known to be identity — returns `sx/sy = 1.0000` in all
- * twelve volumes, so the search does not chase aspect. And the same search run
- * `en-mono → raw-mono` over the same slots inverts, in twelve volumes of
- * twelve: the two directions' horizontal scales multiply to a median 0.9941,
- * against the 1.0842 they would give if the scale belonged to the metric rather
- * than to the pages.
+ * authority for every figure, and for what `'pillarbox'` beat.
  *
  * A frame that is non-finite, zero or negative has not decoded yet — a swap
  * can be pressed before the incoming page is ready, and `NaN` is what an
@@ -626,11 +564,10 @@ export type MapKind = 'identity' | 'pillarbox' | 'reset'
  * produces more `NaN`.
  *
  * Like `into`/`outOf`, `'pillarbox'` may return a rect whose `w` and `h`
- * differ even when the input's matched — but not because `from` and `to`
- * carry their margin on different axes. `content` is defined as the *narrower*
+ * differ even when the input's matched. `content` is defined as the *narrower*
  * of the two frames' aspects, so it is no wider than either frame, `ch` is
  * identically 1 for both, and `y`/`h` come out exactly as they went in; the
- * true reason is the plainer one `paintedIn` gives: a pillarbox is exactly the
+ * reason is the plainer one `paintedIn` gives: a pillarbox is exactly the
  * case where one axis is rescaled and the other is not, and here that axis is
  * always the horizontal one. Rescaled, not shrunk — mapping *out* of the frame
  * carrying the margin grows it, which is what the `widens` test asserts. Not
@@ -647,10 +584,8 @@ export type MapKind = 'identity' | 'pillarbox' | 'reset'
  * `cw` at zero, which `axis` divides by when that frame is the source and
  * collapses the rect to nothing when it is the target. `{w: 1e-310, h: 1e308}`
  * underflows to zero and becomes `content` itself, making `cw` a `0 / 0` on
- * either side. Each ends in a rect no caller can use, past a guard that checked
- * only the dimensions, so both aspects are checked rather than the comment
- * being softened to describe a hole. Which of the two hides is the half that
- * inverted with the axis: under `max` it was the underflowing frame.
+ * either side. Each ends in a rect no caller can use, past a guard that checks
+ * only the dimensions, so both aspects are checked.
  */
 export function mapRect(
   rect: Rect,
@@ -682,9 +617,7 @@ export function mapRect(
   // Both frames hold the same content at one aspect, centred in each. The
   // content's aspect is the *narrower* of the two, which is what the corpus
   // measured: the shared artwork is as tall as the taller page says it is, and
-  // the wider-aspect page carries its extra as margin at left and right. The
-  // spec's rule said the opposite — margin on the narrower slot, at top and
-  // bottom — and it is the one token below that this function had wrong.
+  // the wider-aspect page carries its extra as margin at left and right.
   //
   // Mapping through that shared box — out of the source's fractions, into the
   // content's, out into the target's — is what makes this an **involution**:
@@ -732,9 +665,9 @@ export function mapRect(
  * Exactly what `mapView` needs about each side of a swap and nothing more.
  * `frame` is the `<img>`'s `naturalWidth`/`naturalHeight` — every aspect below
  * is derived from it — and `cell` is which drawing position it occupies, which
- * `Cell`'s own doc enumerates. A page has no identity here beyond these three
- * facts: nothing in this module knows what edition or slot it came from, and
- * nothing needs to.
+ * `Cell`'s own doc enumerates. A page has no identity here beyond these
+ * fields: nothing in this module knows what edition or slot it came from,
+ * and nothing needs to.
  */
 export interface Drawn {
   frame: Frame
@@ -742,16 +675,14 @@ export interface Drawn {
   /**
    * Which edge this page's artwork is pulled to inside its element.
    *
-   * **`mapView` was the fourth consumer of that fact and the one that did not
-   * ask**, which is why this field exists. `notes.ts`'s `paintedBox` learned
-   * the hug when the seam shipped, and `paintedIn` — which that function's own
-   * doc calls its fractional twin — did not, so a swap while zoomed in
-   * two-page mode measured both pages as centred while both were hugged to
-   * the seam. Single and scroll mode were unaffected: their hug is `centre`,
-   * where the two answers coincide, which is exactly why nothing caught it.
+   * **`paintedIn` has to be told the hug**, like `notes.ts`'s `paintedBox`,
+   * whose fractional twin it is. Without it a swap while zoomed in two-page
+   * mode would measure both pages as centred while both are hugged to the
+   * seam. Single and scroll mode are unaffected: their hug is `centre`, where
+   * the two answers coincide.
    *
-   * Optional, defaulting to `centre`, so every caller drawing one page into
-   * one box is unchanged.
+   * Optional, defaulting to `centre`, so a caller drawing one page into one box
+   * need not pass it.
    */
   hug?: ArtworkHug
   /**
@@ -828,18 +759,17 @@ function cellAspect(cell: Cell, groupAspect: number): number {
  * cell (`cellsFor`), never which way round an image is painted. So `'L'` is
  * the left half of the pixels and `rtl` does not enter here.
  *
- * **Exactly half, because the corpus measured exactly half.** `docs/notes.md`,
- * "What this means for the schema": every one of the 28 spreads in the corpus
- * is exactly twice the width of its neighbours. That is the same measurement
- * that made `Half` a left/right flag instead of a stored geometry, and the
- * alternative it beat is recorded there — "part *i* of *n*", which a three-page
- * gatefold would need and which no corpus volume has yet asked for. If one
- * ever does, this function and `Drawn.half`'s type are where it lands.
+ * **Exactly half, because the corpus measured exactly half.** See
+ * `docs/notes.md`, "What this means for the schema". That is the same
+ * measurement that made `Half` a left/right flag instead of a stored geometry,
+ * and the alternative it beat is recorded there — "part *i* of *n*", which a
+ * three-page gatefold would need and which no corpus volume has asked for. If
+ * one ever does, this function and `Drawn.half`'s type are where it lands.
  *
  * `undefined` is `WHOLE`, and that is what makes a slot with no half behave
- * *exactly* as it did before this existed rather than merely closely: `into`
- * and `outOf` against `WHOLE` reduce to `x + f * 1` and `(x - 0) / 1`, which
- * are identities in floating point and not approximations of one.
+ * *exactly* as if halves did not exist rather than merely closely: `into` and
+ * `outOf` against `WHOLE` reduce to `x + f * 1` and `(x - 0) / 1`, which are
+ * identities in floating point and not approximations of one.
  */
 function halfBox(half: 'L' | 'R' | undefined): Rect {
   if (half === 'L') return { x: 0, y: 0, w: 0.5, h: 1 }
@@ -854,15 +784,14 @@ function halfBox(half: 'L' | 'R' | undefined): Rect {
  * reason is `mapRect`'s own contract rather than tidiness — it reconciles two
  * *aspects*, and a joined spread's is twice its half's.
  *
- * **This argument and `halfBox` fix two different halves of one defect**, and
- * they are worth telling apart because each alone still misses. Handed the
+ * **This argument and `halfBox` each guard a different half of one failure**,
+ * and they are worth telling apart because each alone still misses. Handed the
  * whole spread's frame, `'pillarbox'` takes the doubling for margin the wider
  * side carries at its edges and rescales by two about the half's own centre:
  * with `halfBox` already applied the reader lands on the *right* half at twice
  * the wrong magnification, everything but the exact centre displaced. Without
  * `halfBox` as well, the same reading maps the spread's central band — the
- * fold — onto the other edition's whole page, which is what `docs/status.md`
- * §5 recorded as the shipped behaviour. Reachable on the primary corpus:
+ * fold — onto the other edition's whole page. Reachable on the primary corpus:
  * `en-mono` joins Go-Toubun v01's page 4 where the raw prints two pages.
  *
  * Derived from `halfBox` rather than written out as `frame.w / 2`, so the
@@ -890,7 +819,7 @@ const halfFrame = (frame: Frame, half: 'L' | 'R' | undefined): Frame => {
  *    leaves around the image inside that cell, and which half of the image a
  *    joined spread's slot names. Skipping the second is what would make a swap
  *    wrong by exactly that letterbox — `paintedIn`'s own doc says so. Skipping
- *    the third is what put a reader on the fold of a joined spread instead of
+ *    the third would put a reader on the fold of a joined spread instead of
  *    on the half they were reading, which `halfFrame`'s doc works through.
  * 2. `mapRect` between the two *slots'* frames — `halfFrame` of each side, the
  *    whole image where there is no half — which is the transform proper.
@@ -913,19 +842,17 @@ const halfFrame = (frame: Frame, half: 'L' | 'R' | undefined): Frame => {
  * shapes it is handed: taking the half out first is what makes the shape it is
  * handed the half's, which is `halfFrame`'s whole argument.
  *
- * **A slot with no half comes through exactly as it did before halves
- * existed**, not approximately: `halfBox(undefined)` is `WHOLE`, and `into`
- * and `outOf` against `WHOLE` are floating-point identities rather than
- * near-identities — see `halfBox`'s own doc. That is why the two new steps are
- * unconditional here instead of guarded by an `if`, and why the existing
- * `mapView` tests hold unchanged.
+ * **A slot with no half comes through exactly, not approximately, as if halves
+ * did not exist**: `halfBox(undefined)` is `WHOLE`, and `into` and `outOf`
+ * against `WHOLE` are floating-point identities rather than near-identities —
+ * see `halfBox`'s own doc. That is why the half steps are unconditional here
+ * instead of guarded by an `if`.
  *
  * `'reset'` short-circuits to `WHOLE` rather than falling through the
- * composition. Throwing the view away means fit-whole of the *group*, which is
- * what every mode drew before zoom existed; running `mapRect`'s own `WHOLE` —
- * which is in image fractions — through steps 3 and 4 instead would land on
- * the incoming page's own box, and in `two` mode that is half the group, i.e.
- * a swap that "resets" to a 2× zoom.
+ * composition. Throwing the view away means fit-whole of the *group*; running
+ * `mapRect`'s own `WHOLE` — which is in image fractions — through steps 3 and
+ * 4 instead would land on the incoming page's own box, and in `two` mode that
+ * is half the group, i.e. a swap that "resets" to a 2× zoom.
  *
  * A page area that has not been laid out has no aspect to fit against, and
  * `fitRect` would return the rect unfitted — a rect whose `w` and `h` may

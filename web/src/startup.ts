@@ -2,9 +2,7 @@
  * Opening a work: the four reads, in the order they have to happen, and the
  * one of them that is allowed to fail.
  *
- * Extracted from `App.tsx`'s load effect, which was 63 lines of `await` with
- * two `throw`s, one `catch` and six setters — and, being in `App.tsx`, was
- * unreachable from Vitest (see that file's own note on `resolver.ts`). What is
+ * Kept out of `App.tsx` (see that file's own note on `resolver.ts`). What is
  * left there is the `useEffect`, its `cancelled` flag and the setters; every
  * decision about *what a load means* is here.
  *
@@ -94,12 +92,6 @@ export interface Opened {
 
 /**
  * Open one work by slug.
- *
- * **Was `openFirstWork`, which read `/api/works` and took `[0]`.** That was
- * the only way to reach a work when the reader was handed sidecar paths on
- * argv; spec C1's browse UI knows which work it wants, and `serve --db` serves
- * every row, so listing them to discard all but one was a request whose answer
- * was thrown away.
  *
  * Throws for a work that defines no editions — a state with no reader to show,
  * so there is nothing to degrade to — and lets a failing sidecar read reject,

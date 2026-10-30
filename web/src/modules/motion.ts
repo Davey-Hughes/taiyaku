@@ -65,14 +65,13 @@ export function fadeStyle(prefs: MotionPrefs, shown: boolean): CSSProperties {
  * immediately or schedule the frame that flips it, and hand back the cleanup
  * a caller's effect must run before scheduling again.
  *
- * Extracted out of `Chrome.tsx`'s own `useEffect`, which used to inline this
- * branch with nothing able to reach it — the same argument `direction.ts`'s
- * `setOverride` doc makes about `App.tsx`: a reordered dependency or a
- * flipped condition here breaks quietly, every existing test still green,
- * because none of them import a `.tsx` file. Nothing here touches the DOM —
- * only `requestAnimationFrame`/`cancelAnimationFrame`, both stubbable on
- * `globalThis` in plain Vitest — so extracting it costs nothing and buys a
- * test for exactly the kind of edit that breaks it.
+ * A function of its own, not inline in `Chrome.tsx`'s `useEffect`, so a test
+ * can reach it — the same argument `direction.ts`'s `setOverride` doc makes
+ * about `App.tsx`: a reordered dependency or a flipped condition here breaks
+ * quietly. Nothing here touches the DOM — only
+ * `requestAnimationFrame`/`cancelAnimationFrame`, both stubbable on
+ * `globalThis` in plain Vitest — so it costs nothing and buys a test for
+ * exactly the kind of edit that breaks it.
  *
  * Hidden, or not animating: settle `shown` to `!animating` at once, no frame
  * scheduled — there is nothing on screen for a frame to prepare. Visible and

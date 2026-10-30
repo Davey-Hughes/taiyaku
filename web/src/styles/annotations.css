@@ -1,19 +1,15 @@
 /* Visible while you draw, quiet enough to label through.
  *
- * This was a 1px `currentColor` outline at `opacity: 0.15` — "out of the way
- * until you go for them", the requirement that killed the sidebar box list.
- * Against real pages it was not quiet, it was invisible: at 0.15 a hairline
- * over halftone artwork is indistinguishable from the screentone beneath it,
- * reported from an actual labelling session as "impossible to see". A box
- * nobody can see is a box nobody can check, against the one input this
- * instrument has.
- *
- * The requirement it was serving still holds and is now met by *alpha in the
- * fill* rather than by opacity on the whole element: the infill is light
- * enough to read text through, so the page stays legible with every box on it
- * drawn. Three parts, because one is not enough on line art — the dark outline
- * carries the shape, the pale inner line keeps that outline legible where it
- * crosses black ink, and the fill says which side is inside. */
+ * The requirement is "out of the way until you go for them". It is met by
+ * *alpha in the fill* rather than by opacity on the whole element: a 1px
+ * `currentColor` outline at `opacity: 0.15` over halftone artwork is
+ * indistinguishable from the screentone beneath it, and a box nobody can
+ * see is a box nobody can check, against the one input this instrument
+ * has. The infill is light enough to read text through, so the page stays
+ * legible with every box on it drawn. Three parts, because one is not
+ * enough on line art — the dark outline carries the shape, the pale inner
+ * line keeps that outline legible where it crosses black ink, and the fill
+ * says which side is inside. */
 .region-box {
   border: 2px solid var(--box-line);
   background: var(--box-fill);
@@ -32,9 +28,8 @@
  *
  * `RegionOverlay` puts `data-kind` on every box precisely so this can exist —
  * "a colour difference is invisible to a test and to a reader who cannot
- * distinguish them" — and nothing rendered it, so pressing `1`-`6` gave no
- * confirmation at all. That bears directly on label quality, which is the one
- * input this whole instrument has.
+ * distinguish them". Confirming a `1`-`6` press bears directly on label
+ * quality, which is the one input this whole instrument has.
  *
  * Two signals, neither of them colour.
  *
@@ -42,8 +37,8 @@
  * hand-written `content` rules. There is nothing to keep in step: a kind added
  * to `taiyaku-core`'s `Kind` and to `labelling.ts` labels itself the day it
  * arrives, and no rule can be the one somebody forgot. It carries its own
- * opacity now that the box no longer has one to ride, so the box under the
- * pointer says `sfx` in full while a crowded page stays readable.
+ * opacity, so the box under the pointer says `sfx` in full while a crowded
+ * page stays readable.
  *
  * And a border style per kind, because a 10px word set over line art is not
  * legible at any size a badge can be, while a dotted-versus-solid edge is
@@ -63,10 +58,9 @@
   background: var(--bg);
   color: var(--text);
   border: 1px solid var(--box-line);
-  /* The badge used to ride the box's own `opacity`, which is gone — so without
-   * this every box on a crowded page shouts its kind at full strength and the
-   * labels become the page. Faint at rest, full on approach: the same
-   * behaviour as before, now stated on the thing it applies to. */
+  /* The badge has no box `opacity` to ride, so without this every box on a
+   * crowded page shouts its kind at full strength and the labels become the
+   * page. Faint at rest, full on approach. */
   opacity: 0.45;
   transition: opacity 80ms ease-out;
 }
@@ -76,12 +70,10 @@
 }
 /* The reading axis, as a tick in the box's own corner.
  *
- * `v`, `h` and *not applicable* were set by three keys and shown by nothing on
- * the page: the only readout was the one line at the foot of the screen, and
- * that describes the selected box alone. So a page of boxes gave no way to see
- * which had been given an axis, which had been given the wrong one, or whether
- * a keystroke had landed at all — reported from a labelling session as not
- * being able to tell them apart.
+ * `v`, `h` and *not applicable* are set by three keys. The one line at the foot
+ * of the screen describes the selected box alone, so the tick is what shows,
+ * across a page of boxes, which has been given an axis, which the wrong one,
+ * and whether a keystroke landed at all.
  *
  * A shape rather than a colour or a letter: the axis *is* an orientation, so a
  * bar lying the way the text reads is the shortest path from the mark to the
@@ -99,9 +91,8 @@
   background: var(--box-line);
   /* A light halo, so the mark reads on black ink and on white paper alike.
    * The kind badge is legible for the same reason — it sits on an opaque
-   * `--bg` — and the first version of this tick, a bare bar at half opacity,
-   * disappeared into a busy colour cover exactly the way the original box
-   * outline did. */
+   * `--bg` — and a bare bar at half opacity would disappear into a busy
+   * colour cover. */
   box-shadow: 0 0 0 2px var(--bg);
   opacity: 0.85;
   transition: opacity 80ms ease-out;
@@ -152,8 +143,8 @@
  * matter what it holds, and its badge keeps saying which kind it is. Cross
  * hatching rather than a colour, for the reason at the top of this block.
  *
- * Loose hatching, though: at the 4px pitch this started on, the lines closed
- * over the artwork and an ignored box hid the very thing it was declining to
+ * Loose hatching, though: at a 4px pitch the lines would close over the
+ * artwork and an ignored box would hide the very thing it is declining to
  * judge. The point of the flag is to say "I looked at this and could not call
  * it", which requires still being able to look at it.
  * `absorbs` in `score.rs` calls this "the ignore hatch"; this is it. */
@@ -221,20 +212,16 @@
 /* Nothing on the page area is text to be selected.
  *
  * A drag across artwork is a box being drawn, but the browser has no way to
- * know that: it did what a drag across a document always does and ran a text
- * selection under the pointer, painting the page and everything past it blue.
- * On every box. Reported from a labelling session as the highlight selecting
- * the whole page.
+ * know that: it would run a text selection under the pointer, as a drag across
+ * a document always does, painting the page and everything past it blue.
  *
- * **Not fixed by cancelling `pointerdown`**, which is the obvious reach and
- * would put a worse bug back: the spec says a cancelled `pointerdown`
- * suppresses the compatibility mouse events, `click` among them, and `click`
- * is how a box is selected at all. That is the same failure pointer capture
- * caused, arrived at from the other direction. This is CSS precisely so it
- * touches no events.
+ * **Not done by cancelling `pointerdown`**, which is the obvious reach and
+ * would cause a worse bug: the spec says a cancelled `pointerdown` suppresses
+ * the compatibility mouse events, `click` among them, and `click` is how a box
+ * is selected at all. This is CSS precisely so it touches no events.
  *
  * The image stops being a hit target for the same gesture's sake: an `<img>`
- * is natively draggable, so a press on the artwork also started a
+ * is natively draggable, so a press on the artwork would also start a
  * drag-and-drop with a ghost of the page floating under the cursor. The
  * labeller reads the image's geometry rather than its events — `toFractions`
  * measures it through `querySelector` — so it loses nothing by being

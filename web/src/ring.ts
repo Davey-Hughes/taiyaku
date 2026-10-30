@@ -3,9 +3,9 @@
  *
  * The ring is the page, then the bars' stops, then whatever the page itself
  * offers (a gap's moves, note tabs, the note list), then the page again;
- * `Shift+Tab` walks it backwards. The user chose a ring over a trap inside
- * the bars on 2026-09-30, so that pressing `Tab` on and on comes back to
- * reading rather than circling the bars.
+ * `Shift+Tab` walks it backwards. It is a ring rather than a trap inside the
+ * bars, so that pressing `Tab` on and on comes back to reading rather than
+ * circling the bars.
  *
  * Pure, over counts, so it can be tested without a DOM. `focus.ts` reads the
  * counts off the page and moves focus; `App.tsx` puts the bars up or down to

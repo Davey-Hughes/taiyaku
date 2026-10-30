@@ -3,9 +3,7 @@
  * This screen is UI chrome, not artwork, so it draws from the theme's tokens
  * in `tokens.css` rather than the `--box-*` palette, which is fixed against
  * the artwork on purpose. The tokens follow `color-scheme` — the OS's, or the
- * reader's choice through `data-theme` — the way a hardcoded palette would
- * not. (Until 2026-09-17 this block used CSS system colours; `tokens.css`
- * maps each keyword to its token.)
+ * reader's choice through `data-theme` — the way a hardcoded palette would not.
  *
  * At 900px and up, `.library` does not touch `html`, `body` or `#root`'s
  * `height: 100%` chain — that chain exists so `PageView` can constrain a page
@@ -263,9 +261,8 @@ a.account-button {
 
 /* The section headings — Libraries, Library, Theme — in the title face with a
  * hairline running to the column's edge, as the mockup the user chose drew
- * them (spec 2026-09-17 §7.1). `--muted` rather than the `opacity: 0.65` they
- * had: a token has a floor `index.css.test.ts` checks, and an opacity has
- * none. */
+ * them (spec 2026-09-17 §7.1). `--muted` rather than an `opacity`: a token has
+ * a floor `index.css.test.ts` checks, and an opacity has none. */
 .sidebar-heading {
   display: flex;
   align-items: center;
@@ -396,9 +393,9 @@ a.account-button {
 }
 
 /* The legend carries `.sidebar-heading` like the sidebar's `h2`s, and that
- * rule now sets the face, the weight and the line itself. A legend shrinks to
- * its text by default, and the heading's hairline reaches the column's edge
- * only if the legend does. */
+ * rule sets the face, the weight and the line itself. A legend shrinks to its
+ * text by default, and the heading's hairline reaches the column's edge only
+ * if the legend does. */
 .theme-control legend {
   width: 100%;
   padding: 0;
@@ -443,9 +440,7 @@ a.account-button {
 
 /* The wordmark (`Wordmark.tsx`): 対訳 set vertically in the accent like a
  * seal, then the name. It sets no size or weight; where it is drawn does —
- * the sign-in screen's `<h1>`, the phone bar's way home, the sidebar's top.
- * `display: flex` is what the sign-in heading itself had before this
- * component took its markup, so that screen draws as it did. */
+ * the sign-in screen's `<h1>`, the phone bar's way home, the sidebar's top. */
 .wordmark {
   display: flex;
   align-items: center;

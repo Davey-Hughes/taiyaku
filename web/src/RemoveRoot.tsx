@@ -28,13 +28,11 @@
  * button.
  *
  * **And the re-derive's own report is drawn beneath them.** A removal is
- * delete-plus-derive, so it produces a whole `DeriveReport` — the server's own
- * whole-branch review added that key so that "nothing a removal's re-derive
- * found ever reached a caller" would stop being true. Showing only the three
- * counts put it straight back: a removal whose re-derive reported
- * `unwritable_documents` or `lost_positions` said nothing about either, on the
- * one screen in this product built around a pass naming what it did not do.
- * Whole-branch review, 2026-09-04.
+ * delete-plus-derive, so it produces a whole `DeriveReport`. Showing only the
+ * three counts would leave a removal whose re-derive reported
+ * `unwritable_documents` or `lost_positions` saying nothing about either, on
+ * the one screen in this product built around a pass naming what it did
+ * not do.
  */
 import { useEffect, useRef, useState } from 'react'
 import {
@@ -54,9 +52,7 @@ import { WaitWords } from './WaitWords'
  * `n` of a thing, in the number the count actually is.
  *
  * Zero takes the plural — "0 works" — which is English rather than an
- * oversight; only one is singular. Found by rendering this dialog in a real
- * browser, where it read "This removes 1 works": jsdom has no opinion about
- * prose, and every fixture until then happened to use plurals.
+ * oversight; only one is singular.
  */
 function count(n: number, one: string, many: string): string {
   return `${n} ${n === 1 ? one : many}`
@@ -83,13 +79,10 @@ export interface RemoveRootProps {
    * Called once the directory is actually gone, with what the removal actually
    * did.
    *
-   * **The real answer, not the rehearsal's.** This used to be `() => void`
-   * and the `RemovalAnswer` `removeRoot` resolves was dropped on the floor —
-   * so a removal whose own re-derive reported `unwritable_documents` or
-   * `lost_positions` reached nobody, and the only figures anybody saw were
-   * the rolled-back dry run's, which can differ. Pass 4 of the whole-branch
-   * review; the same defect this component's doc comment says it exists to
-   * prevent, one step later in the flow.
+   * **The real answer, not the rehearsal's.** A removal whose own re-derive
+   * reports `unwritable_documents` or `lost_positions` would otherwise reach
+   * nobody, and the only figures anybody saw would be the rolled-back dry
+   * run's, which can differ.
    */
   onRemoved: (answer: RemovalAnswer) => void
   /** The removal was refused once this dialog had gone, with why. */
@@ -125,9 +118,8 @@ export function RemoveRoot({
    * state, so two presses dispatched before the next render both read
    * `removing` false, and the confirm is drawn held only once the wait
    * has lasted, so nothing else holds a second press until then. This is
-   * the one button on the branch where an unguarded second dispatch is
-   * least worth leaving to luck: C4 §2 calls it the most destructive action
-   * in the product.
+   * the button where an unguarded second dispatch is least worth leaving to
+   * luck: C4 §2 calls it the most destructive action in the product.
    */
   const inFlight = useRef(false)
 

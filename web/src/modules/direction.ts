@@ -40,12 +40,10 @@ export const directionModule: ReaderModule<DirectionPrefs> = {
 /**
  * Set one edition's override, leaving every other edition's alone.
  *
- * Extracted out of `App.tsx`'s `d` handler, which used to inline this same
- * merge with no test able to reach it — `App.tsx` is legitimately
- * Vitest-unreachable (see the global no-resolver-in-tests constraint), so a
- * one-line regression here (forgetting to spread `prefs.override` before
- * writing the one key that changed) would have silently wiped every other
- * edition's saved override on the next toggle, caught by nothing.
+ * A function of its own so a test can pin it without mounting `App.tsx`:
+ * written out there, a one-line regression (forgetting to spread
+ * `prefs.override` before writing the one key that changed) would silently
+ * wipe every other edition's saved override on the next toggle.
  */
 export function setOverride(
   prefs: DirectionPrefs,
@@ -66,8 +64,8 @@ export function setOverride(
  * of `d` would set `rtl` and appear to do nothing. `effectiveDirection` is
  * what makes the first press always visible.
  *
- * Written out in `App.tsx`'s `d` handler until this existed, which put the one
- * rule that decides what a keypress means somewhere no test could reach.
+ * Kept out of `App.tsx`'s `d` handler, which would put the one rule that
+ * decides what a keypress means somewhere no test could reach.
  */
 export function flipped(
   sidecarReading: Direction,
@@ -92,11 +90,10 @@ export function flipped(
  * through it before applying it, `Filmstrip` lays its rail out the same way,
  * and `modules/help.ts` asks it which arrow advances so the help cannot say
  * `→ next page` to a reader for whom it is false. Three consumers, one rule —
- * the alternative was each deciding for itself, which is how the filmstrip
- * came to run left-to-right under a right-to-left work in the first place.
+ * the alternative is each deciding for itself, which lets the filmstrip run
+ * left-to-right under a right-to-left work.
  *
- * `ltr` is the identity, so a work with no override behaves exactly as it did
- * before this existed.
+ * `ltr` is the identity.
  */
 export function stepFor(by: 1 | -1, reading: Direction): 1 | -1 {
   if (reading !== 'rtl') return by

@@ -6,7 +6,7 @@ import '../src/index.css'
 import { mount } from './support/mount'
 
 /**
- * I1 of the whole-branch review. `MetadataEditor.tsx:744` renders
+ * I1 of the whole-branch review. `MetadataEditor.tsx`'s title field renders
  * `<label className="field title">` on the Series page, ②'s shipped screen,
  * and no `.metadata-editor` rule exists anywhere. Before ⑤a hoisted `.field`
  * out of `.proposal-detail`, a bare `.field` selector never reached it;

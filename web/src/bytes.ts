@@ -1,10 +1,10 @@
 /**
  * Sizes, printed for a person deciding whether something will fit.
  *
- * **Its own module rather than `backup.ts`'s**, since #114's confirmation
- * screen prints a total size too and importing the backup client into a
- * curation screen would couple two unrelated features through three pure
- * lines. Moved rather than copied: a second formatter is one that drifts.
+ * **Its own module rather than `backup.ts`'s**, since the confirmation screen
+ * prints a total size too and importing the backup client into a curation
+ * screen would couple two unrelated features through a few pure lines. A
+ * second formatter is one that drifts.
  */
 const UNITS = ['B', 'KiB', 'MiB', 'GiB', 'TiB']
 

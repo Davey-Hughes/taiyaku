@@ -1,16 +1,13 @@
 /**
  * The app's routes, and the one place `App` is mounted.
  *
- * Spec C1 §1. `react-router` is the first runtime dependency beyond React
- * since the project began, taken over a hand-rolled fifty-line router because
+ * Spec C1 §1. `react-router` is taken over a hand-rolled router because
  * scroll restoration, nested routes and navigation blocking are all things
  * this UI wants and all things that are tedious to get right twice.
  *
  * **Every route here is below `Gate.tsx`**, which `main.tsx` wraps around this
  * component — so nothing in this file has to think about a 401, and a
- * signed-out visitor never reaches any of them. That was not true when this
- * file first shipped: sign-in lived inside `App`, `App` mounts on `/read/:work`
- * alone, and `/` therefore had no way to sign in at all.
+ * signed-out visitor never reaches any of them.
  *
  * **`key={work}` is the whole reason `App.tsx` did not have to become
  * re-entrant.** A changing key unmounts and remounts, so that file's "loads
@@ -61,7 +58,7 @@ function Reader() {
 /**
  * The account screen at a URL of its own — O94.
  *
- * From spec A2 until this route, `Account` mounted only inside `App`, behind
+ * Without a route of its own, `Account` would mount only inside `App`, behind
  * `A`: the one screen where an account changes its own password could be
  * reached only by opening a work, and not at all in a library with no work to
  * open — while `AccountPage` refuses an administrator's reset of their own
@@ -125,7 +122,7 @@ export function AppRoutes() {
 
         No admin guard, like `/proposals` above: a non-admin who types this
         reaches it and is shown the server's own 403 sentence, which is what
-        `api.ts`'s `getJson` was changed during C3 to make possible.
+        `api.ts`'s `getJson` makes possible.
       */}
       <Route
         path="/config/*"

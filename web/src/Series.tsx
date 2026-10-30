@@ -8,13 +8,13 @@
  * taken as props — `Shell` owns the state and `Routes.tsx` mounts this
  * component with nothing else to hand it.
  *
- * **The alignment mark is the whole point of the page.** Go-Toubun is 14
- * volumes in `Manga`, 14 in `Manga (RAW)` and a fan release, and only volumes
- * 1, 3 and 8 are aligned — a page that lists volumes and editions without
- * saying which are paired is a Komga screen with extra badges.
- * `WorkCard.aligned` is one bool per volume and no list route carries more;
- * the verdict and the paired count come from `/api/library/works/{slug}` and
- * from nowhere else, which is what the panel is for.
+ * **The alignment mark is the whole point of the page.** A series can hold the
+ * same volumes in more than one edition with only some of them aligned, and a
+ * page that lists volumes and editions without saying which are paired is a
+ * Komga screen with extra badges. `WorkCard.aligned` is one bool per volume
+ * and no list route carries more; the verdict and the paired count come from
+ * `/api/library/works/{slug}` and from nowhere else, which is what the panel
+ * is for.
  *
  * **The series is read through the store** (`usePage`), so a return draws
  * what was kept in its first render and reads it again, and a move to a
@@ -73,13 +73,12 @@ interface Loaded {
  * and not from volume 3, so the first volume to mention a key is not always
  * the first volume.
  */
-// `unreadable` — O62 — now lives in `library.ts`, not here: the whole-branch
-// review's I1 found it applied only inside `Table` below, while `browseModule`
-// makes the grid the *default* layout — so the grid rendered every reader link
-// and every per-edition download unguarded. `Library.tsx`'s Continue strip and
-// `SeriesGrid.tsx`'s unfiled works needed the identical guard, which is what
-// made it a shared pure function rather than a fourth copy. See its doc
-// comment in `library.ts` for the "every edition, not any" reasoning.
+// `unreadable` (O62) lives in `library.ts`, not here: `Table` below and the
+// grid both apply it, since `browseModule` makes the grid the default layout,
+// and `Library.tsx`'s Continue strip and `SeriesGrid.tsx`'s unfiled works need
+// the identical guard. That is why it is a shared pure function rather than a
+// fourth copy. See its doc comment in `library.ts` for which edition it
+// asks about.
 
 function editionColumns(works: WorkCard[]): { key: string; label: string }[] {
   const seen = new Map<string, string>()
@@ -230,7 +229,7 @@ function Table({
                         // content.** `aria-label` *replaces* an element's
                         // content for its accessible name, and this cell holds
                         // nothing but the anchor — so labelling it "download …"
-                        // alone stopped a screen reader announcing the page
+                        // alone would stop a screen reader announcing the page
                         // count at all, which is the one fact the cell exists
                         // to carry.
                         aria-label={`download ${w.title} — ${c.label}, ${held.pages} pages`}
@@ -264,9 +263,8 @@ function Table({
  *
  * **`verdict` and `paired` come from `/api/library/works/{slug}` and from
  * nowhere else.** `WorkCard.aligned` is a bool, deliberately: an
- * `alignments_of` per row would put back the N+1 the whole-branch review
- * closed in `home`, at 111 queries on the largest series. That is what makes
- * the `button` default cheap rather than merely tidy.
+ * `alignments_of` per row would be an N+1. That is what makes the `button`
+ * default cheap rather than merely tidy.
  *
  * A pair with no verdict is **stated as unaligned**, not left blank. The two
  * are different facts — "these editions have no alignment" against "the panel
@@ -345,9 +343,8 @@ function AlignmentPanel({
  * The cover, and the alignment mark on it — the part of a grid tile shared by
  * a readable volume (inside a `<Link>`) and an unreadable one (inside a plain
  * `<span>`, below). Factored out rather than written twice: a copy in each
- * branch is exactly the kind of drift I1 found in `unreadable` itself, one
- * level up. With no `shown`, the volume lacks the chosen edition and is drawn
- * dimmed, over the cover of the edition it leads with.
+ * branch would drift. With no `shown`, the volume lacks the chosen edition and
+ * is drawn dimmed, over the cover of the edition it leads with.
  */
 function VolumeCover({
   w,
@@ -583,17 +580,16 @@ export function Series() {
                     : w.editions.find((e) => e.key === chosen)
                 // **`onFocusCapture`, plus `onMouseEnter`.** Hover and focus
                 // both, because "select" with a mouse and "select" with a
-                // keyboard are the same intent and only one of them is a
-                // click; a click still navigates, since nothing here calls
+                // keyboard are the same intent and only one of them is a click;
+                // a click still navigates, since nothing here calls
                 // `preventDefault`. Capture rather than bubble: React maps
-                // either to the bubbling native `focusin`, so today the two
-                // are interchangeable here — this `<li>` sits on that event's
-                // path regardless of phase, verified by swapping one for the
-                // other and re-running this file's tests. Capture is kept
-                // anyway because it is the phase a later bubble-phase
-                // `stopPropagation` — added to some interactive child the
-                // panel grows — cannot defeat; that is a guard against a bug
-                // that does not exist yet, not a description of one that does.
+                // either to the bubbling native `focusin`, so the two are
+                // interchangeable here — this `<li>` sits on that event's path
+                // regardless of phase. Capture is kept anyway because it is the
+                // phase a later bubble-phase `stopPropagation` — added to some
+                // interactive child the panel grows — cannot defeat; that is a
+                // guard against a bug that does not exist yet, not a
+                // description of one that does.
                 return (
                   <li
                     key={w.slug}
@@ -614,16 +610,15 @@ export function Series() {
                     }
                   >
                     {unreadable(w) ? (
-                      // **O62 — the link is the treatment, not a badge.**
-                      // I1 of the whole-branch review: this is the grid, the
-                      // *default* layout (`browseModule.defaults.layout` is
-                      // `'grid'`), so the guard `Table` already carries has
-                      // to be applied here too, not only there. Same rule as
-                      // `Table`'s cell: a work whose members are gone must
-                      // not offer a link that fails at the first page, and
-                      // the volume keeps its name — withholding that too
-                      // would read as a library that has lost the work
-                      // rather than one that cannot open it.
+                      // **O62 — the link is the treatment, not a badge.** This
+                      // is the grid, the *default* layout
+                      // (`browseModule.defaults.layout` is `'grid'`), so the
+                      // guard `Table` carries has to be applied here too. Same
+                      // rule as `Table`'s cell: a work whose members are gone
+                      // must not offer a link that fails at the first page, and
+                      // the volume keeps its name — withholding that too would
+                      // read as a library that has lost the work rather than
+                      // one that cannot open it.
                       <span className="tile-unreadable">
                         <VolumeCover w={w} shown={shown} />
                         <span className="title">{w.title}</span>{' '}

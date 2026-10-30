@@ -1,4 +1,4 @@
-import { act, StrictMode, useEffect } from 'react'
+import { act, StrictMode, useEffect, useLayoutEffect, useRef } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 import {
   useConstant,
@@ -7,6 +7,7 @@ import {
   useDrawnSrcs,
   useDrawnWait,
   useFlushOnHide,
+  useFocusLeavesHeld,
   useLatest,
   usePrefsMap,
   useProgressWrite,
@@ -189,6 +190,100 @@ describe('useDrawnWait', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+})
+
+describe('useFocusLeavesHeld', () => {
+  let asDrawn: Element | null = null
+  function Form({ held }: { held: boolean }) {
+    const button = useRef<HTMLButtonElement>(null)
+    const box = useRef<HTMLInputElement>(null)
+    // Stands in for a browser taking focus off a button as soon as its caller
+    // disables it, which jsdom never does, so the hook has to have read focus
+    // already. Declared before the hook: layout effects run in order, and
+    // after the hook's, this blur would come too late to catch a hook that
+    // reads focus in its effect. Not `disabled` itself, so a test can give the
+    // button focus while the hold stays on.
+    useLayoutEffect(() => {
+      if (held) button.current?.blur()
+    }, [held])
+    useFocusLeavesHeld(held, button, box)
+    // Where focus stands before paint: a hook that moved it in a passive
+    // effect could leave a frame drawn with focus on the page.
+    useLayoutEffect(() => {
+      if (held) asDrawn = document.activeElement
+    }, [held])
+    return (
+      <>
+        <button ref={button} type="button">
+          Make
+        </button>
+        <input ref={box} aria-label="Name" />
+        <input aria-label="Path" />
+      </>
+    )
+  }
+  function run(held: boolean, strict = false) {
+    const ui = (on: boolean) =>
+      strict ? (
+        <StrictMode>
+          <Form held={on} />
+        </StrictMode>
+      ) : (
+        <Form held={on} />
+      )
+    const host = mount(ui(held))
+    const el = (selector: string) => host.querySelector<HTMLElement>(selector)!
+    return {
+      button: el('button'),
+      box: el('[aria-label="Name"]'),
+      path: el('[aria-label="Path"]'),
+      render: (on: boolean) => rerender(ui(on)),
+    }
+  }
+
+  it('sends focus to the box when the hold comes on while the button has it, StrictMode or not', () => {
+    for (const strict of [false, true]) {
+      const f = run(false, strict)
+      f.button.focus()
+      f.render(true)
+      expect(document.activeElement).toBe(f.box)
+      expect(asDrawn).toBe(f.box)
+    }
+  })
+
+  it('leaves focus on another field when the hold comes on', () => {
+    const f = run(false)
+    f.path.focus()
+    f.render(true)
+    expect(document.activeElement).toBe(f.path)
+  })
+
+  it('acts as the hold comes on, not again while it stays on', () => {
+    const f = run(false)
+    f.button.focus()
+    f.render(true)
+    expect(document.activeElement).toBe(f.box)
+    f.button.focus()
+    f.render(true)
+    expect(document.activeElement).toBe(f.button)
+  })
+
+  it('leaves focus on the button when the hold ends', () => {
+    const f = run(true)
+    f.button.focus()
+    f.render(false)
+    expect(document.activeElement).toBe(f.button)
+  })
+
+  it('leaves focus on the button while the hold is off, and acts on the next hold that comes on', () => {
+    const f = run(true)
+    f.render(false)
+    f.button.focus()
+    f.render(false)
+    expect(document.activeElement).toBe(f.button)
+    f.render(true)
+    expect(document.activeElement).toBe(f.box)
   })
 })
 

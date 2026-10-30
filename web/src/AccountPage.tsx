@@ -166,8 +166,7 @@ const REMOVING = 'Removing…'
  * `n` of a thing, in the number the count actually is.
  *
  * Zero takes the plural — "0 API keys" — which is English rather than an
- * oversight. `RemoveRoot` carries the same helper and the same note; it was
- * found by rendering that dialog in a real browser, where it read "1 works".
+ * oversight. `RemoveRoot` carries the same helper and the same note.
  */
 function count(n: number, one: string, many: string): string {
   return `${n} ${n === 1 ? one : many}`
@@ -201,10 +200,10 @@ export function AccountPage({
   /**
    * What the last write on this page was answered with.
    *
-   * **The hold alone was not enough, and this is the half that closes it.**
+   * **The hold alone is not enough, and this is the half that closes it.**
    * `settled` waits for the list read a write triggers, but that read can fail
    * or be superseded by a later one — and either way it resolves without
-   * bringing fresh props, so the controls came back live over pre-write
+   * bringing fresh props, so the controls would come back live over pre-write
    * values. `patchUser` answers the account whole, so the page can keep that
    * answer and stop guessing: it is what is drawn, and what `toggleGrant`
    * computes the next grant list from. Retired the moment a new `user` prop
@@ -387,10 +386,10 @@ function AccountBody({
    * Why the dry run could not answer. **A slot of its own**, because the
    * dialog reads it: "working out what this would remove…" is drawn while
    * there is neither a cost nor a reason, and `begin()` clears the shared slot
-   * on *every* write — so ticking a capability box after a failed dry run put
-   * the dialog back to "working out" for ever, with nothing in flight.
-   * `Backup.tsx` keeps the same two slots for its own pair, and the users
-   * screen keeps the list's failure in `Users.tsx` apart from the add's
+   * on *every* write — so ticking a capability box after a failed dry run
+   * would put the dialog back to "working out" for ever, with nothing in
+   * flight. `Backup.tsx` keeps the same two slots for its own pair, and the
+   * users screen keeps the list's failure in `Users.tsx` apart from the add's
    * refusal in `NewAccount.tsx`.
    */
   const [costFailure, setCostFailure] = useState<string | undefined>()
@@ -438,11 +437,10 @@ function AccountBody({
     setSaving(true)
     setFailure(undefined)
     // **Cleared here rather than left to fade.** "Password set" is a notice
-    // about one write, and nothing else on this page was clearing it — so it
-    // stood over every later toggle, grant and refusal, still saying somebody
-    // had just been signed out everywhere. O96's `heldNotice` finding, which
-    // `RuleList` closed the same way: the mutation that follows a notice is
-    // what retires it.
+    // about one write, and nothing else on this page clears it — so it would
+    // stand over every later toggle, grant and refusal, still saying somebody
+    // had just been signed out everywhere. O96: the mutation that follows a
+    // notice is what retires it.
     setWasReset(false)
     return true
   }
@@ -457,8 +455,7 @@ function AccountBody({
    * list*: ticking a second library inside it computes the new grants from
    * the pre-patch `user.libraries` and so silently revokes the first. Holding
    * until `onChanged` settles keeps this page's props and its controls in
-   * step, and costs the reload's few hundred milliseconds on a screen touched
-   * rarely.
+   * step, at the cost of the reload's wait on a screen touched rarely.
    */
   const settled = (after?: () => void) => {
     after?.()
@@ -659,8 +656,7 @@ function AccountBody({
       // `settled` waits for the list read, and that read can fail or be
       // superseded without bringing fresh props — leaving the revoked session
       // listed with a live Revoke, whose next press answers 404 for a session
-      // that is already gone. Third review pass, in the fix the second one
-      // produced for exactly this shape.
+      // that is already gone.
       .then(() => {
         // The caller's own keys and sessions are also `/account`'s and the
         // reader panel's lists, which keep the revoked row until read again.
@@ -678,10 +674,9 @@ function AccountBody({
     if (inFlight.current) return
     // **The newest dry run wins.** Two are routinely in flight — Remove…,
     // Cancel, Remove… again — and nothing makes them answer in order, so a
-    // slow first answer landing after a failed second drew five counts and an
-    // enabled *Remove sam* underneath an alert saying the count could not be
-    // taken. `Users`, `Backup` and `Libraries` all carry the same counter. Fourth
-    // review pass.
+    // slow first answer landing after a failed second would draw five counts
+    // and an enabled *Remove sam* underneath an alert saying the count could
+    // not be taken.
     const seq = ++latestCost.current
     setConfirming(true)
     setCost(undefined)

@@ -1,26 +1,13 @@
 /**
  * How large a page to ask the server for.
  *
- * **The measurement that put this here.** `gotoubun-v01`'s `en-mono` pages are
- * 2147×3056 — 6.56 megapixels — and in a 1385×512 window the reader draws them
- * into a box of 693×475. Twenty times the pixels that reach the screen. What
- * that costs, measured in the browser with the bytes already cached so the
- * timing is decode alone:
- *
- * | fetched at | pixels | decode | decoded bitmap |
- * | ---------- | -----: | -----: | -------------: |
- * | 2147 (as released) | 6.56 MP | 74.5 ms | 26.2 MB |
- * | 1600 | 3.64 MP | 14.9 ms | 14.6 MB |
- * | 1024 | 1.49 MP |  7.3 ms |  6.0 MB |
- * | 700  | 0.70 MP |  4.3 ms |  2.8 MB |
- *
- * Both columns matter. The decode is what a page turn waits on — `decode.ts`
- * holds the outgoing page until the incoming one can be painted, and
- * `cohort.ts` makes a spread wait for the slower of its halves. The bitmap is
- * what the browser evicts under memory pressure, which is what made an
- * occasional turn cost hundreds of milliseconds instead of single digits; at
- * 2.8 MB there is far less worth evicting. `raw-mono`, at 685×1024, has never
- * felt slow, and this is why.
+ * A page is fetched near the size it is drawn at, not at the original: a page
+ * fetched at full size can carry far more pixels than reach the screen. Both
+ * decode time and decoded bitmap size matter. The decode is what a page turn
+ * waits on — `decode.ts` holds the outgoing page until the incoming one can be
+ * painted, and `cohort.ts` makes a spread wait for the slower of its halves.
+ * The bitmap is what the browser evicts under memory pressure, which is what
+ * makes an occasional turn slow; a small bitmap leaves far less worth evicting.
  *
  * **A ladder rather than the exact size**, because the server caches one file
  * per (member, page, long edge) and a reader dragging a window edge would
@@ -51,8 +38,7 @@ export const SIZE_LADDER: readonly number[] = [512, 768, 1024, 1536, 2048, 3072]
  * them land on full resolution rather than on a 512px page nobody can read.
  *
  * Rounding **up** to a rung, never down: a page drawn at 1025 CSS pixels asked
- * for at 1024 is visibly soft, where asking at 1536 costs about half a
- * frame of decode.
+ * for at 1024 is visibly soft, where asking at 1536 costs a little more decode.
  */
 export function requestedLongEdge(
   boxLongEdge: number,

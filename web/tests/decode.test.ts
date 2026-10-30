@@ -446,7 +446,8 @@ describe('presentWhenDecoded', () => {
   // `two` mode's pair, at the seam `PageView` actually uses. The old behaviour
   // — each half presenting the moment its own decode settled — is what a
   // reader reported as the halves not arriving together, measured at a median
-  // 89.7 ms apart in the browser; see `cohort.ts`.
+  // 89.7 ms apart in the browser; see the `cohort.ts` entry in
+  // `docs/superpowers/notes/2026-10-29-code-history-web-src.md`.
   it('holds a decoded page until the page beside it has decoded too, when both share a cohort', async () => {
     const cohort = createCohort()
     const fast = deferred<void>()

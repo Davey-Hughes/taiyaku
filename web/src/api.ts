@@ -16,10 +16,9 @@ const seg = (s: string) => encodeURIComponent(s)
  * **A state change rather than an error to show.** Being signed out is not
  * something a reader can act on by reading a message; it is something
  * `Gate.tsx` routes on. Raised as its own type from one place — `request`
- * below — because
- * eight separate branches is eight chances for a ninth call site to forget, and
- * the ninth is exactly the one that would ship signed-out readers a stack trace
- * where a login screen belongs.
+ * below — because a branch in every call is one more chance for the next call
+ * site to forget, and that one is exactly the one that would ship signed-out
+ * readers a stack trace where a login screen belongs.
  */
 export class Unauthenticated extends Error {
   constructor() {
@@ -31,25 +30,24 @@ export class Unauthenticated extends Error {
 /**
  * Called once, from anywhere, the first time a 401 arrives.
  *
- * **Routing a 401 cannot be left to each call site.** It was, and the writes all
- * ended in `.catch(console.error)` — so a session revoked from another browser
- * left the reader turning pages while every position and note write was
- * discarded into a console nobody has open, with no login screen and nothing on
- * screen wrong. Only the two load-time effects routed it, which are exactly the
- * calls that happen when a session is *least* likely to have just died.
+ * **Routing a 401 cannot be left to each call site.** A write that ends in
+ * `.catch(console.error)` would, once a session was revoked from another
+ * browser, leave the reader turning pages while every position and note write
+ * is discarded into a console nobody has open, with no login screen and
+ * nothing on screen wrong. Routing it only from the two load-time effects
+ * would catch exactly the calls that happen when a session is *least* likely
+ * to have just died.
  *
- * A module-level hook rather than a parameter threaded through sixteen
- * signatures: the answer is the same for every call, and a signature a caller
- * can decline to pass is how this happened the first time. Found by the
- * whole-branch review, 2026-08-18.
+ * A module-level hook rather than a parameter threaded through each call's
+ * signature: the answer is the same for every call, and a signature a caller
+ * can decline to pass is how a 401 goes unrouted.
  *
  * **One slot, so exactly one component may register.** A second registration
  * replaces the first with nothing said, which is why this belongs to
  * `Gate.tsx` — the one component above the router, mounted for the whole page
- * load — and not to a screen. It belonged to `App` until 2026-08-21, and the
- * cost was the whole library: `main.tsx` renders the router, `/` is the
- * library, and `App` mounts on `/read/:work` alone — so a signed-out visitor
- * on `/` reached a screen where this hook was never registered at all.
+ * load — and not to a screen: `main.tsx` renders the router, `/` is the
+ * library, and `App` mounts on `/read/:work` alone, so a signed-out visitor on
+ * `/` would reach a screen where this hook was never registered at all.
  */
 let onUnauthenticated: (() => void) | undefined
 
@@ -60,24 +58,22 @@ export function whenSignedOut(handler: () => void): void {
 /**
  * `fetch`, with the one status this module answers structurally.
  *
- * Every call below goes through this rather than calling `fetch` directly.
- * `pageUrl` and `thumbUrl` are the deliberate exceptions and do not: they
- * return URLs for an `<img src>`, so the browser fetches them and a 401 there
- * shows as a broken image rather than reaching any code here — which is why
- * `Gate.tsx` asks `me()` on load instead of waiting to be told by a page that
- * failed to draw.
+ * Every call below goes through this rather than calling `fetch` directly,
+ * except `login` (its doc says why) and `logout`. `pageUrl` and `thumbUrl`
+ * do not fetch: they return URLs for an `<img src>`, so the browser fetches
+ * them and a 401 there shows as a broken image rather than reaching any code
+ * here — which is why `Gate.tsx` asks `me()` on load instead of waiting to be
+ * told by a page that failed to draw.
  */
 const request = async (input: string, init?: RequestInit) => {
   // Forwarded without an explicit `undefined` when there is no init, so the
-  // call `fetch` sees is byte-for-byte the one it saw before this wrapper
-  // existed. That keeps every pre-existing test in `api.test.ts` passing
-  // untouched, which is the evidence that this change did nothing to these
-  // calls except notice a 401.
+  // call `fetch` sees is byte-for-byte a direct `fetch(input)`.
   const res = init === undefined ? await fetch(input) : await fetch(input, init)
   if (res.status === 401) {
-    // Fired before the throw, so a caller that swallows the rejection — every
-    // write does, deliberately, since a failed position write is not something
-    // to show a reader — still hands the app the one fact it must act on.
+    // Fired before the throw, so a caller that swallows the rejection — a
+    // progress write does, deliberately, since a failed position write is not
+    // something to show a reader — still hands the app the one fact it must
+    // act on.
     onUnauthenticated?.()
     throw new Unauthenticated()
   }
@@ -93,14 +89,12 @@ const request = async (input: string, init?: RequestInit) => {
  * `whenSignedOut` above exists to have fixed once.
  *
  * **A non-2xx throws the body along with the status, the same as `sendJson`
- * below and for the same reason.** This threw the path and the status alone
- * until spec C3, and the read routes it serves are where that cost the most:
- * `listProposals` and `proposalDetail` both come through here, `Routes.tsx`
- * puts no admin guard on `/proposals`, and so a reader who types that URL was
- * shown `"/api/library/proposals: 403"` while the server's own sentence — the
- * proposals inbox is an administrator's — was read off the wire and dropped.
- * Every other thrower in this file carries `await res.text()`; this was the
- * one that did not.
+ * below and for the same reason.** The read routes it serves are where leaving
+ * the body out would cost the most: `listProposals` and `proposalDetail` both
+ * come through here, `Routes.tsx` puts no admin guard on `/proposals`, and so
+ * a reader who types that URL would be shown `"/api/library/proposals: 403"`
+ * while the server's own sentence — the proposals inbox is an administrator's
+ * — would be read off the wire and dropped.
  */
 export async function getJson<T>(path: string): Promise<T> {
   const res = await request(path)
@@ -117,7 +111,7 @@ export async function getJson<T>(path: string): Promise<T> {
  * be forgotten.
  *
  * A non-2xx throws the path, the status and the body together — the shape
- * `patchAlignment` and `putNotes` already throw, and for the same reason
+ * `patchAlignment` and `putNotes` throw, and for the same reason
  * `patchAlignment`'s own doc gives: the status is what tells a caller a
  * stale-validator refusal apart from one it cannot fix by retrying. The body
  * matters here specially: the proposals API refuses an accept by *naming the
@@ -300,7 +294,7 @@ export async function logout(): Promise<void> {
  * `longEdge` asks the server to fit the page inside that many pixels — see
  * `pageSize.ts` for how the reader chooses one and why. Omitted means the
  * member's own bytes at full size, which is what zoom asks for and what every
- * caller wanting the original keeps getting.
+ * caller wanting the original gets.
  *
  * The parameter is part of the URL rather than a header, so the browser's own
  * cache keys on it: two sizes of one page are two cache entries, which is what
@@ -327,9 +321,9 @@ export const pageUrl = (
  * different routes — a page's `w` is what the reader draws, a tile's is one
  * of `tileSize.ts`'s three rungs.
  *
- * Without one it is the 160 px tile — what `CreditsPanel.tsx` still asks for
- * (its thumbnails are 56 px tall, so even a 3× screen wants only 168 and a
- * rung there would fetch 320 to fix nothing), and what an account that may not
+ * Without one it is the 160 px tile — what `CreditsPanel.tsx` asks for (its
+ * thumbnails are 56 px tall, so even a 3× screen wants only 168 and a rung
+ * there would fetch 320 to fix nothing), and what an account that may not
  * stream is given whatever it asks for.
  *
  * A library cover does **not** come through here at all: the server sends its
@@ -352,11 +346,9 @@ export const thumbUrl = (
  * a series and show its cover, without shipping the sidecar itself.
  *
  * **`series` and `volume` come from the server's library rows, not from the
- * sidecar** — there is no field for either on the sidecar document, because a
- * series grouping and a volume number are spec B's scanner's job, not the
- * aligner's. Both are `null` today rather than absent: nothing populates
- * either column yet, and the server answers them honestly as "not yet known"
- * rather than leaving the key out.
+ * sidecar** — there is no field for either on the sidecar document, because
+ * a series grouping and a volume number are spec B's scanner's job, not
+ * the aligner's.
  *
  * `slug` is the permalink and can outlive `title`: `taiyaku-library`'s
  * `import::update_work` updates a re-imported work's title but leaves its
@@ -388,10 +380,10 @@ export async function listWorks(): Promise<WorkSummary[]> {
  * and `App`'s load effect tells that failure from every other with
  * `instanceof`, as it tells `Unauthenticated`.
  *
- * **The message is the one this read threw for a 404 before the type
- * existed**: `getSidecarWithEtag` builds one string for every non-2xx and
- * hands it here, so `messageOf` reads from this what it read from the plain
- * `Error`. `Labeller.tsx`'s notice is that string, through `getSidecar`.
+ * **The message is the one `getSidecarWithEtag` builds for every non-2xx**: it
+ * hands that string here for a 404, so `messageOf` reads from this what it
+ * reads from a plain `Error`. `Labeller.tsx`'s notice is that string,
+ * through `getSidecar`.
  *
  * `work` is the slug the caller asked for, as it was given and not as the URL
  * escapes it. The response's body is in the message and nowhere else.
@@ -456,11 +448,11 @@ interface ServerPosition extends StoredProgress {
 /**
  * `undefined` where nothing is recorded — the server answers 204, not 404.
  *
- * The server answers **every** edition's position, newest first, since a
- * position became per-edition. The reader resumes into the head: it opens one
- * edition at a time, and the most recently updated is the one the reader was
- * last in. The rest are not discarded server-side — switching edition and
- * coming back finds the place that edition held.
+ * The server answers **every** edition's position, newest first. The reader
+ * resumes into the head: it opens one edition at a time, and the most recently
+ * updated is the one the reader was last in. The rest are not discarded
+ * server-side — switching edition and coming back finds the place that
+ * edition held.
  */
 export async function getProgress(
   work: string,
@@ -583,7 +575,7 @@ export async function getNotes(work: string): Promise<FetchedNotes> {
  * older than this route — and either way the caller is now holding a document
  * it has no validator for. `notesWrite.ts`'s `writeGate` is what that answer
  * runs into: the next write is refused and the reader is told, rather than
- * every write from here on being a silent no-op, which is what it used to be.
+ * every write from here on being a silent no-op.
  */
 export async function putNotes(
   work: string,
