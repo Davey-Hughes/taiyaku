@@ -911,7 +911,7 @@ fn the_hub_editions_spreads_and_credits_lists_come_from_the_incoming_document() 
 
 /// **C1b, end to end at the library layer.** Adding a volume to the hub and
 /// re-solving is the ordinary case for an ongoing series, and it must not
-/// refuse: `merge_spoke`'s from-side guard (`core/sidecar.rs:628`) compares
+/// refuse: `merge_spoke`'s from-side guard (see its `# Errors`) compares
 /// its own stored edition at `alignment.from` against the `from_side` it is
 /// handed, on `sha256`, and refuses when they differ — which they do here, on
 /// purpose, since the hub gained a member. Before C1, that refusal propagated

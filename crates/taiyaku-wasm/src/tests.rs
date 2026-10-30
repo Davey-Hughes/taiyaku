@@ -21,10 +21,9 @@ fn a_half_crosses_the_boundary_as_l_or_r() {
     );
 }
 
-/// The shell forwards four positional arguments and copies three fields,
-/// and until now nothing exercised either. The agreement test in `binding`
-/// sits one layer below this and cannot see a transposed `from`/`to` or a
-/// wrong field copied into `WasmSlot`.
+/// The shell forwards four positional arguments and copies three fields. The
+/// agreement test in `binding` sits one layer below this and cannot see a
+/// transposed `from`/`to` or a wrong field copied into `WasmSlot`.
 ///
 /// `.ok()` rather than `.unwrap()` on the `Result`: formatting a `JsError`
 /// off-target would call into JavaScript, and the happy path never
@@ -47,9 +46,9 @@ fn the_shell_forwards_its_arguments_and_copies_every_field() {
 }
 
 /// The three forwarders that carry a value straight across. `binding`'s own
-/// tests pin what each answers; nothing pinned that *this* layer asks the
-/// right question with the right argument, so all three were replaceable by
-/// a constant without a test noticing.
+/// tests pin what each answers, not that *this* layer asks the right question
+/// with the right argument, which a constant in place of any of the three
+/// would otherwise hide.
 ///
 /// `editions` and `credits` are asserted against exact contents rather than
 /// a length, and `credits` against a list that is neither empty nor `[0]`
@@ -127,7 +126,8 @@ fn slot_at_and_index_of_are_inverses_across_the_boundary() {
     // the reason is a hazard rather than an oversight: the error arm builds
     // a `JsError`, and constructing one on a non-wasm target panics with
     // "cannot call wasm-bindgen imported functions on non-wasm targets" —
-    // not only formatting it, as the note on the test above suggests.
+    // not only formatting it, as the note on
+    // `the_shell_forwards_its_arguments_and_copies_every_field` suggests.
     // `a_half_crosses_the_boundary_as_l_or_r` pins that refusal one layer
     // down, in `half_from_str`, which is ordinary Rust and can be asked.
 }

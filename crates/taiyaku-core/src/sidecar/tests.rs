@@ -63,12 +63,9 @@ fn edition_with_pages(path: &str, sha: &str, pages: u32) -> Edition {
     }
 }
 
-/// The invariant `correct_runs` protects for one correction
-/// (`lib.rs:126-134`), checked here against a *whole* merged run list:
-/// no target slot may be claimed twice. C2 is `carry_hand_runs` breaking
-/// exactly this while restoring the `a` side correctly, and nothing above
-/// `correct_runs` asserted `claimed == distinct` on the `b` side before —
-/// this is that assertion, shared so every merge test can run it.
+/// The invariant `correct_runs` protects for one correction, checked here
+/// against a *whole* merged run list: no target slot may be claimed twice. It
+/// is shared so every merge test can run it.
 fn assert_b_side_is_one_to_one(runs: &[RunEntry], a_slots: &[Slot], b_slots: &[Slot]) {
     let mut owners: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
     for entry in runs {
@@ -296,9 +293,8 @@ fn a_merge_with_nothing_to_carry_stores_the_run_list_it_was_handed() {
 }
 
 /// Re-solving a spoke after fixing its archive is ordinary, so a changed
-/// `sha256` on the spoke side still merges. Narrowed by O13: this is now
-/// specifically the *no hand runs* case, which is what keeps that fix a
-/// narrowing rather than a breaking change.
+/// `sha256` on the spoke side still merges. This is specifically the *no
+/// hand runs* case (O13).
 #[test]
 fn re_aligning_a_spoke_with_no_hand_runs_replaces_it_rather_than_duplicating() {
     let mut s = two_edition();
@@ -386,10 +382,10 @@ fn replacing_a_spoke_drops_its_credits_and_says_how_many() {
 /// 5, one at slot 9 — deliberately, so this pins more than "the corrected
 /// slot still says what it said": it pins that the *rest* of the run,
 /// including the slots strictly between the two corrections, is not
-/// collateral damage. `carry_hand_runs`'s first cut dropped the whole
-/// 30-slot solved run wherever any hand run overlapped it, which this
-/// fixture's own shape — one long run — hid completely if only the
-/// corrected slots themselves were checked.
+/// collateral damage. A helper that dropped the whole 30-slot solved run
+/// wherever any hand run overlapped it would go unseen if only the
+/// corrected slots themselves were checked, because this fixture's own
+/// shape is one long run.
 #[test]
 fn a_hand_run_survives_a_re_solve_of_an_unchanged_spoke() {
     let mut s = two_edition();
@@ -479,13 +475,12 @@ fn a_hand_run_survives_a_re_solve_of_an_unchanged_spoke() {
     );
 }
 
-/// The case the from-side guard never covered. Re-solving a spoke after
-/// fixing its archive is ordinary and stays allowed — but a correction
-/// addresses slots of the edition that is being replaced, so carrying it
-/// across would resurrect runs pointing into bytes that are gone. What
-/// should become of such a correction is a real question, deliberately
-/// left open in `docs/status.md`; refusing is what stops it being answered
-/// silently.
+/// Re-solving a spoke after fixing its archive is ordinary and stays
+/// allowed — but a correction addresses slots of the edition that is being
+/// replaced, so carrying it across would resurrect runs pointing into
+/// bytes that are gone. What should become of such a correction is a real
+/// question, deliberately left open in `docs/status.md`; refusing is what
+/// stops it being answered silently.
 #[test]
 fn replacing_a_spoke_that_holds_hand_runs_is_refused() {
     let mut s = two_edition();
@@ -987,24 +982,23 @@ fn a_hand_run_whose_target_precedes_a_piece_does_not_evict_it() {
     );
 }
 
-/// C2. `carry_hand_runs` splits solved runs around a hand run's **source**
-/// span, but did nothing about a solved piece's **target** landing on a
+/// `carry_hand_runs` splits solved runs around a hand run's **source**
+/// span, and must also deal with a solved piece's **target** landing on a
 /// slot a hand run already claims. The unchanged-spoke fixture used
-/// everywhere else in this file hides it, because `correct` also
-/// hand-marks the slot it displaced, and that mark carries across and
+/// everywhere else in this file hides the collision, because `correct`
+/// also hand-marks the slot it displaced, and that mark carries across and
 /// neutralises the old owner — but only while the fresh solve agrees with
 /// the old one about where everything goes. Re-solving with a genuinely
 /// different run shape (as a newer solver or a different `floor` would)
-/// does not agree, and the reviewer's reproduction is exactly this: a
-/// fresh solve shifted by one slot from the run the hand corrections were
-/// made against.
+/// does not agree: here, a fresh solve shifted by one slot from the run
+/// the hand corrections were made against.
 ///
-/// Before the fix, slot `a` 10 keeps the counterpart (`b` 9) the fresh
-/// solve's own offset gives it, even though the hand run at `a` 5 already
-/// claims `b` 9 — the exact collision `correct_runs` exists to prevent.
-/// `b` 9 then answers `a` 5 one way and `a` 10 the other, which is the
-/// silent page move `notes.md`'s "swapping must not round-trip through
-/// the alignment" is about.
+/// Without that handling, slot `a` 10 would keep the counterpart (`b` 9)
+/// the fresh solve's own offset gives it, even though the hand run at `a` 5
+/// already claims `b` 9 — the exact collision `correct_runs` exists to
+/// prevent. `b` 9 would then answer `a` 5 one way and `a` 10 the other,
+/// which is the silent page move `notes.md`'s "swapping must not
+/// round-trip through the alignment" is about.
 #[test]
 #[expect(
     clippy::too_many_lines,
@@ -1153,13 +1147,14 @@ fn carrying_hand_runs_across_a_reshaped_solve_evicts_the_collision() {
     );
 }
 
-/// C1. `merge_spoke` looked for hand runs only on the edge between the
-/// two editions being merged (`start` <-> `name`), and `Sidecar::correct`
-/// can now write a hand-corrected *direct* edge to a **third** edition —
-/// `b -> c` here, while the spoke being re-solved is `a -> b`. That direct
-/// edge is not the one being replaced, so it was never inspected, and a
-/// spoke whose bytes changed merged silently while the stale `b -> c`
-/// edge — hand runs and all — kept addressing the old `b`'s slots.
+/// `merge_spoke` must look for hand runs on more than the edge between the
+/// two editions being merged (`start` <-> `name`): `Sidecar::correct` can
+/// write a hand-corrected *direct* edge to a **third** edition — `b -> c`
+/// here, while the spoke being re-solved is `a -> b`. That direct edge is
+/// not the one being replaced, so inspecting only the merged pair's edge
+/// would never see it, and a spoke whose bytes changed would merge
+/// silently while the stale `b -> c` edge — hand runs and all — kept
+/// addressing the old `b`'s slots.
 #[test]
 fn replacing_a_spoke_whose_hand_corrected_edge_is_to_a_third_edition_is_refused() {
     let mut s = two_edition();
@@ -1613,10 +1608,10 @@ fn a_slot_reference_that_is_empty_or_not_numeric_is_refused() {
 }
 
 /// The block a reader needs in order to tell a worthless alignment from a
-/// good one. Measured: seven short unrelated pairings pair every page they
-/// have and are indistinguishable from a correct alignment on both
-/// calibration statistics, so the run shape is the only thing that
-/// separates them and the document has to carry it.
+/// good one. Short unrelated pairings can pair every page they have and be
+/// indistinguishable from a correct alignment on both calibration
+/// statistics, so the run shape is the only thing that separates them and
+/// the document has to carry it.
 #[test]
 fn an_alignment_carries_its_quality_through_a_round_trip() {
     let json = r#"{
@@ -1647,9 +1642,7 @@ fn an_alignment_carries_its_quality_through_a_round_trip() {
     );
 }
 
-/// Every sidecar written before this field existed lacks it, and those
-/// files must keep parsing. Absent means unknown, which Task 3's `trust`
-/// distinguishes from sound.
+/// A sidecar without this field must keep parsing.
 #[test]
 fn a_document_without_quality_still_parses_and_omits_the_field() {
     let json = r#"{
@@ -1775,8 +1768,7 @@ fn trust_composed_through_the_hub_takes_the_worse_edge() {
 }
 
 /// The cases where the document simply does not say. `None` is not
-/// `Sound` — every sidecar written before this field existed is unknown,
-/// and a reader must not read silence as approval.
+/// `Sound`, and a reader must not read silence as approval.
 #[test]
 fn trust_says_nothing_when_the_document_does_not() {
     let json = r#"{
@@ -1816,9 +1808,9 @@ fn trust_says_nothing_when_the_document_does_not() {
 }
 
 /// A span written backwards must be reported, not turned into a panic by
-/// `PageRange::new`'s `debug_assert`. Reproduced from review: `"9-2"`
-/// panics with "page range must not be inverted" in a debug build, which
-/// is what the test suite and debug wasm both are.
+/// `PageRange::new`'s `debug_assert`. `"9-2"` would panic with "page range
+/// must not be inverted" in a debug build, which is what the test suite and
+/// debug wasm both are.
 #[test]
 fn an_inverted_span_is_rejected_rather_than_panicking() {
     let json = r#"{
@@ -1845,8 +1837,8 @@ fn an_inverted_span_is_rejected_rather_than_panicking() {
 
 /// A paired run whose sides cover different numbers of slots must be
 /// reported, not turned into a panic by `Run::paired`'s `debug_assert_eq`.
-/// Reproduced from review: `"a": "0-1", "b": "0-5"` panics with "paired
-/// run sides must be equal length" in a debug build.
+/// `"a": "0-1", "b": "0-5"` would panic with "paired run sides must be
+/// equal length" in a debug build.
 #[test]
 fn a_mismatched_paired_span_is_rejected_rather_than_panicking() {
     let json = r#"{
@@ -2299,7 +2291,7 @@ fn correcting_one_edge_of_a_star_reads_that_edges_own_runs() {
 /// A correction the document already agrees with must change nothing at
 /// all — not the runs, not `by`, not `note`. Without this, "correcting" a
 /// slot to where it already resolves stamps `hand` across the whole run it
-/// sits in, which on the real fixture is 188 slots.
+/// sits in.
 #[test]
 fn a_correction_that_changes_nothing_rewrites_nothing() {
     let mut s = Sidecar::from_json(REAL).expect("parses");
@@ -2314,9 +2306,9 @@ fn a_correction_that_changes_nothing_rewrites_nothing() {
 }
 
 /// The quality block is recomputed from the runs that are now there, not
-/// carried over. Measured on this fixture: two corrections take the
-/// average run length from 64.33 to 21.22, past the 27.0 threshold — see
-/// O23 in `docs/status.md`, which records that rather than hiding it.
+/// carried over. Two corrections on this fixture take the average run
+/// length past the 27.0 threshold; see O23 in `docs/status.md`, which
+/// records that rather than hiding it.
 #[test]
 fn correcting_recomputes_the_quality_beside_the_runs() {
     let mut s = Sidecar::from_json(REAL).expect("parses");
@@ -2342,13 +2334,10 @@ fn correcting_recomputes_the_quality_beside_the_runs() {
 /// not touch.
 ///
 /// `entries_from_runs` writes `margin: None` for every entry it builds, so
-/// before this was guarded a single correction silently cleared the margins
-/// across the whole edge. Found by driving the reader against the real
-/// corpus, not by any test: one correction took `raw-mono -> en-fan` from
-/// eight margins to zero while the untouched `raw-mono -> en-mono` edge
-/// kept all of its. A margin is recoverable only by re-solving against the
-/// archives, which is the work `docs/sidecar.md` says the document exists
-/// to avoid.
+/// without a guard a single correction would silently clear the margins
+/// across the whole edge. A margin is recoverable only by re-solving
+/// against the archives, which is the work `docs/sidecar.md` says the
+/// document exists to avoid.
 ///
 /// `REAL`'s stored edge carries a margin on three of its five runs, and the
 /// correction below rewrites only the run holding slot 50 — so the runs at
@@ -2386,7 +2375,7 @@ fn a_correction_keeps_the_margins_of_the_runs_it_did_not_touch() {
         "and so does this one: {kept:?}"
     );
     // The long run that held slot 50 was split by the correction, so no
-    // stored figure describes any of its pieces any more.
+    // stored figure describes any of its pieces.
     assert!(
         kept.iter()
             .filter(|(a, _)| a != "0" && a != "2-5")
@@ -2447,7 +2436,7 @@ fn a_run_pointed_at_a_new_target_does_not_inherit_the_old_targets_margin() {
 }
 
 /// A hand correction has to survive the file being written and read back,
-/// or nothing else in this milestone means anything.
+/// or nothing else means anything.
 #[test]
 fn a_correction_round_trips_through_the_document() {
     let mut s = Sidecar::from_json(REAL).expect("parses");
@@ -2597,10 +2586,9 @@ fn every_refusal_variant_shows_the_message_it_carries() {
 /// was already a gap before it — so `all` must leave `"5-6"` unmarked.
 /// `any` would mark it hand because slot 5 alone satisfies it, and on a
 /// run a correction merges into rather than splits, that generalises to
-/// the whole run: measured at up to 188 of this fixture's 195 slots for a
-/// differently shaped correction. Task 3's re-solve refusal keys off
-/// which runs are hand-marked, so an over-broad mark here would make it
-/// refuse forever.
+/// the whole run for a differently shaped correction. The re-solve refusal
+/// keys off which runs are hand-marked, so an over-broad mark here would
+/// make it refuse forever.
 #[test]
 fn a_hand_mark_covers_only_the_slots_a_person_decided() {
     let mut s = Sidecar::from_json(REAL).expect("parses");
@@ -2635,12 +2623,12 @@ fn a_hand_mark_covers_only_the_slots_a_person_decided() {
 
 /// Two corrections whose changed slots land index-adjacent merge into one
 /// run — `compress` groups consecutive gaps by adjacency alone, with no
-/// awareness of `by` or `note`. The old note-recovery looked up the
-/// previous note by exact span equality, so once the merged run's span
+/// awareness of `by` or `note`. A note recovery that looked up the previous
+/// note by exact span equality would miss once the merged run's span
 /// (`"60-61"`) matched neither correction's original single-slot span
-/// (`"60"`, `"61"`), the lookup missed and the *first* correction's note
-/// vanished — even though the run stayed correctly `by: Hand`. Recovery
-/// by overlap, joining rather than choosing, is what keeps both.
+/// (`"60"`, `"61"`), and the *first* correction's note would vanish — even
+/// though the run stayed correctly `by: Hand`. Recovery by overlap, joining
+/// rather than choosing, is what keeps both.
 #[test]
 fn two_merged_corrections_keep_both_notes() {
     let mut s = Sidecar::from_json(REAL).expect("parses");
@@ -2664,14 +2652,12 @@ fn two_merged_corrections_keep_both_notes() {
 
 /// **A document from a newer taiyaku does not parse.**
 ///
-/// `from_json` used to be a bare `serde_json::from_str`, so `{"taiyaku": 2}`
-/// became a `Sidecar` with every field this build has no name for silently
-/// gone — and the commands that read-modify-write a document (`align --write`,
-/// `credits --write`, `regions`, `library import` + `export --in-place`) wrote
-/// that stripped copy back over the reader's only one, stamped version 1.
-/// `taiyaku_library::import` refused it at the library's two entry points; the
-/// other commands never asked. Refusing here is the one place all of them pass
-/// through.
+/// A bare `serde_json::from_str` would turn `{"taiyaku": 2}` into a
+/// `Sidecar` with every field this build has no name for silently gone, and
+/// the commands that read-modify-write a document (`align --write`,
+/// `credits --write`, `regions`, `library import` + `export --in-place`)
+/// would write that stripped copy back over the reader's only one, stamped
+/// version 1. Refusing here is the one place all of them pass through.
 #[test]
 fn a_document_from_a_newer_taiyaku_does_not_parse_at_all() {
     let json = format!(

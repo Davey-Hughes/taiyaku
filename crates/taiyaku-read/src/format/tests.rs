@@ -7,7 +7,7 @@ fn tempdir() -> TempDir {
     TempDir::new("format")
 }
 
-/// A zip whose entries are `names`, each holding `bytes`.
+/// A zip holding `entries`, each a name and its bytes.
 fn zip_with(dir: &Path, name: &str, entries: &[(&str, &[u8])]) -> PathBuf {
     let path = dir.join(name);
     let file = std::fs::File::create(&path).expect("create");
@@ -23,15 +23,9 @@ fn zip_with(dir: &Path, name: &str, entries: &[(&str, &[u8])]) -> PathBuf {
 
 /// A real, single-member tar, built from bytes.
 ///
-/// **There was no tar fixture anywhere in the workspace**, and three
-/// surviving mutants shared that one absence: the header buffer could shrink
-/// from 512 bytes to 8, `Format::Tar`'s token could change, and the tar and
-/// zip tests in `from_header` could swap places, with every test in the
-/// repository still green. `taiyaku-read` depends on `zip` and on nothing
-/// that writes tars, and the constraint on this branch is no new
-/// dependency — so the header is written out field by field, which is also
-/// what makes the offset the whole question turns on (`ustar` at 257)
-/// visible rather than incidental.
+/// `taiyaku-read` depends on `zip` and on nothing that writes tars, so the
+/// header is written out field by field, which is also what makes the offset
+/// the whole question turns on (`ustar` at 257) visible rather than incidental.
 ///
 /// The layout is POSIX ustar: `name` at 0, `size` and `mtime` as
 /// NUL-terminated octal, the checksum computed over the header with its own
@@ -155,9 +149,9 @@ impl std::io::Read for OneByteAtATime<'_> {
 }
 
 /// The defect this pins: with a single `read`, a source that returns one
-/// byte at a time gave `from_header` a one-byte slice, and every tar became
-/// `Unknown` while `%PDF-` and the rest still answered from their first six
-/// bytes. Both halves are asserted, because a fix that read the tar
+/// byte at a time would give `from_header` a one-byte slice, and every tar
+/// would become `Unknown` while `%PDF-` and the rest still answered from their
+/// first six bytes. Both halves are asserted, because a fix that read the tar
 /// correctly and lost the short-file case would pass on the first assertion
 /// alone.
 #[test]
@@ -194,13 +188,12 @@ fn a_file_shorter_than_the_header_buffer_still_answers() {
     assert_eq!(sniff(&empty), Ok(Format::Unknown));
 }
 
-/// **`Format::is_readable` had no test anywhere in the workspace**, and
-/// `token` had none for either EPUB variant. Both are enumerated here rather
-/// than sampled: `token`'s own doc says the strings are the schema's
-/// vocabulary and "a change here is a migration, not a rename", and
-/// `is_readable` decides whether a member is offered to a reader that can
-/// open it — a `Pdf` slipping into the readable set is a reader failing on
-/// material the library told it to expect.
+/// **`token` and `is_readable` are enumerated here rather than sampled**:
+/// `token`'s own doc says the strings are the schema's vocabulary and "a
+/// change here is a migration, not a rename", and `is_readable` decides
+/// whether a member is offered to a reader that can open it — a `Pdf`
+/// slipping into the readable set is a reader failing on material the library
+/// told it to expect.
 #[test]
 fn every_format_names_its_schema_token_and_says_whether_it_can_be_read() {
     for (format, token, readable) in [

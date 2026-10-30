@@ -73,20 +73,17 @@ impl Format {
     /// tokens, and this stays the statement of what the answer is.
     /// `derive/tests.rs::the_token_side_readability_test_agrees_with_the_enums_own`
     /// is what stops the two drifting — it walks every variant and asserts
-    /// both sides agree, which is the check that was missing while this
-    /// function had no test of any kind.
+    /// both sides agree.
     ///
     /// **The seven `false`s are a decision, not a backlog — O90.** [`sniff`]
     /// names eight containers so a scan can say what it met, and this admits
-    /// two; the seventh `false` is `Unknown`, which is no container at all. The gap was left unrecorded until a real library held a series
-    /// of RAR archives named `.cbz`: twelve volumes, sniffed correctly and
-    /// counted unreadable, with nothing anywhere saying that was intended.
+    /// two; the seventh `false` is `Unknown`, which is no container at all.
     /// **RAR in particular is refused on licence, not on difficulty.**
     /// taiyaku is GPL-3.0-or-later, and RARLAB's UnRAR source, which `unrar`
     /// builds and `unrar-rs` incorporates, carries a restriction the GPL does
-    /// not allow a distributor to add. The clean-room `rar` crate was too immature
-    /// for the crate every page read passes through when this was decided
-    /// (2026-09-15). The files were repacked to zip instead.
+    /// not allow a distributor to add. The clean-room `rar` crate was too
+    /// immature for the crate every page read passes through when this
+    /// was decided.
     /// `docs/superpowers/specs/2026-09-15-o90-unreadable-attribution-design.md`
     /// §1 is the record, and names what would reopen it: a library where
     /// repacking is not available.
@@ -132,7 +129,7 @@ pub fn sniff(path: &Path) -> Result<Format, String> {
 /// filesystem it does — this project's own library is mounted over nfs4.
 /// Every signature but one lives in the first six bytes and survives a short
 /// read; the tar magic sits at offset 257, so a single `read` returning 256
-/// bytes silently turned every tar into [`Format::Unknown`] while leaving
+/// bytes would silently turn every tar into [`Format::Unknown`] while leaving
 /// the other five answers correct, which is the shape of failure nobody
 /// notices. `read_exact` is the wrong call for the same job: a file shorter
 /// than 512 bytes is an ordinary case here — a stub, a truncated download —
@@ -174,16 +171,15 @@ fn read_header(source: &mut impl Read) -> std::io::Result<([u8; 512], usize)> {
 /// version of this function that opened the archive to look for a `mimetype`
 /// entry would double the open count on that path to answer a question the
 /// error message does not need: an EPUB handed to `taiyaku align` is a zip
-/// holding no pages, and `read_member` already names what it found instead.
-/// So this stays header-only and total, and [`sniff`] — which runs once per
-/// file per scan, not once per page — does the refinement.
+/// holding no pages, and `read_member` already reports it as holding no page
+/// images. So this stays header-only and total, and [`sniff`] — which runs
+/// once per file per scan, not once per page — does the refinement.
 ///
-/// **The per-page claim is `member_page`'s alone.** An earlier version of
-/// this paragraph named `member_digest` among the callers; it is not one —
-/// for a file it hashes the bytes with `std::fs::read` and never opens an
-/// archive at all. Corrected rather than dropped, because `member_page`
-/// really is the hot path this reasoning is about and the argument stands on
-/// it: it is the call the reader makes for every page it displays.
+/// **The per-page claim is `member_page`'s alone.** `member_digest` is not a
+/// caller: for a file it hashes the bytes with `std::fs::read` and never
+/// opens an archive at all. `member_page` really is the hot path this
+/// reasoning is about and the argument stands on it: it is the call the
+/// reader makes for every page it displays.
 ///
 /// **The tar test comes before the zip test, and the order is load-bearing.**
 /// A tar's first 100 bytes are its first member's *filename*, and a tar

@@ -1,8 +1,7 @@
 use super::*;
 
-/// The ceiling is a number, and nothing asserted it — so every arithmetic
-/// mutation of `3 * 1024 * 1024 * 1024` survived, including ones that lower
-/// it below the corpus's largest page.
+/// The ceiling is a number that an arithmetic mutation of
+/// `3 * 1024 * 1024 * 1024` could lower below the corpus's largest page.
 ///
 /// Written as the two facts the doc comment above claims rather than as a
 /// restatement of the expression, because `assert_eq!(X, 3 * 1024 * 1024 *

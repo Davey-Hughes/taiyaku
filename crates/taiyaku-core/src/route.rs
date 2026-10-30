@@ -1,15 +1,14 @@
 //! Which path a lookup walks between two editions, and the answer it gives.
 //!
-//! `sidecar.rs` owns the document; this owns what can be asked of one. The two
-//! were the same file until composition made routing a subject of its own.
+//! `sidecar.rs` owns the document; this owns what can be asked of one.
 
 use crate::{Run, Sidecar, Slot, counterpart};
 
 /// Which path a lookup walked.
 ///
 /// Reported rather than hidden because a composed answer is weaker than a
-/// direct one — measured at about 1.7% of pages lost to hub gaps — and a reader
-/// that cannot tell them apart has been told less than the document knows.
+/// direct one, since pages are lost to hub gaps, and a reader that cannot tell
+/// them apart has been told less than the document knows.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Via {
     /// The same edition on both sides.
@@ -29,11 +28,10 @@ pub enum Via {
 ///
 /// This is what lets a sidecar store N-1 edges rather than 2(N-1). It rests on
 /// a measurement rather than an assumption — the solver is symmetric on the
-/// pairing relation, checked across five pairs in two series including the
-/// widest length mismatch in the corpus (195 slots against 240), where every
-/// paired run is identical to its transpose. `calibrate` is asymmetric on
-/// paper, since `signal` is a median of per-A-page maxima, and it does not
-/// reach the DP's output on any material measured. See `notes.md`.
+/// pairing relation, checked on corpus pairs, where every paired run is
+/// identical to its transpose. `calibrate` is asymmetric on paper, since
+/// `signal` is a median of per-A-page maxima, and it does not reach the DP's
+/// output on any material measured. See `notes.md`.
 #[must_use]
 pub fn invert(runs: &[Run]) -> Vec<Run> {
     let mut inverted: Vec<Run> = runs
@@ -159,8 +157,7 @@ pub fn route(sidecar: &Sidecar, from: &str, to: &str) -> Option<Route> {
     }
 
     // No stored edge, so chain two through the hub. This is the topology
-    // `sidecar.md` specifies and `topology` measured: 0.00% disagreement across
-    // 4,815 page comparisons, about 1.7% of pages lost to hub gaps.
+    // `sidecar.md` specifies.
     if !sidecar.editions.contains_key(&sidecar.hub) {
         return None;
     }

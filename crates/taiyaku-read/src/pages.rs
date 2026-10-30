@@ -23,43 +23,36 @@ const IMAGE_EXTENSIONS: &[&str] = &[
 /// host this crate actually targets (64-bit; it does not compile to wasm) the
 /// conversion is infallible, so a `.cbz` that misstates the field — hand-
 /// edited, or merely corrupt — sails straight through to `with_capacity`,
-/// which reserves the declared size immediately. `docs/notes.md` measured a
-/// patched archive reporting 2 GiB for 104 real bytes.
+/// which reserves the declared size immediately.
 ///
 /// It is a hint, not a limit, and that is what should size it:
 /// `read_to_end` grows the buffer to the true size regardless of what was
 /// reserved up front, so a hint that is too small costs one reallocation and
 /// nothing else — being tight is free. The number that matters is therefore
-/// not "large enough to cover the biggest page the corpus holds" (an earlier
-/// version of this constant reasoned that way, and reserved 1 GiB per entry
-/// for it — 1,073,741,824 bytes for a 6-byte entry, in the regression test
-/// below); it is "large enough that an ordinary page never reallocates,
-/// small enough that a lying declared size cannot turn one request into a
-/// large reservation." Real pages on this corpus run 100 KB–3 MB
-/// (`taiyaku-cli::fingerprint::LARGE_PAGE_BYTES`'s doc comment) and a live
-/// client session transferred at 247 KB mean, 2.0 MB largest
-/// (`docs/notes.md`). 32 MiB clears all of that with roughly an order of
-/// magnitude to spare — and lands on the same number `LARGE_PAGE_BYTES`
-/// independently draws as the line between an ordinary page and an unusual
-/// one, on this same corpus, for an unrelated decision (parallel vs.
-/// sequential decode).
+/// not "large enough to cover the biggest page the corpus holds"; it is
+/// "large enough that an ordinary page never reallocates, small enough that a
+/// lying declared size cannot turn one request into a large reservation."
+/// Real pages on this corpus run 100 KB–3 MB
+/// (`taiyaku-cli::fingerprint::LARGE_PAGE_BYTES`'s doc comment). 32 MiB clears
+/// that with roughly an order of magnitude to spare — and lands on the same
+/// number `LARGE_PAGE_BYTES` independently draws as the line between an
+/// ordinary page and an unusual one, on this same corpus, for an unrelated
+/// decision (parallel vs. sequential decode).
 ///
 /// The corpus does hold pages bigger than 32 MiB — the Color Walk art
 /// books' ~430 MB archival TIFFs (`lib.rs`) — and this ceiling is
-/// deliberately below them: reading one now costs a few reallocations
+/// deliberately below them: reading one costs a few reallocations
 /// instead of none, which the hint-not-limit property above makes harmless.
 /// Deliberately not `MAX_DECODE_ALLOC` either: that 3 GiB ceiling bounds a
 /// *decoded* pixel buffer, and even at the corpus's own worst case
 /// (10200×14039, 24-bit) that buffer is only 1.33× the encoded file's
-/// bytes — ~430 MB on disk, ~546 MiB decoded — not "several times" as an
-/// earlier version of this comment claimed, and not a number this hint
-/// should be derived from either way.
+/// bytes — ~430 MB on disk, ~546 MiB decoded — and it is not a number this
+/// hint should be derived from either way.
 ///
 /// **This clamp is per entry, and `read_archive` collects every page before
 /// returning**, so a crafted archive of N lying entries reserves the ceiling
-/// N times over, simultaneously, before any of them is freed. At the old
-/// 1 GiB ceiling, a 100-entry archive could reserve 100 GiB at once; at
-/// 32 MiB the same 100 entries reserve at most 3.125 GiB in aggregate.
+/// N times over, simultaneously, before any of them is freed: at 32 MiB, 100
+/// such entries reserve at most 3.125 GiB in aggregate.
 const MAX_ENTRY_CAPACITY_HINT: u64 = 32 * 1024 * 1024;
 
 pub struct Page {
@@ -80,7 +73,7 @@ impl std::fmt::Debug for Page {
 /// Public because the duplicate inventory counts pages without reading them and
 /// must not carry its own copy of this list — which entries are pages is
 /// normative (`docs/sidecar.md`, "How a member becomes pages"), and a second
-/// list is the duplication O10 was closed to remove.
+/// list is a duplication (O10).
 #[must_use]
 pub fn is_page_name(name: &str) -> bool {
     Path::new(name)
@@ -256,16 +249,14 @@ fn read_directory(root: &Path) -> Result<Vec<Page>, String> {
 /// which format it found rather than reporting a corrupt zip, since the
 /// extension is frequently wrong about what is actually inside.
 ///
-/// **The recognition itself lives in `format.rs` since 2026-08-17**, because
-/// the scanner needs the same answer as a token rather than as prose and two
-/// tables of magic numbers would drift. This is the prose half; that is the
-/// decision half.
+/// **The recognition itself lives in `format.rs`**, because the scanner needs
+/// the same answer as a token rather than as prose and two tables of magic
+/// numbers would drift. This is the prose half; that is the decision half.
 ///
 /// An EPUB is **not** named here, deliberately. Telling one from a plain zip
 /// means opening the archive and reading its `mimetype` entry, and this
 /// function runs inside `open_archive` — once per page served. `read_member`
-/// already reports what a page-less archive held instead, which is the
-/// diagnosis that actually helps.
+/// already reports a page-less archive as holding no page images.
 fn unsupported_container(bytes: &[u8]) -> Option<&'static str> {
     match crate::format::from_header(bytes) {
         crate::Format::SevenZip => Some("a 7-Zip archive"),
@@ -278,15 +269,14 @@ fn unsupported_container(bytes: &[u8]) -> Option<&'static str> {
 
 /// The names of an already-open archive's page entries, in reading order.
 ///
-/// Factored out of `archive_page_names` so a caller that already holds a
-/// `ZipArchive` — `read_archive`, `member_page` — can order its entries
-/// without opening the path a second time. A second open reads whatever file
-/// is at that path *now*, which need not be the file the first handle is
-/// still reading if the path was replaced in between (an atomic rename-over
-/// during a re-download, say). Two handles on two different files agreeing
-/// only by name is a silent content mismatch, not a clean error, so this is
-/// the one place — for both listing and reading — that decides archive page
-/// order.
+/// Takes the open `ZipArchive` rather than a path, so a caller that already
+/// holds one — `read_archive`, `member_page` — can order its entries without
+/// opening the path a second time. A second open reads whatever file is at
+/// that path *now*, which need not be the file the first handle is still
+/// reading if the path was replaced in between (an atomic rename-over during
+/// a re-download, say). Two handles on two different files agreeing only by
+/// name is a silent content mismatch, not a clean error, so this is the one
+/// place — for both listing and reading — that decides archive page order.
 fn page_names_from(zip: &mut zip::ZipArchive<File>) -> Vec<String> {
     let mut names: Vec<String> = (0..zip.len())
         .filter_map(|i| {
@@ -311,10 +301,9 @@ fn page_names_from(zip: &mut zip::ZipArchive<File>) -> Vec<String> {
 ///
 /// The single door in, so that listing an archive, reading one page of it and
 /// reading all of it cannot differ in what they say about a container taiyaku
-/// does not support. `archive_page_names` used to go straight to
-/// `ZipArchive::new`, which reported a perfectly good RAR file as an unreadable
-/// cbz — and `member_pages`, which lists rather than reads, is the path `align`
-/// takes when it records a member.
+/// does not support. Going straight to `ZipArchive::new` would report a
+/// perfectly good RAR file as an unreadable cbz — and `member_pages`, which
+/// lists rather than reads, is the path `align` takes when it records a member.
 fn open_archive(path: &Path) -> Result<zip::ZipArchive<File>, String> {
     let mut file = File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
 
@@ -623,11 +612,10 @@ pub struct PageEntry {
 /// themselves.
 ///
 /// Shared by `member_page_entries` and `for_each_member_page`'s directory
-/// branches, which otherwise repeated this identically. Not shared with
-/// `member_page_names`, `member_page_sizes` or `member_pages` — those three
-/// are deliberately separate listings that never read a page's bytes, and
-/// folding them in here would cost every scanner call a read it does not
-/// need.
+/// branches. Not shared with `member_page_names`, `member_page_sizes` or
+/// `member_pages` — those three are deliberately separate listings that never
+/// read a page's bytes, and folding them in here would cost every scanner call
+/// a read it does not need.
 fn directory_page_entry(member: &Path, page: &Path) -> Result<(PageEntry, Vec<u8>), String> {
     let name = page
         .strip_prefix(member)
@@ -699,8 +687,7 @@ type PageVisitor<'a> = dyn FnMut(&PageEntry, &[u8]) -> Result<(), String> + 'a;
 /// `member_page` opens the archive per index, which is right for a route
 /// serving one page and wrong for a download reading two hundred of them: this
 /// is that loop with the open hoisted out. `read_edition` is the other
-/// neighbour and holds *every* page at once, which for this corpus's largest
-/// member would be 1.49 GB.
+/// neighbour and holds *every* page at once.
 ///
 /// The `PageEntry` travels with the bytes so a caller that planned an output
 /// from `member_page_entries` can check the member still matches as it

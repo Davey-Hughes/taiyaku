@@ -59,13 +59,11 @@ fn an_axis_is_one_character_in_the_file() {
 
 /// Page keys are integers in Rust and strings in JSON.
 ///
-/// **This does not discriminate a `u32` key from a `String` one**, and the
-/// doc comment claimed it did until a review checked: `serde_json`
-/// stringifies any map key, so a `BTreeMap<String, _>` emits the identical
-/// bytes. That property is a serde guarantee rather than something this
-/// crate can break, so the honest fix was the comment and not the test.
-/// What it still catches is a change of *shape* — pages emitted as an array
-/// of pairs would write `4`, unquoted, and fail here.
+/// **This does not discriminate a `u32` key from a `String` one**:
+/// `serde_json` stringifies any map key, so a `BTreeMap<String, _>` emits the
+/// identical bytes. That property is a serde guarantee rather than something
+/// this crate can break. What it still catches is a change of *shape* — pages
+/// emitted as an array of pairs would write `4`, unquoted, and fail here.
 #[test]
 fn page_keys_are_strings_in_the_file() {
     assert!(doc().to_json().contains("\"4\""));

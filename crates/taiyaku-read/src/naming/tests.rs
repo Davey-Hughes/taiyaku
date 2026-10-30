@@ -2,8 +2,8 @@ use super::*;
 
 /// Fractional chapters are how bonus content is numbered, and plain
 /// lexicographic comparison gets them backwards: `c005.5` precedes
-/// `c005.cbz` because `5` sorts before `c`. Measured cost of the bug on the
-/// corpus was a whole volume assembled out of order.
+/// `c005.cbz` because `5` sorts before `c`, so a whole volume would be
+/// assembled out of order.
 #[test]
 fn a_fractional_chapter_sorts_after_its_whole_number() {
     assert_eq!(natural_cmp("c005.cbz", "c005.5.cbz"), Ordering::Less);
@@ -83,19 +83,11 @@ fn a_name_ending_at_a_loop_bound_is_tokenized_rather_than_indexed_past() {
     assert_eq!(natural_cmp("c005.", "c005.5"), Ordering::Less);
 }
 
-/// `natural_cmp`'s three remaining decisions, none of which had a test.
+/// `natural_cmp`'s decisions about mixed tokens, ties and case.
 ///
-/// **This is code the scanner branch moved past rather than wrote** —
-/// `tokenize` and `natural_cmp` are byte-identical to what
-/// `crates/taiyaku-read/src/naming.rs` held before it. The gap is
-/// pre-existing; it is closed here because the mutation sweep is what found
-/// it and leaving three unpinned decisions in the function that orders every
-/// page of every archive would be the wrong place to draw a line.
-///
-/// 1. **Digits before letters.** The comment above the arms says
-///    "`9.jpg` precedes `cover.jpg`" and nothing checked it. Swapped, every
-///    archive with a cover page opens on the cover instead of page one —
-///    visible to a reader on the first page of every such work.
+/// 1. **Digits before letters.** Swapped, every archive with a cover page
+///    opens on the cover instead of page one — visible to a reader on the
+///    first page of every such work.
 /// 2. **A shorter token list sorts first.** With the final length comparison
 ///    returning `Equal`, `page1` and `page1a` compare equal, so a sort over
 ///    names sharing a prefix is unstable — `sort_by` may leave them in any
@@ -145,11 +137,11 @@ fn a_chapter_number_is_taken_from_the_marker_that_precedes_it() {
 fn a_chapter_number_carries_its_decimal_and_never_falls_back() {
     // `member.chapter_declared` is REAL because half-chapters exist.
     assert_eq!(chapter_number("c001.5"), Some(1.5));
-    // THE decision of this task. `volume_number` falls back to the first
-    // digit run, which is right for a directory that is a volume by
-    // construction. A chapter parser that fell back would answer for every
-    // volume file in the library — `Series - v01 (2023).cbz` would carry
-    // chapter 1 — and §4's rule 3 would then set a chapter on everything.
+    // `volume_number` falls back to the first digit run, which is right for a
+    // directory that is a volume by construction. A chapter parser that fell
+    // back would answer for every volume file in the library —
+    // `Series - v01 (2023).cbz` would carry chapter 1 — and §4's rule 3 would
+    // then set a chapter on everything.
     assert_eq!(chapter_number("Series - v01 (2023).cbz"), None);
     assert_eq!(chapter_number("069"), None);
     assert_eq!(chapter_number("[2015] ONE PIECE v077"), None);
@@ -157,10 +149,10 @@ fn a_chapter_number_carries_its_decimal_and_never_falls_back() {
 
 #[test]
 fn a_marker_must_start_a_word_rather_than_end_one() {
-    // Both measured on the built function, not reasoned about: `c` and `ch`
-    // are one and two characters, so without a boundary test they match the
-    // tail of ordinary words. This is the no-fallback rule's hole reached by
-    // another route — a name with no chapter in it getting a chapter number.
+    // `c` and `ch` are one and two characters, so without a boundary test they
+    // match the tail of ordinary words. This is the no-fallback rule's hole
+    // reached by another route — a name with no chapter in it getting a
+    // chapter number.
     assert_eq!(chapter_number("Scan by ABC 2019"), None);
     assert_eq!(chapter_number("which 7"), None);
     assert_eq!(chapter_number("Sonic 3"), None);
@@ -203,10 +195,7 @@ fn a_year_in_the_name_does_not_win_over_the_volume() {
 /// first-digit-run rule, and the reason the marker is searched for before
 /// falling back: a number appearing *before* the volume marker. The
 /// marker scan finds `77`; a bare first-digit-run rule would return `2015`
-/// instead. Sabotage-checked: with `MARKERS` and the preceding-text check
-/// removed so `volume_number` falls straight through to the first digit
-/// run, this assertion fails (`2015` instead of `77`), confirming the
-/// marker scan is what this test exercises.
+/// instead.
 #[test]
 fn a_number_before_the_marker_does_not_win_over_the_volume() {
     assert_eq!(volume_number("[2015] ONE PIECE v077"), Some(77));
@@ -230,10 +219,8 @@ fn a_number_before_the_marker_does_not_win_over_the_volume() {
 ///   `a_number_before_the_marker_does_not_win_over_the_volume` already
 ///   guards for the marker path.
 ///
-/// `volume_number` is code this branch moved from `taiyaku-cli`'s
-/// `inventory.rs` rather than wrote — byte-identical — so both gaps predate
-/// it. `volume_number_marked` shares `marked_number` and not this scan, so
-/// each is checked on its own function.
+/// `volume_number_marked` shares `marked_number` and not this scan, so each
+/// scan is checked on its own function.
 #[test]
 fn the_marker_scan_tolerates_a_space_and_the_fallback_takes_the_first_run() {
     assert_eq!(
@@ -248,10 +235,8 @@ fn the_marker_scan_tolerates_a_space_and_the_fallback_takes_the_first_run() {
     );
 }
 
-/// A candidate that reached the page threshold and then vanished from the
-/// output is the silence this repository exists to avoid. When a single
-/// unparsed candidate is present, it must appear in the output — a name
-/// without a volume number indicates a parse failure that must be visible.
+/// A name with no digits yields no number rather than a wrong one, so a
+/// caller such as `inventory` can report it as unparsed instead of dropping it.
 #[test]
 fn a_name_with_no_digits_has_no_number_rather_than_a_wrong_one() {
     assert_eq!(volume_number("extras"), None);
@@ -274,40 +259,38 @@ fn volume_number_marked_agrees_with_volume_number_wherever_a_marker_is_present()
 }
 
 /// The second place `volume_number_marked` and `volume_number` diverge,
-/// beside the bare-digit fallback above: `volume_number`'s own scan has no
+/// beside the bare-digit fallback below: `volume_number`'s own scan has no
 /// decimal handling at all, so `v01.5` reads as `1` there, while
-/// `marked_number`'s scan — the one `chapter_number` already carried a
-/// decimal part for — reads it as `1.5`. Intended: half-volumes are as real
-/// as half-chapters, and `work.volume` is `REAL` for the same reason
-/// `member.chapter_declared` is.
+/// `marked_number`'s scan — the one `chapter_number` uses — reads it as
+/// `1.5`. Intended: half-volumes are as real as half-chapters, and
+/// `work.volume` is `REAL` for the same reason `member.chapter_declared` is.
 #[test]
 fn volume_number_marked_reads_a_decimal_part_volume_number_does_not() {
     assert_eq!(volume_number("v01.5"), Some(1));
     assert_eq!(volume_number_marked("v01.5"), Some(1.5));
 }
 
-/// The one place the two diverge, and the entire reason
-/// `volume_number_marked` exists: with no marker anywhere in the name,
-/// `volume_number` falls back to the first bare digit run — right for
-/// `inventory`, which is handed a directory that is a volume by
-/// construction — while `volume_number_marked` answers `None`, which is
-/// right for the scanner's `builtin-volume` rule (§4), applied to every
-/// filename in a library rather than to a directory known in advance to be
-/// one.
+/// The divergence that is the entire reason `volume_number_marked` exists:
+/// with no marker anywhere in the name, `volume_number` falls back to the
+/// first bare digit run — right for `inventory`, which is handed a directory
+/// that is a volume by construction — while `volume_number_marked` answers
+/// `None`, which is right for the scanner's `builtin-volume` rule (§4),
+/// applied to every filename in a library rather than to a directory known in
+/// advance to be one.
 #[test]
 fn volume_number_marked_does_not_fall_back_to_a_bare_digit_run() {
     assert_eq!(volume_number("069"), Some(69));
     assert_eq!(volume_number_marked("069"), None);
-    // The case that motivated this task: no `v`/`vol`/`第` anywhere, so a
-    // bare-fallback parser reads the chapter digits as a volume.
+    // No `v`/`vol`/`第` anywhere, so a bare-fallback parser reads the chapter
+    // digits as a volume.
     assert_eq!(volume_number_marked("Kaguya-sama - c001.cbz"), None);
 }
 
 #[test]
 fn a_kanji_marker_needs_its_counter_and_the_counter_decides_which_number_it_is() {
-    // `第` is an ordinal prefix, not a unit. Before the counter was checked,
-    // both parsers answered for both forms and every Japanese-named file
-    // took a volume and a chapter with the same value.
+    // `第` is an ordinal prefix, not a unit. Without the counter check, both
+    // parsers would answer for both forms and every Japanese-named file would
+    // take a volume and a chapter with the same value.
     assert_eq!(volume_number_marked("第69巻"), Some(69.0));
     assert_eq!(chapter_number("第69巻"), None);
 

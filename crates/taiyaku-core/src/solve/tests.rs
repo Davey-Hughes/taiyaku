@@ -103,11 +103,10 @@ fn a_page_with_near_identical_rivals_scores_high_but_with_no_margin() {
     assert!(scored[1].similarity < 0.7, "{:?}", scored[1]);
 }
 
-/// Some edition pairs are weak everywhere. Kaguya's raw against its English
-/// release differs by a median of 57-69 bits of 256, with a tenth of pages
-/// past 89 — similarity around 0.65 for real, correct matches. What makes a
-/// match real is standing clear of noise, not clearing an absolute bar, so
-/// a floor fixed in advance discards true pairings on the weaker editions.
+/// Some edition pairs are weak everywhere, so even real, correct matches have
+/// low similarity. What makes a match real is standing clear of noise, not
+/// clearing an absolute bar, so a floor fixed in advance discards true
+/// pairings on the weaker editions.
 #[test]
 fn a_uniformly_weak_pairing_still_aligns() {
     let a: Vec<PageHash> = (0..6).map(h).collect();
@@ -141,11 +140,9 @@ fn a_constant_offset_stays_a_single_run() {
     );
 }
 
-/// Coverage has to gate fragmentation, and the reason is a hole that a
-/// runs-per-page measure cannot see on its own: a refused pair produces
-/// exactly one run covering everything, which scores about 0.9 runs per
-/// hundred pages and therefore *better* than every correct alignment
-/// measured. Judging on fragmentation alone calls a total refusal excellent.
+/// Coverage has to gate fragmentation: a refused pair produces exactly one
+/// run covering everything, so judging on fragmentation alone gets a total
+/// refusal wrong.
 #[test]
 fn a_refusal_is_not_mistaken_for_a_clean_alignment() {
     // A refusal: one gap run over the whole edition.
@@ -163,7 +160,7 @@ fn a_refusal_is_not_mistaken_for_a_clean_alignment() {
     assert_eq!(verdict(&sound, 195), Verdict::Sound);
 
     // A mislabelled copy: most pages paired, but in confetti. Shaped after
-    // [Oshi no Ko] v01's bad copy at 34 runs per hundred pages.
+    // [Oshi no Ko] v01's bad copy.
     let fragmented: Vec<Run> = (0..70)
         .map(|i| {
             Run::paired(
@@ -177,11 +174,11 @@ fn a_refusal_is_not_mistaken_for_a_clean_alignment() {
 
 /// A pair where only a minority of A has counterparts is refused, and that
 /// is deliberate rather than accidental. Estimating the signal from a high
-/// percentile of best matches instead of the median does make this case
+/// percentile of best matches instead of the median would make this case
 /// align, but it costs more than it buys: unrelated works stop being refused
 /// and start pairing most of their pages, and genuine alignments degrade as
-/// the raised floor rejects real matches. This test pins the refusal so the
-/// trade is not made again by accident.
+/// the raised floor rejects real matches. This test pins the refusal so that
+/// trade is not made by accident.
 #[test]
 fn a_pair_where_only_part_of_a_matches_is_refused() {
     // Ten pages with counterparts, thirty with none.
@@ -260,8 +257,7 @@ fn identical_sequences_collapse_to_one_paired_run() {
 /// Margin is what does not inflate with the length of B. A row's best is a
 /// maximum over every candidate, so it climbs as candidates are added; the
 /// distance from that best to the runner-up does not. No guard uses it:
-/// calibration carries it so `align --stats` can print it, and the survey
-/// that printed it is what rejected the guard.
+/// calibration carries it so `align --stats` can print it.
 #[test]
 fn the_margin_is_the_median_gap_from_a_row_s_best_to_its_runner_up() {
     // Every A page has a counterpart 8 bits away and a decoy 40 bits away,
@@ -278,16 +274,16 @@ fn the_margin_is_the_median_gap_from_a_row_s_best_to_its_runner_up() {
     assert!((cal.margin - 32.0 / 256.0).abs() < 1e-6, "{cal:?}");
     assert!(cal.signal > 0.95, "{cal:?}");
     assert!(cal.noise < 0.60, "{cal:?}");
-    // The floor is still the midpoint of noise and signal, unchanged.
+    // The floor is the midpoint of noise and signal.
     assert!(
         (cal.floor - f32::midpoint(cal.noise, cal.signal)).abs() < 1e-6,
         "{cal:?}"
     );
 }
 
-/// Margin handling has two untested edge cases: a missing runner-up when B
-/// is single-page, and a perfect tie between best and runner-up. Regression
-/// in either would go undetected.
+/// Margin handling has two edge cases: a missing runner-up when B is
+/// single-page, and a perfect tie between best and runner-up. Without this
+/// test a regression in either would go undetected.
 #[test]
 fn the_margin_is_the_best_when_b_has_one_page_and_zero_for_tied_candidates() {
     // B with one page: no runner-up, so margin is the best similarity itself.
@@ -317,11 +313,10 @@ fn the_margin_is_the_best_when_b_has_one_page_and_zero_for_tied_candidates() {
     assert!((cal_tie.margin - 0.0).abs() < 1e-6, "{cal_tie:?}");
 }
 
-/// Average paired-run length is the cheaper statement of what
-/// fragmentation measures, and the survey needs it to decide whether it is
-/// also the better one. Gap runs are excluded: a refused pair is one long
-/// gap, and counting it would make a total refusal look like the longest
-/// run in the corpus.
+/// Average paired-run length is the cheaper statement of what fragmentation
+/// measures. Gap runs are excluded: a refused pair is one long gap, and
+/// counting it would make a total refusal look like the longest run in
+/// the corpus.
 #[test]
 fn average_run_length_counts_paired_runs_only() {
     let runs = vec![
@@ -362,10 +357,9 @@ fn a_short_edition_aligning_as_one_run_is_sound() {
 
 /// The case that distinguishes the two fragmentation measures, which most
 /// do not: twenty paired runs of two slots each across 210 pages is 9.5
-/// runs per hundred, comfortably under the old threshold of 15 and so
-/// called sound, while averaging two slots a run. Twenty runs of two is
-/// confetti whatever the page count says, and the survey put every
-/// confirmed-good pairing at 36 slots a run or better.
+/// runs per hundred, under that measure's threshold of 15 and so sound,
+/// while averaging two slots a run. Twenty runs of two is confetti
+/// whatever the page count says.
 #[test]
 fn a_short_run_average_is_fragmented_even_when_runs_per_page_looks_healthy() {
     // Named and typed so the ratio below can read it back losslessly with
@@ -380,7 +374,7 @@ fn a_short_run_average_is_fragmented_even_when_runs_per_page_looks_healthy() {
         })
         .collect();
 
-    // The measure this replaces would have called it sound.
+    // The runs-per-hundred measure would call it sound.
     let ratio = 100.0 * f32::from(run_count) / 210.0;
     assert!(ratio < 15.0);
     assert!(average_run_length(&runs) < 3.0);

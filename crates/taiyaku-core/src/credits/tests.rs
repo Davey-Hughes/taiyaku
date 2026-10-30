@@ -66,8 +66,7 @@ fn a_run_at_a_members_first_index_is_not_flagged_at_its_end() {
 #[test]
 fn a_run_spanning_a_member_boundary_splits_into_two() {
     // The corpus shape: c1's last page and c2's first two, contiguous.
-    // Unsplit this is one run flagged at neither end, which is how the
-    // first design lost a credits page and gained four false positives.
+    // Unsplit this is one run flagged at neither end.
     let doc = two_members(r#"[{"a":"0-2","b":"0-2"},{"a":"3-5"},{"a":"6-7","b":"6-7"}]"#);
     let runs = unpaired_runs(&doc, "fan", "raw").expect("resolves");
     assert_eq!(runs.len(), 2, "one run per member, never one spanning both");
@@ -88,10 +87,9 @@ fn a_run_touching_neither_end_is_flagged_at_neither() {
 
 #[test]
 fn the_from_side_of_an_edge_reports_its_own_gap_runs() {
-    // Every other test in this file asks the `to` side of the stored edge,
-    // so the `from` arm had never been executed. A gap run carries only an
-    // `a` span, and that span *is* the pages with no counterpart — so the
-    // side the span addresses must report them, not treat them as covered.
+    // This asks the `from` side of the stored edge. A gap run carries only an
+    // `a` span, and that span *is* the pages with no counterpart — so the side
+    // the span addresses must report them, not treat them as covered.
     //
     // Same fixture as `a_run_at_a_members_final_index_is_flagged_at_its_end`
     // asked from the other end: one gap at `a` page 3, and `raw` is the
@@ -121,9 +119,8 @@ fn an_edition_with_nothing_unpaired_yields_no_runs() {
 #[test]
 fn a_spread_inside_an_unpaired_run_keeps_pages_and_slots_apart() {
     // The corpus cannot catch a page-for-slot substitution: Go-Toubun's fan
-    // edition has five spreads and every one of them falls outside every
-    // unpaired region, so both indexings agree there. This fixture makes
-    // them disagree by construction.
+    // edition's spreads all fall outside every unpaired region, so both
+    // indexings agree there. This fixture makes them disagree by construction.
     //
     // `fan` page 1 is a spread, so the edition is 4 pages and 5 slots:
     //   slot 0 = page 0
@@ -201,10 +198,6 @@ fn a_half_paired_spread_page_is_not_unpaired() {
 /// edition's gaps under this edition's page numbers — a wrong answer that
 /// looks entirely well-formed. The fixture asks the same question from
 /// both ends of one edge and requires the two answers to differ.
-///
-/// Every other test in this module examines the edge's `to` side, which
-/// is what the CLI does; nothing had ever asked the `from` side, so the
-/// arm of the match that answers it could be deleted outright.
 #[test]
 fn each_end_of_a_directed_edge_reports_its_own_gaps() {
     // One edge, `raw` -> `en`, and one run: raw slots 0-3 pair with en
@@ -306,9 +299,7 @@ fn an_unpaired_run_stops_at_a_member_boundary() {
     assert!(runs[0].at_member_end, "{runs:?}");
     // The second run is two pages, so it is the one that exercises the
     // extension arm. Both of its index spaces are stated, because the
-    // exclusive end of an extended run is arithmetic no other test reads:
-    // the existing ones assert `local` and let `pages` and `slots` pass
-    // unread.
+    // exclusive end of an extended run is arithmetic.
     assert_eq!(runs[1].pages, 4..6, "{runs:?}");
     assert_eq!(runs[1].slots, 4..6, "{runs:?}");
     assert_eq!(runs[1].local, 2..4, "{runs:?}");

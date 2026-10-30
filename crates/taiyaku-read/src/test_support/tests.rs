@@ -23,8 +23,7 @@ fn two_temp_dirs_under_one_label_are_distinct_and_both_exist() {
 }
 
 /// Dropping one removes it, contents and all. A unique name without this is
-/// one leaked directory per test per run: `taiyaku-serve`'s fixtures measured
-/// 9,147 of them before they had a `Drop`.
+/// one leaked directory per test per run.
 #[test]
 fn a_temp_dir_is_removed_with_its_contents_when_dropped() {
     let dir = TempDir::new("dropped");
@@ -58,11 +57,9 @@ fn a_temp_dir_is_named_for_the_process_that_made_it() {
 }
 
 /// **O117's standing check: no file under `crates/` but this helper calls
-/// `temp_dir()` itself.** Every test that did named its own path there, and
-/// every one of those was a fixed name or a name unique only within one run
-/// until O117 moved them all onto [`TempDir`]. A new test written the old way
-/// fails here, naming its line, rather than failing some later parallel run
-/// for a reason nobody can see.
+/// `temp_dir()` itself.** A new test that names its own path there instead of
+/// using [`TempDir`] fails here, naming its line, rather than failing some
+/// later parallel run for a reason nobody can see.
 ///
 /// Comment lines are skipped. No shipped code calls `temp_dir()` today; if
 /// some ever must, exempt its file here by name, with the reason.

@@ -12,7 +12,7 @@ use crate::{Direction, Half, Run, Slot, Verdict};
 /// A position within an edition's slot table, its length, or a count drawn
 /// from it.
 ///
-/// Named apart from `slot_index` above, which answers a different question
+/// Named apart from `slot_index` below, which answers a different question
 /// (which position a `Slot` sits at) and already owns that name.
 ///
 /// # Panics
@@ -224,9 +224,8 @@ pub struct Edition {
     /// `taiyaku credits` prints it for review and writes it only under
     /// `--write`.
     ///
-    /// Skipped when empty, so a sidecar written before this feature existed
-    /// round-trips byte for byte. An absent list and an empty one both mean
-    /// nothing has been classified.
+    /// Skipped when empty, so a sidecar with no list round-trips byte for byte.
+    /// An absent list and an empty one both mean nothing has been classified.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub credits: Vec<u32>,
 }
@@ -309,10 +308,8 @@ pub struct RunEntry {
 /// Stored because a reader holding only the document should not have to open
 /// the archives to find out — which is the work the sidecar exists to avoid.
 /// The figures accompany the verdict rather than the verdict standing alone,
-/// because the threshold behind it is a moving policy: it is an average run
-/// length of 27 slots today and was a runs-per-hundred-pages figure a week
-/// ago, so a bare verdict would mean different things in two files written a
-/// week apart.
+/// because the threshold behind it is a moving policy, so a bare verdict could
+/// mean different things in two files written under different thresholds.
 ///
 /// This is a summary, never an authority. `Sidecar::quality_of` recomputes it
 /// from the runs, so a hand-edited document cannot leave a stale verdict
@@ -329,44 +326,37 @@ pub struct Quality {
     pub paired: u32,
     /// Mean length of the paired runs, in slots.
     ///
-    /// `f64`, matching `average_run_length`'s return type: widened there to
-    /// close a `cast_precision_loss` suppression (u32 -> f64 is lossless
-    /// where u32 -> f32 is not). Unlike that function's result, this field is
-    /// rounded — see `rounded_avg_run` — because it is stored in the sidecar
-    /// document, which `docs/sidecar.md` pins to a human-readable, diffable
-    /// form; `average_run_length` itself stays unrounded, since `verdict`
-    /// compares its result against a threshold and rounding there would move
-    /// which pairings cross it.
+    /// `f64`, matching `average_run_length`'s return type. Unlike that
+    /// function's result, this field is rounded — see `rounded_avg_run` —
+    /// because it is stored in the sidecar document, which `docs/sidecar.md`
+    /// pins to a human-readable, diffable form; `average_run_length` itself
+    /// stays unrounded, since `verdict` compares its result against a
+    /// threshold and rounding there would move which pairings cross it.
     pub avg_run: f64,
 }
 
 /// Round an average run length to the precision the sidecar document stores,
 /// without touching the value `verdict` actually compares against.
 ///
-/// f32 rounded `avg_run` to six-ish decimal digits by accident — that was
-/// never a chosen precision, just where f32's mantissa ran out — and widening
-/// `average_run_length` to f64 (see its doc) would otherwise have let a raw
-/// figure like `64.33333333333333` reach the document, which is longer for
-/// no reason `docs/sidecar.md`'s "human-readable, diffable" goals can point
-/// to. Five decimals is the chosen bound rather than the least that would
-/// serve: no consumer needs the third digit — `docs/status.md` reports these
-/// figures at two (64.33 -> 32.00 -> 21.22), `stats.rs` prints one, and
-/// nothing reads the stored field back for a decision, since `verdict` always
-/// recomputes from `average_run_length` directly — but five costs three
-/// characters against sixteen and keeps the stored figure from ever being
-/// the reason a later reader has less precision than they wanted. That
-/// headroom is the house default here; two would have been the minimum.
+/// Without rounding, a raw figure like `64.33333333333333` would reach the
+/// document, which is longer for no reason `docs/sidecar.md`'s
+/// "human-readable, diffable" goals can point to. Five decimals is the chosen
+/// bound rather than the least that would serve: no consumer needs the third
+/// digit — `stats.rs` prints one, and nothing reads the stored field back for
+/// a decision, since `verdict` always recomputes from `average_run_length`
+/// directly — but five costs three characters against sixteen and keeps the
+/// stored figure from ever being the reason a later reader has less precision
+/// than they wanted. That headroom is the house default here; two would have
+/// been the minimum.
 ///
 /// Five also stays a *decimal* figure once written. `avg_run` is a ratio of
 /// two slot counts, so `(raw * 100_000.0).round()` peaks around 1e8 for any
 /// book — exact well below 2^53 — and the quotient's shortest round-tripping
-/// form never runs past five decimals. Checked across every total/count pair
-/// a physical volume could produce, not inferred.
+/// form never runs past five decimals.
 ///
-/// Called at each of the three places a `Quality` is built (`sidecar.rs`'s
-/// `rewrite` and `quality_of`, and `taiyaku-cli`'s `built_alignment`), rather
-/// than left for each to round inline, so the precision cannot drift between
-/// them.
+/// Called wherever a `Quality` is computed from runs (`sidecar.rs`'s `rewrite`
+/// and `quality_of`, and `taiyaku-cli`'s `built_alignment`), rather than left
+/// for each to round inline, so the precision cannot drift between them.
 #[must_use]
 pub fn rounded_avg_run(raw: f64) -> f64 {
     (raw * 100_000.0).round() / 100_000.0
@@ -408,8 +398,7 @@ pub enum Anchor {
     /// edition is one hop from every other.
     Hub,
     /// A direct edge deliberately layered over the star, for a pair where
-    /// composition demonstrably loses. The measurements name the candidate:
-    /// the two editions furthest from the hub lose 3.5% to each other.
+    /// composition demonstrably loses.
     Direct,
 }
 
@@ -435,7 +424,7 @@ pub enum Merged {
     /// that catches a `merge_spoke` refusal and, rather than propagate it,
     /// drops the stored alignment `merge_spoke` could not safely merge onto
     /// and takes the freshly-solved one instead: `taiyaku_library::import::
-    /// reimport` (C1), because `serve` must never fail to start over a stale
+    /// reimport`, because `serve` must never fail to start over a stale
     /// alignment. Most often this is a hub that moved underneath a spoke —
     /// the guard at `merge_spoke`'s from-side check refuses precisely
     /// because the stored runs address a page sequence that no longer
@@ -494,8 +483,8 @@ impl std::fmt::Display for NotCorrected {
 /// `path` is the member's path as the sidecar records it, offered as a label.
 /// Nothing here parses it: a fan release's `c000.cbz` may or may not be
 /// chapter zero, and inferring a chapter number from a filename is precisely
-/// what this function exists to avoid — `notes.md` records two series where
-/// the declared names are wrong and the content-derived answer is right.
+/// what `Sidecar::chapter_at` exists to avoid — `notes.md` records series
+/// where the declared names are wrong and the content-derived answer is right.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChapterAt {
     /// Zero-based index of the member within the chapter-organised edition.
@@ -549,13 +538,12 @@ impl Sidecar {
     /// outright — so the boundary a library crate wants to guard is not always
     /// one `from_json` was on the way in to.
     ///
-    /// Refusing is the same stance `taiyaku_library::schema::migrate` already
-    /// takes on a database "written by a newer taiyaku", for the same reason:
-    /// running an older binary over newer data corrupts what it does not
-    /// understand. Only *newer* is refused. There is no older version to
-    /// accept yet — `VERSION` has been 1 since the format existed — and
-    /// whoever bumps it owns the question of what reading a 1 means, which is
-    /// an upgrade path, not a comparison.
+    /// Refusing is the same stance `taiyaku_library::schema::migrate` takes on
+    /// a database "written by a newer taiyaku", for the same reason: running an
+    /// older binary over newer data corrupts what it does not understand. Only
+    /// *newer* is refused. There is no older version to accept — [`VERSION`] is
+    /// 1 — and whoever bumps it owns the question of what reading a 1 means,
+    /// which is an upgrade path, not a comparison.
     ///
     /// # Errors
     ///
@@ -638,11 +626,13 @@ impl Sidecar {
     /// # Panics
     ///
     /// Does not panic in practice, though the body carries an `.expect("just
-    /// inserted")` and two indexing operations that would if their
+    /// inserted")` and four indexing operations that would if their
     /// invariants broke. The `.expect` follows
     /// `self.editions.insert(name.to_string(), edition)` on the same key, so
-    /// the entry is always there. The indexing (`self.editions[&start]`,
-    /// `self.editions[name]`) is reached only when `carried > 0`, by which
+    /// the entry is always there. The two `members[i]` lookups in the
+    /// content check take `i` from a `zip` position, so it is within both
+    /// member lists. The other two (`self.editions[&start]`,
+    /// `self.editions[name]`) are reached only when `carried > 0`, by which
     /// point `start`'s presence was confirmed earlier in this function and
     /// `name` was just inserted; the self-pairing check above already rules
     /// out `name == start`.
@@ -719,9 +709,8 @@ impl Sidecar {
             ));
         }
 
-        // O13. `docs/sidecar.md` promises a hand-corrected run survives a
-        // re-solve, and dropping the stored edge wholesale is what broke that
-        // promise for as long as nothing could produce one.
+        // O13. `docs/sidecar.md` promises that a hand-corrected run survives
+        // a re-solve.
         //
         // The guard above compares the *from* side: it refuses when the
         // document's copy of the hub is not the edition just aligned. The
@@ -785,7 +774,7 @@ impl Sidecar {
                     .zip(&edition.members)
                     .any(|(here, there)| here.sha256 != there.sha256)
         });
-        // C1: a hand-corrected run addresses `name`'s slots no matter which
+        // A hand-corrected run addresses `name`'s slots no matter which
         // alignment stores it, and `start` <-> `name` is not the only one
         // that can. `Sidecar::correct` writes a *direct* edge to whichever
         // edition it is asked to pair `name` against when there is no stored
@@ -842,10 +831,9 @@ impl Sidecar {
             self.editions.get_mut(name).expect("just inserted").credits = stored_credits;
         }
         // Only the `start` <-> `name` edge is replaced here — the one edge
-        // this call is actually re-solving. It is not true that no surviving
-        // edge can address a `name` that is now gone: a solver-only direct
-        // edge to a third edition can still survive unchanged and stale,
-        // re-solving it being a separate step this function does not take.
+        // this call is actually re-solving. A solver-only direct edge to a
+        // third edition can still survive unchanged and stale, re-solving it
+        // being a separate step this function does not take.
         // What the guard above does guarantee is narrower but load-bearing:
         // no *hand-corrected* edge to a third edition survives with stale
         // meaning, because `spoke_replaced` refused before this line runs.
@@ -1088,12 +1076,9 @@ impl Sidecar {
             //
             // `entries_from_runs` writes `margin: None` for everything — it
             // rebuilds entries from bare runs and has no confidence figure to
-            // hand them — so without this every correction silently stripped
-            // the margins off the *whole* edge, not just the runs it changed.
-            // Measured on the primary corpus volume before this was fixed: one
-            // correction against `raw-mono -> en-fan` took that edge from 8
-            // margins to 0, while the untouched `raw-mono -> en-mono` edge kept
-            // all of its. A margin is the weakest per-page figure inside its
+            // hand them — so without this every correction would silently
+            // strip the margins off the *whole* edge, not just the runs it
+            // changed. A margin is the weakest per-page figure inside its
             // run, recoverable only by re-solving against the archives, and
             // `docs/sidecar.md` has it there precisely so a reader need not
             // open them.
@@ -1101,7 +1086,7 @@ impl Sidecar {
             // Matched on both spans being identical rather than on overlap: a
             // margin describes exactly the run it was computed over, so a run
             // that split, merged or moved has no figure that honestly applies
-            // to it any more, and inheriting one would overstate what was
+            // to it, and inheriting one would overstate what was
             // measured. Those come back as `None` — unknown, which is true —
             // until the edge is re-solved.
             entry.margin = previous
@@ -1110,11 +1095,11 @@ impl Sidecar {
                 .and_then(|e| e.margin);
 
             // Every slot of the run, not any of them. A correction that
-            // changes the answer always lands as its own single-slot run, so
-            // `all` marks exactly what a person decided. `any` would mark the
-            // whole run it sits inside — measured at 188 slots on the primary
-            // corpus volume — and Task 3's refusal would then fire on every
-            // later re-solve of an edge somebody once touched.
+            // changes the answer lands as its own single-slot run unless it
+            // agrees with its neighbours, so `all` marks only what a
+            // person decided. `any` would mark the whole run it sits inside,
+            // and the refusal over hand-corrected runs would then fire on
+            // every later re-solve of an edge somebody once touched.
             if !(start..=end).all(|s| by_hand.contains(&s)) {
                 continue;
             }
@@ -1259,12 +1244,11 @@ impl Sidecar {
     /// stored. A verdict is a property of the pairing rather than of a
     /// direction, so either orientation answers.
     ///
-    /// `pub` rather than `pub(crate)` because `taiyaku-cli` asked the same
-    /// question twice — `verify` for the `by` it prints beside an alignment,
-    /// `lookup` for the edge whose read error `route` swallowed — each with its
-    /// own copy of the two-way comparison. Three copies of one predicate is
-    /// three places for the orientation to be got wrong, and only this one was
-    /// ever tested.
+    /// `pub` rather than `pub(crate)` because `taiyaku-cli` asks the same
+    /// question — `verify` for the `by` it prints beside an alignment, `lookup`
+    /// for the edge whose read error `route` swallowed. A copy of the two-way
+    /// comparison in each would be another place for the orientation to be
+    /// got wrong.
     #[must_use]
     pub fn edge_between(&self, from: &str, to: &str) -> Option<&Alignment> {
         self.alignments
@@ -1319,8 +1303,7 @@ impl Sidecar {
     /// `min` over the verdict ordering.
     ///
     /// `None` means the document does not say, which is **not** the same as
-    /// sound: every sidecar written before the `quality` block existed is
-    /// silent, and a reader must not read silence as approval.
+    /// sound: a reader must not read silence as approval.
     #[must_use]
     pub fn trust(&self, from: &str, to: &str) -> Option<Verdict> {
         if !self.editions.contains_key(from) || !self.editions.contains_key(to) {
@@ -1416,38 +1399,29 @@ fn split_around(start: u32, end: u32, cuts: &[(u32, u32)], mut push: impl FnMut(
 /// gives up the overlapping slots — but only the slots the hand run actually
 /// covers, not the whole run it happens to sit inside.
 ///
-/// **An earlier version of this function filtered out whole solved runs by
-/// page-range overlap instead of splitting them**, on the reasoning that the
-/// two lists are already in the document's own page notation and converting
-/// to slot indices and back would need both slot tables for no gain. That
-/// reasoning covers *detecting* overlap, which page order tracks exactly as
-/// well as slot order does — it does not cover *keeping what survives it*.
-/// The preservation test below measured the difference: two one-slot
-/// corrections at slots 5 and 9 inside a single 30-slot solved run left slots
-/// 0-4, 6-8 and 10-29 with no counterpart at all under the drop-the-run
-/// version, where `docs/sidecar.md` promises only the corrected slots move.
-/// So this does need the slot tables, to split each overlapping solved run
-/// around every hand run it contains rather than discard it, and converts
-/// back to page notation through them once the splitting is done.
+/// Slot tables are needed, not just page order: overlap detection alone would
+/// not need them, since page order tracks overlap exactly as well as slot
+/// order does, but keeping what survives it does. Dropping a whole overlapped
+/// solved run leaves its other slots with no counterpart, where
+/// `docs/sidecar.md` promises only the corrected slots move. So this splits
+/// each overlapping solved run around every hand run it contains rather than
+/// discarding it, and converts back to page notation through the tables once
+/// the splitting is done.
 ///
-/// **C2: splitting around the hand runs' source spans restores 1:1 on the `a`
-/// side only.** Nothing checked whether a surviving solved piece's *target*
-/// already landed on a slot a hand run claims — reachable once the fresh
-/// solve disagrees in shape with the run the hand corrections were made
-/// against, which the unchanged-spoke fixture this function was written
-/// against cannot exercise, because `correct` also hand-marks the slot it
-/// displaces and that mark carries across and neutralises the old owner. A
-/// second pass fixes it: after the `a`-side split, any surviving piece whose
-/// `b` overlaps a hand run's `b` gives up exactly the overlapping slots,
-/// becoming a gap there — the same rule `correct_runs` applies to a single
-/// correction (`lib.rs:126-134`), the hand run winning because that is the
-/// whole point of the field. This does not re-derive the merged edge through
-/// `correct_runs` itself: that pipeline's `Run` carries no `margin`, `by` or
-/// `note`, and re-deriving through `compress` can move a piece's boundary
-/// away from both the solved run and the hand run it came from, leaving
-/// nothing honest to reattach that metadata to. Splicing, then evicting what
-/// the splice missed, keeps every piece traceable to the run it inherits
-/// `margin` from and the hand run it deferred to.
+/// **Splitting around the hand runs' source spans restores 1:1 on the `a` side
+/// only.** A surviving solved piece's *target* can still land on a slot a hand
+/// run claims — reachable once the fresh solve disagrees in shape with the run
+/// the hand corrections were made against. A second pass fixes it: after the
+/// `a`-side split, any surviving piece whose `b` overlaps a hand run's `b`
+/// gives up exactly the overlapping slots, becoming a gap there — the same rule
+/// `correct_runs` applies to a single correction, the hand run winning because
+/// that is the whole point of the field. This does not re-derive the merged
+/// edge through `correct_runs` itself: that pipeline's `Run` carries no
+/// `margin`, `by` or `note`, and re-deriving through `compress` can move a
+/// piece's boundary away from both the solved run and the hand run it came
+/// from, leaving nothing honest to reattach that metadata to. Splicing, then
+/// evicting what the splice missed, keeps every piece traceable to the run it
+/// inherits `margin` from and the hand run it deferred to.
 ///
 /// Each surviving piece inherits its parent solved run's `margin` — except a
 /// piece the second pass evicts, which does not: that figure was a measure of
@@ -1472,8 +1446,8 @@ fn carry_hand_runs(
     };
 
     // Hand spans in slot indices, sorted by where they start, so a solved run
-    // overlapping more than one of them — as it does in the fixture above —
-    // is split around all of them in a single pass rather than one at a time.
+    // overlapping more than one of them is split around all of them in a single
+    // pass rather than one at a time.
     let mut hand_spans: Vec<(u32, u32)> = hand
         .iter()
         .map(|h| (index(a_slots, h.a.start), index(a_slots, h.a.end)))
@@ -1482,7 +1456,7 @@ fn carry_hand_runs(
 
     // The hand runs' own targets, in slot indices. A surviving solved piece
     // whose target overlaps one of these has to give up the overlap: see the
-    // C2 paragraph above.
+    // second-pass paragraph above.
     let mut hand_b_spans: Vec<(u32, u32)> = hand
         .iter()
         .filter_map(|h| {

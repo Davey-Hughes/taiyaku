@@ -10,17 +10,15 @@ use taiyaku_core::{ChapterAt, Half, Route, Sidecar, Slot, Via, route};
 /// A parsed sidecar, held so a reader can ask it many questions without
 /// re-parsing the document.
 ///
-/// **It memoises the last `(from, to)` pair's `Route`.** `resolve` used to
-/// build a fresh `Route` per call, which rebuilds both slot tables and, where
-/// the answer composes through the hub, recomposes the run lists —
-/// `taiyaku_core::Route` exists precisely so a caller can pay that once.
-/// `route_cache` holds exactly one pair rather than a map keyed on every pair
-/// ever asked about, because the caller this was measured against —
-/// `web/src/nearest.ts`'s `nearestPaired`, scanning either side of a gap —
-/// fixes `from`/`to` for the whole scan and varies only the slot. One swap
-/// per keypress does not notice either way; up to `slotCount` resolves during
-/// one gap scan does — see `docs/status.md`'s O14 entry for the measured
-/// counts.
+/// **It memoises the last `(from, to)` pair's `Route`.** Building a `Route`
+/// rebuilds both slot tables and, where the answer composes through the hub,
+/// recomposes the run lists — `taiyaku_core::Route` exists precisely so a
+/// caller can pay that once. `route_cache` holds exactly one pair rather than
+/// a map keyed on every pair ever asked about, because `web/src/nearest.ts`'s
+/// `nearestPaired`, scanning either side of a gap, fixes `from`/`to` for the
+/// whole scan and varies only the slot. One swap per keypress does not notice
+/// either way; up to `slotCount` resolves during one gap scan does — see
+/// `docs/status.md`'s O14 entry for the measured counts.
 ///
 /// **What this does not cover: a caller alternating between two pairs.** A
 /// different `(from, to)` replaces the memo outright — there is no second
@@ -39,8 +37,8 @@ use taiyaku_core::{ChapterAt, Half, Route, Sidecar, Slot, Via, route};
 /// access from multiple threads, because **`Binding` is single-threaded by
 /// construction on the JS side**: `wasm-bindgen` hands a `WasmSidecar` to
 /// exactly one JS thread, and nothing in this crate spawns another to race
-/// it. A `RefCell` would be the wrong tool the moment that stopped being
-/// true.
+/// it. A `RefCell` would be the wrong tool the moment that stopped
+/// being true.
 #[derive(Debug, Clone)]
 pub struct Binding {
     sidecar: Sidecar,
@@ -141,7 +139,7 @@ impl Binding {
         self.route_builds.get()
     }
 
-    /// Every edition this document defines, unordered.
+    /// Every edition this document defines, in key order.
     pub fn editions(&self) -> Vec<String> {
         self.sidecar.editions.keys().cloned().collect()
     }

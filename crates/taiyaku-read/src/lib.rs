@@ -1,6 +1,5 @@
 //! Reading an edition's pages from the containers it is stored in.
 //!
-//! Split out of `taiyaku-cli` when `taiyaku-serve` became a second consumer.
 //! The page sequence a member contributes is normative — `docs/sidecar.md`,
 //! "How a member becomes pages" — so it has to be derived in exactly one
 //! place. Two callers deriving it separately is the defect this crate exists
@@ -21,11 +20,11 @@ pub use pages::{
 
 /// How much a single image decode may allocate.
 ///
-/// O10: here, rather than in either consumer. `taiyaku-cli`'s fingerprinting
-/// and `taiyaku-serve`'s cover generation each carried their own copy, across
-/// a crate boundary with no dependency edge between the two, each with a
-/// comment asking whoever changed one to keep the other in step. That is the
-/// arrangement that drifts. Both already depend on this crate — it is the one
+/// O10: here, rather than in either consumer. A copy in each of
+/// `taiyaku-cli`'s fingerprinting and `taiyaku-serve`'s cover generation,
+/// across a crate boundary with no dependency edge between the two, would each
+/// need a comment asking whoever changed one to keep the other in step. That
+/// is the arrangement that drifts. Both depend on this crate — it is the one
 /// they share — and both decode pages *this* crate handed them, so the
 /// ceiling on that decode belongs alongside the bytes.
 ///

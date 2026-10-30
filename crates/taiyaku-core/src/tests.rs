@@ -145,8 +145,8 @@ fn a_corrected_target_is_taken_from_whoever_held_it() {
 
 /// A correction that agrees with its neighbour merges rather than
 /// splitting, because `compress` is the only thing deciding run shape.
-/// Measured on the real fixture: pairing `raw-mono`'s gap at slot 6 with
-/// `en-mono` slot 5 takes the stored five runs down to three.
+/// Pairing `raw-mono`'s gap at slot 6 with `en-mono` slot 5 takes the stored
+/// five runs down to three.
 #[test]
 fn a_correction_that_agrees_with_its_neighbour_merges() {
     let runs = vec![

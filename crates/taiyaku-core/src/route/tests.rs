@@ -130,9 +130,8 @@ fn a_page_resolves_through_a_stored_sidecar() {
     );
 }
 
-/// Three editions in a star: hub `a`, spokes `b` and `c`, and only the two
-/// hub edges stored. `b -> c` is the question a reader with three editions
-/// asks, and until now the document could not answer it.
+/// Three editions in a star: hub `a`, spokes `b` and `c`, and only the two hub
+/// edges stored. `b -> c` is the question a reader with three editions asks.
 const STAR: &str = r#"{
       "taiyaku": 1,
       "work": { "title": "T", "reading": "rtl" },
@@ -187,10 +186,10 @@ fn two_spokes_resolve_through_the_hub() {
     assert_eq!(composed.runs().len(), 2);
 }
 
-/// The cost hub-and-spoke is measured to carry, at the sidecar layer: about
-/// 1.7% of pages. A page that exists in a spoke but not in the hub has
-/// nowhere to land, so the chain ends there — and the reader sees "no
-/// counterpart" rather than the wrong page, which is the safe direction.
+/// The cost hub-and-spoke carries, at the sidecar layer. A page that exists in
+/// a spoke but not in the hub has nowhere to land, so the chain ends there —
+/// and the reader sees "no counterpart" rather than the wrong page, which is
+/// the safe direction.
 #[test]
 fn a_page_landing_on_a_hub_gap_has_no_counterpart() {
     let s = Sidecar::from_json(STAR).expect("parses");
@@ -260,11 +259,8 @@ fn an_unreadable_direct_edge_does_not_fall_through_to_the_hub() {
     assert!(route(&s, "b", "c").is_none());
 }
 
-/// The behaviour change this work turns on. `resolve` previously answered
-/// only in the stored direction, so a reader holding a two-edition document
-/// could go raw→en and not back. The relation is symmetric — measured, not
-/// assumed — so the document already carried this answer and the library
-/// declined to give it.
+/// A stored edge answers in both directions. The relation is symmetric, so the
+/// document already carries the reverse answer.
 #[test]
 fn a_stored_edge_answers_in_both_directions() {
     let s = Sidecar::from_json(crate::sidecar::REAL).expect("parses");
@@ -301,8 +297,8 @@ fn a_stored_edge_answers_in_both_directions() {
     );
 }
 
-/// An edition corresponds to itself, and `trust` has always said so. Before
-/// this, `resolve` disagreed unless a self-alignment happened to be stored.
+/// An edition corresponds to itself, and `trust` says so. `resolve` must agree
+/// without a self-alignment stored.
 #[test]
 fn an_edition_resolves_to_itself() {
     let s = Sidecar::from_json(crate::sidecar::REAL).expect("parses");

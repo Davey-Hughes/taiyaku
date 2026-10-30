@@ -280,7 +280,7 @@ fn import_with(
 /// reaches it: project what the library holds, merge each incoming spoke into
 /// that projection — *while its stored hub is still whatever the library
 /// actually held*, which is what lets `merge_spoke`'s from-side guard
-/// (`core/sidecar.rs:628`) tell a genuinely stale spoke from an ordinary
+/// (see its `# Errors`) tell a genuinely stale spoke from an ordinary
 /// carry — and only afterward overwrite the hub and `work` block with the
 /// incoming document's own copies before writing the result back through
 /// [`sidecar`], which already replaces editions and alignments wholesale

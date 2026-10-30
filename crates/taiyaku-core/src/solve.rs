@@ -20,8 +20,7 @@ fn page_index(i: usize) -> u32 {
 /// A 256-bit structural page hash.
 ///
 /// 256 bits because that is what the corpus asked for: a 16x16 difference hash
-/// resolved 99.5% of the sanity-baseline pair against 97.9% for the usual
-/// 64-bit form, and wider hashes bought nothing further.
+/// rather than the usual 64-bit form.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PageHash(pub [u64; 4]);
 
@@ -65,26 +64,20 @@ pub struct Calibration {
     /// counterparts — a whole volume against one of its own chapters, say —
     /// because most of A then really does match nothing and the median lands on
     /// noise. Estimating from a high percentile instead fixes that case and
-    /// costs more than it buys: with the 90th percentile, Go-Toubun's raw
-    /// against Kaguya's English release pairs 146 of 195 pages instead of being
-    /// refused, and Kaguya's own alignment degrades from 8 runs and 204 pages
-    /// paired to 12 and 201 as the raised floor rejects real matches.
+    /// costs more than it buys: unrelated works stop being refused, and real
+    /// alignments degrade as the raised floor rejects real matches.
     pub signal: f32,
     /// Median of each A page's distance from its best match to its runner-up.
     ///
     /// This is the statistic that does not inflate with the length of B. A
     /// row's best is a maximum over `|B|` candidates and climbs as candidates
     /// are added, for reasons unrelated to whether the editions correspond;
-    /// the gap from that best to the second best does not. The survey measures
-    /// Color Walk's art book pages against a One Piece volume at a margin of
-    /// 0.004 — one bit of a 256-bit hash — where a genuine pairing of the same
-    /// shape sits an order of magnitude higher.
+    /// the gap from that best to the second best does not.
     ///
-    /// Being a median of `best - runner_up`, this is never negative. The signed
-    /// per-page figures the notes quote for the art book are `confidence`'s
-    /// margin, a different quantity: that one scores the counterpart the
-    /// alignment actually chose against its best rival, so it goes negative
-    /// when a better-scoring candidate was passed over.
+    /// Being a median of `best - runner_up`, this is never negative, unlike
+    /// `confidence`'s margin, a different quantity: that one scores the
+    /// counterpart the alignment actually chose against its best rival, so it
+    /// goes negative when a better-scoring candidate was passed over.
     pub margin: f32,
     /// The similarity below which a pairing is not worth making, midway
     /// between noise and signal.
@@ -107,11 +100,10 @@ impl Calibration {
 
 /// Measure the two editions against each other.
 ///
-/// A fixed threshold cannot work. Measured across the corpus, correct matches
-/// land anywhere from 0.65 to 0.98 depending on which pair of editions is being
-/// compared — colourisation alone moves it 0.10 to 0.15 — while unrelated pages
-/// sit near 0.5 throughout. What identifies a real match is therefore its
-/// distance from that noise, not its absolute value.
+/// A fixed threshold cannot work: where correct matches land depends on which
+/// pair of editions is being compared, while unrelated pages sit at the same
+/// level throughout. What identifies a real match is therefore its distance
+/// from that noise, not its absolute value.
 ///
 /// Returns `None` only when a side has no pages at all.
 #[must_use]
@@ -192,8 +184,8 @@ fn median(values: &mut [f32]) -> f32 {
 /// run past the end, and 0.0 the first. There is no clamp on `at` because it
 /// cannot exceed the last index: `fraction` is bounded to `0.0..=1.0` by every
 /// caller, so `(len - 1) * fraction` is at most `len - 1` before rounding. That
-/// bound is now load bearing rather than merely true — out of range indexes
-/// past the end instead of clamping — so it is asserted rather than trusted.
+/// bound is load bearing rather than merely true — out of range indexes past
+/// the end instead of clamping — so it is asserted rather than trusted.
 fn percentile(values: &mut [f32], fraction: f32) -> f32 {
     debug_assert!((0.0..=1.0).contains(&fraction));
     values.sort_by(|x, y| x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal));
@@ -415,16 +407,12 @@ pub enum Verdict {
 
 /// Judge an alignment from its shape.
 ///
-/// Coverage is checked before fragmentation, and that order still matters. A
+/// Coverage is checked before fragmentation, and that order matters. A
 /// refused pair is a single gap run covering everything, which
 /// `average_run_length` reports as 0.0 — below the fragmentation threshold, so
 /// without this check first a total refusal would read as `Fragmented` rather
 /// than `Refused`. The two mean different things: refused says nothing
 /// corresponds, fragmented says something did but too little of it to trust.
-/// Measured across the corpus: every confirmed-good pairing averages 36.0
-/// slots a run or more, and everything that must not pass 6.8 or fewer — 6.8
-/// being the one-chapter-to-volume subset, with the known-bad copies, the
-/// needle and the unrelated pairs all at 4.8 or below.
 #[must_use]
 pub fn verdict(runs: &[Run], pages: usize) -> Verdict {
     let paired = paired_slots(runs);
@@ -453,10 +441,9 @@ pub fn verdict(runs: &[Run], pages: usize) -> Verdict {
                   u32/u16/u8, which do have infallible From impls into f32/f64."
     )]
     let cap = MIN_AVERAGE_RUN.min(pages as f32);
-    // average_run_length now returns f64 (see its own doc). f64::from(f32) is
-    // lossless, so promoting cap for the comparison changes no value: cap
-    // stays exactly what it was, computed in f32 as before, only compared at
-    // higher precision.
+    // `average_run_length` returns f64. `f64::from(f32)` is lossless, so
+    // promoting `cap` for the comparison changes no value: `cap` stays computed
+    // in f32, only compared at higher precision.
     if average_run_length(runs) < f64::from(cap) {
         Verdict::Fragmented
     } else {
@@ -480,52 +467,35 @@ pub fn paired_slots(runs: &[Run]) -> u32 {
 /// Average paired-run length below which an alignment is confetti rather than a
 /// correspondence.
 ///
-/// Measured, not guessed. Across the corpus survey every confirmed-good pairing
-/// averages 36.0 slots a run or more, up to 200.0 for a pair that is one run
-/// covering the whole volume; everything that must not pass averages 6.8 or
-/// fewer. That 6.8 is the one-chapter-to-volume subset; the highest among the
-/// known-bad copies, the needle and the unrelated pairs is 4.8. This sits at
-/// three quarters of the weakest good figure, clearing 6.8 by nearly four
-/// times (27.0 / 6.8 = 3.97).
+/// Across the corpus survey every confirmed-good pairing averages 36.0 slots a
+/// run or more; everything that must not pass averages 6.8 or fewer. This sits
+/// at three quarters of the weakest good figure, clearing 6.8 by nearly
+/// four times.
 ///
-/// This replaced runs per hundred pages, but not because that measure failed on
-/// this corpus: gated on coverage it separates too, the good rows running 0.5 to
-/// 4.9 per hundred and everything that must not pass 21.2 to 100.0. The swap was
-/// made because run length states the property in slots and so does not have to
-/// be rescaled by the edition's length before it means anything, and because the
-/// two disagree on a shape no corpus row happens to take — twenty paired runs of
-/// two slots across 210 pages reads as 9.5 per hundred and therefore sound,
-/// while averaging two slots a run.
+/// Run length is used rather than runs per hundred pages because it states the
+/// property in slots and so does not have to be rescaled by the edition's
+/// length before it means anything. The two also disagree on a shape no corpus
+/// row happens to take: twenty paired runs of two slots across 210 pages reads
+/// as 9.5 per hundred and therefore sound, while averaging two slots a run.
 ///
-/// The old measure's hole at the bottom is real and already gated: a wholly
-/// refused pair is one gap run covering everything and so scores 0.5 per
-/// hundred, matching the best correct alignment measured — the One Piece v092
-/// identity pairing, one run over 200 slots, also scores 0.5 — and beating every
-/// other. Average run length excludes gap runs by construction, so the same pair
-/// reports 0.0, which is equally below the threshold and equally needs coverage
-/// checked first — see `verdict`.
+/// Average run length excludes gap runs by construction, so a wholly refused
+/// pair, one gap run covering everything, reports 0.0: below the threshold, so
+/// coverage needs checking first — see `verdict`.
 ///
 /// `verdict` caps this by the edition's own length, because the constant is
-/// unmeasured below 146 slots: the shortest confirmed-good pairing in the
-/// survey is Kobayashi v01 at 146, so nothing here says what a twenty-page
-/// one-shot should score. Uncapped, such an edition is `Fragmented` by
-/// arithmetic — its average cannot exceed its length — however cleanly it
-/// aligns.
+/// unmeasured below 146 slots, the shortest confirmed-good pairing in the
+/// survey: nothing here says what a twenty-page one-shot should score.
+/// Uncapped, such an edition is `Fragmented` by arithmetic — its average cannot
+/// exceed its length — however cleanly it aligns.
 ///
 /// Making the threshold *proportional* to the length is the obvious
-/// alternative, and it fails on this corpus: Color Walk's nine art book pages
-/// score 1.0 / 9 = 0.11 where Nausicaä's genuine 4:1 repagination scores
-/// 46.1 / 600 = 0.077, so the needle would outrank a real alignment. The cap
-/// keeps the measured absolute figure wherever it has been measured, and only
-/// relaxes below the range the corpus covers.
+/// alternative, and it fails on this corpus: an unrelated short edition would
+/// outrank a real alignment. The cap keeps the measured absolute figure
+/// wherever it has been measured, and only relaxes below the range the
+/// corpus covers.
 const MIN_AVERAGE_RUN: f32 = 27.0;
 
 /// Mean length of the paired runs, in slots.
-///
-/// Runs per hundred pages and this measure describe the same thing from
-/// opposite ends, and this end may be the more legible one: measured on One
-/// Piece Starter Book against volume 1, the genuine opening section was a
-/// single run of 103 slots where the noise that followed ran 1.8 to 2.1.
 ///
 /// Gap runs are excluded deliberately. A refused pair is one gap covering the
 /// whole edition, and including it would report the longest run in the corpus
@@ -534,7 +504,7 @@ const MIN_AVERAGE_RUN: f32 = 27.0;
 pub fn average_run_length(runs: &[Run]) -> f64 {
     // Folded rather than collected: the sum and the count are all this needs,
     // and an intermediate allocation is not worth making in the crate that
-    // compiles to WebAssembly, on a path an align walks up to three times.
+    // compiles to WebAssembly.
     let (total, count) = runs
         .iter()
         .filter(|r| r.b.is_some())
@@ -549,11 +519,10 @@ pub fn average_run_length(runs: &[Run]) -> f64 {
         // below f64's 2^53. total and count are u32, and f64::from(u32) is
         // lossless outright (u32's 32 bits fit f64's 52-bit mantissa), where
         // there is no equivalent `From<u32> for f32` (f32's mantissa is only
-        // 24 bits) — so widening this function's return type to f64 closes
-        // the cast without a suppression. `verdict` promotes its f32 cap to
-        // f64 with `f64::from` to compare against this, which is itself
-        // lossless, so the threshold value being compared against is
-        // unchanged.
+        // 24 bits) — so returning f64 closes the cast without a suppression.
+        // `verdict` promotes its f32 cap to f64 with `f64::from` to compare
+        // against this, which is itself lossless, so the threshold value being
+        // compared against is unchanged.
         _ => f64::from(total) / f64::from(count),
     }
 }

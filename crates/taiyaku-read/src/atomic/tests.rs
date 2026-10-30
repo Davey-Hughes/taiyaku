@@ -1,22 +1,21 @@
 use super::*;
 use crate::test_support::TempDir;
 
-/// The property O2 established for progress and this now shares: the
-/// destination is *replaced*, never opened for truncation, so a crash
-/// mid-write cannot leave a short file where a whole one was.
+/// The property O2 established for progress, shared here: the destination is
+/// *replaced*, never opened for truncation, so a crash mid-write cannot leave
+/// a short file where a whole one was.
 ///
-/// Asserted by inode identity rather than by taking write permission off
-/// the existing file, which was this test's first version. That approach
-/// had a silent failure mode: on a filesystem that ignores the read-only
-/// bit, or when the test runs as root, the permission-denied write this
-/// test relies on to distinguish "replaced" from "truncated" simply
-/// succeeds, so the earlier code printed a skip line and returned — but
-/// libtest captures stdout for a passing test, so that line is invisible
-/// under a plain `cargo test`, and the run reports an ordinary `ok`
-/// indistinguishable from one that actually measured anything. A rename
-/// gives the destination path a *different* inode; an in-place
-/// truncating write keeps the same one. That distinction holds no matter
-/// who is running the test or what the filesystem's permission
+/// Asserted by inode identity rather than by taking write permission off the
+/// existing file. That approach has a silent failure mode: on a filesystem
+/// that ignores the read-only bit, or when the test runs as root, the
+/// permission-denied write it relies on to distinguish "replaced" from
+/// "truncated" simply succeeds, so a test that printed a skip line and
+/// returned would hide it — libtest captures stdout for a passing test, so
+/// that line is invisible under a plain `cargo test` — and the run would
+/// report an ordinary `ok` indistinguishable from one that actually measured
+/// anything. A rename gives the destination path a *different* inode; an
+/// in-place truncating write keeps the same one. That distinction holds no
+/// matter who is running the test or what the filesystem's permission
 /// enforcement does, so there is nothing left to skip.
 #[test]
 fn the_destination_is_replaced_by_rename_not_truncation() {
@@ -51,9 +50,8 @@ fn the_destination_is_replaced_by_rename_not_truncation() {
     );
 }
 
-/// O29, the branch that carried it. The destination's parent does not
-/// exist, so the *staging* write is what fails — the branch that used to
-/// answer with the temporary's name.
+/// O29. The destination's parent does not exist, so the *staging* write is
+/// what fails.
 ///
 /// The assertion is on the absence of `.tmp.` rather than on the exact
 /// wording, because the point is not which sentence is printed but that no
@@ -77,8 +75,8 @@ fn a_failed_staging_names_the_destination_and_never_the_temporary() {
     );
 }
 
-/// The other branch, which already named the destination and is pinned so
-/// that a later edit cannot quietly give it the temporary instead.
+/// The other branch, which names the destination and is pinned so that a
+/// later edit cannot quietly give it the temporary instead.
 ///
 /// A directory at the destination is what fails the rename while letting
 /// the staging write succeed: the temporary is a sibling file, and a file
@@ -129,8 +127,7 @@ fn two_temp_paths_for_one_destination_differ() {
 /// before the data it points at is written — XFS, which the NAS's array disks
 /// run, has no equivalent of ext4's `auto_da_alloc` to force it — and a crash
 /// in that window leaves the destination naming data that never existed,
-/// with the old file already unlinked. The module doc's promise, "a crash
-/// cannot publish half of one", did not hold.
+/// with the old file already unlinked.
 ///
 /// So the temporary must be synced **before** the rename, and the directory
 /// **after** it, or the rename itself may not survive the crash either.

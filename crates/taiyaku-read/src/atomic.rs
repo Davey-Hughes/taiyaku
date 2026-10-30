@@ -1,46 +1,30 @@
 //! Write a file so a crash cannot publish half of one.
 //!
-//! **Seven call sites**, from `rg -n 'atomic::write\(' crates/` on 2026-09-12
-//! with comment lines and tests set aside, rather than from anyone's memory:
-//! in `taiyaku-serve`, the sidecar rewritten by a correction in `routes.rs`
-//! and **two** in `cover.rs`; in `taiyaku-library`, `hand::save` and
-//! `export`; in `taiyaku-cli`, `write_sidecar` — behind both `align --write`
-//! and `credits --write` — and `regions.rs`. It said eight, naming
-//! `progress::store`, `notes::store` and `truth::store`, all of which had
-//! since moved into the database, and it had never gained the two in
-//! `taiyaku-library`.
+//! **Call sites**, from `rg -n 'atomic::write\(' crates/` with comment lines
+//! and tests set aside, rather than from anyone's memory: in `taiyaku-serve`,
+//! the sidecar rewritten by a correction in `routes.rs` and **two** in
+//! `cover.rs`; in `taiyaku-library`, `hand::save` and `export`; in
+//! `taiyaku-cli`, `write_sidecar` — behind both `align --write` and
+//! `credits --write` — and `regions.rs`.
 //!
-//! **This tally has now been wrong four times, and the third is the reason
-//! the instruction below is phrased as a command.** The fourth, above, is the
-//! one that command cannot catch: callers came and went in other crates while
-//! nobody touched this file. It said "three" while it
-//! was four, then "four" while it was five, and then sat at five through
-//! `truth.rs` landing on 2026-08-11 — so it was five while it was six, for
-//! three days, in a comment whose entire subject is that it keeps being
-//! wrong. The move to this crate on 2026-08-14 was drafted with a corrected
-//! count that was *also* wrong, because it too was written from this
-//! paragraph rather than from the code.
-//!
-//! **So: if you touch this module, run the grep and count what comes back.**
-//! Do not update this number by reading the sentence above and adding one.
+//! **If you touch this module, run the grep and read what comes back.** Do
+//! not update this list by reading the sentence above and adding to it.
 //!
 //! It lives in `taiyaku-read` rather than in the server because it is not a
 //! server concern — a sidecar is a sidecar whoever rewrites it — and because
 //! `taiyaku-library` needs it for export and must not depend on
-//! `taiyaku-serve`. It was in `taiyaku-serve` until 2026-08-14 and moved down
-//! rather than being copied.
+//! `taiyaku-serve`.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// A temp path nothing else will ever pick.
 ///
-/// `pub` rather than `pub(crate)` since 2026-08-14, when this module moved
-/// down a crate. `taiyaku-serve`'s cover cache asserts a joint property of
+/// `pub` because `taiyaku-serve`'s cover cache asserts a joint property of
 /// this function and its own `cache_path` — that a temp name never ends where
 /// the read path would find it, so an unrenamed leftover can never be served
-/// as a real cover — and that test cannot move here, because this crate knows
-/// nothing about covers.
+/// as a real cover — and that test cannot live in this crate, because this
+/// crate knows nothing about covers.
 ///
 /// A process id plus a monotonic per-process counter. Two devices writing one
 /// work through one server is two requests in one process, so the counter
@@ -55,27 +39,18 @@ pub fn temp_path(path: &Path, extension: &str) -> PathBuf {
 /// Write `bytes` to `path`, atomically.
 ///
 /// `fs::write` truncates first, and a crash in that window leaves a short file
-/// where a whole one was — for progress that answers 500 instead of "nothing
-/// recorded", and for a sidecar it destroys the alignment of every edition in
-/// the work.
+/// where a whole one was — for a sidecar, that destroys the alignment of every
+/// edition in the work.
 ///
 /// A failed write or a failed rename each leave a temp file nothing else will
 /// ever collect, since its name is unique to this attempt, so both branches
 /// remove it rather than accumulating one file per failure in the reader's
-/// own library directory. `cover.rs`'s writer, before this module existed,
-/// did this unconditionally for the same reason; both failure paths now get
-/// the same treatment here.
+/// own library directory.
 ///
 /// **Every error names `path` — the file the caller asked for — and never the
-/// temporary.** That was O29: the staging branch used to name the temporary,
-/// which is a filename this module invents, that no caller typed, that is
-/// deleted before the error is returned, and that therefore cannot be looked
-/// for. It reached people two ways. `taiyaku align --write /nowhere/out.json`
-/// answered `out.json.tmp.4041762.0: No such file or directory`, and — the
-/// half the item had recorded as harmless — three of the four callers in this
-/// crate put the string straight into a 500 body (`routes.rs`'s
-/// `Failed(message)` arm), so `notes::store`, `progress::store` and the
-/// sidecar rewrite leaked it to HTTP clients too. Only `cover.rs` discards it.
+/// temporary (O29).** The temporary is a filename this module invents, that no
+/// caller typed, that is deleted before the error is returned, and that
+/// therefore cannot be looked for.
 ///
 /// The distinction between the two failures is kept, because they are not the
 /// same event — a full disk or a missing directory fails the staging write,
@@ -83,18 +58,17 @@ pub fn temp_path(path: &Path, extension: &str) -> PathBuf {
 /// carried in words rather than by swapping in a path the caller cannot use.
 ///
 /// `pub`, not `pub(crate)`: `taiyaku-cli`'s `write_sidecar` — the one writer
-/// behind both `align --write` and `credits --write` — is the caller outside
-/// this crate, and it is writing the very file the paragraph above names as the
-/// worst thing to lose half of.
+/// behind both `align --write` and `credits --write` — is one of the callers
+/// outside this crate, and it is writing the very file the first
+/// paragraph names.
 ///
-/// **The temporary is synced before the rename, and the directory after it.**
-/// That was O104: a rename replaces the destination atomically only for bytes
+/// **The temporary is synced before the rename, and the directory after it
+/// (O104).** A rename replaces the destination atomically only for bytes
 /// already on disk, and without the sync the rename can be journalled first —
 /// XFS, which the NAS's array disks run, does nothing to force the data out
 /// ahead of it — so a crash could leave `path` naming data never written, with
-/// the old file already gone. The module's first line was a promise this
-/// function did not keep until then. The directory sync is what makes the
-/// rename itself survive the crash.
+/// the old file already gone. The directory sync is what makes the rename
+/// itself survive the crash.
 ///
 /// # Errors
 ///

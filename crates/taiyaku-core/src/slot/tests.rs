@@ -4,9 +4,8 @@ use super::*;
 /// per-edition, and the case that breaks a naive version is an edition
 /// published two facing pages per image throughout — every page landscape,
 /// no portrait page anywhere to measure against. One Piece volume 1 exists
-/// in the corpus in exactly that form, 107 images of 1524x1200 for a
-/// 210-page volume, and treating none of them as spreads makes the whole
-/// edition unalignable.
+/// in the corpus in exactly that form, and treating none of its images as
+/// spreads makes the whole edition unalignable.
 #[test]
 fn an_edition_that_is_entirely_spreads_is_still_all_spreads() {
     // Mixed edition: Go-Toubun, one spread among portrait pages.
@@ -212,9 +211,8 @@ fn a_landscape_page_takes_two_slots_and_shifts_everything_after_it() {
 /// is the *earlier* page, so listing halves left-first would require the
 /// alignment to run backwards across the pair. The solver enforces
 /// monotonicity and correctly refuses, which costs one of the two halves of
-/// every spread — measured, exactly seven of fourteen recoverable pages on
-/// Go-Toubun volume 1. The alignment cannot discover the order for itself;
-/// it has to be told.
+/// every spread. The alignment cannot discover the order for itself; it has
+/// to be told.
 #[test]
 fn right_to_left_reading_puts_the_right_half_first() {
     let slots = expand(&[true], Direction::RightToLeft);

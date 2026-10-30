@@ -260,11 +260,11 @@ CREATE TABLE note (
 -- with one hardcoded id today.
 --
 -- **A page that was looked at is a row here, whether or not it holds boxes.**
--- `TruthEdition::pages`' own doc comment (core/truth.rs:137) is explicit: "an
+-- `TruthEdition::pages`' own doc comment (core's `truth.rs`) is explicit: "an
 -- absent key means nobody has looked at that page; a present empty value means
--- somebody looked and found no text. Across 75 pages of manual work that
--- difference is the progress tracker, and it is the same distinction
--- `RegionEdition::pages` refuses to collapse."
+-- somebody looked and found no text. In manual work that difference is the
+-- progress tracker, and it is the same distinction `RegionEdition::pages`
+-- refuses to collapse."
 --
 -- An earlier draft of this schema had `truth_box` alone. Boxes are one row
 -- each, so a page examined and found empty wrote zero rows — indistinguishable
@@ -302,7 +302,7 @@ CREATE TABLE truth_box (
 );
 
 -- **The archives the boxes were drawn against, stored rather than re-derived.**
--- `TruthEdition::members` (core/truth.rs:136) is provenance, and
+-- `TruthEdition::members` (core's `truth.rs`) is provenance, and
 -- `TruthEdition::is_stale_for` compares it element-wise against the digests of
 -- the archives in hand now — the check `taiyaku score` and `score_corpus` both
 -- refuse on, whose own doc calls stale ground truth "the sharpest form of this

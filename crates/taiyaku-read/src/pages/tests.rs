@@ -2,11 +2,8 @@ use super::*;
 use crate::test_support::TempDir;
 
 /// A member that yields no pages is almost always a mistake, and saying
-/// nothing about it is the worst possible response. Pointing a directory of
-/// archival TIFFs at the aligner reported `A: 0 pages` and carried on
-/// cheerfully, because `.tif` was not in the recognised list — the files
-/// were there, readable, and silently ignored. The error has to name what
-/// it found instead.
+/// nothing about it is the worst possible response. The error has to name
+/// what it found instead.
 #[test]
 fn a_member_with_no_pages_says_what_it_found_instead() {
     let dir = TempDir::new("nopages");
@@ -36,8 +33,7 @@ fn reading_a_seven_zip_archive_says_so() {
 }
 
 /// A PDF is named rather than reported as a corrupt zip, the same way a
-/// 7-Zip archive is. New with the scanner's sniffer: `unsupported_container`
-/// recognised three formats before it and recognises four now.
+/// 7-Zip archive is.
 #[test]
 fn reading_a_pdf_says_so() {
     let dir = TempDir::new("container");
@@ -73,13 +69,12 @@ fn an_unreadable_container_is_named_by_its_leading_bytes() {
 }
 
 /// The signature sits at bytes 257..262, so 262 bytes is exactly enough to
-/// read it. The old guard asked for 263 and called a 262-byte buffer
-/// unrecognised; `get` asks for what it reads.
+/// read it. A guard asking for 263 would call a 262-byte buffer unrecognised;
+/// `get` asks for what it reads.
 ///
-/// No real tar is this short — one header block is 512 bytes, which is why
-/// this was never felt — but a bound that is one out is worth removing
-/// rather than pinning, and a slice guard written as arithmetic is a thing
-/// a test has to keep honest.
+/// No real tar is this short — one header block is 512 bytes — but a bound
+/// that is one out is worth removing rather than pinning, and a slice guard
+/// written as arithmetic is a thing a test has to keep honest.
 #[test]
 fn the_tar_signature_is_read_from_the_shortest_buffer_that_holds_it() {
     let mut exact = vec![0u8; 262];
@@ -188,11 +183,10 @@ fn cbz(dir: &Path, name: &str, entries: &[&str]) -> PathBuf {
 /// details of this reader — see `docs/sidecar.md`, "How a member becomes
 /// pages".
 ///
-/// Central-directory order is whatever the packer happened to write: 32 of
-/// the corpus's 57 cbz archives store their entries in an order that is not
-/// the name order, so a reader iterating entries as stored gets a different
-/// page sequence for over half of them. And 12 of the 57 carry a
-/// `ComicInfo.xml`, which is not a page and must not shift the numbering.
+/// Central-directory order is whatever the packer happened to write, so a
+/// reader iterating entries as stored can get a different page sequence from
+/// one that sorts by name. And a `ComicInfo.xml` is not a page and must not
+/// shift the numbering.
 #[test]
 fn entries_are_pages_in_name_order_whatever_order_they_were_stored_in() {
     let dir = TempDir::new("order");
@@ -211,8 +205,7 @@ fn entries_are_pages_in_name_order_whatever_order_they_were_stored_in() {
 /// with a directory per chapter beyond recovery, and the corpus holds the case:
 /// Go-Toubun's Full Colour edition nests pages under `Chapter 15 - …/` and
 /// carries a `ZBlank (1).jpg` in each directory. On the basename every
-/// chapter's blank sorts to the front and the chapters interleave; 2 of the
-/// 7 nested archives measured come out differently the two ways.
+/// chapter's blank sorts to the front and the chapters interleave.
 #[test]
 fn nested_pages_sort_on_the_whole_path_not_the_basename() {
     let dir = TempDir::new("nested");
@@ -272,11 +265,6 @@ fn a_page_reads_by_index_in_the_order_read_member_gives() {
 /// handed shell globs, which are not in reading order — so a caller holding
 /// a sidecar needs the other one, and the two must be demonstrably
 /// different or the second is just a renamed call.
-///
-/// The seam check in `taiyaku-serve` made exactly this mistake: it rebuilt
-/// a sidecar's editions with `read_edition`, so on any work whose array
-/// order is not its natural order it would have reported a disagreement
-/// with neither side wrong.
 #[test]
 fn a_sidecars_member_order_is_the_page_order_and_is_not_re_sorted() {
     // Named so that natural order is the reverse of the order given.
@@ -300,12 +288,12 @@ fn a_sidecars_member_order_is_the_page_order_and_is_not_re_sorted() {
 }
 
 /// `member_pages` is the path `align` takes to record a member's page
-/// count, and it lists rather than reads. Listing used to go straight to
-/// `ZipArchive::new`, so a RAR file — the single most common thing to find
-/// behind a `.cbr`, or behind a `.cbz` that lies — came back as "not a
-/// readable cbz" while reading the same file said "this is a RAR archive".
-/// Same file, same tool, two answers, and the useful one was on the path
-/// nobody took.
+/// count, and it lists rather than reads. Listing that went straight to
+/// `ZipArchive::new` would report a RAR file — the single most common thing
+/// to find behind a `.cbr`, or behind a `.cbz` that lies — as "not a
+/// readable cbz" while reading the same file says "this is a RAR archive".
+/// Same file, same tool, two answers, and the useful one on the path nobody
+/// takes.
 #[test]
 fn counting_a_rar_archives_pages_names_the_format() {
     let dir = TempDir::new("count-container");
@@ -320,10 +308,9 @@ fn counting_a_rar_archives_pages_names_the_format() {
     }
 }
 
-/// Every ordering test above builds a cbz; the directory branches of
-/// `member_page_names` and `member_page` had no direct coverage of their
-/// own, including `strip_prefix`, which turns an absolute path into a
-/// member-relative name and is new code rather than a move of Task 2's.
+/// Every ordering test above builds a cbz; this one covers the directory
+/// branches of `member_page_names` and `member_page`, including
+/// `strip_prefix`, which turns an absolute path into a member-relative name.
 /// Without this test, `strip_prefix` regressing to leave the temp-dir
 /// prefix in page names, or a nested directory sorting on the wrong key,
 /// would still pass every other test in this file.
@@ -435,21 +422,15 @@ fn lying_size_cbz(dir: &Path, name: &str, entries: &[&str]) -> PathBuf {
     path
 }
 
-/// A literal, not `MAX_ENTRY_CAPACITY_HINT` itself. An earlier version of
-/// this test asserted `capacity() <= MAX_ENTRY_CAPACITY_HINT`, which
-/// passes for *any* ceiling at or above the declared lie — raise the
-/// constant to 4 GiB and the assertion still goes green, having proved
-/// nothing about whether the clamp does anything useful. This bound sits
-/// comfortably above today's 32 MiB ceiling (allocator rounding, and
-/// room to retune the ceiling within its own order of magnitude without
-/// editing this test) and 30-fold below the ~2 GiB lie, so it still
-/// catches a regression that quietly enlarges the ceiling or drops the
-/// clamp outright.
-///
-/// Verified against the failure it exists to catch: with `.min(...)`
-/// deleted from the call site, both tests below failed with
-/// `capacity() == 2147483632` (the declared lie itself), before the
-/// clamp was restored.
+/// A literal, not `MAX_ENTRY_CAPACITY_HINT` itself: asserting
+/// `capacity() <= MAX_ENTRY_CAPACITY_HINT` passes for *any* ceiling at or
+/// above the declared lie — raise the constant to 4 GiB and the assertion
+/// still goes green, having proved nothing about whether the clamp does
+/// anything useful. This bound sits comfortably above the 32 MiB ceiling
+/// (allocator rounding, and room to retune the ceiling within its own order
+/// of magnitude without editing this test) and 30-fold below the ~2 GiB lie,
+/// so it still catches a regression that quietly enlarges the ceiling or
+/// drops the clamp outright.
 const RESERVATION_CEILING: usize = 64 * 1024 * 1024;
 
 /// The path `read_archive` takes: every page in the member, collected at
@@ -476,11 +457,10 @@ fn a_declared_size_far_past_reality_does_not_reserve_past_the_ceiling() {
 /// The path `taiyaku-serve` actually calls on every page request: one
 /// entry, addressed by index, never the whole archive. `read_archive`
 /// and `member_page` carry the identical
-/// `entry.size().min(MAX_ENTRY_CAPACITY_HINT)` clamp, but until this
-/// test only the `read_archive` side had a regression test — a change
-/// that broke the clamp on `member_page` alone (a copy-paste that
-/// dropped the `.min()`, say) would have shipped with the suite green,
-/// on the one path a server request actually reaches.
+/// `entry.size().min(MAX_ENTRY_CAPACITY_HINT)` clamp, and a change that
+/// broke the clamp on `member_page` alone (a copy-paste that dropped the
+/// `.min()`, say) would otherwise ship with the suite green, on the one path
+/// a server request actually reaches.
 #[test]
 fn a_lying_member_page_does_not_reserve_past_the_ceiling_either() {
     let dir = TempDir::new("lying-size-member-page");
@@ -502,8 +482,8 @@ fn a_lying_member_page_does_not_reserve_past_the_ceiling_either() {
 /// natural order (not stored order — this archive is written 002 first),
 /// the real uncompressed size of each entry, and its crc32.
 ///
-/// Deflated deliberately: 97.9% of this corpus's entries are, and the point
-/// of this function is that it never inflates one to answer.
+/// Deflated deliberately, as most of this corpus's entries are: the point of
+/// this function is that it never inflates one to answer.
 #[test]
 fn member_page_entries_reads_names_sizes_and_crcs_from_an_archive() {
     let dir = TempDir::new("entries-archive");
@@ -617,18 +597,18 @@ fn for_each_member_page_stops_at_the_first_refusal() {
     });
     assert_eq!(refused, Err("the caller gave up".to_string()));
     // The third page was never read: a download whose client hung up must not
-    // keep inflating the rest of a 1.49 GB volume.
+    // keep inflating the rest of the volume.
     assert_eq!(count, 2);
 }
 
-/// Finding 1's fix, pinned so it cannot be "tidied up" back to symmetry:
+/// Pinned so it cannot be "tidied up" back to symmetry:
 /// `for_each_member_page` must report the real byte count `read_to_end`
 /// produced, not the central directory's declared `uncompressed_size` — a
 /// field `zip` never checks against anything (unlike `crc32`, which
 /// `Crc32Reader` validates against the real bytes on every read). A corrupt
 /// or hand-edited archive can misstate its declared size and still read back
-/// cleanly, so before this fix `f` received an entry whose `size` disagreed
-/// with the `bytes` beside it.
+/// cleanly, so reporting the declared size would hand `f` an entry whose
+/// `size` disagreed with the `bytes` beside it.
 ///
 /// `member_page_entries` must keep reporting the declared lie on the very
 /// same file: it is the planning function, and reading page data to verify

@@ -1,10 +1,9 @@
 //! The `<stem>.regions.json` format: text blocks, per edition, per page.
 //!
-//! A sibling document rather than a block in `taiyaku.json`, on size. The real
-//! Go-Toubun v01 alignment is five runs; regions are per page, and an edition of
-//! 195 pages at a handful of blocks a page is two orders of magnitude more JSON
-//! than the file it would sit in. `taiyaku.json`'s first two design goals are
-//! human-readable and diffable in git, and this would end both.
+//! A sibling document rather than a block in `taiyaku.json`, on size. Regions
+//! are per page, and a handful of blocks a page is far more JSON than the file
+//! it would sit in. `taiyaku.json`'s first two design goals are human-readable
+//! and diffable in git, and this would end both.
 //!
 //! The convention is the one `<stem>.notes.json` and `taiyaku.stump.json`
 //! already use: same directory, same stem. It is also stronger forward
@@ -48,9 +47,9 @@ pub enum Axis {
 /// One text block, in page fractions.
 ///
 /// Fractions rather than pixels, which is the unit every other geometry in this
-/// project uses, and the reason is the corpus: page widths run from 685 to 5343
-/// pixels across editions of the same work, so a pixel box means nothing without
-/// the page it was measured on.
+/// project uses, and the reason is the corpus: page widths differ widely across
+/// editions of the same work, so a pixel box means nothing without the page it
+/// was measured on.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Region {
     pub x: f64,

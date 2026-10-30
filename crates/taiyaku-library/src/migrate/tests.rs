@@ -576,8 +576,8 @@ fn a_notes_json_that_does_not_parse_is_reported_and_skipped() {
 /// and found to hold no text must migrate as a present, empty key — not as
 /// an absent one, which would read back as "nobody ever looked". That
 /// distinction is exactly what `truth_page` exists for
-/// (`schema/001_initial.sql`'s own comment: "across 75 pages of manual work
-/// that difference is the progress tracker"), and Task 9 fixed the row-store
+/// (`schema/001_initial.sql`'s own comment: "in manual work that
+/// difference is the progress tracker"), and Task 9 fixed the row-store
 /// side of it; this is the read-back side.
 #[test]
 fn a_truth_json_beside_the_sidecar_migrates_a_page_examined_and_found_empty() {

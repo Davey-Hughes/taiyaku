@@ -6,8 +6,8 @@
 //! the format needs the same notion.
 //!
 //! An edition that joins spreads carries one wide page where the other edition
-//! carries two. Measured on the corpus, cutting that wide page down the middle
-//! and hashing each half finds exactly the two pages the other edition split it
+//! carries two. On the corpus, cutting that wide page down the middle and
+//! hashing each half finds exactly the two pages the other edition split it
 //! into, at similarities indistinguishable from ordinary matches.
 //!
 //! The trick is to do this before solving. A landscape page becomes two entries
@@ -71,11 +71,10 @@ pub enum Direction {
 /// Splitting that down the middle produces two halves corresponding to nothing.
 ///
 /// The upper bound is 2.8 rather than something tighter because spreads are
-/// sometimes **padded**. Tongari volume 9 is spreads letterboxed into 1920×1080,
-/// which reads as 2.53 times an ordinary 1125×1600 page — the two pages are
-/// correct and the white bars either side are not. Everything genuinely
-/// measured falls either at 1.95 to 2.53, or at 3.43 for the jacket, so the
-/// line sits in the gap between them.
+/// sometimes **padded**. Spreads letterboxed into 1920×1080 read as 2.53 times
+/// an ordinary 1125×1600 page — the two pages are correct and the white bars
+/// either side are not. Everything genuinely measured falls either at 1.95 to
+/// 2.53, or at 3.43 for the jacket, so the line sits in the gap between them.
 #[must_use]
 pub fn is_spread(page_aspect: f64, ordinary_aspect: f64) -> bool {
     if ordinary_aspect <= 0.0 {
@@ -94,14 +93,14 @@ pub fn is_spread(page_aspect: f64, ordinary_aspect: f64) -> bool {
 /// published two facing pages per image throughout, so every page is landscape
 /// and there is no portrait baseline to measure against.
 pub fn spread_flags(dimensions: &[(u32, u32)]) -> Vec<bool> {
-    // w and h are a page's pixel dimensions; the corpus's largest measured page
-    // is 10200x14039 (crates/taiyaku-read/src/lib.rs's MAX_DECODE_ALLOC, the
-    // Color Walk art books), far below 2^24 (16,777,216) where f32 begins
-    // losing integer precision, and further still below f64's 2^53. f64::from
-    // (u32) is lossless outright (u32's 32 bits fit f64's 52-bit mantissa),
-    // where there is no equivalent `From<u32> for f32` (f32's mantissa is
-    // only 24 bits) — so widening `is_spread`'s parameters and every value
-    // computed here to f64 closes the cast without a suppression.
+    // w and h are a page's pixel dimensions (the largest the corpus holds is
+    // at crates/taiyaku-read/src/lib.rs's MAX_DECODE_ALLOC), far below 2^24
+    // (16,777,216) where f32 begins losing integer precision, and further
+    // still below f64's 2^53. f64::from (u32) is lossless outright (u32's 32
+    // bits fit f64's 52-bit mantissa), where there is no equivalent
+    // `From<u32> for f32` (f32's mantissa is only 24 bits) — so widening
+    // `is_spread`'s parameters and every value computed here to f64 closes
+    // the cast without a suppression.
     let aspect = |(w, h): (u32, u32)| f64::from(w) / f64::from(h);
     let mut portrait: Vec<f64> = dimensions
         .iter()

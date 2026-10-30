@@ -8,7 +8,7 @@
 //! the feature only under `[dev-dependencies]`, so it is compiled into that
 //! crate's test builds and any `--all-features` build, and into no binary
 //! this workspace ships. The file name is the one the coverage report and
-//! `.cargo/mutants.toml` already exclude, so neither gate needed changing.
+//! `.cargo/mutants.toml` exclude.
 //!
 //! [`TempDir`] is here for the same reason, and for every crate with tests
 //! rather than two: `taiyaku-library`, `taiyaku-serve` and `taiyaku-cli` enable
@@ -123,8 +123,7 @@ pub fn strace(test: &str, child: (&str, &std::ffi::OsStr), trace: &str, log: &Pa
 ///
 /// Under `-f`, a call still in progress when another thread's traced call
 /// starts is printed as `1234 write(3</a>, "x", 1 <unfinished ...>` and later
-/// finished as `1234 <... write resumed>) = 1`. Tracing writes makes that
-/// likelier than tracing syncs alone did, and either half on its own parses
+/// finished as `1234 <... write resumed>) = 1`. Either half on its own parses
 /// as nothing — a write that silently vanished from the order.
 fn rejoined(recorded: &str) -> Vec<String> {
     let mut pending: std::collections::HashMap<&str, String> = std::collections::HashMap::new();
@@ -188,12 +187,12 @@ fn decorated(args: &str) -> impl Iterator<Item = PathBuf> + '_ {
 /// write to the staged file, then a sync of it, then the rename, then a sync
 /// of `dir` — and nothing written to `path` after the rename.
 ///
-/// **A sync before the last write proves nothing**, which is what the first
-/// version of these tests allowed: syncing the empty temporary and then
-/// writing to it, or syncing a stamp's staged archive before `finish` wrote
-/// its central directory, both passed. So the sync must follow the last
-/// write, and at least one write must have been seen at all, or an
-/// unrecognised write syscall would make the whole ordering vacuous.
+/// **A sync before the last write proves nothing**: syncing the empty
+/// temporary and then writing to it, or syncing a stamp's staged archive
+/// before `finish` writes its central directory, are both that case. So the
+/// sync must follow the last write, and at least one write must have been
+/// seen at all, or an unrecognised write syscall would make the whole
+/// ordering vacuous.
 ///
 /// # Panics
 ///
@@ -239,16 +238,14 @@ fn wrote_to(call: &Call, target: &Path) -> bool {
     matches!(call, Call::Write(paths) if paths.iter().any(|p| p == target))
 }
 
-/// A directory of its own for one test, removed with everything in it when
-/// dropped.
+/// A directory of its own for one test, removed with everything in it
+/// when dropped.
 ///
-/// **O117.** Tests used to write fixed names under the temp dir —
-/// `taiyaku-test-serve-works-single.db`, `taiyaku-test-atomic-rename` — and a
-/// fixed name is shared by every run on the machine. Two checkouts running
-/// their suites at once, or a `cargo test` beside a `cargo mutants`, deleted
-/// and rewrote each other's files mid-test and failed with `disk I/O error` or
-/// `NotFound` for a reason that was never the change under test.
-/// `docs/notes.md`, "O117", has the reproduction.
+/// **O117.** A fixed name under the temp dir is shared by every run on the
+/// machine. Two checkouts running their suites at once, or a `cargo test`
+/// beside a `cargo mutants`, would delete and rewrite each other's files
+/// mid-test and fail with `disk I/O error` or `NotFound` for a reason that was
+/// never the change under test. `docs/notes.md`, "O117", has the reproduction.
 ///
 /// The name is `taiyaku-test-{label}-{pid}-{n}`. The process id separates two
 /// runs: a counter alone restarts at nought in every process, which under
@@ -260,15 +257,14 @@ fn wrote_to(call: &Call, target: &Path) -> bool {
 /// before its `Drop` leaves one, and its process id has since been reused by
 /// this one.
 ///
-/// Removal failures on drop are ignored in both directions, for the reason
-/// `taiyaku-serve`'s fixtures gave first: a test that passed must not be failed
-/// by a directory that will not go, and one that failed must not have its
-/// message replaced — a panic during unwinding aborts the process.
+/// Removal failures on drop are ignored in both directions: a test that
+/// passed must not be failed by a directory that will not go, and one that
+/// failed must not have its message replaced — a panic during unwinding aborts
+/// the process.
 ///
-/// No `tempfile` dependency, for the reason the helpers this replaces gave:
-/// the workspace's dependency list is short enough to quote in
-/// `docs/status.md`, and this is the whole of what that crate would be used
-/// for.
+/// No `tempfile` dependency: the workspace's dependency list is short enough
+/// to quote in `docs/status.md`, and this is the whole of what that crate
+/// would be used for.
 #[derive(Debug)]
 pub struct TempDir {
     path: PathBuf,
@@ -307,9 +303,8 @@ impl TempDir {
     }
 }
 
-/// So `&dir` goes wherever a `&Path` does and `dir.join(…)` reads as it did
-/// when `dir` was a `PathBuf`, which is what let every site move without
-/// rewriting what it does with the path.
+/// So `&dir` goes wherever a `&Path` does and `dir.join(…)` reads as it does
+/// on a `PathBuf`.
 impl std::ops::Deref for TempDir {
     type Target = Path;
 

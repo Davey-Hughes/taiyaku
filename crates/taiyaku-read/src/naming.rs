@@ -65,19 +65,16 @@ fn tokenize(name: &str) -> Vec<Token> {
 /// rule applied to every filename in a library: `Kaguya-sama - c001.cbz` has
 /// no volume marker, and answering `1` for it gives every chapter file a
 /// volume it does not have. This function keeps the fallback because both of
-/// its callers — `inventory::walk`, and `taiyaku-cli`'s
+/// its callers — `inventory::group_by_volume`, and `taiyaku-cli`'s
 /// `the_inventory_finds_every_duplicate_set` corpus check, which walks the
 /// same `op-duplicates` directories — are handed something that *is* a
 /// volume by construction, so a bare `069` is a volume number there.
 ///
-/// Deliberately not a regex, and it stays that way now that the workspace
-/// has one. `regex` arrived in `taiyaku-library` with the scanner's rule
-/// layer on 2026-08-17 — the evidence the paragraph this replaces asked for
-/// — but this is hand-written, measured on a 579-directory One Piece run,
-/// and carries a guard a regex in a text box will not, since a year *before*
-/// the marker (`[2015] ONE PIECE v077`) must not be read as the volume.
-/// Re-expressing it as a default regex would be a second implementation of a
-/// measured behaviour, and it would drift.
+/// Deliberately not a regex. This is hand-written and carries a guard a regex
+/// in a text box will not, since a year *before* the marker
+/// (`[2015] ONE PIECE v077`) must not be read as the volume. Re-expressing it
+/// as a default regex would be a second implementation of this behaviour, and
+/// it would drift.
 pub fn volume_number(name: &str) -> Option<u32> {
     const MARKERS: [&str; 4] = ["vol.", "vol", "v", "第"];
 
@@ -114,10 +111,8 @@ pub fn volume_number(name: &str) -> Option<u32> {
 /// chapter 7, and the counter that disambiguates them — `巻` for volumes,
 /// `話` or `章` for chapters — comes *after* the digits. With `第` in both
 /// marker sets and nothing looking past the number, every Japanese-named file
-/// under the seeded defaults took a volume number and a chapter number with
-/// the same value: measured, `ワンピース/第69巻.cbz` resolved to
-/// `vol=Some(69.0) chap=Some(69.0)`. That is the defect Step 0 exists to
-/// close, reached from the other side.
+/// under the seeded defaults would take a volume number and a chapter number
+/// with the same value.
 ///
 /// A bare `第7` with no counter is genuinely ambiguous and answers neither. A
 /// layout that writes one is served by a `regex` rule, which is what the rule
@@ -153,18 +148,15 @@ const VOLUME_MARKERS: [Marker; 4] = [
 /// Chapter markers. `c` and `ch` are short enough to need the word-boundary
 /// test in [`marked_number`]; see its doc. `話` and `章` both count chapters.
 ///
-/// **`話` and `巻` are measured**, at 577 and 534 `第N…` basenames in the
-/// development corpus, re-measured 2026-08-18 with the method written down —
-/// see `docs/notes.md`'s kanji counter survey, which also records that the
-/// `巻` figure this replaces (498) reproduces under no counting method at
-/// all, while 577 holds under every one. `章` is included on knowledge of
-/// the language rather than measurement — it appears zero times there.
-/// `回` and `卷` are deliberately absent for the same reason: also measured
-/// at zero, and adding either is a two-line change once a corpus shows one.
-/// `章` stays despite scoring the same zero, because it can only ever fire
-/// on an explicit `第N章` — it cannot produce a false positive the way a
-/// wrong marker could — and dropping a correct Japanese counter to match
-/// one corpus would be overfitting in the other direction.
+/// **`話` and `巻` are measured** in the development corpus; see
+/// `docs/notes.md`'s kanji counter survey. `章` is included on knowledge of
+/// the language rather than measurement — it appears zero times there. `回`
+/// and `卷` are deliberately absent for the same reason: also measured at
+/// zero, and adding either is a two-line change once a corpus shows one. `章`
+/// stays despite scoring the same zero, because it can only ever fire on an
+/// explicit `第N章` — it cannot produce a false positive the way a wrong
+/// marker could — and dropping a correct Japanese counter to match one
+/// corpus would be overfitting in the other direction.
 const CHAPTER_MARKERS: [Marker; 9] = [
     Marker {
         before: "chapter",
@@ -207,13 +199,13 @@ const CHAPTER_MARKERS: [Marker; 9] = [
 /// The first digit run introduced by one of `markers`, with an optional
 /// decimal part, and **no fallback**.
 ///
-/// The scan `chapter_number` has always used, with the marker set lifted out
-/// so `volume_number_marked` can share it rather than carry a second copy.
+/// The scan `chapter_number` and `volume_number_marked` share, each with its
+/// own marker set, rather than carrying a second copy.
 ///
 /// **A marker must start a word.** `c` and `v` are one character, so without
 /// this they match the tail of ordinary words: `Scan by ABC 2019` reads as
 /// 2019 because `abc` ends in `c`, and `Series Nov 7` reads as 7 because
-/// `nov` ends in `v`. Both measured on the built function.
+/// `nov` ends in `v`.
 ///
 /// ASCII-only, because every kanji is alphanumeric to Unicode and
 /// `単行本第7話` has to keep working.
@@ -257,9 +249,8 @@ fn marked_number(name: &str, markers: &[Marker]) -> Option<f64> {
                 // collected into a `String` first — that string would be
                 // the rest of the name, built on every digit run this scan
                 // finds regardless of whether any marker even has an
-                // `after` to check, which is most of them: ten of the
-                // eleven entries across both marker sets are `None` and
-                // never look at it.
+                // `after` to check, which is most of them: those entries
+                // are `None` and never look at it.
                 let mut tail = chars[at..].iter().copied();
                 counter.chars().all(|c| tail.next() == Some(c))
             })
@@ -272,13 +263,12 @@ fn marked_number(name: &str, markers: &[Marker]) -> Option<f64> {
 
 /// The volume number in a name, **only where a marker says so**.
 ///
-/// [`volume_number`] directly above falls back to the first bare digit run
-/// when no marker appears, which is right for `inventory` — it is handed a
-/// directory that is a volume by construction. It is wrong for the scanner's
-/// `builtin-volume` rule, which is applied to every filename in a library:
-/// with the fallback, `Kaguya-sama - c001.cbz` comes back as volume 1, and
-/// every chapter file in the corpus acquires a volume number it does not
-/// have.
+/// [`volume_number`] falls back to the first bare digit run when no marker
+/// appears, which is right for `inventory` — it is handed a directory that is a
+/// volume by construction. It is wrong for the scanner's `builtin-volume` rule,
+/// which is applied to every filename in a library: with the fallback,
+/// `Kaguya-sama - c001.cbz` comes back as volume 1, and every chapter file in
+/// the corpus acquires a volume number it does not have.
 ///
 /// So this is the same question `chapter_number` answers for chapters, and
 /// the same answer. The two functions are one scan over two marker sets; see
@@ -294,12 +284,13 @@ pub fn volume_number_marked(name: &str) -> Option<f64> {
 ///
 /// Takes the first digit run — with an optional decimal part — immediately
 /// preceded, optionally across one space or a `.`, by `c`, `ch`, `chp`,
-/// `chapter` or `第`. **There is no fallback**, which is the one place this
-/// deliberately differs from [`volume_number`] directly above.
+/// `chapter` or `第`. **There is no fallback**, which deliberately differs
+/// from [`volume_number`].
 ///
 /// `volume_number` falls back to the first digit run when no marker appears,
-/// and that is right for its caller: `inventory` hands it a directory that is
-/// a volume by construction, so a bare `069` is a volume number. A chapter
+/// and that is right for its callers: `inventory` and the corpus check
+/// (`the_inventory_finds_every_duplicate_set`) hand it a directory that is a
+/// volume by construction, so a bare `069` is a volume number. A chapter
 /// parser with the same fallback would answer for every volume file in a
 /// library — `Series - v01 (2023).cbz` would carry chapter 1 — and the
 /// scanner's `builtin-chapter` rule (§4) would then set `chapter` on
@@ -312,9 +303,9 @@ pub fn volume_number_marked(name: &str) -> Option<f64> {
 /// `第` needs its own counter to say which number it is: `第7話` and `第12章`
 /// are chapters, `第7巻` is a volume answered by [`volume_number_marked`]
 /// instead, and a bare `第7` with no counter answers neither — see
-/// [`Marker`]. Before that counter was checked, `第` matched anything after
-/// it and every Japanese-named file under the seeded defaults took a volume
-/// number and a chapter number with the same value.
+/// [`Marker`]. Without that counter check, `第` would match anything after
+/// it and every Japanese-named file under the seeded defaults would take a
+/// volume number and a chapter number with the same value.
 ///
 /// **The dotted forms are listed as markers rather than trimmed**, which is
 /// how [`volume_number`] above already handles `vol.`: its `MARKERS` carries
@@ -326,11 +317,10 @@ pub fn volume_number_marked(name: &str) -> Option<f64> {
 /// work.** `c` and `ch` are one and two characters, so without it they match
 /// the *tail of ordinary words*: `Scan by ABC 2019` reads as chapter 2019
 /// because `abc` ends in `c`, and `which 7` reads as chapter 7 because
-/// `which` ends in `ch`. Both were measured on the built function rather than
-/// reasoned about. This is the same hole the no-fallback rule above exists to
-/// close, reached by a different route — a name with no chapter in it getting
-/// a chapter number — so closing one without the other would have been half a
-/// decision.
+/// `which` ends in `ch`. This is the same hole the no-fallback rule above
+/// exists to close, reached by a different route — a name with no chapter in
+/// it getting a chapter number — so closing one without the other would have
+/// been half a decision.
 ///
 /// The boundary test is ASCII-only on purpose: `第7話` must keep working when
 /// it follows a kanji, and `char::is_alphanumeric` would reject that, since

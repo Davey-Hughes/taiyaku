@@ -5,11 +5,10 @@
 //! `slot` rather than in the CLI, and it reports geometry rather than applying
 //! a threshold: the command decides what counts.
 //!
-//! **Runs are split at member boundaries.** Measured on `corpus/gotoubun-v01`'s
-//! fan edition, an unsplit run spanning `c005`'s last page and `c005.5`'s first
-//! four begins and ends mid-member, so a rule reading position off its endpoints
-//! sees no boundary at all — and loses one credits page and four front-matter
-//! pages in the same stroke. See `docs/notes.md`, "Corrected 2026-08-05".
+//! **Runs are split at member boundaries.** An unsplit run spanning one
+//! member's last page and the next member's first pages begins and ends
+//! mid-member, so a rule reading position off its endpoints sees no boundary at
+//! all. See `docs/notes.md`, "what the five rows actually hold".
 
 use std::collections::BTreeSet;
 use std::ops::Range;
@@ -34,26 +33,15 @@ pub struct UnpairedRun {
     pub local: Range<u32>,
     /// Does this run end on the member's last page?
     ///
-    /// The only positional test that classifies. Measured four for four on
-    /// `corpus/gotoubun-v01`'s fan edition, where the first-index version is
-    /// zero for four — what accumulates at a member's start is front matter.
+    /// The only positional test that classifies. On `corpus/gotoubun-v01`'s
+    /// fan edition the first-index version is zero for four — what
+    /// accumulates at a member's start is front matter.
     ///
-    /// *Corrected 2026-08-13.* That "zero for four" was gotoubun-v01 alone,
-    /// and it does not generalise: `domestic-v01`'s fan edition (wave 2, en-fan
-    /// against en-official) is five for five the other way. All five of its
-    /// known credit pages sit at a member's *start* — local index 1 in four of
-    /// five, local 2 in the first — so the first-index version of this rule
-    /// would have caught every one of them there, and the last-index version
-    /// this field actually implements catches none. See
-    /// `taiyaku-cli/fixtures/credits/domestic-v01-en-fan.json` and
-    /// `taiyaku-cli/src/credits.rs`'s
-    /// `the_domestic_v01_fixture_is_a_direct_counterexample_to_the_first_index_claim`.
-    /// The original claim is left standing above rather than rewritten: it was
-    /// sound on the one edition it was measured against, and a doc comment
-    /// whose justification changes without a visible trace is the defect this
-    /// module's own header exists to avoid. What it no longer supports is
-    /// stated as general: a scanlation group's own front matter is *one*
-    /// group's habit, not a property of the shape.
+    /// That does not generalise: the known credit pages of `domestic-v01`'s
+    /// fan edition all sit at a member's *start*, where the last-index
+    /// version this field implements catches none. A scanlation group's own
+    /// front matter is *one* group's habit, not a property of the shape. See
+    /// `taiyaku-cli/fixtures/credits/domestic-v01-en-fan.json`.
     pub at_member_end: bool,
 }
 
@@ -65,25 +53,25 @@ pub struct UnpairedRun {
 ///
 /// # Errors
 ///
-/// Returns an error if `edition` names an edition the document does not
-/// define, or if no stored alignment joins `edition` and `against` in either
-/// direction. It also propagates `Sidecar::runs_of`'s errors for the
-/// alignment it finds: `alignment.from` or `alignment.to` naming an edition
-/// this document no longer defines, a span whose slot does not exist in
-/// either edition, a span with its endpoints reversed, or two paired spans
-/// that cover different numbers of slots — all signs of a hand-edited
-/// alignment the document can no longer read. The first of those reaches
-/// here through `against` rather than `edition`: the `find_map` above
-/// matches `against` as a bare string against the stored edge and never
-/// checks it against `self.editions`, so an alignment naming a since-deleted
-/// edition is still found and handed to `runs_of`, which is where the error
-/// actually comes from. This crate has no code path that removes an edition
-/// once added — `docs/status.md`'s O24 is the nearer live concern, a direct
-/// edge whose far edition survives *under the same name* with replaced
-/// content rather than vanishing outright — so this arm is reached only by a
-/// document edited by hand. Finally, it refuses if a page already found to
-/// be unpaired cannot be located in `edition`'s own member table, which
-/// would mean that table and `edition`'s slot table disagree.
+/// Returns an error if `edition` names an edition the document does not define,
+/// or if no stored alignment joins `edition` and `against` in either direction.
+/// It also propagates `Sidecar::runs_of`'s errors for the alignment it finds:
+/// `alignment.from` or `alignment.to` naming an edition this document no longer
+/// defines, a span whose slot does not exist in either edition, a span with its
+/// endpoints reversed, or two paired spans that cover different numbers of
+/// slots — all signs of a hand-edited alignment the document can no longer
+/// read. The first of those reaches here through `against` rather than
+/// `edition`: the `find_map` below matches `against` as a bare string against
+/// the stored edge and never checks it against `sidecar.editions`, so an
+/// alignment naming a since-deleted edition is still found and handed to
+/// `runs_of`, which is where the error actually comes from. This crate has no
+/// code path that removes an edition once added — `docs/status.md`'s O24 is the
+/// nearer live concern, a direct edge whose far edition survives *under the
+/// same name* with replaced content rather than vanishing outright — so this
+/// arm is reached only by a document edited by hand. Finally, it refuses if a
+/// page already found to be unpaired cannot be located in `edition`'s own
+/// member table, which would mean that table and `edition`'s slot
+/// table disagree.
 ///
 /// # Panics
 ///

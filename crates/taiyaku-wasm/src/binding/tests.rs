@@ -242,9 +242,7 @@ fn index_of_refuses_a_slot_the_edition_does_not_present() {
 /// 195-page volume would pay for a route rebuild 195 times without a
 /// memo; this resolves every slot of `raw-mono` against `en-mono` — the
 /// real 195-slot edition — and checks that `route_builds` stops counting
-/// after the first. Before `resolve` routed through `cached_route`, this
-/// assertion failed with `route_builds() == 195`; it is the test that
-/// pinned the memo, not one added after the fact.
+/// after the first.
 #[test]
 fn resolving_every_slot_of_one_pair_builds_the_route_once() {
     let b = Binding::from_json(REAL_FIXTURE).expect("parses");
@@ -265,11 +263,10 @@ fn resolving_every_slot_of_one_pair_builds_the_route_once() {
 /// no `b` side) — the same gap `docs/status.md`'s O14 entry cites. Its
 /// neighbours, slots 0 and 2, do resolve, so `web/src/nearest.ts`'s
 /// `nearestPaired` finds both in one step each way: two resolves for the
-/// scan. Before `App.tsx`'s gap branch was changed to reuse what the scan
-/// already found, it resolved both offers a second time through
-/// `resolveOffered` — two more calls, same pair. All four are reproduced
-/// here directly against `Binding`, since `nearest.ts`'s own tests use a
-/// fake resolver and cannot observe a Rust-side rebuild.
+/// scan. The former second pass over the same two slots (that O14 entry)
+/// follows, so four resolves in all, made directly against `Binding`, since
+/// `nearest.ts`'s own tests use a fake resolver and cannot observe a Rust-side
+/// rebuild.
 #[test]
 fn a_gap_scan_and_its_former_second_pass_build_the_route_once() {
     let b = Binding::from_json(REAL_FIXTURE).expect("parses");
@@ -278,8 +275,7 @@ fn a_gap_scan_and_its_former_second_pass_build_the_route_once() {
     // from the gap at slot 1.
     assert!(b.resolve("raw-mono", "en-mono", 0, None).is_some());
     assert!(b.resolve("raw-mono", "en-mono", 2, None).is_some());
-    // The second pass App.tsx no longer makes — kept here to show the
-    // memo would have absorbed it even if it still did.
+    // The former second pass over the same two slots, which the memo absorbs.
     assert!(b.resolve("raw-mono", "en-mono", 0, None).is_some());
     assert!(b.resolve("raw-mono", "en-mono", 2, None).is_some());
 
