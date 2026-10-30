@@ -303,6 +303,17 @@ else
   run node scripts/status-test-count.mjs target/nextest/default/junit.xml docs/status.md
 fi
 
+# --- the comment guard ---
+# The last step of CI's `test` job, mirrored here. It reads the tree and the branch's diff against
+# its merge base with origin/main, so unlike the step above it needs node and git alone, and runs
+# whether or not the coverage tools are installed.
+if ! command -v node >/dev/null 2>&1; then
+  note_skip "the comment guard (node not on PATH)"
+else
+  run node scripts/check-comments.mjs --self-test
+  run node scripts/check-comments.mjs
+fi
+
 # --- the standing corpus checks ---
 # Not a CI job: CI has no corpus, so these skip there and are the one thing this script measures
 # that the forge cannot. `cargo test` captures stderr for passing tests, so a check that skipped and

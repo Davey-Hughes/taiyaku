@@ -8,7 +8,7 @@ to `.github/workflows/`; using the Forgejo path keeps the intent unambiguous.
 | Job | Runs |
 | --- | ---- |
 | `lint` | `cargo fmt --check`, `cargo clippy -D warnings`, `cargo doc -D rustdoc::broken_intra_doc_links` |
-| `test` | `cargo llvm-cov nextest --workspace` — runs the tests under nextest's per-test timeout *and* gates their aggregate coverage — then installs node and runs `scripts/coverage-floor.mjs` over a re-rendered JSON report for the per-file half |
+| `test` | `cargo llvm-cov nextest --workspace` — runs the tests under nextest's per-test timeout *and* gates their aggregate coverage — then installs node and runs `scripts/coverage-floor.mjs` over a re-rendered JSON report for the per-file half, `scripts/status-test-count.mjs`, and last the comment guard, `scripts/check-comments.mjs` |
 | `wasm` | builds `taiyaku-core` and `taiyaku-wasm` for `wasm32-unknown-unknown`, builds the browser package with `wasm-pack`, and runs `scripts/smoke-wasm.mjs` against the compiled module |
 | `web` | `pnpm install --frozen-lockfile`, `biome check` (formatting **and** lint), `tsc -b` typecheck, `vitest run --coverage` in `web/`, then `scripts/coverage-floor.mjs` for the per-file half |
 | `docker` | **on `main` only (a push, the weekly schedule or a dispatch), after the four above pass**: builds the image in an isolated buildx builder, runs it until its health check passes, probes three paths and checks its binary holds the commit, then pushes `forge.daveynet.xyz/davey/taiyaku:sha-<7>`, and `:latest` when its commit is main's tip (a refresh re-pushes, with patched packages, the `sha-<7>` of the commit it built and, at the tip, `:latest`) — see "The image job" |
@@ -21,8 +21,9 @@ exported before the script runs, both sides are what `taiyaku-serve`'s build
 script read from git: HEAD, with `dirty` true when tracked files differed from
 it, or `null` and `false` where it read no commit.
 
-The `test` job installs node for one step and one step only. `rust:1-bookworm`
-carries none, and the per-file floor is a node script because it is the *same*
+The `test` job installs node for its three node steps: the per-file floor, the
+test count and the comment guard. `rust:1-bookworm` carries none, and the
+per-file floor is a node script because it is the *same*
 script the `web` job runs — see "The other half" below for why one file rather
 than two.
 
@@ -1239,6 +1240,179 @@ is a dated measurement, not a live claim: it says what was true when the
 slowest test was bisected. The two live sites are matched on their surrounding
 prose for exactly this reason; a looser "a number near the word tests" pattern
 would sweep the historical one in and demand it be falsified on every branch.
+
+## The comment guard
+
+**A comment holds the why**: the reason, the invariant, what breaks if the code
+changes. That is the user's rule of 2026-10-17. History (what the code used to
+do, how a defect was found, a pull request's story) and measurements go to the
+docs or are dropped, and a comment may point at a notes section or an O-number.
+Trimming the comments that break the rule is a clean-up; this gate keeps them
+from growing back.
+
+`scripts/check-comments.mjs` runs last in the `test` job, and in
+`scripts/check-all.sh` straight after the test count. Each run is preceded by
+`--self-test`, which runs the lexer and all three rules over fixed cases, and
+reads a diff from a scratch repository it makes under the temp directory. It
+needs node and git and nothing else, so `check-all.sh` runs it whether or not
+the coverage tools are installed. In CI it is the `test` job's last step, so
+a step that fails before it skips it.
+
+**It lexes before it judges.** Each source file (`.rs`, `.ts`, `.tsx`, `.mjs`,
+`.js`, `.css`, `.sh`, the YAML under `.forgejo/`, and the `Dockerfile`) is
+split into comment, string and code, so a `//` inside a string or a URL is
+not a comment (JSX text aside: see "What it does not see"). It handles
+Rust's nested block comments, raw strings and lifetimes, and TypeScript's
+template literals, regex literals and JSX `{/* */}`. A line is a comment
+line when everything on it that is not whitespace is comment. In shell,
+YAML and the `Dockerfile` only a whole-line
+`#` is a comment: a trailing one may sit inside a string or a `${#var}`, and
+reading it as code errs to the safe side (Docker itself reads a `#` as a
+comment only at a line's start). Python, SQL, TOML, JSON, Markdown and other
+YAML are not read.
+
+### The three rules
+
+1. **History markers.** A comment on a line the branch adds fails when it
+   holds any of these:
+   - an ISO date, unless it is part of a file name
+     (`2026-10-28-loading-library-design.md`), comes before a `§` (a pointer at
+     a notes section, `spec 2026-09-17 §7.2`), or follows `ruling` (`the
+     user's ruling of 2026-10-27`, or `rulings of`);
+   - a 7–40-character lowercase hex run holding a digit and a letter (a commit);
+   - `#` and digits (a pull request), unless a backtick or `&` sits right
+     before the `#` (`` `#808080` `` is a colour, `&#123;` an HTML entity), or
+     the file is CSS, where `#000` in a comment is a colour;
+   - `PR` as a word, `previously`, `originally`, `formerly`, `was tried` or
+     `were tried`, `before` followed by `this` or `the` and then `fix` or
+     `change`, and `~~`, except on a line whose comment text opens with three
+     or more tildes (a fence line) once a leading delimiter followed by
+     whitespace is taken off: `/// ~~~` is skipped, `///~~~` is not;
+   - `used to`, unless it follows `is`, `are`, `was`, `were`, `be`, `been`,
+     `being`, `get`, `gets` or `got` ("is used to sort" is not history).
+
+   Each pattern reads the line's comment text between the comment text of the
+   lines just above and below it (a code line's trailing comment included), so
+   a pointer that wraps (`spec 2026-09-17` at a line's end with `§7.2` on the
+   next, or `rulings of` above its date) is still seen as one. Only a hit that
+   starts on the added line fails it.
+
+   O-numbers (`O148`) and `no longer` are allowed: the first points at the
+   ledger, and the second usually states an invariant.
+2. **The block cap.** A block is a maximal run of whole-line comments, and a
+   blank line inside a block comment continues it. A line is counted when it
+   holds text: one that is only a delimiter (`/**`, `*/`, `/*`, or a bare `//`
+   or `///`) is not, so every comment style gets 8 lines of text. A block
+   fails when it has more than **8** counted lines and the branch grew it: the
+   counted comment lines added inside it outnumber the counted comment lines
+   removed by the hunks that touch it. A new 9-line block fails. Trimming a
+   20-line block to 12, or editing one of its lines, passes; adding a line to
+   it fails.
+3. **The comment share.** For each area (the six crates, `web/src`,
+   `web/tests` and `scripts`) the share is comment lines ÷ (comment lines +
+   code lines), with blank lines counting as neither, compared with
+   `scripts/comment-budget.json` at its 4 decimals. A share above its budget
+   fails. A share more than 0.0050 below it fails too, as stale, when the
+   branch has fewer comment lines in that area than its base had, so a
+   trimming branch locks its gain in rather than leaving room to grow back
+   into. A share that fell only because the branch added more code than
+   comments passes. A crate with no budget fails until it has one, as does
+   `web/src`, `web/tests` or `scripts` left out of the budget, and so does a
+   budget area with no lines under it.
+
+### What is exempt
+
+- **Existing comments, from rules 1 and 2.** Both read only the lines a branch
+  adds. A line whose comment text the diff also removes somewhere is carried,
+  not added: a moved function, a re-indented block, or an edit to the code
+  beside an old trailing comment brings nothing new. For the block cap, only
+  a removed line the cap counted carries, so a header line moved into a block
+  grows it. Rule 3 sees every comment, but against a budget written from the
+  tree as it stood.
+- **From the block cap's count:** in a doc comment (Rust's `///`, `//!`,
+  `/** */` and `/*! */`, TypeScript's `/** */`), fenced code (a Rust doctest)
+  between two fence lines, and an `# Errors`, `# Panics`, `# Safety` or
+  `# Examples` section, up to the next heading; Rust `//!` module docs; and a
+  file's leading header. The header is the file's first block, when only a
+  shebang and blank lines come before it. In Rust, TypeScript and JavaScript a
+  blank line or an import (`import`, `export {` or `export *`, `use` or `mod`
+  with or without `pub`, `extern crate`, an inner attribute) must come after
+  it, since a block that runs straight into an item is that item's doc, and
+  counts. In shell, workflow YAML, a Dockerfile and CSS the first block is the
+  header whatever follows it. A block made only of these passes at any length.
+  A fence that never closes exempts nothing.
+- **Strings.** A marker in a string is code, which is how the gate's own
+  self-test can spell out every marker it checks.
+
+### Raising a budget, deliberately
+
+Rule 3's message gives the exact `"area": value` to write. A branch whose new
+comments earn their place raises its area's budget **in the same diff**, where
+a reviewer reads the new value beside the comments that needed it. A branch
+that trims writes the lower value the stale message gives. A budget is never
+raised to leave room for later.
+
+Two trimming branches can each stay inside the 0.0050 margin and together pass
+it. A pull request's run sees only its own branch, so the second to land can
+pass there and fail as stale on `main`'s push run; writing the value its
+message gives clears it.
+
+Rules 1 and 2 have no budget and no allow-list. A comment they fail is
+rewritten: the history goes to the docs or the pull request's description, and
+the comment keeps the reason, or points at the O-number that records it.
+
+### How the base is chosen
+
+Rules 1 and 2 diff the working tree against the branch's merge base with
+`git diff -U0 --find-renames`, and read every untracked file as wholly added,
+so they see the same files rule 3 does. Rule 3's stale arm reads the base's
+tree too, for the comment lines each area had there.
+
+- **Locally**, the base is the merge base of HEAD and `origin/main`, which is
+  how `check-all.sh` runs it.
+- **In CI**, the checkout is a `--depth 1` fetch with no history, so the step
+  deepens it first. Whenever the run has a target branch
+  (`FORGEJO_BASE_REF`, which a pull request's run has), it fetches that branch
+  and the pull request's ref at depth 50, then 500, then 5,000, stopping once
+  `git merge-base` resolves, and passes `--base refs/remotes/origin/<target>`.
+  On a push to `main`, the weekly schedule or a dispatch it deepens the
+  checkout by one commit and passes `--base HEAD^`, so a push judges the
+  commit it lands. `--deepen 1` counts from the commit checked out, so a push
+  that lands on `main` while the job runs cannot leave `HEAD^` missing, as a
+  fresh `--depth 2` fetch of the moved branch would. Any other event, or a
+  pull request's run without a `FORGEJO_BASE_REF`, fails the step, rather than
+  judge one commit of a longer branch.
+- **With no base, the gate exits 2**, never 0. An unknown revision, an empty
+  `--base`, or a shallow clone too short to reach the merge base each stops it
+  with a message naming what is missing, because a diff against nothing would
+  pass every comment unread.
+
+A rule failure exits 1; exit 2 is a gate that cannot judge, for want of a
+base or a readable budget.
+
+### What it does not see
+
+- JSX text is lexed as code. An apostrophe, a quote or a `//` in it can
+  mislabel the rest of that line, and only that line. A backtick reaches
+  further: it opens a template literal that runs to the next backtick, and
+  every comment line between reads as string, unseen by rules 1 and 2. A
+  `/*` likewise runs to the next `*/`, reading the code between as comment.
+  Write either as an expression in braces (`` {'`'} ``) instead.
+- A trailing `#` comment in shell or YAML (`true # see #212`) is read as code,
+  so rules 1 and 2 never judge it.
+- A whole-line `#` inside a shell heredoc reads as a comment.
+- Two old blocks joined by deleting the code between them make one longer
+  block, but no added comment line grew it, so it passes. So does a block
+  moved from elsewhere to sit against another: its lines are carried.
+- A blank line ends a block, so two paragraphs of 8 `//` lines with a blank
+  line between them pass. Joining them would fail separate comments that
+  happen to sit a blank line apart.
+- History told in words the patterns do not list, and a pull request number
+  in a CSS comment. The list was tuned on the tree: a pattern more than one in
+  five of whose hits in a sample were legitimate comments was narrowed or
+  dropped. Most of the past-tense verbs went that way, since in this app a
+  file or a library that was added, removed, moved or renamed is an event the
+  code handles; only `was tried` and `were tried` stay.
 
 ## Formatting, and the tool that checks it
 

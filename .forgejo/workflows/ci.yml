@@ -274,9 +274,9 @@ jobs:
             --ignore-filename-regex '(band_sweep|borrow_frequency|geometry_experiment|model_experiment|region_experiment|truth_population|score_corpus|/corpus|test_support)\.rs$' \
             --fail-under-lines 93
       - name: Install node
-        # This job needs node for exactly one thing — the coverage floor script
-        # below — which is why the step sits here rather than with the tool
-        # installs above. rust:1-bookworm carries no node at all (the comment at
+        # This job needs node only for the scripts after this step, which is
+        # why the step sits here rather than with the tool installs above.
+        # rust:1-bookworm carries no node at all (the comment at
         # the top of this file records `command -v node` exiting non-zero), so
         # it is fetched the same way the `wasm` job fetches it: a checksummed
         # tarball from nodejs.org rather than a dual-toolchain image. Same
@@ -367,6 +367,35 @@ jobs:
       # scripts/status-test-count.mjs records why that was the wrong trade.
       - name: Check the test count in docs/status.md
         run: node scripts/status-test-count.mjs target/nextest/default/junit.xml docs/status.md
+      # Keeps comments from growing back once trimmed; see
+      # scripts/check-comments.mjs. Last in this job so that a comment failure
+      # never hides a test result. Mirrored in scripts/check-all.sh.
+      # Two of its rules judge only what the branch adds, so the depth-1
+      # checkout is deepened to a base first: with a target branch, back to
+      # the merge base; on a push, schedule or dispatch, the parent commit,
+      # deepened from the commit checked out, which a later push cannot move.
+      # Any other event stops here rather than judge a guessed base.
+      - name: Comment guard
+        run: |
+          if [ -n "${FORGEJO_BASE_REF:-}" ]; then
+            base="refs/remotes/origin/$FORGEJO_BASE_REF"
+            for depth in 50 500 5000; do
+              git fetch -q --depth "$depth" origin "$FORGEJO_REF" "+refs/heads/$FORGEJO_BASE_REF:$base"
+              git merge-base HEAD "$base" >/dev/null && break
+            done
+          else
+            case "${FORGEJO_EVENT_NAME:-}" in
+              push | schedule | workflow_dispatch) ;;
+              *)
+                echo "Comment guard: a '${FORGEJO_EVENT_NAME:-}' run with no FORGEJO_BASE_REF has no base to judge against." >&2
+                exit 1
+                ;;
+            esac
+            git fetch -q --deepen 1 origin "$FORGEJO_REF"
+            base=HEAD^
+          fi
+          node scripts/check-comments.mjs --self-test
+          node scripts/check-comments.mjs --base "$base"
 
   # The core is required to stay WebAssembly-compatible so the browser reader
   # and a future native shell can share it. This is easy to break by accident —
