@@ -128,7 +128,7 @@
 /* The disclosure control is the whole line, so it has to stop looking like a
  * button and start looking like a row: no chrome, the page's own font, and
  * its contents laid out as the row's columns. `flex: 1` leaves the rest of
- * the line for the Accept and Dismiss controls that sit beside it.
+ * the line for the Dismiss or Reopen control that can sit beside it.
  *
  * A grid rather than a flex row, because the narrow layout below moves the
  * *middle* item to a second line and leaves the two beside it where they

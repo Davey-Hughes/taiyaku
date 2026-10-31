@@ -2,8 +2,6 @@ import { describe, expect, it } from 'vitest'
 import { humanBytes } from '../src/bytes'
 
 describe('humanBytes', () => {
-  // The block moved here from `backup.test.ts` when the function moved out of
-  // `backup.ts`; the assertions are unchanged.
   it('counts bytes in bytes', () => {
     expect(humanBytes(0)).toBe('0 B')
     expect(humanBytes(512)).toBe('512 B')

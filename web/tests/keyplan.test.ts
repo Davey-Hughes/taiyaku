@@ -1,12 +1,9 @@
 /**
- * The keydown decision, which was thirteen early returns in `App.tsx` and so
- * was reachable by nothing.
+ * The keydown decision.
  *
- * Several of those returns exist because of a defect somebody watched happen —
- * a refused save dropping focus to `<body>`, `disabled={submitting}` blurring
- * the just-clicked Confirm — and until this file there was no way to write the
- * state down, let alone assert on it. Every test below is a state and an
- * answer; nothing here mounts anything.
+ * Several of its branches exist because of a defect — a refused save dropping
+ * focus to `<body>`, `disabled={submitting}` blurring the just-clicked Confirm.
+ * Every test below is a state and an answer; nothing here mounts anything.
  */
 import { describe, expect, it } from 'vitest'
 import { intentOf, type Intent } from '../src/keys'
@@ -234,10 +231,10 @@ describe('keyPlan, the note editor', () => {
   /**
    * **Nothing reaches the page while the editor is open.** It is a dialog that
    * takes text, so a keystroke means the note — whatever the browser thinks is
-   * focused. The control guard alone is not enough: measured, with a server
-   * refusing a write, the editor stayed open holding the reader's text while
-   * focus sat on `<body>`, so typing opened the settings panel instead of
-   * writing the note.
+   * focused. The control guard alone is not enough: with a server refusing a
+   * write, the editor stays open holding the reader's text while focus sits
+   * on `<body>`, so typing would open the settings panel instead of writing
+   * the note.
    */
   it('refuses every key but Escape while the editor is open, focus or no focus', () => {
     for (const intent of [
@@ -262,9 +259,9 @@ describe('keyPlan, the note editor', () => {
 
 describe('keyPlan, Tab (spec 2026-09-26 §3.1)', () => {
   /**
-   * Claimed now: the reader moves focus round its ring itself. Leaving the
-   * move to the browser is what walked focus out of the page into the
-   * browser's own frame (O135).
+   * The reader moves focus round its ring itself. Leaving the move to the
+   * browser would walk focus out of the page into the browser's own
+   * frame (O135).
    */
   it('steps round the ring and prevents the browser’s own focus move', () => {
     expect(keyPlan('Tab', { kind: 'chrome' }, guards())).toEqual({
@@ -286,7 +283,10 @@ describe('keyPlan, Tab (spec 2026-09-26 §3.1)', () => {
     })
   })
 
-  /** O161: the first `Tab` in an open panel showed the bars behind it. */
+  /**
+   * O161: without this guard the first `Tab` in an open panel would show the
+   * bars behind it.
+   */
   it('leaves Tab inside an open panel to the panel', () => {
     expect(
       keyPlan('Tab', { kind: 'chrome' }, guards({ inPanel: true })),
@@ -449,10 +449,9 @@ describe('keyPlan, module keys', () => {
 
   /**
    * **`inert` still prevents the default, and that is the point of it being a
-   * separate answer from `undefined`.** The handler this replaced called
-   * `preventDefault()` *before* the module switch, so every one of the gates
-   * above already swallowed the browser's own default; folding them into
-   * "not ours" would have quietly handed those keys back.
+   * separate answer from `undefined`.** Every one of the gates above swallows
+   * the browser's own default; folding them into "not ours" would quietly hand
+   * those keys back.
    */
   it('claims the key it makes inert, rather than handing it back', () => {
     const plan = keyPlan('=', mod(ZOOM_IN_INTENT), guards({ zoomable: false }))
@@ -593,9 +592,8 @@ describe('keyPlan, against intentOf', () => {
    * fires for a shifted `a` typed anywhere. With the account branch above the
    * guard and `preventDefault: true`, a reader whose password contains a
    * capital A could not type it into the login field, the account panel's
-   * current or new password fields, or the key-name box: the character never
-   * reached the input and the panel opened instead. Found by the whole-branch
-   * review, 2026-08-18.
+   * current or new password fields, or the key-name box: the character would
+   * never reach the input and the panel would open instead.
    */
   it('leaves A alone when focus is in a control, unlike Tab', () => {
     expect(act('A', { kind: 'account' }, { control: 'text' })).toBeUndefined()
@@ -604,19 +602,17 @@ describe('keyPlan, against intentOf', () => {
     expect(act('Tab', { kind: 'chrome' }, { control: 'text' })).toEqual({
       kind: 'ring',
     })
-    // And still opens the panel when nothing is focused, which is the half that
-    // would make this a regression rather than a fix if it broke.
+    // And it opens the panel when nothing is focused, which would be a
+    // regression if it broke.
     expect(act('A', { kind: 'account' })).toEqual({ kind: 'open-account' })
   })
 
   /**
    * **`Escape` belongs to whatever is on top.** Without the account panel in
-   * `Guards` it fell through to `cancel-correction`, so a reader dismissing the
-   * panel silently abandoned a pending correction — the panel stayed open and
-   * the correction was gone, with nothing saying either. The note editor
-   * already had exactly this guard.
-   *
-   * Found by the second whole-branch review.
+   * `Guards` it would fall through to `cancel-correction`, so a reader
+   * dismissing the panel would silently abandon a pending correction —
+   * the panel would stay open and the correction be gone, with nothing
+   * saying either.
    */
   it('closes the account panel on Escape rather than cancelling a correction', () => {
     expect(
@@ -629,11 +625,10 @@ describe('keyPlan, against intentOf', () => {
   })
 
   /**
-   * The account panel stands the reader keys down, exactly as the note editor
-   * does. Consulting it only for `Escape` left arrows turning the hidden reader
-   * behind the modal — and the debounced write recording that position.
-   *
-   * Found by the third whole-branch review.
+   * The account panel stands the reader keys down, exactly as the note
+   * editor does. Consulting it only for `Escape` would leave arrows turning
+   * the hidden reader behind the modal — and the debounced write recording
+   * that position.
    */
   it('stands the reader keys down while the account panel is open', () => {
     for (const key of ['ArrowRight', 'ArrowLeft', ' ', 'c', '1']) {

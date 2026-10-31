@@ -56,9 +56,9 @@ describe('RegionOverlay', () => {
   })
 
   it('carries the reading axis, including not-applicable, as its own value', () => {
-    // Three keys set this and nothing on the page showed it: the only readout
-    // described the *selected* box, so a page of boxes said nothing about
-    // which had an axis or whether a keystroke had landed.
+    // Three keys set this, and the only readout describes the *selected*
+    // box, so without the attribute a page of boxes would say nothing about
+    // which has an axis or whether a keystroke has landed.
     //
     // `null` gets a value of its own rather than an absent attribute, which
     // would be indistinguishable from a box that predates the field — and

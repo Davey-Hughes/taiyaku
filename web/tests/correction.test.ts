@@ -153,13 +153,10 @@ describe('describePosition', () => {
 })
 
 /**
- * The write, the install, and the two rules the render body used to inline.
- *
  * Every case below is either an assertion about *which arguments a port
  * received* or about *which outcome came back* — the same seam, and for the
- * same reason, `notesWrite.ts`'s ten cases use: there is no way to assert on
- * a `PATCH` body or a call count from outside a mounted component, and
- * `App.tsx` cannot be mounted at all.
+ * same reason, `notesWrite.ts`'s cases use: there is no way to assert on a
+ * `PATCH` body or a call count from outside a mounted component.
  */
 
 const WORK = 'gotoubun'

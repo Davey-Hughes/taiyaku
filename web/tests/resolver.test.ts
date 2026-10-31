@@ -19,21 +19,18 @@ describe('Resolver.credits', () => {
   })
 })
 
-// `resolver.ts` imports `taiyaku-wasm` **as a value** (`init`, `WasmSidecar`)
-// — every other module in this tree imports only its types, which is why
-// this is the one file `vitest run --project node` never loaded and the one
-// the coverage gate found at 0%. The fix is this file: mock the module so
-// `wasmResolver` runs for real against a fake `WasmSidecar`, and pin the
-// conversion at the boundary — page/half/via/member/of/path crossing from a
-// wasm-bindgen class into the plain `Position`/`Landed`/`Chapter` objects the
-// rest of the reader consumes, plus the `free()` calls that keep the wasm
-// side from leaking.
+// `resolver.ts` imports `taiyaku-wasm` **as a value** (`init`, `WasmSidecar`).
+// This file mocks the module so `wasmResolver` runs for real against a fake
+// `WasmSidecar`, and pins the conversion at the boundary —
+// page/half/via/member/of/path crossing from a wasm-bindgen class into the
+// plain `Position`/`Landed`/`Chapter` objects the rest of the reader
+// consumes, plus the `free()` calls that keep the wasm side from leaking.
 //
 // `node`, not `jsdom`: nothing here touches the DOM, and `resolver.ts` is
 // already written to be importable without one (its own doc: "no WASM, no
 // async init, no CI toolchain" is what the `Resolver` interface exists to
-// let `reading.ts`/`pairing.ts` avoid — this file is what finally exercises
-// the WASM-backed implementation of that interface itself).
+// let `reading.ts`/`pairing.ts` avoid — this file exercises the WASM-backed
+// implementation of that interface itself).
 //
 // `vi.mock`'s factory is hoisted above every import in this file, including
 // the plain `const` declarations that would otherwise back it — referencing
@@ -254,7 +251,7 @@ describe('wasmResolver', () => {
 
     // Same read-then-free shape as `slotAt`, plus `via` — the field that
     // says which path the resolution walked, which `slotAt`'s `Position`
-    // does not carry at all (see `Resolver`'s own doc on the distinction).
+    // does not carry at all (see `Landed`'s own doc).
     it('reads page/half/via into a plain Landed and frees the handle', async () => {
       const r = fakeSlot(6, 'L', 'inverted')
       const resolveSlot = vi.fn(

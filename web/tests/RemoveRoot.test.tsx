@@ -33,11 +33,10 @@ const root: config.Root = {
 }
 
 /**
- * A whole `DeriveReport`, because the dialog now renders one.
+ * A whole `DeriveReport`, because the dialog renders one.
  *
- * `{} as Derived` was enough while only `removed` was drawn; it stops being
- * enough the moment a component reads the thirty-one fields, and a cast that
- * lies about a shape is exactly the fixture this repo keeps getting caught by.
+ * A `{} as Derived` cast stops being enough the moment a component reads
+ * the thirty-one fields.
  */
 const derived = (over: Partial<config.Derived> = {}): config.Derived => ({
   series: 1,
@@ -222,13 +221,11 @@ describe('RemoveRoot', () => {
   })
 
   it('hands its caller what the real removal actually did', async () => {
-    // **Pass 4, finding 3.** `removeRoot(...).then(() => onRemoved())` threw
-    // away a full `RemovalAnswer` — the real counts and the real
-    // `DeriveReport` the server added so that "nothing a removal's re-derive
-    // found ever reached a caller" would stop being true. The dialog then
-    // unmounts, so a removal whose re-derive reported `unwritable_documents`
-    // or `lost_positions` reached nobody; the admin had only ever seen the
-    // rolled-back rehearsal, whose figures can differ.
+    // `removeRoot(...).then(() => onRemoved())` would throw away a full
+    // `RemovalAnswer` — the real counts and the real `DeriveReport` the server
+    // adds. The dialog then unmounts, so a removal whose re-derive reported
+    // `unwritable_documents` or `lost_positions` would reach nobody; the admin
+    // would have seen only the rolled-back rehearsal, whose figures can differ.
     const onRemoved = vi.fn()
     const host = await settle(onRemoved)
     await act(async () => {
@@ -355,9 +352,9 @@ describe('RemoveRoot', () => {
 
   it('does not write back a dry run that arrived after it closed', async () => {
     // The `cancelled` flag in the effect. Without it, a person who opens the
-    // dialog and closes it before the 281 ms dry run returns gets a state
-    // write into an unmounted component — the same guard `Library`, `Shell`
-    // and `Series` all carry on their own fetch effects.
+    // dialog and closes it before the dry run returns gets a state write into
+    // an unmounted component — the same guard `Shell` carries on its own
+    // fetch effect.
     let land: (answer: config.RemovalAnswer) => void = () => {}
     vi.mocked(config.removalCost).mockReturnValue(
       new Promise<config.RemovalAnswer>((resolve) => {
@@ -390,11 +387,9 @@ describe('RemoveRoot', () => {
   })
 
   it('draws what the removal re-derive found, not only the three counts', async () => {
-    // **Review finding 9.** `RemovalAnswer.derive` exists because the server's
-    // own whole-branch review added the key so that "nothing a removal's
-    // re-derive found ever reached a caller" would stop being true. Rendering
-    // only `removed` put it straight back — on the one screen built around
-    // naming what a pass did not do.
+    // `RemovalAnswer.derive` exists so that what a removal's re-derive found
+    // reaches a caller. Rendering only `removed` would drop it — on the one
+    // screen built around naming what a pass did not do.
     vi.mocked(config.removalCost).mockResolvedValue({
       removed: {
         works: 412,
@@ -416,10 +411,9 @@ describe('RemoveRoot', () => {
   })
 
   it('sends one DELETE for a double-pressed confirm', async () => {
-    // **Review pass 2, finding 4 — the third place the same class occurs, and
-    // the one where an unguarded second dispatch is least worth leaving to
-    // luck.** `disabled={removing}` is state-driven; two presses before the
-    // next render both send the real, committed DELETE.
+    // An unguarded second dispatch is least worth leaving to luck here: two
+    // presses before the next render both read `removing` false, so without a
+    // guard both would send the real, committed DELETE.
     const host = await settle()
     await act(async () => {
       press(host, 'Remove /srv/manga').click()
@@ -431,10 +425,8 @@ describe('RemoveRoot', () => {
   })
 
   it('counts one work as a work, not as 1 works', async () => {
-    // Found by rendering the dialog in a real browser: jsdom has no opinion
-    // about prose, and every fixture until now happened to use plurals. This
-    // is the most destructive action in the product; it should not read like
-    // a debug print.
+    // This is the most destructive action in the product; it should not read
+    // like a debug print.
     vi.mocked(config.removalCost).mockResolvedValue({
       removed: { works: 1, positions: 1, notes: 1, left_with_no_library: [] },
       derive: derived(),

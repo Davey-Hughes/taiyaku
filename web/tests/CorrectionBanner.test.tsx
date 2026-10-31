@@ -3,9 +3,8 @@
  *
  * Two states with almost nothing in common, and a consequence sentence whose
  * two branches say opposite things — which is why this is worth mounting
- * rather than reading. The `disabled` pair is the only thing standing between
- * a reader and a second concurrent write against one validator, and until this
- * file existed nothing checked it at all.
+ * rather than reading. The `disabled` pair stands between a reader and a
+ * second concurrent write against one validator.
  */
 import { act } from 'react'
 import { describe, expect, it } from 'vitest'
@@ -66,10 +65,9 @@ describe('CorrectionBanner, before a counterpart is picked', () => {
 describe('CorrectionBanner, once a counterpart is picked', () => {
   /**
    * The assertion, restated at the moment of confirming. Without it the banner
-   * swapped the prompt for the consequence line alone, so the one screen a
-   * reader commits from never said what was being asserted — found against the
-   * real corpus, where the strip has 235 tiles and the picked one scrolls out
-   * of view as easily as not.
+   * would swap the prompt for the consequence line alone, so the one screen a
+   * reader commits from would never say what was being asserted, and the
+   * picked tile can scroll out of view in the strip.
    */
   it('restates what is being asserted, both sides of it', () => {
     const host = mount(<CorrectionBanner {...props({ pending: picked })} />)
@@ -152,10 +150,8 @@ describe('CorrectionBanner, once a counterpart is picked', () => {
   })
 
   /**
-   * **Both, not just Confirm.** A second Confirm click would start a
-   * concurrent write against the same validator; Cancel is the subtler one —
-   * it is the control that most looks like it undoes the write, and it is the
-   * one that cannot.
+   * **Both, not just Confirm.** Cancel is the subtler one — it is the control
+   * that most looks like it undoes the write, and it is the one that cannot.
    */
   it('stands both controls down while the write is on the wire', () => {
     const host = mount(

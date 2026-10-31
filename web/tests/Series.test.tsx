@@ -117,10 +117,8 @@ const card = (
  * the answer is drawn some microtask turns after the mount.
  *
  * `Series` takes its three switches from `BrowsePrefsContext` rather than as
- * props (§11 step 8), so `props` here is layered over `browseModule.defaults`
- * and handed to the provider instead of spread onto the component. The tests
- * below are unchanged by that: each one still says `settleWith({ layout:
- * 'table' })` and reads as before.
+ * props, so `props` here is layered over `browseModule.defaults` and handed
+ * to the provider instead of spread onto the component.
  */
 async function settleWith(
   props: Partial<
@@ -207,12 +205,11 @@ describe('Series, grid layout', () => {
       li.querySelector('.aligned') === null ? '-' : '⇄',
     )
     expect(marks).toEqual(['-', '⇄', '-'])
-    // I7 of the whole-branch review: spec C1 §3 puts the mark *on the
-    // cover*, and `index.css` has exactly one rule for it —
-    // `.cover-box .aligned` — so outside that box the mark loses its
-    // positioning and its chip. `textContent`/presence checks above cannot
-    // tell "on the cover" from "moved below the title"; only the ancestor
-    // can.
+    // Spec C1 §3 puts the mark *on the cover*, and `styles/library.css` has
+    // exactly one rule for it — `.cover-box .aligned` — so outside that box the
+    // mark loses its positioning and its chip. `textContent`/presence checks
+    // above cannot tell "on the cover" from "moved below the title"; only the
+    // ancestor can.
     const alignedLi = [...host.querySelectorAll('.volumes li')].find(
       (li) => li.querySelector('.aligned') !== null,
     )
@@ -370,12 +367,10 @@ describe('Series, grid layout', () => {
 })
 
 /**
- * I1 of the whole-branch review: O62's guard (`unreadable`, spec C1 §8) was
- * applied only inside `Table`, and `browseModule.ts` makes `layout: 'grid'`
- * the **default** — every fixture above this block passes `layout: 'table'`
- * to exercise the guarded path, and `settle()`/`settleWith({})` below pass
- * nothing, exactly the "one click from the shipped defaults" the finding
- * itself describes. Before this fix, a reader met an unguarded
+ * O62's guard (`unreadable`, spec C1 §8) applies in the grid too, not only in
+ * `Table`: `browseModule.ts` makes `layout: 'grid'` the **default**, and
+ * `settle()`/`settleWith({})` below pass nothing, so these cases run the
+ * shipped defaults. Without the guard a reader would meet an unguarded
  * `<Link to={/read/${w.slug}}>` and an unguarded per-edition download here.
  */
 describe('Series, grid layout — the reader link and download withheld', () => {
@@ -459,7 +454,7 @@ describe('Series, the work-level editor', () => {
     // Opening the panel fetches the work's detail; without this the mock
     // answers `undefined` and `reveal`'s `.then` throws an uncaught
     // TypeError. Vitest still reports the test itself as passing and fails
-    // the run — which is how this shipped green on a focused run.
+    // the run.
     vi.mocked(library.work).mockResolvedValue({ ...work(), alignments: [] })
     const host = await settleWith({ panel: 'button' }, who({ admin: true }))
     expect(host.querySelector('.metadata-editor')).toBeNull()
@@ -494,11 +489,11 @@ describe('Series, the work-level editor', () => {
   })
 
   /**
-   * Task 5, C3 §7 / design doc §1.1: `can_stamp` is the one capability O86
-   * does not fold into `admin`, so the stamp section inside the editor has to
-   * be gated on the column alone. These two are the case the column exists
-   * for and its mirror — an administrator is necessary (the describe block
-   * above already covers "no editor at all" without it) but not sufficient.
+   * C3 §7 / design doc §1.1: `can_stamp` is the one capability O86 does not
+   * fold into `admin`, so the stamp section inside the editor has to be gated
+   * on the column alone. These two are the case the column exists for and its
+   * mirror — an administrator is necessary (the describe block above already
+   * covers "no editor at all" without it) but not sufficient.
    */
   it('offers the ComicInfo stamp section to an administrator who holds can_stamp', async () => {
     vi.mocked(library.work).mockResolvedValue({ ...work(), alignments: [] })
@@ -828,12 +823,10 @@ describe('Series, table layout', () => {
   })
 
   /**
-   * C1 of the whole-branch review: the selector's own visibility check never
-   * looked at `layout`, so it rendered — and governed nothing, since `Table`
-   * takes no `chosen` — the moment `editionSelector` was on, table or not.
-   * `editionSelector: true` and `panel: 'button'` are `browseModule.defaults`
-   * already, so this needs no override beyond `layout` — the same "one click
-   * from the shipped defaults" the finding itself describes.
+   * The selector is hidden under the table layout: `Table` takes no `chosen`,
+   * so a selector drawn there would govern nothing. `editionSelector: true`
+   * and `panel: 'button'` are `browseModule.defaults` already, so this needs
+   * no override beyond `layout`.
    */
   it('hides the edition selector and the alignment button, since the table already answers what they ask', async () => {
     const host = await settleWith({ layout: 'table' })
@@ -1471,7 +1464,7 @@ describe('Series, the edition selector', () => {
 
 describe('Series, the alignment panel', () => {
   beforeEach(() => {
-    // Unlike the three `describe`s above, these tests assert on
+    // Unlike the `describe`s above, these tests assert on
     // `library.work`'s call count and arguments — assertions that leak
     // across `it` blocks sharing one `vi.fn()` unless each test starts
     // clean, the same reason the grid-layout `describe` clears here.
@@ -1652,13 +1645,11 @@ describe('Series, the alignment panel', () => {
   })
 
   /**
-   * I5 of the whole-branch review: `reveal(slug)` always calls `setOpen(slug)`
-   * and nothing ever set it back, so `aria-expanded` went `false`, `true`,
-   * `true` — the panel had no way to close once any button had opened it.
-   * The fix belongs at the button's own `onClick`, not inside `reveal`:
-   * `on-select`'s hover and focus paths call `reveal` too, and a toggle
-   * there would close the panel the second time a pointer merely passed back
-   * over the same tile.
+   * The toggle belongs at the button's own `onClick`, not inside `reveal`:
+   * `reveal(slug)` always calls `setOpen(slug)`, and `on-select`'s hover and
+   * focus paths call `reveal` too, so a toggle there would close the panel the
+   * second time a pointer merely passed back over the same tile. The button's
+   * toggle is what lets the panel close once any button has opened it.
    */
   it('closes on a second press, and reopening costs no second request', async () => {
     const host = await settleWith({ panel: 'button' })
@@ -1706,12 +1697,12 @@ describe('Series, the alignment panel', () => {
   })
 
   /**
-   * D1 of the browser pass: `derive` never writes an alignment itself, so
-   * `alignments.length === 0` is the state of *every* volume in a freshly
-   * scanned library, however many editions it holds. The panel must tell
-   * "truly nothing to pair" (fewer than two editions) apart from "has
-   * something to pair and simply has not been aligned yet" (two or more).
-   * This test is the first case, where the existing sentence is correct.
+   * `derive` never writes an alignment itself, so `alignments.length === 0`
+   * is the state of *every* volume in a freshly scanned library, however many
+   * editions it holds. The panel must tell "truly nothing to pair" (fewer
+   * than two editions) apart from "has something to pair and simply has not
+   * been aligned yet" (two or more). This test is the first case, where the
+   * existing sentence is correct.
    */
   it('says a single-edition volume has nothing to pair, when that is true', async () => {
     vi.mocked(library.oneSeries).mockResolvedValue({
@@ -1729,11 +1720,11 @@ describe('Series, the alignment panel', () => {
   })
 
   /**
-   * The second case, and the one the browser pass actually caught: a volume
-   * with two editions and no alignments is not "one edition, nothing to pair
-   * with" — that sentence is false on this fixture. The table layout renders
-   * the same two editions as two columns on one screen, so the wrong
-   * sentence and the correct data would have appeared together.
+   * The second case: a volume with two editions and no alignments is not
+   * "one edition, nothing to pair with" — that sentence is false on this
+   * fixture. The table layout renders the same two editions as two columns
+   * on one screen, so the wrong sentence and the correct data would have
+   * appeared together.
    */
   it('does not claim a single edition when the volume has two and simply has not been aligned', async () => {
     const editions = [edition(), edition({ key: 'en', label: 'English' })]

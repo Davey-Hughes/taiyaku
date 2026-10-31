@@ -101,13 +101,12 @@ describe('network calls', () => {
   })
 
   it("getJson rejects with the status and the server's own sentence, not the status alone", async () => {
-    // Every read in `library.ts` and `curation.ts` comes through `getJson`,
-    // and this threw `path: status` with the body read off the wire and
-    // dropped. The proposals inbox is where that cost the most: `Routes.tsx`
-    // puts no admin guard on `/proposals`, so a reader who types the URL
-    // reaches `listProposals`, and `curation.rs::admin_or_forbidden` answers
-    // 403 with the sentence below — the only part of the refusal a person
-    // can act on.
+    // Every read in `library.ts` and `curation.ts` comes through `getJson`.
+    // The proposals inbox is where the body matters most: `Routes.tsx` puts no
+    // admin guard on `/proposals`, so a reader who types the URL reaches
+    // `listProposals`, and `session::administering_or_forbidden` answers 403
+    // with a sentence like the one below — the only part of the refusal a
+    // person can act on.
     //
     // The whole message is asserted rather than a substring of it: a version
     // that dropped the status, or the path, or appended the body to the
@@ -139,13 +138,12 @@ describe('network calls', () => {
   /**
    * O179: the sidecar read gives a 404 a type of its own, `WorkNotFound`, and
    * nothing else about the throw moves. The message is compared whole, with
-   * `toBe`, in both cases below: it is the string this read threw for every
-   * non-2xx before the type existed, and `messageOf` still hands it to
-   * whoever shows one.
+   * `toBe`, in both cases below: it is the string this read throws for every
+   * non-2xx but a 401, and `messageOf` hands it to whoever shows one.
    *
    * **The 404's slug has a space in it**, so that the slug as given and the
    * slug as the URL escapes it are two strings. With `nope`, a `WorkNotFound`
-   * built from the escaped segment passed this case.
+   * built from the escaped segment would pass this case.
    */
   it('getSidecarWithEtag rejects a 404 as a WorkNotFound carrying the slug, under the message it threw before', async () => {
     const fetchMock = vi
@@ -507,10 +505,10 @@ describe('being signed out', () => {
   })
 
   /**
-   * Eight call sites each throw on a non-ok response, and a 401 is not an
-   * error the reader can show — it is a state change. Handled in one place so
-   * a ninth call site cannot forget, and asserted over every one of them so
-   * "handled in one place" is a fact rather than an intention.
+   * Call sites throw on a non-ok response, and a 401 is not an error the
+   * reader can show — it is a state change. Handled in one place so a new
+   * call site cannot forget, and asserted over each call below so "handled in
+   * one place" is a fact rather than an intention.
    */
   it('raises Unauthenticated from every guarded call', async () => {
     globalThis.fetch = vi

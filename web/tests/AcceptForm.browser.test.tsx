@@ -19,27 +19,19 @@ import { mount } from './support/mount'
  * against one that pushed the panel wider than the window and took the
  * evidence above it along.
  *
- * **The values are the store's own.** `Proposals.browser.test.tsx` records
- * what the pass before it got wrong — invented `reason` strings the server
- * never emits — so the fixtures here are printed out of
- * `proposals/tests.rs`' `library_with_a_shared_publisher_directory` and the
- * `format!` calls in `proposals.rs` that word each field: the rule is what
- * `offered_rule` derives for that library, the pattern is the longest thing
- * on the panel because a real one is a `rel_path` prefix, and the refusal is
- * the measured `Publisher/` collateral in `refusals`' own sentence.
+ * **The values are the store's own**, not invented `reason` strings the server
+ * never emits: the fixtures here are printed out of `proposals/tests.rs`'
+ * `library_with_a_shared_publisher_directory` and the `format!` calls in
+ * `proposals.rs` that word each field. The rule is what `offered_rule` derives
+ * for that library, the pattern is the longest thing on the panel because a
+ * real one is a `rel_path` prefix, and the refusal is the measured `Publisher/`
+ * collateral in `refusals`' own sentence.
  *
- * **460 and 1100 for the reason `Proposals.browser.test.tsx` gives**: 460px
- * since the style pass's ②: below 900px the sidebar leaves the flow, and
- * 460 − 2 × 16 gives `main` the 428px that 700 − 224 − 48 gave it beside the
- * 14rem sidebar. The expanded panel, `.proposal-detail` (`ProposalRow.tsx`),
- * measures 426px at 460px on this branch — the same 426px it measured at
- * 700px before the move, since `main`'s content width does not change. The
- * form inside it, and the pattern within the form, both measure 407px there
- * too, at 460px same as at 700px before it. At 1100px — unaffected by the
- * move, since the breakpoint is 900px — `.proposal-detail` measures 826px
- * and the form 807px of it. The pattern keeps the form's whole width at
- * both; what changes is how many of the four short fields fit on the line
- * beneath it, and whether the prefix is readable end to end or scrolls.
+ * **460 and 1100 for the reason `Proposals.browser.test.tsx` gives**: below
+ * 900px the sidebar leaves the flow, and 460 − 2 × 16 gives `main` 428px. The
+ * pattern keeps the form's whole width at both; what changes is how many of the
+ * four short fields fit on the line beneath it, and whether the prefix is
+ * readable end to end or scrolls.
  *
  * **Both colour schemes, set through `color-scheme` on the root.** Everything
  * below `.library` is drawn from the tokens in `styles/tokens.css`, each a
@@ -224,11 +216,10 @@ describe('the accept form, in a browser', () => {
   it('gives the pattern a box worth reading at 1100px, on one row of fields', async () => {
     const host = await panelAt(1100, 'light')
 
-    // The pattern has the form's width — measured 807px of an 826px panel —
-    // and at this one that is the whole 52-character `rel_path` prefix with
-    // nothing scrolled out of sight, which is the claim the form makes by
-    // putting it on screen. Sharing the row with the short fields measured
-    // 416px here, and cut it.
+    // The pattern has the form's width, and at this one that is the whole
+    // `rel_path` prefix with nothing scrolled out of sight, which is the claim
+    // the form makes by putting it on screen. Sharing the row with the short
+    // fields would cut it.
     const form = box(host, '.accept-form')
     expect(box(host, '.field.pattern input').width).toBeGreaterThan(
       form.width * 0.9,
@@ -283,11 +274,11 @@ describe('the accept form, in a browser', () => {
   it('wraps the fields at 460px rather than crushing the pattern', async () => {
     const host = await panelAt(460, 'light')
 
-    // The pattern still has the whole row — measured 407px, against 325px
-    // when it shared the line — and the short fields wrap under it rather
-    // than beside it. No `cut` assertion: 407px does not hold 52 monospace
-    // characters at any layout, so what matters here is that the box scrolls
-    // instead of the panel growing, which `fitsItsColumn` below says.
+    // The pattern still has the whole row, and the short fields wrap under
+    // it rather than beside it. No `cut` assertion: at this width the pattern
+    // does not hold 52 monospace characters at any layout, so what matters
+    // here is that the box scrolls instead of the panel growing, which
+    // `fitsItsColumn` below says.
     const form = box(host, '.accept-form')
     expect(box(host, '.field.pattern input').width).toBeGreaterThan(
       form.width * 0.9,
@@ -336,14 +327,12 @@ describe('the accept form, in a browser', () => {
       )
       expect(host.querySelector('.consequence')).toBeNull()
 
-      // **Both of them at full contrast, which is the fix to what this file
-      // asserted first.** The original line here said the inactive control's
-      // colour differed from the refusal's, taking WCAG's inactive-component
-      // exemption — and `GrayText` on `ButtonFace` is 1.35:1 in dark, so what
-      // the exemption bought was a button with no word on it in the state the
-      // form sits in for the whole of every widening. The refusal and the
-      // control now share the reader's text colour; that Accept is
-      // unavailable is said below, by the ground and the border.
+      // **Both of them at full contrast.** Taking WCAG's inactive-component
+      // exemption would give the control a colour that differs from the
+      // refusal's, and `GrayText` on `ButtonFace` is 1.35:1 in dark: a button
+      // with no word on it in the state the form sits in for the whole of every
+      // widening. The refusal and the control share the reader's text colour;
+      // that Accept is unavailable is said below, by the ground and the border.
       // `var(--text)` resolves to real pixels here and in `jsdom` it does not
       // resolve at all, which is why this lives in this project.
       const refusal = host.querySelector('.refusals li')

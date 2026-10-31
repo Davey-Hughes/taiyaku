@@ -89,8 +89,7 @@ describe('ScanReport', () => {
     // Forty-seven: twelve from the walk, thirty-one from the derive, and the
     // four causes O90 draws inside `unreadable`. Counted rather than
     // spot-checked, because the failure this guards is a field quietly
-    // dropped on the way out — which is exactly what happened once already on
-    // the server side.
+    // dropped on the way out.
     const host = mount(<ScanReport outcome={finished()} />)
     expect(host.querySelectorAll('[data-field]')).toHaveLength(47)
   })
@@ -188,9 +187,9 @@ describe('ScanReport', () => {
   })
 
   it('draws alignments a fold left behind apart from rows it discarded', () => {
-    // O76: a fold carries an alignment now, and the one it cannot carry is
-    // not a discarded row. Per element, with a different number in each, so a
-    // label paired with the other row's count fails.
+    // O76: a fold carries an alignment, and the one it cannot carry is not a
+    // discarded row. Per element, with a different number in each, so a label
+    // paired with the other row's count fails.
     const host = mount(
       <ScanReport
         outcome={finished({
@@ -260,7 +259,7 @@ describe('ScanReport', () => {
     for (const before of didNotDo) {
       for (const after of achievement) {
         // `indexOf` answers -1 for a field this render dropped entirely, and
-        // -1 < anything holds — so a confession row removed outright used to
+        // -1 < anything holds — so a confession row removed outright would
         // pass this same comparison. Both indices must actually be present
         // before their order means anything.
         expect(
@@ -332,8 +331,8 @@ describe('ScanReport', () => {
   })
 
   it('lists a declined document, which is not an orphan', async () => {
-    // #104's third category: a root that stopped keeping documents reports
-    // the file rather than deleting it, and rather than calling it orphaned.
+    // A root that stopped keeping documents reports the file rather than
+    // deleting it, and rather than calling it orphaned.
     const host = mount(
       <ScanReport
         outcome={finished({
@@ -443,8 +442,7 @@ describe('ScanReport', () => {
   it('marks a zero count and leaves a non-zero count unmarked', () => {
     // `finished()`'s default walk carries both: `added: 3` and `updated: 0`.
     // A fixture where every count is zero would prove only that the
-    // attribute can be written; O92 is the record of a fixture whose rows
-    // cancelled out and let a flipped comparison through.
+    // attribute can be written (O92).
     const host = mount(<ScanReport outcome={finished()} />)
     const zero = host.querySelector('[data-field="updated"]')
     const value = host.querySelector('[data-field="added"]')
@@ -492,22 +490,20 @@ describe('ScanReport', () => {
   })
 
   it('marks every row whose value is zero, whatever component drew it', () => {
-    // Three rows were hand-rolled rather than routed through `Count`/`Paths`
-    // and so kept full strength while their 34 neighbours receded — the same
-    // fact drawn two ways. Asserted over every `[data-field]` rather than per
-    // component, because the defect was precisely a row that no per-component
-    // test was looking at.
+    // Asserted over every `[data-field]` rather than per component, because a
+    // row hand-rolled rather than routed through `Count`/`Paths` would keep
+    // full strength beside its zero neighbours — the same fact drawn two
+    // ways — and no per-component test would be looking at it.
     //
     // The `<dd>`'s *first child node* is read, not its `textContent`. For a
     // wrapper like `unreadable` the `<dd>` also holds a nested `<dl>` of
     // causes, so `textContent` is the count concatenated with that whole
     // subtree — "0In a format taiyaku does not read0…" — and no regex
     // anchored on a word boundary can find the count inside it: `\b` needs a
-    // word/non-word transition, and digit-to-letter is word-to-word. That
-    // used to make the match fail at every possible value and silently skip
-    // the row via `continue`, which is how the wrapper's own unmarked zero
-    // passed here. The first child node is the count alone in every
-    // component that draws one, so reading it directly needs no regex.
+    // word/non-word transition, and digit-to-letter is word-to-word. Such a
+    // regex would fail at every possible value and silently skip the row via
+    // `continue`. The first child node is the count alone in every component
+    // that draws one, so reading it directly needs no regex.
     const host = mount(<ScanReport outcome={finished()} />)
     const wrong: string[] = []
     for (const row of host.querySelectorAll('[data-field]')) {

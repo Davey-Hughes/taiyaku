@@ -57,7 +57,7 @@
  * is fetched by the row that is being judged rather than by the list.
  *
  * **The collapsed line is a `<div>` holding a disclosure `<button>`, not one
- * big `<button>`.** Accept and Dismiss controls belong *in* that line, and an
+ * big `<button>`.** Dismiss or Reopen can sit *in* that line beside it, and an
  * interactive descendant of a `<button>` is invalid HTML — so the wrapper is
  * a plain element and the disclosure control is one child of it, leaving room
  * for siblings. The whole line is not clickable; the disclosure button is,

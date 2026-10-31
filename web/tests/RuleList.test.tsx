@@ -164,8 +164,8 @@ describe('RuleList', () => {
         }),
       ],
     })
-    // `.rule-name`, not the whole button: `.select` now also holds a
-    // `.mechanism` span, so its own textContent is the two concatenated.
+    // `.rule-name`, not the whole button: `.select` also holds a `.mechanism`
+    // span, so its own `textContent` is the two concatenated.
     const name = host.querySelector<HTMLElement>('.rule-row .rule-name')
     expect(name?.textContent).toBe('new rule')
   })
@@ -183,8 +183,8 @@ describe('RuleList', () => {
       ],
     })
     const row = host.querySelector('.rule-row')
-    // `.rule-name`, not `.select`: the button now holds two spans, and
-    // `.select`'s own textContent is their concatenation.
+    // `.rule-name`, not `.select`: the button holds two spans, and `.select`'s
+    // own `textContent` is their concatenation.
     expect(row?.querySelector('.rule-name')?.textContent).toBe(
       'volume from the name',
     )
@@ -226,8 +226,8 @@ describe('RuleList', () => {
     // foreign drag source) as "row 0 was dragged" and silently reorders the
     // list under someone who never dragged a rule. The row this drops on is
     // deliberately **not** row 0: landing on row 0 makes the separate
-    // `from === index` check swallow the bug and the test pass for the wrong
-    // reason, which is exactly how it stayed hidden.
+    // `from === index` check swallow the bug and the test pass for the
+    // wrong reason.
     const { host, onReorder } = render()
     const rows = host.querySelectorAll<HTMLElement>('.rule-row')
     act(() => {
@@ -286,9 +286,9 @@ describe('RuleList', () => {
   })
 
   it('closes the confirm dialog when the list changes under it', () => {
-    // M3: the dialog holds `{index, proposal}` while the rest of the list
-    // stays interactive. Addressing a rule by position is right for this
-    // list (this file's own doc comment says why an id cannot do the job),
+    // The dialog holds `{index, proposal}` while the rest of the list stays
+    // interactive. Addressing a rule by position is right for this list
+    // (`RuleList.tsx`'s own doc comment says why an id cannot do the job),
     // but *holding* a position open across a mutation is not — a different,
     // lower-indexed rule being deleted while this dialog is open shifts the
     // array under `confirming.index`, and "Delete and reopen" would then
@@ -437,9 +437,10 @@ describe('RuleList', () => {
 
   it('freezes the confirm dialog’s Delete and reopen too — O96, whole-branch review M2', () => {
     // The dialog can only be open across a save if it was opened before the
-    // save started, because the Delete that opens it is itself held — so
-    // the *same* `rules` array is passed to both renders, or `RuleList`'s own
-    // M3 effect closes the dialog and this asserts nothing.
+    // save started, because the Delete that opens it is itself held — so the
+    // *same* `rules` array is passed to both renders, or the effect in
+    // `RuleList` that closes the dialog on a list change would close it and
+    // this asserts nothing.
     //
     // It is the one frozen control the `gestures` helper above cannot reach,
     // and the one that reopens a proposal.
@@ -531,10 +532,8 @@ describe('RuleList', () => {
   // rules draws no warning. Without this, a mutant turning the `>` at
   // RuleList.tsx into `>=` survives the whole suite — the 2-rule and
   // 41-rule cases can't tell `>` from `>=` apart, only the 40th rule can.
-  // Forty is a guess anchored to a measured curve's knee (10 extra rules 47
-  // ms, 40 -> 401 ms, 80 -> 1.34 s, 160 -> 5.01 s, in a debug build on a
-  // one-work fixture), not a measurement of this screen; the preview route
-  // itself refuses past 200.
+  // Forty is a guess anchored to a measured curve's knee, not a measurement
+  // of this screen; the preview route itself refuses past 200.
   it('draws no cost warning at exactly forty rules', () => {
     const forty = Array.from({ length: 40 }, (_, i) =>
       rule({ id: i + 1, ordinal: i + 1 }),

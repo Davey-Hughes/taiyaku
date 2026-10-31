@@ -39,9 +39,8 @@ describe('annotationsModule', () => {
     }
   })
 
-  // The contract's first declared options. A string with no options renders as
-  // a text box, which for a placement is a control that invites a typo and
-  // answers with nothing.
+  // A string with no options renders as a text box, which for a placement is a
+  // control that invites a typo and answers with nothing.
   it('declares the values its placement setting may take', () => {
     expect(annotationsModule.options?.notesList).toEqual([
       'auto',
@@ -92,7 +91,7 @@ describe('toggleReveal', () => {
   /**
    * The reason this is a function rather than a spread at the call site: a
    * hand-written one is where the field beside it gets dropped, which is the
-   * defect `direction.ts`'s `setOverride` was extracted over.
+   * defect `direction.ts`'s `setOverride` exists to prevent.
    */
   it('leaves every other preference alone', () => {
     const next = toggleReveal({

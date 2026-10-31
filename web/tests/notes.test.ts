@@ -191,9 +191,9 @@ describe('reviewList', () => {
 
 describe('notesBySlot', () => {
   // Scroll mode mounts every group at once, so asking "which notes are on this
-  // slot" per rendered slot would be one scan per page — 195 on the primary
-  // corpus volume, each resolving. Inverting it costs one resolve per *note*,
-  // of which there are a handful, whatever the volume's length.
+  // slot" per rendered slot would be one scan per page, each resolving.
+  // Inverting it costs one resolve per *note*, of which there are a handful,
+  // whatever the volume's length.
   it('groups every note under the slot it lands on here', () => {
     const notes = [
       note('a3', 'a', 3),
@@ -319,9 +319,8 @@ describe('paintedBox', () => {
 
   // The four above describe a page sized to its own content, where the element
   // and the artwork differ by a sliver. `fit.ts`'s `upscaleToFit` defaults on
-  // and makes the element the whole cell, so the difference is now most of the
-  // element. The two geometries below are real: measured in a browser on
-  // `gotoubun-v01` at fit-whole on 2026-08-08, from a 2147x3056 scan.
+  // and makes the element the whole cell, so the difference is most of the
+  // element. The two geometries below are that case.
   const scan = { w: 2147, h: 3056 }
   /** Single mode: the element is the whole page area. */
   const area = { w: 1385, h: 475 }
@@ -329,7 +328,6 @@ describe('paintedBox', () => {
   const cell = { w: 692.5, h: 475 }
 
   it('insets the artwork inside an element far larger than it, in both axes', () => {
-    // Measured: 334x475 of artwork, 526px of background each side.
     const art = paintedBox(scan, area)
     expect(art.w).toBeCloseTo(334, 0)
     expect(art.h).toBe(475)
@@ -348,18 +346,15 @@ describe('paintedBox', () => {
     })
   })
 
-  // `pageStyle`'s `hug` closed the two-page seam with `object-position`, so a
-  // pair's two halves are pushed against each other and the leftover is no
-  // longer split evenly. Measured in two-page mode: this answered 179 in each
-  // cell — 179 and 872 across the page area — where the artwork sat at 359 and
-  // 693.
+  // `pageStyle`'s `hug` closes the two-page seam with `object-position`, so a
+  // pair's two halves are pushed against each other and the leftover is not
+  // split evenly.
   it('pushes the artwork to the right edge for the left cell of a pair', () => {
     expect(paintedBox(scan, cell, 'right-edge').x).toBeCloseTo(359, 0)
   })
 
   it('pushes the artwork to the left edge for the right cell of a pair', () => {
-    // 0 within the cell, and the cell's own left edge is at 692.5 — the 693
-    // that was measured across the page area.
+    // 0 within the cell, and the cell's own left edge is at 692.5.
     expect(paintedBox(scan, cell, 'left-edge').x).toBe(0)
   })
 
@@ -449,8 +444,7 @@ describe('pointInSlot', () => {
   it('reads the seam edge of a hugged page as the page’s own edge', () => {
     // The left cell of a two-page pair: its artwork is flush against the seam,
     // so the far edge of the cell *is* the far edge of the page. Halving the
-    // leftover instead read that same pixel as 1.54 — the drag defect, in one
-    // number.
+    // leftover instead would read that same pixel as past the page's edge.
     const painted = paintedBox(
       { w: 2147, h: 3056 },
       { w: 692.5, h: 475 },
@@ -469,9 +463,8 @@ describe('pointInSlot', () => {
 
 describe('spreadTabs', () => {
   // Two whole-page notes on one slot both anchor at 0.5, so their tabs land
-  // exactly on top of each other and a reader sees one marker where there are
-  // two — which is how "I can't do multiple annotations per page" looks even
-  // once multiple notes are allowed.
+  // exactly on top of each other and a reader sees one marker where there
+  // are two.
   it('separates tabs that would sit on top of each other', () => {
     const spread = spreadTabs([0.5, 0.5, 0.5], 0.06)
     expect(spread[1] - spread[0]).toBeCloseTo(0.06)
@@ -828,7 +821,7 @@ describe('newNote', () => {
   })
 
   // Always a new note, however many the slot already holds — reopening the one
-  // already there is what made a second note on a page impossible.
+  // already there would make a second note on a page impossible.
   it('keeps the notes this session already touched', () => {
     const held = note('held', 'a', 4)
     const draft = newNote(editing(held), at, [], 'fresh', 'now')
@@ -1075,8 +1068,6 @@ describe('regionUnderDrag', () => {
 describe('anchorFrom', () => {
   const start = { x: 0.25, y: 0.75 }
 
-  // A click on the page used to do nothing at all, and the only way to mark a
-  // panel was to draw a box round it.
   it('plants a point where a draw barely moved', () => {
     const barely = { x: 0.25, y: 0.75, w: 0.001, h: 0.5 }
     expect(anchorFrom('draw', barely, start)).toEqual(pointAt(start))

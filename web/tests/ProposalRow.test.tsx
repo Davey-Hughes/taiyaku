@@ -13,12 +13,9 @@ import { mount, rerender } from './support/mount'
 // inbox when the rule in its panel is accepted`, the only one here that runs
 // fake timers and advances past the form's debounce. Every other test in this
 // file mounts the same form and reaches neither, because they run real timers
-// and the sweep is never sent — measured by taking both out of this mock and
-// the `resolution` default out of `beforeEach`, dropping that test and the two
-// beside it, and making `globalThis.fetch` throw: the remaining 30 all passed.
-// So these two are what one fake-timer test needs, not a wall against thirty
-// live requests. What the form *does* with the answer is `AcceptForm.test.tsx`'s
-// subject.
+// and the sweep is never sent. So these two are what one fake-timer
+// test needs. What the form *does* with the answer is
+// `AcceptForm.test.tsx`'s subject.
 vi.mock('../src/curation', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../src/curation')>()),
   proposalDetail: vi.fn(),
@@ -256,8 +253,8 @@ describe('ProposalRow', () => {
     ).toBe('false')
 
     // The panel is what costs a request, so a collapsed row must not make
-    // one — an inbox of 37 rows would otherwise ask for 37 panels to show
-    // none of them.
+    // one — otherwise an inbox would ask for a panel per row to show none
+    // of them.
     expect(host.querySelector('.proposal-detail')).toBeNull()
     expect(curation.proposalDetail).not.toHaveBeenCalled()
   })
@@ -499,8 +496,8 @@ describe('ProposalRow', () => {
     expect(sideAt(host, 0).querySelector('.directories')).toBeNull()
     // The whole sentence. Its tail — "it has not been scanned, or a rename or
     // a rule moved it" — is the half that says an empty list is *not* only
-    // "never scanned", which is `Side.directories`' own documented contract
-    // and the thing a `toContain` on the first clause left free to be deleted.
+    // "never scanned", which is `Side.directories`' own documented contract,
+    // so a `toContain` on the first clause would leave it free to be deleted.
     expect(sideAt(host, 0).querySelector('.no-directory')?.textContent).toBe(
       'Nothing on disk resolves to this series today — it has not been ' +
         'scanned, or a rename or a rule moved it.',
@@ -563,10 +560,8 @@ describe('ProposalRow', () => {
     // and its own message for it says the second child will be discarded. A
     // test that only read the three chips would pass on the broken key.
     //
-    // Filtered rather than asserted empty: every mount in this project logs
-    // React's "not configured to support act(...)" line, which is nothing to
-    // do with this and would make the assertion fail for a reason it is not
-    // about.
+    // Filtered to React's "same key" message rather than asserted empty, so
+    // the assertion fails only on the collision it is about.
     const complaints = vi.spyOn(console, 'error').mockImplementation(() => {})
     const host = await open({ subject: subject({ volumes: [1, 1, 2] }) })
 
@@ -595,16 +590,16 @@ describe('ProposalRow', () => {
       '? target is itself an edition of Monster',
     ])
 
-    // The heading over them, which nothing held: the list is a list of
-    // *signals behind a score*, and unlabelled above a panel of paths and
-    // page thumbnails it reads as a description of the artwork.
+    // The heading over them: the list is a list of *signals behind a score*,
+    // and unlabelled above a panel of paths and page thumbnails it reads as a
+    // description of the artwork.
     expect(host.querySelector('h2.lab')?.textContent).toBe(
       'Why this was proposed',
     )
   })
 
   it('gives the reasons’ heading its words as its aria-label — O182', async () => {
-    // `.lab` draws it in capitals, and Chromium's tree named it in them.
+    // `.lab` draws it in capitals, and Chromium's tree would name it in them.
     const host = await open()
     const heading = host.querySelector('.proposal-detail > h2.lab')
     expect(heading?.textContent).toBe('Why this was proposed')
@@ -633,8 +628,7 @@ describe('ProposalRow', () => {
 
     // And the line under the control says what would have to change, in
     // full: inverted to "Already available: the fingerprinting code lives in
-    // `taiyaku-cli`" it contradicts the disabled control beside it, and
-    // nothing failed.
+    // `taiyaku-cli`" it would contradict the disabled control beside it.
     expect(measured?.querySelector('.not-yet')?.textContent).toBe(
       'Not wired up yet: the fingerprinting code has to leave taiyaku-cli ' +
         'first.',
@@ -650,20 +644,19 @@ describe('ProposalRow', () => {
   })
 
   it('does not guess at why, on the one state where guessing was wrong', async () => {
-    // **The sentence used to enumerate, and the enumeration was drawn over a
-    // panel that contradicted it.** `evidence` hands `offered_rule` the same
-    // `paths_of(&subject_title)` it hands `side`, so an empty `directories`
-    // is not merely *consistent with* `rule: null` — it causes it:
-    // `common_directory_pattern` refuses on `dirs.is_empty()`. Every open
-    // proposal in this state therefore drew "Nothing on disk resolves to this
-    // series today — it has not been scanned" and, four inches below, "its
-    // subject spans more than one directory".
+    // **The no-rule sentence does not enumerate causes.** `evidence` hands
+    // `offered_rule` the same `paths_of(&subject_title)` it hands `side`, so
+    // an empty `directories` is not merely *consistent with* `rule: null` — it
+    // causes it: `common_directory_pattern` refuses on `dirs.is_empty()`. A
+    // sentence that enumerated causes would draw "its subject spans more than
+    // one directory" below "Nothing on disk resolves to this series today —
+    // it has not been scanned", over a panel contradicting it.
     //
-    // It also read as exhaustive, joined by "or", while naming three of at
-    // least six: `offered_rule` also refuses a subject sitting under one
-    // directory name in *two roots*, a suffix that slugifies to nothing, and
-    // a proposal that is not open. This is the pairing that would have caught
-    // it, and it is the fixture that was missing.
+    // It would also read as exhaustive, joined by "or", while naming only
+    // some of the refusals: `offered_rule` also refuses a subject sitting
+    // under one directory name in *two roots*, a suffix that slugifies to
+    // nothing, and a proposal that is not open. This is the pairing that
+    // catches it.
     const host = await open({
       subject: subject({ directories: [] }),
       rule: null,
@@ -1249,8 +1242,8 @@ describe('ProposalRow', () => {
   })
   it('offers a decided row no accept, dismiss or un-accept control, collapsed or opened (O72)', async () => {
     // **Every button in the row, not the line's direct children.** The
-    // per-state test above reads `.row > button`, so an Undo drawn inside a
-    // `<span>` on the line, or in the opened panel, passed it — and O74 is
+    // per-state test above reads `.row > button`, which does not see an Undo
+    // drawn inside a `<span>` on the line, or in the opened panel — and O74 is
     // why no Undo may exist: un-accepting leaves what the rule derived
     // standing. The panel is loaded, with `rule: null` as the server sends
     // for any proposal not open, so what it draws is on screen. Every

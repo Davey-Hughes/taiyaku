@@ -115,12 +115,10 @@ describe('the browse client', () => {
     )
   })
 
-  // `home`'s one caller, `Library.tsx`, is exercised only through
-  // `Library.test.tsx`'s mock of this whole module (`vi.mock('../src/library', …
-  // home: vi.fn())`) — the real implementation below is never reached from
-  // there, or from anywhere else, which left it the one function in this
-  // file coverage-floor still flagged once `oneSeries` and `search` had
-  // their own tests.
+  // `home`'s one caller, `pageReads.ts`, is exercised only through mocks of
+  // this whole module (`Library.test.tsx`'s `vi.mock('../src/library', …
+  // home: vi.fn())`, and others like it) — the real implementation below is
+  // never reached from there, or from anywhere else.
   it('asks for the home lists without a library, and with one', async () => {
     const fetchMock = vi
       .fn()
@@ -195,15 +193,12 @@ describe('the browse client', () => {
   })
 
   describe('unreadable', () => {
-    // O62's whole-branch-review finding: mutating `.every` to `.some` left
-    // the entire 1694-test web suite green, because the one existing test
-    // never built a volume with one broken edition and one intact. That
-    // fixture is kept below — **and O84 changed which answer it must give.**
-    // The guard asked `editions.every(missing > 0)` then; it asks about the
-    // one edition `opens` names now, so the same two editions mean different
-    // things depending on which of them the reader will open. Both directions
-    // are asserted, because a guard that only ever sees one of them is the
-    // shape the O62 finding was about.
+    // O62's fixture: a volume with one broken edition and one intact.
+    // **Which answer it must give depends on the edition `opens` names
+    // (O84):** the guard asks about that one edition, so the same two
+    // editions mean different things depending on which of them the reader
+    // will open. Both directions are asserted, because a guard that only
+    // ever sees one of them is the shape O62 was about.
     it('keeps a volume readable when the edition it opens is the intact one', () => {
       const w = workCard({
         opens: 'en',
@@ -215,9 +210,9 @@ describe('the browse client', () => {
       expect(unreadable(w)).toBe(false)
     })
 
-    // **O84 itself.** The same volume, opened at its broken edition. Under
-    // the `every` rule this answered `false` and the reader was handed a link
-    // that fails at the first page — spec C1 §8's exact prohibition.
+    // **O84 itself.** The same volume, opened at its broken edition. Under an
+    // `every` rule this would answer `false` and the reader would be handed a
+    // link that fails at the first page — spec C1 §8's exact prohibition.
     it('marks a volume unreadable when the edition it opens has lost its files, even though a sibling is intact', () => {
       const w = workCard({
         opens: 'raw',
@@ -240,11 +235,11 @@ describe('the browse client', () => {
       expect(unreadable(w)).toBe(true)
     })
 
-    // The other mutation the O62 finding names: dropping the emptiness guard
-    // left `[].every(...)` — vacuously `true` — as the whole answer. The
-    // `find` form answers `undefined` instead, so the shape is different and
-    // the requirement is not: a work with no visible edition at all is a
-    // grant hiding everything, a different fact from missing files.
+    // The other mutation O62 names: under an `every` rule, dropping the
+    // emptiness guard would leave `[].every(...)` — vacuously `true` — as the
+    // whole answer. The `find` form answers `undefined` instead, so the shape
+    // is different and the requirement is not: a work with no visible edition
+    // at all is a grant hiding everything, a different fact from missing files.
     it('does not call a work with no visible editions unreadable — that is a grant hiding it, not missing files', () => {
       const w = workCard({ editions: [] })
       expect(unreadable(w)).toBe(false)
@@ -316,9 +311,7 @@ describe('libraryParam', () => {
 })
 
 /**
- * O133: a library cover is offered at three long edges, one per screen
- * density, instead of the 160 px filmstrip tile a phone upscaled nearly
- * fivefold.
+ * O133: a library cover is offered at three long edges, one per screen density.
  */
 describe('cover sources', () => {
   it('adds 256, 512 and 768 px to the address the server sends, after its version, for one, two and three device pixels per CSS pixel', () => {

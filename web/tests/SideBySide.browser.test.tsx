@@ -446,7 +446,7 @@ describe('a table in its box is inset one --space-4 on all four sides', () => {
   )
 })
 
-/** The longest label a derive's report draws: ruling 2's. */
+/** The longest label a derive's report draws. */
 const LONG_LABEL = 'Members whose directory was removed mid-derive'
 
 /** What a removal would take, and what re-deriving after it would find. */
@@ -502,11 +502,11 @@ async function disclose(scope: ParentNode, words: string) {
 }
 
 /**
- * Every page this PR draws, at a phone's width, and the states of them that
- * draw `LONG_LABEL`: a directory's and a library's scan report, each
- * removal's and a move's rehearsal with what re-deriving would find opened,
- * and the report the Libraries table draws after a removal. `holds` is the
- * page's own root, so a case that drew some other page fails.
+ * The pages held at a phone's width, and the states of them that draw
+ * `LONG_LABEL`: a directory's and a library's scan report, each removal's and a
+ * move's rehearsal with what re-deriving would find opened, and the report the
+ * Libraries table draws after a removal. `holds` is the page's own root, so a
+ * case that drew some other page fails.
  */
 const AT_A_PHONE: Array<{
   page: string

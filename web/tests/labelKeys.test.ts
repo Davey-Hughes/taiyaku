@@ -23,8 +23,7 @@ describe('keysOf', () => {
 
   it('writes unrelated keys out in full rather than as a range', () => {
     // `v-n` reads as a span from `v` to `n`: backwards, four keys wide, and
-    // containing neither `h` nor anything a labeller could press. It reached
-    // the screen because the rule was length alone.
+    // containing neither `h` nor anything a labeller could press.
     expect(keysOf({ keys: ['v', 'h', 'n'], label: '' })).toBe('v h n')
   })
 

@@ -25,7 +25,7 @@ import * as usersApi from '../src/users'
  * moves it to the page. Each case reaches the control with real keys and
  * presses it with Enter, so what the keyboard does to a held control is
  * what is read. Where focus is is read before how the control is held, so
- * that a control held by `disabled` again fails on focus left on the page.
+ * that a control held by `disabled` fails on focus left on the page.
  */
 
 vi.mock('../src/backup', async (importOriginal) => ({

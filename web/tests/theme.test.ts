@@ -124,10 +124,8 @@ describe("index.html's theme-color", () => {
 /**
  * **`tokens.css` is what turns the choice into a palette**: `applyTheme` only
  * writes `data-theme`, and a rule per pinned choice turns that into
- * `color-scheme`, which every `light-dark()` token resolves against. Swapping
- * the two rules left every other test passing — `applyTheme` still wrote the
- * right attribute, the pairs were still the right pairs — while Ink painted
- * paper. So this reads the rules themselves.
+ * `color-scheme`, which every `light-dark()` token resolves against. So this
+ * reads the rules themselves.
  */
 describe("tokens.css's color-scheme rules", () => {
   type Pinned = Exclude<ThemeChoice, 'system'>

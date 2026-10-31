@@ -32,12 +32,9 @@ describe('nearestPaired', () => {
   })
 
   it('resolves each offer once, not once for the scan and again for the caller', () => {
-    // The double-resolve this fix removes lived in `App.tsx` (untestable
-    // here — see its own no-resolver-in-tests comment), not in
-    // `nearestPaired` itself. What this pins is the half `nearestPaired`
-    // owns: the scan calls `resolver.resolve` once per candidate slot it
-    // actually looks at, and the found offer already carries a resolved
-    // `page` — so a caller has nothing left to resolve.
+    // What this pins: the scan calls `resolver.resolve` once per candidate
+    // slot it actually looks at, and the found offer already carries a
+    // resolved `page` — so a caller has nothing left to resolve.
     let calls = 0
     const counting: typeof r = {
       ...r,
@@ -52,7 +49,7 @@ describe('nearestPaired', () => {
       8,
     )
     // Slot 4 is the gap; the scan checks slot 3 (before, found immediately)
-    // and slots 5, 6, 7 (after, all past the end of `a`'s 8 slots — none
+    // and slots 5, 6, 7 (after, up to the end of `a`'s 8 slots — none
     // resolve, so the scan exhausts `within` without an `after`).
     expect(calls).toBe(4)
     expect(found).toEqual({ before: { slot: 3, page: 2, at: 2 } })

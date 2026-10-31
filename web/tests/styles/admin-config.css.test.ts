@@ -4,14 +4,14 @@ import settingsSource from '../../src/styles/settings.css?raw'
 import { rules, selectors, subject, withoutComments } from '../support/css'
 
 /**
- * ⑤b empties `admin.css` of the two pre-token idioms the style pass replaced
+ * `admin.css` holds neither of the two pre-token idioms the style pass replaced
  * everywhere else: a border mixed from `currentColor`, and `opacity` standing
- * in for a quiet colour. Both are invisible to `colourLiterals.test.ts`,
- * which only fails on a literal — `color-mix(in srgb, currentColor 25%,
- * transparent)` names no colour at all, and `opacity: 0.8` names none either.
+ * in for a quiet colour. Both are invisible to `colourLiterals.test.ts`, which
+ * only fails on a literal — `color-mix(in srgb, currentColor 25%, transparent)`
+ * names no colour at all, and `opacity: 0.8` names none either.
  *
- * Asserted here rather than left to review, because "the sweep is complete"
- * is a claim that decays the moment somebody adds a rule.
+ * Asserted here rather than left to review, because "the sweep is complete" is
+ * a claim that decays the moment somebody adds a rule.
  */
 describe('admin.css holds no pre-token idiom', () => {
   it('uses opacity for no quiet text', () => {
@@ -24,9 +24,6 @@ describe('admin.css holds no pre-token idiom', () => {
     expect(found).toEqual([])
   })
 
-  // The companion case: Task 6 replaced the last two `color-mix(in srgb,
-  // currentColor …)` borders — `.remove-root` and `.remove-user` — with
-  // `--danger`, closing the sweep Task 3 left these two out of.
   it('mixes no border from currentColor', () => {
     const found = [
       ...withoutComments(adminSource).matchAll(
@@ -38,14 +35,11 @@ describe('admin.css holds no pre-token idiom', () => {
 })
 
 /**
- * I2 of the whole-branch review over ⑤b: nothing asserted that `--danger`
- * actually reaches the two removal blocks. Deleting `box-shadow: inset 3px 0
- * 0 var(--danger)` from `.remove-root, .remove-user`, or either
- * `var(--danger)` declaration from `.remove-root .confirm, .remove-user
- * .confirm`, left the whole suite green — it was the only one of ⑤b's five
- * decisions with no test. Static rather than measured, like the sibling
- * describe block below: this is cheaper than a browser assertion and the
- * token's own contrast is already covered by `index.css.test.ts`.
+ * Pins that `--danger` reaches the removal blocks: the inset `box-shadow` strip
+ * on the block, and the border and text colour of its confirm button. Static
+ * rather than measured, like the sibling describe block below: this is cheaper
+ * than a browser assertion, and `index.css.test.ts` already covers the token's
+ * own contrast.
  */
 describe('admin.css marks the removal blocks with --danger', () => {
   it('puts the token on the strip and on the confirm button', () => {
@@ -114,11 +108,10 @@ describe('admin.css marks the move confirm as the action', () => {
 })
 
 /**
- * Task 2's own rule: one `--config-measure` on the page, not a width on each
- * control inside it. Static rather than measured — the browser pass
- * (`Config.browser.test.tsx`) is what proves the measure actually reaches
- * 640px in a real layout; this is what stops a later edit from adding a
- * second, competing width beside it.
+ * One `--config-measure` on the page, not a width on each control inside it.
+ * Static rather than measured — the browser pass (`Config.browser.test.tsx`) is
+ * what proves the measure actually reaches 640px in a real layout; this is what
+ * stops a later edit from adding a second, competing width beside it.
  */
 describe('admin.css sets the settings-area measure once', () => {
   it('sets the measure once rather than per control', () => {
@@ -161,12 +154,12 @@ describe('admin.css quiets every .why on the users screen', () => {
 
 /**
  * O177. `.scan-report > section > dl` makes a grid of the report's two
- * top-level lists and of nothing below them. As `.scan-report dl` it also
- * reached `UnreadableCauses`'s nested `<dl>` of causes and made that a grid
- * too — one hard column at 390px — which `Config.browser.test.tsx`'s "keeps the scan
- * report's list of causes inside its row" measures. That case is in the
- * browser project, which CI does not run; this holds the same rule where CI
- * does, read off the stylesheet rather than measured.
+ * top-level lists and of nothing below them. As `.scan-report dl` it would also
+ * reach `UnreadableCauses`'s nested `<dl>` of causes and make that a grid too,
+ * which `Config.browser.test.tsx`'s "keeps the scan report's list of causes
+ * inside its row" measures. That case is in the browser project, which CI does
+ * not run; this holds the same rule where CI does, read off the stylesheet
+ * rather than measured.
  */
 describe("admin.css makes a grid of the scan report's top-level lists only", () => {
   it('gives grid columns to no dl but a section’s own', () => {

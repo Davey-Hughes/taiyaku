@@ -145,10 +145,8 @@ describe('the generic per-module preference map App.tsx builds', () => {
 /**
  * The preferences map, as six rules rather than six hand-written spreads.
  *
- * Every one of these was inline in `App.tsx` and so was covered by typecheck
- * alone — and the class of defect they guard against is one this repository
- * has already shipped once: `direction.ts` extracted `setOverride` because a
- * hand-written merge dropped every other edition's saved value.
+ * A hand-written merge would drop every other edition's saved value, which
+ * `direction.ts`'s `setOverride` exists to prevent.
  */
 
 const two = (): ReaderModule<{ on: boolean; size: number }> => ({
@@ -203,7 +201,7 @@ describe('changeSlice', () => {
   /**
    * **The defect this shape exists to prevent.** A rule that returns only the
    * field it changed drops the rest of the slice — which is exactly what
-   * `direction.ts`'s `setOverride` was extracted over, and what makes the
+   * `direction.ts`'s `setOverride` exists to prevent, and what makes the
    * *rule* rather than the merge the thing to get right.
    */
   it('keeps whatever the rule keeps, and nothing more', () => {

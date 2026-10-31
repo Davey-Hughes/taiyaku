@@ -36,13 +36,12 @@ import { Users } from '../src/Users'
  * O175: what Chromium's own accessibility tree names the controls under a
  * `.field` label, read over the DevTools protocol.
  *
- * `markup.browser.test.tsx` pins names as Playwright computes them, and here
- * the two disagreed. `admin.css` draws the `.field` labels mounted here as
- * upper-case micro-labels through `text-transform`; Chromium's tree named
- * the control in those capitals — "EDITION KEY", "NAME" — where Playwright's
- * computation gave the words as written. Each control now carries its
- * label's words in an `aria-label`, and this file holds what the tree makes
- * of that.
+ * `markup.browser.test.tsx` pins names as Playwright computes them.
+ * `admin.css` draws the `.field` labels mounted here as upper-case
+ * micro-labels through `text-transform`; Chromium's tree would name a control
+ * in those capitals — "EDITION KEY", "NAME" — where Playwright's computation
+ * gives the words as written. Each control carries its label's words in an
+ * `aria-label`, and this file holds what the tree makes of that.
  *
  * **A `.field` case first asserts that its labels are drawn in capitals.** A
  * label drawn as written names its control as written with no `aria-label`
@@ -556,8 +555,8 @@ describe('the name Chromium gives a control under a field label — O175', () =>
 /**
  * O182: the same capitals on two headings and a group. `admin.css` draws a
  * proposal's two `.lab` headings and the rule form's `sets` legend through
- * `text-transform: uppercase` as well, and Chromium's tree named them in
- * those capitals. Each now carries its words in an `aria-label`.
+ * `text-transform: uppercase` as well, and Chromium's tree would name them in
+ * those capitals. Each carries its words in an `aria-label`.
  *
  * Each case first asserts that the words are drawn in capitals, for the
  * reason the field cases above do.

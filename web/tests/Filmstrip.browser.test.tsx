@@ -18,9 +18,7 @@ import { cdp, page, userEvent } from 'vitest/browser'
 // protects against losing this import outright. What it protects against is
 // a *valid but degenerate* `--strip-unit`, such as `0px`: that resolves to a
 // real number, so every tile collapses to its border width and every
-// `calc()` below would agree with itself at zero. 6 of the 7
-// `*.browser.test.tsx` files in this directory import it for the same
-// reason; `PageView.browser.test.tsx` does not.
+// `calc()` below would agree with itself at zero.
 import '../src/index.css'
 import { Filmstrip, type FilmstripProps } from '../src/Filmstrip'
 import type { Group } from '../src/pairing'
@@ -38,9 +36,8 @@ import { type GlideSample, releaseSpeed } from '../src/tiles'
  * What jsdom cannot answer: whether a windowed rail is the same *shape* as an
  * unwindowed one. Every assertion here is a measured box.
  *
- * The invariant is deliberately "the windowed rail is as wide as its tiles'
- * nominal widths say it should be", not "as wide as it was before O140" —
- * giving a tile a width moved that on its own, before anything was windowed.
+ * The invariant is "the windowed rail is as wide as its tiles' nominal widths
+ * say it should be".
  *
  * Nothing here loads a thumbnail: `thumbUrl` points at `/api/...`, which no
  * server answers in this environment, so every tile sits at exactly its
@@ -143,11 +140,8 @@ describe('a windowed rail has the shape of an unwindowed one', () => {
   // the two spacers are the right way round or swapped, since a swap
   // exchanges their widths rather than changing either one's magnitude. Only
   // a *positional* assertion can catch a swap, and only if it is run in both
-  // directions: the review that produced this loop found the original,
-  // `ltr`-only version of this test caught a swap (48 vs 47 tiles = 101px)
-  // while an untested `rtl` case would not have — the same shape of miss
-  // recorded as O65 elsewhere in this project, an `rtl` fixture passing a
-  // mutation `ltr` caught.
+  // directions: an `rtl` fixture can pass a mutation that `ltr` catches, the
+  // same shape of miss recorded as O65 elsewhere in this project.
   for (const reading of ['ltr', 'rtl'] as const) {
     it(`puts the current tile where an unwindowed rail would put it, ${reading}`, async () => {
       await page.viewport(1440, 900)
@@ -170,9 +164,7 @@ describe('a windowed rail has the shape of an unwindowed one', () => {
       // *left*, and Chromium reports `scrollLeft` as negative,
       // `-(scrollWidth - clientWidth)` at the start up to `0`. Folding both
       // onto the same 0..max scale up front is what lets one `offset`
-      // formula serve both directions — measured empirically (a raw,
-      // un-normalised `rtl` reading came out negative and off by exactly
-      // `scrollWidth - clientWidth`).
+      // formula serve both directions.
       const scrollLeft =
         rail.scrollLeft >= 0
           ? rail.scrollLeft
@@ -261,9 +253,9 @@ describe("the strip's rung follows the stylesheet's drawn tile height", () => {
  * called on. jsdom has no layout, so that file swaps `scrollIntoView` for a
  * recorder, stubs the rail's scroll geometry and its box, and dispatches the
  * scroll event by hand. Whether the rail then *shows* the tile is not a
- * question it can ask — and the defect was that it did not: the window
- * rebuilt around the new current tile while the rail stayed scrolled to
- * wherever the flick had left it (`Filmstrip.tsx`'s centring effect, C1).
+ * question it can ask — and the defect would be that it did not: the window
+ * would rebuild around the new current tile while the rail stayed scrolled
+ * to wherever the flick left it (`Filmstrip.tsx`'s centring effect).
  *
  * Nothing is stubbed here. The flick is a write to the real `scrollLeft`,
  * the scroll event is the browser's own, the centring is the real
@@ -271,8 +263,8 @@ describe("the strip's rung follows the stylesheet's drawn tile height", () => {
  * real scroll position and the tile's real box.
  *
  * **The turn is a `rerender`, not a second `mount`.** The same instance has
- * to see `currentIndex` change: a fresh one has no flicked window to be stale
- * against.
+ * to see `currentIndex` change: a fresh one has no flicked window to be
+ * stale against.
  */
 describe('a page turn after the reader has flicked the rail', () => {
   /** Which tiles the window holds, as `groups` indices. */
@@ -365,10 +357,10 @@ describe('a page turn after the reader has flicked the rail', () => {
  * O138: the rail draws no scrollbar.
  *
  * What is read here is the cascade: that the rail wears the class and the
- * rule reaches it. It is not the scrollbar. O145 found that Playwright's
- * defaults launch Chromium with `--hide-scrollbars`, so in this project the
- * rail's `clientHeight` equals its `offsetHeight` with the rule or without
- * it. The scrollbar itself is read on the running app (`docs/notes.md`).
+ * rule reaches it. It is not the scrollbar: Playwright's defaults launch
+ * Chromium with `--hide-scrollbars`, so in this project the rail's
+ * `clientHeight` equals its `offsetHeight` with the rule or without it
+ * (O145). The scrollbar itself is read on the running app (`docs/notes.md`).
  */
 describe("the rail's scrollbar", () => {
   it('is declared away on the rail itself', async () => {

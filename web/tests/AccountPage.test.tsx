@@ -336,9 +336,8 @@ describe('the actor rule', () => {
   })
 
   it('will not let an administrator reset their own password, and links to where to', async () => {
-    // The fourth refusal, and the one whose advice names another screen. Until
-    // O94 that screen had no URL, and this said "open any work and press A";
-    // it links to `/account` now. Asserted on the refusal's own paragraph and
+    // The fourth refusal, and the one whose advice names another screen: it
+    // links to `/account` (O94). Asserted on the refusal's own paragraph and
     // on the link as an element, so a sentence that merely spells out
     // `/account` does not pass for a way a person can follow.
     const me = user()
@@ -543,11 +542,11 @@ describe('the fields', () => {
     pass(WAIT_DRAWN_AFTER_MS)
     expect(holdOf(control(host, 'select[name="role"]'))).toBe('held')
 
-    // **The lock is `begin`'s guard, and nothing stands in front of it
-    // now.** A tick lands on a live box, reaches `save`, and `begin`
-    // refuses it. This case alone cannot say the guard is the ref: by now
-    // the page has rendered `saving`, so a guard reading that would pass
-    // here too. The double-press DELETE cases below are what prove the ref.
+    // **The lock is `begin`'s guard, and nothing stands in front of it.** A
+    // tick lands on a live box, reaches `save`, and `begin` refuses it. This
+    // case alone cannot say the guard is the ref: by now the page has rendered
+    // `saving`, so a guard reading that would pass here too. The double-press
+    // DELETE cases below are what prove the ref.
     const second = tick(host, 90)
     const stream = control<HTMLInputElement>(host, 'input[name="can_stream"]')
     await act(async () => {
@@ -2532,7 +2531,7 @@ describe('removal', () => {
     // **Both presses inside one `act`, before React re-renders.** That is the
     // window the ref guards and `disabled={removing}` does not: a second press
     // *after* a render lands on a disabled button and would pass against a
-    // page with no guard at all. Checked by hand-applying that defect.
+    // page with no guard at all.
     await act(async () => {
       confirm.click()
       confirm.click()
@@ -2544,7 +2543,7 @@ describe('removal', () => {
 
   it('marks the confirm button and not Cancel, before the cost has loaded', async () => {
     // The whole reason this is a class and not `:first-of-type`: until the
-    // cost resolves, Cancel is the only button in the block. Both removal
+    // cost resolves, Cancel is the only button in the block. The removal
     // blocks render their confirm button only after the cost resolves, so
     // `:first-of-type` would paint Cancel in danger red on the loading state.
     let land: ((answer: usersApi.RemovalAnswer) => void) | undefined

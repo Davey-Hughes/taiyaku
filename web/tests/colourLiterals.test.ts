@@ -12,32 +12,12 @@ import { describe, expect, it } from 'vitest'
  * theme: `styles/tokens.css`, where colour is defined, and `palette.ts`,
  * whose note colours are drawn *on* artwork and so follow no theme.
  *
- * **The allowance only shrinks, and it is now empty.** It started at what the
- * tree held when the tokens arrived, and `toEqual` makes a file over its entry
- * fail and a file *under* its entry fail too. ⑤c was the style pass's last PR
- * and emptied it: `Account.tsx`'s ten went when its inline `style=` props
- * became class names, and `styles/annotations.css`'s two became
- * `--box-edge-bright` and `--box-hatch`.
- *
- * **Those last two were nearly exempted instead, on a reason that was
- * wrong**, and the correction is worth keeping because it is the kind of
- * mistake this file exists to make expensive. The argument was that both
- * values are deliberately theme-independent, and that moving them into
- * `tokens.css` would put values that must *not* follow the theme into the
- * file whose whole job is following it. `tokens.css` has carried a **Fixed**
- * block since the box palette was written, for exactly that case, and
- * `annotations.css` already drew four of its six colours from it. The
- * supporting quotation was also attributed to `palette.ts`, which does not
- * contain it — it is `annotations.css`'s own comment, about itself.
- *
- * Tokenising turned out to fix something as well: the hatch's
- * `rgba(74, 36, 0, 0.5)` was `--box-line` at half alpha, hand-copied two
- * lines above a `var(--box-fill)` in the same declaration. Changing
- * `--box-line` would have moved the outline and left the hatch behind.
+ * **The allowance only shrinks, and it is empty.** `toEqual` makes a file
+ * over its entry fail and a file *under* its entry fail too.
  *
  * **Adding an entry back is a decision, not a fix.** A colour that needs to
- * exist outside `tokens.css` needs the exempt paragraph above to gain a third
- * bullet saying why — and "it must not follow the theme" is not that reason,
+ * exist outside `tokens.css` needs the exempt paragraph above to name a third
+ * file and say why — and "it must not follow the theme" is not that reason,
  * because `tokens.css` already holds such values.
  *
  * **What this cannot see:** a colour named in words (`black`), a colour built
@@ -45,11 +25,10 @@ import { describe, expect, it } from 'vitest'
  * would count. Nor a regular expression literal in TypeScript, which is
  * scanned as code: one holding `//` or `/*` — `/\//` ends in two slashes —
  * reads to the counter as a comment opening, and it under-counts whatever
- * that comment appears to swallow. None of these exists here today.
+ * that comment appears to swallow.
  *
  * **And it is file-granular where it exempts.** Everything in an exempt file
- * is unseen, not just the values the exemption was for. That is why ⑤c
- * declined to add a third.
+ * is unseen, not just the values the exemption was for.
  */
 const SOURCES = import.meta.glob<string>(
   ['./**/*.{ts,tsx,css}', '!./**/*.test.{ts,tsx}'],

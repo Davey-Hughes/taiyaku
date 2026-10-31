@@ -280,8 +280,8 @@ describe('More, at the sidebar’s foot', () => {
   ])(
     'names the link and the button with what the count %i counts — O164',
     (count, link, button) => {
-      // The number alone ran into the word: Chromium named the link
-      // "Proposals17". The labels say what it counts.
+      // Without a label the number runs into the word ("Proposals17"); the
+      // labels say what it counts.
       const host = at(<AccountMenu admin={true} openProposals={count} />)
       expect(moreButton(host).getAttribute('aria-label')).toBe(button)
       expect(
@@ -312,8 +312,7 @@ describe('More, at the sidebar’s foot', () => {
     ['/series/3', false],
     ['/configure', false],
   ])('marks an administrator’s More on %s: %s', (path, here) => {
-    // Spec §1: the screens behind More are marked on More, standing in for
-    // the current mark their links carried in the column.
+    // Spec §1: the screens behind More are marked on More.
     const host = at(<AccountMenu admin={true} />, path)
     expect(moreButton(host).hasAttribute('data-here')).toBe(here)
   })

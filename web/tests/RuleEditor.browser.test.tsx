@@ -1183,8 +1183,8 @@ describe('the Rules screen’s width', () => {
  * A control that a save, an import or a preview takes while it has focus
  * keeps focus, in a real browser: jsdom never moves focus off a disabled
  * control, and Chromium moves it to the page. Where focus is is read before
- * how the control is held, so that a control held by `disabled` again fails
- * on focus left on the page.
+ * how the control is held, so that a control held by `disabled` fails on
+ * focus left on the page.
  */
 describe('the Rules screen’s held controls, in a real browser', () => {
   const second: rulesApi.Rule = {

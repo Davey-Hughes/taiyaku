@@ -34,8 +34,7 @@ import { mount, rerender } from './support/mount'
  * Deliberately left uncovered, and left to the browser project: the default
  * `makeImage` branch (`newImage`, i.e. a real `new Image()`), because
  * exercising it honestly means exercising a real `decode()` — which is
- * exactly the property `jsdom` does not have. See the report for the exact
- * lines.
+ * exactly the property `jsdom` does not have.
  */
 
 interface ControlledImage {

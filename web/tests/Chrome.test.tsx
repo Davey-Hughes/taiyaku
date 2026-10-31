@@ -110,9 +110,8 @@ describe('Chrome', () => {
   })
 
   /**
-   * Spec 2026-09-17 §8.3, reversing O65's dock above the strip: the way back
-   * is in the top bar now, which is inside this component, so it keeps the
-   * fade and stands down while correcting as O65's button did.
+   * Spec 2026-09-17 §8.3: the way back is in the top bar, which is inside this
+   * component, so it keeps the fade and stands down while correcting.
    * `App.browser.test.tsx` measures that nothing covers it.
    */
   it('puts the way back in the top bar, on the reader’s top edge', () => {

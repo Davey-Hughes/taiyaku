@@ -513,11 +513,11 @@ describe('useFlushOnHide', () => {
   })
 
   it('sends both pending writes when the component itself goes away', () => {
-    // The unmount is the third way the reader leaves, and until 2026-08-09 it
-    // was the one nothing covered: the two debounces `App.tsx` hands in were
-    // left armed, so a `putProgress` or a `putNotes` could fire up to 700 ms
-    // after the component that scheduled it had gone. Flushed rather than
-    // cancelled — see this hook's own doc for the argument at each call site.
+    // The unmount is the third way the reader leaves. Left armed, the two
+    // debounces `App.tsx` hands in could fire `putProgress` or `putNotes` up to
+    // 700 ms after the component that scheduled them had gone. Flushed rather
+    // than cancelled — see this hook's own doc for the argument at each
+    // call site.
     const position = flushable()
     const notes = flushable()
     probe(() => useFlushOnHide(position, notes), undefined)
@@ -616,9 +616,8 @@ describe('useReadingClock', () => {
   })
 
   it('records no turn for the load that opened the work', () => {
-    // Measured, not assumed: counting the load as a turn made the first
-    // estimate this project ever rendered `~6m left`, derived entirely from
-    // load latency before a key had been pressed.
+    // Counting the load as a turn would derive the first estimate entirely
+    // from load latency, before a key had been pressed.
     const p = run({ edition: 'ja', slot: 12 })
     expect(p.last().turns.current).toEqual([])
   })

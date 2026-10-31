@@ -73,15 +73,15 @@ function fireSelect(el: HTMLSelectElement, value: string) {
 }
 
 /**
- * jsdom defines no `elementFromPoint` at all — confirmed by hand: calling it
- * throws `document.elementFromPoint is not a function`, and `vi.spyOn` on it
- * throws `"The property 'elementFromPoint' is not defined on the object"`.
- * `Settings`'s release guard (I1 of the second whole-branch review) reads it
- * on every `pointerup`, so every test below that fires one needs an answer —
- * and a single answer for the whole file cannot be right, since "released
- * over the scrim" and "released over the panel" are the two things most of
- * these tests exist to tell apart. Stubbed per test, to whatever a real hit
- * test would answer for that test's own press, and restored after.
+ * jsdom defines no `elementFromPoint` at all: calling it throws
+ * `document.elementFromPoint is not a function`, and `vi.spyOn` on it throws
+ * `"The property 'elementFromPoint' is not defined on the object"`.
+ * `Settings`'s release guard reads it on every `pointerup`, so every test
+ * below that fires one needs an answer — and a single answer for the whole
+ * file cannot be right, since "released over the scrim" and "released over
+ * the panel" are the two things most of these tests exist to tell apart.
+ * Stubbed per test, to whatever a real hit test would answer for that test's
+ * own press, and restored after.
  */
 function stubHitTest(at: (x: number, y: number) => Element | null): () => void {
   const before = document.elementFromPoint
@@ -439,12 +439,12 @@ describe('Settings', () => {
   })
 
   it('does not close when the press began on the scrim and released inside the panel', () => {
-    // I4 of the whole-branch review: `click`'s own target is this element
-    // either way a mixed press goes, since a DOM `click` fires on the
-    // nearest common ancestor of the down and up targets — so this is the
-    // one direction the two tests above cannot tell apart from the correctly
-    // refused one, and the one that closed the dialog under a reader who
-    // pressed the dim background and swept onto the panel.
+    // `click`'s own target is this element either way a mixed press goes,
+    // since a DOM `click` fires on the nearest common ancestor of the down and
+    // up targets — so this is the one direction the two tests above cannot
+    // tell apart from the correctly refused one, and the one that would close
+    // the dialog under a reader who pressed the dim background and swept onto
+    // the panel.
     const onClose = vi.fn()
     const host = mount(
       <Settings
@@ -475,21 +475,19 @@ describe('Settings', () => {
   })
 
   it('does not close when a touch release retargets to the scrim over the panel', () => {
-    // I1 of the second whole-branch review. This is not the mixed-direction
-    // case above — that one is a mouse's stream, where a drag that starts on
-    // a control really does release with `pointerup`'s own `target` on the
-    // scrim. A *touch* pointer never produces that stream at all: it gets
-    // implicit pointer capture on `pointerdown`, so the browser dispatches
-    // every later event for that pointer — `pointerup` and `click` alike —
-    // at the capture element regardless of where the finger actually lifts.
-    // For a press down on the scrim and up over the panel, `pointerup`'s
-    // *target* is still the scrim; only its `clientX`/`clientY` say the
-    // finger moved. Measured in Chromium at 390×844 with `hasTouch: true,
-    // isMobile: true`: an 8 px sweep, x=16 to x=24 — less than half the
-    // scrim's own ~20px margin at that size (`docs/notes.md`, "Style pass
-    // ④"), so a realistic slip, which crossed onto the panel — delivered
-    // `pointerdown`, `pointerup` and `click` all targeted at the scrim,
-    // with the release's client coordinates over the panel.
+    // This is not the mixed-direction case above — that one is a mouse's
+    // stream, where a drag that starts on a control really does release with
+    // `pointerup`'s own `target` on the scrim. A *touch* pointer never produces
+    // that stream at all: it gets implicit pointer capture on `pointerdown`, so
+    // the browser dispatches every later event for that pointer — `pointerup`
+    // and `click` alike — at the capture element regardless of where the finger
+    // actually lifts. For a press down on the scrim and up over the panel,
+    // `pointerup`'s *target* is still the scrim; only its `clientX`/`clientY`
+    // say the finger moved. Here a sweep from x=16 to x=24, less than half the
+    // scrim's own ~20px margin (`docs/notes.md`, "Style pass ④") and so a
+    // realistic slip, crosses onto the panel: `pointerdown`, `pointerup` and
+    // `click` all target the scrim, with the release's client coordinates
+    // over the panel.
     const onClose = vi.fn()
     const host = mount(
       <Settings
@@ -503,9 +501,8 @@ describe('Settings', () => {
     )
     const scrim = host.querySelector('.reader-dialog') as HTMLElement
     const panel = host.querySelector('.reader-dialog-panel') as HTMLElement
-    // A real hit test, at the coordinates Chromium's own run answered in the
-    // reviewer's measurement: short of the scrim's ~20px margin is the
-    // scrim, at or past it is the panel.
+    // A real hit test: short of the scrim's ~20px margin is the scrim, at or
+    // past it is the panel.
     const restore = stubHitTest((x) => (x < 20 ? scrim : panel))
     try {
       act(() => {

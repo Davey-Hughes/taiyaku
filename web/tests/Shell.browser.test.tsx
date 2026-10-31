@@ -1791,8 +1791,8 @@ describe('the licence page’s contents, and Back', () => {
 /**
  * The sidebar's wordmark is the way to `/`, as its Libraries heading is
  * (the user's ruling of 2026-10-26): a link named for both, drawn at rest
- * as the plain wordmark it was, with the sidebar links' ring and hover.
- * Login's wordmark stays a heading's words (`Login.test.tsx`).
+ * as the plain wordmark, with the sidebar links' ring and hover.
+ * Login's wordmark is a heading's words (`Login.test.tsx`).
  */
 describe('the sidebar’s wordmark', () => {
   /** The column's wordmark, and the link it is drawn in. */

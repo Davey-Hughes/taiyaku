@@ -3,7 +3,7 @@
  * `disabled`, which Chromium takes focus off, or not at all. A control
  * `HeldButton` holds, or one held as it is, reads `'held'`; a test that it is
  * held reads that rather than `disabled`, so that one held by `disabled`
- * again fails it.
+ * fails it.
  */
 export function holdOf(el: Element): 'held' | 'disabled' | 'free' {
   if ((el as HTMLButtonElement).disabled) return 'disabled'

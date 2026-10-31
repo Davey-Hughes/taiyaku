@@ -10,31 +10,23 @@ import { mount } from './support/mount'
  * The collapsed inbox row, laid out — which is the one thing about it neither
  * of the other two projects can see.
  *
- * **Why this file exists, and what the pass before it got wrong.** C3 §3
- * chose a scannable list over a one-at-a-time triage loop for a single
- * reason: with ~37 proposals mostly of one kind, a person should be able to
- * *see* that 29 of 37 are the same question and answer it once. That is a
- * claim about what a row shows at a given width, so it is a claim only a
- * layout engine can check — `jsdom` returns zeroes from
- * `getBoundingClientRect`, and every assertion in `Proposals.test.tsx` and
- * `ProposalRow.test.tsx` would pass just as happily on a row ellipsised to
- * ten characters.
+ * C3 §3 chose a scannable list over a one-at-a-time triage loop for a single
+ * reason: with an inbox mostly of one kind, a person should be able to *see*
+ * that most of it is the same question and answer it once. That is a claim
+ * about what a row shows at a given width, so it is a claim only a layout
+ * engine can check — `jsdom` returns zeroes from `getBoundingClientRect`, and
+ * every assertion in `Proposals.test.tsx` and `ProposalRow.test.tsx` would
+ * pass just as happily on a row ellipsised to ten characters.
  *
- * A browser pass had already looked at this screen and found it fine. It was
- * driven with **invented `reason` strings the server never emits**, at one
- * width, so it flattered the wide case and never rendered the narrow one. The
- * fixtures below are the store's own sentences, in the shapes
- * `raise_edition_of` and `raise_attach_chapters` write them — the two
- * `format!` calls were printed out of `proposals/tests.rs`' own fixtures, not
- * written from memory — and both widths are here because the defect lived at
- * exactly one of them.
+ * The fixtures below are the store's own sentences, in the shapes
+ * `raise_edition_of` and `raise_attach_chapters` write them, not invented
+ * `reason` strings the server never emits. Both widths are here because a
+ * defect can sit at exactly one of them.
  *
- * **460 and 1100 are not arbitrary.** 460px since the style pass's ②: below
- * 900px the sidebar leaves the flow, and 460 − 2 × 16 gives `main` the 428px
- * that 700 − 224 − 48 gave it beside the 14rem sidebar — the same list width
- * the row reflows at either way. At 1100px `.library` is still the fixed
- * 14rem sidebar plus `main`'s 1.5rem padding, so the list is 828px there —
- * either side of the 32rem container query that reflows the row.
+ * **460 and 1100 are not arbitrary.** Below 900px the sidebar leaves the
+ * flow, and 460 − 2 × 16 gives `main` 428px. At 1100px `.library` is still
+ * the fixed 14rem sidebar plus `main`'s 1.5rem padding, so the list is 828px
+ * there — either side of the 32rem container query that reflows the row.
  * The `@container inbox` comment in `styles/admin.css` says why it is 32rem.
  *
  * CI does not run this project (see `vite.config.ts`: no Chromium), so
@@ -83,8 +75,7 @@ const ROWS: curation.ListedProposal[] = [
     // the column at 1100px, so nothing else in this file can tell "the title
     // is ellipsised inside its track" apart from "the track grew to fit it
     // and the list is now wider than `main`" — which is the failure
-    // `minmax(0, 1fr)` and `min-width: 0` exist to prevent, and which both
-    // survived their own deletion until this row existed. Its shape is the
+    // `minmax(0, 1fr)` and `min-width: 0` exist to prevent. Its shape is the
     // mockup's own second row plus an edition suffix.
     id: 3,
     kind: 'edition-of',
@@ -134,8 +125,7 @@ async function inboxAt(width: number): Promise<HTMLElement> {
     await Promise.resolve()
     await Promise.resolve()
   })
-  // A track sized by its text measures narrower before the web fonts arrive —
-  // 3.3px for the reflowed row at 460px, 6.2px for the title column at 1100px —
+  // A track sized by its text measures narrower before the web fonts arrive,
   // so every measurement in this file is taken once they have.
   await document.fonts.ready
   if (!host) throw new Error('nothing mounted')
@@ -173,8 +163,6 @@ describe('the collapsed inbox row, in a browser', () => {
     const listed = rows(host)
     expect(listed).toHaveLength(4)
 
-    // Measured: the list is 828px and the title column 506.6px of it, with the
-    // web fonts loaded.
     const first = listed[0]
     if (!first) throw new Error('no first row')
     expect(boxOf(first, '.what')).toBeGreaterThan(400)
@@ -212,12 +200,8 @@ describe('the collapsed inbox row, in a browser', () => {
     const first = rows(host)[0]
     if (!first) throw new Error('no first row')
 
-    // **The measurement the review was about.** The row drew the `reason`
-    // sentence in a flex column that measured 100px here — ten characters,
-    // `"Monster - `, identical on every `edition-of` row in the inbox. The
-    // container query gives the titles the whole row instead: measured
-    // 326.6px once the web fonts have loaded — at 460px on this branch, as
-    // at 700px before it — and the subject and its target both fit.
+    // **The container query gives the titles the whole row**, and the subject
+    // and its target both fit.
     expect(boxOf(first, '.what')).toBeGreaterThan(300)
     expect(cut(first, '.subject')).toBe(false)
     expect(cut(first, '.arrow')).toBe(false)

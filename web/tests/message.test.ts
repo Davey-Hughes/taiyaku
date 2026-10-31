@@ -22,8 +22,7 @@ describe('messageOf', () => {
   it('stringifies anything else, which is the arm forty call sites never reached', () => {
     // Nothing in this codebase throws a non-Error deliberately; the arm is
     // there because `unknown` is what a `catch` binds and a thrown string is
-    // what a dependency can hand back. Pinned once here rather than being
-    // thirty uncovered branches spread over twenty-one files.
+    // what a dependency can hand back.
     expect(messageOf('a bare string')).toBe('a bare string')
     expect(messageOf(undefined)).toBe('undefined')
     expect(messageOf({ code: 500 })).toBe('[object Object]')

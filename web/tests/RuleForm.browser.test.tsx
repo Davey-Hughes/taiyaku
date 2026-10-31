@@ -15,17 +15,13 @@ import { mount } from './support/mount'
  * passes a jsdom assertion just as happily as one on a row of its own. Only
  * a measured box tells them apart, which is why this file exists.
  *
- * The whole-branch review's C1. `.field.pattern` and `.rule-form .field`
- * both declare `flex`, they tied at (0,2,0), and source order gave it to
- * `.rule-form .field` — so the pattern box rendered 342px of the form's
- * 1051 at 1440px instead of the whole row. The fix raised
- * `.rule-form .field.pattern` above the tie.
+ * A bare `.field.pattern` declaring `flex` would tie `.rule-form .field` at
+ * (0,2,0), and source order would give the win to `.rule-form .field`: the
+ * pattern box would be a third of the row instead of the whole.
+ * `.rule-form .field.pattern` is raised above the tie.
  *
- * **Selectors, not line numbers.** The first version of this comment cited
- * `admin.css:505` and `:884`, which pointed at a prose comment and at
- * `.rule-row .select`'s body by the time the commit landed — and quoted a
- * selector that same commit had deleted. Every other comment in this tree
- * names the rule instead, for exactly that reason.
+ * **Selectors, not line numbers.** A line cite into `admin.css` goes stale as
+ * the file changes, so the rules are named.
  */
 
 const rule: Rule = {
@@ -48,11 +44,8 @@ const roots: Root[] = [
     id: 1,
     // **A real root path, because that is what sizes the `scope` select.** A
     // `<select>`'s intrinsic width is its widest option, so this string is
-    // the fixture's whole point. It was `/srv/manga` — ten characters, which
-    // fits a phone — and the browser pass then found the select rendering
-    // 299px inside its 166px label against the library these rules were
-    // built on, whose root is the 35 characters below, putting 118px of
-    // sideways scroll on the document at 390.
+    // the fixture's whole point: `/srv/manga`, ten characters, fits a phone,
+    // and the 35 characters below do not.
     path: '/home/davey/temp/manga-test/Volumes',
     edition_key: 'en',
     default_kind: 'manga',
@@ -75,8 +68,6 @@ describe('the rule form, in a browser', () => {
     if (!form || !pattern) throw new Error('the rule form did not render')
     const formWidth = form.getBoundingClientRect().width
     const patternWidth = pattern.getBoundingClientRect().width
-    // Measured by the controller at 1440px on `/config/rules`: 342px of the
-    // form's 1051px, a third of the row rather than the whole of it.
     expect(patternWidth).toBeGreaterThan(formWidth * 0.9)
   })
 
@@ -84,10 +75,9 @@ describe('the rule form, in a browser', () => {
     const host = mount(
       <RuleForm rule={rule} roots={roots} onCommit={() => {}} />,
     )
-    // The pane's width, because that is what the form has to fit inside.
-    // `mount()` appends to `document.body`, where the form is bounded by
-    // nothing. 777px is what `.editor-right` measured at a 1440px window
-    // when this was found.
+    // The pane's width, because that is what the form has to fit inside:
+    // `mount()` appends to `document.body`, where nothing bounds the form.
+    // 777px stands in for that pane's width at a 1440px window.
     host.style.width = '777px'
     await new Promise((r) => requestAnimationFrame(() => r(undefined)))
     const form = host.querySelector('.rule-form')
@@ -95,17 +85,16 @@ describe('the rule form, in a browser', () => {
     if (!form || !sets) throw new Error('the rule form did not render')
 
     // **`flex-basis` sizes the content box, and this project sets no global
-    // `border-box` reset.** `flex: 1 0 100%` asked for the form's full width
-    // as content; the fieldset's own `var(--space-3)` padding and 1px border
-    // then sat on top, so it rendered 803px inside a 777px form — 12+12 and
-    // 1+1 exactly. `box-sizing: border-box` is what holds it.
+    // `border-box` reset.** `flex: 1 0 100%` asks for the form's full width as
+    // content, so without `box-sizing: border-box` the fieldset's own
+    // `var(--space-3)` padding and 1px border would sit on top of it, past the
+    // form's width.
     //
     // **Asserted on this element rather than on anything's `scrollWidth`.**
-    // The document's reads no overflow at any width, because the element
-    // that grew a scrollbar for those 26px was `main`, four ancestors up
-    // through boxes that are all `overflow-x: visible`. A blanket
-    // "nothing spills" assertion was tried here and fails on the bare
-    // fixture for reasons the real screen does not have.
+    // The document reads no overflow at any width, because the element that
+    // scrolls is `main`, above boxes that are all `overflow-x: visible`. A
+    // blanket "nothing spills" assertion fails on the bare fixture for
+    // reasons the real screen does not have.
     expect(sets.getBoundingClientRect().width).toBeLessThanOrEqual(
       form.getBoundingClientRect().width,
     )
@@ -125,8 +114,8 @@ describe('the rule form, in a browser', () => {
     if (!scope || !label) throw new Error('the scope field did not render')
     // A grid item will not go below its content's min-content width without
     // `min-width: 0`, and a select's min-content is its widest option — the
-    // root path above. Without that declaration this select rendered 299px
-    // inside a 166px label, and the overflow reached the document.
+    // root path above. Without that declaration this select would be wider
+    // than its label, and the overflow would reach the document.
     expect(scope.getBoundingClientRect().width).toBeLessThanOrEqual(
       label.getBoundingClientRect().width + 1,
     )

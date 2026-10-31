@@ -24,16 +24,13 @@ import { rules } from './support/css'
  * it catches is a class no selector holds, which a rename that skipped the
  * stylesheet leaves behind.
  *
- * **What this cannot see.** Measured on c4b099f9, outside comments: 447
- * `className` attributes in 49 non-test `.tsx` files, 416 `className="…"`
- * and 31 `className={…}`. Of the 31, two are ternaries over strings and are
- * read in full; 26 draw on `look` (one spelling `secret` beside it) and one
- * is `classes`, both read through their tables; and two hold a class this
- * does not read:
+ * **What this cannot see.** A `className={…}` that draws on a table, `look`
+ * or `classes`, is read through the table, and a ternary over strings is
+ * read in full; two shapes hold a class this does not read:
  *
  * - **A class composed at runtime**: `NoteList.tsx`'s
- *   `` `note-list-${placement}` ``. Its two values have rules today,
- *   `reader.css`'s `.note-list-side` and `.note-list-below` — found by hand.
+ *   `` `note-list-${placement}` ``. Its two values have rules,
+ *   `reader.css`'s `.note-list-side` and `.note-list-below`.
  * - **A class a function returns**: `ProposalRow.tsx`'s `strength(…)`, from
  *   `curation.ts`. Only `strong` of its three values has a rule — `admin.css`
  *   leaves `maybe` and `weak` plain on purpose — and renaming any of the
@@ -43,13 +40,12 @@ import { rules } from './support/css'
  * `LOOKS[…]` in `Account.tsx`; what is checked is that `LOOKS` is found and
  * holds strings, not that `look` is drawn from it.
  *
- * Four more shapes would go unseen, and `rg` finds none of them today:
+ * Four more shapes would go unseen:
  *
  * - **A name outside a template literal, beside a string** — `cond ? 'a' :
  *   look.x`, `look.x ?? 'a'`, `fn('a')` — reads the string and not the
  *   name. A name inside a template's `${…}` is read, as `Account.tsx`'s
- *   `` `secret ${look.secret ?? ''}` `` is. The two ternaries name only
- *   their conditions.
+ *   `` `secret ${look.secret ?? ''}` `` is.
  * - **An object's keys as classes**, as `clsx` takes them: in
  *   `clsx('a', { b: on })` the key `b` is not read, and nor is `clsx` taken
  *   for a name.
@@ -60,8 +56,7 @@ import { rules } from './support/css'
  * - **The tokeniser's limits**, which it shares with
  *   `colourLiterals.test.ts`: a `//` or `/*` in JSX text reads as a comment
  *   and hides what follows it, and a regular-expression literal holding one,
- *   or a quote or a backtick, is misread. The one regular-expression literal
- *   `rg` finds in a non-test `.tsx` is `Series.tsx`'s `/^\d+$/`.
+ *   or a quote or a backtick, is misread.
  *
  * **The exemptions are by class, not by site**, and they are held both ways:
  * an exempt class that gains a rule, or stops being written, fails until its
@@ -188,12 +183,9 @@ const ELSEWHERE: Record<string, string> = {
 
 /**
  * Classes no selector names, no test or source selects by, and no stylesheet
- * spells as `.name` even in a comment: names nothing reads, as this test's
- * first run found them. None is a rename's leftover — `git log -G` at
- * c4b099f9 finds no stylesheet under `web/` that ever held one as `.name`.
- * Whether each should gain a rule or lose its name is not decided here. A
- * rule on the element's tag or an ancestor may still draw it; this test does
- * not look.
+ * spells as `.name` even in a comment: names nothing reads. Whether each
+ * should gain a rule or lose its name is not decided here. A rule on the
+ * element's tag or an ancestor may still draw it; this test does not look.
  */
 const UNREAD = [
   'archives',

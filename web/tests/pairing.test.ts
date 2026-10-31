@@ -109,8 +109,7 @@ describe('two-page with a hand-inserted break', () => {
     // and 4 pair normally: [{0}, {1,2,spread}, {3,4}]. Break 4 leaves the
     // spread's own restart untouched (nextIsSpreadStart still puts slot 0
     // alone) while separately forcing slot 3 alone too (nextIsBreak) — the
-    // two mechanisms firing at different positions within one call, which
-    // is the composition nothing in the suite exercised before.
+    // two mechanisms firing at different positions within one call.
     const ext = [...odd, { page: 3 }]
     expect(groups(ext, 'two', 'rtl', [4])).toEqual([
       { slots: [0] },
@@ -127,14 +126,6 @@ describe('two-page with a hand-inserted break', () => {
     // spread still wins. Break 5 lands on a slot the walk actually
     // revisits and forces slot 4 alone, which cascades: (5,6) then (7,8)
     // pair up instead of (4,5), (6,7), 8 alone.
-    //
-    // (The review's suggested [3, 6] was tried first: 6 turns out to land
-    // on a position the walk never revisits as a "current" index once the
-    // spread has put it back on even parity, so it has no effect at all —
-    // groups(bSlots, 'two', 'rtl', [3, 6]) equals the no-breaks case
-    // exactly, which would pass even if breaks were entirely unwired. 5 is
-    // used instead so the test actually proves the mechanism does
-    // something.)
     expect(groups(bSlots, 'two', 'rtl', [3, 5])).toEqual([
       { slots: [0, 1] },
       { slots: [2, 3], spread: true },
@@ -182,13 +173,11 @@ describe('cellsFor', () => {
     })
   })
 
-  // **Contract changed with the low-speed flicker fix.** This used to expect
-  // `wide: true` — an unpartnered page drawn across the whole group, exactly as
-  // a joined spread is. It is not a spread: it is an ordinary page that happens
-  // to have no partner, and drawing it full width collapsed the layout and
-  // expanded it again on consecutive turns wherever the aligned pairing left
-  // one. It keeps its own cell now; `alone` is what tells `App.tsx` the other
-  // one holds nothing but a mirror.
+  // An unpartnered page is not a spread: it is an ordinary page that happens
+  // to have no partner, and drawing it full width would collapse the layout and
+  // expand it again on consecutive turns wherever the aligned pairing left
+  // one. It keeps its own cell; until both cells have drawn, `alone` is what
+  // tells `GroupView.tsx` the other one holds nothing but a mirror.
   it('mirrors a solo slot (no pairing partner) into both cells, but is not wide', () => {
     expect(cellsFor({ slots: [7] }, 'ltr')).toEqual({
       wide: false,
@@ -208,12 +197,11 @@ describe('cellsFor', () => {
   })
 
   it('keeps the same two positions stable across a shape change at a spread boundary', () => {
-    // The exact turn that used to remount: leaving an ordinary pair for the
-    // spread that interrupts it. `first` carries through as the same slot
-    // family (the position nearer the start of the group), and both calls
-    // return `wide` alongside a fully-populated `second` — nothing here
-    // ever omits a cell, which is what let `App.tsx` stop switching element
-    // types at this position.
+    // Leaving an ordinary pair for the spread that interrupts it. `first`
+    // carries through as the same slot family (the position nearer the start
+    // of the group), and both calls return `wide` alongside a fully-populated
+    // `second` — nothing here ever omits a cell, which is what keeps the
+    // two-page layout from switching element types at this position.
     const pair = cellsFor({ slots: [2, 3] }, 'ltr')
     const spread = cellsFor({ slots: [4, 5], spread: true }, 'ltr')
     expect(pair).toEqual({ wide: false, alone: false, first: 2, second: 3 })
@@ -252,10 +240,8 @@ describe('secondCellAlone', () => {
     expect(secondCellAlone(solo, { second: 'a.png' })).toBe(true)
   })
 
-  // **The flicker fix.** State moves on the keypress and the pictures wait for
-  // their decode, so the target can say "a pair" while both cells still draw
-  // one page — measured at three layout changes in 114 ms during a flick, with
-  // the artwork never changing at all.
+  // State moves on the keypress and the pictures wait for their decode, so the
+  // target can say "a pair" while both cells still draw one page.
   it('is alone when both cells draw one page, whatever the target says', () => {
     expect(secondCellAlone(pair, { first: 'a.png', second: 'a.png' })).toBe(
       true,
@@ -301,12 +287,10 @@ describe('cellOf', () => {
     expect(cellOf(spread, 'rtl', 4)).toBe('only')
   })
 
-  // **Contract changed, and the old expectation was a real geometry bug.**
-  // This asserted `'only'` for an unpartnered page. `viewport.ts`'s `cellBox`
-  // reads `'only'` as *the page fills the group* and returns `WHOLE`; since an
-  // unpartnered page keeps its own half-width cell, that mapped a zoom rect
-  // against twice the width the page actually covers. `'only'` is the joined
-  // spread alone.
+  // `'only'` is the joined spread alone. `viewport.ts`'s `cellBox` reads
+  // `'only'` as *the page fills the group* and returns `WHOLE`; an unpartnered
+  // page keeps its own half-width cell, so `'only'` for it would map a zoom
+  // rect against twice the width the page actually covers.
   it('is `first` for an unpartnered page, which occupies one cell rather than the group', () => {
     expect(cellOf({ slots: [7] }, 'rtl', 7)).toBe('first')
     expect(cellOf({ slots: [7] }, 'ltr', 7)).toBe('first')
@@ -327,10 +311,9 @@ describe('correctionTiles', () => {
   })
 
   // bSlots: 0, 1, 2R, 2L, 3, 4, 5, 6, 7 — slots 2 and 3 are one page, joined
-  // into a single `spread: true` group by `groups`. `correctionTiles` is the
-  // fix for I4: a reader correcting has to be able to name either half on
-  // its own, so this keeps them apart rather than folding them into one
-  // unaddressable two-slot tile.
+  // into a single `spread: true` group by `groups`. A reader correcting has to
+  // be able to name either half on its own, so `correctionTiles` keeps them
+  // apart rather than folding them into one unaddressable two-slot tile.
   it('does not join a spread into one tile — each half is its own group', () => {
     expect(correctionTiles(bSlots)).toEqual([
       { slots: [0] },
@@ -384,10 +367,9 @@ describe('stepToGroup', () => {
   const rtl = 'rtl' as const
 
   /**
-   * The defect this exists for, reported from a manual pass: a joined spread
-   * is two slots drawn as one image, so stepping by slot showed the same
-   * picture twice and the reader pressed the arrow again wondering why
-   * nothing moved.
+   * A joined spread is two slots drawn as one image, so stepping by slot would
+   * show the same picture twice and the reader would press the arrow again
+   * wondering why nothing moved.
    */
   it('crosses a joined spread in one press', () => {
     const slots = slotsWith(6, [2])
@@ -426,8 +408,8 @@ describe('stepToGroup', () => {
 
   /**
    * In `two` mode a group is a pair, so one press turns both pages — stepping
-   * by slot advanced the pair by one and redrew half of what was already on
-   * screen.
+   * by slot would advance the pair by one and redraw half of what is already
+   * on screen.
    */
   it('turns a whole pair in two-page mode', () => {
     const slots = slotsWith(6, [])
@@ -445,10 +427,10 @@ describe('stepToGroup', () => {
   })
 
   /**
-   * O28. The old clamp kept the reader in the group they were already in and
-   * the first-slot landing then moved them to its start — backward, on a
-   * forward press. None of these presses change the picture, since both slots
-   * are inside one drawn group; what moved was the slot a swap answers from.
+   * O28. A clamp that kept the reader in the group they are already in would
+   * let the first-slot landing move them to its start — backward, on a forward
+   * press. None of these presses change the picture, since both slots are
+   * inside one drawn group; what would move is the slot a swap answers from.
    *
    * `two` mode needs no spread for this, because a pair is a group too.
    */
@@ -465,10 +447,9 @@ describe('stepToGroup', () => {
   })
 
   /**
-   * The mirror of it, at the start. O28's entry recorded that backward here
-   * "already returns the slot unchanged", which held only from a group's
-   * *first* slot — from the second it answered 0, invisibly, in the direction
-   * the reader had pressed.
+   * The mirror of it, at the start: from a group's *second* slot, a backward
+   * press would answer 0 under the same clamp, invisibly, in the direction the
+   * reader had pressed.
    */
   it('leaves the slot alone going backward off the start', () => {
     const pairs = groups(slotsWith(6, []), 'two', rtl)
@@ -484,7 +465,7 @@ describe('stepToGroup', () => {
   /**
    * And the rule is confined to the boundary: away from it, a second slot
    * still moves to the neighbouring group's first slot in both directions.
-   * Without this the fix could be spelled "a second slot never moves".
+   * Without this the rule could be spelled "a second slot never moves".
    */
   it('still moves off a second slot in the middle of the volume', () => {
     // 0, 1, 2R, 2L, 3, 4, 5 — slot 3 is the spread's second half.
@@ -493,7 +474,7 @@ describe('stepToGroup', () => {
     expect(stepToGroup(g, 3, -1)).toBe(1)
   })
 
-  /** A slot no group claims cannot move — better than guessing at one. */
+  /** Nothing survives ahead of slot 99, so `stepToGroup` returns it as is. */
   it('stays put when the slot belongs to no group', () => {
     const slots = slotsWith(3, [])
     const g = groups(slots, 'single', rtl)
@@ -534,11 +515,9 @@ describe('groups, with slots set aside', () => {
   })
 
   it('measured: on the primary corpus this is the difference between working and not', () => {
-    // `en-fan`'s four credit pages each sit at a chapter's end and so pair
-    // with an ordinary page. Driven in a browser against a written sidecar,
-    // filtering finished groups gave 122 tiles with `skip` on and 122 with it
-    // off. This is that shape in miniature: every skipped slot is the second
-    // of its would-be pair.
+    // `en-fan`'s credit pages each sit at a chapter's end and so pair with an
+    // ordinary page. This is that shape in miniature: every skipped slot is
+    // the second of its would-be pair.
     const none = groups(slotsWith(8, []), 'two', 'rtl')
     const set = groups(slotsWith(8, []), 'two', 'rtl', [], new Set([1, 5]))
     expect(none.length).toBe(4)
@@ -557,8 +536,7 @@ describe('groups, with slots set aside', () => {
 
   it('leaves every caller that skips nothing exactly as it was', () => {
     // `skip` switched off must cost nothing and change nothing —
-    // `module.ts`'s contract that a module which is off contributes nothing,
-    // and the property M5b's manual pass checks for.
+    // `module.ts`'s contract that a module which is off contributes nothing.
     const slots = slotsWith(7, [3])
     for (const mode of ['single', 'two', 'scroll'] as const) {
       expect(groups(slots, mode, 'rtl', [], new Set())).toEqual(
@@ -571,9 +549,9 @@ describe('groups, with slots set aside', () => {
 describe('groups, the cases the whole-branch review found', () => {
   it('keeps a joined spread whole in two mode when only one half is skipped', () => {
     // The partner search can land on a spread's *second* half when its first
-    // is skipped. Pairing with it put half a wide image in an ordinary cell
-    // and dropped the other half — while `single` mode, given the same input,
-    // kept the spread. The two modes must agree.
+    // is skipped. Pairing with it would put half a wide image in an ordinary
+    // cell and drop the other half — while `single` mode, given the same input,
+    // keeps the spread. The two modes must agree.
     const slots = slotsWith(3, [1])
     const two = groups(slots, 'two', 'rtl', [], new Set([1]))
     const single = groups(slots, 'single', 'rtl', [], new Set([1]))
@@ -583,16 +561,16 @@ describe('groups, the cases the whole-branch review found', () => {
   })
 
   it('honours a break that falls inside the skipped run', () => {
-    // A break is a slot a reader marked by hand. Testing only `partner`
-    // swallowed one sitting between `index` and `partner`, so switching
-    // `skip` on silently changed the parity of the rest of the volume for a
-    // reader who had fixed it themselves.
+    // A break is a slot a reader marked by hand. Testing only `partner` would
+    // swallow one sitting between `index` and `partner`, so switching `skip` on
+    // would silently change the parity of the rest of the volume for a reader
+    // who had fixed it themselves.
     const slots = slotsWith(5, [])
     expect(
       groups(slots, 'two', 'rtl', [1], new Set([1])).map((x) => x.slots),
     ).toEqual([[0], [2, 3], [4]])
     // Distinguishable from the same call without the break, which is the
-    // whole point — these were byte-identical before.
+    // whole point.
     expect(
       groups(slots, 'two', 'rtl', [], new Set([1])).map((x) => x.slots),
     ).toEqual([
@@ -604,8 +582,7 @@ describe('groups, the cases the whole-branch review found', () => {
 
 describe('stepToGroup, across a group that straddles a skipped slot', () => {
   // `[2, 4]` is one tile with slot 3 set aside between its halves — a shape
-  // that could not exist before `groups` took a `skipped` set, and that breaks
-  // any test written against a group's first or last slot alone.
+  // that breaks any test written against a group's first or last slot alone.
   //
   // **These pin a backstop, not a reachable state.** `skippedApartFrom` exempts
   // the page the reader is standing on, so the app never asks `stepToGroup`
@@ -622,12 +599,9 @@ describe('stepToGroup, across a group that straddles a skipped slot', () => {
   })
 
   it('answers both directions with the tile the reader is inside', () => {
-    // The two directions failed differently here, and the comment this
-    // replaces claimed both were stuck. Only `←` was: it returned 1 and did
-    // nothing. `→` returned 4 — it moved, but past slot 2, which is drawn as
-    // half of the tile `[0, 2]`. Both now answer 0, that tile's first slot,
-    // so nothing drawn is stepped over in either direction. The forward answer
-    // is therefore a reversal (4 → 0), not only an unsticking.
+    // Both directions answer 0, that tile's first slot, so nothing drawn is
+    // stepped over in either direction: slot 2 is drawn as half of the tile
+    // `[0, 2]`, which landing on 4 would pass over.
     const g = groups(slotsWith(6, []), 'two', 'rtl', [], new Set([1, 3]))
     expect(g.map((x) => x.slots)).toEqual([
       [0, 2],
@@ -639,11 +613,6 @@ describe('stepToGroup, across a group that straddles a skipped slot', () => {
 })
 
 describe('stepToGroup, standing on a slot no group holds', () => {
-  // Reachable three ways once `skip` filters groups: taking a credit page
-  // from the panel, clicking its filmstrip tile before switching `skip` on,
-  // and switching `skip` on while already standing there. Before the credits
-  // panel this could not happen, and the function simply refused to move.
-
   it('steps forward to the nearest surviving group', () => {
     const g = groups(slotsWith(6, []), 'single', 'rtl', [], new Set([3]))
     expect(stepToGroup(g, 3, 1)).toBe(4)
@@ -669,8 +638,6 @@ describe('stepToGroup, standing on a slot no group holds', () => {
 })
 
 describe('skipping is presentational', () => {
-  // Moved here from `modules/credits.test.ts` when `nextReadable` was retired:
-  // the claim is now a property of the grouping, not of a slot walker.
   // The whole content of the numbering decision. If someone later renumbers
   // for readability, this goes red — which is the point.
   it('changes which slot an arrow lands on, never what a slot is called', () => {

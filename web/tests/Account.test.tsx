@@ -424,14 +424,14 @@ describe('Account', () => {
   })
 
   /**
-   * **`class="secret secret"`, which is what the page rendered.** The call
-   * site writes the literal `secret` for both placements and appends
-   * `look.secret` after it; `LOOKS.page` set that to `'secret'` as well, so
-   * the one box on this screen drawn from a template literal carried the
-   * same class twice. Collapsing the literal instead is the fix that looks
-   * right and is not: `.secret` is what `admin.css` paints the page's copy
-   * with *and* half of what the panel's box carries, so the panel would lose
-   * it — which is what the panel's own class assertion below states.
+   * **A secret box with `class="secret secret"`.** The call site writes the
+   * literal `secret` for both placements and appends `look.secret` after it;
+   * a `LOOKS.page` that set that to `'secret'` as well would give the one box
+   * on this screen drawn from a template literal the same class twice.
+   * Collapsing the literal instead is the fix that looks right and is not:
+   * `.secret` is what `admin.css` paints the page's copy with *and* half of
+   * what the panel's box carries, so the panel would lose it — which is what
+   * the panel's own class assertion below states.
    *
    * A key has to be minted for the box to exist at all, so this cannot ride
    * along on the page case above: one `mount` per `it()`.
@@ -685,10 +685,9 @@ describe('Account', () => {
         .map((b) => b.className),
     ).toEqual(['reader-button', 'reader-button'])
 
-    // `look.row`: the create form, the key row, the session row — the three
-    // that carried `rowStyle`. Both class names, per row: the modifier is
-    // what carries the 8 px that inline style had, and `.reader-section-head`
-    // alone — ③'s row, which no panel of ③'s ever stacked — has no margin.
+    // `look.row`: the create form, the key row, the session row. Both class
+    // names, per row: the modifier is what carries the 8 px, and
+    // `.reader-section-head` alone has no margin.
     expect(
       [...host.querySelectorAll('.reader-section-head')].map(
         (el) => el.className,
@@ -718,7 +717,7 @@ describe('Account', () => {
     expect(secret?.className).toBe('secret reader-secret')
     // The fourth `look.meta` site, and the one the count above cannot see:
     // that count runs before this submit, when no secret is on screen, so
-    // dropping `look.meta` from the caption turned nothing red.
+    // dropping `look.meta` from the caption would turn nothing red.
     expect(secret?.querySelector('.secret-caption')?.className).toBe(
       'copy-words secret-caption reader-meta',
     )
@@ -1891,10 +1890,10 @@ describe('Account', () => {
    * **The one-time secret does not survive closing the panel.**
    *
    * `App` renders `<Account>` unconditionally, so `return null` hides it
-   * without unmounting and React keeps every hook's state. The secret was
-   * therefore redisplayed to anyone who reopened the panel — for the rest of
-   * the page's life — while the copy beside it said it "cannot be shown
-   * again". Found by the whole-branch review, 2026-08-18.
+   * without unmounting and React keeps every hook's state. A secret held in
+   * that state would be redisplayed to anyone who reopened the panel — for
+   * the rest of the page's life — while the copy beside it says it "cannot
+   * be shown again".
    */
   it('forgets the shown secret and the typed passwords when it closes', async () => {
     vi.stubGlobal(
@@ -1941,10 +1940,10 @@ describe('Account', () => {
 
   /**
    * Neither form may be submitted twice while its first request is in flight.
-   * A double-click on Create minted two permanent API keys and showed only the
-   * second secret — the first existed, was never displayed, and could be found
-   * only by listing keys and guessing which of two identically-named rows it
-   * was. Found by the second whole-branch review.
+   * A double-click on Create would mint two permanent API keys and show only
+   * the second secret — the first would exist, never be displayed, and be
+   * found only by listing keys and guessing which of two identically-named
+   * rows it was.
    */
   it('will not submit either form twice while one is in flight', async () => {
     let creates = 0
@@ -2015,10 +2014,10 @@ describe('Account', () => {
   /**
    * **A revocation that did not happen must not look like one that did.**
    *
-   * Both Revoke buttons discarded every failure and skipped the refresh, so the
-   * row stayed on screen unchanged with no alert — and a reader revoking the key
-   * for a tablet they had just lost believed the credential was dead when it
-   * still worked. Found by the third whole-branch review.
+   * Were both Revoke buttons to discard every failure and skip the refresh,
+   * the row would stay on screen unchanged with no alert — and a reader
+   * revoking the key for a tablet they had just lost would believe the
+   * credential was dead when it still worked.
    */
   it('says when a revoke failed rather than leaving the row looking revoked', async () => {
     vi.stubGlobal(
@@ -2077,16 +2076,14 @@ describe('Account', () => {
   })
 
   /**
-   * **The clause naming the gesture used to be on the `Error` arm alone.**
-   * Both Revoke handlers read
-   * `why instanceof Error ? `That key was not revoked: ${why.message}` : String(why)`,
-   * so a rejection that was not an `Error` — a cancelled request, a proxy
-   * closing the socket — printed the bare reason with no clause saying what had
-   * failed, under a row still sitting on screen. That is the same
-   * indistinguishability the case above this one exists to prevent, reached by
-   * the other arm. O103 collapsed the ternary into `messageOf` and the prefix
-   * became unconditional; this is what holds it there. The non-`Error` case
-   * further down drives the POST and PUT forms only and never reaches a DELETE.
+   * **The clause naming the gesture belongs on the non-`Error` arm as well.**
+   * Were it on the `Error` arm alone, a rejection that is not an `Error` — a
+   * cancelled request, a proxy closing the socket — would print the bare
+   * reason with no clause saying what had failed, under a row still sitting
+   * on screen. That is the same indistinguishability the case above this one
+   * exists to prevent, reached by the other arm. The prefix is unconditional
+   * (O103), and this is what holds it there. The non-`Error` case further
+   * down drives the POST and PUT forms only and never reaches a DELETE.
    */
   it('still names the gesture when a revoke rejects with something that is not an Error', async () => {
     vi.stubGlobal(
@@ -2234,7 +2231,7 @@ describe('Account', () => {
   })
 
   // The page's four boxes, each a row's control: the three passwords and the
-  // key's name, which its label names now and not its placeholder.
+  // key's name, which its label names and not its placeholder.
   it('gives each box its label’s words as its aria-label, as a page — O175', async () => {
     vi.stubGlobal(
       'fetch',
@@ -3261,9 +3258,9 @@ describe('Account’s focus after a Revoke', () => {
  * A refusal of Create or of Change password (the user's ruling of
  * 2026-10-25) is said in a callout drawn straight after the row it answers
  * (the user's rulings of 2026-10-26), the New key row's or Confirm
- * password's, not above the sections, where it moved the page; it goes
- * when a box of its form is edited, when focus leaves the form, or as the
- * next attempt is sent. One `it()` per placement.
+ * password's, not above the sections, where it would move the page; it
+ * goes when a box of its form is edited, when focus leaves the form, or as
+ * the next attempt is sent. One `it()` per placement.
  */
 describe('Account’s refusals of Create and Change password', () => {
   afterEach(() => {
@@ -4121,17 +4118,12 @@ describe('Account’s reads', () => {
 
 /**
  * **The page placement holds no colour and no `opacity`, and that is the half
- * of this screen a stylesheet cannot be asked about.** `/account`'s quiet text
- * was four inline `opacity` dims — 0.8, 0.85 and two at 0.6 — and the pair at
- * 0.6 computed **4.18:1 on Paper** at 16 px, under AA's 4.5 for normal text;
- * the other two clear it at 7.88 and 9.27. Computed on 2026-09-24 from
- * `tokens.css`'s `--text` blended over `--bg`, which is what a composited
- * `opacity` resolves to. `admin.css`'s own `.proposal-detail` comment has
- * banned opacity dimming on these screens since C3, and ⑤b spent a PR
- * emptying the last nine from the stylesheet — nine is the count, and
- * `admin.css` holds none today — but a `style=` prop is somewhere no rule in
- * that stylesheet can reach, which is why this assertion is over the
- * component's source rather than over the CSS.
+ * of this screen a stylesheet cannot be asked about.** An inline `opacity`
+ * dim of quiet text can fall under AA's 4.5:1 for normal text.
+ * `admin.css`'s own `.proposal-detail` comment bans opacity dimming on these
+ * screens, but a `style=` prop is somewhere no rule in that stylesheet can
+ * reach, which is why this assertion is over the component's source rather
+ * than over the CSS.
  */
 describe('Account.tsx carries no inline style', () => {
   /**
@@ -4140,11 +4132,10 @@ describe('Account.tsx carries no inline style', () => {
    * each of them — a stubbed import would leave both measuring nothing
    * rather than the component's source. `admin-account.css.test.ts`'s
    * `reads admin.css at all` is the same guard for its own `?raw` import,
-   * for the same reason; this is `Account.tsx`'s. Probed on 2026-09-24 under
-   * `jsdom`, with a control line, before writing this: unlike `admin.css?raw`
+   * for the same reason; this is `Account.tsx`'s. Unlike `admin.css?raw`
    * (stubbed to `''` by vitest's default `css: false`), a `.tsx?raw` import
-   * is not a CSS import and arrives whole — this case is a robustness guard
-   * against that ever changing, not a fix for something failing today.
+   * is not a CSS import and arrives whole under `jsdom`, so this case is a
+   * robustness guard against that changing.
    */
   it('reads Account.tsx at all', async () => {
     const source = await import('../src/Account.tsx?raw').then((m) => m.default)

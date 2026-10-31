@@ -107,7 +107,7 @@ const twoLibraries: LibraryStatus = {
  * screen mounted with no gate above it genuinely reads.
  *
  * **The status is supplied through `StatusContext` directly rather than
- * mocked.** `Shell` owns the `status()` fetch now — `Library` only reads the
+ * mocked.** `Shell` owns the `status()` fetch — `Library` only reads the
  * context it publishes — so a test of `Library` alone hands it the value
  * `Shell` would have resolved to, synchronously, the way `Shell.test.tsx`
  * hands `Shell` itself a mocked fetch.
@@ -185,11 +185,10 @@ describe('the library screen', () => {
     const host = await show()
     // The rendered mark itself, not a bare digit anywhere on the page.
     expect(host.querySelector('.aligned')?.textContent).toBe('⇄ 7')
-    // I7 of the whole-branch review: spec C1 §3 puts the mark *on the
-    // cover*, and `index.css` has exactly one rule for it —
-    // `.cover-box .aligned` — so outside that box the mark loses its
-    // positioning and its chip. `textContent` alone cannot tell "on the
-    // cover" from "moved below the title"; only the ancestor can.
+    // Spec C1 §3 puts the mark *on the cover*, and `styles/library.css` has
+    // exactly one rule for it — `.cover-box .aligned` — so outside that box the
+    // mark loses its positioning and its chip. `textContent` alone cannot tell
+    // "on the cover" from "moved below the title"; only the ancestor can.
     expect(host.querySelector('.cover-box .aligned')).not.toBeNull()
   })
 
@@ -203,8 +202,8 @@ describe('the library screen', () => {
   })
 
   /**
-   * I1 of the whole-branch review: `SeriesGrid` draws `/`'s and `/search`'s
-   * unfiled works, and its reader link carried none of O62's guard either.
+   * `SeriesGrid` draws the unfiled works of the Library view's grid and of
+   * its search hits, and its reader link is under O62's guard too.
    */
   it('withholds an unfiled work’s reader link when every edition it holds has lost its files', async () => {
     vi.mocked(library.grid).mockResolvedValue({
@@ -340,12 +339,10 @@ describe('the library screen', () => {
   })
 
   /**
-   * I1 of the whole-branch review: O62's guard (spec C1 §8) reached `Table`
-   * in `Series.tsx` and nowhere else. The Continue strip is named in the
-   * finding as "the likeliest place in the product to meet a work whose
-   * files just vanished, because the reader was mid-read when they went" —
-   * so an unguarded `<Link>` here is the worst place for the gap, not an
-   * incidental one.
+   * O62's guard (spec C1 §8) covers the Continue strip as well as `Table` in
+   * `Series.tsx`: the strip is the likeliest place in the product to meet a
+   * work whose files just vanished, because the reader was mid-read when
+   * they went.
    */
   it('withholds the continue-strip link for a work whose every edition has lost its files', async () => {
     vi.mocked(library.home).mockResolvedValue({
@@ -370,7 +367,7 @@ describe('the library screen', () => {
     const host = await show()
     expect(host.querySelector('a[href="/read/half-read-v02"]')).toBeNull()
     // Still named, and still says why — the same rule `Series.tsx`'s `Table`
-    // already follows: withholding the link must not withhold the work.
+    // follows: withholding the link must not withhold the work.
     const strip = host.querySelector('[data-testid="continue"]')
     expect(strip?.textContent).toContain('A Series v01')
     expect(strip?.querySelector('.unreadable')?.textContent).toBeTruthy()
@@ -1227,8 +1224,7 @@ describe('the library screen', () => {
 
   /**
    * Spec C1 §8's third empty state: "A series with no cover — a generated
-   * placeholder carrying the title, not a broken image." The plan built three
-   * of the five and never mentioned this one.
+   * placeholder carrying the title, not a broken image."
    */
   describe('a cover that will not load', () => {
     const withCover = async () => {
@@ -1267,8 +1263,7 @@ describe('the library screen', () => {
       expect(host.querySelector('img')?.getAttribute('src')).toBe(
         '/api/works/a-series-v01/raw/pages/0/thumb?v=c0ffee-0-1&w=256',
       )
-      // O133: the browser picks the size for its screen's density — 768 px on
-      // a 3× phone, where the 160 px filmstrip tile used to be upscaled.
+      // O133: the browser picks the size for its screen's density.
       expect(host.querySelector('img')?.getAttribute('srcset')).toBe(
         '/api/works/a-series-v01/raw/pages/0/thumb?v=c0ffee-0-1&w=256 1x, /api/works/a-series-v01/raw/pages/0/thumb?v=c0ffee-0-1&w=512 2x, /api/works/a-series-v01/raw/pages/0/thumb?v=c0ffee-0-1&w=768 3x',
       )

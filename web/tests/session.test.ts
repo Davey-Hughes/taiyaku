@@ -80,10 +80,10 @@ describe('applyIntent', () => {
     expect(next).toEqual({ authority: 'a', slot: 7, viewing: 'a' })
   })
 
-  // The reviewer's trace: from the hub, press a digit (view C), press a digit
-  // (view hub), then Space. `previous` must have tracked the outgoing edition
-  // on *both* digit presses, not just the last one, or Space lands back on
-  // the hub instead of C — a silent no-op standing in for "go back".
+  // From the hub, press a digit (view C), press a digit (view hub), then
+  // Space. `previous` must have tracked the outgoing edition on *both* digit
+  // presses, not just the last one, or Space lands back on the hub instead of
+  // C — a silent no-op standing in for "go back".
   it('tracks previous across consecutive view intents, so Space returns to the edition just left', () => {
     let state: ReadingState = { authority: 'a', slot: 0, viewing: 'a' } // hub
     let previous = 'a'
@@ -143,9 +143,9 @@ describe('applyIntent: an arrow on a gap or a borrowed page', () => {
 
   // O40. `b` slot 3 is the offer after the gap and the reader has asked for it
   // to be set aside, so the arrow takes the next one that is not — the same
-  // set `groups` is handed, consulted by the one path that used to be blind to
-  // it. Nothing else in this block passes a set, which is what pins the
-  // default: an arrow on a gap in an edition with nothing skipped is unmoved.
+  // set `groups` is handed. Nothing else in this block passes a set, which is
+  // what pins the default: an arrow on a gap in an edition with nothing
+  // skipped is unmoved.
   it('does not take an offer the reader asked to skip', () => {
     const { state } = applyIntent(
       { kind: 'step', by: 1 },
@@ -275,10 +275,9 @@ describe('initialPrevious', () => {
 // fresh load a silent no-op — `applyIntent`'s toggle arm computes
 // `state.viewing === state.authority ? previous : state.authority`, so
 // `previous === authority === viewing` targets the edition already shown, and
-// `swap` reassigns `previous` right back to that same value. This pins the
-// fix at the seam the two functions actually meet: a freshly-restored state,
-// seeded via `initialPrevious`, must have its very first toggle change
-// `viewing`.
+// the same arm reassigns `previous` right back to that same value. This pins
+// the seam the two functions actually meet: a freshly-restored state, seeded
+// via `initialPrevious`, must have its very first toggle change `viewing`.
 describe('a freshly-restored session, seeded via initialPrevious', () => {
   it('the first toggle changes viewing, for every edition restore might start on', () => {
     for (const authority of r.editions()) {
@@ -297,11 +296,6 @@ describe('a freshly-restored session, seeded via initialPrevious', () => {
   })
 })
 
-// I3 (M5d review): `App.tsx` rebuilt the resolver from a correction's
-// response body but left `alignments` at whatever loaded at session start,
-// so `verdictFor` kept answering off a stale document. `alignmentsOf` is the
-// one-line fix threaded through both of `App.tsx`'s call sites (the success
-// path and the stale-`ETag` re-read).
 describe('alignmentsOf', () => {
   it('reads the alignments straight off a sidecar document', () => {
     const doc = {

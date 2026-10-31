@@ -13,14 +13,14 @@ import { mount } from './support/mount'
 // component test in this tree does.
 //
 // **Every route this screen can reach, not only the one it calls itself.**
-// `listProposals` was the only mock, which left the rows' `proposalDetail`
-// and `dismissProposal` as the *real* functions calling the real global
-// `fetch`: jsdom inherits Node's undici, and `/api/library/proposals/1` is a
-// relative URL undici rejects with `TypeError: Failed to parse URL` before a
-// socket opens. So it did not flake — but the test named "shows that row its
-// own evidence" was asserting against a failed load, and the day anything
-// binds `fetch` to jsdom's window it becomes a real request out of a unit
-// test. A screen's mock has to cover what the components it mounts call.
+// Without a mock for the rows' `proposalDetail` and `dismissProposal`, they
+// would be the *real* functions calling the real global `fetch`: jsdom
+// inherits Node's undici, and `/api/library/proposals/1` is a relative URL
+// undici rejects with `TypeError: Failed to parse URL` before a socket opens.
+// A test such as the one that shows a row its own evidence would then assert
+// against a failed load, and the day anything binds `fetch` to jsdom's window
+// it would become a real request out of a unit test. A screen's mock has to
+// cover what the components it mounts call.
 vi.mock('../src/curation', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../src/curation')>()),
   listProposals: vi.fn(),
@@ -137,8 +137,8 @@ describe('Proposals', () => {
     // Three rows differing in all three fields a line draws. A fixture whose
     // rows agreed could not tell "each row reads its own proposal" apart from
     // "every row reads `proposals[0]`", and neither of those apart from "the
-    // line renders nothing at all" — three mutations that survived a version
-    // of this test which counted `<li>`s and read only their class.
+    // line renders nothing at all": a test that counted `<li>`s and read only
+    // their class would pass all three.
     //
     // Scores 2, 1 and 0 straddle `strength`'s own boundary (>= 2), so the
     // strength column is not constant either.
@@ -237,10 +237,10 @@ describe('Proposals', () => {
     })
     const host = await settle()
 
-    // The header counts the *inbox*, not the rows currently listed. This
-    // fixture is the only one where the two differ — 35 against a list of
-    // one — so it is the only one that can tell them apart, and with a kind
-    // tab selected they differ at runtime on every screen.
+    // The header counts the *inbox*, not the rows currently listed. In this
+    // fixture the two differ — 35 against a list of one — so it can tell
+    // them apart, and with a kind tab selected they differ at runtime on
+    // every screen.
     expect(host.querySelector('h1')?.textContent).toBe('Proposals, 35 open')
 
     // The kind row is one-of-N and wears the tab look; the state row is the
@@ -249,10 +249,10 @@ describe('Proposals', () => {
     // test here can hold is that the three are three different elements —
     // `admin-proposals.css.test.ts` holds that they are drawn differently.
     expect(host.querySelector('.proposal-tabs')).not.toBeNull()
-    // `.weak-toggle` is gone from the app, so this line cannot go red today.
-    // It is kept as a name guard: it is the only thing here that would catch
-    // the old pill being reintroduced under its old name, which the `input`
-    // line below cannot, a `<button>` not being an `<input>`.
+    // `.weak-toggle` is not in the app, so this line is a name guard: it is
+    // the only thing here that would catch the old pill being reintroduced
+    // under its old name, which the `input` line below cannot, a `<button>`
+    // not being an `<input>`.
     expect(host.querySelector('.proposal-tabs .weak-toggle')).toBeNull()
     expect(host.querySelector('.proposal-tabs input')).toBeNull()
     expect(
@@ -318,10 +318,10 @@ describe('Proposals', () => {
     // have to be able to find", and so is a proposal the threshold is
     // currently hiding.
     //
-    // Non-empty `counts`, unlike the version of this test that shipped: with
-    // `counts: {}` no kind tab renders at all, so a threshold toggle that
-    // also cleared the kind had nothing to clear and the coupling was
-    // unobservable. A kind is selected first here for exactly that reason.
+    // Non-empty `counts`: with `counts: {}` no kind tab renders at all, so a
+    // threshold toggle that also cleared the kind would have nothing to clear
+    // and the coupling would be unobservable. A kind is selected first here
+    // for exactly that reason.
     vi.mocked(curation.listProposals).mockResolvedValue({
       proposals: [],
       counts: { 'edition-of': 29, 'attach-chapters': 6 },
@@ -336,8 +336,8 @@ describe('Proposals', () => {
 
     const weak = weakBox(host)
     expect(weak.checked).toBe(false)
-    // The label is stable now — asserted once, because a label that changed
-    // under a state also drawn was the defect O150's answer removed.
+    // The label is stable — asserted once, because a label that changed under
+    // a state also drawn would be the defect (O150).
     expect(weak.closest('label')?.textContent?.trim()).toBe(
       'Show weak proposals',
     )
@@ -365,10 +365,9 @@ describe('Proposals', () => {
   it('expands one row at a time, and shows that row its own evidence', async () => {
     // Each row's evidence answers from its own id, so "the second row's own
     // panel" is a thing this fixture can be wrong about — and the panel it
-    // reads below is a real one. It used to be a *failed* one: `proposalDetail`
-    // was unmocked here, reached the global `fetch` and rejected, so the only
-    // `<p>` the assertion could have been reading was `.full-reason` above
-    // the alert. See this file's `vi.mock` for the whole of that.
+    // reads below is a real one: `proposalDetail` is mocked here, so it does
+    // not reach the global `fetch` and reject. See this file's `vi.mock` for
+    // the whole of that.
     const rowsIn = [
       proposal({ id: 1, subject_title: 'first subject' }),
       proposal({ id: 2, subject_title: 'second subject' }),
@@ -387,7 +386,7 @@ describe('Proposals', () => {
     const rows = [...host.querySelectorAll('li')]
     expect(rows).toHaveLength(2)
     // The disclosure control *inside* the collapsed line, not the line
-    // itself. The line is a plain element precisely so Accept and Dismiss
+    // itself. The line is a plain element precisely so Dismiss or Reopen
     // can sit in it beside this button — an interactive descendant of a
     // `<button>` is invalid HTML.
     const buttons = rows.map((li) => li.querySelector('.row button.disclosure'))
@@ -423,19 +422,17 @@ describe('Proposals', () => {
   })
 
   it('re-reads the inbox when a row dismisses its own proposal', async () => {
-    // **The seam between the row and the screen, which nothing joined.**
-    // `ProposalRow.test.tsx` proves a row calls `onChanged` after a
-    // dismissal; the test below proves `reload` re-fetches. Neither sees the
-    // wiring between them, and replacing `onChanged={reload}` in
-    // `Proposals.tsx` with `() => {}` left all 41 of this branch's targeted
-    // tests green — while leaving the list and every tab count stale after
-    // every dismissal, which is the exact defect the reload counter exists
-    // to prevent.
+    // **The seam between the row and the screen.** `ProposalRow.test.tsx`
+    // proves a row calls `onChanged` after a dismissal; the test below proves
+    // `reload` re-fetches. Neither sees the wiring between them: replacing
+    // `onChanged={reload}` in `Proposals.tsx` with `() => {}` would leave the
+    // list and every tab count stale after every dismissal, which is the
+    // exact defect the reload counter exists to prevent.
     //
     // It has to live in this file: `Proposals` is what hands a row its
     // `onChanged`, so this is the only place both halves are on screen at
-    // once. The counts move as well as the rows — a mutation that re-fetched
-    // but only wrote `setProposals` would leave the header reading 2.
+    // once. The counts move as well as the rows — a re-fetch that replaced
+    // the list but not the counts would leave the header reading 2.
     vi.mocked(curation.listProposals)
       .mockResolvedValueOnce({
         proposals: [proposal({ id: 1 }), proposal({ id: 2 })],
@@ -546,11 +543,11 @@ describe('Proposals', () => {
   })
 
   it('drops the tab for a kind whose count has fallen to zero', async () => {
-    // `setCounts` replaces; it does not merge. The two read identically on a
-    // first response, which is all every other fixture here asks for — and a
-    // merge leaves a tab counting proposals that are no longer there, since
-    // a kind with nothing open is *absent* from the server's `counts` map
-    // rather than present with a zero.
+    // `setLoaded` replaces the counts; it does not merge them. The two read
+    // identically on a first response, which is all every other fixture here
+    // asks for — and a merge leaves a tab counting proposals that are no
+    // longer there, since a kind with nothing open is *absent* from the
+    // server's `counts` map rather than present with a zero.
     vi.mocked(curation.listProposals)
       .mockResolvedValueOnce({
         proposals: [],
@@ -565,21 +562,19 @@ describe('Proposals', () => {
       )
     expect(labels()).toEqual(['All 3', 'Edition Of 2', 'Attach Chapters 1'])
 
-    // Any filter change re-asks; the threshold toggle is the one control
-    // that is always on screen.
+    // Any filter change re-asks; the threshold toggle is always on screen.
     await click(weakBox(host))
     expect(labels()).toEqual(['All 2', 'Edition Of 2'])
   })
 
   it('discards a stale response that lands after a newer filter change', async () => {
-    // `Library.tsx`, `Shell.tsx` and `Series.tsx` all guard
-    // their own fetch effects with a `cancelled` flag for exactly this: a
-    // request that is no longer the current one must not overwrite what a
-    // later one already set. Every other test here awaits two microtask
-    // flushes between mount and the next assertion, which is enough time for
-    // vitest's default mocked-promise resolution to land in order — so none
-    // of them can tell "discards the stale one" apart from "the stale one
-    // just never arrived late enough to matter". This test controls both
+    // `Proposals.tsx` guards its fetch effect with a `cancelled` flag for
+    // exactly this: a request that is no longer the current one must not
+    // overwrite what a later one already set. Every other test here awaits two
+    // microtask flushes between mount and the next assertion, which is enough
+    // time for vitest's default mocked-promise resolution to land in order —
+    // so none of them can tell "discards the stale one" apart from "the stale
+    // one just never arrived late enough to matter". This test controls both
     // promises by hand and resolves them out of order on purpose.
     let resolveFirst: ((inbox: curation.Inbox) => void) | undefined
     let resolveSecond: ((inbox: curation.Inbox) => void) | undefined
@@ -644,8 +639,7 @@ describe('Proposals', () => {
   it('discards a stale rejection that lands after a newer request already succeeded', async () => {
     // The `catch` side of the same guard the resolve-path test above pins.
     // `.then` and `.catch` each carry their own `if (cancelled) return`, and
-    // mutating only the `.then` one still passed every other test here —
-    // this is the one that would have let that survive.
+    // that test does not reach the `.catch` one.
     let rejectFirst: ((err: unknown) => void) | undefined
     let resolveSecond: ((inbox: curation.Inbox) => void) | undefined
     vi.mocked(curation.listProposals)
@@ -792,10 +786,10 @@ describe('Proposals', () => {
     // **The filter can empty its own list, and the tab it was set from is
     // absent from the next response.** `counts` comes from a SQL `GROUP BY`,
     // so a kind with nothing open is missing rather than zero: answering the
-    // last `attach-chapters` proposal took that tab out of the row
-    // *underneath the person's own selection*. The list went blank, no tab
-    // read pressed, the header still said "2 open", and nothing said what
-    // had happened or how to get back.
+    // last `attach-chapters` proposal would take that tab out of the row
+    // *underneath the person's own selection*, leaving the list blank, no tab
+    // pressed, the header still saying "2 open", and nothing saying what had
+    // happened or how to get back.
     //
     // A stateful stub rather than a queue of canned answers, because the
     // recovery is half of the defect: a fixture answering the same empty
@@ -1073,9 +1067,9 @@ describe('Proposals', () => {
     // Held, not resolved at once: the header, the counts and the empty
     // state all describe one answer, and the window between pressing a
     // state and its answer landing is where reading the pressed control
-    // instead drew "2 dismissed" over two open rows. Both directions, so the
-    // empty state is watched in that window too — it chose its words from
-    // the pressed control and said "Nothing to answer" over an empty
+    // instead would draw "2 dismissed" over two open rows. Both directions,
+    // so the empty state is watched in that window too — choosing its words
+    // from the pressed control would say "Nothing to answer" over an empty
     // dismissed list.
     const held: Array<(inbox: curation.Inbox) => void> = []
     let first = true

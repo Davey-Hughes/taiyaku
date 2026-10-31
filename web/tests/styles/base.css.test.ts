@@ -5,15 +5,14 @@ import indexSource from '../../src/index.css?raw'
 import { rules, selectors, subject, withoutComments } from '../support/css'
 
 /**
- * `base.css` restyles elements only inside the screens the style pass has
- * reached — `.library` and `.login` — plus the document-wide rules the page
- * cannot work without. A bare `button` rule would reach the reader, whose
- * inline-styled chrome sets some properties and leaves the rest to the
- * browser, so a border or a padding set here would move geometry that the
- * pass's reader PR redraws on its own terms (spec 2026-09-17 §5). A prelude
- * can hold a comma-separated selector list — `.a, .b { … }` — and each
- * selector in it is scoped, or not, independently of the others, so the
- * list is split on its top-level commas before the scope check runs.
+ * `base.css` restyles elements only inside `.library` and `.login`, plus the
+ * document-wide rules the page cannot work without. A bare `button` rule would
+ * reach the reader, whose inline-styled chrome sets some properties and leaves
+ * the rest to the browser, so a border or a padding set here would move the
+ * reader's geometry (spec 2026-09-17 §5). A prelude can hold a comma-separated
+ * selector list — `.a, .b { … }` — and each selector in it is scoped, or not,
+ * independently of the others, so the list is split on its top-level commas
+ * before the scope check runs.
  *
  * **It guards `base.css` and nothing else.** Element defaults live there by
  * the spec's §4 table, and a bare element rule written in another partial is
@@ -78,7 +77,7 @@ describe('base.css', () => {
   })
 
   // The two rules tie at no specificity, so the later one wins; a ring rule
-  // moved below this one would ring every landing point again.
+  // moved below this one would ring every landing point.
   it('draws no ring where focus only lands, in one rule after the ring it ties', () => {
     const all = rules(baseSource)
     const ring = all.findIndex(
@@ -140,13 +139,12 @@ const CONTROL_SUBJECT = /^(?:input|select|textarea)(?![\w-])/
  * the expansion intact. Unwrapping to a bare `input` would not.
  *
  * **A list that is not all controls is dropped**, because `:is()` takes its
- * most specific argument: narrowing `:is(input, .foo)` from (0,1,0) to
- * (0,0,1) would silently change what it has to beat, and keeping it whole
- * would make `base.css`'s own `:where(button, input, select, textarea)` read
- * as exposed with no exact-text companion — red against code that is safe.
- * **Dropped is not the same as strict**, and an earlier draft of this comment
- * claimed it "fails closed", which is backwards: such a rule never enters
- * `exposed` at all, so nothing can go red for it. See the limit stated below.
+ * most specific argument: narrowing `:is(input, .foo)` from (0,1,0) to (0,0,1)
+ * would silently change what it has to beat, and keeping it whole would make
+ * `base.css`'s own `:where(button, input, select, textarea)` read as exposed
+ * with no exact-text companion — red against code that is safe. **Dropped is
+ * not the same as strict**: such a rule never enters `exposed` at all, so
+ * nothing can go red for it. See the limit stated below.
  *
  * `:not()` and `:has()` are not expanded and must not be: `.foo:not(input)`
  * styles `.foo`, not an input.
@@ -168,12 +166,10 @@ function expandControlSubjects(selector: string): string[] {
  * rather than flattened, because the value a selector was given is exactly
  * what decides whether it needs a companion below.
  *
- * **Qualified subjects count**, and the first version of this did not see
- * them: it compared `subject(selector)` to the three names for equality, so
- * `input[type="text"]`, `input:focus` and `select:disabled` were all
- * invisible — and `.rule-form .field input[type="text"]` at (0,3,1) beats
- * both `base.css`'s floor and the companion below it. Found by the
- * re-review of the round that added this file.
+ * **Qualified subjects count**: comparing `subject(selector)` to the three
+ * names for equality would miss `input[type="text"]`, `input:focus` and
+ * `select:disabled` — and `.rule-form .field input[type="text"]` at (0,3,1)
+ * beats both `base.css`'s floor and the companion below it.
  *
  * **What it still cannot see**, stated rather than papered over, because an
  * understated limit is worse than none — a reader trusts it and writes the
@@ -189,24 +185,19 @@ function expandControlSubjects(selector: string): string[] {
  *   selector text — sets `font-size` as a longhand and so wins over the
  *   shorthand; nothing here knows that, and a *new* mixed rule written
  *   without such a neighbour would pass unseen. O152's second half.
- * - **A second rule with a selector text that is already floored.** The
- *   pairing is by text across the whole concatenated cascade, not per rule,
- *   so once *any* rule with selector X has a companion, *every* rule with
- *   selector X counts as covered — including one written after that
- *   companion, which beats it on source order at equal specificity.
- *   Demonstrated: appending a second `.account .field input { font: inherit }`
- *   to the end of `admin.css` leaves this file green — re-run against that
- *   selector when ⑤c deleted the `.account input` pair the demonstration was
- *   first made with, as that screen joined the shared `.field` block. The
- *   narrow guard below (`places admin.css's companion after the rule it
- *   corrects`) checks that ordering for one selector by hand; the general
- *   case needs each rule's position, which `rules()` does not return.
+ * - **A second rule with a selector text that is already floored.** The pairing
+ *   is by text across the whole concatenated cascade, not per rule, so once
+ *   *any* rule with selector X has a companion, *every* rule with selector X
+ *   counts as covered — including one written after that companion, which beats
+ *   it on source order at equal specificity. The narrow guard below (`places
+ *   admin.css's companion after the rule it corrects`) checks that ordering for
+ *   one selector by hand; the general case needs each rule's position, which
+ *   `rules()` does not return.
  *
- * `reader.css`'s `.reader-dialog-panel :where(input, select) { font:
- * inherit }` — under a panel at `--text-ui`, drawing the reader's Settings
- * dialog — was the rule that exposed the two limits this gate has since
- * widened past: the `font` shorthand and a wrapped subject (O151). The gate
- * sees it now, and #173 gave it a companion; both are on `main`.
+ * `reader.css`'s `.reader-dialog-panel :where(input, select) { font: inherit }`
+ * is the rule behind this gate reading the `font` shorthand and a wrapped
+ * subject (O151): it sits under a panel at `--text-ui`, which draws the
+ * reader's Settings dialog.
  */
 function fontSizedControls(
   css: string,
@@ -267,17 +258,14 @@ function splitByCoarsePointer(css: string): { coarse: string; rest: string } {
  * Whether `value` is provably at least 16px without running a browser.
  * `:root`'s own `font: 16px / 1.5 …` above makes `rem` a fixed multiple, so a
  * literal `px` or `rem` can be resolved; a `var()`, `calc()`, `%` or `em`
- * cannot, and is treated the same as a literal that measured under the
- * line — the whole reason C2 held even though `--text-ui` (14px) is not the
- * `0.8rem` (12.8px) that shipped. `max(16px, …)` is the floor's own idiom
- * and is trusted rather than parsed.
+ * cannot, and is treated the same as a literal under 16px. `max(16px, …)` is
+ * the floor's own idiom and is trusted rather than parsed.
  */
 function needsAFloor(value: string): boolean {
   // A `font` shorthand is never proven. Its size sits between optional
-  // style/variant/weight/stretch keywords and a mandatory family, and
-  // `font: inherit` resolves against an ancestor this gate has no model of
-  // — which is exactly how the reader's panel handed 14px to every control
-  // it drew (O151). Unprovable is the same as under the line here.
+  // style/variant/weight/stretch keywords and a mandatory family, and `font:
+  // inherit` resolves against an ancestor this gate has no model of (O151).
+  // Unprovable is the same as under the line here.
   if (value.startsWith('font: ')) return !/max\(\s*16px/.test(value)
   if (/^max\(\s*16px/.test(value)) return false
   const rem = value.match(/^(-?\d*\.?\d+)rem$/)
@@ -309,13 +297,10 @@ const CASCADE_ORDER = [
 
 describe('the 16px iOS zoom floor, against every stylesheet index.css imports', () => {
   /**
-   * C2 of the whole-branch review. `base.css`'s floor above is written at
-   * `:where()`, zero specificity, so any rule anywhere under `src/styles/`
-   * that names `input`, `select` or `textarea` — even with a single
-   * class — outranks it regardless of whether the media query matches.
-   * `admin.css`'s `.field input`/`.field select` did exactly that, at a
-   * literal `0.8rem` (12.8px), and stayed at 12.8px on a real coarse
-   * pointer because specificity, not the media query, decided the tie.
+   * `base.css`'s floor above is written at `:where()`, zero specificity, so any
+   * rule anywhere under `src/styles/` that names `input`, `select` or
+   * `textarea` — even with a single class — outranks it regardless of whether
+   * the media query matches: specificity, not the media query, decides the tie.
    *
    * This is not a scope check like `strays()` above — the defect is about
    * cascade position *between two rules*, not about one selector reaching
@@ -356,12 +341,11 @@ describe('the 16px iOS zoom floor, against every stylesheet index.css imports', 
     // Not vacuous: `.field input`/`.field select` are exposed today, and are
     // the reason this test exists.
     expect(exposed.length).toBeGreaterThan(0)
-    // **Filtered by value, not just matched by selector.** The first version
-    // of this collected every coarse-block selector regardless of what it
-    // declared, so changing the companion's own `max(16px, …)` back to a
-    // bare `var(--text-ui)` put all nine controls under the floor again and
-    // this test stayed green — the defect it exists to prevent, reachable in
-    // one token. Found by the re-review of the round that added it.
+    // **Filtered by value, not just matched by selector.** Collecting every
+    // coarse-block selector regardless of what it declares would let the
+    // companion's own `max(16px, …)` be changed to a bare `var(--text-ui)` with
+    // this test still green: the defect it exists to prevent, reached by
+    // changing one token.
     const floored = new Set(
       fontSizedControls(coarse)
         .filter(({ value }) => !needsAFloor(value))
@@ -384,9 +368,9 @@ describe('the 16px iOS zoom floor, against every stylesheet index.css imports', 
   })
 
   it('sees a control whose size comes from the font shorthand', () => {
-    // `font: inherit` sets font-size, and the gate matched `font-size:` alone.
-    // This is half of O151: the reader's Settings panel hands `--text-ui` to
-    // every control through exactly this declaration.
+    // `font: inherit` sets font-size, so the gate has to read the shorthand as
+    // well as `font-size:`. This is half of O151: the reader's Settings panel
+    // hands `--text-ui` to every control through exactly this declaration.
     const exposed = fontSizedControls('.panel input { font: inherit; }')
     expect(exposed).toEqual([
       { selector: '.panel input', value: 'font: inherit' },
@@ -406,9 +390,10 @@ describe('the 16px iOS zoom floor, against every stylesheet index.css imports', 
   })
 
   it('pairs a companion that covers more controls than the rule it corrects', () => {
-    // #173's companion names `textarea` although the panel draws none, so its
-    // selector text differs from the exposed rule by one name. Expanding both
-    // is what makes the superset pair; exact-text matching would not.
+    // The reader panel's companion names `textarea` although the panel draws
+    // none, so its selector text differs from the exposed rule by one name.
+    // Expanding both is what makes the superset pair, which exact-text matching
+    // would not do.
     const exposed = fontSizedControls(
       '.p :where(input, select) { font: inherit; }',
     )

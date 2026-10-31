@@ -13,9 +13,7 @@ import { mount, rerender } from './support/mount'
  * `decode.ts`'s gate, `ordering.ts`'s monotonicity, `cohort.ts`'s barrier — and
  * cannot cover the assembly: `App.tsx` and `PageView` need a DOM, and `jsdom`
  * has no layout engine (`getBoundingClientRect` returns zeroes) and no real
- * `HTMLImageElement.decode()`. Both are load-bearing here. Every defect this
- * reader has shipped in this area was visual, and none of them would have
- * failed a Node test.
+ * `HTMLImageElement.decode()`. Both are load-bearing here.
  */
 
 /** A 2x2 PNG as a data URL, so a decode is real but instant and needs no server. */
@@ -134,9 +132,8 @@ describe('PageView, in a browser', () => {
     expect(Math.round(cells[1]?.getBoundingClientRect().width ?? 0)).toBe(0)
   })
 
-  // Both halves of a turn become visible together — the defect a reader
-  // reported as the halves not arriving at the same time, measured then at a
-  // median 89.7 ms apart. Here with real decodes and one shared cohort.
+  // Both halves of a turn become visible together, here with real decodes and
+  // one shared cohort.
   it('presents both halves of a pair in the same frame', async () => {
     const cohort = createCohort()
     const queue = createDecodeQueue(3)

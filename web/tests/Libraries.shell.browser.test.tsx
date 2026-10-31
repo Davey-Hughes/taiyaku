@@ -605,10 +605,9 @@ describe('the Libraries screen in the real Shell', () => {
 
   /**
    * O209: the pressed control at the very foot of the window, and its
-   * refusal drawn beneath it, below the fold, is brought into view. Each
-   * of these pages fits the window whole, and a control that is always in
-   * view cannot be put at its foot, so the window is first made shorter
-   * than the page down to the control, by `by`.
+   * refusal drawn beneath it, below the fold, is brought into view. A
+   * control that is always in view cannot be put at its foot, so the window
+   * is first made shorter than the page down to the control, by `by`.
    */
   async function atTheFoot(width: number, el: HTMLElement, by = 100) {
     const main = document.querySelector('main') as HTMLElement

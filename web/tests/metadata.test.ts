@@ -72,9 +72,8 @@ describe('patchWork', () => {
     expect(result.persisted).toBe(false)
   })
 
-  // The brief's own illustrative tests never exercise `why` at all — both
-  // cases below are added because the shipped server's `why` is not the
-  // always-an-array shape the brief assumed.
+  // The server's `why` is not always an array, so both cases below exist to
+  // pin it.
   it('leaves `why` absent on the ordinary path, rather than defaulting it to an empty array', async () => {
     vi.stubGlobal(
       'fetch',
@@ -121,8 +120,8 @@ describe('patchWork', () => {
   // A hard failure (409/404/403) is a bare string, never JSON — unlike the
   // 200 responses above. A client that called `res.json()` on this body
   // would throw a confusing "Unexpected token" instead of the server's own
-  // sentence, which is exactly the failure `sendJson` (and this test) rules
-  // out. Not in the brief, whose illustrative tests only ever mock a 200.
+  // sentence, which is exactly the failure `sendJson` (and this test)
+  // rules out.
   it('propagates a 409 refusal as the server’s own bare-string body, not JSON', async () => {
     vi.stubGlobal(
       'fetch',

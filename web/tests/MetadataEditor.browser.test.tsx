@@ -6,17 +6,15 @@ import '../src/index.css'
 import { mount } from './support/mount'
 
 /**
- * I1 of the whole-branch review. `MetadataEditor.tsx`'s title field renders
- * `<label className="field title">` on the Series page, ②'s shipped screen,
- * and no `.metadata-editor` rule exists anywhere. Before ⑤a hoisted `.field`
- * out of `.proposal-detail`, a bare `.field` selector never reached it;
- * after the hoist it did, restyling a screen nobody decided to change.
+ * `MetadataEditor.tsx`'s title field renders `<label className="field title">`
+ * on the Series page, and no `.metadata-editor` rule exists anywhere. A bare
+ * `.field` selector would reach it and restyle a screen nobody decided
+ * to change.
  *
  * Built from the class list by hand rather than by mounting `MetadataEditor`
  * itself — the defect is entirely about which stylesheet rule a class list
- * reaches, not about the component's own behaviour, and the controller's own
- * measurement compared exactly this pair: a hoisted `.field` beside an
- * untouched control in the same `.library`.
+ * reaches, not about the component's own behaviour. The pair compared is a
+ * hoisted `.field` beside an untouched control in the same `.library`.
  */
 describe('the Series page’s title field, after the Rules screen hoisted .field', () => {
   it('is not restyled by a class the Series page never opted into', () => {
@@ -39,11 +37,8 @@ describe('the Series page’s title field, after the Rules screen hoisted .field
       throw new Error('the fixture did not render')
     }
 
-    // Measured by the controller: uppercase, 11.2px, `display: grid` and a
-    // 0.672px letter-spacing on the label; `--bg` rather than `--field`, 4px
-    // rather than `--radius-control`, and 12.8px rather than 16px on the
-    // input. Compared against the untouched control rather than against
-    // hard-coded numbers, so this still holds if a token's value changes.
+    // Compared against the untouched control rather than against hard-coded
+    // numbers, so this still holds if a token's value changes.
     expect(getComputedStyle(label).textTransform).toBe('none')
     expect(getComputedStyle(hoisted).backgroundColor).toBe(
       getComputedStyle(untouched).backgroundColor,

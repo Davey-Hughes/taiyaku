@@ -59,8 +59,7 @@ describe('the backup client', () => {
     // `sendJson` answers `undefined` for a 204, and `expectBody` is what turns
     // that into a named failure rather than letting `taken.name` throw on
     // `undefined` a line later. The route always sends a body today; this is
-    // the guard for a server that stops doing so, and it is the one branch in
-    // this file that lost its cover when `humanBytes` moved to `bytes.ts`.
+    // the guard for a server that stops doing so.
     vi.stubGlobal(
       'fetch',
       vi.fn().mockResolvedValue(new Response(null, { status: 204 })),

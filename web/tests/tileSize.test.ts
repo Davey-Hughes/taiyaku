@@ -34,8 +34,8 @@ describe('requestedTileEdge', () => {
 
   it('falls to the smallest rung on any input that is not a positive number', () => {
     // The opposite direction from `pageSize.ts`'s `requestedLongEdge`, which
-    // falls toward the original: soft is the failure mode for a page, and 237
-    // tiles at 480 px is the failure mode here.
+    // falls toward the original: soft is the failure mode for a page, and a
+    // whole rail of tiles at 480 px is the failure mode here.
     for (const bad of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
       expect(requestedTileEdge(bad, 3)).toBe(160)
       expect(requestedTileEdge(96, bad)).toBe(160)
@@ -64,9 +64,9 @@ describe('stripTileEdge', () => {
   })
 
   it('treats a view without matchMedia as the wide one', () => {
-    // jsdom has no `matchMedia` at all — probed 2026-09-21, it is `undefined`
-    // rather than a stub — so this is the branch every component test in that
-    // project takes, not a hypothetical.
+    // jsdom has no `matchMedia` at all — it is `undefined` rather than a stub
+    // — so this is the branch a component test in that project takes unless
+    // it stubs one, not a hypothetical.
     //
     // dpr 3, not 1: at dpr 1 both STRIP_TILE_PX heights round up to the same
     // bottom rung, 160, so that dpr cannot tell wide from narrow and the

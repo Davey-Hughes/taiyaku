@@ -73,9 +73,8 @@ function selectValue(select: HTMLSelectElement, value: string) {
 }
 
 /**
- * Task 8's real mount site, in miniature: `selected` is state this harness
- * owns, and the `key` below is the composite key Task 8 designs — index
- * *and* id — not a bare id.
+ * The real mount site in miniature: `selected` is state this harness owns,
+ * and the `key` below is a composite key — index *and* id — not a bare id.
  *
  * **A bare id cannot do this job.** Every unsaved rule carries `id: 0`, the
  * store's sentinel, so two unsaved rules are indistinguishable by id alone;
@@ -168,8 +167,8 @@ describe('RuleForm', () => {
   })
 
   it('fires no commit while typing', () => {
-    // The screen's central cost decision: a preview costs a median 281 ms and
-    // a half-typed regex is a rule that matches nothing. The build design's §5.3.
+    // The screen's central cost decision: a preview is the slow call, and a
+    // half-typed regex is a rule that matches nothing. The build design's §5.3.
     const { host, onCommit } = render()
     const pattern = host.querySelector<HTMLInputElement>(
       'input[name="pattern"]',
@@ -243,19 +242,17 @@ describe('RuleForm', () => {
 
   /**
    * The redraw is the composite `key`'s doing, not any compare this component
-   * runs internally — the component runs no such compare any more, and
-   * proving that requires driving the real mechanism rather than an
-   * `onCommit` mock's `rerender`.
+   * runs internally, and proving that requires driving the real mechanism
+   * rather than an `onCommit` mock's `rerender`.
    *
    * **Both rules below carry `id: 0`.** That is the case a bare id compare
    * could never handle — every unsaved rule shares the sentinel, so switching
    * between two of them would leave `rule.id !== seenId` false forever under
-   * the internal fallback this component used to hold, and the draft would
-   * never reset. It is also precisely the shape the rule editor's own design
-   * produces: a person can have two brand-new, unsaved rules open one after
-   * another before either is ever written. The composite key — index and id
-   * together — is what actually resets this form; this test fails without it,
-   * proved by hand-mutating the harness's key in the same run.
+   * an internal fallback, and the draft would never reset. It is also
+   * precisely the shape the rule editor's own design produces: a person can
+   * have two brand-new, unsaved rules open one after another before either is
+   * ever written. The composite key — index and id together — is what
+   * actually resets this form, and this test fails without it.
    */
   it('redraws to the second rule via the composite key, which a bare id cannot do for two unsaved rules', () => {
     const rules = [
@@ -319,18 +316,14 @@ describe('RuleForm', () => {
   })
 
   /**
-   * Investigating a review claim: that editing `pattern` and then clicking
-   * straight into a select "double-commits", with the second commit
-   * resending the just-committed pattern from a *stale* `draft` closure.
-   *
-   * **The double commit is real; "stale" is not.** `commit()` never resets
-   * `draft` after a blur, so the select's `onChange` — a closure from the
-   * same render the typing already produced — closes over a `draft` that
-   * already holds the typed pattern. It resends that field, but it is the
-   * current value, identical to what the blur just committed, not a stale
-   * one. Two `onCommit` calls for two gestures is the owner's ruling for
-   * Finding 2's select handlers; this pins that the resent field is at least
-   * correct, so the redundancy is a duplicate preview, not a data bug.
+   * **The second commit, the select's, resends the pattern, and that field
+   * is not stale.** `commit()` never resets `draft` after a blur, so the
+   * select's `onChange` — a closure from the same render the typing already
+   * produced — closes over a `draft` that already holds the typed pattern.
+   * It resends that field, but it is the current value, identical to what the
+   * blur just committed. Two `onCommit` calls for two gestures is the owner's
+   * ruling for the select handlers; this pins that the resent field is at
+   * least correct, so the redundancy is a duplicate preview, not a data bug.
    */
   it('resends the just-committed pattern when a select changes right after a blur, but not a stale one', () => {
     const { host, onCommit } = render()

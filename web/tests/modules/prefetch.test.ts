@@ -43,10 +43,9 @@ describe('window', () => {
 })
 
 describe('prefetchModule', () => {
-  // One group each way, not two — these count groups since `groupWindow`, and
-  // reaching further measured *slower*: a decoded page is ~26 MB, so a wide
-  // window evicts the pages the reader is arriving at. The table is the
-  // `prefetch.ts` entry in
+  // One group each way, not two: reaching further is slower, because a decoded
+  // page is ~26 MB and a wide window evicts the pages the reader is arriving
+  // at. The table is the `prefetch.ts` entry in
   // `docs/superpowers/notes/2026-10-29-code-history-web-src.md`.
   it('defaults to enabled, one group either side, and a capped decode concurrency', () => {
     expect(prefetchModule.defaults).toEqual({
@@ -72,9 +71,9 @@ describe('groupWindow', () => {
   ]
 
   it('reaches whole groups, so the pair a turn lands on is never half-fetched', () => {
-    // The shipped defaults, from the group holding slots 2 and 3. `window`'s
-    // slot-space answer here is [1, 3, 4] — slot 5 missing, which is the
-    // second half of the very next group.
+    // From the group holding slots 2 and 3. `window`'s slot-space answer
+    // here is [1, 3, 4] — slot 5 missing, which is the second half of the
+    // very next group.
     expect(groupWindow(paired, 2, 2, 1)).toEqual([0, 1, 4, 5, 6, 7])
   })
 

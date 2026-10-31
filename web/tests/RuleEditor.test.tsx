@@ -82,8 +82,8 @@ const previewBody = (over: Partial<Preview> = {}): Preview => ({
 
 /**
  * A whole `DeriveReport`, the same fixture shape `RemoveRoot.test.tsx` and
- * `RootRow.test.tsx` already use — `{} as Derived` is enough only until a
- * component reads one of the thirty-one fields, and this one now does.
+ * `RootRow.test.tsx` use — `{} as Derived` is enough only until a component
+ * reads one of its fields, and this one does.
  */
 const derived = (over: Partial<config.Derived> = {}): config.Derived => ({
   series: 2,
@@ -239,9 +239,9 @@ describe('RuleEditor', () => {
     const host = await render()
     const preview = host.querySelector('.preview')
     expect(preview).not.toBeNull()
-    // The point of the move: Provenance is file + one column per metadata
-    // field, and inside the panes' grid it is capped at whatever the list
-    // column leaves at every width.
+    // Provenance is file + one column per metadata field, and inside the
+    // panes' grid it would be capped at whatever the list column leaves at
+    // every width.
     expect(host.querySelector('.editor-panes .preview')).toBeNull()
     const box = preview?.closest('.settings-section')
     expect(box?.querySelector('.settings-section-title')?.textContent).toBe(
@@ -276,10 +276,10 @@ describe('RuleEditor', () => {
   })
 
   it('does not preview again when the already-selected rule is clicked', async () => {
-    // M1: the design runs a preview on selecting a *different* rule — the
+    // The design runs a preview on selecting a *different* rule — the
     // already-open one has nothing left for a preview to answer, so paying
-    // another ~281 ms derivation (and clearing the "Saved:" line) for the
-    // same click is wasted work rather than a feature.
+    // another derivation (and clearing the "Saved:" line) for the same click
+    // is wasted work rather than a feature.
     const host = await render()
     await act(async () => {
       host.querySelectorAll<HTMLElement>('.rule-row button.select')[0].click()
@@ -486,11 +486,10 @@ describe('RuleEditor', () => {
   })
 
   it('draws what the save’s own re-derive found, not only the rehome count', async () => {
-    // Whole-branch review, I5/context note: `Impact` describes the
-    // database's own structure and nothing past it, so a save that could not
-    // write a hand document used to answer `200` with a rehome count and
-    // silence about `<root>/.taiyaku/`. `DeriveSection` is `ScanReport.tsx`'s
-    // own renderer for this exact struct, reused here rather than a second,
+    // `Impact` describes the database's own structure and nothing past it,
+    // so it would stay silent about a hand document a save could not write
+    // under `<root>/.taiyaku/`. `DeriveSection` is `ScanReport.tsx`'s own
+    // renderer for this exact struct, reused here rather than a second,
     // narrower vocabulary.
     vi.mocked(rulesApi.saveRules).mockResolvedValue(
       savedBody({
@@ -535,13 +534,12 @@ describe('RuleEditor', () => {
   })
 
   it('says the library is not yet derived from an import, and names Save as what applies it', async () => {
-    // I3: `POST .../rules/import` writes the rule table and derives nothing
-    // — the CLI prints this warning for the identical route
-    // (`library.rs`'s `library rules --import`), and this screen used to say
-    // nothing at all, leaving the library's structure silently still the old
-    // rules' the moment the import appeared to succeed. No proposals
-    // reopened here, on purpose: that half of the old message must not be
-    // the only thing this notice ever said.
+    // `POST .../rules/import` writes the rule table and derives nothing — the
+    // CLI prints this warning for the identical route (`library.rs`'s
+    // `library rules --import`). Without the notice the library's structure
+    // would silently stay the old rules' the moment the import appeared to
+    // succeed. No proposals reopened here, on purpose: that half of the
+    // message must not be the only thing this notice says.
     vi.mocked(rulesApi.importRules).mockResolvedValue({
       rules: [rule()],
       complaints: [],
@@ -622,18 +620,18 @@ describe('RuleEditor', () => {
       'pattern does not compile',
     )
     expect(previewingOn(host)).toBe('unseen')
-    // I2: a failed preview must not leave Save actionable — there is no
-    // preview at all here (this is the very first one, rejected), so Save
-    // has no number of its own to state and must stay held.
+    // A failed preview must not leave Save actionable — there is no preview
+    // at all here (this is the very first one, rejected), so Save has no
+    // number of its own to state and must stay held.
     expect(await savesSentByPress(host)).toBe(0)
     expect(holdOf(saveButton(host))).toBe('held')
   })
 
   it('invalidates the standing preview when a later one fails, so Save cannot act on a number that describes a different list', async () => {
-    // I2's own discriminating case: the *first* preview (on mount) succeeds,
-    // so `preview`/`predicted.current` hold a real, non-empty value before
-    // the failure this test causes — unlike the test above, where there was
-    // never a successful preview to leave stale in the first place.
+    // Here the *first* preview (on mount) succeeds, so
+    // `preview`/`predicted.current` hold a real, non-empty value before the
+    // failure this test causes — unlike the test above, where there was never
+    // a successful preview to leave stale in the first place.
     const host = await render()
     expect(holdOf(saveButton(host))).toBe('free')
     vi.mocked(rulesApi.previewRules).mockRejectedValueOnce(
@@ -675,10 +673,10 @@ describe('RuleEditor', () => {
   })
 
   it('refuses a second Save while the first is still in flight, rather than racing two PUTs', async () => {
-    // `savingNow` is a ref precisely so this guard is checked synchronously,
-    // ahead of the state update that disables the button — two clicks landing
-    // before React re-renders would otherwise both pass the guard and fire
-    // two PUTs racing each other over the same rows.
+    // `writer.current` is a ref precisely so this guard is checked
+    // synchronously, ahead of the state update that holds the button — two
+    // clicks landing before React re-renders would otherwise both pass the
+    // guard and fire two PUTs racing each other over the same rows.
     let resolveSave: (value: Saved) => void = () => {}
     vi.mocked(rulesApi.saveRules).mockImplementation(
       () =>
@@ -840,8 +838,8 @@ describe('RuleEditor', () => {
     // the screen showing the list `setRules` puts back over them.
     //
     // `async`/`await` throughout, never `act(...).then(...)`: a rejection
-    // chained off `act`'s thenable is swallowed, and this test passed while
-    // printing its own AssertionError until that was fixed.
+    // chained off `act`'s thenable is swallowed, so a failing assertion would
+    // not fail the test.
     holdTheClock()
     const { host, land } = await heldSave()
     // Pressed before the hold is drawn, so it is the handler that turns it
@@ -1001,8 +999,8 @@ describe('RuleEditor', () => {
     // The Overrides row needs a preview that *has* one, and its own tab open:
     // with the default empty `overrides` those two buttons never render, so a
     // test naming them while asserting only on `.rule-row` would pass against
-    // `PreviewTabs` never being frozen at all. `PreviewTabs.test.tsx` mounts
-    // only with `frozen={false}`, so this is the one place that covers it.
+    // `PreviewTabs` never being frozen at all. `PreviewTabs.test.tsx` freezes
+    // it only for a save, so this is the one place that covers an import.
     holdTheClock()
     vi.mocked(rulesApi.previewRules).mockResolvedValue(
       previewBody({ overrides: [anOverride()] }),
@@ -1105,18 +1103,18 @@ describe('RuleEditor', () => {
   it('holds Save in the same tick the import gate is taken, so a click sends nothing and says nothing — O97, closed further by O101', async () => {
     // **The ref guard is not what stands here.** `save`'s
     // `writer.current !== undefined` check exists because a hold taken from
-    // state lands on a render while the ref is read synchronously — and the
-    // gate taken inside `file.text()`'s `.then`, one microtask after the
-    // change event returned, left a click landing in between to reach `save`
-    // with Save still free. `beginImport` takes the gate inside the discrete
-    // change event itself, which React flushes synchronously, so `frozen` and
+    // state lands on a render while the ref is read synchronously — a gate
+    // taken inside `file.text()`'s `.then`, one microtask after the change
+    // event returned, would let a click landing in between reach `save` with
+    // Save still free. `beginImport` takes the gate inside the discrete change
+    // event itself, which React flushes synchronously, so `frozen` and
     // `writer.current` change together and there is no tick in which only one
     // of them is standing.
     //
     // So the click is made at once, with no `await` to hide behind, and turned
     // down by `saveHeld`: it sends nothing, and the ref guard's refusal is not
-    // said. Move the gate back after the read and the click sends a save,
-    // which is what makes it O101's own regression guard.
+    // said. Move the gate after the read and the click sends a save, which
+    // is what makes it O101's own regression guard.
     let resolveImport: (value: ImportAnswer) => void = () => {}
     vi.mocked(rulesApi.importRules).mockImplementation(
       () =>
@@ -1188,8 +1186,8 @@ describe('RuleEditor', () => {
   })
 
   it('still holds a form commit made during a save, which this branch must not cost — O96, kept', async () => {
-    // The regression guard: task 4 changes the code that decides between held
-    // and discarded, and O96's whole claim lives on the other branch of it.
+    // The regression guard: O96's whole claim lives on the held branch of the
+    // code that decides between held and discarded.
     const { host, land } = await heldSave()
     await editPatternAndBlur(host, 'Edited/.*')
 
@@ -1212,10 +1210,10 @@ describe('RuleEditor', () => {
     // evaluated as an *argument* — synchronously, inside the call. A file
     // that is not valid JSON therefore throws out of `importRules` itself
     // rather than returning a rejected promise, so `.then`/`.catch` are never
-    // attached and the `.catch` that clears the gate never runs. Picking the
-    // wrong file is the most ordinary thing a person can do here, and the
-    // symptom is that Save and Import are dead for the rest of the session
-    // with only the import's failure on screen to explain it.
+    // attached and `sendImport`'s own `.catch`, which clears the gate, never
+    // runs. Picking the wrong file is the most ordinary thing a person can do
+    // here, and an uncaught throw would leave Save and Import dead for the rest
+    // of the session.
     //
     // The mock throws synchronously for exactly that reason: it is modelling
     // what `importRules` throws for such a file, not inventing a failure
@@ -1269,15 +1267,13 @@ describe('RuleEditor', () => {
     })
 
     expect(rulesApi.importRules).not.toHaveBeenCalled()
-    // In `refused` since O100, not in `importNotice`: a message about a
-    // gesture that did not happen cannot live in the slot owned by the one
-    // that did. Here it survived there by luck — nothing in `save` writes
-    // `importNotice` — and it moved with the second-import case, which did not.
+    // In `refused`, not in `importNotice`: a message about a gesture that did
+    // not happen cannot live in the slot owned by the one that did.
     const notice = host.querySelector('p.refused')?.textContent ?? ''
     expect(notice).toContain('not applied')
     expect(notice).toContain('nothing was imported')
     // Set while the save is still running, so "now the save has finished"
-    // was false for as long as it was on screen — O100's second half.
+    // would be false for as long as it was on screen — O100's second half.
     expect(notice).toContain('once the save has finished')
 
     await act(async () => {
@@ -1339,14 +1335,11 @@ describe('RuleEditor', () => {
   }
 
   it('keeps the refusal of a second import on screen after the first import lands — O100', async () => {
-    // Both of `beginImport`'s refusals used to go to `importNotice`, and the
-    // running import's own success path overwrites that state — so the
-    // sentence saying the second pick was refused is replaced by one saying
-    // an import worked, and the person is left believing the file they picked
+    // The running import's own success path overwrites `importNotice`, so a
+    // refusal stored there would be replaced by a sentence saying an import
+    // worked, and the person would be left believing the file they picked
     // second is the one in the store. It is not; the first document is. This
-    // is the failure the build design's §5 created `refused` to avoid,
-    // reached in the function that reasoning was written for, and found by
-    // driving a real library with the POST held open at the transport.
+    // is the failure the build design's §5 created `refused` to avoid.
     const { host, land } = await heldImport()
     vi.mocked(rulesApi.importRules).mockClear()
 
@@ -1358,9 +1351,9 @@ describe('RuleEditor', () => {
     const refused = host.querySelector('p.refused')?.textContent ?? ''
     expect(refused).toContain('imported twice')
     // **The clause, not just the sentence.** This one is set while the first
-    // import is still running, so "now the first has finished" was false for
-    // the width of the window — the same tense defect as the discard notice
-    // below, and the reason to assert the half that was wrong rather than a
+    // import is still running, so "now the first has finished" would be false
+    // for the width of the window — the same tense defect as the discard
+    // notice below, and the reason to assert the clause rather than a
     // substring that skips it.
     expect(refused).toContain('once the first has finished')
 
@@ -1383,11 +1376,9 @@ describe('RuleEditor', () => {
   })
 
   it('tells a discarded edit what the import will do, not what it has already done — O100', async () => {
-    // The sentence ended "The imported rules are on screen now" and is set
+    // A sentence ending "The imported rules are on screen now" would be set
     // while the import is still in flight, so for the width of the window it
-    // describes a list that is not on screen yet. At two milliseconds nobody
-    // reads it; held open at the transport it is the only thing on screen,
-    // which is how it was found.
+    // would describe a list that is not on screen yet.
     const { host, fail } = await heldImport(1)
     await editPatternAndBlur(host, 'Edited/.*')
 
@@ -1396,11 +1387,11 @@ describe('RuleEditor', () => {
     expect(refused).toContain('once the import has finished')
     expect(refused).not.toContain('on screen now')
 
-    // **And it has to stay true when the import does not land.** An earlier
-    // wording promised the imported rules would replace the list; a refused
-    // document is the ordinary failure here, so that promise was broken by
-    // the commonest ending this route has. The list is still the loaded one
-    // and the notice must not say otherwise.
+    // **And it has to stay true when the import does not land.** A refused
+    // document is the ordinary failure here, so a notice promising that the
+    // imported rules replace the list would be broken by the commonest ending
+    // this route has. The list is still the loaded one and the notice must not
+    // say otherwise.
     await act(async () => {
       fail(new Error('rules/import: not a rule document'))
       await Promise.resolve()
@@ -1416,11 +1407,11 @@ describe('RuleEditor', () => {
   })
 
   it('takes the writer gate before the file is read, so Import says Importing… while the bytes are still arriving — O101', async () => {
-    // The gate was taken inside `doImport`, which ran in `file.text()`'s
-    // `.then` — so between picking a file and its bytes arriving, Import was
-    // enabled and `writer.current` was free. On a small document that window
-    // is one microtask; on a large one it is however long the read takes, and
-    // nothing on screen said the gesture had started.
+    // The gate has to be taken before the file is read: taken in
+    // `file.text()`'s `.then`, Import would stay enabled and `writer.current`
+    // free between picking a file and its bytes arriving. On a small document
+    // that window is one microtask; on a large one it is however long the read
+    // takes, and nothing on screen would say the gesture had started.
     holdTheClock()
     vi.mocked(rulesApi.importRules).mockResolvedValue(importAnswer())
     const held = heldReadFile()
@@ -1449,9 +1440,8 @@ describe('RuleEditor', () => {
 
   it('refuses a second pick made while the first file is still being read — O101', async () => {
     // The consequence of the window above, and the route by which O100 is
-    // reachable without a synthetic event: pick a large file, pick a small one
-    // while it is still being read, and the small one's import is running when
-    // the large one's finally fires.
+    // reachable without a synthetic event: pick a large file, then pick a
+    // small one while it is still being read.
     vi.mocked(rulesApi.importRules).mockResolvedValue(importAnswer())
     const held = heldReadFile()
     const host = await render()
@@ -1473,9 +1463,7 @@ describe('RuleEditor', () => {
 
   it('clears the writer gate when the file cannot be read — O101', async () => {
     // The gate is taken before the read, so the read's own failure has to
-    // release it. This is the third instance on this screen of a gate taken
-    // and never released, after the failed import and the document that is
-    // not JSON, and it is new because the gate moved.
+    // release it.
     const host = await render()
     const fileInput = host.querySelector<HTMLInputElement>('input[type="file"]')
     if (!fileInput) throw new Error('no file input')
@@ -1501,7 +1489,7 @@ describe('RuleEditor', () => {
   it('clears the held-edit notice when a later gesture changes the list — O96, whole-branch review M3', async () => {
     // The notice names a rule by *position* and claims it is the list on
     // screen. Delete a lower-indexed rule and both halves are false. This is
-    // `RuleList`'s own M3 for its confirm dialog, for the same reason.
+    // what `RuleList`'s confirm dialog does, for the same reason.
     const { host, land } = await heldSave()
     await editPatternAndBlur(host, 'Edited/.*')
     await act(async () => {
@@ -1550,7 +1538,7 @@ describe('RuleEditor', () => {
     // *last landed* preview's impact. A click that lands while a preview is
     // still in flight would send the just-committed rules against a stale
     // impact and draw the "something changed the library" warning for a race
-    // the client caused, not the server. This file's own top comment.
+    // the client caused, not the server. `RuleEditor.tsx`'s own top comment.
     holdTheClock()
     const host = await render()
     let resolvePreview: (value: Preview) => void = () => {}
@@ -1580,11 +1568,10 @@ describe('RuleEditor', () => {
   })
 
   it('re-previews the saved list once a save lands, and holds Save until that lands too', async () => {
-    // I1's own discriminating case. Without `save` re-previewing on landing,
-    // this second `previewRules` mock is never consumed at all — the button
-    // is free the instant `saveRules` resolves and keeps stating '71', the
-    // pre-save number, forever after the library has already been re-homed
-    // to match it.
+    // Without `save` re-previewing on landing, this second `previewRules` mock
+    // is never consumed at all — the button is free the instant `saveRules`
+    // resolves and keeps stating '71', the pre-save number, forever after the
+    // library has already been re-homed to match it.
     holdTheClock()
     let resolveFollowUp: (value: Preview) => void = () => {}
     vi.mocked(rulesApi.previewRules)
@@ -1622,13 +1609,11 @@ describe('RuleEditor', () => {
   })
 
   it('carries the id the server actually assigned on a second save, not the freshly-added rule’s 0', async () => {
-    // Weak-test fix: `save()`'s `setRules(answer.rules)` is what replaces a
-    // freshly-added rule's `id: 0` with the row the store actually created.
-    // Delete that line and every other test in this file still passes; only
-    // this one notices, because without it a second save re-sends `id: 0`
-    // and the store reads that as "insert a new row" rather than "keep the
-    // one just created" — a duplicated rule and an orphaned
-    // `created_rule_id`.
+    // `save()`'s `setRules(next)` (`next` is `answer.rules` when nothing was
+    // held) is what replaces a freshly-added rule's `id: 0` with the row the
+    // store actually created. Without that line a second save re-sends `id: 0`
+    // and the store reads that as "insert a new row" rather than "keep the one
+    // just created" — a duplicated rule and an orphaned `created_rule_id`.
     const withRealId = [
       rule(),
       rule({ id: 2, ordinal: 2, pattern: 'Colour/.*' }),
@@ -1752,12 +1737,12 @@ describe('RuleEditor', () => {
   it('keeps naming the proposals an import reopened after its own follow-up preview resolves', async () => {
     // `sendImport` fires its own `runPreview` right after landing, and that
     // preview's success path unconditionally clears `failure` — so a notice
-    // stored there was wiped a preview-cycle later, almost always before a
-    // person could read it, by the very call the import itself triggered.
+    // stored there would be wiped a preview-cycle later, almost always before
+    // a person could read it, by the very call the import itself triggered.
     // The follow-up preview is left to resolve normally here (the default
     // mock resolves it), rather than held open, because that resolution is
-    // exactly the moment the old code lost the message — an assertion made
-    // before it would pass against the broken version too.
+    // exactly the moment such a notice would be lost — an assertion made
+    // before it would pass against a broken version too.
     vi.mocked(rulesApi.importRules).mockResolvedValue({
       rules: [rule({ id: 5, pattern: 'Imported/.*', set_series: null })],
       complaints: [],
@@ -1824,14 +1809,14 @@ describe('RuleEditor', () => {
     // `exportDoc` runs inline in the Export link's own `href`, on every
     // render — a root deleted out from under a still-scoped rule has to show
     // the reason rather than crash the whole screen building an href nobody
-    // asked to see. It previously did crash: an unguarded `setFailure` here
-    // fired again on every render it caused, and this rule's mismatch never
-    // stops being true, so React's render-phase-update budget ran out and
-    // the whole screen died with "Too many re-renders" instead of drawing
-    // this message. Fixed by comparing against the current failure before
-    // setting it. This checks the settled state rather than the instant
-    // right after mount, since the message keeps re-asserting itself on
-    // every later render too, for as long as the mismatch stands.
+    // asked to see. An unguarded `setFailure` here would fire again on every
+    // render it caused, and this rule's mismatch never stops being true, so
+    // React's render-phase-update budget would run out and the whole screen
+    // would die with "Too many re-renders" instead of drawing this message;
+    // `exportDoc` compares against the current failure before setting it.
+    // This checks the settled state rather than the instant right after
+    // mount, since the message keeps re-asserting itself on every later
+    // render too, for as long as the mismatch stands.
     vi.mocked(rulesApi.listRules).mockResolvedValue({
       rules: [rule({ root_id: 99 })],
       complaints: [],
@@ -2001,13 +1986,12 @@ describe('RuleEditor', () => {
 })
 
 /**
- * **`runPreview`'s two `seq !== latest.current` guards, which no test had
- * reached** — 116 calls went through the first of them and not one was stale.
+ * **`runPreview`'s two `seq !== latest.current` guards.**
  *
- * Every edit fires a preview and a preview is the slow call on this screen
- * (~281 ms is the figure the design quotes), so two are routinely outstanding
- * and the server need not answer them in order. A stale answer landing last is
- * a Save button stating a count derived for a rule list nobody is looking at.
+ * Every edit fires a preview and a preview is the slow call on this screen,
+ * so two are routinely outstanding and the server need not answer them in
+ * order. A stale answer landing last is a Save button stating a count derived
+ * for a rule list nobody is looking at.
  */
 describe('RuleEditor, a preview overtaken by a newer one', () => {
   /** Select rule 2 against a held preview, then rule 1 against a prompt one. */
@@ -2043,9 +2027,9 @@ describe('RuleEditor, a preview overtaken by a newer one', () => {
   })
 
   it("does not let the older answer's failure invalidate the newer one", async () => {
-    // The catch clears `preview` as well as setting the banner — I2's rule,
-    // and the reason this guard is not merely cosmetic: a stale rejection
-    // without it holds Save over a preview that succeeded afterwards.
+    // The catch clears `preview` as well as setting the banner, and that is
+    // the reason this guard is not merely cosmetic: a stale rejection without
+    // it holds Save over a preview that succeeded afterwards.
     const slow = deferred<Preview>()
     const host = await overtaken(slow.promise)
     await flush(() => slow.reject(new Error('/api/library/rules/preview: 500')))

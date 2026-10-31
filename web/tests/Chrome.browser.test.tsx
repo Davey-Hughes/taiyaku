@@ -447,7 +447,7 @@ describe('the mark on the progress line, laid out', () => {
     //
     // A row is asked for by its own whole number. Between two rows the
     // browser's answer leans upward, and a point half a pixel above a box
-    // was read as inside it.
+    // would be read as inside it.
     it(`is drawn in the row above the line and the row below it, ${reading}`, async () => {
       await page.viewport(1440, 900)
       const host = inReader({ reading, currentIndex: 0 })

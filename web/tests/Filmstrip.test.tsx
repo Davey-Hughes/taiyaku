@@ -60,7 +60,7 @@ beforeEach(() => {
 // own doc). That shape is what exercises the half badge and the half-aware
 // alt text without needing `pairing.ts` itself in this file at all.
 //
-// Load-bearing, since O140: this, `Chrome.test.tsx`'s 3 groups and
+// Load-bearing (O140): this, `Chrome.test.tsx`'s 3 groups and
 // `App.test.tsx`'s 6 pages all sit inside the rail's 33-tile window
 // (`windowMargin` either side of the focus), so `lo` is always 0, no leading
 // spacer renders, and `buttons(host)[i]` still addresses tile `i` directly.
@@ -108,10 +108,10 @@ describe('tiles', () => {
     expect(img0?.getAttribute('loading')).toBe('lazy')
 
     // jsdom has no `matchMedia`, so `stripTileEdge` takes its wide branch at
-    // `devicePixelRatio` 1 and every tile asks for 160 — today's image at an
-    // explicit size. The rung that varies is the browser project's to assert
-    // (`Filmstrip.browser.test.tsx`); what this pins is that the URL carries
-    // one at all, on every tile, and that it is the same one.
+    // `devicePixelRatio` 1 and every tile asks for 160. The rung that varies is
+    // the browser project's to assert (`Filmstrip.browser.test.tsx`); what this
+    // pins is that the URL carries one at all, on every tile, and that it is
+    // the same one.
     const images = [...host.querySelectorAll('img')]
     expect(images).toHaveLength(groups.length)
     for (const [i, img] of images.entries()) {
@@ -430,18 +430,11 @@ describe('the rail', () => {
 })
 
 describe('recentring on a thumbnail load', () => {
-  // This used to pin the opposite: a rail-level `load` listener that
-  // re-centred on every descendant thumbnail's load, added back when a tile
-  // had no width of its own and a lazy image decoding could collapse the
-  // layout. A `minWidth` floor (Task 2a, 2026-09-21) closed that gap, and
-  // windowing turned the listener from a safeguard into the regression this
-  // pins against: scrolling the rail renders new tiles, whose images then
-  // load, so the listener fired continuously while the reader was mid-flick
-  // and dragged the rail back to the current tile — reported from a real
-  // iPhone as a flick that swipes and then returns within about a second,
-  // which made the rail impossible to make progress on. The fix removed the
-  // listener rather than narrowing it, so a thumbnail's `load` must now be a
-  // no-op for the rail.
+  // A rail-level `load` listener that re-centred on every descendant
+  // thumbnail's load would be a regression: scrolling the rail renders new
+  // tiles, whose images then load, so the listener would fire continuously
+  // while the reader is mid-flick and drag the rail back to the current tile.
+  // So a thumbnail's `load` must be a no-op for the rail.
   it('does not recentre when a descendant thumbnail fires a load event', () => {
     const host = mount(<Filmstrip {...props({ currentIndex: 1 })} />)
     expect(scrolledTo).toHaveLength(1)
@@ -458,16 +451,16 @@ describe('recentring on a thumbnail load', () => {
 // stubbed by hand below to stand in for a tile that has actually drawn.
 // `--strip-tile-border` and `--strip-unit` are likewise set directly on the
 // rail's own inline style rather than left to a stylesheet: this file never
-// imports `reader.css` (only `Filmstrip.browser.test.tsx` does, against a
+// imports `reader.css` (`Filmstrip.browser.test.tsx` does, against a
 // real layout engine — see that file's own comment on the import), and
 // jsdom's `getComputedStyle` only ever reflects an element's own inline
 // style, never one cascaded from a class selector.
 describe('measuring --strip-unit at runtime', () => {
-  // The runtime measurement needs at least 5 loaded one-unit tiles before it
-  // trusts a median (`medianTileWidth`'s own minimum sample, `tiles.ts`), so
-  // these tests need more tiles than the shared top-level `groups` fixture
-  // (4) has — an 8-tile, one-group-per-slot fixture of its own, small
-  // enough to stay inside the rail's window (`lo` stays 0), so
+  // The runtime measurement needs at least 3 loaded tiles before it trusts a
+  // median (`medianTileWidth`'s own minimum sample, `tiles.ts`), and the
+  // tests below load up to 5 — more than the shared top-level `groups`
+  // fixture (4) has. Hence an 8-tile, one-group-per-slot fixture of its own,
+  // small enough to stay inside the rail's window (`lo` stays 0), so
   // `buttons(host)[i]` still addresses tile `i` directly.
   const unitSlots: Position[] = Array.from({ length: 8 }, (_, i) => ({
     page: i,
@@ -506,12 +499,11 @@ describe('measuring --strip-unit at runtime', () => {
     return img
   }
 
-  // O140's measured phone case (390×844, dpr 3, mobile emulation): a
-  // loaded one-unit tile's outer width is 68.19 px. Border 2 px either side
-  // gives a measured unit of 64.19, ten-odd pixels past the nominal 54 the
-  // rail is primed with — well outside the 0.5 px tolerance, so the
-  // corrected value is written onto the rail once `medianTileWidth`'s
-  // minimum sample (3, fix-round review finding A) agrees on it.
+  // O140's phone case (390×844, dpr 3): a loaded one-unit tile's outer width
+  // is 68.19 px. Border 2 px either side gives a measured unit of 64.19,
+  // ten-odd pixels past the nominal 54 the rail is primed with — well outside
+  // the 0.5 px tolerance, so the corrected value is written onto the rail once
+  // `medianTileWidth`'s minimum sample (3) agrees on it.
   it('writes the median measured unit once at least 3 one-unit tiles have loaded, past tolerance', () => {
     const host = mount(<Filmstrip {...unitProps()} />)
     const rail = primeRail(host)
@@ -545,16 +537,13 @@ describe('measuring --strip-unit at runtime', () => {
     expect(rail.style.getPropertyValue('--strip-unit')).toBe('54px')
   })
 
-  // C2 (whole-branch review): the minimum-sample guard on its own terms — 2
-  // loaded tiles is one short of `medianTileWidth`'s default floor of 3
-  // (lowered from 5 by fix-round review finding A, now that every loaded
-  // tile contributes rather than only one-unit ones), so even a unanimous,
-  // well-past-tolerance width from both of them must not write anything
-  // yet. Without this floor, an early render with a single loaded tile (or
-  // a small handful) could set the property off of a sample too small to
-  // trust — see `medianTileWidth`'s own doc for why the same floor is also
-  // what stops one unmarked double-page scan from deciding the measurement
-  // on its own.
+  // The minimum-sample guard on its own terms — 2 loaded tiles is one short of
+  // `medianTileWidth`'s default floor of 3, so even a unanimous,
+  // well-past-tolerance width from both of them must not write anything yet.
+  // Without this floor, an early render with a single loaded tile (or a small
+  // handful) could set the property off of a sample too small to trust — see
+  // `medianTileWidth`'s own doc for why the same floor is also what stops one
+  // unmarked double-page scan from deciding the measurement on its own.
   it('does not write the property when fewer than the minimum sample have loaded', () => {
     const host = mount(<Filmstrip {...unitProps()} />)
     const rail = primeRail(host)
@@ -573,14 +562,14 @@ describe('measuring --strip-unit at runtime', () => {
     expect(rail.style.getPropertyValue('--strip-unit')).toBe('54px')
   })
 
-  // Finding A, part 2 (fix-round review): the ref flag above only fires once
+  // `Filmstrip.tsx`'s ref flag, `unitMeasuredRef`, only fires once
   // `medianTileWidth` reaches its minimum sample — a rail with fewer tiles
   // than that can never reach it, so the `load` listener needs a second way
-  // to detach or it stays attached for the component's whole life, forcing
-  // a layout read on every future load. `unitGroups` sliced to 2 tiles is
-  // one below the minimum sample (3): the property never gets measured, but
-  // the listener still has to let go once both of the only tiles it could
-  // ever read have loaded.
+  // to detach or it stays attached for the component's whole life, forcing a
+  // layout read on every future load. `unitGroups` sliced to 2 tiles is one
+  // below the minimum sample (3): the property never gets measured, but the
+  // listener still has to let go once both of the only tiles it could ever
+  // read have loaded.
   it('detaches the load listener once every rendered tile has loaded, even below the minimum sample', () => {
     const host = mount(
       <Filmstrip {...unitProps({ groups: unitGroups.slice(0, 2) })} />,
@@ -631,16 +620,13 @@ describe('measuring --strip-unit at runtime', () => {
     expect(rail.style.getPropertyValue('--strip-unit')).toBe('54px')
   })
 
-  // C2 (whole-branch review): the failure this branch fixes. A double-page
-  // scan the sidecar never marked `spread: true` is a one-slot group, so
-  // `tileUnits` correctly calls it one unit and it carries the same
-  // one-unit `minWidth` floor as an ordinary tile — while drawing at
-  // roughly twice the nominal width (tile 0 here, at 132 px against an
-  // ordinary tile's 68.19). Taking the first qualifying tile, the rule this
-  // replaces, would have accepted 132 outright whenever it happened to load
-  // first and corrupted `--strip-unit` to about double the true value —
-  // reproduced with exactly this stubbed width during the whole-branch
-  // review that found it. The median of `[132, 68.19, 68.19, 68.19, 68.19]`
+  // A double-page scan the sidecar never marked `spread: true` is a one-slot
+  // group, so `tileUnits` correctly calls it one unit and it carries the same
+  // one-unit `minWidth` floor as an ordinary tile — while drawing at roughly
+  // twice the nominal width (tile 0 here, at 132 px against an ordinary tile's
+  // 68.19). Taking the first qualifying tile would accept 132 outright
+  // whenever it happened to load first and corrupt `--strip-unit` to about
+  // double the true value. The median of `[132, 68.19, 68.19, 68.19, 68.19]`
   // is 68.19: the outlier is a minority of the sample and cannot move it.
   it('derives the ordinary unit even when one loaded one-unit tile is an unmarked double-page scan', () => {
     const host = mount(<Filmstrip {...unitProps()} />)
@@ -661,16 +647,14 @@ describe('measuring --strip-unit at runtime', () => {
   // widths that would themselves justify a very different median — must not
   // move the property again.
   //
-  // Finding B (fix-round review): the previous version of this test
-  // re-stubbed only a sixth, outlying tile (999 among five 68.19s) before
-  // the second load. An odd sample's outlier sorts to one end and never
-  // reaches the middle, so a second measurement — if the ref did not block
-  // one — would recompute the *same* 68.19 median and write the *same*
-  // 64.19px regardless: deleting `unitMeasuredRef.current = true` in
-  // `Filmstrip.tsx` still passed this test, which is what the comment above
-  // claims but the test itself never checked. Re-stubbing the five tiles
-  // that *form* the median — not a sixth tile outside it — is what makes a
-  // second measurement, if one ran, want to write something else: median
+  // The second load re-stubs the five tiles that *form* the median, not a
+  // sixth, outlying one. An odd sample's outlier sorts to one end and never
+  // reaches the middle, so had only a sixth tile been re-stubbed, a second
+  // measurement — if the ref did not block one — would recompute the *same*
+  // 68.19 median and write the *same* 64.19px regardless, and the test would
+  // still pass with `unitMeasuredRef.current = true` deleted from
+  // `Filmstrip.tsx`. Re-stubbing the five that form the median is what makes
+  // a second measurement, if one ran, want to write something else: median
   // 300, unit 296, nowhere near 64.19px.
   it('measures at most once per mount, whatever loads afterwards', () => {
     const host = mount(<Filmstrip {...unitProps()} />)
@@ -693,16 +677,14 @@ describe('measuring --strip-unit at runtime', () => {
     expect(rail.style.getPropertyValue('--strip-unit')).toBe('64.19px')
   })
 
-  // fix-round review, finding A: a two-unit tile no longer sits out of the
-  // sample the way it used to (see this describe block's own tests above,
-  // now updated) — `normalizedTileWidth` (`tiles.ts`) rescales its own outer
+  // `normalizedTileWidth` (`tiles.ts`) rescales a two-unit tile's own outer
   // width back to what a one-unit tile of the same per-unit width would have
   // measured, so a genuine `spread: true` tile (`tileMinWidth(2)`) joins the
   // same sample the two ordinary one-unit tiles beside it do, rather than
   // being excluded from it. 132.38 is chosen so its normalised figure agrees
-  // with theirs exactly — `(132.38 - 2*2) / 2 + 2*2` is 68.19, the same
-  // outer width the ordinary tiles measure here — so all three agreeing
-  // reaches the new minimum sample of 3 and writes.
+  // with theirs exactly — `(132.38 - 2*2) / 2 + 2*2` is 68.19, the same outer
+  // width the ordinary tiles measure here — so all three agreeing reaches the
+  // minimum sample of 3 and writes.
   it('normalises a two-unit tile into the same sample a one-unit tile contributes to', () => {
     const spreadGroups: Group[] = [
       { slots: [0] },
@@ -749,10 +731,10 @@ describe('windowing', () => {
     Array.from(host.querySelectorAll('[data-testid="strip-spacer"]'))
 
   // jsdom has no layout engine, so every element's `getBoundingClientRect`
-  // reports all-zero until stubbed — and the scroll handler now reads it (on
-  // the rail and on the rendered tiles) to decide whether to rebuild the
-  // window. A left/width pair is all any caller here needs, so this fills in
-  // the rest of `DOMRect`'s shape rather than asking every call site to.
+  // reports all-zero until stubbed — and the scroll handler reads it (on the
+  // rail and on the rendered spacers) to decide whether to rebuild the window.
+  // A left/width pair is all any caller here needs, so this fills in the rest
+  // of `DOMRect`'s shape rather than asking every call site to.
   function rect(left: number, width: number) {
     return {
       x: left,
@@ -845,14 +827,12 @@ describe('windowing', () => {
   // moves the window there. `scrollWidth`/`clientWidth` are defined on the
   // element directly for this one test, and so is the rail's own bounding
   // box (`rect(0, 400)`, an arbitrary positive width starting at x 0) — the
-  // scroll handler reads it to size its guard, and left unstubbed it would
-  // be zero too, which makes the guard zero and `nearAGap` false, and the
-  // window would never rebuild. The rendered spacer's own box is
-  // deliberately left at jsdom's zero default rather than stubbed away from
-  // the rail: a zero-width spacer at (0, 0) sits inside the guarded box this
-  // rail's stub produces (-100..500), which is exactly "a spacer near the
-  // strip" — this test is about the window moving on a scroll, not about the
-  // guard's exact boundary (that is
+  // scroll handler reads it to size its guard. The rendered spacer's own box
+  // is deliberately left at jsdom's zero default rather than stubbed away
+  // from the rail: a zero-width spacer at (0, 0) sits inside the guarded box
+  // this rail's stub produces (-200..600), which is exactly "a spacer near
+  // the strip" — this test is about the window moving on a scroll, not about
+  // the guard's exact boundary (that is
   // `describe('re-anchoring on the rendered window running out')`, below,
   // where the spacer boxes are stubbed on purpose to land on either side of
   // it).
@@ -889,16 +869,14 @@ describe('windowing', () => {
     ).toContain('page 120')
   })
 
-  // The regression this guards against (reported from a real iPhone):
-  // scrolling the rail renders new tiles the way the test above shows, and
-  // those tiles' images then load — before the `load` listener was removed
-  // from `Filmstrip.tsx`'s centring effect, that firing while the reader was
-  // still mid-flick called `scrollIntoView` on the current tile and dragged
-  // the rail straight back to it, so a flick "does swipe but then returns"
-  // within about a second and the reader could not make progress. The
-  // sequence here is the same scroll as the test above, then a `load` on a
-  // tile the scroll newly rendered — one that was not on screen before the
-  // window moved, matching what a real flick produces.
+  // Scrolling the rail renders new tiles the way the test above shows, and
+  // those tiles' images then load. A `load` listener in `Filmstrip.tsx`'s
+  // centring effect that fired while the reader was still mid-flick would
+  // call `scrollIntoView` on the current tile and drag the rail straight back
+  // to it, so the reader could not make progress. The sequence here is the
+  // same scroll as the test above, then a `load` on a tile the scroll newly
+  // rendered — one that was not on screen before the window moved, matching
+  // what a real flick produces.
   it('leaves the rail alone when a thumbnail loads after a scroll moved the window', () => {
     const host = mount(<Filmstrip {...longProps({ currentIndex: 0 })} />)
     const rail = host.firstElementChild as HTMLElement
@@ -931,16 +909,15 @@ describe('windowing', () => {
     expect(scrolledTo).toHaveLength(callsAfterScroll)
   })
 
-  // Finding C (fix-round review): the test above takes its baseline *after*
-  // the scroll that moves the window, so a re-centre the scroll itself
-  // caused would already be absorbed into `callsAfterScroll` and go
-  // unnoticed — it only pins a re-centre caused by a *subsequent* load. The
-  // C1 regression this guards against (a `pendingRecentre` ref and a
-  // no-dependency retry effect that runs after every render, including the
-  // one `setScrolledTo` below triggers) could just as easily be reintroduced
-  // by the scroll-driven re-render itself, which is exactly the shape this
-  // pins: the baseline is taken *before* the `act()` that dispatches the
-  // scroll.
+  // The test above takes its baseline *after* the scroll that moves the
+  // window, so a re-centre the scroll itself caused would already be absorbed
+  // into `callsAfterScroll` and go unnoticed — it only pins a re-centre caused
+  // by a *subsequent* load. The regression this guards against (a
+  // `pendingRecentre` ref and a no-dependency retry effect that runs after
+  // every render, including the one `setScrolledTo` below triggers) could just
+  // as easily be reintroduced by the scroll-driven re-render itself, which is
+  // exactly the shape this pins: the baseline is taken *before* the `act()`
+  // that dispatches the scroll.
   //
   // `currentIndex: 110`, not 0: the far-end scroll's new window is
   // `stripWindow(119, 120, 16)` = tiles 103..119, and unless the current
@@ -980,43 +957,31 @@ describe('windowing', () => {
   })
 
   // O140's fix: the scroll handler re-anchors once a *spacer* comes within a
-  // quarter of the rail's width of the visible rail, read via
-  // `getBoundingClientRect` on the rail and on each rendered spacer — not on
-  // a count of tiles the focus has drifted (a drift-based rule was replaced: it
-  // assumed the viewport straddles the focus tile, when the focus is the rail's
-  // leading edge and the viewport extends forward from it, which cost a 321 px
-  // gap at 1440 px), and not on the first/last *rendered tile's* box either —
-  // an earlier version of this fix tried that, checking both ends of the DOM
-  // order against both ends of the rail on the reasoning that checking both
-  // made it agnostic to reading direction. It did not: the rail is
-  // `row-reverse` under `rtl`, so the last tile in the DOM sits at the left of
-  // the screen, not the right, and checking both ends of the DOM order makes
-  // one of the two checks true on nearly every frame instead. Measured driving
-  // a 1.2 s flick at 390×844 under 4× CPU throttle: 71 re-anchors across 182
-  // frames, worse than the 65 the drift-based rule produced and worse than the
-  // 24 the spacer rule below achieves. A spacer reaching the visible strip *is*
-  // the blank gap this guard exists to prevent, which is symmetric under either
-  // flex direction with no reading-direction arithmetic needed.
+  // guard of the visible rail (a quarter of the rail's width, and no less
+  // than 200 px), read via `getBoundingClientRect` on the rail and on each
+  // rendered spacer. A spacer reaching the visible strip *is* the blank gap
+  // this guard exists to prevent, which is symmetric under either flex
+  // direction (the rail is `row-reverse` under `rtl`) with no
+  // reading-direction arithmetic needed.
   //
   // jsdom has no layout engine — every element's `getBoundingClientRect`
   // reports all-zero by default — so the rail's and the spacers' boxes are
   // stubbed explicitly below. That means these tests pin the *decision
-  // rule* (rebuild once a spacer's box overlaps a quarter-rail-width guard
-  // around the visible rail), not real geometry;
-  // `Filmstrip.browser.test.tsx` is what exercises the rule against an
-  // actual layout.
+  // rule* (rebuild once a spacer's box overlaps the guard around the visible
+  // rail), not real geometry; `Filmstrip.browser.test.tsx` is what exercises
+  // the rule against an actual layout.
   //
   // `units` are one per tile here (`longSlots` is 120 ordinary pages), and
   // `scrollWidth`/`clientWidth` are set so `scrollLeft` reads back as the
   // fraction `focusAtFraction` needs to land on an exact tile index — see
   // `focusAtFraction`'s own tests in `tiles.test.ts` for the same trick.
   describe('re-anchoring on the rendered window running out', () => {
-    // Rail 400 px wide, so the guard (a quarter of its width) is 100 px:
-    // the check fires once a spacer's box overlaps the rail's own box
-    // widened by 100 px on each side. `currentIndex: 60` in this 120-tile,
-    // 16-margin fixture renders both a leading and a trailing spacer
-    // (stripWindow(60, 120, 16) = { lo: 44, hi: 77 }, and 44 > 0 while
-    // 77 < 120), so both are available to stub.
+    // Rail 400 px wide, so the guard is its 200 px floor (a quarter of the
+    // width would be 100 px): the check fires once a spacer's box overlaps
+    // the rail's own box widened by 200 px on each side. `currentIndex: 60`
+    // in this 120-tile, 16-margin fixture renders both a leading and a
+    // trailing spacer (stripWindow(60, 120, 16) = { lo: 44, hi: 77 }, and
+    // 44 > 0 while 77 < 120), so both are available to stub.
     function primed(currentIndex: number) {
       const host = mount(<Filmstrip {...longProps({ currentIndex })} />)
       const rail = host.firstElementChild as HTMLElement
@@ -1035,8 +1000,8 @@ describe('windowing', () => {
 
     it('does not rebuild the window while both spacers sit well clear of the rail', () => {
       const { host, rail, leading, trailing } = primed(60)
-      // Both spacers sit far outside the guard (rail: 0..400, guard 100):
-      // no gap is near the strip.
+      // Both spacers sit outside the guard (rail: 0..400, guard 200, so the
+      // guarded box is -200..600): no gap is near the strip.
       leading.getBoundingClientRect = () => rect(-500, 50)
       trailing.getBoundingClientRect = () => rect(600, 50)
 
@@ -1051,7 +1016,7 @@ describe('windowing', () => {
       const { host, rail, leading, trailing } = primed(60)
       leading.getBoundingClientRect = () => rect(-500, 50)
       // The trailing spacer's left edge (370) is inside the guard (rail's
-      // right edge 400 plus guard 100 = 500), so it overlaps the guarded box.
+      // right edge 400 plus guard 200 = 600), so it overlaps the guarded box.
       trailing.getBoundingClientRect = () => rect(370, 50)
 
       const before = Array.from(host.querySelectorAll('img')).map((i) => i.alt)
@@ -1153,18 +1118,16 @@ describe('windowing', () => {
     expect(after).not.toContain('page 17')
   })
 
-  // C1 (whole-branch review): a page turn while the reader had flicked the
-  // rail away from the current tile used to leave the strip blank. The
-  // centring effect's own, synchronous `recenter()` call ran against the
-  // *stale* window — still built from the scroll position, since
-  // `setScrolledTo(undefined)` in that same effect only schedules the reset
-  // and does not apply it before `recenter` runs — found no ref to scroll
-  // to (the new current tile was not in that stale window), and was never
-  // retried once the reset actually rebuilt the window around the new
-  // current tile, because the effect's own dependencies had not changed. A
-  // real repro at 390×844 showed the rendered window correctly follow the
-  // new `currentIndex` while `scrollLeft` stayed exactly where the flick
-  // left it and zero tiles were visible.
+  // A page turn while the reader has flicked the rail away from the current
+  // tile must not leave the strip blank. The centring effect's own,
+  // synchronous `recenter()` call runs against the *stale* window — still
+  // built from the scroll position, since `setScrolledTo(undefined)` in that
+  // same effect only schedules the reset and does not apply it before
+  // `recenter` runs — and finds no ref to scroll to (the new current tile is
+  // not in that stale window). With no retry once the reset has rebuilt the
+  // window around the new current tile — the effect's own dependencies do not
+  // change — the rendered window would follow the new `currentIndex` while
+  // `scrollLeft` stayed exactly where the flick left it and no tile showed.
   it('recentres on the new current tile after a page turn that lands outside the window the reader had flicked to', () => {
     const host = mount(<Filmstrip {...longProps({ currentIndex: 10 })} />)
     const rail = host.firstElementChild as HTMLElement

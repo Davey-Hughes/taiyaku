@@ -43,12 +43,9 @@ const json = (body: unknown) =>
 /**
  * **Keys and sessions, because the sweep below can only see what renders.**
  * With both lists empty the panel draws no key row, no session row, no
- * `Revoke` and neither `<span className={look.meta}>` — and `carries no
- * inline style attribute anywhere` stayed green with
- * `style={{ opacity: 0.6 }}` put back on the session's "last seen" span,
- * which is the whole defect it names. The unstubbed `fetch` here reaches
- * Vite's proxy and is refused by a `serve` that is not running, so the
- * component's own `.catch` left both lists at `[]`.
+ * `Revoke` and neither `<span className={look.meta}>`. The unstubbed `fetch`
+ * here reaches Vite's proxy and is refused by a `serve` that is not running,
+ * so the component's own `.catch` would leave both lists at `[]`.
  *
  * **Two of each rather than one**, so that `keeps each stacked row off the
  * one above it` measures a row following another row *of the same list* —
@@ -64,9 +61,9 @@ const json = (body: unknown) =>
 const server = () =>
   vi.fn((input: string, init?: RequestInit) => {
     // Matched on the method as well as the path, because `POST /api/keys`
-    // and `GET /api/keys` are different answers — the path alone handed
-    // `createKey` the *list* of keys, whose `.secret` is `undefined`, and
-    // the panel then drew a secret box holding nothing.
+    // and `GET /api/keys` are different answers — the path alone would hand
+    // `createKey` the *list* of keys, whose `.secret` is `undefined`, and the
+    // panel would then draw a secret box holding nothing.
     if (input === '/api/keys' && (init?.method ?? 'GET') === 'POST') {
       return Promise.resolve(json({ secret: 'tyk_the-only-copy' }))
     }
@@ -106,11 +103,8 @@ const server = () =>
 
 /**
  * **The account panel is one of the reader's dialogs, measured rather than
- * asserted by class name.** ③ drew Settings as `.reader-dialog-panel` — Help, the
- * note list and Credits are `.docked-panel`, a different shape; this one was 25 inline `style=` props drawing a
- * different dialog — 12px corners against 0, a drop shadow against none,
- * `rgba(24,24,24,0.96)` against `--reader-panel`, 16px body against 14, a
- * sans title against a serif one. ⑤c makes it the same panel.
+ * asserted by class name.** It is `.reader-dialog-panel`, as Settings is; Help,
+ * the note list and Credits are `.docked-panel`, a different shape.
  *
  * In the browser project because jsdom computes no styles: a class-name
  * assertion passes against a panel whose rules never loaded, which is the
@@ -132,9 +126,9 @@ const panelUi = () => (
 async function panel(): Promise<HTMLElement> {
   const host = mount(panelUi())
   // The key list and the session list arrive over two separate promise
-  // chains, and a fixed number of microtask ticks flushed the first and not
-  // the second — the keys row rendered, the session row did not, and React
-  // warned about an update outside `act`. A macrotask flushes both.
+  // chains. A fixed number of microtask ticks would flush the first and not
+  // the second, and React would warn about an update outside `act`. A
+  // macrotask flushes both.
   await act(async () => {
     await new Promise((resolve) => {
       setTimeout(resolve, 0)
@@ -234,8 +228,7 @@ function holdWrite(route: string) {
  * are drawn held only once the wait has lasted `WAIT_DRAWN_AFTER_MS`, and
  * then as a disabled button is drawn; a click inside that delay and Enter
  * while it is drawn held send nothing. Focus is read before how the button
- * is held, so that one held by `disabled` again fails on focus left on the
- * page.
+ * is held, so that one held by `disabled` fails on focus left on the page.
  */
 async function pressedThroughItsWait(
   screen: HTMLElement,
@@ -1325,8 +1318,7 @@ async function sizedWithText(width: number, rootFont: string) {
  * 2026-10-26): where they take two, the row under Confirm password,
  * Change password's, keeps their room whether the line is said or not, so
  * nothing moves when it comes, and a press on Confirm password reaches it.
- * Where they take one, that row keeps no room beyond Change password's, as
- * it kept none before.
+ * Where they take one, that row keeps no room beyond Change password's.
  */
 async function differLaidUnderConfirm(screen: HTMLElement) {
   const { current, confirm, confirmRow, line, change } = passwordParts(screen)
@@ -1486,10 +1478,10 @@ describe('the account panel', () => {
    * **A desktop viewport, and the width assertion below needs it to mean
    * anything.** `.reader-dialog-panel` is `min(480px, 90vw)`, and the browser
    * project's default viewport is 414px wide — where that resolves to 373px
-   * and the 480 cap is never reached. A panel widened back to the old
-   * `min(560px, 90vw)` would measure 373 there too, so the assertion would
-   * stay green under the exact change it exists to catch. 1280 x 900 is the
-   * desktop `Config.browser.test.tsx` uses.
+   * and the 480 cap is never reached. A panel widened to `min(560px, 90vw)`
+   * would measure 373 there too, so the assertion would stay green under the
+   * exact change it exists to catch. 1280 x 900 is the desktop
+   * `Config.browser.test.tsx` uses.
    */
   beforeEach(async () => {
     vi.stubGlobal('fetch', server())
@@ -1499,17 +1491,16 @@ describe('the account panel', () => {
   afterEach(() => {
     vi.unstubAllGlobals()
     // Beside the global cleanup rather than at the end of the one case that
-    // sets it: removed after the assertion, a failed assertion left `paper`
-    // on the document for every case after it, and each of those resolves
-    // its colours against the theme this attribute names.
+    // sets it: removed after the assertion, a failed assertion would leave
+    // `paper` on the document for every case after it, and each of those
+    // resolves its colours against the theme this attribute names.
     document.documentElement.removeAttribute('data-theme')
   })
 
   it('is drawn as a reader dialog, not as its own', async () => {
     const el = await panel()
     const style = getComputedStyle(el)
-    // The four the old panel differed on, read off the box rather than the
-    // class list.
+    // Four properties, read off the box rather than the class list.
     expect(style.borderRadius).toBe('0px')
     expect(style.boxShadow).toBe('none')
     expect(Math.round(el.getBoundingClientRect().width)).toBe(480)
@@ -1518,11 +1509,11 @@ describe('the account panel', () => {
     const scrim = el.closest<HTMLElement>('.reader-dialog')
     expect(scrim).not.toBeNull()
 
-    // **The reader's scrim, stated as what `--scrim` resolves to here.**
-    // This was `not.toBe('rgba(0, 0, 0, 0.6)')`, the old hand-mixed black,
-    // and a negative assertion against one literal is green against a scrim
-    // with no background at all: `background: transparent` on
-    // `.reader-dialog` passed it.
+    // **The reader's scrim, stated as what `--scrim` resolves to here.** A
+    // negative assertion against one literal, such as
+    // `not.toBe('rgba(0, 0, 0, 0.6)')`, is green against a scrim with no
+    // background at all, and `background: transparent` on `.reader-dialog`
+    // would pass it.
     //
     // The token cannot be compared as text — a custom property's value is
     // `light-dark(#231e1759, #0000008c)` while a computed `background-color`
@@ -1572,11 +1563,10 @@ describe('the account panel', () => {
 
   it('carries no inline style attribute anywhere', async () => {
     const el = await panel()
-    // **The rows are on screen before the sweep runs.** Both lists empty is
-    // the state this fixture had first, and there the sweep visits only the
-    // frame — every element that ever carried `rowStyle` or
-    // `{ opacity: 0.6 }` is a key row or a session row, so it would report
-    // `[]` whatever those rows held.
+    // **The rows are on screen before the sweep runs.** With both lists
+    // empty the sweep visits only the frame — every element that would carry
+    // `rowStyle` or `{ opacity: 0.6 }` is a key row or a session row, so it
+    // would report `[]` whatever those rows held.
     expect(el.textContent).toContain('Panels')
     expect(el.textContent).toContain('Firefox')
 
@@ -1587,14 +1577,11 @@ describe('the account panel', () => {
   })
 
   /**
-   * **The rows this panel stacks, which ③'s panels never did.**
-   * `.reader-section-head` is ③'s row and carries no margin, because
-   * `Settings.tsx` draws one per section under the section's own rule.
-   * Here they stack — the create form and a row per key; a row per session —
-   * and taking that class alone closed every gap between them: four of the
-   * boundaries measured below all read 0 px at this viewport, each row's top
-   * exactly on the previous row's bottom, where each had 8 px above it
-   * before ⑤c.
+   * **The rows this panel stacks.** `.reader-section-head` carries no
+   * margin, because `Settings.tsx` draws one per section under the section's
+   * own rule. Here they stack — the create form and a row per key; a row per
+   * session — and that class alone would close every gap between them, each
+   * row's top exactly on the previous row's bottom.
    */
   it('keeps each stacked row off the one above it', async () => {
     const el = await panel()
@@ -1608,8 +1595,7 @@ describe('the account panel', () => {
     // none: the catalog's address above the create form, the create form
     // above the first key row, one key row above the next,
     // `.reader-panel-heading` (`margin: … 0 0`) above the first session row,
-    // one session row above the next. All five measured 0 with the margin
-    // gone.
+    // one session row above the next.
     const gapAbove = (row: Element) => {
       const above = row.previousElementSibling
       if (!above) throw new Error('a stacked row with nothing above it')
@@ -1635,13 +1621,11 @@ describe('the account panel', () => {
   })
 
   /**
-   * **The caption inside the secret box, and the space under it.** The
-   * inline style it lost in ⑤c was `margin: '8px 0 0'`; a `<p>`'s own
-   * margin is 1em top *and bottom*, and the bottom one falls inside this
-   * box's border, so the box grew a blank line beneath its last line of
-   * text. This is also the fourth `look.meta` site, and the only one
-   * `Account.test.tsx`'s count cannot reach — that count runs before a key
-   * is minted, when no secret is on screen.
+   * **The caption inside the secret box, and the space under it.** A `<p>`'s
+   * own margin is 1em top *and bottom*, and the bottom one would fall inside
+   * this box's border, as a blank line beneath its last line of text. It is
+   * also the one `look.meta` site `Account.test.tsx`'s count cannot reach —
+   * that count runs before a key is minted, when no secret is on screen.
    */
   it('breaks the secret’s caption between its words, never inside one, at 1920px', async () => {
     await page.viewport(1920, 1080)
@@ -1974,13 +1958,6 @@ describe('the account page', () => {
     return screen
   }
 
-  /**
-   * **The key's name box, measured against the password boxes.** A box
-   * drawn anywhere but in its row's control takes `base.css`'s bare-control
-   * defaults, 16px with `1px 2px` of padding, beside password boxes at 14px
-   * and `4px 8px`; and a box that does not sit against Create leaves a hole
-   * between the two.
-   */
   for (const [width, height, end] of [
     [1920, 1080, 'end'],
     [1024, 768, 'end'],
@@ -2008,6 +1985,13 @@ describe('the account page', () => {
     })
   }
 
+  /**
+   * **The key's name box, measured against the password boxes.** A box
+   * drawn anywhere but in its row's control takes `base.css`'s bare-control
+   * defaults, 16px with `1px 2px` of padding, beside password boxes at 14px
+   * and `4px 8px`; and a box that does not sit against Create leaves a hole
+   * between the two.
+   */
   for (const [width, height] of [
     [1920, 1080],
     [1024, 768],

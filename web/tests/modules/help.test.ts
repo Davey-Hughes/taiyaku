@@ -55,7 +55,7 @@ describe('helpModule', () => {
 })
 
 describe('keyLabel', () => {
-  // The three keys in the two real tables that do not render as themselves.
+  // The keys in the two real tables that do not render as themselves.
   it('names the space bar, which would otherwise be an empty cell', () => {
     expect(keyLabel(' ')).toBe('Space')
   })
@@ -297,9 +297,9 @@ describe('helpGroups and the reading direction', () => {
 })
 
 describe('helpGroups pairs step rows by meaning, not by position', () => {
-  // The case the first implementation got wrong: with three step-like rows it
-  // reversed the list instead of pairing them, so one row kept its own label
-  // and another took a stranger's.
+  // The case a reversal gets wrong: with three step-like rows, reversing the
+  // list instead of pairing them would leave one row with its own label and
+  // another with a stranger's.
   const table = [
     {
       keys: ['ArrowRight'],

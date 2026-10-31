@@ -5,12 +5,11 @@ import { Help } from '../src/Help'
 
 const noop = () => {}
 
-// `helpGroups` (modules/help.ts) is already at 100% and owns the derivation
-// rules — key ranges, label fallbacks, the reading-direction swap. These
-// tests stay off that ground: they pin what `Help` itself does with whatever
-// `helpGroups` hands back — the `visible` gate, the group→section and
-// row→dt/dd mapping, and the close affordance — using the real function only
-// as a source of *some* groups to render, never asserting on its formatting.
+// `helpGroups` (modules/help.ts) owns the derivation rules — key ranges,
+// label fallbacks, the reading-direction swap. These tests pin what `Help`
+// itself does with whatever `helpGroups` hands back — the `visible` gate, the
+// group→section and row→dt/dd mapping, and the close affordance — using the
+// real function as a source of groups to render.
 
 describe('Help', () => {
   it('renders nothing when not visible', () => {

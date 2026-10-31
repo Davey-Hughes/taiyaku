@@ -63,10 +63,9 @@ describe('strength', () => {
   })
 
   it('draws the weak line exactly where the inbox threshold does', () => {
-    // O155 itself: the two lines lived in two places and disagreed, so 13
-    // of the 17 rows the inbox shows by default said "weak" beneath an
-    // unticked "Show weak proposals". Pinned to the constant rather than to
-    // 1, so moving either line alone is a red test.
+    // O155: the weak line sits exactly where the inbox threshold does.
+    // Pinned to the constant rather than to 1, so moving either line alone is
+    // a red test.
     expect(strength(INBOX_MIN_SCORE)).not.toBe('weak')
     expect(strength(INBOX_MIN_SCORE - 1)).toBe('weak')
   })
@@ -133,13 +132,8 @@ describe('consequence', () => {
     expect(line).toContain('9 works')
     expect(line).not.toContain('15')
     expect(line).toContain('Nothing on disk is touched')
-    // **The verb, pinned.** This said `move 9 works` until a reproduction
-    // from a clean database — scan, accept, rescan — showed the matched
-    // volumes arriving as a new edition of the target's works while their
-    // original works stayed standing over the same files (O73, since closed
-    // by the fold `THE_FOLD` now describes). Nothing moves *on disk*,
-    // and the word is the whole finding — the fold that follows moves rows,
-    // not files.
+    // **The verb, pinned (O73).** Nothing moves *on disk* — the fold that
+    // follows moves rows, not files — so the line must not say `move`.
     expect(line).not.toContain('move')
     expect(line).toContain('from 9 works')
     // And when: the accept writes a rule and changes no `edition` row.
@@ -203,29 +197,26 @@ describe('consequence', () => {
 
 describe('THE_FOLD', () => {
   it('describes the fold rather than the duplication it closed', () => {
-    // Until O73 closed this line named the open item and asserted `twice`
-    // and `not.toContain('move')` — the accept-time truth being that nothing
-    // moved and the duplication was permanent. The fold built to close it
-    // (`derive::superseded`, `fold::absorb`) now removes the superseded work
-    // on the next scan and carries a reader's own state onto the surviving
-    // edition, so the line has to say the opposite of what it said before:
-    // this pins that it does, and that the rarer refusal path — where moving
-    // a reader's own state would not be safe — is still named rather than
-    // silently dropped.
+    // The fold (`derive::superseded`, `fold::absorb`) removes the superseded
+    // work on the next scan and carries a reader's own state onto the
+    // surviving edition, so the line describes the fold and names no open
+    // item (O73). This pins that it does, and that the rarer refusal path —
+    // where moving a reader's own state would not be safe — is named rather
+    // than silently dropped.
     expect(THE_FOLD).toContain('folds these works together')
     expect(THE_FOLD).toContain('refuses instead')
     expect(THE_FOLD).not.toContain('O73')
   })
 
   it('promises the move only as far as the store makes it', () => {
-    // **The unqualified promise is what this replaces.** The line said "any
-    // reader position, note or marked page on them moves onto this edition
-    // instead", and `fold::Moved` carries a counter for each of the three
-    // ways that is not so — `collisions`, `lost_positions` and `discarded`,
-    // every one of them constructed by a test in `taiyaku-library`. This is
-    // the control that causes the fold, so `works_moved`'s rule in
-    // `proposals.rs` governs it: a false statement to the person deciding is
-    // a defect whether it is a number or a verb.
+    // **The unqualified promise is ruled out.** To say "any reader position,
+    // note or marked page on them moves onto this edition instead" would be
+    // false: `fold::Moved` carries a counter for each of the three ways that
+    // is not so — `collisions`, `lost_positions` and `discarded`, every one
+    // of them constructed by a test in `taiyaku-library`. This is the control
+    // that causes the fold, so `works_moved`'s rule in `proposals.rs` governs
+    // it: a false statement to the person deciding is a defect whether it is
+    // a number or a verb.
     expect(THE_FOLD).toContain('move onto this edition wherever they can')
     expect(THE_FOLD).not.toContain('moves onto this edition instead')
     // `Moved::collisions`: the surviving edition's own marks win.
@@ -237,9 +228,8 @@ describe('THE_FOLD', () => {
   it('names what the fold discards, which nothing on this panel said', () => {
     // `Moved::discarded` takes the work's `work_tag` rows and its
     // `collection_item` places — a reader's own curation — along with its
-    // credits. Alignments were discarded too until **O76** closed, and this
-    // pinned "alignment corrected by hand" among the discards; a fold carries
-    // them now, so that phrase must not come back.
+    // credits. A fold carries alignments (O76), so "alignment corrected by
+    // hand" is not among the discards.
     expect(THE_FOLD).toContain('discards')
     expect(THE_FOLD).toContain('tags')
     expect(THE_FOLD).toContain('places in reading lists')
@@ -253,8 +243,7 @@ describe('THE_FOLD', () => {
     // its own otherwise. What it cannot place, or what would align an edition
     // with itself, is left and counted. O121: a place or a note on either side,
     // or an alignment already on this edition, that would name another page
-    // refuses the fold instead — the target's own rows included, which the
-    // first version of this sentence left out.
+    // refuses the fold instead — the target's own rows included.
     expect(THE_FOLD).toContain('marked pages and alignments on them move')
     expect(THE_FOLD).toContain(
       'a hand-corrected alignment wins over one that is not, and otherwise this edition keeps its own',
@@ -263,8 +252,7 @@ describe('THE_FOLD', () => {
       'any alignment it cannot place exactly on these pages',
     )
     expect(THE_FOLD).toContain('would align an edition with itself')
-    // The third class its own doc enumerates, which the first version of this
-    // sentence left to the winner clause to imply.
+    // The third class its own doc enumerates, apart from the winner clause.
     expect(THE_FOLD).toContain('hand-corrected alignment outranks')
     expect(THE_FOLD).toContain(
       'would leave a place or note on either side, or an alignment already on this edition, naming a different page, refuses instead',

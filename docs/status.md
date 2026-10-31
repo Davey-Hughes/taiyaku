@@ -4962,7 +4962,7 @@ mismatched pair said nothing at all.
   2026-10-29 how the rest of the repository goes: a full pass in which Sonnet
   cuts, Opus reviews every block blind, then one fix round and a pointer pass.
   It runs as five PRs by `docs/superpowers/plans/2026-10-29-comment-pass.md`;
-  the first, `web/src` and `web/vite.config.ts`, is done.
+  the first two are done: `web/src` with `web/vite.config.ts`, and `web/tests`.
 
 - **Measure argon2's cost on the NAS, and set the semaphore cap O57 wants.**
   §14 recorded that OWASP's parameters — `M_COST_KIB` 19456, `T_COST` 2,

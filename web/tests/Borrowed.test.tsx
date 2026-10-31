@@ -46,12 +46,9 @@ describe('Borrowed', () => {
     // would wrap it. Under `createRoot`, React defers a click-triggered state
     // update to its own scheduler rather than committing it inline with the
     // dispatch, so reading `textContent` right after an unwrapped `.click()`
-    // observes the pre-click DOM — confirmed by a failing run with the raw
-    // call, in both the jsdom and browser projects alike, which is what rules
-    // out "PageView misbehaves under jsdom" as the cause: PageView itself
-    // renders correctly under jsdom on its own. `act` forces the update to
-    // flush before the assertion below reads the DOM, the same fix
-    // `Labeller.browser.test.tsx` already applies to its own clicks.
+    // observes the pre-click DOM. `act` forces the update to flush before the
+    // assertion below reads the DOM, as `Labeller.browser.test.tsx` does for
+    // its own clicks.
     act(() => {
       mark?.click()
     })
@@ -151,9 +148,8 @@ describe('Borrowed', () => {
   })
 
   it('docks the mark below the top bar’s line, clear of a phone’s notch, whether or not the chrome is shown', () => {
-    // The top bar covers `top: 0` (whole-branch review): measured in
-    // Chromium at 390×844 with the chrome shown, `elementFromPoint` at the
-    // mark's centre returned the bar, not the mark — the pointer's only way
+    // The top bar covers `top: 0`, so a mark docked there would sit under it,
+    // with the bar taking the pointer from the mark: the pointer's only way
     // into the offers, and back out. Docked here unconditionally, the same
     // rule spec §8.1 gives the panels: always below the top bar's line, and
     // above the bottom bar's, whether or not the chrome is shown.

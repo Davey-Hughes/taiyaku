@@ -80,10 +80,10 @@ describe('pageStyle', () => {
     expect(s.objectFit).toBe('contain')
   })
 
-  // The exact declarations today's reader draws. Off must be byte-for-byte the
-  // old behaviour, not merely similar, or turning the setting off is a new
-  // third rendering nobody asked for. The `objectPosition` this now also emits
-  // does not break that: unset, `object-position` *is* `50% 50%`, so the
+  // The exact declarations of the fit-whole rendering. Off must be
+  // byte-for-byte that rendering, not merely similar, or turning the setting
+  // off is a third rendering nobody asked for. The `objectPosition` this also
+  // emits does not break that: unset, `object-position` *is* `50% 50%`, so the
   // default hug restates the value rather than changing it.
   it('is the old fit-whole exactly when upscaling is off', () => {
     const s = pageStyle({ ...prefs, upscaleToFit: false })
@@ -121,7 +121,7 @@ describe('pageStyle', () => {
   })
 
   // Single mode, scroll mode and every standalone `PageView` reach this
-  // branch, and it has to be the centring they already drew.
+  // branch, and it has to be centred.
   it('centres when nobody asks, and says so rather than omitting it', () => {
     expect(pageStyle(prefs).objectPosition).toBe('50% 50%')
     expect(pageStyle(prefs, 'centre')).toEqual(pageStyle(prefs))
@@ -142,15 +142,13 @@ describe('pageStyle', () => {
 describe('seamStyle', () => {
   const prefs = { ...fitModule.defaults }
 
-  // This used to assert `justifyContent: 'flex-end'` and `'flex-start'` on the
-  // two cells, which was the whole of what it checked and was inert in
-  // `PageView`'s markup — a cell whose only child is `width: 100%` has no free
-  // space to distribute, and neither `justify-content` on a non-flex box nor
-  // one that does nothing is observable from a style object. So the assertion
-  // passed for as long as the declaration existed and would have passed had it
-  // done the opposite. What actually pushes the pages together is
-  // `pageStyle`'s hug, asserted above; this pins that the cell has stopped
-  // claiming to.
+  // `justifyContent: 'flex-end'` and `'flex-start'` on the two cells would be
+  // inert in `PageView`'s markup — a cell whose only child is `width: 100%`
+  // has no free space to distribute, and neither `justify-content` on a
+  // non-flex box nor one that does nothing is observable from a style object.
+  // So an assertion on it would pass whatever the declaration did. What
+  // actually pushes the pages together is `pageStyle`'s hug, asserted above;
+  // this pins that the cell does not claim to.
   it('leaves positioning the artwork to pageStyle', () => {
     for (const cell of ['first', 'second'] as const) {
       expect(seamStyle(prefs, cell).justifyContent).toBeUndefined()

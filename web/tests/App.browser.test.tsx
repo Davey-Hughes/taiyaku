@@ -18,9 +18,8 @@ import { mouse } from './support/mouse'
  * Chromium where each box actually lands, at a desktop, a portrait tablet and
  * a phone.
  *
- * O65 was first measured here: with the chrome open, `Library` sat over the
- * `single` and `two` buttons. Both are in the top bar now (§8.3), and the
- * first two cases ask the same question of it. The Ink-theme block is last.
+ * The first two cases guard O65: with the chrome open, `Library` must not sit
+ * over the `single` and `two` buttons, both in the top bar (§8.3).
  *
  * The mocks are `App.test.tsx`'s, for the reasons that file's header gives:
  * `vi.mock('../src/resolver')` is what lets `App.tsx` load at all without the
@@ -29,8 +28,7 @@ import { mouse } from './support/mouse'
  * Unless a server is listening behind vite's dev proxy they fail there, and
  * the proxy prints `ECONNREFUSED` to stderr.
  *
- * CI does not run this project (`vite.config.ts`: no Chromium); the gate
- * does.
+ * CI does not run this project (`vite.config.ts`: no Chromium); the gate does.
  */
 
 const ports = vi.hoisted(() => ({
@@ -86,10 +84,7 @@ const WORK = 'vol-01'
 
 /**
  * Read `ltr`, so the strip lays its first tile out at its left end, under
- * where a `Library` button docked over the strip would sit. This fixture was
- * first written `rtl`, and a mutation docking the button over the strip
- * passed every test below; read `ltr`, the same mutation reports `page 1`
- * onward as covered.
+ * where a `Library` button docked over the strip would sit.
  */
 const PAGES = 6
 
@@ -360,21 +355,14 @@ describe('O112: the note list under the page, in a browser', () => {
     )
     // Nine notes on the slot on screen. The list runs to the reader's bottom
     // edge and its rows sit 27 px apart, so growing it by one note shifts
-    // every row up by that much. Measured in Chromium: at eight notes the
-    // list stood 227 px tall at every size in `SIZES`, and at 1440×900 —
-    // where the bar is 211 px, from the 176 px strip, the tallest of the
-    // three — no row cleared its top edge at all, so "no row takes a click
-    // meant for them" could not fail there: every row was already
-    // unreachable for a reason this test was not checking. (At 768×1024 and
-    // 390×844, where the bar is 147 px, two rows already cleared it, so
-    // those sizes were already testing the click half.) Nine notes (254 px)
-    // clears the bar everywhere: one row at 1440×900, three at 768×1024 and
-    // three at 390×844. Ten overflowed the list's own scrollable area at
-    // 390×844 instead — the tenth row's unclipped
-    // `getBoundingClientRect()` fell below the viewport, which
+    // every row up by that much. Nine clears the bar at every size in `SIZES`:
+    // with eight, no row clears it at 1440×900, where the bar is tallest, so
+    // "no row takes a click meant for them" could not fail there. Ten
+    // overflows the list's own scrollable area at 390×844 — the tenth row's
+    // unclipped `getBoundingClientRect()` falls below the viewport, which
     // `elementFromPoint` cannot reach regardless of the bar — so nine is the
-    // largest count that clears the bar at every size while staying clear of
-    // that.
+    // largest count that clears the bar at every size while staying clear
+    // of that.
     ports.getNotes.mockResolvedValue({
       doc: {
         work: WORK,
@@ -476,10 +464,10 @@ describe('the reader in Ink whatever the theme, in a browser', () => {
  * **Driven with a mouse, deliberately.** Spec 2026-09-17 §9.1 put every
  * pointer in scope, so a mouse press exercises every rule here.
  * `@vitest/browser-playwright` would allow a touch context through
- * `contextOptions.hasTouch`, but `vite.config.ts` gives this project a single
- * instance — enabling it would put all fifty-eight existing cases into a touch
- * context to reach the two things only a finger has, the double tap and the
- * pinch. Both are ④'s device pass's.
+ * `contextOptions.hasTouch`, but `vite.config.ts` runs this file in one
+ * instance with every browser file but `SHOWN_SCROLLBARS`'s — enabling it would
+ * put all of those cases into a touch context to reach the two things only a
+ * finger has, the double tap and the pinch. Both are ④'s device pass's.
  */
 function pointerAt(type: string, at: { x: number; y: number }) {
   // Dispatched on whatever is actually under the point, so a bar drawn over
@@ -550,7 +538,7 @@ describe('the gestures on the page, laid out', () => {
     const from = area.left + area.width / 2
     const start = fill()
     // 30 px: past the tap's slop, short of the swipe's minimum. It is
-    // neither, and it is the pan it always was.
+    // neither, so it is a pan.
     pointerAt('pointerdown', { x: from, y })
     pointerAt('pointermove', { x: from - 30, y })
     pointerAt('pointerup', { x: from - 30, y })
@@ -576,7 +564,7 @@ describe('the gestures on the page, laid out', () => {
    * `Settings.tsx`'s own `onClick` handler, dispatched the way `click` fires
    * for a real down-then-up — `pointerAt`'s pair does not synthesise one; a
    * script-dispatched `PointerEvent` pair never does, in a real browser any
-   * more than in jsdom (`Settings.test.tsx`'s own note).
+   * more than in jsdom.
    */
   function clickAt(at: { x: number; y: number }) {
     const target = document.elementFromPoint(at.x, at.y) ?? document.body
@@ -602,11 +590,11 @@ describe('the gestures on the page, laid out', () => {
       const start = fill()
       const area = box('.page-area')
       const panel = box('.reader-dialog-panel')
-      // `.reader-dialog` is the whole viewport (measured 2026-09-20): the
-      // outer-third point the cases above tap can land inside the panel
-      // rather than beside it once the panel is wide relative to a narrower
-      // viewport. The strip between the panel's own edge and the viewport's
-      // is where the scrim is guaranteed to be, at every size tested.
+      // `.reader-dialog` is the whole viewport: the outer-third point the cases
+      // above tap can land inside the panel rather than beside it once the
+      // panel is wide relative to a narrower viewport. The strip between the
+      // panel's own edge and the viewport's is where the scrim is guaranteed to
+      // be, at every size tested.
       const at = {
         x: panel.right + (area.right - panel.right) / 2,
         y: area.top + area.height / 2,
@@ -628,14 +616,14 @@ describe('the gestures on the page, laid out', () => {
       press('n')
       await until(() => document.querySelector('[aria-label="Note"]') !== null)
       const img = document.querySelector('.page-area img') as HTMLImageElement
-      // C1's fix reads `draftImage`'s own match — `src.endsWith(pageAt(...))`
-      // — to tell this image from a facing one, so the swap below has to
-      // survive it: the real page URL, captured before it is replaced, so a
-      // press on this element is still read as a press on the draft's own
-      // page rather than on a stranger `draftImage` cannot place.
+      // `draftImage` matches by `src.endsWith(pageAt(...))` to tell this image
+      // from a facing one, so the swap below has to survive that match: the
+      // real page URL, captured before it is replaced, so a press on this
+      // element is still read as a press on the draft's own page rather than
+      // on a stranger `draftImage` cannot place.
       const realSrc = img.src
       // A tall page, decoded for real rather than served — no backend runs
-      // behind this project's dev proxy (this describe block's own doc).
+      // behind this project's dev proxy (the file header).
       // `object-fit: contain` still letterboxes it against the element's own
       // laid-out box, exactly as a served page would.
       img.src =
@@ -649,8 +637,8 @@ describe('the gestures on the page, laid out', () => {
       })
       const rect = img.getBoundingClientRect()
       // The margin, computed from this fixture's own decode against the
-      // element's laid-out box — not the 420/130 the real library measured,
-      // which are that fixture's numbers at those two sizes only.
+      // element's laid-out box, not a fixed pair of numbers, which would hold
+      // at two sizes only.
       const painted = paintedBox(
         { w: img.naturalWidth, h: img.naturalHeight },
         { w: rect.width, h: rect.height },
@@ -710,7 +698,7 @@ describe('O166: a key pressed on a Settings select', () => {
     await until(settingsOpen)
     layoutSelect().focus()
     await userEvent.keyboard('{ArrowRight}')
-    // A turn writes progress after `useProgressWrite`'s 400 ms debounce.
+    // A turn writes progress after `App.tsx`'s 400 ms `PROGRESS_DEBOUNCE_MS`.
     await act(async () => {
       await new Promise((r) => setTimeout(r, 1000))
     })
@@ -721,12 +709,11 @@ describe('O166: a key pressed on a Settings select', () => {
 /**
  * The reader, with keyboard focus on its page area. Vitest runs these tests
  * in an iframe, and until something inside it takes focus a real key press
- * goes to the frame around it: run on its own, a walk's first `Tab` only
- * moved focus into the frame, and the ring started one press late. A reader
- * who has just opened the page has focus on `<body>` instead, which the ring
- * treats as the page too; `App.test.tsx`'s walks start from there, and the
- * real-library drive (`docs/notes.md`, §3) walked a fresh load in a real
- * browser.
+ * goes to the frame around it: run on its own, a walk's first `Tab` would
+ * only move focus into the frame, and the ring would start one press late. A
+ * reader who has just opened the page has focus on `<body>` instead, which
+ * the ring treats as the page too; `App.test.tsx`'s walks start from there;
+ * `docs/notes.md`, §3, has a fresh load walked in a real browser.
  */
 async function readerFocused(width: number, height: number) {
   await reader(width, height)

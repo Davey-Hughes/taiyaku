@@ -72,15 +72,10 @@ describe('humanInterval', () => {
 })
 
 describe('regimeFacts', () => {
-  // Ten candidate cases (six migrated from the old `regimeLine` sentence
-  // test, four written fresh for the labelled-list shape) collapsed to five
-  // here, and Task 4's review added a sixth for the one arm none of the ten
-  // had ever reached — a failed probe with no reason. Six: a case survives only if it exercises a behaviour none of the
-  // others do. "carries the last scan status when there is one" and "keeps
-  // the outcome with the date" both just assert the status gets appended
-  // after the date — one case, not two — and the full-array case below
-  // subsumes "no probe", "never scanned" and "no interval set" on its own,
-  // since each is one arm of the same three-entry result.
+  // A case is here only if it exercises a behaviour none of the others do.
+  // The full-array case below subsumes "no probe", "never scanned" and "no
+  // interval set" on its own, since each is one arm of the same
+  // three-entry result.
 
   it('names each fact under its own label, in order watch / scan every / last scan', () => {
     // A directory read from a list carries no probe (only a route that adds a
@@ -101,10 +96,8 @@ describe('regimeFacts', () => {
   })
 
   it('says a probe failed even when the server gave no reason', () => {
-    // The one arm neither `regimeLine`'s six cases nor this block's first
-    // five ever reached: `watching: false` with a null reason. Found by
-    // Task 4's review, and older than Task 4 — the sentence version had the
-    // same hole, so a typo here would have shipped either way.
+    // `watching: false` with a null reason is the arm no other case here
+    // reaches, so a typo in this arm would ship unseen.
     expect(
       regimeFacts(root(), { watching: false, watch_reason: null })[0],
     ).toEqual({ label: 'watch', value: 'probe failed' })
@@ -190,8 +183,8 @@ describe('the roots client', () => {
   })
 
   it('spells dry_run exactly, because the server refuses any other key', async () => {
-    // `deny_unknown_fields`: before it existed, `?dryrun=true` — one key off —
-    // answered 200 and ran the real, committed removal. A typo here is a
+    // `deny_unknown_fields`: without it, `?dryrun=true` — one key off —
+    // would answer 200 and run the real, committed removal. A typo here is a
     // deleted library, so the exact string is pinned rather than assumed.
     const fetchMock = vi
       .fn()

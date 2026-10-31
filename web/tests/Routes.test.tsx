@@ -68,10 +68,10 @@ vi.mock('../src/library', async (importOriginal) => ({
   status: vi.fn().mockResolvedValue({ libraries: [] }),
   matchesChip: () => true,
   sorted: (s: unknown[]) => s,
-  // Task 4 wires `/series/:id` to `Series`, which fetches `oneSeries` on
-  // mount — a route this file exercises (`/series/1`, below). Its own
-  // behaviour is `Series.test.tsx`'s job; this fixture only has to resolve
-  // so the route mounts without an unhandled rejection.
+  // `/series/:id` is wired to `Series`, which fetches `oneSeries` on mount — a
+  // route this file exercises (`/series/1`, below). Its own behaviour is
+  // `Series.test.tsx`'s job; this fixture only has to resolve so the route
+  // mounts without an unhandled rejection.
   oneSeries: vi.fn().mockResolvedValue({
     series: {
       id: 1,
@@ -95,7 +95,7 @@ vi.mock('../src/library', async (importOriginal) => ({
     .fn()
     .mockResolvedValue({ series: [], unfiled: [], query: 'hello' }),
 }))
-// Task 7 wires `/proposals` to `Proposals`, which fetches `listProposals` on
+// `/proposals` is wired to `Proposals`, which fetches `listProposals` on
 // mount — a route this file exercises (`/proposals`, below). Its own
 // behaviour is `Proposals.test.tsx`'s job; this fixture only has to resolve
 // so the route mounts without an unhandled rejection, the same reason
@@ -104,7 +104,7 @@ vi.mock('../src/curation', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../src/curation')>()),
   listProposals: vi.fn().mockResolvedValue({ proposals: [], counts: {} }),
 }))
-// O94 wires `/account` to `Account`, which lists this account's keys and
+// `/account` is wired to `Account` (O94), which lists this account's keys and
 // sessions on mount — a route this file exercises (`/account`, below). Its own
 // behaviour is `Account.test.tsx`'s job; these only have to resolve, the same
 // reason `oneSeries`, `search` and `listProposals` above exist. `logout` is
@@ -158,7 +158,7 @@ describe('the routes', () => {
     const host = at('/read/gotoubun-v01')
     // `toContain` rather than `toBe`: the mocked `App` also renders the
     // `onLeave` button (asserted below), so the reader's textContent is more
-    // than just the slug now.
+    // than just the slug.
     expect(host.querySelector('[data-testid="reader"]')?.textContent).toContain(
       'gotoubun-v01',
     )
@@ -185,8 +185,7 @@ describe('the routes', () => {
 
   it('answers an unknown path with the library rather than the reader', async () => {
     const host = at('/nonsense')
-    // Asserted structurally rather than by text: the `Library` this task
-    // mounts is Task 8's placeholder and has no text content yet.
+    // Asserted structurally rather than by text.
     expect(host.querySelector('main')).not.toBeNull()
     expect(host.querySelector('[data-testid="reader"]')).toBeNull()
     await flush()
@@ -332,8 +331,7 @@ describe('the routes', () => {
    * the current-password box — and by `listKeys`, which only its effect asks.
    * **The library this file mocks holds no work at all**: `grid` answers no
    * series and nothing unfiled, and `status` no roots. That is the row's own
-   * case — `Account` used to mount only inside `/read/:work`, so an account
-   * in a library with nothing readable had no way to it.
+   * case: an account in a library with nothing readable.
    */
   it('routes /account into the account screen inside the shell, in a library with no works', async () => {
     const host = at('/account')
@@ -464,12 +462,12 @@ describe('the routes', () => {
 
   /**
    * `Routes.tsx`'s own doc calls `key={work}` "the whole reason `App.tsx` did
-   * not have to become re-entrant" — but nothing before this test ever
-   * navigated this file from one `/read/:work` URL to another, so nothing
-   * here actually pinned that the key does its job. `App.test.tsx`'s
-   * "a changing work remounts" test proves React's key semantics in general,
-   * with `rerender` supplying `key="one"`/`key="two"` itself; it says nothing
-   * about whether `Reader` actually keys `<App>` by the URL segment.
+   * not have to become re-entrant", so this test navigates from one
+   * `/read/:work` URL to another to pin that the key does its job.
+   * `App.test.tsx`'s "a changing work remounts" test proves React's key
+   * semantics in general, with `rerender` supplying `key="one"`/`key="two"`
+   * itself; it says nothing about whether `Reader` actually keys `<App>` by
+   * the URL segment.
    *
    * Navigation happens through a real `useNavigate()`, not a second `mount()`
    * — two separate `mount()` calls would each get a fresh `App` instance

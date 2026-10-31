@@ -79,8 +79,8 @@ describe('newBox', () => {
     // The clamp must not become a quiet rewrite. Recomputing the extent as a
     // difference of two clamped fractions — which is what the reader's
     // `regionFromDrag` does, correctly, for a drag expressed as two points —
-    // would turn this `0.3` into `0.30000000000000004` on every one of the
-    // 1,500 boxes, none of which ever left the page.
+    // would turn this `0.3` into `0.30000000000000004` on a box that never
+    // left the page.
     const after = newBox({ x: 0.1, y: 0.2, w: 0.3, h: 0.4 })
     expect(after).toMatchObject({ x: 0.1, y: 0.2, w: 0.3, h: 0.4 })
   })

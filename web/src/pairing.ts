@@ -198,10 +198,11 @@ export interface Cells {
   /**
    * Whether `second` names a real second slot or is `first` mirrored into it.
    *
-   * `App.tsx` hides the cell either way; this is what tells it apart from a
-   * pair, since `wide` does not. A mirrored cell is drawing the same URL as
-   * its neighbour, which is why it must not also be *counted* as a page on
-   * screen.
+   * `GroupView.tsx` hides the cell either way. Until both cells have drawn,
+   * this is what tells it apart from a pair, since `wide` does not;
+   * `secondCellAlone` has the rule. A mirrored cell is drawing the same URL
+   * as its neighbour, which is why it must not also be *counted* as a page
+   * on screen.
    */
   alone: boolean
   first: number

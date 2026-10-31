@@ -39,10 +39,10 @@ describe('positionLine', () => {
   })
 
   it('names the edition when one is given, so a change of scale is never silent', () => {
-    // Only a gap sets this. The line then reports the authority's position
-    // while the reader is looking at another edition, and the percentage is
-    // against the authority's slot count — so the row has to say whose
-    // numbers these are.
+    // Only a gap or a borrowed page sets this. The line then reports the
+    // authority's position while the reader is looking at another edition,
+    // and the percentage is against the authority's slot count — so the row
+    // has to say whose numbers these are.
     expect(
       positionLine({ slot: 88, total: 193, page: 87, edition: 'raw-mono' }),
     ).toBe('raw-mono slot 89 / 193 · p. 87 · 46%')
@@ -175,9 +175,9 @@ describe('pagesPerMinute', () => {
 
 describe('nextTurns', () => {
   it('skips the first call — session load is not a page turn', () => {
-    // The bug a browser caught: recording session-load itself as a turn
-    // makes the mount-to-loaded interval look like a page turn, producing a
-    // reading-time estimate before a single key has been pressed.
+    // Recording session-load itself as a turn would make the mount-to-loaded
+    // interval look like a page turn, producing a reading-time estimate before
+    // a single key has been pressed.
     expect(nextTurns([], 1_000, true)).toEqual([])
   })
 
@@ -371,9 +371,6 @@ describe('readoutsModule', () => {
 })
 
 /**
- * The block `App.tsx` used to hold: nine bindings, four branches and two
- * arithmetic rules, none of them reachable from a test until now.
- *
  * `fakeResolver` rather than the real one — `resolver.ts` value-imports
  * `taiyaku-wasm` and a test that pulls it in passes on a machine that has
  * built the wasm package and breaks CI.
@@ -527,8 +524,7 @@ describe('readoutLines', () => {
       { startedAt: 0, turns: [0, 60_000], now: 120_000 },
     )
     // Without the clamp this line reads `2m read · ~-18m left`, which is what
-    // the raw `3 - 21` produces — checked directly against `timeLine`, not
-    // assumed from the shape of the arithmetic.
+    // the raw `3 - 21` produces.
     expect(backwards.time).toBe('2m read · ~0m left')
   })
 

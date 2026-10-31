@@ -99,9 +99,9 @@ function reporter() {
 }
 
 /**
- * A child that reports `continueStrip` from `BrowsePrefsContext` — the wire I2
- * pins — as a reader that is neither the View panel nor the page, so the
- * assertion reads the provider's value directly.
+ * A child that reports `continueStrip` from `BrowsePrefsContext`, as a reader
+ * that is neither the View panel nor the page, so the assertion reads the
+ * provider's value directly.
  */
 function continueStripProbe() {
   function Probe() {
@@ -311,7 +311,7 @@ describe('Shell', () => {
   beforeEach(() => {
     // Call records, not implementations — `asks for no count at all for a
     // reader` asserts on *not* having been called, and without this it reads
-    // the admin mounts three tests above it.
+    // the admin mounts above it.
     vi.clearAllMocks()
     vi.mocked(aboutApi.about).mockResolvedValue(ABOUT)
     vi.mocked(library.status).mockResolvedValue({
@@ -439,8 +439,7 @@ describe('Shell', () => {
    * The count itself. `Sidebar.test.tsx` pins that a number handed to
    * `AccountMenu` is drawn; nothing there can pin that `Shell` fetches one, or
    * *which* one — deleting this effect leaves every sidebar test green and
-   * every deployment back to a bare `Proposals` entry, which is exactly how
-   * the entry shipped without a count in the first place.
+   * every deployment with a bare `Proposals` entry.
    *
    * The two kind counts differ (5 and 2), so `7` cannot come from either one
    * alone, and the request's own filter is asserted: a count taken at no
@@ -734,11 +733,10 @@ describe('Shell', () => {
 
   /**
    * `density` decides the one class name `Shell` puts on its own root —
-   * `'comfortable'`, every other test's default, never reaches the ternary's
-   * `'compact'` branch. Seeded through storage rather than through a View
-   * panel's control, because this is about what `Shell` draws
-   * from a stored preference on first mount, not about the panel that writes
-   * one.
+   * `'comfortable'` never reaches the ternary's `'compact'` branch. Seeded
+   * through storage rather than through a View panel's control, because this
+   * is about what `Shell` draws from a stored preference on first mount, not
+   * about the panel that writes one.
    */
   it('marks the root compact when the stored preference says so', async () => {
     const s = fakeStorage()
@@ -799,13 +797,12 @@ describe('Shell', () => {
   })
 
   /**
-   * I2 of the whole-branch review: `BrowsePrefsContext.Provider` is the one
-   * wire from `Shell`'s own `prefs` state to every browse screen mounted
-   * below it, and nothing pinned that the value handed to `value={…}` is
-   * `prefs` itself rather than some constant that merely has the right
-   * shape. `module.ts`'s `sliceReset` doc names the missing test outright:
-   * "change a setting, confirm it takes effect" — written here at the
-   * `Shell` level, through a probe that reads the context the way a real
+   * `BrowsePrefsContext.Provider` is the one wire from `Shell`'s own `prefs`
+   * state to every browse screen mounted below it. This pins that the value
+   * handed to `value={…}` is `prefs` itself rather than some constant that
+   * merely has the right shape. `module.ts`'s `sliceReset` doc names the test
+   * outright: "change a setting, confirm it takes effect" — written here at
+   * the `Shell` level, through a probe that reads the context the way a real
    * screen (`Series`, `SeriesGrid`'s caller) would, beside the library page
    * whose View makes the change.
    */
@@ -832,14 +829,13 @@ describe('Shell', () => {
   })
 
   /**
-   * I3 of the whole-branch review: the reset test above pins the mirror
-   * case — that a reload does *not* resurrect a value nothing ever stored —
-   * which a deleted `persistPrefs` call satisfies for free, since with
-   * nothing ever written a fresh mount reads defaults either way. This is
-   * the direction that mutation actually breaks: a preference the reader
-   * *changed* has to still be there after a reload. A fresh `mount()`
-   * stands in for the reload, same as the reset test's `before`/`after`
-   * pair.
+   * The reset test above pins the mirror case — that a reload does *not*
+   * resurrect a value nothing ever stored — which a deleted `persistPrefs`
+   * call satisfies for free, since with nothing ever written a fresh mount
+   * reads defaults either way. This is the direction that deletion breaks: a
+   * preference the reader *changed* has to still be there after a reload. A
+   * fresh `mount()` stands in for the reload, same as the reset test's
+   * `before`/`after` pair.
    */
   it('a changed preference survives a reload, not just a reset', async () => {
     vi.stubGlobal('localStorage', fakeStorage())

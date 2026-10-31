@@ -50,8 +50,8 @@ describe('alignedBreaks', () => {
     expect(drawn(bSlots, breaks)).toEqual(drawn(bSlots, []))
   })
 
-  // The reported defect, at its smallest: `b` carries one page the hub does
-  // not, so from there on the hub's pairs and `b`'s are one slot out of phase.
+  // The smallest case: `b` carries one page the hub does not, so from there
+  // on the hub's pairs and `b`'s are one slot out of phase.
   it('restarts the pairing where an extra page in the other edition put it out of phase', () => {
     const hubSlots = whole(6)
     const bSlots = whole(7)
@@ -181,8 +181,8 @@ describe('forcedBreaks', () => {
   })
 
   it('names each of two spreads that sit back to back', () => {
-    // The `en-mono` shape that broke the first version of this module: pages 1
-    // and 2 both joined, which the hub splits into four ordinary pages.
+    // The `en-mono` shape: pages 1 and 2 both joined, which the hub splits
+    // into four ordinary pages.
     const slots: Position[] = [
       { page: 0 },
       { page: 1, half: 'R' },

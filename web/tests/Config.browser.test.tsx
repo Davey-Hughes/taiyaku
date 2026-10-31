@@ -55,14 +55,9 @@ import { rootFontAt } from './support/rootFont'
 import { holdTheClock, pass, WAIT_DRAWN_AFTER_MS } from './support/wait'
 
 /**
- * The browser pass over all four Configuration screens — Task 7 of style
- * pass ⑤b. Nothing Tasks 1–6 did is measurable in jsdom: a measured width, a
- * computed colour and a grid's row count all need a real layout engine — the
- * gap ⑤a's own scope-`<select>` defect shipped through (the comment on
- * `admin.css`'s shared `.field` controls records it: found by the browser pass,
- * against a 35-character real root, on a screen `RuleForm.browser.test.tsx`'s
- * short fixture root had already passed). This file turns the one-off
- * Chromium checks each of Tasks 1–6 did by hand into standing assertions.
+ * The browser pass over all four Configuration screens. A measured width, a
+ * computed colour and a grid's row count all need a real layout engine, so
+ * none of them is measurable in jsdom.
  *
  * **These three screens take no props and fetch their own data**, so this
  * file stubs `../src/config`, `../src/libraries`, `../src/users` and
@@ -133,13 +128,12 @@ const root = (over: Partial<config.Root> = {}): config.Root => ({
 })
 
 /**
- * A real path from this library, not a short fixture one. ⑤a's C1 hid behind
- * a ten-character `/srv/manga`: the scope `<select>`'s intrinsic width only
- * spilled past its label — and out through four `overflow-x: visible`
- * ancestors onto the document — against a 35-character real root, and the
- * fixture-rooted test that should have caught it passed. `RuleForm.
- * browser.test.tsx`'s own comment on `admin.css`'s scope-select rule records
- * exactly this.
+ * A real path from this library, not a short fixture one. The scope
+ * `<select>`'s intrinsic width would spill past its label — and out through
+ * four `overflow-x: visible` ancestors onto the document — only against a
+ * long real root like this 35-character one, not a ten-character
+ * `/srv/manga`. `RuleForm.browser.test.tsx`'s own comment on `admin.css`'s
+ * scope-select rule records exactly this.
  */
 const longPathRoot = root({ path: '/home/davey/temp/manga-test/Volumes' })
 
@@ -1420,16 +1414,16 @@ describe('the Configuration screens at 390px', () => {
 
   it("keeps the scan report's list of causes inside its row", async () => {
     // **This is what holds `.scan-report > section > dl`** (O177). As
-    // `.scan-report dl`, that rule reaches `UnreadableCauses`'s own nested
-    // `<dl>` and makes it a grid of one 16rem column whatever it holds,
-    // which is wider than the row a 360px window leaves it. A wider window
-    // has room for the column, so this case is at 360.
+    // `.scan-report dl`, that rule would reach `UnreadableCauses`'s own nested
+    // `<dl>` and make it a grid of one 16rem column whatever it holds, which
+    // is wider than the row a 360px window leaves it. A wider window has room
+    // for the column, so this case is at 360.
     //
     // **The assertion is on the list itself**: a list that ends in `main`'s
     // padding scrolls nothing.
     //
     // **No cause in this fixture names a path, on purpose**: a path is the
-    // other thing that has pushed this list past its row (O178, held by the
+    // other thing that can push this list past its row (O178, held by the
     // cases below), and here the rule is the only thing that can.
     await page.viewport(360, 844)
     const host = await reportOnADirPage({
@@ -1545,8 +1539,7 @@ describe('the Configuration screens at 390px', () => {
   /**
    * The stylesheet's own fallbacks in place of the two web faces, which is
    * what a reader has until the font files arrive and for good if they never
-   * do. Wider than the faces: it is what took the populated case past the
-   * viewport's edge before it waited for `document.fonts.ready` (O177).
+   * do. Wider than the faces (O177).
    */
   function withFallbackFonts() {
     const root = document.documentElement
@@ -2806,7 +2799,7 @@ describe('the Users pages’ own lines', () => {
    * on one line or two (the user's ruling of 2026-10-26): where they take
    * two, Set password's row keeps their room whether the line is said or
    * not, so nothing moves when it comes. Where they take one, that row
-   * keeps no room beyond Set password's, as it kept none before.
+   * keeps no room beyond Set password's.
    */
   for (const [width, rootFont] of [
     [320, ''],
@@ -3061,8 +3054,7 @@ describe('the libraries screen at desktop width', () => {
   })
 
   it('draws the two boxes of a directory’s first row at one height', async () => {
-    // A neighbour's textarea, and its hint, made the row taller than a box
-    // needs; a box in a grid stretches to its row unless told not to.
+    // A box in a grid stretches to its row unless told not to.
     const host = await shown(routed(DIR))
     const edition = host.querySelector('input[name="edition_key"]') as Element
     const language = host.querySelector(

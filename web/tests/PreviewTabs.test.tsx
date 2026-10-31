@@ -52,8 +52,7 @@ const anOverride = (over: Partial<Override> = {}): Override => ({
  * `index + 1`. With ids of 1 and 2 at indices 0 and 1, `id` and `index + 1`
  * are the *same number*, so a component rendering the id would draw exactly
  * what a component rendering the position draws and every assertion would
- * still pass. That was the shipped state until a hand-applied mutation showed
- * the test surviving it.
+ * still pass.
  */
 const rules: Rule[] = [
   {
@@ -238,19 +237,15 @@ describe('PreviewTabs', () => {
   it('draws the two values it chose between, each beside its own rule', () => {
     // **The reason the row can be read at all** — O95. Naming the rules says
     // *that* they disagreed; only the values say what about, and the whole
-    // judgement the tab now asks for is whether this layering is deliberate.
+    // judgement the tab asks for is whether this layering is deliberate.
     //
     // **Asserted per line, because the pairing is the payload and a whole-page
-    // `toContain` cannot see it.** The first version of this checked
-    // `textContent` for `→ raw` and `→ en-color`, and **passed with the two
-    // values transposed** — all 793 jsdom tests did. A transposed row reads
-    // "rule 1 `^(?<series>[^/]+)/` → Chainsaw Man / rule 4
-    // `^(?<series>.+?)[ _-]+v` → Chainsaw Man - Digital Colored Comics
-    // (wins)", so the winner looks like the rule that *keeps* the edition
-    // suffix — and a reader then reorders, or edits, against the wrong rule.
-    // That is the exact wrong-remedy failure O95 exists to close, reintroduced
-    // one level down and invisible to reading. Found by this branch's
-    // whole-branch review.
+    // `toContain` cannot see it.** A transposed row reads "rule 1
+    // `^(?<series>[^/]+)/` → Chainsaw Man / rule 4 `^(?<series>.+?)[ _-]+v` →
+    // Chainsaw Man - Digital Colored Comics (wins)", so the winner looks like
+    // the rule that *keeps* the edition suffix — and a reader then reorders, or
+    // edits, against the wrong rule. That would be the exact wrong-remedy
+    // failure O95 exists to close, one level down and invisible to reading.
     const { host, click } = render({
       preview: preview({ overrides: [anOverride()] }),
     })
@@ -292,11 +287,10 @@ describe('PreviewTabs', () => {
   })
 
   it('offers reorder and editing the winner as two options, not one fix', () => {
-    // **O95.** The single button this row used to carry read "Move rule 4
-    // above rule 1", and on the shipped seeded defaults pressing it stops a
-    // colour edition folding into its main series. Two options under a
-    // neutral lead is what reads right for a deliberate layering and for a
-    // genuine mistake both.
+    // **O95.** A single button reading "Move rule 4 above rule 1" would, on the
+    // shipped seeded defaults, stop a colour edition folding into its main
+    // series when pressed. Two options under a neutral lead is what reads right
+    // for a deliberate layering and for a genuine mistake both.
     const { host, click, onReorder, onSelectRule } = render({
       preview: preview({ overrides: [anOverride()] }),
     })
@@ -318,8 +312,8 @@ describe('PreviewTabs', () => {
     // **`blankRule()` leaves `pattern` as `''`, and an empty pattern matches
     // everything** — so a freshly added rule is one of the likeliest halves of
     // a real override, and a `??` fallback (which cannot see an empty string)
-    // left the pattern slot blank in the one place whose job is telling the
-    // two rules apart.
+    // would leave the pattern slot blank in the one place whose job is telling
+    // the two rules apart.
     const blank = { ...rules[0], id: 0, pattern: '' }
     const { host, click } = render({
       rules: [blank, rules[1]],
@@ -340,11 +334,12 @@ describe('PreviewTabs', () => {
   it('names a builtin rule by its kind rather than calling it unfinished', () => {
     // **`builtin-volume` and `builtin-chapter` are seeded with `pattern = ''`
     // by design** — migration 3, `003_scanner.sql` — so the `||` fallback that
-    // is right for `blankRule()` told a reader a shipped rule was unfinished.
-    // It is the likeliest numeric row there is: a hand-written volume regex
-    // disagreeing with seeded `builtin-volume` is exactly the chain
+    // is right for `blankRule()` would tell a reader a shipped rule was
+    // unfinished. It is the likeliest numeric row there is: a hand-written
+    // volume regex disagreeing with seeded `builtin-volume` is exactly
+    // the chain
     // `preview::tests::the_numeric_fields_report_their_own_values_and_not_each_others`
-    // builds. Found by this branch's whole-branch review.
+    // builds.
     const builtin = { ...rules[0], kind: 'builtin-volume', pattern: '' }
     const { host, click } = render({
       rules: [builtin, rules[1]],
@@ -364,15 +359,13 @@ describe('PreviewTabs', () => {
     // window sends an out-of-range index the route refuses, or splices
     // `undefined` into the list through `moved()`.
     //
-    // **Both windows, because they are not the same window.** `save()` sets
-    // the `writer` gate this component reads as `frozen`, and never `busy`,
-    // so a version of this test that only checked `busy` passed while a save
-    // left both buttons live for seconds on a real library — and a reorder
-    // pressed inside that window is applied and then silently discarded by
-    // the save's own `setRules`. Found by the second whole-branch review of
-    // this branch. Since O97 `frozen` covers an import too, and that half is
-    // covered in `RuleEditor.test.tsx` rather than here, because it needs a
-    // real import in flight to produce it.
+    // **Both windows, because they are not the same window.** `save()` sets the
+    // `writer` gate this component reads as `frozen`, and never `busy`, so a
+    // test that only checked `busy` would pass even if a save left both buttons
+    // live — and a reorder pressed inside that window would be applied and then
+    // silently discarded by the save's own `setRules`. `frozen` covers an
+    // import too (O97); that half is covered in `RuleEditor.test.tsx` rather
+    // than here, because it needs a real import in flight to produce it.
     holdTheClock()
     const { host, click, onReorder, onSelectRule } = render({
       preview: preview({ overrides: [anOverride()] }),
@@ -449,11 +442,11 @@ describe('PreviewTabs', () => {
     })
     click('Overrides')
     // **The whole sentence, and the element it lives in.** `others` is a
-    // maximum across every entry sharing the row's triple, so the copy must
-    // not claim it of the one file the row names. Asserting the exact text of
+    // maximum across every entry sharing the row's triple, so the copy must not
+    // claim it of the one file the row names. Asserting the exact text of
     // `.others` also catches the count being drawn twice: `plural()` prepends
-    // the number itself, so routing this through it rendered "2 2 other rules
-    // disagree" — which a `toContain('2 other rules disagree')` passes.
+    // the number itself, so routing this through it would render "2 2 other
+    // rules disagree" — which a `toContain('2 other rules disagree')` passes.
     expect(host.querySelector('.others')?.textContent).toBe(
       'In at least one of these files, 2 other rules disagree too.',
     )
@@ -516,8 +509,7 @@ describe('PreviewTabs', () => {
     expect(line?.textContent).toBe(
       'kind, language, volume, chapter and title are not set for any of these 2 files.',
     )
-    // Above: beneath 224 rows, which is the real library's case, is a
-    // sentence nobody reaches.
+    // Above: beneath all of a real library's rows is a sentence nobody reaches.
     const scroll = host.querySelector('.preview .table-scroll')
     expect(scroll).not.toBeNull()
     expect(
@@ -551,8 +543,7 @@ describe('PreviewTabs', () => {
   })
 
   it('says it was capped on the Provenance tab too — O149', () => {
-    // `PreviewTabs`' own rule is that the row cap is drawn, and until
-    // 2026-09-25 only Matched files drew it.
+    // `PreviewTabs`' own rule is that the row cap is drawn.
     const { host, click } = render({
       preview: preview({
         rows: [row({ rel_path: 'a.cbz' }), row({ rel_path: 'b.cbz' })],

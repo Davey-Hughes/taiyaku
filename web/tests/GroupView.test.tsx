@@ -8,15 +8,13 @@ import { mount, rerender } from './support/mount'
 
 /**
  * `GroupView` in `jsdom`, and the first test in it is the detector for an
- * invariant that had none.
+ * invariant that `PageView.browser.test.tsx` cannot see.
  *
- * `PageView.browser.test.tsx` was believed to guard the reconciliation rule
- * this component holds. It does not and never did: it imports neither `App`
- * nor this component, and every one of its six tests mounts a hand-written
- * replica built from bare `PageView`s — so all six pass identically whether
- * the group's two-cell shape is right, wrong, or absent. What actually needs
- * guarding is **node identity across a wide → paired change**, and asking
- * about that needs no layout engine, no real decode and no
+ * That file imports neither `App` nor this component: it mounts a
+ * hand-written replica built from bare `PageView`s, so its tests pass
+ * identically whether the group's two-cell shape is right, wrong, or absent.
+ * What needs guarding is **node identity across a wide → paired change**, and
+ * asking about that needs no layout engine, no real decode and no
  * `getBoundingClientRect`. So it runs here, which means it runs in CI.
  *
  * Every test below is unbuffered, which is what lets them assert on the drawn
@@ -26,7 +24,7 @@ import { mount, rerender } from './support/mount'
  */
 
 const paired: Group = { slots: [0, 1] }
-/** A joined spread: `cellsFor` gives both cells one URL and collapses the second. */
+/** A joined spread: `cellsFor` marks it `wide`; the second cell collapses. */
 const spread: Group = { slots: [2, 3], spread: true }
 /** An unpartnered page — `alone` without `wide`, which keeps its own half-width cell. */
 const solo: Group = { slots: [7] }
@@ -61,10 +59,9 @@ describe('GroupView, reconciliation', () => {
   // preserves it, so this asserts on the element objects themselves rather
   // than on a selector that would match an equivalent-looking replacement.
   //
-  // Watched failing before it was trusted: with the two-page branch returning
-  // a bare `<PageView>` for a wide group — the shape this component replaced —
-  // both assertions on the wide → paired step fail, because React sees a
-  // different element type at that position and mounts a fresh subtree with
+  // Were the two-page branch to return a bare `<PageView>` for a wide group,
+  // both assertions on the wide → paired step would fail: React would see a
+  // different element type at that position and mount a fresh subtree with
   // nothing decoded in it.
   it('keeps the same two <img> nodes across a wide group and back', () => {
     const host = mount(<GroupView {...props({ group: paired })} />)
@@ -90,8 +87,8 @@ describe('GroupView, reconciliation', () => {
     expect(firstImg?.getAttribute('src')).toBe('/p/1.png')
 
     rerender(<GroupView {...props({ group: spread })} />)
-    // A spread's own two slots share one page; `cellsFor` puts its first slot
-    // in both cells, and neither is reordered by reading direction.
+    // `cellsFor` keeps a spread's two slots in slot order, `first` then
+    // `second`: neither is reordered by reading direction.
     expect(imagesIn(host).map((i) => i.getAttribute('src'))).toEqual([
       '/p/2.png',
       '/p/3.png',
@@ -124,10 +121,10 @@ describe('GroupView, whether the second cell shows', () => {
     expect(secondCell(one).getAttribute('aria-hidden')).toBe('true')
   })
 
-  // **The flicker fix's own assertion.** State moves on the keypress and the
-  // pictures wait for their decode, so the target says "a pair" while both
-  // cells are still drawing one page. Keyed on the target, the layout flapped
-  // — three changes in 114 ms during a flick, with the artwork never changing.
+  // **Whether the second cell shows follows what is drawn.** State moves on
+  // the keypress and the pictures wait for their decode, so the target says
+  // "a pair" while both cells are still drawing one page. Keyed on the
+  // target, the layout would flap with the artwork never changing.
   it('hides the second cell while both cells draw one page, whatever the target says', () => {
     const host = mount(
       <GroupView
@@ -178,8 +175,7 @@ describe('GroupView, whether the second cell shows', () => {
       />,
     )
     expect(secondCell(host).style.width).toBe('0px')
-    // Not merely hidden: an unpartnered page keeps its width and only goes
-    // empty, which is the distinction that stopped the low-speed flicker.
+    // Not merely hidden: an unpartnered page keeps its width and goes empty.
     expect(secondCell(host).style.visibility).toBe('')
   })
 

@@ -176,10 +176,10 @@ describe('createDecodeQueue', () => {
   })
 
   it('two independently created queues never contend for the same concurrency slot — a job stuck in one leaves the other free', async () => {
-    // Pins the fix for the priority inversion a review found: `App.tsx` now
-    // gives `PageView`'s swap decode its own queue, separate from the
-    // prefetch window's, so a stale prefetch job holding its one queue's
-    // slot can never delay the live page turn's decode in the other.
+    // Pins the separation: `App.tsx` gives `PageView`'s swap decode its own
+    // queue, separate from the prefetch window's, so a stale prefetch job
+    // holding its one queue's slot can never delay the live page turn's
+    // decode in the other.
     const stale = createDecodeQueue(1)
     const live = createDecodeQueue(1)
     void stale.run(
@@ -220,12 +220,11 @@ describe('presentWhenDecoded', () => {
     expect(shown).toBe('new.jpg')
   })
 
-  // **Contract changed with the flick work.** This used to assert that a
-  // superseded decode is never shown. Ordering now lives in the caller —
-  // `PageView` drops anything older than what it is already drawing — so this
-  // function presents whatever it decoded and the reader sees pages go by
-  // during a flick instead of one frozen spread. What it must still never do is
-  // present a job it *skipped*, which the tests below pin.
+  // **Ordering lives in the caller.** `PageView` drops anything older than
+  // what it is already drawing, so this function presents whatever it decoded
+  // and the reader sees pages go by during a flick instead of one frozen
+  // spread. What it must never do is present a job it *skipped*, which the
+  // tests below pin.
   it('presents a decode a later request superseded, leaving ordering to the caller', async () => {
     const d = deferred<void>()
     const queue = createDecodeQueue(1)
@@ -246,8 +245,7 @@ describe('presentWhenDecoded', () => {
 
   // The flick case. A job that has gone stale by the time the queue reaches it
   // must cost nothing — not the decode, and not the fetch that assigning `src`
-  // would trigger. Measured before this: sixteen presses needing two pages
-  // requested twenty-nine, twenty-one of them after the reader had stopped.
+  // would trigger.
   it('never touches a superseded source that newer work is waiting behind, so a passed-over page costs no fetch and no decode', async () => {
     const queue = createDecodeQueue(1)
     const first = deferred<void>()
@@ -331,11 +329,10 @@ describe('presentWhenDecoded', () => {
     expect(presented).toBe(false)
   })
 
-  // **This scenario is no longer reachable, which is the point.** It used to
-  // put one skipped member and one decoded member in a single cohort — the
-  // shape that let a pair show two generations at once. `decideOnce` makes the
-  // skip/decode call once per cohort, so both halves of a turn now take the
-  // same path. The test that follows pins that directly.
+  // **Both halves of a turn take the same path.** A skipped member and a
+  // decoded member in one cohort would let a pair show two generations at
+  // once, so `decideOnce` makes the skip/decode call once per cohort. The
+  // test that follows pins that directly.
   it('gives every member of a cohort the same skip decision, so a pair cannot split', async () => {
     const cohort = createCohort()
     const shown: string[] = []
@@ -375,7 +372,7 @@ describe('presentWhenDecoded', () => {
     const holding = deferred<void>()
     void busy.run(() => holding.promise)
 
-    // One half superseded, the other not — the split that used to tear.
+    // One half superseded, the other not — the split that would tear.
     const stale = presentWhenDecoded(
       () => fakeImage(() => Promise.resolve()),
       busy,
@@ -443,10 +440,9 @@ describe('presentWhenDecoded', () => {
     expect(made[1]?.src).toBe('b.jpg')
   })
 
-  // `two` mode's pair, at the seam `PageView` actually uses. The old behaviour
-  // — each half presenting the moment its own decode settled — is what a
-  // reader reported as the halves not arriving together, measured at a median
-  // 89.7 ms apart in the browser; see the `cohort.ts` entry in
+  // `two` mode's pair, at the seam `PageView` actually uses: each half would
+  // otherwise present the moment its own decode settled, and the halves would
+  // not arrive together. See the `cohort.ts` entry in
   // `docs/superpowers/notes/2026-10-29-code-history-web-src.md`.
   it('holds a decoded page until the page beside it has decoded too, when both share a cohort', async () => {
     const cohort = createCohort()
@@ -499,15 +495,13 @@ describe('presentWhenDecoded', () => {
     expect(shown).toEqual(['only.jpg'])
   })
 
-  // **This guarantee was weakened by the flick work, deliberately, and the
-  // weakening is the cost of showing pages go by.** It used to read "does not
-  // present a half the reader has moved past". A superseded half is now drawn
-  // when nothing newer is queued, so a pair whose two cells make that decision
+  // **Presenting both halves, superseded or not, is deliberate, and it is
+  // the cost of showing pages go by.** A superseded half is drawn when
+  // nothing newer is queued, so a pair whose two cells make that decision
   // differently can briefly show two generations at once. In a real turn both
-  // cells change together, join one cohort and decode together, so they move in
-  // lockstep; this is reachable only when one cell's job is skipped and its
-  // partner's is not. Measured in the browser rather than assumed — see
-  // `docs/notes.md`.
+  // cells change together, join one cohort and decode together, so they move
+  // in lockstep; this is reachable only when one cell's job is skipped and
+  // its partner's is not. See `docs/notes.md`.
   it('presents both halves of a cohort once it releases, superseded or not', async () => {
     const cohort = createCohort()
     const fast = deferred<void>()

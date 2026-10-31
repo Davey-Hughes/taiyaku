@@ -64,11 +64,10 @@ describe('FieldControl', () => {
 
   it('takes its row styling from its caller', () => {
     // Deliberately not `'6px 0'` — that is `Settings.tsx`'s own module-scope
-    // `rowStyle` value, which used to be what this component closed over. A
-    // buggy move that left a same-valued constant behind in `settingsFields.tsx`
-    // and never wired the prop through would still satisfy an assertion phrased
-    // against `'6px 0'`, so this uses a value that appears nowhere else, which
-    // only the prop path can produce.
+    // `rowStyle` value. A `settingsFields.tsx` holding a same-valued constant
+    // of its own and never wiring the prop through would still satisfy an
+    // assertion phrased against `'6px 0'`, so this uses a value that appears
+    // nowhere else, which only the prop path can produce.
     const host = mount(
       <FieldControl
         field={{ key: 'x', kind: 'boolean' }}

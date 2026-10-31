@@ -4,22 +4,15 @@ import settingsSource from '../../src/styles/settings.css?raw'
 import { rules, selectors, withoutComments } from '../support/css'
 
 /**
- * The `/account` page read from its stylesheet — ⑤c Task 6, and the same rule
- * `admin-rules.css.test.ts` and `admin-proposals.css.test.ts` state for their
- * own screens: only facts that are *defects* if they regress live here, and
- * how the screen looks is the browser pass's job (spec 2026-09-17 §5 item 2).
+ * The `/account` page read from its stylesheet. Only facts that are *defects*
+ * if they regress live here, the rule `admin-rules.css.test.ts` and
+ * `admin-proposals.css.test.ts` state for their own screens; how the screen
+ * looks is the browser pass's job (spec 2026-09-17 §5 item 2).
  *
  * **In the `node` project, which is where every stylesheet-text assertion in
  * this repository lives**, for a mechanical reason rather than a tidy one.
- * Vitest's default `css: false` stubs a `?raw` CSS import to the empty
- * string, and only the `node` project carries the `css.include` line that
- * turns that off. These assertions were written inside `Account.test.tsx`
- * first, where `admin.css?raw` arrives as `''`: probed under `jsdom` on
- * 2026-09-24, that import measured **length 0** there against 13384
- * characters for the `../src/Account.tsx?raw` read beside it — so a `.tsx`
- * source read is unaffected by the stub and stays in that file, while
- * everything below moved here rather than being propped up by widening a
- * shared config for one test.
+ * Vitest's default `css: false` stubs a `?raw` CSS import to the empty string;
+ * only the `node` project carries the `css.include` line that turns that off.
  */
 
 /** Every rule in `admin.css` whose selector list satisfies `wanted`. */

@@ -15,18 +15,13 @@ import { rules, selectors, subject, withoutComments } from './support/css'
  * `styles/`, and recomputes the relative-luminance arithmetic a browser
  * applies.
  *
- * **Why the model is trusted.** Until 2026-09-17 these rules used CSS system
- * colours, and this file modelled the values a live Chromium reported for
- * them; that model reproduced the browser pass's own figures (D2's 3.81:1 in
- * dark, the disabled Accept's 1.35:1), which is what showed it was the real
- * one. No rule names a system colour now, so the token model earns the same
- * trust by reproducing four ratios the style pass's spec computed outside this
- * file (`docs/superpowers/specs/2026-09-17-style-pass-design.md`, §2).
+ * **Why the model is trusted.** It reproduces four ratios the style pass's
+ * spec computed outside this file
+ * (`docs/superpowers/specs/2026-09-17-style-pass-design.md`, §2).
  *
- * Three regression checks predate the tokens and are kept, recomputed against
- * them: D2 and D3 from the 2026-08-21 browser pass, and the disabled Accept.
- * The fixes are described above `.alignment-panel .paired` and
- * `.volumes li.without .cover-box` in `styles/library.css`, and above
+ * Three regression checks, D2, D3 and the disabled Accept, are recomputed
+ * against the tokens. The fixes are described above `.alignment-panel .paired`
+ * and `.volumes li.without .cover-box` in `styles/library.css`, and above
  * `.proposal-detail .accept:disabled` in `styles/admin.css`.
  */
 
@@ -139,11 +134,11 @@ function opacityOf(body: string): number {
 }
 
 /**
- * Every paired token as it was before spec 2026-10-18 §3 lifted Ink's: the
- * palette the reader was designed with, which it still draws (its own block
- * below), the hairline §3 holds the lifted `--line` to, and the values the
- * style pass's spec computed its ratios from. Written out rather than read
- * from `tokens.css`, so a change to either half there fails against it.
+ * Every paired token as spec 2026-10-18 §3 found it before lifting Ink's: the
+ * palette the reader draws (its own block below), the hairline §3 holds the
+ * lifted `--line` to, and the values the style pass's spec computed its ratios
+ * from. Written out rather than read from `tokens.css`, so a change to either
+ * half there fails against it.
  */
 const BEFORE_LIFT: Record<string, Record<Scheme, string>> = {
   bg: { paper: '#f3eee3', ink: '#15130f' },
@@ -179,9 +174,8 @@ describe('the token model', () => {
     expect(
       contrast(token('muted', 'paper'), token('surface', 'paper')),
     ).toBeCloseTo(4.71, 2)
-    // Ink's two from the values the style pass's spec measured, which the
-    // lift has since moved on `:root`; `:root`'s own are held to spec
-    // 2026-10-18 §3's figures below.
+    // Ink's two from the pre-lift values the style pass's spec measured;
+    // `:root`'s own are held to spec 2026-10-18 §3's figures below.
     expect(
       contrast(beforeLift('line-strong', 'ink'), beforeLift('bg', 'ink')),
     ).toBeCloseTo(3.58, 2)
@@ -599,11 +593,9 @@ function dimmingOpacity(body: string): number | undefined {
  * selector's last compound targets (`.cover-box`, `img`, `.cover-missing`),
  * not a spelling match on `.without`'s own compound: a combinator, a
  * wildcard or a different class after it all still count as dimming the
- * tile. `where` names the file and the one selector, so a failure says
- * which.
+ * tile. `where` names the file and the one selector, so a failure says which.
  *
- * **What it cannot see**, measured by the review of the fix that made it an
- * allowlist: `.without` spelled as an attribute selector,
+ * **What it cannot see:** `.without` spelled as an attribute selector,
  * `[class~="without"]`, is not recognised; and `dimmingOpacity` takes the
  * first dimming declaration in source order rather than the cascade's last,
  * so `opacity: 0.5; opacity: 1` is flagged although it does not dim. The
@@ -632,13 +624,13 @@ const described = (stylesheets: Record<string, string>): string[] =>
   dimsTheTile(stylesheets).map(({ where, opacity }) => `${where} → ${opacity}`)
 
 describe('D3: a dimmed volume tile fades its cover, not its label or its button', () => {
-  // The defect: `.volumes li.without { opacity: 0.5 }` dimmed the whole `<li>`
-  // — cover, title and the `i` button together — though the tile is not
-  // disabled. `groupOpacity` is what `dimsTheTile` finds: any `opacity` or
-  // `filter: opacity()` below 1 on a selector that contains `.without`,
+  // Guards against `.volumes li.without { opacity: 0.5 }`, which would dim the
+  // whole `<li>` — cover, title and the `i` button together — though the tile
+  // is not disabled. `groupOpacity` is what `dimsTheTile` finds: any `opacity`
+  // or `filter: opacity()` below 1 on a selector that contains `.without`,
   // unless what it actually dims — the selector's last compound — is the
-  // cover itself (`.cover-box`, `img` or `.cover-missing`). With none left
-  // (the fix) there is nothing to dim the title or the button and it is 1.
+  // cover itself (`.cover-box`, `img` or `.cover-missing`). With none found
+  // there is nothing to dim the title or the button and it is 1.
   function groupOpacity(): number {
     return Math.min(1, ...dimsTheTile(STYLESHEETS).map((r) => r.opacity))
   }
@@ -733,11 +725,10 @@ describe('D3: a dimmed volume tile fades its cover, not its label or its button'
 
 /**
  * **The disabled Accept** — the one place on the proposals panel where "WCAG
- * exempts an inactive component" was the wrong call, because the form sits
- * disabled for the whole of every edit whose answer is a refusal. It shipped at
- * `GrayText` over `ButtonFace`, 1.35:1 in dark Chromium. The fix keeps the word
- * at full contrast and says "unavailable" with the ground and the border
- * instead, so this guards both halves.
+ * exempts an inactive component" is the wrong call, because the form sits
+ * disabled for the whole of every edit whose answer is a refusal. The word
+ * keeps full contrast, and the control says "unavailable" with its ground and
+ * its border, so this guards both halves.
  */
 describe('the disabled Accept is legible in both themes', () => {
   const enabled = ruleBody('.proposal-detail .accept')
@@ -774,9 +765,9 @@ describe('the disabled Accept is legible in both themes', () => {
 })
 
 /**
- * The sidebar's section headings — Libraries, Library, Theme. They were faded
- * with `opacity: 0.65`, which has no floor anyone checks; spec 2026-09-17
- * §7.1 gives them `--muted` instead, on the page's own ground.
+ * The sidebar's section headings — Libraries and Theme. Spec 2026-09-17
+ * §7.1 colours them with `--muted` on the page's own ground, not a fade with
+ * `opacity`, which has no floor anyone checks.
  */
 describe('the sidebar headings are legible in both themes', () => {
   const heading = ruleBody('.sidebar-heading')
@@ -799,9 +790,8 @@ describe('the sidebar headings are legible in both themes', () => {
 })
 
 /**
- * The series table's missing cell — spec 2026-09-17 §5 ② and §7.2. It was
- * `opacity: 0.55` over the text colour, 3.60:1 on Paper's ground; it is now
- * `--muted`, with its dashed border back at full `--line-strong`.
+ * The series table's missing cell — spec 2026-09-17 §5 ② and §7.2. It is
+ * `--muted`, with its dashed border at full `--line-strong`.
  */
 describe('the series table’s missing cell is legible in both themes', () => {
   const missing = ruleBody('.editions td.missing')
@@ -830,8 +820,8 @@ describe('the series table’s missing cell is legible in both themes', () => {
 
 /**
  * The figures face on the page counts only — spec 2026-09-17 §5 ②. `base.css`
- * sets it on every table inside `.library`, which drew the digits inside a
- * volume's file name heavier than the title around them; the series table
+ * sets it on every table inside `.library`, which would draw the digits inside
+ * a volume's file name heavier than the title around them; the series table
  * takes the UI face and gives the figures face back to its page-count cells.
  */
 describe('the figures face reaches the series table’s page counts only', () => {
@@ -845,10 +835,9 @@ describe('the figures face reaches the series table’s page counts only', () =>
   })
 
   it('is named by no other rule in any stylesheet the screens load', () => {
-    // `base.css` is read here too since ⑤a. It carries the blanket rule
-    // that puts the figures face on every table under `.library`, which is
-    // exactly what this case exists to notice — and could not, while it
-    // read only the three screen stylesheets.
+    // `base.css` is read here too: it carries the blanket rule that puts the
+    // figures face on every table under `.library`, which is exactly what this
+    // case exists to notice.
     const naming = rules([cssSource, baseSource].join('\n'))
       .filter((rule) => rule.body.includes('--font-figures'))
       .map((rule) => rule.prelude)
@@ -859,11 +848,11 @@ describe('the figures face reaches the series table’s page counts only', () =>
   })
 
   it('does not reach the rule preview’s tables', () => {
-    // §7.2 deferred this to ⑤. Neither table has a numeric column: every
-    // digit in Matched files is inside a file name, and Provenance's only
-    // digits are rule ordinals reading `rule 1`. So both opt out the way
-    // `.editions` does — and unlike `.editions` they add no cell exception
-    // back, because there is no page-count column to make one for.
+    // Neither table has a numeric column: every digit in Matched files is
+    // inside a file name, and Provenance's only digits are rule ordinals
+    // reading `rule 1`. So both opt out the way `.editions` does — and unlike
+    // `.editions` they add no cell exception back, because there is no
+    // page-count column to make one for.
     expect(declared(ruleBody('.preview table'), 'font-family')).toBe(
       'var(--font-ui)',
     )
@@ -883,9 +872,7 @@ describe('the figures face reaches the series table’s page counts only', () =>
  * neither.** The library's filter row and the inbox's kind row take the
  * underlined tab look; the inbox's state row keeps pills, because it is the
  * coarser filter and two identical strips stacked give no hierarchy (spec
- * §12.3). What this pins is that no single selector reaches both kinds — the
- * regression ② shipped, when `.chips` drew "All" and "Hide weak proposals"
- * with the same accent underline side by side.
+ * §12.3). What this pins is that no single selector reaches both kinds.
  */
 describe('a tab row and a pill row stay two different rows', () => {
   it('draws the library’s row and the inbox’s kind row as tabs', () => {
@@ -903,10 +890,8 @@ describe('a tab row and a pill row stay two different rows', () => {
   })
 
   it('has no `.chips` left anywhere', () => {
-    // `.chips` was the selector that reached both kinds. Its absence is the
-    // fact, not its replacement: a `.chips` written again would draw the
-    // inbox's three controls alike whatever the rules below say. Comments
-    // are stripped first, so a comment may still name `.chips`.
+    // The absence of `.chips` is the fact, not its replacement. Comments are
+    // stripped first, so a comment may still name `.chips`.
     expect(withoutComments(cssSource)).not.toContain('.chips')
   })
 })

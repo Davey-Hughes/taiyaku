@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import adminSource from '../../src/styles/admin.css?raw'
 import settingsSource from '../../src/styles/settings.css?raw'
-// Aliased: three cases below bind `subject` as a loop variable, and a
+// Aliased: several cases below bind `subject` as a loop variable, and a
 // helper that only some of this file's blocks can see reads worse than one
 // name that means the same thing everywhere.
 import {
@@ -36,16 +36,12 @@ function declared(body: string, property: string): string | undefined {
 
 /**
  * **The two rows are drawn as two different kinds of control, and that is the
- * whole of O150.** Style pass ② found the failure this pins by shipping it:
- * the underlined tab look reached the inbox and drew "All" and "Hide weak
- * proposals" with the same accent underline side by side, so the look was
- * pulled back off the row (spec §7.2, decided 2026-09-18). ⑤c earns it back by
- * taking the independent toggle out of the row, and this is what stops the two
- * converging again.
+ * whole of O150.** What stops the state row (`.proposal-states`) and the kind
+ * row (`.proposal-tabs`) converging on one look is this describe block, per
+ * spec §7.2.
  *
- * Asserted on the *declarations*, not on a class name: a test that only
- * checked `.proposal-tabs` exists would pass against a row with no rules at
- * all, which is exactly the state this screen was in before this PR.
+ * Asserted on the *declarations*, not on a class name: a test that only checked
+ * `.proposal-tabs` exists would pass against a row with no rules at all.
  */
 describe('the inbox draws a filter and a tab differently', () => {
   it('draws the state row as pills', () => {
@@ -108,10 +104,9 @@ describe('the inbox draws a filter and a tab differently', () => {
 
   it('draws a verdict as an outline, never as a filled pill', () => {
     // A filled `--accent` pill is what `.proposal-states`'s pressed control
-    // wears. This rule was byte-identical to it until ⑤c's browser pass put
-    // the two side by side. What must not come back is the fill; the border
-    // and the text colour are shared with the pressed pill on purpose, since
-    // both mean "this one" — it is the ground that says which is pressable.
+    // wears, and the fill is what this rule must not take; the border and the
+    // text colour are shared with the pressed pill on purpose, since both mean
+    // "this one" — it is the ground that says which is pressable.
     const [body] = bodiesFor('.proposals li.strong .score')
     expect(body).toBeDefined()
     expect(declared(body, 'background')).toBe('none')
@@ -119,17 +114,16 @@ describe('the inbox draws a filter and a tab differently', () => {
   })
 
   it('gives the two rows no shared treatment', () => {
-    // The regression ② shipped: one selector matching both rows, drawing
-    // them alike. `.chips` was that selector and is gone from this app.
-    // Comments are stripped first, so a comment may still name `.chips`.
+    // A selector shared by both rows would draw them alike; `admin.css` must
+    // name no `.chips`. Comments are stripped first, so a comment may still
+    // name `.chips`.
     expect(withoutComments(adminSource)).not.toContain('.chips')
   })
 
   it('gives no selector both rows', () => {
-    // The mutation that found this: adding `.proposal-tabs` to the pill
-    // rule's selector list leaves every other assertion here green, because
-    // both rules still exist and match. What goes wrong is that one element
-    // takes both.
+    // Adding `.proposal-tabs` to the pill rule's selector list would leave both
+    // rules in place and both matching, so no check that a rule exists can see
+    // it. What goes wrong is that one element takes both.
     for (const { prelude } of rules(adminSource)) {
       const parts = prelude.split(',').map((p) => p.trim())
       const pill = parts.some((p) => p.startsWith('.proposal-states'))
@@ -142,30 +136,18 @@ describe('the inbox draws a filter and a tab differently', () => {
 /**
  * **O148.** `TILE_HEIGHT_PX` is the box `.proposal-detail .pages img` draws,
  * restated in TypeScript so `requestedTileEdge` can pick a rung for it. The
- * reader's filmstrip carries the same restatement and has been pinned against
- * its own stylesheet since ③ (`styles/reader.css.test.ts`); the inbox got the
- * restatement without the guard, so changing the CSS left the constant
- * silently wrong and every test green. Setting it to `1` passed the whole
- * suite, because `devicePixelRatio` is 1 in jsdom and every height from 1 to
- * 160 rounds to the same bottom rung there.
+ * reader's filmstrip carries the same restatement and is pinned against its own
+ * stylesheet (`styles/reader.css.test.ts`); this pins the inbox's. A constant
+ * of `1` passes the other tests, because `devicePixelRatio` is 1 in jsdom and
+ * every height from 1 to 160 rounds to the same bottom rung there.
  *
- * **The box has two heights and this asserts the right one.** The rule
- * carries `border: 1px solid` with no `box-sizing`, so the *content* box is
- * 72×108 and the *border* box is 74×110 — both measured in Chromium. The
- * constant is the content height, which is correct: that is the box the
- * artwork is scaled into and the number `requestedTileEdge` chooses a rung
- * for. A test that derived from the drawn box would assert 110 and fail
- * against right code; one that ignored the border would pass either way.
- *
- * **One case, not two.** A second `it()` here asserted `object-fit` and
- * `display`, and its comment said those guard the derivation's two inputs —
- * a `width` that stops being a length, or a dropped `aspect-ratio`. Neither
- * property affects the box's dimensions at all, and both hazards are already
- * carried by the assertions below: mutating `width` to `100%` reddens the
- * `toMatch(/^[\d.]+rem$/)` while that second case stayed **green**, which is
- * how it was found (⑤c's Task 4 review). It was decoration with a misleading
- * comment, and deleting it was better than writing a truer comment around
- * assertions that still proved nothing.
+ * **The box has two heights and this asserts the right one.** The rule carries
+ * `border: 1px solid` with no `box-sizing`, so the *content* box is 72×108 and
+ * the *border* box is 74×110. The constant is the content height, which is
+ * correct: that is the box the artwork is scaled into and the number
+ * `requestedTileEdge` chooses a rung for. A test that derived from the drawn
+ * box would assert 110 and fail against right code; one that ignored the border
+ * would pass either way.
  */
 describe('the inbox tile height follows the stylesheet', () => {
   it('derives TILE_HEIGHT_PX from the rule that draws the tile', () => {
@@ -187,27 +169,25 @@ describe('the inbox tile height follows the stylesheet', () => {
 
 /**
  * **The coarse-pointer floor, asserted as a floor rather than as a rule that
- * exists.** A test that only checked `admin.css` now contains a `(pointer:
+ * exists.** A test that only checked `admin.css` contains a `(pointer:
  * coarse)` block would pass against a block covering one selector, so this
  * asserts the *lines*: every selector the floor is made of, each of which
  * goes missing under a one-line deletion.
  *
- * **Lines and not the nine kinds of control they cover**, which is what the
- * task brief asked for and what this file cannot have. Naming
- * `.proposal-tabs button` inside the floor is a red test two describes
- * above — `draws the kind row as underlined tabs` pins that selector to
- * exactly one rule, the one the preview strip shares — and naming it beside
+ * **Lines and not the kinds of control they cover**, which this file cannot
+ * have. Naming `.proposal-tabs button` inside the floor is a red test two
+ * describes above — `draws the kind row as underlined tabs` pins that selector
+ * to exactly one rule, the one the preview strip shares — and naming it beside
  * `.proposal-states .state` is a second red, `gives no selector both rows`,
- * which is O150's guard. Both were watched failing against a floor that
- * named all nine. So the inbox's pills, kind tabs and Dismiss/Reopen are
- * covered by the `button` line here, as `<button>`s inside `.proposals`, and
- * the assertion that covers them is the one on that line's text.
+ * which is O150's guard. So the inbox's pills and Dismiss/Reopen are covered
+ * by the `button` line here, as `<button>`s inside `.proposals`, and the
+ * assertion that covers them is the one on that line's text.
  *
  * **The box line is the one exception to "lines, not controls", and it is
- * deliberate.** It is asserted twice — once for the text it now has and once
- * for the text it must not have — because the defect it closed was not a
- * missing line but a line scoped one container too narrowly, which no
- * `toContain` over the narrow text could have caught.
+ * deliberate.** It is asserted twice — once for the text it has and once for
+ * the text it must not have — because the defect it guards is not a missing
+ * line but a line scoped one container too narrowly, which no `toContain` over
+ * the narrow text could catch.
  *
  * **Every selector below is anchored to the `{` of the rule whose prelude
  * holds it**, and that anchor is what makes a case red when a selector is
@@ -230,27 +210,24 @@ describe('the inbox tile height follows the stylesheet', () => {
  * reason the next paragraph states.
  *
  * The heights themselves belong to the browser pass. jsdom computes none, and
- * this project's `browser` Chromium is `pointer: fine` so the media query
- * never engages there — the blind spot O151 hid in, and the reason §12.4a's
- * figures were taken with a fine pointer, where an absent rule makes the two
- * identical. A Chromium *context* with `hasTouch` and `isMobile` does match
- * `(pointer: coarse)`, and this floor's later figures were read in one. The
- * `browser` project's instance is not that context, but a browser test can
- * still switch the coarse-pointer blocks on in place and measure a height
- * (`support/pointer.ts`'s `coarseRulesOn`). `About.browser.test.tsx` does
- * so for this floor, on About's Copy address button.
+ * this project's `browser` Chromium is `pointer: fine` so the media query never
+ * engages there — the blind spot O151 hid in. A Chromium *context* with
+ * `hasTouch` and `isMobile` does match `(pointer: coarse)`. The `browser`
+ * project's instance is not that context, but a browser test can still switch
+ * the coarse-pointer blocks on in place and measure a height
+ * (`support/pointer.ts`'s `coarseRulesOn`). `About.browser.test.tsx` does so
+ * for this floor, on About's Copy address button.
  */
 describe('admin.css carries a coarse-pointer floor', () => {
   /**
    * The body of the **last** `@media (pointer: coarse)` block, matched by
    * counting braces rather than by a regex.
    *
-   * `admin.css` holds two such blocks once this lands — the shared `.field`
-   * block's companion and this floor — so *which* one a test reads is the
-   * whole question. A greedy `\{([\s\S]*)\}` anchored to the file's end
-   * matches from the **first** block, so it would report a floor that exists
-   * whether or not this one was ever written. That version of this helper was
-   * caught in review before it shipped; this is the replacement.
+   * `admin.css` holds two such blocks — the shared `.field` block's companion
+   * and this floor — so *which* one a test reads is the whole question. A
+   * greedy `\{([\s\S]*)\}` anchored to the file's end matches from the
+   * **first** block, so it would report a floor that exists whether or not this
+   * one was ever written.
    */
   const lastCoarseBlock = (source: string) => {
     const src = withoutComments(source)
@@ -289,16 +266,14 @@ describe('admin.css carries a coarse-pointer floor', () => {
    * `selector` anchored to the `{` of the rule whose prelude holds it, and —
    * when one is given — to a `declaration` in that rule's own body.
    *
-   * **The anchor carries the whole of this file's coverage of the floor.**
-   * `[^{}]*\{` between a selector and its brace, which these cases used
-   * before, matches a suffix appended to that selector just as well as it
-   * matches the rest of a selector list, so narrowing a selector until it
-   * reaches no element satisfied both halves of every case at once. Here
+   * **The anchor carries the whole of this file's coverage of the floor.** A
+   * `[^{}]*\{` between a selector and its brace would match a suffix appended
+   * to that selector just as well as it matches the rest of a selector list, so
+   * narrowing a selector until it reaches no element would still pass. Here
    * only whitespace, or a `,` and the remainder of the prelude, may stand
    * between the two, and neither leaves anywhere for a suffix to sit. The
-   * `[^}]*` then cannot leave the rule's own body, so a declaration has to
-   * be on the rule the selector names rather than anywhere later in the
-   * block.
+   * `[^}]*` then cannot leave the rule's own body, so a declaration has to be
+   * on the rule the selector names rather than anywhere later in the block.
    *
    * `declaration` is a regular-expression fragment; `selector` is a literal.
    */
@@ -329,15 +304,14 @@ describe('admin.css carries a coarse-pointer floor', () => {
   })
 
   for (const subject of [
-    // Every button on the six screens and `/about`, which is how the inbox's
-    // pills, its kind tabs and its Dismiss/Reopen are reached.
+    // Every button under these roots but a `.proposal-tabs` or `.preview-tabs`
+    // one, which is how the inbox's pills and its Dismiss/Reopen are reached.
     ':where(.proposals, .account, .config, .about) button:not(:where(.proposal-tabs, .preview-tabs) > button)',
     // Every labelled control on them, but `/account`'s, which are settings
     // rows' controls, floored by `settings.css`.
     ':where(.proposals, .config) .field :where(input, select, textarea)',
-    // The link-shaped action the `button` line cannot reach, and which the
-    // speculative `a.button` this list used to name did not reach either:
-    // `/config/rules`'s Export, beside an Import button already at 44.
+    // The link-shaped action the `button` line cannot reach: `/config/rules`'s
+    // Export, beside an Import button already at 44.
     '.editor-actions .export',
     // The `<details>` toggles, which no other rule styles.
     ':where(.proposals, .config) summary',
@@ -346,9 +320,9 @@ describe('admin.css carries a coarse-pointer floor', () => {
     // has to beat for that is (0, 2, 1).
     '.proposals .checks label',
     // The box itself, scoped to the admin roots rather than to `.checks`.
-    // `.checks` holds one of these boxes and never held all of them — see
-    // `scopes the box to the admin roots` below, which is the half of this
-    // that a second, narrower copy cannot satisfy.
+    // `.checks` holds one of these boxes and not all of them — see `scopes the
+    // box to the admin roots` below, which is the half of this that a second,
+    // narrower copy cannot satisfy.
     ':where(.proposals, .config) input[type="checkbox"]',
   ]) {
     it(`names ${subject}`, () => {
@@ -361,10 +335,10 @@ describe('admin.css carries a coarse-pointer floor', () => {
     '.backup-rows a',
     // The two radios of an account's Sees choice, a box and its words.
     '.settings-choices label',
-    // The checkbox rows `Row check` draws: an account's three permissions,
-    // each library it is limited to, and a directory's Keeps documents
-    // under .taiyaku/. Their label takes the whole first line, 44px tall,
-    // and all of it is the target.
+    // The checkbox rows `Row check` draws: an account's permissions, each
+    // library it is limited to, and a directory's Keeps documents under
+    // .taiyaku/. Their label takes the whole first line, 44px tall, and all of
+    // it is the target.
     '.settings-row-check .settings-row-label',
     // The row's text drawn as no box of its own, so that its label and its
     // help are the grid's items and the label can take a line of its own.
@@ -401,12 +375,11 @@ describe('admin.css carries a coarse-pointer floor', () => {
   })
 
   it('gives every subject of the first rule the 44px row itself', () => {
-    // The same shape as the two Criticals below, one rule up: `names` above
-    // is satisfied by either of these two sitting in a rule that declares
-    // nothing. They share one rule today, and `inRule` reaches that rule's
-    // own `{` wherever in the list a selector sits — and reaches a
-    // *different* rule's if one of them is ever split out, which is how a
-    // split that drops the declaration is caught.
+    // `names` above is satisfied by either of these two sitting in a rule that
+    // declares nothing. They share one rule today, and `inRule` reaches that
+    // rule's own `{` wherever in the list a selector sits — and reaches a
+    // *different* rule's if one of them is ever split out, which is how a split
+    // that drops the declaration is caught.
     for (const subject of [
       ':where(.proposals, .account, .config, .about) button:not(:where(.proposal-tabs, .preview-tabs) > button)',
       ':where(.proposals, .config) .field :where(input, select, textarea)',
@@ -437,13 +410,12 @@ describe('admin.css carries a coarse-pointer floor', () => {
   })
 
   /**
-   * O157: the three underlined one-of-N rows take their 44px from a box
-   * with no paint centred on each item, not from their own height, which
-   * the floor's `:not()` keeps off them on §12.8's measurement. Both halves
-   * are asserted. The `::after` grows the target, and `position: relative`
-   * anchors it to its own item. Without that, every tab's target would be
-   * placed against the nearest positioned ancestor, one box for the whole
-   * row.
+   * O157: the three underlined one-of-N rows take their 44px from a box with no
+   * paint centred on each item, not from their own height, which the floor's
+   * `:not()` keeps off them (§12.8). Both halves are asserted. The `::after`
+   * grows the target, and `position: relative` anchors it to its own item.
+   * Without that, every tab's target would be placed against the nearest
+   * positioned ancestor, one box for the whole row.
    */
   for (const item of [
     '.config-nav a',
@@ -467,28 +439,24 @@ describe('admin.css carries a coarse-pointer floor', () => {
       ]) {
         expect(coarse).toMatch(inRule(`${item}::after`, declaration))
       }
-      // The item's own box is left alone. A height here is the redesign
-      // §12.8 measured and refused.
+      // The item's own box is left alone: a height on it is the redesign that
+      // §12.8 refused.
       expect(coarse).not.toMatch(inRule(item, 'min-height'))
       expect(coarse).not.toMatch(inRule(item, 'min-block-size'))
     })
   }
 
   /**
-   * **The 44 has to be a floor on the rendered box, and `min-height` alone
-   * is not.** In standards mode the UA stylesheet gives `<select>` and
-   * `<button>` `border-box` and leaves `<input>` and `<textarea>` at
-   * `content-box`, and this project sets no global reset — so before
-   * `box-sizing` joined the rule, the same line rendered the selects on
-   * these screens at 44 or more and every text box beside them at **54**:
-   * 44 of content, plus the shared reset's `var(--space-1)` padding top and
-   * bottom and its 1px borders. Measured at 390px with a coarse pointer on
-   * 2026-09-25, on `/account`, the add-account and add-root forms, the
-   * expanded root and user rows, the rule form and the proposals accept
-   * form alike.
+   * **The 44 has to be a floor on the rendered box, and `min-height` alone is
+   * not.** In standards mode the UA stylesheet gives `<select>` and `<button>`
+   * `border-box` and leaves `<input>` and `<textarea>` at `content-box`, and
+   * this project sets no global reset — so without `box-sizing` in the rule,
+   * the same line would render the selects on these screens at 44 or more and
+   * every text box beside them at **54**: 44 of content, plus the shared
+   * reset's `var(--space-1)` padding top and bottom and its 1px borders.
    *
-   * `border-box` and not merely "declares `box-sizing`": `content-box` is
-   * the value the defect had, spelled out.
+   * `border-box` and not merely "declares `box-sizing`": spelled out,
+   * `content-box` is the defect.
    */
   it('measures that 44 on the rendered box rather than on its content', () => {
     for (const subject of [
@@ -535,45 +503,38 @@ describe('admin.css carries a coarse-pointer floor', () => {
 
   it('is scoped to the admin roots, not to .library', () => {
     // The defect is a second floor over the library home, search, the series
-    // page and the sidebar, which `library.css` and `shell.css` already
-    // answer for — whether it arrives as `:where(.library) button`, as a
-    // bare `.library button`, or by widening a selector already here. The
-    // first version of this asserted `/:where\(\.library[,)]/`, which is one
-    // spelling of it: `.library button { min-height: 44px }` added inside
-    // the block left it green, watched. **Any** mention of `.library` in
-    // this block is the defect, and none of the roots contains the
-    // substring, so the whole class is one match. The positive half — that
-    // the scoped text is still there — is the `names` cases above, not
+    // page and the sidebar, which `library.css` and `shell.css` already answer
+    // for — whether it arrives as `:where(.library) button`, as a bare
+    // `.library button`, or by widening a selector already here. **Any**
+    // mention of `.library` in this block is the defect, and none of the roots
+    // contains the substring, so the whole class is one match. A pattern for
+    // one spelling, such as `/:where\(\.library[,)]/`, would pass `.library
+    // button { min-height: 44px }` added inside the block. The positive half —
+    // that the scoped text is still there — is the `names` cases above, not
     // repeated here.
     expect(coarse).not.toMatch(/\.library/)
   })
 
   it('gives the inbox’s checkbox row a centred 44px row', () => {
-    // `.checks label` is `align-items: baseline` above, which puts a
-    // checkbox's bottom edge on the sentence's baseline: right at the 13px
-    // box the browser draws, and at 24px it lifts the box 6.5px above the
-    // sentence's centre. Measured in Chromium at 390px on 2026-09-24 — 3px
-    // above the row's top and 17px below, against 10 and 10 once centred.
+    // `.checks label` is `align-items: baseline` above, which puts a checkbox's
+    // bottom edge on the sentence's baseline: right at the 13px box the browser
+    // draws, and at 24px it lifts the box above the sentence's centre.
     //
-    // **Per declaration**, because `names` above is satisfied by the
-    // selector sitting in a rule with nothing in it. The `{` this reaches is
-    // the one belonging to the rule whose prelude holds that selector,
-    // wherever in the list it sits.
+    // **Per declaration**, because `names` above is satisfied by the selector
+    // sitting in a rule with nothing in it. The `{` this reaches is the one
+    // belonging to the rule whose prelude holds that selector, wherever in the
+    // list it sits.
     const label = '.proposals .checks label'
     expect(coarse).toMatch(inRule(label, 'min-height:\\s*44px'))
     expect(coarse).toMatch(inRule(label, 'align-items:\\s*center'))
   })
 
   it('gives the two link-shaped actions a centred 44px row', () => {
-    // §7.1 is about links *and* controls and the first draft of this floor
-    // covered only the controls: measured at 390px, Export was 47×24 beside
-    // an Import button at 72×44, and the backup download 196×24 as the only
-    // per-row action on that screen.
+    // §7.1 is about links *and* controls, not controls alone.
     //
-    // All three declarations, because the first two are what make the third
-    // do anything to a link that is not a flex item — and because
-    // `min-height` alone, which these two do take today, left the word at
-    // the top of the 44px box (0 above, 20 below) rather than centred.
+    // All three declarations, because the first two are what make the third do
+    // anything to a link that is not a flex item — and because `min-height`
+    // alone would put the word at the top of the 44px box, not in its centre.
     for (const [block, link] of [
       [coarse, '.editor-actions .export'],
       [settingsCoarse, '.backup-rows a'],
@@ -590,24 +551,21 @@ describe('admin.css carries a coarse-pointer floor', () => {
     // `MoveRoot`'s move-volumes — which no other rule styles.
     const summary = ':where(.proposals, .config) summary'
     expect(coarse).toMatch(inRule(summary, 'min-height:\\s*44px'))
-    // **`align-content`, not `align-items`, and that is the whole finding.**
-    // A `<summary>` is `display: list-item`, so it takes `min-height` as it
-    // stands but leaves its text at the top of the box. `display: flex` with
-    // `align-items: center` does centre it and deletes the disclosure
-    // triangle: measured in Chromium at 390px, the content's inline-start
-    // offset falls from 16.94px to 0. This negative is what stops that
-    // being the fix, and it is brace-scoped so a `display: flex` on another
-    // rule in the block cannot satisfy it.
+    // **`align-content`, not `align-items`.** A `<summary>` is `display:
+    // list-item`, so it takes `min-height` as it stands but leaves its text at
+    // the top of the box. `display: flex` with `align-items: center` does
+    // centre it, but deletes the disclosure triangle. This negative is what
+    // stops that being the fix, and it is brace-scoped so a `display: flex` on
+    // another rule in the block cannot satisfy it.
     expect(coarse).toMatch(inRule(summary, 'align-content:\\s*center'))
     expect(coarse).not.toMatch(/summary[^{}]*\{[^}]*display:\s*(inline-)?flex/)
   })
 
   it('scopes the box to the admin roots, not to .checks', () => {
     // The `names` case above is satisfied by a `.checks`-scoped copy sitting
-    // beside the widened rule just as well as by the widened rule alone, and
-    // a copy is how this regressed the first time: the rule reached five of
-    // the boxes while its comment claimed every checkbox. `.grant-list`'s
-    // box and `.rule-list`'s bare one were the two it missed.
+    // beside the widened rule just as well as by the widened rule alone.
+    // `.grant-list`'s box and `.rule-list`'s bare one are outside `.checks`,
+    // and a copy scoped to it would miss them.
     expect(coarse).not.toMatch(/\.checks\s+input\[type="checkbox"\]/)
   })
 
@@ -667,15 +625,12 @@ describe('admin.css carries a coarse-pointer floor', () => {
   /**
    * The box rule's own three declarations.
    *
-   * **All three were `[\s\S]*?` across the whole block body before**, which
-   * is not an assertion about the checkbox rule at all: it matches the
-   * selector, then anything, then the declaration *anywhere after it*.
-   * Watched — with the checkbox rule's declarations replaced by
-   * `outline-offset: 2px` and the three moved onto an unrelated later rule
-   * in the same block, so that no checkbox anywhere got a box, all three of
-   * the old expressions still matched and the file was green. Through
-   * `inRule` the `[^}]*` cannot leave the rule's own body, so the
-   * declaration has to be on the rule the selector names.
+   * A `[\s\S]*?` across the whole block body is not an assertion about the
+   * checkbox rule at all: it matches the selector, then anything, then the
+   * declaration *anywhere after it*, so it would pass with the declarations
+   * moved onto an unrelated later rule in the same block. Through `inRule` the
+   * `[^}]*` cannot leave the rule's own body, so the declaration has to be on
+   * the rule the selector names.
    *
    * The positives carry the full scoped selector, because a second, narrower
    * copy of the rule satisfies a bare `input[type="checkbox"]`. The negative
@@ -699,30 +654,26 @@ describe('admin.css carries a coarse-pointer floor', () => {
   })
 
   it('keeps the 24px box from shrinking in the row it sits in', () => {
-    // A flex item's base size is its max-content width, so a root path on
-    // one line puts the grant row's free space well under zero and the
-    // default `flex-shrink: 1` takes part of it out of the box: measured
-    // 20.27×24 in Chromium at 390px with this declaration removed, against a
-    // rule that says 24.
+    // A flex item's base size is its max-content width, so a root path on one
+    // line puts the grant row's free space well under zero and the default
+    // `flex-shrink: 1` would take part of it out of the box, which would then
+    // draw narrower than the rule's 24.
     expect(coarse).toMatch(inRule(boxRule, 'flex-shrink:\\s*0'))
   })
 
   it('centres the pill text optically against the floor it sits in', () => {
-    // Reported from a phone. A button centres its content box, so the floor's
-    // slack is split evenly — but the text inside it is not symmetric about
-    // its own centre, and all three pills sat with their cap-top 1.5px below
-    // the pill's optical centre. `padding-block: 2.5px 5.5px` keeps the total
-    // padding at 8px and moves the content up 1.5px, which takes that offset
-    // to 0.0 on all three; `Dismissed`, the one word with no descender, lands
-    // 16.5/16.5. Measured in Chromium at 390x844 with `hasTouch` against the
-    // built stylesheet; the table is the `admin.css` entry for `.state` in
-    // `docs/superpowers/notes/2026-10-29-code-history-web-src.md`, and
-    // `admin.css`'s own comment says why `0 6px` would overcorrect.
+    // A button centres its content box, so the floor's slack is split evenly —
+    // but the text inside it is not symmetric about its own centre.
+    // `padding-block: 2.5px 5.5px` keeps the total padding at 8px and moves the
+    // content up 1.5px to make up for that. The table is in
+    // `docs/superpowers/notes/2026-10-29-code-history-web-src.md`, under the
+    // `admin.css` entry for `.state`; `admin.css`'s own comment says why `0
+    // 6px` would overcorrect.
     //
-    // Pinned as the asymmetry, not as the literal: what must not come back is
-    // a symmetric `padding-block`, which is what the floor inherits without
-    // this rule. Both halves — that the rule exists inside the coarse block,
-    // and that its two values differ — are needed, because `padding-block: 4px`
+    // Pinned as the asymmetry, not as the literal: what must not come back is a
+    // symmetric `padding-block`, which is what the floor inherits without this
+    // rule. Both halves — that the rule exists inside the coarse block, and
+    // that its two values differ — are needed, because `padding-block: 4px`
     // satisfies a presence check and restores the defect.
     const rule = inRule('.proposal-states .state', 'padding-block')
     expect(coarse).toMatch(rule)
@@ -742,10 +693,8 @@ describe('admin.css carries a coarse-pointer floor', () => {
     // which takes the 44.
     expect(coarse).toMatch(inRule(boxRule, 'inline-size:\\s*24px'))
     expect(coarse).toMatch(inRule(boxRule, 'block-size:\\s*24px'))
-    // Order-independent now: the old unscoped form reddened on any rule
-    // *after* the checkbox rule that carried a 44px row, so moving the
-    // `summary` rule from above it to below broke this for a non-reason.
-    // Watched both ways — green here, and the old expression matched.
+    // Bounded to one rule's body, so only a rule that names the checkbox can
+    // fail this, wherever it sits in the block.
     expect(coarse).not.toMatch(
       /input\[type="checkbox"\][^{}]*\{[^}]*min-height:\s*44px/,
     )
@@ -754,17 +703,16 @@ describe('admin.css carries a coarse-pointer floor', () => {
 
 /**
  * **O157's label, outside the coarse block.** `RuleList` wraps the enable box
- * in a wordless `<label className="enable">`, and the coarse block's rule is
- * the only one that styled it — so at a fine pointer the label drew the box
- * in a line box, 3px lower than it sat with no label (measured at 1440px,
- * `docs/notes.md` "Admin follow-ups"). A flex box outside every at-rule puts
- * it back, and the coarse rule, coming later at the same specificity, still
- * makes it the 44px grid there.
+ * in a wordless `<label className="enable">`. With no rule outside the coarse
+ * block, a fine pointer would draw the box in the label's line box, lower than
+ * it sits with no label (`docs/notes.md`, "Admin follow-ups"). A flex box
+ * outside every at-rule puts it back, and the coarse rule, coming later at the
+ * same specificity, still makes it the 44px grid at a coarse pointer.
  *
- * **Outside every at-rule, asserted, and not only first.** `rules()` reads
- * the rules nested in an `@media` block as readily as the top-level ones, so
- * "the first of two declares `flex`" alone passes against a `flex` rule moved
- * into a block that a desk never matches, which is the defect back.
+ * **Outside every at-rule, asserted, and not only first.** `rules()` reads the
+ * rules nested in an `@media` block as readily as the top-level ones, so "the
+ * first of two declares `flex`" alone passes against a `flex` rule moved into a
+ * block that a desk never matches, which is the defect back.
  */
 describe('the rule-enable label leaves the desktop box where it was', () => {
   /** `css` with every at-rule block taken out, braces counted. */

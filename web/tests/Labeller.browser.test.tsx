@@ -17,11 +17,9 @@ function alphaOf(colour: string): number {
   return m && colour.startsWith('rgba') ? Number(m[1]) : 1
 }
 
-// A box nobody can see is a box nobody can check. The first version of this
-// styling was a 1px hairline at `opacity: 0.15`, which a labelling session
-// reported as "impossible to see" — invisible over halftone artwork rather
-// than merely quiet. Colour is a matter of taste and is not asserted here;
-// *being visible at all* is not.
+// A box nobody can see is a box nobody can check: over halftone artwork a
+// faint box can be invisible rather than merely quiet. Colour is a matter of
+// taste and is not asserted here; *being visible at all* is not.
 describe('a resting box is visible without being touched', () => {
   it('has a filled interior and a border thick enough to read on line art', () => {
     const host = mount(
@@ -44,8 +42,8 @@ describe('a resting box is visible without being touched', () => {
     const style = getComputedStyle(drawn)
     expect(alphaOf(style.backgroundColor)).toBeGreaterThan(0.05)
     expect(Number.parseFloat(style.borderTopWidth)).toBeGreaterThanOrEqual(2)
-    // Not faded out as a whole: the fill carries the quietness now, so that
-    // the page stays readable with every box on it drawn.
+    // Not faded out as a whole: the fill carries the quietness, so that the
+    // page stays readable with every box on it drawn.
     expect(Number(style.opacity)).toBe(1)
   })
 })
@@ -57,9 +55,9 @@ describe('a resting box is visible without being touched', () => {
 describe('the page area is not text', () => {
   it('refuses a text selection, and lets the pointer past the image', () => {
     // A drag across artwork is a box being drawn; the browser has no way to
-    // know that and ran a text selection under the pointer, painting the page
-    // blue on every box. The `<img>` compounded it by being natively
-    // draggable, so a press on the artwork also started a drag-and-drop.
+    // know that and would run a text selection under the pointer, painting the
+    // page blue on every box. The `<img>`, being natively draggable, would also
+    // start a drag-and-drop on a press on the artwork.
     //
     // Asserted as computed style in a real browser rather than by dragging and
     // reading `window.getSelection()`: `user-select` is what governs the
@@ -76,15 +74,14 @@ describe('selecting a box by pointer', () => {
   it('selects on a real click, driven through the browser rather than dispatched', async () => {
     // The regression this exists for: capturing the pointer on `pointerdown`
     // retargets the compatibility mouse events — `click` among them — to the
-    // capturing element, so every click on a box was delivered to the page
-    // instead. Nothing could be selected by pointer at all; `Tab` was the only
-    // way in, because it reads the cursor ref rather than a click.
+    // capturing element, so every click on a box would be delivered to the page
+    // instead. Nothing could be selected by pointer at all; `Tab` would be the
+    // only way in, because it reads the cursor ref rather than a click.
     //
     // `userEvent` rather than `dispatchEvent`, and this is the whole test:
     // retargeting is done by the browser's own dispatch, so a synthetic click
     // lands on whatever element it is called on and passes whatever the
-    // capture did. An earlier version of this test dispatched one and proved
-    // nothing — putting the bug back left it green.
+    // capture did.
     const host = mount(
       <Labeller
         initialBoxes={[
@@ -111,9 +108,8 @@ describe('selecting a box by pointer', () => {
   })
 
   it('does not take the pointer for a press that never became a drag', async () => {
-    // The mechanism, at the level the bug actually lived: a press with a
-    // pixel or two of jitter must not capture, because capturing is what
-    // costs the click.
+    // The mechanism: a press with a pixel or two of jitter must not capture,
+    // because capturing is what costs the click.
     const host = mount(<Labeller initialBoxes={[]} />)
     const page = host.querySelector('[data-testid="label-page"]') as HTMLElement
     const box = page.getBoundingClientRect()
@@ -130,9 +126,9 @@ describe('selecting a box by pointer', () => {
 
   it('creates no box from a press that wobbled but never dragged', async () => {
     // `addBox` refuses a *zero* extent, and a wobble is not zero: a click on a
-    // box to select it used to leave a two-pixel box behind wherever the hand
-    // moved. Specks like that enter the ground truth as labels like any other,
-    // and `score` counts a prediction that misses one as spurious.
+    // box to select it would leave a two-pixel box behind wherever the hand
+    // moved. Specks like that would enter the ground truth as labels like any
+    // other, and `score` counts a prediction that misses one as spurious.
     const host = mount(<Labeller initialBoxes={[]} />)
     const page = host.querySelector('[data-testid="label-page"]') as HTMLElement
     const box = page.getBoundingClientRect()

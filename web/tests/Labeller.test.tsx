@@ -25,15 +25,13 @@ globalThis.ResizeObserver =
 
 /**
  * jsdom implements no part of the Pointer Capture API. `Labeller` captures on
- * `pointerdown` so a drag running past the page still finishes on the element
- * that started it, and without this every drag test in this file throws
- * `setPointerCapture is not a function` — as an *unhandled* error, which
- * vitest reports beside a green run rather than failing it.
+ * the first move past `DRAG_SLOP`, so a drag running past the page still
+ * finishes on the element that started it, and calls `setPointerCapture`
+ * inside a `try`.
  *
- * Stubbed here rather than guarded in the component: `StubResizeObserver`
- * above is the same accommodation for the same gap, and shaping production
- * code around what jsdom lacks is how a real browser's behaviour stops being
- * the thing under test.
+ * Stubbed here as well: `StubResizeObserver` above is the same accommodation
+ * for the same gap, and shaping production code around what jsdom lacks is how
+ * a real browser's behaviour stops being the thing under test.
  */
 if (!Element.prototype.setPointerCapture) {
   Element.prototype.setPointerCapture = () => {}
@@ -188,17 +186,15 @@ describe('the on-screen legend', () => {
 
 describe('Labeller keys', () => {
   /**
-   * **A modifier means the keystroke is not this page's**, which the reader
-   * has enforced since spec A2 (`keys.ts`'s `intentOf` bails on
-   * ctrl/meta/alt) and the labeller never did. Reported by its own user as
-   * hotkeys being eaten.
+   * **A modifier means the keystroke is not this page's**, as the reader
+   * enforces (`keys.ts`'s `intentOf` bails on ctrl/meta/alt).
    *
-   * Two costs, and the second is the worse one. `Tab` was
-   * `preventDefault`ed unconditionally, so a window switch was swallowed.
-   * And every other binding matched a bare `event.key`, so a browser
+   * Two costs follow when it is not honoured, and the second is the worse one.
+   * A `Tab` that is `preventDefault`ed unconditionally swallows a window
+   * switch. And a binding that matches a bare `event.key` lets a browser
    * shortcut that happens to share a letter — Cmd+1 through Cmd+6 for tabs,
-   * Cmd+V, Cmd+H, Cmd+N, Cmd+I — *also* retagged the selected box, silently,
-   * in the tool that produces this project's ground truth.
+   * Cmd+V, Cmd+H, Cmd+N, Cmd+I — *also* retag the selected box, silently, in
+   * the tool that produces this project's ground truth.
    */
   it('ignores a key held with ctrl, meta or alt', () => {
     for (const modifier of ['ctrlKey', 'metaKey', 'altKey'] as const) {
@@ -221,8 +217,7 @@ describe('Labeller keys', () => {
       window.dispatchEvent(plain)
     })
     expect(plain.defaultPrevented).toBe(true)
-    // Alt+Tab and Cmd+Tab are the window manager's, and swallowing them is
-    // what the reporter noticed.
+    // Alt+Tab and Cmd+Tab are the window manager's.
     for (const modifier of ['altKey', 'metaKey'] as const) {
       expect(pressWith('Tab', modifier).defaultPrevented, modifier).toBe(false)
     }
@@ -272,9 +267,8 @@ describe('Labeller keys', () => {
   })
 
   it('shows the selected box’s kind, so a kind key confirms itself', () => {
-    // Nothing rendered `data-kind` and nothing printed it, so pressing `1`-`6`
-    // produced no confirmation of any sort — 1,500 boxes tagged blind against
-    // the one input this instrument has.
+    // Without a readout, pressing `1`-`6` would give no confirmation of any
+    // sort, and boxes would be tagged blind.
     const host = mount(<Labeller initialBoxes={one} initialSelected="a" />)
     const readout = () =>
       host.querySelector('[data-testid="kind-readout"]')?.textContent
@@ -293,10 +287,9 @@ describe('Labeller keys', () => {
   })
 
   it('selects what the cursor is over when Tab is pressed', () => {
-    // **Tab was the one documented key nothing pressed.** It is handled ahead
-    // of every other binding and returns before them, which is exactly the
-    // shape the wiring test above warns a key can be swallowed by — and the
-    // three statements behind that `if` had never run.
+    // **`Tab` is handled ahead of every other binding and returns before
+    // them**, which is exactly the shape the wiring test above warns a key can
+    // be swallowed by.
     //
     // `cycleAt` reads the **cursor**, not the box list: Tab means "the next
     // box under the pointer", which is how two stacked balloons are reached
@@ -332,10 +325,9 @@ describe('Labeller keys', () => {
   })
 
   it('selects the box it just drew, so the kind keys land on it', () => {
-    // Draw, then tag, with nothing in between. Two steps per box across ~900
-    // of them is the cost; the sharper problem is that the two-step version
-    // can tag the box drawn *before* this one, and nothing about that looks
-    // wrong on screen.
+    // Draw, then tag, with nothing in between. Two steps per box is the cost;
+    // the sharper problem is that the two-step version can tag the box drawn
+    // *before* this one, and nothing about that looks wrong on screen.
     const host = mount(<Labeller />)
     const page = host.querySelector('[data-testid="label-page"]') as HTMLElement
     stubRect(page, { left: 0, top: 0, width: 400, height: 400 })
@@ -363,8 +355,7 @@ describe('Labeller keys', () => {
 
   it('gives the next box the reading axis the last one was given', () => {
     // A page of vertical Japanese is a page of it, and a page of English is
-    // not: the axis is as worth carrying as the kind, and was the half that
-    // still cost a keystroke on every box.
+    // not: the axis is as worth carrying as the kind.
     const host = mount(<Labeller />)
     const page = host.querySelector('[data-testid="label-page"]') as HTMLElement
     stubRect(page, { left: 0, top: 0, width: 400, height: 400 })
@@ -397,10 +388,10 @@ describe('Labeller keys', () => {
   })
 
   it('creates nothing from a press that wobbled but never dragged', () => {
-    // `addBox` refuses a *zero* extent, and a wobble is not zero: before the
-    // drag threshold, clicking a box to select it left a two-pixel box behind
-    // wherever the hand moved, and a speck like that enters the ground truth
-    // as a label like any other.
+    // `addBox` refuses a *zero* extent, and a wobble is not zero: without the
+    // drag threshold, clicking a box to select it would leave a two-pixel box
+    // behind wherever the hand moved, and a speck like that enters the ground
+    // truth as a label like any other.
     const host = mount(<Labeller />)
     const page = host.querySelector('[data-testid="label-page"]') as HTMLElement
     stubRect(page, { left: 0, top: 0, width: 400, height: 400 })
@@ -869,8 +860,7 @@ describe('Labeller with ports', () => {
     })
     await flush()
     // Not "wrote an empty document" — wrote *nothing*. A put here would carry a
-    // `pages` key for page 0, and this is the write that put one phantom page
-    // into each of the nine dev editions.
+    // `pages` key for page 0, which is a phantom page.
     expect(puts).toEqual([])
   })
 
@@ -1008,9 +998,9 @@ describe('Labeller with ports', () => {
     })
     const host = mount(<Labeller ports={ports} />)
     await flush()
-    // A deliberate visit, because landing on page 0 no longer attempts a write
-    // at all — and with nothing attempted there would be nothing for the
-    // missing validator to refuse, so this test would pass without measuring.
+    // A deliberate visit, because landing on page 0 attempts no write at all —
+    // and with nothing attempted there would be nothing for the missing
+    // validator to refuse, so this test would pass without measuring.
     goToPage(host, '1')
     await flush()
     act(() => {
@@ -1058,8 +1048,6 @@ describe('Labeller with ports', () => {
       host.querySelector('[data-testid="truth-progress"]')?.textContent,
     ).toBe('0 / 3 pages labelled')
     // The switch must not carry the previous page's deliberateness with it.
-    // One of these per edition is what put nine phantom pages into a 45-page
-    // dev set.
     const written = puts[puts.length - 1].doc
     expect(written.editions['en-mono']).toBeUndefined()
     expect(written.editions['raw-mono'].pages['2']).toEqual([])
@@ -1088,14 +1076,14 @@ describe('Labeller with ports', () => {
 
   it('writes a pending edit to the work it was made in, not the one switched to', async () => {
     // Draw in work A, switch to work B inside the 700 ms debounce, and the
-    // timer used to fire with A's document, B's work id and A's etag.
-    // Normally that is a 412 and a notice — but two never-labelled works
-    // serialise to identical bytes and therefore identical ETags, so
-    // `If-Match` *matches* and A's boxes land in B's `taiyaku.truth.json`.
-    // That is a box on the wrong art, which `taiyaku-core`'s
-    // `TruthEdition::is_stale_for` calls the sharpest form of the staleness
-    // problem. The two works below hand back the same `v1` validator on
-    // purpose, so nothing but the fix itself can stop the write.
+    // timer would fire with A's document, B's work id and A's etag. Normally
+    // that is a 412 and a notice — but two never-labelled works serialise to
+    // identical bytes and therefore identical ETags, so `If-Match` *matches*
+    // and A's boxes would land in B's `taiyaku.truth.json`. That is a box on
+    // the wrong art, which `taiyaku-core`'s `TruthEdition::is_stale_for` calls
+    // the sharpest form of the staleness problem. The two works below hand back
+    // the same `v1` validator on purpose, so nothing but the write going to the
+    // work the edit was made in can stop it.
     const { ports, puts } = twoWorkPorts()
     const host = mount(<Labeller ports={ports} />)
     await flush()
@@ -1133,10 +1121,9 @@ describe('Labeller with ports', () => {
 
   it('does not carry one work’s boxes onto the next work’s page', async () => {
     // The same pairing, seen from the editor rather than the wire. A work
-    // switch used to reload `boxes` from the *previous* work's document —
-    // `doc` was still the old one — so the new work's page 0 opened holding
-    // art it has nothing to do with, and the next keystroke would have saved
-    // it there.
+    // switch that reloaded `boxes` from the *previous* work's document — `doc`
+    // still the old one — would open the new work's page 0 holding art it has
+    // nothing to do with, and the next keystroke would save it there.
     const { ports } = twoWorkPorts()
     const host = mount(<Labeller ports={ports} />)
     await flush()

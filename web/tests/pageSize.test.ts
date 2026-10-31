@@ -12,8 +12,8 @@ describe('requestedLongEdge', () => {
     expect(requestedLongEdge(1, 1, 1)).toBe(512)
   })
 
-  // The measured case: a 1385x512 window in `two` mode draws a page into
-  // 693x475, which wants 768 rather than the 2147 the archive holds.
+  // A 1385x512 window in `two` mode draws a page into 693x475, which wants 768
+  // rather than the 2147 the archive holds.
   it('asks for a rung near the drawn size rather than the full page', () => {
     const box = pageBoxLongEdge(1385, 512, 'two')
     expect(requestedLongEdge(box, 1, 1)).toBe(768)

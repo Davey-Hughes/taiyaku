@@ -7,10 +7,7 @@
  * these cases are assertions on an argument or a call count, and there is no
  * way to make one of those from outside a mounted component.
  *
- * Cases 2, 3, 4 and 9 were written against the *correct* semantics and watched
- * failing against a faithful port of the save path `App.tsx` had. The other
- * six are controls that must pass on both sides of the fix: the fix changes
- * the validator the retry writes against, and nothing else.
+ * Cases 2, 3, 4 and 9 pin the correct semantics; the other six are controls.
  */
 import { describe, expect, it } from 'vitest'
 import type { FetchedNotes } from '../src/api'
@@ -124,11 +121,7 @@ function server(notes: Note[], work = WORK) {
 }
 
 /**
- * `writeGate`, and the silence it used to keep.
- *
- * Same discipline as the ten above and for the same reason: the refusal case
- * was written first, watched failing against a faithful port of today's
- * `if (!notesDoc || notesEtag === undefined) return`, and only then fixed.
+ * `writeGate`, and the silence it must not keep.
  *
  * The reader-facing sentence is spelled out here rather than imported. It is
  * the only thing anybody sees when their notes stop reaching the server, so a
@@ -144,9 +137,9 @@ describe('writeGate', () => {
     expect(writeGate(doc, 'v1')).toEqual({ kind: 'write', etag: 'v1', doc })
   })
 
-  // The defect. Watched failing against the faithful port, which answered
-  // `wait` here and so wrote nothing, said nothing, and let the reader keep
-  // typing into a session that could no longer save.
+  // Here a missing validator has to refuse rather than answer `wait`, which
+  // would write nothing, say nothing, and let the reader keep typing into a
+  // session that could no longer save.
   //
   // Two things arrive at this state and neither is exotic: a load whose notes
   // read failed (`startup.ts`'s `Opened.notesEtag`, absent), and a `PUT` whose
@@ -161,9 +154,9 @@ describe('writeGate', () => {
     })
   })
 
-  // A control, passing on both sides of the fix. Before the load has answered
-  // there is no document, nothing has been asked for, and a notice would be
-  // the reader being told about a failure that has not happened.
+  // A control. Before the load has answered there is no document, nothing has
+  // been asked for, and a notice would be the reader being told about a
+  // failure that has not happened.
   it('waits, silently, before anything has loaded', () => {
     expect(writeGate(undefined, undefined)).toEqual({ kind: 'wait' })
     expect(writeGate(undefined, 'v1')).toEqual({ kind: 'wait' })
@@ -190,7 +183,7 @@ describe('saveNotes', () => {
     expect(s.gets).toEqual([])
   })
 
-  // 2 — the defect. Watched failing against the faithful port.
+  // 2 — pins the correct semantics.
   it('retries against the validator the re-read returned', async () => {
     const s = server([note('a')])
     const mine = s.etag
@@ -204,7 +197,7 @@ describe('saveNotes', () => {
     expect(s.puts[1].etag).toBe(s.gets[0].etag)
   })
 
-  // 3 — the defect. Watched failing against the faithful port.
+  // 3 — pins the correct semantics.
   it('refuses when the retry is refused too, and says why', async () => {
     const second = stale('v3')
     const s = scripted({
@@ -228,7 +221,7 @@ describe('saveNotes', () => {
     expect(out).toEqual({ kind: 'refused', notice: second.message })
   })
 
-  // 4 — the defect. Watched failing against the faithful port.
+  // 4 — pins the correct semantics.
   it('reports the merge as landed only with the write that landed it', async () => {
     const s = server([note('a')])
     const mine = s.etag
@@ -254,7 +247,7 @@ describe('saveNotes', () => {
     expect(s.etag).not.toBe(s.gets[0].etag)
   })
 
-  // 5 — a control. Today's `console.error(rereadErr)` path, pinned.
+  // 5 — a control.
   it('shows the original refusal when the re-read itself fails', async () => {
     const first = stale('v2')
     const offline = new Error('reading notes: 503 the server is away')
@@ -292,7 +285,7 @@ describe('saveNotes', () => {
     expect(s.gets).toHaveLength(1)
   })
 
-  // 7 — a control. The fix changes the validator, not the merge rule.
+  // 7 — a control: the merge rule, whichever validator the retry carries.
   it('sends the other device’s notes with this reader’s laid over them', async () => {
     const s = server([note('a', 'first')])
     const mine = s.etag
@@ -328,7 +321,7 @@ describe('saveNotes', () => {
     expect(s.gets).toEqual([])
   })
 
-  // 9 — the defect, in a state today's code cannot reach. Watched failing.
+  // 9 — pins the correct semantics.
   //
   // A server old enough to answer the notes route without an `ETag` leaves
   // nothing to write conditionally against, and this reader never writes
@@ -385,11 +378,10 @@ describe('saveNotes', () => {
     })
   })
 
-  // Beyond §4.1a's ten, and added because the branch was otherwise the one
-  // uncovered thing in this module. `api.ts` only ever throws an `Error`, so
-  // this is defensive — but a port is a seam and the thing on the other side
-  // of one is not always well behaved. What matters is that the reader is
-  // shown something they can read rather than `[object Object]`.
+  // Beyond §4.1a's ten. `api.ts` only ever throws an `Error`, so this is
+  // defensive — but a port is a seam and the thing on the other side of one is
+  // not always well behaved. What matters is that the reader is shown something
+  // they can read rather than `[object Object]`.
   it('shows a refusal that was not thrown as an Error', async () => {
     const s = scripted({ put: () => Promise.reject('the tab went away') })
 

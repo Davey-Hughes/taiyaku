@@ -65,7 +65,7 @@ describe('debounce', () => {
     // This is the whole point: a tab closing within the debounce window must
     // not lose the position it was about to write. The reader shell calls
     // `flush` from a `visibilitychange`/`pagehide` handler for exactly this
-    // reason — see `debounce.ts`'s module doc.
+    // reason — see the `flush` doc in `debounce.ts`.
     it('sends the pending call immediately, without waiting out the delay', () => {
       const fn = vi.fn()
       const write = debounce(fn, 400)

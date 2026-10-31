@@ -148,11 +148,9 @@ describe('Login', () => {
    * **An account name is compared byte for byte**, so a keyboard that helps
    * is a keyboard that locks the reader out. `user.name` is `TEXT NOT NULL
    * UNIQUE` with no `COLLATE NOCASE`, and `account::by_name`'s
-   * `WHERE name = ?1` matches under SQLite's BINARY default — verified
-   * against a real library, where `local` returns 1 row and `Local` returns
-   * 0. iOS capitalises the first letter of an empty text field by default,
-   * so every iPhone typed a name that could not match, on the one screen
-   * there is no way past. Reported from a device pass, 2026-09-23.
+   * `WHERE name = ?1` matches under SQLite's BINARY default. iOS capitalises
+   * the first letter of an empty text field by default, so an iPhone would
+   * type a name that could not match, on the one screen there is no way past.
    */
   it('stops a phone keyboard rewriting the account name', () => {
     const host = mount(<Login onSignedIn={noop} />)

@@ -126,8 +126,7 @@ describe('Config', () => {
 
   it('gives every tab a screen to draw', async () => {
     // A tab in `TABS` with no entry in `SCREENS` renders an empty route: a
-    // link that navigates to nothing. Asserted rather than trusted, because
-    // the two lists are what PR B and PR C each extend.
+    // link that navigates to nothing. Asserted rather than trusted.
     for (const tab of config.TABS) {
       const host = await at(`/config/${tab.path}`)
       // `:not(h1)`: the hidden heading is not a screen (O163).
@@ -220,10 +219,9 @@ describe('Config', () => {
   })
 
   it('redirects a sub-path that names no tab', async () => {
-    // **Review finding 10.** `Routes.tsx` matches `/config/*` first, so its
-    // own catch-all never fires for a bad sub-path — `/config/rules` today
-    // drew the sub-nav over a blank pane with nothing said. PR B adding that
-    // tab is exactly when somebody types it.
+    // `Routes.tsx` matches `/config/*` first, so its own catch-all never fires
+    // for a bad sub-path, which would draw the sub-nav over a blank pane with
+    // nothing said.
     const host = await at('/config/nonsense')
     expect(host.querySelector('.library-table')).not.toBeNull()
   })

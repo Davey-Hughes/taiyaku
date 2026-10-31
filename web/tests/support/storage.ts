@@ -4,12 +4,12 @@
  * Neither test environment provides a real one: the `node` project has no DOM
  * at all, and the `jsdom` project — despite the name — leaves `localStorage`
  * `undefined`, which is easy to miss because `prefs.ts` swallows the failure by
- * design. A component that saved and restored through it therefore passed its
- * tests while persisting nothing, until something asserted the value came back.
+ * design. A component that saved and restored through it would pass its
+ * tests while persisting nothing unless something asserted the value came back.
  *
  * Stubbed with `vi.stubGlobal('localStorage', fakeStorage())` and cleared with
- * `vi.unstubAllGlobals()`, which is the shape `prefs.test.ts` established for
- * its own tests and this file extracts so the two cannot drift.
+ * `vi.unstubAllGlobals()`, which is the shape `prefs.test.ts` uses for its own
+ * tests with this function, so the two cannot drift.
  */
 export function fakeStorage(): Storage {
   const map = new Map<string, string>()

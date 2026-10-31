@@ -1199,8 +1199,7 @@ describe('Users, making one', () => {
 
   it('creates an administrator when the add form says so', async () => {
     // The role the form sends is the one it was set to, not the default the
-    // server would apply — `004_auth.sql` defaults to `user` precisely because
-    // an omitted column minted an administrator.
+    // server would apply — `004_auth.sql` defaults to `user`.
     vi.mocked(usersApi.addUser).mockResolvedValue(
       user({ id: 2, name: 'sam', role: 'admin' }),
     )
@@ -1224,12 +1223,12 @@ describe('Users, making one', () => {
   })
 
   it("explains the add form in the administrator's words, not the repository's", async () => {
-    // O160: this help named a spec section and a migration file, neither of
-    // which the person reading the screen can open. The wording is asserted
-    // on each element that says it rather than the page, which holds other
-    // words. The backtick and `<code>` checks hold #112's finding, that this
-    // help once drew markdown backticks as themselves (`docs/notes.md`,
-    // "What the pixels found that the tests did not").
+    // O160: the help names neither a spec section nor a migration file, which
+    // the person reading the screen cannot open. The wording is asserted on
+    // each element that says it rather than the page, which holds other words.
+    // The backtick and `<code>` checks hold that the help draws no markdown
+    // backticks as themselves (`docs/notes.md`, "What the pixels found that
+    // the tests did not").
     const host = await at(NEW)
     const page = host.querySelector('.new-account') as HTMLElement
     const role = row(page, 'Role')

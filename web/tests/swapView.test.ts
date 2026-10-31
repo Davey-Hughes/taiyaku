@@ -78,8 +78,8 @@ describe('carrySwap', () => {
     })
   })
 
-  // The hug is the part a swap used to get wrong: the artwork is pulled to
-  // the seam in two-page mode, and measuring it as centred put the mapped
+  // The hug is the part a swap can get wrong: the artwork is pulled to the
+  // seam in two-page mode, and measuring it as centred would put the mapped
   // rect where a centred page would have been.
   it('carries a centred hug as faithfully as a hugged one', () => {
     const centred: DrawnPage = { url: '/p/1', cell: 'only', hug: 'centre' }

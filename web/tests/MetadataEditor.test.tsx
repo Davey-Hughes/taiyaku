@@ -57,22 +57,17 @@ const stampButton = (host: HTMLElement) =>
  * Every read control on screen.
  *
  * **A list rather than the one**, because "one control at a time" is itself
- * an assertion. There were two — `plan-stamp`, gated on there being no plan,
- * and `replan-stamp`, gated on a refusal — sharing a handler and carrying
- * different labels, and after a failed read beside a refused stamp both drew
- * side by side.
+ * an assertion.
  *
  * **Selected by exclusion — every button in the section that is not the
- * confirm — rather than by name.** This queried `button[name='plan-stamp']`,
- * which is the name of the control that survived, so the three assertions
- * spelled `toHaveLength(1)` were blind to the one that did not: re-adding
- * `replan-stamp` verbatim — gated on `refused`, sharing `askPlan`, carrying
- * its own label — left all 55 tests green. A named list of the two would have
- * the same hole one name wider, since the next control to draw beside this one
- * will not be called `replan-stamp` either. This section draws one confirm and
- * read controls, so *not the confirm* is what *a read control* means in it,
- * and a button of any name arriving beside this one is a failure rather than
- * an invisible addition.
+ * confirm — rather than by name.** A query by `button[name='plan-stamp']`
+ * would be blind to a second control under another name, such as a
+ * `replan-stamp` sharing `askPlan` and carrying its own label, and a named
+ * list of the two would have the same hole one name wider, since the next
+ * control to draw beside this one will not be called `replan-stamp` either.
+ * This section draws one confirm and read controls, so *not the confirm* is
+ * what *a read control* means in it, and a button of any name arriving beside
+ * this one is a failure rather than an invisible addition.
  */
 const readButtons = (host: HTMLElement) => [
   ...host.querySelectorAll<HTMLButtonElement>(
@@ -94,12 +89,10 @@ const askingLine = (host: HTMLElement) =>
  *
  * **The only way to observe an in-flight render.** A test that awaits the
  * whole of `askPlan`'s promise sees the answer and never the gap it opened,
- * so the two lines that clear the old answer — `setPlan(undefined)` and
- * `setPlanFailure(undefined)` — could both be deleted and the suite stayed
- * green: whatever they blank is overwritten a microtask later by the answer
- * itself. What they actually protect is the frame in between, where a stale
- * `Rewrite 2 archives` button sat live beside "Working out which archives
- * would change…".
+ * so `askPlan`'s `setPlan(undefined)` could be deleted without a failure:
+ * what it blanks is overwritten a microtask later by the answer itself.
+ * What it actually protects is the frame in between, where a stale
+ * `Rewrite 2 archives` button would sit live while the new read is out.
  */
 function deferred<T>() {
   let settle!: (value: T) => void
@@ -141,13 +134,13 @@ describe('MetadataEditor', () => {
   })
 
   /**
-   * **I6's third shape.** The test above cannot distinguish
-   * `setCurrent(result.title ?? value)` from the regressed `setCurrent(value)`
-   * — its mock resolves with the exact string just typed, so the two
-   * expressions agree by coincidence. This mocks a re-projected title that
-   * differs from what was typed (the server's own word for what it actually
-   * holds now, per this file's own doc comment), so only the correct
-   * expression can make the displayed title match it.
+   * The test above cannot distinguish `setCurrent(result.title ?? value)` from
+   * the regressed `setCurrent(value)` — its mock resolves with the exact
+   * string just typed, so the two expressions agree by coincidence. This mocks
+   * a re-projected title that differs from what was typed (the server's own
+   * word for what it actually holds now, per `submit`'s comment in
+   * `MetadataEditor.tsx`), so only the correct expression can make the
+   * displayed title match it.
    */
   it('shows the server-reprojected title, not the value just typed, when they differ', async () => {
     const patch = vi.fn().mockResolvedValue({
@@ -186,12 +179,11 @@ describe('MetadataEditor', () => {
    * The claim is stronger than "no particular wording appears": a response
    * with `keeps_documents: false` must render **exactly** what an ordinary
    * successful save renders — nothing at all keyed off that field, not even
-   * a new note this test's own pinned string would not know to look for.
-   * Pinning one wording (`/could not be saved beside your library/i`, this
-   * test's own shape until now) would catch a regression that reuses that
-   * exact note but wave through a new alarm element keyed off
-   * `keeps_documents` with different wording; comparing two full renders
-   * catches either.
+   * a new note a pinned string would not know to look for. Pinning one
+   * wording (`/could not be saved beside your library/i`) would catch a
+   * regression that reuses that exact note but wave through a new alarm
+   * element keyed off `keeps_documents` with different wording; comparing two
+   * full renders catches either.
    */
   it('renders exactly what an ordinary successful save renders when keeps_documents is false', async () => {
     const ordinary = mount(
@@ -259,11 +251,8 @@ describe('MetadataEditor', () => {
   })
 
   /**
-   * The same shape as `askPlan`'s two blanking lines, found by sweeping for
-   * it rather than by reading this function: `submit`'s `setFailure(undefined)`
-   * has no observable effect once the answer lands, so deleting it survived
-   * the whole suite. What it protects is the frame in between, where the
-   * previous save's alert sat over a save that was still out.
+   * What `submit`'s `setFailure(undefined)` protects is the frame while the
+   * save is out, where the previous save's alert would sit over it.
    */
   it('clears the last save failure while the next save is out', async () => {
     // The two fields this editor reads, not the whole document — the other
@@ -299,10 +288,9 @@ describe('MetadataEditor, the ComicInfo stamp', () => {
   /**
    * **The three sizes are chosen so no two of them format alike.** 512 MiB and
    * 1.5 GiB sum to exactly 2 GiB, so `humanBytes` draws `512.0 MiB`,
-   * `1.5 GiB` and `2.0 GiB` — three distinct strings. They were 40 MiB and
-   * 2 GiB summing to 2.0390625 GiB, which `humanBytes` also draws as
-   * `2.0 GiB`: substituting the largest archive's size for the total survived
-   * the whole suite, so the total was not pinned by the test that names it.
+   * `1.5 GiB` and `2.0 GiB` — three distinct strings. A total that drew like
+   * the largest archive's size would let substituting that size for the total
+   * go unnoticed, so the total would not be pinned by the test that names it.
    */
   const PLAN = {
     archives: [
@@ -503,11 +491,10 @@ describe('MetadataEditor, the ComicInfo stamp', () => {
   /**
    * The protection above rides entirely on structure — `.stamp-comicinfo`
    * sits as a sibling after `</form>`, not inside it — plus `type="button"`
-   * as belt and braces. Nothing before this test asserted the structure
-   * directly, so a future change that moved the section back inside the form
-   * would go uncaught unless it also dropped `type="button"`. A button with
-   * no `type` inside a form submits it, which would make an irreversible
-   * archive rewrite a side effect of pressing Save.
+   * as belt and braces. Without this test, a future change that moved the
+   * section inside the form would go uncaught unless it also dropped
+   * `type="button"`. A button with no `type` inside a form submits it, which
+   * would make an irreversible archive rewrite a side effect of pressing Save.
    */
   it('does not render the stamp section inside the metadata form', () => {
     const host = mount(
@@ -521,11 +508,11 @@ describe('MetadataEditor, the ComicInfo stamp', () => {
   })
 
   /**
-   * **No digit of the count appears in the key.** `content_key` was `'k2'`
-   * and the completion test asserted `toContain('2')`, which the key alone
-   * satisfied: replacing the whole count phrase with a literal
-   * `Rewrote archives.` survived the suite, leaving the number of archives
-   * actually rewritten unasserted after an irreversible operation.
+   * **No digit of the count appears in the key.** A key such as `'k2'` would
+   * satisfy a completion test's `toContain('2')` by itself, so replacing the
+   * whole count phrase with a literal `Rewrote archives.` would leave the
+   * number of archives actually rewritten unasserted after an
+   * irreversible operation.
    */
   const DONE = {
     rewritten: 2,
@@ -579,10 +566,10 @@ describe('MetadataEditor, the ComicInfo stamp', () => {
 
     expect(stampButton(host)).toBeNull()
     expect(host.querySelector('.stamp-comicinfo .nothing')).not.toBeNull()
-    // The `.skipped` note rendered inside the non-empty branch alone, so this
-    // work — every archive a `.cbr` — read as "nothing to write … or this
-    // work has no zip archive at all" and the rar never appeared. The server
-    // had already told the two situations apart.
+    // A `.skipped` note rendered inside the non-empty branch alone would leave
+    // this work — every archive a `.cbr` — reading as "nothing to write", with
+    // the rar never appearing. The server already tells a work with nothing
+    // to write from one with no zip archive at all.
     expect(
       host.querySelector('.stamp-comicinfo .skipped')?.textContent,
     ).toContain('rar')
@@ -604,14 +591,9 @@ describe('MetadataEditor, the ComicInfo stamp', () => {
   })
 
   /**
-   * **Both presses inside one `act`**, on a control that carries no
-   * `disabled` at all — it is conditionally *rendered*, and within one batch
-   * it is still in the DOM. So only the ref can stop the second, which is
-   * what makes this test about the ref rather than about an attribute.
-   *
-   * The comment this replaces argued no guard was needed because "a second
-   * press is only reachable after a failure, by which time the first has
-   * already settled". Verified false: it sent two `stampPlan`s.
+   * **Both presses inside one `act`**: `disabled={busy}` has not reached the
+   * DOM within one batch, so only the ref can stop the second, which is what
+   * makes this test about the ref rather than about an attribute.
    */
   it('reads one plan for two presses dispatched before a render', async () => {
     vi.mocked(stamp.stampPlan).mockResolvedValue(PLAN)
@@ -639,10 +621,9 @@ describe('MetadataEditor, the ComicInfo stamp', () => {
     const button = stampButton(host)!
 
     // **Both presses inside one `act`**, which is what a double-click
-    // dispatches: React batches the state update, so `disabled={sending}` has
-    // not been applied to the DOM when the second lands. Only the ref stops
-    // it. #112's two double-press tests clicked twice across two `act`s and
-    // so proved `disabled` rather than the ref they named.
+    // dispatches: React batches the state update, so the confirm's
+    // `disabled={phase.kind === 'writing'}` has not been applied to the DOM
+    // when the second lands. Only the ref stops it.
     await act(async () => {
       button.click()
       button.click()
@@ -676,12 +657,11 @@ describe('MetadataEditor, the ComicInfo stamp', () => {
   })
 
   /**
-   * **The count, as a whole phrase.** `toContain('2')` was satisfied by the
-   * old fixture's `content_key: 'k2'` alone, so replacing the count with a
-   * literal `Rewrote archives.` survived — the one number that says how many
-   * of a person's files were irreversibly rewritten went unasserted. The key
-   * in `DONE` now holds no digit of the count, and this compares the whole
-   * sentence rather than looking for a character in it.
+   * **The count, as a whole phrase.** The one number that says how many of a
+   * person's files were irreversibly rewritten is compared as the whole
+   * sentence, not by looking for a character in it: `toContain('2')` would be
+   * satisfied by a `content_key` holding a `2` alone. The key in `DONE` holds
+   * no digit of the count.
    */
   it('states exactly how many archives were rewritten', async () => {
     const host = await stampWith(PLAN, DONE)
@@ -692,26 +672,24 @@ describe('MetadataEditor, the ComicInfo stamp', () => {
   })
 
   /**
-   * **The one outcome a screen reader was never told.** A refusal carries
-   * `role="alert"` and announces itself; the completion carries no role, and
-   * it was drawn outside every live region — so what a person heard, after
-   * agreeing to a rewrite with no undo, was "Rewriting 2 archives — the
-   * originals are being replaced now", then that paragraph removed (silent
-   * under the default `aria-relevant`), then silence. The completion is inside
-   * the region now.
+   * **The one outcome a screen reader could miss.** A refusal carries
+   * `role="alert"` and announces itself; the completion carries no role, so
+   * drawn outside every live region it would leave a person, after agreeing
+   * to a rewrite with no undo, hearing "Rewriting 2 archives — the originals
+   * are being replaced now", then that paragraph removed (silent under the
+   * default `aria-relevant`), then silence. The completion is
+   * inside the region.
    *
-   * **And the region itself is pinned, which it was not.** Deleting
-   * `aria-live="polite"` from the wrapper survived all 55 tests of pass 3,
-   * while `AcceptForm` — the incumbent this section's wrapper and its comment
-   * were both copied from — has carried `expect(why.getAttribute('aria-live'))
-   * .toBe('polite')` since it shipped. The comment travelled and the test did
-   * not.
+   * **And the region itself is pinned.** `AcceptForm` — the incumbent this
+   * section's wrapper and its comment were both copied from — carries
+   * `expect(why.getAttribute('aria-live')).toBe('polite')`, and so does
+   * this test.
    *
    * The identity check is the other half: a region has to exist *before* what
    * it announces is put into it, so this asserts the node the completion lands
    * inside is the same node that was on screen before anything was asked —
-   * which a `role="status"` on `.stamped` itself, the alternative, could not
-   * be.
+   * which a `role="status"` on `.stamped` itself, the alternative,
+   * could not be.
    */
   it('announces the completion, inside the region that was there before it', async () => {
     vi.mocked(stamp.stampPlan).mockResolvedValue(PLAN)
@@ -736,10 +714,11 @@ describe('MetadataEditor, the ComicInfo stamp', () => {
   it('says the identity did not move when the key came back null, rather than printing an empty one', async () => {
     const host = await stampWith(SPOKE_PLAN, KEY_HELD)
 
-    // The defect: `content_key` is `Option<String>` in the store and serialised
-    // straight through, so `null` reached a field typed `string` and the screen
-    // read "This work's content_key is now . It had no document on disk to
-    // move." — an empty key, and a claim about a document nothing had checked.
+    // `content_key` is `Option<String>` in the store and serialised straight
+    // through, so `null` would reach a field typed `string` and the screen
+    // would read "This work's content_key is now . It had no document on disk
+    // to move." — an empty key, and a claim about a document nothing
+    // had checked.
     const stamped = host.querySelector('.stamped')
     expect(stamped?.textContent).not.toMatch(/content_key is now/)
     expect(host.querySelector('.stamped .key-held')?.textContent).toMatch(
@@ -754,11 +733,10 @@ describe('MetadataEditor, the ComicInfo stamp', () => {
   })
 
   /**
-   * O81's case, and the one the old copy stated as benign. `stamp::apply`
-   * hard-codes `document_moved: false` when the key did not move, and
-   * `hand::rename_for_rekey` answers `false` for five causes — two of which
-   * leave the document stranded at the old key. The screen must name the
-   * uncertainty rather than either reading of it.
+   * O81's case. `stamp::apply` hard-codes `document_moved: false` when the
+   * key did not move, and `hand::rename_for_rekey` answers `false` for five
+   * causes — two of which leave the document stranded at the old key. The
+   * screen must name the uncertainty rather than either reading of it.
    */
   it('warns that a document may be stranded when the key moved and it did not', async () => {
     const host = await stampWith(PLAN, LEFT_BEHIND)
@@ -812,8 +790,8 @@ describe('MetadataEditor, the ComicInfo stamp', () => {
    * the title in the form above and Save — the rendered XML now differs, so a
    * third zip enters the plan — then confirm. The server answers "this work's
    * archives have changed since the plan was made (2 then, 3 now); nothing
-   * was written". Before this the only enabled control resent the same body,
-   * which the same guard refuses every time, and closing the whole panel was
+   * was written". If the only enabled control resent the same body, the same
+   * guard would refuse it every time, and closing the whole panel would be
    * the only escape.
    */
   it('offers a fresh plan after a refusal, and draws the new one over the old', async () => {
@@ -849,9 +827,7 @@ describe('MetadataEditor, the ComicInfo stamp', () => {
   })
 
   /**
-   * The same ref, on the press the false comment was actually about: it
-   * claimed a second press was "only reachable after a failure, by which time
-   * the first has already settled". This is that press, doubled inside one
+   * The same ref, on the press of the re-read control, doubled inside one
    * batch, in the `refused` phase — where the read control carries
    * `disabled={false}`, so the attribute cannot be what stops the second and
    * only the ref can.
@@ -880,11 +856,10 @@ describe('MetadataEditor, the ComicInfo stamp', () => {
    * Drive a refusal, so the confirm sits beside the read control with an alert
    * over a plan a retry would resend.
    *
-   * **Not the only state where both controls are live** — that was true when
-   * the second read control was gated on a refusal, and the read control has
-   * rendered in all eight phases since; `ready` has both too. What a refusal
-   * adds is the alert and the plan the confirm would send again, which is what
-   * the tests below press against.
+   * **Not the only state where both controls are live** — the read control
+   * renders in all eight phases, and `ready` has both too. What a refusal adds
+   * is the alert and the plan the confirm would send again, which is what the
+   * tests below press against.
    */
   const refused = async () => {
     vi.mocked(stamp.stampPlan).mockResolvedValue(PLAN)
@@ -925,10 +900,10 @@ describe('MetadataEditor, the ComicInfo stamp', () => {
     expect(stamp.stampPlan).toHaveBeenCalledTimes(1)
     expect(stamp.performStamp).toHaveBeenCalledTimes(2)
     expect(askingLine(host)).toBeNull()
-    // **Pass 3's finding 2.** The ref refused the press; until now nothing
-    // said so, and the control sat enabled and inert for the length of a
-    // rewrite over a NAS. Every other ref-guarded control in this tree pairs
-    // the ref with the attribute.
+    // The ref refuses the press, so the attribute says so: otherwise the
+    // control would sit enabled and inert for the length of a rewrite over a
+    // NAS. Every other ref-guarded control in this tree pairs the ref with
+    // the attribute.
     expect(planButton(host)?.disabled).toBe(true)
 
     posted.settle(DONE)
@@ -949,9 +924,9 @@ describe('MetadataEditor, the ComicInfo stamp', () => {
    *
    * So the archives are rewritten with no plan on screen, and the answer that
    * lands for that read is empty — the likely answer, since the stamp just
-   * wrote every one of them. Two things have to hold at once here. The
-   * completion used to render inside `plan.archives.length > 0`: the count,
-   * the content_key and the whole O81 stranded-document paragraph were
+   * wrote every one of them. Two things have to hold at once here. A
+   * completion rendered inside `plan.archives.length > 0` would have the
+   * count, the content_key and the whole O81 stranded-document paragraph
    * replaced by "Nothing to write", which is the opposite of what had just
    * happened to the person's files. And that empty answer must not draw at
    * all: its GET went out before the POST, so it describes a library the
@@ -994,19 +969,19 @@ describe('MetadataEditor, the ComicInfo stamp', () => {
   })
 
   /**
-   * **The supersede block, driven past the frame the other three stop at.**
+   * **The supersede block, driven past the frame the others stop at.**
    * `confirmStamp` releases `planInFlight` and clears `asking` on behalf of
    * the read it overtakes, because `settlePlan` returns on the sequence
    * mismatch *before* it reaches either line — so for a superseded read those
-   * two statements are the only thing that ever releases them. Three tests
-   * press both controls in one batch; all three stop at the frame, and none
-   * uses the section again afterwards.
+   * two statements are the only thing that ever releases them. The tests that
+   * press both controls in one batch stop at the frame, and none uses the
+   * section again afterwards.
    *
-   * Measured, one deletion at a time with the rest of the suite green:
+   * Without either line the section is left in a dead end:
    *
    * - without `planInFlight.current = false`, `askPlan`'s guard refuses every
    *   press for the life of the mount while `busy` is false — the read control
-   *   enabled and permanently inert, which is the shape pass 3 raised;
+   *   enabled and permanently inert;
    * - without `setAsking(false)`, `asking` never clears, so once the write
    *   clears the plan slot the phase parks in `reading` for good: "Working out
    *   which archives would change…" on screen, the read control disabled, and
@@ -1014,7 +989,7 @@ describe('MetadataEditor, the ComicInfo stamp', () => {
    *
    * Both are dead ends with no way out but a remount, which is why this
    * asserts a press that *lands* rather than a control that merely looks
-   * enabled: the first deletion leaves it enabled.
+   * enabled: the first leaves it enabled.
    */
   it('reads again after a stamp superseded the read it overtook', async () => {
     vi.mocked(stamp.stampPlan).mockResolvedValue(PLAN)
@@ -1065,15 +1040,15 @@ describe('MetadataEditor, the ComicInfo stamp', () => {
   })
 
   /**
-   * **The frame between the press and the answer, which nothing observed.**
-   * Deleting `setPlan(undefined)` from `askPlan` survived the whole suite,
-   * because every test awaited the answer that overwrote it. The live
-   * `Rewrite 2 archives` button below is what that line actually protects: it
-   * sends the plan the server has already refused. `phaseOf` tests the plan
-   * slot before `asking` so that *this* test is the one that sees the
-   * deletion: measured with the order reversed, the stale plan hides behind
-   * the reading line here and only `draws one read control and one alert when
-   * the read and the write both fail` still catches it.
+   * **The frame between the press and the answer.** Deleting
+   * `setPlan(undefined)` from `askPlan` would go unseen by a test that awaits
+   * the answer that overwrites it. The live `Rewrite 2 archives` button below
+   * is what that line actually protects: it sends the plan the server has
+   * already refused. `phaseOf` tests the plan slot before `asking` so that
+   * *this* test is the one that sees the deletion: with the order reversed,
+   * the stale plan would hide behind the reading line here and only `draws one
+   * read control and one alert when the read and the write both fail` would
+   * still catch it.
    */
   it('blanks the refused plan and its confirm control while the re-read is out', async () => {
     const host = await refused()
@@ -1089,7 +1064,7 @@ describe('MetadataEditor, the ComicInfo stamp', () => {
     // press rather than at the answer.
     expect(host.querySelector('.stamp-comicinfo [role="alert"]')).toBeNull()
     // The control stays on screen and goes disabled, rather than vanishing:
-    // the ref that refuses a second read now has the attribute beside it.
+    // the ref that refuses a second read has the attribute beside it.
     expect(readButtons(host)).toHaveLength(1)
     expect(planButton(host)?.disabled).toBe(true)
 
@@ -1102,8 +1077,8 @@ describe('MetadataEditor, the ComicInfo stamp', () => {
 
   /**
    * The same frame on the other read, and the other line: deleting
-   * `setPlanFailure(undefined)` from `askPlan` also survived the suite,
-   * because no test had ever failed a plan read and then asked again.
+   * `setPlanFailure(undefined)` from `askPlan` is seen only by a test that
+   * fails a plan read and then asks again.
    */
   it('blanks a refused plan read while the next one is out', async () => {
     vi.mocked(stamp.stampPlan).mockRejectedValue(
@@ -1129,12 +1104,13 @@ describe('MetadataEditor, the ComicInfo stamp', () => {
   })
 
   /**
-   * **The forecast, weakened to what the outcome can report.** It read "and
-   * its <content_key>.library.json moves with it when it does" while
-   * `key-moved-alone` — on screen at the same time, since the plan does not
-   * unmount on success — has to say the document may be stranded instead.
-   * `hand::rename_for_rekey` answers `false` for five causes, two of which
-   * strand it, so the certainty was never available to promise.
+   * **The forecast is no stronger than what the outcome can report.** A
+   * forecast reading "and its <content_key>.library.json moves with it when
+   * it does" would contradict `key-moved-alone` — on screen at the same time,
+   * since the plan does not unmount on success — which has to say the document
+   * may be stranded instead. `hand::rename_for_rekey` answers `false` for
+   * five causes, two of which strand it, so the certainty is not
+   * available to promise.
    */
   it('does not promise the document move before the person agrees to it', async () => {
     vi.mocked(stamp.stampPlan).mockResolvedValue(PLAN)
@@ -1154,11 +1130,10 @@ describe('MetadataEditor, the ComicInfo stamp', () => {
   })
 
   /**
-   * **`Format::is_readable` is `Dir | Zip` alone.** The note read "which
-   * taiyaku reads and never writes", which is false for every token
-   * `stamp.rs` can print but `dir` — `pages.rs`'s `unsupported_container`
-   * refuses rar, 7z, tar and PDF outright. What is true of all of them is the
-   * write rule.
+   * **`Format::is_readable` is `Dir | Zip` alone.** A note reading "which
+   * taiyaku reads and never writes" would be false for every token `stamp.rs`
+   * can print but `dir` — `pages.rs`'s `unsupported_container` refuses rar,
+   * 7z, tar and PDF outright. What is true of all of them is the write rule.
    */
   it('states the write rule rather than claiming taiyaku reads what it skips', async () => {
     vi.mocked(stamp.stampPlan).mockResolvedValue({
@@ -1184,9 +1159,9 @@ describe('MetadataEditor, the ComicInfo stamp', () => {
 
   /**
    * `unreadable` is not a format: `skipped_formats` prints it for a member
-   * `taiyaku_read::sniff` could not open at all. Listing it beside `rar` read
-   * "this work holds unreadable, which taiyaku reads and never writes" — a
-   * sentence that contradicts itself twice over.
+   * `taiyaku_read::sniff` could not open at all. Listing it beside `rar` would
+   * read "this work holds unreadable, which taiyaku reads and never writes" —
+   * a sentence that contradicts itself twice over.
    */
   it('gives a file nothing could open its own sentence, not a place in the format list', async () => {
     vi.mocked(stamp.stampPlan).mockResolvedValue({
@@ -1235,12 +1210,8 @@ describe('MetadataEditor, the ComicInfo stamp', () => {
   })
 
   /**
-   * The third instance of the same shape, and the one that matters most:
-   * `confirmStamp`'s `setStampFailure(undefined)` left a 409 on screen for
-   * the whole of the retry that was answering it, so the screen said the
-   * stamp had been refused while it was in the middle of rewriting the
-   * files. Deleting the line survived the suite for the reason `deferred`
-   * above records.
+   * `confirmStamp`'s `setStampFailure(undefined)` clears the 409 that the
+   * retry is answering.
    */
   it('clears the refusal while the stamp answering it is on the wire', async () => {
     const host = await refused()
@@ -1262,11 +1233,9 @@ describe('MetadataEditor, the ComicInfo stamp', () => {
     )
   })
   /**
-   * **One test per phase from here down, plus one apiece for pass 3's three
-   * Important findings.** The section's eight phases are computed in one
-   * place now (`phaseOf`), and what each one draws is a property of the phase
-   * rather than of six booleans read separately by nine gates — which is what
-   * let three rounds of fixes leave the gates disagreeing with each other.
+   * **One test per phase from here down.** The section's eight phases are
+   * computed in one place (`phaseOf`), and what each one draws is a property
+   * of the phase rather than of booleans read separately by each gate.
    *
    * `idle`: nothing asked, one control, nothing said.
    */
@@ -1284,9 +1253,8 @@ describe('MetadataEditor, the ComicInfo stamp', () => {
   })
 
   /**
-   * `reading`, and the first half of finding 2: the ref that refuses a second
-   * read now has the attribute beside it, so the control says it is busy
-   * rather than sitting enabled and inert.
+   * `reading`: the ref that refuses a second read has the attribute beside it,
+   * so the control says it is busy rather than sitting enabled and inert.
    */
   it('disables the read control while a plan read is out', async () => {
     const pending = deferred<stamp.StampPlan>()
@@ -1308,12 +1276,11 @@ describe('MetadataEditor, the ComicInfo stamp', () => {
   })
 
   /**
-   * **Finding 3.** `sending` reached the DOM in exactly one place — inside
-   * the confirm control's own label — and that control was gated on the plan
-   * slot, so the one sentence saying an irreversible rewrite was running
-   * could not be drawn in two of the states it runs in. It is a phase now,
-   * and the phase carries the plan being written rather than reading the
-   * slot.
+   * **A running rewrite is a phase of its own**, and the phase carries the
+   * plan being written rather than reading the slot. Drawn only inside the
+   * confirm control's own label, which is gated on the plan slot, the one
+   * sentence saying an irreversible rewrite is running could not be drawn in
+   * two of the states it runs in.
    */
   it('says at section level that a rewrite is running', async () => {
     vi.mocked(stamp.stampPlan).mockResolvedValue(PLAN)
@@ -1329,8 +1296,7 @@ describe('MetadataEditor, the ComicInfo stamp', () => {
     const running = host.querySelector('.stamp-comicinfo .writing')
     expect(running?.textContent).toContain('2 archives')
     expect(running?.textContent).toMatch(/nothing here can stop it/i)
-    // Not the read's sentence, which is what a blanked plan used to leave as
-    // the only thing on screen, and not an empty plan's.
+    // Not the read's sentence, and not an empty plan's.
     expect(askingLine(host)).toBeNull()
     expect(host.querySelector('.stamp-comicinfo .nothing')).toBeNull()
 
@@ -1340,7 +1306,7 @@ describe('MetadataEditor, the ComicInfo stamp', () => {
     expect(host.querySelector('.stamp-comicinfo .writing')).toBeNull()
   })
 
-  /** The second half of finding 2: neither control is live during the write. */
+  /** Neither control is live during the write. */
   it('disables both controls while a rewrite is on the wire', async () => {
     vi.mocked(stamp.stampPlan).mockResolvedValue(PLAN)
     const posted = deferred<stamp.Stamped>()
@@ -1363,14 +1329,13 @@ describe('MetadataEditor, the ComicInfo stamp', () => {
   })
 
   /**
-   * The same sentence in the state that had none, and the empty plan that
-   * used to replace it. A re-read pressed in the same batch as the confirm
-   * blanks the plan slot; the answer it gets back is empty — the likely one,
-   * since the stamp is rewriting every archive — and landing it drew "Nothing
-   * to write: every zip archive in this work already holds the ComicInfo.xml
-   * taiyaku would write" over files being rewritten at that moment. The
-   * answer is now discarded (its GET went out before the POST) and the phase
-   * says what is happening whatever the slot holds.
+   * The same sentence, with the plan slot blanked. A re-read pressed in the
+   * same batch as the confirm blanks the plan slot; the answer it gets back is
+   * empty — the likely one, since the stamp is rewriting every archive — and
+   * drawing it would show "Nothing to write: every zip archive in this work
+   * already holds the ComicInfo.xml taiyaku would write" over files being
+   * rewritten at that moment. The answer is discarded (its GET went out before
+   * the POST) and the phase says what is happening whatever the slot holds.
    */
   it('says a rewrite is running with the plan slot blanked and an empty answer landed', async () => {
     const host = await refused()
@@ -1409,8 +1374,7 @@ describe('MetadataEditor, the ComicInfo stamp', () => {
    * `done`. The plan that was applied is spent — every archive it named now
    * holds the document taiyaku would write, so `stamp::apply` answers 409 for
    * it — and clearing it is what makes "does this plan predate the rewrite?"
-   * a question with a mechanical answer instead of the argument the deleted
-   * comment was making.
+   * a question with a mechanical answer.
    */
   it('offers a read and no confirm once a rewrite has landed', async () => {
     const host = await stampWith(PLAN, DONE)
@@ -1423,15 +1387,13 @@ describe('MetadataEditor, the ComicInfo stamp', () => {
   })
 
   /**
-   * **Finding 1: the dead end.** A plan read strictly after a rewrite, by an
-   * explicit press, describes archives that still need stamping — a work
-   * whose title was corrected between the two, or one the confirm's own 409
-   * sent the person back to re-read. The confirm control used to be gated on
-   * `stamped === undefined` under a comment claiming both plans reachable
-   * there predated the rewrite, so this phase drew the total, the archive
-   * list, the consequences, the irreversible warning and **no controls at
-   * all** — and `stamped` is never cleared by a read, so re-reading could not
-   * recover.
+   * **The dead end.** A plan read strictly after a rewrite, by an explicit
+   * press, describes archives that still need stamping — a work whose title
+   * was corrected between the two, or one the confirm's own 409 sent the
+   * person back to re-read. A confirm control gated on `stamped === undefined`
+   * would leave this phase drawing the total, the archive list, the
+   * consequences and the irreversible warning with no confirm — and
+   * `stamped` is never cleared by a read, so re-reading could not recover.
    */
   it('offers a confirm for a plan read after the rewrite, and keeps the report above it', async () => {
     const host = await stampWith(PLAN, DONE)
@@ -1450,12 +1412,10 @@ describe('MetadataEditor, the ComicInfo stamp', () => {
   })
 
   /**
-   * **Findings 4 and 5.** Press the re-read and the confirm in one batch and
-   * let both requests fail: this drew `plan-stamp` and `replan-stamp` side by
-   * side, same handler and different labels, under two `role="alert"`
-   * paragraphs. There is one read control now, and the two failures cannot
-   * coexist at all — a stamp supersedes the read it overtook, so that GET's
-   * rejection is discarded rather than drawn beside the POST's.
+   * Press the re-read and the confirm in one batch and let both requests
+   * fail. There is one read control, and the two failures cannot coexist at
+   * all — a stamp supersedes the read it overtook, so that GET's rejection is
+   * discarded rather than drawn beside the POST's.
    */
   it('draws one read control and one alert when the read and the write both fail', async () => {
     const host = await refused()
@@ -1486,12 +1446,12 @@ describe('MetadataEditor, the ComicInfo stamp', () => {
   })
 
   /**
-   * **Finding 6.** The sentence ended "…, or this work has no zip archive at
-   * all", and it can sit above "Rewrote 2 archives." and above a 409 reading
-   * "this work's archives have changed since the plan was made" — the
-   * disjunct is untrue in both. Nothing was lost by dropping it: "every zip
-   * archive already holds it" is true of a work with none, and `.skipped`
-   * says what the work holds instead.
+   * **The sentence offers no "or this work has no zip archive at all".** It
+   * can sit above "Rewrote 2 archives." and above a 409 reading "this work's
+   * archives have changed since the plan was made" — the disjunct is untrue in
+   * both. Nothing is lost by leaving it out: "every zip archive already holds
+   * it" is true of a work with none, and `.skipped` says what the work
+   * holds instead.
    */
   it('does not offer "no zip archive at all" as a reason nothing needs writing', async () => {
     vi.mocked(stamp.stampPlan).mockResolvedValue({
@@ -1511,13 +1471,13 @@ describe('MetadataEditor, the ComicInfo stamp', () => {
   })
 
   /**
-   * **Finding 7.** An EPUB *is* a zip container, so `epub-fixed` in the
-   * skipped list beside "writes ComicInfo.xml into zip archives and nothing
-   * else" was a sentence a reader cannot reconcile. What taiyaku filters on
-   * is the identification `sniff` made — `stamp::plan` skips every member
-   * whose format is not `Format::Zip`, and an EPUB is `EpubFixed` or
-   * `EpubReflow` — so that is what the copy states, and the container is
-   * named where it would otherwise contradict it.
+   * **An EPUB *is* a zip container**, so `epub-fixed` in the skipped list
+   * beside "writes ComicInfo.xml into zip archives and nothing else" would be
+   * a sentence a reader cannot reconcile. What taiyaku filters on is the
+   * identification `sniff` made — `stamp::plan` skips every member whose
+   * format is not `Format::Zip`, and an EPUB is `EpubFixed` or `EpubReflow` —
+   * so that is what the copy states, and the container is named where it would
+   * otherwise contradict it.
    */
   it('says why an EPUB is skipped when it is a zip container itself', async () => {
     vi.mocked(stamp.stampPlan).mockResolvedValue({
@@ -1583,8 +1543,8 @@ describe('MetadataEditor, the ComicInfo stamp', () => {
    * **The report survives whatever the plan slot ends up holding**, and this
    * is the ordinary way that is tested: read again after a rewrite and the
    * answer is empty, because the stamp just wrote every archive it named.
-   * The completion rendered inside `plan.archives.length > 0` two rounds ago,
-   * so that read replaced the count, the content_key and the whole O81
+   * Rendered inside `plan.archives.length > 0`, the completion would have that
+   * read replace the count, the content_key and the whole O81
    * stranded-document paragraph with "Nothing to write".
    */
   it('keeps the rewrite report under an empty plan read after it', async () => {

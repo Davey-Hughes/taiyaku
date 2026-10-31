@@ -388,9 +388,9 @@ describe('ruleName', () => {
   })
 
   it('falls past an empty note rather than stopping on it', () => {
-    // `??` cannot see `''`, and the old chain's trailing `|| 'new rule'`
-    // only caught the *last* item — so an empty note would have skipped
-    // the pattern entirely and landed on 'new rule'.
+    // `??` cannot see `''`, and a trailing `|| 'new rule'` would catch it for
+    // the *last* item only — so an empty note would skip the pattern entirely
+    // and land on 'new rule'.
     expect(ruleName(aRule({ note: '', pattern: 'Manga/.*' }))).toBe('Manga/.*')
   })
 

@@ -3,11 +3,9 @@
  *
  * **Nothing here mocks `api.ts`**, and that is the point. `Library.test.tsx`
  * mocks `../src/library` wholesale, so no test in it ever reaches `api.ts`'s
- * `request` and none of them can see a 401 at all — which is exactly how a
- * signed-out visitor came to be shown "not signed in" in an alert banner with
- * no way forward. These tests stub `fetch` and let the real `getJson`,
- * `Unauthenticated` and `whenSignedOut` run, so what they pin is the path a
- * browser actually takes.
+ * `request` and none of them can see a 401 at all. These tests stub `fetch`
+ * and let the real `getJson`, `Unauthenticated` and `whenSignedOut` run, so
+ * what they pin is the path a browser actually takes.
  */
 import { act } from 'react'
 import { MemoryRouter } from 'react-router'
@@ -182,9 +180,9 @@ describe('the sign-in gate', () => {
     server(null)
     const host = await show()
     expect(form(host), 'the sign-in form').not.toBeNull()
-    // The negative half, and it is the regression: what the gate guards must
-    // not be mounted at all — a screen that renders and then reports "not
-    // signed in" in a banner is the state this whole change exists to remove.
+    // The negative half: what the gate guards must not be mounted at all — a
+    // screen that renders and then reports "not signed in" in a banner is the
+    // failure this test pins.
     expect(host.querySelector('[data-testid="who"]')).toBeNull()
   })
 

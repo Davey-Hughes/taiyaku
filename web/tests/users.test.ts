@@ -187,7 +187,7 @@ describe('the users client', () => {
 
   it('patches with only the keys it was handed', async () => {
     // An absent key leaves the column alone. Sending a whole row would rewrite
-    // five columns to answer a question about one.
+    // every column to answer a question about one.
     const fetchMock = vi.fn().mockImplementation(() => json({ user: user() }))
     vi.stubGlobal('fetch', fetchMock)
     await patchUser(3, { can_download: false })
@@ -209,10 +209,10 @@ describe('the users client', () => {
   })
 
   it('spells dry_run exactly, because the server refuses any other key', async () => {
-    // `deny_unknown_fields` on `DeleteUserQuery`: `?dryrun=true` — one key off
-    // — answered 200 and ran the real, committed removal on the roots route
-    // before that attribute existed. This route is the second-most destructive
-    // in the product, so the exact string is pinned rather than assumed.
+    // `deny_unknown_fields` on `DeleteUserQuery` refuses a key one off, such
+    // as `?dryrun=true`, which would otherwise run the real, committed
+    // removal. This route is the second-most destructive in the product, so
+    // the exact string is pinned rather than assumed.
     const fetchMock = vi
       .fn()
       .mockImplementation(() => json({ removed: {}, dry_run: true }))

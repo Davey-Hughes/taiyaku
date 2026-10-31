@@ -39,17 +39,17 @@ describe('lenderFor', () => {
   it('lends nothing when no third edition resolves, rather than the authority', () => {
     // The authority's page is already one `Space` away — `applyIntent`'s
     // toggle goes to `state.authority` whenever `viewing !== authority`, which
-    // is true of every gap. Lending it drew a page the reader had just left,
-    // without arrows, annotations, zoom or prefetch, in place of the `Gap`
-    // view that names the missing edition and offers both escapes.
-    // 228 of 276 corpus borrows were this. See the 2026-08-13 design, §2.
+    // is true of every gap. Lending it would draw that page, without arrows,
+    // annotations, zoom or prefetch, in place of the `Gap` view that names the
+    // missing edition and offers both escapes. See §2 of
+    // `docs/superpowers/specs/2026-08-13-borrow-lender-and-arrows-design.md`.
     const twoEditions = fakeResolver({ a: whole(4), b: whole(4) }, pairs)
     expect(lenderFor(inGap, twoEditions, ['a', 'b'])).toBeUndefined()
   })
 
   it('never lends the edition being viewed', () => {
-    // `b` resolves to itself trivially, so a rule that forgot to exclude the
-    // viewed edition would answer `b` — and draw the page that is missing.
+    // `d` pairs slot 2 with `a`, so a rule that forgot to exclude the viewed
+    // edition would answer `d`.
     const fromD: ReadingState = { authority: 'a', slot: 2, viewing: 'd' }
     expect(lenderFor(fromD, resolver, order)?.edition).not.toBe('d')
   })

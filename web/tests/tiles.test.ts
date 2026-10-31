@@ -51,12 +51,12 @@ describe('tilePages', () => {
     expect(tilePages(lastGroup, bSlots)).toEqual([{ slot: 8, page: 7 }])
   })
 
-  // I4 (M5d review): while correcting, `App.tsx` builds the strip from
-  // `pairing.ts`'s `correctionTiles` instead of `groups`, so a joined
-  // spread's two halves arrive here as two separate one-slot groups rather
-  // than one `spread: true` group. Both share a page, so without `half` the
-  // two tiles would show the same thumbnail with the same "page N" alt text
-  // and a reader would have no way to tell which is which.
+  // While correcting, `App.tsx` builds the strip from `pairing.ts`'s
+  // `correctionTiles` instead of `groups`, so a joined spread's two halves
+  // arrive here as two separate one-slot groups rather than one `spread: true`
+  // group. Both share a page, so without `half` the two tiles would show the
+  // same thumbnail with the same "page N" alt text and a reader would have no
+  // way to tell which is which.
   it('carries the half for a genuine singleton slot, so two tiles sharing a page can be told apart', () => {
     // bSlots' slot 2 (R) and slot 3 (L) share page 2.
     const [rTile, lTile] = correctionTiles(bSlots).slice(2, 4)
@@ -126,12 +126,12 @@ describe('normalizedTileWidth', () => {
     expect(normalizedTileWidth(68.19, 2, 1)).toBeCloseTo(68.19, 5)
   })
 
-  // fix-round review, finding A: a two-unit tile's own outer width rescales
-  // to the outer width a one-unit tile of the same per-unit figure would
-  // have measured. unit = (132.38 - 2*2) / 2 = 64.19 — the same unit a
-  // one-unit tile at 68.19 implies (68.19 - 2*2 = 64.19) — so both tiles'
-  // normalised widths agree, and `medianTileWidth` can take their median
-  // together without either one distorting it.
+  // A two-unit tile's own outer width rescales to the outer width a one-unit
+  // tile of the same per-unit figure would have measured.
+  // unit = (132.38 - 2*2) / 2 = 64.19 — the same unit a one-unit tile at
+  // 68.19 implies (68.19 - 2*2 = 64.19) — so both tiles' normalised widths
+  // agree, and `medianTileWidth` can take their median together without
+  // either one distorting it.
   it('rescales a two-unit tile to what a one-unit tile of the same per-unit width would measure', () => {
     expect(normalizedTileWidth(132.38, 2, 2)).toBeCloseTo(68.19, 5)
   })
@@ -170,9 +170,9 @@ describe('refinedStripUnit', () => {
 })
 
 describe('medianTileWidth', () => {
-  // The default floor is 3 (fix-round review finding A, lowered from 5 now
-  // that `normalizedTileWidth` lets every loaded tile contribute rather than
-  // only one-unit ones) — two values is one short of it.
+  // The default floor is 3, which every loaded tile counts toward through
+  // `normalizedTileWidth`, not only one-unit ones — two values is one short
+  // of it.
   it('is undefined below the minimum sample size', () => {
     expect(medianTileWidth([60, 60])).toBeUndefined()
   })
@@ -186,10 +186,10 @@ describe('medianTileWidth', () => {
     expect(medianTileWidth([63, 59, 61, 58, 60, 62])).toBe(60.5)
   })
 
-  // The case `medianTileWidth` exists for (C2, whole-branch review): a
-  // double-page scan the sidecar never marked `spread: true` still carries
-  // the one-unit floor and would previously corrupt `--strip-unit` outright
-  // if it happened to be the first tile to load — see `Filmstrip.tsx`'s
+  // The case `medianTileWidth` exists for: a double-page scan the sidecar
+  // never marked `spread: true` still carries the one-unit floor, and taking
+  // whichever tile happened to load first would corrupt `--strip-unit`
+  // outright whenever this one won the race — see `Filmstrip.tsx`'s
   // measurement effect. With an odd sample, the outlier sorts to one end and
   // never reaches the middle position, whatever its own magnitude is.
   it('is not moved by an outlier roughly twice the ordinary width', () => {
@@ -446,9 +446,8 @@ describe('shownShare', () => {
   })
 })
 
-// O216. In figures, and not in the constants' names: these are the numbers
-// the glide was tried and chosen at, and a case written in the constants'
-// own terms would pass whatever they were changed to.
+// O216. In figures, and not in the constants' names: a case written in the
+// constants' own terms would pass whatever they were changed to.
 describe('releaseSpeed', () => {
   /** `count` moves `step` px apart, one every `every` ms, from x 500 at 1000 ms. */
   const steady = (count: number, every: number, step: number): GlideSample[] =>

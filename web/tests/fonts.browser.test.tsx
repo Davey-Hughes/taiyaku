@@ -8,8 +8,8 @@ import '../src/index.css'
  * O179: the seven spacing characters Zen Kaku Gothic New draws with no
  * advance, and the `"taiyaku marks"` faces in `styles/tokens.css` that give
  * them one. A server sentence quotes a name in backticks — ``no work `nope` ``
- * — and in Zen Kaku alone both backticks were drawn over the letters beside
- * them.
+ * — and in Zen Kaku alone both backticks would be drawn over the letters
+ * beside them.
  *
  * Each weight of both families is asked for by name with
  * `document.fonts.load` before `document.fonts.ready` is awaited and anything
@@ -21,7 +21,7 @@ import '../src/index.css'
 
 const MARKS = ['`', '¨', '´', '¸', 'ˆ', '˚', '˜']
 const WEIGHTS = [400, 500, 700]
-/** The stack `--font-ui` was before the marks faces: the defect's own. */
+/** The stack of `--font-ui` without the marks faces: the defect's own. */
 const ZEN_KAKU_ALONE = '"Zen Kaku Gothic New", system-ui, sans-serif'
 
 let host: HTMLElement | undefined
@@ -57,10 +57,10 @@ async function widths(
 }
 
 describe('a quoted name in the interface face', () => {
-  // The control: the defect is in this browser, in the stack `--font-ui` had
-  // before. If Zen Kaku did not load, or a later release gives the backtick
-  // its advance, this fails, and the two below stop showing that the marks
-  // faces are what makes the difference.
+  // The control: the defect is in this browser, in Zen Kaku alone. If Zen Kaku
+  // did not load, or a later release gives the backtick its advance, this
+  // fails, and the two below stop showing that the marks faces are what makes
+  // the difference.
   it.each(WEIGHTS)(
     'draws a backtick with no width in Zen Kaku alone, at %i',
     async (weight) => {
@@ -78,7 +78,7 @@ describe('a quoted name in the interface face', () => {
     'gives both backticks a width in --font-ui, at %i',
     async (weight) => {
       const [quoted, bare] = await widths(weight, ['`nope`', 'nope'])
-      // Each backtick is 352, 365 or 375 units: 5.6 to 6 px at 16 px.
+      // Each backtick is 5.6 to 6 px at 16 px.
       expect(quoted - bare).toBeGreaterThan(10)
     },
   )
@@ -98,10 +98,9 @@ describe('a quoted name in the interface face', () => {
   )
 
   // Which weight's file drew. The backtick cannot say — 5.6 to 6 px at every
-  // weight — but `˚` is 497, 410 and 341 units at 400, 500 and 700 in the
-  // package's Latin files (fontTools, 2026-10-03): 7.95, 6.56 and 5.46 px,
-  // more than a pixel apart. A face pointed at another weight's file draws
-  // another weight's ring.
+  // weight — but `˚` is 7.95, 6.56 and 5.46 px at 400, 500 and 700, more than
+  // a pixel apart. A face pointed at another weight's file draws another
+  // weight's ring.
   it.each([
     [400, 7.95],
     [500, 6.56],

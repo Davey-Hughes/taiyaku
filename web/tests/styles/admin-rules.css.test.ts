@@ -36,23 +36,18 @@ function declared(selector: string, property: string): string[] {
 describe('the rule list', () => {
   it('prints each ordinal once', () => {
     // `RuleList` renders an `<ol>` *and* a `.ordinal` span, so the browser's
-    // own marker drew `1. 1`, `2. 2` down the whole list.
+    // own marker would draw `1. 1`, `2. 2` down the whole list.
     expect(declared('.rule-list ol', 'list-style')).toEqual(['none'])
   })
 
   it('says the row can be dragged, and stops saying it while a write is', () => {
-    // §10.4 commits ⑤a to "the drag handle gets an affordance it currently
-    // lacks"; the plan narrowed away from it and the whole-branch review
-    // found it missing. On the row rather than a grip, because `RuleList`
-    // puts `draggable` on the whole `<li>` — a grip would picture a control
-    // that is not there.
+    // §10.4 commits to "the drag handle gets an affordance it currently lacks".
+    // On the row rather than a grip, because `RuleList` puts `draggable` on the
+    // whole `<li>` — a grip would picture a control that is not there.
     expect(declared('.rule-row', 'cursor')).toEqual(['grab'])
-    // **Hooked on `draggable`, the attribute `RuleList` actually sets.** The
-    // first draft of this rule used `[aria-disabled="true"]`, which that
-    // component never sets on the row — it would have styled a state that
-    // cannot occur. Verified in a browser: the row renders
-    // `draggable="true"`, carries no `aria-disabled`, and flipping the
-    // attribute moves the cursor grab -> default.
+    // **Hooked on `draggable`, the attribute `RuleList` actually sets.**
+    // `[aria-disabled="true"]` is never set on the row by that component, so a
+    // rule hooked on it would style a state that cannot occur.
     expect(declared('.rule-row[draggable="false"]', 'cursor')).toEqual([
       'default',
     ])
@@ -77,8 +72,8 @@ describe('the rule list', () => {
 
 describe('the tab look', () => {
   it('underlines the current tab without moving the row', () => {
-    // `inset 0 -2px 0`, not a border: ②'s `.library-chips` draws it
-    // this way so selecting a tab does not shift the row's baseline.
+    // `inset 0 -2px 0`, not a border: `.library-chips` draws it this way so
+    // selecting a tab does not shift the row's baseline.
     for (const prelude of [
       '.preview-tabs button[aria-selected="true"]',
       '.config-nav a[aria-current="page"]',
@@ -92,21 +87,19 @@ describe('the tab look', () => {
 
 describe('the field pattern', () => {
   it('is a shared class, scoped to the two screens that opted in', () => {
-    // C3 built it for AcceptForm; ⑤a's rule form edits the same content, so
-    // it is hoisted rather than copied — but bare, a hoisted `.field` also
-    // reached `MetadataEditor.tsx`'s Series-page label, which never opted
-    // in. The whole-branch review's I1 scoped it to the two screens that did.
+    // `AcceptForm` and the rule form edit the same content, so the pattern is
+    // hoisted rather than copied; it is scoped to the two screens that opted
+    // in, because a bare `.field` would also reach `MetadataEditor.tsx`'s
+    // Series-page label.
     expect(bodies('.field')).toHaveLength(0)
     expect(bodies('.proposal-detail .field')).toHaveLength(1)
-    // **Both screens, because the name says two.** This asserted only the
-    // inbox until the re-review: dropping `.rule-form .field,` from the
-    // shared prelude left every gate green while the rule form's nine labels
-    // fell back inline beside the previous field's input — the predecessor
-    // defect this whole block exists to prevent. Two bodies: the shared one
-    // and `flex: 1 1 8rem`.
-    // **The same body, not a count.** `toHaveLength(2)` was the first form
-    // and it breaks on a legitimate third rule — a narrow-width override is
-    // exactly the kind of edit this branch has been making — while still
+    // **Both screens, because the name says two.** Dropping `.rule-form
+    // .field,` from the shared prelude would leave the rule form's labels to
+    // fall back inline beside the previous field's input — the defect this
+    // whole block exists to prevent. Two bodies: the shared one, and one that
+    // sets `flex: 1 1 8rem`.
+    // **The same body, not a count.** `toHaveLength(2)` would break on a
+    // legitimate third rule, such as a narrow-width override, while still
     // passing if the shared prelude were split into two identical standalone
     // rules, which is the thing being guarded against.
     expect(bodies('.rule-form .field')).toContain(
@@ -115,11 +108,9 @@ describe('the field pattern', () => {
   })
 
   it('keeps the pattern field on a row of its own, on both screens that use it', () => {
-    // Measured in C3: sharing the row gave the pattern 416px of 807 at a
-    // 1100px window and cut a 52-character rel_path prefix. Two selectors,
-    // one body: C1 raised `.rule-form .field.pattern`'s specificity to beat
-    // `.rule-form .field` (below), which tied it at (0,2,0) and won on
-    // source order until then.
+    // Sharing the row cuts a long `rel_path` prefix off the pattern. Two
+    // selectors, one body: `.rule-form .field.pattern` is (0,3,0) and so beats
+    // `.rule-form .field` (below), which is (0,2,0).
     expect(declared('.proposal-detail .field.pattern', 'flex')).toEqual([
       '10100%',
     ])
@@ -143,25 +134,13 @@ describe('the preview tables', () => {
       expect(declared(prelude, 'position'), prelude).toEqual(['sticky'])
       expect(declared(prelude, 'left'), prelude).toEqual(['0'])
       expect(declared(prelude, 'background'), prelude).toHaveLength(1)
-      // **No `max-width` assertion, and that is the finding rather than an
-      // omission.** This rule carried `max-width: 16rem` until it was
-      // measured: the pinned cell renders **35px** wide in a 390px box, with
-      // the cap and without it alike, because `overflow-wrap: anywhere`
-      // below collapses its min-content and the auto-layout table gives it
-      // what is left. A 256px cap over a 35px cell constrains nothing. It
-      // was pinned here for one commit, which would have frozen a
-      // declaration that does not do anything.
     }
   })
 
   it('wraps the pinned path rather than cutting its end off', () => {
-    // The end is what tells these rows apart. Against the library this was
-    // built on, all 1,915 file paths are distinct in full and only 762 stay
-    // distinct once cut to 36 characters (a sharp edge — 757 at 35, 824 at 37;
-    // the `admin.css` entry above `.preview .table-scroll th:first-child,` in
-    // `docs/superpowers/notes/2026-10-29-code-history-web-src.md` has why 36) —
-    // so an ellipsis would have made 1,153 of them, 60%, read identically in
-    // the one column that is pinned so a reader can tell which row they are on.
+    // The end is what tells these rows apart: an ellipsis cut to a fixed length
+    // would make many of the paths read identically, in the one column that is
+    // pinned so a reader can tell which row they are on.
     for (const prelude of [
       '.preview .table-scroll th:first-child',
       '.preview .table-scroll td:first-child',
@@ -173,11 +152,10 @@ describe('the preview tables', () => {
       expect(declared(prelude, 'overflow-wrap'), prelude).toEqual(['anywhere'])
       expect(declared(prelude, 'text-overflow'), prelude).toEqual([])
       // **And a floor, because wrapping without one hides the path just as
-      // well.** The auto table gave this column 38px at 390 — three
-      // characters — and a 67-character path wrapped into that stood 933px
-      // tall, taller than the viewport, over a 161,451px table. 10rem is
-      // where the median row stops improving (933 -> 93 -> 72, then 72 at
-      // 12 and 14rem) while the box's own scroll keeps growing.
+      // well.** The auto table would give this column about three characters
+      // at 390px, and a long path wrapped into that would stand taller than the
+      // viewport. 10rem is where that stops improving, while the box's own
+      // scroll keeps growing.
       expect(declared(prelude, 'min-width'), prelude).toEqual(['10rem'])
     }
   })

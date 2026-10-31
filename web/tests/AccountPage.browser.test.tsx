@@ -12,8 +12,8 @@ import * as usersApi from '../src/users'
 
 /**
  * The account page under real keys. A radio group chooses on an arrow key as it
- * does on a click, so a key pressed on "Only these" reached "Every library"
- * and, until O195, lifted the account's limit unasked.
+ * does on a click, so a key pressed on "Only these" would reach "Every library"
+ * and lift the account's limit unasked (O195).
  */
 
 vi.mock('../src/users', async (importOriginal) => ({

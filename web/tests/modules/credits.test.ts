@@ -34,8 +34,7 @@ describe('creditSlotsIn', () => {
   it('converts page indices to every slot that page presents', () => {
     // Page 1 is a spread, so skipping it must skip both halves — skipping one
     // would leave the reader on half a credits card. Both halves carry the
-    // same `page`, which is why filtering on `page` gets this for free rather
-    // than needing the spread list the old `Pagination` asked for.
+    // same `page`, which is why filtering on `page` gets this for free.
     expect(creditSlotsIn(spreadAt1, [1])).toEqual([1, 2])
   })
 
@@ -52,7 +51,7 @@ describe('creditSlotsIn', () => {
   })
 
   it('answers nothing for an empty credits list', () => {
-    // The common case today: no corpus sidecar has a `credits` field at all.
+    // The common case: a sidecar with no `credits` field.
     expect(creditSlotsIn(flat, [])).toEqual([])
   })
 })
@@ -60,7 +59,7 @@ describe('creditSlotsIn', () => {
 describe('skippedApartFrom', () => {
   it('exempts the page the reader is standing on', () => {
     // Taking a credit page from the panel is a deliberate act, and the panel
-    // says so. Before this, the page area drew the volume cover instead.
+    // says so.
     expect([...skippedApartFrom([1, 3], flat, 1)]).toEqual([3])
   })
 
@@ -118,10 +117,9 @@ describe('the module contract', () => {
   // any module's own keys, so a module claiming it would collision-check clean
   // against every other module and then simply never fire. This test presses
   // whatever key the module actually declares — through `intentOf`, against
-  // the real registry — rather than hardcoding the key, so it would have
-  // caught that: it fails red against `c` (yielding `{ kind: 'correct' }`
-  // instead) and only goes green once the module claims a key `intentOf`
-  // hands to its module loop.
+  // the real registry — rather than hardcoding the key. It fails for `c`
+  // (yielding `{ kind: 'correct' }` instead) and passes only once the module
+  // claims a key `intentOf` hands to its module loop.
   it('reaches the panel intent through intentOf, against the real registry', () => {
     const key = creditsModule.keys?.[0]?.key
     expect(key).toBeDefined()

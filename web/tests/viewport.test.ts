@@ -158,7 +158,7 @@ describe('zoomAt', () => {
   // Off a corner, the clamp's slide actually moves the rect, and the anchor
   // gives way with it: the point at fraction 0.5 of the old rect on both
   // axes is at fraction 0.75 of the new one, not 0.5. Pins the caveat the
-  // doc comment now states, rather than leaving it only described.
+  // doc comment states, rather than leaving it only described.
   it('lets the anchor slide when a zoom-out forces the clamp to move the rect', () => {
     const rect = { x: 0.7, y: 0.7, w: 0.3, h: 0.3 }
     const at = { x: 0.85, y: 0.85 }
@@ -178,11 +178,11 @@ describe('zoomAt', () => {
     expect(afterFraction.fy).toBeCloseTo(0.75, 10)
   })
 
-  // The ceiling is a third, distinct behaviour from the floor case above and
-  // the edge-slide case below: reaching the whole group's extent on an axis
-  // resets that axis to {start: 0, size: 1} unconditionally (`clampRect`),
-  // discarding the solved origin rather than sliding it. An ordinary
-  // zoom-out, not a corner: rect.w / by = 0.9 / 0.5 = 1.8, capped to 1.
+  // The ceiling is a third, distinct behaviour from the floor and edge-slide
+  // cases above: reaching the whole group's extent on an axis resets that
+  // axis to {start: 0, size: 1} unconditionally (`clampRect`), discarding the
+  // solved origin rather than sliding it. An ordinary zoom-out, not a corner:
+  // rect.w / by = 0.9 / 0.5 = 1.8, capped to 1.
   it('gives way for the anchor when a zoom-out hits the whole-group ceiling', () => {
     const rect = { x: 0.1, y: 0.1, w: 0.9, h: 0.9 }
     const at = { x: 0.15, y: 0.15 }
@@ -290,10 +290,10 @@ describe('wheelBy', () => {
     expect(wheelBy(wheel(3, 1), STEP)).toBeCloseTo(1 / STEP, 12)
   })
 
-  // The defect this replaced: `deltaY < 0 ? step : 1 / step` gave a full step
-  // to each of these, so the fifteen a trackpad flick emits multiplied to
-  // 1.15 ** 15 ≈ 8.14 and pinned the view at the default `maxScale` of 8. The
-  // whole gesture is one notch's worth of pixels, so it is one step.
+  // The fifteen events of a trackpad flick are together one notch's worth of
+  // pixels, so the whole gesture is one step rather than a full step each,
+  // which would multiply to 1.15 ** 15 ≈ 8.14 and pin the view at the default
+  // `maxScale` of 8.
   it('spreads a gesture over its events rather than giving each a full step', () => {
     const flick = Array.from({ length: 15 }, () =>
       wheelBy(wheel(-100 / 15), STEP),
@@ -504,9 +504,8 @@ describe('mapRect', () => {
   // The other direction from the test above: source is the narrower (tall)
   // frame, target is the wider (square) one, so the rect now enters the
   // frame that carries the margin and shrinks horizontally instead of growing.
-  // Only the round-trip test below exercised this direction before — a
-  // symmetric error there would cancel, which is precisely how an earlier
-  // transposition bug survived its own round-trip test.
+  // The round-trip test below cannot pin this direction, since a symmetric
+  // error there would cancel.
   it('pillarbox shrinks a rect entering the frame that carries the margin', () => {
     const after = mapRect(rect, tall, square, 'pillarbox')
     expect(after).toEqual({ x: 0.325, y: 0.25, w: 0.35, h: 0.5 })
@@ -526,15 +525,14 @@ describe('mapRect', () => {
     expect(back.h).toBeCloseTo(rect.h, 10)
   })
 
-  // Which axis moves, pinned on its own and swept both ways round. The three
-  // tests above name a direction each, and the round-trip above pins none: an
-  // involution cancels a transposed axis exactly as cleanly as a correct one,
-  // which is how this function shipped `Math.max` for `Math.min` with a green
-  // suite. So the vertical is asserted *identical* rather than close —
-  // `content` is the narrower of the two aspects, so `ch` is 1 for both frames
-  // and `axis` hands `y` and `h` straight back — and the horizontal scale is
-  // asserted to be `aFrom / aTo`, which is the relation `docs/notes.md` found
-  // in twelve corpus volumes of twelve.
+  // Which axis moves, pinned on its own and swept both ways round. The widen
+  // and shrink tests above name a direction each, and the round-trip above
+  // pins none: an involution cancels a transposed axis exactly as cleanly as
+  // a correct one.
+  // So the vertical is asserted *identical* rather than close — `content` is
+  // the narrower of the two aspects, so `ch` is 1 for both frames and `axis`
+  // hands `y` and `h` straight back — and the horizontal scale is asserted to
+  // be `aFrom / aTo`, which is the relation `docs/notes.md` measures.
   it('pillarbox scales the horizontal by the aspect ratio and the vertical not at all', () => {
     // Two hand-picked shapes, then Kaguya's own pair: `docs/notes.md` measures
     // its raw at 0.703 against the English 0.667. Off-centre on both axes,
@@ -601,9 +599,7 @@ describe('mapRect frames whose aspect is not finite', () => {
   // underflows and divides its way back to NaN. Not reachable from a real
   // naturalWidth/naturalHeight, which are bounded integers — pinned because
   // the doc comment claims `ch` is identically 1, and a claim that absolute
-  // deserves its boundary written down. Which of the two hides behind a
-  // healthy partner and which poisons `content` directly swapped over when
-  // `content` became the `min` of the two aspects; both still arrive here.
+  // deserves its boundary written down.
   it('leaves the rect alone when a frame overflows to an infinite aspect', () => {
     expect(mapRect(rect, { w: 1e308, h: 1e-10 }, tall, 'pillarbox')).toEqual(
       rect,
@@ -789,9 +785,9 @@ describe('mapView', () => {
 describe('mapView across a joined spread', () => {
   const AREA = 2
   // Two 700×1000 pages printed as one image. Twice the width of its
-  // neighbours, which is not a convenience: `docs/notes.md` records every one
-  // of the corpus's 28 spreads at exactly that, and it is why a half is a flag
-  // rather than a stored geometry.
+  // neighbours, which is not a convenience: `docs/notes.md` records the
+  // corpus's spreads at exactly that, and it is why a half is a flag rather
+  // than a stored geometry.
   const SPREAD: Frame = { w: 1400, h: 1000 }
   // One of those pages, as the edition that splits the spread prints it.
   const PAGE: Frame = { w: 700, h: 1000 }
@@ -817,7 +813,7 @@ describe('mapView across a joined spread', () => {
   // of this file to see would still be drift on every ordinary swap, which is
   // the only thing an `if` would have bought.
   //
-  // Deliberately all-dyadic, so the assertion is about the new steps rather
+  // Deliberately all-dyadic, so the assertion is about the half steps rather
   // than about binary fractions: a square page paints at `{x: 0.25, w: 0.5}`
   // in a 2:1 area, and 0.375 and 0.25 divide by 0.5 without remainder.
   it('leaves a slot with no half exactly where it was, to the bit', () => {
@@ -829,10 +825,8 @@ describe('mapView across a joined spread', () => {
     }
   })
 
-  // The defect this closes, in the direction the corpus reaches it: `en-mono`
-  // joins Go-Toubun v01's page 4 where the raw prints two pages. A reader
-  // zoomed into a balloon on one half of the joined image presses the swap and
-  // must land on the page that half *is*.
+  // A reader zoomed into a balloon on one half of a joined spread presses the
+  // swap and must land on the page that half *is*.
   //
   // The last assertion is what makes this a test of which half rather than of
   // whether the rect landed on the page at all — mapping onto the wrong one is
@@ -877,10 +871,9 @@ describe('mapView across a joined spread', () => {
   // is the whole of the single page's centre; the answer is the centre of one
   // half of the spread, and the two halves are a third of the group apart.
   //
-  // The third assertion is the defect itself, kept as a test rather than as a
-  // memory: with no half the spread's extra width reads as margin at both
-  // edges, and the page's centre maps to the *spread's* centre — the fold
-  // between the two pages rather than the middle of either.
+  // The third assertion is the spread with no half: its extra width reads as
+  // margin at both edges, and the page's centre maps to the *spread's* centre —
+  // the fold between the two pages rather than the middle of either.
   it('lands on the half that holds the content, not on the fold', () => {
     const centred = { x: 0.45, y: 0.45, w: 0.1, h: 0.1 }
     const right = mapView(
@@ -934,11 +927,10 @@ describe('mapView across a joined spread', () => {
     expect(left.x + left.w / 2).toBeCloseTo(0.325, 12)
   })
 
-  // The second half of the fix, and the one the half boxes alone do not give.
   // `mapRect` reconciles two *aspects*, and a joined spread's is twice its
   // half's — so handed the whole image it would read that doubling as margin
-  // the wider side carries at its edges and correct for something that is not
-  // there.
+  // the wider side carries at its edges and correct for something that is
+  // not there.
   //
   // Here the outgoing half is 1000×1000 and the incoming page is 1000×1000, so
   // there is nothing for `pillarbox` to correct and it must agree with
@@ -976,9 +968,8 @@ describe('mapView across a joined spread', () => {
   //
   // A `half` beside `'first'`/`'second'` is in the sweep although `pairing.ts`
   // draws a joined spread as one wide image in every mode, so that combination
-  // does not arise today. It is here because `Drawn`'s doc claims the two are
-  // independent boxes in different spaces, and an untested claim about
-  // independence is the kind this file has been wrong about before.
+  // does not arise. It is here because `Drawn`'s doc claims the two are
+  // independent boxes in different spaces.
   it('still comes back with w === h when a half is involved', () => {
     for (const area of [0.75, 1, 2, 3]) {
       for (const from of [
@@ -1005,9 +996,8 @@ describe('mapView across a joined spread', () => {
 })
 
 describe('mapView across a two-page seam', () => {
-  // Every other `mapView` test runs `cell: 'only'`, where the hug is `centre`
-  // and a hugged page and a centred one are the same box — which is exactly
-  // why a swap measuring both as centred went unnoticed until a review.
+  // Every other `mapView` test leaves `hug` unset, so it is `centre`, where a
+  // hugged page and a centred one are the same box.
   const frame = { w: 700, h: 1000 }
   const area = 2 // a landscape page area, so each cell is letterboxed
 

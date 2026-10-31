@@ -2,9 +2,8 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach } from 'vitest'
 
-// A root and a host per mount, every one torn down after each test.
-// Extracted from `PageView.browser.test.tsx`, which had this inline, so the
-// `jsdom` and `browser` projects mount identically. Deliberately not
+// A root and a host per mount, every one torn down after each test. Shared,
+// so the `jsdom` and `browser` projects mount identically. Deliberately not
 // `@testing-library/react`: this repository's rule is that a dev-only
 // dependency needs a stated reason, and a second mounting API earns nothing
 // over the lines already working here.
@@ -43,10 +42,10 @@ export function mount(ui: React.ReactNode): HTMLElement {
  * instance React keeps mounted across it. A second `mount()` call would
  * remount a fresh instance instead, which is a different thing to test.
  *
- * Throws rather than no-opping when nothing is mounted. The optional-chained
- * form this replaced would silently do nothing, and a test whose `rerender`
- * did nothing still passes every assertion about what was on screen *before*
- * it — so the failure mode is a green test that checked nothing.
+ * Throws rather than no-opping when nothing is mounted. An optional-chained
+ * call would silently do nothing, and a test whose `rerender` did nothing
+ * still passes every assertion about what was on screen *before* it — so the
+ * failure mode is a green test that checked nothing.
  */
 export function rerender(ui: React.ReactNode): void {
   if (!root) {

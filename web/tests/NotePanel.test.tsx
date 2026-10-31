@@ -6,12 +6,11 @@ import { COLOUR_NAMES, DEFAULT_COLOUR } from '../src/palette'
 import { mount, rerender } from './support/mount'
 
 /**
- * `NotePanel` in `jsdom`: what it renders for a draft and for the review
- * list, and what it does with the events a reader triggers — clicks, and
- * typing in the body textarea. `notes.ts` (99.13%) already covers the data
- * this component is handed; nothing here re-derives `notesHere`,
- * `reviewList` or `nextColour` — only what `NotePanel` itself does with the
- * result.
+ * `NotePanel` in `jsdom`: what it renders for a draft and for the review list,
+ * and what it does with the events a reader triggers — clicks, and typing in
+ * the body textarea. `notes.ts` already covers the data this component is
+ * handed; nothing here re-derives `notesHere`, `reviewList` or `nextColour` —
+ * only what `NotePanel` itself does with the result.
  */
 
 function note(overrides: Partial<Note> = {}): Note {
@@ -284,8 +283,8 @@ describe('NotePanel, editing', () => {
 
   it('no longer tells a reader to press a key they may not have', () => {
     const host = mount(<NotePanel {...baseProps()} />)
-    // O137: `esc` and `click away` are both absent on a phone, and the
-    // status line named them as the way out.
+    // O137: `esc` and `click away` are both absent on a phone, so a status line
+    // naming them would offer no way out.
     expect(host.textContent).not.toContain('esc')
     expect(host.textContent).toContain('saved')
   })

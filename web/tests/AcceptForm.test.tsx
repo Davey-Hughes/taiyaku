@@ -305,11 +305,10 @@ describe('AcceptForm', () => {
   })
 
   it('says the opposite where the rule is tied to no root at all', async () => {
-    // `Rule.root_id` is nullable and `accept_with` takes a NULL one today, so
-    // a rule written by hand can arrive unscoped. The line above would be a
-    // false promise about it, and this is the one field on the form whose
-    // value is never editable here — the sentence is the only thing that can
-    // change.
+    // `Rule.root_id` is nullable and `accept_with` takes a NULL one, so a rule
+    // written by hand can arrive unscoped. The line above would be a false
+    // promise about it, and this is the one field on the form whose value is
+    // never editable here — the sentence is the only thing that can change.
     const { host } = await ready({ root_id: null })
 
     expect(control(host, '.scope').textContent).toMatch(/every one/i)
@@ -456,7 +455,7 @@ describe('AcceptForm', () => {
 
   it('says how many more a widened pattern resolves', async () => {
     // The reason the pattern is editable at all: C3 §3 chose a list over a
-    // triage loop so one widened rule can answer the questions 37 rows are
+    // triage loop so one widened rule can answer the questions the rows are
     // asking, and "resolves 6 more" is that turned into a preview rather
     // than a surprise.
     vi.mocked(curation.resolution).mockResolvedValue(
@@ -571,14 +570,13 @@ describe('AcceptForm', () => {
   })
 
   it('says what the accept also does, inside what describes the button', async () => {
-    // **O73 named this line until the fold that closes it shipped.** The
-    // consequence sentence says a new edition is added; what it cannot say
-    // inside "Accepting will:" is that the works the material comes from are
-    // folded away on the next scan, carrying a reader's own position, notes
-    // and marked pages onto the new edition. That is a real consequence of
-    // pressing this control, so it goes inside the described block rather
-    // than somewhere else on the panel — a screen reader on Accept has to
-    // reach it.
+    // **What the accept also does — O73.** The consequence sentence says a new
+    // edition is added; what it cannot say inside "Accepting will:" is that the
+    // works the material comes from are folded away on the next scan, carrying
+    // a reader's own position, notes and marked pages onto the new edition.
+    // That is a real consequence of pressing this control, so it goes inside
+    // the described block rather than somewhere else on the panel — a screen
+    // reader on Accept has to reach it.
     const { host } = await ready()
 
     const why = control(host, '.why')
@@ -594,8 +592,7 @@ describe('AcceptForm', () => {
     // A screen reader on Accept reads this block and nothing else, and the
     // three things the fold does *not* carry — the marks the surviving
     // edition already holds, the older of two places in one edition, which
-    // of two alignments of one pair survives (O76, where a hand-corrected
-    // alignment used to be among what the `DELETE` took), and the tags and
+    // of two alignments of one pair survives (O76), and the tags and
     // reading-list places it does take — are the parts a person deciding
     // cannot find out any other way. Asserted here rather than only in
     // `curation.test.ts` because that file pins the string and this one pins
@@ -706,19 +703,18 @@ describe('AcceptForm', () => {
   })
 
   it('discards the sweep already in flight when the pattern is widened under it', async () => {
-    // The other half of the window above, and the one that was not covered:
-    // the first sweep has been *sent* and has not answered yet. The mount
-    // sweep goes out a quarter-second after the panel opens, so this is the
-    // ordinary timeline rather than a contrived one — widen at t=300 and the
-    // narrow rule's answer arrives at t=400 for a pattern nobody is looking
-    // at any more. Clearing `preview` does not touch it: only bumping the
-    // sequence does, which is why the effect does both.
+    // The other half of the window above: the first sweep has been *sent* and
+    // has not answered yet. The mount sweep goes out a quarter-second after the
+    // panel opens, so this is the ordinary timeline rather than a contrived one
+    // — widen at t=300 and the narrow rule's answer arrives at t=400 for a
+    // pattern nobody is looking at any more. Clearing `preview` does not touch
+    // it: only bumping the sequence does, which is why the effect does both.
     //
     // What this refuses is the inverse of C3 §3's headline case. A widening
     // whose extra matches are the subjects of other open proposals is
-    // `also_resolves`, not `collateral` — no refusal fires, the server
-    // accepts it, and the sentence approved said "move 14 works" for a rule
-    // that moves 54 and closes six other proposals.
+    // `also_resolves`, not `collateral` — no refusal fires, the server accepts
+    // it, and the sentence approved said "move 14 works" for a rule that moves
+    // 54 and closes six other proposals.
     let answerNarrow: (r: curation.Resolution) => void = () => {}
     vi.mocked(curation.resolution)
       .mockImplementationOnce(
@@ -1006,7 +1002,7 @@ describe('AcceptForm', () => {
   })
 
   it('gives its heading its words as its aria-label — O182', async () => {
-    // `.lab` draws it in capitals, and Chromium's tree named it in them.
+    // `.lab` draws it in capitals, and Chromium's tree would name it in them.
     const { host } = await ready()
     const heading = host.querySelector('.accept-form > h2.lab')
     expect(heading?.textContent).toBe('The rule this writes')

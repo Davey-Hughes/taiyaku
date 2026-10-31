@@ -24,9 +24,9 @@ export interface CorrectionBannerProps {
  * Two states, and the second is the whole reason this is a component worth
  * testing rather than JSX inside `App.tsx`: before a counterpart is picked it
  * is a prompt, and after one is picked it has to say *what is being asserted*
- * and *what that costs* on the same screen, with two buttons whose `disabled`
- * is the only thing standing between a reader and a second concurrent write
- * against one validator.
+ * and *what that costs* on the same screen, with two buttons whose
+ * `disabled` stands between a reader and a second concurrent write against
+ * one validator.
  *
  * `role="status"` rather than `alert`: this appears because the reader pressed
  * `c`, so it is not an interruption, and an assertive live region would make a
