@@ -114,13 +114,11 @@ fn the_primary_title_is_distinguishable_from_the_others() {
     assert_eq!(primary, vec!["五等分の花嫁"]);
 }
 
-/// **Whole-branch review 3, Minor 2.** `SeriesInfo::is_empty` is an `&&` with
-/// two data-losing consequences behind it, and every series fixture here
-/// carried a `reading`, so the ordinary shape — titles and no reading
-/// direction, which is what a series gets when nobody has stated a convention
-/// for it — had no test at all. Under `&&` → `||` that shape reads as empty,
-/// which (a) drops the whole `series` block out of every exported
-/// `taiyaku.library.json` via `skip_serializing_if` and (b) makes
+/// `SeriesInfo::is_empty` is an `&&` with two data-losing consequences behind
+/// it. The ordinary shape — titles and no reading direction, which is what a
+/// series gets when nobody has stated a convention for it — would, under `&&` →
+/// `||`, read as empty, which (a) drops the whole `series` block out of every
+/// exported `taiyaku.library.json` via `skip_serializing_if` and (b) makes
 /// `LibraryDoc::is_empty` answer `true`, which is what `migrate` reads to
 /// decide whether a sibling document is worth applying and what `export::work`
 /// reads to decide whether the document is worth writing at all.
@@ -189,10 +187,8 @@ fn a_series_with_titles_and_no_reading_direction_is_not_empty() {
     );
 }
 
-/// **Whole-branch review 3, Minor 3.** `updated` is a documented field of the
-/// interchange format and nothing asserted it was a timestamp: `now_rfc3339`
-/// could return `"xyzzy"` and all 945 tests passed. The shape is what is
-/// checked — `strftime`'s own format string is the implementation, so
+/// `updated` is a documented field of the interchange format. The shape is what
+/// is checked — `strftime`'s own format string is the implementation, so
 /// re-asserting it literally would only restate the code — plus a year in a
 /// range no clock error and no placeholder falls into.
 #[test]
@@ -229,12 +225,9 @@ fn of_stamps_updated_with_an_rfc3339_timestamp() {
     );
 }
 
-/// **Whole-branch review 3, Minor 4.** `SeriesTitle.primary`'s
-/// `skip_serializing_if = "is_false"` had no test, so `is_false` returning
-/// `false` outright — writing `"primary": false` onto every alt title in the
-/// document — passed. The point of the skip is that this file is meant to be
-/// hand-edited and diffed in git: one flag on the title that carries it, not
-/// a `false` on every other line.
+/// `SeriesTitle.primary`'s `skip_serializing_if = "is_false"`: the point of the
+/// skip is that this file is meant to be hand-edited and diffed in git — one
+/// flag on the title that carries it, not a `false` on every other line.
 #[test]
 fn only_the_primary_title_carries_the_flag_in_the_document() {
     let doc = LibraryDoc::from_json(FIXTURE).expect("parses");
@@ -430,8 +423,8 @@ fn applying_the_same_document_twice_is_idempotent() {
     assert_eq!(external_count, 1, "external ids must not accumulate");
 }
 
-/// Every tag currently on this work, in name order — the payload the two
-/// wholesale-replacement tests below assert on, rather than a count, which
+/// Every tag currently on this work, in name order — the payload the
+/// wholesale-replacement test below asserts on, rather than a count, which
 /// cannot tell "replaced" from "added and something else removed".
 fn tags_of(conn: &Connection, work_id: i64) -> Vec<String> {
     let mut stmt = conn
@@ -450,8 +443,7 @@ fn tags_of(conn: &Connection, work_id: i64) -> Vec<String> {
 /// comment says the tables this document owns outright are "replaced
 /// wholesale: metadata this document does not mention is cleared, not left
 /// behind from an earlier one" — and for `work_tag` that is one
-/// `DELETE FROM work_tag` in `apply_tags`, which could be deleted with the
-/// whole suite still green (whole-branch review 2, I6).
+/// `DELETE FROM work_tag` in `apply_tags`.
 ///
 /// A second document naming a *different* tag rather than none, so this
 /// separates "replaced" from "cleared and then coincidentally empty": the
@@ -487,8 +479,7 @@ fn apply_replaces_the_tag_list_rather_than_adding_to_it() {
 }
 
 /// The same claim for `member.chapter_declared`/`chapter_source`, cleared by
-/// `apply_members`' opening `UPDATE … SET chapter_declared = NULL` — also
-/// deletable with the suite green (review 2, I6).
+/// `apply_members`' opening `UPDATE … SET chapter_declared = NULL`.
 ///
 /// Two editions, and the second document moves the chapter number from one
 /// member to the other, so this pins the clear as *work-wide* rather than
@@ -535,7 +526,7 @@ fn apply_clears_a_member_chapter_the_document_no_longer_names() {
     );
 }
 
-/// The hazard this task names: `series_title`'s primary key is the composite
+/// The hazard: `series_title`'s primary key is the composite
 /// `(series_id, title)`, not a rowid alias, so `INSERT OR REPLACE` against it
 /// resolves a conflict by deleting and re-inserting with a fresh rowid. That
 /// implicit delete only reaches the trigger keeping `series_fts` current when
@@ -584,20 +575,15 @@ fn series_rows(conn: &Connection, title: &str) -> (i64, i64, i64) {
     )
 }
 
-/// **Whole-branch review 3, Minor 14.** Clearing a work's series used to be a
-/// single `UPDATE work SET series_id = NULL`, which left the `series` row, its
-/// `series_title` rows and their `series_fts` entries belonging to nobody.
-/// Search (spec C1) reads `series_fts`, so the shelf kept answering queries
-/// with a series no work is under — and every apply that named a different
-/// series left another one.
+/// Search (spec C1) reads `series_fts`, so a series no work is under would
+/// keep answering queries.
 ///
 /// The `series_fts` hit is the assertion that matters: `series_title` cascades
 /// from `series` on `ON DELETE CASCADE`, and that cascaded delete reaches the
 /// `series_title_ad` trigger on its own — SQLite fires a table's ordinary
 /// `DELETE` triggers for a foreign-key cascade the same as for an explicit
 /// `DELETE` against it, with no pragma involved. **This is not the test that
-/// would notice `recursive_triggers` going away** — confirmed by running it
-/// with that pragma turned off, which leaves it passing; the tests that would
+/// would notice `recursive_triggers` going away**: the tests that would
 /// notice are `reapplying_the_same_series_titles_does_not_leave_phantom_fts_rows`
 /// and `replacing_a_series_title_leaves_no_phantom_in_the_search_index`
 /// (`lib.rs`'s own comment on the pragma explains why: it gates the
@@ -725,14 +711,9 @@ fn renaming_a_works_only_series_does_not_leave_the_old_one_behind() {
     assert_eq!(found, 1, "the new title is the one that answers now");
 }
 
-/// **Whole-branch review C1, first shape.** Before [`set_series_titles`]
-/// existed, a PATCH that corrected a series' only title with nothing left to
-/// match reached `apply_series` the ordinary way: no `series_title` row
-/// shared any text with the new title, so a brand-new `series` row was
-/// minted, and [`forget_orphaned_series`] then deleted the one the caller
-/// actually meant to edit. [`set_series_titles`] writes the id already in
-/// hand instead of resolving one by text, so this is the one case it exists
-/// to rule out.
+/// A PATCH that corrects a series' only title with nothing left to match:
+/// [`set_series_titles`] writes the id already in hand instead of resolving one
+/// by text.
 #[test]
 fn set_series_titles_keeps_the_same_series_id_even_when_no_old_title_matches() {
     let library = Library::open_in_memory().expect("library");
@@ -775,16 +756,9 @@ fn set_series_titles_keeps_the_same_series_id_even_when_no_old_title_matches() {
     assert_eq!(found, 1, "the corrected title is the one that answers now");
 }
 
-/// **Whole-branch review C1, second shape.** Before [`set_series_titles`]
-/// existed, sending the full title array with one entry corrected reached
-/// `apply_series`'s *matched* branch instead — the unchanged native title
-/// still matched by text, so the series was not moved, but
-/// `INSERT OR REPLACE series_title` only ever adds or overwrites a row, never
-/// removes one absent from the new set. The corrected romaji landed *beside*
-/// the wrong one rather than instead of it, and `series_fts` answered on both
-/// forever. [`set_series_titles`] deletes the whole title set for this id
-/// before writing the new one, so a spelling the new set drops is actually
-/// gone.
+/// Sending the full title array with one entry corrected: [`set_series_titles`]
+/// deletes the whole title set for this id before writing the new one, so a
+/// spelling the new set drops is actually gone.
 #[test]
 fn set_series_titles_removes_a_spelling_the_new_set_drops() {
     let library = Library::open_in_memory().expect("library");
@@ -878,13 +852,11 @@ fn set_series_titles_refuses_an_empty_title_list() {
     );
 }
 
-/// **Minor, delta review of the fix waves (`f133b3e..910b15a`).**
-/// `browse.rs`'s own `MAX(CASE WHEN st.is_primary = 1 THEN st.title END)`
-/// picks whichever of more than one `is_primary` row sorts lexically greater — C1's second-shape symptom (a corrected spelling
-/// landing beside, not instead of, the one it replaced) by a different door.
-/// Not a regression: nothing produced this state before `set_series_titles`
-/// existed. But it is the one writer that could, so it is the natural place
-/// to refuse it.
+/// `browse.rs`'s own `MAX(CASE WHEN st.is_primary = 1 THEN st.title END)` picks
+/// whichever of more than one `is_primary` row sorts lexically greater — the
+/// symptom of a corrected spelling landing beside, not instead of, the one it
+/// replaced, by a different door. `set_series_titles` is the natural place to
+/// refuse it.
 #[test]
 fn set_series_titles_refuses_more_than_one_primary_title() {
     let library = Library::open_in_memory().expect("library");
@@ -924,16 +896,8 @@ fn set_series_titles_refuses_more_than_one_primary_title() {
     );
 }
 
-/// **Half two of the Critical the delta review of the fix waves
-/// (`f133b3e..910b15a`) found.** Before this refusal existed,
-/// [`set_series_titles`]'s own plain `INSERT` could put the same title text
-/// on two different series at once. Once that state existed,
-/// [`find_series_by_title`]'s `SELECT`, un-`LIMIT`ed then, could answer
-/// either series for that text, and a caller resolving
-/// through it — `apply_series`, reached from `patch_series`'s own per-work
-/// loop before it called [`apply_with_series_id`] instead — could migrate
-/// every work in a series onto the wrong one and orphan the series the
-/// request actually named.
+/// [`set_series_titles`]'s refusal; [`apply_with_series_id`]'s doc has the
+/// hazard it guards against.
 #[test]
 fn set_series_titles_refuses_a_title_text_another_series_already_holds() {
     let library = Library::open_in_memory().expect("library");
@@ -1019,16 +983,15 @@ fn set_series_titles_refuses_a_title_text_another_series_already_holds() {
     );
 }
 
-/// **Half one of the Critical the delta review of the fix waves
-/// (`f133b3e..910b15a`) found — proven independently of half two's refusal
-/// above.** This drives [`apply_with_series_id`] directly, bypassing
+/// This drives [`apply_with_series_id`] directly, bypassing
 /// [`set_series_titles`] entirely, so the collision exists in the database
-/// regardless of whether the refusal above is doing its job: the two halves
-/// must each hold on their own, and mutating away either one alone must fail
+/// regardless of whether the refusal above is doing its job: this function
+/// and that refusal must each hold on their own, and mutating away either one
+/// alone must fail
 /// a test. `metadata::tests::patching_a_series_title_to_text_another_series_already_holds_does_not_delete_it`
 /// (`taiyaku-serve`) is the route-level reproduction and cannot serve this
-/// role, because the refusal below aborts that request before its own loop
-/// ever reaches `apply_with_series_id` at all.
+/// role, because the refusal aborts that request before its own loop ever
+/// reaches `apply_with_series_id` at all.
 #[test]
 fn apply_with_series_id_does_not_resolve_by_title_even_when_the_text_collides() {
     let library = Library::open_in_memory().expect("library");
@@ -1103,18 +1066,17 @@ fn apply_with_series_id_does_not_resolve_by_title_even_when_the_text_collides() 
 
 /// **A no-op `apply_with_series_id` still passes the test above.** That test
 /// only reads back `work_a`'s series membership, which a version of this
-/// function that wrote nothing at all would also leave untouched — so it
-/// proves the refusal to resolve by title without proving the function
-/// applies the document it was handed. This drives it with `series_id: None`
-/// — the shape [`crate::import::sidecar`]'s own callers use least, but the
-/// one this function's own doc comment says still writes everything but
-/// series identity and the reading direction — and reads back the same
-/// fields `applying_the_fixture_writes_series_editions_members_tags_and_external`
+/// function that wrote nothing at all would also leave untouched — so it proves
+/// the refusal to resolve by title without proving the function applies the
+/// document it was handed. This drives it with `series_id: None` — the shape
+/// this function's own doc comment says still writes everything but series
+/// identity and the reading direction — and reads back the same fields
+/// `applying_the_fixture_writes_series_editions_members_tags_and_external`
 /// checks for [`apply`]: `work.volume`, `edition.language`/`kind`,
 /// `member.chapter_declared`/`chapter_source`, and `work_tag`. `doc.external`
-/// is cleared first, the same way the collision test above clears it,
-/// because an external id with no series to attach to is refused rather than
-/// silently dropped, and this test passes `None`.
+/// is cleared first, the same way the collision test above clears it, because
+/// an external id with no series to attach to is refused rather than silently
+/// dropped, and this test passes `None`.
 #[test]
 fn apply_with_series_id_writes_editions_members_and_tags_like_apply_does() {
     let library = Library::open_in_memory().expect("library");
@@ -1474,9 +1436,7 @@ fn an_invalid_stored_reading_direction_is_refused() {
     .expect("series");
     let series_id = conn.last_insert_rowid();
     conn.execute(
-        // `series_id_hand` too: `of` projects the provenance, not the
-        // effective column (O80, migration 011), so attaching by `series_id`
-        // alone now projects no series at all and there is nothing to refuse.
+        // `series_id_hand` too (O80, migration 011).
         "UPDATE work SET series_id_hand = ?1, series_id = ?1 WHERE id = ?2",
         params![series_id, work_id],
     )
@@ -1498,15 +1458,13 @@ fn an_invalid_stored_series_title_kind_is_refused() {
         .expect("series");
     let series_id = conn.last_insert_rowid();
     conn.execute(
-        // `series_id_hand` too: `of` projects the provenance, not the
-        // effective column (O80, migration 011), so attaching by `series_id`
-        // alone now projects no series at all and there is nothing to refuse.
+        // `series_id_hand` too (O80, migration 011).
         "UPDATE work SET series_id_hand = ?1, series_id = ?1 WHERE id = ?2",
         params![series_id, work_id],
     )
     .expect("attach");
     conn.execute(
-        // `hand = 1`: `of` projects only a person's titles now (O80).
+        // `hand = 1`: `of` projects only a person's titles (O80).
         "INSERT INTO series_title (series_id, title, kind, hand)
          VALUES (?1, 'T', 'mystery', 1)",
         params![series_id],
@@ -1585,16 +1543,9 @@ fn applying_to_a_work_id_that_does_not_exist_is_refused() {
     let refused = apply(&conn, 404, &doc)
         .expect_err("apply must refuse a work_id that names no work, not silently no-op");
 
-    // **The row-count guard's own message, not merely an `Err`.** This test
-    // used to assert `result.is_err()`, and passed with the guard deleted:
-    // execution ran on and failed three calls further down, in
-    // `apply_editions`, with `work 404 has no edition named `raw-mono`;
-    // import its sidecar before applying metadata that names it`. That is a
-    // different refusal about a different thing — it depends on this
-    // fixture naming an edition, so a document that named none would have
-    // gone all the way through, writing a series and tags against a work
-    // that does not exist. Whole-branch review 2, I5. Verified by deleting
-    // the guard again: this now goes red.
+    // **The row-count guard's own message, not merely an `Err`.** Without the
+    // guard this fixture still fails later, with a different message, so
+    // asserting `is_err()` alone would not show the guard is there.
     assert!(
         refused.contains("work 404 does not exist"),
         "the refusal must be the row-count guard's, not a later failure that \
@@ -1609,11 +1560,9 @@ fn applying_to_a_work_id_that_does_not_exist_is_refused() {
 /// credit list is on a book's own colophon: the author is named first because
 /// somebody decided so, not because the name sorts first.
 ///
-/// Every previous fixture in this module carries exactly one credit per
-/// edition, so reversing that `ORDER BY` changed nothing anywhere (whole-branch
-/// review 2, Minor 9). Three credits here, and deliberately adversarial:
-/// the names descend alphabetically and the roles are in neither the document
-/// order nor `CreditRole`'s declaration order, so `ORDER BY person.name`,
+/// Three credits here, and deliberately adversarial: the names descend
+/// alphabetically and the roles are in neither the document order nor
+/// `CreditRole`'s declaration order, so `ORDER BY person.name`,
 /// `ORDER BY credit.role` and `ORDER BY credit.id DESC` each produce a
 /// different list from the one asserted.
 #[test]
@@ -1652,12 +1601,12 @@ fn a_multi_credit_edition_keeps_the_order_the_document_gave() {
     );
 }
 
-/// **The review of review 3's Minor fixes, M4.** `DELETE FROM series` cascades
-/// into four tables this document does not own, and one of them is not derivable from
-/// anything: `collection_item`. A collection spans works, has no sidecar to sit
-/// beside, and is covered by backup rather than by export (this module's own
-/// doc comment says so) — so a shelf dropped out of a reading list because the
-/// last *work* left the series is a loss no sibling document can restore.
+/// `DELETE FROM series` cascades into tables this document does not own, and
+/// one of them is not derivable from anything: `collection_item`. A collection
+/// spans works, has no sidecar to sit beside, and is covered by backup rather
+/// than by export (this module's own doc comment says so) — so a shelf dropped
+/// out of a reading list because the last *work* left the series is a loss no
+/// sibling document can restore.
 ///
 /// Nothing writes `collection_item` today, which is why this test writes the
 /// row by hand: the guard has to be right before the writer exists, because
@@ -1808,11 +1757,9 @@ fn clearing_a_hand_set_title_restores_the_one_derivation_minted() {
     );
 }
 
-/// **Step 6c.** `apply_editions`'s blanket clear resets `label_hand` for every
-/// edition but used to leave `label` alone, so an edition *dropped from the
-/// document entirely* — the key absent, a different statement from
-/// `label: None` that takes the blanket-clear branch rather than the per-key
-/// one — kept its withdrawn hand label forever while `label_hand` read NULL.
+/// An edition *dropped from the document entirely* — the key absent, a
+/// different statement from `label: None` — has its derived label restored, and
+/// `label_hand` cleared.
 #[test]
 fn dropping_an_edition_from_the_document_restores_its_derived_label() {
     let (conn, work_id) = a_work_with_one_edition();
@@ -1843,10 +1790,7 @@ fn dropping_an_edition_from_the_document_restores_its_derived_label() {
         .expect("reading the label");
     // `a_work_with_one_edition`'s sidecar declares this edition's label as
     // `"R"` (`import.rs`'s `Scope::Document` writes the document's own label
-    // into `label_derived` at import time) — not the edition key. The plan's
-    // draft of this test asserted `"en-mono"`, which assumed a scan-derived
-    // label; corrected here to the value this fixture actually mints, since
-    // the fixture predates this test and is shared with others in this file.
+    // into `label_derived` at import time) — not the edition key.
     assert_eq!(
         label, "R",
         "an edition dropped from the document must fall back to its derived \
@@ -1889,14 +1833,10 @@ fn editing_a_title_does_not_move_the_slug() {
     );
 }
 
-/// **`chosen` reports the attachment, and nothing asserted it — O80.**
+/// **`chosen` reports the attachment — O80.**
 ///
 /// The field exists so a document can tell "a person put this work in this
-/// series" from "here are this series' corrected titles". A mutation sweep
-/// deleted `chosen` from `of`'s own `SeriesInfo` expression and the whole
-/// suite still passed: the fact the field was added to carry was never read
-/// back. Found by `scripts/mutants.sh --since main` on the branch that added
-/// it, which is the case that discipline exists for.
+/// series" from "here are this series' corrected titles".
 ///
 /// Both directions, because a constant `true` and a constant `false` are each
 /// half right and a single assertion cannot tell them apart.

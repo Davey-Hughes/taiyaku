@@ -1,9 +1,7 @@
 /// The account these tests export and import as.
 ///
-/// A named constant rather than a bare `1` at forty call sites, and
-/// deliberately *not* a constant in `export.rs`: the one that used to live
-/// there answered for every reader in the library, which is what spec A2
-/// §5.1 removed. Here it means "whoever this test is", which is a fixture
+/// A named constant rather than a bare `1`, and deliberately *not* a constant
+/// in `export.rs`: here it means "whoever this test is", which is a fixture
 /// detail rather than a rule.
 const THE_READER: i64 = 1;
 
@@ -13,8 +11,8 @@ use taiyaku_read::test_support::TempDir;
 use super::*;
 use taiyaku_core::{RegionMember, Sidecar, TruthDoc, TruthEdition};
 
-/// A directory unique to one test, removed when the test ends: O117's shared
-/// [`TempDir`], which this file carried its own copy of until then.
+/// A directory unique to one test, removed when the test ends: O117's
+/// shared [`TempDir`].
 fn tempdir() -> TempDir {
     TempDir::new("export")
 }
@@ -37,18 +35,16 @@ fn doc(title: &str, sha256: &str) -> Sidecar {
 ///
 /// The volume is what makes `librarydoc::of` answer a non-empty document, and
 /// so what makes `<stem>.library.json` written rather than absent: a work
-/// nobody has hand-edited has no metadata to snapshot, and export stopped
-/// writing an empty one (review 3, Minor 12). One field is enough and is
-/// honest — "this directory is volume 1" is exactly the kind of decision that
-/// document exists to keep.
+/// nobody has hand-edited has no metadata to snapshot. One field is enough and
+/// is honest — "this directory is volume 1" is exactly the kind of decision
+/// that document exists to keep.
 fn a_work_with_notes_and_progress(conn: &rusqlite::Connection, dir: &TempDir) -> i64 {
     let path = dir.path().join("taiyaku.json");
     let id = crate::import::sidecar(conn, &doc("T", "aa"), &path).expect("import");
 
-    // **`volume_hand` — a *hand-set* volume, which is what the comment says
-    // and what the effective column stopped meaning at O80 / migration 011.**
-    // `volume` alone is what derivation writes for every work in the library,
-    // and a document is not written for that.
+    // **`volume_hand` — a *hand-set* volume (O80 / migration 011).** `volume`
+    // alone is what derivation writes for every work in the library, and a
+    // document is not written for that.
     conn.execute(
         "UPDATE work SET volume_hand = 1.0, volume = 1.0 WHERE id = ?1",
         [id],
@@ -118,10 +114,9 @@ fn a_bare_work(conn: &rusqlite::Connection, dir: &TempDir) -> i64 {
 }
 
 /// The first import's pass over the four sibling documents — what writes the
-/// `migrated_document` markers `export::work` reads, and the only thing that
-/// ever sets one to absorbed on the way *in*. Every test below that cares
-/// about what an export may touch has to go through this, because the defect
-/// it pins lives exactly in the seam between the two.
+/// `migrated_document` markers `export::work` reads. Every test below that
+/// cares about what an export may touch has to go through this, because the
+/// defect it pins lives exactly in the seam between the two.
 fn migrate_siblings(
     conn: &rusqlite::Connection,
     dir: &TempDir,
@@ -135,14 +130,11 @@ const A_TRUTH_DOCUMENT: &str = r#"{"taiyaku_truth":1,"editions":{"raw":{"members
     "0":[{"x":0.1,"y":0.2,"w":0.3,"h":0.05,"axis":"v","kind":"dialogue","ignore":false,"text":"labelled by hand"}]
 }}}}"#;
 
-/// **Whole-branch review 3, C1(b).** A `taiyaku.truth.json` with one box a
-/// fraction off the page (`x + w = 1.15`) is `Malformed`, so it records no
-/// marker and writes no rows — which is right, and is what makes fixing it
-/// and importing again the documented way to recover (`migrate.rs`'s own doc,
-/// design §4.3). One routine `export --in-place` then deleted it, because
-/// `state::truth` is `None` and the file was therefore "stale". There was
-/// nothing left to fix: one character typed into a labelling file plus one
-/// export was the whole of it.
+/// A `taiyaku.truth.json` with one box a fraction off the page (`x + w =
+/// 1.15`) is `Malformed`, so it records no marker and writes no rows — which
+/// is right, and is what makes fixing it and importing again the documented
+/// way to recover (`migrate.rs`'s own doc, design §4.3). An export leaves it
+/// where it is.
 #[test]
 fn a_malformed_sibling_survives_an_export_and_can_still_be_fixed_and_imported() {
     let dir = tempdir();
@@ -190,15 +182,11 @@ fn a_malformed_sibling_survives_an_export_and_can_still_be_fixed_and_imported() 
     );
 }
 
-/// **Whole-branch review 3, C1(a) and C1(c).** A work imported with no
-/// siblings has all four documents recorded as settled, so a file that turns
-/// up afterwards is never read — copy the directory to a laptop, label it
-/// there, copy it back; or restore one file from a backup while keeping the
-/// database. Export then treated "the database holds no state for this
-/// document" as "the file is stale", and the two documents whose state is an
-/// `Option` were **deleted** while `notes.json` and `library.json` — always
-/// written — were **overwritten with empty documents**, losing the volume,
-/// the tags and every note.
+/// A work imported with no siblings has all four documents recorded as
+/// settled, so a file that turns up afterwards is never read — copy the
+/// directory to a laptop, label it there, copy it back; or restore one file
+/// from a backup while keeping the database. An export leaves all of them as
+/// the reader left them.
 #[test]
 fn a_sibling_that_appeared_after_the_first_import_is_neither_removed_nor_emptied() {
     let dir = tempdir();
@@ -235,10 +223,7 @@ fn a_sibling_that_appeared_after_the_first_import_is_neither_removed_nor_emptied
     );
 
     let exported = work(&conn, id, THE_READER, None).expect("export");
-    // The contents first, because they are the loss: `truth.json` was
-    // deleted outright, and `notes.json` and `library.json` — always written
-    // — came back holding `{"work": ..., "notes": []}` and a bare
-    // `taiyaku_library`/`updated` pair.
+    // The contents first, because they are what the reader would lose.
     for (name, text) in restored {
         assert_eq!(
             std::fs::read_to_string(dir.path().join(name)).unwrap_or_default(),
@@ -274,9 +259,9 @@ fn a_sibling_that_appeared_after_the_first_import_is_neither_removed_nor_emptied
 
 /// The other side of the same rule, and the one that keeps `--in-place` from
 /// becoming a one-shot command: a document this export *wrote* came out of
-/// these rows, so the next export overwrites it without ceremony — and the
-/// next import still does not read it back over rows the reader has since
-/// emptied, which is what `migrated_document` was added for (review 2, C3).
+/// these rows, so the next export overwrites it without ceremony — and the next
+/// import still does not read it back over rows the reader has since emptied,
+/// which is what `migrated_document` is for.
 #[test]
 fn a_document_this_export_wrote_is_this_librarys_from_then_on() {
     let dir = tempdir();
@@ -326,11 +311,10 @@ fn a_document_this_export_wrote_is_this_librarys_from_then_on() {
     );
 }
 
-/// **`44187fd`'s purpose, through the route that makes it legitimate.** The
-/// labelling was really migrated into rows, so the file beside the sidecar is
-/// this library's copy of what the rows held; clearing every box and
-/// exporting takes it away, which is what makes `--in-place` a snapshot
-/// rather than an overlay.
+/// The labelling was really migrated into rows, so the file beside the sidecar
+/// is this library's copy of what the rows held; clearing every box and
+/// exporting takes it away, which is what makes `--in-place` a snapshot rather
+/// than an overlay.
 #[test]
 fn clearing_the_labelling_after_a_real_migration_still_removes_the_stale_document() {
     let dir = tempdir();
@@ -447,10 +431,10 @@ fn exporting_writes_five_documents_beside_the_sidecar() {
     );
 }
 
-/// The property this task's versioned document exists for: a reader with
-/// positions on more than one edition of the same work must get every one of
-/// them back out of `taiyaku.progress.json`, not just the first one this
-/// module happens to serialise.
+/// The property the versioned document exists for: a reader with positions
+/// on more than one edition of the same work must get every one of them back
+/// out of `taiyaku.progress.json`, not just the first one this module
+/// happens to serialise.
 #[test]
 fn exporting_writes_every_position_across_editions() {
     let dir = tempdir();
@@ -539,16 +523,9 @@ fn a_work_with_no_notes_exports_an_empty_notes_document() {
 /// must not export `taiyaku.progress.json`, `taiyaku.truth.json` or
 /// `taiyaku.library.json` at all — all three are genuinely absent rather than
 /// empty, unlike notes, which has a meaningful empty form because
-/// `startup.ts`'s `getNotes` reads one. `taiyaku-serve`'s own
-/// `progress::load`/`truth::load` already treat "file absent" as the encoding
-/// of `None`; writing an empty placeholder would assert a fact ("this work has
-/// a position", "someone opened the labelling tool here", "someone filed this
-/// work") that is not true.
-///
-/// **`taiyaku.library.json` is the one this branch moved** (review 3, Minor
-/// 12): it used to be written unconditionally, so every `--in-place` export
-/// left a `{"taiyaku_library": 1, "updated": "..."}` in every work directory
-/// in the reader's library, whose only field changed on every run.
+/// `startup.ts`'s `getNotes` reads one. Writing an empty placeholder would
+/// assert a fact ("this work has a position", "someone opened the labelling
+/// tool here", "someone filed this work") that is not true.
 #[test]
 fn a_bare_work_exports_only_the_two_documents_that_always_exist() {
     let dir = tempdir();
@@ -575,12 +552,9 @@ fn a_bare_work_exports_only_the_two_documents_that_always_exist() {
     assert!(!work_dir.join("taiyaku.truth.json").exists());
 }
 
-/// **Whole-branch review 3, Minor 12, in place**: the case the finding was
-/// observed on. A reader with a real library runs `export --all --in-place` to
-/// bring their sibling documents up to date, and every work that has never
-/// been hand-edited — which is all of them, since nothing sets this metadata
-/// yet — got a new file holding nothing but a version and a timestamp, and a
-/// fresh timestamp on every run after that.
+/// A reader with a real library runs `export --all --in-place` to bring their
+/// sibling documents up to date; a work nobody has hand-edited gets no
+/// `taiyaku.library.json` out of it.
 ///
 /// Asserted across two exports, because "it is created" and "it changes every
 /// time" are two complaints and the second is the one that makes a library
@@ -625,10 +599,10 @@ fn hand_fixed_metadata_is_written_and_clearing_it_removes_the_document() {
     let id = a_bare_work(&conn, &dir);
     let metadata_path = dir.path().join("taiyaku.library.json");
 
-    // `volume_hand`: a document records what a *person* set, and `of`
-    // projects the provenance rather than the effective column since O80 /
-    // migration 011. Writing `volume` alone is what derivation does, and a
-    // document is not written for that.
+    // `volume_hand`: a document records what a *person* set, and `of` projects
+    // the provenance rather than the effective column (O80 / migration 011).
+    // Writing `volume` alone is what derivation does, and a document is not
+    // written for that.
     conn.execute(
         "UPDATE work SET volume_hand = 3.0, volume = 3.0 WHERE id = ?1",
         [id],
@@ -655,11 +629,10 @@ fn hand_fixed_metadata_is_written_and_clearing_it_removes_the_document() {
     assert!(!metadata_path.exists(), "really gone, not merely listed");
 }
 
-/// **Whole-branch review 3, Minor 5.** The removal loop's `NotFound` guard is
-/// the difference between "most works never had this document" and "this
-/// document is still there, asserting state the database no longer holds".
-/// Replacing the guard with `true` — swallowing every removal error — passed
-/// the whole suite, and `work`'s own `# Errors` clause promises the opposite.
+/// The removal loop's `NotFound` guard is the difference between "most works
+/// never had this document" and "this document is still there, asserting state
+/// the database no longer holds". `work`'s own `# Errors` clause promises that
+/// a stale document that cannot be removed fails the export.
 ///
 /// A directory at the path is the cheapest way to make `remove_file` fail for
 /// a reason that is not absence, and it is not contrived: an interrupted
@@ -738,13 +711,11 @@ fn exporting_a_work_with_no_sidecar_path_but_a_dir_falls_back_to_the_taiyaku_ste
     assert!(dir.path().join("orphan").join("taiyaku.json").exists());
 }
 
-/// **The C1 defect of whole-branch review 2, at this module's own level.**
 /// Every work in a real library keeps its sidecar at `<dir>/taiyaku.json`, so
-/// the stem is the same string for every work and a flat `dir` gave two works
-/// the same five paths — the second silently overwriting the first, with
-/// `atomic::write` making each write clean enough that nothing looked wrong.
-/// The per-work subdirectory named for `slug` is what keeps them apart, and
-/// `slug` is `UNIQUE` in the schema, so no two works can land in one.
+/// the stem is the same string for every work, and two works exported under one
+/// `dir` still land on different paths. The per-work subdirectory named for
+/// `slug` is what keeps them apart, and `slug` is `UNIQUE` in the schema, so no
+/// two works can land in one.
 #[test]
 fn two_works_whose_sidecars_share_a_filename_do_not_collide_under_one_dir() {
     let a_dir = tempdir();
@@ -792,13 +763,13 @@ fn two_works_whose_sidecars_share_a_filename_do_not_collide_under_one_dir() {
 }
 
 /// **Clearing your labelling and exporting takes the old document away.**
-/// `taiyaku.truth.json` is written only when `state::truth` is `Some`, and
-/// leaving a stale one behind made `--in-place` an overlay rather than a
-/// snapshot: the directory afterwards asserted boxes the reader had deleted.
-/// The C3 fix makes that file inert against *this* library — `migrate.rs`
-/// records the document as considered, so a later import will not read it back
-/// — but the five documents are also how a library travels, and copying this
-/// directory to another machine would resurrect the labelling there.
+/// `taiyaku.truth.json` is written only when `state::truth` is `Some`, and a
+/// stale one left behind would make `--in-place` an overlay rather than a
+/// snapshot: the directory would assert boxes the reader had deleted.
+/// `migrate.rs` records the document as considered, so a later import will
+/// not read it back, but the five documents are also how a library travels,
+/// and copying this directory to another machine would resurrect the
+/// labelling there.
 ///
 /// Cleared through `put_truth` with an empty document, which is the path the
 /// labeller actually takes (it sends the whole document on every write), not
@@ -852,10 +823,10 @@ fn clearing_the_labelling_and_exporting_removes_the_stale_truth_document() {
     );
 }
 
-/// The other half of the same rule: a work that never had either optional
-/// document reports no removals. A `remove_file` on a path that is not there
-/// is the ordinary case — most works have neither — and must not be reported
-/// as a deletion or fail the export.
+/// The other half of the same rule: a work that never had any optional document
+/// reports no removals. A `remove_file` on a path that is not there is the
+/// ordinary case — most works have none — and must not be reported as a
+/// deletion or fail the export.
 #[test]
 fn a_bare_work_reports_no_removals_for_documents_that_were_never_there() {
     let dir = tempdir();
@@ -1016,15 +987,9 @@ fn a_reader_with_only_a_position_is_named_as_well() {
     assert_eq!(exported.other_users, vec!["bob".to_string()]);
 }
 
-/// **The cause the `--in-place --user` refusal only papered over.**
-///
-/// `absorbed` is keyed `(work_id, document)` with no user, so an in-place export
-/// as reader 1 — the *default*, needing no flag at all — found no notes and no
-/// position for them, marked both documents stale, and had the "never absorbed"
-/// guard satisfied by reader 2's own import. Reader 2's `taiyaku.notes.json` was
-/// overwritten with an empty document and their `taiyaku.progress.json` deleted.
-///
-/// Found by the second whole-branch review, which reproduced it end to end.
+/// An in-place export as reader 1 — the *default*, needing no flag at all —
+/// leaves reader 2's documents alone: their notes are not overwritten with an
+/// empty document and their reading position is not deleted.
 #[test]
 fn an_in_place_export_does_not_delete_another_readers_documents() {
     let library = crate::Library::open_in_memory().expect("library");

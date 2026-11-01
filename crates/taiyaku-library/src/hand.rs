@@ -5,7 +5,7 @@
 //! it answers only for a work that has a sidecar. `import::scanned` leaves
 //! `sidecar_path` NULL **by design** — one `taiyaku.json` per work directory
 //! cannot describe fourteen volumes sitting beside each other
-//! (`derive::Candidate::path`'s own doc comment) — so a scanned work had
+//! (`derive::Candidate::path`'s own doc comment) — so a scanned work would have
 //! nowhere at all to keep the part nothing can re-derive. That is what this
 //! module gives it:
 //!
@@ -14,7 +14,7 @@
 //! ```
 //!
 //! **Dotted, so the scanner never has to be taught to ignore it.**
-//! `scan.rs:679` skips every entry whose name begins with `.`, and
+//! `scan.rs`'s `measure_dir` skips every entry whose name begins with `.`, and
 //! `watch.rs`'s own probe file already relies on that. An exclusion list would
 //! have been a second thing to keep in step with this one.
 //!
@@ -139,10 +139,10 @@ pub struct Saved {
     /// Why the document did not reach the disk, when it did not — the
     /// `io::Error`'s own message, naming the path.
     ///
-    /// **A bool alone was the first shape and it was not honest enough.**
+    /// **A bool alone would not be honest enough.**
     /// `taiyaku_read::atomic::write` is built to distinguish a staging
     /// failure from a rename failure and to name the exact path (its O29
-    /// comment); collapsing that to `false` threw away the only thing a
+    /// comment); collapsing that to `false` would throw away the only thing a
     /// caller could act on. Not failing the edit is what a read-only root
     /// requires — discarding the reason is not.
     pub why: Option<String>,
@@ -169,22 +169,15 @@ pub struct Saved {
 /// deliberate — including when there is no address to land it at.** It is the
 /// same marker `derive::write_work`'s own read-back arms, and it means one
 /// thing only: **this work's document has been read back from disk, so do not
-/// read it again.**
+/// read it again.** Migration 011 answers "do not overwrite" per field, with a
+/// `_hand` column each, so the marker carries none of it (O80).
 ///
-/// *It used to mean a second thing — "do not overwrite `work.series_id`,
-/// `work.volume`, `edition.kind` and `edition.language`" — and conflating the
-/// two is what O80 was: a title-only Save armed it and froze three columns
-/// nobody had touched. Migration 011 answers that per field with a `_hand`
-/// column each, and `derive` writes `COALESCE(<hand>, <derived>)`, so the
-/// marker carries none of it now.*
-///
-/// An edit made against a
-/// read-only root is still an edit the next scan must not revert; so is one
-/// made against an imported work, whose sidecar leaves [`path_for`] answering
-/// `None` — [`Saved::path`] is `None` there too, but the marker is recorded
-/// regardless. What is lost in both cases is durability, and
-/// [`Saved::persisted`] is how a caller reports that rather than discovering
-/// it later.
+/// An edit made against a read-only root is still an edit the next scan must
+/// not revert; so is one made against an imported work, whose sidecar leaves
+/// [`path_for`] answering `None` — [`Saved::path`] is `None` there too, but the
+/// marker is recorded regardless. What is lost in both cases is durability,
+/// and [`Saved::persisted`] is how a caller reports that rather than
+/// discovering it later.
 ///
 /// A root that has declined to keep documents produces a third `None` path,
 /// for a reason neither of those two share: nothing was owed, so nothing is
@@ -334,24 +327,21 @@ pub fn load(
 /// Move this work's document from the address it had under `old_key` to the
 /// one it has now.
 ///
-/// **Called from `derive::write_work`, after `write_roots` and the commit
-/// that follows it.** An
-/// earlier version called this from `import_with`, right after `tx.commit()`
-/// — the moment that looks like it should work, since the old `content_key`
-/// is still readable from the row just replaced. It cannot: for a
-/// single-member work a repack changes the member's `sha256`, and
-/// `import::replace_editions`'s delete-and-reinsert leaves that member's
-/// `root_id` NULL there, because `held_member_meta` restores it keyed on
-/// `sha256` — exactly what changed — so the lookup misses. [`path_for`] then
-/// answers `None` and the rename is silently skipped. `write_roots` restores
-/// `root_id` by `(edition key, ordinal)` instead, and runs after
+/// **Called from `derive::write_work`, after `write_roots` and the commit that
+/// follows it.** Calling it from `import_with`, right after `tx.commit()`,
+/// cannot work: for a single-member work a repack changes the member's
+/// `sha256`, and `import::replace_editions`'s delete-and-reinsert leaves that
+/// member's `root_id` NULL there, because `held_member_meta` restores it keyed
+/// on `sha256` — exactly what changed — so the lookup misses. [`path_for`]
+/// then answers `None` and the rename is silently skipped. `write_roots`
+/// restores `root_id` by `(edition key, ordinal)` instead, and runs after
 /// `import::scanned` returns — so the call from `derive::write_work`, after
 /// `write_roots`, is the first point at which this can resolve an address at
 /// all. Once `import::scanned` commits, the old key is gone from the row, and
-/// since O80 closed a title-only document carries no series, no volume and no
-/// member digests either — so nothing can match the file to a work once it
-/// strands. See `derive.rs`'s own comment at the call site for the full
-/// account, and see [`Orphan`] for what a stranded document then looks like.
+/// a title-only document carries no series, no volume and no member digests
+/// either (O80) — so nothing can match the file to a work once it strands. See
+/// `derive.rs`'s own comment at the call site for the full account, and see
+/// [`Orphan`] for what a stranded document then looks like.
 ///
 /// **Never overwrites.** Two works cannot legitimately share an address, so a
 /// file already at the target means something this was not designed for;
@@ -382,36 +372,27 @@ pub fn rename_for_rekey(conn: &Connection, work_id: i64, old_key: &str) -> Resul
 /// absorbed the work it belonged to.
 ///
 /// **Not** a document a live work still addresses whose root has simply
-/// declined to keep it — that is [`Declined`], and conflating the two here
-/// was a Critical. `expected.get(&path)` answers `Some` for exactly that
-/// case: a work stays marked `absorbed = 1` after its root's
-/// `keeps_documents` is turned off, so the file is still addressed by a real
-/// `work_id`, and it is the file `hand::load` — deliberately not gated on
-/// `keeps_documents`, so a rebuilt database can still read it back — reads
-/// its title from on the very same pass. An earlier version of `reconcile`
-/// gated the whole comparison on `root.keeps_documents` rather than
-/// branching on it, so an off root's addressed files fell straight through
-/// to here regardless, and this type's own doc comment argued that was
-/// honest: "the classification is unchanged — it is still an orphan […]
-/// only the reason given for it now covers both causes." It does not, and
-/// migration 012 is why that stopped being a corner case: it defaults every
-/// existing root's `keeps_documents` off, so the first derive after
-/// upgrading reported *every* hand document in the library as an orphan —
-/// on the same pass that just recovered each one's title into the database.
-/// "No work owes it" reads as "stranded, act on it" in a project where an
-/// orphan means exactly that, and the plausible action is deleting the only
-/// copy of a person's organisational work outside the database. `reconcile`
-/// now branches on `expected.get(&path)` instead of gating the lookup on
-/// `root.keeps_documents`, so a file something still addresses can never
-/// reach this arm merely because its root opted out.
+/// declined to keep it — that is [`Declined`]. `expected.get(&path)` answers
+/// `Some` for exactly that case: a work stays marked `absorbed = 1` after its
+/// root's `keeps_documents` is turned off, so the file is still addressed by a
+/// real `work_id`, and it is the file `hand::load` — deliberately not gated on
+/// `keeps_documents`, so a rebuilt database can still read it back — reads its
+/// title from on the very same pass. Migration 012 defaults every existing
+/// root's `keeps_documents` off, so classifying such a file here would report
+/// *every* hand document in the library as an orphan on the first derive after
+/// upgrading. "No work owes it" reads as "stranded, act on it" in a project
+/// where an orphan means exactly that, and the plausible action is deleting
+/// the only copy of a person's organisational work outside the database.
+/// `reconcile` therefore branches on `expected.get(&path)` rather than gating
+/// the lookup on `root.keeps_documents`, so a file something still addresses
+/// can never reach this arm merely because its root opted out.
 ///
 /// **The title travels with the path because the path is a hash.** The
 /// filename is the `content_key` the document was written under, which names
-/// content that no longer exists; and since O80 closed (#97, *the document
-/// projects only what a person set*) a title-only document — the common case,
+/// content that no longer exists; and a title-only document — the common case,
 /// and the one the metadata editor's single control produces — carries no
-/// series, no volume and no member digests either. So there is no route back
-/// to a work from the file's contents, and a report naming only the path
+/// series, no volume and no member digests either (O80). So there is no route
+/// back to a work from the file's contents, and a report naming only the path
 /// leaves a person nothing to act on. The title is the one actionable thing
 /// in it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -454,8 +435,8 @@ pub struct Absorbed {
 /// here, but a live work still addresses the file. Distinct from an
 /// [`Orphan`]: nothing here is stranded, unreachable, or disagreeing with the
 /// database — the address is exactly right, and the only thing wrong is that
-/// this root no longer keeps what lives at it. See [`Orphan`]'s own doc
-/// comment for why folding this into that one was a Critical.
+/// this root does not keep what lives at it. See [`Orphan`]'s own doc comment
+/// for why the two are kept apart.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Declined {
     pub path: PathBuf,
@@ -490,8 +471,7 @@ pub struct Reconciled {
     ///
     /// **Never a document a live work still addresses.** That is
     /// [`Self::declined`], and keeping the two apart is the point — see
-    /// [`Orphan`]'s own doc comment for the Critical that conflating them
-    /// was.
+    /// [`Orphan`]'s own doc comment for why.
     pub orphans: Vec<Orphan>,
     /// Documents at a work's own address whose root has declined to keep
     /// them. See [`Declined`].
@@ -572,22 +552,19 @@ pub fn reconcile(conn: &Connection, root: &crate::scan::Root) -> Result<Reconcil
     // **`NotFound` and `NotADirectory` both mean "nothing is listable here,"
     // not "reconcile cannot proceed" — so both fall through to the
     // gap-repair loop below with `present` left empty, rather than an early
-    // return** (the brief's own sketch of this function returned early on
-    // `NotFound` alone, which is what the note on the `read_dir` early
-    // return flagged as possibly not typechecking; doing so also skips the
-    // gap-repair loop entirely, which is wrong for a root whose obstruction
-    // has just been cleared — see `a_gap_is_written_on_the_next_pass`). A
-    // root that has never taken a hand edit has no `.taiyaku` at all — the
-    // ordinary case, since `save` creates it on first write. A plain file
-    // occupying that name — this module's own fixture for a root that
-    // cannot take a document, per this task's constraint against
-    // `set_readonly` — cannot contain a document either, by construction:
-    // nothing was ever able to write beneath a name that is not a
-    // directory. It is `save`'s own attempt below, not this listing, that
-    // discovers and names the real failure for that case. Any other error
-    // (permission denied, and so on) is genuinely unexpected and is not
-    // folded in the same way: swallowing it would let the loop below
-    // "repair" — overwrite — a document this listing merely failed to see.
+    // return**, which would skip the gap-repair loop entirely and be wrong
+    // for a root whose obstruction has just been cleared — see
+    // `a_gap_is_written_on_the_next_pass`. A root that has never taken a hand
+    // edit has no `.taiyaku` at all — the ordinary case, since `save` creates
+    // it on first write. A plain file occupying that name — this module's own
+    // fixture for a root that cannot take a document — cannot contain a
+    // document either, by construction: nothing was ever able to write
+    // beneath a name that is not a directory. It is `save`'s own attempt
+    // below, not this listing, that discovers and names the real failure for
+    // that case. Any other error (permission denied, and so on) is genuinely
+    // unexpected and is not folded in the same way: swallowing it would let
+    // the loop below "repair" — overwrite — a document this listing merely
+    // failed to see.
     let mut present: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
     match std::fs::read_dir(&dir) {
         Ok(entries) => {
@@ -601,13 +578,12 @@ pub fn reconcile(conn: &Connection, root: &crate::scan::Root) -> Result<Reconcil
                 // **Gated on `root.keeps_documents`, and that gate decides
                 // only whether this file is *compared*, never whether it is
                 // *addressed*.** `expected.get(&path)` answers that on its
-                // own merits just below, regardless of this gate — the two
-                // used to be the same `if`, which was the Critical
-                // [`Orphan`]'s own doc comment records: a work stays marked
-                // `absorbed = 1` after its root's `keeps_documents` is turned
-                // off, so `expected` still maps this path to a real
-                // `work_id`, and folding that answer into the gate reported
-                // every such file as stranded rather than merely declined.
+                // own merits just below, regardless of this gate. A work
+                // stays marked `absorbed = 1` after its root's
+                // `keeps_documents` is turned off, so `expected` still maps
+                // this path to a real `work_id`, and folding that answer into
+                // the gate would report every such file as stranded rather
+                // than merely declined — see [`Orphan`]'s own doc comment.
                 // What this gate alone protects is the comparison against
                 // the database below: an off root's document is not
                 // maintained, so nothing about it can meaningfully "agree"
@@ -658,13 +634,12 @@ pub fn reconcile(conn: &Connection, root: &crate::scan::Root) -> Result<Reconcil
                     // `taiyaku-serve/src/metadata.rs` states this directly,
                     // "'hand' and 'comicinfo' are the ones a re-derive is
                     // scoped never to overwrite" — so neither can churn the
-                    // way `Filename` does. Excluding `Comicinfo` too was the
-                    // filter's first shape, and it was wrong: a person can
-                    // hand-write `"chapter_source": "comicinfo"` into the
-                    // document directly — precisely the hand-editing this
-                    // module exists to serve — and that would have left it
-                    // diverging from the database with nothing ever reporting
-                    // it stale.
+                    // way `Filename` does. Excluding `Comicinfo` too would be
+                    // wrong: a person can hand-write
+                    // `"chapter_source": "comicinfo"` into the document
+                    // directly — precisely the hand-editing this module
+                    // exists to serve — and that would leave it diverging
+                    // from the database with nothing ever reporting it stale.
                     //
                     // Excluding `Filename`, not dropping `members` outright:
                     // dropping the `members` block from the comparison
@@ -675,9 +650,8 @@ pub fn reconcile(conn: &Connection, root: &crate::scan::Root) -> Result<Reconcil
                     //
                     // This narrows the comparison; it does not fix the
                     // cause. That `of` projects derived chapters into the
-                    // document at all is unfinished business left open when
-                    // O80 closed (#97, "the document projects only what a
-                    // person set"), and is deliberately not addressed here.
+                    // document at all is unfinished business left open by
+                    // O80, and is deliberately not addressed here.
                     let not_filename = |m: &crate::librarydoc::MemberMeta| {
                         !matches!(
                             m.chapter_source,
@@ -703,12 +677,11 @@ pub fn reconcile(conn: &Connection, root: &crate::scan::Root) -> Result<Reconcil
                     .and_then(|text| crate::librarydoc::LibraryDoc::from_json(&text).ok())
                     .and_then(|doc| doc.title);
                 // **Branch on `expected`, not on `root.keeps_documents`
-                // again.** This is the fix for the Critical [`Orphan`]'s doc
-                // comment describes: a path `expected` still names is
-                // addressed by a live work no matter what this root has
-                // decided about keeping documents, so it cannot be stranded
-                // — an off root reports it as [`Declined`] instead, and only
-                // a path `expected` does not name at all falls through to
+                // again.** A path `expected` still names is addressed by a
+                // live work no matter what this root has decided about
+                // keeping documents, so it cannot be stranded — an off root
+                // reports it as [`Declined`] instead, and only a path
+                // `expected` does not name at all falls through to
                 // [`Self::orphans`] below.
                 if expected.contains_key(&path) {
                     // Addressed, but declined: a live work owes nothing
@@ -739,30 +712,21 @@ pub fn reconcile(conn: &Connection, root: &crate::scan::Root) -> Result<Reconcil
     }
 
     // **This guard does not stop a write — `save` already refuses one, one
-    // layer down, for a declined root** (see the branch at the top of
-    // `save` gated on `keeps_documents == Some(false)`). Deleting this guard
-    // was checked by mutation: the result was `repaired: 1` and **no
-    // `.taiyaku` directory** — proof that no file reaches disk either way.
-    // What this guard actually prevents is a false count: without it, every
-    // gap in `expected` is still handed to `save`, which writes nothing and
-    // answers `persisted: true`, and the loop below counts that as a repair
-    // — printing "N document(s) written" for a pass that wrote none, every
-    // scan, forever.
+    // layer down, for a declined root** (see the branch at the top of `save`
+    // gated on `keeps_documents == Some(false)`).
     //
     // **Two independent refusals, and that is deliberate:** this one and
-    // `save`'s. Neither is redundant with the other — this one keeps the
-    // report honest, `save`'s keeps the disk honest — so that removing
-    // either one alone does not start writing files. The failure mode this
-    // guards against is someone relaxing one of the two while believing the
-    // other is still the backstop.
+    // `save`'s, so that removing either one alone does not start writing files.
+    // The failure mode this guards against is someone relaxing one of the two
+    // while believing the other is still the backstop.
     //
-    // **A wrapped loop, not an early return.** An early return here also
-    // skipped the sort below, and `orphans` and `declined` are the two lists
-    // that can be non-empty for an off root (the walk above still runs
-    // regardless of this gate). `read_dir` order is stable for an unchanged
-    // directory, so skipping the sort was invisible until the first
-    // insertion — on exactly the list a repeated, unchanged scan is meant to
-    // print identically for years.
+    // **A wrapped loop, not an early return.** An early return here would also
+    // skip the sort below, and `orphans` and `declined` are the two lists that
+    // can be non-empty for an off root (the walk above still runs regardless of
+    // this gate). `read_dir` order is stable for an unchanged directory, so
+    // skipping the sort would be invisible until the first insertion — on
+    // exactly the list a repeated, unchanged scan is meant to print
+    // identically for years.
     if root.keeps_documents {
         for (path, work_id) in &expected {
             if present.contains(path) {
@@ -778,18 +742,15 @@ pub fn reconcile(conn: &Connection, root: &crate::scan::Root) -> Result<Reconcil
             // gated on, which is a snapshot.** `roots` is read once, near the
             // top of `derive()`, before this function is ever called; `save`
             // re-reads `root.keeps_documents` itself, off the same row,
-            // seconds later. Nothing but raw SQL can move that column today,
-            // so the two cannot yet disagree — but spec C4's configuration
-            // screen is what makes them reachable apart, and a PATCH landing
-            // mid-derive is exactly when a background scan is running this
-            // loop. If the column goes from on to off in that gap, the outer
-            // gate above (already read as `true`) still admits this
-            // iteration, `save` sees the new value and refuses the write —
-            // `persisted: true`, `keeps_documents: Some(false)` — and
-            // counting that `persisted` as a repair would be the identical
-            // false claim the outer gate's own comment already guards
-            // against, one layer further down: a person told "N document(s)
-            // written" for a pass that wrote none.
+            // seconds later. A PATCH landing mid-derive is exactly when a
+            // background scan is running this loop. If the column goes from
+            // on to off in that gap, the outer gate above (already read as
+            // `true`) still admits this iteration, `save` sees the new value
+            // and refuses the write — `persisted: true`,
+            // `keeps_documents: Some(false)` — and counting that `persisted`
+            // as a repair would be the identical false claim the outer gate's
+            // own comment already guards against, one layer further down: a
+            // person told "N document(s) written" for a pass that wrote none.
             if saved.persisted && saved.keeps_documents != Some(false) {
                 // **`persisted` alone is not "written".** `save`'s
                 // remove-file branch answers `persisted: true` for
@@ -831,15 +792,14 @@ pub fn reconcile(conn: &Connection, root: &crate::scan::Root) -> Result<Reconcil
 
     // **Sorted, all four, before this returns.** `expected` is a `HashMap`,
     // and Rust reseeds its SipHash key every process start, so `unwritable` —
-    // built by iterating `&expected` above — printed a root's gaps in a
+    // built by iterating `&expected` above — would print a root's gaps in a
     // different order on every scan, even one where nothing had changed.
-    // `orphans`, `declined` and `stale` already come out in `read_dir`'s
-    // order, which is arbitrary but stable for an unchanged directory;
-    // sorting them too costs one comparison per entry against a pass that is
-    // already hashing archives, and it is what the one thing a person
-    // actually does with two scans — diff their output — needs: identical
-    // text for an unchanged library, rather than a reordering that reads as
-    // a change nothing made.
+    // `orphans`, `declined` and `stale` already come out in `read_dir`'s order,
+    // which is arbitrary but stable for an unchanged directory; sorting them
+    // too costs little against a pass that is already hashing archives, and it
+    // is what the one thing a person actually does with two scans — diff their
+    // output — needs: identical text for an unchanged library, rather than a
+    // reordering that reads as a change nothing made.
     found.unwritable.sort();
     found.orphans.sort_by(|a, b| a.path.cmp(&b.path));
     found.declined.sort_by(|a, b| a.path.cmp(&b.path));

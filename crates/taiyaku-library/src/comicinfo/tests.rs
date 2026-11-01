@@ -35,9 +35,8 @@ fn every_fact_that_exists_becomes_an_element() {
     assert!(out.contains("<Notes>Japanese raw</Notes>"));
 }
 
-/// Every one of `element_for`'s five roles, pinned to the exact element it
-/// must produce — "the only judgement in this module" deserves a test that
-/// notices if any one of the five is renamed.
+/// Every one of `element_for`'s five roles, pinned to the exact element it must
+/// produce, so a test notices if any one of the five is renamed.
 #[test]
 fn each_role_maps_to_its_named_element() {
     let out = xml(&full());

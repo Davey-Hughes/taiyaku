@@ -130,9 +130,9 @@ fn a_chapter_file_gets_a_chapter_and_no_volume() {
 }
 
 /// Nothing in this module resolves a Japanese path through the engine at
-/// all otherwise — `巻` counts volumes, `話`/`章` count chapters, and before
-/// `marked_number`'s `after` check this file's own `第69巻.cbz` would have
-/// taken a chapter number too.
+/// all otherwise — `巻` counts volumes, `話`/`章` count chapters, and
+/// `marked_number`'s `after` check is what stops `第69巻.cbz` taking a chapter
+/// number too.
 #[test]
 fn a_japanese_volume_gets_a_volume_and_not_also_a_chapter() {
     let engine = engine_of(&defaults());
@@ -144,7 +144,7 @@ fn a_japanese_volume_gets_a_volume_and_not_also_a_chapter() {
 #[test]
 fn a_pattern_that_will_not_compile_is_reported_and_disables_only_itself() {
     // A bad pattern reaches this engine from a text box in C4's editor. It
-    // must not take a scan of 156 series down with it.
+    // must not take a scan down with it.
     let (engine, complaints) = Engine::compile(&[
         rule(1, "regex", "^(?<series>[^/]+)/", "path"),
         rule(2, "regex", "(unclosed", "name"),
@@ -155,14 +155,11 @@ fn a_pattern_that_will_not_compile_is_reported_and_disables_only_itself() {
     assert_eq!(resolved.series.as_deref(), Some("Series"));
 }
 
-/// Both tests above put the surviving rule *before* the bad pattern, which
-/// an implementation that stopped compiling — or stopped resolving — at the
-/// first failure would also pass. This one puts a rule *after* the bad
-/// pattern instead, which is the direction that actually distinguishes
-/// "disables only itself" from "disables everything from here on". Found by
-/// review as a test-strength gap rather than a behaviour one: the reviewer
-/// probed the shipped code against this exact shape and it was already
-/// correct.
+/// The test above puts the surviving rule *before* the bad pattern, which an
+/// implementation that stopped compiling — or stopped resolving — at the first
+/// failure would also pass. This one puts a rule *after* the bad pattern
+/// instead, which is the direction that actually distinguishes "disables only
+/// itself" from "disables everything from here on".
 #[test]
 fn a_bad_pattern_does_not_disable_the_rules_that_come_after_it() {
     let (engine, complaints) = Engine::compile(&[
@@ -176,12 +173,9 @@ fn a_bad_pattern_does_not_disable_the_rules_that_come_after_it() {
     assert_eq!(resolved.volume, Some(1.0));
 }
 
-// --- everything below is beyond the brief's four tests: `load`, root
-// scoping, disabled rules, the root fallback for `kind`/`language`, and the
-// two `FromStr` refusals were all implemented but left unexercised by the
-// four above, which is a real coverage gap rather than a hypothetical one —
-// the workspace's aggregate coverage gate caught it. Each test here would
-// fail if the behaviour it names broke. ---
+// --- Each test below would fail if the behaviour it names broke: `load`, root
+// scoping, disabled rules, the root fallback for `kind`/`language` and the two
+// `FromStr` refusals among them. ---
 
 /// `load`'s own SQL — the query, the column order, `ORDER BY ordinal, id` —
 /// over the real rows migration 3 seeds, rather than the hand-built
@@ -312,7 +306,7 @@ fn a_root_level_file_matches_on_an_empty_parent_name() {
 
 /// [`MatchOn::Parent`] is the parent directory's **own name**, not the
 /// parent's full path and not the whole `rel_path` — the distinction
-/// `MatchOn`'s doc comment states and which nothing tested.
+/// `MatchOn`'s doc comment states.
 ///
 /// The test above cannot see it: its fixture is `notes.pdf`, where the whole
 /// path and the parent name are one component and the empty string
@@ -323,8 +317,7 @@ fn a_root_level_file_matches_on_an_empty_parent_name() {
 /// root, and must **not** fire for a file that merely lives somewhere under a
 /// directory of that name. The second is the one with consequences — a
 /// `parent`-scoped rule deciding for every file whose whole path begins with
-/// the pattern is a rule silently applied to a subtree instead of a
-/// directory.
+/// the pattern is a rule silently applied to a subtree instead of a directory.
 #[test]
 fn a_parent_rule_matches_the_parents_own_name_and_not_the_whole_path() {
     let mut colour = rule(1, "prefix", "Full Color", "parent");
@@ -349,22 +342,16 @@ fn a_parent_rule_matches_the_parents_own_name_and_not_the_whole_path() {
 }
 
 /// A [`RuleKind::Prefix`] pattern is a **prefix**, per its own doc comment,
-/// and nothing tested that it is not a substring.
+/// not a substring.
 ///
-/// `a_later_rule_overrides_only_the_fields_it_sets` above is the closest
-/// thing, and it cannot see this: its pattern is `"Full Color"` against a
-/// parent that is exactly `"Full Color"`, where prefix and substring agree.
-/// The cost of the difference is not cosmetic — a one-click "this directory
-/// is the colour edition" rule whose pattern is `Color` would capture every
-/// series with `Color` anywhere in its path — and it is the predicate
-/// `proposals::accept`'s swallow-check rests on. It used to rest on two
-/// restatements of it as well — `derive::other_series_under_prefix` asking
-/// `rel_path.starts_with(pattern)`, and `accept`'s post-write verification
-/// asking `substr(rel_path, 1, length(?1)) = ?1` — and this test was what
-/// said all three agreed. Both restatements are gone: `proposals::resolves`
-/// asks this engine what a candidate rule would decide, so the predicate
-/// below is now the only one there is, and this test is the only thing
-/// pinning it.
+/// `a_later_rule_overrides_only_the_fields_it_sets` above is the closest thing,
+/// and it cannot see this: its pattern is `"Full Color"` against a parent that
+/// is exactly `"Full Color"`, where prefix and substring agree. The cost of the
+/// difference is not cosmetic — a one-click "this directory is the colour
+/// edition" rule whose pattern is `Color` would capture every series with
+/// `Color` anywhere in its path — and it is the predicate `proposals::resolves`
+/// rests on: it asks this engine what a candidate rule would decide, so the
+/// predicate below is the only one there is.
 #[test]
 fn a_prefix_rule_matches_a_prefix_and_not_a_substring() {
     let mut mid_path = rule(1, "prefix", "Color", "path");
@@ -389,15 +376,12 @@ fn a_prefix_rule_matches_a_prefix_and_not_a_substring() {
 }
 
 /// [`Engine::compile`]'s own doc promises `ordinal` order **regardless of
-/// what order a caller hands rules in**, and nothing tested it: every test
-/// in this file builds its `Vec<Rule>` already ordered, and `load`'s query
-/// orders the rows before `compile` ever sees them. So deleting the sort
-/// changed no test's output, and neither did dropping `id` from its key.
+/// what order a caller hands rules in**.
 ///
-/// Both halves matter for the same reason: layering is what makes "everything
-/// under this root is raw" and "except these are colour" two rules rather
-/// than four, and layering in the wrong order is an exception that stops
-/// overriding the general case.
+/// Both halves of its `(ordinal, id)` key matter for the same reason: layering
+/// is what makes "everything under this root is raw" and
+/// "except these are colour" two rules rather than four, and layering in the
+/// wrong order is an exception that stops overriding the general case.
 #[test]
 fn compile_sorts_by_ordinal_regardless_of_the_order_it_is_handed() {
     let mut second = rule(1, "prefix", "", "path");
@@ -444,12 +428,10 @@ fn two_rules_sharing_an_ordinal_break_the_tie_on_id() {
 }
 
 /// `load`'s `ORDER BY ordinal, id`, which is **not** what puts the engine in
-/// order — [`Engine::compile`] re-sorts, which is exactly why reversing this
-/// query changed no test's answer and the two masked each other. With
-/// `compile`'s own sort now pinned above, the query's one remaining
-/// observable effect is the order rows are read in, and complaints are what
-/// shows it: `load` pushes one per row it cannot turn into a [`Rule`], as it
-/// meets them.
+/// order — [`Engine::compile`] re-sorts. With `compile`'s own sort pinned
+/// above, the query's one observable effect is the order rows are read in, and
+/// complaints are what shows it: `load` pushes one per row it cannot turn into
+/// a [`Rule`], as it meets them.
 ///
 /// Both bad rows are bad *kinds* rather than bad patterns on purpose — a
 /// pattern complaint comes from `compile`, after every row has been read, and
@@ -522,18 +504,15 @@ fn fields_no_rule_decides_fall_back_to_the_roots_own_defaults() {
     assert!(!resolved.provenance.contains_key(&Field::Series));
 }
 
-/// The other half of the fallback, and the half nothing tested: it applies to
-/// fields **no rule decided**, and must leave the ones a rule did decide
-/// alone.
+/// The other half of the fallback: it applies to fields **no rule decided**,
+/// and must leave the ones a rule did decide alone.
 ///
-/// No test had both a root default and a rule setting the same field, so
-/// removing the `is_none()` guard on any of the three arms left the whole
-/// suite green — and a root's own `edition_key` overwriting the one a rule
-/// explicitly chose is two editions of one work silently merged into one,
-/// which is the outcome `apply_set_columns` exists to make possible in the
-/// first place. All three arms are covered here, because they are three
-/// copies of one shape and a test for one of them proves nothing about the
-/// other two.
+/// This pins the `is_none()` guard on each of the fallback's three arms. A
+/// root's own `edition_key` overwriting the one a rule explicitly chose would
+/// be two editions of one work silently merged into one, which is the outcome
+/// `apply_set_columns` exists to make possible in the first place. All three
+/// arms are covered here, because they are three copies of one shape and a test
+/// for one of them proves nothing about the other two.
 #[test]
 fn a_roots_default_does_not_overwrite_a_field_a_rule_decided() {
     let mut generous_root = root();
@@ -561,16 +540,13 @@ fn a_roots_default_does_not_overwrite_a_field_a_rule_decided() {
     assert_eq!(resolved.provenance[&Field::Language], 1);
 }
 
-/// **Important 1's reproduction.** `fields_settable_by` used to check its
-/// four `set_*` columns unconditionally, before the kind-gated `match`
-/// underneath them — so a `BuiltinVolume` row carrying a stray `set_series`
-/// (nothing stops one: the schema has no `CHECK` on that column, and
-/// `import_json` does not reject one either) was reported as able to decide
-/// `Field::Series`, a field [`Engine::resolve`] can never actually set for
-/// that kind — its own `match rule.kind` only ever calls `apply_set_columns`
-/// for `Prefix` and `Regex`. Fixed by gating those four checks on
-/// [`kind_applies_set_columns`], the identical predicate `resolve` now gates
-/// its own `apply_set_columns` call on, so the two cannot drift apart again.
+/// A `BuiltinVolume` row carrying a stray `set_series` (nothing stops one: the
+/// schema has no `CHECK` on that column, and `import_json` does not reject one
+/// either) is not reported as able to decide `Field::Series`, a field
+/// [`Engine::resolve`] can never actually set for that kind.
+/// `fields_settable_by` gates its four `set_*` checks on
+/// [`kind_applies_set_columns`], the identical predicate `resolve` gates its
+/// own `apply_set_columns` call on, so the two cannot drift apart.
 #[test]
 fn fields_settable_by_ignores_a_stray_set_column_a_builtin_rules_kind_can_never_apply() {
     let mut stray_volume_rule = rule(1, "builtin-volume", "", "name");
@@ -587,7 +563,7 @@ fn fields_settable_by_ignores_a_stray_set_column_a_builtin_rules_kind_can_never_
          at all: {fields:?}"
     );
 
-    // The other builtin kind, same defect, same fix.
+    // The other builtin kind, held to the same.
     let mut stray_chapter_rule = rule(1, "builtin-chapter", "", "name");
     stray_chapter_rule.set_kind = Some("stray".to_string());
 
@@ -626,19 +602,11 @@ fn a_regex_rule_sets_edition_and_title_captures_and_ignores_a_capture_that_will_
 
 /// **`fields_settable_by`'s own `RuleKind::Regex` arm names each of the five
 /// recognised captures by hand — `apply_captures`'s own five, one call to
-/// `resolved.set`/`set_number` apiece — and nothing above ever calls
-/// `fields_settable_by` itself with a pattern naming `series`, `volume` or
-/// `chapter`.** The test just above drives `edition`/`title` only, and only
-/// through `Engine::resolve`, which runs `apply_captures` directly and never
-/// touches this function at all — the two are independent implementations of
-/// the same five names, one dynamic and one static, and nothing before this
-/// test compared them. Deleting any one arm of `fields_settable_by`'s own
-/// `match name { .. }` — `"series"` through `"chapter"` — left the whole
-/// suite green: the field it named would then never be reported settable,
-/// which is what lets `preview::rows_for`'s near-miss check demand that field
-/// be undecided (or root-decided) before it will call a genuine miss a
-/// near-miss at all, for a rule that could never have decided it in the
-/// first place.
+/// `resolved.set`/`set_number` apiece.** The test just above drives
+/// `edition`/`title` only, and only through `Engine::resolve`, which runs
+/// `apply_captures` directly and never touches this function at all — the two
+/// are independent implementations of the same five names, one dynamic and one
+/// static, and this test compares them.
 #[test]
 fn fields_settable_by_names_every_capture_a_regex_rule_recognises() {
     let names_every_field = rule(
@@ -808,11 +776,9 @@ fn a_malformed_import_leaves_the_existing_rule_set_untouched() {
 }
 
 /// **The hazard `#[serde(deny_unknown_fields)]` on `RuleJson` exists to
-/// close.** Without it, a document from before the `root_id` → `root_path`
-/// rename — this exact shape, produced by an older build — parsed anyway:
-/// serde filled the now-missing `root_path` with `None` and silently
-/// dropped the unrecognised `root_id`, so a rule scoped to one root came
-/// back scoped to every root. This must now refuse, not import unscoped.
+/// close.** A document carrying `"root_id"`, a field `RuleJson` does not have,
+/// must be refused rather than imported with its rule unscoped: a rule scoped
+/// to one root would otherwise come back scoped to every root.
 #[test]
 fn importing_a_stale_document_with_root_id_refuses_rather_than_widening_scope() {
     let library = Library::open_in_memory().expect("open");
@@ -938,34 +904,23 @@ fn importing_a_rule_scoped_to_an_unknown_root_refuses_and_leaves_the_rule_set_un
     );
 }
 
-/// **Minor 5.** `replace_all`'s own doc claims atomicity — "the delete and
-/// the inserts are atomic ... roll back together with an outer transaction
-/// where one is open" — and nothing had tested it before this: every test
-/// above reaches `replace_all` only through `import_json`, which refuses a
-/// rule scoped to an unknown root *before* ever calling it (a root-path
-/// lookup, not a SQL failure), so the property this test pins was
-/// unexercised by anything in this file. Reverting `replace_all`'s `Nested`
-/// scope to bare `conn.execute` calls with no commit leaves every other test
-/// in this suite green, because none of them ever makes an insert partway
-/// through the list fail.
+/// `replace_all`'s own doc claims atomicity: its delete, updates and
+/// inserts are atomic, and roll back together with an outer transaction
+/// where one is open.
 ///
 /// **`root_id: Some(9999)` is the failure.** No such root exists, and every
 /// connection this crate hands out enforces foreign keys
-/// (`every_connection_enforces_foreign_keys`, `lib.rs`), so the `INSERT` for
-/// that one new rule refuses. Where it sits in the proposed list does not
-/// matter: `replace_all`'s three-pass structure runs every `DELETE`, then
-/// every `UPDATE`, then every `INSERT`, so the one insert this test makes
-/// always runs last regardless of list position — placing it "in the
-/// middle" was only ever a fact about the `Vec`, never about execution
-/// order.
+/// (`crate::tests::every_connection_enforces_foreign_keys`), so the `INSERT`
+/// for that one new rule refuses. Where it sits in the proposed list does not
+/// matter: `replace_all`'s three-pass structure runs every `DELETE`, then every
+/// `UPDATE`, then every `INSERT`, so the one insert this test makes always runs
+/// last regardless of list position — placing it "in the middle" was only ever
+/// a fact about the `Vec`, never about execution order.
 ///
 /// **The list also genuinely drops the last seeded rule**, not only adds the
-/// bad one — `replace_all` no longer deletes every row on every call (that
-/// was the defect this same round's other fix removed), so a proposed list
-/// that only *adds* a rule never issues a real `DELETE` at all, and a probe
-/// confirmed reverting `Nested::open`'s wrapping still left this test green
-/// in that shape: every write it makes is either a harmless same-value
-/// `UPDATE` or the one `INSERT` that fails, so there is nothing for a broken
+/// bad one — a proposed list that only *adds* a rule never issues a real
+/// `DELETE` at all, so every write it makes is either a harmless same-value
+/// `UPDATE` or the one `INSERT` that fails, and there is nothing for a broken
 /// rollback to leave half-applied. Dropping a rule for real gives the
 /// `DELETE` something to do — without the atomic scope, that `DELETE` and
 /// every `UPDATE`, both of which run ahead of the `INSERT` pass, would
@@ -1060,17 +1015,15 @@ fn replace_all_leaves_the_rule_set_untouched_when_an_insert_mid_list_is_refused_
     );
 }
 
-/// **A kept row's own `UPDATE` actually has to run.** Every existing test
+/// **A kept row's own `UPDATE` actually has to run.** Every other test
 /// that checks a kept rule's columns after a replace proposes that rule back
 /// *unchanged* — `replace_all_preserves_the_ids_it_is_given_and_mints_only_for_the_rest`
 /// included, just below — so `kept[&1] == &rule_1` there is satisfied whether
 /// or not the `UPDATE … WHERE id = ?12` loop runs at all: the row already
-/// held those values before this call. Filtering that loop on `r.id == NEW`
-/// instead of `r.id != NEW` — new rules only, kept rules never — still
-/// passes every one of them, because a no-op `UPDATE` on a row already
+/// held those values before this call, and a no-op `UPDATE` on a row already
 /// holding the proposed values is indistinguishable from a skipped one. This
-/// proposes a *changed* field for a kept row and reads it back, which the
-/// no-op case cannot satisfy by accident.
+/// proposes a *changed* field for a kept row and reads it back, which the no-op
+/// case cannot satisfy by accident.
 #[test]
 fn replace_all_writes_a_kept_rules_changed_field_not_only_its_unchanged_id() {
     let library = Library::open_in_memory().expect("open");
@@ -1100,13 +1053,11 @@ fn replace_all_writes_a_kept_rules_changed_field_not_only_its_unchanged_id() {
 /// present before, absent from `rules` — loses its row entirely.
 ///
 /// **Also the exact interleaving [`replace_all`]'s own doc comment argues
-/// about**, though for a different reason than the old two-pass `INSERT`
-/// design it once had: two kept rules (`1` and `4`, the seeded first and
-/// last) sit either side of a brand new one in the proposed list, so a
-/// version of this function that minted ids by list position rather than by
-/// `id == 0` would still pass a version of this test that put every new rule
-/// at the end. Seeded rule `2` is dropped entirely, to also pin the third
-/// outcome — gone, not merely un-kept.
+/// about**: two kept rules (`1` and `4`, the seeded first and last) sit either
+/// side of a brand new one in the proposed list, so a version of this function
+/// that minted ids by list position rather than by `id == 0` would still pass a
+/// version of this test that put every new rule at the end. Seeded rule `2` is
+/// dropped entirely, to also pin the third outcome — gone, not merely un-kept.
 #[test]
 fn replace_all_preserves_the_ids_it_is_given_and_mints_only_for_the_rest() {
     let library = Library::open_in_memory().expect("open");
@@ -1226,17 +1177,12 @@ fn replace_all_over_an_unchanged_rule_never_nulls_a_proposals_created_rule_id() 
     );
 }
 
-/// **Whole-branch review, Important 3.** `import_json` replaces the whole
-/// rule set through `replace_all`'s own `DELETE FROM rule`, which orphans
-/// `created_rule_id` (`ON DELETE SET NULL`) on any proposal an accepted,
-/// now-dropped rule had answered — and nothing on this path ever calls
-/// `derive`, so nothing ever reached `proposals::raise`'s own repair for
-/// that. Before this fix, an import of a document that simply predates an
-/// accept left that proposal reading `accepted` with `created_rule_id`
-/// `NULL` — an acceptance nothing any longer decided — until whatever scan
-/// happened to run next. `import_json` now runs the identical repair
-/// `delete_rule` already does, inside its own transaction, and reports the
-/// ids it reopened rather than silently dropping them.
+/// `import_json` replaces the whole rule set through `replace_all`'s own
+/// `DELETE FROM rule`, which orphans `created_rule_id` (`ON DELETE SET NULL`)
+/// on any proposal an accepted, now-dropped rule had answered. Importing a
+/// document that predates an accept must reopen that proposal rather than leave
+/// it reading `accepted` with a `created_rule_id` of `NULL`, and must report
+/// the ids it reopened.
 #[test]
 fn importing_a_rule_set_that_drops_an_accepted_rule_reopens_its_proposal() {
     use crate::scan;
@@ -1303,21 +1249,13 @@ fn importing_a_rule_set_that_drops_an_accepted_rule_reopens_its_proposal() {
     );
 }
 
-/// **Important 1, first refusal.** A nonzero id naming no row this table
-/// currently holds must be refused — a caller bug, per this function's own
-/// doc comment, not a legitimate "adopt this identity" request. Reverting
-/// the guard loop above to a bare `kept_ids.insert(rule.id);` leaves both
-/// this test and the one below unwritten territory: nothing before them
-/// ever handed `replace_all` an id it did not itself mint or read back, so
-/// the whole crate's suite stayed at 613 passed, 0 failed with the guard
-/// gone entirely. Measured with it gone: the four seeded rules plus
-/// `Rule { id: 77, .. }` returns `Ok(())`, and the table still holds exactly
-/// the four seeded rows — the `UPDATE ... WHERE id = 77` this function
-/// issues for it matches no row, its rows-affected count silently
-/// discarded, so the caller's rule is dropped on the floor rather than
-/// refused. Nothing reachable through `preview` or `import_json` today ever
-/// exercises this; C4's save path handing back an id from a stale editor is
-/// exactly what it exists to catch.
+/// A nonzero id naming no row this table currently holds must be refused — a
+/// caller bug, per this function's own doc comment, not a legitimate
+/// "adopt this identity" request: left alone, the `UPDATE ... WHERE id = 77`
+/// this function issues for it would match no row, its rows-affected count
+/// silently discarded, and the caller's rule would be dropped on the floor
+/// rather than refused. C4's save path handing back an id from a stale editor
+/// is exactly what it exists to catch.
 #[test]
 fn replace_all_refuses_a_nonzero_id_that_names_no_existing_row() {
     let library = Library::open_in_memory().expect("open");
@@ -1342,14 +1280,9 @@ fn replace_all_refuses_a_nonzero_id_that_names_no_existing_row() {
     );
 }
 
-/// **Important 1, second refusal.** Two rules sharing one nonzero id must be
-/// refused atomically, not resolved by silent last-write-wins — exactly the
-/// outcome this function's own doc comment says it refuses. With the guard
-/// loop reverted to a bare `kept_ids.insert(rule.id);`, the four seeded
-/// rules plus a second copy of rule 1 — same id, `pattern: "second-copy"` —
-/// returns `Ok(())`, the table still holds exactly four rows, and rule 1's
-/// pattern now reads `"second-copy"`, silently overwritten by whichever of
-/// the two copies its `UPDATE` happened to run last.
+/// Two rules sharing one nonzero id must be refused atomically, not resolved by
+/// silent last-write-wins — exactly the outcome this function's own doc comment
+/// says it refuses.
 #[test]
 fn replace_all_refuses_two_rules_sharing_one_nonzero_id() {
     let library = Library::open_in_memory().expect("open");
@@ -1379,19 +1312,18 @@ fn replace_all_refuses_two_rules_sharing_one_nonzero_id() {
     );
 }
 
-// --- `create`, `update`, `delete`: task 7's single-row CRUD ---------------
+// --- `create`, `update`, `delete`: single-row CRUD ---
 
 /// A rule with every column that can hold a non-default value set to one —
 /// `root_id`, `set_kind` and `set_language` included.
 ///
-/// **Review found this exact gap.** `library_with_two_competing_rules`'s
-/// pair, which every `update` test before this one reused, leaves `root_id`,
-/// `set_kind` and `set_language` all `None` — so a version of `update` whose
-/// guard on any of those three is unconditional (always writing
+/// `library_with_two_competing_rules`'s pair leaves `root_id`, `set_kind` and
+/// `set_language` all `None` — so a version of `update` whose guard on any of
+/// those three is unconditional (always writing
 /// `patch.<field>.unwrap_or(None)` whether `patch` named it or not) writes
 /// `None` over `None`, indistinguishable from correct. A fixture rule has to
-/// hold a real value on each of them before a test can tell "left alone"
-/// from "silently rewritten" apart.
+/// hold a real value on each of them before a test can tell "left alone" from
+/// "silently rewritten" apart.
 fn fully_specified_rule(conn: &Connection) -> Rule {
     let dir = crate::tests::tempdir("rules-fully-specified");
     let root = crate::scan::add_root(conn, dir.path()).expect("adding a root for root_id");
@@ -1420,15 +1352,9 @@ fn fully_specified_rule(conn: &Connection) -> Rule {
         .expect("the just-created rule")
 }
 
-/// **Important 2.** The reviewer mutation-tested `update` rather than
-/// reading it: making `root_id`'s guard (`rules.rs`) unconditional —
-/// `patch.root_id.unwrap_or(None)`, always pushed instead of only when
-/// `patch.root_id` is `Some` — left all 643 tests in this crate green,
-/// because no fixture any `update` test used ever gave a rule a non-`None`
-/// `root_id` to lose. Reverting `set_kind`'s guard the same way survives for
-/// the identical reason, and `set_language` has the same shape.
-/// [`fully_specified_rule`] gives a rule real values on all three, so a
-/// patch naming a different field has something to actually preserve.
+/// [`fully_specified_rule`] gives a rule real values on `root_id`, `set_kind`
+/// and `set_language`, so a patch naming a different field has something to
+/// actually preserve.
 ///
 /// Making the `root_id`, `set_kind` or `set_language` guard unconditional —
 /// each on its own — must turn this test red: the field goes back to `NULL`
@@ -1468,8 +1394,7 @@ fn updating_one_field_leaves_root_id_set_kind_and_set_language_alone() {
         after.set_language, before.set_language,
         "set_language must survive an unrelated patch"
     );
-    // The remaining columns, to the same standard — review called these
-    // "weaker versions of the same gap", covered before only indirectly.
+    // The remaining columns, to the same standard.
     assert_eq!(after.kind, before.kind);
     assert_eq!(after.match_on, before.match_on);
     assert_eq!(after.note, before.note);
@@ -1527,8 +1452,7 @@ fn clearing_root_id_sets_it_to_null_and_leaves_set_kind_alone() {
 ///
 /// `list`'s items are [`crate::proposals::ListedProposal`], which wraps
 /// `.proposal` rather than exposing `state`/`created_rule_id` at the top
-/// level — the plan this test started from assumed a flatter shape, and
-/// `crate::proposals::Filter` has no `Default` impl either, so the filter
+/// level, and `crate::proposals::Filter` has no `Default` impl, so the filter
 /// is spelled out by hand below.
 #[test]
 fn deleting_a_proposal_written_rule_reopens_its_proposal() {
@@ -1591,19 +1515,13 @@ fn deleting_an_absent_rule_reports_it_rather_than_erroring() {
     assert_eq!(deleted.reopened_proposals, Vec::<i64>::new());
 }
 
-/// **Important 1.** `proposals::accept_with` can write one rule that answers
-/// several proposals at once — a widened rule, its own doc comment's
-/// "resolves 6 more" — and `unaccept` reopens every one of them, keyed on
-/// the rule rather than on any single proposal id. `delete` has to report
-/// all of them, not just the lowest-numbered one: a caller told
-/// `reopened_proposals: [5]` when the rule actually answered `[5, 9]` would
-/// tell a person deleting a widened rule that they reopened one question
-/// when they reopened two.
-///
-/// Reverting `delete` to report only the first id it finds — the
-/// `Option<i64>` this field used to be — leaves this test red: the second
-/// proposal's id is missing from `deleted.reopened_proposals`, and the
-/// second proposal itself is still `accepted` afterward rather than `open`.
+/// `proposals::accept_with` can write one rule that answers several proposals
+/// at once — a widened rule, `proposals::Resolution`'s "resolves 6 more" — and
+/// `unaccept` reopens every one of them, keyed on the rule rather than on any
+/// single proposal id. `delete` has to report all of them, not just the
+/// lowest-numbered one: a caller told `reopened_proposals: [5]` when the rule
+/// actually answered `[5, 9]` would tell a person deleting a widened rule that
+/// they reopened one question when they reopened two.
 #[test]
 fn deleting_a_widened_rule_reports_and_reopens_every_proposal_it_answered() {
     let dir = crate::tests::tempdir("rules-widened-accept");
@@ -1871,18 +1789,12 @@ fn creating_without_an_ordinal_appends_past_the_current_maximum() {
     );
 }
 
-/// **Minor 3.** `create`'s own doc comment names the hazard: a bare
-/// `MAX(ordinal) + 1` overflows the moment a rule already sits at
-/// `i64::MAX` — exactly what `crate::proposals::accept_with`'s own
-/// `COALESCE(MAX(ordinal), 4) + 1` does, measured for real once
-/// (`crate::tests::LAST_WORD_ORDINAL`'s own doc comment tells that story).
-/// `create` guards the identical computation with `i64::saturating_add`
-/// rather than a bare `+`, so a rule already at `i64::MAX` gives the next
-/// one `i64::MAX` too.
-///
-/// Reverting `create`'s `m.saturating_add(1)` to a bare `m + 1` turns this
-/// test red: a debug build panics on the overflow, and a release build
-/// wraps to `i64::MIN`, sorting the new rule first instead of last.
+/// `create`'s own doc comment names the hazard: a bare `MAX(ordinal) + 1`
+/// overflows the moment a rule already sits at `i64::MAX` — exactly what
+/// `crate::proposals::accept_with`'s own `COALESCE(MAX(ordinal), 4) + 1` does.
+/// `create` guards the identical computation with `i64::saturating_add` rather
+/// than a bare `+`, so a rule already at `i64::MAX` gives the next one
+/// `i64::MAX` too.
 #[test]
 fn creating_past_the_maximum_ordinal_saturates_rather_than_overflowing() {
     let library = Library::open_in_memory().expect("open");
@@ -1980,12 +1892,10 @@ fn created_rule_reads_back_with_the_content_it_was_given() {
 ///
 /// The separator condition stops `One Piecey` counting as a qualified
 /// `One Piece`. The letter-or-digit condition stops a trailing space counting
-/// as a qualifier — the real library has
-/// `Hunter × Hunter (Official Colored) ` with one, and 37 members would have
-/// moved to a series name ending in whitespace.
+/// as a qualifier, as in `Hunter × Hunter (Official Colored) `.
 #[test]
 fn a_directory_qualifies_a_series_only_across_a_separator_and_with_something_to_say() {
-    // The three merged shapes measured in the real library, 2026-09-15.
+    // Directories that qualify the captured series.
     assert!(qualifies("[Oshi no Ko] - Fan Translated", "[Oshi no Ko]"));
     assert!(qualifies("Death Note (Colored Council)", "Death Note"));
     assert!(qualifies(
@@ -1995,9 +1905,7 @@ fn a_directory_qualifies_a_series_only_across_a_separator_and_with_something_to_
 
     // Every admitted separator, each as the remainder's *first* character. A
     // space before a dash or a bracket satisfies the check on its own, so
-    // `"A - Q"` and `"A (Q)"` pin only the space: the controller's mutation
-    // sweep removed `'-'`, `'('` and `'['` from `QUALIFIER_SEPARATORS` in turn
-    // and no test failed until these three no-space cases were added.
+    // `"A - Q"` and `"A (Q)"` pin only the space.
     for directory in [
         "A Q", "A-Q", "A_Q", "A(Q)", "A[Q]", "A - Q", "A (Q)", "A [Q]",
     ] {
@@ -2006,8 +1914,7 @@ fn a_directory_qualifies_a_series_only_across_a_separator_and_with_something_to_
 
     // A digit is something to say. O89's spec §1.4 accepts a numbered
     // directory as a qualifier (more often a sequel or part than the same
-    // series), and a range pack with it — no test pinned that until the
-    // whole-branch review asked `is_alphanumeric` → `is_alphabetic`.
+    // series), and a range pack with it.
     assert!(qualifies("Series 1", "Series"));
     assert!(qualifies("Naruto 1-72", "Naruto"));
 

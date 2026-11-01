@@ -1,28 +1,20 @@
 use rusqlite::Connection;
 
 /// A migrated database holding one scanned work: a hub edition `en` with two
-/// members under two different roots, plus a second, non-hub edition `raw`
-/// with a member under a third root.
+/// members under two different roots, plus a second, non-hub edition `raw` with
+/// a member under a third root.
 ///
-/// **Strengthened from the brief's one-edition, one-member fixture.** That
-/// fixture cannot fail for the reason `the_address_is_a_dotfile_directory_
-/// under_the_hub_editions_root`'s name claims: with a single edition and a
-/// single member, "the hub edition's first member" and "any member at all"
-/// name the same row, so a query that dropped `edition.key = work.hub` or
-/// reversed `ORDER BY member.ordinal` still passed against it (checked by
-/// hand, mutating `path_for`'s SQL and re-running against the original
-/// fixture — both mutants survived). Three roots make the three candidates
-/// resolve to three different paths, so picking the wrong one is visible:
-/// `/wrong-order` is the hub edition's *second* member by ordinal, and
-/// `/other-edition` belongs to the non-hub edition entirely. Only
+/// Three roots make the hub edition's first member, its second member and the
+/// non-hub edition's member resolve to three different paths, so picking the
+/// wrong one is visible: `/wrong-order` is the hub edition's *second* member by
+/// ordinal, and `/other-edition` belongs to the non-hub edition entirely. Only
 /// `/library`, the hub edition's first member, is the right answer.
 ///
-/// The non-hub edition's member carries ordinal `-1` — lower than either of
-/// the hub edition's, rather than tied with the first at `0` — so that
-/// dropping the `edition.key = work.hub` filter picks it *deterministically*
-/// first once ordered, rather than winning only because SQLite's sort
-/// happened to keep the tie in insertion order. Checked by hand: with ordinal
-/// `0` on both, the same mutant still passed.
+/// The non-hub edition's member carries ordinal `-1` — lower than either of the
+/// hub edition's, rather than tied with the first at `0` — so that dropping the
+/// `edition.key = work.hub` filter picks it *deterministically* first once
+/// ordered, rather than winning only because SQLite's sort happened to keep the
+/// tie in insertion order.
 fn a_scanned_work(conn: &Connection) -> i64 {
     crate::schema::migrate(conn).expect("migrating");
     conn.execute_batch(
@@ -62,10 +54,8 @@ fn the_address_is_a_dotfile_directory_under_the_hub_editions_root() {
     );
 }
 
-/// A work whose hub edition has no rooted member at all — an imported/sidecar
-/// work, whose `sidecar_path` is NULL by design and which therefore has
-/// nowhere else to put the document. Extracted so the tests that need this
-/// shape share one copy of it rather than each seeding a second.
+/// A work whose hub edition has no rooted member at all — an
+/// imported/sidecar work.
 fn a_work_with_no_rooted_member(conn: &Connection) -> i64 {
     crate::schema::migrate(conn).expect("migrating");
     conn.execute_batch(
@@ -121,10 +111,9 @@ fn a_scanned_work_rooted_at(conn: &Connection, root: &str) -> i64 {
 /// seeds a `root` row directly — so a caller of *that* fixture gets the
 /// off default, which is exactly the case
 /// `a_root_that_keeps_no_documents_gets_no_file_and_reports_success` exists to
-/// exercise. Every test below this line is about a document that actually
-/// lands on disk, not about the setting that decides whether one does, so
-/// each opts in through this wrapper rather than repeating the `UPDATE`
-/// inline at every call site.
+/// exercise. The tests below that are about a document that actually lands on
+/// disk, not about the setting that decides whether one does, opt in through
+/// this wrapper rather than repeating the `UPDATE` inline at every call site.
 fn a_scanned_work_rooted_at_that_keeps_documents(conn: &Connection, root: &str) -> i64 {
     let work_id = a_scanned_work_rooted_at(conn, root);
     conn.execute("UPDATE root SET keeps_documents = 1", [])
@@ -184,12 +173,12 @@ fn an_unedited_work_has_nothing_to_remove_and_that_is_not_a_failure() {
         saved.why, None,
         "nothing went wrong, so there is nothing to report"
     );
-    // **I2.** `record_absorbed(…, !doc.is_empty())` must not arm the guard
-    // for a work nothing has ever hand-edited — mutating `!doc.is_empty()`
-    // to `true` would freeze derivation out of every scanned work's
+    // `record_absorbed(…, !doc.is_empty())` must not arm the guard for a work
+    // nothing has ever hand-edited — mutating `!doc.is_empty()` to `true` would
+    // freeze derivation out of every scanned work's
     // `series_id`/`volume`/`edition.kind`/`edition.language` the moment
-    // anything ever called `save` on it at all, hand edit or not. Nothing
-    // above named the marker, only `persisted`/`why`.
+    // anything ever called `save` on it at all, hand edit or not. Nothing above
+    // names the marker, only `persisted`/`why`.
     assert!(
         !crate::migrate::absorbed(&conn, work_id, crate::migrate::LIBRARY)
             .expect("reading the marker"),
@@ -278,14 +267,12 @@ fn a_removal_failure_that_is_not_notfound_is_reported_not_swallowed() {
     doc.title = None;
     crate::librarydoc::apply(&conn, work_id, &doc).expect("applying the withdrawal");
 
-    // **A directory in the document's place, not a read-only parent.** This
-    // read `set_readonly` on the parent until 2026-08-29, and that premise
-    // does not hold for every process: **CI runs as root, which ignores the
-    // write bit**, so the removal succeeded there and the failure this test
-    // is named for never happened — the forge failed on it while every local
-    // run passed. `remove_file` on a directory is `EISDIR` for any uid, which
-    // is a removal failure that is not `NotFound`, which is exactly the arm
-    // under test.
+    // **A directory in the document's place, not a read-only parent.** A
+    // read-only parent does not stop every process: **CI runs as root, which
+    // ignores the write bit**, so the removal would succeed there and the
+    // failure this test is named for would never happen. `remove_file` on a
+    // directory is `EISDIR` for any uid, which is a removal failure that is not
+    // `NotFound`, which is exactly the arm under test.
     std::fs::remove_file(&path).expect("clearing the document to put a directory in its place");
     std::fs::create_dir(&path).expect("a directory where the document was");
 
@@ -327,12 +314,10 @@ fn a_root_that_cannot_take_the_document_still_arms_the_guard() {
     doc.title = Some("Hand Set".to_string());
     crate::librarydoc::apply(&conn, work_id, &doc).expect("applying");
 
-    // **A file where the directory must go, not a read-only root.** This test
-    // used `set_readonly` on `root` until 2026-08-29, and that premise does
-    // not hold for every process: **CI runs as root, which ignores the write
-    // bit**, so `create_dir_all` succeeded there, the document reached the
-    // disk, and the assertion below failed on the forge while passing for
-    // every unprivileged developer. A plain file at `<root>/.taiyaku` makes
+    // **A file where the directory must go, not a read-only root.** A read-only
+    // root does not stop every process: **CI runs as root, which ignores the
+    // write bit**, so `create_dir_all` would succeed there and the document
+    // would reach the disk. A plain file at `<root>/.taiyaku` makes
     // `create_dir_all` fail with `AlreadyExists` (`File exists`, os error 17)
     // for *any* uid, which is the same branch of `save` without the
     // privilege dependency.
@@ -360,13 +345,9 @@ fn a_root_that_cannot_take_the_document_still_arms_the_guard() {
     );
 }
 
-/// **I4.** A work with no rooted member at all — [`a_work_with_no_rooted_
+/// A work with no rooted member at all — [`a_work_with_no_rooted_
 /// member_has_no_address`]'s own fixture, an imported/sidecar work — has
-/// nowhere for [`save`] to write. That must not mean the edit is unprotected:
-/// `derive::write_work`'s guard reads this same marker before it overwrites
-/// `work.series_id`, `work.volume`, `edition.kind` and `edition.language`, so
-/// an edit that never arms it would be silently reverted the next time
-/// anything scans this library.
+/// nowhere for [`save`] to write; saving still arms the `absorbed` marker.
 #[test]
 fn saving_a_work_with_no_address_still_arms_the_guard() {
     let conn = Connection::open_in_memory().expect("in-memory database");
@@ -452,8 +433,8 @@ fn a_rescan_with_no_database_recovers_the_hand_set_title() {
 /// A document whose work has been rekeyed under it is an **orphan**, and the
 /// report has to carry the title out of it. The filename is a hash of content
 /// that no longer exists, so a report naming only the path gives a person
-/// nothing to act on — and since O80 closed, a title-only document carries no
-/// series, no volume and no member digests to identify it by any other route.
+/// nothing to act on — and a title-only document carries no series, no volume
+/// and no member digests to identify it by any other route (O80).
 ///
 /// **The same pass also closes the gap the rekey opened at the new
 /// address.** The work's marker is still armed and its new `content_key`
@@ -522,11 +503,8 @@ fn a_document_no_work_addresses_is_an_orphan_named_with_its_title() {
     );
 }
 
-/// **O82's claim, driven.** A correction made while the root could not take
-/// the document is written on the next pass once it can. Before this, nothing
-/// re-attempted the write and no command existed to sweep — measured on
-/// 2026-08-31 by restoring write permission and running a full scan and
-/// derive, after which the document still held the superseded title.
+/// **O82's claim, driven.** A correction made while the root could not take the
+/// document is written on the next pass once it can.
 #[test]
 fn a_gap_is_written_on_the_next_pass() {
     let dir = crate::tests::tempdir("hand-reconcile-retry");
@@ -567,15 +545,14 @@ fn a_gap_is_written_on_the_next_pass() {
     );
 }
 
-/// **A gap the marker names but the projection does not.** A work whose
-/// marker is armed while it carries no hand-set field at all reproduces the
-/// state a hand edit withdrawn outside `save` would leave behind:
-/// `librarydoc::of` projects the same empty document
-/// `of_is_empty_for_a_work_nothing_has_been_applied_to` pins, so the gap
-/// loop's call to `save` takes its remove-file branch, finds nothing to
-/// remove (`ErrorKind::NotFound`), and answers `persisted: true` for a pass
-/// that wrote no file at all. Before this fix that counted as a repair;
-/// asserting `repaired == 0` is the fix.
+/// **A gap the marker names but the projection does not.** A work whose marker
+/// is armed while it carries no hand-set field at all reproduces the state a
+/// hand edit withdrawn outside `save` would leave behind: `librarydoc::of`
+/// projects the same empty document
+/// `of_is_empty_for_a_work_nothing_has_been_applied_to` pins, so the gap loop's
+/// call to `save` takes its remove-file branch, finds nothing to remove
+/// (`ErrorKind::NotFound`), and answers `persisted: true` for a pass that wrote
+/// no file at all. That must not count as a repair.
 #[test]
 fn a_gap_whose_document_projects_empty_is_not_counted_as_repaired() {
     let dir = crate::tests::tempdir("hand-reconcile-empty-gap");
@@ -607,17 +584,12 @@ fn a_gap_whose_document_projects_empty_is_not_counted_as_repaired() {
 /// `root` snapshot this loop is gated on.** `derive()` reads `scan::roots`
 /// once, near the top of the call, and hands the same snapshot to every
 /// `reconcile` seconds later; `save` re-reads `root.keeps_documents` itself,
-/// live, off the same row. Unreachable through the public API today —
-/// nothing but raw SQL moves the column outside a test — but constructible
-/// directly here: this test hands `reconcile` a `Root` that still says
+/// live, off the same row. This test hands `reconcile` a `Root` that still says
 /// `keeps_documents: true` while the database row underneath it has already
-/// been turned off, which is exactly what a PATCH landing mid-derive would
-/// produce once spec C4 gives the column a control. Before the fix, the
-/// outer gate admitted the loop on the strength of the stale `true`, `save`
-/// then read the live `false` and refused the write, and `saved.persisted`
-/// alone was enough to count it — printing "1 document(s) written" for a
-/// pass that wrote nothing, the identical false claim the outer gate's own
-/// comment already exists to prevent, one layer further down.
+/// been turned off, which is what a PATCH landing mid-derive would produce. The
+/// outer gate admits the loop on the strength of the stale `true`, `save` then
+/// reads the live `false` and refuses the write, and counting `saved.persisted`
+/// alone would print "1 document(s) written" for a pass that wrote nothing.
 #[test]
 fn repaired_is_counted_off_the_live_answer_not_the_stale_snapshot() {
     let dir = crate::tests::tempdir("hand-reconcile-race");
@@ -636,8 +608,7 @@ fn repaired_is_counted_off_the_live_answer_not_the_stale_snapshot() {
 
     // The setting is turned off live, between when `derive()` would have
     // snapshotted `root` and when `reconcile` actually runs — simulated
-    // directly, since a real race is not reproducible on demand and nothing
-    // but raw SQL can reach the column at all today.
+    // directly, since a real race is not reproducible on demand.
     conn.execute("UPDATE root SET keeps_documents = 0", [])
         .expect("off, live");
     let mut stale_snapshot = crate::scan::roots(&conn).expect("reading roots").remove(0);
@@ -698,9 +669,7 @@ fn a_gap_that_cannot_be_written_is_named_and_does_not_fail_the_pass() {
 }
 
 /// **The control.** A library in which nothing has gone wrong must report
-/// nothing at all — without this, a `reconcile` that returned every work as a
-/// gap, or rewrote every document on every pass, would still pass the three
-/// tests above.
+/// nothing at all.
 #[test]
 fn a_library_with_nothing_wrong_reports_nothing() {
     let dir = crate::tests::tempdir("hand-reconcile-clean");
@@ -722,11 +691,10 @@ fn a_library_with_nothing_wrong_reports_nothing() {
     assert_eq!(found.unwritable.len(), 0, "nothing failed to write");
 }
 
-/// **The third state, and the one neither O81 nor O82 named.** A document that
-/// exists at the right address and disagrees with the database is neither a
-/// gap nor an orphan, so a sweep counting only presence walks straight past
-/// it — and a rebuild then reads the older title back over the newer one.
-/// Measured on 2026-08-31; see `docs/notes.md`.
+/// **The third state.** A document that exists at the right address and
+/// disagrees with the database is neither a gap nor an orphan, so a sweep
+/// counting only presence walks straight past it — and a rebuild then reads the
+/// older title back over the newer one. See `docs/notes.md`.
 #[test]
 fn a_document_that_disagrees_with_the_database_is_stale_and_is_not_rewritten() {
     let dir = crate::tests::tempdir("hand-reconcile-stale");
@@ -800,12 +768,9 @@ fn a_document_that_agrees_is_not_stale_despite_a_newer_updated_stamp() {
     );
 }
 
-/// A file at a work's own address that cannot be *parsed* is not a
-/// disagreement — it is already `DeriveReport::unreadable_hand`'s, which the
-/// read-back populates, and this must not duplicate it. Checked by hand:
-/// turning the parse guard's `let … else { continue }` in `reconcile` into
-/// `found.stale.push(path.display().to_string())` makes this test fail;
-/// reverted after confirming that.
+/// A file at a work's own address that cannot be *parsed* is not a disagreement
+/// — it is already `DeriveReport::unreadable_hand`'s, which the read-back
+/// populates, and this must not duplicate it.
 ///
 /// **This exercises only the parse guard, not the read guard.** `b"not json
 /// at all"` is valid UTF-8, so `std::fs::read_to_string` always succeeds
@@ -867,10 +832,6 @@ fn an_unparseable_document_is_neither_stale_nor_an_orphan() {
 /// read-only permission bit passes locally and fails on the forge. A
 /// directory has no such escape: reading one fails for every uid, root
 /// included.
-///
-/// Checked by hand: turning the read guard's `let … else { continue }` in
-/// `reconcile` into `found.stale.push(path.display().to_string())` makes
-/// this test fail; reverted after confirming that.
 #[test]
 fn a_document_that_cannot_be_read_is_not_reported_stale() {
     let dir = crate::tests::tempdir("hand-reconcile-unreadable");
@@ -901,17 +862,11 @@ fn a_document_that_cannot_be_read_is_not_reported_stale() {
     );
 }
 
-/// **Finding 2.** `librarydoc::of` projects `Comicinfo` and `Filename`
-/// chapters into `members`, not only `Hand` ones, and `derive::
-/// write_chapters` writes a fresh `Filename` chapter from a member's name on
-/// every scan. A work with an unrelated hand edit whose document already
-/// agrees with the database must not turn `stale` the moment the library
-/// gains a chapter nobody touched by hand.
-///
-/// Checked by hand: removing `reconcile`'s `not_filename` filter makes this
-/// fail, because the document on disk (saved before the chapter existed) then
-/// disagrees with the freshly projected one on `members` alone; the filter
-/// was restored after confirming that.
+/// `librarydoc::of` projects `Comicinfo` and `Filename` chapters into
+/// `members`, not only `Hand` ones, and `derive::write_chapters` writes a fresh
+/// `Filename` chapter from a member's name on every scan. A work with an
+/// unrelated hand edit whose document already agrees with the database must not
+/// turn `stale` the moment the library gains a chapter nobody touched by hand.
 #[test]
 fn a_new_filename_chapter_does_not_make_a_hand_edit_stale() {
     let dir = crate::tests::tempdir("hand-reconcile-new-chapter");
@@ -989,9 +944,8 @@ fn a_rekey_never_overwrites_a_document_already_at_the_new_address() {
     );
 }
 
-/// **The change's headline: an off root gets no file.** Not an error, not a
-/// failed write — nothing was owed, so nothing is missing and `persisted`
-/// says so.
+/// **An off root gets no file.** Not an error, not a failed write — nothing was
+/// owed, so nothing is missing and `persisted` says so.
 #[test]
 fn a_root_that_keeps_no_documents_gets_no_file_and_reports_success() {
     let dir = crate::tests::tempdir("hand-save-documents-off");
@@ -1031,19 +985,12 @@ fn a_root_that_keeps_no_documents_gets_no_file_and_reports_success() {
     );
 }
 
-/// **Nothing is ever deleted by the off branch — the case the headline test
-/// above cannot reach.** That test's root never keeps a document in the first
-/// place, so it cannot tell "nothing was owed" apart from "something was
-/// owed and got destroyed." This one turns the setting off *after* a document
-/// already reached disk, then empties the projection on the very save that
-/// follows — the save that, on an on root, would take the remove-file branch.
-///
-/// Narrowing `save`'s guard to `if keeps_documents == Some(false) &&
-/// !doc.is_empty()` passes every other test in this file — including the
-/// headline one, whose document never existed to delete — while deleting the
-/// file this test plants. Checked by hand: applying that narrowing here fails
-/// this test (`left: false` on the final `is_file` assertion) and nothing
-/// else; reverting restores green.
+/// **Nothing is ever deleted by the off branch — the case the test above cannot
+/// reach.** That test's root never keeps a document in the first place, so it
+/// cannot tell "nothing was owed" apart from "something was owed and got
+/// destroyed." This one turns the setting off *after* a document already
+/// reached disk, then empties the projection on the very save that follows —
+/// the save that, on an on root, would take the remove-file branch.
 #[test]
 fn an_off_root_never_deletes_a_document_already_on_disk() {
     let dir = crate::tests::tempdir("hand-save-documents-off-keeps-existing");
@@ -1063,9 +1010,8 @@ fn an_off_root_never_deletes_a_document_already_on_disk() {
     );
 
     // The person turns the setting off, and clears their own edit in the same
-    // stroke — exactly the person this test exists for, per the brief: "a
-    // person who has just turned the setting off is exactly the person with a
-    // file on disk and edits still to clear."
+    // stroke: a person who has just turned the setting off is exactly the
+    // person with a file on disk and edits still to clear.
     conn.execute("UPDATE root SET keeps_documents = 0", [])
         .expect("turning documents off");
     let mut doc = crate::librarydoc::of(&conn, work_id).expect("projecting");
@@ -1150,12 +1096,11 @@ fn a_work_with_no_rooted_member_has_no_root_to_ask() {
     assert_eq!(saved.path, None, "and no address either");
 }
 
-/// **The one way this change can fail silently.** A marked work whose address
-/// holds no file is a gap, and `reconcile` repairs a gap by writing the file.
-/// In a root that keeps no documents every marked work looks exactly like
-/// that — so without the branch under test, the next scan would recreate
-/// every document the setting exists to prevent, and the setting would appear
-/// to work and then quietly undo itself.
+/// A marked work whose address holds no file is a gap, and `reconcile` repairs
+/// a gap by writing the file. In a root that keeps no documents every marked
+/// work looks exactly like that — so without the branch under test, the next
+/// scan would recreate every document the setting exists to prevent, and the
+/// setting would appear to work and then quietly undo itself.
 #[test]
 fn an_off_root_is_never_repaired_into_growing_documents() {
     let dir = crate::tests::tempdir("hand-reconcile-off-no-repair");
@@ -1190,26 +1135,11 @@ fn an_off_root_is_never_repaired_into_growing_documents() {
     );
 }
 
-/// **The Critical.** A document at a work's own, correct address — a live
-/// work still addresses it — whose root has simply turned `keeps_documents`
-/// off must be reported as [`super::Declined`], never folded into
-/// [`super::Orphan`]. An earlier `reconcile` gated the whole comparison
-/// branch on `root.keeps_documents` rather than branching on
-/// `expected.get(&path)`, so every such file fell straight through to
-/// `found.orphans` — meaning migration 012, which defaults every existing
-/// root's `keeps_documents` off, made the first derive after upgrading
-/// report *every* hand document in the library as stranded, on the very
-/// pass that `hand::load` (deliberately not gated on `keeps_documents`) read
-/// each one's title back into the database. A person reading "no work owes
-/// this" for a file that had just supplied their database's title had every
-/// reason to delete what they were told was surplus — this test is what
-/// stands between that and a green suite.
-///
-/// **Hand-applying the regression confirms the fixture bites.** Folding the
-/// `expected.contains_key(&path)` arm in `reconcile` back into
-/// `found.orphans.push(..)` (restoring the old behaviour) turns this test's
-/// `found.declined.len() == 1` assertion red while every other test in this
-/// module still passes — checked by hand during this fix, then reverted.
+/// A document at a work's own, correct address — a live work still addresses it
+/// — whose root has simply turned `keeps_documents` off must be reported as
+/// [`super::Declined`], never folded into [`super::Orphan`]: a person told that
+/// no work owes a document, when `hand::load` reads their title from it, has
+/// every reason to delete it.
 #[test]
 fn an_off_root_reports_an_addressed_document_as_declined_not_orphaned() {
     let dir = crate::tests::tempdir("hand-reconcile-off-declined");
@@ -1266,14 +1196,13 @@ fn an_off_root_reports_an_addressed_document_as_declined_not_orphaned() {
     );
 }
 
-/// **The other half of the branch.** A document under an off root's
-/// `.taiyaku` that a live work does *not* address — its work was rekeyed
-/// out from under it — is still genuinely stranded, and turning documents
-/// off must not stop that from being reported. Without this, a fix for the
-/// Critical above that simply routed every off-root file to `declined`
-/// instead of `orphans` (rather than actually branching on
-/// `expected.get(&path)`) would pass every other test in this module and
-/// still be wrong.
+/// **The other half of the branch.** A document under an off root's `.taiyaku`
+/// that a live work does *not* address — its work was rekeyed out from under it
+/// — is still genuinely stranded, and turning documents off must not stop that
+/// from being reported. Without this, a `reconcile` that simply routed every
+/// off-root file to `declined` instead of `orphans` (rather than actually
+/// branching on `expected.get(&path)`) would pass every other test in this
+/// module and still be wrong.
 #[test]
 fn an_off_root_still_reports_a_document_nothing_addresses() {
     let dir = crate::tests::tempdir("hand-reconcile-off-orphan");

@@ -962,12 +962,11 @@ fn derive_summary(report: &taiyaku_library::derive::DeriveReport, raised: usize)
         // **"No work owes it" here means what it says: nothing addresses
         // it.** A document a live work still addresses, whose root has
         // simply declined to keep it, is reported below under
-        // `declined_documents` instead — folding the two together here was
-        // the Critical `taiyaku_library::hand::Orphan`'s own doc comment
-        // records: a person turning documents off used to read, on every
-        // scan, that *every* hand document in the library was stranded and
-        // owed to nothing, sending them hunting for (or deleting) works that
-        // were perfectly fine.
+        // `declined_documents` instead. Folding the two together would tell a
+        // person who turned documents off, on every scan, that *every* hand
+        // document in the library was stranded and owed to nothing, sending
+        // them hunting for (or deleting) works that are perfectly fine; see
+        // `taiyaku_library::hand::Orphan`'s own doc comment.
         //
         // **A fold's target is appended, not substituted.** The path and
         // title stay exactly as they were for every other orphan, and a

@@ -10,13 +10,13 @@
 //! disagree.
 //!
 //! **It never opens a file.** Page counts and digests are columns on
-//! `scan_entry`, written by the walk, so editing a rule re-derives 156 series
-//! at memory speed. `derive/tests.rs` deletes the tree before the second
-//! derive, which is the only way to test a negative like this.
+//! `scan_entry`, written by the walk, so editing a rule re-derives at memory
+//! speed. `derive/tests.rs` deletes the tree before the second derive, which
+//! is the only way to test a negative like this.
 //!
 //! # The one file it does open, and why that is not a contradiction
 //!
-//! §3 makes hashing lazy: `scan.rs` leaves `sha256` NULL because hashing 156
+//! §3 makes hashing lazy: `scan.rs` leaves `sha256` NULL because hashing the
 //! series on every walk is not affordable. A member about to become part of a
 //! work needs its digest — `content_key` is a hash over them — so this module
 //! is where that laziness ends, once per member ever, with the answer written
@@ -71,24 +71,19 @@ const SCANNER_CHAPTER_SOURCE: &str = "filename";
 /// Why derivation could make no structure out of an entry, one field per
 /// cause — [`DeriveReport::unreadable`]. O90.
 ///
-/// **One number used to stand for all four**, and the report was what
-/// collapsed them: the doc on that number already listed four situations, and
-/// a person reading "13 unreadable" could not tell twelve RAR archives from
-/// one archive of pages taiyaku does not read.
-///
 /// **A path where a person has to find the file, a count where they do not.**
-/// A refused format is counted per token, because twelve RAR archives are
-/// fixed by one loop and their names add nothing to it, and `by_format` is
-/// bounded by the formats there are rather than by the size of the library. A
-/// container holding no pages of its own is counted, because its usual
-/// instance is a volume directory holding archives, which is a layout and not
-/// a fault. The other two are single files that something is wrong with, so
-/// they are named, for [`DeriveReport::unreadable_hand`]'s reason: the person
-/// has to be told *which* file. Each is joined to its root, since two roots
-/// can hold the same `rel_path`.
+/// A refused format is counted per token, because RAR archives are fixed by
+/// one loop and their names add nothing to it, and `by_format` is bounded by
+/// the formats there are rather than by the size of the library. A container
+/// holding no pages of its own is counted, because its usual instance is a
+/// volume directory holding archives, which is a layout and not a fault. The
+/// other two are single files that something is wrong with, so they are named,
+/// for [`DeriveReport::unreadable_hand`]'s reason: the person has to be told
+/// *which* file. Each is joined to its root, since two roots can hold the
+/// same `rel_path`.
 ///
 /// `docs/superpowers/specs/2026-09-15-o90-unreadable-attribution-design.md`
-/// §2.1 records the argument, and the version of it that named nothing.
+/// §2.1 records the argument.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Unreadable {
     /// Entries in a format [`taiyaku_read::Format::is_readable`] refuses, by
@@ -105,11 +100,7 @@ pub struct Unreadable {
     /// `taiyaku-read` reads as a page**. The walk keeps no record of which,
     /// because `pages_of` swallows `member_pages`' refusal whole.
     ///
-    /// The second is not hypothetical. The one entry a real library still
-    /// counted here after its RAR archives were repacked was a zip of 185
-    /// JPEG XL pages, which `bsdtar` and Python's `zipfile` both list cleanly
-    /// (`docs/notes.md`, "O90"). "Could not list" would have been the wrong
-    /// name for it.
+    /// The second is not hypothetical (`docs/notes.md`, "O90").
     pub uncounted: Vec<String>,
     /// Containers that listed cleanly and held no page images of their own,
     /// so `pages` is `Some(0)` — a volume directory holding archives is one,
@@ -171,10 +162,9 @@ pub struct DeriveReport {
     /// library.** A rule set that made a series directory speak for its
     /// volumes would swallow every one of them, and without this number the
     /// result reads as a library that happens to hold nothing rather than as
-    /// a rule that swallowed it. That is not hypothetical any more: a
-    /// `set_series` rule broad enough to match the root's own `rel_path`
-    /// collapses the whole library onto one work, and this is the field that
-    /// says so.
+    /// a rule that swallowed it. A `set_series` rule broad enough to match the
+    /// root's own `rel_path` collapses the whole library onto one work, and
+    /// this is the field that says so.
     ///
     /// **Every entry the ancestor test dropped, not only the ones that would
     /// have been members.** A directory the rules gave neither a volume nor a
@@ -206,13 +196,13 @@ pub struct DeriveReport {
     /// Editions left standing on a work this derive wrote, that this derive
     /// did not derive.
     ///
-    /// **The stated cost of [`crate::import::scanned`] no longer deleting
-    /// them.** A scan cannot tell "the scan never saw this edition" from "a
-    /// rule edit removed it", so it must not act as though it can — deleting
-    /// a hand-aligned edition is unrecoverable, while an orphan is visible
-    /// and fixable. What that leaves is an orphan nobody asked for: edit a
-    /// rule so `raw` becomes `colour`, and the work keeps a `raw` edition
-    /// naming files the rules no longer place there.
+    /// **The stated cost of [`crate::import::scanned`] not deleting them.** A
+    /// scan cannot tell "the scan never saw this edition" from "a rule edit
+    /// removed it", so it must not act as though it can — deleting a
+    /// hand-aligned edition is unrecoverable, while an orphan is visible and
+    /// fixable. What that leaves is an orphan nobody asked for: edit a rule so
+    /// `raw` becomes `colour`, and the work keeps a `raw` edition naming files
+    /// the rules no longer place there.
     ///
     /// So it gets a number, for the same reason [`Self::suppressed`] and
     /// [`Self::rekeyed`] have one — the outcome changes what a person sees
@@ -235,9 +225,8 @@ pub struct DeriveReport {
     /// second exists in `scan::apply_removal`, deleting the works a removed
     /// root alone accounted for, before that function calls into
     /// `derive_with` in turn — so it is the last thing that should do its
-    /// job quietly — which is why the four counters below travel with it
-    /// rather than leaving "1 work folded away" to stand for whatever
-    /// happened inside.
+    /// job quietly — which is why the counters below travel with it rather
+    /// than leaving "1 work folded away" to stand for whatever happened inside.
     pub emptied_works: usize,
     /// Superseded works left standing because the fold was refused.
     ///
@@ -255,17 +244,16 @@ pub struct DeriveReport {
     /// A refusal is not always a mapping failure. `fold::absorb` also refuses
     /// a work carrying a reader's row on an edition key it no longer holds; a
     /// pair where one reader holds one note id on both works and the two
-    /// copies differ, which `note`'s key was widened to permit and which the
-    /// move would collide on (copies identical in every column are dropped
-    /// from the superseded work instead, and counted in
-    /// [`Self::dropped_notes`]); and a
-    /// pair whose ground truth on a mapped edition was drawn against different
-    /// archives on the two sides. All three are the reader's own state or the
-    /// library's ground truth, and none is this fold's to destroy or to
-    /// rewrite. [`Self::unfoldable`] is where the difference is legible.
+    /// copies differ, which the move would collide on (copies identical in
+    /// every column are dropped from the superseded work instead, and counted
+    /// in [`Self::dropped_notes`]); and a pair whose ground truth on a mapped
+    /// edition was drawn against different archives on the two sides. All
+    /// three are the reader's own state or the library's ground truth, and
+    /// none is this fold's to destroy or to rewrite. [`Self::unfoldable`] is
+    /// where the difference is legible.
     ///
-    /// **And since O121, a fold that would leave a row naming another page** —
-    /// a reading position or a note whose page and half has no slot on the
+    /// **And a fold that would leave a row naming another page (O121)** — a
+    /// reading position or a note whose page and half has no slot on the
     /// surviving edition, or an alignment the surviving work already holds
     /// whose spans the spread flags the fold writes would move. A slot is an
     /// index into one edition's spreads and reading direction, and the fold
@@ -276,11 +264,11 @@ pub struct DeriveReport {
     ///
     /// **A count says something was refused; it does not say what to look
     /// at.** The refusal message `fold::absorb` builds already names the work
-    /// id and the edition keys, and dropping it for a number left an operator
-    /// with "1 superseded work left standing" over a library of thousands.
-    /// [`crate::scan::ScanReport::unreadable_dirs`] is the precedent and the
-    /// same argument: a `Vec` costs one field, and the alternative is a
-    /// person grepping for a work they cannot name.
+    /// id and the edition keys, and dropping it for a number would leave an
+    /// operator with "1 superseded work left standing" over a library of
+    /// thousands. [`crate::scan::ScanReport::unreadable_dirs`] is the precedent
+    /// and the same argument: a `Vec` costs one field, and the alternative is
+    /// a person grepping for a work they cannot name.
     ///
     /// In `superseded`'s own order, which is deterministic, so two runs over
     /// an unchanged library produce the same list.
@@ -306,13 +294,13 @@ pub struct DeriveReport {
     pub unreadable_hand: Vec<String>,
     /// Documents written on this pass that were not on disk — O82's retry.
     ///
-    /// **Deliberately not "that a failed save had left missing", which this
-    /// said until 2026-09-02.** A failed write is one cause and no longer the
-    /// only one: a root whose `keeps_documents` was off when the edit was
-    /// made, and has since been turned on, arrives here with its marker armed
-    /// and no file — the ordinary path for anyone opting a root back in, and
-    /// the one a person is most likely to be watching. Naming a cause the
-    /// count cannot know is how a report starts lying about the common case.
+    /// **Not only what a failed save had left missing.** A failed write is
+    /// one cause and not the only one: a root whose `keeps_documents` was off
+    /// when the edit was made, and has since been turned on, arrives here with
+    /// its marker armed and no file — the ordinary path for anyone opting a
+    /// root back in, and the one a person is most likely to be watching.
+    /// Naming a cause the count cannot know is how a report starts lying about
+    /// the common case.
     ///
     /// **A field rather than a silence, under the same rule as
     /// [`Self::suppressed`] and [`Self::rekeyed`]:** any derivation outcome
@@ -332,12 +320,10 @@ pub struct DeriveReport {
     ///
     /// **Never a document a live work still addresses.** A root that has
     /// declined to keep documents reports those under
-    /// [`Self::declined_documents`] instead — see [`crate::hand::Orphan`]'s
-    /// own doc comment for the Critical that folding the two together was:
-    /// migration 012 defaults every existing root's `keeps_documents` off,
-    /// so a report that called an addressed file an orphan named *every*
-    /// hand document in the library as stranded on the first derive after
-    /// upgrading.
+    /// [`Self::declined_documents`] instead: migration 012 defaults every
+    /// existing root's `keeps_documents` off, so a report that called an
+    /// addressed file an orphan would name *every* hand document in the
+    /// library as stranded on the first derive after upgrading.
     ///
     /// Each carries the title out of the file, because the filename is the
     /// `content_key` the document was written under and names content that no
@@ -350,14 +336,9 @@ pub struct DeriveReport {
     /// **A field rather than a silence, under the same rule as
     /// [`Self::suppressed`] and [`Self::rekeyed`]: any derivation outcome
     /// that changes what a person sees and cannot be inferred from the other
-    /// counts gets one.** Before this field existed, `hand::reconcile` folded
-    /// this case into [`Self::orphan_documents`], so every derive after
-    /// migration 012 (which turns `keeps_documents` off for every existing
-    /// root) reported every hand document in the library as stranded — on
-    /// the very pass that `hand::load` read each one's title back into the
-    /// database. This name is what lets a person read the difference between
-    /// "act on this, it is stranded" and "this root simply no longer keeps
-    /// what is here."
+    /// counts gets one.** This name is what lets a person read the difference
+    /// between "act on this, it is stranded" and "this root simply no longer
+    /// keeps what is here."
     pub declined_documents: Vec<crate::hand::Declined>,
     /// Documents at a work's own address that disagree with the database.
     ///
@@ -388,9 +369,7 @@ pub struct DeriveReport {
     /// `fold::Moved::lost_positions` reads the `progress` rows on both works
     /// before the move loop and on the target after it, so it counts a row
     /// overwritten by an incoming one as well as a row that never landed, and
-    /// does not depend on which edition key sorted first. The subtraction it
-    /// replaced could see neither, and reported `0` for a fold that destroyed
-    /// a position.
+    /// does not depend on which edition key sorted first.
     ///
     /// Counted for [`Self::moved_truth_collisions`]' reason, which is the same
     /// reason: a silent loss is indistinguishable from no loss.
@@ -410,9 +389,8 @@ pub struct DeriveReport {
     /// slot, region, colour, `created` and `updated` equal, and the target's
     /// edition exactly the one the superseded work's edition maps onto. Those
     /// two rows are one fact written twice — the ordinary result of one
-    /// sidecar imported against both volumes — and until 2026-09-14 they
-    /// refused the whole fold. Copies that differ in anything still refuse,
-    /// and are named in [`Self::unfoldable`].
+    /// sidecar imported against both volumes. Copies that differ in anything
+    /// refuse the fold, and are named in [`Self::unfoldable`].
     ///
     /// A field rather than a silence, under the rule [`Self::suppressed`] and
     /// [`Self::rekeyed`] state: a reader who counts their notes after a fold
@@ -432,11 +410,7 @@ pub struct DeriveReport {
     /// Credits, tags, collection places, credit page flags, hand-entered
     /// chapter numbers and hand-classified editions — `fold::DISCARDED` is the
     /// list and states, per entry, why each is counted rather than migrated.
-    /// *Until O76, 2026-09-15, it counted alignments, their runs and spread
-    /// flags too, and this doc said the number existed so that "1 work folded
-    /// away" could never quietly mean "and its hand-corrected alignment went
-    /// with it". A fold carries those now, and the alignment it cannot carry is
-    /// [`Self::uncarried_alignments`].*
+    /// The alignment a fold cannot carry is [`Self::uncarried_alignments`].
     pub discarded_rows: usize,
     /// Alignments a fold did not carry onto the surviving work and that
     /// nothing there stands in for — `fold::Moved::uncarried_alignments`,
@@ -472,14 +446,11 @@ pub struct DeriveReport {
     /// works this pass folded: a series standing with nothing in it is a
     /// standing fact, for [`Self::kept_editions`]' reason.
     ///
-    /// **So a fold is not the only way in, and the name says so since
-    /// 2026-08-27.** [`fn@derive`] mints a series row for every series a rule or
-    /// a directory names, including one holding nothing but unattached chapter
+    /// **So a fold is not the only way in, and the name says so.**
+    /// [`fn@derive`] mints a series row for every series a rule or a
+    /// directory names, including one holding nothing but unattached chapter
     /// directories — an ordinary shape in this project's corpus — so a first
     /// scan of a library that has never folded anything reports one of these.
-    /// It was called `emptied_series`, and `taiyaku-cli`'s summary printed
-    /// "N series left empty" from it on the same line as the fold's own
-    /// counts.
     pub series_holding_no_work: usize,
     /// Entries that joined an edition another entry had already opened — a
     /// volume arriving as two chapter directories contributes two members and
@@ -492,13 +463,10 @@ pub struct DeriveReport {
     /// anything else, and derivation cannot always tell which it has: the
     /// rules resolved a volume for both, and that is all it knows.
     ///
-    /// So it is counted, for the same reason [`Self::suppressed`] is. Until
-    /// this field existed, `ONE PIECE/001..004` — four bare-numbered
-    /// directories the rules deliberately refuse to read a volume out of —
-    /// became **one** work of 18 pages, reported as one work with nothing
-    /// distinguishing it from a work that genuinely holds one volume. That
-    /// particular merge is fixed (those entries are keyed individually now),
-    /// and the ones that remain are reported rather than assumed correct.
+    /// So it is counted, for the same reason [`Self::suppressed`] is: a merge
+    /// of entries that are not one volume would otherwise be indistinguishable
+    /// from a work that genuinely holds one volume, so merges are reported
+    /// rather than assumed correct.
     pub merged: usize,
     /// Editions whose rules named an `edition.kind` the column's closed set
     /// does not hold, so none was written.
@@ -515,36 +483,28 @@ pub struct DeriveReport {
     /// Newly-opened proposals this derive's own [`proposals::raise`] call
     /// produced.
     ///
-    /// **The counter that used to read zero unconditionally.** `derive`
-    /// already calls `proposals::raise` at the end of every pass; `library
-    /// scan` (`taiyaku-cli`) used to call it a *second* time to get a number
-    /// to print, and every proposal that first call had just opened was
-    /// already in `proposal` by then, so the second call's `INSERT OR
-    /// IGNORE` conflicted on every single row and its own count was always
-    /// `0` — measured with one genuinely open proposal in
-    /// `docs/notes.md`'s history. One raiser, like one writer: this is that
-    /// raiser's own count, carried out through the report rather than
-    /// re-derived by a second call.
+    /// **One raiser, like one writer.** `derive` calls `proposals::raise` at
+    /// the end of every pass, and this is that call's own count, carried out
+    /// through the report rather than re-derived by a second call: a second
+    /// call would find every proposal the first had just opened already in
+    /// `proposal`, and its `INSERT OR IGNORE` would conflict on every row and
+    /// count `0`.
     pub raised: usize,
     /// Members whose root was deleted by a concurrent [`crate::scan::remove_root`]
     /// while this derive was already running, between the group this pass
     /// built in memory and [`write_roots`] writing it back.
     ///
-    /// **Whole-branch review, Important 1.** `derive_with` holds no
-    /// transaction of its own (see this module's own doc on
-    /// [`fn@derive_with`]), so under WAL a root removal that commits mid-pass
-    /// leaves a member's `Candidate::root_id` naming a row that is already
-    /// gone — `write_roots`'s own `UPDATE` used to let SQLite's foreign key
-    /// on `member.root_id` refuse that outright, failing the whole derive
-    /// with a bare "FOREIGN KEY constraint failed" over a race nobody could
-    /// see coming. `write_roots` now catches exactly that constraint,
-    /// clears the column to `NULL` instead — the identical state
-    /// `schema/006_member_root.sql`'s own `ON DELETE SET NULL` already gave
-    /// every other member of the removed root — and counts it here rather
-    /// than either crashing the pass or losing the event, for
-    /// [`Self::suppressed`]'s reason. A member counted here is not stranded:
-    /// it reads exactly as an imported member with no root on record does
-    /// (O54), and the next scan that finds it under a surviving root
+    /// `derive_with` holds no transaction of its own (see this module's own
+    /// doc on [`fn@derive_with`]), so under WAL a root removal that commits
+    /// mid-pass leaves a member's `Candidate::root_id` naming a row that is
+    /// already gone. `write_roots` catches the foreign-key constraint on
+    /// `member.root_id` that its `UPDATE` then trips, clears the column to
+    /// `NULL` instead — the identical state `schema/006_member_root.sql`'s own
+    /// `ON DELETE SET NULL` gives every other member of the removed root — and
+    /// counts it here rather than either failing the pass or losing the event,
+    /// for [`Self::suppressed`]'s reason. A member counted here is not
+    /// stranded: it reads exactly as an imported member with no root on record
+    /// does (O54), and the next scan that finds it under a surviving root
     /// recovers it the ordinary way.
     pub root_removed_mid_derive: usize,
 }
@@ -557,7 +517,7 @@ pub struct DeriveReport {
 /// where the root keeps them, and `write_work` calls
 /// [`crate::hand::rename_for_rekey`], which renames a document when a work's
 /// `content_key` moves and is gated on nothing at all — a rekey stranding a
-/// document is the defect it exists to prevent (#101).
+/// document is the defect it exists to prevent.
 ///
 /// **[`Documents::Skip`] suppresses writes, never reads.** `hand::load` stays
 /// on: a hand-set title is part of the structure a preview claims to predict,
@@ -574,9 +534,8 @@ pub enum Documents {
 
 /// [`derive_with`] under [`Documents::Reconcile`] — what a real derivation is.
 ///
-/// Kept as its own function rather than a defaulted parameter because 133 call
-/// sites read it, all but a handful of them tests, and none of them has an
-/// opinion about documents.
+/// Kept as its own function rather than a defaulted parameter because most of
+/// its call sites are tests, and none of them has an opinion about documents.
 ///
 /// # Errors
 ///
@@ -634,10 +593,10 @@ pub fn derive_with(conn: &Connection, documents: Documents) -> Result<DeriveRepo
     // same handful of patterns for every file in a library of thousands.
     //
     // The complaints are dropped here rather than propagated: a malformed
-    // pattern disables its own rule and nothing else, and the caller that
-    // reports them to a person is `library scan`, which loads the engine
-    // itself. Surfacing them a second time from here would mean two callers
-    // deciding how loudly to say the same thing.
+    // pattern disables its own rule and nothing else, and the callers that
+    // report them to a person compile the rules themselves. Surfacing them a
+    // second time from here would mean two callers deciding how loudly to say
+    // the same thing.
     let (engine, _complaints) = Engine::load(conn)?;
     let roots = crate::scan::roots(conn)?;
 
@@ -650,10 +609,9 @@ pub fn derive_with(conn: &Connection, documents: Documents) -> Result<DeriveRepo
     // volume being counted twice.** The fact layer records the container
     // directory *and* everything beneath it, so "each entry is one member"
     // makes a volume split into chapter subdirectories produce a member for
-    // the volume and one per chapter — `docs/sidecar.md` records seven of
-    // fifty-seven corpus archives in that layout. The first pass resolves
-    // every entry once and notes which of them speak for their subtrees; the
-    // second drops any whose ancestor does. See [`nested_in_claim`].
+    // the volume and one per chapter. The first pass resolves every entry
+    // once and notes which of them speak for their subtrees; the second drops
+    // any whose ancestor does. See [`nested_in_claim`].
     for root in &roots {
         let mut seen = Vec::new();
         for entry in entries(conn, root.id)? {
@@ -692,8 +650,7 @@ pub fn derive_with(conn: &Connection, documents: Documents) -> Result<DeriveRepo
 
     // Every series that produced *anything* gets a row, including one holding
     // only unattached chapters: `proposal.subject_id` references `series(id)`,
-    // so Task 8's `attach-chapters` proposal has nothing to point at
-    // otherwise.
+    // so the `attach-chapters` proposal has nothing to point at otherwise.
     let mut series_ids: BTreeMap<(String, i64), i64> = BTreeMap::new();
     for (title, library_id) in named_series {
         let id = reconcile_series(conn, library_id, &title)?;
@@ -781,8 +738,7 @@ pub fn derive_with(conn: &Connection, documents: Documents) -> Result<DeriveRepo
                 // (an imported work, or one nobody ever hand-edited); a
                 // target of `None` cannot happen for a work `superseded`
                 // just named as a fold target, but is handled rather than
-                // asserted away, matching this function's own rule against
-                // returning `Err` for anything this task touches.
+                // asserted away.
                 if let (Some(path), Some((slug, title))) = (document_path, target) {
                     absorbed_into.insert(path, crate::hand::Absorbed { slug, title });
                 }
@@ -807,17 +763,16 @@ pub fn derive_with(conn: &Connection, documents: Documents) -> Result<DeriveRepo
         .map(|n| usize::try_from(n).unwrap_or(usize::MAX))
         .map_err(|e| format!("counting series left with no works: {e}"))?;
 
-    // Task 8: raised last, because every kind of proposal points at a series
-    // row and this is the point at which every series this derive touched —
-    // including one holding only unattached chapters — is guaranteed to have
-    // one. `proposals::raise` is idempotent, so a rescan over unchanged facts
-    // opens nothing a person has already dismissed or accepted.
+    // Raised last, because every kind of proposal points at a series row and
+    // this is the point at which every series this derive touched — including
+    // one holding only unattached chapters — is guaranteed to have one.
+    // `proposals::raise` is idempotent, so a rescan over unchanged facts opens
+    // nothing a person has already dismissed or accepted.
     //
-    // **The one call, and its count kept.** A second call anywhere else —
-    // `library scan` used to make one, to get a number to print — sees every
-    // proposal this call just opened already sitting in `proposal`, and
-    // `INSERT OR IGNORE` reports zero new rows for every one of them. See
-    // `DeriveReport::raised`.
+    // **The one call, and its count kept.** A second call anywhere else would
+    // see every proposal this call just opened already sitting in `proposal`,
+    // and `INSERT OR IGNORE` would report zero new rows for every one of them.
+    // See `DeriveReport::raised`.
     report.raised = proposals::raise(conn)?;
 
     // **After everything — which is two different constraints, not one.**
@@ -845,9 +800,7 @@ pub fn derive_with(conn: &Connection, documents: Documents) -> Result<DeriveRepo
     // disturbs the work it was folded into. Run after, as below, and the same
     // pass that deletes the row is the pass that reports the document
     // address-less. `folding_a_work_away_orphans_its_hand_document_on_the_same_pass`
-    // pins this: moving this loop up to just after the `for group in
-    // groups.into_values()` write loop — still after `write_roots` — turns
-    // that assertion red while leaving every other test in this module green.
+    // pins this.
     // **Skipped whole, not per-root.** `reconcile` writes (gap repair), renames
     // and reports; a preview wants none of the three, and the report fields it
     // populates would be artefacts of a derivation nobody asked to keep.
@@ -889,16 +842,13 @@ pub fn derive_with(conn: &Connection, documents: Documents) -> Result<DeriveRepo
 /// does not reach anything: the real volume is carried alongside in [`Group`]
 /// and it is that value the `work` row and the hub lookup are given.
 ///
-/// **The third element is C4's fix, and `None` is not a group.** An entry the
-/// rules gave neither a volume nor a chapter has nothing to be grouped *by*,
-/// and keying those on `(series, NULL)` merged every one of them in a series
-/// into a single page sequence: `ONE PIECE/001..004` — bare numbers, which
-/// `volume_number_marked` deliberately refuses — became one work of four
-/// members and 18 pages, and `Series/Omake` beside `Series/Bonus` became one
-/// work called `Bonus`. Measured against the shipped binary. Merging distinct
-/// material into one page sequence is the failure [`write_work`]'s own doc
-/// calls out, since member order is page order and every alignment offset
-/// derives from it.
+/// **The third element keeps volume-less entries apart, and `None` is not a
+/// group.** An entry the rules gave neither a volume nor a chapter has
+/// nothing to be grouped *by*, and keying those on `(series, NULL)` would
+/// merge every one of them in a series into a single page sequence. Merging
+/// distinct material into one page sequence is the failure
+/// [`DeriveReport::merged`]'s doc calls out, since member order is page order
+/// and every alignment offset derives from it.
 ///
 /// `rel_path` rather than the absolute path, so one volume-less work present
 /// in two roots of one library is still one work — which is what
@@ -909,10 +859,9 @@ pub fn derive_with(conn: &Connection, documents: Documents) -> Result<DeriveRepo
 /// which is §7's chapter case and stays; an entry with a chapter and no
 /// volume never reaches here at all ([`classify`] settles it first).
 ///
-/// **The fourth element is the library — Part F1.** Last, so a library's
-/// groups sort by title, volume and path as a store's did, and the rows a pass
-/// mints come out in the order they always have. Two directories of one library
-/// group together exactly as two roots did before F1; a directory of another
+/// **The fourth element is the library.** Last, so a library's groups sort by
+/// title, volume and path, and the rows a pass mints come out in that order.
+/// Two directories of one library group together; a directory of another
 /// library never joins them.
 type GroupKey = (String, Option<u64>, Option<String>, i64);
 
@@ -1053,45 +1002,35 @@ impl Seen {
     /// What this entry produces, given the entries beneath it that produce
     /// something — see [`Produces`].
     ///
-    /// **"What will this entry produce", not "could it be a member".** Those
-    /// came apart on `Series/Extras/Art Book`: the test used to be "a volume
-    /// or a chapter", per Step 7b's rule, while [`classify`] admitted a
-    /// volume-less entry as a member anyway — so the container and its
-    /// contents both became members of one work, five pages counted as ten,
-    /// and `suppressed` said `0`. Three levels gave three members
-    /// (whole-branch review, C3; measured against the shipped binary).
+    /// **"What will this entry produce", not "could it be a member".**
     ///
     /// The order of the tests is the whole rule:
     ///
     /// 1. A chapter with no volume is §7's case, settled before pages are
     ///    looked at because it needs none.
-    /// 2. No pages, no anything. This is the other half of C1: a directory
-    ///    holding archives rather than loose images gets `pages = Some(0)`
-    ///    from the walk, and `builtin-volume` reads `v01` out of its *name*
-    ///    regardless — so the page-less directory suppressed the archive that
+    /// 2. No pages, no anything. A directory holding archives rather than
+    ///    loose images gets `pages = Some(0)` from the walk, and
+    ///    `builtin-volume` reads `v01` out of its *name* regardless. Taken as
+    ///    a member, the page-less directory would suppress the archive that
     ///    actually held the pages, and `member_digest` over it is the digest
-    ///    of nothing, the same hash for every such directory, so the
-    ///    surviving groups collided on `content_key` and landed on one row.
+    ///    of nothing, the same hash for every such directory, so the groups
+    ///    that survived would collide on `content_key` and land on one row.
     /// 3. **A volume-less container defers to whatever is inside it.** A rule
     ///    marked no volume here, so this entry is a name in a path and not a
     ///    thing anybody released; if something beneath it is a member, that
-    ///    is what the material is. Without this clause the first fix for C3
-    ///    took the *container* as the member and dropped everything under it
-    ///    — measured over this project's own corpus as 107 members becoming
-    ///    40, with `incoming/bocchi`'s five editions collapsed into one
-    ///    439-page member and `incoming/onepiece`'s six into one of 630. That
-    ///    is precisely the failure C4 was settled to stop: member order is
-    ///    page order, so one member of five editions is five works
-    ///    concatenated.
+    ///    is what the material is. Without this clause the *container* would
+    ///    be taken as the member and everything under it dropped. That is
+    ///    precisely the failure C4 was settled to stop: member order is page
+    ///    order, so one member of five editions is five works concatenated.
     /// 4. Otherwise a member — including a marked volume, which speaks for
     ///    its own chapter subdirectories even though they are members'
-    ///    material. That is Step 7b, and it is the one place a container
-    ///    *does* win: `Series - v01/c001` is a piece of `v01`, not a work
-    ///    beside it, and the rules said so by resolving a volume.
+    ///    material. It is the one place a container *does* win:
+    ///    `Series - v01/c001` is a piece of `v01`, not a work beside it, and
+    ///    the rules said so by resolving a volume.
     ///
-    /// **A series is required too**, which the old wording left implicit: an
-    /// entry with no series has no group to join and can never be a member.
-    /// Unreachable here in any case — [`admit`] has already refused one.
+    /// **A series is required too**: an entry with no series has no group to
+    /// join and can never be a member. Unreachable here in any case —
+    /// [`admit`] has already refused one.
     ///
     /// **What this does not consult is the digest**, which is the one place
     /// it is coarser than "became a member": an entry whose bytes have gone
@@ -1132,12 +1071,11 @@ impl Seen {
 /// The root's own `rel_path` is `""`, which has no prefix form — everything
 /// is beneath it — so it is its own arm rather than a `"/"` that would match
 /// nothing. **Strictly** is what that arm has to be careful about: the root's
-/// own entry is in this set too once it has claimed, and `!claims.is_empty()`
-/// therefore made the root defer to itself. Measured as a root of loose page
-/// images deriving to nothing at all, with one suppressed entry to show for
-/// it. It is also what keeps [`claims_of`]'s two passes agreeing: the
-/// non-empty arm cannot match `rel_path` itself, because a path does not
-/// start with itself followed by a separator, and this arm must not either.
+/// own entry is in this set too once it has claimed, so `!claims.is_empty()`
+/// would make the root defer to itself. It is also what keeps
+/// [`claims_of`]'s two passes agreeing: the non-empty arm cannot match
+/// `rel_path` itself, because a path does not start with itself followed by a
+/// separator, and this arm must not either.
 fn any_beneath(claims: &BTreeSet<String>, rel_path: &str) -> bool {
     if rel_path.is_empty() {
         return claims.iter().any(|held| !held.is_empty());
@@ -1172,8 +1110,7 @@ fn claims_of(seen: &[Seen]) -> BTreeSet<String> {
 /// no rule gave a series to is passed over in silence.
 ///
 /// The root's own row and every container directory above a member land in
-/// that second case under the seeded rules, which is why the fixture's seven
-/// entries produce two works rather than seven.
+/// that second case under the seeded rules.
 fn admit(engine: &Engine, root: &Root, entry: Entry, report: &mut DeriveReport) -> Option<Seen> {
     if !is_readable(entry.format.as_deref()) {
         let token = entry.format.unwrap_or_else(|| UNKNOWN_FORMAT.to_string());
@@ -1198,8 +1135,7 @@ fn admit(engine: &Engine, root: &Root, entry: Entry, report: &mut DeriveReport) 
 /// *and* one per chapter — the volume's pages counted twice over, and three
 /// chapters made editions of nothing. `inventory::decide` settles the same
 /// question with a page threshold, which derivation has no equivalent of; the
-/// rule layer gives a better one, and it needs nothing but `rel_path`
-/// prefixes.
+/// rule layer gives a better one, and it needs nothing but `rel_path` prefixes.
 ///
 /// A series directory holding volume directories claims nothing — the walk
 /// gives it a recursive page total, so it *would* claim, but [`admit`] never
@@ -1212,17 +1148,12 @@ fn admit(engine: &Engine, root: &Root, entry: Entry, report: &mut DeriveReport) 
 /// group its parent forms.
 ///
 /// **The root's own entry — `rel_path` `""` — is walked to like any other
-/// ancestor, and is reachable.** An earlier version of this comment argued it
-/// was not: [`admit`] refuses an entry with no series, seeded rule 1 needs a
-/// `/` to give one, and no extractor reads a number out of the empty string.
-/// The first clause is the whole of it, and any `set_series` rule broad
-/// enough to match `""` satisfies it — a `prefix` rule with an empty pattern
-/// is what `proposals::accept` writes. Measured: the root became a member,
-/// the work it made was titled with the empty string, and every entry in the
-/// library was counted a second time inside it. It now claims the subtree
-/// like any other container, which collapses that library to one work and
-/// says so through `suppressed` — the honest reading of a rule that says
-/// every path is one series.
+/// ancestor, and is reachable.** [`admit`] refuses an entry with no series,
+/// but any `set_series` rule broad enough to match `""` gives it one: a
+/// `prefix` rule with an empty pattern is what `proposals::accept` writes.
+/// The root then claims the subtree like any other container, which collapses
+/// that library to one work and says so through `suppressed` — the honest
+/// reading of a rule that says every path is one series.
 fn nested_in_claim(claims: &BTreeSet<String>, rel_path: &str) -> bool {
     let mut at = rel_path;
     while !at.is_empty() {
@@ -1240,7 +1171,7 @@ fn nested_in_claim(claims: &BTreeSet<String>, rel_path: &str) -> bool {
 /// The order of the tests below is load-bearing. The chapter case is settled
 /// **before** anything is hashed, because §7's answer for it is that it
 /// produces no work — so paying a digest for it would be paying for a member
-/// that is never written, on every entry of a 146-chapter directory.
+/// that is never written, on every entry of a directory of chapters.
 fn classify(
     conn: &Connection,
     root: &Root,
@@ -1253,11 +1184,11 @@ fn classify(
         resolved,
     } = seen;
 
-    // §7: which seven of 146 chapter files constitute volume 3 is a question
-    // only the alignment answers. Count the directory and leave it visibly
-    // unattached; `proposals::raise` is what asks about it. Chapters that sit
-    // *inside* a volume never reach here — `nested_in_claim` dropped them,
-    // because that question has already been answered for them.
+    // §7: which chapter files constitute volume 3 is a question only the
+    // alignment answers. Count the directory and leave it visibly unattached;
+    // `proposals::raise` is what asks about it. Chapters that sit *inside* a
+    // volume never reach here — `nested_in_claim` dropped them, because that
+    // question has already been answered for them.
     if resolved.volume.is_none() && resolved.chapter.is_some() {
         into.named_series.insert((series, root.library_id));
         into.chapter_dirs
@@ -1423,9 +1354,9 @@ pub(crate) fn parent_of(rel_path: &str) -> &str {
 ///
 /// **`sort_title` is the name the files gave the series, and a correction does
 /// not move it — O114.** `librarydoc::set_series_titles` and `apply_series`'s
-/// matched branch leave it alone. When either moved this column, the next pass
-/// found nothing under the scanned name, minted a second series and moved every
-/// volume onto it.
+/// matched branch leave it alone: were either to move this column, the next
+/// pass would find nothing under the scanned name, mint a second series and
+/// move every volume onto it.
 ///
 /// **A `SELECT` then an `INSERT`, not `INSERT … ON CONFLICT DO NOTHING`.**
 /// There is no unique constraint on `series.sort_title` — `001_initial.sql`
@@ -1443,9 +1374,9 @@ pub(crate) fn parent_of(rel_path: &str) -> &str {
 /// `taiyaku.library.json` later applied over a scanned work would mint a
 /// second series beside the derived one rather than finding it.
 ///
-/// **Within a library — Part F1.** The same title in two libraries is two
-/// series. The row found is the library's own, or else the oldest of that
-/// title in no library that
+/// **Within a library.** The same title in two libraries is two series. The
+/// row found is the library's own, or else the oldest of that title in no
+/// library that
 /// [`crate::libraries::own_or_adoptable_series`] lets it take, which is then
 /// filed under the library. Where two libraries could take one series the
 /// lower library id does, since [`derive_with`] reconciles in `(title,
@@ -1486,7 +1417,7 @@ fn reconcile_series(conn: &Connection, library_id: i64, sort_title: &str) -> Res
     };
     // **Only onto a series holding no title — O114.** A correction through
     // `librarydoc::set_series_titles` replaces the whole set and may drop this
-    // text; writing it back on every pass returned a removed spelling as a
+    // text; writing it back on every pass would return a removed spelling as a
     // second primary title. A series minted just above holds none.
     conn.execute(
         "INSERT INTO series_title (series_id, title, is_primary)
@@ -1505,8 +1436,7 @@ fn reconcile_series(conn: &Connection, library_id: i64, sort_title: &str) -> Res
 /// It also reads back and applies a hand document sitting at this work's
 /// address when nothing has absorbed it yet — the whole `LibraryDoc`: title,
 /// volume, series row and titles, external ids, edition metadata, member
-/// chapters, tags — which is what closes the guard below for the rest of this
-/// call.
+/// chapters, tags.
 ///
 /// Returns the `work_id` it resolved — new or reconciled — so [`derive`] can
 /// collect the set of works this pass wrote and hand it to [`superseded`].
@@ -1543,14 +1473,11 @@ fn write_work(
     }
 
     // **One commit for the work, not one per statement — O210.** Every commit
-    // waits for the disk, and this function used to make four: the import's
-    // own transaction, then `write_roots`, the `UPDATE work` and
-    // `write_edition_metadata` each committed alone. Everything below runs on
-    // `conn` inside this scope — `Nested` is a state of the
-    // connection, not a second handle — and the import's own `Nested`, like
-    // `librarydoc::apply`'s, nests in it as a `SAVEPOINT`. Opened before
-    // `held_work` reads, so the address it finds is the one the import
-    // writes over.
+    // waits for the disk. Everything below runs on `conn` inside this scope —
+    // `Nested` is a state of the connection, not a second handle — and the
+    // import's own `Nested`, like `librarydoc::apply`'s, nests in it as a
+    // `SAVEPOINT`. Opened before `held_work` reads, so the address it finds is
+    // the one the import writes over.
     let mut tx = crate::Nested::open(conn, "write_work")
         .map_err(|e| format!("starting to write a work of `{}`: {e}", group.series))?;
     let held = held_work(conn, series_id, group)?;
@@ -1597,16 +1524,14 @@ fn write_work(
         },
         editions,
         hub: hub_key,
-        // **Empty because a walk has nothing to say here, and empty no longer
-        // means deleted.** Solving is `taiyaku align`'s, not the scanner's, so
+        // **Empty because a walk has nothing to say here, and empty does not
+        // mean deleted.** Solving is `taiyaku align`'s, not the scanner's, so
         // this document declares no correspondence — and `import::scanned_in`
         // reads that as silence rather than as an answer: it leaves the work's
-        // `alignment`, `run` and `page_flag` rows exactly as they were. Until
-        // 2026-08-17 it replaced them wholesale from this empty list, so a
-        // rescan after an `align --write` dropped every run, hand-corrected
-        // ones included. See `import::scanned`'s own doc for the rule and for
-        // what it costs — an edge naming an edition a later rule edit removed
-        // dangles, resolvably rather than dangerously.
+        // `alignment`, `run` and `page_flag` rows exactly as they were. See
+        // `import::scanned`'s own doc for the rule and for what it costs — an
+        // edge naming an edition a later rule edit removed dangles, resolvably
+        // rather than dangerously.
         alignments: Vec::new(),
     };
     // **Counted before the import, because afterwards the row already holds
@@ -1642,31 +1567,29 @@ fn write_work(
     // therefore both simpler and exact.
     report.kept_editions += kept_editions(conn, work_id, &doc)?;
 
-    // **Moved ahead of the read-back below, and of both guards after it.**
-    // `write_roots` only issues `UPDATE member SET root_id = ?` from the
-    // group's own candidates, matched on `(edition key, ordinal)` —
-    // `import::scanned_in`, just above, is the only thing either depends on, so
-    // nothing here needs the guard or the read-back to have run first. The
-    // read-back does need this to have run first: on a work being minted for
-    // the first time, `member.root_id` is still NULL the moment
-    // `hand::load` calls `hand::path_for`, whose
-    // `JOIN root ON root.id = member.root_id` then matches nothing —
-    // `path_for` answers `None`, `hand::load` answers `Ok(None)`, and a
-    // correction sitting right beside the archives is silently skipped. A
-    // *second* derive recovers it, because by then this call has already run
-    // once. That is the store spec §4.4 claim broken: losing the database
-    // was supposed to cost one rescan, not two.
+    // **Before the read-back below.** `write_roots` only issues
+    // `UPDATE member SET root_id = ?` from the group's own candidates, matched
+    // on `(edition key, ordinal)` — `import::scanned_in`, just above, is the
+    // only thing either depends on, so nothing here needs the guard or the
+    // read-back to have run first. The read-back does need this to have run
+    // first: on a work being minted for the first time, `member.root_id` would
+    // still be NULL the moment `hand::load` calls `hand::path_for`, whose
+    // `JOIN root ON root.id = member.root_id` would then match nothing —
+    // `path_for` would answer `None`, `hand::load` `Ok(None)`, and a correction
+    // sitting right beside the archives would be silently skipped until a
+    // *second* derive. That would break the store spec §4.4 claim: losing the
+    // database was supposed to cost one rescan, not two.
     //
-    // **`write_chapters` stays below, unmoved, and that is not an
-    // oversight.** It looks like the same shape — another targeted update
-    // keyed on `(edition key, ordinal)` from `import::scanned_in`'s own rows —
-    // but it has a real ordering dependency the read-back's `apply` call
-    // creates: `librarydoc::apply`'s `apply_members` clears *every* member's
-    // chapter for this work unconditionally, then rewrites only the entries
-    // the hand document names, by `sha256`. Running `write_chapters` before
-    // that guard would have its scanner-derived chapters wiped right back to
-    // NULL for every member the document does not mention. Running it after,
-    // as it already does, lets it fill exactly those NULLs back in — its own
+    // **`write_chapters` stays below, and that is not an oversight.** It looks
+    // like the same shape — another targeted update keyed on
+    // `(edition key, ordinal)` from `import::scanned_in`'s own rows — but it
+    // has a real ordering dependency the read-back's `apply` call creates:
+    // `librarydoc::apply`'s `apply_members` clears *every* member's chapter for
+    // this work unconditionally, then rewrites only the entries the hand
+    // document names, by `sha256`. Running `write_chapters` before that guard
+    // would have its scanner-derived chapters wiped right back to NULL for
+    // every member the document does not mention. Running it after, as it
+    // already does, lets it fill exactly those NULLs back in — its own
     // per-candidate guard, `chapter_source IS NULL OR chapter_source =
     // SCANNER_CHAPTER_SOURCE`, is what stops it from also overwriting a
     // member the document *did* set. `write_roots` has no such
@@ -1683,26 +1606,22 @@ fn write_work(
     // before the rename, and the rest of the work in a second scope after it,
     // so the read-back below still finds the document at the address the
     // rename gave it. Inside a caller's own transaction — a rule save's
-    // derive runs in one — that first commit is a `RELEASE`, as the import's
-    // own was before O210.
+    // derive runs in one — that first commit is a `RELEASE`.
     //
-    // **Why here and not in `import_with`, where an earlier version of this
-    // change placed it.** `hand::path_for` resolves a work's address through
-    // `member.root_id`, and for the one member whose bytes just changed —
-    // which, for a single-file volume, is every member the hub edition has —
-    // `replace_editions`' delete-and-reinsert leaves that column NULL:
-    // `held_member_meta` restores it by matching the old and new rows on
-    // `sha256`, and a repacked archive's hash is exactly what changed.
-    // `write_roots`, just above, is what restores it, by `(edition key,
-    // ordinal)` instead — and it runs *after* `import::scanned_in` returns, so
-    // it cannot have run yet at any point inside `import_with`. Calling the
-    // rename there, as the first version of this change did, found
-    // `path_for` answering `None` for `archived_volumes`' own fixture — a
-    // work with exactly one member — and left the document exactly where
-    // `a_repacked_volume_takes_its_document_with_it` catches it: unmoved,
-    // reported as an orphan. Waiting until here is what lets one derive do
-    // what the store spec §4.4 asks of it, rather than needing a second pass
-    // the way a brand-new work's hand document already does, above.
+    // **Why here and not in `import_with`.** `hand::path_for` resolves a
+    // work's address through `member.root_id`, and for the one member whose
+    // bytes just changed — which, for a single-file volume, is every member
+    // the hub edition has — `replace_editions`' delete-and-reinsert leaves
+    // that column NULL: `held_member_meta` restores it by matching the old and
+    // new rows on `sha256`, and a repacked archive's hash is exactly what
+    // changed. `write_roots`, just above, is what restores it, by `(edition
+    // key, ordinal)` instead — and it runs *after* `import::scanned_in`
+    // returns, so it cannot have run yet at any point inside `import_with`.
+    // Calling the rename there would, for a work with exactly one member, find
+    // `path_for` answering `None` and leave the document unmoved, reported as
+    // an orphan, which `a_repacked_volume_takes_its_document_with_it` catches.
+    // Waiting until here is what lets one derive do what the store spec §4.4
+    // asks of it.
     if let Some(old_key) = rekeyed_from
         && documents == Documents::Reconcile
     {
@@ -1714,58 +1633,44 @@ fn write_work(
     }
 
     // The `work` columns the sidecar format has no field for, which are also
-    // the two the hub lookup above reads back — and, under the same guard and
-    // for the same reason, `edition.kind` and `edition.language`, which the
-    // format has no field for either. See [`write_edition_metadata`], which
-    // is where that second pair's own argument for being here lives. Written
-    // after the import rather than before, because a brand-new work has no id
-    // until then.
+    // the two the hub lookup above reads back — and, for the same reason,
+    // `edition.kind` and `edition.language`, which the format has no field for
+    // either. See [`write_edition_metadata`], which is where that second pair's
+    // own argument for being here lives. Written after the import rather than
+    // before, because a brand-new work has no id until then.
     //
-    // **Skipped when a hand document has actually been applied to this
-    // work (I7).** `librarydoc::apply` — reached through `migrate::work`,
-    // §4.4, or through the read-back below — is the documented mechanism for
-    // setting `work.volume` and `work.series_id` by hand, and
-    // `<stem>.library.json` exists precisely so that hand metadata survives a
-    // re-derivation. Before this, `derive` wrote both unconditionally on
-    // every pass: a hand-set `volume = 4.5` came back as `1.0` after one
-    // derive, and a hand-renamed series minted a second row and moved the
-    // works to it, leaving the renamed one empty. `migrate::absorbed(…,
+    // **Hand metadata survives a re-derivation.** `librarydoc::apply` —
+    // reached through `migrate::work`, §4.4, or through the read-back below —
+    // is the documented mechanism for setting `work.volume` and
+    // `work.series_id` by hand, and `<stem>.library.json` exists precisely so
+    // that hand metadata survives a re-derivation. `migrate::absorbed(…,
     // LIBRARY)` is the exact question `migrate.rs` already answers for the
     // same class of "has a hand document actually been applied here"
-    // decision — reused rather than a second implementation of it. **This is
-    // no longer true of the marker alone**: the read-back below now arms it
-    // itself, precisely because a `.library.json` file sits on disk with
-    // nothing in `migrated_document` yet to say so.
+    // decision — reused rather than a second implementation of it. The
+    // read-back below arms the marker itself, because a `.library.json` file
+    // sits on disk with nothing in `migrated_document` yet to say so.
     //
-    // **Content matching still finds this row.** `import::scanned_in`'s own
+    // **Content matching finds this row.** `import::scanned_in`'s own
     // `find_by_key` probes `content_key`, within the group's library, before
     // it ever falls back to the address `held_work` computed above, and
     // `content_key` is a hash over the hub edition's members — untouched by a
     // hand-set `series_id` or `volume`. So a work whose hand metadata has
     // moved its address away from what the rules currently resolve is still
     // reconciled onto the same row by its content, exactly as an ordinary
-    // rescan is; only the two columns below are left alone.
+    // rescan is.
     //
-    // **That design question is answered, and this guard no longer holds the
-    // answer — O80, migration 011.** This paragraph used to end "a provenance
-    // column, scoping this to works with no `sidecar_path`, and so on — is
-    // still the design question I7 left open, and nothing here answers it".
-    // The provenance column is what shipped: `volume_hand`, `series_id_hand`,
-    // `language_hand`, `kind_hand`, `series_title.hand` and
-    // `series.reading_hand`, with every writer below using
-    // `COALESCE(<hand>, <what this pass derived>)`. So the marker no longer
-    // decides whether these columns may be written — only whether the
-    // document has already been read back, which is the block immediately
-    // following.
+    // **Hand values are kept per column — O80, migration 011.** The
+    // provenance columns are `volume_hand`, `series_id_hand`, `language_hand`,
+    // `kind_hand`, `series_title.hand` and `series.reading_hand`, with every
+    // writer below using `COALESCE(<hand>, <what this pass derived>)`. So the
+    // marker does not decide whether these columns may be written — only
+    // whether the document has already been read back, which is the block
+    // immediately following.
     //
-    // **The document on disk, read back before the guard is consulted.** A
-    // fresh database has no marker for a work it has just minted, so without
-    // this the guard below is open and derivation writes over a correction
-    // that is sitting right beside the archives. `migrate::work`'s
-    // `Step::Apply` cannot do this job — O53: `librarydoc::of` reads non-empty
-    // the moment a work has a derived volume or series, so that step is
-    // unreachable for any work a scan has touched. This is the "real but
-    // different path" O53's own entry names.
+    // **The document on disk, read back.** A fresh database has no marker for
+    // a work it has just minted, so a correction sitting right beside the
+    // archives is read here. `migrate::work`'s `Step::Apply` cannot do this
+    // job (O53). This is the "real but different path" O53's own entry names.
     if !crate::migrate::absorbed(conn, work_id, crate::migrate::LIBRARY)? {
         match crate::hand::load(conn, work_id) {
             Ok(Some((path, doc))) => {
@@ -1805,20 +1710,12 @@ fn write_work(
             Err(why) => report.unreadable_hand.push(why),
         }
     }
-    // **No `absorbed` guard here since O80 — the provenance columns answer
-    // it per field instead.** That guard did two jobs: "this document has been
-    // read back from disk, do not read it again" (the block above, which keeps
-    // it) and "do not overwrite these four columns". Conflating them is what
-    // let a title-only Save freeze `volume`, `series_id`, `kind` and
-    // `language` for a work nobody had edited that way — `librarydoc::of`
-    // projected the *effective* values, so every document claimed derivation's
-    // own answers as a person's.
-    //
-    // Migration 011 gave each of the four a `_hand` column, so this pass can
-    // write what it derived unconditionally and let `COALESCE` decide. A hand
-    // value wins; everything else re-derives, every scan, exactly as it did
-    // before anyone edited anything. This is the provenance column I7 left
-    // open and `derive.rs` has carried a comment about since #77.
+    // **No `absorbed` guard here — the provenance columns answer it per field
+    // instead (O80).** Migration 011 gave each of `volume`, `series_id`,
+    // `kind` and `language` a `_hand` column, so this pass can write what it
+    // derived unconditionally and let `COALESCE` decide. A hand value wins;
+    // everything else re-derives, every scan, as it does for a work nobody
+    // has edited.
     conn.execute(
         "UPDATE work
             SET series_id = COALESCE(series_id_hand, ?1),
@@ -1911,38 +1808,34 @@ fn digests_by_work(conn: &Connection) -> Result<BTreeMap<i64, Vec<HeldDigest>>, 
 ///    written works holding that member's key resolves to exactly one
 ///    work — the target.
 ///
-/// **(2) matches on `path`, not `sha256` alone — a false positive a review
-/// found in the design itself (O73's fold), not in an implementation of
-/// it.** A live work can drop material from `held` through at least three
-/// ordinary routes with nothing wrong having happened — `scan::forget_unseen`
-/// deleting `scan_entry` rows out from under a `member.root_id` that survives
-/// an unreadable subtree, a rule edit that suppresses entries
-/// (`Produces::Deferred`, see [`DeriveReport::suppressed`]), or a re-hash that
-/// fails and leaves the entry dropped while the member keeps its old digest.
-/// A byte-identical file sitting at an unrelated path anywhere else in the
-/// library would, on `sha256` alone, read as proof that one of those routes
-/// was actually a fold. It is not: the fold this function exists to detect —
-/// measured against the reproduction that opened O73 — never moves a file on
-/// disk, it only reclassifies which work and edition an unchanged path
-/// belongs to. So the superseded work's member and the covering member on the
-/// target must name the identical path, exactly as O73's own reproduction
-/// does, or there is no evidence of a fold at all.
+/// **(2) matches on `path`, not `sha256` alone.** A live work can drop
+/// material from `held` through at least three ordinary routes with nothing
+/// wrong having happened — `scan::forget_unseen` deleting `scan_entry` rows
+/// out from under a `member.root_id` that survives an unreadable subtree, a
+/// rule edit that suppresses entries (`Produces::Deferred`, see
+/// [`DeriveReport::suppressed`]), or a re-hash that fails and leaves the entry
+/// dropped while the member keeps its old digest. A byte-identical file
+/// sitting at an unrelated path anywhere else in the library would, on
+/// `sha256` alone, read as proof that one of those routes was actually a fold.
+/// It is not: the fold this function exists to detect never moves a file on
+/// disk, it only reclassifies which work and edition an unchanged path belongs
+/// to. So the superseded work's member and the covering member on the target
+/// must name the identical path, exactly as O73's own reproduction does, or
+/// there is no evidence of a fold at all.
 ///
 /// **(2) also requires the covering member's `root_id` to equal the
-/// candidate's own — a second false positive a review found in the
-/// registration path rather than in a fold.** `scan::add_root` canonicalises
-/// and inserts with no containment check, and `scan_entry` is unique on
-/// `(root_id, rel_path)`, so registering `/srv/manga` and then
-/// `/srv/manga/Extras` walks everything under `Extras` twice, as two rows
-/// with different `rel_path`s but identical absolute `path` and `sha256`. The
-/// rules can resolve those two rows into two different works, and letting
-/// either one leave `held` through any of the three routes above then
-/// produces every symptom of a fold over material that never moved: same
-/// path, same digest, and both roots still present so condition 4 excludes
-/// neither side. `root_id` equality on top of `path` and `sha256` separates
-/// that shape from an actual fold cleanly: O73's own reproduction has the
-/// candidate's member and the covering member descend from the same
-/// `scan_entry` under the same root, so the two ids are equal by
+/// candidate's own.** `scan::add_root` canonicalises and inserts with no
+/// containment check, and `scan_entry` is unique on `(root_id, rel_path)`, so
+/// registering `/srv/manga` and then `/srv/manga/Extras` walks everything
+/// under `Extras` twice, as two rows with different `rel_path`s but identical
+/// absolute `path` and `sha256`. The rules can resolve those two rows into two
+/// different works, and letting either one leave `held` through any of the
+/// three routes above then produces every symptom of a fold over material
+/// that never moved: same path, same digest, and both roots still present so
+/// condition 4 excludes neither side. `root_id` equality on top of `path` and
+/// `sha256` separates that shape from an actual fold cleanly: O73's own
+/// reproduction has the candidate's member and the covering member descend
+/// from the same `scan_entry` under the same root, so the two ids are equal by
 /// construction, and [`write_roots`] guarantees the covering member carries
 /// one at all.
 ///
@@ -1952,9 +1845,7 @@ fn digests_by_work(conn: &Connection) -> Result<BTreeMap<i64, Vec<HeldDigest>>, 
 /// [`DeriveReport::kept_editions`]'s own doc names exactly this shape, a work
 /// "naming files the rules no longer place there". Treating such a stale row
 /// as evidence would let a work be judged superseded on the strength of a
-/// fact this derive did not establish, and the `or_insert` tie-break that used
-/// to sit here compounded it by preferring the smallest work id — the older,
-/// and so likelier-stale, holder.
+/// fact this derive did not establish.
 ///
 /// **(4) is what keeps an imported work safe.** `006_member_root.sql` states
 /// that NULL means "under no root", "which is exactly true of an imported
@@ -2016,13 +1907,12 @@ fn superseded(
 
     // Every `(root_id, path, sha256)` held on an edition this derive actually
     // wrote, mapped to the *set* of written works that hold it — not to a
-    // single "owner", which is what made the map too strict (see this
-    // function's own doc). A stale edition on a written work
-    // (`DeriveReport::kept_editions`) contributes nothing here, by
-    // construction: only rows whose `(work_id, edition_key)` is in
-    // `written_editions` are counted as evidence at all. `root_id` joins the
-    // key alongside `path` and `sha256` — see condition 2's own doc above for
-    // why matching on the file alone is not enough.
+    // single "owner", which would be too strict (see this function's own
+    // doc). A stale edition on a written work (`DeriveReport::kept_editions`)
+    // contributes nothing here, by construction: only rows whose `(work_id,
+    // edition_key)` is in `written_editions` are counted as evidence at all.
+    // `root_id` joins the key alongside `path` and `sha256` — see condition
+    // 2's own doc above for why matching on the file alone is not enough.
     let mut digest_holders: BTreeMap<(i64, &str, &str), BTreeSet<i64>> = BTreeMap::new();
     for &work_id in written {
         let Some(editions) = wrote_editions.get(&work_id) else {
@@ -2085,7 +1975,7 @@ fn superseded(
         }
     }
     // Ascending by superseded work id, and stated rather than left to
-    // `BTreeMap` iteration order: the next task iterates this list to delete,
+    // `BTreeMap` iteration order: `derive_with` iterates this list to delete,
     // and that order must not depend on an incidental property of `held`.
     found.sort_unstable();
     Ok(found)
@@ -2106,29 +1996,25 @@ fn superseded(
 /// `ORDER BY … id LIMIT 1` because two rows really can sit at one address, and
 /// reading the hub off whichever one SQLite happened to return would make the
 /// answer depend on the page order of a b-tree. The oldest row wins, which is
-/// the one a reader's progress is on. Since F1 that is the oldest of the
-/// group's own library, and a row in no library only where the library has
-/// none at the address.
+/// the one a reader's progress is on. That is the oldest of the group's own
+/// library, and a row in no library only where the library has none at
+/// the address.
 ///
-/// **One derive can produce that state on its own**, which an earlier version
-/// of this comment denied by claiming it took a database written before the
-/// `known` probe existed. `derive/tests.rs`'s
+/// **One derive can produce that state on its own.** `derive/tests.rs`'s
 /// `a_volume_replaced_by_a_copy_of_another_does_not_fail_the_derive` is the
-/// counterexample: content decides before the address, so a duplicated
-/// download sends the second series' group onto the first's row, the `UPDATE`
-/// in [`write_work`] then stamps that row with the second series'
+/// case: content decides before the address, so a duplicated download sends
+/// the second series' group onto the first's row, the `UPDATE` in
+/// [`write_work`] then stamps that row with the second series'
 /// `(series_id, volume)`, and the row that used to hold that address keeps
-/// it. Two rows, one address, no legacy anything.
+/// it. Two rows, one address.
 ///
 /// **A group with no volume is addressed by its own files**, and it has to
-/// be. `(series_id, NULL)` stopped being an address the moment C4 keyed those
-/// groups individually: a series holding `001`, `002`, `003` and `004` has
-/// four rows matching `volume IS NULL`, and `ORDER BY id LIMIT 1` would hand
-/// every one of those groups the first of them — so a work whose bytes
-/// changed, or a work arriving later, would take the row of whichever
-/// volume-less work got there first, with the reader's position on it.
-/// Measured as a merge before C4 and as a theft after it, which is why both
-/// halves land together.
+/// be. `(series_id, NULL)` is not an address, because those groups are keyed
+/// individually: a series holding `001`, `002`, `003` and `004` has four rows
+/// matching `volume IS NULL`, and `ORDER BY id LIMIT 1` would hand every one
+/// of those groups the first of them — so a work whose bytes changed, or a
+/// work arriving later, would take the row of whichever volume-less work got
+/// there first, with the reader's position on it.
 ///
 /// So the probe asks what the group key already says: `rel_path` identifies
 /// the group, `member.path` is that `rel_path` under a root, and the row
@@ -2244,12 +2130,10 @@ fn kept_editions(conn: &Connection, work_id: i64, doc: &Sidecar) -> Result<usize
 /// **And the root's own directory name when the `rel_path` is empty**, which
 /// is the root itself having become the member. Reachable through any
 /// `set_series` rule broad enough to match `""` — a `prefix` rule with an
-/// empty pattern is what `proposals::accept` writes — and measured producing
-/// a work whose title was the empty string and whose slug was therefore
-/// `work`, since `slugify` falls back when nothing alphanumeric survives
-/// (whole-branch review, C3). The name of the directory the root points at is
-/// the only name that entry has; it is read off the member's absolute
-/// [`Candidate::path`], since its `rel_path` carries nothing at all.
+/// empty pattern is what `proposals::accept` writes. The name of the
+/// directory the root points at is the only name that entry has; it is read
+/// off the member's absolute [`Candidate::path`], since its `rel_path`
+/// carries nothing at all.
 fn title_of(group: &Group, hub_key: &str) -> String {
     let first = group
         .editions
@@ -2289,14 +2173,13 @@ fn title_of(group: &Group, hub_key: &str) -> String {
 /// else would remove it. The clear names [`SCANNER_CHAPTER_SOURCE`] rather
 /// than every row, because a number a person entered by hand, or one a
 /// `comicinfo` document supplied, is not this derive's to recover if it turns
-/// out wrong. **The write needs the identical guard and, until it had one,
-/// did not have it**: a member whose filename still parses — which is exactly
-/// the member someone corrects a chapter on, since `builtin-chapter` is a
-/// seeded rule — had its hand or `comicinfo` value silently reverted to the
-/// filename's answer on the very next re-derive, `chapter_source` included.
-/// So the write's own `WHERE` only lands on a row this derive already owns:
-/// one it just cleared (`NULL`) or one it wrote on a previous pass
-/// (`chapter_source = 'filename'`).
+/// out wrong. **The write needs the identical guard**: a member whose
+/// filename still parses — which is exactly the member someone corrects a
+/// chapter on, since `builtin-chapter` is a seeded rule — would have its hand
+/// or `comicinfo` value silently reverted to the filename's answer on the very
+/// next re-derive, `chapter_source` included. So the write's own `WHERE` only
+/// lands on a row this derive already owns: one it just cleared (`NULL`) or
+/// one it wrote on a previous pass (`chapter_source = 'filename'`).
 ///
 /// Matched on `(edition key, ordinal)`, which is where the members this call
 /// just described actually landed: `replace_editions` inserts them in document
@@ -2361,11 +2244,11 @@ fn write_chapters(conn: &Connection, work_id: i64, group: &Group) -> Result<(), 
 /// row this `UPDATE` is about to write, and the `member.root_id` foreign key
 /// refuses it. Caught specifically — [`is_foreign_key_violation`] — and
 /// turned into the same `NULL` `schema/006_member_root.sql`'s own `ON DELETE
-/// SET NULL` already wrote for every other member of that root, rather than
+/// SET NULL` writes for every other member of that root, rather than
 /// propagated: see [`DeriveReport::root_removed_mid_derive`] for why this is
 /// safe to treat as ordinary rather than as a hard failure. Any other error
 /// this statement can return — a locked database, a genuinely malformed
-/// statement — still propagates unchanged.
+/// statement — propagates unchanged.
 fn write_roots(
     conn: &Connection,
     work_id: i64,
@@ -2413,8 +2296,7 @@ fn write_roots(
 
 /// Whether SQLite refused a statement because it would have written a value
 /// with no matching row on the other end of a foreign key — [`write_roots`]'s
-/// own use is the only one today: a root deleted out from under an in-flight
-/// derive.
+/// own use is the only one: a root deleted out from under an in-flight derive.
 fn is_foreign_key_violation(e: &rusqlite::Error) -> bool {
     matches!(
         e,
@@ -2445,16 +2327,6 @@ fn in_page_order(candidates: &[Candidate]) -> Vec<&Candidate> {
 /// Write the edition kind and language the rules resolved onto the `edition`
 /// rows [`crate::import::scanned_in`] just wrote.
 ///
-/// **The columns were there and nothing reached them.** `rule` has carried
-/// `set_kind` and `set_language` since the scanner's own migration, the
-/// engine resolves both into [`crate::rules::Resolved`], and C3's accept form
-/// offers both as controls — while `import::replace_editions` inserts
-/// `(work_id, key, label)` and nothing else, so a rule saying
-/// `set_kind = 'official'` left `edition.kind` NULL. Measured on real
-/// archives rather than reasoned about: one accepted `edition-of` proposal,
-/// one rescan, and the `full-color` edition that rescan produced held no kind
-/// at all, so two of the accept form's five controls decided nothing.
-///
 /// # Why these two do not join the never-overwrite list
 ///
 /// A scan must not write over what a person established, which is why
@@ -2465,24 +2337,15 @@ fn in_page_order(candidates: &[Candidate]) -> Vec<&Candidate> {
 /// from an earlier derive, so never writing is the only rule available that
 /// cannot destroy the answer.
 ///
-/// This pair does not share the absence. `librarydoc::apply` is the only
-/// other production writer of a *value* into `edition.kind`/`edition.language`
-/// — `replace_editions`' `UPDATE` puts back what the row already held, across
-/// its own delete-and-reinsert — and `migrate::absorbed(…, LIBRARY)` answers,
-/// per work, whether such a document has actually been applied. So these join
-/// `work.series_id` and `work.volume` under that guard instead of joining a
-/// list whose reason does not reach them; see [`write_work`]'s own comment on
-/// it.
+/// This pair does not share the absence. `librarydoc::apply` is the only other
+/// production writer of a *value* into `edition.kind`/`edition.language` —
+/// `replace_editions`' `UPDATE` puts back what the row already held, across its
+/// own delete-and-reinsert — and it sets `kind_hand` and `language_hand` with
+/// them, which the `UPDATE` below keeps over the rules' answer. So these join
+/// `work.series_id` and `work.volume` instead of joining a list whose reason
+/// does not reach them; see [`write_work`]'s comment on the provenance columns.
 ///
-/// **Per work rather than per edition, which is the granularity the other
-/// writer has.** `librarydoc::apply` nulls `kind` and `language` on every
-/// edition of the work before applying the document over them, so what it
-/// speaks for is the whole work's edition metadata. A finer guard here would
-/// be claiming a distinction the document itself does not draw. The cost is
-/// real and stated: an edition derived *after* a document was absorbed takes
-/// no kind from the rules, and editing the document is the fix.
-///
-/// **Unconditional within the guard, and that is the point.** Editing a rule
+/// **Unconditional within `COALESCE`, and that is the point.** Editing a rule
 /// changes what the next scan writes, including back to NULL once no rule
 /// resolves one — the same shape [`write_chapters`] gives a chapter number
 /// this module wrote itself. Filling only a NULL would have been the safer
@@ -2529,7 +2392,7 @@ fn write_edition_metadata(
         };
         conn.execute(
             // `COALESCE(<hand>, <derived>)` — O80, migration 011. See
-            // `write_work`'s note where the `absorbed` guard used to stand.
+            // `write_work`'s note on why there is no `absorbed` guard.
             "UPDATE edition
                 SET kind     = COALESCE(kind_hand, ?1),
                     language = COALESCE(language_hand, ?2)
@@ -2565,8 +2428,8 @@ fn write_edition_metadata(
 /// second implementation this paragraph exists to refuse.
 ///
 /// The map is keyed by `(root_id, directory rel_path)` — the same identity
-/// [`classify`]'s own `chapter_dirs` set uses — with the series name attached,
-/// which that set does not carry because nothing before Task 8 needed it.
+/// [`classify`]'s own `chapter_dirs` set uses — with the series name
+/// attached, which that set does not carry.
 ///
 /// # Errors
 ///
@@ -2610,23 +2473,20 @@ pub(crate) fn unattached_chapter_dirs(
 /// already excluded by that function.
 ///
 /// **Shared with `proposals::accept` for the same reason
-/// [`unattached_chapter_dirs`] is shared with `proposals::raise`.** An
-/// earlier version of `accept` answered "which paths belong to this series"
-/// by reading the series' own `sort_title` — reasoning that seeded rule 1
-/// resolves a series from the first path component, so the title *is* that
-/// component. **False whenever a higher-ordinal rule decides the series
-/// first** — seeded rule 4 exists precisely because a filename sometimes
-/// repeats the series where the directory does not — and it produced a
-/// `prefix` rule that matched nothing: the "accepted, and nothing a person
-/// can see" outcome this module refuses `attach-chapters` to avoid, reached
-/// by a different road. Reading `admit`'s own resolution here, rather than
+/// [`unattached_chapter_dirs`] is shared with `proposals::raise`.** Reading
+/// the series' own `sort_title` as the answer to "which paths belong to this
+/// series" rests on reasoning that seeded rule 1 resolves a series from the
+/// first path component, so the title *is* that component. **False whenever
+/// a higher-ordinal rule decides the series first** — seeded rule 4 exists
+/// precisely because a filename sometimes repeats the series where the
+/// directory does not. Reading `admit`'s own resolution here, rather than
 /// re-deriving "which series does this path belong to" a second way in
 /// `proposals.rs`, is what keeps this answer and `derive`'s own from being
 /// able to disagree.
 ///
 /// **The root id travels with the path** so `proposals::accept` can scope the
 /// rule it writes to the one root the subject's own material actually lives
-/// under (I6) — a `prefix` rule with `root_id` NULL applies to every root
+/// under — a `prefix` rule with `root_id` NULL applies to every root
 /// forever, including one added after the accept, sharing nothing with the
 /// subject beyond a directory name that happens to match.
 ///
@@ -2635,9 +2495,9 @@ pub(crate) fn unattached_chapter_dirs(
 /// `accept` needs is "where does this series' material live", not "which of
 /// it is a member".
 ///
-/// **Within `library` — Part F1.** Only that library's directories answer, so the
-/// same title in another library contributes nothing. A `library` of `None`
-/// has no directory and answers empty.
+/// **Within `library`.** Only that library's directories answer, so the same
+/// title in another library contributes nothing. A `library` of `None` has no
+/// directory and answers empty.
 ///
 /// # Errors
 ///
@@ -2659,21 +2519,18 @@ pub(crate) fn rel_paths_for_series(
 thread_local! {
     /// How many times [`rel_paths_by_series`] has run **on the calling
     /// thread**, in this test process. The one-sweep guarantee its own doc
-    /// describes used to be pinned by a claim in a comment ("every callee
-    /// takes `&[(i64, String)]`, so a second call is not reachable without a
-    /// signature change"), which was false: `proposals::side` holds a
-    /// `Connection` and `proposals::offered_rule` holds a `Connection` and a
-    /// `&str`, and either could call [`rel_paths_for_series`] again with no
-    /// signature change at all. This counts instead of asserting.
+    /// describes is checked by counting calls, not by a signature:
+    /// `proposals::side` holds a `Connection` and `proposals::offered_rule`
+    /// holds a `Connection` and a `&str`, and either could call
+    /// [`rel_paths_for_series`] again with no signature change at all.
     ///
     /// Thread-local, not a shared `static`, because libtest runs `#[test]`
     /// functions concurrently on a thread pool: a single process-wide
-    /// counter measured `2` for a lone `evidence` call the moment another
-    /// test's `evidence`/`preview` happened to land inside the same
-    /// reset-then-read window on a different thread. Nothing here calls
-    /// `rel_paths_by_series` from a second thread, so a thread-local count
-    /// is exact for whichever test resets and reads it, regardless of what
-    /// else the suite is doing.
+    /// counter would also count another test's `evidence`/`preview` landing
+    /// inside the same reset-then-read window on a different thread. Nothing
+    /// here calls `rel_paths_by_series` from a second thread, so a
+    /// thread-local count is exact for whichever test resets and reads it,
+    /// regardless of what else the suite is doing.
     pub(crate) static REL_PATHS_BY_SERIES_CALLS: std::cell::Cell<usize> =
         const { std::cell::Cell::new(0) };
 }
@@ -2696,7 +2553,7 @@ pub(crate) type RelPathsBySeries = BTreeMap<(Option<i64>, String), Vec<(i64, Str
 /// `scan_entry` row under each, and resolves every one of them; deciding
 /// whether the series that came back is one of two rather than one of one is
 /// free beside it. `proposals::evidence` asks about both ends of a proposal
-/// at once and used to pay for the whole sweep twice to do it.
+/// at once, so it pays for the whole sweep once rather than twice.
 pub(crate) fn rel_paths_by_series(
     conn: &Connection,
     series: &BTreeSet<(Option<i64>, &str)>,

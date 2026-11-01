@@ -9,21 +9,6 @@ use crate::Library;
 /// `a_container_that_will_not_open_is_recorded_with_its_format_and_no_count`
 /// reaches.
 ///
-/// This used to say the choice was *forced* — `taiyaku-library` does not
-/// depend on `zip` and must not start, its dependency list being "five
-/// entries" that `docs/status.md` quotes. It is **eight**: `notify`, `regex`,
-/// `rusqlite`, `serde`, `serde_json`, `sha2`, `taiyaku-core` and
-/// `taiyaku-read` (`Cargo.toml`, checked 2026-08-18) — six before this
-/// branch, and it was written as five then too. `docs/status.md` names the
-/// crates rather than counting them, so nothing there had to move. The
-/// dependency claim stands and the
-/// conclusion did not: [`write_archive`] writes a stored-method archive from
-/// bytes, needing no library at all. That mattered, because "every derive
-/// fixture is a directory of page images" meant `pages = 0` never occurred in
-/// any test, and the layout this project's own corpus uses — archives inside
-/// volume directories — derived to a single page-less work with both archives
-/// suppressed (whole-branch review, C1).
-///
 /// `pub(crate)` for `derive/tests.rs`, which has to see *these* facts rather
 /// than a second tree describing the same corpus: two fixtures drift, and the
 /// whole point of the derive tests is that both modules read one set of rows.
@@ -44,20 +29,14 @@ pub(crate) fn fixture() -> crate::tests::TempDir {
 /// A `.cbz` at `path` holding `pages` stored page entries.
 ///
 /// **Written from bytes rather than through a zip library, and that is what
-/// makes it affordable.** `taiyaku-library` depends on five crates and `zip`
-/// is not one of them — `docs/status.md` quotes that list — so the choice was
-/// between a new dependency and this. A stored-method archive is a fixed
-/// 30-byte local header per entry, the entry's name and bytes, a 46-byte
-/// central directory record per entry, and a 22-byte end record; nothing here
-/// compresses, so nothing here needs a compressor.
+/// makes it affordable.** A stored-method archive is a fixed 30-byte local
+/// header per entry, the entry's name and bytes, a 46-byte central directory
+/// record per entry, and a 22-byte end record; nothing here compresses, so
+/// nothing here needs a compressor.
 ///
-/// **Why a fixture needed it at all.** Every derive fixture in this
-/// repository built its members out of directories of page images, so
-/// `scan_entry.pages` was never `0` and no test ever met a container holding
+/// **Why a fixture needed it at all.** It gives a test a container holding
 /// archives rather than pages — the shape this project's own corpus uses, and
-/// the one where a volume directory took `pages = Some(0)` from the walk,
-/// became a member, and suppressed the archive that actually held the pages.
-/// Two archives derived to one page-less work (whole-branch review, C1).
+/// the one where a volume directory takes `pages = Some(0)` from the walk.
 ///
 /// Each page's bytes name the archive holding them, for the reason
 /// [`write_pages`] gives: two archives with equal page counts must not hash
@@ -194,10 +173,9 @@ fn a_hand_written_archive_lists_its_pages() {
 
 #[test]
 fn two_hand_written_archives_of_equal_length_do_not_hash_alike() {
-    // The property [`write_pages`] learned the hard way and this helper
-    // inherits: two members with the same page count must not be
-    // byte-identical, or `content_key` collides and two works silently merge
-    // into one row.
+    // The property [`write_pages`] has and this helper inherits: two members
+    // with the same page count must not be byte-identical, or `content_key`
+    // collides and two works silently merge into one row.
     let tree = crate::tests::tempdir("scan-archive-distinct");
     write_archive(&tree.path().join("v01").join("Series v01.cbz"), 3);
     write_archive(&tree.path().join("v02").join("Series v02.cbz"), 3);
@@ -213,18 +191,15 @@ fn two_hand_written_archives_of_equal_length_do_not_hash_alike() {
 /// A directory member holding `pages` files `is_page_name` accepts.
 ///
 /// **Each page's bytes name the directory that holds it**, so two members are
-/// never byte-identical by accident. The first version wrote the same
-/// placeholder into every page, which meant any two volumes with equal page
-/// counts hashed to the same member digest, produced the same `content_key`,
-/// and **silently merged into one `work` row** — `derive`'s documented
+/// never byte-identical by accident. Two volumes with equal page counts would
+/// otherwise hash to the same member digest, produce the same `content_key`,
+/// and **silently merge into one `work` row** — `derive`'s documented
 /// duplicated-download case, reached by a fixture rather than by a corpus.
-/// It went unnoticed until a Task 8 fixture happened to give two volumes the
-/// same length, and then surfaced as a proposal count that was short by one.
 ///
-/// Varying the counts per volume also avoids it, and that is what the fixtures
-/// did first — but a helper that is only correct while every caller remembers
-/// to vary something is not correct, it is lucky. `lib.rs` makes the same
-/// argument about `recursive_triggers`, in the same words.
+/// Varying the counts per volume would avoid it too, but a helper that is only
+/// correct while every caller remembers to vary something is not correct, it
+/// is lucky. `lib.rs` makes the same argument about `recursive_triggers`, in
+/// the same words.
 ///
 /// A test that *wants* two identical members writes them itself; deliberate
 /// duplication should be visible at the call site, not inherited from a
@@ -301,11 +276,10 @@ fn a_scan_records_every_entry_with_the_format_its_bytes_say() {
 #[test]
 fn the_page_images_inside_a_directory_member_are_counted_and_not_recorded() {
     // Nine page files exist on disk under this fixture. Recording one row per
-    // page would put hundreds of thousands of rows in `scan_entry` for a real
-    // library — 156 series of directory members — to hold facts that
-    // derivation never reads one at a time. `is_page_name` is the test, and it
-    // is the same function `read_edition` uses, so what counts as a page is
-    // decided in one place.
+    // page would put a row for every page image of a real library in
+    // `scan_entry`, to hold facts that derivation never reads one at a time.
+    // `is_page_name` is the test, and it is the same function `read_edition`
+    // uses, so what counts as a page is decided in one place.
     let tree = fixture();
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
@@ -385,9 +359,7 @@ fn a_root_that_has_become_empty_is_refused_and_nothing_is_applied() {
     assert_eq!(kept, 7, "nothing was applied");
 }
 
-/// `last_scan_at` and `last_scan_status` have existed since migration 1 and
-/// nothing had ever written them before this. C4 §3's regime line quotes
-/// both.
+/// C4 §3's regime line quotes `last_scan_at` and `last_scan_status`.
 #[test]
 fn a_scan_records_when_it_ran_and_how_it_went() {
     let tree = fixture();
@@ -408,10 +380,10 @@ fn a_scan_records_when_it_ran_and_how_it_went() {
     assert_eq!(status.as_deref(), Some("ok"));
 }
 
-/// Including the outcome nobody wants to write: B §8.1's refusal is a
-/// status, not a silence. Same fixture shape as
+/// Including the outcome nobody wants to write: B §8.1's refusal is a status,
+/// not a silence. Same fixture shape as
 /// `a_root_that_has_become_empty_is_refused_and_nothing_is_applied`, above —
-/// this test is about the two columns that test does not look at.
+/// this test is about the `last_scan_status` column that test does not look at.
 #[test]
 fn a_refused_empty_scan_records_the_refusal_rather_than_nothing() {
     let tree = fixture();
@@ -452,10 +424,10 @@ fn a_symlink_cycle_is_an_error_naming_the_depth_rather_than_a_silent_truncation(
     );
 }
 
-/// IMPORTANT — `scan_root`'s own doc comment calls this "the one case this
-/// function tries hardest not to leave silent": an `Err` must still land
-/// `last_scan_status = "failed"` on the root row, not `"ok"` and not
-/// nothing. Root-safe like the fixture it borrows —
+/// `scan_root`'s own doc comment calls this "the one case this function tries
+/// hardest not to leave silent": an `Err` must still land
+/// `last_scan_status = "failed"` on the root row, not `"ok"` and not nothing.
+/// Root-safe like the fixture it borrows —
 /// `a_symlink_cycle_is_an_error_naming_the_depth_rather_than_a_silent_truncation`,
 /// above — a symlink cycle is an error `CAP_DAC_OVERRIDE` cannot bypass the
 /// way a permission trick can, so this proves something under CI's own root
@@ -490,11 +462,10 @@ fn a_failed_scan_records_failed_rather_than_ok_or_nothing() {
 fn an_unreadable_directory_is_skipped_counted_and_named_rather_than_failing_the_root() {
     // I4. `lost+found` under a freshly mounted share is `0700`, owned by
     // root — the deployment shape this scanner exists for — so a non-root
-    // `taiyaku library scan --add /srv/manga` met it on every mount point
-    // and failed the *whole root* over one directory it was never going to
-    // be able to read anyway. This module's own stated principle — one
-    // unreadable file must not leave a library unscanned — had never
-    // actually been applied to a directory before this test existed.
+    // `taiyaku library scan --add /srv/manga` meets it on every mount point,
+    // and one directory it can never read must not fail the *whole root*.
+    // This module's own stated principle is that one unreadable file must not
+    // leave a library unscanned.
     let tree = fixture();
     let locked = tree.path().join("lost+found");
     std::fs::create_dir_all(&locked).expect("mkdir");
@@ -569,9 +540,8 @@ fn an_unreadable_directory_is_skipped_counted_and_named_rather_than_failing_the_
 #[test]
 fn a_page_added_two_levels_down_refreshes_every_ancestors_total() {
     // A directory's mtime does not move when anything happens below it, so
-    // an ancestor's recursive total is only correct if the walk rewrites it
-    // unconditionally. Measured: adding a page to `series/vol01/` leaves
-    // `series` and the root byte-identical with unchanged mtimes.
+    // an ancestor's recursive total is only correct if the walk rewrites
+    // it unconditionally.
     let tree = fixture();
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
@@ -614,12 +584,10 @@ fn a_page_added_two_levels_down_refreshes_every_ancestors_total() {
 
 #[test]
 fn a_container_that_will_not_open_is_recorded_with_its_format_and_no_count() {
-    // Reaches `pages_of`'s zip arm, which no other test in this module does
-    // — the fixture holds no archive, so an implementation that reopened
-    // every container on every scan would pass everything else here. Four
-    // bytes of zip signature and nothing behind them: `sniff` answers
-    // `Zip`, `member_pages` refuses, and the refusal is swallowed rather
-    // than failing the scan.
+    // Reaches `pages_of`'s zip arm, which the fixture alone does not: it
+    // holds no archive. Four bytes of zip signature and nothing behind them:
+    // `sniff` answers `Zip`, `member_pages` refuses, and the refusal is
+    // swallowed rather than failing the scan.
     let tree = fixture();
     std::fs::write(tree.path().join("truncated.cbz"), b"PK\x03\x04").expect("write");
     let library = Library::open_in_memory().expect("open");
@@ -700,26 +668,10 @@ fn an_unchanged_container_is_not_reopened() {
 /// **A file's modification time reaches the scan entry, and is the file's
 /// own.**
 ///
-/// `mtime_secs` could be replaced with the constant `0`, `1` or `-1` and every
-/// test in the workspace still passed — found by the first sharded run of
-/// `.forgejo/workflows/mutants.yml` on 2026-08-20, on the forge rather than
-/// here.
-///
-/// **It was recorded as caught by the local sweep, and that was the more
-/// interesting half.** Two `derive` tests
-/// (`a_volume_whose_files_change_stays_the_same_work_and_keeps_its_progress`
-/// and `a_volume_replaced_by_a_copy_of_another_does_not_fail_the_derive`) fail
-/// under the mutant when cargo-mutants runs them in its copied tree, and pass
-/// under the same mutant applied in place — verified by hand both ways. They
-/// are the same pair that raced a one-second clock in CI earlier that week and
-/// the pair O56 is written about, so their environment-sensitivity was already
-/// known; what is new is that it was **inflating the mutation score**, marking
-/// a mutant caught that nothing deliberately catches.
-///
-/// So this asserts the property directly instead: a known mtime, set on the
-/// file rather than waited for, read back through `measure`. No clock, no
-/// second-resolution race, no dependence on which directory the tree was
-/// copied into.
+/// Replacing `mtime_secs` with the constant `0`, `1` or `-1` must fail a test,
+/// so this asserts the property directly: a known mtime, set on the file
+/// rather than waited for, read back through `measure`. No clock, no
+/// second-resolution race.
 #[test]
 fn a_files_modification_time_reaches_its_scan_entry() {
     let dir = crate::tests::tempdir("scan-mtime");
@@ -732,7 +684,7 @@ fn a_files_modification_time_reaches_its_scan_entry() {
     // A fixed instant well clear of both zero and now, so none of the three
     // constants the mutants use can coincide with it: 2001-09-09T01:46:40Z.
     // **Set rather than waited for** — the point of this test is that it does
-    // not race a one-second clock the way the two `derive` tests did.
+    // not race a one-second clock.
     const STAMPED: i64 = 1_000_000_000;
     let when = std::time::UNIX_EPOCH + std::time::Duration::from_secs(STAMPED as u64);
     std::fs::File::open(&volume)
@@ -768,9 +720,9 @@ fn a_files_modification_time_reaches_its_scan_entry() {
 }
 
 /// **The default is off, and that is the whole point of migration 012.**
-/// `<root>/.taiyaku/` appeared in a person's media tree without their asking;
-/// a root now says so or gets nothing. A root added by `add_root` takes the
-/// column's default, so this pins the default rather than any call site.
+/// `<root>/.taiyaku/` must not appear in a person's media tree without their
+/// asking: a root says so or gets nothing. A root added by `add_root` takes
+/// the column's default, so this pins the default rather than any call site.
 #[test]
 fn a_new_root_keeps_no_documents_by_default() {
     let dir = crate::tests::tempdir("scan-keeps-documents-default");
@@ -794,7 +746,7 @@ fn a_new_root_keeps_no_documents_by_default() {
 }
 
 /// A root told to keep documents keeps them. Without this the setting could
-/// be hard-coded off and every other test in this plan would still pass.
+/// be hard-coded off.
 #[test]
 fn a_root_can_be_told_to_keep_documents() {
     let dir = crate::tests::tempdir("scan-keeps-documents-on");
@@ -1003,17 +955,15 @@ fn a_root_reached_only_through_a_symlink_is_still_recognised_as_nested() {
 /// (`an_unreadable_directory_is_skipped_counted_and_named_rather_than_failing_the_root`,
 /// above, guards against exactly that). A guard that skips when the
 /// restriction did not take is not enough on its own here, either: libtest
-/// captures *both* stdout and stderr for a passing test, checked directly
-/// rather than assumed, so a skip announced on either stream is invisible
-/// under a plain `cargo test` — it would report an ordinary `ok` on the CI
-/// host every single run, with nothing to show it measured nothing.
+/// captures *both* stdout and stderr for a passing test, so a skip announced
+/// on either stream is invisible under a plain `cargo test` — it would report
+/// an ordinary `ok` on the CI host every single run, with nothing to show it
+/// measured nothing.
 ///
 /// A plain **file** at the path a directory is required at needs no such
 /// guard: `std::fs::read_dir` on a non-directory fails with `ENOTDIR`
 /// unconditionally, a type mismatch rather than a permission check, so it
-/// refuses for root exactly as it does for anyone else — confirmed directly
-/// against a `rust:alpine` container running as uid 0, not assumed from
-/// `chmod`'s own behaviour.
+/// refuses for root exactly as it does for anyone else.
 #[test]
 fn a_path_the_process_cannot_read_is_refused_saying_so() {
     let dir = crate::tests::tempdir("scan-add-root-checked-unreadable");
@@ -1070,14 +1020,13 @@ fn a_nonexistent_path_produces_a_distinct_error_from_an_unreadable_path() {
     );
 }
 
-/// IMPORTANT 2 (task 11 fix round 1) — a store fault, not any of this
-/// function's three documented caller-fault refusals, must answer
-/// [`AddRootError::Failed`], not [`AddRootError::Unusable`]. `path` here
-/// exists, is readable and overlaps nothing, so every caller-fault check
-/// passes; `PRAGMA query_only` then makes the connection itself refuse to
-/// write, which is what a disk-full or database-busy failure looks like
-/// from inside `add_root` — the insert [`add_root_checked`] runs once its
-/// own checks are satisfied.
+/// A store fault, not any of this function's three documented caller-fault
+/// refusals, must answer [`AddRootError::Failed`], not
+/// [`AddRootError::Unusable`]. `path` here exists, is readable and overlaps
+/// nothing, so every caller-fault check passes; `PRAGMA query_only` then makes
+/// the connection itself refuse to write, which is what a disk-full or
+/// database-busy failure looks like from inside `add_root` — the insert
+/// [`add_root_checked`] runs once its own checks are satisfied.
 #[test]
 fn a_store_fault_while_adding_a_root_is_reported_as_failed_not_unusable() {
     let dir = crate::tests::tempdir("scan-add-root-checked-store-fault");
@@ -1094,12 +1043,10 @@ fn a_store_fault_while_adding_a_root_is_reported_as_failed_not_unusable() {
     );
 }
 
-/// **The fix `mark_derive_failed` exists for** — whole-branch review,
-/// Important 1: [`scan_root`] itself only ever sees the walk, and writes
-/// `last_scan_status = "ok"` the moment that commits, before the derive half
-/// of the job (its own caller's job, per this function's own doc comment)
-/// has even started. Nothing here drove the function at all before this
-/// test — the row it corrects had no test reading it back.
+/// **The correction `mark_derive_failed` exists for.** [`scan_root`] itself
+/// only ever sees the walk, and writes `last_scan_status = "ok"` the moment
+/// that commits, before the derive half of the job (its own caller's job, per
+/// this function's own doc comment) has even started.
 #[test]
 fn mark_derive_failed_corrects_a_status_a_successful_scan_already_wrote() {
     let dir = crate::tests::tempdir("scan-mark-derive-failed");
@@ -1162,8 +1109,8 @@ fn adding_a_root_probes_the_watcher_before_the_first_scan() {
 /// `scan_interval_secs: Some(interval_secs)` from `add_root_checked`'s own
 /// `Ok(Added { root: Root { .., ..root }, .. })` leaves `Added::root` holding
 /// whatever `add_root` returned before the probe ran — `None`, the fresh
-/// row's column default — while the stored row itself still carries the real
-/// interval, and the whole suite stayed green.
+/// row's column default — while the stored row itself still carries the
+/// real interval.
 #[test]
 fn adding_a_root_returns_the_same_interval_it_wrote_to_the_row() {
     let dir = crate::tests::tempdir("scan-add-root-checked-returned-interval");
@@ -1706,12 +1653,10 @@ fn a_dir_is_not_added_to_a_library_called_a_dot_name() {
 
 /// The trap `rules::update`'s own test names: a patch must change only the
 /// field it names, checked against a root where every one of the five
-/// nullable columns already holds a distinct, non-default value.
-/// `rules::update`'s equivalent test passed while still writing 9 of 11
-/// columns unconditionally, because no fixture there ever varied more than
-/// two of them — a fixture that leaves four columns at their column default
-/// cannot tell "patched only what it named" from "overwrote everything with
-/// what a fresh read already held."
+/// nullable columns already holds a distinct, non-default value. A fixture
+/// that leaves four columns at their column default cannot tell "patched
+/// only what it named" from "overwrote everything with what a fresh read
+/// already held."
 #[test]
 fn a_root_patch_changes_only_the_field_it_names() {
     let dir = crate::tests::tempdir("scan-root-patch");
@@ -1770,13 +1715,9 @@ fn a_root_patch_changes_only_the_field_it_names() {
 /// A listed root reports `exclude_globs`, so a client can see what the
 /// column holds.
 ///
-/// **O92's readable half.** The column shipped in migration 1 and
-/// [`super::update_root`] has always patched it, but `Root` did not carry it
-/// and the list query did not select it — so the roots screen's box for it
-/// was write-only, starting empty whatever the row held. Applying the pattern
-/// to a walk was the rest of O92 and closed on 2026-09-09: `scan_root_inner`
-/// compiles the column into an [`super::Excluder`] and `measure_dir` consults
-/// it before descending.
+/// **O92's readable half.** Applying the pattern to a walk is the rest of O92:
+/// `scan_root_inner` compiles the column into an [`super::Excluder`] and
+/// `measure_dir` consults it before descending.
 ///
 /// **Both cases, because only the pair pins the read.** A test that checks
 /// the patched value alone passes against a query hard-coding any non-`None`
@@ -2046,16 +1987,11 @@ fn removal_cost_leaves_the_database_exactly_as_it_found_it() {
     );
 }
 
-/// The case `unchecked_transaction` could never survive, and the one Task
-/// 11's HTTP route will eventually call `removal_cost` through: a caller
-/// that already holds an open transaction. `preview::preview` already proves
-/// what a plain `BEGIN` does there — `import::scanned` and `fold::absorb`
-/// each refused outright, on the very first work, the moment they tried to
-/// open one under `preview`'s own outer transaction — which is exactly why
-/// `removal_cost` and `remove_root` were switched to `crate::Nested` instead.
-/// This pins the half that mattered most: `Nested`'s rollback path — a
-/// `ROLLBACK TO SAVEPOINT` folded back into the caller's still-open
-/// transaction, not a real `ROLLBACK` — must still leave the database
+/// The case a plain `BEGIN` cannot survive: a caller that already holds an open
+/// transaction. `removal_cost` and `remove_root` open [`crate::Nested`] rather
+/// than `unchecked_transaction` directly, so this pins `Nested`'s rollback
+/// path — a `ROLLBACK TO SAVEPOINT` folded back into the caller's still-open
+/// transaction, not a real `ROLLBACK` — which must still leave the database
 /// exactly as it found it, and still report the same counts a standalone
 /// call would.
 #[test]
@@ -2286,22 +2222,19 @@ fn removal_cost_does_not_repair_a_document_gap_on_the_surviving_root() {
     );
 }
 
-/// **Whole-branch review, Important 2 — the positive twin of the test just
-/// above.** `removal_cost` and `remove_root` both run `apply_removal`, which
-/// derives under `Documents::Skip` and so cannot itself have written the
-/// repair — proven above by `removal_cost`, whose own transaction always
-/// rolls back, leaving the gap exactly as it found it. `remove_root` commits
-/// instead, and must actually repair the gap for real: it runs a second,
-/// real `Documents::Reconcile` derive afterward (see that function's own
-/// doc), so the repair the O82 retry promises still happens on a real
-/// removal.
+/// **The positive twin of the test just above.** `removal_cost` and
+/// `remove_root` both run `apply_removal`, which derives under
+/// `Documents::Skip` and so cannot itself have written the repair — proven
+/// above by `removal_cost`, whose own transaction always rolls back, leaving
+/// the gap exactly as it found it. `remove_root` commits instead, and must
+/// actually repair the gap for real: it runs a second, real
+/// `Documents::Reconcile` derive afterward (see that function's own doc), so
+/// the repair the O82 retry promises still happens on a real removal.
 ///
-/// **The trace additionally proves *when*.** Before this fix, `remove_root`
-/// ran the `Reconcile` pass *inside* the same transaction `DELETE FROM root`
-/// used, so any `Err` after the repair wrote the file would have rolled the
-/// database back while leaving the filesystem moved — the exact invariant
-/// `write_work`'s own doc comment states a document rename must never risk.
-/// Tracing the same way
+/// **The trace additionally proves *when*.** A `Reconcile` pass inside the
+/// same transaction `DELETE FROM root` uses would, on any `Err` after the
+/// repair wrote the file, roll the database back while leaving the filesystem
+/// moved. Tracing the same way
 /// `remove_root_sends_delete_from_root_inside_an_already_open_transaction`
 /// does, this pins that the repair's own derive pass opens its own
 /// transaction only *after* `remove_root`'s own `COMMIT` — never before it.
@@ -3288,8 +3221,7 @@ fn removing_a_one_dir_library_names_its_one_account() {
 /// reimplemented — so this test pins the five behaviours the design chose it
 /// *for*, not the crate's whole surface.
 ///
-/// Verified against `ignore` 0.4.33 on 2026-09-09 before it was written here;
-/// each row is a behaviour a hand-rolled matcher would have had to be given
+/// Each row is a behaviour a hand-rolled matcher would have had to be given
 /// on purpose, and four of the five are ones `globset` alone cannot express.
 #[test]
 fn the_pattern_language_is_gitignores() {
@@ -3368,10 +3300,9 @@ fn no_pattern_excludes_nothing() {
 /// standing — `rules.rs`'s rule, for its reason: a scan of a real library
 /// must not die over one bad pattern.
 ///
-/// **`\` and `a{b` are the two shapes `ignore` 0.4.33 actually rejects**,
-/// measured on 2026-09-09. `a[`, `[a-`, `[[:bogus:]]` and `***` all compile,
-/// so this test names the two that exist rather than a category that does
-/// not.
+/// **`\` and `a{b` are the two shapes `ignore` 0.4.33 actually rejects.** `a[`,
+/// `[a-`, `[[:bogus:]]` and `***` all compile, so this test names the two that
+/// exist rather than a category that does not.
 #[test]
 fn a_bad_line_disables_itself_and_nothing_else() {
     let excluder = super::Excluder::build(Some("extras\n\\\n*.nfo"));
@@ -3620,8 +3551,7 @@ fn a_root_with_no_patterns_reports_the_fields_empty() {
 /// asserting only one directory's total cannot see that the parent's
 /// recursive sum — which is just the sum of its children's totals — followed
 /// the reduction up the tree. `an_excluded_directory_is_not_walked_and_is_named`,
-/// above, is the only existing test that touches directory content, and it
-/// excludes a whole directory wholesale rather than one page inside one.
+/// above, excludes a whole directory wholesale rather than one page inside one.
 #[test]
 fn an_excluded_page_image_is_dropped_from_its_directorys_page_total() {
     let tree = fixture();
@@ -3689,26 +3619,24 @@ fn an_excluded_page_image_is_dropped_from_its_directorys_page_total() {
 /// with `dirs`, `files`, `added`, `updated` and `gone` all zero — nothing was
 /// applied — but `unreadable_dirs`, `excluded_dirs` and `excluded_files` are
 /// filled in from `walk`, and `bad_exclude_patterns` from `excluder.complaints`
-/// — **not from `walk`, whatever an earlier version of this comment claimed**
-/// — because the walk that found nothing to apply still ran and still
-/// excluded whatever the pattern named on the way, and the same patterns
-/// still failed to compile whether or not the walk they hobbled ever produced
-/// anything. An unmounted share looks exactly like a root whose own pattern
-/// excludes everything beneath it — both leave the walk with only the root
-/// itself — so this pins the combination directly rather than trusting that
-/// the two code paths agree.
+/// — **not from `walk`** — because the walk that found nothing to apply still
+/// ran and still excluded whatever the pattern named on the way, and the same
+/// patterns still failed to compile whether or not the walk they hobbled ever
+/// produced anything. An unmounted share looks exactly like a root whose own
+/// pattern excludes everything beneath it — both leave the walk with only the
+/// root itself — so this pins the combination directly rather than trusting
+/// that the two code paths agree.
 ///
-/// **Assertion 5 is the one that matters most.** It proves the refusal
-/// protected the library from a pattern that would otherwise have forgotten
-/// every entry under the root: `gone` stays `0`, and the rows the first,
-/// unexcluded scan wrote are still there after the second, refused one.
+/// **The last two assertions are the ones that matter most.** They prove the
+/// refusal protected the library from a pattern that would otherwise have
+/// forgotten every entry under the root: `gone` stays `0`, and the rows the
+/// first, unexcluded scan wrote are still there after the second, refused one.
 ///
-/// **`bad_exclude_patterns` is pinned too — Minor 4.** `excluding`'s own
-/// pattern list carries a second, unparseable line (`a{b`, the exact shape
+/// **`bad_exclude_patterns` is pinned too.** `excluding`'s own pattern list
+/// carries a second, unparseable line (`a{b`, the exact shape
 /// [`check_exclude_globs_names_the_line_it_refuses`] uses) alongside `*`, so
-/// this refusal's own `bad_exclude_patterns` has something in it to assert
-/// against — setting that field to `Vec::new()` in `scan_root_inner`'s struct
-/// literal left every test in this module passing before this addition.
+/// this refusal's own `bad_exclude_patterns` has something in it to
+/// assert against.
 #[test]
 fn a_refused_scan_reports_what_it_excluded_and_applies_nothing() {
     let tree = fixture();
@@ -3764,9 +3692,8 @@ fn a_refused_scan_reports_what_it_excluded_and_applies_nothing() {
 /// The §8.1 refusal names `exclude_globs` as a fourth possible cause,
 /// always — but only recommends removing the root when the walk that just
 /// ran did not actually exclude anything on the way to finding nothing.
-/// Important 3: an admin whose own pattern swallowed the whole root a moment
-/// ago must not be told the most destructive remedy this product has (C4
-/// §2) is the fix.
+/// An admin whose own pattern swallowed the whole root a moment ago must not
+/// be told the most destructive remedy this product has (C4 §2) is the fix.
 #[test]
 fn the_refusal_offers_removal_only_when_exclusion_did_not_cause_it() {
     let library = Library::open_in_memory().expect("open");
@@ -3821,9 +3748,9 @@ fn the_refusal_offers_removal_only_when_exclusion_did_not_cause_it() {
 
 /// `excluded_everything` (`scan.rs`) reads
 /// `!walk.excluded_dirs.is_empty() || walk.excluded_files > 0` — and every
-/// other test that reaches it excludes both a directory and a file in the
-/// same walk, so `||` and `&&` agree and `> 0` could read `< 0` (always
-/// false for a `usize`) without either mutant surviving a `MISSED`.
+/// other test in this module that reaches it with something excluded has a
+/// non-empty `excluded_dirs`, so `> 0` could read `< 0` (always false for a
+/// `usize`) with no other test failing.
 ///
 /// This root has no subdirectory at all: `excluded_dirs` is empty and
 /// `excluded_files` is the only thing that can make `excluded_everything`
@@ -3878,13 +3805,13 @@ fn a_refusal_caused_by_excluded_files_alone_still_names_exclusion() {
 
 /// The directory-only twin of
 /// [`a_refusal_caused_by_excluded_files_alone_still_names_exclusion`]:
-/// `excluded_dirs` is the only thing that can make `excluded_everything`
-/// true here, so `> 0` reading `< 0` (always false for `usize`) cannot hide
-/// behind `excluded_files` the way it does in every other test that reaches
-/// this branch — including
-/// `the_refusal_offers_removal_only_when_exclusion_did_not_cause_it`'s case
-/// B, whose `*` pattern excludes [`fixture`]'s `notes.pdf` too and so is not
-/// a directories-only case.
+/// `excluded_dirs` is the only thing that can make `excluded_everything` true
+/// here, so its `!walk.excluded_dirs.is_empty()` half cannot hide behind
+/// `excluded_files` the way it does in every other test that excludes
+/// both — including
+/// `the_refusal_offers_removal_only_when_exclusion_did_not_cause_it`'s case B,
+/// whose `*` pattern excludes [`fixture`]'s `notes.pdf` too and so is not a
+/// directories-only case.
 #[test]
 fn a_refusal_caused_by_excluded_directories_alone_still_names_exclusion() {
     let tree = crate::tests::tempdir("scan-refusal-dirs-only");
@@ -3938,9 +3865,8 @@ fn a_refusal_caused_by_excluded_directories_alone_still_names_exclusion() {
 /// **One test, both assertions, because the pairing is the claim.** A test
 /// asserting only `forgotten_by_exclusion` passes against an implementation
 /// that counts every stale row there; a test asserting only `gone` passes
-/// against one that counts every stale row there, which is what this
-/// codebase did before this field existed. Neither number means anything
-/// without the other.
+/// against one that counts every stale row there. Neither number means
+/// anything without the other.
 /// **Built on [`fixture`] with its own junk, rather than on
 /// [`fixture_with_junk`], and excludes `extras/` rather than `extras`.**
 /// Neither substitution is cosmetic:
@@ -3956,20 +3882,18 @@ fn a_refusal_caused_by_excluded_directories_alone_still_names_exclusion() {
 ///   call — the single-path check both `excludes` and the first step of
 ///   `excludes_with_parents` make — passes regardless of the `is_dir` it is
 ///   given (`ignore` 0.4.33's own `matched_stripped`: `!glob.is_only_dir() ||
-///   is_dir`). A test built on it cannot tell a correct `Held.is_dir` from
-///   Task 2's Step 4 mutation, which hard-codes it `false` — the very thing
-///   Step 9's table says this test catches. `extras/` is `is_only_dir`, so
-///   the directory row's own match — and therefore its landing in
-///   `forgotten_by_exclusion` rather than `gone` — turns on `is_dir` being
-///   right.
+///   is_dir`). A test built on it cannot tell a correct `Held.is_dir` from one
+///   hard-coded `false`. `extras/` is `is_only_dir`, so the directory row's own
+///   match — and therefore its landing in `forgotten_by_exclusion` rather than
+///   `gone` — turns on `is_dir` being right.
 ///
 /// Two ordinary files stand in for the pages for the same reason: a file
 /// under `extras` must hold a `scan_entry` row that cannot match `extras/`
 /// by its own name (a directory-only pattern never matches a file, whatever
 /// its name), so the only way either row reaches `forgotten_by_exclusion` is
 /// through `excludes_with_parents`'s ancestor walk — which is what turns
-/// `excludes_with_parents` back into plain `excludes` (Step 9's third row)
-/// into a real, observable difference here.
+/// `excludes_with_parents` back into plain `excludes` into a real, observable
+/// difference here.
 ///
 /// **A fourth file — plain `extras`, at the root rather than under
 /// `Go-Toubun no Hanayome` — pins the mutation the three rows above cannot:
@@ -4056,8 +3980,7 @@ fn an_excluded_row_is_counted_apart_from_one_that_vanished() {
 }
 
 /// A directory-only pattern must not swallow a plain file of the same name
-/// that is still on disk *while the excluding scan itself runs* — Important
-/// 2.
+/// that is still on disk *while the excluding scan itself runs*.
 ///
 /// **The gap this closes is at `measure_dir`'s own `excluder.excludes(&child_rel,
 /// is_dir)` call, not at `forget_unseen`'s `excludes_with_parents`.**
@@ -4065,14 +3988,13 @@ fn an_excluded_row_is_counted_apart_from_one_that_vanished() {
 /// stages same-named files, but deletes every one of them from disk *before*
 /// its excluding scan runs — so that test's own walk never meets a live file
 /// this pattern could wrongly swallow, and only `forget_unseen`'s bookkeeping
-/// call is exercised. Forcing `measure_dir`'s call to `true` therefore passes
-/// every test in this module unchanged; forcing it to `false` is already
-/// caught, by that same test's directory assertion. This test's own file
-/// sits on disk during the one scan that matters, so `is_dir` at the point
-/// the walk actually asks the question has to be right: forced `true`, a
-/// directory-only pattern excludes the file exactly as wrongly as it excludes
-/// the directory, and the file's own row would never reach `scan_entry` at
-/// all.
+/// call is exercised. Forcing `measure_dir`'s call to `true` therefore does not
+/// fail that test; forcing it to `false` already does, by that same test's
+/// directory assertion. This test's own file sits on disk during the one scan
+/// that matters, so `is_dir` at the point the walk actually asks the question
+/// has to be right: forced `true`, a directory-only pattern excludes the file
+/// exactly as wrongly as it excludes the directory, and the file's own row
+/// would never reach `scan_entry` at all.
 #[test]
 fn a_directory_only_pattern_does_not_swallow_a_present_file_of_the_same_name() {
     let tree = fixture();

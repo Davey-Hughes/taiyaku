@@ -220,14 +220,10 @@ fn a_locked_admin_does_not_count_as_an_admin_existing() {
 
 /// A non-admin with a real password is still not an admin.
 ///
-/// **The second half of what this test used to claim was the hole.** It read
-/// "so the claim route does not close because an ordinary reader was added
-/// first", which is a description of the defect written as though it were the
-/// requirement: a library somebody has already set up must not be claimable by
-/// a stranger, whatever role they set up. The claim route reads [`is_claimed`]
-/// now, and `a_reader_with_a_password_claims_the_library` is where that lives.
-/// `admin_exists` itself was never wrong — it was being asked the wrong
-/// question. Corrected by the fourth whole-branch review.
+/// A library somebody has already set up must not be claimable by a stranger,
+/// whatever role they set up, so the claim route reads [`is_claimed`] and not
+/// `admin_exists`. `a_reader_with_a_password_claims_the_library` is where
+/// that lives.
 #[test]
 fn an_ordinary_user_does_not_count_as_an_admin_existing() {
     let library = library();
@@ -272,12 +268,11 @@ fn a_reader_with_a_password_claims_the_library() {
     );
 }
 
-/// The invariant [`promote`] now refuses to break: a library must never end up
+/// The invariant [`promote`] refuses to break: a library must never end up
 /// with nobody who can administer it.
 ///
-/// `promote --role user` on a fresh library shut every bootstrap path at once —
-/// nothing left for `unclaimed` to find, and [`is_claimed`] true so the claim
-/// route refuses too. Readable, unadministrable, and silent about it.
+/// `promote --role user` on a fresh library would leave nothing for
+/// `unclaimed` to find, and [`is_claimed`] true so the claim route refuses too.
 #[test]
 fn promoting_the_only_account_to_a_reader_is_refused() {
     let library = library();
@@ -303,8 +298,8 @@ fn promoting_the_only_account_to_a_reader_is_refused() {
 
 /// The wider ceiling, and why the pair alone could not be it: the name half is
 /// caller-supplied, so a guesser inventing a fresh one every time never
-/// approaches [`LOCKOUT_AFTER`] — and after `credential::DECOY_HASH` landed,
-/// each of those attempts cost a full argon2 verify.
+/// approaches [`LOCKOUT_AFTER`], and each of those attempts costs a full argon2
+/// verify (`credential::DECOY_HASH`).
 #[test]
 fn the_address_is_counted_whatever_names_it_offered() {
     let library = library();
@@ -1012,11 +1007,6 @@ fn lapsed_attempt_windows_are_swept_and_live_ones_are_not() {
 }
 
 /// A key minted against an account nobody has claimed authenticates as nobody.
-///
-/// The password path refused the locked placeholder and the key path did not,
-/// so a key was an admin credential on a server `admin_exists` still reported as
-/// unclaimed — with the claim route open and `user promote` ready to rename the
-/// row out from under it.
 #[test]
 fn a_key_on_a_locked_account_authenticates_as_nobody() {
     let library = library();
@@ -1039,21 +1029,8 @@ fn a_key_on_a_locked_account_authenticates_as_nobody() {
 /// **The session lifecycle, asserted against the functions that do the work
 /// rather than through `session_owner`.**
 ///
-/// Mutation testing found ten survivors across these four functions on
-/// 2026-08-19: `close_session` could return `Ok(())` without deleting,
-/// `sweep_expired_sessions` `Ok(0)` or `Ok(1)` without sweeping, `sessions_of`
-/// `Ok(vec![])` without listing, and `revoke_session` `Ok(true)` *or*
-/// `Ok(false)` without revoking — with its `rows > 0` surviving `==`, `<` and
-/// `>=` as well. Every test in the workspace still passed against all ten.
-///
-/// The reason is one reason: `account/tests.rs` had no test naming any of them,
-/// and `serve`'s route tests asserted through `session_owner` — which answers
-/// `None` for a session that was never opened just as readily as for one that
-/// was properly closed. **A revoke that revoked nothing would have shipped
-/// green**, on the route whose entire job is ending a session somebody believes
-/// is compromised.
-///
-/// Coverage said 100%. Coverage measures which lines ran.
+/// `session_owner` answers `None` for a session that was never opened just as
+/// readily as for one that was properly closed.
 #[test]
 fn closing_a_session_deletes_the_row_rather_than_returning_ok() {
     let library = claimed_library();
@@ -1090,9 +1067,8 @@ fn rows(conn: &rusqlite::Connection) -> i64 {
         .expect("counts")
 }
 
-/// The sweep deletes what has lapsed and **counts what it deleted** — `Ok(0)`
-/// and `Ok(1)` both survived, so the number was never asserted against a known
-/// population.
+/// The sweep deletes what has lapsed and **counts what it deleted**, so the
+/// number is asserted against a known population.
 #[test]
 fn the_sweep_takes_the_expired_sessions_and_counts_them() {
     let library = claimed_library();
@@ -1127,9 +1103,9 @@ fn the_sweep_takes_the_expired_sessions_and_counts_them() {
     );
 }
 
-/// `sessions_of` listed nothing and passed, and its `current` flag survived
-/// being inverted. Both need a fixture where the right answer and the wrong one
-/// are different shapes.
+/// `sessions_of` must list the sessions rather than nothing, and its `current`
+/// flag must not be inverted. Both need a fixture where the right answer and
+/// the wrong one are different shapes.
 #[test]
 fn listing_sessions_names_them_and_marks_the_one_asking() {
     let library = claimed_library();
@@ -1176,9 +1152,9 @@ fn listing_sessions_names_them_and_marks_the_one_asking() {
     );
 }
 
-/// `revoke_session` survived `Ok(true)`, `Ok(false)`, and all three ways of
-/// getting `rows > 0` wrong. Its answer is what the route turns into 404 or 204,
-/// so a constant is a route that lies in one direction or the other.
+/// `revoke_session` answers whether it ended a session. Its answer is what the
+/// route turns into 404 or 204, so a constant is a route that lies in one
+/// direction or the other.
 #[test]
 fn revoking_a_session_ends_that_one_and_says_whether_it_did() {
     let library = claimed_library();
@@ -1484,8 +1460,7 @@ fn granted_libraries_are_read_per_account_and_in_order() {
     );
 }
 
-/// A library id no row holds is refused, where a root id would once have
-/// been.
+/// A library id no row holds is refused.
 #[test]
 fn granting_a_library_that_does_not_exist_is_an_error() {
     let library = claimed_library();
@@ -1499,7 +1474,7 @@ fn granting_a_library_that_does_not_exist_is_an_error() {
 }
 
 /// A list names libraries. `7` is a directory of library 70 and no library's id,
-/// so a writer that still read the list as directories would grant 70 for it.
+/// so a writer that read the list as directories would grant 70 for it.
 #[test]
 fn a_libraries_list_names_libraries_and_never_a_dir() {
     let library = claimed_library();
@@ -1626,9 +1601,6 @@ fn a_libraries_list_naming_one_library_twice_grants_it_once() {
 
 // --- spec C4 §4: user administration -------------------------------------
 
-/// O54's note — "nothing can set either to 0 outside a fixture until spec C4's
-/// user administration" — stops being true here. A patch writes the columns it
-/// names and leaves the ones it does not.
 #[test]
 fn a_patch_writes_the_columns_it_names_and_leaves_the_others() {
     let library = claimed_library();
@@ -1718,9 +1690,9 @@ fn an_actorless_caller_may_demote_an_administrator_beside_another_one() {
     assert_eq!(done.role, "user");
 }
 
-/// `004_auth.sql` gives `role` a `CHECK (role IN ('admin', 'user'))`, added
-/// because "a typo stored a role that is neither and `Principal::from_account`'s
-/// `== "admin"` quietly read it as a reader". `update` lets the constraint
+/// `004_auth.sql` gives `role` a `CHECK (role IN ('admin', 'user'))`, so a role
+/// that is neither cannot be stored and quietly read as a reader by
+/// `Principal::from_account`'s `== "admin"`. `update` lets the constraint
 /// refuse rather than keeping a second list of the two words.
 #[test]
 fn a_role_that_is_neither_word_is_refused_and_writes_nothing() {
@@ -2035,10 +2007,10 @@ fn removing_an_account_states_what_it_costs_before_it_acts() {
 }
 
 /// Five tables cascade from `user(id)`, and they only cascade because
-/// `PRAGMA foreign_keys` is ON per connection (`lib.rs:339`). A test that
-/// opened a bare `rusqlite::Connection` would see no cascade at all and would
-/// pass a wrong answer as right — so this asserts the rows are gone, not just
-/// that the account is.
+/// `PRAGMA foreign_keys` is ON per connection (`Library::configure`). A test
+/// that opened a bare `rusqlite::Connection` would see no cascade at all and
+/// would pass a wrong answer as right — so this asserts the rows are gone, not
+/// just that the account is.
 #[test]
 fn removing_an_account_takes_its_positions_notes_sessions_keys_and_grants() {
     let library = claimed_library();
@@ -2120,11 +2092,10 @@ fn removing_an_account_that_does_not_exist_names_the_id() {
     );
 }
 
-/// **The quote runs the same refusal the commit runs.** `removal_cost` used to
-/// answer five counts for a deletion `remove` would then refuse, so an operator
-/// read the counts, confirmed, and met the refusal afterwards — on the route
-/// whose whole purpose is to say what will happen. Found by C4 PR 2's
-/// whole-branch review.
+/// **The quote runs the same refusal the commit runs.** `removal_cost` must not
+/// answer counts for a deletion `remove` would then refuse, or an operator
+/// would read the counts, confirm, and meet the refusal afterwards — on the
+/// route whose whole purpose is to say what will happen.
 #[test]
 fn quoting_the_removal_of_the_last_administrator_is_refused_like_the_removal() {
     let library = claimed_library();
@@ -2136,12 +2107,10 @@ fn quoting_the_removal_of_the_last_administrator_is_refused_like_the_removal() {
     assert_eq!(quoted, done, "one refusal, stated identically by both");
 }
 
-/// **A patch's password lands in the same transaction as its columns.** They
-/// used to be two writes — `update` committing its own scope and
-/// `set_password` opening none — so a store fault on the password left the
-/// role and capability changes committed beside a failed request. Found by
-/// C4 PR 2's whole-branch review; asserted here through the one failure that
-/// is reachable without breaking the disk.
+/// **A patch's password lands in the same transaction as its columns**, so a
+/// store fault on the password cannot leave the role and capability changes
+/// committed beside a failed request. Asserted here through the one failure
+/// that is reachable without breaking the disk.
 #[test]
 fn a_patch_with_a_refused_password_writes_none_of_its_columns() {
     let library = claimed_library();
@@ -2168,8 +2137,8 @@ fn a_patch_with_a_refused_password_writes_none_of_its_columns() {
     );
 }
 
-/// The password half of a patch ends every session and keeps every key, which
-/// is what `set_password(.., None)` did before it moved inside `update`.
+/// The password half of a patch ends every session and keeps every key, as
+/// `set_password(.., None)` does.
 #[test]
 fn a_patched_password_ends_every_session_and_keeps_every_key() {
     let library = claimed_library();
@@ -2206,9 +2175,8 @@ fn a_patched_password_ends_every_session_and_keeps_every_key() {
 ///
 /// Pinned because the mutation sweep cannot: `replace && with || in update`
 /// is *unviable* — the `&&` sits in a let-chain and the mutant does not
-/// compile — so the sweep reports the condition as unreachable rather than as
-/// untested. C4 PR 2 checked the 18 unviable mutants against what it changed,
-/// which is the only thing that finds this class.
+/// compile — so the sweep reports the condition as unreachable rather than
+/// as untested.
 #[test]
 fn an_administrator_may_edit_their_own_row_while_resending_their_role() {
     let library = claimed_library();

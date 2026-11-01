@@ -23,8 +23,8 @@
 //! Because the effective value of a field comes from whichever rule set it
 //! last, [`Resolved::provenance`] records, per field, the id of the rule that
 //! decided it — the sentinel `0` for a root's own default column, and no
-//! entry at all where nothing decided the field. A later spec displays this;
-//! without it the layering is unexplainable.
+//! entry at all where nothing decided the field. Without this record the
+//! layering is unexplainable.
 //!
 //! **One exception to last-setter-wins, added by O89.** [`Engine::resolve`]
 //! ends with a reconciliation that restores a `path`/`parent` rule's series
@@ -47,11 +47,11 @@
 //!   `match_on` string to [`taiyaku_read::volume_number_marked`] /
 //!   [`taiyaku_read::chapter_number`], rather than a second, drifting
 //!   reimplementation as a regex default. **Not**
-//!   [`taiyaku_read::volume_number`], which `inventory::walk` still calls
-//!   unmodified: that one falls back to a bare digit run when no marker
-//!   appears, right for a directory that is a volume by construction and
-//!   wrong for a rule applied to every filename in a library, where a bare
-//!   `c001` would otherwise read as volume 1.
+//!   [`taiyaku_read::volume_number`], which `inventory::walk` calls: that one
+//!   falls back to a bare digit run when no marker appears, right for a
+//!   directory that is a volume by construction and wrong for a rule applied to
+//!   every filename in a library, where a bare `c001` would otherwise read as
+//!   volume 1.
 //!
 //! # A malformed pattern disables its own rule and nothing else
 //!
@@ -59,9 +59,8 @@
 //! a scan of a real library must not die because one rule does not compile.
 //! [`Engine::compile`] returns one complaint per pattern that would not
 //! compile, rather than failing outright or logging where a caller cannot
-//! control it — the caller (`library scan`, and later the API) decides how
-//! loudly to say so. The rule itself compiles to nothing, matches nothing,
-//! and every other rule is unaffected.
+//! control it — the caller decides how loudly to say so. The rule itself
+//! compiles to nothing, matches nothing, and every other rule is unaffected.
 //!
 //! # Compiled once, at load
 //!
@@ -76,10 +75,10 @@
 //! [`Engine::compile`] takes rules already loaded from SQLite; [`Engine::load`]
 //! is the thin wrapper that reads the rows and calls it. The split is the same
 //! one [`crate::require_fts5`] makes over [`crate::require_fts5_with_probe`],
-//! and for the same reason: the branch worth pinning — a pattern that will
-//! not compile, and the layering behaviour built on top of it — is the one a
-//! database cannot easily be made to produce, so every test in this module
-//! reaches `compile` directly and never opens a connection at all.
+//! and for the same reason: the branch worth pinning — a pattern that will not
+//! compile, and the layering behaviour built on top of it — is the one a
+//! database cannot easily be made to produce, so a test of it can reach
+//! `compile` directly and never open a connection at all.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -305,16 +304,13 @@ impl Resolved {
     /// `str::parse::<f64>()` accepts `nan`, `inf`, `infinity` and overflowing
     /// literals like `1e999`, so a capture group aimed at a filename and
     /// slightly too wide really does produce one — `^(?<volume>Nan)` off
-    /// `Nanatsu no Taizai` is the case this was found through, a real series
-    /// title rather than anything contrived. There is no volume or chapter a
-    /// non-finite could mean, and letting one through made three separate
-    /// things wrong downstream, each found by a different review pass of the
-    /// O95 branch: `preview::overrides` reported a chain in which *every*
-    /// rule produced `NaN` as a disagreement with itself, since `NaN != NaN`;
-    /// `config_api::field_value_json` collapsed every non-finite onto the same
-    /// `null` that means "this field is unset", because JSON holds neither;
-    /// and the editor then drew "rule 3 overrides rule 2 on N files" above two
-    /// sides both reading *unset*. One cause, refused once, here.
+    /// `Nanatsu no Taizai`, say. There is no volume or chapter a non-finite
+    /// could mean, and one let through would break two things downstream:
+    /// `preview::overrides` would report a chain in which *every* rule produced
+    /// `NaN` as a disagreement with itself, since `NaN != NaN`; and
+    /// `config_api::field_value_json` would collapse every non-finite onto the
+    /// same `null` that means "this field is unset", because JSON holds
+    /// neither. One cause, refused once, here.
     ///
     /// **Guarded here rather than at `apply_captures`' two call sites**,
     /// because `RuleKind::BuiltinVolume` and `BuiltinChapter` reach this
@@ -322,10 +318,9 @@ impl Resolved {
     /// grows a hole when somebody adds a third.
     ///
     /// **Rejected: comparing non-finites as equal in `preview::FieldValue`.**
-    /// That was the first fix written for the `NaN` half and it is wrong for
-    /// the other: `inf` and `NaN` are genuinely *different* resolutions, so
-    /// treating every non-finite pair as one answer would suppress a real
-    /// disagreement to hide a rendering problem.
+    /// `inf` and `NaN` are genuinely *different* resolutions, so treating every
+    /// non-finite pair as one answer would suppress a real disagreement to hide
+    /// a rendering problem.
     fn set_number(&mut self, field: Field, rule_id: i64, value: f64) {
         if !value.is_finite() {
             return;
@@ -342,17 +337,17 @@ impl Resolved {
 /// One rule, with its regex compiled if it has one.
 ///
 /// Kept as a matched pair rather than two parallel `Vec`s so the two can
-/// never drift out of index alignment — see delta review notes across this
-/// crate on exactly that shape of bug elsewhere.
+/// never drift out of index alignment.
 #[derive(Debug)]
 struct Compiled {
     rule: Rule,
     regex: Option<Regex>,
 }
 
-/// The compiled rule set: every enabled, in-scope rule this library holds,
-/// in `ordinal` order, ready to [`Engine::resolve`] against any `rel_path`
-/// with no further compilation.
+/// The compiled rule set: every rule handed to [`Engine::compile`], in
+/// `ordinal` order, ready to [`Engine::resolve`] against any `rel_path` with no
+/// further compilation. A disabled or out-of-scope rule is held too; `resolve`
+/// skips it.
 #[derive(Debug)]
 pub struct Engine {
     rules: Vec<Compiled>,
@@ -362,16 +357,15 @@ impl Engine {
     /// Compile `rules`, sorted into `ordinal` order, into an [`Engine`] — and
     /// one complaint per pattern that would not compile.
     ///
-    /// **Sorted here rather than trusted from the caller.** `Engine`'s own
-    /// doc promises `ordinal` order, and sorting inside `compile` is what
-    /// makes that true of every `Engine` regardless of what order a caller
-    /// hands `rules` in — every test in this module, and `load`'s own
-    /// `ORDER BY`, already arrange rules in order before calling this, but
-    /// `compile` is `pub` and nothing stops a future caller handing it rules
-    /// in another order. Ties on `ordinal` break on `id`, the same tie-break
-    /// `load`'s query now names explicitly, so two rules sharing an
-    /// `ordinal` still resolve to one deterministic order rather than an
-    /// unspecified one.
+    /// **Sorted here rather than trusted from the caller.** `Engine`'s own doc
+    /// promises `ordinal` order, and sorting inside `compile` is what makes
+    /// that true of every `Engine` regardless of what order a caller hands
+    /// `rules` in — `load`'s own `ORDER BY` already arranges rules in order
+    /// before calling this, but `compile` is `pub` and nothing stops a future
+    /// caller handing it rules in another order. Ties on `ordinal` break on
+    /// `id`, the same tie-break `load`'s query names explicitly, so two rules
+    /// sharing an `ordinal` still resolve to one deterministic order rather
+    /// than an unspecified one.
     ///
     /// **A bad pattern disables its own rule and nothing else.** Only a
     /// [`RuleKind::Regex`] rule can fail here — [`RuleKind::Prefix`] has no
@@ -421,9 +415,9 @@ impl Engine {
     /// **A bad pattern disables its own rule and nothing else.** These arrive
     /// from a text box (spec C4's editor) and from imported JSON, so a scan
     /// of a real library must not die because one rule is malformed. The
-    /// complaints are returned rather than logged, so the caller —
-    /// `library scan`, and later the API — decides how loudly to say so; a
-    /// rule silently doing nothing is the outcome this avoids.
+    /// complaints are returned rather than logged, so the caller decides
+    /// how loudly to say so; a rule silently doing nothing is the outcome
+    /// this avoids.
     ///
     /// # Errors
     ///
@@ -467,11 +461,10 @@ impl Engine {
             // Whether this rule matched `target` at all, per its own kind,
             // and — for `Regex` only — the captures that match produced.
             // Applying them is deferred to below the match, alongside the
-            // literal `set_*` columns, so the two apply in the same order
-            // `apply_set_columns` then `apply_captures` this function has
-            // always used: a named capture must still be able to override a
-            // literal `set_series` on the same rule, not the other way
-            // round.
+            // literal `set_*` columns, so the two apply in one order,
+            // `apply_set_columns` then `apply_captures`: a named capture must
+            // still be able to override a literal `set_series` on the same
+            // rule, not the other way round.
             let (matched, captures) = match rule.kind {
                 RuleKind::Prefix => (target.starts_with(rule.pattern.as_str()), None),
                 RuleKind::Regex => {
@@ -556,15 +549,9 @@ impl Engine {
 /// question, so the two cannot silently disagree about it.** `resolve` gates
 /// its own call to [`apply_set_columns`] on this function's answer;
 /// `fields_settable_by` gates whether it reports any of the four `set_*`
-/// fields at all on the same call. Before this existed, `fields_settable_by`
-/// checked `rule.set_*.is_some()` unconditionally, so a `BuiltinVolume` rule
-/// carrying a stray `set_series` was reported as able to decide `Series` —
-/// a field `resolve` can never actually set for that kind — which made
-/// `crate::preview::rows_for`'s near-miss check demand `Series` be undecided
-/// or root-decided before it would call a genuine `Volume` miss a near-miss
-/// at all, excluding rows the tab exists to show. If `resolve` ever starts
-/// or stops applying `set_*` for a kind, this function's arms must move with
-/// it — one function to update rather than two lists that can drift.
+/// fields at all on the same call. If `resolve` ever starts or stops applying
+/// `set_*` for a kind, this function's arms must move with it — one function to
+/// update rather than two lists that can drift.
 fn kind_applies_set_columns(kind: RuleKind) -> bool {
     matches!(kind, RuleKind::Prefix | RuleKind::Regex)
 }
@@ -572,10 +559,10 @@ fn kind_applies_set_columns(kind: RuleKind) -> bool {
 /// Every rule in the database, in `ordinal, id` order, with the complaints
 /// raised by rows whose `kind` or `match_on` would not parse.
 ///
-/// Split out of [`Engine::load`] so a caller can add a rule that is not in
-/// the table yet — `proposals::resolves` asks what a *candidate* rule would
-/// decide, and the only honest way to answer is to put it in the set the real
-/// engine compiles.
+/// Its own function rather than part of [`Engine::load`], so a caller can add a
+/// rule that is not in the table yet — `proposals::resolves` asks what a
+/// *candidate* rule would decide, and the only honest way to answer is to put
+/// it in the set the real engine compiles.
 ///
 /// # Errors
 ///
@@ -698,11 +685,11 @@ const QUALIFIER_SEPARATORS: [char; 5] = [' ', '-', '_', '(', '['];
 ///
 /// Three conditions: the directory starts with the captured series, what
 /// follows begins with a separator, and what follows says something — at
-/// least one letter or digit. The third is O89's pre-flight finding: the real
-/// library holds `Hunter × Hunter (Official Colored) ` with a trailing space,
-/// and without it 37 members would have moved to a series name ending in
-/// whitespace. Equal strings leave nothing after the prefix and fail the
-/// second condition, so they need no case of their own.
+/// least one letter or digit. Without the third, a directory such as
+/// `Hunter × Hunter (Official Colored) `, trailing space and all, would qualify
+/// `Hunter × Hunter (Official Colored)` and the series would become a name
+/// ending in whitespace. Equal strings leave nothing after the prefix and fail
+/// the second condition, so they need no case of their own.
 fn qualifies(directory: &str, captured: &str) -> bool {
     directory.strip_prefix(captured).is_some_and(|rest| {
         rest.starts_with(QUALIFIER_SEPARATORS) && rest.chars().any(char::is_alphanumeric)
@@ -722,8 +709,9 @@ fn captured_series<'h>(caps: &regex::Captures<'h>) -> Option<&'h str> {
         .filter(|s| !s.is_empty())
 }
 
-/// Apply a rule's four literal `set_*` columns — the part every kind of rule
-/// shares once it has matched at all.
+/// Apply a rule's four literal `set_*` columns — the part a `Prefix` and a
+/// `Regex` rule share once it has matched; [`kind_applies_set_columns`] keeps
+/// the builtin kinds out.
 fn apply_set_columns(rule: &Rule, resolved: &mut Resolved) {
     if let Some(v) = &rule.set_series {
         resolved.set(Field::Series, rule.id, v.clone());
@@ -796,8 +784,8 @@ fn apply_captures(rule: &Rule, caps: &regex::Captures<'_>, resolved: &mut Resolv
 /// kind — so this function gates those four checks on
 /// [`kind_applies_set_columns`], the exact same predicate `resolve` gates its
 /// own [`apply_set_columns`] call on. See that function's doc comment for
-/// what goes wrong when the two disagree, and why they are kept as one
-/// function rather than two hand-maintained lists of kinds.
+/// why they are kept as one function rather than two hand-maintained lists
+/// of kinds.
 #[must_use]
 pub(crate) fn fields_settable_by(rule: &Rule) -> std::collections::BTreeSet<Field> {
     let mut fields = std::collections::BTreeSet::new();
@@ -892,8 +880,7 @@ fn apply_root_fallback(root: &Root, resolved: &mut Resolved) {
 /// rather than landing harmlessly at the end, which is what "I typed a new
 /// rule into the editor and never dragged it anywhere" has to mean. See
 /// [`create`]'s own doc comment for how that maximum is found, and for the
-/// overflow hazard this crate has already measured once
-/// (`crate::tests::LAST_WORD_ORDINAL`'s own doc comment) guarded against.
+/// overflow hazard it guards against.
 #[derive(Debug, Clone)]
 pub struct NewRule {
     pub ordinal: Option<i64>,
@@ -949,12 +936,8 @@ pub struct RulePatch {
 /// rather than folded into the `INSERT` as SQL arithmetic.** A bare
 /// `COALESCE(MAX(ordinal), 4) + 1` —
 /// [`crate::proposals::accept_with`]'s own version of this exact
-/// computation — overflows the moment any rule holds `i64::MAX`: measured
-/// for real, once, by a fixture that gave a rule exactly that ordinal to
-/// guarantee it always sorted last
-/// (`crate::tests::LAST_WORD_ORDINAL`'s own doc comment tells the story, and
-/// why that fixture no longer uses `i64::MAX` either). This function reads
-/// `MAX(ordinal)` and adds one with [`i64::saturating_add`] instead of a
+/// computation — overflows the moment any rule holds `i64::MAX`. This function
+/// reads `MAX(ordinal)` and adds one with [`i64::saturating_add`] instead of a
 /// bare `+`, so a rule already sitting at `i64::MAX` gives the new one
 /// `i64::MAX` too, rather than panicking (a debug build) or silently
 /// wrapping to `i64::MIN` (a release one) — either of which would make
@@ -1109,20 +1092,17 @@ pub struct Deleted {
     /// pointed at this rule (one created by hand or by import, never by an
     /// accept).
     ///
-    /// **A `Vec`, not an `Option<i64>` naming one proposal — one rule
-    /// answering several is the ordinary case here, not a corner.**
+    /// **A `Vec`, not an `Option<i64>` naming one proposal — one rule answering
+    /// several is the ordinary case here, not a corner.**
     /// [`crate::proposals::accept_with`]'s group write can record the *same*
-    /// rule against more than one proposal at once — a widened rule
-    /// answering several, its own doc comment's "resolves 6 more" — and that
-    /// path is reachable through a live HTTP route
-    /// (`taiyaku-serve`'s curation endpoints), not just a test. `unaccept`
-    /// is keyed on the rule rather than on the one proposal id it is handed,
-    /// so it always reopens every proposal that rule answered regardless of
-    /// what this field reports — an `Option<i64>` version of this field
-    /// reported one of seven reopened proposals and left the other six
-    /// unaccounted for to whichever caller reads this struct, which is the
-    /// same under-reporting `proposals_resolved` was replaced for two
-    /// commits before this one.
+    /// rule against more than one proposal at once — a widened rule answering
+    /// several, `proposals::Resolution`'s "resolves 6 more" — and that path is
+    /// reachable through a live HTTP route (`taiyaku-serve`'s curation
+    /// endpoints), not just a test. `unaccept` is keyed on the rule rather than
+    /// on the one proposal id it is handed, so it always reopens every proposal
+    /// that rule answered regardless of what this field reports — an
+    /// `Option<i64>` would leave the other proposals unaccounted for to
+    /// whichever caller reads this struct.
     pub reopened_proposals: Vec<i64>,
 }
 
@@ -1177,8 +1157,7 @@ pub fn delete(conn: &Connection, id: i64) -> Result<Deleted, String> {
     let existed = if let Some(&first) = reopened_proposals.first() {
         // A refusal means `first` stopped carrying this rule between the
         // lookup above and this call — another connection un-accepted it —
-        // and it stays this function's error, as it was while `unaccept`
-        // answered a refusal through its `Err`.
+        // and is returned as this function's error.
         if let crate::proposals::Offer::Refused(why) = crate::proposals::unaccept(conn, first)? {
             return Err(why);
         }
@@ -1226,14 +1205,13 @@ pub fn delete(conn: &Connection, id: i64) -> Result<Deleted, String> {
 /// happened to assign.
 ///
 /// **`#[serde(deny_unknown_fields)]` is load-bearing, not decoration.**
-/// Without it, a document from before this field was renamed — one still
-/// carrying `"root_id": 3` from an older build — parses anyway: serde
-/// silently fills the now-missing `root_path` with `None` and drops the
-/// unrecognised `root_id` on the floor, so the imported rule comes back
-/// scoped to *every* root rather than refusing or erroring. That is exactly
-/// the silent-widening outcome this whole redesign exists to rule out, by a
-/// route that never touches SQL at all — the attribute is what makes an
-/// unrecognised field a parse error instead.
+/// Without it, a document carrying `"root_id": 3` would parse anyway: serde
+/// would fill the missing `root_path` with `None` and drop the unrecognised
+/// `root_id` on the floor, so the imported rule would come back scoped to
+/// *every* root rather than refusing or erroring. That is the silent-widening
+/// outcome this struct is shaped to rule out, by a route that never touches
+/// SQL at all — the attribute is what makes an unrecognised field a parse
+/// error instead.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RuleJson {
@@ -1309,20 +1287,13 @@ pub fn export_json(conn: &Connection) -> Result<String, String> {
 /// position now names, without minting a second sentinel of its own.
 ///
 /// **Position in `rules` decides nothing about where a row reads back —
-/// `rule.ordinal` does.** [`read`]
-/// and [`Engine::load`] both read the table back `ORDER BY ordinal, id`, so
-/// where a rule sits in the slice this function is handed has no bearing on
-/// where it reads back. Where two rules tie on `ordinal`, `id` breaks it,
-/// and that tie-break changed under this function's own fix: a kept row
-/// keeps the low id it already had, while a freshly minted row is always
-/// minted higher (SQLite mints `INTEGER PRIMARY KEY` rowids upward), so a
-/// tie on `ordinal` now always sorts a kept rule ahead of a new one,
-/// regardless of list position — where the old delete-and-reinsert design
-/// minted every id in list order, so a tie broke in list order instead.
-/// Measured: the four seeded rules plus a new rule at `ordinal: 1`, placed
-/// *first* in the proposed list, reads back as `[(1,1,"^(?<series>[^/]+)/"),
-/// (5,1,"brand-new"), ...]` — the kept rule first despite the new one
-/// leading the list, where the old code put `brand-new` first.
+/// `rule.ordinal` does.** [`read`] and [`Engine::load`] both read the table
+/// back `ORDER BY ordinal, id`, so where a rule sits in the slice this function
+/// is handed has no bearing on where it reads back. Where two rules tie on
+/// `ordinal`, `id` breaks it: a kept row keeps the low id it already had, while
+/// a freshly minted row is always minted higher (SQLite mints
+/// `INTEGER PRIMARY KEY` rowids upward), so a tie on `ordinal` always sorts a
+/// kept rule ahead of a new one, regardless of list position.
 ///
 /// **Atomic on its own**, unlike [`crate::import::replace_alignments`], the
 /// precedent this copies its shape from: that function still leans on both
@@ -1367,11 +1338,6 @@ pub fn export_json(conn: &Connection) -> Result<String, String> {
 /// no-op one: previewing (or saving) the exact list already in the database
 /// leaves every accepted proposal's `created_rule_id` exactly as it was,
 /// and [`crate::proposals::raise`]'s own orphan check reopens nothing.
-/// Before this, every call reset every id regardless, which reopened every
-/// accepted proposal on *any* call at all, whether or not its rule actually
-/// left the list — measured by previewing the library's own unchanged rule
-/// list back at itself and getting `proposals_reopened: 1` for a proposal
-/// nothing about the preview touched.
 ///
 /// **A nonzero id must already name a row this table holds, or this
 /// refuses.** A rule editor only ever hands back a real id for a rule that
@@ -1432,7 +1398,7 @@ pub(crate) fn replace_all(conn: &Connection, rules: &[Rule]) -> Result<Vec<i64>,
 
     // Only the ids genuinely dropped from `rules` are deleted — everything
     // kept is updated in place below, its row never touched by a `DELETE` at
-    // all, which is the whole of what makes this function's fix work.
+    // all, which is what keeps its identity.
     for id in existing_ids.difference(&kept_ids) {
         scope
             .execute("DELETE FROM rule WHERE id = ?1", [id])
@@ -1518,18 +1484,16 @@ pub(crate) fn replace_all(conn: &Connection, rules: &[Rule]) -> Result<Vec<i64>,
 /// the existing rule set exactly as it was rather than emptied or half
 /// replaced.
 ///
-/// **Returns every proposal this import reopened — whole-branch review,
-/// Important 3.** [`replace_all`]'s own `DELETE FROM rule` orphans
-/// `created_rule_id` (`ON DELETE SET NULL`) on every proposal an accepted
-/// rule this import just dropped had answered, exactly as [`delete`] does
-/// for one rule at a time — but nothing on this path ever called `derive`,
-/// so nothing ever reached [`crate::proposals::raise`]'s own repair for that
-/// (`reopen_orphaned_accepts`), and an import through `taiyaku-serve`'s
-/// `POST /api/library/rules/import` route left every such proposal reading
-/// `accepted` with a `created_rule_id` of `None` — an acceptance nothing any
-/// longer decides — until whatever scan happened to run next. Calling the
-/// same repair here, inside this function's own transaction, closes the gap
-/// for every caller at once rather than only the one route that noticed it.
+/// **Returns every proposal this import reopened.** [`replace_all`]'s own
+/// `DELETE FROM rule` orphans `created_rule_id` (`ON DELETE SET NULL`) on every
+/// proposal an accepted rule this import just dropped had answered, exactly as
+/// [`delete`] does for one rule at a time — but nothing on this path calls
+/// `derive`, so [`crate::proposals::raise`] never runs its repair for that
+/// (`reopen_orphaned_accepts`), and without calling that repair here every such
+/// proposal would read `accepted` with a `created_rule_id` of `None` — an
+/// acceptance nothing decides — until whatever scan happened to run next.
+/// Calling the same repair here, inside this function's own transaction, covers
+/// every caller at once.
 ///
 /// # Errors
 ///

@@ -1,13 +1,11 @@
--- Whole-branch review 3, C1.
---
--- `migrated_document` recorded one fact — "this work's this document has been
--- settled" — and three different situations wrote it: the file was read into
--- rows, the file was left unread because the rows already held state, and
--- there was no file at all. `export --in-place` then read that one fact as
--- "the database has authority over the file at this path", which is true of
--- the first and false of the last: a sibling document that appeared after the
--- first import was deleted, or overwritten with an empty document, having
--- never been read by anything.
+-- Migration 1's `migrated_document` records one fact — "this work's this
+-- document has been settled" — and three different situations write it: the
+-- file was read into rows, the file was left unread because the rows already
+-- held state, and there was no file at all. `export --in-place` would then
+-- read that one fact as "the database has authority over the file at this
+-- path", which is true of the first and false of the last: a sibling document
+-- that appeared after the first import would be deleted, or overwritten with
+-- an empty document, having never been read by anything.
 --
 -- So the marker keeps its meaning and gains the missing half. `absorbed`
 -- means: this library has had this file's content — read it into rows on an

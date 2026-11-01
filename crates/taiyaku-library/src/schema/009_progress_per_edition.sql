@@ -3,20 +3,20 @@
 -- another work, and the reader rows hanging off the work it left have to move
 -- with it. `UPDATE progress SET work_id = <target>` is refused by the old key
 -- whenever the reader held a position on both works, which is the ordinary
--- case rather than the corner: measured 2026-08-27, `docs/notes.md`.
+-- case rather than the corner (`docs/notes.md`).
 --
--- **What the widening also fixes, which is older than O73.** `put_progress`
--- upserts on `(user_id, work_id)` naming `edition = excluded.edition`, so a
--- reader at slot 50 of one edition who opened a sibling edition and turned one
--- page lost the first position, silently. After this they do not. A test that
--- pinned the old behaviour is pinning a defect.
+-- **What the widening also fixes, which is older than O73.** Under the old key
+-- a work holds one position per reader, so a reader at slot 50 of one edition
+-- who opened a sibling edition and turned one page lost the first position,
+-- silently. After this they do not. A test that pins the old behaviour is
+-- pinning a defect.
 --
 -- **Nothing is dropped or merged by the copy.** Every row already satisfies
 -- the wider key, the narrow one being a prefix of it.
 --
--- `completed_at` and `read_count` come across and are now per edition, which
--- is what 001 always described them as: "finished once and now re-reading" is
--- a fact about a rendition, not about a volume.
+-- `completed_at` and `read_count` come across and are per edition, which is
+-- what 001 describes them as: "finished once and now re-reading" is a fact
+-- about a rendition, not about a volume.
 --
 -- **Nothing REFERENCES `progress`** — `grep -rn 'REFERENCES progress' schema/`
 -- is empty — so unlike migration 4's rebuild of `user` there is no child to

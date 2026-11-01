@@ -3,8 +3,7 @@
 //! **`VACUUM INTO`, not a file copy.** SQLite's own statement takes a
 //! consistent snapshot of a live database without stopping the server and
 //! needs no external tool; copying the file out from under a WAL-mode writer
-//! does not. `rusqlite`'s `backup` feature is enabled for exactly this, and
-//! `Cargo.toml` has said so since before anything called it.
+//! does not.
 //!
 //! **A backup is not a sidecar export**, which store spec §13.4 states and C4
 //! §5 puts on the screen: `export` writes five documents per work and carries
@@ -22,9 +21,8 @@ use rusqlite::Connection;
 /// What every backup file's name starts with.
 ///
 /// **A constant because three things read it** — [`take`] mints it, [`list`]
-/// filters on it and [`prune`] deletes on it — and `prune` is the only
-/// file-deleting function in this crate. A literal repeated at the delete site
-/// is a literal that can drift away from the one at the create site.
+/// filters on it and [`prune`] deletes on it. A literal repeated at the delete
+/// site is a literal that can drift away from the one at the create site.
 pub const PREFIX: &str = "library-";
 
 /// What every backup file's name ends with. See [`PREFIX`].
@@ -35,9 +33,8 @@ pub const SUFFIX: &str = ".db";
 /// **Two cases, because one of them is not a fault.** A backup already
 /// existing under the minted name is a person pressing "back up now" twice
 /// inside the same second — the name's timestamp has one-second resolution —
-/// and reporting that as a server failure is the same misfiling C4 PR 2's
-/// whole-branch review found three times over in `users_api`. Named here so
-/// the route can answer `409` and say what happened.
+/// and is not a server failure. Named here so the route can answer `409` and
+/// say what happened.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TakeError {
     /// A backup of this name is already there. Not a fault: wait a second.
@@ -99,8 +96,8 @@ fn name_now(conn: &Connection) -> Result<String, String> {
 /// **Never call this on the server's own connection.** `ServeState.library`
 /// holds one `Mutex<Connection>` for the whole process and a `VACUUM INTO`
 /// stalls every request for the length of a file copy; the route runs it on
-/// [`crate::Library::working`] inside `spawn_blocking`, which is the third
-/// caller of that reasoning after the rule preview and the scan.
+/// [`crate::Library::working`] inside `spawn_blocking`, as the rule preview
+/// and the scan do.
 ///
 /// # Errors
 ///
@@ -129,7 +126,7 @@ pub fn take_named(conn: &Connection, into_dir: &Path, name: &str) -> Result<Back
     // "../../library.db")` joins straight onto `into_dir` and writes outside
     // it — `VACUUM INTO`'s refusal of an existing target is the only thing
     // between that and the live database, and it does not hold for a target
-    // that does not exist yet. Found by C4 PR 2's whole-branch review.
+    // that does not exist yet.
     let Some(taken) = stamp_of(name) else {
         return Err(TakeError::Failed(format!(
             "`{name}` is not a backup name; one is `{PREFIX}YYYYMMDDTHHMMSSZ{SUFFIX}`"
@@ -224,11 +221,9 @@ pub fn list(dir: &Path) -> Result<Vec<Backup>, String> {
         //
         // The cost of that strictness is that a backup symlinked in from the
         // volume `--out DIR` wrote it to does not appear on the screen that
-        // lists backups. Recorded rather than fixed: the trade favours a
-        // delete path that cannot be aimed through a link, and
-        // `pruning_a_symlinked_backup_is_left_alone_entirely` is what holds it
-        // — this comment claimed the opposite behaviour until that test was
-        // written and disagreed.
+        // lists backups. The trade favours a delete path that cannot be aimed
+        // through a link, and
+        // `pruning_a_symlinked_backup_is_left_alone_entirely` holds it.
         let metadata = entry
             .metadata()
             .map_err(|e| format!("reading the size of {name}: {e}"))?;
@@ -251,10 +246,9 @@ pub fn list(dir: &Path) -> Result<Vec<Backup>, String> {
 /// Keep the `keep` newest backups in `dir` and delete the rest, answering
 /// which files were removed, oldest first.
 ///
-/// **This is the only function in this crate that deletes a file, and it is
-/// written to be unable to delete the wrong one.** It deletes only names
-/// [`list`] returned — which is to say only names [`stamp_of`] accepted, in
-/// this one directory, never recursing and never following a subdirectory —
+/// **It is written to be unable to delete the wrong one.** It deletes only
+/// names [`list`] returned — which is to say only names [`stamp_of`] accepted,
+/// in this one directory, never recursing and never following a subdirectory —
 /// and it returns the names rather than a count, so the CLI prints what
 /// happened instead of a number the operator has to trust.
 ///

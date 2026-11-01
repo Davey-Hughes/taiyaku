@@ -11,13 +11,6 @@
 //! file is dot-prefixed, so `scan.rs`'s walk skips it even in the window
 //! before it is removed, and it is removed on every path out of `probe`
 //! including the timeout.
-//!
-//! **A measurement of this workstation, and not of the server.** The store
-//! spec's §10 originally reasoned that a watcher delivers nothing over NFS and
-//! that the interval must therefore be short. The NFS observation is correct
-//! *of this workstation*, which mounts the library over nfs4; the server will
-//! run **on** the NAS, where the same tree is local. The conclusion was about
-//! the wrong host, and the probe replaces the prediction entirely.
 
 use std::path::Path;
 use std::sync::mpsc;
@@ -64,12 +57,12 @@ const UNWATCHED_INTERVAL: Duration = Duration::from_secs(15 * 60);
 /// scanned on the short interval, not a scan that refuses to run at all.
 ///
 /// No `#[must_use]` here, unlike [`interval_for`] and [`report_line`]:
-/// `the_probe_removes_the_file_it_wrote` (this module's own test, and the
-/// brief's) calls this only for the side effect and checks the directory
-/// afterward rather than the `Probe` — clippy's pedantic suggestion is
-/// advisory (`check-all.sh`, "The pedantic lints, and why they are
-/// advisory") and this is the one call site where taking it would fight a
-/// legitimate caller rather than catch a real bug.
+/// `the_probe_removes_the_file_it_wrote` (this module's own test) calls this
+/// only for the side effect and checks the directory afterward rather than
+/// the `Probe` — clippy's pedantic suggestion is advisory (`check-all.sh`,
+/// "The pedantic lints, and why they are advisory") and this is the one call
+/// site where taking it would fight a legitimate caller rather than catch a
+/// real bug.
 pub fn probe(root: &Path, timeout: Duration) -> Probe {
     let probe_path = root.join(format!(".taiyaku-watch-probe-{}", std::process::id()));
 
@@ -201,8 +194,7 @@ pub fn interval_for(probe: &Probe) -> Duration {
 }
 
 /// One line naming what this root can actually do — §8's exact shape,
-/// reported per root and never assumed. The strings below are pasted in
-/// rather than paraphrased, produced from exactly these two calls:
+/// reported per root and never assumed. Two calls and the lines they return:
 ///
 /// ```text
 /// let watching = Probe { watching: true, reason: None };
@@ -231,12 +223,11 @@ pub fn report_line(root: &Path, probe: &Probe, dirs: usize, interval: Duration) 
 /// `/proc`.
 ///
 /// Split out for the same reason `require_fts5_with_probe` is split from
-/// `require_fts5` in `lib.rs`: this machine allows 524,288 watches (measured
-/// 2026-08-14), so no test running here can drive the real
-/// `/proc/sys/fs/inotify/max_user_watches` past a directory count anyone
-/// would put in a fixture. Parameterising the ceiling lets a test hand in one
-/// low enough to exercise the branch without needing a host that actually has
-/// a lower one.
+/// `require_fts5` in `lib.rs`: on this machine the real
+/// `/proc/sys/fs/inotify/max_user_watches` is far above any directory count
+/// anyone would put in a fixture, so no fixture's count can pass it.
+/// Parameterising the ceiling lets a test hand in one low enough to exercise
+/// the branch without needing a host that actually has a lower one.
 fn report_line_against(
     root: &Path,
     probe: &Probe,

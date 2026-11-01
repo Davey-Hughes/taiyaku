@@ -58,11 +58,9 @@ pub struct LibraryDoc {
     ///
     /// `Option`, and projected from `work.title_hand` rather than from
     /// `work.title` — see migration 010 for why the effective column cannot
-    /// be the one that appears here. **O67** is the defect: a work spanning
-    /// five editions is named after whichever file minted its row, so a
-    /// reader is shown "…Full Color Edition… — en-mono" for a monochrome
-    /// edition. `work.slug` is unaffected and deliberately so; it is an
-    /// address, and progress, notes and truth all hang off it.
+    /// be the one that appears here (**O67**). `work.slug` is unaffected and
+    /// deliberately so; it is an address, and progress, notes and truth all
+    /// hang off it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -289,11 +287,10 @@ pub fn of(conn: &Connection, work_id: i64) -> Result<LibraryDoc, String> {
         Option<i64>,
     ) = conn
         .query_row(
-            // **The hand columns, never the effective ones — O80.** Projecting
-            // plain `volume`/`series_id` made every document claim whatever the
-            // last derive wrote, so a title-only Save recorded derivation's own
-            // answers as a person's and `write_work` froze them. Migration 011
-            // gave these two the provenance `title_hand` has had since 010.
+            // **The hand columns, never the effective ones — O80.** A derive
+            // writes the effective `volume` and `series_id` too, so a
+            // document projected from them would record derivation's own
+            // answers as a person's.
             "SELECT volume_hand, series_id_hand, title_hand, series_id \
              FROM work WHERE id = ?1",
             [work_id],
@@ -357,10 +354,9 @@ fn series_info_of(conn: &Connection, series_id: i64) -> Result<SeriesInfo, Strin
     let titles = titles_where(
         conn,
         series_id,
-        // `hand = 1` only — derivation inserts an `is_primary` row for
-        // every series it mints, and projecting those made every scanned
-        // work's document non-empty (O53's recorded consequence, and the
-        // same defect as O80 one level up).
+        // `hand = 1` only — derivation inserts an `is_primary` row for every
+        // series it mints, and projecting those would make every scanned work's
+        // document non-empty (O53, O80).
         "SELECT title, kind, is_primary FROM series_title \
          WHERE series_id = ?1 AND hand = 1 ORDER BY rowid",
     )?;
@@ -602,14 +598,12 @@ fn external_of(conn: &Connection, series_id: i64) -> Result<BTreeMap<String, Str
 /// this work is not an error: the content it names may simply no longer be
 /// present, and there is nothing to attach a stale chapter number to.
 pub fn apply(conn: &Connection, work_id: i64, doc: &LibraryDoc) -> Result<(), String> {
-    // `crate::Nested`, not `unchecked_transaction` directly: `derive::write_work`
-    // reaches this inside its own scope for the work, and
+    // `crate::Nested`, not `unchecked_transaction` directly:
+    // `derive::write_work` reaches this inside its own scope for the work, and
     // `preview::preview_with_rows` holds the whole derivation in a transaction
-    // of its own — a plain `BEGIN` here refuses outright inside either, and the
-    // refusal used to be swallowed into `DeriveReport::unreadable_hand` rather
-    // than surfaced (whole-branch review, Critical 1). See `Nested`'s own doc
-    // for why a `SAVEPOINT` cannot simply replace `unchecked_transaction`
-    // everywhere instead.
+    // of its own — a plain `BEGIN` here refuses outright inside either. See
+    // `Nested`'s own doc for why a `SAVEPOINT` cannot simply replace
+    // `unchecked_transaction` everywhere instead.
     let tx = crate::Nested::open(conn, "librarydoc_apply")
         .map_err(|e| format!("starting library-metadata transaction: {e}"))?;
 
@@ -629,26 +623,24 @@ pub fn apply(conn: &Connection, work_id: i64, doc: &LibraryDoc) -> Result<(), St
     // only sense in which "no hand title" can be written to a NOT NULL column.
     //
     // **Two arms, not three.** Every production writer of this row keeps
-    // `title_derived` populated: migration 010 backfills it for every row
-    // that existed, `import::insert_work` mints it alongside `title` for
-    // every row created since, `import::update_work`'s `Scope::Document`
-    // branch (Step 6c) refreshes it on every reimport, and `taiyaku-serve`'s
-    // `works::row_id_for_document` mints it alongside `title` for a work
-    // bridged in with no prior library row at all — a fourth writer, and the
-    // one that once did not (I3). `title_derived` carries no `NOT NULL` of
-    // its own, so nothing enforces this at the schema level: the claim above
-    // is only as good as `grep -rn 'INSERT.*INTO work'` across the workspace
-    // naming every production call site there is, re-checked here rather
-    // than trusted from the last time it was true. With that held, there is
-    // no row on which `title_derived` can read NULL for this `COALESCE` to
-    // need a third arm to step over. Keeping `title` as a defensive third arm
-    // would not be free: it would make exactly the invariant violation this migration
-    // exists to prevent (`title_derived` unexpectedly NULL) fail *silently*,
-    // by falling back to whatever `title` already held — a stale value rather
-    // than an error. Dropping it means that violation instead raises SQLite's
-    // own `NOT NULL` constraint the moment someone clears a hand title with no
-    // derived value to restore, which is the loud failure this codebase
-    // prefers (see `apply`'s own row-count guard, a few lines above).
+    // `title_derived` populated: migration 010 backfills it for every row that
+    // existed, `import::insert_work` mints it alongside `title` for every row
+    // created since, `import::update_work`'s `Scope::Document` branch refreshes
+    // it on every reimport, and `taiyaku-serve`'s `works::row_id_for_document`
+    // mints it alongside `title` for a work bridged in with no prior library
+    // row at all — a fourth writer. `title_derived` carries no `NOT NULL` of
+    // its own, so nothing enforces this at the schema level: the claim above is
+    // only as good as `grep -rn 'INSERT.*INTO work'` across the workspace
+    // naming every production call site there is. With that held, there is no
+    // row on which `title_derived` can read NULL for this `COALESCE` to need a
+    // third arm to step over. Keeping `title` as a defensive third arm would
+    // not be free: it would make a violation of that invariant (`title_derived`
+    // unexpectedly NULL) fail *silently*, by falling back to whatever `title`
+    // already held — a stale value rather than an error. Dropping it means that
+    // violation instead raises SQLite's own `NOT NULL` constraint the moment
+    // someone clears a hand title with no derived value to restore, which is
+    // the loud failure this codebase prefers (see `apply`'s own row-count
+    // guard, a few lines above).
     let updated = tx
         .execute(
             // **`volume_hand` is the provenance, `volume` the effective
@@ -698,9 +690,7 @@ pub fn apply(conn: &Connection, work_id: i64, doc: &LibraryDoc) -> Result<(), St
 /// series already held, `apply_series` would resolve there instead, every
 /// work in the loop would migrate onto it, and once the last one left,
 /// [`forget_orphaned_series`] would delete the series the caller actually
-/// named — cascading its titles and external ids with it. (Delta review of
-/// the fix waves, `f133b3e..910b15a`: the Critical, reproduced end to end
-/// against `patch_series` before this function existed.)
+/// named — cascading its titles and external ids with it.
 ///
 /// `series_id` is `work_id`'s series exactly as the caller already knows it —
 /// passed in rather than read back, since `work.series_id` has not changed
@@ -713,11 +703,9 @@ pub fn apply(conn: &Connection, work_id: i64, doc: &LibraryDoc) -> Result<(), St
 /// Unlike titles, a reading direction carries no identity to resolve —
 /// writing it is a plain `UPDATE … WHERE id = series_id`, and no more unsafe
 /// to repeat on every work in a series-wide edit's loop than any other
-/// idempotent `UPDATE`. *(This named `set_series_titles`' own `sort_title`
-/// write as the same shape until O114 removed that write.)* `apply_series`'s
-/// own matched branch is the only other writer of this column, and this
-/// function does not reach it, so this is the one this function's own caller
-/// needs instead.
+/// idempotent `UPDATE`. `apply_series`'s own matched branch is the only other
+/// writer of this column, and this function does not reach it, so this is the
+/// one this function's own caller needs instead.
 ///
 /// **Idempotent, for the same reason [`apply`] is.** Every sub-write this
 /// function performs — the reading-direction `UPDATE`, [`apply_external`],
@@ -738,9 +726,7 @@ pub fn apply_with_series_id(
     doc: &LibraryDoc,
 ) -> Result<(), String> {
     // `crate::Nested`, not `unchecked_transaction` directly — same reason as
-    // `apply`'s own, above: this function is reached from the same
-    // `derive::write_work` path a wrapping preview transaction can already
-    // have open.
+    // `apply`'s own, above.
     let tx = crate::Nested::open(conn, "librarydoc_apply_with_series_id")
         .map_err(|e| format!("starting library-metadata transaction: {e}"))?;
 
@@ -796,16 +782,15 @@ pub fn apply_with_series_id(
 
 /// Resolve, create or clear this work's series, and upsert the titles this
 /// document names onto it. Returns the resolved `series_id`, or `None` when
-/// `series.titles` is empty and the work's series association was cleared.
+/// `series.titles` is empty.
 ///
 /// **A series the last work in it just left is deleted, not left behind.**
-/// Clearing `work.series_id` used to be the whole of this branch, so the
-/// `series` row, its `series_title` rows and their `series_fts` entries stayed
-/// exactly where they were, belonging to nobody. Search (spec C1) reads
+/// The `series` row, its `series_title` rows and their `series_fts` entries
+/// would otherwise stay, belonging to nobody. Search (spec C1) reads
 /// `series_fts`, so a title nothing is under would keep answering a query
 /// forever, and every re-application of a document that names a different
-/// series left another one (whole-branch review 3, Minor 14). See
-/// [`forget_orphaned_series`] for why it is checked rather than assumed.
+/// series would leave another one. See [`forget_orphaned_series`] for why it is
+/// checked rather than assumed.
 fn apply_series(
     conn: &Connection,
     work_id: i64,
@@ -813,19 +798,19 @@ fn apply_series(
 ) -> Result<Option<i64>, String> {
     let previous = series_of(conn, work_id)?;
     if series.titles.is_empty() {
-        // Only the provenance is cleared; `derive` re-attaches the work to
-        // whatever series the next pass resolves (O80, migration 011).
+        // `derive` re-attaches the work to whatever series the next pass
+        // resolves (O80, migration 011).
         conn.execute(
             // **The hand attachment is withdrawn; the effective one goes only
-            // if that is what it was — O80.** An empty series block no longer
-            // means "take this work off the shelf": since `of` projects only
+            // if that is what it was — O80.** An empty series block does not
+            // mean "take this work off the shelf": since `of` projects only
             // *hand-set* titles it means "nobody has corrected this series",
             // which is true of nearly every work in a scanned library, and
-            // clearing `series_id` unconditionally detached all of them on the
-            // first apply. A work a person *placed* is a different case: the
-            // document withdrawing that placement really is asking for it
-            // back, and `derive` re-attaches on the next pass if the files say
-            // so.
+            // clearing `series_id` unconditionally would detach all of them
+            // on the first apply. A work a person *placed* is a different
+            // case: the document withdrawing that placement really is asking
+            // for it back, and `derive` re-attaches on the next pass if the
+            // files say so.
             "UPDATE work
                 SET series_id = CASE WHEN series_id_hand IS NULL
                                      THEN series_id ELSE NULL END,
@@ -857,12 +842,10 @@ fn apply_series(
 
     let series_id = match find_series_by_title(conn, library, &series.titles)? {
         Some(id) => {
-            // **Not `sort_title` — O114.** A series this document found by
-            // one of its titles keeps its `sort_title`, the key
-            // `derive::reconcile_series` finds it by: writing the document's
-            // primary title here made the next scan mint a second series under
-            // the scanned name. A series minted below has no scanned name, so
-            // it takes the primary title.
+            // **Not `sort_title` — O114.** A series this document found by one
+            // of its titles keeps its `sort_title`, the key
+            // `derive::reconcile_series` finds it by. A series minted below has
+            // no scanned name, so it takes the primary title.
             //
             // **A series in no library is filed with the work it is found
             // for**, as `derive::reconcile_series` files one it takes. A work
@@ -969,19 +952,19 @@ fn series_of(conn: &Connection, work_id: i64) -> Result<Option<i64>, String> {
 /// this work from the count.
 ///
 /// **And `EXISTS` over `collection_item.series_id` beside it**, because a
-/// collection is the one holder this document cannot restore. Everything the
-/// `DELETE` below cascades into is keyed on the series and reachable only
-/// through it — `series_title`, `series_tag`, `external_id` — with one
-/// exception: `collection_item` belongs to a *collection*, which spans works,
-/// has no sibling document to sit beside and is covered by backup rather than
-/// by export (this module's own doc comment). So a shelf a reading list still
-/// names is not an orphan, however few works are on it, and dropping it out of
-/// that list because one work's metadata edit happened to be the last one
-/// would be a loss no re-import could undo. Nothing writes `collection_item`
-/// today — spec C1's collections are what will — which is exactly why the
-/// guard has to be right before the writer exists: after it lands the failure
-/// is silent and permanent. `work_tag`, `credit` and the rest cascade from
-/// `work`, not from `series`, and are not this function's business.
+/// collection is the one holder this document cannot restore. Of the tables the
+/// `DELETE` below cascades into, `series_title`, `series_tag` and `external_id`
+/// are keyed on the series and reachable only through it; `collection_item`
+/// belongs to a *collection*, which spans works, has no sibling document to sit
+/// beside and is covered by backup rather than by export (this module's own doc
+/// comment). So a shelf a reading list still names is not an orphan, however
+/// few works are on it, and dropping it out of that list because one work's
+/// metadata edit happened to be the last one would be a loss no re-import could
+/// undo. Nothing writes `collection_item` today — spec C1's collections are
+/// what will — which is exactly why the guard has to be right before the writer
+/// exists: after it lands the failure is silent and permanent. `work_tag`
+/// cascades from `work`, not from `series`, and is not this
+/// function's business.
 ///
 /// One `DELETE` is enough for all of it: `series_title`, `external_id`,
 /// `series_tag` and `collection_item` all declare `ON DELETE CASCADE` on
@@ -995,36 +978,18 @@ fn series_of(conn: &Connection, work_id: i64) -> Result<Option<i64>, String> {
 /// an *implicit* delete, which recursive_triggers is what gates — this
 /// `DELETE` is explicit and needs no such gate.
 ///
-/// **This used to be unreachable with a series to forget (delta review M5),
-/// and spec C3's PATCH routes changed that.** [`apply`] no longer has a single
-/// production caller: `crates/taiyaku-serve/src/metadata.rs`'s `edit_work_raw`
-/// reaches it from every one of the four PATCH routes, and
-/// `derive::write_work`'s own read-back reaches it too, both alongside the
-/// original `migrate::apply_library`. `patch_work`'s own `series` field is the
-/// one that can hand this function a real series to forget: it sets
-/// `doc.series` from the request body outright, so moving a work onto a
-/// different series or clearing its series entirely resolves `previous` (this
-/// work's series before the edit) to `Some`, and this function deletes that
-/// series once nothing else — no work, no `collection_item` — still holds it.
+/// **Reached with a series to forget through `patch_work`'s own `series`
+/// field.** [`apply`] is called from `crates/taiyaku-serve/src/metadata.rs`'s
+/// `edit_work_raw`, from `derive::write_work`'s own read-back and from
+/// `migrate::apply_library`. `patch_work`'s `series` field sets `doc.series`
+/// from the request body outright, so moving a work onto a different series or
+/// clearing its series entirely resolves `previous` (this work's series before
+/// the edit) to `Some`, and this function deletes that series once nothing else
+/// — no work, no `collection_item` — still holds it.
 ///
-/// **`patch_series` does not reach this path — corrected, not merely
-/// restated.** An earlier version of this comment claimed `patch_series`
-/// never reaches here because `apply_series`'s resolved `series_id` always
-/// agreed with `previous`. That was false, and the delta review of the fix
-/// waves (`f133b3e..910b15a`) is why: `patch_series`'s per-work loop used to
-/// call the ordinary [`apply`], which reaches `apply_series`, and
-/// `apply_series` resolves by matching `doc.series.titles`' own *text* —
-/// nothing about that resolution guarantees agreement with `previous` at
-/// all. When [`set_series_titles`] had just written a title text some other
-/// series already held, `apply_series` resolved onto that other series
-/// instead, `previous` and the newly resolved `series_id` disagreed, and this
-/// function deleted the series the caller actually named. `patch_series`'s
-/// loop now calls [`apply_with_series_id`] instead, which does not reach
-/// `apply_series` — or this function — at all, so the true reason `patch_series`
-/// does not reach this path is structural: nothing in it calls the function
-/// that would. This function is kept as `pub` API regardless, since
-/// `patch_work`'s own `series` field still exercises it, moving a work onto a
-/// different series or clearing it entirely.
+/// **`patch_series` does not reach this path.** Its per-work loop calls
+/// [`apply_with_series_id`], which does not reach `apply_series` — or this
+/// function — at all: nothing in it calls the function that would.
 fn forget_orphaned_series(conn: &Connection, series_id: Option<i64>) -> Result<(), String> {
     let Some(series_id) = series_id else {
         return Ok(());
@@ -1052,9 +1017,9 @@ fn forget_orphaned_series(conn: &Connection, series_id: Option<i64>) -> Result<(
 ///
 /// **Within the work's library — Part F1**: among the series
 /// [`crate::libraries::own_or_adoptable_series`] allows it. A work in no
-/// library (an imported one) still finds a series in any, as before F1.
-/// Where several series hold one title, a series in a library is answered
-/// before one in none, and then the oldest.
+/// library (an imported one) finds a series in any. Where several series hold
+/// one title, a series in a library is answered before one in none, and then
+/// the oldest.
 fn find_series_by_title(
     conn: &Connection,
     library: Option<i64>,
@@ -1110,13 +1075,9 @@ fn find_series_by_title(
 ///
 /// **`series.sort_title` is left alone — O114.** It is the key
 /// `derive::reconcile_series` and `proposals` find a series by — for a scanned
-/// series, the name its files gave it. This function used to move it to the
-/// primary title, or the first where none is primary, and the next scan then
-/// found nothing under the scanned name, minted a second series and moved
-/// every volume onto it.
-/// [`crate::browse::series`] shows the primary title, or the first one
-/// written where none is primary, so the correction is still what the grid
-/// shows.
+/// series, the name its files gave it. [`crate::browse::series`] shows the
+/// primary title, or the first one written where none is primary, so the
+/// correction is still what the grid shows.
 ///
 /// **`work.series_id` and the `series` row itself are untouched.** Deciding
 /// which series a work belongs to — moving it, or clearing it — is
@@ -1134,16 +1095,11 @@ fn find_series_by_title(
 /// every one of a document's titles in turn.
 ///
 /// **Refuses more than one title marked `primary`.** `browse.rs`'s own
-/// `MAX(CASE WHEN st.is_primary = 1 THEN st.title END)`
-/// picks whichever of them sorts lexically greater when more than one row
-/// has the flag — C1's second-shape symptom (a corrected spelling landing
-/// beside the one it was meant to replace, so the reader-facing title
-/// depends on string order rather than on which one a person actually meant)
-/// by a different door, and this is the one writer that could let more than
-/// one ever exist for one series at once — `apply_series`'s own
-/// `INSERT OR REPLACE`, keyed on `(series_id, title)`, cannot: two distinct
-/// title *texts* upserted with `primary: true` simply overwrite the same
-/// row's flag in turn, one at a time, never coexisting.
+/// `MAX(CASE WHEN st.is_primary = 1 THEN st.title END)` picks whichever of them
+/// sorts lexically greater when more than one row has the flag — the second
+/// failure above (a corrected spelling landing beside the one it was meant to
+/// replace, so the reader-facing title depends on string order rather than on
+/// which one a person actually meant) by a different door.
 ///
 /// # Errors
 ///
@@ -1177,8 +1133,7 @@ pub fn set_series_titles(
     // its own per-work loop, never underneath a derivation — but it is the
     // same `apply`-family shape as `apply` and `apply_with_series_id` just
     // above, opened on the same kind of connection a preview can hold open,
-    // so it is converted for the same reason rather than left as the one
-    // survivor of this class of bug.
+    // so it opens a `Nested` for the same reason.
     let tx = crate::Nested::open(conn, "librarydoc_set_series_titles")
         .map_err(|e| format!("starting a series-title transaction: {e}"))?;
 
@@ -1279,7 +1234,7 @@ fn apply_editions(
     // statement can reach, the same as everywhere else this invariant is
     // held, so both shapes restore the identical value here. That is *not*
     // the same choice `apply`'s own title write makes above: that write
-    // deliberately dropped its own fallback-to-the-column-being-written arm,
+    // deliberately lacks its own fallback-to-the-column-being-written arm,
     // on the argument that a violated invariant (`title_derived` NULL) should
     // fail loudly as a `NOT NULL` error rather than silently keep a stale
     // title — and that argument applies here too, so it is not why this
@@ -1346,7 +1301,7 @@ fn apply_editions(
         // write: `label_derived` is kept populated by every writer of this
         // row — migration 010's backfill, `import::replace_editions`'s own
         // INSERT for a brand-new edition, and its restore for one already
-        // held (Step 6c) — so there is no row on which it can read NULL here.
+        // held — so there is no row on which it can read NULL here.
         // A third arm falling back to `label` would turn that invariant's
         // violation into a silently stale value instead of the loud
         // `NOT NULL` constraint failure a violation should produce.

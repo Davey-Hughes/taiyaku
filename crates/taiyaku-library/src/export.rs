@@ -51,14 +51,12 @@ pub struct Exported {
     /// whose state is **not** in the documents just written.
     ///
     /// **§5.1, decided 2026-08-18.** `note` and `progress` have carried
-    /// `user_id` in their primary key since migration 1 — `note`'s is
-    /// `(user_id, work_id, id)` since migration 5 and `progress`'s is
-    /// `(user_id, work_id, edition)` since migration 9 — so the database
-    /// holds every reader; a sidecar carries one set, which is what the
-    /// format is, and
-    /// versioning it to hold several was declined — those files are consumed by
-    /// `taiyaku-serve`'s routes and by the reader, and the blast radius is the
-    /// whole round trip.
+    /// `user_id` in their primary key — `note`'s is `(user_id, work_id, id)`
+    /// and `progress`'s is `(user_id, work_id, edition)` — so the database
+    /// holds every reader; a sidecar carries one set, which is what the format
+    /// is, and versioning it to hold several was declined — those files are
+    /// consumed by `taiyaku-serve`'s routes and by the reader, and the blast
+    /// radius is the whole round trip.
     ///
     /// So the ambiguity is **reported rather than resolved**: this list is the
     /// difference between "exported" and "exported everything", which no other
@@ -87,24 +85,21 @@ pub struct Exported {
 /// from, so the result is the same as a sidecar with no stem at all —
 /// `taiyaku.json` and its four siblings.
 ///
-/// **The subdirectory is why `--all --dir` does not destroy a library.**
-/// Every work in a real library keeps its sidecar at `<dir>/taiyaku.json` —
-/// that is the documented convention, and the reason a work's identity comes
-/// from `unique_slug` rather than from its filename — so the stem is the
-/// *same string* for every work. A flat `dir` therefore gave every work the
-/// same five paths and each overwrote the one before it: three works in,
-/// three files out, holding only the third, with `atomic::write` making each
-/// individual write clean enough that nothing looked wrong (whole-branch
-/// review 2, C1). Keying the
-/// directory on `slug` — `UNIQUE` in the schema, so no two works can collide
-/// — is what makes the paths distinct, and it keeps the property the way
-/// back in needs: the five documents of one work stay siblings of *each
-/// other*, sharing the `<stem>.notes.json` arithmetic `migrate.rs` finds
-/// them by. The subdirectory is created if it does not exist, for the reason
-/// `taiyaku-cli` already creates `--dir` itself: `taiyaku_read::atomic::write`
-/// stages its temporary beside the target, so the directory has to exist
-/// before the first document is written, and this is a directory the caller
-/// never named and so cannot have created.
+/// **The subdirectory is why `--all --dir` does not destroy a library.** Every
+/// work in a real library keeps its sidecar at `<dir>/taiyaku.json` — that is
+/// the documented convention, and the reason a work's identity comes from
+/// `unique_slug` rather than from its filename — so the stem is the *same
+/// string* for every work, and a flat `dir` would give every work the same five
+/// paths, each overwriting the one before it. Keying the directory on `slug` —
+/// `UNIQUE` in the schema, so no two works can collide — is what makes the
+/// paths distinct, and it keeps the property the way back in needs: the five
+/// documents of one work stay siblings of *each other*, sharing the
+/// `<stem>.notes.json` arithmetic `migrate.rs` finds them by. The subdirectory
+/// is created if it does not exist, for the reason `taiyaku-cli` already
+/// creates `--dir` itself: `taiyaku_read::atomic::write` stages its temporary
+/// beside the target, so the directory has to exist before the first document
+/// is written, and this is a directory the caller never named and so cannot
+/// have created.
 ///
 /// **A NULL `sidecar_path` with no `dir` is an error, not a panic or a
 /// silent no-op.** Such a work — one that arrived by a route that never had
@@ -118,15 +113,14 @@ pub struct Exported {
 /// changes nothing on disk. Once writing starts, each of the (at most) five
 /// files is written through `taiyaku_read::atomic::write`, which makes each
 /// individual file atomic — never a truncated half-write. There is no
-/// transaction across the five files themselves: a later file failing to
-/// write (a full disk, most plausibly) leaves the earlier ones written and
-/// current, which is the same independence `progress.rs`, `notes.rs` and
-/// `truth.rs` already have from each other and from the sidecar, both today
-/// and before this crate existed. Coordinating five renames into one
-/// all-or-nothing unit would need a mechanism this codebase does not have
-/// anywhere else, to buy a guarantee export does not need: a document that
-/// did write is never wrong for having written, only possibly out of step
-/// with a sibling that did not.
+/// transaction across the five files themselves: a later file failing to write
+/// (a full disk, most plausibly) leaves the earlier ones written and current,
+/// which is the same independence `progress.rs`, `notes.rs` and `truth.rs`
+/// already have from each other and from the sidecar. Coordinating five renames
+/// into one all-or-nothing unit would need a mechanism this codebase does not
+/// have anywhere else, to buy a guarantee export does not need: a document that
+/// did write is never wrong for having written, only possibly out of step with
+/// a sibling that did not.
 ///
 /// **`taiyaku.notes.json` is always written, even when nobody has annotated
 /// the work.** `state::notes` answers an empty document rather than `None`
@@ -134,33 +128,27 @@ pub struct Exported {
 /// empty-versus-absent case for this function to invent on top of it.
 /// `taiyaku.progress.json` and `taiyaku.truth.json` are the opposite: each
 /// has a meaningful absence, and export honours it rather than papering over
-/// it — nothing recorded means the file is not written at all, the same
-/// convention `taiyaku-serve`'s own `truth::load` already reads back ("a file
-/// that is not there is `Ok(None)`... which is not a failure").
+/// it — nothing recorded means the file is not written at all.
 ///
-/// **The two say "nothing recorded" differently, and only truth says it with
-/// an `Option`.** `state::progress` answers a `Vec<Position>` — one position
-/// per edition since migration 009 widened `progress`'s key — so its absence
-/// is the empty vector, which is what the `progress.is_empty()` test below
-/// asks and what `taiyaku-serve`'s `progress::load` now answers with too.
-/// Neither document has a meaningful empty form the way `Notes` does: a
-/// progress document with no position to report is not a smaller one, it is
-/// the absence of one, and `taiyaku.truth.json` already models "never
-/// labelled" as the whole document being missing, not as `editions` being
-/// empty (`state::truth`'s own doc comment). Writing an empty placeholder for
-/// either would assert a fact — "this work has a recorded position", "someone
-/// opened the labelling tool here" — that is not true.
+/// **The two say "nothing recorded" differently, and only truth says it with an
+/// `Option`.** `state::progress` answers a `Vec<Position>` — one position per
+/// edition — so its absence is the empty vector, which is what the
+/// `progress.is_empty()` test below asks and what `taiyaku-serve`'s
+/// `progress::load` answers with too. Neither document has a meaningful empty
+/// form the way `Notes` does: a progress document with no position to report is
+/// not a smaller one, it is the absence of one, and `taiyaku.truth.json`
+/// already models "never labelled" as the whole document being missing, not as
+/// `editions` being empty (`state::truth`'s own doc comment). Writing an empty
+/// placeholder for either would assert a fact — "this work has a recorded
+/// position", "someone opened the labelling tool here" — that is not true.
 ///
 /// **`taiyaku.library.json` joins those two rather than the always-written
-/// pair, and that is a decision this branch made rather than inherited**
-/// (whole-branch review 3, Minor 12). `librarydoc::of` always answers a
-/// document, so this used to write one unconditionally — and a work nobody has
+/// pair.** `librarydoc::of` always answers a document, but a work nobody has
 /// hand-edited projects to `{"taiyaku_library": 1, "updated": "..."}` and
-/// nothing else, whose `updated` is stamped fresh on every run. Every
-/// `--in-place` export therefore created a new, permanently-dirty file in
-/// every work directory in the reader's library, one whose only field changed
-/// each time it was written, in a project whose README promises the library is
-/// not modified.
+/// nothing else, whose `updated` is stamped fresh on every run. Writing it for
+/// every such work would create a permanently-dirty file in every work
+/// directory in the reader's library, one whose only field changes each time it
+/// is written, in a project whose README promises the library is not modified.
 ///
 /// It is written when there is something to say and not written when there is
 /// not, because an empty one says nothing a missing one does not. The
@@ -179,19 +167,19 @@ pub struct Exported {
 /// where this library had the file's content to begin with.
 ///
 /// **And a stale one is removed, which is what makes this a snapshot rather
-/// than an overlay.** Not writing `<stem>.truth.json` leaves whatever was
+/// than an overlay.** Not writing `<stem>.truth.json` leaves whatever is
 /// already at that path, so a reader who cleared their labelling and exported
-/// found the old document still sitting beside the sidecar, asserting boxes
-/// they had deleted. That file is inert against *this* library — `migrate.rs`
-/// records the document as considered, so a later import will not read it back
-/// in (whole-branch review 2, C3) — but the five documents are also how a
-/// library travels: copy the directory to another machine, import it there,
-/// and the deleted labelling comes back. So a document with no state left to
-/// write has its file taken away rather than left, and the removal is
-/// reported in [`Exported::removed`] rather than done quietly. A path that is
-/// not there needs no removing and is not reported; a path that is there and
-/// cannot be removed fails the export, since a stale document that outlived
-/// the removal is the overlay this exists to prevent.
+/// would find the old document still sitting beside the sidecar, asserting
+/// boxes they had deleted. That file is inert against *this* library —
+/// `migrate.rs` records the document as considered, so a later import will not
+/// read it back in — but the five documents are also how a library travels:
+/// copy the directory to another machine, import it there, and the deleted
+/// labelling comes back. So a document with no state left to write has its file
+/// taken away rather than left, and the removal is reported in
+/// [`Exported::removed`] rather than done quietly. A path that is not there
+/// needs no removing and is not reported; a path that is there and cannot be
+/// removed fails the export, since a stale document that outlived the removal
+/// is the overlay this exists to prevent.
 ///
 /// # What an export will not touch
 ///
@@ -203,20 +191,17 @@ pub struct Exported {
 /// false and a file is sitting at the path, this leaves it alone and reports
 /// it in [`Exported::kept`].
 ///
-/// Three shapes reach that branch, all reproduced (whole-branch review 3, C1)
-/// against a database that recorded only "this document is settled":
+/// Three shapes reach that branch:
 ///
 /// - a sibling **restored from a backup or copied back from another machine**
 ///   after the first import. `migrate` records every document as settled on
 ///   that first pass, including the ones with no file at all, so a file that
-///   turns up later is never read — and was then deleted, or overwritten with
-///   an empty document, by the next routine export. `taiyaku serve
-///   <sidecar>...` imports every path on every start, so the marker is there
-///   after the first start a work is ever served.
+///   turns up later is never read. `taiyaku serve <sidecar>...` imports every
+///   path on every start, so the marker is there after the first start a work
+///   is ever served.
 /// - a **malformed** sibling, which records nothing at all, so that fixing it
 ///   and importing again works — the recovery path `migrate`'s own doc and
-///   design §4.3 both promise. A single character typed into a
-///   `taiyaku.truth.json` plus one export used to be enough to end it.
+///   design §4.3 both promise.
 /// - a sibling **left unread because the rows already held state** for that
 ///   document. The rows win, which is what makes this a migration rather than
 ///   a sync; that is not a reason to destroy a file nothing has read.
@@ -266,11 +251,10 @@ pub fn work(
 
     let notes_json = serde_json::to_string_pretty(&notes)
         .map_err(|e| format!("serialising notes for work `{slug}`: {e}"))?;
-    // `state::progress` answers one position per edition, newest first
-    // (migration 009); `taiyaku.progress.json` carries all of them, versioned,
-    // via `progressdoc::to_json` — see that module's doc comment for why the
-    // document had to gain a shape that can say what a reader now holds,
-    // rather than only ever writing back the head.
+    // `state::progress` answers one position per edition, newest first;
+    // `taiyaku.progress.json` carries all of them, versioned, via
+    // `progressdoc::to_json` — see that module's doc comment for why the
+    // document carries every one of them rather than only the head.
     let progress_json = if progress.is_empty() {
         None
     } else {
@@ -280,10 +264,9 @@ pub fn work(
         )
     };
 
-    // Fixed order, matching the table in this module's doc comment: the
-    // sidecar test that checks this byte-for-byte relies on `taiyaku.json`
-    // being first, and `exporting_writes_five_documents_beside_the_sidecar`
-    // relies on this exact ordering.
+    // Fixed order, matching the table in this module's doc comment:
+    // `exporting_writes_five_documents_beside_the_sidecar` relies on this
+    // exact ordering.
     //
     // The middle field is which `migrated_document` this document answers to,
     // and `taiyaku.json` has none: the sidecar is what an import reads by
@@ -469,21 +452,14 @@ fn target_dir(
 ///
 /// `pub(crate)`: `migrate.rs` needs the identical arithmetic to find a
 /// sidecar's siblings on the way *in*, and reuses this rather than carrying a
-/// second copy. It was written twice within this crate's reach until
-/// `taiyaku-serve`'s `Work::sibling` — the doc comment that first warned about
-/// the duplication — was deleted for having no callers at all (whole-branch
-/// review 3, Minor 8).
+/// second copy.
 ///
-/// **Three copies remain, not two.** `taiyaku_core::RegionDoc::path_beside`
-/// and `TruthDoc::path_beside` are the same arithmetic in a crate this one
-/// depends on, but whose types carry the paths themselves rather than a stem;
-/// each names it. The third is `taiyaku-serve`'s `stump::cache::path_for`,
-/// which is `file_stem`-plus-`format!` for `<stem>.stump.json` — and is
-/// precisely the copy the deleted `Work::sibling` comment was warning about,
-/// since two of the three files it listed have moved into this database and
-/// that one has not (delta review M7). It is in a crate this one cannot depend
-/// on, which is why the three stay three; being counted is the whole of what
-/// this comment can do about it.
+/// **Other copies exist.** `taiyaku_core::RegionDoc::path_beside` and
+/// `TruthDoc::path_beside` are the same arithmetic in a crate this one depends
+/// on, but whose types carry the paths themselves rather than a stem; each
+/// names it. Another is `taiyaku-serve`'s `stump::cache::path_for`, which is
+/// `file_stem`-plus-`format!` for `<stem>.stump.json`. It is in a crate this
+/// one cannot depend on, which is why it stays a copy.
 pub(crate) fn stem_of(sidecar_path: Option<&str>) -> String {
     sidecar_path
         .map(Path::new)

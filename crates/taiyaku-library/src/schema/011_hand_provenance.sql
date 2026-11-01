@@ -1,21 +1,10 @@
 -- **O80: the four columns a hand edit withdrew from derivation, given the
 -- provenance migration 010 gave `title` and `label`.**
 --
--- 010 fixed this asymmetry for two fields and stopped. `librarydoc::of`
--- projected `title_hand` and `label_hand` — the *hand* values — but plain
--- `work.volume`, `work.series_id`, `edition.language` and `edition.kind`,
--- which are whatever the last derive wrote. So the document every save writes
--- claimed derivation's own answers as though a person had chosen them.
---
--- `hand::save` then arms the `library` marker on any non-empty document, and
--- `derive::write_work` reads that marker as "never touch these four columns
--- again". `MetadataEditor.tsx` sends `{ title }` unconditionally on Save and
--- title is the only field the shipped UI edits — so correcting a title, or
--- pressing Save with nothing changed, permanently withdrew three columns
--- nobody had touched. There was no way back: `#[serde(default)] Option<T>`
--- makes an absent key and an explicit `null` identical on the wire, so no
--- route can clear a field, and once the marker is armed `derive` never reads
--- the document again. The state exited only through raw SQL.
+-- 010 fixed this asymmetry for two fields and stopped: `work.volume`,
+-- `work.series_id`, `edition.language` and `edition.kind` stayed plain columns,
+-- whatever the last derive wrote. A document that projected them would claim
+-- derivation's own answers as though a person had chosen them.
 --
 -- **One column each, where 010 needed two.** 010 added `title_derived`
 -- because nothing recomputes a title after `import::insert_work`'s INSERT, so
@@ -25,13 +14,10 @@
 -- can simply be written `COALESCE(<hand>, <what this pass derived>)`, and
 -- clearing a hand value restores derivation's answer on the next scan.
 --
--- **The guard goes away with it.** `write_work`'s `absorbed(…, library)`
--- check did two different jobs — "this document has been read back from disk,
--- do not read it again" and "do not overwrite these four columns" — and
--- conflating them is what let a title edit freeze a volume. The marker keeps
--- the first job only. The second is now answered per field, by whether a hand
--- value exists, which is the provenance column `derive.rs`'s own comment has
--- called the open I7 question since #77.
+-- **The guard goes away with it.** `write_work`'s `absorbed(…, library)` check
+-- keeps one job: "this document has been read back from disk, do not read it
+-- again". Whether to overwrite these four columns is answered per field, by
+-- whether a hand value exists.
 --
 -- --- The backfill, which is exact where it can be and lossless where it
 -- --- cannot ---
@@ -57,11 +43,10 @@
 -- **The series is two facts, and they needed separating before either could
 -- have provenance.** `LibraryDoc.series` carries a work's *attachment* (which
 -- series it belongs to) and the *series' own* titles and reading direction —
--- series-level data replicated into every member work's document. `of` read
--- every `series_title` row, derivation's included, so a scanned work's
--- document claimed the derived series title exactly as it claimed the derived
--- volume. That is what `derive.rs` records as O53's consequence: *"librarydoc::of
--- reads non-empty the moment a work has a derived volume or series"*.
+-- series-level data replicated into every member work's document. An `of` that
+-- read every `series_title` row, derivation's included, would make a scanned
+-- work's document claim the derived series title as it would the derived
+-- volume (O53).
 --
 -- So `series_title` gains `hand` and `series` gains `reading_hand`, and the
 -- attachment gains an explicit fact of its own in the document

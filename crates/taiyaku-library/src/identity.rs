@@ -1,9 +1,8 @@
 //! What makes a work the same work across a move, a rename or a remount.
 //!
-//! Content, with the path kept only as a hint. Keying on the canonical path —
-//! which is what `taiyaku-serve`'s `work_id` does today — would duplicate every
-//! work in the library when a NAS mounts at `/mnt/nas` on one host and
-//! `/Volumes/nas` on another, and orphan every note on it.
+//! Content, with the path kept only as a hint. Keying on the canonical path
+//! would duplicate every work in the library when a NAS mounts at `/mnt/nas` on
+//! one host and `/Volumes/nas` on another, and orphan every note on it.
 
 use std::fmt::Write as _;
 

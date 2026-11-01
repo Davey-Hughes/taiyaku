@@ -27,9 +27,8 @@
 //! An **alignment** names two editions, so it survives only if *both* of them
 //! do — both inside the directories the listing reads. One clause says so —
 //! `pair_clause` — and `alignments_of`, `WorkCard::aligned` and
-//! `SeriesCard::aligned` all read it, because the two counts asked a weaker
-//! question until 2026-08-21 and a grid drawing `⇄ 1` beside a work page
-//! listing no pair is one screen contradicting itself.
+//! `SeriesCard::aligned` all read it, since a grid drawing `⇄ 1` beside a work
+//! page listing no pair is one screen contradicting itself.
 //!
 //! Filtering after the query was the alternative and is wrong twice over: it
 //! reads rows the caller may not see into memory before deciding, and it makes
@@ -42,16 +41,13 @@
 //! assigned so far*, so a single `?3` earlier in a statement pushes the
 //! following `?`s to 4 and 5 — and a query built by concatenating a caller's
 //! fragment onto a generated `IN (?,?)` cannot know what those indices are.
-//! Measured on 2026-08-20 against the real schema: `WHERE e.work_id = ?3 AND …
-//! IN (?,?)` counts **five** parameters, not three, and `rusqlite` refuses the
-//! call.
+//! So `WHERE e.work_id = ?3 AND … IN (?,?)` counts **five** parameters, not
+//! three, and `rusqlite` refuses the call.
 //!
-//! Four constant statements — the three FTS id lookups and `cover_work`'s
-//! `series` read — carried `?1` until 2026-08-21 and were converted rather
-//! than exempted. Nothing broke while each had a single parameter, but a
-//! generated `IN (?,?)` spliced into any of them would put that `?1` and
-//! anonymous holes in one statement, the mix measured above, and a rule with
-//! four standing exceptions is one a later edit will mis-remember. (The
+//! A constant statement with a single parameter is no exception: a generated
+//! `IN (?,?)` spliced into one that carried `?1` would put that `?1` and
+//! anonymous holes in one statement, the mix described above, and a rule with
+//! standing exceptions is one a later edit will mis-remember. (The
 //! hand-written `INSERT`s in the `tests` submodule are fixtures, not queries,
 //! and are outside this.)
 //!
@@ -66,11 +62,9 @@
 // **Imported rather than written `std::collections::HashMap` inline, and that
 // is load-bearing for the mutation harness.** `cargo-mutants` replaces a
 // function body with a literal it generates — `Ok(HashMap::new())` — and emits
-// the short name, so while this module spelled the path out in full every such
-// mutant failed to *compile* and was reported `unviable`. O85's own two
-// functions had **fourteen** whole-body mutants and all fourteen were unviable,
-// which is a zero-survivor result that establishes nothing about them. Measured
-// 2026-08-29, before and after this line.
+// the short name, so with the path spelled out in full every such mutant would
+// fail to *compile* and be reported `unviable`, which is a zero-survivor result
+// that establishes nothing about the function.
 use std::collections::{HashMap, HashSet};
 
 use rusqlite::{Connection, OptionalExtension as _, params_from_iter};
@@ -190,7 +184,7 @@ pub struct WorkCard {
     pub editions: Vec<EditionCard>,
     /// Whether any alignment of this work has **both** its editions inside the
     /// grant — the same question `WorkDetail::alignments` answers in detail,
-    /// asked as one bit. They were separate pieces of SQL and disagreed.
+    /// asked as one bit.
     pub aligned: bool,
     pub pages: i64,
     /// **The edition this caller's reader will actually open — O84.**
@@ -205,8 +199,7 @@ pub struct WorkCard {
     /// edition this caller cannot see is one `resolver.slotCount` answers
     /// `undefined` for, which is exactly `restore`'s hub fallback.
     ///
-    /// **This is what makes `WorkCard` per-caller.** It was user-independent
-    /// until O84, and `works_of` took no `user_id`; a work whose hub has lost
+    /// **This is what makes `WorkCard` per-caller.** A work whose hub has lost
     /// its files while a sibling has not is readable for one reader and not
     /// for another, so no user-independent field can answer it. Withholding on
     /// the *hub* alone was the cheaper answer and drops a work out of
@@ -238,9 +231,8 @@ pub struct AlignmentCard {
 ///
 /// `works_of` answers a whole listing's editions in two statements since O85,
 /// and an `alignments_of` per row would put back exactly the N+1 that fix
-/// removed — the shape the whole-branch review closed in `home` at 111 queries
-/// on the largest series, and reopened here once already. §3's panel opens one
-/// work at a time, so this is the route that fills it.
+/// removed. §3's panel opens one work at a time, so this is the route that
+/// fills it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WorkDetail {
     pub card: WorkCard,
@@ -270,8 +262,8 @@ pub struct Home {
 ///
 /// Not a parameter, because no caller has a reason to differ and a cap the
 /// caller chooses is a cap the caller forgets. Spec C1 §7 declines
-/// virtualisation on measured numbers — 127 series, 111 volumes in the largest
-/// — so this bounds the three *recency* lists rather than the grid.
+/// virtualisation, so this bounds the three *recency* lists rather than
+/// the grid.
 const LIST_CAP: i64 = 20;
 
 /// The `AND` clause that restricts an edition to the caller's access (see
@@ -313,23 +305,20 @@ fn root_clause_for(alias: &str, access: &Access) -> String {
 
 /// `?,?,?` for an `IN` list of `n` values.
 ///
-/// Spelled out inline in [`root_clause_for`], [`member_clause`] and [`status`]
-/// before O85 added two more `IN` lists; one place to read the rule the module
-/// header states, that every placeholder here is anonymous.
-/// [`Access::grant_clause`] writes its holes here too, for the same reason.
+/// One place to read the rule the module header states, that every placeholder
+/// here is anonymous. [`Access::grant_clause`] writes its holes here too, for
+/// the same reason.
 pub(crate) fn holes(n: usize) -> String {
     std::iter::repeat_n("?", n).collect::<Vec<_>>().join(",")
 }
 
 /// The `AND` restricting a joined `member m` to the caller's roots.
 ///
-/// **Distinct from [`root_clause`], and the whole-branch review found out
-/// why.** `root_clause` decides whether an *edition* survives; this decides
-/// which of its *members* are counted. Without it, the edition listing's
-/// `LEFT JOIN member m` counted every member of a surviving edition — so a
-/// reader granted one root saw member and page counts covering roots they
-/// cannot see, and the module header's claim that counts are computed after
-/// the filter was true of `SeriesCard` and false of `EditionCard`.
+/// **Distinct from [`root_clause`].** `root_clause` decides whether an
+/// *edition* survives; this decides which of its *members* are counted.
+/// Without it, the edition listing's `LEFT JOIN member m` would count every
+/// member of a surviving edition, so a reader granted one root would see member
+/// and page counts covering roots they cannot see.
 ///
 /// Reachable in the *default* configuration rather than in a corner: two roots
 /// added with `library scan --add` carry no `edition_key`, both fall back to
@@ -404,11 +393,11 @@ fn narrowed(
 /// **both** of the editions it names survive the filter.
 ///
 /// **One definition, read by both questions the `alignment` table answers**,
-/// because the whole-branch review found them disagreeing: with an `en`↔`raw`
-/// pair and a grant of `en` alone, the grid drew `⇄ 1` and the work reported
-/// `aligned: true`, while the same work's alignment list — which had this
-/// filter and the counts did not — was empty. The same screen contradicted
-/// itself, so [`aligned_clause`] and `alignments_of` now read one clause.
+/// because two definitions can disagree: with an `en`↔`raw` pair and a grant of
+/// `en` alone, a count without this filter would draw `⇄ 1` and report
+/// `aligned: true` while the alignment list, which has it, is empty. The same
+/// screen would contradict itself, so [`aligned_clause`] and `alignments_of`
+/// read one clause.
 ///
 /// A listing narrowed to one library reaches both sides through `access`
 /// itself, which is only that library's directories (see [`library_scope`]), so a
@@ -430,13 +419,10 @@ fn pair_clause(access: &Access) -> String {
 
 /// Whether work `w` carries an alignment this caller may see, as an expression.
 ///
-/// **A count after the filter, which until 2026-08-21 it was not.** Both
-/// `aligned` counts read `EXISTS (SELECT 1 FROM alignment a WHERE a.work_id =
-/// w.id)`, which asks nothing about roots — so `WorkCard.aligned` and
-/// `SeriesCard.aligned` were computed over the *unfiltered* alignment set,
-/// the exact number the module header says filtering in Rust would produce,
-/// in the module whose reason for existing is that it does not. Shipped in
-/// PR #81; `alignments_of` is what made the disagreement observable.
+/// **A count after the filter.** Without [`pair_clause`], `EXISTS (SELECT 1
+/// FROM alignment a WHERE a.work_id = w.id)` asks nothing about roots, so it
+/// would count the *unfiltered* alignment set, the exact number the module
+/// header says filtering in Rust would produce.
 ///
 /// Requires `w` in scope, and contributes [`pair_clause`]'s two groups. The
 /// correlation `a.work_id = w.id` is written first so those groups still bind
@@ -509,8 +495,8 @@ fn page_zero_hash(alias: &str) -> String {
 /// `rowid` order — the order `librarydoc::set_series_titles` writes a list in —
 /// and only then `sort_title`, which is NOT NULL, so every series has a title to
 /// show. **Not `sort_title` second — O114.** That column is the scan's key and
-/// a correction no longer moves it, so a list sent with no primary would show
-/// text the correction may have removed.
+/// a correction leaves it alone, so a list sent with no primary would show text
+/// the correction may have removed.
 ///
 /// `library` narrows the listing to the directories of that library the grant
 /// allows ([`library_scope`]); a library the grant does not reach, one with no
@@ -552,11 +538,11 @@ pub fn series(
     // filter's own parameters are the only thing allowed in front of it —
     // which is also why the `aligned` count may live where it does.
     //
-    // **`aligned` is an `EXISTS` rather than the `LEFT JOIN alignment a` it
-    // was.** The join could carry the same restriction in its `ON`, but it
-    // sits below the progress join, so its roots would bind *after* `user_id`;
-    // and it multiplied every grouped row by the number of alignments, which
-    // only `COUNT(DISTINCT …)` everywhere else was hiding.
+    // **`aligned` is an `EXISTS` rather than a `LEFT JOIN alignment a`.** The
+    // join could carry the same restriction in its `ON`, but it would sit below
+    // the progress join, so its roots would bind *after* `user_id`; and it
+    // would multiply every grouped row by the number of alignments, which only
+    // `COUNT(DISTINCT …)` everywhere else would hide.
     let sql = format!(
         "SELECT g.id, g.title, g.works, g.editions, g.aligned, s.cover_work_id, g.added,
                 g.unread, cw.id, cw.slug, ce.key, {page}
@@ -611,13 +597,7 @@ pub fn series(
 /// Every edition of every work in `work_ids`, keyed by work id, in key order.
 ///
 /// **One statement for the whole set, and one more for every edition's
-/// `missing` — O85.** This was `editions_of`, called once per work by
-/// [`works_of`], which then called `missing_members` once per edition: an N+1
-/// nested inside an N+1, in the very module whose own comment on
-/// [`WorkDetail`] cites the whole-branch review's 111-query fix in `home` as
-/// the precedent not to repeat. Measured on the two-root fixture
-/// `library_with_volumes` builds, before the fix: **2 + 3n statements** for an
-/// n-work series — 8 at two works, 20 at six — against 4 for any n after it.
+/// `missing` — O85.**
 ///
 /// A work whose editions the grant wholly hides has **no key in the map**
 /// rather than an empty vector, which is [`visible_editions`]' rule for the same
@@ -626,13 +606,10 @@ pub fn series(
 ///
 /// **The `IN` list is bounded by SQLite's parameter ceiling, which this trades
 /// one unbounded thing for another against.** `unfiled` takes no `LIMIT`, so
-/// `work_ids` is as long as the caller's set; where the old shape issued one
-/// query per work and could never exceed a parameter count, this issues one
-/// query with one placeholder per work. Measured on this machine's system
-/// libsqlite3, 3.53.4, 2026-08-29: **at least 200,000** bound parameters bind
-/// without complaint, against a library that would need that many works in a
-/// single listing to reach it. Recorded rather than guarded, because a guard
-/// would be code no library can execute.
+/// `work_ids` is as long as the caller's set, and this issues one query with
+/// one placeholder per work, where a query per work could never exceed a
+/// parameter count. This is left unguarded, because a guard would be code no
+/// library can execute.
 ///
 /// Placeholders bind in text order, all anonymous: the member join's roots,
 /// then the `EXISTS` clause's roots, then `work_ids`. See the module header.
@@ -722,20 +699,17 @@ fn editions_by_work(
 /// missing: nothing was ever walked for it, so there is no scan fact to read,
 /// the same reasoning `edition_formats` states for reporting no format.
 ///
-/// **Task 7b: takes the caller's access like every other function in this
-/// module.**
-/// Shipped without it, which is a grant leak `member_clause`'s own doc calls
-/// out as reachable in the default configuration: two roots added the
-/// ordinary way merge into one edition, and a caller granted only one of them
-/// was told a `missing` count covering material under the root they cannot
-/// see — a fact about material the grant hides. [`member_clause`] is the same
-/// clause [`editions_by_work`]'s member join already reads for the same reason.
+/// **Takes the caller's access.** Without it this would be a grant leak, which
+/// `member_clause`'s own doc calls out as reachable in the default
+/// configuration: two roots added the ordinary way merge into one edition, and
+/// a caller granted only one of them would be told a `missing` count covering
+/// material under the root they cannot see — a fact about material the grant
+/// hides. [`member_clause`] is the same clause [`editions_by_work`]'s member
+/// join reads for the same reason.
 ///
-/// **O85: a set, not one edition.** This took a single `edition_id` and was
-/// called once per edition of every work in a listing. **An edition with
-/// nothing missing has no row here at all** — `COUNT(*)` over an empty group
-/// produces none — so a caller reads its absence as zero rather than expecting
-/// a key per edition, which is what the single-edition version returned.
+/// **O85: a set, not one edition.** **An edition with nothing missing has no
+/// row here at all** — `COUNT(*)` over an empty group produces none — so a
+/// caller reads its absence as zero rather than expecting a key per edition.
 ///
 /// # Errors
 ///
@@ -789,8 +763,7 @@ pub fn missing_by_edition(
 /// other way round the work id takes hole 1 and every root shifts.
 ///
 /// That clause is shared with [`aligned_clause`] rather than written twice:
-/// this list and the `aligned` flag beside it are the same question, and they
-/// answered it differently for as long as they were two pieces of SQL.
+/// this list and the `aligned` flag beside it are the same question.
 fn alignments_of(
     conn: &Connection,
     access: &Access,
@@ -827,10 +800,9 @@ fn alignments_of(
 
 /// The works matching `predicate`, with only the editions this caller may see.
 ///
-/// **Two queries, not one join.** A work joined to its editions returns one row
-/// per edition, and rebuilding the nesting from a flat result is where counts
-/// go wrong. The work list is small — spec C1 §7 measures 111 volumes in the
-/// largest series — so a second query per work is cheaper than the bug.
+/// **Separate queries, not one join.** A work joined to its editions returns
+/// one row per edition, and rebuilding the nesting from a flat result is where
+/// counts go wrong.
 ///
 /// `predicate` and `order` are SQL fragments over `w`, never caller text: every
 /// call site below passes a literal. Their parameters bind **after** the roots,
@@ -881,8 +853,7 @@ fn works_of(
         .map_err(|e| format!("reading works: {e}"))?;
 
     // **O85: the editions for the whole set, not one work at a time.** Two
-    // statements for any number of works, where this was one per work and one
-    // more per edition of each.
+    // statements for any number of works.
     let ids: Vec<i64> = rows.iter().map(|(id, ..)| *id).collect();
     let mut editions = editions_by_work(conn, access, &ids)?;
     let positions = opens_by_work(conn, user_id, &ids)?;
@@ -1032,20 +1003,18 @@ pub fn work(
 
 /// The works belonging to no series, which no series-joined query can reach.
 ///
-/// **Spec C1 §5.4**, and measured rather than assumed: `import.rs` never writes
-/// `series_id` — `taiyaku.json` has no field for it — so this is every
-/// hand-imported work in the library, and before this it was invisible on the
-/// one screen a reader opens on.
+/// **Spec C1 §5.4.** `import.rs` never writes `series_id` — `taiyaku.json` has
+/// no field for it — so this is every hand-imported work in the library.
 ///
 /// **A restricted account sees none of them**, and that needs no branch: an
 /// imported member's `root_id` is NULL, and `IN (…)` excludes NULL. That is
 /// §5.1's rule applying unchanged, not a second one.
 ///
 /// **A library narrowing leaves every imported work out of this, by that same
-/// rule rather than a new one.** An imported member's `root_id` is NULL, and the narrowed directory
-/// list is never empty ([`library_scope`]), so `IN (…)` excludes every
-/// imported work: an imported work is in no library, and asking for a library
-/// asks for what is in it.
+/// rule rather than a new one.** An imported member's `root_id` is NULL, and
+/// the narrowed directory list is never empty ([`library_scope`]), so `IN (…)`
+/// excludes every imported work: an imported work is in no library, and asking
+/// for a library asks for what is in it.
 ///
 /// # Errors
 ///
@@ -1071,20 +1040,19 @@ pub fn unfiled(
 
 /// The shortest query FTS5's `trigram` tokeniser can answer.
 ///
-/// Measured 2026-08-21 against SQLite 3.53.4: a trigram index over
-/// `五等分の花嫁` answers `五` and `五等` with nothing, and `五等分` with the
-/// row — the `*` prefix operator does not change that, because trigram has no
-/// prefix to operate on. Below this length the index is not slow, it is
-/// silent, which is a different failure and needs a different answer.
+/// A trigram index over `五等分の花嫁` answers `五` and `五等` with nothing,
+/// and `五等分` with the row — the `*` prefix operator does not change that,
+/// because trigram has no prefix to operate on. Below this length the index
+/// is not slow, it is silent, which is a different failure and needs a
+/// different answer.
 const TRIGRAM_MIN: usize = 3;
 
 /// How one query is going to be asked, chosen by its length alone.
 ///
 /// **Two paths rather than one widened one.** `LIKE '%q%'` would answer every
-/// query correctly at this library's size — §7's measured 127 series — and was
-/// considered; the index is kept because it is the part that still holds at
-/// ten times that, and the scan is kept because it is the only thing that
-/// answers the first two keystrokes at all.
+/// query correctly at this library's size (§7), but the index is the part that
+/// still holds at ten times that, and the scan is the only thing that answers
+/// the first two keystrokes at all.
 enum Match {
     /// An FTS5 string literal, quotes doubled, for `MATCH`.
     Fts(String),
@@ -1108,10 +1076,10 @@ fn match_for(trimmed: &str) -> Match {
 
 /// A `LIKE` needle in which the reader's own `%`, `_` and `\` are literals.
 ///
-/// Measured 2026-08-21: without this, `title LIKE '%' || '%' || '%'` matches
-/// every row — a one-character search that dumps the library. `ESCAPE '\'` is
-/// what makes the backslash meaningful, and so what makes a typed backslash
-/// need one of its own.
+/// Without this, `title LIKE '%' || '%' || '%'` would match every row — a
+/// one-character search that dumps the library. `ESCAPE '\'` is what makes
+/// the backslash meaningful, and so what makes a typed backslash need one of
+/// its own.
 fn escape_like(q: &str) -> String {
     let mut out = String::with_capacity(q.len());
     for ch in q.chars() {
@@ -1135,9 +1103,8 @@ fn escape_like(q: &str) -> String {
 /// characters, is an ordinary Japanese word and the second half of a title
 /// this library holds. See [`TRIGRAM_MIN`] and [`escape_like`].
 ///
-/// `work_fts` has been populated by triggers since migration 1 with nothing
-/// reading it. Searching series alone leaves an imported work unfindable by its
-/// own title, which is spec C1 §5.4.
+/// Searching series alone leaves an imported work unfindable by its own title,
+/// which is spec C1 §5.4.
 ///
 /// `library` narrows the search as it narrows [`series`] and [`unfiled`].
 ///
@@ -1261,20 +1228,17 @@ fn matching_unfiled_works(conn: &Connection, m: &Match, shown: &str) -> Result<V
 
 /// One column of ids from a title query, which the three above differ only in.
 ///
-/// **Unbounded, deliberately, and the cap moved to the caller.** These used to
-/// `LIMIT ?2` and were only then intersected with what the grant allows — so
-/// if the twenty rows SQLite happened to return were all outside the caller's
-/// roots, a search that genuinely matched visible series reported nothing
-/// found. That is the "filter after the query" failure the module header
-/// argues against, committed by the one function that argued it. Found by the
-/// whole-branch review.
+/// **Unbounded, deliberately, and the cap is the caller's.** A `LIMIT` of
+/// twenty here would apply before the grant does, so if the twenty rows SQLite
+/// happened to return were all outside the caller's roots, a search that
+/// genuinely matched visible series would report nothing found. That is the
+/// "filter after the query" failure the module header argues against.
 ///
 /// Unbounded is affordable because these return ids from a query over title
 /// columns, and [`search`] caps the filtered result instead. It stays
 /// affordable on the `LIKE` path for the same reason §7 declines
-/// virtualisation: 127 series and their titles is a scan measured in
-/// microseconds, and it is only ever reached by a query of one or two
-/// characters.
+/// virtualisation, the size of the library, and that path is only ever reached
+/// by a query of one or two characters.
 fn ids(conn: &Connection, sql: &str, needle: &str, doing: &str) -> Result<Vec<i64>, String> {
     let mut stmt = prepare(conn, sql).map_err(|e| format!("preparing: {doing}: {e}"))?;
     let rows = stmt
@@ -1291,22 +1255,22 @@ fn ids(conn: &Connection, sql: &str, needle: &str, doing: &str) -> Result<Vec<i6
 /// newest works — each capped at [`LIST_CAP`], each filtered by the same
 /// grant, and each narrowed by `library` as [`series`] is.
 ///
-/// **Both orderings are `MAX(…)` over `progress`, not a scalar subquery.**
-/// Since migration 009 a reader holds a position per *edition* of a work, so
+/// **Both orderings are `MAX(…)` over `progress`.** Since migration 009 a
+/// reader holds a position per *edition* of a work, so
 /// `(SELECT updated FROM progress p WHERE p.work_id = w.id AND p.user_id = ?)`
-/// is a subquery over what can now be several rows — and a scalar subquery
-/// over several rows returns whichever one SQLite reaches first, with no
-/// error and no warning, so the ordering was silently arbitrary among a
-/// work's editions. `MAX(updated)` / `MAX(completed_at)` answer "this work's
-/// most recent position", across however many editions it has one in.
+/// is a subquery over what can be several rows — and a scalar subquery over
+/// several rows returns whichever one SQLite reaches first, with no error and
+/// no warning, so the ordering would be silently arbitrary among a work's
+/// editions. `MAX(updated)` / `MAX(completed_at)` answer "this work's most
+/// recent position", across however many editions it has one in.
 ///
 /// **`read`'s predicate also excludes a work still open in any edition.** The
-/// old `(user_id, work_id)` key could never be both "finished" and "still
-/// reading" at once; the per-edition key can, when one edition is finished and
-/// a sibling is not. Showing the same volume under both Continuing and Read on
-/// one screen would state a contradiction to the reader, so a work counts as
-/// read only once no edition is still open — a judgement call rather than a
-/// measurement, made here rather than by showing the volume in both.
+/// per-edition key can have a work both "finished" and "still reading" at once,
+/// when one edition is finished and a sibling is not. Showing the same volume
+/// under both Continuing and Read on one screen would state a contradiction to
+/// the reader, so a work counts as read only once no edition is still open — a
+/// judgement call rather than a measurement, made here rather than by showing
+/// the volume in both.
 ///
 /// **`continuing` binds `user_id` twice — once for the predicate, once for the
 /// ordering subquery — and `read` binds it three times**, the third being the
@@ -1350,14 +1314,9 @@ pub fn home(
         &[&user_id, &user_id, &user_id],
         "(SELECT MAX(completed_at) FROM progress p WHERE p.work_id = w.id AND p.user_id = ?) DESC",
     )?;
-    // **`LIMIT` in the SQL, not `.take()` afterwards.** When this was written
-    // `works_of` fired an edition query per row it returned, so selecting every
-    // work in the library and discarding all but twenty cost one query per work
-    // — 69 per `/api/library/home` on the measured corpus, and thousands on a
-    // real library. Found by the whole-branch review. **O85 has since made that
-    // one statement for the whole set, which removes the per-row cost but not
-    // this bound's reason**: it keeps the rows read proportional to what the
-    // route returns rather than to the size of the library.
+    // **`LIMIT` in the SQL, not `.take()` afterwards.** It keeps the rows read
+    // proportional to what the route returns rather than to the size of
+    // the library.
     let added = works_of(conn, &access, user_id, "1 = 1", &[], "w.id DESC LIMIT 20")?;
 
     let cap = usize::try_from(LIST_CAP).unwrap_or(usize::MAX);
@@ -1371,12 +1330,10 @@ pub fn home(
 /// The work whose hub cover stands for this series.
 ///
 /// **A fallback, not a lookup.** `series.cover_work_id` exists in migration 1
-/// and nothing in this repository writes it — verified 2026-08-20, and still
-/// true now that spec C3's metadata editing has shipped — so it is NULL for
-/// every series a scan has produced, which is all of them. C1 writes it at no
-/// point, and C3's `PATCH /api/library/series/{id}` has no field for it either
-/// — `SeriesEdit` covers titles, reading, tags and external ids, not a cover
-/// choice. Choosing a cover is still where this belongs; it remains undone.
+/// and nothing but a test writes it, so it is NULL for every series a scan has
+/// produced, which is all of them. C1 writes it at no point, and C3's
+/// `PATCH /api/library/series/{id}` has no field for it either — `SeriesEdit`
+/// covers titles, reading, tags and external ids, not a cover choice.
 ///
 /// The fallback is the lowest-`volume` work this caller may see, `w.id` as the
 /// tiebreak so a series of volume-less works answers the same row every time
@@ -1398,11 +1355,10 @@ pub fn cover_work(
     series_id: i64,
 ) -> Result<Option<CoverTarget>, String> {
     // **`.optional()`, because a series id that does not exist is not an
-    // error.** Without it `query_row` returns `QueryReturnedNoRows`, the
-    // handler turned that into a 500, and `/series/9999/cover` answering 500
-    // while `/series/9999` answers 404 is an enumeration oracle — exactly the
-    // distinction `one_series` goes out of its way not to expose. Found by the
-    // whole-branch review.
+    // error.** Without it `query_row` returns `QueryReturnedNoRows`, so
+    // `/series/9999/cover` would answer with a failure while `/series/9999`
+    // answers 404, an enumeration oracle — exactly the distinction `one_series`
+    // goes out of its way not to expose.
     cover_target(conn, access, series_id)
         .optional()
         .map(Option::flatten)
@@ -1411,10 +1367,9 @@ pub fn cover_work(
 
 /// Which work and which of its editions a cover comes from.
 ///
-/// **The edition matters and an earlier version ignored it**, redirecting to
-/// `work.hub`: grant `Manga` (key `en`) and not `Manga (RAW)` (key `raw`, the
-/// hub) and the cover served page 0 of the edition the grant hides — with
-/// `cover_work`'s own doc comment promising the opposite. Whole-branch review.
+/// **The edition matters.** Redirecting to `work.hub` would serve page 0 of an
+/// edition the grant hides when the hub is outside it: grant `Manga` (key `en`)
+/// and not `Manga (RAW)` (key `raw`, the hub).
 #[derive(Debug, Clone, PartialEq)]
 pub struct CoverTarget {
     pub work_id: i64,
@@ -1429,13 +1384,6 @@ pub struct CoverTarget {
 
 /// One query for the cover, rather than building every `WorkCard` in the
 /// series to read one id off the front.
-///
-/// When this was written `works_of` fired an edition query per work, and the
-/// grid asks for one cover per tile — so a 127-series library rendered
-/// thousands of queries to answer 127 questions. Found by the whole-branch
-/// review. O85 has since bounded the listing itself; asking for a cover with
-/// one query rather than by building every `WorkCard` is what this function is
-/// still for.
 ///
 /// One row for a series that exists, holding no cover where [`cover_edition`]
 /// finds none, and no row for one that does not.
@@ -1479,11 +1427,9 @@ fn cover_at(row: &rusqlite::Row<'_>, at: usize) -> rusqlite::Result<Option<Cover
 
 /// Whether `slug`'s `edition` holds a member this caller may see.
 ///
-/// **The page routes' grant check**, and the reason the whole-branch review
-/// called the filter partly cosmetic: `/api/works/{slug}/{edition}/pages/N`
-/// applied no grant at all, so a restricted reader who knew a slug could read
-/// every page of every root. Browse hid the work and the bytes were served
-/// anyway.
+/// **The page routes' grant check.** Without it a restricted reader who knew a
+/// slug could read every page of every root: browse would hide the work and the
+/// bytes would be served anyway.
 ///
 /// Answers `true` for [`Access::Every`] without asking the store.
 ///
@@ -1521,12 +1467,11 @@ pub fn edition_visible(
 /// **What `taiyaku-serve`'s `/api/works` list and OPDS `works` feed both need
 /// instead of a loop.** `browse::work` already answers "only the editions
 /// this caller may see" for one work (`WorkCard::editions`'s own contract),
-/// but calling it once per work to build a whole-library list would be the
-/// same shape of N+1 the whole-branch review closed in `home` at 111 queries
-/// on the largest series — this answers the whole library in one round trip,
-/// and the caller does one `HashSet` lookup per edition after that. [`work`]
-/// stays the right tool for a caller that already holds one slug —
-/// `get_sidecar` and `patch_alignments` need nothing else.
+/// but calling it once per work to build a whole-library list would be an N+1
+/// — this answers the whole library in one round trip, and the caller does one
+/// `HashSet` lookup per edition after that. [`work`] stays the right tool for a
+/// caller that already holds one slug — `get_sidecar` and `patch_alignments`
+/// need nothing else.
 ///
 /// This is [`root_clause`] alone — no library narrowing, no alignment, no
 /// `member_clause` — because the question is only "does this edition keep a

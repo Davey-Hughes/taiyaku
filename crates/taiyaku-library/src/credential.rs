@@ -42,21 +42,17 @@ pub const API_KEY_PREFIX: &str = "tyk_";
 ///
 /// Not a well-formed PHC string, so [`verify_password_in`] refuses it for every
 /// input, the way `/etc/shadow` refuses a locked account. It exists as a
-/// constant because two other things read it: migration 4 writes it, and
-/// `account::admin_exists` asks whether any admin has replaced it — which is
-/// what makes "an admin row exists" and "an admin can log in" different
-/// questions, and spec A2 §5's claim route turns on the second.
+/// constant because other code reads it: `account::admin_exists` asks whether
+/// any admin has replaced it, which is what makes "an admin row exists" and
+/// "an admin can log in" different questions.
 pub const LOCKED: &str = "!";
 
 /// A real argon2id hash of a value nothing can present, so a login for a name
 /// that does not exist can cost what a real one costs.
 ///
-/// **Timing is a shape.** Returning early for an unknown name answered 401 in
-/// under a millisecond where a known name took the measured ~11 ms, so response
-/// time enumerated the account roster — and because the rate limiter keys on
-/// `(address, name)`, every new name opened its own window and never approached
-/// the lockout, so the walk was unlimited. Verifying against this instead makes
-/// the two paths cost the same.
+/// **Timing is a shape.** Returning early for an unknown name would let
+/// response time enumerate the account roster. Verifying against this instead
+/// makes the two paths cost the same.
 ///
 /// Generated once and pinned rather than hashed at startup: it must be a
 /// well-formed PHC string that `verify_password_in` actually runs argon2 over,
@@ -68,10 +64,10 @@ pub const DECOY_HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$3jVJ8kQnW2mXcR7LtYb
 /// than a measurement**.
 ///
 /// Spec A2 §14 records that these are unverified on the host that will run
-/// this. [`tests::argon2_is_slow_on_purpose`] is the floor that stops them
-/// being lowered silently; the measurement on the deployment host is what makes
-/// them final. A parameter set that is fast on a workstation and slow on the
-/// server is the failure this project's measurement discipline exists to catch.
+/// this. The `const` assertions below are the floor that stops them being
+/// lowered silently; the measurement on the deployment host is what makes them
+/// final. A parameter set that is fast on a workstation and slow on the server
+/// is the failure this project's measurement discipline exists to catch.
 const M_COST_KIB: u32 = 19_456;
 const T_COST: u32 = 2;
 const P_COST: u32 = 1;
@@ -83,11 +79,11 @@ const P_COST: u32 = 1;
 ///
 /// §10 asks for the cost to be "asserted to be within a band, not merely
 /// correct", and a *timing* floor is the obvious reading of that and the wrong
-/// test. Measured in release on 2026-08-18: hashing 11.9 ms, verifying 10.9 ms.
-/// A clock floor set anywhere near that fails on faster hardware, reporting a
-/// hardware upgrade as a security defect. `tests::argon2_is_slow_on_purpose`
-/// keeps a 2 ms backstop for the different failure these three lines cannot
-/// see — a `hash_password` that stopped calling argon2 at all.
+/// test. A clock floor set near the cost of a hash fails on faster hardware,
+/// reporting a hardware upgrade as a security defect.
+/// `tests::argon2_is_slow_on_purpose` keeps a 2 ms backstop for the different
+/// failure these three lines cannot see — a `hash_password` that stopped
+/// calling argon2 at all.
 const _: () = assert!(M_COST_KIB >= 19_456, "m is below OWASP's recommendation");
 const _: () = assert!(T_COST >= 2, "t is below OWASP's recommendation");
 const _: () = assert!(P_COST >= 1, "p is not a parallelism");
@@ -304,24 +300,17 @@ fn hash_in<'a>(
 /// **An empty password is refused here**, which is the one place every writer
 /// of `user.password_hash` passes through.
 ///
-/// `hash_password("")` produces a *well-formed* PHC string rather than
-/// [`LOCKED`], so [`verify_password_in`] answers true for it and anybody who
-/// presses Enter can sign in — and `account::admin_exists` counts
-/// `password_hash <> '!'`, so the account then reads as a working
-/// administrator.
+/// `hash_password("")` would produce a *well-formed* PHC string rather than
+/// [`LOCKED`], so [`verify_password_in`] would answer true for it and anybody
+/// who presses Enter could sign in — and `account::admin_exists` counts
+/// `password_hash <> '!'`, so the account would then read as a
+/// working administrator.
 ///
-/// **This refusal existed three times before it existed once.** Spec A2's
-/// whole-branch review found the claim route missing it on 2026-08-18 and
-/// noted that "both sibling paths already refuse this in the same words:
-/// `change_password` and the CLI's `accept`" — three copies, in three crates,
-/// of one rule about this crate's own column. C4 PR 2 then added two more
-/// writers (`POST /api/library/users` and `PATCH /api/library/users/{id}`)
-/// and they had it *none* of the times, which is the same defect arriving by
-/// the route the three copies could not cover. Moved here, where it cannot be
-/// missed by a writer that has not been written yet. The three call sites keep
-/// their own checks: each fires earlier and words the refusal for the screen
-/// it is on, and none of them is now the only thing standing between an empty
-/// string and the column.
+/// **The refusal is here and not in each writer**, so that a writer that has
+/// not been written yet cannot miss it. The claim route, `change_password` and
+/// the CLI's `accept` keep their own checks: each fires earlier and words the
+/// refusal for the screen it is on, and none of them is the only thing standing
+/// between an empty string and the column.
 ///
 /// **It runs in a working memory this process keeps for hashing.** It takes
 /// one out, runs argon2 in it and puts it back, holding nothing of the run.

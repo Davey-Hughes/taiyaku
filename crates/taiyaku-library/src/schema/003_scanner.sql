@@ -80,10 +80,9 @@ CREATE TABLE rule (
 
 -- Proposals ------------------------------------------------------------------
 --
--- The judgements §1's measurement says no rule should make. Suffix-stripping
--- as an edition signal scored roughly 20 right to 17 wrong on a hand
--- classification of the real library, which is barely better than a coin flip,
--- so this table proposes and nothing merges.
+-- The judgements §1's measurement says no rule should make. Suffix-stripping as
+-- an edition signal is barely better than a coin flip, so this table proposes
+-- and nothing merges.
 --
 -- `subject_id` keys on the SERIES ROW rather than on anything content-derived.
 -- A dismissed proposal keyed on a content hash returns as a brand-new proposal

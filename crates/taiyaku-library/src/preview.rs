@@ -101,17 +101,15 @@ pub struct Impact {
     /// previewed would put a question back in front of someone who already
     /// answered it.
     ///
-    /// **Not `proposals_resolved`, which this field replaces.** A derivation
-    /// reaches exactly one proposal writer — [`crate::proposals::raise`],
-    /// which only ever inserts a fresh `open` row or reopens an orphaned
-    /// `accepted` one — so nothing a derive does can ever move a proposal
-    /// *out* of `open`. `proposals_resolved` was
-    /// `open_before.saturating_sub(open_after)`, and `open_after` can never
-    /// be less than `open_before`: the subtraction was always `0`, structural
-    /// rather than merely usually so, and it floored the one signal a
-    /// derivation can actually produce — a reopen — right along with it.
-    /// `proposals_reopened` reports that signal directly instead of a
-    /// difference that can only ever read zero.
+    /// **Not a difference of `open` counts.** A derivation reaches exactly one
+    /// proposal writer — [`crate::proposals::raise`], which only ever inserts a
+    /// fresh `open` row or reopens an orphaned `accepted` one — so nothing a
+    /// derive does can ever move a proposal *out* of `open`, and the count of
+    /// `open` proposals after a derivation can never be less than the count
+    /// before it. That difference, taken before minus after and floored at
+    /// zero, would be `0` structurally rather than merely usually, and would
+    /// floor the one signal a derivation can actually produce — a reopen —
+    /// right along with it. This field reports that signal directly.
     pub proposals_reopened: usize,
     /// New proposals this derivation's own `raise` call opened —
     /// [`crate::derive::DeriveReport::raised`], carried straight through from
@@ -171,26 +169,26 @@ fn diff(
 /// `proposed` (the list a caller previewed), or the root's own default
 /// column.
 ///
-/// **An index into `proposed`, not a rule's database id — a second boundary
-/// the sentinel above is kept off of, for a reason a rule id cannot avoid.**
-/// "The rule currently open in the editor" is not always a rule with an id
-/// at all: [`crate::rules::replace_all`]'s own `id: 0` names a rule the
-/// caller has proposed but never saved — the live-typing case, and the
-/// ordinary shape of "add a rule" before the save button is ever pressed —
-/// and `0` is *also* `rules::ROOT_FALLBACK` — the root-fallback sentinel
-/// [`decided`] exists to translate, private to `rules.rs` and reachable from
-/// here only through [`crate::rules::is_root_fallback`]. An id-keyed
-/// `Decided` would silently attribute a root-decided field to a brand-new,
-/// unsaved rule the moment its root sets any default at all, and could never
-/// tell two unsaved rules in the same proposed list apart — both carry
-/// `id: 0`, so nothing about either rule's own id distinguishes them.
-/// `proposed` is always the exact list the caller just sent, so a position in
-/// it is unambiguous and needs no sentinel regardless of how many of its
-/// rules are unsaved. No id ever crosses this boundary at all:
-/// [`preview_with_rows`] maps the real ids [`crate::rules::replace_all`]
-/// minted back to `proposed`'s own indices before a single [`Decided`] is
-/// ever built — a stronger version of the same discipline that already keeps
-/// that sentinel private behind [`crate::rules::is_root_fallback`].
+/// **An index into `proposed`, not a rule's database id — a second boundary the
+/// sentinel is kept off of, for a reason a rule id cannot avoid.** "The rule
+/// currently open in the editor" is not always a rule with an id at all:
+/// [`crate::rules::replace_all`]'s own `id: 0` names a rule the caller has
+/// proposed but never saved — the live-typing case, and the ordinary shape of
+/// "add a rule" before the save button is ever pressed — and `0` is *also*
+/// `rules::ROOT_FALLBACK` — the root-fallback sentinel [`decided`] exists to
+/// translate, private to `rules.rs` and reachable from here only through
+/// [`crate::rules::is_root_fallback`]. An id-keyed `Decided` would silently
+/// attribute a root-decided field to a brand-new, unsaved rule the moment its
+/// root sets any default at all, and could never tell two unsaved rules in the
+/// same proposed list apart — both carry `id: 0`, so nothing about either
+/// rule's own id distinguishes them. `proposed` is always the exact list the
+/// caller just sent, so a position in it is unambiguous and needs no sentinel
+/// regardless of how many of its rules are unsaved. No id ever crosses this
+/// boundary at all: [`preview_with_rows`] maps the real ids
+/// [`crate::rules::replace_all`] minted back to `proposed`'s own indices before
+/// a single [`Decided`] is ever built — a stronger version of the same
+/// discipline that already keeps that sentinel private
+/// behind [`crate::rules::is_root_fallback`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Decided {
     Rule(usize),
@@ -223,10 +221,10 @@ pub struct Row {
 /// more existed than fit.
 ///
 /// **Capped, and the cap is stated rather than silently applied** — the same
-/// discipline `inventory` holds over its own listings. A real library holds
-/// 2 044 scan entries (`docs/notes.md`, "What a rule preview costs on a real
-/// library"), and a table that quietly stopped at `limit` rows would read to
-/// whoever is looking at it as though it were the whole list.
+/// discipline `inventory` holds over its own listings. A rule can reach more
+/// scan entries than `limit` (`docs/notes.md`, "What a rule preview costs on a
+/// real library"), and a table that quietly stopped at `limit` rows would read
+/// to whoever is looking at it as though it were the whole list.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Rows {
     pub rows: Vec<Row>,
@@ -360,16 +358,14 @@ fn rows_for(
             // true over an empty set. `fields_settable_by`'s own doc comment
             // frames the question this answers — "did this rule miss this
             // entry, or did it simply have nothing to say about it at all" —
-            // and without this guard the second case was answered as the
+            // and without this guard the second case would be answered as the
             // first, for every entry in the library at once.
             //
-            // **`blankRule()` is exactly that rule, so this was the ordinary
-            // case rather than a degenerate one.** The editor's "+ Add" mints
-            // a `regex` rule with an empty pattern and no `set_*` columns, and
+            // **`blankRule()` is exactly that rule, so this is the ordinary
+            // case rather than a degenerate one.** The editor's "+ Add" mints a
+            // `regex` rule with an empty pattern and no `set_*` columns, and
             // selects it immediately: nothing is settable, so every
-            // `scan_entry` in the library read as a near-miss and the Matched
-            // files tab opened on 500 rows and a truncation notice. Found by
-            // the whole-branch review of C4 PR B.
+            // `scan_entry` in the library would read as a near-miss.
             let is_near_miss = !decided_here
                 && !fields_set.is_empty()
                 && fields_set
@@ -452,11 +448,11 @@ pub fn preview(conn: &Connection, proposed: &[crate::rules::Rule]) -> Result<Imp
 /// **One transaction, not two.** A [`Row`]'s `after` only exists inside the
 /// rolled-back derivation this function already runs to answer [`Impact`] —
 /// a standalone row-building function would have to open a second
-/// transaction and derive again. Measured at 281 ms for one derivation over a
-/// real library (`docs/notes.md`, "What a rule preview costs on a real
-/// library"), and the HTTP route this feeds sends one request carrying both
-/// the proposed list and which rule is selected — paying that cost twice
-/// would double the wait for data this one pass already holds.
+/// transaction and derive again. What a derivation over a real library costs is
+/// in `docs/notes.md`, "What a rule preview costs on a real library", and the
+/// HTTP route this feeds sends one request carrying both the proposed list and
+/// which rule is selected — paying that cost twice would double the wait for
+/// data this one pass already holds.
 ///
 /// `selected` is an index into `proposed` — "the rule currently open in the
 /// editor" is a position in the exact list the caller just sent, never a
@@ -540,11 +536,11 @@ pub struct Applied {
     /// back carrying the id it was actually written under and the editor
     /// needs no second request to learn it.
     ///
-    /// **After the commit, not inside the transaction — whole-branch review,
-    /// I6.** [`apply`]'s own doc comment carries the full argument; the short
-    /// version is that this read (and [`Self::complaints`]'s) answers nothing
-    /// [`Impact`] needs, so it has no business sitting between the derive
-    /// landing and the commit that makes it durable.
+    /// **After the commit, not inside the transaction.** [`apply`]'s own doc
+    /// comment carries the full argument; the short version is that this read
+    /// (and [`Self::complaints`]'s) answers nothing [`Impact`] needs, so it has
+    /// no business sitting between the derive landing and the commit that makes
+    /// it durable.
     pub rules: Vec<crate::rules::Rule>,
     /// [`crate::rules::read`]'s complaints plus
     /// [`crate::rules::Engine::compile`]'s, the same pair `rules::import_json`'s
@@ -555,15 +551,13 @@ pub struct Applied {
     /// Everything [`crate::derive::derive_with`]'s `Documents::Reconcile` pass
     /// reported about the user's own filesystem — whole-branch review, I5.
     ///
-    /// **The only `derive` caller that used to report nothing about
-    /// `<root>/.taiyaku/`, on the only route in this product that writes
-    /// there.** `Impact` describes the database's own structure and nothing
-    /// past it; `repaired_documents`, `unwritable_documents`,
-    /// `orphan_documents`, `declined_documents`, `stale_documents` and the
-    /// fold counts all live on [`crate::derive::DeriveReport`] instead, so a
-    /// save that could not write a hand document — a read-only root,
-    /// [`crate::hand::save`]'s own `persisted: false` path — used to answer
-    /// `200` with a rehome count and nothing else.
+    /// `Impact` describes the database's own structure and nothing past it;
+    /// `repaired_documents`, `unwritable_documents`, `orphan_documents`,
+    /// `declined_documents`, `stale_documents` and the fold counts all live on
+    /// [`crate::derive::DeriveReport`] instead, so without this field a save
+    /// that could not write a hand document — a read-only root,
+    /// [`crate::hand::save`]'s own `persisted: false` path — would answer `200`
+    /// with a rehome count and nothing else.
     ///
     /// **Carried whole rather than copied field by field.** `taiyaku-serve`
     /// already owns a renderer for every field of [`crate::derive::DeriveReport`]
@@ -596,48 +590,42 @@ pub struct Applied {
 /// library, so a half-derived library still has most of its works current.
 /// This is not that: a save either lands whole or does not land, because a
 /// rule set half-applied is a state nothing in this product knows how to
-/// describe. The cost is the write lock, held for one full derivation —
-/// measured at a median 281 ms on 130 series and 1858 works — which is why
-/// the route takes [`crate::Library::working`] rather than the shared
-/// connection.
+/// describe. The cost is the write lock, held for one full derivation, which is
+/// why the route takes [`crate::Library::working`] rather than the
+/// shared connection.
 ///
-/// **Nothing fallible sits between `derive_with` returning and the commit
-/// below — whole-branch review, I6.** This module's own doc comment states
-/// why [`preview_with_rows`] runs `Documents::Skip`: a rollback cannot undo a
-/// file. `Documents::Reconcile` is exactly what this function runs instead,
-/// so every `?` that used to sit between the derive landing and the commit
-/// was a way for the database to roll back while the real files
-/// `hand::reconcile`'s gap repair and `hand::rename_for_rekey` had already
-/// written or renamed stayed exactly where the derive put them — a hand
-/// document renamed to a `content_key` the database never adopted, reported
-/// as an orphan on the next pass, someone's corrections detached from their
-/// work.
+/// **Nothing fallible but the two reads named below sits between `derive_with`
+/// returning and the commit.** This module's own doc comment states why
+/// [`preview_with_rows`] runs `Documents::Skip`: a rollback cannot undo a file.
+/// `Documents::Reconcile` is exactly what this function runs instead, so any
+/// `?` between the derive landing and the commit would be a way for the
+/// database to roll back while the real files `hand::reconcile`'s gap repair
+/// and `hand::rename_for_rekey` had already written or renamed stayed exactly
+/// where the derive put them — a hand document renamed to a `content_key` the
+/// database never adopted, reported as an orphan on the next pass, someone's
+/// corrections detached from their work.
 ///
-/// Two of the reads that used to sit in that window stay there anyway:
-/// `after`'s own [`grouping`] and [`crate::proposals::states`] genuinely have
-/// to run on *this* transaction, because they describe what *this*
-/// derivation did, not what the table happens to hold once something else
-/// has had a chance to write to it — a read taken after the commit could be
-/// answering a question this save was never asked. Both are cheap SELECTs on
-/// a transaction already open, so keeping them costs nothing this restructuring
-/// was trying to save. [`Impact`] and the reopened proposal ids are computed
-/// from them before the commit for the same reason.
+/// Two reads stay in that window anyway: `after`'s own [`grouping`] and
+/// [`crate::proposals::states`] genuinely have to run on *this* transaction,
+/// because they describe what *this* derivation did, not what the table happens
+/// to hold once something else has had a chance to write to it — a read taken
+/// after the commit could be answering a question this save was never asked.
+/// Both are cheap SELECTs on a transaction already open. [`Impact`] and the
+/// reopened proposal ids are computed from them before the commit for the
+/// same reason.
 ///
-/// What actually moved is [`crate::rules::read`] and
-/// [`crate::rules::Engine::compile`] — used only to populate
-/// [`Applied::rules`] and [`Applied::complaints`], which answer nothing
-/// [`Impact`] needs and have no business deciding whether this transaction is
-/// allowed to land. Both now run after `tx.commit()`, on `conn` rather than
-/// the consumed `tx` — reading the rule table back once it is durable rather
-/// than while it is still provisional.
+/// [`crate::rules::read`] and [`crate::rules::Engine::compile`] are used only
+/// to populate [`Applied::rules`] and [`Applied::complaints`], which answer
+/// nothing [`Impact`] needs and have no business deciding whether this
+/// transaction is allowed to land. Both run after `tx.commit()`, on `conn`
+/// rather than the consumed `tx` — reading the rule table back once it is
+/// durable rather than while it is still provisional.
 ///
-/// **The residue this leaves, because there is nowhere left to move it.** The
-/// commit itself can still be refused, and a refusal there rolls the database
-/// back with the files already written or renamed regardless — the one
-/// window this restructuring narrows to a single statement rather than
-/// closes. Nothing short of writing those files inside the same durability
-/// boundary as the row that names them would close it the rest of the way,
-/// and SQLite has no such boundary to offer.
+/// **The residue.** The commit itself can still be refused, and a refusal there
+/// rolls the database back with the files already written or renamed regardless
+/// — a window of a single statement, not closed. Nothing short of writing those
+/// files inside the same durability boundary as the row that names them would
+/// close it, and SQLite has no such boundary to offer.
 ///
 /// # Errors
 ///
@@ -690,17 +678,14 @@ pub fn apply(conn: &Connection, proposed: &[crate::rules::Rule]) -> Result<Appli
 /// genuinely different answer, for at least one `scan_entry`.
 ///
 /// **This is an observation, and the screen that draws it says so — O95.**
-/// It was called a `Conflict` until 2026-09-05, and the word was wrong in the
-/// one case the shipped defaults produce on nearly every library: migration
-/// 3's rule 1 reads a series from the directory and its rule 4 reads it from
-/// the filename, rule 4 wins, and **that is what folds a colour edition into
-/// its main series** — rule 4's own seeded note says so. *(Since O89,
-/// 2026-09-16: only where the directory does not qualify the filename's
-/// series. A directory that extends it is reconciled back to rule 1's value
-/// and is no longer an override. See `docs/status.md`, O89.)* Naming it a
-/// conflict made the editor offer a reorder as the fix, and the reorder is
-/// the one thing that breaks the fold. The detection below is unchanged and
-/// correct; only the noun moved. See `docs/status.md`, O95.
+/// "Conflict" would be the wrong word in the one case the shipped defaults
+/// produce on nearly every library: migration 3's rule 1 reads a series from
+/// the directory and its rule 4 reads it from the filename, rule 4 wins, and
+/// **that is what folds a colour edition into its main series** — rule 4's own
+/// seeded note says so. *(Per O89: only where the directory does not qualify
+/// the filename's series. A directory that extends it is reconciled back to
+/// rule 1's value and is not an override. See `docs/status.md`, O89.)* See
+/// `docs/status.md`, O95.
 ///
 /// **C4 §1's own worked example, and the reason this exists.** A rule sets
 /// `edition_key = "raw"` for everything under `Manga (RAW)/`; a later rule
@@ -736,16 +721,15 @@ pub fn apply(conn: &Connection, proposed: &[crate::rules::Rule]) -> Result<Appli
 /// same step that captures the path, so a row's example file and its two
 /// values can never describe different files.
 ///
-/// **They exist because the row is now a judgement someone has to make.**
+/// **They exist because the row is a judgement someone has to make.**
 /// Naming the two rules says *that* they disagree; only the values say what
 /// about, and `Death Note (Colored Council)` → `Death Note` reads instantly
 /// as a deliberate normalisation where two regexes and a path do not.
 ///
-/// *(Since O89, 2026-09-16: this example predates the reconciliation.
+/// *(Per O89, this pairing is not reported as an override at all:
 /// `Death Note (Colored Council)` qualifies the filename's captured
-/// `Death Note`, so `rules::Engine::resolve` now restores the directory's
-/// own value and this pairing is no longer reported as an override at all —
-/// `docs/status.md`, O89.)*
+/// `Death Note`, so `rules::Engine::resolve` restores the directory's own value
+/// — `docs/status.md`, O89.)*
 ///
 /// **An override is about the *value*, not merely about who touched the
 /// field.** Two enabled rules setting the same field to the *same* value are
@@ -780,9 +764,8 @@ pub fn apply(conn: &Connection, proposed: &[crate::rules::Rule]) -> Result<Appli
 /// `first`, never `wins`, against the higher-id one.
 ///
 /// **`others` counts the disagreements `first` does not name, when three or
-/// more enabled rules disagree on one field.** Decided by the owner
-/// 2026-09-03, after a review found this chain-of-three-or-more case had
-/// never been put to them. Rules setting one field to `"v1"`, `"v2"`, then
+/// more enabled rules disagree on one field.** Decided by the owner's
+/// ruling of 2026-09-03. Rules setting one field to `"v1"`, `"v2"`, then
 /// `"v3"` (all three distinct) produce one row: `first` names `"v2"`'s rule
 /// — the most recent disagreement, per the paragraph above — `wins` names
 /// `"v3"`'s, and `others` is `1`, for the `"v1"`-versus-`"v3"` disagreement
@@ -791,12 +774,11 @@ pub fn apply(conn: &Connection, proposed: &[crate::rules::Rule]) -> Result<Appli
 /// what tells them there is more to find rather than letting the row imply
 /// it is the whole story. In the ordinary two-rule case `others` is `0` and
 /// the UI shows nothing extra. Rejected: leaving it silent, which
-/// under-reports with nothing on screen saying so (the status quo this
-/// decision replaces); and one row per disagreeing pair, N-choose-2 rows
-/// for a case that is already rare and unchanged for the common two-rule
-/// one. See [`overrides`]'s own doc comment for how the count is taken when
-/// two entries share one `(field, first, wins)` triple but disagree on how
-/// many other rules were involved.
+/// under-reports with nothing on screen saying so; and one row per disagreeing
+/// pair, N-choose-2 rows for a case that is already rare and unchanged for the
+/// common two-rule one. See [`overrides`]'s own doc comment for how the count
+/// is taken when two entries share one `(field, first, wins)` triple but
+/// disagree on how many other rules were involved.
 ///
 /// **No `Eq`, deliberately.** [`FieldValue::Number`] holds an `f64`, so this
 /// derives `PartialEq` alone. Nothing needs the stronger bound: this type is
@@ -821,13 +803,12 @@ pub struct Override {
 /// [`Override`]'s own doc comment), and telling that apart from "nothing
 /// changed" needs the actual value, not who most recently wrote it.
 ///
-/// **Public, and typed rather than stringified**, since 2026-09-05: an
-/// [`Override`] carries two of these out to the editor, and a `volume` is a
-/// number all the way to the wire the way [`Placement`]'s own fields are.
-/// `None` in either arm is a field the resolution left unset — which is a
-/// real half of a disagreement, not an absence of one, since a later rule
-/// clearing what an earlier rule set is exactly the case a reader needs to
-/// see.
+/// **Public, and typed rather than stringified**: an [`Override`] carries two
+/// of these out to the editor, and a `volume` is a number all the way to the
+/// wire the way [`Placement`]'s own fields are. `None` in either arm is a field
+/// the resolution left unset — which is a real half of a disagreement, not an
+/// absence of one, since a later rule clearing what an earlier rule set is
+/// exactly the case a reader needs to see.
 #[derive(Debug, Clone, PartialEq)]
 pub enum FieldValue {
     Text(Option<String>),
@@ -853,12 +834,9 @@ fn field_value(resolved: &crate::rules::Resolved, field: crate::rules::Field) ->
 /// One [`Override`] under construction, while [`overrides`] is still walking
 /// the entries that share its `(field, first, wins)` key.
 ///
-/// **A struct rather than the tuple this was**, which clippy's own
-/// `type_complexity` refused once the two values joined it — and the names are
-/// worth more than the brevity here anyway, since `examples` and `others` are
-/// both counts and `first_value` and `wins_value` are both values, so a
-/// positional read of either pair is one transposition away from a row that
-/// says something untrue.
+/// **A struct rather than a tuple**: `examples` and `others` are both counts
+/// and `first_value` and `wins_value` are both values, so a positional read of
+/// either pair is one transposition away from a row that says something untrue.
 struct PartialOverride {
     /// The entry this row will name, and the entry both values below belong
     /// to. First encountered wins, and nothing overwrites it.
@@ -879,9 +857,9 @@ struct PartialOverride {
 /// [`preview_with_rows`], this reads `scan_entry` and the rule set as they
 /// stand — it never calls [`crate::rules::replace_all`] or
 /// [`fn@crate::derive::derive_with`], so it takes no write lock and pays
-/// none of a derivation's own cost (281 ms on a real library — `docs/notes.md`,
-/// "What a rule preview costs on a real library"). That is also why it
-/// cannot lean on a minted database id the way [`rows_for`] does through
+/// none of a derivation's own cost (`docs/notes.md`,
+/// "What a rule preview costs on a real library"). That is also why it cannot
+/// lean on a minted database id the way [`rows_for`] does through
 /// `written_ids`: see the next paragraph.
 ///
 /// **How this stays off `Rule::id` without ever writing one.** `proposed`
@@ -912,7 +890,7 @@ struct PartialOverride {
 /// depends on any other rule, the only thing that can differ between
 /// `engines[k]` and `engines[k + 1]` is `engines[k + 1]`'s one extra rule.
 ///
-/// *(Not quite, since O89. Adding a capturing rule can also trigger
+/// *(Not quite, per O89. Adding a capturing rule can also trigger
 /// [`crate::rules::Engine::resolve`]'s reconciliation, which restores an
 /// earlier directory rule's series. Where a user series rule sits between
 /// that directory rule and the capture, over a qualifying directory, the
@@ -924,21 +902,19 @@ struct PartialOverride {
 /// compiled again into `engines[6]`, `engines[7]`, and so on.
 ///
 /// **Cost: quadratic in rules, linear in files** — C4 §11's own estimate,
-/// unmeasured until now and still unmeasured at any real scale: this
-/// crate's seeded rule set is four rules, and nobody has run this against
-/// seventy. Building `engines` compiles `0 + 1 + … + order.len()` rules in
-/// total, quadratic in the rule count for the reason above; resolving every
-/// `scan_entry` against every engine is `O(rules × files)`, linear in files
-/// for a fixed rule count. `fields_settable` is the one thing in this
-/// function computed per rule rather than per `(rule, scan_entry)` pair —
-/// `O(rules)`, once, before the roots loop below — which is what keeps this
-/// estimate true rather than silently short by an extra `O(rules × files)`
-/// worth of `Regex::new` calls, the expensive one by an order of magnitude
-/// per `rules.rs`'s own module doc. Whether either shape is affordable on a
-/// library of thousands rather than a handful is exactly the gap C4 §11
-/// flags and this function does nothing to close. Carrying the two values
-/// out on each row costs nothing on top: they were already computed, to tell
-/// a disagreement from an agreement, and were previously thrown away.
+/// unmeasured at any real scale. Building `engines` compiles
+/// `0 + 1 + … + order.len()` rules in total, quadratic in the rule count for
+/// the reason above; resolving every `scan_entry` against every engine is
+/// `O(rules × files)`, linear in files for a fixed rule count.
+/// `fields_settable` is the one thing in this function computed per rule rather
+/// than per `(rule, scan_entry)` pair — `O(rules)`, once, before the roots loop
+/// below — which is what keeps this estimate true rather than silently short by
+/// an extra `O(rules × files)` worth of `Regex::new` calls, the expensive one
+/// by an order of magnitude per `rules.rs`'s own module doc. Whether either
+/// shape is affordable on a library of thousands rather than a handful is
+/// exactly the gap C4 §11 flags and this function does nothing to close.
+/// Carrying the two values out on each row costs nothing on top: they are
+/// computed anyway, to tell a disagreement from an agreement.
 ///
 /// # Errors
 ///

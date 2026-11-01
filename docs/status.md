@@ -1933,16 +1933,15 @@ so the next run's own "already holds a position" check reads that partial
 write as complete and never retries the rest. **O79.** *O79 has since closed —
 see its entry above.*
 
-**One pointer is knowingly dangling, and is left that way.**
-`schema/001_initial.sql` ends its note about the `truth_` tables with "`export.rs`'s
-`LOCAL_USER` comment is the other half of this note: it explains why the
-per-person documents get away with one hardcoded id today." Spec A2 deleted that
-constant, so the sentence points at nothing. Migration 1 is **not** edited to fix
-it: migrations here are append-only, which O45 gives as a reason in its own right
-and separately from the `sqlite_master` one. The paragraph's actual *claim* is
-still true — `truth` stayed library-wide and only `notes`/`progress` became
-per-reader, which is exactly what that comment predicted A2 would find. It is the
-citation that went stale, and this is where it is corrected.
+**One pointer dangled until the comments pass cut it.**
+`schema/001_initial.sql` ended its note about the `truth_` tables with
+"`export.rs`'s `LOCAL_USER` comment is the other half of this note: it explains
+why the per-person documents get away with one hardcoded id today." Spec A2
+deleted that constant, so the sentence pointed at nothing. The comments pass
+removed it: it sat between two statements, and SQLite stores no text outside a
+statement. The paragraph's actual *claim* is still true — `truth` stayed
+library-wide and only `notes`/`progress` became per-reader, which is exactly
+what that comment predicted A2 would find.
 
 **`serve` was a first cut, and five things about it were known thin** — O1 to
 O5, each found by the whole-branch review. All five are now closed. O1 was the
@@ -4962,7 +4961,8 @@ mismatched pair said nothing at all.
   2026-10-29 how the rest of the repository goes: a full pass in which Sonnet
   cuts, Opus reviews every block blind, then one fix round and a pointer pass.
   It runs as five PRs by `docs/superpowers/plans/2026-10-29-comment-pass.md`;
-  the first two are done: `web/src` with `web/vite.config.ts`, and `web/tests`.
+  the first three are done: `web/src` with `web/vite.config.ts`, `web/tests`,
+  and `crates/taiyaku-library`.
 
 - **Measure argon2's cost on the NAS, and set the semaphore cap O57 wants.**
   §14 recorded that OWASP's parameters — `M_COST_KIB` 19456, `T_COST` 2,

@@ -122,10 +122,9 @@ fn token_hashing_is_hex_sha256_and_is_not_the_token() {
 /// here is the one failure those cannot see: a `hash_password` that stopped
 /// calling argon2 altogether while the constants sat there looking correct.
 ///
-/// The floor is an order of magnitude under the measurement (release, 2026-08-18:
-/// hashing 11.9 ms, verifying 10.9 ms) rather than close to it, because a floor
-/// near the real cost fails on faster hardware — reporting a hardware upgrade as
-/// a security defect.
+/// The floor is an order of magnitude under the cost of the hash and the verify
+/// this times rather than close to it, because a floor near the real cost fails
+/// on faster hardware — reporting a hardware upgrade as a security defect.
 #[test]
 fn argon2_is_slow_on_purpose() {
     let started = std::time::Instant::now();
@@ -147,11 +146,10 @@ fn argon2_is_slow_on_purpose() {
 /// each call, and the verify the server runs: `verify_password_in` in a memory
 /// that is kept, with the zeroing after each run timed on its own beside it.
 ///
-/// **`#[ignore]` because it is a tool rather than a test.** Twenty argon2
-/// operations, which is what it ran then, cost 5.6 s in the debug profile CI
-/// runs, which made a *measurement* the slowest thing in the workspace and
-/// ate the slow-timeout margin `.config/nextest.toml` reasons about. It
-/// asserts nothing, so nothing is lost by asking for it.
+/// **`#[ignore]` because it is a tool rather than a test.** It runs argon2 for
+/// many rounds, which in the debug profile CI runs would spend the slow-timeout
+/// margin `.config/nextest.toml` reasons about on a measurement. It asserts
+/// nothing, so nothing is lost by asking for it.
 #[test]
 #[ignore = "a measurement, not an assertion — see the doc comment"]
 fn report_the_argon2_cost() {
@@ -236,7 +234,7 @@ fn the_decoy_hash_costs_what_a_real_one_costs() {
 /// The stored hash carries the parameters it was made with, so this asserts
 /// that `hasher()` uses **this module's** constants rather than any others.
 ///
-/// **It does not kill `hasher -> Argon2::default()`, and that is the finding.**
+/// **It does not kill `hasher -> Argon2::default()`.**
 /// `argon2::Params::DEFAULT_M_COST/T_COST/P_COST` are 19456, 2 and 1 — the same
 /// three values `M_COST_KIB`, `T_COST` and `P_COST` hold, because both are
 /// OWASP's current recommendation. So the mutant is genuinely equivalent today
@@ -258,14 +256,6 @@ fn the_stored_hash_carries_this_modules_parameters() {
     );
 }
 
-/// **The refusal that used to live in three places and not in this one.**
-///
-/// `hash_password("")` produced a well-formed PHC string, so
-/// a verify of `""` against it answered true and `admin_exists` counted the row
-/// as a working administrator. Spec A2's whole-branch review caught the claim
-/// route missing the check on 2026-08-18; C4 PR 2's two new user routes had it
-/// none of the times, which is the same defect arriving by a route three
-/// copies of a rule cannot cover.
 #[test]
 fn an_empty_password_is_refused_where_every_writer_passes_through() {
     let why = hash_password("").expect_err("refuses");

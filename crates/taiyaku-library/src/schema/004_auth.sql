@@ -11,7 +11,7 @@
 -- and `note` are the two tables referencing `user(id)`. They hold every note
 -- and every reading position in the library. Written the obvious way, inside
 -- the transaction, this migration copies the `user` rows correctly and deletes
--- all of them. Measured 2026-08-18: notes surviving, 0. See `docs/notes.md`,
+-- all of them. See `docs/notes.md`,
 -- and `schema::tests::migration_4_rebuilds_user_without_taking_the_notes_with_it`,
 -- which fails the moment that wrapper is removed.
 
@@ -105,15 +105,6 @@ CREATE TABLE api_key (
 CREATE INDEX api_key_by_user ON api_key (user_id);
 
 -- Per-root sharing.
---
--- **Nothing filters on this yet, and that is recorded rather than
--- discovered.** Spec A2 §8 expected spec B to land afterwards and give `work` a
--- `root_id`; B landed first and added neither that column nor any other
--- work-to-root link — `scan_entry.root_id` and `rule.root_id` exist, `member`
--- has no `scan_entry_id`. Meanwhile `serve` is handed sidecar paths and no
--- route lists by root, so there is nothing for a filter to filter. The guard
--- resolves `Principal.roots` from here today; spec C1's browse API is the first
--- caller that can act on the answer.
 --
 -- In migration 4 rather than deferred to C1 because it holds hand-entered data,
 -- which is the store design's §10 rule for what goes in early.

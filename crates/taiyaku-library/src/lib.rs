@@ -15,12 +15,11 @@ pub mod comicinfo;
 pub mod credential;
 pub mod derive;
 pub mod export;
-// **Private, and that is the point.** `fold::absorb` is the only code in this
-// project that deletes a `work` row, and `derive` is the only thing that has
-// any business calling it — `derive::superseded` is what decides the pair.
-// It was `pub` only because two of `DeriveReport`'s doc comments linked to it;
-// those name it in plain backticks now. Narrowing the door is a mitigation
-// rather than a guarantee, so `absorb` guards its own invariants regardless.
+// **Private, and that is the point.** `fold::absorb` deletes a `work` row, and
+// `derive` is the only thing that has any business calling it —
+// `derive::superseded` is what decides the pair. Narrowing the door is a
+// mitigation rather than a guarantee, so `absorb` guards its own
+// invariants regardless.
 mod fold;
 pub mod hand;
 pub mod identity;
@@ -79,13 +78,11 @@ pub(crate) fn has_no_address(name: &str) -> bool {
     matches!(name, "." | "..")
 }
 
-// Per-person state, moved down from `taiyaku-serve` because this crate
-// cannot depend on the server — the dependency points the other way.
-// `taiyaku-serve` re-exports each of these from its old module paths, so
-// every existing consumer keeps compiling unchanged. See
+// Per-person state lives in this crate because it cannot depend on
+// `taiyaku-serve` — the dependency points the other way. See
 // `docs/superpowers/specs/2026-08-14-library-store-design.md`, §3.4 and §4.3.
 //
-// `TruthDoc`, `TruthEdition` and `TruthRegion` do NOT move: they already
+// `TruthDoc`, `TruthEdition` and `TruthRegion` are not defined here: they
 // live in `taiyaku-core`, which this crate depends on.
 
 /// How far through a work a reader got, and in which edition.
@@ -233,16 +230,14 @@ fn is_busy(e: &rusqlite::Error) -> bool {
 /// the only pragma here with a loop around it. Switching journal mode takes a
 /// brief exclusive lock on the database, and SQLite runs no busy handler for
 /// it: if any other connection holds the file, the pragma returns
-/// `SQLITE_BUSY` on the spot. Reordering it after the timeout — done, above,
-/// because that is where the decision belongs — does not change that.
+/// `SQLITE_BUSY` on the spot.
 ///
 /// It only ever bites on the **first** open of a fresh library: once the file
 /// is in WAL, this pragma is a no-op that takes no lock at all. That is also
 /// the one open every install performs, and `serve` plus `library import`
-/// starting together is ordinary, so review 3 measured 14 failures across 48
-/// concurrent first opens — half of them here, reported as
-/// `opening the library: setting WAL: database is locked`, with nothing
-/// anywhere saying that a retry recovers.
+/// starting together is ordinary, so without the retry a first open that
+/// collides would fail here, reported as
+/// `opening the library: setting WAL: database is locked`.
 ///
 /// A thin wrapper over [`set_wal_within`] for the same reason
 /// [`require_fts5`] wraps [`require_fts5_with_probe`]: the branch worth
@@ -305,8 +300,8 @@ impl Library {
     /// *same* file; a relative path stored verbatim would instead follow
     /// whatever the process's current directory happens to be when
     /// `working` is later called, which is not necessarily the directory it
-    /// was in when `open` ran. Nothing in this repository calls
-    /// `std::env::set_current_dir` today, so this is dormant — but
+    /// was in when `open` ran. Nothing outside the tests in this repository
+    /// calls `std::env::set_current_dir`, so this is dormant — but
     /// `taiyaku-cli`'s `--db` flag reaches `open` with no absolute-path
     /// check the way its own `$XDG_DATA_HOME`/`$HOME` fallbacks have, so a
     /// relative path is reachable, and canonicalising here is cheaper than
@@ -408,51 +403,42 @@ impl Library {
         // transactions and both waiting to promote would deadlock, so it
         // returns SQLITE_BUSY at once — and under WAL, a snapshot the other
         // writer has moved past returns SQLITE_BUSY_SNAPSHOT, which waiting
-        // cannot resolve at all. So a busy timeout on its own leaves exactly
-        // the reproduced failure in place.
+        // cannot resolve at all. So a busy timeout on its own leaves those
+        // failures in place.
         //
         // `Immediate` for every transaction on this connection rather than at
-        // each of the seven call sites (`state.rs` three times, one each in
-        // `import.rs`, `librarydoc.rs`, `scan.rs` and `rules.rs`) a future
-        // contributor might add a write to, and for the same reason
-        // `recursive_triggers` is a pragma rather than a rule for callers:
-        // all seven are writes, and a store that is only correct while every
-        // future writer remembers to pass a behaviour is not correct, it is
-        // lucky. `schema.rs`'s migration transaction is an eighth
-        // `unchecked_transaction` and gets this same `Immediate` behaviour
-        // too, when this connection is the one [`Self::from_connection`] is
-        // building: `schema::migrate` runs after `configure` returns, on
-        // this same connection, before any caller has it to write through at
-        // all. It sits outside the count above because it is not a call site
-        // future code could add or forget. [`Self::working`]'s second
-        // connection never runs a migration at all — the file it opens is
-        // already migrated — but still gets `Immediate` here, because it is a
-        // writer too and the same promotion deadlock applies to it. The
-        // concurrent writers `schema.rs:159-161`'s own comment depends on
-        // `Immediate` for are real and measured, not hypothetical —
-        // `status.md`'s record of review 3's I1: 14 failures in 48 concurrent
-        // first opens, each its own process racing this exact migration, none
-        // in 40 runs after this connection-wide setting closed it.
-        // The cost is that a read-only `unchecked_transaction` would also take
-        // the write lock; there is none, and one would be the wrong shape here
-        // anyway — `Library` hands out one connection behind a `Mutex`, and
-        // every caller of [`Self::working`] is expected to run at most one
-        // long job against it at a time.
+        // each call site a future contributor might add a write to, and for
+        // the same reason `recursive_triggers` is a pragma rather than a rule
+        // for callers: a store that is only correct while every future writer
+        // remembers to pass a behaviour is not correct, it is lucky.
+        // `schema.rs`'s migration transaction gets this same `Immediate`
+        // behaviour too, when this connection is the one
+        // [`Self::from_connection`] is building: `schema::migrate` runs after
+        // `configure` returns, on this same connection, before any caller has
+        // it to write through at all. [`Self::working`]'s second connection
+        // never runs a migration at all — the file it opens is already
+        // migrated — but still gets `Immediate` here, because it is a writer
+        // too and the same promotion deadlock applies to it. The concurrent
+        // writers `schema::apply_pending`'s own doc depends on `Immediate` for
+        // are real: concurrent first opens are each their own process racing
+        // this exact migration. The cost is that a read-only
+        // `unchecked_transaction` would also take the write lock; there is
+        // none, and one would be the wrong shape here anyway — `Library` hands
+        // out one connection behind a `Mutex`, and every caller of
+        // [`Self::working`] is expected to run at most one long job against
+        // it at a time.
         //
-        // **A contract on the caller, not a guarantee this type provides —
-        // whole-branch review, I4.** Every call to `working` opens an
-        // independent connection with no memory of any other, so nothing
-        // here stops two long jobs running at once; a C4 branch shipped with
-        // nothing above this module enforcing the one-at-a-time premise
-        // either, and a save's single `BEGIN IMMEDIATE` landed between two of
-        // a scan's own per-work transactions — replacing the rule table and
-        // re-deriving the whole library while the scan's already-compiled
+        // **A contract on the caller, not a guarantee this type provides.**
+        // Every call to `working` opens an independent connection with no
+        // memory of any other, so nothing here stops two long jobs running at
+        // once. A save's single `BEGIN IMMEDIATE` landing between two of a
+        // scan's own per-work transactions would replace the rule table and
+        // re-derive the whole library while the scan's already-compiled
         // `Engine` was still mid-pass under the rules that transaction just
         // replaced. `taiyaku-serve`'s `ServeState::library_job` is what makes
-        // the premise true today: a lock a scan's derive and a save's
-        // `preview::apply` both take before ever calling `working`, so the
-        // two genuinely run one at a time rather than merely being assumed
-        // to.
+        // the premise true: a lock a scan's derive and a save's
+        // `preview::apply` both take before ever calling `working`, so the two
+        // genuinely run one at a time rather than merely being assumed to.
         conn.set_transaction_behavior(rusqlite::TransactionBehavior::Immediate);
         require_fts5(conn)
     }
@@ -553,56 +539,52 @@ impl std::ops::Deref for Working<'_> {
 /// `unchecked_transaction` sends — is refused outright the moment SQLite
 /// already holds an open transaction; `derive.rs`'s own doc records exactly
 /// this, on why [`crate::derive::derive`] holds no transaction of its own.
-/// That made [`crate::import::scanned`] (through `import_with`, called once
-/// per work) and [`crate::fold::absorb`] (once per fold), each of which
-/// opens one of its own, uncomposable with a caller that wraps a whole
+/// So [`crate::import::scanned`] (through `import_with`, called once per
+/// work) and [`crate::fold::absorb`] (once per fold), each of which opens one
+/// of its own, would be uncomposable with a caller that wraps a whole
 /// derivation in a transaction to roll it all back at once —
-/// [`crate::preview::preview`]'s entire mechanism, and the reason this type
-/// was added: every existing call to `unchecked_transaction` inside a
-/// derive pass failed on the spot with "cannot start a transaction within a
-/// transaction" the moment a preview wrapped it, on any library holding at
-/// least one work.
+/// [`crate::preview::preview`]'s entire mechanism. A plain
+/// `unchecked_transaction` inside a derive pass would fail on the spot with
+/// "cannot start a transaction within a transaction" the moment a preview
+/// wrapped it, on any library holding at least one work.
 ///
 /// **Why not always open a `SAVEPOINT`, and skip the branch.** `SAVEPOINT`
 /// nests unconditionally, so that alone would fix the failure above — but at
-/// the cost of a real regression for every *existing* caller, which reaches
-/// this with nothing open yet. A `SAVEPOINT` that starts a transaction
-/// implicitly (nothing open) takes SQLite's own `BEGIN DEFERRED` locking —
-/// no lock until the first write — where every connection this crate hands
-/// out is configured `TransactionBehavior::Immediate` for the opposite
-/// reason: [`Library::configure`]'s own comment records 14 failures in 48
-/// concurrent first opens, a promotion deadlock `busy_timeout` cannot help
-/// with, closed by taking the write lock at `BEGIN` rather than several
-/// statements later. Reintroducing deferred locking under a name that looks
-/// like a drop-in replacement would undo that with nothing to catch it. So
-/// the choice is read off what the connection is already doing —
-/// [`Connection::is_autocommit`] is false only when something has already
-/// opened a transaction this one must nest inside instead of colliding
-/// with — a caller wrapping a whole derive, as [`crate::preview::preview`]
-/// does, or `derive::write_work`'s own scope for one work, which every
-/// import and `librarydoc::apply` inside a derive nests in since O210 — and
-/// every other call site keeps the exact `BEGIN`/lock behaviour it always
-/// had.
+/// the cost of a regression for every caller that reaches this with nothing
+/// open yet. A `SAVEPOINT` that starts a transaction implicitly (nothing
+/// open) takes SQLite's own `BEGIN DEFERRED` locking — no lock until the first
+/// write — where every connection this crate hands out is configured
+/// `TransactionBehavior::Immediate` for the opposite reason:
+/// [`Library::configure`]'s own comment records a promotion deadlock
+/// `busy_timeout` cannot help with, closed by taking the write lock at `BEGIN`
+/// rather than several statements later. Reintroducing deferred locking under
+/// a name that looks like a drop-in replacement would undo that with nothing
+/// to catch it. So the choice is read off what the connection is already
+/// doing — [`Connection::is_autocommit`] is false only when something has
+/// already opened a transaction this one must nest inside instead of
+/// colliding with — a caller wrapping a whole derive, as
+/// [`crate::preview::preview`] does, or `derive::write_work`'s own scope for
+/// one work, which every import and `librarydoc::apply` inside a derive nests
+/// in (O210) — and every other call site keeps the `BEGIN`/lock behaviour
+/// of `unchecked_transaction`.
 ///
-/// **The cost `preview` pays for that outer transaction is real and
-/// undocumented anywhere else.** Because `preview` holds a `BEGIN IMMEDIATE`
-/// for a whole library-wide derivation rather than per work, every `Nested`
-/// scope opened underneath it takes the `SAVEPOINT` branch, and the write
-/// lock the
-/// outer `BEGIN IMMEDIATE` holds stays taken for as long as that entire
-/// derivation runs: exactly the span `Library::working`'s second connection
-/// exists to let a long job occupy without starving every other request.
-/// See [`crate::preview::preview`]'s own doc for why that trade is made on
-/// purpose.
+/// **The cost `preview` pays for that outer transaction is real.** Because
+/// `preview` holds a `BEGIN IMMEDIATE` for a whole library-wide derivation
+/// rather than per work, every `Nested` scope opened underneath it takes the
+/// `SAVEPOINT` branch, and the write lock the outer `BEGIN IMMEDIATE` holds
+/// stays taken for as long as that entire derivation runs: exactly the span
+/// `Library::working`'s second connection exists to let a long job occupy
+/// without starving every other request. See [`crate::preview::preview`]'s own
+/// doc for why that trade is made on purpose.
 pub(crate) struct Nested<'a> {
     conn: &'a Connection,
     label: &'static str,
     /// `Some` for the ordinary, unnested case: a real
     /// [`rusqlite::Transaction`], whose own `Drop` already rolls back an
-    /// early return exactly as every caller of `unchecked_transaction`
-    /// already relied on. Taken with `Option::take` in [`Self::commit`]
-    /// rather than moved out by a pattern match, which this type's own
-    /// `Drop` impl below would refuse to compile.
+    /// early return exactly as every caller of `unchecked_transaction` relies
+    /// on. Taken with `Option::take` in [`Self::commit`] rather than moved out
+    /// by a pattern match, which this type's own `Drop` impl below would
+    /// refuse to compile.
     ///
     /// **Not what `Drop` below checks.** `commit` takes this to `None` on
     /// *both* branches — the real-transaction case takes it to run the real
@@ -688,29 +670,25 @@ impl Drop for Nested<'_> {
     /// `COMMIT` and consumes it outright, and an uncommitted `Transaction`
     /// left in `self.tx` at drop time rolls back on its own — through that
     /// value's own `Drop`, which fires on this struct's other fields
-    /// immediately after this method returns, exactly what every caller of
-    /// `unchecked_transaction` already depended on before this type existed.
-    /// Only the `SAVEPOINT` case — `savepoint_open` true — is this type's own
-    /// to undo. Checking `savepoint_open` rather than `self.tx.is_none()` is
-    /// the point: `commit` takes `tx` to `None` on *both* branches, so
-    /// `tx.is_none()` alone cannot tell a committed real transaction apart
-    /// from an open savepoint, and reading it that way used to run
-    /// `ROLLBACK TO SAVEPOINT` against a connection with no such savepoint
-    /// after every ordinary commit — review measured 744 of these in one
-    /// suite run, each swallowed by the `let _ =` below and each a wasted
-    /// parse-and-step, one per work imported and per fold.
+    /// immediately after this method returns. Only the `SAVEPOINT` case —
+    /// `savepoint_open` true — is this type's own to undo. Checking
+    /// `savepoint_open` rather than `self.tx.is_none()` is the point: `commit`
+    /// takes `tx` to `None` on *both* branches, so `tx.is_none()` alone cannot
+    /// tell a committed real transaction apart from an open savepoint, and
+    /// reading it that way would run `ROLLBACK TO SAVEPOINT` against a
+    /// connection with no such savepoint after every ordinary commit, each
+    /// swallowed by the `let _ =` below and each a wasted parse-and-step.
     ///
     /// Both statements together, best-effort: a `ROLLBACK TO` leaves the
     /// savepoint itself still open (unlike a transaction's plain `ROLLBACK`,
     /// which ends it — [`rusqlite::Savepoint`]'s own doc notes the same
     /// asymmetry), so the `RELEASE` after it is what actually closes this
     /// scope. A `Drop` cannot propagate an error, the same constraint
-    /// `rusqlite::Transaction`'s own `Drop` accepts — and unlike the stale
-    /// invariant this replaced, `savepoint_open` being accurate now means
-    /// this statement is only ever attempted where a savepoint of this name
-    /// genuinely exists, so a failure here is a sign this type's own
-    /// bookkeeping broke, not a routine result of an ordinary commit. Kept as
-    /// `let _ =` rather than a `debug_assert!` on the result: a `Drop` runs
+    /// `rusqlite::Transaction`'s own `Drop` accepts. `savepoint_open` being
+    /// accurate means this statement is only ever attempted where a savepoint
+    /// of this name genuinely exists, so a failure here is a sign this type's
+    /// own bookkeeping broke, not a routine result of an ordinary commit. Kept
+    /// as `let _ =` rather than a `debug_assert!` on the result: a `Drop` runs
     /// during unwinding too, and panicking a second time there aborts the
     /// process instead of reporting the first panic — see
     /// `tests.rs`'s `committing_the_real_transaction_branch_sends_no_savepoint_statement`,
@@ -729,11 +707,11 @@ impl Drop for Nested<'_> {
 /// Refuse a SQLite that cannot do FTS5, before any schema is applied.
 ///
 /// **This crate links the system `libsqlite3` rather than bundling one** — a
-/// measured choice, 3.06 s against 1 m 43 s to build, with CI having no cargo
-/// cache and a ten-minute job budget. The cost is that FTS5 stops being a
-/// guarantee of the dependency and becomes a property of the host. Debian and
-/// Arch both build it in; that is two distributions checked, not a promise
-/// about every host this will ever run on.
+/// choice made on build time, with CI having no cargo cache and a ten-minute
+/// job budget. The cost is that FTS5 stops being a guarantee of the dependency
+/// and becomes a property of the host. Debian and Arch both build it in; that
+/// is two distributions checked, not a promise about every host this will ever
+/// run on.
 ///
 /// Without this, the failure arrives as `no such module: fts5` from the middle
 /// of a migration, on a database that is half-created and half-not. Probing
@@ -759,9 +737,8 @@ fn require_fts5(conn: &Connection) -> Result<(), String> {
 /// itself can never be driven down its refusal branch by any test running
 /// here — CI's `rust:1-bookworm` and every workstation this has been built on
 /// both have it. A test that cannot reach a branch cannot pin what that branch
-/// does; see `tests.rs`'s `opening_refuses_a_sqlite_without_fts5_and_names_what_is_missing`,
-/// which used to assert only that the host has FTS5 (true whether or not
-/// `require_fts5` was ever called) rather than anything about the refusal.
+/// does; see `tests.rs`'s
+/// `opening_refuses_a_sqlite_without_fts5_and_names_what_is_missing`.
 /// Parameterising the probe statement lets a test hand in one that fails the
 /// same way a real FTS5-less SQLite fails — `no such module` — without
 /// needing such a host to exist. The caller's statement must still name the

@@ -1,6 +1,5 @@
 //! Standing checks against the real corpus. Gated on `TAIYAKU_CORPUS` and
-//! skipping cleanly without it, exactly as the sixteen already in this
-//! workspace do.
+//! skipping cleanly without it.
 //!
 //! Neither of these two opens a file the scanner itself would not:
 //! `scan::scan_root` and `derive::derive` are called exactly as `taiyaku
@@ -14,10 +13,10 @@
 /// field passes semantic equality and fails this.
 ///
 /// What it does not exercise: this corpus snapshot carries no `credits` list,
-/// no `by: "hand"` run and no `note` field on any of its twelve documents —
-/// every edition, alignment and run here is machine-produced. Those three
-/// fields are not untested, just not tested here; they are covered by the
-/// hand-written fixtures in `import/tests.rs` instead.
+/// no `by: "hand"` run and no `note` field on any of its documents — every
+/// edition, alignment and run here is machine-produced. Those three fields are
+/// not untested, just not tested here; they are covered by the hand-written
+/// fixtures in `import/tests.rs` instead.
 #[test]
 fn every_corpus_sidecar_survives_a_round_trip() {
     let Some(root) = std::env::var_os("TAIYAKU_CORPUS") else {
@@ -61,58 +60,36 @@ fn every_corpus_sidecar_survives_a_round_trip() {
 }
 
 /// A standing check over the scanner itself — the walk, the rules and
-/// derivation — which this corpus job never had (whole-branch review, I9).
-/// `cargo test --workspace --all-features corpus::` matched twenty-one
-/// checks before this one existed, spread across `taiyaku-cli`,
-/// `taiyaku-serve` and this crate's own `every_corpus_sidecar_survives_a_
-/// round_trip`, and every one of them exercises alignment, credits, regions
-/// or the store's own round trip against real material — none calls
-/// [`crate::scan::scan_root`] or [`crate::derive::derive`]. The only
-/// real-data evidence the scanner had before this was an ad-hoc timing run
-/// recorded by hand in `docs/notes.md` — which is exactly where both C1 (an
-/// entire library derived to one zero-page work) and I1 (a proposal counter
-/// that read zero unconditionally) were misread as expected behaviour,
-/// because nothing automated was there to disagree.
+/// derivation — against real material.
 ///
 /// **Scoped to the corpus's *settled* material, one root per
 /// `<series>-vNN/` directory, and `incoming/` is not walked at all.**
 /// `corpus/README.md` draws this boundary itself: the top level is
 /// "settled material used for regression", while `incoming/` is "whatever a
-/// particular investigation needed and has not been tidied". Measured
-/// first, unscoped: `incoming/`'s many unrelated investigations — `bocchi`,
-/// `chainsawman`, `onepiece`, `tongari`… — share no rule beyond the four
-/// seeded defaults, which resolve every path under `incoming/` to *one*
-/// series (`^(?<series>[^/]+)/` on the first path component alone) and
-/// then, for any two entries that happen to resolve the same volume number
-/// from their own filenames, one *work* — several genuinely unrelated
-/// titles as different editions of "the same" volume. That is a real,
-/// already-documented property of running the bare seeded rules over an
-/// untidied dump — Task 11's own `merged` count over the whole corpus (42)
-/// names `incoming/`'s flat layout as the reason most of them are not one —
-/// not a scanner defect this branch introduced, and a standing check must
-/// not fail on a fact of the fixture rather than a regression. Each settled
-/// directory becoming its own `root_id` also makes the third assertion
-/// below exact rather than a path-prefix guess: two works can share a root
-/// only if their own material genuinely does.
+/// particular investigation needed and has not been tidied". `incoming/`'s many
+/// unrelated investigations — `bocchi`, `chainsawman`, `onepiece`,
+/// `tongari`… — share no rule beyond the four seeded defaults, which resolve
+/// every path under `incoming/` to *one* series (`^(?<series>[^/]+)/` on the
+/// first path component alone) and then, for any two entries that happen to
+/// resolve the same volume number from their own filenames, one *work* —
+/// several genuinely unrelated titles as different editions of "the same"
+/// volume. That is a property of running the bare seeded rules over an
+/// untidied dump, and a standing check must not fail on a fact of the fixture
+/// rather than a regression. Each settled directory becoming its own
+/// `root_id` also makes the third assertion below exact rather than a
+/// path-prefix guess: two works can share a root only if their own material
+/// genuinely does.
 ///
-/// **What it asserts, and why each one is C1 or C3 by name.**
+/// **What it asserts.**
 ///
 /// - `report.works > 0` — the corpus must derive *something*, or the other
 ///   two assertions below are vacuously true and this test measures nothing.
-/// - Every `member.pages` is at least one. C1's exact shape: a volume
-///   directory holding archives took `pages = Some(0)` from the walk,
-///   became a member in its own right, and suppressed the archive that
-///   actually held the pages beneath it — a container standing in for its
-///   own contents, holding none of them.
+/// - Every `member.pages` is at least one: a zero-page member is a container
+///   standing in for the archive beneath it.
 /// - No work holds members from more than one root — one `<series>-vNN/`
 ///   directory must never contribute to a work another one's material is
-///   also on. C3's exact shape: the first attempt at the fix collapsed
-///   `incoming/bocchi`'s five editions into one 439-page member and
-///   `incoming/onepiece`'s six into one of 630, each spanning several
-///   directories in a single work; a `set_series` rule broad enough to
-///   reach the root did the same to the *whole* library. Neither incident
-///   held its material inside one project's own directory, which is what
-///   this checks for directly rather than re-deriving from the rules.
+///   also on. This checks for it directly rather than re-deriving it from
+///   the rules.
 ///
 /// # Panics
 ///

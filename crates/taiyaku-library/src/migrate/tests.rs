@@ -1,9 +1,8 @@
 /// The account these tests export and import as.
 ///
-/// A named constant rather than a bare `1` at forty call sites, and
-/// deliberately *not* a constant in `export.rs`: the one that used to live
-/// there answered for every reader in the library, which is what spec A2
-/// §5.1 removed. Here it means "whoever this test is", which is a fixture
+/// A named constant rather than a bare `1`, and deliberately *not* a constant
+/// in `export.rs`, where one would answer for every reader in the library (see
+/// spec A2 §5.1). Here it means "whoever this test is", which is a fixture
 /// detail rather than a rule.
 const THE_READER: i64 = 1;
 
@@ -18,17 +17,12 @@ use crate::{Library, Note, Progress, Region};
 /// reason: a real path on a real filesystem, since `migrate::work` stats
 /// files rather than reading through an abstraction a test could fake.
 ///
-/// **The process id is part of the name**, matching `export/tests.rs`'s and
-/// `src/tests.rs`'s own `tempdir` helpers, which have carried one all along.
-/// Without it the path is fixed, so two overlapping runs of this suite — a
-/// `cargo test` while a `cargo mutants` or a second terminal is going, which
-/// is how this crate is actually worked on — share one directory, and one
-/// run's `remove_dir_all` deletes the other's fixture mid-test. The `name`
-/// alone only separates tests within one run (whole-branch review 3, Minor
-/// 13).
-///
-/// O117 moved it onto the shared `TempDir`, which keeps the process id, adds a
-/// counter, and removes the directory on drop, which this helper never did.
+/// **The process id is part of the name**, through `TempDir`. Without it the
+/// path is fixed, so two overlapping runs of this suite — a `cargo test` while
+/// a `cargo mutants` or a second terminal is going, which is how this crate is
+/// actually worked on — share one directory, and one run's `remove_dir_all`
+/// deletes the other's fixture mid-test. The `name` alone only separates tests
+/// within one run.
 fn scratch(name: &str) -> taiyaku_read::test_support::TempDir {
     taiyaku_read::test_support::TempDir::new(&format!("migrate-{name}"))
 }
@@ -85,19 +79,13 @@ fn a_progress_json_beside_the_sidecar_migrates_the_reading_position() {
     assert_eq!(recovered[0].slot, 7);
 }
 
-/// The property this task added `progressdoc` for: a versioned document
-/// carrying more than one position must land *every* position, not just the
-/// first — `apply_progress` loops over `progressdoc::from_json`'s output, and
-/// nothing before this test ran that loop over more than one element.
+/// A versioned document carrying more than one position must land *every*
+/// position, not just the first — `apply_progress` loops over
+/// `progressdoc::from_json`'s output.
 ///
-/// **And each position's own `updated`, which the loop used to drop.**
-/// `apply_progress` called `state::put_progress`, which stamps
-/// `datetime('now')`, so every reimported position landed in the same second
-/// and `state::progress`'s `ORDER BY updated DESC, edition ASC` fell back to
-/// alphabet — deciding by edition key which position `getProgress` resumes a
-/// reader into. The two times below are minutes apart and in the opposite
-/// order to the two edition keys, so a version that restamps them is red on
-/// the order and on the times both.
+/// **And each position's own `updated`.** `apply_progress`'s comment in
+/// `migrate.rs` states what a restamp does. The two times below are minutes
+/// apart, so a version that restamps them is red on the times.
 #[test]
 fn a_versioned_progress_json_migrates_every_position() {
     let root = scratch("progress-versioned");
@@ -190,12 +178,6 @@ fn a_progress_json_that_does_not_parse_is_reported_and_skipped() {
 
 /// **A database error partway through a document writes no position at all,
 /// and the next import applies the whole document** (O79).
-///
-/// Each position used to be written by its own statement, so a refusal at the
-/// second of three left the first written. The outcome was `Malformed` and no
-/// marker was recorded, both as intended — but the next import's "already
-/// holds a position" check then found that one row and answered
-/// `AlreadyPresent`, and the other two were never read again.
 ///
 /// **The refusal is a trigger, because nothing in the schema can refuse a
 /// later position once an earlier one was accepted.** `progress` has no
@@ -370,14 +352,12 @@ fn notes_already_held_are_not_overwritten_by_the_file() {
     assert_eq!(recovered.notes[0].id, "live", "the file must not have won");
 }
 
-/// **The C3 defect of whole-branch review 2, closed.** Deciding "has this
+/// **A reader's deletion of their last note sticks.** Deciding "has this
 /// already been migrated?" by asking whether the database currently holds
 /// anything answers a different question. An emptied live state is
-/// indistinguishable from "never migrated", so the reader's own deletion was
-/// undone by the next import — and `taiyaku serve` imports every path it is
-/// given on **every start**, so it recurred at every restart, forever, with
-/// no way to make the deletion stick (`export --in-place` never removes a
-/// sibling file it has nothing to write to).
+/// indistinguishable from "never migrated" — and `taiyaku serve` imports
+/// every path it is given on **every start**, so a deletion that an import
+/// could undo would be undone at every restart.
 #[test]
 fn deleting_the_last_note_is_not_undone_by_the_next_import() {
     let root = scratch("notes-deleted-stays-deleted");
@@ -425,10 +405,10 @@ fn deleting_the_last_note_is_not_undone_by_the_next_import() {
     );
 }
 
-/// The same defect through the document that matters most: clearing every
-/// labelled page (`PUT /truth` with an empty document) must stick. Labelling
-/// is hours of irreplaceable human work in both directions — resurrecting 75
-/// pages of deleted boxes is as wrong as losing them.
+/// Clearing every labelled page (`PUT /truth` with an empty document) must
+/// stick, and this is the document that matters most. Labelling is hours of
+/// irreplaceable human work in both directions — resurrecting deleted boxes is
+/// as wrong as losing them.
 #[test]
 fn clearing_every_labelled_page_is_not_undone_by_the_next_import() {
     let root = scratch("truth-cleared-stays-cleared");
@@ -577,8 +557,7 @@ fn a_notes_json_that_does_not_parse_is_reported_and_skipped() {
 /// an absent one, which would read back as "nobody ever looked". That
 /// distinction is exactly what `truth_page` exists for
 /// (`schema/001_initial.sql`'s own comment: "in manual work that
-/// difference is the progress tracker"), and Task 9 fixed the row-store
-/// side of it; this is the read-back side.
+/// difference is the progress tracker").
 #[test]
 fn a_truth_json_beside_the_sidecar_migrates_a_page_examined_and_found_empty() {
     let root = scratch("truth-applies");

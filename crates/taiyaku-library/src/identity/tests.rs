@@ -81,14 +81,13 @@ fn a_hub_that_names_no_edition_is_an_error_naming_the_hub() {
 /// so two members `aa` and `bb` hash identically to one member `aabb` — two
 /// different works, one identity, and whichever is imported second silently
 /// lands on the first's row, taking over its notes and its reading position.
-/// The `hasher.update(b"\n")` is the whole of the defence and no test observed
-/// it: deleting it survived the suite (whole-branch review 2, I6).
+/// The `hasher.update(b"\n")` is the whole of the defence.
 ///
-/// Hex digests are fixed-width today, which makes this unreachable in
-/// practice *today*; `sha256` in a sidecar is a string this crate never
-/// validates the length of, and a truncated or prefixed digest is exactly the
-/// kind of hand edit the format tolerates elsewhere. The comment at the
-/// `update` says it does not rely on fixed width, so neither does this.
+/// Hex digests are fixed-width today, which makes this unreachable in practice
+/// *today*; `sha256` in a sidecar is a string this crate never validates the
+/// length of, and a truncated or prefixed digest is exactly the kind of hand
+/// edit the format tolerates elsewhere. The comment at the `update` says it
+/// does not rely on fixed width, so neither does this.
 #[test]
 fn the_member_separator_stops_two_hashes_concatenating_into_one() {
     let split = Sidecar::from_json(&sidecar_json(&[("a.cbz", "aa"), ("b.cbz", "bb")], false))

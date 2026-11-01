@@ -82,13 +82,10 @@ pub fn by_api_key(conn: &Connection, secret: &str) -> Result<Option<Account>, St
     let found = conn
         .query_row(
             // **`password_hash <> LOCKED` here as well as on the password
-            // path.** A locked account is one nobody has claimed, and a key
-            // minted against it authenticated as an admin on every guarded
-            // route while `admin_exists` still answered false — so the claim
-            // route stayed open and `user promote` still treated the row as
-            // unclaimed, renaming it out from under a live credential. The
-            // invariant was enforced in one of the two resolvers. Found by the
-            // third whole-branch review.
+            // path.** A locked account is one nobody has claimed, so a key
+            // minted against it would authenticate while the claim route stays
+            // open and `user promote` treats the row as unclaimed, renaming it
+            // out from under a live credential.
             "SELECT u.id, u.name, u.role, u.can_download, u.can_stream, u.can_stamp
                FROM api_key k
                JOIN user u ON u.id = k.user_id
@@ -361,23 +358,21 @@ pub fn admin_exists(conn: &Connection) -> Result<bool, String> {
 /// Whether this library has been set up at all — whether **anybody** can log
 /// in, of any role.
 ///
-/// **This, and not [`admin_exists`], is what §5's claim route turns on**, and
-/// the difference between the two questions was a hole rather than a nicety.
+/// **This, and not [`admin_exists`], is what §5's claim route turns on.**
 /// `taiyaku library user add alice` is a real way to make the first account and
 /// it inserts with role `user`, leaving the seeded row locked — so
-/// `admin_exists` answered false on a library its owner had already set up and
-/// was already reading from, while `unclaimed` still found row 1. A stranger
-/// reaching `POST /api/claim` took that row, which §5 requires promotion to
-/// update rather than insert beside, and so inherited both administrator and
-/// every note and reading position recorded before the library had a login.
-/// Reproduced at 204 in
+/// `admin_exists` answers false on a library its owner has already set up and
+/// is already reading from, while `unclaimed` still finds row 1. A claim route
+/// gated on `admin_exists` would let a stranger reaching `POST /api/claim` take
+/// that row, which §5 requires promotion to update rather than insert beside,
+/// and so inherit both administrator and every note and reading position
+/// recorded before the library had a login. Pinned by
 /// `session::tests::a_library_someone_has_already_set_up_cannot_be_claimed_by_a_stranger`.
 ///
 /// The two functions both remain because they answer different questions and
-/// both are asked: this one gates the claim route and the "nobody can log in"
-/// startup warning, `admin_exists` is what the `--allow-web-setup` notice reads
-/// when it says an administrator is or is not there. Keeping one and reading it
-/// for both is what produced the hole.
+/// both are asked: this one gates the claim route, the "nobody can log in"
+/// startup warning and the `--allow-web-setup` notice, and `admin_exists` is
+/// what `promote` asks.
 ///
 /// # Errors
 ///
@@ -513,14 +508,11 @@ pub fn close_other_sessions(conn: &Connection, user_id: i64, keep: &str) -> Resu
 
 /// Delete every rate-limit window that has lapsed.
 ///
-/// **Nothing removed these but a successful login for one exact key.** A loop of
-/// `POST /api/session` with a fresh random name each time is cheap for the
-/// server — the name misses, so before the decoy it cost nothing at all — and
-/// left one permanent row per request in a `WITHOUT ROWID` table, with no
-/// lockout ever firing because every key was new. An unauthenticated
-/// disk-exhaustion path against the one database `serve` and `library import`
-/// share. Swept beside the sessions at startup, which is where the counterpart
-/// already was. Found by the second whole-branch review.
+/// **Without this, nothing removes these but a successful login for one exact
+/// key.** A loop of `POST /api/session` with a fresh random name each time
+/// would leave a row for every name it fails with in a `WITHOUT ROWID` table,
+/// for good: an unauthenticated disk-exhaustion path against the one database
+/// `serve` and `library import` share. Swept beside the sessions at startup.
 ///
 /// # Errors
 ///
@@ -576,8 +568,8 @@ pub fn attempt_key(address: &str, name: &str) -> String {
 ///
 /// Wider than [`LOCKOUT_AFTER`] on purpose: a household behind one NAT is one
 /// address, and several readers each spending their own allowance must not lock
-/// each other out. Five accounts' worth, which at the measured 11.9 ms bounds
-/// one address to well under a second of argon2 per window.
+/// each other out. Five accounts' worth, which at 11.9 ms a hash bounds one
+/// address to well under a second of argon2 per window.
 ///
 /// **Behind a reverse proxy this counts the proxy unless `--trusted-proxy` is
 /// set**, in which case every reader shares one budget. That is the same
@@ -601,18 +593,15 @@ const _: () = assert!(
 ///
 /// **[`attempt_key`]'s pair is the right key for lockout and the wrong one for
 /// cost.** The name half is supplied by the caller and unbounded, so a fresh
-/// invented name is a fresh counter — stated as a deliberate §7 trade by
-/// `session::tests::guessing_at_names_is_rate_limited_as_well`, and it was one
-/// while an unknown name returned in under a millisecond. [`credential::DECOY_HASH`]
-/// then made an unknown name cost what a real one costs, closing a timing
-/// oracle and opening a denial of service in the same move: ~12 ms of argon2
-/// and 19 MiB of buffer per request, against a counter no attacker need ever
-/// approach. Reproduced in
+/// invented name is a fresh counter, and [`credential::DECOY_HASH`] makes an
+/// unknown name cost what a real one costs: argon2 time and 19 MiB of buffer
+/// per request, a denial of service against a counter no attacker need ever
+/// approach. Pinned by
 /// `session::tests::inventing_a_new_name_every_time_does_not_buy_unlimited_hashing`.
 ///
 /// **Cannot collide with an [`attempt_key`]**: that one always contains a
-/// newline and an address never does — an address reaching here is the rendering
-/// of a `SocketAddr`, which is digits, dots, colons and brackets.
+/// newline and an address never does — an address reaching here is the
+/// rendering of an `IpAddr`.
 #[must_use]
 pub fn address_key(address: &str) -> String {
     address.to_string()
@@ -740,14 +729,11 @@ pub fn promote(
         .map_err(WriteError::Failed)?
         .ok_or_else(|| WriteError::Refused(NOTHING_TO_PROMOTE.to_string()))?;
     // **Refuse to leave the library with nobody who can administer it.**
-    // `promote --role user` on a fresh library set the one row that could be
-    // promoted to a role that cannot administer, and then every bootstrap path
-    // was shut: `unclaimed` finds nothing to promote a second time, and the
-    // claim route reads `is_claimed`, which now answers true. The library was
-    // readable and permanently unadministrable, with no message having said so.
-    // Adding an admin first and promoting to `user` afterwards still works —
-    // the rule is the invariant, not the order. Found by the fourth
-    // whole-branch review.
+    // Promoting the only unclaimed row to a role that cannot administer would
+    // leave nothing for `unclaimed` to find a second time, and the claim route,
+    // which reads `is_claimed`, would be shut. Adding an admin first and
+    // promoting to `user` afterwards still works — the rule is the invariant,
+    // not the order.
     if role != "admin" && !admin_exists(conn).map_err(WriteError::Failed)? {
         return Err(WriteError::Refused(format!(
             "promoting the only account to `{role}` would leave this library with no \
@@ -840,12 +826,11 @@ fn is_unique_violation(e: &rusqlite::Error) -> bool {
 /// The account a [`promote`] would reach, or the refusal explaining that there
 /// is none.
 ///
-/// **Split out so a caller can ask before it prompts.** `taiyaku library user
-/// promote` on a library that has already been claimed used to read a password
-/// twice and *then* refuse, which is the worst order: the person has done the
-/// work and typed the secret before being told the command was never going to
-/// do anything. The rule lives here so both callers share it rather than the
-/// CLI carrying a second copy that can drift.
+/// **Split out so a caller can ask before it prompts.** A refusal that comes
+/// after `taiyaku library user promote` has read a password twice is the worst
+/// order: the person has done the work and typed the secret before being told
+/// the command was never going to do anything. The rule lives here so both
+/// callers share it rather than the CLI carrying a second copy that can drift.
 ///
 /// # Errors
 ///
@@ -934,19 +919,14 @@ pub enum Grant {
 ///
 /// **`password` is an administrator resetting somebody else's**, and it is
 /// here rather than left to [`set_password`] because the two have to succeed
-/// or fail together.
+/// or fail together. [`update`] commits its own scope and `set_password` opens
+/// none, so a store fault on a password set separately would leave the role
+/// and capability changes **committed** beside a failed request. A
+/// half-applied `PATCH`, on the one route that edits permissions.
 ///
-/// This design first said the opposite — that folding it in "would put an
-/// argon2 hash inside this function's transaction for every caller that was
-/// only changing a checkbox" — and the whole-branch review showed what the
-/// separation cost: [`update`] commits its own scope and `set_password` opens
-/// none, so a store fault on the password left the role and capability
-/// changes **committed** beside a failed request. A half-applied `PATCH`, on
-/// the one route that edits permissions.
-///
-/// The objection is answered rather than overruled: the hash is taken
-/// **before** the scope opens, so `None` costs nothing and `Some` costs one
-/// argon2 outside the transaction rather than inside it.
+/// The hash is taken **before** [`update`]'s scope opens, so `None` costs
+/// nothing and `Some` costs one argon2 outside the transaction rather than
+/// inside it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Patch {
     pub name: Option<String>,
@@ -962,19 +942,12 @@ pub struct Patch {
 /// Why one of this module's writers would not do what it was asked.
 ///
 /// **Three cases rather than one `String`**, because the caller has to tell
-/// them apart and could not: `create_user` answered `400` for a role the
-/// schema's `CHECK` refuses while `patch_user` answered `409` for the
-/// identical mistake, and a disk fault inside either was reported to the
-/// client as a conflict. Found by C4 PR 2's whole-branch review.
+/// them apart.
 ///
 /// **Shared by [`update`], [`remove`], [`removal_cost`] and [`promote`] rather
-/// than one type per function.** Typing only `update` — which is what the review
-/// named — left `remove`'s disk faults answering `409` and, worse, left a
-/// *dry run* of removing the last administrator answering **500** where the
-/// real removal answered 409: the quote is the safety feature on the
-/// destructive route, and it was the one path reporting a routine refusal as
-/// a server fault. Fixing only the function a review points at is how the
-/// second instance survives.
+/// than one type per function**, so that [`removal_cost`]'s quote, the safety
+/// feature on the destructive route, refuses as [`remove`] does and does not
+/// report a routine refusal as a server fault.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WriteError {
     /// The caller's own mistake: an empty password, a name already taken or
@@ -1059,11 +1032,10 @@ pub fn update(
     // connection is configured `TransactionBehavior::Immediate` (`lib.rs`), so
     // `Nested::open` takes the write lock at `BEGIN` — which means the
     // "is there another administrator" question and the demotion that acts on
-    // its answer are one atomic step. Read outside, they were two: the CLI is
-    // a documented second writer in a second process, and it demoting one
+    // its answer are one atomic step. Read outside, they would be two: the CLI
+    // is a documented second writer in a second process, and it demoting one
     // administrator while this demotes another could leave the library with
-    // none — the single state this check exists to prevent. Found by C4 PR 2's
-    // whole-branch review.
+    // none — the single state this check exists to prevent.
     let scope = crate::Nested::open(conn, "account_update")
         .map_err(|e| WriteError::Failed(format!("updating account {id}: {e}")))?;
 
@@ -1154,12 +1126,11 @@ pub fn update(
         })?;
     }
 
-    // **Replace-all, diffed rather than deleted and reinserted.** C4 PR 1's
-    // §3 correction records what delete-and-reinsert cost the rule table —
-    // fresh ids reopened every accepted proposal through an
-    // `ON DELETE SET NULL` — and while nothing refers to a `user_library` row
-    // that way, a diff is the same size of code and cannot acquire that class
-    // of bug later.
+    // **Replace-all, diffed rather than deleted and reinserted.** Deleting a
+    // row and reinserting it under a fresh id nulls every reference to the old
+    // one through an `ON DELETE SET NULL`. Nothing refers to a `user_library`
+    // row that way, but a diff is the same size of code and cannot acquire
+    // that class of bug later.
     //
     // **An empty list sets "only these" and names none**, so the account sees
     // no library: emptying a grant must never widen it to every library.
@@ -1173,14 +1144,10 @@ pub fn update(
             let mut wanted_libraries = std::collections::BTreeSet::new();
             for library_id in wanted {
                 // **An id no library holds is the caller's mistake, not a
-                // fault.** `INSERT OR IGNORE` does not suppress a foreign-key
-                // violation (SQLite's `ON CONFLICT` covers UNIQUE, NOT NULL,
-                // CHECK and PRIMARY KEY, and FK is not among them), so left
-                // to `grant_library` this reaches the client as a 500
-                // carrying SQLite's own text. The list is checked whole
-                // before a grant is written, and a refusal rolls back
-                // whatever the same patch wrote before it, since the scope is
-                // never committed.
+                // fault.** Left to `grant_library`, it reaches the client as a
+                // 500. The list is checked whole before a grant is written, and
+                // a refusal rolls back whatever the same patch wrote before it,
+                // since the scope is never committed.
                 if !library_exists(conn, *library_id).map_err(WriteError::Failed)? {
                     return Err(WriteError::Unusable(format!(
                         "there is no library {library_id} to grant"
@@ -1209,8 +1176,8 @@ pub fn update(
     // **The password lands inside this scope, with the columns above it.**
     // Written here rather than through [`set_password`] for the reason
     // [`Patch`]'s own doc gives: that function opens no transaction of its
-    // own, so calling it *after* this one committed left a store fault able
-    // to produce a half-applied patch.
+    // own, so calling it *after* this one committed would leave a store fault
+    // able to produce a half-applied patch.
     //
     // **Every session of the account's ends**, which is A2 §4's rule for an
     // administrator resetting somebody else's password: there is no session
@@ -1306,9 +1273,6 @@ pub fn create_key(conn: &Connection, user_id: i64, name: &str) -> Result<String,
 /// exactly as [`revoke_session`] is and for the same reason: an id from one
 /// account's listing must not delete another account's key, and a function that
 /// took the id alone would depend on every future caller remembering to check.
-/// The one caller that existed did check — by listing every key of the account
-/// and scanning — and the next one would have inherited the hole rather than the
-/// guard. Found by the second whole-branch review.
 ///
 /// # Errors
 ///
@@ -1528,11 +1492,10 @@ fn count_for(conn: &Connection, id: i64, name: String) -> Result<Removal, String
 
 /// Count what [`remove`] would take, without taking any of it.
 ///
-/// **Runs [`remove`]'s refusal too, and that is the point of the quote.** A
-/// dry run whose whole purpose is to state what the commit will do must not
-/// answer `200 OK` with five counts for a deletion the commit will then
-/// refuse — an operator would read the counts, confirm, and meet the refusal
-/// afterwards. Found by C4 PR 2's whole-branch review.
+/// **Runs [`remove`]'s refusal too, and that is the point of the quote.** A dry
+/// run whose whole purpose is to state what the commit will do must not answer
+/// `200 OK` with five counts for a deletion the commit will then refuse — an
+/// operator would read the counts, confirm, and meet the refusal afterwards.
 ///
 /// # Errors
 ///

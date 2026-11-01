@@ -41,7 +41,8 @@ pub enum MoveError {
     /// No such directory, or no such library.
     Missing(String),
     /// The caller's own mistake: the directory's own library, or a name for a
-    /// new one that is empty or taken.
+    /// new one that is empty, taken, or one a page address cannot
+    /// hold (`crate::has_no_address`).
     Unusable(String),
     /// The move cannot keep every reader's place. `volumes` names what
     /// stands in the way, each as `title (edition key)`; it is empty where no

@@ -13,7 +13,7 @@
 -- **The seeded administrator (id 1, from migration 1) gets 0 like everyone
 -- else**, which is the half of §1.1's exception to O86 that lives in the
 -- schema. The other half is in `Principal::from_account`, which folds
--- `can_download`, `can_stream` and `roots` into the admin role and does NOT
+-- `can_download`, `can_stream` and `access` into the admin role and does NOT
 -- fold this one. A default of 1 here would have made that carve-out
 -- unobservable: every administrator would already hold the capability, and the
 -- test that pins the exception would pass against a build that had dropped it.

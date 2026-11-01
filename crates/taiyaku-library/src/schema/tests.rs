@@ -63,7 +63,6 @@ fn an_unparseable_schema_version_is_refused_rather_than_read_as_zero() {
 /// That is precisely the state `migrate`'s own refusal message says it will
 /// not create.
 ///
-/// Reproduced by review as a real database that could never be opened again.
 /// Asserted here in both halves: nothing from the failed migration survives,
 /// **and** a corrected migration then applies to the same connection.
 #[test]
@@ -154,27 +153,24 @@ fn two_processes(label: &str) -> (crate::tests::TempDir, Connection, Connection)
     (dir, first, second)
 }
 
-/// **Whole-branch review 3, I1.** Two processes opening the same *fresh*
-/// library both read version 0 before either has a transaction open — `serve`
-/// and `taiyaku library import` default to the same file, so starting them
-/// together is ordinary rather than exotic — and both then decide to apply
-/// migration 1. The second waits on the write lock, gets it once the first has
-/// committed, and used to run `CREATE TABLE series` over a table that now
-/// exists:
+/// Two processes opening the same *fresh* library both read version 0 before
+/// either has a transaction open — `serve` and `taiyaku library import` default
+/// to the same file, so starting them together is ordinary rather than exotic —
+/// and both then decide to apply migration 1. The second waits on the write
+/// lock, gets it once the first has committed, and would run
+/// `CREATE TABLE series` over a table that now exists:
 ///
 /// ```text
 /// taiyaku: opening the library: applying schema version 1: table series already exists
 /// ```
 ///
 /// That is the exact message this module's own doc names as the unrecoverable
-/// state it exists to prevent, produced from a different cause, at 14 failures
-/// in 48 concurrent first opens. A reader who hits it has every reason to
-/// believe their new library is beyond saving.
+/// state it exists to prevent, produced from a different cause. A reader who
+/// hits it has every reason to believe their new library is beyond saving.
 ///
 /// The interleaving is written out by hand rather than raced: the second
-/// process reads the version, the first migrates, and only then does the
-/// second act on what it read. `661cab2` made each migration atomic and that
-/// does not close this — the decision was taken before the transaction began.
+/// process reads the version, the first migrates, and only then does the second
+/// act on what it read.
 #[test]
 fn a_migration_decided_before_another_process_committed_it_is_not_applied_twice() {
     let (_dir, first, second) = two_processes("schema-race");
@@ -308,12 +304,9 @@ fn two_members_cannot_share_an_ordinal_within_an_edition() {
     );
 }
 
-/// **The FTS index must survive a rename, and nothing tested that.** An
-/// earlier draft of this schema gave `work` all three lifecycle triggers and
-/// `series_title` only two, so renaming a title left the index matching the old
-/// name and missing the new one — a wrong search result, with no error
-/// anywhere. Both tables are asserted here because the asymmetry is precisely
-/// what went unnoticed.
+/// **The FTS index must survive a rename.** A stale index would match the old
+/// name and miss the new one — a wrong search result, with no error anywhere.
+/// Both tables are asserted here because each has triggers of its own.
 #[test]
 fn renaming_a_title_updates_the_search_index_for_both_tables() {
     let conn = Connection::open_in_memory().expect("in-memory connection");
@@ -418,17 +411,14 @@ fn migration_three_creates_the_scanner_tables_and_seeds_the_default_rules() {
 /// `scan_entry`'s `UNIQUE (root_id, rel_path)` — one row per path per root,
 /// whatever changes about the file at it.
 ///
-/// **Nothing tested any scanner constraint**; the test above checks table
-/// names and a rule count. Widening this key — to include `size`, say —
-/// leaves every test in the workspace green, because `scan.rs` never relies
-/// on it: `record` chooses `INSERT` or `UPDATE` from `held_for`'s own
-/// `(root_id, rel_path)` lookup, so a file that merely changed size takes
-/// the `UPDATE` branch either way and no duplicate is ever offered to
-/// SQLite. That makes this an invariant nothing in the crate currently
-/// enforces from the other side — which is a reason to pin it here, not a
-/// reason it does not matter: it is what a second writer, or a future upsert
-/// written as `ON CONFLICT`, would be relying on, and it is the constraint
-/// that makes `forget_unseen`'s `held` map a complete picture of a root.
+/// `scan.rs` never relies on it: `record` chooses `INSERT` or `UPDATE` from
+/// `held_for`'s own `(root_id, rel_path)` lookup, so a file that merely changed
+/// size takes the `UPDATE` branch and no duplicate is ever offered to SQLite.
+/// That makes this an invariant nothing in the crate currently enforces from
+/// the other side — which is a reason to pin it here, not a reason it does not
+/// matter: it is what a second writer, or a future upsert written as
+/// `ON CONFLICT`, would be relying on, and it is the constraint that makes
+/// `forget_unseen`'s `held` map a complete picture of a root.
 ///
 /// Migration 3 is applied and this file is append-only, so the constraint
 /// can only be checked, never corrected.
@@ -525,8 +515,7 @@ fn a_dismissed_proposal_is_not_raised_again_when_its_target_is_null() {
 /// The pragma that would prevent it cannot live in the migration. `PRAGMA
 /// foreign_keys` is a **no-op inside a transaction** — it does not error and
 /// does not warn, it simply does not apply — and [`apply_pending`] runs every
-/// migration inside one. Measured on 2026-08-18 against a two-table
-/// reproduction of this pair: notes surviving, 0. See `docs/notes.md`.
+/// migration inside one. See `docs/notes.md`.
 ///
 /// This test is why `migrate_with` disables foreign keys around the whole run
 /// rather than inside it.
@@ -693,11 +682,10 @@ fn migration_5_rebuilds_note_keeping_the_rows_and_the_index() {
 
 /// **The role column fails closed and refuses a third word.**
 ///
-/// Migration 1 wrote `DEFAULT 'admin'` when there was one account and no login,
-/// and migration 4's rebuild carried it forward — so an insert omitting the
-/// column minted an administrator, and a typo stored a role that is neither,
-/// which `Principal::from_account`'s `== "admin"` reads as a reader without
-/// saying so.
+/// Migration 1 wrote `DEFAULT 'admin'` when there was one account and no login.
+/// An insert omitting the column must not mint an administrator, and a typo
+/// must not store a role that is neither, which `Principal::from_account`'s
+/// `== "admin"` would read as a reader without saying so.
 #[test]
 fn a_role_defaults_to_reader_and_refuses_anything_else() {
     let conn = Connection::open_in_memory().expect("in-memory connection");
@@ -768,17 +756,12 @@ fn the_schema_version_is_seventeen() {
     );
 }
 
-/// **I5.** The row this test used to seed was inserted *after* `migrate()`
-/// had already run migration 010 to completion — through the plain `INSERT`
-/// every other seeding helper in this file uses, which leaves `title_hand`
-/// and `label_hand` at their column default (`NULL`) regardless of whether
-/// migration 010 ever ran at all. `title_hand`/`label_hand` reading `None`
-/// was never evidence of anything migration 010 does; the two `UPDATE
-/// … SET *_derived = *` statements — the ones `librarydoc::apply`'s
-/// `COALESCE(?2, title_derived)` depends on to be safe on every pre-010 row
-/// (I3 is what that COALESCE reads as when the column it falls back to is
-/// unexpectedly NULL) — ran over a table with zero rows in it and nothing
-/// here ever checked what they did to one that already existed.
+/// Migration 010's two `UPDATE … SET *_derived = *` statements are what
+/// `librarydoc::apply`'s `COALESCE(?2, title_derived)` depends on to be safe on
+/// every pre-010 row, so this test runs them over a row that already exists
+/// rather than over an empty table. `title_hand`/`label_hand` reading `None`
+/// shows nothing about them: a plain `INSERT` leaves those NULL whether or not
+/// migration 010 ever ran.
 ///
 /// `migrate_with(&conn, &MIGRATIONS[..9])` is the established pattern for
 /// this in the same file (`migration_7_backfills_the_root_of_a_member_under_
@@ -836,9 +819,7 @@ fn migration_ten_backfills_derived_columns_and_leaves_hand_ones_null() {
 /// Migration 7 backfills the root of every member a scan produced, which
 /// migration 6 left NULL.
 ///
-/// **The bug this closes blanks a library rather than leaking one**: with
-/// every member NULL, the first `grant-root` gives that reader nothing, and
-/// the CLI says the opposite. Whole-branch review, 2026-08-20.
+/// **The bug this closes blanks a library rather than leaking one.**
 #[test]
 fn migration_7_backfills_the_root_of_a_member_under_one() {
     let conn = Connection::open_in_memory().expect("in-memory connection");
@@ -1076,18 +1057,17 @@ fn migration_9_lets_one_work_hold_a_position_per_edition() {
     assert_eq!(held, 2, "both editions' positions must stand");
 }
 
-/// **The migration's stated risk, actually exercised.** Every other rebuild
-/// test in this file plants a row at the prior version and migrates it
-/// forward — `migration_4_rebuilds_user_without_taking_the_notes_with_it`,
-/// `migration_5_rebuilds_note_keeping_the_rows_and_the_index`,
-/// `migration_6_adds_member_root_id_leaving_existing_members_null` and
-/// `migration_8_rebuild_reindexes_titles_that_predate_it` all do this.
+/// **The migration's stated risk, actually exercised.**
+/// `migration_4_rebuilds_user_without_taking_the_notes_with_it`,
+/// `migration_5_rebuilds_note_keeping_the_rows_and_the_index` and
+/// `migration_8_rebuild_reindexes_titles_that_predate_it` each plant a row at
+/// the prior version and migrate it forward.
 /// `migration_9_lets_one_work_hold_a_position_per_edition` does not: it
-/// migrates a fresh database straight to version 9 and only inserts
-/// afterwards, which shows the new key admits two editions but never shows
-/// that a row written under the *old* `(user_id, work_id)` key — the shape
-/// every real library holds before this migration ever runs — survives the
-/// `progress_new` copy intact.
+/// migrates a fresh database straight to version 9 and only inserts afterwards,
+/// which shows the new key admits two editions but never shows that a row
+/// written under the *old* `(user_id, work_id)` key — the shape every real
+/// library holds before this migration ever runs — survives the `progress_new`
+/// copy intact.
 ///
 /// So this test stops at 8, writes a row the old key still accepts, with
 /// `completed_at` and `read_count` both set, then runs the full migration and

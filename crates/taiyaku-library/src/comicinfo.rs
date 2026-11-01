@@ -2,35 +2,33 @@
 //!
 //! **Only the generated path.** A passthrough download is served byte for byte
 //! and gains nothing: whatever `ComicInfo.xml` the source archive holds travels
-//! unchanged, and 12 of this corpus's 57 archives hold one (`docs/sidecar.md`).
-//! Spec C2 §3 and §6.
+//! unchanged. Spec C2 §3 and §6.
 //!
 //! **An absent fact is an absent element.** A `<Writer/>` with nothing in it
 //! claims the writer is unknown; leaving it out claims nothing. Most credit
 //! fields *are* absent for most works — nothing derives a writer, so a credit
 //! is present only where `librarydoc::apply`'s `apply_editions` has written
-//! one. That is not only `PATCH /api/library/editions/{id}` (spec C3 §5,
-//! shipped 2026-08-28): `migrate::apply_library` reaches the identical
-//! function on a work's first import, when a `.library.json` sitting beside
-//! a sidecar names a credit before the database has any row for it, and
-//! `derive::write_work`'s own read-back reaches it again for a scanned work
-//! whose `LIBRARY` marker is not yet armed. `import.rs`'s `replace_editions`
-//! is a fourth site that touches `credit` rows, but only to carry an existing
-//! one across its own wholesale delete-and-reinsert of an edition — it
-//! originates none. In practice a download carries series, number, title, page
-//! count and the edition label, and carries credits only for the editions
-//! somebody has curated, by whichever of these paths.
+//! one. That is not only `PATCH /api/library/editions/{id}` (spec C3 §5):
+//! `migrate::apply_library` reaches the identical function on a work's first
+//! import, when a `.library.json` sitting beside a sidecar names a credit
+//! before the database has any row for it, and `derive::write_work`'s own
+//! read-back reaches it again for a scanned work whose `LIBRARY` marker is not
+//! yet armed. `import.rs`'s `replace_editions` is a fourth site that touches
+//! `credit` rows, but only to carry an existing one across its own wholesale
+//! delete-and-reinsert of an edition — it originates none. In practice a
+//! download carries series, number, title, page count and the edition label,
+//! and carries credits only for the editions somebody has curated, by
+//! whichever of these paths.
 //!
 //! **`LanguageISO` comes from `edition.language`**, a real column the rule
 //! engine's `set_language` writes and `import` preserves — not from the edition
 //! key. Deriving a language from `raw` or `en` would be a guess presented as
 //! metadata, which is what `work.root_id` was rejected for in spec C1.
 
-//! **This module was `taiyaku-serve`'s until spec C3 §6.** It reads the
-//! database and renders XML, which is a store concern; it sat in the server
-//! crate only because C2's generated download happened to be its first
-//! caller. The stamp is its second, and a stamp is a store mutation, so the
-//! two share it from here rather than one reaching up into the other's crate.
+//! This module reads the database and renders XML, which is a store concern
+//! (spec C3 §6). The generated download and the stamp both call it, and a
+//! stamp is a store mutation, so the two share it from here rather than one
+//! reaching up into the other's crate.
 
 use std::fmt::Write as _;
 

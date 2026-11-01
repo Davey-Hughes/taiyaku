@@ -66,9 +66,8 @@ CREATE TABLE member (
 -- is not — and it stays. What does NOT follow from it is that a document
 -- listing a page twice is malformed: `"spreads": [3, 3]` states one fact twice,
 -- `Sidecar::from_json` accepts it, and `project.rs` reads these back
--- `ORDER BY page`, so this list has been a set all along. `import.rs` writes
--- them with INSERT OR IGNORE for that reason. Refusing the import instead is
--- review 2's I3, where one hand-edited document took down the whole server.
+-- `ORDER BY page`, so this list is a set. `import.rs` writes them with
+-- INSERT OR IGNORE for that reason.
 CREATE TABLE page_flag (
   edition_id INTEGER NOT NULL REFERENCES edition(id) ON DELETE CASCADE,
   kind       TEXT NOT NULL,                 -- spread | credit
@@ -82,20 +81,17 @@ CREATE TABLE page_flag (
 -- Serialize, so `to_json` writes whatever the struct holds, and a projection
 -- that recomputed it instead would emit a different document from the one it
 -- was given. It is still never an AUTHORITY — `Sidecar::quality_of` recomputes
--- from the runs when anyone asks a question (core/sidecar.rs:1220), so a
+-- from the runs when anyone asks a question (`core/sidecar.rs`), so a
 -- hand-edited document cannot make a stale verdict mean anything. Stored and
 -- restored faithfully; consulted by nothing.
--- **No `UNIQUE (work_id, from_key, to_key)`, deliberately.** An earlier draft
--- had one, on the reasoning that two edges for one edition pair are ambiguous.
--- They are — and resolving that ambiguity is `taiyaku-core`'s business, not
--- this store's. Nothing in the format forbids the repeat: `Sidecar::from_json`
--- is a plain serde parse, every edge lookup in `core/sidecar.rs` resolves with
--- `.find(…)`/`.position(…)` — so a duplicate pair has always meant "the first
--- one" — and `serve` read exactly that meaning off the file before this crate
--- existed. The constraint turned a legal document into an import failure
--- naming a SQLite constraint rather than the document, and since `serve`
--- imports every path before serving any, one hand-edited work aborted the
--- whole server. Whole-branch review 2, I3.
+-- **No `UNIQUE (work_id, from_key, to_key)`, deliberately.** Two edges for one
+-- edition pair are ambiguous — and resolving that ambiguity is `taiyaku-core`'s
+-- business, not this store's. Nothing in the format forbids the repeat:
+-- `Sidecar::from_json` is a serde parse and a version check, and every edge
+-- lookup in `core/sidecar.rs` resolves with `.find(…)`/`.position(…)`, so a
+-- duplicate pair means "the first one". A constraint would turn a legal
+-- document into an import failure naming a SQLite constraint rather than
+-- the document.
 --
 -- So both rows are kept and `project.rs` reads them back `ORDER BY id`:
 -- insertion order is document order, and the projection means what the file
@@ -182,10 +178,9 @@ CREATE TABLE work_tag (
   PRIMARY KEY (work_id, tag_id)
 ) WITHOUT ROWID;
 
--- In migration 1 despite nothing reading it yet, because it holds HAND-MATCHED
--- data: deferring the table means matching a whole library against AniList a
--- second time. `user_credential` and `sync_state` are deliberately absent —
--- machine-obtained, nothing to backfill.
+-- In migration 1 because it holds HAND-MATCHED data: deferring the table means
+-- matching a whole library against AniList a second time. `user_credential` and
+-- `sync_state` are deliberately absent — machine-obtained, nothing to backfill.
 CREATE TABLE external_id (
   series_id   INTEGER NOT NULL REFERENCES series(id) ON DELETE CASCADE,
   provider    TEXT NOT NULL,                -- anilist | mal | mangaupdates
@@ -251,13 +246,10 @@ CREATE TABLE note (
 -- projects cannot express, and `state::truth`/`state::put_truth` take no user
 -- argument for the same reason, while `state::notes`/`state::progress` do.
 --
--- What this costs, stated so A2 does not have to rediscover it: once a library
--- holds more than one real account, every account shares one labelling. If
--- per-person ground truth is ever wanted, it is a migration that adds the
--- column to all three tables *and* a `taiyaku.truth.json` version bump to carry
--- it — not a schema change alone. `export.rs`'s `LOCAL_USER` comment is the
--- other half of this note: it explains why the per-person documents get away
--- with one hardcoded id today.
+-- What this costs: once a library holds more than one real account, every
+-- account shares one labelling. If per-person ground truth is ever wanted, it
+-- is a migration that adds the column to all three tables *and* a
+-- `taiyaku.truth.json` version bump to carry it — not a schema change alone.
 --
 -- **A page that was looked at is a row here, whether or not it holds boxes.**
 -- `TruthEdition::pages`' own doc comment (core's `truth.rs`) is explicit: "an
@@ -266,10 +258,9 @@ CREATE TABLE note (
 -- progress tracker, and it is the same distinction `RegionEdition::pages`
 -- refuses to collapse."
 --
--- An earlier draft of this schema had `truth_box` alone. Boxes are one row
--- each, so a page examined and found empty wrote zero rows — indistinguishable
--- from a page nobody had opened, silently destroying the labelling progress
--- record. Found in Task 9 by a test rather than by reading.
+-- Boxes are one row each, so without this table a page examined and found empty
+-- would write zero rows — indistinguishable from a page nobody had opened,
+-- silently destroying the labelling progress record.
 CREATE TABLE truth_page (
   work_id INTEGER NOT NULL REFERENCES work(id) ON DELETE CASCADE,
   edition TEXT NOT NULL,
@@ -284,8 +275,8 @@ CREATE TABLE truth_page (
 -- the FK needs. So this is not machinery for a hypothetical: it encodes an
 -- invariant the write path has already committed to, into the layer that cannot
 -- regress. The risk it closes is not only a future external writer but a
--- refactor *inside* `put_truth` that reorders the two inserts, which today would
--- fail silently. Same reasoning as `recursive_triggers`: a schema correct only
+-- refactor *inside* `put_truth` that reorders the two inserts, which would fail
+-- silently. Same reasoning as `recursive_triggers`: a schema correct only
 -- while every writer remembers something is lucky, not correct.
 CREATE TABLE truth_box (
   id      INTEGER PRIMARY KEY,
@@ -309,14 +300,13 @@ CREATE TABLE truth_box (
 -- problem in the project": it "draws a box on the wrong art on the RIGHT page
 -- and then scores a detector against it."
 --
--- An earlier draft of this schema had no such table and `state::truth`
--- projected `members` from the `member` rows that existed at read time. That
--- made `is_stale_for` compare a list against itself — it could never report
--- stale again — and an export after a reimport wrote a `taiyaku.truth.json`
--- asserting archives the labelling had never seen, over the reader's only copy.
--- Found in whole-branch review 2 by running it, not by reading. Same lesson as
--- `truth_page` directly above: a fact that only a document carries has to be
--- stored, because a projection of the present cannot reconstruct the past.
+-- Without this table, `state::truth` would project `members` from the `member`
+-- rows that exist at read time. That would make `is_stale_for` compare a list
+-- against itself — it could never report stale — and an export after a reimport
+-- would write a `taiyaku.truth.json` asserting archives the labelling had never
+-- seen, over the reader's only copy. Same lesson as `truth_page` directly
+-- above: a fact that only a document carries has to be stored, because a
+-- projection of the present cannot reconstruct the past.
 --
 -- `ordinal` rather than a list, because member ORDER is page order and
 -- `is_stale_for` compares position by position. Not a foreign key to `member`:
@@ -335,16 +325,14 @@ CREATE TABLE truth_member (
 -- it applied a file, found live rows and left the file unread, or found no
 -- file at all.
 --
--- An earlier version of `migrate.rs` had no such record and inferred it from
--- content: "the database holds no note for this work" stood in for "this
--- work's notes have never been migrated". Those are different questions.
--- Delete your last note and the inference falls through, so the sibling file
--- is applied again and the note comes back — and `taiyaku serve <sidecar>...`
--- imports every path on every start, so it came back at every restart,
--- forever, with no way to make the deletion stick (`export --in-place` never
--- removes a sibling file it has nothing to write to). Whole-branch review 2,
--- C3. "Migrated once" and "currently empty" have to be distinguishable, and
--- only a stored fact can distinguish them.
+-- Inferring it from content — "the database holds no note for this work"
+-- standing in for "this work's notes have never been migrated" — answers a
+-- different question. Delete your last note and the inference would fall
+-- through, so the sibling file would be applied again and the note would come
+-- back — and `taiyaku serve <sidecar>...` imports every path on every start, so
+-- it would come back at every restart, forever. "Migrated once" and
+-- "currently empty" have to be distinguishable, and only a stored fact can
+-- distinguish them.
 --
 -- A malformed file writes no row: it has not been migrated, and fixing it and
 -- importing again is how a reader recovers.
@@ -393,9 +381,8 @@ CREATE TRIGGER series_title_ad AFTER DELETE ON series_title BEGIN
 END;
 -- The update trigger is not boilerplate symmetry: without it, renaming a title
 -- leaves series_fts matching the OLD title and missing the NEW one, silently.
--- An earlier draft of this schema omitted it while `work` had all three, and a
--- review reproduced the stale index. §3.5 of the spec claims these tables are
--- "kept current by triggers"; two of three triggers does not keep that promise.
+-- §3.5 of the spec claims these tables are "kept current by triggers"; two of
+-- three triggers does not keep that promise.
 CREATE TRIGGER series_title_au AFTER UPDATE ON series_title BEGIN
   INSERT INTO series_fts (series_fts, rowid, title) VALUES ('delete', old.rowid, old.title);
   INSERT INTO series_fts (rowid, title) VALUES (new.rowid, new.title);
@@ -411,8 +398,8 @@ CREATE TRIGGER work_au AFTER UPDATE ON work BEGIN
   INSERT INTO work_fts (rowid, title) VALUES (new.id, new.title);
 END;
 
--- One implicit local user, so the server behaves exactly as it does today: no
--- login, no hashing, no guards. Spec A2 promotes THIS ROW rather than inserting
--- a new one — inserting would orphan every note and reading position recorded
--- between A and A2 on an account nobody can log in as, silently.
+-- One implicit local user, with no login, no hashing and no guards. Spec A2
+-- promotes THIS ROW rather than inserting a new one — inserting would orphan
+-- every note and reading position recorded between A and A2 on an account
+-- nobody can log in as, silently.
 INSERT INTO user (id, name, role) VALUES (1, 'local', 'admin');

@@ -25,15 +25,12 @@ use taiyaku_core::{
 /// parse the file with the wrong rules. The version is a property of the
 /// writer, and here the writer is this code.
 ///
-/// What the review that raised this ("a reimport rewrites a document's
-/// declared format version") was actually pointing at is the *other*
-/// direction, and it is closed where it belongs: `import::readable_version`
-/// refuses a document declaring a version newer than this build reads, so a
-/// document whose fields this projection would silently drop never reaches
-/// these rows at all. The remaining case — a version 1 document imported by a
-/// build that writes 2 and exported back out as 2 — is a format upgrade
-/// performed deliberately by a caller who typed `--in-place`, not a silent
-/// rewrite, and it is what `export` is for.
+/// A document declaring a version newer than this build reads is refused by
+/// `import::readable_version`, so a document whose fields this projection
+/// would silently drop never reaches these rows at all. The other case — a
+/// version 1 document imported by a build that writes 2 and exported back out
+/// as 2 — is a format upgrade performed deliberately by a caller who typed
+/// `--in-place`, not a silent rewrite, and it is what `export` is for.
 ///
 /// # Errors
 ///

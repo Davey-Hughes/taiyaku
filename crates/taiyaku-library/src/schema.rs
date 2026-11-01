@@ -18,8 +18,8 @@
 //! the decision to run one is taken before the transaction opens. Two
 //! processes reaching a fresh file together — `serve` and `library import`
 //! share one by default — both read version 0 and both decide to apply
-//! migration 1, and the second produced that same "over tables that already
-//! exist" failure from a different cause entirely. The version is therefore
+//! migration 1, and the second would produce, from a different cause entirely,
+//! that same "over tables that already exist" failure. The version is therefore
 //! read a second time under the write lock; see [`apply_pending`].
 
 use rusqlite::Connection;
@@ -73,15 +73,15 @@ pub fn migrate(conn: &Connection) -> Result<(), String> {
 /// `migrate`'s whole body, over a caller-supplied migration list rather than
 /// the built-in one.
 ///
-/// **Split out for the same reason as `require_fts5_with_probe`**: the
-/// property worth pinning is what happens when a migration *fails*, and
-/// `MIGRATIONS` holds exactly one migration that has to keep succeeding. A
-/// test cannot corrupt the real file without breaking every other test in the
-/// crate, so it hands in its own two-statement migration instead — same loop,
-/// same transaction, same error strings, only the SQL differs. `known` is the
-/// list's length rather than [`SCHEMA_VERSION`] so the "written by a newer
-/// taiyaku" refusal stays coherent for whatever list it was given; the two
-/// agree for the real call by the `const` assertion above.
+/// **Split out for the same reason as `require_fts5_with_probe`**: the property
+/// worth pinning is what happens when a migration *fails*, and every migration
+/// in `MIGRATIONS` has to keep succeeding. A test cannot corrupt a real file
+/// without breaking every other test in the crate, so it hands in its own
+/// two-statement migration instead — same loop, same transaction, same error
+/// strings, only the SQL differs. `known` is the list's length rather than
+/// [`SCHEMA_VERSION`] so the "written by a newer taiyaku" refusal stays
+/// coherent for whatever list it was given; the two agree for the real call by
+/// the `const` assertion above.
 fn migrate_with(conn: &Connection, migrations: &[&str]) -> Result<(), String> {
     let known = u32::try_from(migrations.len()).unwrap_or(u32::MAX);
     ensure_meta(conn)?;
@@ -103,10 +103,8 @@ fn migrate_with(conn: &Connection, migrations: &[&str]) -> Result<(), String> {
 /// CASCADE` into its children.
 ///
 /// Migration 4 rebuilds `user`; `progress` and `note` reference it, and they
-/// hold every note and every reading position in the library. Measured on
-/// 2026-08-18 against a two-table reproduction of that pair: the obvious
-/// version of that migration leaves zero notes behind, having copied the `user`
-/// rows perfectly. `schema::tests::migration_4_rebuilds_user_without_taking_the_notes_with_it`
+/// hold every note and every reading position in the library.
+/// `schema::tests::migration_4_rebuilds_user_without_taking_the_notes_with_it`
 /// fails the moment this wrapper is removed.
 ///
 /// **What disabling them costs is paid back in [`apply_pending`]**, which runs
@@ -183,17 +181,16 @@ fn written_by_a_newer_taiyaku(current: u32, known: u32) -> String {
 /// same moment: `serve` and `library import` default to the same file, so
 /// starting them together is ordinary. Both read 0, both decide to apply
 /// migration 1, the second waits on the write lock, gets it once the first has
-/// committed, and runs `CREATE TABLE` over tables that now exist — failing
-/// with the exact message this module's own doc names as the unrecoverable
-/// state it exists to prevent, and telling a reader their new library is
-/// beyond saving when a retry would have opened it. Measured by whole-branch
-/// review 3 (I1) at 14 failures in 48 concurrent first opens.
+/// committed, and would run `CREATE TABLE` over tables that now exist —
+/// failing with the exact message this module's own doc names as the
+/// unrecoverable state it exists to prevent, and telling a reader their new
+/// library is beyond saving when a retry would have opened it.
 ///
-/// Making each migration atomic did not close that: the *decision* was taken
-/// before the transaction began. So the version is read a second time, inside
-/// the transaction whose `BEGIN IMMEDIATE` has already taken the write lock —
-/// where whatever the other process committed is visible, and cannot change
-/// again until this transaction ends.
+/// A transaction per migration does not close that on its own: the *decision*
+/// would be taken before the transaction began. So the version is read a
+/// second time, inside the transaction whose `BEGIN IMMEDIATE` has already
+/// taken the write lock — where whatever the other process committed is
+/// visible, and cannot change again until this transaction ends.
 fn apply_pending(conn: &Connection, migrations: &[&str], current: u32) -> Result<(), String> {
     let known = u32::try_from(migrations.len()).unwrap_or(u32::MAX);
     for (index, sql) in migrations.iter().enumerate() {
@@ -214,9 +211,9 @@ fn apply_pending(conn: &Connection, migrations: &[&str], current: u32) -> Result
         // One transaction around the whole migration and the version row it
         // ends with. `execute_batch` opens none of its own — every statement
         // in the file autocommits as it runs — so without this a failure at
-        // statement *n* left statements 1..n on disk with the version still
-        // where it started, and the next open re-ran the migration from
-        // statement one over tables that already existed. Unrecoverable by
+        // statement *n* would leave statements 1..n on disk with the version
+        // still where it started, and the next open would re-run the migration
+        // from statement one over tables that already existed. Unrecoverable by
         // hand, and exactly the state the unparseable-version refusal above
         // exists to avoid. `unchecked_transaction` rather than `transaction`
         // because `conn` is shared by reference here, the same call

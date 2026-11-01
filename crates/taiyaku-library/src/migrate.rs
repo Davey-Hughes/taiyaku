@@ -6,13 +6,12 @@
 //! one caller that needs it — a sidecar entering the library for the first
 //! time, where "first" is a property of the *database*, not of the file.
 //!
-//! **Why this exists at all.** Task 13 moved reading progress, notes and the
-//! labelling truth out of these files and into rows, and nothing was ever
-//! wired to read them back. An existing install upgrading to a database-backed
-//! library would otherwise come up with every reading position at zero, every
-//! note gone and every labelled truth page unopened — the files sitting on
-//! disk, intact and unread, with no error and nothing printed. See
-//! `.superpowers/sdd/lib-fix-c3-context.md` for the fuller record.
+//! **Why this exists at all.** Reading progress, notes and the labelling truth
+//! are rows, not these files, so without this module an existing install
+//! upgrading to a database-backed library would come up with every reading
+//! position at zero, every note gone and every labelled truth page unopened —
+//! the files sitting on disk, intact and unread, with no error and
+//! nothing printed.
 //!
 //! # "First import" is checked once per document, not once per work
 //!
@@ -31,26 +30,26 @@
 //! **That row carries a second fact, `absorbed`, which this module writes and
 //! [`crate::export`] reads**: whether this library has ever had the file's
 //! *content* — read it in here, or written it out there. Settled and absorbed
-//! are not the same thing, and treating them as one is what let an export
-//! delete a `taiyaku.truth.json` that had appeared after the first import and
-//! so had never been read by anything (review 3, C1). See [`absorbed`].
+//! are not the same thing, and treating them as one would let an export delete
+//! a `taiyaku.truth.json` that had appeared after the first import and so had
+//! never been read by anything. See [`absorbed`].
 //!
-//! An earlier version inferred that fact from content — "the database holds
-//! no note for this work" standing in for "this work's notes have never been
-//! migrated". Those are different questions, and the difference is a reader's
-//! own deletion: delete your last note and the inference falls through, so
-//! the stale file is applied again and the note comes back. `taiyaku serve
-//! <sidecar>...` imports every path on every start, so it came back at every
-//! restart, forever, and nothing a reader could type made the deletion stick.
-//! Whole-branch review 2, C3. **"Migrated once" and "currently empty" have to
-//! be distinguishable, and only a stored fact distinguishes them.**
+//! Inferring that fact from content — "the database holds no note for this
+//! work" standing in for "this work's notes have never been migrated" — would
+//! conflate two different questions, and the difference is a reader's own
+//! deletion: delete your last note and the inference falls through, so the
+//! stale file would be applied again and the note would come back.
+//! `taiyaku serve <sidecar>...` imports every path on every start, so it would
+//! come back at every restart, forever, and nothing a reader could type would
+//! make the deletion stick. **"Migrated once" and "currently empty" have to be
+//! distinguishable, and only a stored fact distinguishes them.**
 //!
-//! [`crate::export::work`] now does remove a sibling file whose state has
-//! become `None` (review 2, Minor 2), which is the *other* half and not a
-//! substitute for this one: it runs when a person asks for an export, while
-//! the resurrection above happened on every start, before anyone could have
-//! asked for anything. **It removes only what this library has absorbed**,
-//! which is the line the two halves meet along — see [`absorbed`].
+//! [`crate::export::work`] does remove a sibling file whose state has become
+//! `None`, which is the *other* half and not a substitute for this one: it runs
+//! when a person asks for an export, while the resurrection above would happen
+//! on every start, before anyone could have asked for anything. **It removes
+//! only what this library has absorbed**, which is the line the two halves meet
+//! along — see [`absorbed`].
 //!
 //! On that first pass, and only there, the live rows still get the last word
 //! over the file — a `work` row can be older than its first import:
@@ -75,13 +74,12 @@
 //! Losing the database is what makes a sibling file authoritative again — it
 //! takes these rows with it, which is exactly the state this module is for.
 //!
-//! Such a file is not *destroyed* either, which is the half that was missing:
-//! it is settled but unabsorbed, so an export leaves it exactly where it is
-//! and names it, rather than overwriting it with an empty document or taking
-//! it away. Neither side claims it — this module will not read it, and export
-//! will not touch it — and that outcome is reported (`Unread`) rather than
-//! filed under `kept`, which meant "the database already held state" and was
-//! being printed at the moment the database held none.
+//! Such a file is not *destroyed* either: it is settled but unabsorbed, so an
+//! export leaves it exactly where it is and names it, rather than overwriting
+//! it with an empty document or taking it away. Neither side claims it — this
+//! module will not read it, and export will not touch it — and that outcome is
+//! reported (`Unread`) rather than filed under `kept`, which means
+//! "the database already held state" where here it holds none.
 //!
 //! # A malformed sibling never fails the import, and is the one thing retried
 //!
@@ -101,7 +99,7 @@
 //! No row means unabsorbed as well as unsettled, so an export will not
 //! overwrite or remove that file either. Both halves of the recovery path
 //! have to hold for it to be one: a malformed `taiyaku.truth.json` deleted by
-//! the next routine export leaves nothing to fix (review 3, C1).
+//! the next routine export leaves nothing to fix.
 //!
 //! # The library is never modified
 //!
@@ -151,13 +149,13 @@ pub enum NotesOutcome {
     /// this work on an earlier import — **and the database holds no note for
     /// it either**.
     ///
-    /// Distinct from [`Self::AlreadyPresent`] because the two were reported
-    /// as one word, `kept`, whose documented meaning is the *other* one: a
-    /// reader was told the database already held their notes at the exact
-    /// moment it held nothing (review 3, C1). It is also the shape worth
-    /// noticing — the file was either read once and its state since cleared,
-    /// or it has never been through this library at all, and
-    /// [`crate::export::work`] treats those two differently.
+    /// Distinct from [`Self::AlreadyPresent`], because reporting both as one
+    /// word, `kept`, whose documented meaning is the *other* one, would tell a
+    /// reader the database already held their notes at the exact moment it held
+    /// nothing. It is also the shape worth noticing — the file was either read
+    /// once and its state since cleared, or it has never been through this
+    /// library at all, and [`crate::export::work`] treats those
+    /// two differently.
     Unread,
     /// The file exists but could not be read, parsed, or written into rows.
     Malformed(String),
@@ -296,13 +294,13 @@ fn marker(conn: &Connection, work_id: i64, document: &str) -> Result<Option<bool
 /// on an export.
 ///
 /// The question [`crate::export::work`] has to ask before it overwrites or
-/// removes a sibling file, and the distinction whole-branch review 3's C1
-/// turned on. "This document has been settled" and "the database has
-/// authority over the file at that path" are different facts, and collapsing
-/// them meant a `taiyaku.truth.json` copied in from another machine — never
-/// read, because the document was already settled — was deleted by the next
-/// routine export, and a `taiyaku.notes.json` in the same state was
-/// overwritten with an empty document. Neither had ever been in the database.
+/// removes a sibling file. "This document has been settled" and "the database
+/// has authority over the file at that path" are different facts, and
+/// collapsing them would mean a `taiyaku.truth.json` copied in from another
+/// machine — never read, because the document was already settled — would be
+/// deleted by the next routine export, and a `taiyaku.notes.json` in the same
+/// state would be overwritten with an empty document. Neither would have been
+/// in the database.
 ///
 /// A document with no row at all answers `false`: nothing has been settled,
 /// so nothing has been absorbed. That is also the malformed case, which is
@@ -315,20 +313,18 @@ pub(crate) fn absorbed(conn: &Connection, work_id: i64, document: &str) -> Resul
 /// Whether this library has ever had the content of a **per-user** document
 /// belonging to *this* user.
 ///
-/// **`absorbed` alone was the cause of a data loss the `--in-place --user`
-/// refusal only papered over.** That marker is keyed `(work_id, document)` with
-/// no user, while the state an export reads became keyed on the user — so
-/// `export --all --in-place` defaulting to the lowest account id found no notes
-/// and no position for them, marked both documents stale, and had the guard
-/// against removing a never-absorbed file satisfied by a *different* reader's
-/// original import. The reader's own `taiyaku.notes.json` was overwritten with
-/// an empty document and their `taiyaku.progress.json` deleted, with the "other
-/// readers hold state" line printing after the files were gone.
+/// **`absorbed` alone is not enough for a per-user document.** That marker is
+/// keyed `(work_id, document)` with no user, while the state an export reads is
+/// keyed on the user — so `export --all --in-place` defaulting to the lowest
+/// account id would find no notes and no position for them, mark both documents
+/// stale, and have the guard against removing a never-absorbed file satisfied
+/// by a *different* reader's original import. The reader's own
+/// `taiyaku.notes.json` would be overwritten with an empty document and their
+/// `taiyaku.progress.json` deleted.
 ///
-/// So a per-user document is only ever treated as absorbed when the exporting
-/// user is the one who has state for it. `truth` and `library` are not per-user
-/// and keep using [`absorbed`] unchanged. Found by the second whole-branch
-/// review.
+/// So a per-user document is treated as absorbed when the exporting user is the
+/// one who has state for it. `truth` and `library` are not per-user and use
+/// [`absorbed`] alone.
 ///
 /// # Errors
 ///
@@ -351,9 +347,9 @@ pub(crate) fn absorbed_for(
     };
     // **The danger is narrower than "this user has no state".** A document
     // nobody has state for is nobody's to lose — declining to write it there
-    // would make an export refuse to rewrite the empty file it had just written,
-    // which is a second defect rather than a fix. What must be refused is
-    // touching a file whose content belongs to *somebody else*.
+    // would make an export refuse to rewrite the empty file it had just
+    // written. What must be refused is touching a file whose content belongs to
+    // *somebody else*.
     Ok(mine || !theirs)
 }
 
@@ -437,9 +433,7 @@ pub(crate) fn record_absorbed(
 }
 
 /// `<stem>.<suffix>`, beside `sidecar_path` — [`export::stem_of`]'s
-/// arithmetic, reused rather than carried a second time. (It used to be a
-/// third: `taiyaku-serve`'s `Work::sibling` carried the same sum until it was
-/// deleted for having no callers — whole-branch review 3, Minor 8.)
+/// arithmetic, reused rather than carried a second time.
 fn sibling_path(sidecar_path: &Path, suffix: &str) -> PathBuf {
     let stem = export::stem_of(Some(&sidecar_path.to_string_lossy()));
     sidecar_path
@@ -475,10 +469,9 @@ enum Step {
 /// never what decides whether to *read the file*: a document already settled
 /// is not revisited whatever its rows look like now, which is the whole point
 /// of the marker. It decides what the caller is **told**, which is a separate
-/// question and was the one this got wrong — every settled document reported
-/// `kept`, documented as "the database already held state for that document",
-/// including the case where the database held nothing at all and the file was
-/// about to be deleted by an export (review 3, C1).
+/// question: reporting every settled document as `kept`, documented as
+/// "the database already held state for that document", would be wrong where
+/// the database holds nothing at all.
 fn step(
     conn: &Connection,
     work_id: i64,
@@ -560,16 +553,16 @@ fn apply_progress(
     // `state::put_progress_at`.
     //
     // **One transaction around every position, so a failure partway writes
-    // none of them (O79).** Each position used to commit on its own: a
-    // statement refused at the second position left the first written, this
-    // returned `Malformed` and no marker was recorded — and the next import's
-    // `holds_state` found that one row and answered `Kept`, so the rest of the
-    // document was never read again. Rolled back, the rows stay empty and the
-    // next import applies the whole document. A malformed *position* never
-    // reaches this loop: `progressdoc::from_json` has already parsed the whole
-    // document above. `unchecked_transaction`, as `state::put_notes` opens for
-    // the next document on this same connection: nothing calls `work` with a
-    // transaction already open.
+    // none of them (O79).** Without it, a statement refused at the second
+    // position would leave the first written; this would return `Malformed` and
+    // record no marker, and the next import's `holds_state` would find that one
+    // row and answer `Kept`, so the rest of the document would never be read
+    // again. Rolled back, the rows stay empty and the next import applies the
+    // whole document. A malformed *position* never reaches this loop:
+    // `progressdoc::from_json` has already parsed the whole document above.
+    // `unchecked_transaction`, as `state::put_notes` opens for the next
+    // document on this same connection: nothing calls `work` with a transaction
+    // already open.
     let tx = conn
         .unchecked_transaction()
         .map_err(|e| format!("starting progress transaction: {e}"))?;

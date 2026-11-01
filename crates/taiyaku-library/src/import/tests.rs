@@ -117,11 +117,8 @@ fn hub_only_doc() -> taiyaku_core::Sidecar {
 ///
 /// Every other reimport fixture here is a hub plus at most one spoke, and with
 /// one spoke there is one alignment, so `reimport`'s spoke->alignment `find`
-/// cannot be observed to pick the wrong one: replacing its `&&` with `||`
-/// passed the entire workspace suite while the resulting binary discarded a
-/// whole freshly-solved alignment on real material (whole-branch review 3,
-/// I2). Every work in the corpus has three to five editions, so this is the
-/// ordinary shape, not an exotic one.
+/// cannot be observed to pick the wrong one. Works with several editions are
+/// the ordinary shape, not an exotic one.
 fn three_edition_doc(en_runs: usize, fr_runs: usize) -> taiyaku_core::Sidecar {
     three_edition_doc_with_hub_sha(en_runs, fr_runs, "hh")
 }
@@ -175,12 +172,11 @@ fn edges(conn: &Connection, work_id: i64) -> Vec<(String, String, usize)> {
     found
 }
 
-/// **Whole-branch review 3, I2.** Each spoke must be merged against *its own*
-/// hub edge. With one spoke the `find` at `reimport`'s merge loop cannot be
-/// wrong; with two, taking the first alignment that mentions the hub pairs the
-/// second spoke with the first spoke's edge, and the second edge — eleven runs
-/// of freshly-solved alignment on the corpus work this was reproduced against
-/// — is discarded with nothing in the summary naming it.
+/// Each spoke must be merged against *its own* hub edge. With one spoke the
+/// `find` at `reimport`'s merge loop cannot be wrong; with two, taking the
+/// first alignment that mentions the hub would pair the second spoke with the
+/// first spoke's edge, and the second edge would be discarded with nothing in
+/// the summary naming it.
 #[test]
 fn every_spoke_is_merged_against_its_own_hub_edge() {
     let library = Library::open_in_memory().expect("library");
@@ -259,18 +255,16 @@ fn reverse_edge_doc() -> taiyaku_core::Sidecar {
     taiyaku_core::Sidecar::from_json(json).expect("parses")
 }
 
-/// **Whole-branch review 3, Minor 6, the reverse-orientation clause.**
 /// `drop_stale_spoke` scopes itself to the `hub` <-> `name` edge in *either*
-/// orientation, and no fixture stored one the other way round, so
-/// `(a.from == name && a.to == hub)` was unpinned in both the count and the
-/// `retain` — eight surviving mutants between them and the arms below.
+/// orientation, and `(a.from == name && a.to == hub)` is the reverse one: this
+/// test stores an edge that way.
 ///
 /// This is also the one shape `merge_spoke` refuses *because* of the
 /// orientation: a hand run on a reverse-stored edge is addressed against
 /// `en`'s slots, and carrying it onto a `raw` -> `en` edge without inverting
 /// it first would misfile it, so core refuses rather than doing that silently
-/// (`core/sidecar.rs:699`). `reimport` then has to drop the edge, and dropping
-/// it means finding it — which the mutated filter does not.
+/// (`core/sidecar.rs`). `reimport` then has to drop the edge, and dropping it
+/// means finding it.
 #[test]
 fn a_stale_hub_edge_stored_backwards_is_dropped_with_the_hand_runs_on_it() {
     let library = Library::open_in_memory().expect("library");
@@ -313,16 +307,15 @@ fn a_stale_hub_edge_stored_backwards_is_dropped_with_the_hand_runs_on_it() {
     );
 }
 
-/// **Whole-branch review 3, Minor 6, the `Replaced` and `Added` arms.** Only
-/// `DroppedHandRuns` had a fixture, and it is the *rare* case: a re-solve of a
-/// work nobody has hand-corrected is the common one, and it takes the same
-/// refusal path the moment the hub moves.
+/// `DroppedHandRuns` is the *rare* outcome: a re-solve of a work nobody has
+/// hand-corrected is the common case, and it takes the same refusal path the
+/// moment the hub moves.
 ///
-/// One re-solve reaches both remaining arms. The hub's archives were replaced,
-/// so `merge_spoke`'s from-side guard refuses every spoke — `en`, which the
-/// library holds, and `fr`, which it has never seen. The first is a
-/// replacement and the second is an addition, and nothing was lost in either,
-/// so neither may report `DroppedHandRuns`.
+/// One re-solve reaches both the `Replaced` and the `Added` arm. The hub's
+/// archives were replaced, so `merge_spoke`'s from-side guard refuses every
+/// spoke — `en`, which the library holds, and `fr`, which it has never seen.
+/// The first is a replacement and the second is an addition, and nothing was
+/// lost in either, so neither may report `DroppedHandRuns`.
 #[test]
 fn a_re_solve_over_a_moved_hub_reports_replaced_and_added_rather_than_a_loss() {
     let library = Library::open_in_memory().expect("library");
@@ -359,17 +352,15 @@ fn a_re_solve_over_a_moved_hub_reports_replaced_and_added_rather_than_a_loss() {
     );
 }
 
-/// **Whole-branch review 3, Minor 1.** A credit list is hand-entered and
-/// ordered — "the artist, then the translator, then the group" is somebody's
-/// decision — and `held_credits` read it with no `ORDER BY` at all. The rows
-/// are deleted and reinserted wholesale on every reimport, taking fresh `id`s
-/// in whatever order they came back in, so the read order *is* the stored
-/// order from then on. `librarydoc::of` reads them back `ORDER BY credit.id`,
-/// which is why this asserts through the projection rather than the raw table:
-/// it is the order a reader sees in their own `taiyaku.library.json`.
+/// A credit list is hand-entered and ordered — "the artist, then the
+/// translator, then the group" is somebody's decision. The rows are deleted
+/// and reinserted wholesale on every reimport, taking fresh `id`s in whatever
+/// order they came back in, so the read order *is* the stored order from then
+/// on. `librarydoc::of` reads them back `ORDER BY credit.id`, which is why
+/// this asserts through the projection rather than the raw table: it is the
+/// order a reader sees in their own `taiyaku.library.json`.
 ///
-/// This is the one route that had no test. `serve` reimports every sidecar on
-/// every start, so it is also the one that runs most.
+/// `serve` reimports every sidecar on every start, so a reimport is routine.
 #[test]
 fn a_hand_entered_credit_list_keeps_its_order_across_a_reimport() {
     let library = Library::open_in_memory().expect("library");
@@ -414,12 +405,10 @@ fn a_hand_entered_credit_list_keeps_its_order_across_a_reimport() {
     );
 }
 
-/// **Whole-branch review 3, Minor 7.** `unique_slug`'s collision loop was
-/// pinned only at its first step: `two_slugs_never_collide` produces two works
-/// with one title, so `suffix += 1` runs once and never gets to be wrong.
-/// Both `-= 1` (giving `t-2` then `t-1`) and `*= 2` (giving `t-2` then `t-4`)
-/// passed. A third volume of one series imported before anyone has retitled
-/// them is the ordinary way to get there.
+/// `two_slugs_never_collide` produces two works with one title, so
+/// `unique_slug`'s `suffix += 1` runs once and never gets to be wrong. A third
+/// volume of one series imported before anyone has retitled them is the
+/// ordinary way to take a second step.
 #[test]
 fn a_third_work_with_one_title_takes_the_third_slug_in_sequence() {
     let library = Library::open_in_memory().expect("library");
@@ -560,10 +549,9 @@ fn reimporting_with_fewer_editions_removes_the_ones_that_went() {
     //
     // **Deliberately at a different path.** Re-importing at the same path would
     // resolve through `find_by_path` whether or not the content keys matched,
-    // so the shared hub edition would be decoration: a review proved exactly
-    // that by breaking the hub's sha256 and watching this test still pass. A
-    // different path forces `find_by_key` to be what resolves it, which is the
-    // thing this test claims to exercise.
+    // so the shared hub edition would be decoration. A different path forces
+    // `find_by_key` to be what resolves it, which is the thing this test
+    // claims to exercise.
     let one = hub_only_doc();
     let again = sidecar(&conn, &one, Path::new("/moved/taiyaku.json")).expect("reimport");
     assert_eq!(again, id, "content resolved it, not the path");
@@ -600,17 +588,16 @@ fn reimporting_with_fewer_editions_removes_the_ones_that_went() {
 /// an edition (and its member) that a reimport *drops* — the document no
 /// longer mentions that edition at all — must not survive under some other
 /// identity, and it must especially not leak onto the edition that *does*
-/// survive. That second failure would be worse than the loss the
-/// preservation fix (`150be53`) exists to prevent: a stray restore that
-/// looks like it worked, on the wrong row.
+/// survive. That second failure would be worse than the loss that preserving
+/// hand-set metadata exists to prevent: a stray restore that looks like it
+/// worked, on the wrong row.
 ///
 /// `held_edition_meta`/`held_member_meta` key by `edition.key`/`member.sha256`
 /// — identities the dropped "en" edition and its member no longer have once
 /// `replace_editions` reinserts only what `hub_only_doc` names — so neither
-/// held map has an entry that could reattach to "raw". This was checked by
-/// hand once during Task 10's review and reverted rather than committed;
-/// this pins it so a future change to the restore logic cannot silently
-/// resurrect a dropped edition's metadata.
+/// held map has an entry that could reattach to "raw". This pins it so a
+/// future change to the restore logic cannot silently resurrect a dropped
+/// edition's metadata.
 #[test]
 fn a_hand_set_edition_that_a_reimport_drops_does_not_survive_or_leak() {
     let library = Library::open_in_memory().expect("library");
@@ -714,17 +701,16 @@ fn two_slugs_never_collide() {
     assert_eq!(slugs, 2, "two works must have two slugs");
 }
 
-/// The four tests above use `doc`'s minimal fixture on purpose, to keep them
+/// Tests above built on `doc`'s minimal fixture use it on purpose, to keep them
 /// obviously about the matching rule. None of them holds a second edition, a
 /// page flag, an alignment, or a paired run, so none of that code in this
 /// module — `replace_editions`' two page-flag loops, all of `replace_alignments`,
 /// and `direction_text`'s `ltr` arm — runs under any of them.
 ///
-/// This test closes that gap, the way Task 5's own round trip closes it for
-/// `project::sidecar`: written by the real `import::sidecar` rather than
+/// This test closes that gap, the way `project`'s own round trip closes it
+/// for `project::sidecar`: written by the real `import::sidecar` rather than
 /// `project::tests::insert_by_hand`, and checked byte-for-byte against
-/// `to_json` so a dropped or misordered field fails loudly rather than
-/// quietly.
+/// `to_json` so a dropped or misordered field fails loudly rather than quietly.
 #[test]
 fn a_full_sidecar_round_trips_through_import_and_projection() {
     let json = r#"{
@@ -806,11 +792,7 @@ fn a_hand_run_in_the_database_survives_a_re_solve() {
     );
 }
 
-/// **C1a.** Before the fix, `reimport` wrote `sidecar(conn, &held, path)` —
-/// `held` being the *projection of what the database already holds* — so
-/// `work.title` never moved even though the incoming document said otherwise,
-/// and the command printed success regardless. A re-solve wins: the incoming
-/// document's `work` block must reach the row.
+/// A re-solve wins: the incoming document's `work` block must reach the row.
 #[test]
 fn a_hand_edited_title_in_the_incoming_document_reaches_the_database() {
     let library = Library::open_in_memory().expect("library");
@@ -833,13 +815,12 @@ fn a_hand_edited_title_in_the_incoming_document_reaches_the_database() {
 }
 
 /// §4.1 rule 2: "the archives were replaced, so update the key rather than
-/// inserting a second work." `import::sidecar` implements it directly, but
-/// before C1 `reimport` was the only path any command reached, and it wrote
-/// the held projection's hub back — so a hub whose bytes changed underneath
-/// an existing import never moved `content_key` at all. This is the same
-/// scenario `a_hand_run_on_a_spoke_whose_hub_moved_is_dropped_and_reported`
-/// exercises with a hand run in play; this version has none, isolating the
-/// key-update claim on its own.
+/// inserting a second work." `import::sidecar` implements it directly. A hub
+/// whose bytes changed underneath an existing import must move `content_key`.
+/// This is the same scenario
+/// `a_hand_run_on_a_spoke_whose_hub_moved_is_dropped_and_reported` exercises
+/// with a hand run in play; this version has none, isolating the key-update
+/// claim on its own.
 #[test]
 fn a_changed_hub_member_sha_updates_the_content_key_rather_than_leaving_the_old_one() {
     let library = Library::open_in_memory().expect("library");
@@ -873,11 +854,11 @@ fn a_changed_hub_member_sha_updates_the_content_key_rather_than_leaving_the_old_
     );
 }
 
-/// **C1a.** The hub edition's `spreads`/`credits` lists are exactly the sort
-/// of fact a hand edit or a fresh `taiyaku credits --write` would change on
-/// disk between imports. Before the fix they came from `held` — the
-/// database's own projection of what it already had — so a hand edit to
-/// either list on the hub was silently discarded on every re-solve.
+/// The hub edition's `spreads`/`credits` lists are exactly the sort of fact a
+/// hand edit or a fresh `taiyaku credits --write` would change on disk between
+/// imports. They must come from the incoming document rather than from
+/// `held`, the database's own projection of what it already had, or a hand
+/// edit to either list on the hub would be discarded on every re-solve.
 #[test]
 fn the_hub_editions_spreads_and_credits_lists_come_from_the_incoming_document() {
     let library = Library::open_in_memory().expect("library");
@@ -909,27 +890,19 @@ fn the_hub_editions_spreads_and_credits_lists_come_from_the_incoming_document() 
     );
 }
 
-/// **C1b, end to end at the library layer.** Adding a volume to the hub and
+/// **End to end at the library layer.** Adding a volume to the hub and
 /// re-solving is the ordinary case for an ongoing series, and it must not
 /// refuse: `merge_spoke`'s from-side guard (see its `# Errors`) compares
 /// its own stored edition at `alignment.from` against the `from_side` it is
 /// handed, on `sha256`, and refuses when they differ — which they do here, on
-/// purpose, since the hub gained a member. Before C1, that refusal propagated
-/// out of `reimport` as a hard `Err`, which is what made `serve` exit 1
-/// telling a reader to re-solve the work they had just re-solved. The fix
-/// decided a re-solve wins: the stale alignment is dropped, the fresh one
-/// takes its place, and the loss — a hand-corrected run, a human decision — is
-/// reported rather than swallowed.
+/// purpose, since the hub gained a member. A re-solve wins: the stale
+/// alignment is dropped, the fresh one takes its place, and the loss — a
+/// hand-corrected run, a human decision — is reported rather than swallowed.
 ///
-/// This also still catches the regression an earlier draft of this plan
-/// introduced: passing the *held* document's hub instead of the *incoming*
-/// one as `from_side` makes the guard's comparison compare a value against
-/// itself — always equal, guard dead, and a merge would proceed as an
-/// ordinary carry rather than a drop. That earlier bug went uncaught because
-/// the only `reimport` test at the time re-imported an identical document,
-/// where held and incoming hubs are byte-identical either way. Asserting the
-/// specific `DroppedHandRuns` outcome (not merely "no error") is what would
-/// catch it now: a dead guard would carry the hand run forward as
+/// Asserting the specific `DroppedHandRuns` outcome (not merely "no error") is
+/// what catches passing the *held* document's hub instead of the *incoming*
+/// one as `from_side`: that compares a value against itself — always equal,
+/// guard dead — and the hand run would be carried forward as
 /// `CarriedHandRuns` instead.
 #[test]
 fn a_hand_run_on_a_spoke_whose_hub_moved_is_dropped_and_reported() {
@@ -951,8 +924,8 @@ fn a_hand_run_on_a_spoke_whose_hub_moved_is_dropped_and_reported() {
         .expect("correction");
 
     // Same path, different hub bytes: the archives behind the hub were
-    // replaced (or, as in C1b, a member was added). The stored runs describe
-    // a page sequence that no longer exists.
+    // replaced (or a member was added). The stored runs describe a page
+    // sequence that no longer exists.
     let replaced = two_edition_doc_with_runs_and_hub_sha(&[("0-9", Some("0-9"), None)], "zz");
 
     let (again, outcomes) =
@@ -986,9 +959,8 @@ fn a_hand_run_on_a_spoke_whose_hub_moved_is_dropped_and_reported() {
     );
 }
 
-/// Deviation from the plan's original pseudocode, which said `continue` and so
-/// silently dropped the edition. A document that says *nothing* about an
-/// edition is not a document saying it is *gone*.
+/// A document that says *nothing* about an edition is not a document saying it
+/// is *gone*.
 #[test]
 fn an_incoming_edition_with_no_hub_alignment_is_added_when_never_held() {
     let library = Library::open_in_memory().expect("library");
@@ -1138,10 +1110,10 @@ fn a_hand_set_chapter_number_survives_a_reimport() {
 /// spec put the column in migration 1.
 ///
 /// Distinct from `a_hand_set_chapter_number_survives_a_reimport` directly
-/// above in the two ways this task made reachable: the work arrives through
-/// `scanned` rather than `sidecar` — so the first import claims no path and
-/// the second one does — and the source is `filename`, `derive.rs`'s own,
-/// rather than a person's `hand`.
+/// above in two ways: the work arrives through `scanned` rather than
+/// `sidecar` — so the first import claims no path and the second one does —
+/// and the source is `filename`, `derive.rs`'s own, rather than a
+/// person's `hand`.
 #[test]
 fn a_chapter_number_the_scanner_recorded_survives_a_later_align() {
     let library = Library::open_in_memory().expect("library");
@@ -1302,26 +1274,19 @@ fn a_title_with_no_alphanumeric_characters_slugifies_to_work() {
 /// **Two alignments for one edition pair are stored, both of them, in the
 /// document's order.**
 ///
-/// This test used to assert the opposite — that the pair was refused — on the
-/// strength of `alignment`'s `UNIQUE (work_id, from_key, to_key)`. That
-/// constraint was a rule this store had no business making. `taiyaku_core`
-/// places no uniqueness rule on `alignments`: `Sidecar::from_json` is a plain
-/// serde parse, and every lookup in `sidecar.rs` resolves an edge with
-/// `.find(…)` or `.position(…)`, so a document with two edges for one pair
-/// has always meant "the first one", and `serve` read exactly that meaning
-/// off the file before this crate existed. What the constraint actually did
-/// was refuse a legal document at import with a raw SQLite message
-/// (`UNIQUE constraint failed: alignment.work_id, …`) — and because `serve`
-/// imports every path it is handed before serving any, one such work aborted
-/// the whole server. Whole-branch review 2, I3.
+/// `taiyaku_core` places no uniqueness rule on `alignments`:
+/// `Sidecar::from_json` is a serde parse and a version check, and every lookup
+/// in `sidecar.rs` resolves an edge with `.find(…)` or `.position(…)`, so a
+/// document with two edges for one pair means "the first one". A uniqueness
+/// constraint on `alignment` would refuse a legal document at import with a raw
+/// SQLite message (`UNIQUE constraint failed: alignment.work_id, …`).
 ///
-/// So the constraint is gone and the rows are kept in insertion order, which
-/// `project::alignments_for` reads back `ORDER BY id`. The document survives a
-/// round trip through the database unchanged, hand edit and all, and whichever
-/// edge `taiyaku_core` would have chosen from the file it still chooses from
-/// the projection. Deciding *between* two edges is that crate's business, not
-/// this one's — the same division this module's own doc comment draws for
-/// merge rules.
+/// So the rows are kept in insertion order, which `project::alignments_for`
+/// reads back `ORDER BY id`. The document survives a round trip through the
+/// database unchanged, hand edit and all, and whichever edge `taiyaku_core`
+/// would have chosen from the file it still chooses from the projection.
+/// Deciding *between* two edges is that crate's business, not this one's — the
+/// same division this module's own doc comment draws for merge rules.
 #[test]
 fn two_alignments_for_one_edition_pair_are_both_kept_in_document_order() {
     let library = Library::open_in_memory().expect("library");
@@ -1363,11 +1328,10 @@ fn two_alignments_for_one_edition_pair_are_both_kept_in_document_order() {
 /// so twice is stating one fact twice, not contradicting itself, and
 /// `Sidecar::from_json` accepts it because nothing in the format forbids it.
 /// Refusing the import over it, with `UNIQUE constraint failed: page_flag…`,
-/// took the whole server down for every other work on the command line
-/// (review 2, I3). `INSERT OR IGNORE` keeps the row invariant and drops the
-/// repetition, which is what the flag already meant: `project.rs` reads these
-/// back `ORDER BY page`, so the list has been a set — order and all — since
-/// the first import.
+/// would reject a legal document. `INSERT OR IGNORE` keeps the row invariant
+/// and drops the repetition, which is what the flag already meant:
+/// `project.rs` reads these back `ORDER BY page`, so the list is a set, order
+/// and all.
 #[test]
 fn a_page_repeated_in_spreads_is_flagged_once_rather_than_refused() {
     let library = Library::open_in_memory().expect("library");
@@ -1396,8 +1360,7 @@ fn a_page_repeated_in_spreads_is_flagged_once_rather_than_refused() {
     );
 }
 
-/// **`held_member_meta`'s tie-break is deterministic, and `5a6bd8a` added the
-/// tie-break without a test that could see it.**
+/// **`held_member_meta`'s tie-break is deterministic.**
 ///
 /// Nothing forbids one archive being a member of two editions of one work — a
 /// repack or an omnibus sharing a literal file with a standalone edition
@@ -1409,8 +1372,7 @@ fn a_page_repeated_in_spreads_is_flagged_once_rather_than_refused() {
 /// choice is arbitrary, as the function's own doc says. Being *stable* is not:
 /// without the `ORDER BY`, which chapter number a reimport restores depends on
 /// whatever order SQLite happens to return rows in, so the same document
-/// imported twice can leave two different libraries. Reversing the `ORDER BY`
-/// survived the whole suite (whole-branch review 2, I6).
+/// imported twice can leave two different libraries.
 ///
 /// The three candidate rows are found and sorted here in Rust, by `edition_id`
 /// then `ordinal`, rather than by reusing the production query's own `ORDER
@@ -1481,10 +1443,6 @@ fn held_member_meta_keeps_the_earliest_edition_and_ordinal_for_a_shared_hash() {
 /// present under two roots is ordinary — so this fixture is exactly that
 /// shape: one hash, two editions, each edition's copy of it scanned from a
 /// different root.
-///
-/// Confirmed red against the code before this test's fix landed: it restored
-/// one of the two roots (whichever `held_member_meta`'s earliest-edition tie-
-/// break preferred) rather than NULL on both.
 #[test]
 fn a_hash_held_under_two_distinct_roots_comes_back_with_no_root_on_either() {
     let library = Library::open_in_memory().expect("library");
@@ -1553,21 +1511,14 @@ fn a_hash_held_under_two_distinct_roots_comes_back_with_no_root_on_either() {
 }
 
 /// **An unambiguous root must survive even when the row the chapter
-/// tie-break keeps never carried it.** `root_id` used to ride along on
-/// whichever row `or_insert` kept for `declared`/`source` — so when the
-/// earlier-sorting row (by `edition.id, member.ordinal`) is the one with a
-/// hand-set chapter and no root, and a *different*, later-sorting row is the
-/// only one that ever carried a root, the representative's own `root_id` is
-/// `None` and the ambiguity pass never fires (only one distinct non-null root
-/// was ever seen), so the one legitimate root was silently dropped. This is
+/// tie-break keeps never carried it.** The earlier-sorting row (by
+/// `edition.id, member.ordinal`) is the one with a hand-set chapter and no
+/// root, and a *different*, later-sorting row is the only one that ever
+/// carried a root: that one legitimate root must be restored. This is
 /// reachable without any contrived setup: a hand-corrected chapter on one
 /// copy alongside a scanned copy of identical bytes in another edition is
 /// exactly the ordinary "same hash, two editions" shape the sibling tests
 /// above already establish.
-///
-/// Confirmed red against the code before this test's fix landed: it restored
-/// `declared=Some(5.0) source=None root_id=None` — the chapter survived, the
-/// root did not.
 #[test]
 fn an_unambiguous_root_survives_even_when_the_chapter_tie_break_row_lacks_it() {
     let library = Library::open_in_memory().expect("library");
@@ -1750,9 +1701,8 @@ fn a_scanned_work_is_stored_with_no_sidecar_path() {
 
 #[test]
 fn two_scanned_works_in_one_directory_do_not_collide() {
-    // The case that made this function necessary: a series directory holds
-    // fourteen volumes as files, so `sidecar_path` could only ever have named
-    // the directory and all fourteen would have matched each other on
+    // A series directory holds many volumes as files, so `sidecar_path` could
+    // only ever name the directory and all of them would match each other on
     // `find_by_path`. Identity is `content_key` alone here — which is why
     // these two, sharing a title and differing only in their member digest,
     // are two works.
@@ -2163,14 +2113,6 @@ fn rescanning_an_aligned_work_does_not_erase_its_sidecar_path() {
 /// every edition with its own key, because neither carries a display name
 /// either. A scan's `work` block and its labels are therefore *different
 /// values*, not the document's own carried through.
-///
-/// **This used to clone the document and clear only `alignments`, `spreads`
-/// and `credits`**, while its doc comment claimed to be "exactly what
-/// `derive.rs` builds". It kept the document's `work.title`, `work.reading`
-/// and edition labels — precisely the three fields derivation does not
-/// preserve — so every `Scope::Scan` test was blind to an overwrite by
-/// construction, and a rescan rewriting a reader's own `taiyaku.json` passed
-/// all 254 of them (whole-branch review, C2).
 fn as_scanned(doc: &taiyaku_core::Sidecar) -> taiyaku_core::Sidecar {
     let mut scan = doc.clone();
     scan.alignments.clear();
@@ -2193,13 +2135,9 @@ fn as_scanned(doc: &taiyaku_core::Sidecar) -> taiyaku_core::Sidecar {
 /// naming the volume in words, a left-to-right reading direction, and an
 /// edition called `Japanese raw` rather than `raw`.
 ///
-/// Shares its hub member's `sha256` with `doc("aa")`, and so its
-/// `content_key`, which is what lets a scan of the same archives land on this
-/// exact row. Each of the four values is one a scan would otherwise have
-/// written over: measured through `library import`, `library scan` and
-/// `library export --in-place`, which rewrote the reader's own `taiyaku.json`
-/// from `"Go-Toubun no Hanayome, volume 1"` / `ltr` / `"Japanese raw"` to
-/// `"Series - v01"` / `rtl` / `"raw"`.
+/// Shares its hub member's `sha256` with `doc("aa")`, and so its `content_key`,
+/// which is what lets a scan of the same archives land on this exact row. Each
+/// of those values is one a scan would otherwise have written over.
 fn authored_doc() -> taiyaku_core::Sidecar {
     let json = r#"{"taiyaku":1,
          "work":{"title":"Go-Toubun no Hanayome, volume 1","reading":"ltr"},
@@ -2300,10 +2238,10 @@ fn a_document_still_names_its_own_editions_labels() {
     assert_eq!(label, "Raws (2019)");
 }
 
-/// **Step 6c.** `update_work`'s `Scope::Document` branch used to overwrite
-/// `title` from the sidecar on every reimport — routine, since `serve`
-/// reimports on every start — even though the sidecar's title is a derived
-/// value and a person may have since corrected it through `librarydoc::apply`.
+/// A document reimport — routine, since `serve` reimports on every start —
+/// must not overwrite a hand-set `title` with the sidecar's, because the
+/// sidecar's title is a derived value and a person may have since corrected
+/// it through `librarydoc::apply`.
 #[test]
 fn a_document_reimport_over_a_hand_set_title_preserves_its_provenance() {
     let library = Library::open_in_memory().expect("library");
@@ -2349,12 +2287,10 @@ fn a_document_reimport_over_a_hand_set_title_preserves_its_provenance() {
     );
 }
 
-/// **Task 2, closing review.** The rescan test below and the title-reimport
-/// test above each cover one half of `replace_editions`'s `Scope::Document`
-/// arm's neighbour; neither covers a hand-set **label** surviving a
-/// **document** reimport, the one combination `held.label_derived` could be
-/// substituted into `edition.label.clone()` in the `Scope::Document` match
-/// arm without any existing test noticing.
+/// A hand-set **label** must survive a **document** reimport. The rescan test
+/// below and the title-reimport test above each cover one half of that;
+/// neither covers the combination, in which `held.label_derived` could be
+/// substituted into `edition.label.clone()` in the `Scope::Document` match arm.
 #[test]
 fn a_document_reimport_over_a_hand_set_label_preserves_its_provenance() {
     let library = Library::open_in_memory().expect("library");
@@ -2412,11 +2348,8 @@ fn a_document_reimport_over_a_hand_set_label_preserves_its_provenance() {
     );
 }
 
-/// **Step 6c.** `held_edition_meta` used to select the effective `label`
-/// column and neither provenance column, and `replace_editions` bound that one
-/// value to both `label` and `label_derived` on the reinsert every scan
-/// performs. So a routine rescan over a hand-set label wiped `label_hand` to
-/// NULL *and* rebound `label_derived` to the hand text — the safety net
+/// A routine rescan over a hand-set label keeps `label_hand` and leaves
+/// `label_derived` at what the document said: the safety net is not
 /// overwritten with the very value it exists to fall back from.
 #[test]
 fn a_rescan_over_a_hand_set_label_preserves_its_provenance() {
@@ -2518,10 +2451,9 @@ fn doc_with_flags() -> taiyaku_core::Sidecar {
 #[test]
 fn a_rescan_leaves_an_alignment_a_person_made_alone() {
     // The scanner walks a filesystem. It cannot know how two editions
-    // correspond, so it must not be the thing that deletes the answer: before
-    // this, `scanned` passed `alignments: Vec::new()` into a wholesale
-    // replace, and a rescan after an `align --write` dropped every run —
-    // hand-corrected ones included, which no re-solve recovers.
+    // correspond, so it must not be the thing that deletes the answer: a
+    // rescan after an `align --write` must not drop a run, hand-corrected ones
+    // included, which no re-solve recovers.
     let library = Library::open_in_memory().expect("library");
     let conn = library.conn();
     let two = two_edition_doc();
@@ -2588,8 +2520,7 @@ fn a_document_still_replaces_both_because_a_document_speaks_for_them() {
     // The other half of the rule, and the half a union would break: a
     // `taiyaku.json` that no longer lists page 8 as a credit means page 8 is
     // not a credit, and a re-solve that produced no alignment means there is
-    // none. Only `scanned` carries them across; `sidecar` replaces, as it
-    // always did.
+    // none. Only `scanned` carries them across; `sidecar` replaces.
     let library = Library::open_in_memory().expect("library");
     let conn = library.conn();
     let path = Path::new("/x/taiyaku.json");
@@ -2648,13 +2579,10 @@ fn a_work_whose_spoke_edition_disappeared_still_projects_and_serves_its_hub() {
     // `quality_of` and `trust` answer `None`, and the hub is untouched — so
     // the work still opens and re-solving is the recovery.
     //
-    // **Reached through a document, because a rescan can no longer reach
-    // it.** This used to rescan a work whose `en` edition had gone from every
-    // root, back when `scanned` deleted every edition the incoming document
-    // did not name; that deletion is C2's second finding and the edition now
-    // stands. A `taiyaku.json` declaring an edge to an edition it does not
-    // define is what is left, and it is an ordinary hand edit: drop an
-    // edition from the document, leave the alignment that names it.
+    // **Reached through a document, because a rescan leaves an edition it no
+    // longer names standing.** A `taiyaku.json` declaring an edge to an
+    // edition it does not define is an ordinary hand edit: drop an edition
+    // from the document, leave the alignment that names it.
     let library = Library::open_in_memory().expect("library");
     let conn = library.conn();
     let mut two = two_edition_doc();

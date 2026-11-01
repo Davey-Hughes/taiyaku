@@ -431,8 +431,8 @@ export function consequence(
  * **"Moves onto this edition instead" would be an unqualified promise the
  * store has never made, and the qualification is the point of this control.**
  * This is what *causes* the fold, so `works_moved`'s own doc in `proposals.rs`
- * governs it — "a wrong number in this line is a false statement to the
- * person deciding" — and three of `fold::Moved`'s own fields exist because
+ * governs it — "an over-count is a false statement to the person
+ * deciding" — and three of `fold::Moved`'s own fields exist because
  * three things do not move. `collisions`: a page the surviving edition
  * already has marked keeps its own marks and the incoming ones die with the
  * work. `lost_positions`: when both sides hold a place in one edition the

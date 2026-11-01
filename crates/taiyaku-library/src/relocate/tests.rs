@@ -521,8 +521,8 @@ fn a_dir_leaving_a_library_that_keeps_another_keeps_its_works_as_they_were() {
 }
 
 /// Case 1: the directory is alone in its library, so the library goes with the
-/// move, and its grant with it. The account holds another library, so that
-/// is allowed, and counted.
+/// move, and its grant with it. The account holds another library, so it is
+/// not left with none, and the grant is counted.
 #[test]
 fn a_dir_alone_in_its_library_takes_its_works_and_the_library_goes() {
     let dir = tempdir("relocate-case-1");
@@ -887,8 +887,9 @@ fn a_divided_work_goes_with_its_hub_and_the_edition_that_stays_keeps_its_history
 }
 
 /// A rehearsal is the move rolled back: the same answer, and neither the
-/// store nor either directory's `.taiyaku/` changed. Both directories keep
-/// documents, so a derive that reconciled would write there.
+/// store nor either directory's `.taiyaku/` changed. The moved directory
+/// keeps documents and its work's document is missing, so a derive that
+/// reconciled would write it back.
 #[test]
 fn a_rehearsal_answers_what_the_move_would_and_leaves_everything_as_it_was() {
     let dir = tempdir("relocate-rehearsal");
@@ -1077,7 +1078,7 @@ fn a_move_that_would_lose_a_position_is_refused_by_the_verdict() {
     assert_eq!(dump(&conn), before);
 }
 
-/// `refused_before`'s second statement counts a member whose directory was
+/// `refused_before`'s first statement counts a member whose directory was
 /// removed (`root_id` NULL, what `ON DELETE SET NULL` leaves) as "elsewhere".
 /// `!= ?1` would call it nowhere and let the move divide the edition.
 #[test]
@@ -1980,7 +1981,7 @@ fn both_refused(conn: &Connection, root: &Root, target: Target<'_>) -> (String, 
 
 /// O191, moving the directory that holds W's hub into Bees, where N holds W's
 /// other edition's files: the derive would fold W into N, and W's row, slug
-/// and hand title would go while the answer said "split". Refused, naming W.
+/// and hand title would go. Refused, naming W.
 #[test]
 fn a_divided_work_the_derive_would_fold_away_refuses_the_move() {
     let dir = tempdir("relocate-o191-hub");

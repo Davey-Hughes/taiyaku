@@ -1,5 +1,5 @@
--- Spec C1 §5.1. The column a browse API needs in order to act on
--- `Principal.roots`, which spec A2 resolved and left nothing reading.
+-- Spec C1 §5.1. The column a browse API needs in order to act
+-- on `Principal.access`.
 --
 -- **On `member`, not on `work`, and that is forced rather than preferred.**
 -- `derive.rs`'s `Group` is "every entry across every root that resolved to the
@@ -16,12 +16,10 @@
 -- one edition, rather than with two or with none.
 --
 -- **NULL means "under no root"**, which is exactly true of an imported work —
--- it has a `sidecar_path` and no root — and of every member written before
--- this migration. `member.root_id IN (?, ?)` excludes NULL by SQL's own
--- rules, so the filter needs no special case and an empty grant (which every
--- account holds, since nothing could write `user_root` until spec C1) applies
--- no filter at all. `NOT NULL DEFAULT 0` was the alternative and would have
--- made every existing member claim a root id no row references.
+-- it has a `sidecar_path` and no root. `member.root_id IN (?, ?)` excludes NULL
+-- by SQL's own rules, so the filter needs no special case. `NOT NULL DEFAULT 0`
+-- was the alternative and would have made every existing member claim a root id
+-- no row references.
 --
 -- **`ON DELETE SET NULL`, not CASCADE.** Removing a root must not delete the
 -- members of works derived from it — `import::scanned` owns those rows, and a

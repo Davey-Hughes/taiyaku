@@ -5,19 +5,9 @@
 //! gates are the store spec's §13.2. Every decision that matters is recorded
 //! there; what is here is the order they run in.
 //!
-//! **A plan is computed by reading, not remembered in a column.** An earlier
-//! draft of the design carried `member.stamped_sha256`, so that a later scan
-//! could recognise taiyaku's own output and decline to promote a chapter
-//! number's provenance from `filename` to `comicinfo`. It was cut once the
-//! premise was checked: nothing in this codebase reads a chapter number out
-//! of a `ComicInfo.xml` — `ChapterSource::Comicinfo` is a value the *format*
-//! carries, parsed from a hand-written `.library.json`, and the scanner's one
-//! ComicInfo read is `taiyaku-cli`'s `credits.rs` pulling `<ScanInformation>`
-//! for the scanlation group, which [`crate::comicinfo::xml`] writes as
-//! `<Publisher>`. There was no loop to break. Reading each archive's existing
-//! document answers the same question better: it stays true across a database
-//! rebuild and across a hand-edit, neither of which a column survives.
-//! §1.3.
+//! **A plan is computed by reading, not remembered in a column.** Reading each
+//! archive's existing document stays true across a database rebuild and across
+//! a hand-edit, neither of which a column survives. §1.3.
 
 use std::path::PathBuf;
 
@@ -54,12 +44,10 @@ pub struct Planned {
 /// rather than joined back to `scan_entry`.** Two reasons, in that order.
 /// `member.format` is never written by anything: the repository's only
 /// `INSERT INTO member` — `import.rs`'s — lists
-/// `(edition_id, ordinal, path, sha256, pages)` and no format, and every
-/// `UPDATE` reaching those rows sets only `chapter_declared`,
-/// `chapter_source` or `root_id`. `proposals.rs`'s `edition_formats` records
-/// the same finding and measured it: `SELECT COUNT(*), COUNT(format) FROM
-/// member` answers `2, 0`. A filter on that column would make this feature
-/// fire on nothing, in every library.
+/// `(edition_id, ordinal, path, sha256, pages)` and no format, and no
+/// `UPDATE` reaching those rows sets `format`. `proposals.rs`'s
+/// `edition_formats` records the same finding. A filter on that column would
+/// make this feature fire on nothing, in every library.
 ///
 /// `edition_formats` answers it by joining `scan_entry` on
 /// `(root_id, rel_path)`, and **this deliberately does not**, because the two
@@ -86,11 +74,8 @@ pub struct Planned {
 ///
 /// # Errors
 ///
-/// Returns an error if the rows cannot be read, or if an archive cannot be
-/// opened. A *missing* archive is an error rather than a silent omission: a
-/// plan that quietly dropped a file it could not see would under-report what
-/// the stamp is about to do, and the size it reports is the whole point of
-/// the confirmation.
+/// Returns an error if the rows cannot be read, or if a zip archive cannot
+/// be opened; a member whose file cannot be read is skipped.
 pub fn plan(conn: &Connection, work_id: i64) -> Result<Vec<Planned>, String> {
     let mut stmt = conn
         .prepare(
@@ -123,18 +108,16 @@ pub fn plan(conn: &Connection, work_id: i64) -> Result<Vec<Planned>, String> {
     let mut planned = Vec::new();
     for (member_id, member_path, pages, edition_key, slug, root) in rows {
         let path = resolve(&member_path, root.as_deref());
-        // **A member whose bytes cannot be read is skipped, not fatal.** It
-        // was fatal, and that was wrong in the direction that matters: a
+        // **A member whose bytes cannot be read is skipped, not fatal.** A
         // sniff opens the file, so one member gone from disk (O62's case)
-        // failed the plan for the whole work — including for the archives
+        // would fail the plan for the whole work — including for the archives
         // beside it that are perfectly stampable. A rar that vanished is not
         // a reason the zip next to it cannot carry its metadata.
         //
-        // It is not silent, which is what the earlier reasoning here was
-        // protecting: `member_paths` returns every member, and the route's
-        // `skipped_formats` reports an unreadable one as `unreadable` beside
-        // the `rar` and `7z` it names — so the screen still says the work has
-        // an archive this will not touch, and why.
+        // It is not silent: `member_paths` returns every member, and the
+        // route's `skipped_formats` reports an unreadable one as `unreadable`
+        // beside the `rar` and `7z` it names — so the screen still says the
+        // work has an archive this will not touch, and why.
         let Ok(format) = taiyaku_read::sniff(&path) else {
             continue;
         };
@@ -189,12 +172,11 @@ pub struct Applied {
 /// in this product that rewrites files.
 ///
 /// **Stage one, rename one, then one transaction.** Peak extra disk is one
-/// archive rather than the whole work, which on C3 §6's own example is 4.1 GB
-/// of difference on a machine chosen for being small. The cost is a window: a
-/// crash after some renames leaves those files stamped and their rows stale,
-/// which is exactly what `member.sha256` exists to detect — the scanner
-/// reports the work stale and a rescan reconciles it. The design's §1.4
-/// records why the two alternatives lost.
+/// archive rather than the whole work, on a machine chosen for being small.
+/// The cost is a window: a crash after some renames leaves those files stamped
+/// and their rows stale, which is exactly what `member.sha256` exists to
+/// detect — the scanner reports the work stale and a rescan reconciles it. The
+/// design's §1.4 records why the two alternatives lost.
 ///
 /// **The file steps cannot join the transaction, and this does not pretend
 /// otherwise.** §13.2 asks that the new `sha256`, the sidecar and
@@ -212,8 +194,8 @@ pub struct Applied {
 /// # Errors
 ///
 /// Returns an error if the plan no longer holds, if any archive cannot be
-/// rewritten, or if the transaction fails. **An error raised after some
-/// archives have been renamed says how many**, because those files are
+/// rewritten, or if the transaction fails. **An error rewriting an archive
+/// after others have been renamed says how many**, because those files are
 /// stamped and their rows are not: the database is behind the disk until a
 /// rescan, and a message that did not say so would leave no trace of it.
 pub fn apply(
@@ -235,9 +217,9 @@ pub fn apply(
     // **Nothing to do is done, not performed.** An empty plan matches an empty
     // confirmation and is accepted rather than refused — "this work is already
     // stamped" is a success — but everything below writes, and there is
-    // nothing here to write about. Falling through re-exported the sidecar and
-    // its four siblings on every repeat, and `export::work` is scoped to the
-    // acting user, so a no-op stamp republished one person's view of the
+    // nothing here to write about. Falling through would re-export the sidecar
+    // and its siblings on every repeat, and `export::work` is scoped to the
+    // acting user, so a no-op stamp would republish one person's view of the
     // work's documents each time it was pressed.
     if current.is_empty() {
         return Ok(Applied {
@@ -334,9 +316,9 @@ pub fn apply(
 /// compression method survive untouched. Two reasons, and neither is
 /// tidiness: re-encoding would rewrite every page of a file the user owns,
 /// and `STORE` — which `cbz.rs` chose for the *generated* download so that
-/// `Content-Length` is exact before the first byte — would inflate 97.9% of
+/// `Content-Length` is exact before the first byte — would inflate most of
 /// this corpus's entries, turning a metadata edit into a size increase across
-/// the library. `cbz.rs` measured that on 2026-08-23.
+/// the library.
 ///
 /// **The document is matched case-insensitively and written under
 /// [`DOCUMENT`]'s spelling.** An archive carrying `comicinfo.xml` has one
@@ -351,15 +333,11 @@ pub fn apply(
 /// across a filesystem boundary, where it stops being atomic and becomes a
 /// copy.
 ///
-/// **The sync is O104, and the sentence above was false without it.** The
-/// rename can reach the journal before the staged bytes reach the disk, and a
-/// crash in between leaves the archive's path naming data that was never
-/// written — the one file in this tree nothing can regenerate. So the staged
-/// archive is synced before the rename and its directory after it, the same
-/// ordering `taiyaku_read::atomic::write` keeps. It can also be most of a
-/// stamp's cost: on the NAS's parity array a synced same-disk copy of the
-/// library's largest archive took 55.3 s, though the library share as
-/// configured stages new files on NVMe, where the flush is cheap.
+/// **The sync is O104.** The rename can reach the journal before the staged
+/// bytes reach the disk, and a crash in between leaves the archive's path
+/// naming data that was never written — the one file in this tree nothing can
+/// regenerate. So the staged archive is synced before the rename and its
+/// directory after it, the same ordering `taiyaku_read::atomic::write` keeps.
 ///
 /// # Errors
 ///
@@ -465,10 +443,10 @@ fn staging_path(path: &std::path::Path) -> PathBuf {
 ///
 /// [`plan`] answers only the archives that would change; a caller that needs
 /// to say what was *left out* — and why — needs the whole set. **Here rather
-/// than in `taiyaku-serve`, which is where it first was:** the server's copy
-/// re-derived [`resolve`]'s root-join independently, so the two could disagree
-/// about which file a member names and the screen could report a format for
-/// an archive the plan had resolved somewhere else entirely.
+/// than in `taiyaku-serve`:** a copy there would re-derive [`resolve`]'s
+/// root-join independently, so the two could disagree about which file a
+/// member names and the screen could report a format for an archive the plan
+/// had resolved somewhere else entirely.
 ///
 /// # Errors
 ///
@@ -499,20 +477,14 @@ pub fn member_paths(conn: &Connection, work_id: i64) -> Result<Vec<PathBuf>, Str
 ///
 /// **Both stored shapes are real** — `download::member_paths`'s own comment
 /// records the second: an imported document may name a member relatively,
-/// and a scanned work has no document, so its member paths are stored
-/// absolute.
+/// and a scanned work has no document, so its member paths are stored absolute.
 ///
 /// **And `Path::join` already tells them apart, so there is no guard here.**
 /// Joining an absolute path onto a base discards the base — `/shelf` joined
 /// with `/elsewhere/v01.cbz` is `/elsewhere/v01.cbz` — which is exactly the
-/// answer the absolute case wants. An earlier version carried
-/// `if path.is_relative()` and fell through to the path unchanged otherwise;
-/// the mutation sweep of 2026-09-07 reported replacing that guard with `true`
-/// as a survivor, and it was right to: the two branches computed the same
-/// value for every input, so the guard was stating a distinction `join` had
-/// already made. Removed rather than written a test for, because a test
-/// pinning an equivalent mutant proves nothing — the sweep was pointing at
-/// dead code, not at a hole.
+/// answer the absolute case wants. A guard on `path.is_relative()` would
+/// compute the same value on both of its branches for every input, so it
+/// would state a distinction `join` has already made.
 fn resolve(member_path: &str, root: Option<&str>) -> PathBuf {
     let path = std::path::Path::new(member_path);
     match root {

@@ -2,8 +2,7 @@ use super::*;
 use crate::Library;
 
 /// A scratch directory that cleans itself up, matching the shape the rest of
-/// this crate's file-touching tests use. *(Until O117 it did not: it returned
-/// a bare path, and nothing removed it.)*
+/// this crate's file-touching tests use.
 fn scratch(name: &str) -> taiyaku_read::test_support::TempDir {
     taiyaku_read::test_support::TempDir::new(&format!("backup-{name}"))
 }
@@ -198,15 +197,12 @@ fn pruning_a_directory_that_does_not_exist_yet_removes_nothing() {
 }
 
 /// **What a symlink in the backup directory costs, checked rather than
-/// assumed** — `prune` is the only file-deleting function in this crate, so
-/// what it can and cannot be aimed at needs a test rather than a comment.
+/// assumed** — `prune` deletes files, so what it can and cannot be aimed at
+/// needs a test rather than a comment.
 ///
 /// `DirEntry::metadata` does not traverse a symlink (unlike the free
 /// `fs::metadata` it reads like), so a symlink named as a backup is not a
-/// file, is never listed, and can never reach `prune` at all. **The comment in
-/// `list` claimed the opposite** — that the link would be listed and that
-/// `remove_file` would take the link rather than its target — until this test
-/// was written and disagreed with it.
+/// file, is never listed, and can never reach `prune` at all.
 #[test]
 fn pruning_a_symlinked_backup_is_left_alone_entirely() {
     let dir = scratch("prune-symlink");
@@ -251,8 +247,7 @@ fn pruning_a_symlinked_backup_is_left_alone_entirely() {
 /// **`take_named` is `pub`, so the shape check belongs on it.** Without one,
 /// `take_named(conn, dir, "../../library.db")` joins straight onto the
 /// directory and writes outside it — and `VACUUM INTO`'s refusal of an
-/// existing target does not hold for a target that does not exist yet. Found
-/// by C4 PR 2's whole-branch review.
+/// existing target does not hold for a target that does not exist yet.
 #[test]
 fn take_named_refuses_a_name_that_is_not_a_backup_name() {
     let dir = scratch("take-named-shape");
@@ -277,11 +272,9 @@ fn take_named_refuses_a_name_that_is_not_a_backup_name() {
 }
 
 /// **"Not found" is the only `read_dir` failure that means "no backups yet".**
-/// The guard was `e.kind() == NotFound`, and a mutation replacing it with
-/// `true` survived every test — so a directory that exists and cannot be read,
-/// or a path that is a file, would have answered an empty listing instead of
-/// saying so. That is the silence this project keeps writing rules against.
-/// Found by C4 PR 2's mutation sweep.
+/// A directory that exists and cannot be read, or a path that is a file, must
+/// say so rather than answer an empty listing. That is the silence this
+/// project keeps writing rules against.
 #[test]
 fn a_backup_path_that_is_not_a_directory_is_an_error_not_an_empty_listing() {
     let dir = scratch("list-not-a-directory");

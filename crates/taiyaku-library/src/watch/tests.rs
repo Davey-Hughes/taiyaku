@@ -29,15 +29,13 @@ fn the_probe_removes_the_file_it_wrote() {
 /// The test above only ever runs against tmpfs with a live watcher, so
 /// `seen` is always `true` when cleanup runs; the read-only and symlink
 /// tests fail before `create_new` ever creates a file, so cleanup there is a
-/// no-op with nothing to prove. Nothing pinned the case this exists for: a
-/// probe file that *was* created and then timed out rather than being seen.
+/// no-op with nothing to prove. This pins the case they leave: a probe file
+/// that *was* created and then timed out rather than being seen.
 ///
-/// Security review's own check: moving `remove_file` inside `if seen` —
-/// leaving a timed-out probe file behind — left every other test in this
-/// module green. `Duration::ZERO` guarantees the timeout branch (the file is
-/// written before the wait loop even starts, and the loop's first deadline
-/// check is already past) without racing a real clock, closing property 1:
-/// "removed on every path out ... including the timeout."
+/// `Duration::ZERO` guarantees the timeout branch (the file is written before
+/// the wait loop even starts, and the loop's first deadline check is already
+/// past) without racing a real clock: `probe` promises the file is "removed
+/// on every path out ... including the timeout."
 #[test]
 fn the_probe_file_is_removed_even_on_an_immediate_timeout() {
     let dir = crate::tests::tempdir("probe-timeout");
@@ -61,8 +59,8 @@ fn the_probe_file_is_removed_even_on_an_immediate_timeout() {
 fn a_root_that_cannot_be_written_falls_back_to_the_short_interval() {
     // **`chmod 0555` does not stop root**, which holds `CAP_DAC_OVERRIDE` —
     // and CI's `test` job runs `rust:1-bookworm` with no `user:`, doing
-    // root-only work in its own steps. Reproduced under `unshare -Ur`: this
-    // test FAILS as root, on a property the code gets right.
+    // root-only work in its own steps. Run as root without the check below,
+    // this test would fail on a property the code gets right.
     //
     // So it measures whether the restriction actually took, and says so when
     // it did not. `taiyaku-serve/src/tests.rs`'s
@@ -79,7 +77,7 @@ fn a_root_that_cannot_be_written_falls_back_to_the_short_interval() {
     std::fs::set_permissions(dir.path(), perms).expect("chmod");
 
     // The guard: if this process can still create a file here, the chmod
-    // bought nothing and every assertion below would pass without measuring.
+    // bought nothing.
     let sentinel = dir.path().join(".taiyaku-permission-check");
     if std::fs::OpenOptions::new()
         .write(true)
@@ -167,7 +165,7 @@ fn the_report_names_what_this_root_can_actually_do() {
     assert!(line.contains("15m"), "{line}");
 }
 
-// --- the watch-count ceiling, not among the brief's five tests -------------
+// --- the watch-count ceiling ------------------------------------------------
 //
 // §8: "a lower ceiling elsewhere must be reported... a partially-watched root
 // is the worst of the three states, because it looks like the first and
@@ -177,9 +175,8 @@ fn the_report_names_what_this_root_can_actually_do() {
 // comparison is `report_line`'s, so it is `report_line`'s tests that have to
 // pin it.
 //
-// This machine allows 524,288 watches (measured 2026-08-14 by the scanner
-// spec, confirmed again here on 2026-08-17), which no fixture's directory
-// count will ever exceed — the same shape `lib.rs` names for
+// This machine allows far more watches than any fixture's directory count
+// will ever reach — the same shape `lib.rs` names for
 // `require_fts5_with_probe`. `report_line_against` takes the ceiling as a
 // parameter for exactly that reason: a test can hand in one low enough to
 // reach the branch without a host that actually has a lower one.
@@ -237,15 +234,13 @@ fn the_report_stays_plain_when_the_directory_count_is_under_the_watch_ceiling() 
     );
 }
 
-/// An event about somebody else's file is not the answer to this
-/// experiment.
+/// An event about somebody else's file is not the answer to this experiment.
 ///
 /// `a_probe_on_an_ordinary_local_directory_sees_its_own_file` cannot see the
-/// difference: its tempdir holds nothing but the probe file, so "the probe's
-/// own event arrived" and "some event arrived" are the same event. Replacing
-/// the predicate with `!event.paths.is_empty()` left every test in this
-/// module green — and an NFS root that delivers unrelated traffic but not
-/// this file would then take the 24-hour interval and miss a day of changes.
+/// difference: its tempdir holds nothing but the probe file, so
+/// "the probe's own event arrived" and "some event arrived" are the same
+/// event. An NFS root that delivers unrelated traffic but not this file must
+/// not take the 24-hour interval and miss a day of changes.
 #[test]
 fn only_the_probes_own_file_answers_the_question() {
     use notify::EventKind;
@@ -277,9 +272,9 @@ fn only_the_probes_own_file_answers_the_question() {
     ));
 }
 
-/// The boundary itself. The two tests above sit 50 either side of the
-/// ceiling and neither is on it, so `>` and `>=` answer alike for both — and
-/// a root with exactly as many directories as the ceiling allows reports
+/// The boundary itself. The two tests above sit either side of the ceiling and
+/// neither is on it, so `>` and `>=` answer alike for both — and a root with
+/// exactly as many directories as the ceiling allows reports
 /// "watching only 150 of 150 directories — 0 short of …", which names a
 /// shortfall of nothing.
 #[test]
@@ -301,8 +296,8 @@ fn a_directory_count_exactly_at_the_ceiling_is_not_a_shortfall() {
     );
 }
 
-/// `probe` always supplies a `reason` when it answers `false`, so nothing
-/// built the state this fallback exists for — and `""` in its place gives an
+/// `probe` always supplies a `reason` when it answers `false`, so it never
+/// builds the state this fallback exists for — and `""` in its place gives an
 /// operator `watch probe failed () — scanning every 15m`, which names
 /// neither the failure nor anything to do about it. [`Probe`] is a `pub`
 /// struct with `pub` fields, so a caller outside this crate can build
@@ -339,11 +334,9 @@ fn report_line_reads_the_real_watch_ceiling_this_host_allows() {
     // The assertion above pins `read_watch_ceiling` alone — it never calls
     // `report_line`, so it could not catch `report_line` failing to use it.
     // `usize::MAX` exceeds any ceiling this host could really report, so if
-    // `report_line` used `None` in place of the real value here (surviving
-    // mutant: replace the `read_watch_ceiling()` call at its one call site
-    // with `None`), this line would come back as the plain "watching N
-    // directories" form instead of naming a shortfall, and the assertion
-    // below would catch it.
+    // `report_line` used `None` in place of the real value here, this line
+    // would come back as the plain "watching N directories" form instead of
+    // naming a shortfall, and the assertion below would catch it.
     let watching = Probe {
         watching: true,
         reason: None,

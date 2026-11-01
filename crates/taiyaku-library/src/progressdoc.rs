@@ -1,12 +1,11 @@
 //! `taiyaku.progress.json`: every position one reader holds on one work.
 //!
-//! **Versioned since a position became per-edition.** The document carried a
-//! bare `{"edition": …, "slot": …}` while a reader held one position per work,
-//! and that shape cannot say what it now has to. `taiyaku_progress: 1` is the
-//! same device `TruthDoc`'s `taiyaku_truth: 1` uses, and for the same reason:
-//! this document now has a shape that can change again.
+//! **Versioned.** A reader holds one position per edition, and the bare
+//! `{"edition": …, "slot": …}` shape cannot say that. `taiyaku_progress: 1` is
+//! the same device `TruthDoc`'s `taiyaku_truth: 1` uses, and for the same
+//! reason: this document has a shape that can change again.
 //!
-//! **The legacy form is still read, and that is not politeness.** Real
+//! **The legacy form is read, and that is not politeness.** Real
 //! documents are on disk — `corpus/gotoubun-v01/taiyaku.progress.json` is one
 //! — and `taiyaku serve <sidecar>…` runs `migrate::apply_progress` over them
 //! at *every* start. A refusal there would drop a reader's position silently,

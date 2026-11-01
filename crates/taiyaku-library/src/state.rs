@@ -2,9 +2,9 @@
 //! alignments, as rows.
 //!
 //! `Progress`, `Notes` and `Note` (with notes' own `Region`) live at this
-//! crate's root — moved down from `taiyaku-serve`, which cannot be the thing
-//! this store depends on. `TruthDoc` needs no move: it is already in
-//! `taiyaku-core`, which this crate depends on.
+//! crate's root rather than in `taiyaku-serve`, which cannot be the thing this
+//! store depends on. `TruthDoc` is in `taiyaku-core`, which this crate
+//! depends on.
 //!
 //! Three merge rules, deliberately different (design §4.3):
 //!
@@ -20,13 +20,11 @@
 //! merge on; both are simple enough to apply inline wherever a caller compares
 //! two `updated` timestamps, which is not this module's job.
 //!
-//! **"Progress has nothing to conflict over" stood here and stopped being
-//! true.** It was one row per work, and migration 9 made it one per edition;
-//! `fold::move_positions` is then a conflict resolution over this very table,
+//! `fold::move_positions` is a conflict resolution over this very table,
 //! applying the newer-wins rule tabled above when two works' positions meet on
 //! one edition key, and `fold::Moved::lost_positions` counts the reading the
-//! loser gives up. The rule is still not applied *here* — that much is
-//! unchanged — but it is applied, and by name.
+//! loser gives up. The rule is not applied *here*, but it is applied, and
+//! by name.
 //!
 //! [`put_alignments`] is the fourth writer here and belongs to none of those
 //! three rules — see its own doc comment for why the document it writes is a
@@ -46,10 +44,10 @@ use crate::{Note, Notes, Position, Progress, Region};
 
 /// Every position one reader holds on one work, newest first.
 ///
-/// **A vector rather than an `Option` since migration 009**: a reader holds a
-/// place in each edition of a volume. The head is the most recently updated,
-/// which is what a caller wanting "where was I" should take — see
-/// `serve`'s `get_progress` and `web/src/api.ts`'s `getProgress`.
+/// **A vector rather than an `Option`**: a reader holds a place in each
+/// edition of a volume. The head is the most recently updated, which is what a
+/// caller wanting "where was I" should take — see `serve`'s `get_progress` and
+/// `web/src/api.ts`'s `getProgress`.
 ///
 /// # Errors
 ///
@@ -106,8 +104,8 @@ pub fn put_progress(
 /// `WITHOUT ROWID` on `(user_id, work_id, edition)`. `edition` itself is not
 /// named in the `DO UPDATE` list: it is part of the conflict target, so
 /// assigning it would be assigning a column to itself. Pinned by
-/// `put_progress_leaves_completed_at_and_read_count_alone` in this module's
-/// `tests.rs`, which is red under exactly that swap.
+/// `put_progress_leaves_completed_at_and_read_count_alone` in
+/// this module's `tests.rs`.
 ///
 /// **`updated: None` stamps `datetime('now')` and is what every live write
 /// passes.** `Some` exists for one caller: `migrate::apply_progress`,
@@ -260,12 +258,11 @@ fn work_slug(conn: &Connection, work_id: i64) -> Result<String, String> {
 /// Replace every note a reader holds on a work with `doc.notes`.
 ///
 /// A client sends the whole document back on every write (`notes.rs`'s
-/// `validate` doc comment), so the row-store equivalent of the old file's
-/// `store` — which replaced the whole file — is delete-then-reinsert, inside
-/// one transaction so a failure partway through leaves the prior set intact
-/// rather than half-replaced. `doc.work` is not written anywhere: nothing in
-/// the `note` table carries a work label, and `work_id` already says which
-/// work this is.
+/// `validate` doc comment), so a write is delete-then-reinsert, inside one
+/// transaction so a failure partway through leaves the prior set intact rather
+/// than half-replaced. `doc.work` is not written anywhere: nothing in the
+/// `note` table carries a work label, and `work_id` already says which work
+/// this is.
 ///
 /// # Errors
 ///
@@ -367,16 +364,10 @@ struct TruthBoxRow {
 /// written.** It is the record of which archives the boxes were drawn
 /// against, and `TruthEdition::is_stale_for` compares it against the digests
 /// of the archives in hand now — so it is the one field here that must *not*
-/// be a projection of the present. An earlier version of this function
-/// re-derived it from whatever `member` rows existed at read time, which made
-/// that comparison compare a list against itself: `is_stale_for` could never
-/// report stale again, and an export after a reimport wrote a
-/// `taiyaku.truth.json` asserting provenance that was false, over the
-/// reader's only copy (whole-branch review 2, C2). The doc comment then here
-/// named a precondition — "called before a reimport overwrites `member`" —
-/// that no caller satisfied or could satisfy. `truth_member` holds it now.
-/// `taiyaku_truth` is still the current [`taiyaku_core::TRUTH_VERSION`],
-/// never a stored value: that one really is a property of this build.
+/// be a projection of the present: that would make the comparison compare a
+/// list against itself. `truth_member` holds it. `taiyaku_truth` is the
+/// current [`taiyaku_core::TRUTH_VERSION`], never a stored value: that one
+/// really is a property of this build.
 ///
 /// **An edition key survives with no pages at all**, if that is what was
 /// written — `pages` is seeded from `truth_page` *and* `truth_member`, so an
@@ -390,8 +381,7 @@ struct TruthBoxRow {
 /// from `truth_box`. `TruthEdition::pages`'s own doc comment calls the
 /// absent-vs-empty distinction the labelling progress tracker; seeding from
 /// `truth_page` rather than from `truth_box` alone is what lets a page
-/// examined and found empty round-trip as exactly that, not as "never
-/// opened".
+/// examined and found empty round-trip as exactly that, not as "never opened".
 ///
 /// **Box order within a page is `truth_box.id`, stated rather than inherited.**
 /// `put_truth` inserts a page's boxes in document order, so rowid order *is*
@@ -548,11 +538,10 @@ fn truth_members(
 ///
 /// `labelled.members` is written to `truth_member` **as given**, for every
 /// edition in the document, including one with no pages: it is the record of
-/// which archives these boxes were drawn against, and the only copy of it
-/// (whole-branch review 2, C2). The labelling client stamps it fresh from
-/// the sidecar it is reading on every write (`web/src/truthWrite.ts`'s
-/// `withPage`), so what arrives here is what the labeller had in front of
-/// them.
+/// which archives these boxes were drawn against, and the only copy of it.
+/// The labelling client stamps it fresh from the sidecar it is reading on
+/// every write (`web/src/truthWrite.ts`'s `withPage`), so what arrives here is
+/// what the labeller had in front of them.
 ///
 /// # Errors
 ///
@@ -636,9 +625,7 @@ pub fn put_truth(conn: &Connection, work_id: i64, doc: &TruthDoc) -> Result<(), 
 /// [`crate::project::sidecar`] on the way out. This function exists because
 /// one route writes them outside an import: `taiyaku-serve`'s
 /// `patch_alignments`, a reader dragging a filmstrip tile to say two pages
-/// belong together. That handler wrote the file and its own in-memory copy and
-/// nothing else, so until the next `serve` start re-imported the file, the
-/// database `serve` answers every request from disagreed with it (O43).
+/// belong together (O43).
 ///
 /// **A whole-document replace, `put_truth`'s rule** — later wins, with no
 /// merge. That is right *here* and only here: the caller is the process that

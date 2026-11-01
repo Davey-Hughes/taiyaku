@@ -277,17 +277,14 @@ pub struct Added {
 /// Why [`add_root_checked`] could not add a root.
 ///
 /// **Two shapes, not the bare `String` this module's other fallible
-/// functions still return**, so a caller can tell which happened rather
-/// than re-parsing a message meant for a person. Every other checked write
-/// this codebase exposes over HTTP already keeps that split at the
-/// handler — `taiyaku-serve`'s `create_rule`/`patch_rule` pre-check their
-/// own caller-fault cases before ever writing, and reserve a 500 for the
-/// store call itself. `add_root_checked` could offer no such split before
-/// this type existed: its own checks run *inside* this function, not in the
-/// handler that calls it, so a caller had nothing of its own to pre-check
-/// against and a handler was left folding every failure this function could
-/// produce — a bad path and a database gone read-only alike — into the same
-/// 400.
+/// functions return**, so a caller can tell which happened rather than
+/// re-parsing a message meant for a person. Every other checked write this
+/// codebase exposes over HTTP already keeps that split at the handler —
+/// `taiyaku-serve`'s `create_rule`/`patch_rule` pre-check their own
+/// caller-fault cases before ever writing, and reserve a 500 for the store
+/// call itself. `add_root_checked`'s own checks run *inside* this function,
+/// not in the handler that calls it, so a caller has nothing of its own to
+/// pre-check against.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AddRootError {
     /// `path` itself: it does not exist, this process cannot read it, or it
@@ -371,13 +368,12 @@ pub fn add_root_checked(conn: &Connection, path: &Path) -> Result<Added, AddRoot
 /// **The library is created only once every validation has passed**, by
 /// [`add_root_in`], so a refused path names no library into being.
 ///
-/// [`add_root`] and [`add_root_in`] still validate nothing: a great many
+/// [`add_root`] and [`add_root_in`] validate nothing: a great many
 /// fixtures call them directly, and a validation that runs inside every
 /// fixture is a validation nobody can test the absence of. This is the
 /// checked path a person takes when adding a root they have not already
 /// vetted by hand — through `taiyaku library scan --add`, or the HTTP API on
-/// their behalf. That command took the unchecked one until O47, and this doc
-/// named `import` as a caller of [`add_root`], which it has never been.
+/// their behalf.
 ///
 /// # Errors
 ///
@@ -892,20 +888,14 @@ fn emptied_by_removing(conn: &Connection, id: i64) -> Result<Option<i64>, String
 /// `crate::proposals::raise` for whatever the loss changes.
 ///
 /// **Always derives under [`crate::derive::Documents::Skip`], never
-/// `Reconcile` — whole-branch review, Important 2.** This function's own
-/// writes run inside a transaction that belongs to its caller — committed by
-/// [`remove_root`], rolled back by [`removal_cost`] — and `Reconcile` writes
-/// and renames hand-metadata documents under `<root>/.taiyaku/` while that
-/// transaction is still open. `write_work`'s own doc comment states the
-/// invariant this would break: a document is renamed only after its
-/// database transaction "has already committed — never inside it. A
-/// rollback that left the file renamed would strand it under a key the
-/// database never adopted." Before this fix, `remove_root` passed `Reconcile`
-/// here, so a document deleted just before a removal was found present
-/// again immediately after it — written mid-transaction, and left in place
-/// even had the removal then failed and rolled back. [`remove_root`] now
-/// runs the real, `Reconcile`-mode pass itself, after its own transaction
-/// commits — see that function's own doc.
+/// `Reconcile`.** This function's own writes run inside a transaction that
+/// belongs to its caller — committed by [`remove_root`], rolled back by
+/// [`removal_cost`] — and `Reconcile` writes and renames hand-metadata
+/// documents under `<root>/.taiyaku/` while that transaction is still open.
+/// `write_work`'s own comment on the rename says what that risks: "A rollback
+/// that left the file renamed would strand it under a key the database never
+/// adopted." [`remove_root`] runs the real, `Reconcile`-mode pass itself, after
+/// its own transaction commits — see that function's own doc.
 ///
 /// # Errors
 ///
@@ -933,10 +923,9 @@ fn apply_removal(
 /// change, derive for real, read the result, roll back. [`apply_removal`]
 /// always derives under [`crate::derive::Documents::Skip`], for
 /// [`crate::preview::preview`]'s own reason — a real derivation writes and
-/// renames hand-metadata documents under `<root>/.taiyaku/`, and a
-/// `ROLLBACK` does not undo a filesystem write. A cost estimate that renamed
-/// files in someone's library would be worse than the bug it exists to
-/// prevent.
+/// renames hand-metadata documents under `<root>/.taiyaku/`, and a `ROLLBACK`
+/// does not undo a filesystem write. A cost estimate that renamed files in
+/// someone's library would be worse than the bug it exists to prevent.
 ///
 /// **The [`crate::derive::DeriveReport`] returned alongside [`Removal`] is a
 /// prediction, not a promise.** It is what `Skip`-mode derivation found while
@@ -948,20 +937,17 @@ fn apply_removal(
 /// [`remove_root`]'s own doc) are never populated here, because this pass
 /// never runs that far.
 ///
-/// **[`crate::Nested`], not `unchecked_transaction` directly** — Task 11 puts
-/// an HTTP route over this function and [`remove_root`] both, and while that
-/// route calls each on a fresh connection today, `preview::preview` already
-/// proves the alternative breaks the moment that stops being true: it wraps
-/// a whole `derive_with` pass in one `BEGIN IMMEDIATE`, and every plain
-/// `unchecked_transaction` opened underneath it — `import::scanned`,
-/// `fold::absorb` — refused outright on the very first work, which is what
-/// `Nested` exists to fix. Rolled back rather than committed by simply never
-/// calling [`crate::Nested::commit`] and letting this scope drop: `Nested`'s
-/// own `Drop` then undoes exactly what `apply_removal` just did, a real
+/// **[`crate::Nested`], not `unchecked_transaction` directly**, because a
+/// caller may already hold a transaction, and a plain `unchecked_transaction`
+/// opened inside one is refused, as `Nested`'s own doc shows under the
+/// `BEGIN IMMEDIATE` that `preview::preview` wraps a whole `derive_with` pass
+/// in. Rolled back rather than committed by simply never calling
+/// [`crate::Nested::commit`] and letting this scope drop: `Nested`'s own
+/// `Drop` then undoes exactly what `apply_removal` just did, a real
 /// `ROLLBACK` if nothing else was open or a `ROLLBACK TO SAVEPOINT` folded
 /// back into a caller's own already-open transaction if something was — see
-/// that type's own doc. Either way this function takes nothing, whether it
-/// is called standalone or nested inside another transaction.
+/// that type's own doc. Either way this function takes nothing, whether it is
+/// called standalone or nested inside another transaction.
 ///
 /// # Errors
 ///
@@ -987,26 +973,20 @@ pub fn removal_cost(
 /// [`crate::hand::reconcile`]'s job, run here the same way
 /// [`fn@crate::derive::derive`] runs it on every other call site.
 ///
-/// **Two derive passes, not one — whole-branch review, Important 2.**
-/// [`apply_removal`] always derives under [`crate::derive::Documents::Skip`]
-/// (see that function's own doc), so the deletes and the SQL-only
-/// re-derivation they need commit as one atomic unit with nothing written to
-/// disk while that transaction is open. The real, `Documents::Reconcile`
-/// pass — the one that writes and renames hand-metadata documents — runs
-/// here, second, on `conn` directly, only *after* the transaction above has
-/// committed. `derive_with`'s own doc states this is safe to run twice:
-/// "idempotent by construction... running this twice over unchanged facts
-/// writes the same rows a second time rather than a second set of rows," so
-/// the cost is one redundant SQL pass, not a correctness risk. Before this
-/// split, the `Reconcile` pass ran *inside* the transaction `Nested` opens
-/// below, which `write_work`'s own doc comment states the exact invariant
-/// this broke: a document is renamed only "after `import::scanned`'s own
-/// transaction has already committed — never inside it. A rollback that left
-/// the file renamed would strand it under a key the database never
-/// adopted." Verified: a document deleted just before a removal was found
-/// present again immediately afterward, written while the removal's own
-/// transaction was still open — any `Err` after that rename would have
-/// rolled the database back while leaving the filesystem moved.
+/// **Two derive passes, not one.** [`apply_removal`] always derives under
+/// [`crate::derive::Documents::Skip`] (see that function's own doc), so the
+/// deletes and the SQL-only re-derivation they need commit as one atomic unit
+/// with nothing written to disk while that transaction is open. The real,
+/// `Documents::Reconcile` pass — the one that writes and renames hand-metadata
+/// documents — runs here, second, on `conn` directly, only *after* the
+/// transaction above has committed. `derive_with`'s own doc states this is safe
+/// to run twice: "idempotent by construction... running this twice over
+/// unchanged facts writes the same rows a second time rather than a second set
+/// of rows," so the cost is one redundant SQL pass, not a correctness risk. A
+/// `Reconcile` pass inside the transaction `Nested` opens below would rename
+/// documents while that transaction is open, and `write_work`'s own comment on
+/// the rename says what that risks: "A rollback that left the file renamed
+/// would strand it under a key the database never adopted."
 ///
 /// The returned [`crate::derive::DeriveReport`] is this second, real pass's
 /// own — the one whose findings actually reached the library, unlike
@@ -1017,12 +997,10 @@ pub fn removal_cost(
 /// that does depend on it — `repaired_documents`, `unwritable_documents`,
 /// `orphan_documents`, `declined_documents`, `stale_documents` — is `Skip`'s
 /// own report, and reporting it dropped and reporting nothing would say
-/// the removal reconciled documents. See M5 of the whole-branch review for
-/// why [`apply_removal`]'s own report is not simply discarded either way.
+/// the removal reconciled documents.
 ///
 /// **[`crate::Nested`], not `unchecked_transaction` directly** — see
-/// [`removal_cost`]'s own doc for why: the same composability this function
-/// needs for Task 11's HTTP route.
+/// [`removal_cost`]'s own doc for why.
 ///
 /// # Errors
 ///
@@ -1145,15 +1123,6 @@ pub fn remove_library(
 /// column predates any validation — migration 1 — so a row can already hold
 /// anything, and treating a build failure as impossible would make it a
 /// crash rather than a complaint.
-///
-/// **Was `#[cfg_attr(not(test), expect(dead_code, …))]` on the type and on
-/// each of its methods, the same choice `cbz.rs` made for `Plan::zip64` ahead
-/// of its own caller landing** — three separate attributes rather than one on
-/// the module, because each came off on its own caller's schedule rather than
-/// all at once. Task 1 built only this matcher; `scan_root_inner` calling
-/// `Excluder::build` and `.excludes` took the attribute off those two and the
-/// struct itself, and `forget_unseen` calling `excludes_with_parents` (O92)
-/// took it off the last method. Nothing here is dead code any more.
 struct Excluder {
     gitignore: ignore::gitignore::Gitignore,
     /// One message per line that would not compile, naming the line.
@@ -1161,9 +1130,8 @@ struct Excluder {
 }
 
 impl Excluder {
-    /// Compile `patterns`, one per line. `None` and `""` both mean "exclude
-    /// nothing", which is the path every scan in this repository took before
-    /// this existed.
+    /// Compile `patterns`, one per line. `None` and `""` both mean
+    /// "exclude nothing".
     fn build(patterns: Option<&str>) -> Self {
         let mut builder = ignore::gitignore::GitignoreBuilder::new("");
         let mut complaints = Vec::new();
@@ -1173,10 +1141,8 @@ impl Excluder {
             }
         }
         // `build` cannot fail once `add_line` has accepted every line it
-        // kept — measured against `ignore` 0.4.33 on 2026-09-09, a builder
-        // holding only a rejected line still builds, empty. Handled rather
-        // than unwrapped anyway: this module's rule is that a pattern
-        // problem is a complaint, never a panic.
+        // kept. Handled rather than unwrapped anyway: this module's rule is
+        // that a pattern problem is a complaint, never a panic.
         let gitignore = builder.build().unwrap_or_else(|why| {
             complaints.push(format!(
                 "compiling this directory's exclude patterns: {why}"
@@ -1219,17 +1185,16 @@ impl Excluder {
 
 /// Whether every line of `patterns` is a pattern this library can compile.
 ///
-/// **`taiyaku-serve`'s `PATCH /api/library/roots/{id}` refuses on this**, so
-/// an admin hears about a typo at save rather than after a scan. A pattern
-/// already stored that will not build is a different matter and is not this
-/// function's business — see [`Excluder::build`], which drops it and
-/// complains.
+/// **`taiyaku-serve`'s `PATCH /api/library/roots/{id}` refuses on this**, so an
+/// admin hears about a typo at save rather than after a scan. A pattern already
+/// stored that will not build is a different matter and is not this function's
+/// business — see [`Excluder::build`], which drops it and complains.
 ///
 /// **What this actually catches is narrow, and callers must not imply
-/// otherwise.** Measured against `ignore` 0.4.33 on 2026-09-09, `add_line`
-/// rejects a dangling `\` and an unclosed `{`. It accepts `a[`, `[a-`,
-/// `[[:bogus:]]`, `[]`, `***` and `a**b`. This is a guard against two
-/// specific typos, not a check that a pattern means what its author meant.
+/// otherwise.** With `ignore` 0.4.33, `add_line` rejects a dangling `\` and an
+/// unclosed `{`. It accepts `a[`, `[a-`, `[[:bogus:]]`, `[]`, `***` and `a**b`.
+/// This is a guard against two specific typos, not a check that a pattern means
+/// what its author meant.
 ///
 /// # Errors
 ///
@@ -1269,26 +1234,20 @@ pub struct ScanReport {
     /// Directories beneath the root that could not be listed, one message per
     /// directory — `std::fs::read_dir`'s own refusal, naming the path.
     ///
-    /// **What this module's principle — one unreadable file must not leave a
-    /// library unscanned — had never actually been applied to.** A `lost+found`
-    /// directory under a freshly mounted share is `0700`, owned by root; a
-    /// non-root `taiyaku library scan --add /srv/manga` met it on every mount
-    /// point and failed the whole root over one directory it was never going
-    /// to be able to read anyway. Skipped, counted and named here instead —
-    /// see [`measure_dir`] — so `Err` from [`scan_root`] is reserved for the
-    /// root's own directory refusing to list, which has nothing above it to
-    /// skip to.
+    /// **This module's principle — one unreadable file must not leave a library
+    /// unscanned — applies to a directory too.** A `lost+found` directory under
+    /// a freshly mounted share is `0700`, owned by root, so a non-root scan can
+    /// never list it. Such a directory is skipped, counted and named here — see
+    /// [`measure_dir`] — so `Err` from [`scan_root`] is reserved for the root's
+    /// own directory refusing to list, which has nothing above it to skip to.
     pub unreadable_dirs: Vec<String>,
     /// Directories a pattern in `root.exclude_globs` named, which this walk
     /// therefore never descended into — no `read_dir`, no `stat`, no
     /// `sniff`, no `member_pages` for anything beneath them.
     ///
-    /// **C4 §3's fourth confession, finally a field.** That section requires
-    /// a scan to report "directories skipped by `exclude_globs`" alongside
-    /// the containers it could not open and the formats it cannot read; the
-    /// build design asserted every item of that discipline "is already a
-    /// field", which was true of the other three and false of this one until
-    /// now (O92).
+    /// **C4 §3's fourth confession.** That section requires a scan to report
+    /// "directories skipped by `exclude_globs`" alongside the containers it
+    /// could not open and the formats it cannot read (O92).
     pub excluded_dirs: Vec<String>,
     /// Files a pattern named, counted rather than listed.
     ///
@@ -1355,25 +1314,23 @@ impl ScanReport {
 /// **`last_scan_at`/`last_scan_status` are written here, on every path out —
 /// including the refusal — because this is the one function `taiyaku-cli`'s
 /// `library scan` and `taiyaku-serve`'s `POST /api/library/roots/{id}/scan`
-/// both call.** Neither column had ever been written before Task 12, though
-/// both have existed since migration 1 and C4 §3's regime line quotes both.
-/// Putting the write inside this function rather than in either caller is
-/// what keeps the CLI and the route from ever disagreeing about what "the
-/// last scan" means for a root — there is exactly one place this fact is
-/// decided, and both front ends read the same row afterward. `last_scan_at`
-/// is `datetime('now')`, SQLite's own clock rather than this process's, so a
-/// scan run from a container with a skewed clock still agrees with every
-/// other timestamp the same database already keeps that way. `last_scan_status`
-/// is one of three words: `"ok"` (recorded and applied), `"refused"` (§8.1 —
-/// nothing was applied, and this call still says so rather than leaving the
-/// column to read as "never scanned"), or `"failed"` (an `Err` below — a
-/// permission refusal on the root's own directory, a symlink cycle past
-/// [`MAX_DEPTH`], or a database statement failing outright). The write itself
-/// is a plain, separate statement, issued after whatever transaction the scan
-/// itself opened has already committed or rolled back — never inside it —
-/// so a scan that failed and rolled back still leaves a truthful `"failed"`
-/// behind rather than losing the write along with everything else the
-/// transaction undid.
+/// both call.** Putting the write inside this function rather than in either
+/// caller is what keeps the CLI and the route from ever disagreeing about
+/// what "the last scan" means for a root — there is exactly one place this
+/// fact is decided, and both front ends read the same row afterward.
+/// `last_scan_at` is `datetime('now')`, SQLite's own clock rather than this
+/// process's, so a scan run from a container with a skewed clock still agrees
+/// with every other timestamp the same database already keeps that way.
+/// `last_scan_status` is one of three words: `"ok"` (recorded and applied),
+/// `"refused"` (§8.1 — nothing was applied, and this call still says so
+/// rather than leaving the column to read as "never scanned"), or `"failed"`
+/// (an `Err` below — a permission refusal on the root's own directory, a
+/// symlink cycle past [`MAX_DEPTH`], or a database statement failing
+/// outright). The write itself is a plain, separate statement, issued after
+/// whatever transaction the scan itself opened has already committed or
+/// rolled back — never inside it — so a scan that failed and rolled back
+/// still leaves a truthful `"failed"` behind rather than losing the write
+/// along with everything else the transaction undid.
 ///
 /// # Errors
 ///
@@ -1421,18 +1378,15 @@ pub fn scan_root(conn: &Connection, root: &Root) -> Result<ScanReport, String> {
 /// Correct `last_scan_status` to `"failed"` after a walk this function had
 /// nothing to do with has already recorded `"ok"`.
 ///
-/// **The one caller this exists for**: `taiyaku-serve`'s `POST
-/// /api/library/roots/{id}/scan` runs [`scan_root`] and then
-/// [`fn@crate::derive::derive`] immediately after, one root at a time, and
-/// folds both into the one report C4 §3's screen shows. [`scan_root`] itself
-/// only ever sees the walk — it writes `"ok"` the moment that commits, before
-/// the derive half of the job has even started — so a derive that then fails
-/// left that `"ok"` standing: the walk genuinely succeeded, but the library
-/// it now describes may be only partly derived (whole-branch review,
-/// Important 1). `taiyaku-cli`'s own `library scan` does not need this: it
-/// derives once after every root in the batch, not per root, so there is no
-/// single root row whose status a derive failure there would need to correct
-/// — an `Err` simply fails the whole command.
+/// **The one caller this exists for**: `taiyaku-serve`'s scan job runs
+/// [`scan_root`] on each directory it was given and then
+/// [`fn@crate::derive::derive`] once, and folds both into the one report
+/// C4 §3's screen shows. [`scan_root`] itself only ever sees the walk — it
+/// writes `"ok"` the moment that commits, before the derive half of the job
+/// has even started — so a derive that then fails would leave that `"ok"`
+/// standing: the walk genuinely succeeded, but the library it now describes
+/// may be only partly derived. `taiyaku-cli`'s own `library scan` does not
+/// call it: an `Err` from its derive fails the whole command.
 ///
 /// Kept here, not in `taiyaku-serve`, for the reason [`scan_root`]'s own doc
 /// comment states about `last_scan_at`/`last_scan_status`: there is exactly
@@ -1470,12 +1424,11 @@ fn scan_root_inner(conn: &Connection, root: &Root) -> Result<ScanReport, String>
 
     // §8.1, before a single row is written.
     //
-    // **The test is "nothing under the root", not "no files".** A first draft
-    // of this asked whether every entry was a directory, which is true of a
-    // perfectly healthy root whose members are directories of page images —
-    // most of this corpus — so it would have refused every scan of one. What
-    // an unmounted share actually looks like is an empty directory: the root
-    // itself and nothing beneath it.
+    // **The test is "nothing under the root", not "no files".** A test that
+    // every entry is a directory would refuse every scan of a perfectly healthy
+    // root whose members are directories of page images. What an unmounted
+    // share actually looks like is an empty directory: the root itself and
+    // nothing beneath it.
     if seen.len() <= 1 {
         let held: i64 = conn
             .query_row(
@@ -1497,11 +1450,10 @@ fn scan_root_inner(conn: &Connection, root: &Root) -> Result<ScanReport, String>
             // only when this walk actually excluded a directory or a file on
             // the way to finding nothing.
             let excluded_everything = !walk.excluded_dirs.is_empty() || walk.excluded_files > 0;
-            // "Remove it" is C4 §2's most destructive action, and it must
-            // never be the advice handed to someone whose own patterns did
-            // this a moment ago — whole-branch review, Important 3. When the
-            // walk excluded nothing, exclusion cannot be the cause and the
-            // old remedy stands unchanged.
+            // "Remove it" is C4 §2's most destructive action, and it must never
+            // be the advice handed to someone whose own patterns did this a
+            // moment ago. When the walk excluded nothing, exclusion cannot be
+            // the cause and the plain advice applies.
             let remedy = if excluded_everything {
                 format!(
                     "This scan's own exclude_globs excluded {} director{} and {} \
@@ -1545,11 +1497,11 @@ fn scan_root_inner(conn: &Connection, root: &Root) -> Result<ScanReport, String>
         }
     }
 
-    // Correction 5: every filesystem operation an entry might need — `sniff`,
-    // `member_pages` — happens here, before `BEGIN`. `held_for` is one query
-    // rather than one per entry, and both it and the resolving below run
-    // outside any transaction, so the write lock `tx` takes further down is
-    // held only across the pure-SQL loop that follows. See `Resolved`.
+    // Every filesystem operation an entry might need — `sniff`, `member_pages`
+    // — happens here, before `BEGIN`. `held_for` is one query rather than one
+    // per entry, and both it and the resolving below run outside any
+    // transaction, so the write lock `tx` takes further down is held only
+    // across the pure-SQL loop that follows. See `Resolved`.
     let held = held_for(conn, root.id)?;
     let resolved: HashMap<String, Resolved> = seen
         .iter()
@@ -1695,14 +1647,12 @@ fn record(
         (true, None) => {
             // `last_seen`, and for a directory its recursive page total.
             //
-            // **A directory's total is written even when the directory itself has
-            // not moved**, because a directory's mtime moves only when an entry is
-            // added, removed or renamed *in it*. Measured on this filesystem on
-            // 2026-08-17: adding a page to `series/vol01/` moved `vol01` from 60 to
-            // 80 bytes with a new mtime and left `series` and the root
-            // byte-identical. Without this, every ancestor of a changed directory
-            // keeps its pre-change total forever, and `derive.rs` reads exactly
-            // those totals to pick the deepest directory that is a member.
+            // **A directory's total is written even when the directory itself
+            // has not moved**, because a directory's mtime moves only when an
+            // entry is added, removed or renamed *in it*. Without this, every
+            // ancestor of a changed directory keeps its pre-change total
+            // forever, and `derive.rs` reads exactly those totals to pick the
+            // deepest directory that is a member.
             //
             // It costs nothing: the walk summed it on the way past, so no container
             // is opened. `COALESCE` leaves a file's stored count alone.
@@ -1784,8 +1734,8 @@ fn record(
 /// this module's cheap-walk claim true rather than aspirational. `sniff`
 /// opens the file, and for anything carrying a zip header opens it a second
 /// time and parses the entire central directory — so calling it from the
-/// walk, on every file, on every scan, was the expensive thing this module
-/// says it avoids. It did exactly that until 2026-08-17.
+/// walk, on every file, on every scan, would be the expensive thing this
+/// module says it avoids.
 ///
 /// A file whose bytes cannot be read is `None` rather than an error, for the
 /// same reason [`pages_of`] swallows a refusal: one unreadable file must not
@@ -1840,12 +1790,11 @@ fn dir_pages(seen: &Seen) -> Option<u32> {
 /// What a new-or-moved entry's bytes turned out to say, resolved before the
 /// write transaction opens.
 ///
-/// **The whole point of this type is where it is built.** Sniffing and
-/// counting pages are filesystem operations, and doing them inside `tx` held
-/// the write lock across every archive open in a library scan — five seconds
-/// is [`crate::BUSY_TIMEOUT`], and a first scan of 156 series on network
-/// storage passes that without difficulty, while `taiyaku serve` is writing a
-/// `progress` row on every page turn.
+/// **The whole point of this type is where it is built.** Sniffing and counting
+/// pages are filesystem operations, and doing them inside `tx` would hold the
+/// write lock across every archive open in a library scan — five seconds is
+/// [`crate::BUSY_TIMEOUT`] — while `taiyaku serve` is writing a `progress` row
+/// on every page turn.
 struct Resolved {
     format: Option<&'static str>,
     pages: Option<u32>,
@@ -1856,20 +1805,8 @@ struct Resolved {
 /// and `is_dir` so [`forget_unseen`] can ask [`Excluder`] about a stale path
 /// without a second query.
 ///
-/// A named type rather than the `(i64, i64)` tuple this was — the shape
-/// [`Seen`], [`Resolved`] and [`Measured`] already use in this module.
-///
-/// **Used to derive `PartialEq, Eq` it never compared with, only to keep
-/// `is_dir` alive under dead-code analysis before this had a reader.**
-/// rustc counts a derived `eq` body as a read while explicitly not counting a
-/// derived `Clone` ("`Held` has a derived impl for the trait `Clone`, but
-/// this is intentionally ignored during dead code analysis") — measured
-/// 2026-09-09 — so `PartialEq, Eq` stood in for the reader `forget_unseen`
-/// did not have yet. `forget_unseen` now reads `is_dir` directly, to ask
-/// [`Excluder::excludes_with_parents`] whether a stale row was forgotten
-/// because a pattern covers it (O92), so the field has a real reader and the
-/// borrowed derives are gone with it — `Copy` remains because `held_for`'s
-/// map is read by value throughout this module.
+/// A named type, the shape [`Seen`], [`Resolved`] and [`Measured`] use. `Copy`
+/// because `held_for`'s map is read by value throughout this module.
 #[derive(Clone, Copy)]
 struct Held {
     size: i64,
@@ -1883,9 +1820,7 @@ struct Held {
 /// decision about what needs opening is made before any lock is taken. That
 /// also makes it a snapshot: a concurrent writer could change a row between
 /// this read and `record`'s, and `record` would branch on the stale value it
-/// was handed. No caller does that today — this crate's only caller is its
-/// own tests — so nothing closes the window yet; whoever adds a second
-/// writer needs to.
+/// was handed.
 fn held_for(conn: &Connection, root_id: i64) -> Result<HashMap<String, Held>, String> {
     let mut stmt = conn
         .prepare("SELECT rel_path, size, mtime, kind FROM scan_entry WHERE root_id = ?1")
@@ -1966,16 +1901,16 @@ fn forget_unseen(
 /// something this rare — a depth limit catches the same failure for free, at
 /// the cost of naming it one call late.
 ///
-/// **Measured, not guessed, and lower than "far above a real tree" alone would
-/// suggest.** A self-referential symlink does not actually recurse forever on
-/// this platform: Linux caps symlink resolution at 40 hops per lookup
-/// (`ELOOP`), and `Path::is_dir()` swallows that error and answers `false`
-/// rather than propagating it — so past roughly 40 levels the walk does not
-/// crash, it silently treats the cyclic subtree as childless and returns
-/// `Ok`, which is the "silent truncation" this limit exists to rule out just
-/// as much as the stack overflow. The ceiling has to fire before that
-/// happens, not after, so it sits at 32 — comfortably past any real library
-/// root and comfortably short of where the OS starts lying about `is_dir`.
+/// **Lower than "far above a real tree" alone would suggest.** A
+/// self-referential symlink does not actually recurse forever on this platform:
+/// Linux caps symlink resolution at 40 hops per lookup (`ELOOP`), and
+/// `Path::is_dir()` swallows that error and answers `false` rather than
+/// propagating it — so past roughly 40 levels the walk does not crash, it
+/// silently treats the cyclic subtree as childless and returns `Ok`, which is
+/// the "silent truncation" this limit exists to rule out just as much as the
+/// stack overflow. The ceiling has to fire before that happens, not after, so
+/// it sits at 32 — comfortably past any real library root and comfortably short
+/// of where the OS starts lying about `is_dir`.
 const MAX_DEPTH: u32 = 32;
 
 /// One entry's facts, gathered before anything is recorded, plus its
@@ -2022,9 +1957,7 @@ impl MeasureError {
 
 /// What one walk accumulated besides the tree itself.
 ///
-/// One accumulator rather than three out-params: [`measure_dir`] already
-/// threaded `unreadable: &mut Vec<String>`, and exclusion adds two more
-/// collections to a signature that was at its limit.
+/// One accumulator rather than three out-params to [`measure_dir`].
 #[derive(Default)]
 struct Walk {
     unreadable: Vec<String>,
@@ -2052,12 +1985,11 @@ fn measure(path: &Path, depth: u32, excluder: &Excluder) -> Result<(Measured, Wa
     let mut walk = Walk::default();
     let measured = measure_dir(path, String::new(), depth, excluder, &mut walk)
         .map_err(MeasureError::into_message)?;
-    // `walk.excluded_dirs` is appended in `read_dir` order, which is not
-    // stable across identical scans of an unchanged tree — Minor 6. Sorted
-    // here, once, over the flat accumulator rather than inside
-    // `measure_dir`'s own loop, so the report is deterministic without
-    // touching `dir_entries.sort()`, the ordering the walk actually descends
-    // in.
+    // `walk.excluded_dirs` is appended in `read_dir` order, which is not stable
+    // across identical scans of an unchanged tree. Sorted here, once, over the
+    // flat accumulator rather than inside `measure_dir`'s own loop, so the
+    // report is deterministic without touching `dir_entries.sort()`, the
+    // ordering the walk actually descends in.
     walk.excluded_dirs.sort();
     Ok((measured, walk))
 }
@@ -2110,7 +2042,7 @@ fn measure_dir(
         // `dir_state.entry_count` exists to say whether a directory changed;
         // an excluded file arriving or leaving is not a change this library
         // has any interest in, and counting it would make one show up. The
-        // cost is that `entry_count` no longer equals what `read_dir`
+        // cost is that `entry_count` does not equal what `read_dir`
         // returned — consistent, since it is only ever compared against a
         // number computed the same way, and a pattern edit *should* read as
         // a change.
@@ -2193,20 +2125,18 @@ fn measure_dir(
 /// reason than a directory listing being merely wrong about one: `stat`
 /// succeeds on all three, so without a check here the walk would record one
 /// and hand it to `sniff`, whose `File::open` on a FIFO blocks until a
-/// writer appears — measured, `timeout 2 cat` on one exits 124.
+/// writer appears.
 ///
 /// **A file with no read permission is not handled here.** `stat` needs only
 /// execute permission on the containing directory, so it succeeds where a
 /// later `File::open` would not; that refusal surfaces downstream, in
 /// [`format_of`]'s `.ok()`.
-///
-/// It no longer sniffs. See [`format_of`].
 fn measure_file(path: &Path, rel_path: String) -> Option<Measured> {
     let meta = std::fs::metadata(path).ok()?;
     // **Regular files and directories only.** `stat` succeeds on a FIFO, a
     // socket and a device node, so the walk would record them — and then
-    // `sniff` would `File::open` a FIFO and block until a writer appeared,
-    // which measured as an indefinite hang. Nothing here can read one anyway.
+    // `sniff` would `File::open` a FIFO and block until a writer appears.
+    // Nothing here can read one anyway.
     if !meta.is_file() {
         return None;
     }

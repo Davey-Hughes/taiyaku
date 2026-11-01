@@ -11,30 +11,27 @@
 -- library.
 --
 -- Reachable without anybody acting oddly: one reader imports a
--- `taiyaku.notes.json` another exported, or two accounts receive the same
--- sidecar. Found by the whole-branch review, 2026-08-18.
+-- `taiyaku.notes.json` another exported, or two accounts receive the
+-- same sidecar.
 --
 -- **The key becomes `(user_id, work_id, id)`.**
 --
--- `(user_id, id)` was the first answer and was still too wide by one column:
--- `state::put_notes` deletes `WHERE work_id = ?1 AND user_id = ?2` and then
--- inserts, so the same reader holding that id on a *different* work hit the key
--- and lost their whole document to the same 500 this migration exists to
--- remove — reachable by copying a `taiyaku.notes.json` between volumes, or
--- importing one sidecar against two works.
+-- `(user_id, id)` would be too wide by one column: `state::put_notes` deletes
+-- `WHERE work_id = ?1 AND user_id = ?2` and then inserts, so the same reader
+-- holding that id on a *different* work would hit the key and lose their whole
+-- document to the same 500 this migration exists to remove — reachable by
+-- copying a `taiyaku.notes.json` between volumes, or importing one sidecar
+-- against two works.
 --
 -- The scope a note id is actually unique in is the scope `put_notes` replaces:
 -- one reader's notes on one work. `notes::validate` cannot narrow it either —
 -- its duplicate check is a `HashSet` over the submitted document, which is word
--- for word the limitation this file cites about the old global key, and an
--- earlier draft of this comment wrongly claimed it "already refuses" the case.
--- It cannot see another work's rows any more than it could see another user's.
+-- for word the limitation this file cites about the old global key. It cannot
+-- see another work's rows any more than it could see another user's.
 --
--- **Amended rather than superseded by a migration 6**, which the append-only
--- rule would otherwise require: 005 has never been merged, so no database has
--- ever applied it and there is nothing for an edit to diverge from. That is the
--- narrow exception the rule leaves — a migration is append-only once it can
--- have run somewhere, and this one cannot have.
+-- The append-only rule has one narrow exception: a migration is append-only
+-- once it can have run somewhere; before then there is nothing for an edit to
+-- diverge from.
 
 -- **Nothing REFERENCES `note`**, so unlike migration 4's rebuild of `user` there
 -- is no `ON DELETE CASCADE` to fire and no child to lose. Checked rather than

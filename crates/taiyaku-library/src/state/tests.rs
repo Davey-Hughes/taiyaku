@@ -4,8 +4,7 @@ use super::*;
 use crate::{Library, Note, Notes};
 
 /// A work with one edition, `raw-mono`, and one member — enough to hang
-/// progress, notes and truth rows off, and to give `truth_members_for`
-/// something real to project.
+/// progress, notes and truth rows off.
 fn a_work(conn: &Connection) -> i64 {
     let json = r#"{"taiyaku":1,"work":{"title":"T","reading":"rtl"},
         "editions":{"raw-mono":{"label":"R","members":[
@@ -208,8 +207,7 @@ fn notes_are_isolated_per_user() {
 }
 
 /// A second `put_notes` call for the same reader must replace the first
-/// wholesale, not accumulate — the row-store equivalent of the old file's
-/// `store` overwriting the whole document.
+/// wholesale, not accumulate.
 #[test]
 fn a_second_put_notes_replaces_the_first_rather_than_accumulating() {
     let library = Library::open_in_memory().expect("library");
@@ -256,10 +254,8 @@ fn progress_round_trips() {
     assert_eq!(back[0].slot, 193);
 }
 
-/// "Never opened" and "on the first page" must stay distinguishable — the
-/// same rule `taiyaku-serve`'s file-backed `progress::load` was written to
-/// keep (O3). `progress` returns a `Vec` since migration 9, so "never opened"
-/// is now the empty vector rather than `None`.
+/// "Never opened" and "on the first page" must stay distinguishable (O3):
+/// "never opened" is the empty vector.
 #[test]
 fn progress_is_empty_when_nothing_recorded() {
     let library = Library::open_in_memory().expect("library");
@@ -404,12 +400,9 @@ fn positions_with_the_same_updated_come_back_in_ascending_edition_order() {
 }
 
 /// **A position on a second edition must not disturb the first.** `progress`'s
-/// primary key is `(user_id, work_id, edition)` since migration 9; before it,
-/// `put_progress`'s `ON CONFLICT` named `(user_id, work_id)` alone, so a
-/// reader at slot 0 of `raw-mono` who then opened `full-color` and turned one
-/// page silently lost the `raw-mono` position. A reader now holds a position
-/// per edition, and this test is what would still be red if that conflict
-/// target had merely been left alone.
+/// primary key is `(user_id, work_id, edition)`, so a reader at slot 0 of
+/// `raw-mono` who then opens `full-color` and turns one page keeps the
+/// `raw-mono` position.
 #[test]
 fn a_second_put_progress_on_a_different_edition_leaves_the_first_position_standing() {
     let library = Library::open_in_memory().expect("library");
@@ -455,13 +448,11 @@ fn a_second_put_progress_on_a_different_edition_leaves_the_first_position_standi
 /// `completed_at` and `read_count` on **every page turn** — a reader who
 /// finished a volume in March would lose that fact the next time they opened
 /// it, silently and permanently. `ON CONFLICT … DO UPDATE` naming the two
-/// columns that are not part of the conflict target is what keeps them;
-/// nothing observed that until this test, so the swap survived the whole
-/// suite (whole-branch review 2, I6).
+/// columns that are not part of the conflict target is what keeps them.
 ///
 /// The two columns are written here by hand because nothing in this module's
-/// interface manages them yet — which is exactly why the guard is needed
-/// before something does.
+/// interface manages them, which is exactly why the guard is needed before
+/// something does.
 #[test]
 fn put_progress_leaves_completed_at_and_read_count_alone() {
     let library = Library::open_in_memory().expect("library");
@@ -581,15 +572,12 @@ fn truth_round_trips_a_box_and_the_members_it_was_drawn_against() {
     assert_eq!(boxes[0].text.as_deref(), Some("こんにちは"));
 }
 
-/// **The C2 defect of whole-branch review 2, closed.** `TruthEdition::members`
-/// is the record of *which archives the boxes were drawn against*, and
-/// `TruthEdition::is_stale_for` — the guard `taiyaku score` and
-/// `score_corpus` both refuse on — compares it element-wise against the
-/// digests of the archives in hand now. Re-projecting `members` from
-/// whatever `member` rows exist at read time made that comparison compare a
-/// list against itself: it could never report stale again, and an export
-/// after a reimport wrote a `taiyaku.truth.json` asserting provenance that
-/// was simply false, over the reader's only copy.
+/// `TruthEdition::members` is the record of *which archives the boxes were
+/// drawn against*, and `TruthEdition::is_stale_for` — the guard `taiyaku score`
+/// and `score_corpus` both refuse on — compares it element-wise against the
+/// digests of the archives in hand now. Re-projecting `members` from whatever
+/// `member` rows exist at read time would make that comparison compare a list
+/// against itself: it could never report stale.
 ///
 /// So the archives are replaced here the way a reimport replaces them — same
 /// edition, different bytes — and the stored provenance must not follow.
@@ -635,7 +623,6 @@ fn truth_keeps_the_provenance_it_was_written_with_when_the_archives_change() {
     );
 }
 
-/// **Closes the gap the previous version of this test documented.**
 /// `TruthEdition::pages`'s own doc comment says an absent page key means
 /// "never looked at" and a present-but-empty one means "looked at, found
 /// nothing" — and calls that the labelling progress tracker. `truth_page`
@@ -787,9 +774,7 @@ fn truth_keeps_an_edition_and_its_provenance_after_the_edition_row_is_gone() {
 /// place where a mismatch between the two halves would be silent.
 ///
 /// A box stored as the wrong kind is not a crash: it is a labelled dialogue
-/// balloon that scores as an SFX. Only `Dialogue` and `Vertical` were ever
-/// written by a test before this, so swapping any of the other five strings
-/// for another changed nothing anybody could see.
+/// balloon that scores as an SFX.
 #[test]
 fn every_axis_and_every_kind_round_trips_through_the_rows() {
     let library = Library::open_in_memory().expect("library");
@@ -937,12 +922,11 @@ fn truth_refuses_a_stored_box_with_a_kind_put_truth_never_writes() {
 }
 
 /// **Box order within a page survives an index on `truth_box.work_id`.**
-/// `truth`'s query used to carry no `ORDER BY`, and round-tripped only because
-/// nothing indexes that column: a bare `WHERE work_id = ?1` is a table scan,
-/// and a table scan returns rowid order, which is the order `put_truth`
-/// inserted. That is a property of the *plan*, not of the query, and the plan
-/// is one `CREATE INDEX` away from changing — for a `work_id` lookup on a
-/// large library, the obvious optimisation.
+/// Without an `ORDER BY`, a bare `WHERE work_id = ?1` is a table scan only
+/// while nothing indexes that column, and a table scan returns rowid order,
+/// which is the order `put_truth` inserted. That is a property of the *plan*,
+/// not of the query, and the plan is one `CREATE INDEX` away from changing —
+/// for a `work_id` lookup on a large library, the obvious optimisation.
 ///
 /// So the index is created here rather than waited for. The three boxes are
 /// written in an order no sort would reproduce — their `x` values descend, and
@@ -1103,19 +1087,13 @@ fn put_alignments_writes_a_hand_corrected_document_back_out_intact() {
     );
 }
 
-/// **Two readers may hold the same note id**, which a global `TEXT PRIMARY KEY`
-/// on `note.id` made impossible.
+/// **Two readers may hold the same note id.**
 ///
-/// Notes became per-user in spec A2 — `put_notes` deletes
-/// `WHERE work_id = ?1 AND user_id = ?2` — but the id namespace stayed global,
-/// so a second reader submitting a document containing an id the first already
-/// held violated the primary key. The write is whole-document, so B's *entire*
-/// notes document was rejected rather than one note, and the 200-versus-500 told
-/// B whether an id existed anywhere in the library.
+/// The write is whole-document, so an id reader A already holds must not
+/// reject reader B's entire notes document.
 ///
 /// Reachable without anyone acting oddly: B imports a `taiyaku.notes.json` A
-/// exported, or both accounts receive the same sidecar. Found by the
-/// whole-branch review, 2026-08-18; fixed by migration 5.
+/// exported, or both accounts receive the same sidecar.
 #[test]
 fn two_readers_can_hold_the_same_note_id() {
     let library = Library::open_in_memory().expect("library");
@@ -1151,9 +1129,8 @@ fn two_readers_can_hold_the_same_note_id() {
     assert_eq!(bob.notes[0].body, "bob's");
 }
 
-/// One reader still cannot hold one id twice — the constraint moved rather than
-/// went away, so `put_notes`'s own `# Errors` about a repeated id stays true
-/// within a document.
+/// One reader cannot hold one id twice, so `put_notes`'s own `# Errors` about
+/// a repeated id holds within a document.
 #[test]
 fn one_reader_still_cannot_hold_one_id_twice() {
     let library = Library::open_in_memory().expect("library");
@@ -1172,12 +1149,9 @@ fn one_reader_still_cannot_hold_one_id_twice() {
 
 /// **One reader may hold one note id on two different works.**
 ///
-/// `(user_id, id)` was too wide by one column: `put_notes` replaces one
-/// reader's notes on one work, so that is the scope an id is unique in.
-/// Reachable by copying a `taiyaku.notes.json` between volumes, and the failure
-/// was the same whole-document 500 migration 5 was written to remove.
-///
-/// Found by the second whole-branch review.
+/// `put_notes` replaces one reader's notes on one work, so that is the
+/// scope an id is unique in. Reachable by copying a `taiyaku.notes.json`
+/// between volumes.
 #[test]
 fn one_reader_can_hold_one_note_id_on_two_works() {
     let library = Library::open_in_memory().expect("library");

@@ -1,7 +1,7 @@
 use super::{from_json, to_json};
 use crate::Position;
 
-/// The legacy form, byte for byte as it exists on disk today.
+/// The legacy form, byte for byte as it exists on disk.
 ///
 /// **Over the real corpus document rather than a fixture**, because a fixture
 /// for this would be written by the same hand as the reader of it and would

@@ -8,20 +8,16 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
-# `taiyaku-serve` is the only consumer. This crate must never be reachable from
-# `taiyaku-core` or `taiyaku-wasm`, both of which compile to wasm32, where
-# SQLite does not.
+# This crate must never be reachable from `taiyaku-core` or `taiyaku-wasm`, both
+# of which compile to wasm32, where SQLite does not.
 #
-# **Against the system libsqlite3 rather than `bundled`, measured rather than
-# assumed**: bundled builds in 1 m 43 s against 3.06 s on a 32-core machine,
-# and CI has no cargo cache and gives each job ten minutes. The cost is that
-# FTS5 is now a property of the host's SQLite rather than a guarantee — see
+# **Against the system libsqlite3 rather than `bundled`**: bundled builds far
+# slower, and CI has no cargo cache and gives each job ten minutes. The cost is
+# that FTS5 is a property of the host's SQLite rather than a guarantee — see
 # `Library::open`, which refuses at open time with a named error rather than
 # letting a migration die part-way through.
 #
 # There is no `fts5` Cargo feature on rusqlite; FTS5 is reached from plain SQL.
-# `backup` is for `VACUUM INTO`, which is how a backup is taken while the
-# server runs (spec A §13.4).
 [dependencies]
 argon2 = "0.5.3"
 base64 = "0.23.1"
@@ -33,11 +29,9 @@ base64 = "0.23.1"
 # itself for `taiyaku_read::volume_number_marked`: a second, drifting
 # reimplementation is worse than a dependency.
 #
-# **Three crates, not the ten `cargo add` suggests** — `ignore`, `globset` and
-# `bstr`. `notify` already supplies `walkdir`, `same-file`, the `crossbeam-*`
-# trio and `winapi-util`; measured against this workspace's lock on
-# 2026-09-09. `globset` alone would have cost two of the same three and could
-# not express negation.
+# **Three crates** — `ignore`, `globset` and `bstr`. `notify` already supplies
+# `walkdir`, `same-file` and `winapi-util`. `globset` alone would have cost two
+# of the same three and could not express negation.
 #
 # **User-supplied patterns are safe here for the reason `regex` below is
 # safe**, and it is worth restating because it is not obvious it transfers:
@@ -67,7 +61,7 @@ sha2 = "0.11.0"
 # `taiyaku-read`, and named here for the reason that manifest gives for naming
 # its own: a direct dependency of this crate's code should be a line in this
 # crate's manifest. `docs/status.md` states this workspace's short dependency
-# list as a fact about the project, so that file gains a line with this one.
+# list as a fact about the project, so that file has a line for this one.
 zip = "7.2.0"
 taiyaku-core = { path = "../taiyaku-core" }
 taiyaku-read = { path = "../taiyaku-read" }

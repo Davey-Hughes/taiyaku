@@ -5,10 +5,10 @@ use crate::{Library, Progress, derive, scan, state};
 /// Two roots, one series, one volume in each — the shape spec C1 §5.1 is
 /// designed around, and the only one where the filter can be seen working.
 ///
-/// Both roots are directories of one library: since Part F1 a work gathers its
-/// editions within a library, and a root of its own library would hold a
-/// work of its own. **That library is numbered 70**, apart from the directories,
-/// so a narrowing that read a library id as a directory id finds nothing rather
+/// Both roots are directories of one library: a work gathers its editions
+/// within a library, and a root of its own library would hold a work of its
+/// own. **That library is numbered 70**, apart from the directories, so a
+/// narrowing that read a library id as a directory id finds nothing rather
 /// than the English directory that happens to share its number.
 fn two_root_library() -> (
     Library,
@@ -34,7 +34,7 @@ fn two_root_library() -> (
         // **Each root declares its own edition key**, or both default to
         // `raw` and derivation merges their members into ONE edition — which
         // is correct behaviour and makes this fixture unable to show a filter
-        // hiding one edition and keeping another. Found by the first run.
+        // hiding one edition and keeping another.
         conn.execute(
             "UPDATE root SET edition_key = 'en' WHERE id = ?1",
             [en_root.id],
@@ -171,9 +171,8 @@ fn series_of(library: &Library, library_id: i64) -> Vec<i64> {
 ///
 /// **The digest is derived from the title**, because `import::sidecar`
 /// reconciles by `content_key` first: two works whose members share a sha256
-/// are one work, and two calls to this helper with one constant digest
-/// produced a single row. Found by the first run of
-/// `continuing_is_ordered_by_when_each_work_was_last_read`.
+/// are one work, and two calls to this helper with one constant digest would
+/// produce a single row.
 fn import_a_work(library: &Library, title: &str, path: &str) {
     let conn = library.conn();
     let digest: String = title
@@ -370,14 +369,9 @@ fn an_imported_work_is_unfiled_rather_than_a_series_of_its_own() {
 /// already stamped is not new — a `library import` over the same work (the
 /// route a hand-corrected `taiyaku.json` reimport opens) must not blank it.
 ///
-/// Reproduces the measured symptom directly: `import.rs`'s `replace_editions`
-/// deletes and reinserts every member under `Scope::Document`, naming no
-/// `root_id`, so every fresh row lands NULL — and nothing re-stamps it,
-/// because `derive.rs`'s `write_roots` runs only on the derive path, which a
-/// plain `library import` never takes. `browse.rs`'s `IN (…)` filter then
-/// excludes the NULL member by SQL's own rules — correct behaviour reacting to
-/// a wrong fact — so the work vanishes from a root-restricted grant that could
-/// see it before the reimport.
+/// A blanked `root_id` would make `browse.rs`'s `IN (…)` filter exclude the
+/// member by SQL's own rules, so the work would vanish from a root-restricted
+/// grant that could see it before the reimport.
 #[test]
 fn a_reimport_over_a_scanned_work_keeps_its_roots_grant() {
     let (library, en_id, raw_id, _en, _raw) = two_root_library();
@@ -505,7 +499,7 @@ fn an_empty_query_searches_for_nothing_rather_than_everything() {
 }
 
 /// The cover falls back to the lowest-volume work while `cover_work_id` is
-/// NULL, which it is for every series in every library today — spec C1 §5.2.
+/// NULL, which it is for every series in every library — spec C1 §5.2.
 #[test]
 fn the_cover_falls_back_to_the_lowest_volume_when_none_is_set() {
     let (library, _, _, _en, _raw) = two_root_library();
@@ -520,7 +514,7 @@ fn the_cover_falls_back_to_the_lowest_volume_when_none_is_set() {
     );
 }
 
-/// A hand-set cover is honoured, and is the state C3 will produce.
+/// A hand-set cover is honoured.
 #[test]
 fn a_hand_set_cover_wins_over_the_fallback() {
     let (library, _, _, _en, _raw) = two_root_library();
@@ -623,19 +617,19 @@ fn library_with_two_works() -> (Library, crate::tests::TempDir, crate::tests::Te
 
 /// A work sorts by the newest of its positions, not by an arbitrary one.
 ///
-/// `(SELECT updated FROM progress p WHERE p.work_id = w.id AND p.user_id = ?)`
-/// is a scalar subquery over what is now a set: SQLite returns whichever row
-/// it reaches first and reports no error, so the ordering was silently
-/// arbitrary among a work's editions.
+/// A scalar subquery over a work's several positions, such as
+/// `(SELECT updated FROM progress p WHERE p.work_id = w.id AND p.user_id = ?)`,
+/// returns whichever row SQLite reaches first and reports no error, so the
+/// ordering would be arbitrary among a work's editions.
 ///
 /// **The old position is put on `en` and the new one on `raw`, deliberately.**
 /// `progress` has no index but its own primary key, `(user_id, work_id,
-/// edition)`, so an unordered scan of it — exactly what the scalar subquery
+/// edition)`, so an unordered scan of it — exactly what a scalar subquery
 /// runs — reaches `en` before `raw` for a fixed work: `'en' < 'raw'`
-/// lexically. Putting the newer timestamp on `raw` means the broken query
-/// reaches the *older* row first for `ids[0]` and reports it as that work's
-/// position — the one arrangement a single-position fixture cannot produce,
-/// and the reason this test needs two positions on one work to mean anything.
+/// lexically. Putting the newer timestamp on `raw` means such a query reaches
+/// the *older* row first for `ids[0]` and reports it as that work's position —
+/// the one arrangement a single-position fixture cannot produce, and the
+/// reason this test needs two positions on one work to mean anything.
 #[test]
 fn continuing_sorts_on_the_newest_position_a_work_holds() {
     let (library, _en, _raw) = library_with_two_works();
@@ -746,8 +740,7 @@ fn a_work_finished_in_one_edition_and_open_in_another_is_still_continuing() {
 ///
 /// Both fall back to `DEFAULT_EDITION_KEY`, so derivation merges their members
 /// into **one** edition. `two_root_library` renames the keys to avoid exactly
-/// this, which is why every test above missed the leak the whole-branch review
-/// found.
+/// this, so it cannot show a merged edition.
 fn merged_edition_library() -> (
     Library,
     i64,
@@ -775,9 +768,9 @@ fn merged_edition_library() -> (
     (library, a_id, b_id, a, b)
 }
 
-/// **The leak the whole-branch review found.** When two roots merge into one
-/// edition, a reader granted only one of them saw member and page counts
-/// covering both.
+/// **A merged edition's counts cover only the members the grant allows.** When
+/// two roots merge into one edition, a reader granted only one of them must
+/// not see member and page counts covering both.
 #[test]
 fn a_merged_edition_counts_only_the_members_the_grant_allows() {
     let (library, a_id, b_id, _a, _b) = merged_edition_library();
@@ -813,10 +806,10 @@ fn a_merged_edition_counts_only_the_members_the_grant_allows() {
     }
 }
 
-/// The same leak at the page level: `edition_visible` is what the page routes
-/// ask, and a merged edition must still be visible to each grant that holds
-/// part of it — the *bytes* are guarded per edition, which is as fine-grained
-/// as the schema goes.
+/// The same boundary at the page level: `edition_visible` is what the page
+/// routes ask, and a merged edition must still be visible to each grant that
+/// holds part of it — the *bytes* are guarded per edition, which is as
+/// fine-grained as the schema goes.
 #[test]
 fn a_merged_edition_is_visible_to_either_grant_and_an_unheld_root_sees_nothing() {
     let (library, a_id, _b_id, _a, _b) = merged_edition_library();
@@ -861,7 +854,7 @@ fn a_work_outside_the_grant_is_invisible_to_the_page_check() {
 }
 
 /// `cover_work` answers `None` for a series that does not exist rather than
-/// erroring — the 500-versus-404 difference was an enumeration oracle.
+/// erroring — a 500-versus-404 difference would be an enumeration oracle.
 #[test]
 fn a_cover_for_a_series_that_does_not_exist_is_none_rather_than_an_error() {
     let (library, _, _, _en, _raw) = two_root_library();
@@ -915,11 +908,6 @@ fn search_does_not_lose_a_visible_hit_to_the_cap() {
 }
 
 /// `one_series` returns the series and its works, not `None`.
-///
-/// Added after a mutation sweep found `one_series -> Ok(None)` surviving on
-/// 2026-08-20: the route test in `taiyaku-serve` exercised it, but nothing in
-/// this crate did, and the sweep runs a crate's own tests against its own
-/// mutations.
 ///
 /// **O62, folded into this test rather than a parallel one**: this is the
 /// series page's own shape, and `missing` is a field on the same
@@ -981,10 +969,9 @@ fn one_series_returns_the_series_and_its_works() {
 
 /// Search reads **two** indexes, and this tells them apart.
 ///
-/// A mutation sweep found `matching_series` and `series_of_matching_works`
-/// each replaceable with an empty vector while every test passed: the fixture's
-/// series and its work share the word "Series", so either index alone still
-/// produced the hit and each covered for the other's absence.
+/// `two_root_library`'s series and its work share the word "Series", so with
+/// that fixture either index alone would still produce the hit and cover for
+/// the other's absence.
 #[test]
 fn each_search_index_is_load_bearing_on_its_own() {
     let (library, _, _, _en, _raw) = two_root_library();
@@ -1037,8 +1024,7 @@ fn one_position_leaves_the_rest_of_the_series_unread() {
     // `work_ids` before `library.conn()`, deliberately: `Library::conn` locks
     // a `Mutex<Connection>`, not reentrant, and this test's own `conn` binding
     // would still be held across the call otherwise — the two calls deadlock
-    // on the same thread. Found by running this test, which hung rather than
-    // failed.
+    // on the same thread.
     let ids = work_ids(&library);
     let conn = library.conn();
     conn.execute(
@@ -1457,13 +1443,10 @@ fn a_grant_naming_both_sides_of_a_pair_returns_the_alignment() {
     assert_eq!(pair.paired, Some(18));
 }
 
-/// **The `aligned` counts and the alignment list are one question.** Until
-/// 2026-08-21 they were two pieces of SQL and answered differently: this exact
-/// fixture reported `series.aligned = 1` and `work.aligned = true` on the
-/// strength of a pair whose raw side sits under a root this reader does not
-/// hold, while the work page — asked directly, one line further down — listed
-/// none. One screen contradicting itself, in the module whose whole reason for
-/// existing is that its counts are computed after the filter.
+/// **The `aligned` counts and the alignment list are one question.** A pair
+/// whose raw side sits under a root this reader does not hold must be counted
+/// by neither, or one screen contradicts itself, in the module whose whole
+/// reason for existing is that its counts are computed after the filter.
 #[test]
 fn an_alignment_naming_a_hidden_edition_is_counted_by_neither_the_work_nor_the_grid() {
     let (library, en_id, _raw_id, _en_dir, _raw_dir) = two_root_library();
@@ -1510,9 +1493,9 @@ fn an_alignment_wholly_inside_the_grant_is_counted_by_both() {
     assert_eq!(cards.first().expect("one series").aligned, 1);
 }
 
-/// **`Every` counts the pair as it always did.** Every account without a grant
-/// reads as `Every`, so a filter that tightened the count here would take the
-/// `⇄` mark off every library in the world.
+/// **`Every` counts the pair.** Every account without a grant reads as
+/// `Every`, so a filter that tightened the count here would take the `⇄` mark
+/// off every library in the world.
 #[test]
 fn access_every_counts_the_alignment_as_it_always_did() {
     let (library, _en_id, _raw_id, _en_dir, _raw_dir) = two_root_library();
@@ -1752,8 +1735,7 @@ fn scanned_is_true_only_for_a_library_one_of_whose_dirs_was_walked() {
 /// silence — so `search` answers it with `LIKE`.
 ///
 /// `花嫁` is the second half of `五等分の花嫁` and two characters long: below
-/// trigram's window, above nothing. Measured 2026-08-21: `series_fts MATCH
-/// '"花嫁"'` returns no rows against an index that contains that exact title.
+/// trigram's window, above nothing.
 #[test]
 fn a_query_too_short_for_trigram_is_answered_by_like() {
     let (library, _, _, _en, _raw) = two_root_library();
@@ -1782,21 +1764,21 @@ fn a_query_too_short_for_trigram_is_answered_by_like() {
 
 /// `match_for` is pinned directly, not only through what `search` returns.
 ///
-/// **I6, whole-branch review.** `LIKE '%q%'` is a superset of what trigram
-/// `MATCH` answers for every fixture above it in this file — pin
-/// `TRIGRAM_MIN` at `100` instead of `3` and every one of those tests still
-/// passes, because the `LIKE` scan quietly answers what the index was
-/// supposed to. A result-shaped assertion cannot tell the two paths apart;
-/// asserting on `match_for`'s own return is a direct unit test of the
-/// decision rather than of a consequence the wrong path also produces, and
-/// simpler than proving the same thing through `EXPLAIN QUERY PLAN`.
+/// `LIKE '%q%'` is a superset of what trigram `MATCH` answers for every
+/// fixture above it in this file — pin `TRIGRAM_MIN` at `100` instead of `3`
+/// and every one of those tests still passes, because the `LIKE` scan quietly
+/// answers what the index was supposed to. A result-shaped assertion cannot
+/// tell the two paths apart; asserting on `match_for`'s own return is a direct
+/// unit test of the decision rather than of a consequence the wrong path also
+/// produces, and simpler than proving the same thing through
+/// `EXPLAIN QUERY PLAN`.
 #[test]
 fn match_for_switches_paths_exactly_at_trigram_min() {
     // Fixed lengths, not `TRIGRAM_MIN - 1` / `TRIGRAM_MIN`: building the
     // fixture from the constant under test would make this test move with
     // any mutation to it and never fail. `TRIGRAM_MIN` is 3, measured
-    // against the tokeniser above; a change to that measurement should
-    // break this pin, not glide past it.
+    // against the tokeniser; a change to that measurement should break this
+    // pin, not glide past it.
     assert!(
         matches!(match_for("ab"), Match::Like(_)),
         "two characters is below TRIGRAM_MIN and must take the LIKE path"
@@ -1810,10 +1792,8 @@ fn match_for_switches_paths_exactly_at_trigram_min() {
 
 /// The `LIKE` path escapes the reader's own wildcards.
 ///
-/// **Without `ESCAPE`, a search for `%` returns the whole library.** Measured
-/// 2026-08-21: `title LIKE '%' || '%' || '%'` matched all six rows of a
-/// fixture. That is the one input that turns a search box into a table dump,
-/// and it is one character long, which is exactly the path this task adds.
+/// **Without `ESCAPE`, a search for `%` returns the whole library.** That turns
+/// a search box into a table dump, and it is one character long.
 #[test]
 fn a_wildcard_typed_into_the_search_box_is_a_literal() {
     let (library, _, _, _en, _raw) = two_root_library();
@@ -1832,17 +1812,15 @@ fn a_wildcard_typed_into_the_search_box_is_a_literal() {
 /// separately from `%` and `_` because an empty-result assertion cannot
 /// tell an escaped backslash from an unescaped one.
 ///
-/// Measured 2026-08-21 against SQLite 3.53.4: unescaped, `%` and `_` each
-/// match *every* row of a fixture, which the "expect nothing" assertion
-/// above catches fine. An unescaped `\` does the opposite — it escapes the
-/// query's own trailing `%` in `title LIKE '%' || ? || '%' ESCAPE '\'`, so
-/// the pattern becomes "ends with a literal `%`" and matches *nothing*,
-/// same as the correctly-escaped form. A fixture with no backslash in any
-/// title makes the two behaviours indistinguishable by an empty-result
-/// check — deleting `'\\'` from `escape_like`'s `matches!` arm left this
-/// suite green. The only assertion that tells them apart is a positive
-/// one: give a work a title that contains a literal backslash and expect
-/// to find it.
+/// Unescaped, `%` and `_` each match *every* row of a fixture, which the
+/// "expect nothing" assertion above catches. An unescaped `\` does the
+/// opposite — it escapes the query's own trailing `%` in
+/// `title LIKE '%' || ? || '%' ESCAPE '\'`, so the pattern becomes "ends with
+/// a literal `%`" and matches *nothing*, same as the correctly-escaped form.
+/// A fixture with no backslash in any title makes the two behaviours
+/// indistinguishable by an empty-result check. The only assertion that tells
+/// them apart is a positive one: give a work a title that contains a literal
+/// backslash and expect to find it.
 #[test]
 fn a_backslash_typed_into_the_search_box_is_a_literal() {
     let (library, _, _, _en, _raw) = two_root_library();
@@ -1915,10 +1893,10 @@ fn a_short_query_matching_a_works_title_drags_its_series_in() {
 
 /// The grant still decides, whichever path answered.
 ///
-/// **This is the property the whole-branch review found broken once already**
-/// — `ids` used to `LIMIT` before the grant filter ran, so a search that
-/// matched only invisible rows reported nothing found. A second query path is
-/// a second chance to make that mistake, so it is pinned on both.
+/// **A `LIMIT` before the grant filter could make a search that matched
+/// visible rows report nothing found**, once every row the `LIMIT` kept is
+/// one the grant hides. A second query path is a second chance to make that
+/// mistake, so it is pinned on both.
 #[test]
 fn a_short_query_is_filtered_by_the_grant_like_a_long_one() {
     let (library, _en_root, raw_root, _en, _raw) = two_root_library();
@@ -1986,8 +1964,7 @@ fn search_with_no_library_spans_the_whole_grant() {
 /// `scan_entry` at all (which would also misfire as `here.cbz` being
 /// "missing", making the total 2) all disagree with the answer this asserts.
 ///
-/// `scan_entry`'s `kind`, `size` and `mtime` are `NOT NULL` with no default —
-/// the measured plan's brief named only `root_id`/`rel_path`.
+/// `scan_entry`'s `kind`, `size` and `mtime` are `NOT NULL` with no default.
 #[test]
 fn an_edition_whose_file_has_left_the_disk_reports_it_missing() {
     let conn = Connection::open_in_memory().expect("in-memory database");
@@ -2014,11 +1991,10 @@ fn an_edition_whose_file_has_left_the_disk_reports_it_missing() {
     );
 }
 
-/// **O73/Task 7b: `missing_by_edition` must take the caller's grant.** It was
-/// the only function in this module that did not, and `member_clause`'s own
-/// doc records that a merged edition — two roots with no `edition_key`,
-/// reachable in the default configuration rather than in a corner — is
-/// exactly the shape that leaked once already.
+/// **O73: `missing_by_edition` must take the caller's grant.**
+/// `member_clause`'s own doc records that a merged edition — two roots with no
+/// `edition_key`, reachable in the default configuration rather than in a
+/// corner — is exactly the shape that leaks when a count ignores the grant.
 ///
 /// `merged_edition_library` gives one edition two members, one under each
 /// root. Both are made to look gone from disk the way
@@ -2028,9 +2004,9 @@ fn an_edition_whose_file_has_left_the_disk_reports_it_missing() {
 /// **A grant test, not a count test.** A caller granted only root `a` must be
 /// told about **one** missing file — its own — never root `b`'s, which it
 /// cannot see at all. `Every` is unrestricted and must still see both:
-/// `member_clause` returns an empty string for that case, so the
-/// query is unchanged, and asserting only the restricted half would not
-/// notice that path breaking.
+/// `member_clause` returns an empty string for that case, so the query is
+/// unchanged, and asserting only the restricted half would not notice that
+/// path breaking.
 #[test]
 fn a_restricted_grant_counts_only_the_missing_members_it_may_see() {
     let (library, a_id, b_id, _a, _b) = merged_edition_library();
@@ -2058,10 +2034,10 @@ fn a_restricted_grant_counts_only_the_missing_members_it_may_see() {
     );
 }
 
-/// One edition's missing count, as [`missing_by_edition`] now answers it.
+/// One edition's missing count, as [`missing_by_edition`] answers it.
 ///
-/// A map since O85, where an edition with nothing missing has no row at all —
-/// so absence reads as zero here, at the one place these tests ask.
+/// It answers a map (O85) in which an edition with nothing missing has no row
+/// at all — so absence reads as zero here, at the one place these tests ask.
 fn missing_for(conn: &Connection, access: &Access, edition_id: i64) -> usize {
     missing_by_edition(conn, access, &[edition_id])
         .expect("counts")
@@ -2074,8 +2050,8 @@ fn missing_for(conn: &Connection, access: &Access, edition_id: i64) -> usize {
 ///
 /// O85's check needs two libraries whose *only* difference is how many works
 /// the series holds, so the count it compares can be attributed to that and
-/// nothing else. Two roots as ever, each naming its own edition key, so every
-/// work carries two editions and the per-edition half of the N+1 is reachable.
+/// nothing else. Each root names its own edition key, so every work carries
+/// two editions and the per-edition half of the N+1 is reachable.
 fn library_with_volumes(volumes: usize) -> (Library, crate::tests::TempDir, crate::tests::TempDir) {
     let en = crate::tests::tempdir("browse-count-en");
     let raw = crate::tests::tempdir("browse-count-raw");
@@ -2131,10 +2107,9 @@ fn statements_listing_series(library: &Library) -> (usize, usize) {
     (STATEMENTS.with(std::cell::Cell::get), works.len())
 }
 
-/// **O85.** `works_of` called `editions_of` once per work, and `editions_of`
-/// called `missing_members` once per edition — an N+1 nested inside an N+1,
-/// the same shape the whole-branch review closed in `home` at 111 queries and
-/// reopened in the same module.
+/// **O85.** Listing a series must not issue one query per work for its
+/// editions, and one per edition for what is missing: that is an N+1 nested
+/// inside an N+1.
 ///
 /// Scale invariance rather than a constant: the number itself is an
 /// implementation detail that a later join may legitimately move, while "the
@@ -2175,8 +2150,7 @@ fn listing_a_series_costs_the_same_number_of_statements_however_many_works_it_ho
 /// before the second root group: the swapped parameters read `{w2, w3, r}` for
 /// the `IN` list, which is `{2, 3, 1}`, *the same set* as `{1, 2, 3}`, and the
 /// misplaced root id is `w1`, which is `1`, the granted root. Right and wrong
-/// render identically. Verified by making that substitution: with the grant on
-/// `en` the test passes under it, and with the grant on `raw` it fails.
+/// render identically.
 #[test]
 fn a_restricted_grant_hides_its_edition_in_every_work_of_a_series() {
     let (library, _en, _raw) = library_with_volumes(3);
@@ -2303,7 +2277,7 @@ fn opens_names_the_stored_position_and_falls_back_to_the_hub() {
 /// naming the hidden hub would point `library.ts`'s `unreadable` at an edition
 /// that is neither on the screen nor ever opened: `find` answers `undefined`,
 /// the guard answers "readable", and whatever the substitute has actually lost
-/// goes unasked. The first version of `opens` did exactly that.
+/// goes unasked.
 #[test]
 fn opens_substitutes_the_first_visible_edition_when_the_grant_hides_the_hub() {
     let (library, _en, _raw) = library_with_volumes(1);
@@ -2346,11 +2320,9 @@ fn opens_substitutes_the_first_visible_edition_when_the_grant_hides_the_hub() {
 }
 
 /// **O114.** `PATCH /api/library/series/{id}` accepts a title list with no
-/// entry marked primary, and the grid showed its first title because
-/// `set_series_titles` wrote that one into `sort_title`. `sort_title` is the
-/// scan's key and a correction no longer moves it, so the grid falls back to
-/// the first title the series holds before the scanned name — text the
-/// correction may have removed.
+/// entry marked primary. `sort_title` is the scan's key and a correction does
+/// not move it, so the grid falls back to the first title the series holds
+/// before the scanned name — text the correction may have removed.
 #[test]
 fn a_series_with_no_primary_title_is_shown_by_its_first_title_not_its_scanned_name() {
     let tree = crate::scan::tests::fixture();

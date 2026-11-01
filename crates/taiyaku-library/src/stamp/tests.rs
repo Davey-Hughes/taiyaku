@@ -2,10 +2,10 @@ use super::*;
 
 /// One scanned work, one edition, one member.
 ///
-/// Built the way every other fixture in this crate is built — `write_archive`
-/// into a `tempdir`, then `add_root`, `scan_root` and `derive` — rather than
-/// by inserting rows, so the `member` row carries the `sha256`, `pages`,
-/// `format` and `root_id` a real scan writes and a stamp then has to move.
+/// Built with `write_archive` into a `tempdir`, then `add_root`, `scan_root`
+/// and `derive`, rather than by inserting rows, so the `member` row carries the
+/// `sha256`, `pages` and `root_id` a real scan writes and a stamp then has
+/// to move.
 struct Fixture {
     library: crate::Library,
     dir: crate::tests::TempDir,
@@ -241,14 +241,11 @@ fn a_member_of_unknown_format_never_enters_a_plan() {
 /// Comparing decompressed pages would pass against a full re-encode, which is
 /// what §4 rejected — and comparing compressed bytes alone is nearly as weak,
 /// because decompressing and recompressing with the same settings can produce
-/// the identical output. **Measured, not assumed:** with the re-encode defect
-/// hand-applied on 2026-09-07, this fixture's `Deflated` entry came back
-/// byte-for-byte identical — `[237, 193, 1, 13, 0, 0, 0, 194, 160, 174, …]`
-/// on both sides — so a bytes-only assertion over an all-`Deflated` fixture
-/// passes against the very defect it exists to catch. The method is what
-/// makes the assertion bite: a naive re-encode writes everything `Deflated`,
-/// so the `Stored` entry changes method whatever the compressor does with
-/// the bytes, and that is the half that failed.
+/// the identical output, so a bytes-only assertion over an all-`Deflated`
+/// fixture can pass against the very defect it exists to catch. The method
+/// is what makes the assertion bite: a naive re-encode writes everything
+/// `Deflated`, so the `Stored` entry changes method whatever the compressor
+/// does with the bytes.
 fn raw_entries(path: &std::path::Path) -> Vec<(String, zip::CompressionMethod, Vec<u8>)> {
     let file = std::fs::File::open(path).expect("opening the archive");
     let mut archive = zip::ZipArchive::new(file).expect("reading the archive");
@@ -266,8 +263,7 @@ fn raw_entries(path: &std::path::Path) -> Vec<(String, zip::CompressionMethod, V
 
 /// An archive holding one `Stored` entry and one `Deflated` one.
 ///
-/// Both halves are deliberate: `Deflated` is what a real archive's pages are
-/// (11,431 of this corpus's 11,681 entries, measured 2026-08-23 in `cbz.rs`),
+/// Both halves are deliberate: `Deflated` is what a real archive's pages are,
 /// and `Stored` is what makes a re-encode visible however the compressor
 /// behaves.
 fn mixed_methods_archive(fixture: &Fixture, name: &str) {
@@ -617,8 +613,8 @@ fn applying_to_an_imported_work_rewrites_its_sidecar_with_the_new_digest() {
 /// What a plan and a stamp cost on real archives, printed rather than
 /// asserted.
 ///
-/// **`--ignored`, on the pattern `credential::tests::report` set** for
-/// argon2's parameters: a figure that depends on the machine is a
+/// **`--ignored`, on the pattern `credential::tests::report_the_argon2_cost`
+/// set** for argon2's parameters: a figure that depends on the machine is a
 /// measurement to record in `docs/notes.md`, not a threshold to fail a build
 /// on. Run it as
 /// `TAIYAKU_CORPUS=corpus cargo test --release -p taiyaku-library \
@@ -778,11 +774,10 @@ fn a_stamp_leaves_another_readers_exported_notes_alone() {
 
 /// **A confirmed stamp with nothing to do writes nothing at all.**
 ///
-/// An empty plan matches an empty confirmation, so `apply` accepts it — and
-/// before this it went on to re-export the sidecar and its four siblings for
-/// a stamp that rewrote no archive. A write with no cause is still a write:
-/// `export::work` is scoped to the acting user, so repeating a no-op stamp
-/// republished one person's view of a work's documents each time.
+/// An empty plan matches an empty confirmation, so `apply` accepts it. A write
+/// with no cause is still a write: `export::work` is scoped to the acting
+/// user, so a no-op stamp that exported would republish one person's view of a
+/// work's documents each time it was repeated.
 #[test]
 fn applying_an_empty_plan_touches_no_document() {
     let fixture = imported_work();
@@ -828,10 +823,10 @@ fn applying_an_empty_plan_touches_no_document() {
 /// **A member the stamp would never touch must not block the work.**
 ///
 /// `plan` sniffs every member to decide which are zips, and a sniff opens the
-/// file — so a member whose bytes are gone raised an error that failed the
-/// whole plan, including for a work whose other archives are perfectly
-/// stampable. O62 is the open item for members gone from disk; a rar that
-/// vanished is not a reason the zip beside it cannot carry its metadata.
+/// file — so a member whose bytes are gone must not fail the whole plan,
+/// including for a work whose other archives are perfectly stampable. O62 is
+/// the open item for members gone from disk; a rar that vanished is not a
+/// reason the zip beside it cannot carry its metadata.
 #[test]
 fn a_member_whose_file_is_gone_does_not_block_the_rest() {
     let dir = crate::tests::tempdir("stamp-missing-member");
@@ -867,11 +862,10 @@ fn a_member_whose_file_is_gone_does_not_block_the_rest() {
 
 /// **`resolve`'s two branches, both driven.**
 ///
-/// Written because the mutation sweep of 2026-09-07 reported both directions
-/// of this guard as survivors: every fixture in this module stores an
-/// absolute `member.path`, so replacing `path.is_relative()` with a constant
-/// changed no test's answer. An imported document may name a member
-/// relatively, and then the root is the only thing that makes it findable.
+/// Every fixture in this module stores an absolute `member.path`, so none
+/// of them has a relative one to join to a root. An imported document may
+/// name a member relatively, and then the root is the only thing that makes
+/// it findable.
 #[test]
 fn a_relative_member_path_is_joined_to_its_root_and_an_absolute_one_is_not() {
     assert_eq!(
@@ -903,11 +897,8 @@ fn member_paths_answers_every_member_including_the_ones_a_plan_skips() {
         plan(&conn, fixture.work_id).expect("plans").is_empty(),
         "the rar is not stampable"
     );
-    // **The path, not the count.** The mutation sweep of 2026-09-07 replaced
-    // this function's body with `Ok(vec![Default::default()])` — one empty
-    // `PathBuf` — and a length assertion passed against it, which is the
-    // whole-page `toContain` mistake in another shape: the count was right
-    // and every answer in it was empty.
+    // **The path, not the count.** An empty `PathBuf` per member would satisfy
+    // a length assertion.
     assert_eq!(
         member_paths(&conn, fixture.work_id).expect("resolves"),
         vec![fixture.archive("Series - v01.cbz")],
@@ -915,8 +906,7 @@ fn member_paths_answers_every_member_including_the_ones_a_plan_skips() {
     );
 }
 
-/// **The hand document follows the work's identity, which is §1.4's last
-/// step and the one nothing was asserting.**
+/// **The hand document follows the work's identity, §1.4's last step.**
 ///
 /// `<content_key>.library.json` is addressed by a hash over the hub edition's
 /// member digests, and a stamp moves every one of them. A document left at
@@ -989,10 +979,7 @@ fn a_stamp_moves_the_hand_document_to_the_works_new_address() {
 /// that "a crash leaves either the old archive or the new one, never a
 /// half-written file". That holds only for bytes that reached the disk: the
 /// rename can be journalled first, and on the NAS's XFS array nothing forces
-/// the data out ahead of it. Measured there on 2026-09-12, a synced same-disk
-/// copy of the library's largest archive (2.39 GB) takes 55.3 s on the parity
-/// array, which is roughly how long a crash after a stamp written there could
-/// leave a reader's only copy of a volume naming data that was never written.
+/// the data out ahead of it.
 ///
 /// The same ordering `atomic::write` is held to, asserted the same way — on
 /// the real syscalls, in a child process under strace — because a stamp is

@@ -25,7 +25,7 @@
 -- withdrawn hand value while `title_hand` read NULL, so `librarydoc::of`
 -- would report no hand edit, `export::work` would delete the document
 -- recording it, and a rescan of the same library would mint a title the
--- database disagrees with. Found by Task 2's review, 2026-08-28.
+-- database disagrees with.
 --
 -- So the derived value gets a column of its own, and `apply` writes
 -- `title = COALESCE(?, title_derived)`. Clearing then restores exactly what

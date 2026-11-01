@@ -1,23 +1,21 @@
 //! Absorbing a superseded work into the work its material moved to.
 //!
-//! **The only code in this project that deletes a `work` row**, which is why
-//! it is a module rather than a function inside `derive`. The safety argument
-//! is an ordering argument and it should be readable in one place: the reader
-//! rows move first, in one transaction, and the delete is the last statement.
-//! Reversed, `work`'s `ON DELETE CASCADE` takes a reader's position, their
-//! notes and the library's ground truth with it — measured, not feared, on
-//! 2026-08-27 against the four-archive reproduction that opened O73.
+//! **It deletes a `work` row**, which is why it is a module rather than a
+//! function inside `derive`. The safety argument is an ordering argument and it
+//! should be readable in one place: the reader rows move first, in one
+//! transaction, and the delete is the last statement. Reversed, `work`'s
+//! `ON DELETE CASCADE` takes a reader's position, their notes and the library's
+//! ground truth with it.
 //!
 //! **Eleven foreign keys name `work(id)` and every one of them cascades** —
 //! `alignment`, `collection_item`, `credit`, `edition`, `migrated_document`,
 //! `note`, `progress`, `truth_box`, `truth_member`, `truth_page` and
-//! `work_tag`, measured through `pragma_foreign_key_list` against the schema
-//! at migration 9. Four more follow transitively: `member` and `page_flag`
-//! through `edition`, `run` through `alignment`, and `work_fts` via the
-//! `work_ad AFTER DELETE` trigger in `001_initial.sql`. Three of those tables
-//! hold a reader's own state and are moved by [`absorb`], and since O76 so is
-//! `alignment`, with `run` beneath it, wherever it can be placed exactly —
-//! [`plan_alignments`] says which it leaves, and which of those it counts as
+//! `work_tag`. Four more follow transitively: `member` and `page_flag` through
+//! `edition`, `run` through `alignment`, and `work_fts` via the `work_ad AFTER
+//! DELETE` trigger in `001_initial.sql`. Three of those tables hold a reader's
+//! own state and are moved by [`absorb`], and so is `alignment` (O76), with
+//! `run` beneath it, wherever it can be placed exactly — [`plan_alignments`]
+//! says which it leaves, and which of those it counts as
 //! [`Moved::uncarried_alignments`]; the rest are counted as
 //! [`Moved::discarded`], because a delete this wide must not be able to happen
 //! quietly.
@@ -25,11 +23,9 @@
 //! **A slot moves as the page and half it names, never as its number** — O121.
 //! A slot is an index into the slots an edition's spread flags and its work's
 //! reading direction build, and a twin a scan has just built holds no spread
-//! flags, so until 2026-09-15 a reader's place past a spread landed a page
-//! later while [`Moved`] counted it as moved and the three counters that
-//! report a loss — [`Moved::lost_positions`], [`Moved::dropped_notes`] and
-//! [`Moved::collisions`] — all read zero. [`plan_slots`] decides where every
-//! slot-addressed row stands before anything is written.
+//! flags, so past a spread the same number names a different page there.
+//! [`plan_slots`] decides where every slot-addressed row stands before
+//! anything is written.
 //!
 //! **The guarantee is per row, not per table.** Moving `progress`, `note`,
 //! `truth_page` and `truth_member` is not the same as moving *every* row in
@@ -115,36 +111,30 @@ pub struct Moved {
     /// Reading positions that existed before this fold and do not exist
     /// after it — the source's, the target's, or both.
     ///
-    /// **A whole-fold identity, and it is the second attempt.** The first was
-    /// `offered - landed` per edition, taken off SQLite's `changes`, and that
-    /// subtraction can only see a losing row that was *skipped*.
-    /// [`edition_map`] is explicitly non-injective, so two editions of
-    /// `from_work` can upsert the same `(user_id, into_key)` row: in
-    /// `BTreeMap` key order, when the later-sorting key carries the newer
-    /// reading the first `execute` inserts and the second *updates*, both
-    /// report `changes = 1`, both count as landed, one row survives and one
-    /// reading position is destroyed and reported as moved. Replayed in
-    /// SQLite on 2026-08-27 — work 2 holding `raw` slot 5 @2020 and `scan`
-    /// slot 9 @2026, both mapped onto work 1's `full-color` — gave
-    /// `raw offered=1 landed=1`, `scan offered=1 landed=1` and one surviving
-    /// row at slot 9, the `raw` reading gone with nothing counting it.
+    /// **A whole-fold identity, not a per-edition subtraction.** `offered -
+    /// landed` per edition, taken off SQLite's `changes`, could only see a
+    /// losing row that was *skipped*. [`edition_map`] is explicitly
+    /// non-injective, so two editions of `from_work` can upsert the same
+    /// `(user_id, into_key)` row: in `BTreeMap` key order, when the
+    /// later-sorting key carries the newer reading the first `execute` inserts
+    /// and the second *updates*, both report `changes = 1`, both count as
+    /// landed, one row survives and one reading position is destroyed and
+    /// reported as moved.
     ///
-    /// So the number is taken over the fold as a whole instead:
-    /// `offered + held - after`, where `offered` is the `progress` rows on
-    /// `from_work` read before the move loop, `held` the rows on `into_work`
-    /// read before it, and `after` the rows on `into_work` read when the loop
-    /// is done. Every remaining source row is destroyed by the final
-    /// `DELETE`, so what exists after the fold is exactly `after`, and the
-    /// difference is every position that stopped existing. It cannot miss a
-    /// case, and it does not depend on which edition key sorts first or on
-    /// which side won.
+    /// The number is taken over the fold as a whole: `offered + held - after`,
+    /// where `offered` is the `progress` rows on `from_work` read before the
+    /// move loop, `held` the rows on `into_work` read before it, and `after`
+    /// the rows on `into_work` read when the loop is done. Every remaining
+    /// source row is destroyed by the final `DELETE`, so what exists after the
+    /// fold is exactly `after`, and the difference is every position that
+    /// stopped existing. It cannot miss a case, and it does not depend on which
+    /// edition key sorts first or on which side won.
     ///
-    /// **It covers a pre-existing target row overwritten by an incoming
-    /// one**, which the subtraction did not and which the previous round
-    /// named as a residual and left uncounted. Where the source's row is the
-    /// newer, the `DO UPDATE` replaces the target's slot, `completed_at` and
-    /// `read_count` entire; that reading is as gone as a declined one, and
-    /// counting the write in [`Self::positions`] said nothing about it.
+    /// **It covers a pre-existing target row overwritten by an incoming one.**
+    /// Where the source's row is the newer, the `DO UPDATE` replaces the
+    /// target's slot, `completed_at` and `read_count` entire; that reading is
+    /// as gone as a declined one, and counting the write in [`Self::positions`]
+    /// says nothing about it.
     ///
     /// **Rows on unmapped keys cancel rather than distort.** [`stranded`] has
     /// already refused any `from_work` reader row on a key the map does not
@@ -152,9 +142,9 @@ pub struct Moved {
     /// grandfathered `into_work` row on a key no `into_key` names is untouched
     /// by every statement below, so it is in `held` and in `after` both.
     ///
-    /// "The newer position wins" is unchanged — a slot number is not
-    /// mergeable and the later reading is the one somebody is in the middle
-    /// of. What this number exists for is that the loss is never silent.
+    /// "The newer position wins": a slot number is not mergeable and the later
+    /// reading is the one somebody is in the middle of. What this number exists
+    /// for is that the loss is never silent.
     pub lost_positions: usize,
     /// Rows the final `DELETE` took that this fold did not move — see
     /// [`DISCARDED`], which enumerates them.
@@ -194,30 +184,28 @@ pub enum Outcome {
 /// not move, and that the final `DELETE` therefore takes — as the table and
 /// the predicate that finds it, with `?1` bound to the superseded work.
 ///
-/// **`alignment`, `run` and a `spread` page flag are not in it, since O76.**
-/// They were, counted as one more number beside a scanlation credit, and that
-/// took a person's correction of an alignment with the work. They are carried
-/// now — see [`plan_slots`] — because the fold is between editions holding the
-/// same archives, which is the one case where their meaning can be kept
-/// exactly. What cannot be kept exactly is refused or counted there, never
+/// **`alignment`, `run` and a `spread` page flag are not in it (O76).** They
+/// are carried — see [`plan_slots`] — because the fold is between editions
+/// holding the same archives, which is the one case where their meaning can be
+/// kept exactly. What cannot be kept exactly is refused or counted there, never
 /// here: an alignment left behind is [`Moved::uncarried_alignments`], and a
-/// spread flag is either written onto the twin that held none, identical to
-/// the twin's own, or a different measurement of the same bytes, where the
-/// twin's own stands and every row that depended on the source's has already
-/// been placed exactly, refused over or counted.
+/// spread flag is either written onto the twin that held none, identical to the
+/// twin's own, or a different measurement of the same bytes, where the twin's
+/// own stands and every row that depended on the source's has already been
+/// placed exactly, refused over or counted.
 ///
-/// **Counted rather than moved, and that is a decision.** Each of these is
-/// the library's *description* of the material rather than a reader's state,
-/// and each would need its own merge rule against what the target already
-/// holds: `credit` has no unique constraint, so a move duplicates a
-/// scanlation group rather than reconciling it; `collection_item`'s
-/// `(collection_id, ordinal)` key collides whenever the target sits in the
-/// same reading list; `edition.label`, `language` and `kind` would overwrite
-/// what this very derive just wrote onto the target's edition, and the next
-/// derive would write it back — a flip-flop, not a migration. Choosing nine
-/// merge rules with no evidence, inside the one function that deletes a work,
-/// is more risk than the loss it avoids, and every one of these is visible
-/// on screen and re-doable by hand where a reading position is not.
+/// **Counted rather than moved, and that is a decision.** Each of these is the
+/// library's *description* of the material rather than a reader's state, and
+/// each would need its own merge rule against what the target already holds:
+/// `credit` has no unique constraint, so a move duplicates a scanlation group
+/// rather than reconciling it; `collection_item`'s `(collection_id, ordinal)`
+/// key collides whenever the target sits in the same reading list;
+/// `edition.label`, `language` and `kind` would overwrite what this very derive
+/// just wrote onto the target's edition, and the next derive would write it
+/// back — a flip-flop, not a migration. Choosing merge rules with no evidence,
+/// inside a function that deletes a work, is more risk than the loss it
+/// avoids, and every one of these is visible on screen and re-doable by hand
+/// where a reading position is not.
 ///
 /// So they get a number instead, for [`crate::derive::DeriveReport`]'s own
 /// reason: a silent loss is indistinguishable from no loss at all. Moving any
@@ -250,10 +238,9 @@ const DISCARDED: [(&str, &str); 6] = [
         "kind = 'credit' AND edition_id IN (SELECT id FROM edition WHERE work_id = ?1)",
     ),
     // A chapter number the scanner derived is re-derived onto the target by
-    // `derive::write_chapters` from the same filename; one a person entered
-    // is, in `member.chapter_declared`'s own words, "the one thing here no
-    // re-derive could recover". Only the second is a loss, so only the second
-    // is counted — matched by `chapter_source` rather than by the number
+    // `derive::write_chapters` from the same filename; one a person entered is
+    // one no re-derive could recover. Only the second is a loss, so only the
+    // second is counted — matched by `chapter_source` rather than by the number
     // being present, which is the same test `write_chapters` clears by.
     (
         "member",
@@ -274,17 +261,15 @@ const DISCARDED: [(&str, &str); 6] = [
 /// Which edition of `into_work` holds the same archives as each edition of
 /// `from_work`.
 ///
-/// **By member digest, not by the rule that caused the fold.** The two
-/// editions are the same bytes — measured at `920d44d8…`, 195 pages, on both
-/// sides of O73's reproduction — so page indices and box coordinates transfer
-/// one for one with nothing to re-derive. *Slots did not, and this sentence
-/// said they did until O121, 2026-09-15: a slot is an index into the slots
+/// **By member digest, not by the rule that caused the fold.** The two editions
+/// are the same bytes, so page indices and box coordinates transfer one for one
+/// with nothing to re-derive. *Slots do not: a slot is an index into the slots
 /// an edition's spread flags and its work's reading direction build, a scan
-/// writes no spread flag, so a slot past a spread named a later page on a twin
-/// holding none. [`plan_slots`] is what places a slot now.* Reading `set_edition_key`
-/// off the rule instead would tie this to *why* the material moved and would
-/// guess where no rule exists; digests hold for any later feature that moves
-/// material between works.
+/// writes no spread flag, so a slot past a spread names a different page on a
+/// twin holding none. [`plan_slots`] is what places a slot.* Reading
+/// `set_edition_key` off the rule instead would tie this to *why* the material
+/// moved and would guess where no rule exists; digests hold for any later
+/// feature that moves material between works.
 ///
 /// **The list, in `ordinal` order, not the set.** Member order is page order,
 /// so two editions holding the same archives in a different order are two
@@ -374,9 +359,9 @@ fn edition_keys(conn: &Connection, work_id: i64) -> Result<Vec<String>, String> 
 /// Every table holding a reader's own state keyed by `(work_id, edition)`,
 /// where `edition` is the plain `TEXT` this module has to check by hand.
 ///
-/// **None of these four columns has a foreign key to `edition(key)`** —
-/// measured against the schema at migration 9 — so SQLite will not stop a row
-/// naming a key its work does not hold, and nothing else does either.
+/// **None of these four columns has a foreign key to `edition(key)`**, so
+/// SQLite will not stop a row naming a key its work does not hold, and nothing
+/// else does either.
 ///
 /// `truth_box` is absent because it cannot be stranded on its own:
 /// `truth_box`'s composite foreign key names
@@ -394,13 +379,11 @@ type Stranded = BTreeMap<String, Vec<(&'static str, usize)>>;
 /// entry for, as `key -> [(table, rows)]`.
 ///
 /// **The guarantee this module makes is per row, and this is what makes it
-/// so.** [`move_positions`], [`move_notes`] and [`move_truth`] are all keyed
-/// on a `from_key` drawn from [`edition_map`], which is built from the
-/// `edition` *table*. A row on a key that table does not hold is invisible to
-/// all three, absent from [`DISCARDED`], and taken by [`absorb`]'s final
-/// `DELETE` — measured 2026-08-27 by replaying `absorb`'s own statements
-/// against the migrated schema, which reported `0` discarded and destroyed
-/// four reader rows with nothing on screen. Pinned by
+/// so.** [`move_positions`], [`move_notes`] and [`move_truth`] are all keyed on
+/// a `from_key` drawn from [`edition_map`], which is built from the `edition`
+/// *table*. A row on a key that table does not hold is invisible to all three,
+/// absent from [`DISCARDED`], and taken by [`absorb`]'s final `DELETE`.
+/// Pinned by
 /// `fold::tests::a_reader_row_on_an_edition_the_work_does_not_hold_refuses_the_fold`.
 ///
 /// **The state is reachable, and three places in this repository produce it.**
@@ -419,12 +402,11 @@ type Stranded = BTreeMap<String, Vec<(&'static str, usize)>>;
 /// defect this fold exists to fix, and it is recoverable: an operator sees
 /// the refusal and can act on it. A destroyed note is not.
 ///
-/// **Per table, not just per key.** The count alone was ambiguous by
+/// **Per table, not just per key.** The count alone is ambiguous by
 /// construction: four rows spread one per table reads `4`, and so does any
-/// other four — `fold::tests`' own assertion on it would have passed just as
-/// happily with `truth_member` dropped and `truth_box` counted twice. Naming
-/// the table beside the number costs one `Vec` and is what an operator needs
-/// anyway, the four tables being four different things to go and look at.
+/// other four. Naming the table beside the number costs one `Vec` and is what
+/// an operator needs anyway, the four tables being four different things to go
+/// and look at.
 ///
 /// A `BTreeMap` for [`edition_map`]'s reason: the message names its keys in
 /// the same order on every run. The `Vec` inside it is in [`READER_TABLES`]
@@ -465,13 +447,13 @@ fn stranded(
 /// Everything one `note` row says apart from whose it is and where it is kept
 /// — the columns two copies under one id must agree on to be one note.
 ///
-/// **Every column of `note` as of migration 13 but four.** `user_id` and `id`
-/// are what [`shared_note_ids`] joins the two copies on, so they are equal by
+/// **Every column of `note` but four.** `user_id` and `id` are what
+/// [`shared_note_ids`] joins the two copies on, so they are equal by
 /// construction; `work_id` and `edition` are the two [`move_notes`] rewrites,
-/// and `edition` is compared through the map instead. Nothing else is left
-/// out: `color` is a reader's choice, and `created` and `updated` are the
-/// client's own timestamps, which `state::merge_notes` reads to decide
-/// between two copies — so two rows differing only there are not one fact.
+/// and `edition` is compared through the map instead. Nothing else is left out:
+/// `color` is a reader's choice, and `created` and `updated` are the client's
+/// own timestamps, which `state::merge_notes` reads to decide between two
+/// copies — so two rows differing only there are not one fact.
 ///
 /// **Compared here, in Rust, and not in SQL, for NULL's sake.** Five of these
 /// columns are nullable, and all five are NULL on the ordinary note — the
@@ -537,35 +519,33 @@ struct SharedNotes {
 ///
 /// **Read rather than caught.** [`move_notes`] is a bare `UPDATE` and the
 /// collision comes back as `UNIQUE constraint failed: note.user_id,
-/// note.work_id, note.id` — measured 2026-08-27 — which travels out of
-/// [`absorb`] as an `Err`, through `derive`'s `?`, and kills the whole derive:
-/// every later pair goes unfolded and `series_holding_no_work` and `proposals::raise`
-/// never run. Nothing is destroyed, the transaction rolling back, so this is
-/// fold-defeating rather than data-losing — but [`Outcome::Refused`] exists
-/// for precisely this and catching the error after the write has begun would
-/// give up the "a refusal costs the database nothing" property as well.
+/// note.work_id, note.id`, which travels out of [`absorb`] as an `Err`, through
+/// `derive`'s `?`, and kills the whole derive: every later pair goes unfolded
+/// and `series_holding_no_work` and `proposals::raise` never run. Nothing is
+/// destroyed, the transaction rolling back, so this is fold-defeating rather
+/// than data-losing — but [`Outcome::Refused`] exists for precisely this and
+/// catching the error after the write has begun would give up the "a refusal
+/// costs the database nothing" property as well.
 ///
-/// **Identical is every column: O78.** Until 2026-09-14 every shared id was
-/// refused, whatever the two rows held — including the rows the route above
-/// actually writes, one sidecar imported against both works, which agree in
-/// everything. Two copies are one note when their [`NoteContent`] is equal
-/// and the target's `edition` is exactly the key `map` sends the source's
-/// edition to. [`edition_map`] pairs editions holding the same digests in the
-/// same order, so a region carries across unchanged, and the edition key and
-/// the slot are the parts of the anchor that move — the slot by the page and
-/// half it names, below. The raw keys are the wrong thing to compare — the
-/// source's `raw` and the target's `raw` can be two different books, and the
-/// source's `raw` and the target's `full-color` the same one. Anything short
-/// of that — a body, a colour, a timestamp, a coordinate, a key — is two
-/// notes, and choosing between them is not this fold's to do.
+/// **Identical is every column: O78.** The rows the route above actually
+/// writes, one sidecar imported against both works, agree in everything. Two
+/// copies are one note when their [`NoteContent`] is equal and the target's
+/// `edition` is exactly the key `map` sends the source's edition to.
+/// [`edition_map`] pairs editions holding the same digests in the same order,
+/// so a region carries across unchanged, and the edition key and the slot are
+/// the parts of the anchor that move — the slot by the page and half it names,
+/// below. The raw keys are the wrong thing to compare — the source's `raw` and
+/// the target's `raw` can be two different books, and the source's `raw` and
+/// the target's `full-color` the same one. Anything short of that — a body, a
+/// colour, a timestamp, a coordinate, a key — is two notes, and choosing
+/// between them is not this fold's to do.
 ///
-/// **The slot is compared where each copy will stand, not as stored.** Until
-/// O121 this doc said there was no slot rewrite to account for, which held
-/// while a fold carried a slot as a number: [`plan_slots`] now rewrites a slot
-/// whose edition's slot sequence the fold changes, on either work, so two
-/// copies stored under different numbers can name one page and two stored
-/// under one number can name two. `plan` answers both; a slot it cannot place has already refused
-/// the fold, so the `None` arm here is a copy that is not identical.
+/// **The slot is compared where each copy will stand, not as stored.**
+/// [`plan_slots`] rewrites a slot whose edition's slot sequence the fold
+/// changes, on either work, so two copies stored under different numbers can
+/// name one page and two stored under one number can name two. `plan` answers
+/// both; a slot it cannot place has already refused the fold, so the `None` arm
+/// here is a copy that is not identical.
 ///
 /// **Per reader, and `user_id` is in both the join and the result.** Two
 /// readers holding one id is migration 5's first case and is not a collision
@@ -681,9 +661,9 @@ fn truth_provenance(conn: &Connection, work_id: i64, edition: &str) -> Result<Ve
 /// **Read beside [`truth_provenance`] rather than inferred from it.** The two
 /// are separate rows written by one `state::put_truth` call, and a document
 /// with `"members": []` and populated `pages` writes the second and not the
-/// first — which is the whole state [`truth_provenance_clashes`] added its
-/// second arm for. "No provenance" and "no boxes" are different facts and
-/// only this tells them apart.
+/// first — which is the whole state [`truth_provenance_clashes`]'s second arm
+/// is for. "No provenance" and "no boxes" are different facts and only this
+/// tells them apart.
 fn has_truth_pages(conn: &Connection, work_id: i64, edition: &str) -> Result<bool, String> {
     conn.query_row(
         "SELECT EXISTS (SELECT 1 FROM truth_page WHERE work_id = ?1 AND edition = ?2)",
@@ -696,17 +676,16 @@ fn has_truth_pages(conn: &Connection, work_id: i64, edition: &str) -> Result<boo
 /// Mapped editions where the ground truth arriving on one target key cannot be
 /// given one honest provenance, in target-key order, each with its reason.
 ///
-/// **`truth_member` is not derivable from the mapping, and the inference that
-/// it was is the defect this exists to close.** [`edition_map`] compares
-/// `member.sha256` — the archives as they are *now*. `truth_member` is a
-/// client-supplied snapshot of what the boxes were *drawn against*, written
+/// **`truth_member` is not derivable from the mapping.** [`edition_map`]
+/// compares `member.sha256` — the archives as they are *now*. `truth_member` is
+/// a client-supplied snapshot of what the boxes were *drawn against*, written
 /// verbatim by `state::put_truth` with no validation of any kind. The two
 /// diverging is not an edge case; it is the entire reason
 /// `TruthEdition::is_stale_for` exists. So "the mapping is by identical digest
 /// list, therefore a target that holds a `truth_member` row already holds the
-/// same digests in the same order" is invalid, and the `INSERT OR IGNORE` it
-/// justified moved the source's pages under the target's digests — boxes drawn
-/// on superseded art recorded as fresh, which `score` would then accept.
+/// same digests in the same order" is invalid: relying on it, the `INSERT OR
+/// IGNORE` would put the source's pages under the target's digests — boxes
+/// drawn on superseded art recorded as fresh, which `score` would then accept.
 /// `truth_member`'s own schema comment calls that "the sharpest form of this
 /// problem in the project".
 ///
@@ -734,20 +713,17 @@ fn has_truth_pages(conn: &Connection, work_id: i64, edition: &str) -> Result<boo
 /// defeat the fold this module exists to deliver.
 ///
 /// **But a side holding boxes and no provenance is a claim being *acquired*,
-/// and it is refused.** An earlier version of this function skipped a source
-/// edition whose list was empty outright, and that exemption re-created the
-/// defect the rest of it closes from the other side: a source carrying
-/// `truth_page`/`truth_box` rows and no `truth_member` row passed, its boxes
-/// were copied onto the target key, and the target's own non-empty list stood
-/// over them through [`move_truth`]'s `INSERT OR IGNORE`.
-/// `TruthEdition::is_stale_for` returns `true` when `members` is empty and
-/// `digests` is not — so `score` correctly refuses those boxes as stale
-/// *before* the fold and reads the very same boxes as fresh *after* it, which
-/// is "boxes drawn on superseded art recorded as fresh" reached from the
-/// other direction. The state is reachable: `state::put_truth` writes the
-/// document's `members` as given and `routes::put_truth` validates neither
-/// the edition key nor the member list, so any `TruthDoc` with
-/// `"members": []` and populated `pages` produces it.
+/// and it is refused.** A source carrying `truth_page`/`truth_box` rows and no
+/// `truth_member` row would otherwise pass, its boxes copied onto the target
+/// key, with the target's own non-empty list standing over them through
+/// [`move_truth`]'s `INSERT OR IGNORE`. `TruthEdition::is_stale_for` returns
+/// `true` when `members` is empty and `digests` is not — so `score` correctly
+/// refuses those boxes as stale *before* the fold and would read the very same
+/// boxes as fresh *after* it, which is "boxes drawn on superseded art recorded
+/// as fresh" reached from the other direction. The state is reachable:
+/// `state::put_truth` writes the document's `members` as given and
+/// `routes::put_truth` validates neither the edition key nor the member list,
+/// so any `TruthDoc` with `"members": []` and populated `pages` produces it.
 ///
 /// The test is therefore over the boxes rather than over the lists: what
 /// lands on a target key must not be *one* claim over boxes that had none.
@@ -756,10 +732,9 @@ fn has_truth_pages(conn: &Connection, work_id: i64, edition: &str) -> Result<boo
 ///
 /// **Both sides, and every source at once.** The unclaimed boxes can be the
 /// target's as easily as a source's, and [`edition_map`] is non-injective, so
-/// the question is asked of the whole set of editions meeting on one target
-/// key rather than of one pair at a time. Written that way, the answer does
-/// not depend on which key the loop reaches first — which the previous
-/// mutate-as-you-go version's did.
+/// the question is asked of the whole set of editions meeting on one target key
+/// rather than of one pair at a time. Written that way, the answer does not
+/// depend on which key the loop reaches first.
 fn truth_provenance_clashes(
     conn: &Connection,
     from_work: i64,
@@ -817,13 +792,11 @@ impl Resequenced {
     /// makes a spread, or a half of a page it does not — and `slot` itself
     /// where it named no page before the fold.
     ///
-    /// **A slot that names no page is carried as it is, not refused.** Past
-    /// the end of its edition, it names no page on either work, so carrying
-    /// it gets no page wrong; and `taiyaku-serve`'s `notes::validate` keeps a
-    /// note stored that way on purpose, so a re-solve that shortened an
-    /// edition leaves it readable and deletable. The first version of this
-    /// function returned `None` for it, which refused, for good, a fold that
-    /// `main` made — over a row that points nowhere.
+    /// **A slot that names no page is carried as it is, not refused.** Past the
+    /// end of its edition, it names no page on either work, so carrying it gets
+    /// no page wrong; and `taiyaku-serve`'s `notes::validate` keeps a note
+    /// stored that way on purpose, so a re-solve that shortened an edition
+    /// leaves it readable and deletable.
     ///
     /// **By the page and the half, not by the position in reading order.** A
     /// half is a physical side of the scan, so the right half of page 4 is the
@@ -1363,10 +1336,8 @@ fn carry_alignments(
 ///    than an edition, and the guarantee the module makes is per row.
 /// 4. **A row the fold would leave naming another page** — see [`plan_slots`].
 ///    A `progress` or `note` slot, on either work, whose page and half has no
-///    slot on the surviving edition, and an alignment `into_work` already
-///    holds whose spans the spread flags this fold writes would move. O121:
-///    until 2026-09-15 a slot was carried as a number, and a number past a
-///    spread named a later page on a twin a scan had built without flags.
+///    slot on the surviving edition, and an alignment `into_work` already holds
+///    whose spans the spread flags this fold writes would move. O121.
 /// 5. **One note id held by one reader on both works, with two copies that
 ///    differ** — see [`shared_note_ids`]. `note`'s key is
 ///    `(user_id, work_id, id)` and migration 5 widened it to that
@@ -1381,11 +1352,10 @@ fn carry_alignments(
 /// 6. **Ground truth meeting on one target edition that cannot be given one
 ///    provenance** — see [`truth_provenance_clashes`]. Identical `member`
 ///    digests do not imply identical `truth_member` digests, and moving boxes
-///    under the wrong provenance records them as fresh when they are stale.
-///    Two *different* lists meeting is one half of it. The other is a side
-///    holding boxes and **no** list, which the fold would otherwise hand the
-///    other side's — a claim those boxes never had, and the same defect
-///    reached from the direction the guard used to be exempt in.
+///    under the wrong provenance records them as fresh when they are stale. Two
+///    *different* lists meeting is one half of it. The other is a side holding
+///    boxes and **no** list, which the fold would otherwise hand the other
+///    side's — a claim those boxes never had.
 ///
 /// **Arms 4, 5 and 6 are refusals about a state neither side can be told to
 /// fix from here, which is the point.** All three leave the duplicate work
@@ -1403,9 +1373,8 @@ pub fn absorb(conn: &Connection, from_work: i64, into_work: i64) -> Result<Outco
     // then takes that work with everything on it. `derive` never asks for it
     // — `superseded` skips a candidate its own `written` set holds — but that
     // is a guard in another module, in a function this one never calls, and
-    // this module is `pub`. For the only code in the project that deletes a
-    // `work` row, "no caller does that" is not the same as "this cannot
-    // happen".
+    // this module is `pub`. For code that deletes a `work` row, "no caller
+    // does that" is not the same as "this cannot happen".
     if from_work == into_work {
         return Ok(Outcome::Refused(format!(
             "work {from_work} cannot be folded into itself; nothing was moved and nothing \
@@ -1434,9 +1403,9 @@ pub fn absorb(conn: &Connection, from_work: i64, into_work: i64) -> Result<Outco
         .filter(|key| !map.contains_key(key))
         .collect();
     if !unmapped.is_empty() {
-        // `edition(s)` rather than a singular/plural switch: the switch was a
-        // branch no assertion could reach without a fixture built to reach
-        // it, which is a test written for a comma.
+        // `edition(s)` rather than a singular/plural switch: the switch would
+        // be a branch no assertion could reach without a fixture built to
+        // reach it, which is a test written for a comma.
         return Ok(Outcome::Refused(format!(
             "work {from_work} holds edition(s) `{}` with no digest-identical edition on \
              work {into_work}; nothing was moved and nothing was deleted",
@@ -1598,7 +1567,7 @@ pub fn absorb(conn: &Connection, from_work: i64, into_work: i64) -> Result<Outco
     // no-op: nothing in the loop above inserts a row that neither side
     // offered, so `after <= offered + held` holds. It is here so that a later
     // statement breaking that invariant reports `0` rather than panicking
-    // inside the one function that deletes a work.
+    // inside a function that deletes a work.
     let after = positions_on(&tx, into_work)?;
     moved.lost_positions = (offered + held).saturating_sub(after);
 
@@ -1891,51 +1860,43 @@ pub(crate) fn rehome_editions(
 /// would be the fold quietly resetting a finished re-read.
 ///
 /// **The conflict is reachable, by two routes this module documents itself.**
-/// An earlier comment here called it "impossible by construction — the
-/// target's edition was derived by the scan that caused this fold, so no
-/// reader can hold a position in it yet", and that is wrong twice over:
 /// [`edition_map`] is explicitly non-injective, so two editions of `from_work`
 /// over identical digests both land on the one edition of `into_work` inside a
 /// single fold and the second `INSERT` meets the first; and `progress.edition`
 /// has no foreign key to `edition(key)` — the fact [`stranded`] rests on — so
 /// `into_work` can already carry a grandfathered row under the mapped key.
 ///
-/// **Counted rather than refused, and the grandfathered row is why that is
-/// not a choice.** A refusal would need to tell the two apart: a target row
-/// that is a genuine reading of the mapped edition, where "newer wins" is the
-/// right answer, and one grandfathered under a key whose edition this derive
-/// has only just created, where the surviving slot means nothing. Nothing in
-/// the schema separates them. [`stranded`]'s test cannot be turned on the
-/// target either: `into_key` is drawn from `into_work`'s own `edition` table
-/// by [`edition_map`], so a target row under the mapped key is never a row on
-/// a key the work does not hold — the C1 shape cannot arise there, and the
-/// blanket version of it would refuse every fold into a target carrying any
-/// grandfathered row, a state `taiyaku-serve`'s `notes` module *deliberately
-/// supports*. That would be a narrowing that defeats the fold while looking
-/// like safety. So the loss is made visible instead, which is what the module
-/// asks of every derived thing it declines to move.
+/// **Counted rather than refused, and the grandfathered row is why that is not
+/// a choice.** A refusal would need to tell the two apart: a target row that is
+/// a genuine reading of the mapped edition, where "newer wins" is the right
+/// answer, and one grandfathered under a key whose edition this derive has only
+/// just created, where the surviving slot means nothing. Nothing in the schema
+/// separates them. [`stranded`]'s test cannot be turned on the target either:
+/// `into_key` is drawn from `into_work`'s own `edition` table by
+/// [`edition_map`], so a target row under the mapped key is never a row on a
+/// key the work does not hold, and the blanket version of it would refuse every
+/// fold into a target carrying any grandfathered row, a state `taiyaku-serve`'s
+/// `notes` module *deliberately supports*. That would be a narrowing that
+/// defeats the fold while looking like safety. So the loss is made visible
+/// instead, which is what the module asks of every derived thing it declines
+/// to move.
 ///
 /// **So the loss is counted, and not here.** `execute` returns rows actually
 /// written, so this function can report how many times it wrote and nothing
-/// more: the `WHERE excluded.updated > progress.updated` makes the source's
-/// row a silent no-op when the target's is newer, and the `DO UPDATE` makes
-/// the target's row a silent casualty when the source's is. Neither is
-/// visible in a per-edition subtraction — two source editions landing on one
-/// target row report `changes = 1` each, `offered - landed = 0` each, with a
-/// position gone. [`absorb`] therefore counts positions as a whole-fold
-/// identity across every call to this function; see [`Moved::lost_positions`]
-/// for the arithmetic and for the replay that showed the subtraction missing
-/// the case. "Newer wins" itself stays: a slot number is not mergeable, and
+/// more: the `WHERE excluded.updated > progress.updated` makes the source's row
+/// a silent no-op when the target's is newer, and the `DO UPDATE` makes the
+/// target's row a silent casualty when the source's is. Neither is visible in a
+/// per-edition subtraction — two source editions landing on one target row
+/// report `changes = 1` each, `offered - landed = 0` each, with a position
+/// gone. [`absorb`] therefore counts positions as a whole-fold identity across
+/// every call to this function; see [`Moved::lost_positions`] for the
+/// arithmetic. "Newer wins" itself stays: a slot number is not mergeable, and
 /// the later reading is the one somebody is in the middle of.
 ///
-/// **On a conflict the newer row wins entire, history included**, which is
-/// why the `DO UPDATE` sets all four columns rather than the two that make up
-/// the place. Setting `slot` and `updated` alone produced a row belonging to
-/// neither reading — the source's place under the target's re-read count —
-/// and "the newer position wins" then quietly meant "and its history does
-/// not". The same argument that put the guard here covers this: discovering
-/// the conflict was reachable by losing a re-read count is as expensive as
-/// discovering it by losing a position.
+/// **On a conflict the newer row wins entire, history included**, which is why
+/// the `DO UPDATE` sets all four columns rather than the two that make up the
+/// place. Setting `slot` and `updated` alone would produce a row belonging to
+/// neither reading — the source's place under the target's re-read count.
 fn move_positions(
     conn: &Connection,
     from_work: i64,
@@ -1978,26 +1939,24 @@ fn positions_on(conn: &Connection, work_id: i64) -> Result<usize, String> {
 
 /// Notes, with the edition string rewritten.
 ///
-/// **The rewrite is the whole of this function's risk.** An `UPDATE` that
-/// moved `work_id` alone would be accepted by every constraint in the schema
-/// — landing a note about a colour page on the monochrome archive at the same
-/// slot number, with nothing saying so. Measured 2026-08-27;
-/// `truth_member`'s own schema comment calls this the sharpest form of the
-/// problem in the project. `fold::tests`'s
+/// **The rewrite is the whole of this function's risk.** An `UPDATE` that moved
+/// `work_id` alone would be accepted by every constraint in the schema —
+/// landing a note about a colour page on the monochrome archive at the same
+/// slot number, with nothing saying so. `truth_member`'s own schema comment
+/// calls this the sharpest form of the problem in the project. `fold::tests`'s
 /// `a_moved_note_names_the_edition_that_holds_its_archive` is the only thing
 /// that catches it.
 ///
-/// **The id being a ULID does not mean nothing collides**, which an earlier
-/// version of this comment asserted as fact. `note`'s key is
-/// `(user_id, work_id, id)` and migration 5 widened it to that *deliberately
-/// to permit* one reader holding one id on two works — its rationale names
-/// the routes, "copying a `taiyaku.notes.json` between volumes, or importing
-/// one sidecar against two works", and a fold pair is by construction two
-/// works over the same volume. The `UPDATE` below then fails outright, so
-/// [`absorb`] reads for that state first: it refuses where the two copies
-/// differ, and where they agree in every column it has already dropped the
-/// source's copy by the time this runs, so nothing here collides; see
-/// [`shared_note_ids`] and [`drop_identical_notes`].
+/// **The id being a ULID does not mean nothing collides.** `note`'s key is
+/// `(user_id, work_id, id)` and migration 5 widened it to that *deliberately to
+/// permit* one reader holding one id on two works — its rationale names the
+/// routes, "copying a `taiyaku.notes.json` between volumes, or importing one
+/// sidecar against two works", and a fold pair is by construction two works
+/// over the same volume. The `UPDATE` below then fails outright, so [`absorb`]
+/// reads for that state first: it refuses where the two copies differ, and
+/// where they agree in every column it has already dropped the source's copy by
+/// the time this runs, so nothing here collides; see [`shared_note_ids`]
+/// and [`drop_identical_notes`].
 fn move_notes(
     conn: &Connection,
     from_work: i64,
@@ -2016,9 +1975,8 @@ fn move_notes(
 /// Ground truth: pages, then boxes, then the digests they were drawn against.
 ///
 /// **Delete-and-reinsert, not `UPDATE`, and page rows first.** `truth_box`'s
-/// foreign key names `(work_id, edition, page)` with no `ON UPDATE`, so
-/// `UPDATE truth_page SET work_id = …` is refused outright — measured, both
-/// with and without the edition rewrite, and pinned by
+/// foreign key names `(work_id, edition, page)` with no `ON UPDATE`, so `UPDATE
+/// truth_page SET work_id = …` is refused outright, pinned by
 /// `truth_page_refuses_to_be_moved_by_update`. The insertion order is
 /// `state::put_truth`'s own, which that composite key exists to enforce. The
 /// "delete" half is [`absorb`]'s final `DELETE FROM work`: nothing is removed
@@ -2037,17 +1995,16 @@ fn move_notes(
 /// record of which archives its boxes were drawn against is not overwritten.
 ///
 /// **That `OR IGNORE` is safe only because [`absorb`] has already refused the
-/// case where it would matter.** An earlier version of this comment justified
-/// it by "since the mapping is by identical digest list, a target that holds
-/// one already holds the same digests in the same order", and that inference
-/// is invalid: [`edition_map`] compares `member.sha256`, the archives as they
-/// are now, while `truth_member` is a client-supplied snapshot of what the
-/// boxes were *drawn against*, which `state::put_truth` writes verbatim. The
-/// two diverging is the whole reason `TruthEdition::is_stale_for` exists. So
-/// the divergence is checked for by name and refused before any write; see
-/// [`truth_provenance_clashes`]. What reaches this statement is a target that
-/// holds the same list or none at all — and, since that guard's second arm,
-/// never boxes on either side carrying no list of their own while one is
+/// case where it would matter.** The mapping is by identical digest list, which
+/// does not mean that a target holding a `truth_member` row holds the same
+/// digests in the same order: [`edition_map`] compares `member.sha256`, the
+/// archives as they are now, while `truth_member` is a client-supplied snapshot
+/// of what the boxes were *drawn against*, which `state::put_truth` writes
+/// verbatim. The two diverging is the whole reason `TruthEdition::is_stale_for`
+/// exists. So the divergence is checked for by name and refused before any
+/// write; see [`truth_provenance_clashes`]. What reaches this statement is a
+/// target that holds the same list or none at all — and, by that guard's second
+/// arm, never boxes on either side carrying no list of their own while one is
 /// about to come to stand over them. `OR IGNORE` is then exactly right.
 ///
 /// Returns the pages moved and the pages the target already held.

@@ -24,27 +24,21 @@ fn refusal_of<T: std::fmt::Debug>(answered: Result<Offer<T>, String>) -> String 
 /// tree** rather than from hand-inserted rows — one directory per title,
 /// holding one volume.
 ///
-/// **It used to insert `series` rows directly, and that stopped being
-/// adequate on 2026-08-17.** Once `accept` derives its rule's pattern from
-/// the paths of the entries that resolved to a series — and verifies the
-/// rule matches something — a series with no `scan_entry` rows behind it has
-/// nothing to accept, and refusing is the correct answer. A fixture that
-/// cannot reach `accept`'s success path cannot test it.
+/// `accept` derives its rule's pattern from the paths of the entries that
+/// resolved to a series, and verifies the rule matches something, so a series
+/// with no `scan_entry` rows behind it has nothing to accept, and refusing is
+/// the correct answer. A fixture that cannot reach `accept`'s success path
+/// cannot test it.
 ///
-/// The weaker version also hid a second thing: with no `work` rows anywhere,
-/// every volume-count comparison was `0` against `0`, so the scoring tests
-/// discriminated on vocabulary alone while appearing to exercise both
-/// signals. Building from a scanned tree fixes both at once, which is the
-/// argument for doing it here rather than per test — every series raised
-/// from this helper now carries exactly one real volume, so the
-/// equal-volume-count signal is genuinely evaluated rather than vacuously
+/// Every series raised from this helper carries exactly one real volume, so
+/// the equal-volume-count signal is genuinely evaluated rather than vacuously
 /// true. It does not by itself discriminate between two series drawn from
 /// here, since every one of them holds the same count: that is
 /// `the_volume_count_signal_needs_volumes_to_count`'s job, via `score_for`.
 ///
 /// Returns the `Library` rather than a bare `Connection`: `Library` owns the
 /// connection behind a `Mutex` and there is no `into_connection`, deliberately
-/// — widening this crate's public surface so four tests can hold a connection
+/// — widening this crate's public surface so tests can hold a connection
 /// directly is the wrong trade. Each test takes `&library.conn()` itself,
 /// which is what every other test module here already does.
 ///
@@ -57,14 +51,11 @@ fn refusal_of<T: std::fmt::Debug>(answered: Result<Offer<T>, String>) -> String 
 /// pins by deleting the tree outright between two derives.
 fn library_with_series(titles: &[&str]) -> Library {
     let dir = crate::tests::tempdir("proposals-library-with-series");
-    // **Belt-and-braces, not load-bearing.** `write_pages` now bakes its own
-    // directory into every page's bytes (Task 5/8 review), so two volumes can
-    // no longer collide on `content_key` no matter what page count either one
-    // gets — varying the count here is not what prevents that any more, and
-    // this loop would still be safe as a single fixed number. Kept anyway: it
-    // is what turned up the collision in the first place, before the helper
-    // itself was fixed, and a mix of counts is closer to a real library than
-    // every volume being the same length.
+    // **Belt-and-braces, not load-bearing.** `write_pages` bakes its own
+    // directory into every page's bytes, so two volumes cannot collide on
+    // `content_key` whatever page count either one gets, and this loop would be
+    // safe as a single fixed number. A mix of counts is closer to a real
+    // library than every volume being the same length.
     for (n, title) in (2_usize..).zip(titles) {
         write_pages(&dir.path().join(title).join(format!("{title} - v01")), n);
     }
@@ -88,11 +79,9 @@ fn library_with_two_suffixed_series() -> Library {
 /// `work` rows actually attached, raised, and the score of the one proposal
 /// that comes back.
 ///
-/// `library_with_series` above creates no `work` rows at all — which is
-/// exactly why the volume-count half of §6's score went unexercised until
-/// this helper existed to attach some. `content_key` and `slug` only need to
-/// be unique within one call's database, so they are derived from the title
-/// and volume rather than carrying any meaning `import.rs`'s own rows would.
+/// `content_key` and `slug` only need to be unique within one call's
+/// database, so they are derived from the title and volume rather than
+/// carrying any meaning `import.rs`'s own rows would.
 fn score_for(series: &[(&str, i64)]) -> f64 {
     let library = Library::open_in_memory().expect("open");
     {
@@ -129,30 +118,25 @@ fn score_for(series: &[(&str, i64)]) -> f64 {
     open[0].score
 }
 
-/// A real tree reproducing the bug review found `accept` capable of: the
-/// subject's own volume sits under a directory named nothing like its
-/// title, `Publisher/`, resolved to its actual series purely by seeded rule
-/// 4's filename capture (rule 1's path-based guess, `series = "Publisher"`,
-/// is overridden per file) — exactly as it would be under a real, published
-/// layout.
+/// A real tree: the subject's own volume sits under a directory named
+/// nothing like its title, `Publisher/`, resolved to its actual series purely
+/// by seeded rule 4's filename capture (rule 1's path-based guess,
+/// `series = "Publisher"`, is overridden per file) — exactly as it would be
+/// under a real, published layout.
 ///
 /// **The base series lives under its own directory, deliberately, not also
-/// under `Publisher/`.** An earlier version of this fixture put both under
-/// one directory and reproduced a *different* bug by accident: once `accept`
-/// also refuses when a directory holds more than the subject (review's
-/// "matches only the subject" fix), that layout can never be accepted at
-/// all, so it stopped being able to test this one.
+/// under `Publisher/`.** `accept` refuses when a directory holds more than
+/// the subject, so with both under one directory that layout could never be
+/// accepted at all.
 /// `library_with_an_unrelated_series_sharing_the_subjects_directory` is the
-/// fixture that puts two series under one directory on purpose, for that
-/// other bug.
+/// fixture that puts two series under one directory on purpose.
 ///
 /// **`library_with_two_suffixed_series` cannot stand in for this**, even
-/// though it too scans a real tree now. Its layout is flat — one series, one
+/// though it too scans a real tree. Its layout is flat — one series, one
 /// top-level directory named after it — so the subject's `sort_title` and
-/// its entries' common directory happen to coincide, which is exactly the
-/// coincidence that let the old, title-derived pattern pass unnoticed. Only
-/// a directory named unlike the subject exposes the bug, which is the
-/// entire reason this helper exists rather than being folded into that one.
+/// its entries' common directory happen to coincide. Only a directory named
+/// unlike the subject separates the two, which is the entire reason this
+/// helper exists rather than being folded into that one.
 ///
 /// Returns the `TempDir` too: it must outlive every use of `library`, or the
 /// tree it holds is removed while `scan_entry` still names paths under it.
@@ -181,10 +165,9 @@ fn library_scanned_with_the_subject_under_an_unrelated_directory()
     (dir, library)
 }
 
-/// A real tree matching review's own measured example: one publisher
-/// directory holding the two related series an `edition-of` accept is about
-/// (the base and its colour sibling) and one entirely unrelated series,
-/// "Chainsaw Man", with two volumes of its own.
+/// A real tree: one publisher directory holding the two related series an
+/// `edition-of` accept is about (the base and its colour sibling) and one
+/// entirely unrelated series, "Chainsaw Man", with two volumes of its own.
 fn library_with_an_unrelated_series_sharing_the_subjects_directory()
 -> (crate::tests::TempDir, Library) {
     let dir = crate::tests::tempdir("proposals-accept-swallow");
@@ -207,10 +190,10 @@ fn library_with_an_unrelated_series_sharing_the_subjects_directory()
 }
 
 /// Two roots that happen to share a directory *name*, `Publisher/`, holding
-/// completely unrelated material — the shape I6 exists for. Root A holds the
-/// same `edition-of` pair `library_scanned_with_the_subject_under_an_
-/// unrelated_directory` does; root B holds a series with no relation to
-/// either, under a directory that merely spells the same as root A's.
+/// completely unrelated material. Root A holds the same `edition-of` pair
+/// `library_scanned_with_the_subject_under_an_unrelated_directory` does; root
+/// B holds a series with no relation to either, under a directory that merely
+/// spells the same as root A's.
 ///
 /// Returns both `TempDir`s: each must outlive every use of `library`.
 fn library_with_two_roots_sharing_a_directory_name()
@@ -245,7 +228,7 @@ fn library_with_two_roots_sharing_a_directory_name()
 
 #[test]
 fn a_dismissed_proposal_stays_dismissed_across_a_rescan() {
-    // §6's first argument. Without this, every rescan re-raises the same 37
+    // §6's first argument. Without this, every rescan re-raises the same
     // suffixed directories forever and the person stops reading them.
     let library = library_with_two_suffixed_series();
     let conn = library.conn();
@@ -317,10 +300,7 @@ fn preview_returns_the_narrow_prefix_rule_accept_would_write() {
         Some("full-color-edition"),
     );
     // `Full Color Edition` is the `official` half of `implied_edition_kind`'s
-    // two-way split, and until this line nothing asserted it: a mutation
-    // changing that branch's constant to "fan" left the whole suite green,
-    // while `accept` now writes `edition.kind` where it used to write NULL.
-    // Seven of the eight edition words land here, so the wrong constant would
+    // two-way split. Most edition words land here, so a wrong constant would
     // stamp every accepted publisher edition in the library as a fan edition.
     assert_eq!(previewed.set_kind.as_deref(), Some("official"));
 
@@ -406,9 +386,9 @@ fn accept_with_writes_the_rule_it_was_handed_not_one_it_derived() {
 
 #[test]
 fn accept_with_still_refuses_a_pattern_that_would_move_another_series() {
-    // The measured `Publisher/` bug: a pattern that merely matches something
-    // is not enough, and handing the rule in from outside must not become a
-    // way around the check.
+    // The `Publisher/` shape: a pattern that merely matches something is not
+    // enough, and handing the rule in from outside must not become a way around
+    // the check.
     let library = library_with_a_shared_publisher_directory();
     let conn = library.conn();
     proposals::raise(&conn).expect("raise");
@@ -434,13 +414,10 @@ fn accept_with_still_refuses_a_pattern_that_would_move_another_series() {
 
 #[test]
 fn accept_with_refuses_a_proposal_preview_would_never_have_offered() {
-    // Fix-round finding 1. `accept_with` is a `pub fn`, and C3's
+    // `accept_with` is a `pub fn`, and C3's
     // `POST /api/library/proposals/{id}/accept` hands it a rule straight out
     // of a request body — so "`preview` already refused on this" is an
-    // assumption it is not entitled to make. Probed before the guards were
-    // shared: this returned `Ok` and flipped a dismissed proposal back to
-    // `accepted`, writing a second rule over the top of the first, which is
-    // the exact state `created_rule_id` exists to prevent.
+    // assumption it is not entitled to make.
     let library = library_with_two_suffixed_series();
     let conn = library.conn();
     proposals::raise(&conn).expect("raise");
@@ -474,11 +451,10 @@ fn accept_with_refuses_a_proposal_preview_would_never_have_offered() {
 
 #[test]
 fn accept_with_refuses_an_attach_chapters_proposal_handed_a_rule_directly() {
-    // Fix-round finding 1's other half, probed the same way: handed a rule it
-    // did not derive, `accept_with` accepted an `attach-chapters` proposal and
-    // wrote a `prefix` rule that sets no volume — the outcome the module doc
-    // calls worse than refusing, since `derive` needs a volume to make a work
-    // and the person sees nothing change.
+    // Handed a rule it did not derive, `accept_with` must not accept an
+    // `attach-chapters` proposal and write a `prefix` rule that sets no volume
+    // — the outcome the module doc calls worse than refusing, since `derive`
+    // needs a volume to make a work and the person sees nothing change.
     let tree = fixture();
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
@@ -529,20 +505,10 @@ fn accept_with_refuses_an_attach_chapters_proposal_handed_a_rule_directly() {
 
 #[test]
 fn accept_with_names_a_regex_rules_collateral_rather_than_refusing_to_look() {
-    // Fix-round finding 2, and the follow-through this test's own earlier
-    // version promised. Both guards used to reason in literal `rel_path`
-    // prefixes: handed `kind = "regex"`, the collateral check prefix-matched
-    // the regex *source text* against every path, matched nothing, and
-    // passed — a silent no-op, not a check — so `accept_with` fail-closed on
-    // every rule that was not `prefix` on `path`, and this test pinned that
-    // refusal by its message.
-    //
-    // The refusal is now the check. This fixture is the one that says what
-    // was at stake: `^Publisher/` reaches "Kaguya-sama wa Kokurasetai" as
-    // surely as the literal `Publisher/` the test below it refuses, and
-    // `resolves` evaluates it through the engine that will actually apply
-    // it — so the accept is refused for the reach itself, and names what it
-    // reached, rather than for its own inability to tell.
+    // `^Publisher/` reaches "Kaguya-sama wa Kokurasetai" as surely as the
+    // literal `Publisher/` does, and `resolves` evaluates it through the engine
+    // that will actually apply it — so the accept is refused for the reach
+    // itself, and names what it reached.
     let library = library_with_a_shared_publisher_directory();
     let conn = library.conn();
     proposals::raise(&conn).expect("raise");
@@ -569,20 +535,14 @@ fn accept_with_names_a_regex_rules_collateral_rather_than_refusing_to_look() {
 
 #[test]
 fn accept_with_refuses_a_parent_matched_rule_that_decides_nothing() {
-    // Fix-round finding 2's other half, and the case its refusal actually
-    // existed for. Neither old guard read `match_on` at all — both compared
-    // `rule.pattern` against `rel_path` directly — so `preview`'s own narrow
-    // pattern, already proven to reach only the subject's material and to
-    // match something, sailed through the collateral check and the
-    // matched-nothing check unchanged no matter what `match_on` said, while
-    // `rules.rs` would evaluate this exact rule against the immediate parent
-    // *directory name*: a different string entirely.
+    // `preview`'s own narrow pattern is already proven to reach only the
+    // subject's material and to match something, but `rules.rs` evaluates this
+    // exact rule against the immediate parent *directory name*: a different
+    // string entirely.
     //
-    // Evaluated that way — which is now what happens — this rule matches no
-    // entry at all: no directory here is *named* `Publisher/Go-Toubun no
-    // Hanayome - Full Color Edition/`. So it is still refused, and now for
-    // the true reason rather than for the guard's inability to tell, by the
-    // check that already existed for a rule deciding nothing.
+    // Evaluated that way this rule matches no entry at all: no directory here
+    // is *named* `Publisher/Go-Toubun no Hanayome - Full Color Edition/`. So it
+    // is refused by the check for a rule deciding nothing.
     let library = library_with_a_shared_publisher_directory();
     let conn = library.conn();
     proposals::raise(&conn).expect("raise");
@@ -607,9 +567,7 @@ fn accept_with_refuses_a_parent_matched_rule_that_decides_nothing() {
 }
 
 /// A root laid out `Publisher/<series>/<series> - v01/`, holding the two
-/// related series and one unrelated third — the shape that made a
-/// correctly-derived `Publisher/` pattern move somebody else's volumes into
-/// the accepted series' page sequence.
+/// related series and one unrelated third.
 fn library_with_a_shared_publisher_directory() -> Library {
     let dir = crate::tests::tempdir("proposals-shared-publisher");
     for (n, title) in (2_usize..).zip([
@@ -752,15 +710,15 @@ fn same_series_relates_a_known_alt_title_to_its_series() {
     // known title of a series joins that series — which is what relates
     // 「五等分の花嫁」 to `Go-Toubun no Hanayome`, since no pattern can.
     //
-    // A real scanned tree, not bare `series` rows: `accept` now derives its
-    // pattern from `scan_entry` (review finding 1), so a subject with no
-    // facts behind it has nothing to derive one from and correctly refuses —
-    // see `library_with_series`'s own doc. Built by hand rather than through
-    // that helper because this test needs a *known alt title* recorded after
-    // the scan, which no title in a plain `titles: &[&str]` list can express.
+    // A real scanned tree, not bare `series` rows: `accept` derives its
+    // pattern from `scan_entry`, so a subject with no facts behind it has
+    // nothing to derive one from and correctly refuses — see
+    // `library_with_series`'s own doc. Built by hand rather than through that
+    // helper because this test needs a *known alt title* recorded after the
+    // scan, which no title in a plain `titles: &[&str]` list can express.
     let dir = crate::tests::tempdir("proposals-same-series");
-    // Different page counts — belt-and-braces, not required; see
-    // `library_with_series`'s doc.
+    // Different page counts — belt-and-braces, not required; see the comment on
+    // the loop in `library_with_series`.
     write_pages(
         &dir.path()
             .join("Go-Toubun no Hanayome")
@@ -821,13 +779,13 @@ fn same_series_relates_a_known_alt_title_to_its_series() {
 
 #[test]
 fn attach_chapters_is_raised_by_a_derive_and_the_accept_is_refused() {
-    // Two things Task 7 found that land here. First: a chapter-organised
-    // directory produces no work and stays visibly unattached, which is what
-    // `proposals::raise` — called from the end of `derive::derive` — turns
-    // into the inbox entry. Second: accepting it cannot produce a work either
-    // (a `prefix` rule sets no volume), so accept refuses this kind by name
-    // rather than silently doing nothing. `scan::tests::fixture()` holds
-    // exactly one such directory, "Kaguya-sama - Fan Translated".
+    // Two things land here. First: a chapter-organised directory produces no
+    // work and stays visibly unattached, which is what `proposals::raise` —
+    // called from the end of `derive::derive` — turns into the inbox entry.
+    // Second: accepting it cannot produce a work either (a `prefix` rule sets
+    // no volume), so accept refuses this kind by name rather than silently
+    // doing nothing. `scan::tests::fixture()` holds exactly one such
+    // directory, "Kaguya-sama - Fan Translated".
     let tree = fixture();
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
@@ -889,21 +847,19 @@ fn raise_reopens_an_accepted_proposal_whose_rule_has_gone() {
     assert!(open[0].created_rule_id.is_none());
 }
 
-/// **Important 3, second bullet.** `reopened`'s predicate — `after` reads
-/// `open` and `before` read `accepted` — survives three separate weakenings,
-/// two of which a fixture routed through a real [`crate::preview::preview`]
-/// still cannot tell apart from the correct behaviour even now that
-/// `crate::rules::replace_all` only deletes the ids a proposed list
-/// genuinely drops: [`crate::proposals::raise`], the one place a derivation
-/// ever writes to `proposal`, only ever inserts a fresh `open` row or flips
-/// an orphaned `accepted` one back to `open` — never `dismissed → open` (id
-/// `3` below) or `open → dismissed` (id `4`), neither of which any real
-/// derive can produce no matter what rule list it is handed. A second
-/// accepted proposal genuinely *surviving* into `after` (id `2`) is
-/// reachable through a real `preview` now —
+/// `reopened`'s predicate — `after` reads `open` and `before` read `accepted`
+/// — has three weakenings to rule out, and a fixture routed through a real
+/// [`crate::preview::preview`] cannot tell two of them from the correct
+/// behaviour: [`crate::proposals::raise`], the one place a derivation ever
+/// writes to `proposal`, only ever inserts a fresh `open` row or flips an
+/// orphaned `accepted` one back to `open` — never `dismissed → open` (id `3`
+/// below) or `open → dismissed` (id `4`), neither of which any real derive
+/// can produce no matter what rule list it is handed. A second accepted
+/// proposal surviving into `after` (id `2`) is reachable through a real
+/// `preview` —
 /// `crate::preview::tests::a_preview_that_drops_one_of_two_accepts_leaves_the_surviving_one_accepted`
-/// pins it that way — but `3` and `4` still want a hand-built pair of
-/// [`proposals::States`], which is what this test stays for.
+/// pins it that way — but `3` and `4` want a hand-built pair of
+/// [`proposals::States`], which is what this test is for.
 ///
 /// Four ids, each ruling out one wrong predicate:
 ///
@@ -911,8 +867,7 @@ fn raise_reopens_an_accepted_proposal_whose_rule_has_gone() {
 ///   version below must count.
 /// - `2`: `accepted` → `accepted`, unchanged. Dropping the `state ==
 ///   STATE_OPEN` half of the predicate counts this one too, since it only
-///   ever looks at `before` — `Series B`'s own shape, the one a real preview
-///   cannot produce.
+///   ever looks at `before`.
 /// - `3`: `dismissed` → `open`. Widening `was == STATE_ACCEPTED` to `was !=
 ///   STATE_OPEN` counts this one too, since a proposal that was never
 ///   accepted at all still satisfies "wasn't open before".
@@ -943,15 +898,13 @@ fn reopened_counts_only_a_proposal_that_moved_from_accepted_to_open() {
 
 #[test]
 fn accept_derives_the_pattern_from_scan_entry_not_the_subject_title() {
-    // Review finding 1, reproducing the exact scenario measured: an earlier
-    // version derived the pattern from the subject's own `sort_title`,
-    // reasoning that seeded rule 1 resolves a series from the first path
-    // component — false whenever a higher-ordinal rule decides it first.
-    // Seeded rule 4 exists precisely because a filename sometimes repeats the
-    // series where the directory does not, and the colour volume here sits
-    // under `Publisher/` with its series decided by rule 4 alone. The old,
-    // title-derived pattern (`Go-Toubun no Hanayome - Full Color Edition/`)
-    // would have matched nothing, since the real path begins `Publisher/`.
+    // Seeded rule 1 reads a series from the path, but a higher-ordinal rule
+    // can decide it first. Seeded rule 4 exists precisely because a filename
+    // sometimes repeats the series where the directory does not, and the colour
+    // volume here sits under `Publisher/` with its series decided by rule 4
+    // alone. A pattern derived from the subject's own `sort_title`
+    // (`Go-Toubun no Hanayome - Full Color Edition/`) would match nothing,
+    // since the real path begins `Publisher/`.
     let (_tree, library) = library_scanned_with_the_subject_under_an_unrelated_directory();
     let conn = library.conn();
     let proposal = proposals::open(&conn, 0.0)
@@ -980,13 +933,12 @@ fn accept_derives_the_pattern_from_scan_entry_not_the_subject_title() {
 
 #[test]
 fn accept_refuses_when_the_directory_also_holds_another_series() {
-    // Critical: the first version of finding 1's fix asked "does this match
-    // something", not "does this match ONLY the subject". Measured, on the
-    // layout this fixture reproduces exactly: accepting the colour proposal
-    // would have written `Publisher/`, which also matches Chainsaw Man's two
-    // volumes — silently moving them into the accepted series' page
-    // sequence, and `write_work`'s own doc records that member order is page
-    // order and every alignment offset is computed from it.
+    // A pattern that merely matches something is not enough: it has to match
+    // ONLY the subject. On this layout the colour proposal's derived pattern is
+    // `Publisher/`, which also matches Chainsaw Man's two volumes — accepting
+    // it would silently move them into the accepted series' page sequence, and
+    // `write_work`'s own doc records that member order is page order and every
+    // alignment offset is computed from it.
     let (_tree, library) = library_with_an_unrelated_series_sharing_the_subjects_directory();
     let conn = library.conn();
     let proposal = proposals::open(&conn, 0.0)
@@ -1020,11 +972,8 @@ fn accept_refuses_when_the_directory_also_holds_another_series() {
 
 #[test]
 fn accept_sets_the_edition_key_so_the_colour_volume_becomes_a_second_edition() {
-    // Important: `set_series` alone makes the accepted directory's material
-    // extra pages of the base edition rather than a second edition of the
-    // work — measured: one `raw` edition per work holding both volumes'
-    // members concatenated, base then colour. `set_edition_key` is what
-    // keeps them two editions of one work instead of one edition of two.
+    // `set_edition_key` is what keeps the accepted directory's volume a second
+    // edition of one work, rather than extra pages of the base edition.
     let library = library_with_two_suffixed_series();
     let conn = library.conn();
     proposals::raise(&conn).expect("raise");
@@ -1086,9 +1035,9 @@ fn accept_sets_the_edition_key_so_the_colour_volume_becomes_a_second_edition() {
 
 #[test]
 fn accept_refuses_an_edition_of_proposal_whose_suffix_has_no_edition_key_to_give() {
-    // Minor 3: a suffix with no letters or digits slugifies to `""`, and
-    // `edition.key` is `TEXT NOT NULL` — SQLite takes an empty string
-    // happily, which is worse than refusing.
+    // A suffix with no letters or digits slugifies to `""`, and `edition.key`
+    // is `TEXT NOT NULL` — SQLite takes an empty string happily, which is worse
+    // than refusing.
     let library = library_with_series(&["Series", "Series - ???"]);
     let conn = library.conn();
     proposals::raise(&conn).expect("raise");
@@ -1111,11 +1060,10 @@ fn accept_refuses_an_edition_of_proposal_whose_suffix_has_no_edition_key_to_give
 
 #[test]
 fn accept_refuses_an_edition_of_proposal_whose_target_no_longer_matches_its_prefix() {
-    // Minor 4: `strip_prefix` used to fall back to `None` silently, which
-    // would restore Important 1's own bug — `set_series` alone, no
-    // `set_edition_key` — the moment a target is renamed between raise and
-    // accept. Simulated directly on the `series` row, since a rename between
-    // two calls is otherwise invisible from outside this test.
+    // A target renamed between raise and accept must be refused rather than
+    // accepted with `set_series` alone and no `set_edition_key`. Simulated
+    // directly on the `series` row, since a rename between two calls is
+    // otherwise invisible from outside this test.
     let library = library_with_two_suffixed_series();
     let conn = library.conn();
     proposals::raise(&conn).expect("raise");
@@ -1141,11 +1089,11 @@ fn accept_refuses_an_edition_of_proposal_whose_target_no_longer_matches_its_pref
 
 #[test]
 fn accept_refuses_when_the_subjects_files_sit_directly_in_the_root() {
-    // Minor: the post-write verification branch — a pattern derived
-    // correctly but matching nothing once checked against the raw facts —
-    // had no test. Reachable when the subject's own entries sit directly
-    // under the root: their common "directory" is the empty string, so the
-    // derived pattern is `/`, and no real `rel_path` ever begins with one.
+    // The post-write verification branch — a pattern derived correctly but
+    // matching nothing once checked against the raw facts — is reachable when
+    // the subject's own entries sit directly under the root: their common
+    // "directory" is the empty string, so the derived pattern is `/`, and no
+    // real `rel_path` ever begins with one.
     let dir = crate::tests::tempdir("proposals-accept-root-level");
     write_pages(
         &dir.path()
@@ -1183,15 +1131,14 @@ fn accept_refuses_when_the_subjects_files_sit_directly_in_the_root() {
 
 #[test]
 fn accept_refuses_when_the_subjects_entries_span_more_than_one_directory() {
-    // The other half of finding 1: when a single common directory does not
-    // exist, `accept` must refuse by name rather than pick one arbitrarily
-    // and risk writing exactly the "matches nothing" rule this fix exists to
-    // prevent for the paths it does not cover.
+    // When a single common directory does not exist, `accept` must refuse by
+    // name rather than pick one arbitrarily and risk writing a rule that
+    // matches nothing for the paths it does not cover.
     let dir = crate::tests::tempdir("proposals-accept-split");
-    // Different page counts — belt-and-braces, not required now that
-    // `write_pages` cannot collide; see `library_with_series`'s doc. Was
-    // never load-bearing for this test's own assertions either way, which
-    // read `scan_entry` rather than `work`.
+    // Different page counts — belt-and-braces, not required: `write_pages`
+    // cannot collide; see the comment on the loop in `library_with_series`. Not
+    // load-bearing for this test's own assertions either, which read
+    // `scan_entry` rather than `work`.
     write_pages(
         &dir.path()
             .join("Go-Toubun no Hanayome")
@@ -1237,10 +1184,10 @@ fn accept_refuses_when_the_subjects_entries_span_more_than_one_directory() {
 
 #[test]
 fn double_accept_is_refused_rather_than_orphaning_the_first_rule() {
-    // Review finding 2. Without a state guard, a second `accept` writes a
-    // second rule and overwrites `created_rule_id` with its id, so `unaccept`
-    // deletes only the second and the first stays in force, deciding
-    // structure invisible to the proposal that made it.
+    // Without a state guard, a second `accept` writes a second rule and
+    // overwrites `created_rule_id` with its id, so `unaccept` deletes only the
+    // second and the first stays in force, deciding structure invisible to the
+    // proposal that made it.
     let library = library_with_two_suffixed_series();
     let conn = library.conn();
     proposals::raise(&conn).expect("raise");
@@ -1273,10 +1220,9 @@ fn double_accept_is_refused_rather_than_orphaning_the_first_rule() {
 
 #[test]
 fn dismiss_refuses_an_accepted_proposal_rather_than_orphaning_its_rule() {
-    // Review finding 2's other hole: dismissing an accepted proposal must not
-    // silently leave its rule alive under a `dismissed` label, invisible to
-    // `open` and never seen by `reopen_orphaned_accepts`, which only looks at
-    // `state = 'accepted'`.
+    // Dismissing an accepted proposal must not silently leave its rule alive
+    // under a `dismissed` label, invisible to `open` and never seen by
+    // `reopen_orphaned_accepts`, which only looks at `state = 'accepted'`.
     let library = library_with_two_suffixed_series();
     let conn = library.conn();
     proposals::raise(&conn).expect("raise");
@@ -1292,10 +1238,10 @@ fn dismiss_refuses_an_accepted_proposal_rather_than_orphaning_its_rule() {
         })
         .expect("count");
     assert_eq!(rules, 1, "the rule survives a refused dismiss");
-    // **And the row is untouched, which the rule count alone cannot see**
-    // (O72's fix round): `dismiss` never deletes a rule, so a version that
-    // wrote `dismissed` over the accepted row and then refused anyway kept
-    // the rule and passed. That row is the orphan this test is named for.
+    // **And the row is untouched, which the rule count alone cannot see**:
+    // `dismiss` never deletes a rule, so a version that wrote `dismissed` over
+    // the accepted row and then refused anyway would keep the rule and pass the
+    // count. That row is the orphan this test is named for.
     assert_eq!(state_of(&conn, proposal.id), "accepted");
     assert_eq!(rule_of(&conn, proposal.id), Some(rule_id));
 }
@@ -1310,12 +1256,9 @@ fn rule_of(conn: &rusqlite::Connection, id: i64) -> Option<i64> {
     .expect("the proposal's rule")
 }
 
-/// **O72's fix round.** A row holding a rule an accept wrote, but not
-/// `accepted`, is what `dismiss`'s old read-then-write left behind when an
-/// accept committed between its two statements — and `dismiss` must not
-/// write over one. The race cannot be staged deterministically, so the row it
-/// leaves is built by hand; this one reads `open`, the other shape `dismiss`
-/// could be handed.
+/// **O72.** A row holding a rule an accept wrote, but not `accepted`, is a
+/// state `dismiss` must not write over. It is built by hand; this one reads
+/// `open`, the other shape `dismiss` could be handed.
 #[test]
 fn dismiss_refuses_a_proposal_still_holding_a_rule_though_it_is_not_accepted() {
     let library = library_with_two_suffixed_series();
@@ -1342,11 +1285,10 @@ fn dismiss_refuses_a_proposal_still_holding_a_rule_though_it_is_not_accepted() {
     assert_eq!(rule_of(&conn, proposal.id), Some(rule_id));
 }
 
-/// **O72's fix round.** The race's product from the other side: a
-/// `dismissed` row still holding its accept's rule. Reopened, it would be
-/// `open` with that rule in force, and `acceptable` would let it be accepted
-/// again beside it. Refused — and the sentence's advice is then taken, and
-/// shown to leave an open proposal with no rule anywhere.
+/// **O72.** A `dismissed` row still holding its accept's rule. Reopened, it
+/// would be `open` with that rule in force, and `acceptable` would let it be
+/// accepted again beside it. Refused — and the sentence's advice is then taken,
+/// and shown to leave an open proposal with no rule anywhere.
 #[test]
 fn reopen_refuses_a_dismissal_still_holding_a_rule_and_un_accepting_repairs_it() {
     let library = library_with_two_suffixed_series();
@@ -1383,12 +1325,11 @@ fn reopen_refuses_a_dismissal_still_holding_a_rule_and_un_accepting_repairs_it()
     assert_eq!(rules, 0, "and the rule is gone");
 }
 
-/// **O72's fix round.** An accepted proposal whose rule has gone — deleted
-/// by hand, or by another process before the next `raise` reopens it — is
-/// refused by both writes, and neither sentence sends a person to un-accept
-/// a proposal `unaccept` would refuse. `dismiss` refused it before this
-/// round by its state alone; its conditional `UPDATE` now has to carry the
-/// state as well as the rule to keep doing so.
+/// **O72.** An accepted proposal whose rule has gone — deleted by hand, or by
+/// another process before the next `raise` reopens it — is refused by both
+/// writes, and neither sentence sends a person to un-accept a proposal
+/// `unaccept` would refuse. `dismiss`'s conditional `UPDATE` has to carry the
+/// state as well as the rule to keep refusing it.
 #[test]
 fn an_accepted_proposal_whose_rule_has_gone_is_refused_by_dismiss_and_reopen() {
     let library = library_with_two_suffixed_series();
@@ -1432,16 +1373,15 @@ fn an_accepted_proposal_whose_rule_has_gone_is_refused_by_dismiss_and_reopen() {
 
 #[test]
 fn raise_refreshes_a_stale_open_proposals_score_and_reason() {
-    // Review finding 3: `INSERT OR IGNORE` never updates, so a proposal
-    // raised before its series had any works would otherwise keep its first
-    // score and reason forever, and `open`'s threshold would keep hiding it
-    // even after the volume-count signal starts agreeing.
+    // `INSERT OR IGNORE` never updates, so a proposal raised before its series
+    // had any works would otherwise keep its first score and reason forever,
+    // and `open`'s threshold would keep hiding it even after the volume-count
+    // signal starts agreeing.
     //
     // Bare `series` rows here, not a scanned tree: this test never calls
-    // `accept`, only `raise`/`open`, and it needs to start at zero volumes
-    // on both sides — `library_with_two_suffixed_series` no longer offers
-    // that, deliberately, now that it gives every series a real volume.
-    // `score_for`'s own doc makes the same call for the same reason.
+    // `accept`, only `raise`/`open`, and it needs to start at zero volumes on
+    // both sides, which `library_with_two_suffixed_series` cannot give it:
+    // every series there has a real volume.
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
     for title in [
@@ -1517,15 +1457,9 @@ fn raise_refreshes_a_stale_open_proposals_score_and_reason() {
 /// Both halves of `EditionOfSignals::vocabulary_phrase`, produced rather than
 /// supplied.
 ///
-/// **The gap this closes was made by a refactor.** The phrase was an inline
-/// `format!` arm inside `raise_edition_of` until this branch extracted it into
-/// a method, and `cargo mutants` generated no mutant for the arm — so nothing
-/// noticed that no test read it. Once it was a function it could be replaced
-/// wholesale with `""` and **the entire workspace suite still passed**, while
-/// that string is half of every `edition-of` proposal's `reason`: the sentence
-/// a person reads in the inbox and the only words there saying *why* the pair
-/// was raised. The only other occurrences of it anywhere are `web/`'s
-/// fixtures, which hand it to a component rather than producing it.
+/// **The phrase is half of every `edition-of` proposal's `reason`**: the
+/// sentence a person reads in the inbox and the only words there saying *why*
+/// the pair was raised.
 ///
 /// Two pairs in one library, raised in one call, because either branch alone
 /// is passed by a constant: a version returning only the vocabulary phrase
@@ -1541,8 +1475,8 @@ fn a_suffix_in_the_edition_vocabulary_and_one_outside_it_are_worded_differently(
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
     // "Full Color Edition" contains `Color`, which is in `EDITION_WORDS`;
-    // "Gaiden" is in none of the eight and is a real thing a suffixed series
-    // is called, so this is not a nonsense string standing in for one.
+    // "Gaiden" is in none of them and is a real thing a suffixed series is
+    // called, so this is not a nonsense string standing in for one.
     for title in [
         "Go-Toubun no Hanayome",
         "Go-Toubun no Hanayome - Full Color Edition",
@@ -1588,12 +1522,9 @@ fn a_suffix_in_the_edition_vocabulary_and_one_outside_it_are_worded_differently(
 
 #[test]
 fn a_failure_between_the_insert_and_the_update_leaves_no_orphaned_rule() {
-    // I5. Before `accept` wrapped its writes in one transaction, a failure
-    // between `INSERT INTO rule` and `UPDATE proposal` left a live rule no
-    // proposal pointed at while the proposal still read `open` — and a
-    // second `accept` on that same proposal then wrote a *second* rule,
-    // exactly the state `created_rule_id` exists to prevent, reached by a
-    // different road.
+    // A failure between `INSERT INTO rule` and `UPDATE proposal` must not
+    // leave a live rule that no proposal points at while the proposal still
+    // reads `open`.
     //
     // Simulated with a trigger that aborts precisely the `UPDATE proposal`
     // statement `accept` issues, standing in for a crash or a constraint
@@ -1639,14 +1570,11 @@ fn a_failure_between_the_insert_and_the_update_leaves_no_orphaned_rule() {
 
 #[test]
 fn accept_scopes_the_rule_to_the_subjects_own_root_and_leaves_another_roots_material_alone() {
-    // I6. Without a `root_id` on the written rule, this proposal could not
-    // even be accepted honestly under the *old* code: an unscoped
-    // `other_series_under_prefix` would see root B's "Something Else" under
-    // the same-spelled `Publisher/` prefix and refuse the whole accept over
-    // material the rule, once scoped, can never actually reach. Scoped, it
-    // succeeds — and the rule it writes must never touch root B's own series
-    // on a later derive, which is the silent-corruption half of I6 measured
-    // directly rather than only inferred from the column being non-NULL.
+    // The rule is scoped to the subject's own root, so root B's "Something
+    // Else" under the same-spelled `Publisher/` prefix is material it can never
+    // reach, and the accept succeeds. The rule it writes must never touch root
+    // B's own series on a later derive, which is checked directly rather than
+    // only inferred from the column being non-NULL.
     let (tree_a, _tree_b, library) = library_with_two_roots_sharing_a_directory_name();
     let conn = library.conn();
     let proposal = proposals::open(&conn, 0.0)
@@ -1708,14 +1636,14 @@ fn accept_scopes_the_rule_to_the_subjects_own_root_and_leaves_another_roots_mate
     );
 }
 
-/// I6's other half: a subject whose own material sits under one
-/// *same-spelled* directory in two different roots has no single root to
-/// scope the written rule to, and `common_directory_pattern` must refuse
-/// rather than pick one arbitrarily. Both roots hold a volume of the colour
-/// series under their own `Publisher/`, so the subject's own directory
-/// component is identical text (`"Publisher"`) in both — the one case the
-/// "more than one directory" check above cannot catch on its own, since the
-/// two directories are not spelled differently.
+/// A subject whose own material sits under one *same-spelled* directory in
+/// two different roots has no single root to scope the written rule to, and
+/// `common_directory_pattern` must refuse rather than pick one arbitrarily.
+/// Both roots hold a volume of the colour series under their own
+/// `Publisher/`, so the subject's own directory component is identical text
+/// (`"Publisher"`) in both — the one case the "more than one directory"
+/// check above cannot catch on its own, since the two directories are not
+/// spelled differently.
 #[test]
 fn accept_refuses_when_the_subjects_own_directory_is_spelled_the_same_in_two_roots() {
     let a = crate::tests::tempdir("proposals-accept-multiroot-a");
@@ -1816,9 +1744,7 @@ fn state_of(conn: &rusqlite::Connection, id: i64) -> String {
 }
 
 /// **O70, at the store.** A write `accept_with` cannot perform is `Err`, and
-/// an accept it declines is `Ok(Offer::Refused)` — two outcomes one
-/// `Result<i64, String>` used to carry together, which `taiyaku-serve`
-/// answered 409 alike.
+/// an accept it declines is `Ok(Offer::Refused)`: two different outcomes.
 ///
 /// The fault is a trigger on the `INSERT INTO rule` the previewed rule
 /// reaches once every refusal has passed. The refusal is the state guard over
@@ -2029,13 +1955,12 @@ fn reopen_answers_a_failed_write_as_an_error() {
     assert_eq!(state_of(&conn, proposal.id), "dismissed");
 }
 
-// --- what the mutation sweep found unpinned --------------------------------
-
-/// [`proposals::open`]'s own doc says "highest score first", and nothing
-/// checked it: `the_score_threshold_hides_the_weak_proposal_but_not_the_strong_one`
+/// [`proposals::open`]'s own doc says "highest score first".
+/// `the_score_threshold_hides_the_weak_proposal_but_not_the_strong_one`
 /// reads `.len()` and the reason string, both of which a reversed `ORDER BY`
-/// leaves alone. An inbox that lists the weakest guesses first is the inverse
-/// of §6.1's whole ranking argument, and it looks exactly like a working one.
+/// leaves alone, so this test reads the order. An inbox that lists the weakest
+/// guesses first is the inverse of §6.1's whole ranking argument, and it looks
+/// exactly like a working one.
 #[test]
 fn open_lists_the_strongest_proposal_first() {
     let library = library_with_series(&[
@@ -2098,12 +2023,11 @@ fn library_where_two_series_claim_one_title() -> (Library, i64, i64, i64) {
 
 /// Two series claiming one title resolve to the **lowest id**, stably.
 ///
-/// No test covered this at all; the seven lines of justification above the
-/// query were the only thing standing behind it. Without the explicit order
-/// the pick is whatever a b-tree scan returns first — unspecified, and liable
-/// to change across a page split that has nothing to do with this data — and
-/// a proposal that points somewhere different on each rescan cannot be
-/// dismissed once and stay dismissed, which is §6's first argument.
+/// Without an explicit order the pick would be whatever a b-tree scan returns
+/// first — unspecified, and liable to change across a page split that has
+/// nothing to do with this data — and a proposal that points somewhere
+/// different on each rescan cannot be dismissed once and stay dismissed, which
+/// is §6's first argument.
 #[test]
 fn two_series_claiming_one_title_resolve_to_the_lowest_id() {
     let (library, first, second, claimant) = library_where_two_series_claim_one_title();
@@ -2125,10 +2049,10 @@ fn two_series_claiming_one_title_resolve_to_the_lowest_id() {
 }
 
 /// `same-series` and `attach-chapters` score above the strongest possible
-/// `edition-of` match, and every test that reads a proposal back asks
+/// `edition-of` match, and most tests that read a proposal back ask
 /// `open(&conn, 0.0)` — which is every score at once, and so no score at all.
-/// Zeroing `CERTAIN` left the whole suite green while hiding both kinds below
-/// any threshold a person would actually type.
+/// Zeroing `CERTAIN` would hide both kinds below any threshold a person would
+/// actually type.
 #[test]
 fn a_certain_proposal_is_visible_above_the_strongest_edition_of_score() {
     let (library, _first, _second, _claimant) = library_where_two_series_claim_one_title();
@@ -2151,7 +2075,7 @@ fn a_certain_proposal_is_visible_above_the_strongest_edition_of_score() {
 }
 
 /// §6.1's "a dismissed or accepted row is never rescored", which
-/// `insert_proposal`'s `AND state = ?6` is — and which no test reached:
+/// `insert_proposal`'s `AND state = ?6` is.
 /// `raise_refreshes_a_stale_open_proposals_score_and_reason` covers the open
 /// case, and `a_dismissed_proposal_stays_dismissed_across_a_rescan` reads
 /// `state` alone. Without the clause, every rescan rewrites the score and
@@ -2247,10 +2171,7 @@ fn library_where_the_subject_shares_its_directory_with_the_target_alone()
 /// The target stays part of the check — a rule matching it would stamp
 /// `set_edition_key` onto the base's own volumes and make the base its own
 /// colour edition — but it is not collateral, and naming it as material the
-/// accept "would move too" misdescribes what it is. With the filter comparing
-/// against the empty string instead of the target's title, the target lands
-/// in `collateral`, `collateral.is_empty()` is never true, and this second
-/// message becomes unreachable while the suite stays green.
+/// accept "would move too" misdescribes what it is.
 #[test]
 fn accept_refuses_by_name_when_the_only_other_series_under_the_pattern_is_the_target() {
     let (_tree, library) = library_where_the_subject_shares_its_directory_with_the_target_alone();
@@ -2307,9 +2228,9 @@ fn library_with_three_colour_editions() -> Library {
 
 #[test]
 fn a_widened_rule_reports_the_other_proposals_it_would_resolve() {
-    // C3 §3: "the moment a person can answer 37 questions once instead of 37
-    // times". The count has to come from the same computation that refuses
-    // collateral, or the form would promise something the write disagrees with.
+    // C3 §3: a person answers many questions once instead of many times. The
+    // count has to come from the same computation that refuses collateral, or
+    // the form would promise something the write disagrees with.
     let library = library_with_three_colour_editions();
     let conn = library.conn();
     proposals::raise(&conn).expect("raise");
@@ -2356,11 +2277,9 @@ fn a_widened_rule_that_reaches_a_series_no_proposal_names_reports_it_as_collater
 
 #[test]
 fn a_regex_rule_s_collateral_is_computed_with_regex_semantics() {
-    // Task 1 refused non-`prefix` rules outright, because
-    // `other_series_under_prefix` would have prefix-matched the regex's own
-    // source text, found nothing, and reported a clean bill of health. This is
-    // the test that proves `resolves` did not inherit that no-op: the same
-    // reach, expressed as a regex, must name the same collateral.
+    // This proves `resolves` does not prefix-match the regex's own source
+    // text, which would find nothing and report a clean bill of health: the
+    // same reach, expressed as a regex, must name the same collateral.
     let library = library_with_a_shared_publisher_directory();
     let conn = library.conn();
     proposals::raise(&conn).expect("raise");
@@ -2474,9 +2393,9 @@ fn accepting_a_widened_rule_accepts_every_proposal_it_resolves() {
 
 #[test]
 fn un_accepting_one_of_a_widened_group_reopens_all_of_them() {
-    // Without this, deleting the rule leaves the other two `accepted` and
+    // Without this, deleting the rule would leave the other two `accepted` and
     // pointing at nothing — the exact state `created_rule_id` exists to
-    // prevent, reached by a road that did not exist before widening.
+    // prevent, reached by way of widening.
     let library = library_with_three_colour_editions();
     let conn = library.conn();
     proposals::raise(&conn).expect("raise");
@@ -2505,26 +2424,23 @@ fn un_accepting_one_of_a_widened_group_reopens_all_of_them() {
     assert_eq!(orphans, 0, "none is left accepted against a deleted rule");
 }
 
-// --- the leftovers review 2 found, each with the measurement behind it ------
-
 #[test]
 fn a_narrow_accept_still_succeeds_under_a_root_that_carries_a_default() {
     // `CANDIDATE_RULE_ID` is `-1` rather than `0` because `rules.rs` spends
-    // `0` on its own `ROOT_FALLBACK` provenance, and until this test nothing
-    // held it there: setting the sentinel back to `0` survived the whole
-    // suite. Every fixture in this file goes through `scan::add_root`, which
-    // leaves `edition_key`, `default_kind` and `default_language` NULL, so
-    // `apply_root_fallback` never records a `ROOT_FALLBACK` at all and the
-    // collision has nothing to collide with.
+    // `0` on its own `ROOT_FALLBACK` provenance. Every fixture in this file
+    // goes through `scan::add_root`, which leaves `edition_key`,
+    // `default_kind` and `default_language` NULL, so `apply_root_fallback`
+    // never records a `ROOT_FALLBACK` at all and the collision has nothing to
+    // collide with.
     //
     // One column is enough to make it real. With the sentinel at `0` and this
-    // root carrying `default_language`, every entry in the library resolves a
-    // `Language` field the root decided, `series_reached_by` reads that
-    // provenance as the candidate's own, and this narrow rule — the one
-    // `preview` derives, matching a single directory — comes back with
-    // `entries_matched: 8` and `Kaguya-sama wa Kokurasetai` as collateral.
-    // The accept is then refused. Fail-closed but total: no accept is
-    // possible at all in any library whose root carries a default.
+    // root carrying `default_language`, every entry in the library would
+    // resolve a `Language` field the root decided, `series_reached_by` would
+    // read that provenance as the candidate's own, and this narrow rule — the
+    // one `preview` derives, matching a single directory — would come back
+    // with `Kaguya-sama wa Kokurasetai` as collateral, so the accept would be
+    // refused: no accept would be possible at all in any library whose root
+    // carries a default.
     let library = library_with_a_shared_publisher_directory();
     let conn = library.conn();
     conn.execute("UPDATE root SET default_language = 'ja'", [])
@@ -2550,16 +2466,11 @@ fn a_narrow_accept_still_succeeds_under_a_root_that_carries_a_default() {
 }
 
 /// A candidate that matches only a container directory: it decides nothing
-/// about anybody's material, and used to be accepted anyway.
+/// about anybody's material, and must be refused.
 ///
-/// Measured on both patterns before the guard existed: `Resolution` came back
-/// `{ also_resolves: [], collateral: [], targets_reached: [], entries_matched: 1,
-/// works_moved: 0 }`, `accept_with` returned `Ok`, wrote the rule and marked
-/// the proposal `accepted`, and the following `derive` left every `work` row
-/// byte-identical — compared before and after. The question leaves the inbox
-/// and nothing decides it, which is exactly what the `entries_matched == 0`
-/// refusal exists to prevent; Task 1 refused both of these outright, so this
-/// is a weakening the dry run opened rather than a hole it inherited.
+/// Accepted, it would take the question out of the inbox with nothing
+/// deciding it, which is exactly what the `entries_matched == 0` refusal
+/// exists to prevent.
 fn a_container_only_rule_is_refused(pattern: &str) {
     let library = library_with_a_shared_publisher_directory();
     let conn = library.conn();
@@ -2613,10 +2524,10 @@ fn a_rule_reaching_only_the_roots_own_entry_is_refused() {
     a_container_only_rule_is_refused("^$");
 }
 
-/// One base series and its colour sibling, **two volumes each**: the shape
-/// that tells "every work in the series this rule reaches" apart from "every
-/// work this rule would actually move". Every other fixture here gives each
-/// series one volume, where the two numbers cannot differ.
+/// One base series and its colour sibling, **two volumes each**: the shape that
+/// tells "every work in the series this rule reaches" apart from "every work
+/// this rule would actually move". Over a fixture giving each series one
+/// volume, the two numbers cannot differ.
 fn library_with_two_volumes_each() -> Library {
     let dir = crate::tests::tempdir("proposals-two-volumes");
     let mut n = 2_usize;
@@ -2643,13 +2554,11 @@ fn library_with_two_volumes_each() -> Library {
 
 #[test]
 fn works_moved_counts_the_works_that_move_not_every_work_in_reach() {
-    // `works_moved` is documented as "how many `work` rows would change
-    // series" and was computed as "every work in every series the rule
-    // touches, matched or not". Measured here before the fix: the `v01`-only
-    // regex below returned `entries_matched: 1` beside `works_moved: 2`, and
-    // the accept succeeded. A later task renders this number in a sentence
-    // saying what accepting will do, so the over-count is a false statement
-    // to the person deciding.
+    // `works_moved` counts the works that move, not every work in every series
+    // the rule touches, matched or not: the `v01`-only regex below matches one
+    // entry and must report one work moved. The number is rendered in a
+    // sentence saying what accepting will do, so an over-count is a false
+    // statement to the person deciding.
     let library = library_with_two_volumes_each();
     let conn = library.conn();
     proposals::raise(&conn).expect("raise");
@@ -2736,8 +2645,7 @@ fn proposal_whose_subject_is(conn: &rusqlite::Connection, title: &str) -> i64 {
 #[test]
 fn a_rule_that_splits_another_proposals_subject_in_two_does_not_answer_it() {
     // `answers` requires `becomes.len() == 1` as well as `becomes` containing
-    // the other proposal's target, and dropping just that clause survived the
-    // whole suite. It is the same guard-disarming
+    // the other proposal's target. It is the same guard-disarming
     // `a_rule_that_reaches_another_proposals_subject_without_answering_it_is_
     // collateral` pins, in its partial form: a rule that sends half of a
     // subject where it asked to go and leaves the other half behind has not
@@ -2784,8 +2692,6 @@ fn a_pattern_that_will_not_compile_is_an_error_not_a_clean_bill_of_health() {
     // the check `series_reached_by` makes on the candidate alone, "resolves
     // nothing" and "your regex has a typo" render identically in the form,
     // and a person widens a pattern that does nothing and accepts it.
-    // Correct behaviour, and until this test nothing held it: deleting the
-    // `Regex::new` call survived the whole suite.
     let library = library_with_a_shared_publisher_directory();
     let conn = library.conn();
     proposals::raise(&conn).expect("raise");
@@ -2861,14 +2767,6 @@ fn a_rule_can_be_judged_unevaluable_without_a_library_to_judge_it_against() {
 
 #[test]
 fn the_targets_reached_refusal_names_every_target_and_agrees_in_number() {
-    // The message was written for exactly one target: it joined them with
-    // `", "` inside one pair of quotes and then spoke of them in the
-    // singular — `…'s directory is shared with "A, B, C" itself, so accepting
-    // it would set the colour edition key on A, B, C's own volumes too` — and
-    // it said "directory", which stopped being true once the rule could be a
-    // cross-root regex. The existing test asserted a substring, so it stayed
-    // green through all of it.
-    //
     // The pattern below sends every colour edition to its own base and every
     // base to itself, so all three bases are targets this rule reaches and
     // nothing is collateral: the refusal that fires is the targets one.
@@ -2975,11 +2873,11 @@ fn a_group_member_judged_under_the_accept_fails_it_rather_than_orphaning_its_rul
 fn a_proposal_judged_under_its_own_accept_fails_it_rather_than_writing_twice() {
     // The same window, on the proposal being accepted itself.
     // `acceptable_proposal` checks `state = 'open'` before the transaction
-    // opens and nothing re-checked it at the write, so a second process
-    // accepting this proposal in between would have had its own
-    // `created_rule_id` replaced — the exact state that column exists to
-    // prevent, which `double_accept_is_refused_rather_than_orphaning_the_
-    // first_rule` pins for one process and nothing pinned for two.
+    // opens, so a second process accepting this proposal in between would have
+    // its own `created_rule_id` replaced unless the write re-checks it — the
+    // exact state that column exists to prevent, which
+    // `double_accept_is_refused_rather_than_orphaning_the_first_rule`
+    // pins for one process.
     let library = library_with_three_colour_editions();
     let conn = library.conn();
     proposals::raise(&conn).expect("raise");
@@ -3001,18 +2899,13 @@ fn a_proposal_judged_under_its_own_accept_fails_it_rather_than_writing_twice() {
 ///
 /// **The motion the form exists for.** Start from `preview`'s own rule and
 /// widen it, which is the one thing the UI's rule editor is for, and the
-/// widening itself can cancel the decision — measured on both shapes below:
-/// `Resolution { collateral: [], targets_reached: [], entries_matched: 1,
-/// subject_reached: true, works_moved: 0 }`, `accept_with` returned `Ok(5)`,
-/// the proposal read `accepted`, and every `work` row was identical across
-/// the following `derive`, compared row by row before and after. The rule is
-/// written, the question leaves the inbox answered, nothing happens, and only
-/// `unaccept` gets it back.
+/// widening itself can cancel the decision. Were such a rule accepted, it
+/// would be written, the question would leave the inbox answered, nothing
+/// would happen, and only `unaccept` would get it back.
 ///
-/// `subject_reached` does not catch this and never could: it asks whether a
-/// matched entry *belongs to* the subject, not whether anything about the
-/// subject changes. `works_moved == 0` is the number that says so, and it was
-/// already in the struct.
+/// `subject_reached` does not catch this: it asks whether a matched entry
+/// *belongs to* the subject, not whether anything about the subject changes.
+/// `works_moved == 0` is the number that says so.
 fn a_rule_that_moves_nothing_is_refused(widen: impl FnOnce(&mut proposals::ProposedRule)) {
     let library = library_with_a_shared_publisher_directory();
     let conn = library.conn();
@@ -3126,16 +3019,13 @@ fn a_rule_that_moves_another_proposals_subject_but_not_this_ones_is_still_refuse
 
 #[test]
 fn works_moved_counts_the_entries_that_change_series_not_the_ones_that_match() {
-    // The discriminator behind `Reach::moved_members` — `resolved.series !=
-    // current` — is the whole of "does this entry actually move", and
-    // mutating it to `if true` survived all 53 proposals tests: every rule
-    // the others hand to `resolves` does move its entries, so "per entry, not
-    // per series" was pinned and "moving, not merely matched" was not.
+    // The discriminator behind `Reach::moved_members` is the whole of "does
+    // this entry actually move".
     //
     // This pattern captures each series directory's own name, so all three
     // series under `Publisher/` are given back exactly the titles they
-    // already have: three entries matched, nothing moved. Under the mutation
-    // every matched entry is recorded as moving and this reports 3.
+    // already have: three entries matched, nothing moved. Were every matched
+    // entry recorded as moving, this would report 3.
     let library = library_with_a_shared_publisher_directory();
     let conn = library.conn();
     proposals::raise(&conn).expect("raise");
@@ -3158,11 +3048,10 @@ fn works_moved_counts_the_entries_that_change_series_not_the_ones_that_match() {
 
 #[test]
 fn works_moved_counts_moving_members_not_work_rows_that_change_series() {
-    // `works_moved`'s headline said "how many `work` rows would change
-    // series". It counts the works holding at least one *moving member*,
-    // which is not the same number: `derive` regroups after the rule lands,
-    // and a work whose two members sit in two different roots can shed one of
-    // them and keep its own `series_id`.
+    // `works_moved` counts the works holding at least one *moving member*,
+    // which is not the same number as the `work` rows that change series:
+    // `derive` regroups after the rule lands, and a work whose two members sit
+    // in two different roots can shed one of them and keep its own `series_id`.
     //
     // Both roots below hold the same colour volume — `write_pages` bakes the
     // absolute directory into its bytes, so the two copies have different
@@ -3299,12 +3188,10 @@ fn library_with_a_same_series_proposal() -> (crate::tests::TempDir, Library) {
 #[test]
 fn the_targets_reached_refusal_does_not_name_an_edition_key_the_rule_has_not_got() {
     // `preview` writes `set_edition_key: None` for every kind but
-    // `edition-of`, and this sentence said "accepting it would set the
-    // edition key on that series' own volumes too" regardless. Measured on a
-    // `same-series` proposal widened to `^[^/]+/`: the refusal named an
-    // edition key the rule does not carry. What is true of every rule is the
-    // general form — `rules.rs` applies every `set_*` column a matching rule
-    // carries to everything it matches.
+    // `edition-of`, so the refusal must not name an edition key the rule
+    // does not carry. What is true of every rule is the general form —
+    // `rules.rs` applies every `set_*` column a matching rule carries to
+    // everything it matches.
     let (_tree, library) = library_with_a_same_series_proposal();
     let conn = library.conn();
     let proposal = proposals::open(&conn, 0.0)
@@ -3346,7 +3233,7 @@ fn the_targets_reached_refusal_does_not_name_an_edition_key_the_rule_has_not_got
     );
 }
 
-// --- Task 3: `list` and `counts_by_kind` ------------------------------------
+// --- `list` and `counts_by_kind` ---------------------------------------------
 
 #[test]
 fn list_filters_by_state_and_kind_and_keeps_open_as_it_was() {
@@ -3465,17 +3352,15 @@ fn list_filters_by_kind_when_open_holds_more_than_one_kind() {
 }
 
 /// C3 §3's inbox is a list rather than a triage queue so a person can *see*
-/// that 29 of 37 rows ask the same question — which needs rows that can be
-/// told apart, and the only per-row identity a collapsed row has is the
-/// titles of the series it names.
+/// that most rows ask the same question — which needs rows that can be told
+/// apart, and the only per-row identity a collapsed row has is the titles of
+/// the series it names.
 ///
-/// **The row used to get that from `reason`, which was a coincidence.** Every
-/// `raise_*` in this module happens to open its sentence with the subject's
-/// quoted `sort_title`, so a row drawing `reason` alone looked identifiable
-/// while the window was wide; at 700px the column measured ten characters and
-/// every `edition-of` row read the same. `scored_reasons` re-words the same
-/// signals *without* titles for the evidence panel, so that leading title was
-/// pinned by nothing at all. This is the test that pins it.
+/// **A row's identity does not come from `reason`.** Every `raise_*` in this
+/// module happens to open its sentence with the subject's quoted `sort_title`,
+/// but that is not a contract, and `scored_reasons` re-words the same signals
+/// *without* titles for the evidence panel. This is the test that pins the
+/// titles to the join.
 ///
 /// Both fixtures in one test on purpose: the `edition-of` half fails a join
 /// that reads the subject's title for both ends (the two titles differ, and
@@ -3536,11 +3421,9 @@ fn list_names_both_series_a_proposal_is_about() {
     );
 }
 
-/// No committed test called `list` with both `state: None` and `kind: None`
-/// before this one — every other `list` test above pins a filter, so a `list`
-/// that quietly kept filtering on `state` or `kind` even when handed `None`
-/// (a stray `AND state = 'open'`, say) would still pass all of them. The
-/// fixture is the same two-kind shape
+/// A `list` that quietly kept filtering on `state` or `kind` even when handed
+/// `None` (a stray `AND state = 'open'`, say) would pass every test that pins a
+/// filter. The fixture is the same two-kind shape
 /// `list_filters_by_kind_when_open_holds_more_than_one_kind` builds, plus a
 /// dismissal, so the unfiltered call has both a state and a kind that a
 /// silently-filtering `list` would drop.
@@ -3709,14 +3592,11 @@ fn counts_by_kind_separates_kinds_and_respects_state() {
 /// The counts and the list have to narrow on the same threshold, or a tab
 /// reads "3" over a list of two.
 ///
-/// Measured at the route before `counts_by_kind` took a `min_score` at all:
-/// `?state=open&min_score=9` answered `{"counts":{"edition-of":1},
-/// "proposals":[]}`. The scale is `{0, 1, 2, 3}` — see [`Filter::min_score`]
-/// — so this drops one of the three colour editions to a score below the
-/// threshold and keeps the other two above it, which is what makes the
-/// difference between a count that follows the threshold and one that
-/// ignores it visible at all: over a fixture whose proposals all score the
-/// same, both answer 3.
+/// The score scale is `{0, 1, 2, 3}` — see [`Filter::min_score`] — so this
+/// drops one of the three colour editions to a score below the threshold and
+/// keeps the other two above it, which is what makes the difference between a
+/// count that follows the threshold and one that ignores it visible at all:
+/// over a fixture whose proposals all score the same, both answer 3.
 #[test]
 fn counts_by_kind_narrows_on_min_score_the_way_the_list_does() {
     let library = library_with_three_colour_editions();
@@ -3797,11 +3677,10 @@ fn lookup_separates_a_missing_proposal_from_a_failed_read() {
 /// Translated", which `derive` leaves visibly unattached and
 /// `raise_attach_chapters` turns into the one proposal of that kind.
 ///
-/// **The one side in this module with no `work` row behind it at all**, which
-/// is what makes it the fixture for `first_volume`'s absent case: a series
-/// row exists (`derive` reconciles one for every series that produced
-/// *anything*, so `proposal.subject_id` has something to point at) and no
-/// work does.
+/// **A side with no `work` row behind it at all**, which is what makes it the
+/// fixture for `first_volume`'s absent case: a series row exists (`derive`
+/// reconciles one for every series that produced *anything*, so
+/// `proposal.subject_id` has something to point at) and no work does.
 ///
 /// The tree is dropped before returning, as `library_with_series` does and
 /// for the same reason: every fact these tests read is in the database by
@@ -3931,8 +3810,8 @@ fn evidence_for_an_attach_chapters_proposal_carries_no_rule() {
         "the one fact this kind states argues for nothing: {:?}",
         ev.reasons,
     );
-    // Minor 11: the sign was asserted and the sentence beside it was not, so
-    // blanking `text` rendered a green line with nothing on it. The sentence
+    // The sentence beside the sign is asserted too: with `text` blank, the
+    // expanded row would draw a sign with nothing beside it. The sentence
     // `raise` recorded is carried whole rather than split, which is what
     // `Reason`'s own doc refuses to make a client undo.
     assert_eq!(
@@ -4051,16 +3930,13 @@ fn evidence_answers_for_a_target_whose_volumes_span_two_directories() {
 }
 
 /// A library whose volume 1 is held **twice** — as a directory of page images
-/// and as a `.cbz` of the same volume — which `derive` groups into one
-/// edition with two members, and a colour sibling for the proposal to be
-/// about.
+/// and as a `.cbz` of the same volume — which `derive` groups into one edition
+/// with two members, and a colour sibling for the proposal to be about.
 ///
-/// **Two members and two formats is the point.** Every other fixture in this
-/// file gives every edition exactly one member, and against those a
-/// `page_count` summed over the members and a `page_count` read off the
-/// first one answer identically, as does a format taken from one member and
-/// a format taken from the edition. Measured on this tree: members of 2 and
-/// 3 pages, `dir` and `zip`.
+/// **Two members and two formats is the point.** Against a fixture giving every
+/// edition exactly one member, a `page_count` summed over the members and a
+/// `page_count` read off the first one answer identically, as does a format
+/// taken from one member and a format taken from the edition.
 ///
 /// Returns the `TempDir`: it must outlive every use of `library`.
 fn library_whose_volume_one_is_a_directory_and_an_archive() -> (crate::tests::TempDir, Library) {
@@ -4086,18 +3962,14 @@ fn library_whose_volume_one_is_a_directory_and_an_archive() -> (crate::tests::Te
 
 #[test]
 fn evidence_names_the_formats_the_edition_was_walked_as_and_sums_its_pages() {
-    // Review's Important 1. `member.format` is written by nothing — the only
-    // `INSERT INTO member` in the repository does not list the column — so
-    // this field was `None` for every edition in every library while its doc
-    // said it held `zip`, `dir`, … . Measured before the fix, on
-    // `library_with_two_suffixed_series`:
-    // `SELECT COUNT(*), COUNT(format) FROM member` answered `2, 0`.
+    // `member.format` is written by nothing — the only `INSERT INTO member`
+    // in the repository does not list the column — so the formats come from
+    // `scan_entry`, where the tokens actually are.
     //
-    // And Minor 8 with it: this side's edition holds two members, so a
-    // `page_count` read off the first member (2) and one summed over both
-    // (5) are different numbers. `/api/works/{work}/{edition}/pages/{index}`
-    // takes a flat index across the members, so the sum is the one that
-    // makes `interior` fetchable at all.
+    // This side's edition holds two members, so a `page_count` read off the
+    // first member (2) and one summed over both (5) are different numbers.
+    // `/api/works/{work}/{edition}/pages/{index}` takes a flat index across the
+    // members, so the sum is the one that makes `interior` fetchable at all.
     let (_tree, library) = library_whose_volume_one_is_a_directory_and_an_archive();
     let conn = library.conn();
     proposals::raise(&conn).expect("raise");
@@ -4139,11 +4011,10 @@ fn evidence_names_the_formats_the_edition_was_walked_as_and_sums_its_pages() {
 
 #[test]
 fn evidence_builds_its_urls_from_the_work_and_edition_rows_the_library_holds() {
-    // Review's Important 3. `FirstVolume` exists so "the panel builds its
-    // URLs against routes that exist", and both fields that carry that —
-    // `work_slug` and `edition_key` — had no assertion anywhere: hard-coding
-    // the key to `"raw"` and blanking the slug both survived the whole
-    // suite. Every image in the expanded row 404s and nothing notices.
+    // `FirstVolume` exists so "the panel builds its URLs against routes that
+    // exist", and both fields that carry that — `work_slug` and `edition_key`
+    // — are asserted against the rows the library holds, or every image in the
+    // expanded row would 404 with nothing noticing.
     //
     // **The hub is deliberately not `raw` on one of the two sides.** Against
     // a library where every work's hub is `raw` — which is every other
@@ -4238,18 +4109,16 @@ fn evidence_builds_its_urls_from_the_work_and_edition_rows_the_library_holds() {
 
 #[test]
 fn evidence_shows_the_lowest_numbered_volume_rather_than_an_unnumbered_one_shot() {
-    // Minors 7 and 9, which need the same fixture and nothing else does: a
-    // series holding a one-shot that carries no volume number beside a
+    // A series holding a one-shot that carries no volume number beside a
     // numbered volume 1.
     //
-    // 9: `ORDER BY volume IS NULL` is what keeps the one-shot out of the
-    // heading. SQLite sorts NULLs first, and `derive` groups by
-    // `(series, Option<volume>, key)` — `None` before `Some` — so the
-    // one-shot also takes the *lower* `work.id`. Both tie-breaks a plain
-    // `ORDER BY volume, id` would fall back on point the wrong way, which is
-    // why dropping that clause survived the suite.
+    // `ORDER BY volume IS NULL` is what keeps the one-shot out of the heading.
+    // SQLite sorts NULLs first, and `derive` groups by
+    // `(series, Option<volume>, key)` — `None` before `Some` — so the one-shot
+    // also takes the *lower* `work.id`. Both tie-breaks a plain
+    // `ORDER BY volume, id` would fall back on point the wrong way.
     //
-    // 7: `volume_count` counts every `work` row and `volumes` lists only the
+    // `volume_count` counts every `work` row and `volumes` lists only the
     // numbered ones, and against every other fixture here those are the same
     // number. Here they are 2 and 1.
     let dir = crate::tests::tempdir("proposals-evidence-one-shot");
@@ -4306,18 +4175,9 @@ fn evidence_shows_the_lowest_numbered_volume_rather_than_an_unnumbered_one_shot(
 
 #[test]
 fn evidence_lists_a_directory_per_root_for_a_side_spanning_two_roots() {
-    // Minors 5 and 6, and the shape that made a single-string `path`
-    // indefensible. Two roots each holding their own `Publisher/` give the
-    // old code `dirs.len() == 1` and `roots.len() == 2`: neither
-    // single-directory arm matched, so the catch-all fired and rendered
-    // `"1 directories across 2 roots"` — measured, and quoted here because
-    // it is what a person saw. Ungrammatical, and it threw away the one
-    // directory name the two roots had in common.
-    //
-    // No fixture in this file could reach it. The two-root fixture that
-    // existed puts *unrelated* series under the two roots, so no single
-    // series ever spanned them, and `root_name` was `None` for a multi-root
-    // side with nothing asserting it.
+    // Two roots each holding their own `Publisher/`: one directory name,
+    // spelled the same in both roots, under which a side's volumes sit in
+    // each. The side lists one directory per root and names no single root.
     let a = crate::tests::tempdir("proposals-evidence-roots-a");
     let b = crate::tests::tempdir("proposals-evidence-roots-b");
     write_pages(
@@ -4389,19 +4249,18 @@ fn evidence_lists_a_directory_per_root_for_a_side_spanning_two_roots() {
 
 #[test]
 fn a_refused_rule_is_an_absent_one_and_a_read_that_failed_is_an_error() {
-    // Minor 12. `Evidence::rule` was `preview(conn, id).ok()`, and its doc
-    // says `None` means "every refusal `preview` makes" — but `.ok()` also
-    // swallowed a read that *failed*, presenting a database fault to a person
-    // as "this proposal cannot be accepted". `Offer` is what separates them,
-    // and this is the one refusal whose own message needs a read to build, so
-    // it is where both halves are reachable.
+    // `Evidence::rule`'s doc says `None` means "every refusal `preview`
+    // makes", and a read that *failed* must not be presented to a person as
+    // "this proposal cannot be accepted". `Offer` is what separates them, and
+    // this is the one refusal whose own message needs a read to build, so it is
+    // where both halves are reachable.
     //
     // **Asserted on `offered_rule` rather than through `evidence`**, because
-    // after the fix every read `offered_rule` makes that `evidence` has not
-    // already made itself is this one — the sweep and both titles come from
-    // the caller — so breaking the `root` table to reach it breaks the sweep
-    // first and `evidence` fails before the rule is ever asked for. Which is
-    // the same outcome, arrived at one step earlier.
+    // every read `offered_rule` makes that `evidence` has not already made
+    // itself is this one — the sweep and both titles come from the caller — so
+    // breaking the `root` table to reach it breaks the sweep first and
+    // `evidence` fails before the rule is ever asked for. Which is the same
+    // outcome, arrived at one step earlier.
     let a = crate::tests::tempdir("proposals-refusal-vs-failure-a");
     write_pages(
         &a.path()
@@ -4473,13 +4332,9 @@ fn a_refused_rule_is_an_absent_one_and_a_read_that_failed_is_an_error() {
 
 #[test]
 fn evidence_for_a_same_series_proposal_states_its_one_fact_and_signs_it_for() {
-    // Minor 10, and 11 with it. No test opened evidence on a `same-series`
-    // proposal at all, so neutering `scored_reasons`' kind filter survived —
-    // and that hands this proposal `edition-of`'s two signals, which means
-    // the expanded row for "五等分の花嫁 is a known title of Go-Toubun no
-    // Hanayome" shows the *rename* sentence as its evidence, about a prefix
-    // relationship this kind never had. The `+` is the other half: this kind
-    // states one fact, and the fact is evidence for.
+    // A `same-series` proposal states one fact, and the fact is evidence for:
+    // one `+`, not the two signals `scored_reasons`' kind filter keeps for
+    // `edition-of`, about a prefix relationship this kind never had.
     let (_tree, library) = library_with_a_same_series_proposal();
     let conn = library.conn();
     let proposal = proposals::open(&conn, 0.0)
@@ -4514,13 +4369,11 @@ fn evidence_for_a_same_series_proposal_states_its_one_fact_and_signs_it_for() {
 
 #[test]
 fn evidence_says_so_when_neither_side_has_a_volume_to_compare() {
-    // Minor 11. `volume_signal`'s three cases are one function so that the
-    // sentence and the sign cannot disagree, and the `?` case — neither side
-    // has any known volumes — had no fixture: every `edition-of` fixture here
-    // has works on at least one side. Turning that `?` into a `-` survived,
-    // which reads as evidence *against* a proposal where the honest answer is
-    // that nobody has asked the question yet. §6 says absence of evidence is
-    // not disagreement any more than it is agreement.
+    // `volume_signal`'s three cases are one function so that the sentence and
+    // the sign cannot disagree. The `?` case — neither side has any known
+    // volumes — must not read as evidence *against* a proposal, where the
+    // honest answer is that nobody has asked the question yet. §6 says absence
+    // of evidence is not disagreement any more than it is agreement.
     //
     // Two chapter-organised series produce that: `derive` reconciles a
     // `series` row for each and no `work` at all, and the titles are still in
@@ -4578,12 +4431,11 @@ fn evidence_says_so_when_neither_side_has_a_volume_to_compare() {
 
 #[test]
 fn evidence_for_a_renamed_target_states_the_rename_rather_than_scoring_it() {
-    // Minor 11. `preview` refuses an accept for this — `strip_prefix` finds
-    // nothing, and setting `set_series` alone would merge the colour volume's
-    // pages into the base edition — so the expanded row has to say what
-    // happened rather than argue for or against. Turning that `?` into a `+`
-    // survived the suite: the row then reads as a signal *for* a proposal
-    // whose accept control is not even there.
+    // `preview` refuses an accept for this — `strip_prefix` finds nothing, and
+    // setting `set_series` alone would merge the colour volume's pages into the
+    // base edition — so the expanded row has to say what happened rather than
+    // argue for or against: read as a signal *for*, it would sit beside a
+    // proposal whose accept control is not even there.
     let library = library_with_two_suffixed_series();
     let conn = library.conn();
     proposals::raise(&conn).expect("raise");
@@ -4624,8 +4476,7 @@ fn evidence_for_a_renamed_target_states_the_rename_rather_than_scoring_it() {
 fn interior_indices_land_inside_every_length_they_are_asked_for() {
     // The store's half of C3 §8, checked across every short length rather
     // than at the one or two a fixture happens to hold: the failure this
-    // guards is an index off the end of a *short* member, and the fixtures
-    // above reach page counts 2, 3 and 4 only.
+    // guards is an index off the end of a *short* member.
     for pages in 0..40_i64 {
         let picked = proposals::interior_indices(pages);
         assert!(
@@ -4687,12 +4538,10 @@ fn library_whose_only_volume_is_walked_as_a_directory_from_two_roots()
 
 #[test]
 fn edition_formats_are_distinct_even_when_two_members_share_one() {
-    // Task-4 cleanup, item 5: `edition_formats`'s `SELECT DISTINCT` had no
-    // test, and dropping it survives the whole suite. Reachable on this
-    // two-root shape — the base's volume 1 gets a `dir` member from root A
-    // and a second `dir` member from root B, one edition with two members of
-    // the same format. Without `DISTINCT` this side's `formats` would answer
-    // `["dir", "dir"]`; measured with it: `["dir"]`.
+    // On this two-root shape the base's volume 1 gets a `dir` member from
+    // root A and a second `dir` member from root B, one edition with two
+    // members of the same format. Without `edition_formats`'s
+    // `SELECT DISTINCT` this side's `formats` would answer `["dir", "dir"]`.
     let (_a, _b, library) = library_whose_only_volume_is_walked_as_a_directory_from_two_roots();
     let conn = library.conn();
     proposals::raise(&conn).expect("raise");
@@ -4715,11 +4564,10 @@ fn edition_formats_are_distinct_even_when_two_members_share_one() {
 
 #[test]
 fn directories_for_entries_sitting_directly_under_the_root_carry_no_trailing_slash() {
-    // Task-4 cleanup, item 6: `material_of`'s `dir.is_empty()` branch — an
-    // entry sitting directly under the root, whose `parent_of` is `""` — had
-    // no test through `evidence`. Always taking the `format!("{root}/{dir}")`
-    // arm survives the suite, and the field would then carry a trailing
-    // slash the root path itself does not have. Same tree shape as
+    // `material_of`'s `dir.is_empty()` branch: an entry sitting directly
+    // under the root has a `parent_of` of `""`, and the field must carry the
+    // root's own path, without the trailing slash that `{root}/{dir}` would
+    // add. Same tree shape as
     // `accept_refuses_when_the_subjects_files_sit_directly_in_the_root`: the
     // subject's volume sits at the root's top level rather than under a
     // series-named subdirectory.
@@ -4759,13 +4607,12 @@ fn directories_for_entries_sitting_directly_under_the_root_carry_no_trailing_sla
 
 #[test]
 fn evidence_performs_exactly_one_sweep() {
-    // Task-4 cleanup, item 8: the one-sweep guarantee `evidence`'s own
-    // comment claims was pinned by a comment, not by anything that fails
-    // when broken. This counts real calls to `derive::rel_paths_by_series`
-    // instead, via a `#[cfg(test)]` thread-local counter — no `rusqlite::trace`
-    // feature needed, and thread-local rather than a shared `static` so a
-    // concurrently running test's own `evidence`/`preview` call on another
-    // thread cannot land inside this test's reset-then-read window.
+    // The one-sweep guarantee `evidence`'s own comment claims. This counts real
+    // calls to `derive::rel_paths_by_series` via a `#[cfg(test)]` thread-local
+    // counter — no `rusqlite::trace` feature needed, and thread-local rather
+    // than a shared `static` so a concurrently running test's own
+    // `evidence`/`preview` call on another thread cannot land inside this
+    // test's reset-then-read window.
     let library = library_with_two_suffixed_series();
     let conn = library.conn();
     proposals::raise(&conn).expect("raise");
@@ -4822,10 +4669,10 @@ fn reopened_ids_names_every_proposal_a_derivation_put_back() {
 
 /// **O114, through a proposal.** `proposals` finds a series by `sort_title`
 /// wherever it starts from a name the rules resolved — `raise_attach_chapters`,
-/// the evidence sweep, a candidate rule's reach — so a correction that moved
-/// `sort_title` left a proposal about a series nothing resolved to: its
-/// evidence named no directory, and the next scan asked the same question
-/// again about a second series minted under the scanned name.
+/// the evidence sweep, a candidate rule's reach. A correction to a series'
+/// title leaves a proposal about the same series: its evidence names the
+/// same directory, and the next scan does not ask the same question about a
+/// second series.
 #[test]
 fn a_title_correction_leaves_an_attach_chapters_proposal_about_the_same_series() {
     let tree = fixture();

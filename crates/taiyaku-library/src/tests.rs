@@ -4,8 +4,7 @@ use std::path::{Path, PathBuf};
 use super::*;
 
 /// A directory unique to one test, removed when the test ends: O117's shared
-/// [`TempDir`], under this crate's own `lib-` label. It was a copy of the same
-/// fifteen lines until then, one of four.
+/// [`TempDir`], under this crate's own `lib-` label.
 ///
 /// `pub(crate)` for `schema/tests.rs`, which needs two connections onto one
 /// real file to reproduce two processes migrating together.
@@ -101,31 +100,24 @@ pub(crate) fn add_a_page(fixture: &FixtureLibrary, name: &str) {
 /// merge every series into one and needs the merge to actually move
 /// something, plus one work the same rule must leave exactly where it is.
 ///
-/// **The name predates the third root.** `Alpha` (root C, below) is what
-/// Important 2's re-review added: `works_rehomed` used to be indistinguishable
-/// from "every member in `after`", because this fixture's own widening rule
-/// moved both of its works and nothing here held still. `Alpha`'s own series
-/// already reads `Alpha` under the seeded rules — the same string the
-/// widening rule in `crate::tests::a_rule_setting_series` sends everything
-/// to in every test that uses this fixture — so the one thing that changes
-/// for it, before and after, is nothing: `works_rehomed` must count `Beta`
-/// and `Gamma` and must not count `Alpha`.
+/// **Three roots, despite the name.** `Alpha` (root C, below) is the work that
+/// holds still: its series already reads `Alpha` under the seeded rules — the
+/// same string the widening rule in `crate::tests::a_rule_setting_series` sends
+/// everything to in every test that uses this fixture — so nothing changes for
+/// it, before and after. `works_rehomed` must count `Beta` and `Gamma` and must
+/// not count `Alpha`.
 ///
 /// **Three placeholder roots are added, and never scanned, before any real
-/// one.** `root.id` and `work.id` are both plain `INTEGER PRIMARY KEY`
-/// columns that SQLite mints upward from 1 in each table independently, so
-/// adding exactly the three roots this fixture needs would give the
-/// earliest-titled series' work the very id its own root already holds — for
-/// `Alpha` below, root 1 and work 1. That is precisely the shape a grant test
-/// in this repo once passed against a deliberately broken build: a wrong
-/// lookup landed on the right row because a root id and a work id happened to
-/// coincide (`docs/status.md`, spec C1's grant tests). The three placeholders
-/// cost three harmless rows in `root`, never scanned and never referenced by
-/// anything a test asserts on, and they consume ids 1 through 3 — so the
-/// three roots this fixture's tests actually hold (and could pass to a
-/// rule's `root_id`) land on 4, 5 and 6, while the three works this derive
-/// writes land on 1, 2 and 3. Every id a test in this fixture's family could
-/// reach for is now provably distinct from its counterpart in the other
+/// one.** `root.id` and `work.id` are both plain `INTEGER PRIMARY KEY` columns
+/// that SQLite mints upward from 1 in each table independently, so adding
+/// exactly the three roots this fixture needs would number them 1, 2 and 3, the
+/// ids its three works hold (`docs/status.md`, spec C1's grant tests). The
+/// three placeholders cost three harmless rows in `root`, never scanned and
+/// never referenced by anything a test asserts on, and they consume ids 1
+/// through 3 — so the three roots this fixture's tests actually hold (and could
+/// pass to a rule's `root_id`) land on 4, 5 and 6, while the three works this
+/// derive writes land on 1, 2 and 3. Every id a test in this fixture's family
+/// could reach for is provably distinct from its counterpart in the other
 /// table, not coincidentally so.
 ///
 /// **`series.id` is not covered by that same argument, and does coincide with
@@ -135,12 +127,8 @@ pub(crate) fn add_a_page(fixture: &FixtureLibrary, name: &str) {
 /// `series` row directly; `derive` mints one per distinct series it finds, in
 /// title order, right after `work` has minted its own ids the same way in the
 /// same pass. `preview::grouping`'s join from `work` to `series` is therefore
-/// exercised by this fixture without ever being *protected* by id
-/// disjointness the way the root/work join above is — mutating `s.id =
-/// w.series_id` to `s.id = w.id` in that join still goes red here, but only
-/// because the widening rule merges every work onto one series and the join
-/// then has to follow `series_id` to find it, not because a wrong id would
-/// otherwise collide with an unrelated row.
+/// exercised by this fixture without ever being *protected* by id disjointness
+/// the way the root/work join above is.
 pub(crate) fn library_with_two_roots() -> FixtureLibrary {
     let dir = tempdir("preview-two-roots");
     std::fs::create_dir_all(dir.path().join("_unused_a")).expect("the first placeholder directory");
@@ -182,9 +170,9 @@ pub(crate) fn library_with_two_roots() -> FixtureLibrary {
 
         // **The three real roots are directories of one library.** The widening
         // rule this fixture's tests append merges their series into one, and
-        // since Part F1 a series is one library's: three libraries would
-        // each keep a series called `Alpha`. The placeholders stay libraries
-        // of their own, which costs nothing, since nothing is scanned there.
+        // a series is one library's: three libraries would each keep a series
+        // called `Alpha`. The placeholders stay libraries of their own, which
+        // costs nothing, since nothing is scanned there.
         let one_library = crate::scan::InLibrary::Named("Preview");
         let root_a =
             crate::scan::add_root_in(&conn, &root_a_dir, one_library).expect("adding root a");
@@ -196,7 +184,7 @@ pub(crate) fn library_with_two_roots() -> FixtureLibrary {
             crate::scan::add_root_in(&conn, &root_c_dir, one_library).expect("adding root c");
         crate::scan::scan_root(&conn, &root_c).expect("scanning root c");
 
-        // Task 5's `preview::rows_for` provenance test needs a root whose own
+        // `preview::rows_for`'s provenance test needs a root whose own
         // `edition_key` column actually decides something — the one case
         // `rules::ROOT_FALLBACK` exists for, and the one a mapping bug
         // (`Decided::Rule(0)` where `Decided::RootDefault` belongs) cannot
@@ -211,10 +199,9 @@ pub(crate) fn library_with_two_roots() -> FixtureLibrary {
         // already resolves to when nothing sets `edition_key` at all. Setting
         // it here changes *how* that string gets decided — the root's own
         // column, through `rules::Engine`, rather than `derive_with`'s later
-        // fallback — without changing what it resolves to, so every existing
-        // assertion in this fixture's family stays exactly as it was: none of
-        // them reads `edition_key` or the derived `edition.key` column at
-        // all, only `series`, `work` and proposal counts.
+        // fallback — without changing what it resolves to, so an assertion in
+        // this fixture's family that reads only `series`, `work` and proposal
+        // counts reads the same either way.
         conn.execute(
             "UPDATE root SET edition_key = 'raw' WHERE id IN (?1, ?2, ?3)",
             rusqlite::params![root_a.id, root_b.id, root_c.id],
@@ -299,16 +286,13 @@ pub(crate) fn library_with_two_roots_and_a_reading_position() -> FixtureLibrary 
 /// fixture already holds. A fixed sentinel above any ordinal this crate ever
 /// assigns gets there without needing the list.
 ///
-/// **Not `i64::MAX`.** That was tried and is what this rule used to carry,
-/// and a test that persists it for real through [`crate::rules::replace_all`]
-/// leaves it sitting in the `rule` table where
+/// **Not `i64::MAX`.** A rule persisted at `i64::MAX` through
+/// [`crate::rules::replace_all`] would sit in the `rule` table where
 /// [`crate::proposals::accept_with`]'s `COALESCE(MAX(ordinal), 4) + 1`
-/// reaches it and overflows — no test in this crate exercises that path
-/// today, but a later one reusing this fixture with an accept would.
-/// `1_000_000_000` is still far above any ordinal this crate ever assigns by
-/// hand (the seeded defaults are 1-4, an accepted rule is one past whatever
-/// `MAX(ordinal)` was) while leaving `i64`'s range untouched for every `+ 1`
-/// downstream code takes for granted.
+/// reaches it and overflows. `1_000_000_000` is far above any ordinal this
+/// crate ever assigns by hand (the seeded defaults are 1-4, an accepted rule
+/// is one past whatever `MAX(ordinal)` was) while leaving `i64`'s range
+/// untouched for every `+ 1` downstream code takes for granted.
 const LAST_WORD_ORDINAL: i64 = 1_000_000_000;
 
 pub(crate) fn a_rule_setting_series(series: &str) -> crate::rules::Rule {
@@ -408,51 +392,27 @@ pub(crate) fn library_with_the_seeded_defaults() -> FixtureLibrary {
     FixtureLibrary { library, dir }
 }
 
-/// A library shaped the way O95 found the real one: two series whose
+/// A library shaped like the real one O95 describes: two series whose
 /// **directory** carries an edition or group suffix that their **filenames**
 /// do not — `Death Note (Colored Council)/Death Note v01.cbz` and
 /// `Chainsaw Man - Digital Colored Comics/Chainsaw Man v01.cbz`.
 ///
 /// **Nothing is added to the seeded four.** That is the point: migration 3's
 /// rule 1 reads the series from the directory, its rule 4 reads it from the
-/// filename "where it repeats it", rule 4 wins on ordinal, and **that is what
-/// folds a colour edition into its main series** rather than a mistake to
-/// reorder away. `crate::preview::overrides` reports it, correctly, and the
-/// editor states it as an observation — `docs/status.md`, O95.
+/// filename "where it repeats it", and rule 4 wins on ordinal — the fold of a
+/// colour edition into its main series that `docs/status.md`'s O95 defends.
 ///
-/// **Since O89 (2026-09-16), this shape is reconciled.** The directory
+/// **This shape is reconciled — `docs/status.md`, O89.** The directory
 /// qualifies the filename's captured series — `Death Note` is a prefix of
 /// `Death Note (Colored Council)`, and `Chainsaw Man` a prefix of
 /// `Chainsaw Man - Digital Colored Comics` — so rule 1's own value stands and
-/// rule 4's capture is no longer an override. This fixture now carries
-/// `a_directory_that_qualifies_the_filenames_series_is_not_an_override`
-/// rather than O95's own two override tests, which moved to
-/// `library_with_directories_their_filenames_abbreviate`.
+/// rule 4's capture is not an override, which this fixture's test
+/// `a_directory_that_qualifies_the_filenames_series_is_not_an_override` pins.
 ///
-/// **Not a contrived shape.** Measured on the real library 2026-09-05: 27 of
-/// 128 directories, 21%, carry a filename stem differing from their
-/// directory.
-///
-/// **Two of them, not one, and with different series either side — true
-/// before O89.** Both files produced the same `(Series, rule 1, rule 4)`
-/// triple and *different* values, which was the one arrangement that could
-/// tell a row carrying its own example's values apart from a row carrying
-/// whichever entry happened to be walked last.
-///
-/// **Since O89 (2026-09-16), neither file produces that triple.** Both
-/// directories qualify their filename's captured series, so the
-/// reconciliation restores rule 1's own value and nothing here overrides
-/// Series any more — which is what
-/// `a_directory_that_qualifies_the_filenames_series_is_not_an_override`
-/// pins. Read as a description of the *shape* still on disk, this paragraph
-/// is current; read as a description of what `overrides` reports for it, it
-/// is not — `docs/status.md`, O89.
-///
-/// **The directory rows themselves contribute nothing**, which is what keeps
-/// `examples` readable as "two archives": rule 1's `^(?<series>[^/]+)/` needs
-/// a separator a bare directory `rel_path` does not have, and rule 4's
-/// `^(?<series>.+?)[ _-]+v` needs a `v` after a separator that neither
-/// directory name carries.
+/// **The directory rows themselves contribute nothing**: rule 1's
+/// `^(?<series>[^/]+)/` needs a separator a bare directory `rel_path` does not
+/// have, and rule 4's `^(?<series>.+?)[ _-]+v` needs a `v` after a separator
+/// that neither directory name carries.
 pub(crate) fn library_with_colour_edition_directories() -> FixtureLibrary {
     let dir = tempdir("preview-colour-edition-directories");
     for (directory, file) in [
@@ -474,27 +434,25 @@ pub(crate) fn library_with_colour_edition_directories() -> FixtureLibrary {
     FixtureLibrary { library, dir }
 }
 
-/// A library on disk holding two more real shapes from O95's own
-/// measurement — this time ones O89's reconciliation leaves standing: a
-/// directory whose *filename* abbreviates its series rather than
-/// *qualifying* it, so what the filename captures is never a prefix of the
-/// directory's own value and the reconciliation never fires.
+/// A library on disk holding two more real shapes from O95 — this time ones
+/// O89's reconciliation leaves standing: a directory whose *filename*
+/// abbreviates its series rather than *qualifying* it, so what the filename
+/// captures is never a prefix of the directory's own value and the
+/// reconciliation never fires.
 ///
-/// **These are real shapes.** On 2026-09-16 the real library still had 117
-/// entries across 11 (directory, capture) pairs where rule 1 and rule 4
-/// disagree *after* O89. The other 61 of O95's measured 178 are reconciled
-/// now, and these two directories are among the 117. (The real filenames
-/// also carry a year, `(2017)`/`(2022)`. It is omitted here so that nothing
-/// but the series pairing can decide a field.)
+/// **These are real shapes.** The real filenames also carry a year,
+/// `(2017)`/`(2022)`. It is omitted here so that nothing but the series
+/// pairing can decide a field.
 ///
 /// **The directory does not *qualify* the capture**, because
 /// `GTO - Paradise Lost` is not a prefix of
 /// `GTO - Great Teacher Onizuka - Paradise Lost`. So O89's reconciliation
 /// leaves rule 4 winning and the override standing.
 ///
-/// **Two entries, with different values either side**, for the reason
-/// `library_with_colour_edition_directories` gives, just above. Neither
-/// directory name has a `[ _-]+v`, so the directory rows reach neither rule.
+/// **Two entries, with different values either side**, so that a row carrying
+/// its own example's values can be told apart from a row carrying whichever
+/// entry happened to be walked last. Neither directory name has a `[ _-]+v`,
+/// so the directory rows reach neither rule.
 pub(crate) fn library_with_directories_their_filenames_abbreviate() -> FixtureLibrary {
     let dir = tempdir("preview-directories-abbreviate");
     for (directory, file) in [
@@ -714,38 +672,23 @@ pub(crate) fn library_with_two_competing_rules() -> FixtureLibrary {
 /// every rule not in the list it is given, and the `Go-Toubun` accept is the
 /// only one `base_rules` omits.
 ///
-/// **Important 3 added the second title.** `Go-Toubun` alone left
-/// `proposals_reopened` and `proposals_raised` reading the same number in
-/// every test that could make either nonzero, which is exactly what let the
-/// two arguments at `diff`'s call site swap without a test noticing.
-/// `Series C` / `Series C - Remaster` is scanned after the accept, and never
-/// derived here at all — so `raise` has never run over it, and `preview`'s
-/// own derivation is the first to find it. That is what makes it
-/// `proposals_raised` without also being `proposals_reopened`: one fresh
-/// proposal alongside one genuine reopen, `raised = 2` against
-/// `reopened = 1`, is what a `diff` call swapping the two arguments cannot
-/// survive.
+/// **`Series C` / `Series C - Remaster` sits beside `Go-Toubun`.** It is
+/// scanned after the accept, and never derived here at all — so `raise` has
+/// never run over it, and `preview`'s own derivation is the first to find it.
+/// That is what makes it `proposals_raised` without also being
+/// `proposals_reopened`: one fresh proposal alongside one genuine reopen,
+/// `raised = 2` against `reopened = 1`, is what a `diff` call swapping the two
+/// arguments cannot survive.
 ///
-/// **A second *accepted* proposal used not to be able to make that same
-/// point, though it looked like it should — that is no longer true.**
-/// [`crate::rules::replace_all`] used to run `DELETE FROM rule` over the
-/// whole table before reinserting the proposed list, byte-identical rule or
-/// not, so *every* currently-accepted proposal's `created_rule_id` went
-/// `NULL` on any preview — not only the one whose rule a fixture actually
-/// meant to omit — and a second accept added here would just have made
-/// `proposals_reopened` read `2` instead of `1`. Fixed, `replace_all` only
-/// ever deletes the ids genuinely dropped from the proposed list and updates
-/// every kept row in place, so a second accepted proposal whose rule stays
-/// in the proposed list now genuinely survives a preview accepted — see
-/// [`library_with_a_surviving_and_a_dropped_accept`], which builds exactly
-/// that: two accepts, only one of them dropped. This fixture is kept for
-/// what it alone still supplies — `Series C`, scanned but never derived, is
-/// what tells `proposals_raised` apart from `proposals_reopened` in the
-/// first place, which the two-accept fixture does not need since one of its
-/// two proposals answers that on its own by staying accepted. Pinning
-/// `reopened`'s full predicate — not just the reachable "stays accepted"
-/// case — still wants hand-built `States` maps too, for the two transitions
-/// no real `preview` call can produce at all: `dismissed → open` and
+/// [`library_with_a_surviving_and_a_dropped_accept`] builds two accepts, only
+/// one of them dropped: [`crate::rules::replace_all`] only ever deletes the ids
+/// genuinely dropped from the proposed list and updates every kept row in
+/// place, so the other accepted proposal survives a preview accepted. It has
+/// no need of `Series C`, since that surviving proposal answers the same
+/// question on its own by staying accepted. Pinning `reopened`'s full
+/// predicate — not just the reachable "stays accepted" case — wants
+/// hand-built `States` maps, for the two transitions no real `preview` call
+/// can produce at all: `dismissed → open` and
 /// `open → dismissed`. See `proposals/tests.rs`.
 pub(crate) fn library_with_an_accepted_proposal() -> (FixtureLibrary, Vec<crate::rules::Rule>) {
     let dir = tempdir("proposal-accepted");
@@ -802,9 +745,7 @@ pub(crate) fn library_with_an_accepted_proposal() -> (FixtureLibrary, Vec<crate:
 }
 
 /// A library holding two accepted `edition-of` proposals — one whose rule
-/// survives into `base_rules`, one whose rule does not — the fixture
-/// `library_with_an_accepted_proposal`'s own doc comment used to say was
-/// unreachable through a real [`crate::preview::preview`] call.
+/// survives into `base_rules`, one whose rule does not.
 ///
 /// **The order is what makes the survivor reachable.** `Series One`'s accept
 /// runs first, and `base_rules` — the second element of the pair this
@@ -933,7 +874,7 @@ const NORMALISED_STAMP: &str = "<stamp normalised for comparison>";
 /// [`crate::hand::reconcile`] normalises the same field for the same reason
 /// before deciding whether a document on disk is stale, and its comment says
 /// what comparing it would cost there: every reachable document reported
-/// stale, including one written a moment ago. Here it cost a flake — O99.
+/// stale, including one written a moment ago. Here that would flake — O99.
 ///
 /// **Why this is a second function rather than a change to `tree_snapshot`,
 /// and has to stay one.** The crate's three other snapshot comparisons each
@@ -969,11 +910,10 @@ pub(crate) fn tree_snapshot_stamps_normalised(root: &Path) -> BTreeMap<PathBuf, 
 
 /// **The flake this normalisation closes cannot be seen by running the test
 /// that carried it.** What differs is two projections a second apart, and a
-/// unit test's two writes land inside the same second almost every time —
-/// which is why the defect survived from #109 until a CI run happened to
-/// straddle a boundary. So the normalisation is proved here directly, on the
-/// two stamps that run actually produced (`21:28:49Z` and `21:28:50Z`),
-/// rather than by a sleep in the test that needs it.
+/// unit test's two writes land inside the same second almost every time. So
+/// the normalisation is proved here directly, on two stamps a second apart
+/// (`21:28:49Z` and `21:28:50Z`), rather than by a sleep in the test that
+/// needs it.
 ///
 /// **The last two assertions are what keep this honest.** A normalisation
 /// that returned an empty map, or dropped documents entirely, would satisfy
@@ -1028,33 +968,29 @@ fn normalising_the_stamp_hides_a_second_and_hides_nothing_else() {
     );
 }
 
-/// **Two processes are expected to hold this file at once, and the second one
-/// used to fail on the spot with "database is locked" rather than waiting.**
+/// **Two processes are expected to hold this file at once, and the second must
+/// wait rather than fail on the spot with "database is locked".**
 ///
 /// `taiyaku serve`, `taiyaku library import` and `taiyaku library export` all
 /// default to the same `$XDG_DATA_HOME/taiyaku/library.db`, and `serve` writes
 /// a `progress` row on every page turn. `Library`'s own doc argues one
 /// connection behind a `Mutex` is enough — a correct argument about
 /// contention *inside* one process that says nothing about the two-process
-/// case the CLI plainly enables. Reproduced by review as
-/// `taiyaku: updating work 2: database is locked`, exit 1.
+/// case the CLI plainly enables.
 ///
-/// **A busy timeout alone does not fix it**, which is the part worth writing
-/// down. Every write in this crate opens its transaction with
-/// `unchecked_transaction`, and that was `BEGIN DEFERRED`: the transaction
+/// **A busy timeout alone does not fix it.** A `BEGIN DEFERRED` transaction
 /// starts as a *reader* at its first `SELECT` — `import::sidecar`'s
 /// `find_by_key`, here — and only becomes a writer several statements later.
 /// SQLite does not run the busy handler for that promotion. It cannot: two
 /// connections holding read transactions and both waiting to promote would
 /// deadlock, so it returns `SQLITE_BUSY` immediately instead, and under WAL a
 /// snapshot the other writer has already moved past returns
-/// `SQLITE_BUSY_SNAPSHOT`, which no amount of waiting resolves. So the timeout
-/// applies to the case the library never used.
+/// `SQLITE_BUSY_SNAPSHOT`, which no amount of waiting resolves.
 ///
 /// Taking the write lock at `BEGIN` is what makes the wait possible, and that
 /// is the connection-level `TransactionBehavior::Immediate` in
-/// `configure`. This drives the real import path — the one review
-/// reproduced — against a second library holding the write lock for 250 ms.
+/// `configure`. This drives the real import path against a second library
+/// holding the write lock for 250 ms.
 #[test]
 fn an_import_waits_for_another_writer_rather_than_failing_on_the_lock() {
     let dir = tempdir("busy");
@@ -1104,9 +1040,9 @@ fn an_import_waits_for_another_writer_rather_than_failing_on_the_lock() {
 /// Read back rather than assumed, because the effect above holds for any
 /// timeout over 250 ms — including one that would hang a page turn for an
 /// hour. Five seconds: longer than any single write this store performs (the
-/// largest is one work's import, measured in milliseconds), short enough that
-/// a genuinely stuck writer surfaces as an error a person can act on instead
-/// of a server that appears to have hung.
+/// largest is one work's import), short enough that a genuinely stuck writer
+/// surfaces as an error a person can act on instead of a server that appears
+/// to have hung.
 ///
 /// **Stated plainly, since it is the kind of thing that looks like a guard and
 /// is not**: `rusqlite` happens to set the same 5 000 ms on every connection
@@ -1128,21 +1064,20 @@ fn every_connection_carries_the_busy_timeout() {
     );
 }
 
-/// **Whole-branch review 3, I1, the other half of the first open.** Switching
-/// a database into WAL takes a brief exclusive lock, and SQLite runs no busy
+/// **The first open of a fresh library waits for the file.** Switching a
+/// database into WAL takes a brief exclusive lock, and SQLite runs no busy
 /// handler for it: while any other connection holds the file, the pragma
 /// returns `SQLITE_BUSY` on the spot, however long the busy timeout is. So the
 /// first open of a *fresh* library — the one open every install performs, with
-/// `serve` and `library import` defaulting to the same file — failed outright
-/// with `opening the library: setting WAL: database is locked`, one of the two
-/// forms behind 14 failures in 48 concurrent first opens.
+/// `serve` and `library import` defaulting to the same file — must wait for
+/// the file rather than fail outright with
+/// `opening the library: setting WAL: database is locked`.
 ///
 /// It is only ever the first: once the file is in WAL the pragma is a no-op
 /// that takes no lock, which is why this test has to hold a lock on a database
 /// that is *not* yet in WAL, exactly as a first open finds one.
 ///
-/// Reordering the timeout ahead of the pragma — done, because that is where
-/// the decision belongs — does not fix this. Waiting does.
+/// Reordering the timeout ahead of the pragma does not fix this. Waiting does.
 #[test]
 fn a_first_open_waits_for_the_file_rather_than_failing_to_set_wal() {
     let dir = tempdir("wal-busy");
@@ -1189,14 +1124,11 @@ fn a_first_open_waits_for_the_file_rather_than_failing_to_set_wal() {
     );
 }
 
-/// **The whole of I1 as it was reproduced**: several processes opening one
-/// fresh library at the same moment, which is what `serve` and `taiyaku
-/// library import` sharing `$XDG_DATA_HOME/taiyaku/library.db` do on the very
-/// first run. Review 3 measured 14 failures across 48 such opens, in the two
-/// forms the two tests around this one pin one at a time — `setting WAL:
-/// database is locked` and `applying schema version 1: table series already
-/// exists`. Neither is reachable on an existing library; it is only ever the
-/// first open, which is the one every install performs.
+/// **Several processes opening one fresh library at the same moment**, which
+/// is what `serve` and `taiyaku library import` sharing
+/// `$XDG_DATA_HOME/taiyaku/library.db` do on the very first run. A race like
+/// this is only ever possible on the first open, which is the one every
+/// install performs.
 ///
 /// Threads rather than processes: each carries its own `Connection`, which is
 /// the unit SQLite locks against, and a test that spawns four copies of the
@@ -1241,11 +1173,11 @@ fn several_first_opens_of_one_fresh_library_at_once_all_succeed() {
 
 /// The wait is bounded, and what it says when it runs out is the point.
 ///
-/// The reproduced message — `setting WAL: database is locked` — named a
-/// condition and offered nothing, on a database that is fine. `set_wal_within`
-/// is split out from `set_wal` for the same reason `require_fts5_with_probe`
-/// is split from `require_fts5`: the giving-up branch is unreachable from a
-/// test that is not willing to hold a lock for the full five seconds.
+/// A bare `setting WAL: database is locked` would name a condition and offer
+/// nothing, on a database that is fine. `set_wal_within` is split out
+/// from `set_wal` for the same reason `require_fts5_with_probe` is split from
+/// `require_fts5`: the giving-up branch is unreachable from a test that is not
+/// willing to hold a lock for the full five seconds.
 #[test]
 fn giving_up_on_wal_says_how_long_it_waited_and_that_nothing_was_lost() {
     let dir = tempdir("wal-gives-up");
@@ -1289,17 +1221,12 @@ fn every_connection_enforces_foreign_keys() {
 /// FTS5 is a property of the host's SQLite build, not of the crate, because
 /// this links the system library rather than bundling one. Debian and Arch both
 /// build it in; "both distros I checked" is not "every host". Without this
-/// check the failure surfaces as Task 3's migration dying part-way with
+/// check the failure surfaces as the schema migration dying part-way with
 /// `no such module: fts5`, on a half-created schema.
 ///
 /// This host has FTS5 — CI's rust:1-bookworm and this workstation both do —
 /// so there is no way to reach `require_fts5`'s refusal through the real
-/// probe statement. What used to sit here instead ran its *own* ad hoc probe
-/// against `Library::open_in_memory()`'s connection and asserted that FTS5
-/// worked — which is true regardless of whether `require_fts5` ever ran,
-/// since the host has it either way, so deleting the call to `require_fts5`
-/// out of `configure` left that test green. Neither half of the name
-/// — "refuses", "names what is missing" — was exercised.
+/// probe statement.
 ///
 /// This calls `require_fts5` itself, through `require_fts5_with_probe`,
 /// handing it a probe statement engineered to fail the exact way a real
@@ -1308,8 +1235,7 @@ fn every_connection_enforces_foreign_keys() {
 /// same `map_err`, same message-building the real call site
 /// (`configure`, `lib.rs`) uses — only the SQL differs — so gutting
 /// `require_fts5_with_probe`'s refusal (for instance, ignoring the `Err` and
-/// returning `Ok(())` regardless) fails this test — checked by that exact
-/// sabotage.
+/// returning `Ok(())` regardless) fails this test.
 ///
 /// This pins the refusal and its message. That `from_connection` *calls*
 /// `require_fts5` at all is a separate claim, pinned separately by
@@ -1334,9 +1260,9 @@ fn opening_refuses_a_sqlite_without_fts5_and_names_what_is_missing() {
 }
 
 /// The guard above is only worth anything if `from_connection` actually runs
-/// it, and that is the half that had never been pinned: on a host with FTS5,
-/// deleting `require_fts5(&conn)?;` changes nothing `open_in_memory` returns,
-/// so the probe can be removed entirely and every other test stays green.
+/// it: on a host with FTS5, deleting the `require_fts5` call would change
+/// nothing `open_in_memory` returns, so the probe could be removed entirely and
+/// every other test would stay green.
 ///
 /// It can be pinned without a host that lacks FTS5, and without widening the
 /// public constructors. `from_connection` is private but reachable from this
@@ -1348,7 +1274,7 @@ fn opening_refuses_a_sqlite_without_fts5_and_names_what_is_missing() {
 /// So the assertion is about **sequencing, not about FTS5**: the schema
 /// migration never touches `temp`, so with the probe wired the open fails
 /// with the FTS5 refusal, and with the probe deleted the migration runs to
-/// completion and the open succeeds. Verified by that exact deletion.
+/// completion and the open succeeds.
 ///
 /// Asserting the refusal's own wording rather than merely that opening failed
 /// is what keeps it honest — a migration that failed for some unrelated
@@ -1427,16 +1353,14 @@ fn a_fresh_database_records_its_schema_version() {
 /// handed back `Working::Shared(library.conn())` would time this test out
 /// instead of failing it cleanly — a bad failure mode for CI to sit through.
 ///
-/// Also asserts that the second connection actually ran `Self::configure`,
-/// the same way `every_connection_enforces_foreign_keys` pins it for the
-/// first: nothing else in this crate calls `working()`, so a version that
-/// opened the file but skipped configuring it — dropping
-/// `Self::configure(&mut conn)?;` from the file-backed branch — would return
-/// an `Owned` connection that still satisfies every assertion above while
-/// silently missing foreign keys, the busy timeout, WAL, recursive triggers,
-/// and `Immediate` transactions. Checking `foreign_keys` and `busy_timeout`
-/// is enough to catch that: both are off (`0`/no timeout) on a
-/// freshly-opened connection `configure` never touched.
+/// Also asserts that the second connection actually ran `Self::configure`, the
+/// same way `every_connection_enforces_foreign_keys` pins it for the first: a
+/// version that opened the file but skipped configuring it — dropping
+/// `Self::configure(&mut conn)?;` from the file-backed branch — would return an
+/// `Owned` connection that still satisfies every assertion above while silently
+/// missing foreign keys, the busy timeout, WAL, recursive triggers, and
+/// `Immediate` transactions. Checking `foreign_keys` is enough to catch that:
+/// it is off (`0`) on a freshly-opened connection `configure` never touched.
 #[test]
 fn a_file_backed_library_works_on_a_connection_of_its_own() {
     let dir = tempdir("library-working");
@@ -1507,16 +1431,13 @@ fn an_in_memory_library_works_on_the_connection_it_already_has() {
         .expect("the working connection writes");
 }
 
-/// A relative path reaches [`Library::open`] today only through
-/// `taiyaku-cli`'s `--db` flag, which — unlike its own
-/// `$XDG_DATA_HOME`/`$HOME` fallbacks — does no absolute-path check. Nothing
-/// in this repository calls `std::env::set_current_dir`, so nothing has ever
-/// exercised what a relative path does once [`Library::working`] opens a
-/// *second* connection against `self.path`: if `open` stored the relative
-/// path verbatim, that second `Connection::open` would resolve it against
-/// whatever the process's current directory is *then*, not the directory
-/// `open` ran in — silently opening a different, empty database file if the
-/// two differ.
+/// A relative path reaches [`Library::open`] only through `taiyaku-cli`'s
+/// `--db` flag, which — unlike its own `$XDG_DATA_HOME`/`$HOME` fallbacks —
+/// does no absolute-path check. If `open` stored the relative path verbatim,
+/// the *second* connection [`Library::working`] opens against `self.path`
+/// would resolve it against whatever the process's current directory is
+/// *then*, not the directory `open` ran in — silently opening a different,
+/// empty database file if the two differ.
 ///
 /// This moves the process into a fresh directory, opens the library by a
 /// bare relative filename, and proves `working()` still lands on the same
@@ -1718,25 +1639,22 @@ fn a_nested_scopes_own_rollback_does_not_disturb_the_transaction_it_nests_inside
     );
 }
 
-/// **Important 2.** `commit`'s real-transaction branch takes `self.tx` to
-/// `None` via `Option::take` before it ever runs the real `COMMIT` — so at
-/// drop time, `tx.is_none()` reads exactly the same whether this scope
-/// committed a real transaction or released a `SAVEPOINT`. A `Drop` guard
-/// that checked `tx.is_none()` alone could not tell the two apart, and used
-/// to run `ROLLBACK TO SAVEPOINT <label>; RELEASE SAVEPOINT <label>` after
-/// every ordinary commit — review's own instrumentation of `Drop` measured
-/// 744 of these in one suite run, each silently swallowed by `let _ =` and
-/// each a wasted parse-and-step against a savepoint that was never opened.
+/// `commit`'s real-transaction branch takes `self.tx` to `None` via
+/// `Option::take` before it ever runs the real `COMMIT` — so at drop time,
+/// `tx.is_none()` reads exactly the same whether this scope committed a real
+/// transaction or released a `SAVEPOINT`. A `Drop` guard that checked
+/// `tx.is_none()` alone could not tell the two apart, and would run
+/// `ROLLBACK TO SAVEPOINT <label>; RELEASE SAVEPOINT <label>` after every
+/// ordinary commit, each silently swallowed by `let _ =` and each a wasted
+/// parse-and-step against a savepoint that was never opened.
 ///
-/// **Why this watches the SQL rather than `is_autocommit()`.** The bug was
-/// never observable that way:
-/// `a_nested_scope_commits_for_real_when_nothing_else_is_open` above already
-/// checks `is_autocommit()` after a real-branch commit and stayed green
-/// through the whole life of the bug, because the spurious statement simply
-/// failed against an autocommit connection with no savepoint to touch and
-/// left `is_autocommit()` reading exactly as it would have anyway. Watching
-/// the statement text — the same technique review used to surface and count
-/// the failures — is the only way to pin that the statement is not sent at
+/// **Why this watches the SQL rather than `is_autocommit()`.** A spurious
+/// statement is not observable that way:
+/// `a_nested_scope_commits_for_real_when_nothing_else_is_open` above checks
+/// `is_autocommit()` after a real-branch commit, and the statement would
+/// simply fail against an autocommit connection with no savepoint to touch,
+/// leaving `is_autocommit()` reading exactly as it would have anyway.
+/// Watching the statement text is what pins that the statement is not sent at
 /// all, not merely that it has no visible effect when it is.
 #[test]
 fn committing_the_real_transaction_branch_sends_no_savepoint_statement() {
@@ -1776,18 +1694,13 @@ fn committing_the_real_transaction_branch_sends_no_savepoint_statement() {
     );
 }
 
-/// **Minor 4.** The savepoint branch's mirror of the bug just above: two
-/// mutations — deleting `self.savepoint_committed = true;` from `commit`'s
-/// `RELEASE` arm, or dropping the `!self.savepoint_committed` conjunct from
-/// `drop`'s guard — leave every other test in this suite green, because both
-/// make `Drop` fire `ROLLBACK TO SAVEPOINT …; RELEASE SAVEPOINT …` against a
-/// savepoint that was already released, and every existing savepoint test
-/// above only checks the data ended up right, not which statements got
-/// there. A `ROLLBACK TO` against an already-released savepoint would either
-/// error (swallowed by `drop`'s `let _ =`, exactly the silent-failure class
-/// the real-transaction branch was fixed for last round) or, worse, roll a
+/// The savepoint branch's mirror of the test just above: this scope's own
+/// `commit` releases its savepoint, so `Drop` must not roll back to or
+/// release it again. A `ROLLBACK TO` against an already-released savepoint
+/// would either error (swallowed by `drop`'s `let _ =`) or, worse, roll a
 /// *different* still-open savepoint of the same name back to a checkpoint
-/// nothing here asked for.
+/// nothing here asked for. The savepoint tests above only check that the data
+/// ended up right, not which statements got there.
 ///
 /// Same harness as `committing_the_real_transaction_branch_sends_no_savepoint_statement`
 /// above, extended to the branch that one does not reach: an outer

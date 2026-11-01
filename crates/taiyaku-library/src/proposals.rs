@@ -1,10 +1,9 @@
 //! Proposals: the judgements §1's measurement says no rule should make.
 //!
-//! §6 and §6.1 of the scanner spec. Suffix-stripping as an edition signal
-//! scored roughly 20 right to 17 wrong on a hand classification of the real
-//! library — barely better than a coin flip — so nothing here merges
-//! anything: [`raise`] proposes, and a person decides through [`accept`],
-//! [`unaccept`] or [`dismiss`].
+//! §6 and §6.1 of the scanner spec. Suffix-stripping as an edition signal was
+//! barely better than a coin flip on a hand classification of the real library,
+//! so nothing here merges anything: [`raise`] proposes, and a person decides
+//! through [`accept`], [`unaccept`] or [`dismiss`].
 //!
 //! # Three decisions, carried from the schema into this module
 //!
@@ -42,8 +41,8 @@
 //! # The four kinds, and where each comes from
 //!
 //! - `edition-of` — [`raise_edition_of`], scored from §6's two signals: a
-//!   vocabulary hit in the suffix, and an equal volume count between the two
-//!   series.
+//!   vocabulary hit in the suffix, and an equal volume count between the
+//!   two series.
 //! - `same-series` — [`raise_same_series`], §5's second use of
 //!   `series_title`: a directory whose name matches any known title of a
 //!   series joins that series, which is what relates 「五等分の花嫁」 to
@@ -58,14 +57,13 @@
 //! # `attach-chapters` cannot be accepted yet
 //!
 //! §6.1 says accepting writes a narrow `prefix` rule, and a `prefix` rule sets
-//! only `edition_key`, `kind`, `language` and `series` — none of them a
-//! volume, and `derive` needs one to make a work. Accepting one of these
-//! today would flip the proposal to `accepted`, write a rule, and produce
-//! nothing a person can see, which is worse than refusing outright. So
-//! [`accept`] refuses this one kind by name, naming the command that can
-//! actually answer the question — `taiyaku align`, the README's own example —
-//! rather than silently doing nothing. See the module's own doc for the two
-//! other shapes this could take and why they are not implemented here.
+//! only `edition_key`, `kind`, `language` and `series` — none of them a volume,
+//! and `derive` needs one to make a work. Accepting one of these today would
+//! flip the proposal to `accepted`, write a rule, and produce nothing a person
+//! can see, which is worse than refusing outright. So [`accept`] refuses this
+//! one kind by name, naming the command that can actually answer the question —
+//! `taiyaku align`, the README's own example — rather than silently
+//! doing nothing.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -74,8 +72,8 @@ use rusqlite::{Connection, OptionalExtension};
 
 /// The edition words, and what they are for.
 ///
-/// **The vocabulary ranks; it never decides.** §1's roughly-20-to-17 hand
-/// classification is the whole argument, and this list does not rescue it:
+/// **The vocabulary ranks; it never decides.** §1's hand classification is the
+/// whole argument, and this list does not rescue it:
 /// `Shingeki no Kyojin - Kui Naki Sentaku (Complete Color Edition)` matches
 /// "Color Edition" and is the colour edition of a *spin-off*, so even the best
 /// signal available gets that one wrong.
@@ -92,11 +90,10 @@ const EDITION_WORDS: [&str; 8] = [
 
 /// Which vocabulary word a suffix matched, if any.
 ///
-/// [`raise_edition_of`] only ever needed *whether* one did. [`preview`] needs
-/// *which*, because the word is what implies the edition kind — see the
-/// mapping in [`implied_edition_kind`]. Extracted rather than duplicated so
-/// there is one list and one matching rule; `any` and `find(..).is_some()`
-/// decide identically, which is what keeps this a refactor.
+/// [`raise_edition_of`] needs only *whether* one did. [`preview`] needs
+/// *which*, because the word is what implies the edition kind — see the mapping
+/// in [`implied_edition_kind`]. One function serves both, so there is one list
+/// and one matching rule.
 fn matched_edition_word(suffix: &str) -> Option<&'static str> {
     EDITION_WORDS
         .iter()
@@ -109,9 +106,9 @@ fn matched_edition_word(suffix: &str) -> Option<&'static str> {
 /// **This is a reading of the word, not a guess about the material.** Seven of
 /// the eight words name a publisher's own edition; `Fan Translated` names the
 /// other thing entirely. `language` gets no such treatment and is left unset —
-/// an English-looking suffix is evidence about the *suffix*, and
-/// `serve/src/comicinfo.rs` already records why deriving a language from a key
-/// would be a guess presented as metadata.
+/// an English-looking suffix is evidence about the *suffix*, and `comicinfo.rs`
+/// already records why deriving a language from a key would be a guess
+/// presented as metadata.
 fn implied_edition_kind(word: &str) -> &'static str {
     if word == "Fan Translated" {
         "fan"
@@ -130,12 +127,10 @@ const STATE_DISMISSED: &str = "dismissed";
 
 /// The narrow rule shape [`preview`] derives: a literal `rel_path` prefix.
 ///
-/// **No longer the only shape [`accept_with`] will take.** It was, for as
-/// long as the collateral guard could only reason in literal prefixes under
-/// one root; [`resolves`] evaluates a candidate through
-/// [`crate::rules::Engine`] instead, so every `kind` and `match_on` the
-/// engine understands is checked with the semantics the engine gives it. The
-/// pair is still named here because `preview` writes exactly it.
+/// **Not the only shape [`accept_with`] will take.** [`resolves`] evaluates a
+/// candidate through [`crate::rules::Engine`], so every `kind` and `match_on`
+/// the engine understands is checked with the semantics the engine gives it.
+/// The pair is named here because `preview` writes exactly it.
 const RULE_KIND_PREFIX: &str = "prefix";
 const MATCH_ON_PATH: &str = "path";
 
@@ -296,7 +291,7 @@ fn proposal_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Proposal> {
 /// **A separate type rather than two more fields on [`Proposal`].** A
 /// collapsed inbox row has to say which series this proposal is about — C3
 /// §3's whole argument for a scannable list over a triage loop is seeing that
-/// 29 of 37 rows ask the same question, and rows that cannot be told apart
+/// most rows ask the same question, and rows that cannot be told apart
 /// are not scannable. But [`lookup`], [`one`] and [`evidence`] read a single
 /// proposal and already have the titles by other means ([`Side`] carries
 /// them), so putting the titles on `Proposal` would make every one of those
@@ -305,12 +300,11 @@ fn proposal_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Proposal> {
 ///
 /// **Not the same thing as the leading words of [`Proposal::reason`].** Every
 /// `reason` this module writes happens to open with the subject's quoted
-/// title, and a row drawn from that string alone looked identifiable while
-/// the window was wide. It is not a contract: [`scored_reasons`] deliberately
-/// re-words the same signals *without* titles for the evidence panel, so
-/// nothing stops the `format!` behind a reason changing — and a row whose
-/// identity came from it would then be a kind, a strength and a truncated
-/// sentence, identical to every other row of that kind.
+/// title. It is not a contract: [`scored_reasons`] deliberately re-words the
+/// same signals *without* titles for the evidence panel, so nothing stops the
+/// `format!` behind a reason changing — and a row whose identity came from it
+/// would then be a kind, a strength and a truncated sentence, identical to
+/// every other row of that kind.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ListedProposal {
     pub proposal: Proposal,
@@ -340,8 +334,8 @@ fn listed_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<ListedProposal> {
 /// **The one query every multi-row listing of `proposal` goes through.**
 /// [`open`] is this with `state` fixed to `open` and `kind` left
 /// unrestricted; it stays a function of its own because its signature has
-/// callers in this crate and in `taiyaku-cli` this task does not touch, not
-/// because it is a different query.
+/// callers in this crate and in `taiyaku-cli`, not because it is a
+/// different query.
 ///
 /// **Not the one query every *read* goes through.** [`counts_by_kind`]
 /// answers "how many", not "which rows", and runs its own `GROUP BY` rather
@@ -355,8 +349,7 @@ fn listed_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<ListedProposal> {
 /// So a filter or an audit hook meant to reach every read of `proposal` has
 /// to go into each statement that names the table rather than here alone —
 /// and `grep 'FROM proposal'` over this file is that list, which is the one
-/// worth trusting. Naming the callers instead is what earlier versions of
-/// this paragraph did, and each of them went stale the next time one moved.
+/// worth trusting.
 ///
 /// # Errors
 ///
@@ -400,12 +393,9 @@ pub fn list(conn: &Connection, filter: &Filter) -> Result<Vec<ListedProposal>, S
 /// `min_score` — what the inbox's filter tabs count themselves by.
 ///
 /// **`min_score` is a parameter because a count over a different set from the
-/// list beside it is a wrong number, not a looser one.** [`Filter`] carries a
-/// threshold and this took none, so `?state=open&min_score=9` answered
-/// `{"counts":{"edition-of":1},"proposals":[]}` — measured, at the route: a
-/// tab reading "1" over an empty list. `kind` is deliberately *not* a
-/// parameter here: the tabs are what a kind filter is chosen from, and a
-/// facet counted with its own filter applied can only ever count itself out
+/// list beside it is a wrong number, not a looser one.** `kind` is deliberately
+/// *not* a parameter here: the tabs are what a kind filter is chosen from, and
+/// a facet counted with its own filter applied can only ever count itself out
 /// of existence.
 ///
 /// # Errors
@@ -449,10 +439,9 @@ pub type States = BTreeMap<i64, String>;
 /// Snapshot every proposal's current state — see [`States`].
 ///
 /// **`pub(crate)`, not `pub`.** Its only callers are [`crate::preview::preview`]
-/// and this crate's own `preview/tests.rs`, the same narrowing
-/// [`crate::rules::replace_all`] got last round: a function nothing outside
-/// the crate calls is a `pub` surface nobody uses and nobody has decided to
-/// support.
+/// and this crate's own `preview/tests.rs`: a function nothing outside
+/// the crate calls is a `pub` surface nobody uses and nobody has decided
+/// to support.
 ///
 /// # Errors
 ///
@@ -576,18 +565,16 @@ struct AcceptableProposal {
 /// for, or the sentence saying why the library declines it.
 ///
 /// **A refusal is a different outcome from a failure**, and one
-/// `Result<_, String>` cannot tell them apart. [`evidence`] needed to first: it
+/// `Result<_, String>` cannot tell them apart. [`evidence`] needs to: it
 /// answers `rule: None` for every proposal that cannot be accepted and still
-/// shows the row, and it did that with `preview(conn, id).ok()` — which
-/// turned a database read that *failed* into the same `None`, presenting a
-/// fault as "this cannot be accepted".
+/// shows the row, and a database read that *failed* must not become that same
+/// `None`, which would present a fault as "this cannot be accepted".
 ///
-/// **The three writes needed to next (O70).** [`accept_with`], [`unaccept`]
-/// and [`dismiss`] answered their refusals and their store failures through
-/// one `Result<_, String>`, and `taiyaku-serve` can only map a status onto the
-/// type it is handed: a trigger failing the `INSERT INTO rule` inside an
-/// accept answered **409**, a refusal about the library's state, for a store
-/// that had failed. Each answers `Result<Offer<_>, String>` now.
+/// **The three writes need to as well (O70).** `taiyaku-serve` can only map a
+/// status onto the type it is handed, and it answers a refusal about the
+/// library's state **409**; so [`accept_with`], [`unaccept`] and [`dismiss`]
+/// each answer `Result<Offer<_>, String>`, which keeps a store that failed
+/// from answering that 409.
 ///
 /// Beside a `Result`, `Err` means a read or a write failed — or, for a
 /// function reading its proposal by id, that there is no such proposal, which
@@ -641,13 +628,11 @@ fn acceptable_proposal(conn: &Connection, id: i64) -> Result<Offer<AcceptablePro
 /// Refuse `proposal` if an accept must not proceed: not `open`,
 /// `attach-chapters`, or no `target_id` to write a rule against.
 ///
-/// **One helper, three callers, deliberately.** These three refusals used to
-/// live in [`accept`] alone and then, after the split, in [`preview`] alone —
-/// and [`accept_with`] is a `pub fn` that C3's
-/// `POST /api/library/proposals/{id}/accept` calls with an admin-supplied
-/// rule, so it cannot assume its caller came through [`preview`] first.
-/// Expressing the refusals twice would be two places for them to drift; this
-/// is the one place they are expressed, and every caller asks it.
+/// **One helper, three callers, deliberately.** [`accept_with`] is a `pub fn`
+/// that C3's `POST /api/library/proposals/{id}/accept` calls with an
+/// admin-supplied rule, so it cannot assume its caller came through [`preview`]
+/// first. Expressing the refusals twice would be two places for them to drift;
+/// this is the one place they are expressed, and every caller asks it.
 ///
 /// **Over a `Proposal` already read, rather than reading its own row.** That
 /// is what lets [`evidence`] — which has one in hand — tell these three
@@ -765,10 +750,8 @@ pub fn preview(conn: &Connection, id: i64) -> Result<ProposedRule, String> {
 /// [`crate::derive::rel_paths_for_series`] compiles every rule in the
 /// library, reads every root and resolves every `scan_entry` row under each,
 /// and [`evidence`] needs exactly that answer for the side it is drawing
-/// anyway. Reading it here as well made an expanded row pay for the subject's
-/// sweep twice — measured: `material_of` for the subject, `material_of` for
-/// the target, then this function's own for the subject again, three passes
-/// for a route a person triggers by opening a row.
+/// anyway. Reading it here as well would make an expanded row pay for the
+/// subject's sweep twice.
 ///
 /// # Errors
 ///
@@ -796,26 +779,22 @@ fn offered_rule(
     };
 
     // **`edition-of` sets the edition key too, not only the series.**
-    // `set_series` alone makes the accepted directory's material extra pages
-    // of the *base* edition rather than a second edition — measured: after
-    // accept and re-derive, three works each with one `raw` edition holding
-    // two members, base and colour concatenated into a single page sequence.
-    // For a proposal whose whole claim is "this is the colour edition of
-    // that", silently merging the pages is the wrong outcome and a reader
-    // sees it. The key is the suffix that made the proposal an `edition-of`
-    // one in the first place — the part of the subject's own title after
-    // `"{target} - "` — slugified, so it reads the way `raise_edition_of`'s
-    // `reason` already does: `full-color-edition` for
-    // `Go-Toubun no Hanayome - Full Color Edition`. `same-series` sets no
+    // `set_series` alone makes the accepted directory's material extra pages of
+    // the *base* edition rather than a second edition. For a proposal whose
+    // whole claim is "this is the colour edition of that", silently merging the
+    // pages is the wrong outcome and a reader sees it. The key is the suffix
+    // that made the proposal an `edition-of` one in the first place — the part
+    // of the subject's own title after `"{target} - "` — slugified, so it reads
+    // the way `raise_edition_of`'s `reason` already does: `full-color-edition`
+    // for `Go-Toubun no Hanayome - Full Color Edition`. `same-series` sets no
     // edition key: it is a claim about identity, not about a second edition.
     let (set_edition_key, set_kind) = if kind == KIND_EDITION_OF {
         // **A missing prefix relationship is refused, not silently
         // absorbed.** If the target was renamed between this proposal being
         // raised and being accepted, `strip_prefix` finds nothing, and
-        // falling back to `None` here would silently restore the very bug
-        // this fix exists for: `set_series` alone, the colour volume's pages
-        // concatenated onto the base edition's. The failure has to be
-        // visible instead.
+        // falling back to `None` here would write a rule with `set_series`
+        // alone, the colour volume's pages concatenated onto the base
+        // edition's. The failure has to be visible instead.
         let Some(suffix) = subject_title.strip_prefix(&format!("{target_title} - ")) else {
             return Ok(Offer::Refused(format!(
                 "proposal {id}: \"{subject_title}\" no longer starts with \"{target_title} - \" \
@@ -859,8 +838,8 @@ fn offered_rule(
 /// Accept proposal `id` by writing exactly `rule`.
 ///
 /// **The guards are not about who chose the pattern.** `accept` derived its
-/// own rule so that two measured failures could not happen — a pattern that
-/// matched nothing, and a pattern that reached an unrelated series. Both are
+/// own rule so that two failures could not happen — a pattern that matched
+/// nothing, and a pattern that reached an unrelated series. Both are
 /// properties of the *pattern*, so both are checked here regardless of where
 /// it came from, and a widened pattern is checked harder rather than less —
 /// or, where the guards cannot evaluate its semantics at all, refused rather
@@ -884,7 +863,7 @@ fn offered_rule(
 ///
 /// If `id` names no proposal — [`lookup`] tells that apart — or if a read or
 /// a write fails, the dry run's reads included. A refusal is not an error:
-/// see [`Offer`] for what a caller answered while it was one.
+/// see [`Offer`] for why the two are kept apart.
 pub fn accept_with(conn: &Connection, id: i64, rule: &ProposedRule) -> Result<Offer<i64>, String> {
     // The refusals about the *proposal* rather than the rule, made
     // here as well as in `preview` and `offered_rule`: this is a `pub fn`,
@@ -893,30 +872,22 @@ pub fn accept_with(conn: &Connection, id: i64, rule: &ProposedRule) -> Result<Of
     // see `acceptable`'s own doc — and `across_libraries` beside it.
     //
     // Its answer is dropped: what the rule would decide, and whose material
-    // that is, is `resolves`' question now, and it reads the proposal's own
-    // two ends itself.
+    // that is, is `resolves`' question, and it reads the proposal's own two
+    // ends itself.
     if let Offer::Refused(why) = acceptable_proposal(conn, id)? {
         return Ok(Offer::Refused(why));
     }
 
     // **"Matches something" is not "matches only the subject".** A rule
     // decides for everything it matches, not only the paths that derived it —
-    // see [`series_reached_by`]'s own doc for the measured consequence of
-    // skipping this and stopping at [`common_directory_pattern`] alone.
+    // see [`series_reached_by`]'s own doc for the consequence of skipping this
+    // and stopping at [`common_directory_pattern`] alone.
     //
-    // **This one dry run replaces the two fail-closed refusals that stood
-    // here**: a rule whose `kind`/`match_on` was not `prefix`/`path`, and a
-    // rule with no `root_id`. Both existed because the guard underneath was
-    // `derive::other_series_under_prefix`, which asks
-    // `rel_path.starts_with(pattern)` under one named root — handed a regex
-    // it prefix-matched the pattern's own *source text*, found nothing, and
-    // reported a clean bill of health, and handed a `parent`-matched rule it
-    // compared against the whole path the engine would never look at. A guard
-    // that cannot evaluate a rule's semantics has to refuse it. `resolves` is
-    // built on `rules::Engine`, which is the thing `derive` itself will use,
-    // so it evaluates the candidate with whatever semantics its `kind`,
-    // `match_on` and `root_id` actually carry — which is what earns the right
-    // to stop refusing them.
+    // **A guard that cannot evaluate a rule's semantics has to refuse it.**
+    // `resolves` is built on `rules::Engine`, which is the thing `derive`
+    // itself will use, so it evaluates the candidate with whatever semantics
+    // its `kind`, `match_on` and `root_id` actually carry — which is what lets
+    // `accept_with` take them rather than refuse them.
     //
     // **Except that a rule it cannot evaluate is refused here, before it.**
     // `resolves` makes that check first, but answers it through the same
@@ -946,13 +917,10 @@ pub fn accept_with(conn: &Connection, id: i64, rule: &ProposedRule) -> Result<Of
         // material misreads what it is. Hence a refusal of its own, in its
         // own words.
         //
-        // **Written for however many targets there are, and it no longer
-        // says "directory".** Both were true of the narrow `prefix` rule this
-        // message was first written for and of nothing else: a widened rule
-        // can be a cross-root regex reaching several targets at once, and the
-        // message joined them into one pair of quotes and singular phrasing —
-        // *…shared with "A, B, C" itself…* — while the test asserting a
-        // substring stayed green.
+        // **Written for however many targets there are, and it does not say
+        // "directory".** A widened rule can be a cross-root regex reaching
+        // several targets at once, so the message quotes each title and words
+        // itself for one series or several.
         let named = resolution
             .targets_reached
             .iter()
@@ -967,13 +935,10 @@ pub fn accept_with(conn: &Connection, id: i64, rule: &ProposedRule) -> Result<Of
         // **And the consequence names what this rule actually carries.**
         // "would set the edition key" is true of an `edition-of` accept and
         // of nothing else: [`preview`] writes `set_edition_key: None` for
-        // every other kind, and the previous round rewrote this sentence
-        // around it without noticing. Measured on a `same-series` proposal
-        // widened to `^[^/]+/`, whose rule carries `set_series` alone — the
-        // refusal named an edition key that is not there. What is true for
-        // every rule is the general form: `rules.rs` applies every `set_*`
-        // column a matching rule carries to everything it matches, so the
-        // target's own volumes get whatever this one sets.
+        // every other kind. What is true for every rule is the general form:
+        // `rules.rs` applies every `set_*` column a matching rule carries to
+        // everything it matches, so the target's own volumes get whatever this
+        // one sets.
         let would = if rule.set_edition_key.is_some() {
             format!("set the edition key on {those} own volumes too")
         } else {
@@ -986,18 +951,17 @@ pub fn accept_with(conn: &Connection, id: i64, rule: &ProposedRule) -> Result<Of
         )));
     }
 
-    // **I5: one transaction for the write, the verify and the state
-    // change.** Three separate statements used to run outside any
-    // transaction of their own: a crash or a failure between the `INSERT`
-    // and the `UPDATE` left a live rule no proposal pointed at while the
-    // proposal still read `open` — and a second `accept` on that same
-    // proposal then wrote a *second* rule and recorded only that one, the
-    // exact state `created_rule_id` exists to prevent, reached by a
-    // different road. Wrapped here, a failure anywhere in this block rolls
-    // the whole thing back — including the `INSERT` — via `Transaction`'s own
-    // `Drop`, which is also why the "matched nothing" branch below no longer
-    // deletes the rule by hand: returning without `commit` already undoes it,
-    // whether what is returned is an `Err` or a refusal.
+    // **I5: one transaction for the write, the verify and the state change.**
+    // Outside one, a crash or a failure between the `INSERT` and the `UPDATE`
+    // would leave a live rule no proposal pointed at while the proposal still
+    // read `open` — and a second `accept` on that same proposal would then
+    // write a *second* rule and record only that one, the exact state
+    // `created_rule_id` exists to prevent. A failure anywhere in this block
+    // rolls the whole thing back — including the `INSERT` — via
+    // `Transaction`'s own `Drop`, which is also why the "matched nothing"
+    // branch below does not delete the rule by hand: returning without
+    // `commit` already undoes it, whether what is returned is an `Err` or
+    // a refusal.
     let tx = conn
         .unchecked_transaction()
         .map_err(|e| format!("starting the accept transaction for proposal {id}: {e}"))?;
@@ -1041,23 +1005,19 @@ pub fn accept_with(conn: &Connection, id: i64, rule: &ProposedRule) -> Result<Of
     // verified against the raw facts directly rather than trusted from how
     // the pattern was derived.
     //
-    // **Counted by the engine, not by a `substr` against `rel_path`.** That
-    // comparison was blind in exactly the way the collateral guard above was
-    // — it read `rule.pattern` as a literal prefix of the whole path whatever
-    // `kind` and `match_on` said, so a `regex` rule was "verified" against
-    // its own source text and a `parent`-matched one against a string the
-    // engine never looks at. It got the right answer for every pattern
-    // probed only because both blindnesses failed the same way. The count
-    // now comes from the same sweep the refusals above rest on, which scopes
-    // itself to `root_id` (I6) because [`crate::rules::Engine::resolve`]
-    // does.
+    // **Counted by the engine, not by a `substr` against `rel_path`.** A
+    // `substr` comparison would read `rule.pattern` as a literal prefix of the
+    // whole path whatever `kind` and `match_on` say, so a `regex` rule would be
+    // "verified" against its own source text and a `parent`-matched one against
+    // a string the engine never looks at. The count comes from the same sweep
+    // the refusals above rest on, which scopes itself to `root_id` (I6) because
+    // [`crate::rules::Engine::resolve`] does.
     if resolution.entries_matched == 0 {
-        // **No manual `DELETE` here any more.** Returning without
-        // `tx.commit()` rolls the whole transaction back — the `INSERT`
-        // above included — which is I5's whole point: a rule that decides
-        // nothing must never be left standing, and now it structurally
-        // cannot be, rather than depending on this branch remembering to
-        // clean up after it.
+        // **No manual `DELETE` here.** Returning without `tx.commit()` rolls
+        // the whole transaction back — the `INSERT` above included — which is
+        // I5's whole point: a rule that decides nothing must never be left
+        // standing, and it structurally cannot be, rather than depending on
+        // this branch remembering to clean up after it.
         //
         // `pattern == "/"` is what a subject whose entries sit directly under
         // the root derives — `common_directory_pattern`'s single "directory"
@@ -1072,8 +1032,7 @@ pub fn accept_with(conn: &Connection, id: i64, rule: &ProposedRule) -> Result<Of
         // whitespace into the string as literal spaces instead of removing
         // it — silent, since fmt never looks inside a string's own content,
         // and unreachable to the gate since nothing there compares string
-        // *values*. Caught only by reading the runtime message. One physical
-        // line has nothing for that merge to do.
+        // *values*. One physical line has nothing for that merge to do.
         let why = if rule.pattern == "/" {
             "this series' files sit directly in the root, so a `path` prefix rule cannot narrow to only them".to_string()
         } else {
@@ -1092,23 +1051,15 @@ pub fn accept_with(conn: &Connection, id: i64, rule: &ProposedRule) -> Result<Of
     // `entries_matched` and then drops it from `reach.series` when the live
     // rules give it no series at all — a container directory, or the root's
     // own entry — so a rule reaching only those matches something and reaches
-    // nobody's material. Measured on a shared `Publisher/` layout: a `regex`
-    // of `^Publisher$` returned `entries_matched: 1` with everything else
-    // empty, wrote its rule, marked the proposal `accepted`, and left every
-    // `work` row identical across the following `derive` — compared row by
-    // row, before and after. `^$` did the same through the root's entry. The
-    // question then only comes back through `unaccept`.
+    // nobody's material.
     //
-    // **What this does not ask is whether anything changes.** It used to say
-    // it did, and it did not: `subject_reached` is `reach.series` containing
-    // the subject's id, which is "an entry this rule decides a field for
-    // belongs to the subject today" and nothing else. A rule that matches the
-    // subject's own volume and gives it back the series it already has passes
-    // this and moves nothing — the `works_moved == 0` refusal below is what
-    // covers that half, and the two are separate because a rule can fail
-    // either one alone. Measured on `^Kaguya-sama wa Kokurasetai - Full Color
-    // Edition/` handed to the *Go-Toubun* proposal: `works_moved: 1` with
-    // `subject_reached: false`, refused here and by nothing below.
+    // **What this does not ask is whether anything changes.** `subject_reached`
+    // is `reach.series` containing the subject's id, which is "an entry this
+    // rule decides a field for belongs to the subject today" and nothing else.
+    // A rule that matches the subject's own volume and gives it back the series
+    // it already has passes this and moves nothing — the `works_moved == 0`
+    // refusal below is what covers that half, and the two are separate because
+    // a rule can fail either one alone.
     //
     // Ordered *after* the count above deliberately: a rule matching nothing
     // at all fails this too, and "matched no scan_entry" is the more specific
@@ -1129,17 +1080,13 @@ pub fn accept_with(conn: &Connection, id: i64, rule: &ProposedRule) -> Result<Of
     // the proposal would leave the inbox `accepted`, and the next `derive`
     // would produce the library it already has.
     //
-    // **Measured, on the motion the form exists for.** Starting from
-    // `preview`'s rule on a shared `Publisher/` layout and widening only the
-    // pattern to `^Publisher/(?<series>[^/]+ - Full Color Edition)/` — a
-    // `series` capture, which `rules.rs` applies *after* `set_series` and so
-    // silently overrides it with the colour title the material already has —
-    // gave `Resolution { collateral: [], targets_reached: [],
-    // entries_matched: 1, subject_reached: true, works_moved: 0 }`,
-    // `accept_with` returned `Ok`, the proposal read `accepted`, and every
-    // `work` row was identical across the following `derive`, compared row by
-    // row. Setting `set_series` to the subject's own title does the same
-    // thing without a capture at all.
+    // **A `series` capture overrides `set_series`.** Starting from `preview`'s
+    // rule on a shared `Publisher/` layout and widening only the pattern to
+    // `^Publisher/(?<series>[^/]+ - Full Color Edition)/` adds a `series`
+    // capture, which `rules.rs` applies *after* `set_series` and so silently
+    // overrides it with the colour title the material already has. Setting
+    // `set_series` to the subject's own title does the same thing without a
+    // capture at all.
     //
     // Ordered *after* `subject_reached` for the same reason that one is
     // ordered after the count: a rule reaching only a container directory
@@ -1188,10 +1135,9 @@ pub fn accept_with(conn: &Connection, id: i64, rule: &ProposedRule) -> Result<Of
     // **Guarded on `state = 'open'` for the same reason, and this is the
     // group the race actually costs something.** `resolution.also_resolves`
     // is read by `resolves`, outside any transaction, from `open`'s own
-    // `state = 'open'` filter; the write below then landed unconditionally,
-    // so a second process that accepted one of these in between had its
-    // `created_rule_id` replaced by this rule's id and its own rule orphaned
-    // — live, and pointed at by nothing.
+    // `state = 'open'` filter; a second process that accepted one of these in
+    // between would otherwise have its `created_rule_id` replaced by this
+    // rule's id and its own rule orphaned — live, and pointed at by nothing.
     for other in &resolution.also_resolves {
         let marked = tx
             .execute(
@@ -1216,8 +1162,7 @@ pub fn accept_with(conn: &Connection, id: i64, rule: &ProposedRule) -> Result<Of
 
 /// Accept proposal `id` with the rule [`preview`] derives for it.
 ///
-/// The narrow default: exactly what this function did before the split, and
-/// what `taiyaku library proposals --accept` still calls.
+/// The narrow default, and what `taiyaku library proposals --accept` calls.
 ///
 /// # Errors
 ///
@@ -1234,7 +1179,7 @@ pub fn accept(conn: &Connection, id: i64) -> Result<i64, String> {
 /// What a candidate rule would do, before it does it.
 ///
 /// **One computation, read two ways.** [`Resolution::also_resolves`] is the
-/// form's *"resolves 6 more"*; [`Resolution::collateral`] is the measured
+/// form's *"resolves 6 more"*; [`Resolution::collateral`] is the
 /// refusal that stops a `Publisher/` pattern moving somebody else's volumes.
 /// They are the same query because the question is the same one: which series
 /// does this rule decide for, and which of those did anybody ask about.
@@ -1269,18 +1214,16 @@ pub struct Resolution {
     /// **That, and not "does the subject change".** The rule may give that
     /// material back the series it already has; this field is still true, and
     /// [`Self::works_moved`] is what says so. False is a refusal, and one
-    /// `entries_matched` cannot make on its own: measured on a shared
-    /// `Publisher/` layout, a `regex` rule of `^Publisher$` matches the
-    /// container directory, counts 1 entry, names no series at all, and was
-    /// accepted — writing a rule, marking the proposal `accepted`, and
-    /// changing not one `work` row on the next `derive`. The question left
-    /// the inbox and nothing decided it, which is exactly what the
-    /// `entries_matched == 0` refusal exists to prevent, reached by a
-    /// different road. `^$`, which matches the root's own entry, does the
-    /// same.
+    /// `entries_matched` cannot make on its own: a `regex` rule of
+    /// `^Publisher$` matches the container directory on a shared `Publisher/`
+    /// layout, counts 1 entry and names no series at all. Accepting on that
+    /// count alone would take the question out of the inbox without deciding
+    /// it, which is exactly what the `entries_matched == 0` refusal exists to
+    /// prevent, reached by a different road. `^$`, which matches the root's own
+    /// entry, does the same.
     ///
     /// **It still earns its place beside a `works_moved == 0` refusal**,
-    /// because a rule can move material that is not the subject's: measured,
+    /// because a rule can move material that is not the subject's:
     /// `^Kaguya-sama wa Kokurasetai - Full Color Edition/` handed to the
     /// *Go-Toubun* proposal comes back `subject_reached: false` with
     /// `works_moved: 1` and nothing in `collateral` — the Kaguya subject is
@@ -1290,25 +1233,23 @@ pub struct Resolution {
     /// How many `work` rows hold at least one member this rule would give a
     /// different series — for the consequence line, and a refusal at zero.
     ///
-    /// **That headline is what it counts, which is not quite "how many `work`
-    /// rows would change series" — what it used to claim.** `derive` regroups
-    /// after the rule lands, and a work whose members span two roots can shed
-    /// one member to another work while keeping its own `series_id`: measured
-    /// on exactly that shape, with a root-scoped rule (the kind [`preview`]
-    /// writes) matching one of the two members, `works_moved: 1` and *zero*
-    /// `work` rows changed `series_id` across the following `derive` —
-    /// compared row by row. The number is right about the members; the works
-    /// it counts are the works those members are in now.
+    /// **That headline is what it counts, which is not quite
+    /// "how many `work` rows would change series".** `derive` regroups after
+    /// the rule lands, and a work whose members span two roots can shed one
+    /// member to another work while keeping its own `series_id`: a root-scoped
+    /// rule (the kind [`preview`] writes) matching one of the two members can
+    /// give `works_moved: 1` while no `work` row changes `series_id` across the
+    /// following `derive`. The number is right about the members; the works it
+    /// counts are the works those members are in now.
     ///
     /// **Counted from the members that would actually move, not from every
-    /// work in every series the rule reaches.** It was the latter, and the
-    /// difference is measurable: a two-volume subject under a regex matching
-    /// only `v01` reported `entries_matched: 1` beside `works_moved: 2`. A
-    /// later task renders this in a sentence saying what accepting will do,
-    /// so an over-count is a false statement to the person deciding. The two
-    /// agree exactly on the canonical group path — three colour editions of
-    /// one volume each, where every work in reach is also a work that moves —
-    /// which is why nothing noticed.
+    /// work in every series the rule reaches.** Counting every work in reach
+    /// would report `works_moved: 2` for a two-volume subject under a regex
+    /// matching only `v01`, beside `entries_matched: 1`. It is rendered in a
+    /// sentence saying what accepting will do, so an over-count is a false
+    /// statement to the person deciding. The two agree exactly on the canonical
+    /// group path — three colour editions of one volume each, where every work
+    /// in reach is also a work that moves.
     ///
     /// Zero is a refusal: see [`accept_with`]'s own comment for the widened
     /// pattern that reached its subject, decided a field for it, and handed
@@ -1499,12 +1440,12 @@ fn common_directory_pattern(
     // outlives that check.
     //
     // Which is a reason for the *narrow* rule this function derives to name
-    // its root, not a refusal of every unscoped rule: `accept_with` takes one
-    // now, because the sweep behind it evaluates a candidate through the same
-    // engine `derive` uses and so covers every root the library holds. What
-    // it cannot cover is a root nobody has added yet, and that is a decision
-    // for whoever deliberately widens a rule to every root — not something
-    // this narrow default should choose on their behalf.
+    // its root, not a refusal of every unscoped rule: `accept_with` takes one,
+    // because the sweep behind it evaluates a candidate through the same engine
+    // `derive` uses and so covers every root the library holds. What it cannot
+    // cover is a root nobody has added yet, and that is a decision for whoever
+    // deliberately widens a rule to every root — not something this narrow
+    // default should choose on their behalf.
     let root_ids: std::collections::BTreeSet<i64> = paths.iter().map(|(r, _)| *r).collect();
     if root_ids.len() != 1 {
         let listed = root_paths(conn, &root_ids)?
@@ -1593,12 +1534,11 @@ fn engine_parts(
 ///
 /// **So that a caller can tell its own bad input from this library's state.**
 /// [`resolves`] answers both through one `Err(String)`: a rule it cannot
-/// compile, and a read that failed underneath it. `taiyaku-serve`'s dry-run
-/// route mapped that single `Err` to a 400 and so told a client to fix its
-/// rule while the library's `scan_entry` table was gone — measured, at the
-/// route. Asking this first leaves [`resolves`]'s own `Err` meaning a read
-/// that failed, because this is the check [`series_reached_by`] itself makes
-/// and it makes it before it touches the store.
+/// compile, and a read that failed underneath it. Mapping that single `Err` to
+/// a 400 would tell a client to fix its rule while the library's `scan_entry`
+/// table was gone. Asking this first leaves [`resolves`]'s own `Err` meaning a
+/// read that failed, because this is the check [`series_reached_by`] itself
+/// makes and it makes it before it touches the store.
 ///
 /// # Errors
 ///
@@ -1618,14 +1558,12 @@ pub fn evaluable(rule: &ProposedRule) -> Result<(), String> {
 /// rule and an every-root rule alike — the three shapes a literal-prefix
 /// guard could only fail closed on.
 ///
-/// **The bug this is the guard for, measured.** A colour-edition proposal
-/// whose subject sat under a shared `Publisher/` directory derived the
-/// pattern `Publisher/`, which was correct about the subject and also
-/// matched every other series under `Publisher/`: their volumes were
-/// silently re-derived into the accepted series' page sequence, and
-/// `write_work`'s own doc records that member order *is* page order and every
-/// alignment offset is computed from it. A rule reaching too much looks like
-/// a decision, which is what makes it worse than one reaching nothing.
+/// **What this is the guard for.** A colour-edition proposal whose subject sits
+/// under a shared `Publisher/` directory derives the pattern `Publisher/`,
+/// which is correct about the subject and also matches every other series under
+/// `Publisher/`: their volumes would be silently re-derived into the accepted
+/// series' page sequence. A rule reaching too much looks like a decision, which
+/// is what makes it worse than one reaching nothing.
 ///
 /// **Two engines, and the difference between them is the answer.** The
 /// widened engine says which entries the candidate decides a field for — by
@@ -1680,14 +1618,13 @@ fn series_reached_by(conn: &Connection, rule: &ProposedRule) -> Result<Reach, St
     };
 
     // **Prepared once, not once per root, and the series lookup memoised.**
-    // This is the endpoint C3's rule-editing form calls on every keystroke,
-    // and both of these were per-iteration round trips inside the entry loop:
-    // one `SELECT rel_path` re-prepared for each root, and one
-    // `series_id_by_sort_title` for each *matched entry* — a widened rule
-    // matching a whole library's worth of entries paid a query per entry to
-    // ask the same handful of questions over and over. Structural, not
-    // speculative: the answers are identical, only the number of statements
-    // is not.
+    // This is the endpoint C3's rule-editing form calls on every keystroke, so
+    // a `SELECT rel_path` re-prepared for each root, or a
+    // `series_id_by_sort_title` for each *matched entry*, would be a
+    // per-iteration round trip: a widened rule matching a whole library's worth
+    // of entries would pay a query per entry to ask the same handful of
+    // questions over and over. The answers are identical; only the number of
+    // statements differs.
     let roots = crate::scan::roots(conn)?;
     let mut stmt = conn
         .prepare("SELECT rel_path FROM scan_entry WHERE root_id = ?1 ORDER BY rel_path")
@@ -1818,12 +1755,11 @@ pub fn unaccept(conn: &Connection, id: i64) -> Result<Offer<()>, String> {
     };
 
     // **One transaction, the same argument I5 makes about `accept_with`.**
-    // Un-accepting is now two writes that mean one thing — the rule goes and
+    // Un-accepting is two writes that mean one thing — the rule goes and
     // everything it answered comes back — and half of it is a worse state
     // than neither half: the rule deleted with the group still `accepted`
-    // waits for the next `raise` to repair it, and the group reopened with
-    // the rule still live shows a person questions the library is still
-    // deciding.
+    // waits for the next `raise` to repair it, and the group reopened with the
+    // rule still live shows a person questions the library is still deciding.
     let tx = conn
         .unchecked_transaction()
         .map_err(|e| format!("starting the un-accept transaction for proposal {id}: {e}"))?;
@@ -1872,13 +1808,7 @@ pub fn unaccept(conn: &Connection, id: i64) -> Result<Offer<()>, String> {
 /// under a label that says no rule was written.
 ///
 /// **One conditional `UPDATE` in a transaction, then a read only to word a
-/// refusal — [`reopen`]'s shape, for [`reopen`]'s reason.** Until O72's fix
-/// round this read the state first and then wrote unconditionally, so an
-/// accept committing between the two left a `dismissed` row holding a live
-/// `created_rule_id`: the state this refusal exists to prevent, reached
-/// through the gap in front of it. That race predates O72. Reopening is what
-/// made it matter twice, since a reopened row with a live rule is one
-/// [`acceptable`] lets be accepted again, beside the rule still in force.
+/// refusal — [`reopen`]'s shape, for [`reopen`]'s reason.**
 ///
 /// Answers [`Offer::Refused`], with nothing written, if it is currently
 /// `accepted` — un-accept it first — or still holds a rule.
@@ -1951,20 +1881,17 @@ pub fn dismiss(conn: &Connection, id: i64) -> Result<Offer<()>, String> {
 /// exists to prevent from the other side. The `WHERE` carries the state, so
 /// nothing but a dismissal is ever rewritten.
 ///
-/// **And no dismissal still holding a rule (O72's fix round).** [`dismiss`]
-/// read, then wrote unconditionally, so an accept committing between the two
-/// left a `dismissed` row with a live `created_rule_id`. Reopened, that row
-/// would be `open` with its rule in force, and [`acceptable`] would let it be
-/// accepted a second time, writing a second rule beside the first. The
-/// refusal names [`unaccept`], which removes the rule and reopens the
-/// proposal in one step.
+/// **And no dismissal still holding a rule (O72).** A `dismissed` row with a
+/// live `created_rule_id`, reopened, would be `open` with its rule in force,
+/// and [`acceptable`] would let it be accepted a second time, writing a second
+/// rule beside the first. The refusal names [`unaccept`], which removes the
+/// rule and reopens the proposal in one step.
 ///
 /// **In one transaction, so the refusal is about the row the `UPDATE`
 /// missed.** Every connection this crate hands out opens a transaction with
 /// `BEGIN IMMEDIATE` (`Library::configure`), so the write lock is taken before
 /// the `UPDATE` and held to the commit, and another process cannot change the
-/// row between it and the read that words the refusal: without that, a row
-/// dismissed in the gap read "is `dismissed`, not dismissed".
+/// row between it and the read that words the refusal.
 ///
 /// Answers [`Offer::Refused`], with nothing written, unless the proposal is
 /// currently `dismissed` and holds no rule.
@@ -2050,7 +1977,7 @@ pub struct FirstVolume {
     /// two adjacent fields answering different questions.
     ///
     /// **Read from `scan_entry`, never from `member.format`.** See
-    /// [`first_volume`]'s own comment: nothing in this repository writes
+    /// [`edition_formats`]'s own comment: nothing in this repository writes
     /// that column.
     pub formats: Vec<String>,
     /// Two interior page indices into [`Self::page_count`], or fewer where
@@ -2081,15 +2008,13 @@ pub struct Side {
     /// `volume_count: 1` and a real `first_volume` while nothing in the live
     /// rule set resolves to it any more.
     ///
-    /// **A list, because a count is not a path.** This was one `String`, and
-    /// a side spanning two directories rendered as `"{root} (2 directories)"`
-    /// — prose in a field the client puts inside a `<code>` element, naming
-    /// something that does not exist on disk and cannot be copied. The
-    /// client's only options were to render the sentence or to parse it back
-    /// apart, and re-parsing a store-side sentence is what [`Reason`]'s own
-    /// doc comment refuses to make anyone do. The empty case carried two
-    /// meanings as well — `""` was both "nothing scanned" and "a path that
-    /// is empty" — and an empty list carries one.
+    /// **A list, because a count is not a path.** A side spanning two
+    /// directories, written as one string, would be prose in a field the
+    /// client puts inside a `<code>` element, naming something that does not
+    /// exist on disk and cannot be copied — and re-parsing a store-side
+    /// sentence is what [`Reason`]'s own doc comment refuses to make anyone
+    /// do. An empty list also carries one meaning, where `""` would carry
+    /// two: "nothing scanned" and "a path that is empty".
     ///
     /// **Not [`common_directory_pattern`], which computes the same fact for
     /// a different purpose.** That function *errors* when a series' entries
@@ -2166,11 +2091,9 @@ pub struct Evidence {
     /// a renamed target among them. The row still expands; only the accept
     /// control is absent.
     ///
-    /// **Only a refusal, never a read that failed.** This was
-    /// `preview(conn, id).ok()`, which turned a database fault inside the
-    /// preview into the same `None` and so presented a failure to a person as
-    /// "this cannot be accepted". [`Offer`] is what tells the two apart:
-    /// a refusal lands here as `None`, a failed read fails the whole request.
+    /// **Only a refusal, never a read that failed.** [`Offer`] is what tells
+    /// the two apart: a refusal lands here as `None`, a failed read fails the
+    /// whole request.
     pub rule: Option<ProposedRule>,
 }
 
@@ -2199,9 +2122,9 @@ pub fn evidence(conn: &Connection, id: i64) -> Result<Evidence, String> {
     // **One sweep for the whole request.** Finding where a series' material
     // sits means compiling every rule in the library, reading every root and
     // resolving every `scan_entry` row under each — see
-    // [`crate::derive::rel_paths_by_series`] — and this route ran three of
-    // them: one per side, plus `preview`'s own for the subject a second time.
-    // It is what a person triggers by expanding a row.
+    // [`crate::derive::rel_paths_by_series`] — and a sweep per side plus
+    // `preview`'s own for the subject would run three of them for what a person
+    // triggers by expanding a row.
     //
     // Keyed by library and *title* rather than by series id, which is also
     // how `rel_paths_by_series` filters: two `series` rows of one library can
@@ -2254,8 +2177,7 @@ pub fn evidence(conn: &Connection, id: i64) -> Result<Evidence, String> {
     // it was raised — and every one of those rows is still listed and still
     // expandable, so propagating those would mean a person could not read the
     // evidence for exactly the proposals whose evidence explains why they are
-    // stuck. A read that *fails* is not one of them, and `.ok()` could not
-    // tell the difference.
+    // stuck. A read that *fails* is not one of them.
     let rule = match offered_rule(
         conn,
         &proposal,
@@ -2277,14 +2199,12 @@ pub fn evidence(conn: &Connection, id: i64) -> Result<Evidence, String> {
 
 /// Proposal `id`, or `None` if there is no such proposal.
 ///
-/// **The read that tells "there is no such row" apart from "the read
-/// failed".** [`one`] below folds the two together — an absent row becomes an
-/// `Err` like any other — which is right for the callers that cannot proceed
-/// either way, and wrong for a caller that has to answer differently: C3's
-/// routes answered an unknown id 409 on three routes and 500 on a fourth,
-/// each quoting the same sentence, because the only way to tell from the
-/// outside was to match on the store's own words. This is the same split
-/// [`Offer`] makes for [`preview`] and the three writes, made for a read.
+/// **The read that tells "there is no such row" apart from "the read failed".**
+/// [`one`] below folds the two together — an absent row becomes an `Err` like
+/// any other — which is right for the callers that cannot proceed either way,
+/// and wrong for a caller that has to answer differently: the only way to tell
+/// from the outside would be to match on the store's own words. This is the
+/// same split [`Offer`] makes for the writes, made for a read.
 ///
 /// # Errors
 ///
@@ -2341,16 +2261,14 @@ fn side(
 /// and would otherwise be two answers to "which root" — see
 /// [`Side::root_name`].
 ///
-/// **One case rather than four.** While this answered with a single string
-/// it needed an arm per shape — nothing scanned, one directory under one
-/// root, several under one root, several across several — and the last two
-/// were sentences rather than paths. The third of them was also wrong:
-/// `dirs` is a set of *relative* directories, so two roots each holding
-/// their own `Publisher/` gave `dirs.len() == 1` with two roots, fell
-/// through to the catch-all, and rendered `"1 directories across 2 roots"`,
-/// discarding the one directory name the two had in common. Joining each
-/// entry onto its own root before collecting makes all four the same case,
-/// and the empty answer falls out of it rather than being written.
+/// **One case rather than four.** Answering with a single string would need an
+/// arm per shape — nothing scanned, one directory under one root, several under
+/// one root, several across several — and the last two would be sentences
+/// rather than paths. Joining each entry onto its own root before collecting
+/// makes all four the same case, and the empty answer falls out of it rather
+/// than being written. It also keeps two roots each holding their own
+/// `Publisher/` apart, which a set of *relative* directories would collapse
+/// into one.
 fn material_of(
     conn: &Connection,
     paths: &[(i64, String)],
@@ -2469,17 +2387,10 @@ fn first_volume(conn: &Connection, series_id: i64) -> Result<Option<FirstVolume>
 
 /// Every distinct format `edition_id`'s members were walked as, ascending.
 ///
-/// **`member.format` is not the source, because nothing writes it.** The
-/// only `INSERT INTO member` in this repository — `import.rs`'s — lists
-/// `(edition_id, ordinal, path, sha256, pages)` and no format, and every
-/// `UPDATE` that reaches these rows sets only `chapter_declared`,
-/// `chapter_source` or `root_id`. Measured on this module's own two-series
-/// fixture:
-/// `SELECT COUNT(*), COUNT(format) FROM member` answers `2, 0`, while every
-/// `scan_entry` row behind those members carries a real token. Read from the
-/// column, [`FirstVolume::formats`] was `None` for every edition in every
-/// library — a permanently blank field a client cannot tell from an honest
-/// "not available yet".
+/// **`member.format` is not the source, because nothing writes it.** The only
+/// `INSERT INTO member` in this repository — `import.rs`'s — lists
+/// `(edition_id, ordinal, path, sha256, pages)` and no format, and no `UPDATE`
+/// that reaches these rows sets `format`.
 ///
 /// **Joined on `(root_id, rel_path)`, which is the pair a member and the
 /// entry it came from share.** `derive`'s `Candidate` builds `member.path`
@@ -2525,8 +2436,7 @@ fn edition_formats(conn: &Connection, edition_id: i64) -> Result<Vec<String>, St
 ///
 /// The upper half of the `clamp` never fires while both fractions are below
 /// one, and stays anyway: the invariant is this function's, not a property
-/// of whichever fractions someone later picks. A mutation raising it to
-/// `page_count` survives the suite for exactly that reason.
+/// of whichever fractions someone later picks.
 fn interior_indices(page_count: i64) -> Vec<i64> {
     if page_count < 2 {
         return Vec::new();
@@ -2999,20 +2909,19 @@ fn raise_attach_chapters(conn: &Connection) -> Result<usize, String> {
 /// **`003_scanner.sql` calls this function `proposals::reconcile`, and that
 /// name never existed.** It cannot be corrected there: the comment sits
 /// inside the `CREATE TABLE proposal (…)` statement, and SQLite stores a
-/// statement's original text verbatim in `sqlite_master` — checked, not
-/// assumed — so editing it would make a database created by a later build
-/// hold different schema text from one already on disk, which is exactly what
-/// `schema.rs`'s "append, never edit" exists to prevent. The correction lives
-/// here instead, where a reader following that comment arrives.
+/// statement's original text verbatim in `sqlite_master`, so editing it would
+/// make a database created by a later build hold different schema text from one
+/// already on disk, which is exactly what `schema.rs`'s "append, never edit"
+/// exists to prevent. The correction lives here instead, where a reader
+/// following that comment arrives.
 ///
 /// **Returns every id it reopened, ascending —
 /// [`crate::rules::Deleted::reopened_proposals`]'s own shape, not a bare
-/// count.** [`crate::rules::import_json`] calls this directly (whole-branch
-/// review, Important 3): it replaces the whole rule set through
-/// `replace_all`'s own `DELETE FROM rule`, which orphans exactly as many
-/// `created_rule_id`s as [`crate::rules::delete`] deletes one at a time, and
-/// its own HTTP route reports the ids the identical way `delete_rule`
-/// already does — a route that only ever handed back a count could not.
+/// count.** [`crate::rules::import_json`] calls this directly: it replaces the
+/// whole rule set through `replace_all`'s own `DELETE FROM rule`, which orphans
+/// exactly as many `created_rule_id`s as [`crate::rules::delete`] deletes one
+/// at a time, and its own HTTP route reports the ids the identical way
+/// `delete_rule` does, which a bare count could not.
 pub(crate) fn reopen_orphaned_accepts(conn: &Connection) -> Result<Vec<i64>, String> {
     let mut stmt = conn
         .prepare("SELECT id FROM proposal WHERE state = ?1 AND created_rule_id IS NULL")

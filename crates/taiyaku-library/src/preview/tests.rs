@@ -19,18 +19,15 @@ use crate::preview::{
 /// number that happens to agree with it.
 ///
 /// **The save side is [`crate::preview::apply`], which is what makes this a
-/// claim about shipped code.** It used to be `replace_all` followed by
-/// `derive` — two lines that existed nowhere but here, so the test asserted
-/// that a preview agrees with a sequence this test types out rather than with
-/// the save this product actually performs. Spec C4 §4.1, and the failure
-/// mode `plans-need-executed-fixtures` names, sitting inside the test that
-/// guards the screen's central promise.
+/// claim about shipped code:** the preview is compared with the save this
+/// product actually performs, not with a sequence typed out in this test.
+/// Spec C4 §4.1.
 ///
-/// **Important 2.** `Alpha` (`library_with_two_roots`'s third root) already
-/// reads `"Alpha"` before this test's own widening rule sends everything
-/// there, so its placement does not move — `works_rehomed: 2`, not `3`, is
-/// what tells `after.len()` (3) apart from a filter that counts every member
-/// regardless of whether its series actually changed.
+/// `Alpha` (`library_with_two_roots`'s third root) already reads `"Alpha"`
+/// before this test's own widening rule sends everything there, so its
+/// placement does not move — `works_rehomed: 2`, not `3`, is what tells
+/// `after.len()` (3) apart from a filter that counts every member regardless
+/// of whether its series actually changed.
 #[test]
 fn a_preview_and_a_real_save_produce_the_same_structure() {
     let fixture = crate::tests::library_with_two_roots();
@@ -40,14 +37,14 @@ fn a_preview_and_a_real_save_produce_the_same_structure() {
 
     let predicted = preview(&conn, &proposed).unwrap();
 
-    // **Critical 1.** The comparison below — `predicted` against `diff`'s own
-    // output over the real save — is circular on its own: it is satisfied by
-    // any `diff` whatsoever, including one that always returns
-    // `Impact::default()`, because both sides route through the same
-    // function. Asserting the literal numbers is what makes `diff` itself
-    // load-bearing rather than merely self-consistent — a mutation that
-    // replaces `diff`'s body with `Impact::default()` must fail *this*
-    // assertion, since the fixture's true impact is not all zeroes.
+    // The comparison below — `predicted` against `diff`'s own output over the
+    // real save — is circular on its own: it is satisfied by any `diff`
+    // whatsoever, including one that always returns `Impact::default()`,
+    // because both sides route through the same function. Asserting the
+    // literal numbers is what makes `diff` itself load-bearing rather than
+    // merely self-consistent — a mutation that replaces `diff`'s body with
+    // `Impact::default()` must fail *this* assertion, since the fixture's
+    // true impact is not all zeroes.
     assert_eq!(
         predicted,
         Impact {
@@ -77,36 +74,24 @@ fn a_preview_and_a_real_save_produce_the_same_structure() {
     );
 }
 
-/// **Whole-branch review, Critical 1.** `librarydoc::apply`'s own
-/// `unchecked_transaction` used to refuse outright the moment `preview`'s
-/// own `BEGIN IMMEDIATE` was already open — "cannot start a transaction
-/// within a transaction" — for any work whose hand document had not yet
-/// been absorbed. `write_work` swallows that refusal into
-/// `DeriveReport::unreadable_hand`, which `preview` never even reads, so a
-/// preview silently skipped applying the chosen series a document on disk
-/// names, while a real save — no wrapping transaction, so the identical
-/// `unchecked_transaction` succeeds — applied it: the two disagreeing about
-/// the exact thing `a_preview_and_a_real_save_produce_the_same_structure`,
-/// just above, exists to promise they cannot.
+/// A preview and a real save must agree on a work whose hand document has not
+/// yet been absorbed: the promise
+/// `a_preview_and_a_real_save_produce_the_same_structure`, just above, exists
+/// to make.
 ///
 /// **The specific state:** [`crate::tests::library_with_a_kept_document`]'s
 /// one work, with its `migrated_document` marker cleared — "present but
-/// unabsorbed," one of the reachable states this finding names (a rebuilt or
-/// freshly imported database; a hand-written or restored
-/// `.taiyaku/*.library.json`; or removing, re-adding and rescanning a root)
-/// — and its on-disk document hand-edited to name a different, chosen
-/// series, bypassing [`crate::librarydoc::apply`] so only the *file*
-/// changes and the database keeps the old series until something re-applies
-/// it. A derive that reads this document back — preview's own rolled-back
-/// one, or a real save's — is exactly what is supposed to do that.
+/// unabsorbed," one of the reachable states (a rebuilt or freshly imported
+/// database; a hand-written or restored `.taiyaku/*.library.json`; or
+/// removing, re-adding and rescanning a root) — and its on-disk document
+/// hand-edited to name a different, chosen series, bypassing
+/// [`crate::librarydoc::apply`] so only the *file* changes and the database
+/// keeps the old series until something re-applies it. A derive that reads
+/// this document back — preview's own rolled-back one, or a real save's — is
+/// exactly what is supposed to do that.
 ///
-/// **The save side is [`crate::preview::apply`], for the reason
-/// `a_preview_and_a_real_save_produce_the_same_structure`'s own doc comment
-/// gives — whole-branch review, M5.** This test drove `crate::derive::derive`
-/// directly until now, which made it a claim about a sequence typed out only
-/// in this file rather than about the save this product actually performs;
-/// this is the one test covering a present-but-unabsorbed document, so it was
-/// the one place that gap survived the sibling's own conversion.
+/// **The save side is [`crate::preview::apply`], for the reason given in
+/// `a_preview_and_a_real_save_produce_the_same_structure`'s own doc comment.**
 #[test]
 fn a_preview_and_a_real_save_agree_on_a_work_with_an_unabsorbed_hand_document() {
     let fixture = crate::tests::library_with_a_kept_document();
@@ -204,8 +189,8 @@ fn a_preview_rolls_back_every_row_it_touched() {
     assert_eq!(grouping(&conn).unwrap(), before_grouping);
 }
 
-/// A preview leaves the library tree alone — Task 1's policy, asserted
-/// through the caller that needs it rather than only at its own level.
+/// A preview leaves the library tree alone, asserted through the caller that
+/// needs it rather than only at its own level.
 ///
 /// **The document must have somewhere to go, or `Skip` and `Reconcile` are
 /// indistinguishable here.** `library_with_a_kept_document`'s document is
@@ -243,21 +228,14 @@ fn a_preview_leaves_the_library_tree_byte_identical() {
 /// distinguishes it from the preview it is otherwise identical to.
 ///
 /// **This is the mirror of `a_preview_leaves_the_library_tree_byte_identical`
-/// just above, and it exists because nothing else in this crate could tell
-/// the two apart.** [`crate::preview::apply`] differs from
+/// just above.** [`crate::preview::apply`] differs from
 /// [`crate::preview::preview_with_rows`] in exactly two things: it commits
 /// rather than rolling back, and it derives under
 /// [`crate::derive::Documents::Reconcile`] rather than `Skip`. The commit is
-/// covered by `apply_commits_what_preview_rolls_back`. The `Documents` value
-/// was covered by nothing at all: hand-swapping `Reconcile` for `Skip` inside
-/// `apply` left **all 720 tests in this crate green**, so the one line
-/// deciding whether a save touches the user's filesystem — spec C4 §4.1 calls
-/// it "the whole difference in what reaches the user's tree" — was free to
-/// change in either direction unnoticed. Found by the whole-branch review's
-/// own hand-applied mutation, after `cargo-mutants` reported `apply`'s only
-/// mutant *unviable* (`Applied` derives no `Default`) and so reported the
-/// sweep clean while proving nothing about this function — O88's remaining
-/// cause, doing exactly what its entry says it does.
+/// covered by `apply_commits_what_preview_rolls_back`; the `Documents` value
+/// is what this test covers, the one line deciding whether a save touches the
+/// user's filesystem — spec C4 §4.1 calls it "the whole difference in what
+/// reaches the user's tree".
 ///
 /// **The document must have somewhere to go, or `Skip` and `Reconcile` are
 /// indistinguishable**, which is the same trap the preview test above
@@ -278,10 +256,7 @@ fn a_preview_leaves_the_library_tree_byte_identical() {
 /// signal to them. This one spans a write that
 /// is supposed to happen, and the document that comes back carries a fresh
 /// `updated` stamp — a field [`crate::librarydoc::of`] fills from the clock
-/// and no column holds. Comparing it made this test fail whenever the
-/// fixture's own write and the save's landed either side of a wall-clock
-/// second, which is O99: CI run 437 hit `21:28:50Z` against `21:28:49Z` on a
-/// tree that was otherwise byte-identical.
+/// and no column holds, which is O99.
 #[test]
 fn a_save_writes_the_library_tree_a_preview_would_have_left_alone() {
     let fixture = crate::tests::library_with_a_kept_document();
@@ -312,10 +287,9 @@ fn a_save_writes_the_library_tree_a_preview_would_have_left_alone() {
     );
 }
 
-/// **Important 4.** Every test above `push`es a rule; none removes one. The
-/// editor's delete button previews exactly that, and it is the only
-/// direction in which `series_after > series_before` — nothing above
-/// exercises that arm of `diff` at all.
+/// A preview of removing a rule. The editor's delete button previews exactly
+/// that, and it is the only direction in which `series_after` exceeds
+/// `series_before` — nothing above exercises that arm of `diff` at all.
 ///
 /// **The merging rule is saved for real first, not just proposed.**
 /// Previewing "remove a rule this library never actually held" would only
@@ -327,21 +301,19 @@ fn a_save_writes_the_library_tree_a_preview_would_have_left_alone() {
 /// `base_rules`, which is what removing that one rule from the editor would
 /// send.
 ///
-/// **A vacuous version of this test was the trap, not a hypothetical.**
-/// Dropping the last of this fixture's four seeded default rules — the
-/// version of "delete a rule" that does not first save a merge — is a
-/// structural no-op here: nothing in this fixture's derivation depends on
-/// those seeded rules at all, so its `Impact` would read `{ series_before: 3,
-/// series_after: 3, series_merged: 0, works_rehomed: 0, works_orphaned: 0,
-/// proposals_reopened: 0, proposals_raised: 0 }` and pass whether or not
-/// `preview` — or `diff` — does anything. Asserting the literal numbers here
-/// (Critical 1's fix, applied to this test too) is also load-bearing on its
-/// own: without it, this test would not catch a regressed `replace_all`.
+/// **A vacuous version of this test is the trap.** Dropping the last of this
+/// fixture's four seeded default rules — the version of "delete a rule" that
+/// does not first save a merge — is a structural no-op here: nothing in this
+/// fixture's derivation depends on those seeded rules at all, so its `Impact`
+/// would read `series_before: 3` and `series_after: 3` with every other field
+/// `0`, and pass whether or not `preview` — or `diff` — does anything.
+/// Asserting the literal numbers here is also load-bearing on its own:
+/// without it, this test would not catch a regressed `replace_all`.
 ///
-/// **Important 2.** `works_rehomed: 2`, not `3`: `Alpha`'s own work reads
-/// `"Alpha"` on both sides of this preview — merged, and split back apart —
-/// since that was already its series before the widening rule ever existed.
-/// Only `Beta` and `Gamma` actually move.
+/// `works_rehomed: 2`, not `3`: `Alpha`'s own work reads `"Alpha"` on both
+/// sides of this preview — merged, and split back apart — since that was
+/// already its series before the widening rule ever existed. Only `Beta` and
+/// `Gamma` actually move.
 #[test]
 fn a_preview_of_removing_a_merging_rule_shows_the_split() {
     let fixture = crate::tests::library_with_two_roots();
@@ -524,24 +496,18 @@ fn the_unchanged_rules_count_one_title_in_two_libraries_as_two_series() {
     );
 }
 
-/// The reopen case: `proposals_reopened` used to be `proposals_resolved`,
-/// which every test above — and every test that existed before this one —
-/// could only ever assert as `0`, because `open_before.saturating_sub(open_after)`
-/// can never read anything else. A field only ever seen at `0` is exactly the
-/// defect this module's fields were rewritten to remove, so this fixture
-/// makes it nonzero on purpose: an accepted proposal, previewed against the
-/// one rule list that drops the rule its accept wrote.
+/// The reopen case: this fixture makes `proposals_reopened` nonzero on
+/// purpose, because a field only ever seen at `0` tests nothing. It is an
+/// accepted proposal, previewed against the one rule list that drops the rule
+/// its accept wrote.
 ///
-/// **Important 3.** Swapping `reopened` and `report.raised` at `diff`'s call
-/// site used to pass every test in this module, because the only fixture
-/// making either field nonzero — this one — made them both read `1`. The
-/// `Series C` pair `crate::tests::library_with_an_accepted_proposal` now
-/// scans without ever deriving is what tells them apart: `preview`'s own
-/// derivation is the first to raise it, so it counts toward
-/// `proposals_raised` without ever having been accepted, and so cannot count
-/// toward `proposals_reopened`. Asserting the whole literal struct, not just
-/// its two proposal fields, is what makes a swap at the call site fail this
-/// test specifically rather than merely fail to be checked by it.
+/// The `Series C` pair `crate::tests::library_with_an_accepted_proposal`
+/// scans without ever deriving is what tells `proposals_reopened` and
+/// `proposals_raised` apart: `preview`'s own derivation is the first to raise
+/// it, so it counts toward `proposals_raised` without ever having been
+/// accepted, and so cannot count toward `proposals_reopened`. Asserting the
+/// whole literal struct, not just its two proposal fields, is what makes a
+/// swap of `reopened` and `report.raised` at `diff`'s call site fail this test.
 #[test]
 fn a_preview_that_drops_an_accepted_rule_shows_the_proposal_it_answered_reopened() {
     let (fixture, base_rules) = crate::tests::library_with_an_accepted_proposal();
@@ -578,23 +544,12 @@ fn a_preview_that_drops_an_accepted_rule_shows_the_proposal_it_answered_reopened
     );
 }
 
-/// **The bug this module was built to catch, reproduced directly.**
-/// Previewing the exact rule list already in the database — the no-op a
-/// person previewing without touching anything sends — reported
-/// `proposals_reopened: 1` for a proposal this preview does not touch at
-/// all, because [`crate::rules::replace_all`] used to re-mint every rule's
-/// id on *every* call regardless of whether its content survived. That set
-/// `proposal.created_rule_id` `NULL` through its `ON DELETE SET NULL`
-/// foreign key for the fixture's one accepted proposal on every preview,
-/// unconditionally, and [`crate::proposals::raise`]'s own orphan check
-/// reopened it every time — the same always-wrong-number shape as
-/// `proposals_resolved` before it, just reached through `replace_all`
-/// instead of through `diff`.
+/// Previewing the exact rule list already in the database — the no-op a person
+/// previewing without touching anything sends — must not reopen a proposal
+/// this preview does not touch at all: `proposals_reopened` reads `0`.
 ///
-/// **Read straight from the database, not from `base_rules`.** The other
-/// tests in this file preview a list that differs from what is stored —
-/// that is the point of a preview. This one previews
-/// [`crate::rules::read`]'s own current answer back at itself, ids
+/// **Read straight from the database, not from `base_rules`.** This test
+/// previews [`crate::rules::read`]'s own current answer back at itself, ids
 /// included, which is the only way to ask "does nothing change" rather than
 /// "does the one change I made show up".
 #[test]
@@ -612,14 +567,14 @@ fn a_preview_of_the_librarys_own_unchanged_rules_reports_no_reopens() {
 
     let predicted = preview(&conn, &current_rules).unwrap();
 
-    // The whole struct, not just `proposals_reopened` — Critical 1's own
-    // standard, applied here too: asserting one field alone would not catch
-    // a `diff` that always returns `Impact::default()`, since `0` is that
-    // field's default anyway. `series_after` and `works_rehomed` read
-    // nonzero here — the fixture's `Go-Toubun` pair genuinely merges under
-    // its still-live accepted rule, and `Series C`, scanned but never
-    // derived until this preview's own derivation, is raised for the first
-    // time — so this call has real work to get right, not a vacuous no-op.
+    // The whole struct, not just `proposals_reopened`: asserting one field
+    // alone would not catch a `diff` that always returns `Impact::default()`,
+    // since `0` is that field's default anyway. `series_after` and
+    // `works_rehomed` read nonzero here — the fixture's `Go-Toubun` pair
+    // genuinely merges under its still-live accepted rule, and `Series C`,
+    // scanned but never derived until this preview's own derivation, is
+    // raised for the first time — so this call has real work to get right,
+    // not a vacuous no-op.
     assert_eq!(
         predicted,
         Impact {
@@ -637,16 +592,15 @@ fn a_preview_of_the_librarys_own_unchanged_rules_reports_no_reopens() {
     );
 
     // Rolled back, same as every other preview: the accepted proposal reads
-    // accepted, not open, whether or not the bug above fires.
+    // accepted, not open, whatever the preview above predicted.
     assert!(
         crate::proposals::open(&conn, 0.0).unwrap().is_empty(),
         "a preview must roll back regardless of what it predicts"
     );
 }
 
-/// **Important 1.** `works_orphaned` used to be unconstrained: hard-coding it
-/// to `0` left every other test in this module green, because none of them
-/// ever made a rule swallow a member that used to exist on its own.
+/// A rule that swallows a member that existed on its own is what makes
+/// `works_orphaned` nonzero.
 ///
 /// **Why a plain broad `set_series` rule cannot do it.** `derive.rs`'s own
 /// `a_broad_rule_that_reaches_the_root_does_not_swallow_the_library` already
@@ -658,15 +612,15 @@ fn a_preview_of_the_librarys_own_unchanged_rules_reports_no_reopens() {
 /// ancestor too, which is what makes it a candidate in its own right
 /// (`Produces::Member`) rather than a name in a path.
 ///
-/// **Why the ancestor has to land on `Series - v01`'s own address, not a
-/// fresh one.** A derive never deletes a work its own pass does not revisit
-/// — `write_work` only runs for `GroupKey`s that still produce a candidate,
-/// and `Series - v02`'s row is left standing, stale, for exactly that reason
-/// (see the `AFTER` state this test does not assert on, below). Giving the
-/// ancestor the *same* `(series, volume)` address `Series - v01` already
-/// holds is what makes `import::scanned`'s address probe find and rewrite
-/// that existing row instead of minting a new one beside it — replacing its
-/// one member, `Omnibus 1/Series - v01`, with the ancestor's own path and
+/// **Why the ancestor has to land on `Series - v01`'s own address, not a fresh
+/// one.** A derive never deletes a work its own pass does not revisit unless
+/// its material moved — `write_work` only runs for `GroupKey`s that still
+/// produce a candidate, and `Series - v02`'s row is left standing, stale, for
+/// exactly that reason.
+/// Giving the ancestor the *same* `(series, volume)` address `Series - v01`
+/// already holds is what makes `import::scanned`'s address probe find and
+/// rewrite that existing row instead of minting a new one beside it — replacing
+/// its one member, `Omnibus 1/Series - v01`, with the ancestor's own path and
 /// dropping the original clean out of the `member` table. That is
 /// `works_orphaned`'s own definition: present in `before`, gone from `after`.
 ///
@@ -674,14 +628,14 @@ fn a_preview_of_the_librarys_own_unchanged_rules_reports_no_reopens() {
 /// second `set_volume` column — `rules.rs` has none, by design (see
 /// `Rule`'s own doc): only a capture or `builtin-volume` can set a number,
 /// and `builtin-volume` needs a marker word this ancestor's name does not
-/// carry. So the directory is named `Omnibus 1`, not `Series 1` as it was
-/// before O89: `Series 1` would now *qualify* the children's own captured
-/// series — its remainder `" 1"` has a separator and a digit — so O89's
-/// reconciliation would restore both children onto `Series 1` too, leaving
-/// the ancestor's literal `Series` no longer sharing either child's address
-/// at all. `Omnibus 1` matches no marker on its own, and the one proposed
-/// rule both sets its series (the mechanism `DeriveReport::suppressed`'s doc
-/// comment names) and captures the trailing `1` as its volume.
+/// carry. So the directory is named `Omnibus 1`, not `Series 1`: `Series 1`
+/// would *qualify* the children's own captured series — its remainder `" 1"`
+/// has a separator and a digit — so O89's reconciliation would restore both
+/// children onto `Series 1` too, leaving the ancestor's literal `Series`
+/// sharing neither child's address. `Omnibus 1` matches no marker on its own,
+/// and the one proposed rule both sets its series (the mechanism
+/// `DeriveReport::suppressed`'s doc comment names) and captures the trailing
+/// `1` as its volume.
 #[test]
 fn a_rule_that_gives_an_ancestor_a_volumes_own_address_orphans_the_volume_it_swallowed() {
     let tree = crate::tests::tempdir("preview-ancestor-swallow");
@@ -749,22 +703,15 @@ fn a_rule_that_gives_an_ancestor_a_volumes_own_address_orphans_the_volume_it_swa
     );
 }
 
-/// **Important 2's rejected fixture, reachable now.** `reopened`'s predicate
+/// **A surviving accepted proposal.** `reopened`'s predicate
 /// — pinned by hand in `proposals::tests::reopened_counts_only_a_proposal_that_moved_from_accepted_to_open`
-/// — used to be checked through a real [`preview`] call only on fixtures
-/// where every currently-accepted proposal reopened, because
-/// `crate::rules::replace_all` used to delete and reinsert the whole table
-/// on any call, nulling every accepted proposal's `created_rule_id`
-/// regardless of whether its own rule left the proposed list. A second
-/// accepted proposal that *survives* a preview — the one shape a swapped
-/// `reopened`/`report.raised` argument pair at `diff`'s call site cannot
-/// fake, alongside the one this module already pins with a genuine reopen —
-/// was unreachable through `preview` for exactly that reason.
+/// — is checked here through a real [`preview`] call on a fixture where one
+/// accepted proposal reopens and another does not.
 ///
-/// It is reachable now: [`crate::tests::library_with_a_surviving_and_a_dropped_accept`]
-/// accepts `Series One` first, so `base_rules` already carries its rule, and
-/// accepts `Series Two` second, entirely absent from `base_rules`.
-/// Previewing `base_rules` drops only `Series Two`'s rule.
+/// [`crate::tests::library_with_a_surviving_and_a_dropped_accept`] accepts
+/// `Series One` first, so `base_rules` already carries its rule, and accepts
+/// `Series Two` second, entirely absent from `base_rules`. Previewing
+/// `base_rules` drops only `Series Two`'s rule.
 #[test]
 fn a_preview_that_drops_one_of_two_accepts_leaves_the_surviving_one_accepted() {
     let (fixture, base_rules) = crate::tests::library_with_a_surviving_and_a_dropped_accept();
@@ -809,15 +756,14 @@ fn a_preview_that_drops_one_of_two_accepts_leaves_the_surviving_one_accepted() {
 }
 
 /// **What a *save* costs, beside what a preview costs.** The sibling below
-/// measures `preview`; this measures [`crate::preview::apply`], and it exists
-/// because the spec priced the preview and never priced the save at all —
-/// while the save is the one that commits, reconciles hand documents, and
-/// holds the write lock for a whole derivation with a person waiting on it.
+/// measures `preview`; this measures [`crate::preview::apply`]. The save is the
+/// one that commits, reconciles hand documents, and holds the write lock for a
+/// whole derivation with a person waiting on it.
 ///
-/// **It also re-asserts the branch's central claim at real scale.** That a
-/// preview and a save produce the same `Impact` is pinned on fixtures by
+/// **It also re-asserts at real scale that a preview and a save produce the
+/// same `Impact`.** That is pinned on fixtures by
 /// `a_preview_and_a_real_save_produce_the_same_structure`; a fixture has
-/// three works. Here it is checked against a library with 1858, where a
+/// three works. Here it is checked against a real library, where a
 /// disagreement would have somewhere to hide.
 ///
 /// **Run it against a copy**, for the reason the sibling gives and one more:
@@ -880,22 +826,18 @@ fn apply_cost_on_a_real_library() {
     );
 }
 
-/// **A rule that can set nothing near-misses nothing** — the editor's own
-/// "+ Add", which was filling the Matched files tab with the whole library.
+/// **A rule that can set nothing near-misses nothing** — the editor's "+ Add".
 ///
 /// `blankRule()` in `web/src/rules.ts` mints a `regex` rule with an empty
 /// pattern and no `set_*` columns, and the screen selects it the moment it is
 /// added. [`crate::rules::fields_settable_by`] returns an **empty set** for
 /// such a rule — nothing to set statically, and no capture names in a pattern
 /// that is the empty string — and `fields_set.iter().all(..)` over an empty
-/// set is vacuously `true`. So every `scan_entry` in the library read as a
-/// near-miss: on a real library the tab opened on 500 rows and a truncation
-/// notice, on the most ordinary gesture the screen has.
+/// set is vacuously `true`.
 ///
 /// A near-miss means "this rule could have set something here and did not".
 /// With nothing settable there is nothing to have missed, which is the
-/// distinction `fields_settable_by`'s own doc comment exists to draw. Found
-/// by C4 PR B's whole-branch review.
+/// distinction `fields_settable_by`'s own doc comment exists to draw.
 #[test]
 fn a_rule_that_sets_nothing_near_misses_nothing() {
     let fixture = crate::tests::library_with_two_roots();
@@ -936,10 +878,8 @@ fn a_rule_that_sets_nothing_near_misses_nothing() {
     assert!(entries > 0, "the fixture must have entries to have missed");
 }
 
-/// **A measurement, not a check.** C4 §11 marks its "34 ms" as an
-/// illustration rather than a figure, because when that spec was written
-/// nothing existed to measure. Something does now, and everything downstream
-/// of "debounced on every keystroke" waits on this number.
+/// **A measurement, not a check.** Everything downstream of "debounced on
+/// every keystroke" waits on this number.
 ///
 /// Ignored by default and pointed at a real library through
 /// `TAIYAKU_PREVIEW_DB`, the same shape as the corpus tests' own
@@ -1017,7 +957,7 @@ fn preview_cost_on_a_real_library() {
     );
 }
 
-// --- Task 5: matched files, near-misses and provenance ---------------------
+// --- matched files, near-misses and provenance -----------------------------
 
 /// C4 §1: "a regex's *failure* is the thing you cannot see by reading it". A
 /// near-miss here is an entry this rule did **not** match whose field nothing
@@ -1052,16 +992,13 @@ fn matched_files_include_the_entries_the_rule_missed_and_nothing_else_caught() {
     );
 }
 
-/// **Fix round 2, Important 2.** Every rule above this one sets exactly one
-/// field, and for a one-element set `.all()` and `.any()` are
-/// indistinguishable — a reviewer mutating the near-miss check's `.all(` to
-/// `.any(` left every test in this module green. The two only diverge for a
-/// rule that sets *two* fields, over an entry where one of those two is
-/// already decided by some other rule and the other is genuinely undecided:
-/// under `.all()` (this module's own near-miss definition — "neither was
-/// caught by anything else") that entry is excluded outright, not shown as a
-/// near-miss; under `.any()` it would be shown, because one of the two
-/// fields is still free.
+/// For a rule that sets one field, `.all()` and `.any()` are
+/// indistinguishable. The two only diverge for a rule that sets *two* fields,
+/// over an entry where one of those two is already decided by some other rule
+/// and the other is genuinely undecided: under `.all()` (this module's own
+/// near-miss definition — "neither was caught by anything else") that entry
+/// is excluded outright, not shown as a near-miss; under `.any()` it would be
+/// shown, because one of the two fields is still free.
 ///
 /// **No new fixture rule needed — `library_with_two_colour_editions`'s own
 /// seeded defaults supply the split decision.** Rule 4
@@ -1231,13 +1168,9 @@ fn the_row_cap_is_honoured_and_the_truncation_flag_says_so() {
     );
 }
 
-/// **Fix round 2, Minor 3.** Mutating `rows.len() > limit` to `>=` leaves
-/// every test above passing — none of them ever sets `limit` to exactly the
-/// row count a fixture holds, only well past it (`200`) or well short of it
-/// (`2`). The shipped code is correct; the gap is that a future regression
-/// making `truncated: true` for a complete table would go unnoticed. Pinned
-/// directly here: a `limit` equal to the real, uncapped row count must still
-/// read as untruncated.
+/// A `limit` equal to the real, uncapped row count must still read as
+/// untruncated, or a regression making `truncated: true` for a complete table
+/// would go unnoticed.
 #[test]
 fn a_limit_equal_to_the_exact_row_count_is_not_truncated() {
     let fixture = crate::tests::library_with_two_roots();
@@ -1296,11 +1229,11 @@ fn no_rule_selected_builds_no_rows_at_all() {
     );
 }
 
-// --- Fix round 1: a rule is addressed by list position, not by id ----------
+// --- a rule is addressed by list position, not by id -----------------------
 //
-// `selected` used to be a rule id, and an unsaved rule's `id` is always `0` —
-// `rules::replace_all`'s own "mint a fresh id" sentinel — which collides with
-// `rules::ROOT_FALLBACK`, also `0`. See `Decided`'s own doc comment.
+// An unsaved rule's `id` is always `0` — `rules::replace_all`'s own "mint a
+// fresh id" sentinel — which collides with `rules::ROOT_FALLBACK`, also `0`.
+// See `Decided`'s own doc comment.
 
 /// **The mis-attribution collision, reproduced directly.** An id-keyed
 /// `Decided` cannot tell "the unsaved rule sitting in the editor" apart from
@@ -1489,14 +1422,10 @@ fn a_kept_rule_and_a_newly_added_rule_are_both_addressable_by_their_index() {
     );
 }
 
-/// **`Rule::root_id` actually scopes `rows_for`'s walk.** Every rule in
-/// every fixture above carries `root_id: None` — nothing before this test
-/// ever proposed a rule scoped to one root and checked which roots its rows
-/// came from, so `rows_for`'s own `if rule.root_id.is_some_and(|scoped|
-/// scoped != root.id) { continue; }` had nothing holding it to `!=` rather
-/// than `==`: flipping it inverts which roots a scoped rule reaches — skip
-/// the one it names and walk every other one instead — and the whole suite
-/// stayed green.
+/// **`Rule::root_id` actually scopes `rows_for`'s walk.** Flipping the `!=` in
+/// `if rule.root_id.is_some_and(|scoped| scoped != root.id) { continue; }`
+/// would invert which roots a scoped rule reaches — skip the one it names and
+/// walk every other one instead.
 #[test]
 fn a_root_scoped_rule_only_matches_scan_entries_under_that_root() {
     let fixture = crate::tests::library_with_two_roots();
@@ -1644,18 +1573,17 @@ fn two_rules_setting_edition_on_one_file_are_reported_with_both_ids() {
     );
 }
 
-/// **Since O89 (2026-09-16), user decision "A": a directory that qualifies
-/// the filename's captured series is reconciled onto the directory's own
-/// value and is no longer an override.** The reconciliation restores
+/// **O89, user decision "A": a directory that qualifies the filename's
+/// captured series is reconciled onto the directory's own value and is not an
+/// override.** The reconciliation restores
 /// `Death Note (Colored Council)` and
 /// `Chainsaw Man - Digital Colored Comics` over rule 4's capture, so the
-/// final value is rule 1's and nothing is overridden — reversing O95's own
-/// rationale for this shape. The curation inbox's `edition-of` proposal is
-/// how a colour edition qualified by a `" - "` suffix gets folded back in
-/// now, with an edition key rather than silently through this layering —
-/// `raise_edition_of` matches only that suffix, so this fixture's own
-/// parenthesised `Death Note (Colored Council)` is not proposed as one
-/// (O126). `docs/status.md`, O89/O95.
+/// final value is rule 1's and nothing is overridden. The curation inbox's
+/// `edition-of` proposal is how a colour edition qualified by a `" - "`
+/// suffix gets folded back in, with an edition key rather than silently
+/// through this layering — `raise_edition_of` matches only that suffix, so
+/// this fixture's own parenthesised `Death Note (Colored Council)` is not
+/// proposed as one (O126). `docs/status.md`, O89/O95.
 #[test]
 fn a_directory_that_qualifies_the_filenames_series_is_not_an_override() {
     let fixture = crate::tests::library_with_colour_edition_directories();
@@ -1706,16 +1634,16 @@ fn a_directory_that_qualifies_the_filenames_series_is_not_an_override() {
     );
 }
 
-/// **O95, executed — now on a shape O89 leaves overriding.** The shape the
-/// real library actually has: a directory whose filenames abbreviate the
-/// same series rather than qualifying it, so migration 3's rule 1 (series
-/// from the directory) and its rule 4 (series from the filename) produce
-/// genuinely different values and rule 4 wins. Since O89 (2026-09-16), a
-/// directory that *qualifies* the filename's captured series is reconciled
-/// and no longer an override, so the colour-edition shape O95 first used
-/// (`library_with_colour_edition_directories`) cannot carry this test any
-/// more — see `a_directory_that_qualifies_the_filenames_series_is_not_an_override`,
-/// just above, for what that shape asserts now instead.
+/// **O95, executed on a shape O89 leaves overriding.** The shape the real
+/// library actually has: a directory whose filenames abbreviate the same
+/// series rather than qualifying it, so migration 3's rule 1 (series from the
+/// directory) and its rule 4 (series from the filename) produce genuinely
+/// different values and rule 4 wins. A directory that *qualifies* the
+/// filename's captured series is reconciled under O89 and is not an
+/// override, so the colour-edition shape
+/// (`library_with_colour_edition_directories`) cannot carry this test; see
+/// `a_directory_that_qualifies_the_filenames_series_is_not_an_override`, just
+/// above, for what that shape asserts.
 ///
 /// **This asserts the two values, and that is the whole of what is new.**
 /// `two_rules_setting_edition_on_one_file_are_reported_with_both_ids` above
@@ -1724,7 +1652,7 @@ fn a_directory_that_qualifies_the_filenames_series_is_not_an_override() {
 /// `GTO - Great Teacher Onizuka - 14 Days in Shonan` →
 /// `GTO - 14 Days in Shonan`, and a reader deciding whether this layering is
 /// deliberate has nothing else to decide from — so a row that dropped the
-/// values would still pass every assertion that existed before this one.
+/// values would still pass every other assertion.
 ///
 /// **`examples` is 2 and not 4.** The two directory rows this fixture also
 /// scans reach neither rule; the fixture's own doc comment says why. A count
@@ -1777,20 +1705,15 @@ fn the_seeded_pairing_reports_the_two_values_it_chose_between() {
 /// `volume` reports the volume and `chapter` reports the chapter — the two
 /// numeric arms of `field_value`, pinned separately.
 ///
-/// **Found by hand after a mutation sweep said nothing, which is the point.**
 /// `field_value` returns a `FieldValue`, which derives no `Default`, so its
 /// only generated mutant is the unviable whole-body one — O88's second cause.
-/// The sweep of this branch reported it as `unviable`, not as a gap, and
-/// hand-applying the swap `Field::Volume => FieldValue::Number(resolved.chapter)`
-/// then failed **nothing at all** across the whole workspace: the two numeric
-/// arms could be exchanged and every test in this repository still passed.
 ///
-/// **It is not a cosmetic swap.** `overrides` compares two snapshots to decide
-/// whether two rules genuinely disagree, so a `Volume` chain compared on
-/// `chapter` values silently *drops* real disagreements and invents ones that
-/// only differ in the other field — and since O95 the row also *draws* the
-/// value, so a wrong arm shows a person a number belonging to a different
-/// column.
+/// **Swapping the two arms is not cosmetic.** `overrides` compares two
+/// snapshots to decide whether two rules genuinely disagree, so a `Volume`
+/// chain compared on `chapter` values silently *drops* real disagreements and
+/// invents ones that only differ in the other field — and the row also
+/// *draws* the value (O95), so a wrong arm shows a person a number belonging
+/// to a different column.
 ///
 /// **One added rule for volume, two for chapter, and the asymmetry is the
 /// fixture's.** Seeded rule 2 is `builtin-volume` and already decides `Volume`
@@ -1902,14 +1825,7 @@ fn the_numeric_fields_report_their_own_values_and_not_each_others() {
 /// group aimed at a filename and slightly too wide produces one without
 /// anybody writing `nan` on purpose.
 ///
-/// **Three defects downstream had one cause**, each found by a different
-/// review pass of this branch: `NaN != NaN`, so a chain in which every rule
-/// produced `NaN` satisfied `overrides`' own disagreement filter at every
-/// step and reported an override where all the rules agreed; `field_value_json`
-/// collapsed every non-finite onto the `null` that means *unset*; and the
-/// editor then drew "rule 3 overrides rule 2 on N files" above two sides both
-/// reading *unset*. `rules::Resolved::set_number` refuses the value instead,
-/// which closes all three at the point it enters.
+/// **`rules::Resolved::set_number` refuses a value that is not finite.**
 ///
 /// **Asserted at both ends.** That the resolution leaves `volume` unset is
 /// what the guard does; that `overrides` then reports no `Volume` row at all
@@ -2005,10 +1921,7 @@ fn a_rows_values_belong_to_the_entry_it_names() {
         "`first_value` is what rule 1 read from THIS row's own directory: {found:?}"
     );
     // `wins_value` is derived from the row's own **filename**, not its
-    // directory: the GTO capture is not a prefix of its directory, so the
-    // stem-splitting `directory.split_once(" (")`/`" - "` trick this test
-    // used to use for the colour-edition fixture would read the wrong value
-    // here.
+    // directory: the GTO capture is not a prefix of its directory.
     let filename = one
         .rel_path
         .rsplit('/')
@@ -2031,8 +1944,7 @@ fn a_rows_values_belong_to_the_entry_it_names() {
 /// A field one rule alone decides is not an override, however many files it
 /// touches.
 ///
-/// **Not `crate::tests::a_rule_setting_series` and not `Field::Series`,
-/// despite that being the brief this test was originally written from.**
+/// **Not `crate::tests::a_rule_setting_series` and not `Field::Series`.**
 /// `library_with_two_roots` already carries two of its own seeded rules that
 /// set `Field::Series` — migration 3's rule 1, from the parent directory,
 /// and its rule 4, from the filename "where it repeats it" — and every file
@@ -2185,12 +2097,9 @@ fn the_override_count_is_the_real_number_of_entries_that_share_it_not_a_constant
     );
 }
 
-/// `first` names the most recent **disagreement**, not merely the earliest
-/// rule to touch the field — the distinction the value-aware reduction in
-/// `overrides` (`earlier.iter().rev().find(|(_, value)| value != wins_value)`)
-/// exists for, and the one every other `preview::` test up to this one
-/// happens not to exercise: replacing that reduction with `earlier.first()`
-/// still passes all of them.
+/// `first` names the most recent **disagreement**, not merely the earliest rule
+/// to touch the field — the distinction the value-aware reduction in
+/// `overrides` exists for.
 ///
 /// Three rules on one file: ordinal 500 sets `Kind = "Z"`, ordinal 501 sets
 /// `Kind = "Y"`, ordinal 502 sets `Kind = "Z"` and wins. `earlier.first()`
@@ -2380,17 +2289,16 @@ fn a_three_way_disagreement_reports_one_override_with_one_other() {
 /// rules distinct ordinals, so `ordinal` alone already orders them and this
 /// tie-break never runs at all.
 ///
-/// **Both of `i64::MAX - (proposed.len() as i64) + index as i64`'s own
-/// surviving mutants break this the same way.** Replacing `+` with `-`
-/// gives `i64::MAX - len - index`, decreasing as `index` increases.
-/// Replacing `+` with `*` gives `i64::MAX - len * index` — `*` binds
-/// tighter than the leading `-`, so this is `i64::MAX - (len * index)`, not
-/// `(i64::MAX - len) * index` — which is *also* decreasing as `index`
-/// increases, just at a different rate (verified by hand against
-/// `cargo mutants --diff`, not inferred from the source text alone).
-/// Both stay injective and stay far above any real row id — nothing about
-/// *that* half of the contract breaks — but both silently reverse which of
-/// two same-ordinal unsaved rules resolves last and so wins their tie.
+/// **Two replacements of the `+` in
+/// `i64::MAX - (proposed.len() as i64) + index as i64` break this the same
+/// way.** Replacing it with `-` gives `i64::MAX - len - index`, decreasing as
+/// `index` increases. Replacing it with `*` gives `i64::MAX - len * index` —
+/// `*` binds tighter than the leading `-`, so this is
+/// `i64::MAX - (len * index)`, not `(i64::MAX - len) * index` — which is
+/// *also* decreasing as `index` increases, just at a different rate. Both
+/// stay injective and stay far above any real row id — nothing about *that*
+/// half of the contract breaks — but both silently reverse which of two
+/// same-ordinal unsaved rules resolves last and so wins their tie.
 #[test]
 fn two_same_ordinal_unsaved_rules_break_their_tie_in_proposed_order() {
     let fixture = crate::tests::library_with_two_roots();
@@ -2436,7 +2344,7 @@ fn two_same_ordinal_unsaved_rules_break_their_tie_in_proposed_order() {
     );
 }
 
-// --- Task 2: apply, the committed twin --------------------------------------
+// --- apply, the committed twin ----------------------------------------------
 
 /// **A save writes, where a preview does not** — the one difference that
 /// matters, asserted by reading the grouping back off the connection after
@@ -2514,15 +2422,8 @@ fn a_save_of_the_unchanged_list_reopens_nothing() {
     );
 }
 
-/// **I5.** `apply` used to keep only `report.raised` out of the
-/// `DeriveReport` its own `Documents::Reconcile` pass produced — every other
-/// field `hand::reconcile` populates (`repaired_documents`,
-/// `unwritable_documents`, `orphan_documents`, `declined_documents`,
-/// `stale_documents`) was computed and thrown away. This is the only route in
-/// this product that writes under `<root>/.taiyaku/` and, before this,
-/// the only `derive` caller that reported nothing about what happened there:
-/// a save that could not write a hand document answered `200` with a rehome
-/// count and silence.
+/// A save that cannot write a hand document still succeeds, and reports the
+/// document in `Applied::derive_report`.
 ///
 /// **The technique is `hand/tests.rs`'s own** —
 /// `a_root_that_cannot_take_the_document_still_arms_the_guard`'s plain file
@@ -2570,15 +2471,10 @@ fn apply_reports_a_document_it_could_not_write() {
     );
 }
 
-/// **I6.** `apply` used to read the rule table back and compile an `Engine`
-/// from it — `crate::rules::read`, fallible on a genuine SQLite fault —
-/// between `derive_with` returning and its own `tx.commit()`. Any failure in
-/// that window rolled the database back while the real files
-/// `derive_with`'s own `Documents::Reconcile` pass had already written or
-/// renamed stayed exactly where it left them: a hand document renamed to a
-/// `content_key` the database never adopted, reported as an orphan on the
-/// next pass — this module's own doc comment on `apply` states the argument
-/// in full, and it is the reason [`preview_with_rows`] runs `Skip` instead.
+/// `apply` reads the rule table back after its commit, not before it. This
+/// module's own doc comment on `apply` states the argument in full, and it is
+/// the reason [`preview_with_rows`] runs `Documents::Skip` where `apply`
+/// runs `Documents::Reconcile`.
 ///
 /// **Watches the SQL `apply` actually sends rather than forcing the read to
 /// fail** — the same `trace_v2` technique
@@ -2620,9 +2516,9 @@ fn apply_reads_the_rule_table_back_after_committing_not_before() {
     // **Every occurrence, not just the first.** `derive_with`'s own
     // `Engine::load` reads the rule table too — the identical SQL text
     // `rules::read` sends — so the *first* occurrence is always the one
-    // before the commit, whichever code this test runs against. What
-    // distinguishes the fix is `apply`'s own read, the last one issued,
-    // moving to the far side of `COMMIT`.
+    // before the commit, whichever code this test runs against. What this
+    // test tells apart is `apply`'s own read, the last one issued, falling on
+    // the far side of `COMMIT`.
     let rule_read_positions: Vec<usize> = statements
         .iter()
         .enumerate()

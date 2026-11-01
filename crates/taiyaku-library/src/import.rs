@@ -14,12 +14,9 @@ use taiyaku_core::{Alignment, Anchor, Direction, Edition, Half, Merged, Sidecar,
 /// refused, before a row is written.**
 ///
 /// The rule and its wording live on [`Sidecar::readable_version`], which
-/// `Sidecar::from_json` now applies to every document any command parses —
-/// this used to be the only check of it, and covered only the two entry points
-/// below while `align --write` and `credits --write` read, stripped and
-/// rewrote a newer document in silence.
+/// `Sidecar::from_json` applies to every document any command parses.
 ///
-/// **It is still checked here, and not redundantly.** A `Sidecar` reaches this
+/// **It is checked here too, and not redundantly.** A `Sidecar` reaches this
 /// crate as a value, not as text: `from_json` guards the documents that were
 /// parsed, and says nothing about one a caller built by hand or projected out
 /// of some other store. The store is where tolerating a newer version stops
@@ -66,8 +63,7 @@ enum Scope {
 /// **With no library — Part F1.** `derive` calls [`scanned_in`], which looks
 /// for the work in its group's library and files it there. This is the same
 /// import with no library to look in, so content decides across the whole
-/// store, as it did before F1, and a work it mints is in no library. What
-/// follows is true of both.
+/// store, and a work it mints is in no library. What follows is true of both.
 ///
 /// `known` is the row derivation already found for this `(series_id,
 /// volume)`, or `None` for a work it has never seen. It is the second
@@ -77,19 +73,15 @@ enum Scope {
 ///
 /// **Without it, a volume whose files change becomes a second work.**
 /// `content_key` hashes the hub edition's member digests, so adding a page,
-/// repacking an archive or fixing a scan changes the key, `find_by_key`
-/// misses, and a new row is inserted while the reader's progress, notes and
-/// history stay on the old one. Measured on 2026-08-17.
+/// repacking an archive or fixing a scan changes the key, `find_by_key` misses,
+/// and a new row is inserted while the reader's progress, notes and history
+/// stay on the old one.
 ///
-/// **What keeps this safe is not that the address is unique.** An earlier
-/// version of this comment claimed two genuinely different works cannot
-/// share a series and a volume, so the probe could not merge things that
-/// should be apart. That is false, and the review that raised this finding
-/// disproved it: an address can be **vacated and reoccupied**. Remove volume
-/// 1 from a root, renumber volume 2 to take its place, and repack it so
-/// content cannot rescue the match, and this probe hands volume 1's row —
-/// with a reader's volume-1 progress on it — to what was physically volume
-/// 2. Measured.
+/// **What keeps this safe is not that the address is unique.** An address can
+/// be **vacated and reoccupied**. Remove volume 1 from a root, renumber volume
+/// 2 to take its place, and repack it so content cannot rescue the match, and
+/// this probe hands volume 1's row — with a reader's volume-1 progress on it —
+/// to what was physically volume 2.
 ///
 /// What actually makes it right is the **order** and the **counter**:
 /// `content_key` decides first, so `known` fires only for content this
@@ -103,25 +95,15 @@ enum Scope {
 /// edition it did not name**, which is the difference between this and
 /// [`sidecar`].
 ///
-/// That list read "editions and members" and named two exemptions until the
-/// whole-branch review measured the rest of it: `import` + `scan` +
-/// `export --in-place` rewrote a reader's own `taiyaku.json` from
-/// `"Go-Toubun no Hanayome, volume 1"` / `ltr` / `"Japanese raw"` to
-/// `"Series - v01"` / `rtl` / `"raw"` (C2). The doc enumerated what a scan
-/// speaks for; the work block was not among the things it named, and the code
-/// wrote it anyway. See [`update_work`] and [`replace_editions`] for the two
-/// rules that now hold, and `DeriveReport::kept_editions` for what the second
-/// costs.
+/// See [`update_work`] and [`replace_editions`] for two of the rules that hold
+/// a scan to that, and `DeriveReport::kept_editions` for what the second costs.
 ///
-/// Derivation owns what the facts and the rules decide: which files are
-/// members of which edition of which work. It has no opinion about what a
-/// work is called, which direction it reads, which pages are credits, which
-/// are spreads, or how two editions correspond —
-/// those come from `align`, from `credits`, or from a person, and a module
-/// that walks a filesystem must not be the thing that deletes them. Before
-/// 2026-08-17 it was: a rescan after an `align --write` dropped the work's
-/// `alignment` and `run` rows, and a `library export` in the window then
-/// wrote a sidecar with no alignments over the reader's own copy.
+/// Derivation owns what the facts and the rules decide: which files are members
+/// of which edition of which work. It has no opinion about what a work is
+/// called, which direction it reads, which pages are credits, which are
+/// spreads, or how two editions correspond — those come from `align`, from
+/// `credits`, or from a person, and a module that walks a filesystem must not
+/// be the thing that deletes them.
 ///
 /// This extends a principle the store already had rather than inventing one:
 /// [`replace_editions`] carries `chapter_declared` across its own wholesale
@@ -138,11 +120,12 @@ enum Scope {
 /// runs that no re-solve can recover — the same trade `Sidecar::merge_spoke`
 /// already makes.
 ///
-/// `work.sidecar_path` stays NULL and identity is [`crate::identity::content_key`]
-/// alone. There is no honest path to record: the corpus convention is one
-/// `taiyaku.json` per work directory (`docs/sidecar.md`), while a scanned
-/// series directory holds every volume as a file beside its siblings — so a
-/// path-keyed identity would make all fourteen of them the same work.
+/// `work.sidecar_path` stays NULL and identity is
+/// [`crate::identity::content_key`] alone. There is no honest path to record:
+/// the corpus convention is one `taiyaku.json` per work directory
+/// (`docs/sidecar.md`), while a scanned series directory holds every volume as
+/// a file beside its siblings — so a path-keyed identity would make them all
+/// the same work.
 ///
 /// **What this buys, and the one case where it does not.** When someone later
 /// runs `align --write` over the same archives, that import matches on
@@ -207,19 +190,12 @@ fn import_with(
     let tx = crate::Nested::open(conn, "import_with")
         .map_err(|e| format!("starting import transaction: {e}"))?;
 
-    // Content first, and a known address on a miss — one shape, two
-    // addresses. A document-backed work is addressed by the path it was read
-    // from; a scanned one by the `(series_id, volume)` derivation already
-    // resolved it at, which is what `known` carries. Neither is consulted
-    // while the content still matches, beyond a document's path choosing
-    // among several works of that content, and neither can merge two works that
-    // are genuinely different: one file holds one document, and one series
-    // holds one volume 3.
-    //
-    // A scanned work used to have no second probe at all, on the reasoning
-    // that it "is its content and nothing else" — and that made every change
-    // to its bytes mint a second row and strand the reader's progress on the
-    // first. See [`scanned`].
+    // Content first, and a known address on a miss — one shape, two addresses.
+    // A document-backed work is addressed by the path it was read from; a
+    // scanned one by the `(series_id, volume)` derivation already resolved it
+    // at, which is what `known` carries. Neither is consulted while the content
+    // still matches, beyond a document's path choosing among several works of
+    // that content. See [`scanned`].
     let existing = match find_by_key(&tx, &key, library, path)? {
         Some(id) => Some(id),
         None => match path {
@@ -264,14 +240,13 @@ fn import_with(
 
 /// Re-import a document over a work the library already holds.
 ///
-/// **A re-solve wins.** The incoming document's `work` block, hub name and
-/// hub edition are written unconditionally — not `held`'s, the database's own
-/// projection of what it already has. A changed hub means the stored runs on
-/// a spoke describe a page sequence that may no longer exist, so what was
-/// held is *stale*, never the other way round: refusing to start over it, the
-/// way this function used to, is the C1 defect, not a safety property (see
-/// this module's own tests, `a_hand_run_on_a_spoke_whose_hub_moved_is_
-/// dropped_and_reported` above all).
+/// **A re-solve wins.** The incoming document's `work` block, hub name and hub
+/// edition are written unconditionally — not `held`'s, the database's own
+/// projection of what it already has. A changed hub means the stored runs on a
+/// spoke describe a page sequence that may no longer exist, so what was held is
+/// *stale*, never the other way round: refusing to start over it is not a
+/// safety property (C1; see this module's own tests,
+/// `a_hand_run_on_a_spoke_whose_hub_moved_is_dropped_and_reported` above all).
 ///
 /// **Spoke corrections still merge, not overwrite.** The rule that decides
 /// what a re-solve does to a hand correction is `Sidecar::merge_spoke` — it
@@ -303,13 +278,12 @@ fn import_with(
 /// `merge_spoke` ever touches a spoke, and it does not touch the hub.
 ///
 /// **An incoming edition with no alignment to the hub** — solving refused it,
-/// or it holds only a direct edge to some other spoke — has no `Alignment`
-/// for `merge_spoke` to take, so it cannot go through the one rule that
-/// decides what a re-solve does to a hand correction. Rather than drop it
-/// silently or overwrite it without that protection, it is added if the
-/// library has never held it — nothing to carry forward there — and
-/// otherwise left exactly as the library already had it, corrections and
-/// all.
+/// or it holds only a direct edge to some other spoke — has no `Alignment` for
+/// `merge_spoke` to take, so it cannot go through the one rule that decides
+/// what a re-solve does to a hand correction. Rather than drop it silently or
+/// overwrite it without that protection, it is added if the library has never
+/// held it — nothing to carry forward there — and otherwise left exactly as the
+/// library already had it, corrections and all.
 ///
 /// # Errors
 ///
@@ -343,8 +317,8 @@ pub fn reimport(
     // `works::row_id_for_write`'s placeholder — a `work` row minted so a
     // reading position could be recorded before anything was imported,
     // carrying a sentinel `content_key` and no `edition` rows at all — found
-    // here by `sidecar_path` rather than by key, exactly as the hazard this
-    // function's own module doc (`taiyaku-cli/src/library.rs`) describes.
+    // here by `sidecar_path` rather than by key, exactly as the hazard
+    // `taiyaku-cli/src/library.rs`'s module doc describes.
     // `merge_spoke`, below, assumes `held` already carries the hub edition
     // it is merging spokes onto — true of any row a real prior import wrote,
     // since `content_key` cannot be computed without one — so a projection
@@ -370,8 +344,8 @@ pub fn reimport(
     // before the loop below, even though step 3 will overwrite it
     // unconditionally once the loop is done: syncing early would make every
     // comparison in this loop compare a value against itself, the exact dead
-    // guard the doc comment above warns `--write` against, and the one thing
-    // that would keep this function from ever noticing a hub had moved.
+    // guard the paragraph above describes, and the one thing that would keep
+    // this function from ever noticing a hub had moved.
     let from_side = incoming
         .editions
         .get(&incoming.hub)
@@ -410,18 +384,15 @@ pub fn reimport(
         );
         outcomes.push(match outcome {
             Ok(merged) => merged,
-            // C1b: a re-solve wins, and `serve` must never fail to start over
-            // a stale alignment. Whatever `held` stored for this spoke could
-            // not be safely carried forward — overwhelmingly because the hub
-            // moved underneath it — so this drops it and takes the incoming,
-            // freshly-solved edge instead, reporting the hand-corrected runs
-            // it cost. The message itself is not inspected: `merge_spoke`'s
-            // `Result<Merged, String>` is a plain string precisely because no
-            // caller before this one needed to branch on why it refused
-            // (`NotCorrected`, a few lines away in `core/sidecar.rs`, is the
-            // typed refusal that exists where a caller does), and this
-            // caller does not distinguish either — every refusal means the
-            // same thing here: the stored edge cannot be trusted, so it goes.
+            // C1b: a re-solve wins, and `serve` must never fail to start over a
+            // stale alignment. Whatever `held` stored for this spoke could not
+            // be safely carried forward — overwhelmingly because the hub moved
+            // underneath it — so this drops it and takes the incoming,
+            // freshly-solved edge instead, reporting the hand-corrected runs it
+            // cost. The message itself is not inspected: `merge_spoke`'s
+            // `Result<Merged, String>` carries a plain string, and every
+            // refusal means the same thing here: the stored edge cannot be
+            // trusted, so it goes.
             Err(_) => drop_stale_spoke(
                 &mut held,
                 &incoming.hub,
@@ -546,21 +517,14 @@ fn clear_stale_path_claim(conn: &Connection, work_id: i64, path: &Path) -> Resul
 /// work's URL — is left alone rather than reslugified out from under a
 /// bookmark.
 ///
-/// **Under [`Scope::Scan`] only `content_key` moves.** A scan derives a title
-/// from a filename and a reading direction from a constant — `derive.rs` says
-/// so in as many words, `Direction::RightToLeft` because nothing in `root` or
-/// `rule` carries one — while a row that already holds a title and a
-/// direction holds what a person or the aligner established. So a scan is not
-/// entitled to either, and the same goes for `hub`, which decides identity:
-/// `content_key` hashes the hub edition's members, and a walk re-picking the
-/// hub would move a work's key and its reader's position with it.
-///
-/// Measured before the fix, across three real commands: `library import` then
-/// `library scan` then `library export --in-place` rewrote the reader's own
-/// `taiyaku.json` from `"Go-Toubun no Hanayome, volume 1"` / `ltr` to
-/// `"Series - v01"` / `rtl` (whole-branch review, C2). [`scanned`]'s own doc
-/// enumerates what a scan speaks for and names exactly two exemptions; the
-/// work block was not among them.
+/// **Under [`Scope::Scan`] `content_key` moves.** A scan derives a title from a
+/// filename and a reading direction from a constant — `derive.rs` says so in as
+/// many words, `Direction::RightToLeft` because nothing in `root` or `rule`
+/// carries one — while a row that already holds a title and a direction holds
+/// what a person or the aligner established. So a scan is not entitled to
+/// either, and the same goes for `hub`, which decides identity: `content_key`
+/// hashes the hub edition's members, and a walk re-picking the hub would move a
+/// work's key and its reader's position with it.
 ///
 /// **What it costs, which is not nothing.** A work this scanner minted holds
 /// a title this scanner derived, and it keeps it: edit a `regex` rule so its
@@ -569,18 +533,16 @@ fn clear_stale_path_claim(conn: &Connection, work_id: i64, path: &Path) -> Resul
 /// person established from one an earlier derive did — `work` has no column
 /// that records which — and of the two mistakes available, keeping a stale
 /// derived title is the recoverable one and overwriting a person's is not.
-/// Measured on a live database: a `set_series` rule that moved a work's
-/// member from `Series/Extras` to the root left the row titled `Extras`.
 ///
 /// **The other residual, stated rather than left to be found.** Where the scan
 /// no longer finds the edition the row names as its hub, `derive` must pick a
-/// hub among the editions it did derive — `content_key` cannot be computed
-/// over an edition the document does not carry — so the key written here is
-/// over a different edition than the one `work.hub` names. Nothing reads the
-/// two together: the projection takes its hub from the row, and that edition
-/// is still there, because [`replace_editions`] no longer deletes what a scan
-/// did not name. It is the same case `DeriveReport::kept_editions` counts, so
-/// it is reported rather than silent.
+/// hub among the editions it did derive — `content_key` cannot be computed over
+/// an edition the document does not carry — so the key written here is over a
+/// different edition than the one `work.hub` names. Nothing reads the two
+/// together: the projection takes its hub from the row, and that edition is
+/// still there, because [`replace_editions`] does not delete what a scan did
+/// not name. It is the same case `DeriveReport::kept_editions` counts, so it is
+/// reported rather than silent.
 ///
 /// **Two statements rather than one `COALESCE` per column**, which is the
 /// shape the settled wording ("`COALESCE`-style") suggests and the schema
@@ -620,8 +582,8 @@ fn update_work(
     // it.** The sidecar's own title is a derived value — this is a routine
     // reimport, which happens on every `serve` start — so it is recorded into
     // `title_derived` and the effective `title` falls back to it only when no
-    // person has set `title_hand`. Writing `title = ?2` unconditionally, as
-    // this used to, overwrote a hand correction on every reimport: Step 6c.
+    // person has set `title_hand`. Writing `title = ?2` unconditionally would
+    // overwrite a hand correction on every reimport.
     conn.execute(
         "UPDATE work SET content_key = ?1, title_derived = ?2,
                 title = COALESCE(title_hand, ?2), reading = ?3, hub = ?4,
@@ -735,9 +697,6 @@ fn slugify(title: &str) -> String {
 /// data `<stem>.library.json` exists to keep from costing a re-derivation.
 ///
 /// **Who does write them, per column, because they do not share a list.**
-/// This used to say "by `librarydoc::apply`, by a `taiyaku.json`, or by a
-/// person" of all four at once, and no one of those three is true of all
-/// four. Written out instead:
 ///
 /// - `edition.label` — this function, out of the document it is handed, **and
 ///   `librarydoc::apply_editions`**, which is the hand edit itself. This
@@ -756,9 +715,7 @@ fn slugify(title: &str) -> String {
 ///   drop them from a row that survives a rescan, exactly as it would drop a
 ///   credit, so they are read before the delete and copied onto the fresh row
 ///   the same way. **Nothing writes either from a `taiyaku.json`**: `project.rs`
-///   touches neither column, so the wide sentence named a writer that has
-///   never existed, and `write_edition_metadata`'s own doc states the narrow
-///   claim — the two files disagreed until this was corrected.
+///   touches neither column.
 /// - `credit` rows — `librarydoc::apply`, which deletes and reinserts them
 ///   per work, and this function's own restore below.
 /// - `member.chapter_declared`/`chapter_source` — `librarydoc::apply`,
@@ -766,8 +723,7 @@ fn slugify(title: &str) -> String {
 ///   `SCANNER_CHAPTER_SOURCE` so a hand-entered number survives, **and this
 ///   function's own restore below**, for the identical reason the two columns
 ///   above need one: the member row is deleted and reinserted along with its
-///   edition, so a hand-set chapter that survived every rescan until now would
-///   not survive this one without it.
+///   edition, so a hand-set chapter would not survive the rescan without it.
 ///
 /// **This function is itself a writer common to all four, alongside
 /// `librarydoc::apply`** — not the one exception the wholesale-replace design
@@ -791,42 +747,38 @@ fn slugify(title: &str) -> String {
 /// the reinsert, **matching editions by `key` and members by `sha256`**
 /// rather than by row id, since the ids are gone once the delete runs.
 /// `sha256` is the right member identity for the same reason
-/// `<stem>.library.json` uses it: it survives a path change. A key or hash
-/// the incoming document no longer mentions is simply absent from the held
-/// maps below, so nothing resurrects a row the document says is gone —
-/// preservation applies only to identities that survive the replacement.
+/// `<stem>.library.json` uses it: it survives a path change. Nothing
+/// resurrects a row the document says is gone — preservation applies only to
+/// identities that survive the replacement.
 ///
 /// This mirrors what `Sidecar::merge_spoke` already does for hand-corrected
 /// runs, which is this codebase's established pattern: derived data is
 /// replaced, hand-entered data is carried across the replacement.
 ///
 /// **Under [`Scope::Scan`] the page flags are carried too**, for the same
-/// reason and by the same means: a scan's document declares no `spreads` and
-/// no `credits` because a walk cannot know either, so replacing from it would
+/// reason and by the same means: a scan's document declares no `spreads` and no
+/// `credits` because a walk cannot know either, so replacing from it would
 /// delete `taiyaku credits --write`'s output on every rescan. Under
-/// [`Scope::Document`] they are replaced from the document as they always
-/// were, which is what lets a `taiyaku.json` that drops a credit page actually
-/// drop it — a union of held and incoming could only ever grow. Keyed on the
-/// edition's `key`, like the metadata above and for the same reason: the row
-/// ids are gone once the delete runs.
+/// [`Scope::Document`] they are replaced from the document, which is what lets
+/// a `taiyaku.json` that drops a credit page actually drop it — a union of held
+/// and incoming could only ever grow. Keyed on the edition's `key`, like the
+/// metadata above and for the same reason: the row ids are gone once the
+/// delete runs.
 ///
-/// **What the key cannot carry, since restoring still beats deleting but is
-/// not free.** A page flag is a page *number*, and the key says nothing about
-/// how many pages precede it. A work survives a rescan whenever its **hub**'s
+/// **What the key cannot carry, since restoring still beats deleting but is not
+/// free.** A page flag is a page *number*, and the key says nothing about how
+/// many pages precede it. A work survives a rescan whenever its **hub**'s
 /// members are unchanged *and no fold takes it* — `derive::superseded` and
 /// `fold::absorb` delete a work precisely when its material is unchanged and
-/// already held by another, which is the one shape this sentence used to rule
-/// out — so a spoke edition that gained or lost a member keeps its credit and
-/// spread flags at the page numbers they had before the member set moved,
-/// pointing at whatever is now at those offsets. (A folded work's flags are
-/// not left pointing anywhere either: since O76 and O121 a fold writes its
-/// spread flags onto a twin holding none, and counts a credit flag, which its
-/// `DELETE` takes.)
-/// Re-running
-/// `taiyaku credits --write` over that edition is the recovery, and nothing
-/// signals the need. Deleting them instead would cost that same re-run on
-/// every rescan of every edition, which is why this is the residual case
-/// rather than the design.
+/// already held by another — so a spoke edition that gained or lost a member
+/// keeps its credit and spread flags at the page numbers they had before the
+/// member set moved, pointing at whatever is now at those offsets. (A folded
+/// work's flags are not left pointing anywhere either: a fold writes its spread
+/// flags onto a twin holding none, and counts a credit flag, which its `DELETE`
+/// takes; O76, O121.) Re-running `taiyaku credits --write` over that edition is
+/// the recovery, and nothing signals the need. Deleting them instead would cost
+/// that same re-run on every rescan of every edition, which is why this is the
+/// residual case rather than the design.
 fn replace_editions(
     conn: &Connection,
     work_id: i64,
@@ -869,22 +821,17 @@ fn replace_editions(
 
     for (key, edition) in &doc.editions {
         // **The label is not a scan's to write, and neither is its
-        // provenance.** `derive::write_work` sets `label: key.clone()`
-        // because neither a root nor a rule carries a display name for an
-        // edition — there is no `set_label` column — so an import that took
-        // the incoming label at face value renamed a person's
-        // `Japanese raw` to `raw` on the next routine rescan. Measured
-        // through `import` + `scan` + `export --in-place`, over the reader's
-        // own document (whole-branch review, C2). Under `Scope::Document` the
-        // label *is* the document's, exactly as `work.title` is — so it is
-        // also that scope's `label_derived`. Under `Scope::Scan` a walk has
-        // no display name at all, so `label_derived` carries across the
-        // rescan unchanged from whatever it already was, and only
-        // `label_hand` — carried the same way — stands between a hand
-        // correction and this wholesale replace. Step 6c: a fresh
-        // `label_derived` had no `label_hand` counterpart at all here before,
-        // so a rescan bound the held effective value to both columns and
-        // wiped provenance in the process.
+        // provenance.** `derive::write_work` sets `label: key.clone()` because
+        // neither a root nor a rule carries a display name for an edition —
+        // there is no `set_label` column — so an import that took the incoming
+        // label at face value would rename a person's `Japanese raw` to `raw`
+        // on the next routine rescan. Under `Scope::Document` the label *is*
+        // the document's, exactly as `work.title` is — so it is also that
+        // scope's `label_derived`. Under `Scope::Scan` a walk has no display
+        // name at all, so `label_derived` carries across the rescan unchanged
+        // from whatever it already was, and only `label_hand` — carried the
+        // same way — stands between a hand correction and this
+        // wholesale replace.
         let held = held_editions.get(key);
         let label_hand = held.and_then(|h| h.label_hand.clone());
         let label_derived = match scope {
@@ -959,11 +906,10 @@ fn replace_editions(
             // OR IGNORE, because a page listed twice in `spreads` or `credits`
             // states one fact twice rather than contradicting itself, and
             // nothing in the format forbids it — `Sidecar::from_json` is a
-            // plain serde parse. The flag has always been a set (`project.rs`
+            // serde parse and a version check. The flag is a set (`project.rs`
             // reads these back `ORDER BY page`), so the repetition carries
-            // nothing to lose. Plain INSERT refused such a document with a raw
-            // `UNIQUE constraint failed: page_flag…`, which took `serve` down
-            // for every other work on the command line: review 2, I3.
+            // nothing to lose. A plain INSERT would refuse such a document with
+            // a raw `UNIQUE constraint failed: page_flag…`.
             Scope::Document => {
                 for page in &edition.spreads {
                     conn.execute(
@@ -983,9 +929,7 @@ fn replace_editions(
                 }
             }
             // A scan's document says nothing about either list, so what the
-            // library already held is what stands. An edition the scan no
-            // longer finds is simply absent from `held_flags`, so nothing
-            // resurrects a flag on a row that has gone.
+            // library already held is what stands.
             Scope::Scan => {
                 for (kind, page) in held_flags.get(key).into_iter().flatten() {
                     conn.execute(
@@ -1053,7 +997,7 @@ fn held_page_flags(
 struct HeldEdition {
     /// What a person said, or `None` — `edition.label_hand`. Carried through
     /// this struct rather than only the effective column: see
-    /// [`replace_editions`]'s Step 6c comment for why the effective value
+    /// [`replace_editions`]'s comment on the label for why the effective value
     /// alone is not enough for a wholesale delete-and-reinsert to restore the
     /// invariant it must hold.
     label_hand: Option<String>,
@@ -1064,12 +1008,12 @@ struct HeldEdition {
     label_derived: Option<String>,
     language: Option<String>,
     kind: Option<String>,
-    /// **The provenance halves of the two above — O80, migration 011.**
-    /// Carried for exactly the reason `label_hand` is: `derive` writes
-    /// `COALESCE(<hand>, <derived>)` now, so a delete-and-reinsert that
-    /// restored only the effective columns would leave a hand-chosen kind or
-    /// language in place for one pass and lose it on the next, when
-    /// derivation found nothing standing in its way.
+    /// **The provenance halves of the two above — O80, migration 011.** Carried
+    /// for exactly the reason `label_hand` is: `derive` writes
+    /// `COALESCE(<hand>, <derived>)`, so a delete-and-reinsert that restored
+    /// only the effective columns would leave a hand-chosen kind or language in
+    /// place for one pass and lose it on the next, when derivation would find
+    /// nothing standing in its way.
     language_hand: Option<String>,
     kind_hand: Option<String>,
     /// `(person_id, role)` pairs — enough to reinsert each `credit` row
@@ -1081,13 +1025,12 @@ struct HeldEdition {
 /// `edition.key` — the identity `replace_editions` restores by, since the
 /// row ids are gone once its delete runs.
 ///
-/// **Both provenance columns, not the effective `label`.** Before Step 6c
-/// this selected `label` alone, and `replace_editions` reinserted that one
-/// value into both `label` and `label_derived` — so a routine rescan wiped
-/// `label_hand` to NULL *and* rebound `label_derived` to whatever `label`
-/// currently held, which under `Scope::Scan` is the held, possibly hand-set,
-/// value: the safety net overwritten with the value it exists to fall back
-/// from.
+/// **Both provenance columns, not the effective `label`.** Selecting `label`
+/// alone would leave `replace_editions` reinserting that one value into both
+/// `label` and `label_derived`, so a routine rescan would wipe `label_hand` to
+/// NULL *and* rebind `label_derived` to whatever `label` currently held, which
+/// under `Scope::Scan` is the held, possibly hand-set, value: the safety net
+/// overwritten with the value it exists to fall back from.
 fn held_edition_meta(
     conn: &Connection,
     work_id: i64,
@@ -1145,10 +1088,6 @@ fn held_edition_meta(
 /// person's decision, not a set. `replace_editions` reinserts these rows in
 /// whatever order they arrive in, and they get fresh `id`s in that order, so
 /// an unordered read here is the whole of what a reimport writes back.
-/// Adding `DESC` used to pass all 547 `taiyaku-library` + `taiyaku-cli` tests;
-/// it was right only because nothing indexes `credit.edition_id`, and this
-/// path runs on every `serve` start (whole-branch review 3, Minor 1 —
-/// review 2's Minor 9 left standing on the one route that had no test).
 fn held_credits(conn: &Connection, edition_id: i64) -> Result<Vec<(i64, String)>, String> {
     let mut stmt = conn
         .prepare("SELECT person_id, role FROM credit WHERE edition_id = ?1 ORDER BY id")
@@ -1223,13 +1162,13 @@ struct HeldMember {
 /// earliest-inserted edition (lowest `edition.id`, i.e. first in the
 /// document), and within it the earliest member (lowest `ordinal`).
 ///
-/// **For `declared`/`source`, that choice is arbitrary — there is no
-/// principled reason the earlier edition's chapter number should be the one
-/// that wins — but it is now deterministic** rather than depending on
-/// whatever order SQLite happens to return rows in. Whether a hand-set
-/// chapter number should instead be scoped to the edition it was set on, so
-/// two editions sharing a file could carry different values for it, is an
-/// open design question this function does not settle.
+/// **For `declared`/`source`, that choice is arbitrary — there is no principled
+/// reason the earlier edition's chapter number should be the one that wins —
+/// but it is deterministic** rather than depending on whatever order SQLite
+/// happens to return rows in. Whether a hand-set chapter number should instead
+/// be scoped to the edition it was set on, so two editions sharing a file could
+/// carry different values for it, is an open design question this function does
+/// not settle.
 ///
 /// **For `root_id` the two are not the same question, and this function does
 /// not treat them alike.** A chapter number has no "true" value to get wrong,

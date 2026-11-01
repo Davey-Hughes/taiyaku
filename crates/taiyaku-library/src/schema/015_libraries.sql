@@ -69,8 +69,7 @@
 -- **A library never outlives its last root.** The two `library_emptied_*`
 -- triggers delete it when its last root is deleted or moved away, and its
 -- grants go with it through `user_library`'s CASCADE. A grant naming a library
--- with no root would resolve to no roots, and `Principal.roots` reads no roots
--- as unrestricted.
+-- with no root would resolve to no roots.
 --
 -- **A library's id is never given to another library** (`AUTOINCREMENT`), so
 -- whatever names a library by id cannot come to name a different one once
@@ -216,11 +215,10 @@ END;
 
 -- **A library that is an account's only grant keeps its last root.** The two
 -- `only_grant_refuses_*` triggers abort the delete of a root, or a change of
--- its library, where it is its library's last root and some account is
--- granted that library and no other. Each runs before its row is deleted or
--- changed, while that row's library and its grants are still there to read.
--- Their message is a literal and names no account; `scan::removal_refusal`
--- asks the same question for a removal and names each one.
+-- its library, where it is its library's last root and some account is granted
+-- that library and no other. Each runs before its row is deleted or changed,
+-- while that row's library and its grants are still there to read. Their
+-- message is a literal and names no account.
 CREATE TRIGGER only_grant_refuses_delete BEFORE DELETE ON root
 WHEN old.library_id IS NOT NULL
  AND NOT EXISTS (SELECT 1 FROM root WHERE library_id = old.library_id AND id <> old.id)

@@ -2,11 +2,9 @@ use super::*;
 use crate::Library;
 
 /// Go-Toubun volume 1's real alignment, from `docs/sidecar.md`'s worked
-/// example, and **all five of its runs**. An earlier draft of this fixture
-/// truncated the runs to three while keeping the real `quality` block, which
-/// made the document contradict itself: three runs pair 5 slots at an average
-/// of 2.5, not the 193 at 64.33333 the block claims. Use it whole — the numbers
-/// only mean anything together.
+/// example, and **all five of its runs**. The `quality` block claims 193 slots
+/// paired at an average of 64.33333, and the numbers only mean anything
+/// together with the runs. Use it whole.
 const ONE_WORK: &str = r#"{
   "taiyaku": 1,
   "work": { "title": "Go-Toubun no Hanayome v01", "reading": "rtl" },
@@ -63,11 +61,10 @@ fn page_flags_survive_the_round_trip() {
 }
 
 /// Write one parsed sidecar's rows by hand, plain SQL rather than a call to
-/// `import::sidecar` — which does not exist until Task 6. A *second* writer of
-/// these rows on purpose: if this task's projection disagreed with Task 6's
-/// import, going through the same writer would hide it, and this way a
-/// projection bug stays distinguishable from an import bug. Returns the new
-/// work's id.
+/// `import::sidecar`: a *second* writer of these rows on purpose. If the
+/// projection disagreed with the import, going through the same writer would
+/// hide it, and this way a projection bug stays distinguishable from an
+/// import bug. Returns the new work's id.
 fn insert_by_hand(conn: &Connection, sidecar: &Sidecar) -> i64 {
     let reading = match sidecar.work.reading {
         Direction::RightToLeft => "rtl",
