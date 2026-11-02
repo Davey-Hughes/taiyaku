@@ -9,7 +9,7 @@
 //!
 //! **It measures how Panels fetches, not how Panels reads.** Gestures,
 //! transitions, zoom and spread handling are invisible here and want a person
-//! writing down what the app gets right. That is a later task.
+//! writing down what the app gets right.
 
 use std::collections::BTreeMap;
 use std::fs::File;
@@ -40,7 +40,7 @@ use serde::Serialize;
 ///   little if you cannot tell whose behaviour it recorded.
 ///
 /// Lower-case, because HTTP header names are case-insensitive and `HeaderMap`
-/// stores them lower-cased; a lookup for `If-None-Match` finds nothing.
+/// stores them lower-cased.
 pub const LOGGED_HEADERS: [&str; 5] = [
     "if-none-match",
     "if-modified-since",
@@ -54,10 +54,8 @@ pub const LOGGED_HEADERS: [&str; 5] = [
 pub struct Entry {
     pub method: String,
     /// The full path *and* query string
-    /// (`request.uri().path_and_query()`), not path alone. This server has
-    /// no resize support, which makes a client's `?width=…` more important
-    /// to see, not less — logging path alone would make it look like no
-    /// client ever asks for one.
+    /// (`request.uri().path_and_query()`), not path alone. Logging path alone
+    /// would make it look like no client ever asks for a `?width=…`.
     pub path: String,
     pub status: u16,
     pub bytes: u64,
@@ -142,15 +140,12 @@ impl Drop for InFlight {
 
 /// Where request lines are written.
 ///
-/// O7: lines go to the file and nowhere else. Every entry used to be kept in
-/// a `Vec` behind a mutex as well, for the life of the process — a server that
-/// stays up for a reading session, on a log that exists precisely to be left
-/// running. Nothing in production ever read it back: `entries()` was called
-/// only from tests, and `scripts/request-summary.sh`, the actual consumer,
-/// reads the JSONL on disk. So the growth was real and bought nothing. The
-/// tests that read it now read the file, which has the second benefit of
-/// meaning every test here exercises the branch a person's measurement
-/// actually depends on.
+/// O7: lines go to the file and nowhere else. An in-memory copy of every
+/// entry would grow for the life of the process, on a log that exists
+/// precisely to be left running, and the actual consumer,
+/// `scripts/request-summary.sh`, reads the JSONL on disk. The tests that look
+/// at what was logged read that file too, so they exercise the branch a
+/// person's measurement actually depends on.
 #[derive(Debug)]
 pub struct Log {
     in_flight: Arc<AtomicU64>,
@@ -169,7 +164,7 @@ impl Log {
     /// immediately, so a bad path is a startup error the caller can act on
     /// rather than an hour of silently lost measurement.
     ///
-    /// Not optional: a `Log` with nowhere to write would now record nothing
+    /// Not optional: a `Log` with nowhere to write would record nothing
     /// anywhere, and `serve` already expresses "not logging" as no `Log` at
     /// all rather than an inert one.
     ///
@@ -266,10 +261,9 @@ impl Log {
     /// A full disk fails *every* subsequent write, and a line of stderr per
     /// request would bury whatever the operator was actually reading. Named
     /// rather than left inline as `!self.write_failed.swap(true, …)` because
-    /// the `!` is the whole behaviour and, inline, deleting it was invisible
-    /// to the suite — the difference between "warn once" and "warn on every
-    /// failure after the first" is not something a test of the log's
-    /// *contents* can see.
+    /// the `!` is the whole behaviour, and the difference between "warn once"
+    /// and "warn on every failure after the first" is not something a test of
+    /// the log's *contents* can see.
     fn first_write_failure(&self) -> bool {
         !self.write_failed.swap(true, Ordering::SeqCst)
     }
@@ -278,19 +272,18 @@ impl Log {
 /// Microseconds since `UNIX_EPOCH`, narrowed from `Duration::as_micros`'s `u128`.
 ///
 /// Saturates rather than panics, matching `finish`'s narrowing of
-/// `Instant::elapsed()`'s `as_micros()` a few lines above
+/// `Instant::elapsed()`'s `as_micros()` above
 /// (`u64::try_from(..).unwrap_or(u64::MAX)`) — deliberately, even though the
-/// two narrowings look like they should differ. `elapsed()` is measured
-/// against a monotonic clock nothing outside the process can move, so
-/// overflowing `u64` microseconds there needs 584,000 years of uptime. Wall
-/// time carries no such guarantee: an operator's clock can be set to
-/// anything, by a fat-fingered `date`, a stuck RTC, or a misbehaving NTP
-/// source, and this function runs on every request's arrival
-/// (`now_micros`, called from `begin`), not once at startup. A clock
-/// misconfigured far enough into the future to overflow this narrowing must
-/// not take the request-handling path down with it on every subsequent
-/// request; a saturated, nonsensical `started_at` is a far better failure
-/// than a panicking request log.
+/// two narrowings look like they should differ. `elapsed()` is measured against
+/// a monotonic clock nothing outside the process can move, so overflowing `u64`
+/// microseconds there needs 584,000 years of uptime. Wall time carries no such
+/// guarantee: an operator's clock can be set to anything, by a fat-fingered
+/// `date`, a stuck RTC, or a misbehaving NTP source, and this function runs on
+/// every request's arrival (`now_micros`, called from `begin`), not once at
+/// startup. A clock misconfigured far enough into the future to overflow this
+/// narrowing must not take the request-handling path down with it on every
+/// subsequent request; a saturated, nonsensical `started_at` is a far better
+/// failure than a panicking request log.
 fn wall_clock_micros(d: u128) -> u64 {
     u64::try_from(d).unwrap_or(u64::MAX)
 }

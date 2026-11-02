@@ -8,9 +8,7 @@
 //! the resolution map, which only the composite holds. What ships instead is
 //! `CompositeSource` (`composite.rs`), whose Stump-backed branch speaks
 //! Stump's GraphQL and REST APIs inline and falls back to `LocalLibrary` for
-//! every member Stump does not have. Whole-branch review, M3: the design and
-//! seven places in the docs and code still named the unbuilt type; this is
-//! the correction.
+//! every member Stump does not have.
 
 use std::path::Path;
 
@@ -22,7 +20,7 @@ use taiyaku_core::Member;
 /// source: locally it comes from sniffing the bytes, falling back to the
 /// entry's extension when they do not sniff as anything recognised
 /// (`content_type`, below). A trait returning bare bytes cannot express this,
-/// so the route was left guessing — and `application/octet-stream` is a
+/// so the route would be left guessing — and `application/octet-stream` is a
 /// guess an `<img>` forgives and nothing else does.
 #[derive(Debug, Clone)]
 pub struct ServedPage {
@@ -96,12 +94,9 @@ fn type_from_extension(name: &str) -> &'static str {
 /// What the bytes say they are, where they say it unambiguously.
 ///
 /// Same reasoning as `taiyaku_read`'s container sniff, one level down: the
-/// extension is frequently wrong about what is inside. Measured rather than
-/// assumed — **114 of the 8,637 page entries in the corpus are PNG files named
-/// `.jpg`**, all in one fan-translated chapter of Go-Toubun v01. A browser
-/// `<img>` re-sniffs and would not care; the OPDS client M3 is for is entitled
-/// to believe the header, and a header that is wrong 1.3% of the time is worse
-/// than one that says nothing.
+/// extension is frequently wrong about what is inside. A browser `<img>`
+/// re-sniffs and would not care; the OPDS client M3 is for is entitled to
+/// believe the header, and a wrong header is worse than one that says nothing.
 pub(crate) fn sniffed_type(bytes: &[u8]) -> Option<&'static str> {
     let starts = |magic: &[u8]| bytes.starts_with(magic);
     if starts(b"\xff\xd8\xff") {

@@ -10,9 +10,9 @@ use std::time::Duration;
 /// One Stump instance, reachable.
 ///
 /// The base URL is configured and never taken from a response. Stump's own
-/// `ImageRef.url` emits its internally configured address — measured as
-/// `http://stump.daveynet.xyz:10801/…` on an instance served publicly over
-/// https — so believing it would send every page fetch somewhere unreachable.
+/// `ImageRef.url` emits its internally configured address, even on an
+/// instance served publicly over https, so believing it would send every
+/// page fetch somewhere unreachable.
 pub trait Transport: Send + Sync + std::fmt::Debug {
     /// POST a JSON document to a path below the base URL, and read the reply.
     fn post_json(&self, path: &str, body: &str) -> Result<Vec<u8>, String>;

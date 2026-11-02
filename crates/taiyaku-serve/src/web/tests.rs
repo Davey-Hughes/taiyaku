@@ -92,10 +92,9 @@ async fn a_deep_link_answers_the_app() {
     }
 }
 
-/// A path under `/api` or `/opds` that no route matched is the same plain 404
-/// it was before the app existed — never the app, or a client asking for a
-/// route that does not exist would be handed HTML with a 200. A path that only
-/// shares the letters is the app's.
+/// A path under `/api` or `/opds` that no route matched is a plain 404 — never
+/// the app, or a client asking for a route that does not exist would be handed
+/// HTML with a 200. A path that only shares the letters is the app's.
 #[tokio::test]
 async fn the_api_keeps_its_own_404() {
     let tmp = Fixture::new("web-api-404");

@@ -2,10 +2,7 @@
 //!
 //! Stump already serves OPDS-PSE, so this feed is not here to let a reader
 //! fetch pages — it is here for the one thing neither Stump nor Komga can
-//! express: **several editions grouped under one work**. Measured on the
-//! development instance, `Go-Toubun no Hanayome` and its Full Color Edition
-//! are two unrelated series of 14 books each; with the raws and the fan
-//! chapters one work would occupy four, with nothing relating them.
+//! express: **several editions grouped under one work**.
 //!
 //! XML is written by hand rather than through a crate. The element set is
 //! small and fixed, and the only hard part is escaping — which has its own
@@ -332,11 +329,9 @@ pub(crate) async fn library_works_by_work(
 /// answers `Every` before ever reaching SQL.
 ///
 /// **Asked on the blocking pool, through [`crate::routes::on_the_grant`] —
-/// O119.** This took `state.library.conn()` itself, on the async worker, so a
-/// restricted reader's `works` feed waited on the library's mutex on a tokio
-/// worker thread, stalling the whole worker: the failure O115 closed for the
-/// eight handlers that ask through `routes`, in a ninth that asked through
-/// code of its own.
+/// O119.** Taking `state.library.conn()` on the async worker would make a
+/// restricted reader's `works` feed wait on the library's mutex on a tokio
+/// worker thread, stalling the whole worker.
 #[expect(
     clippy::result_large_err,
     reason = "the `Err` carries a `Response`, for `routes::visible_editions_or_refuse`'s reason: \
@@ -364,16 +359,12 @@ async fn visible_editions_by_work(
 /// over `sidecar.editions` rather than the caller's visible subset still
 /// discloses how many editions exist under a root the caller cannot see,
 /// which is a smaller leak than a key or a path and a leak all the same.
-/// Found beside the other four in this file, after they closed — a count is
-/// easy to read as "not really naming anything."
 ///
 /// **One query for the whole feed, not one per work.** A loop calling
-/// `browse::edition_visible` per work here would be the same shape of N+1
-/// the whole-branch review closed in `home` at 111 queries on the largest
-/// series, reopened for a feed that walks every work the server holds
-/// rather than one series — so `browse::visible_editions` (the same bulk
-/// query `routes::list_works` already uses for the identical `/api/works`
-/// question) answers every work's visible edition set in one round trip, in
+/// `browse::edition_visible` per work here would be an N+1 over every work the
+/// server holds, so `browse::visible_editions` (the same bulk query
+/// `routes::list_works` already uses for the identical `/api/works` question)
+/// answers every work's visible edition set in one round trip, in
 /// [`visible_editions_by_work`] above, and [`works_feed`]'s loop only ever
 /// does a `HashMap` lookup per work.
 pub(crate) async fn works(
@@ -455,19 +446,14 @@ fn works_feed(
     ))
 }
 
-/// One entry per edition of a work, each carrying the links OPDS 1.2
-/// requires.
+/// One entry per edition of a work, each carrying the links OPDS 1.2 requires.
 ///
-/// **The acquisition link points at a download.** OPDS 1.2 requires at
-/// least one `rel="http://opds-spec.org/acquisition"` link on every entry in
-/// an acquisition feed, or a conformant client may render the entry as
-/// unopenable. This link used to point at the edition's first page because
-/// this server had no whole publication to point at, and PSE
-/// (`rel="http://vaemendis.net/opds-pse/stream"`, below) was the only
-/// acquisition mechanism a reader had. Spec C2 built the download and its
-/// second half repointed this link at the OPDS-namespace mirror of that
-/// route, so the guard's `WWW-Authenticate` prompt still fires for a client
-/// following it — which is the whole reason that mirror exists.
+/// **The acquisition link points at a download**, through the OPDS-namespace
+/// mirror of that route, so the guard's `WWW-Authenticate` prompt still fires
+/// for a client following it — which is the whole reason that mirror exists.
+/// OPDS 1.2 requires at least one `rel="http://opds-spec.org/acquisition"` link
+/// on every entry in an acquisition feed, or a conformant client may render the
+/// entry as unopenable.
 ///
 /// Its `type` is what the download route will actually answer with rather
 /// than a constant: [`crate::download::advertised_type`] decides, once, for
@@ -480,12 +466,12 @@ fn works_feed(
 /// **A reader whose `can_download` is withheld keeps the page link.** The
 /// conformance requirement above admits no third option: an entry with no
 /// acquisition link is the unopenable one, and an entry naming a download
-/// that answers 403 on every attempt is worse than the page that has always
-/// been here. The web UI's own control is *absent* in that case rather than
-/// disabled (spec C2 §8), and the two are not inconsistent — a feed has a
-/// conformance floor a screen does not.
+/// that answers 403 on every attempt is worse than the page link. The web UI's
+/// own control is *absent* in that case rather than disabled (spec C2 §8),
+/// and the two are not inconsistent — a feed has a conformance floor a screen
+/// does not.
 ///
-/// **This link does not reach Stump, deliberately.** The one it replaced did:
+/// **This link does not reach Stump, deliberately.** The page link does:
 /// `stream_page` takes bytes from `ServeState::page` and therefore through
 /// `PageSource`, including `CompositeSource`'s Stump branch.
 /// `download::edition` reads the local filesystem and nothing else, which is
@@ -505,10 +491,8 @@ fn works_feed(
 /// `PageSource` and can serve from Stump, while acquisition cannot. The two
 /// disagree for exactly as long as any member is Stump-only.
 ///
-/// The PSE link is untouched. Streaming stays the in-app read path and
-/// acquisition became the offline one; they are two mechanisms for two
-/// different intentions and always were, and the documented deviation
-/// existed only because one of them had no implementation.
+/// Streaming, the PSE link, is the in-app read path and acquisition is the
+/// offline one: two mechanisms for two different intentions.
 pub(crate) async fn work_feed(
     State(state): State<Arc<ServeState>>,
     AxPath(id): AxPath<String>,
@@ -527,11 +511,9 @@ pub(crate) async fn work_feed(
     // a work with no edition inside the grant (the one `get_sidecar` sends for
     // the identical case, from the same function), `Some` carrying only the
     // editions that survive otherwise — `WorkCard::editions`'s own contract.
-    // It asks on the blocking pool; until O119 this handler called
-    // `browse::work` itself, on the async worker. Reused rather than reimplemented,
-    // and cheap for the one work this route addresses: `works_of`'s row plus
-    // one `editions_by_work` call, not one query per edition — and since O85
-    // that call answers the whole set rather than one work at a time.
+    // It asks on the blocking pool. Reused rather than reimplemented, and cheap
+    // for the one work this route addresses: `works_of`'s row plus one
+    // `editions_by_work` call, not one query per edition.
     // **Absent means "may download"**, as `routes::refuse_if_cannot_download`
     // reads it. `can_download` is a capability, not a grant: it narrows what a
     // reader may do with what they can see, so reading it permissively widens
@@ -548,7 +530,7 @@ pub(crate) async fn work_feed(
         };
 
     let work_id = escape(&work.id);
-    // See the note in `works`: `work.id` is already URL-safe by
+    // See the note in `works_feed`: `work.id` is already URL-safe by
     // construction, but every other `href` in this feed needs encoding, so
     // encoding this one too keeps the rule uniform rather than one route
     // relying on a guarantee made in another module.
@@ -575,22 +557,21 @@ pub(crate) async fn work_feed(
         // the atom `<id>` a reader never sees rendered as a link — and
         // `key_href` is percent-encoded for the `href`s below. An edition
         // key is not sanitised on the way in (a sidecar this server did not
-        // write may hold one `align` would now refuse), so both have to
-        // handle whatever a key actually contains, including a space or a
-        // `/`.
+        // write may hold one `align` would refuse), so both have to handle
+        // whatever a key actually contains, including a space or a `/`.
         let key_x = escape(key);
         let key_href = escape(&percent_encode(key));
         let label = escape(&edition.label);
         // The flat page count across every member, which is exactly what PSE
-        // streams. An edition of seven chapter files is one publication of 235
-        // pages here, which only works because pages are addressed by flat
-        // index rather than by member and entry.
+        // streams. An edition of several chapter files is one publication
+        // here, which only works because pages are addressed by flat index
+        // rather than by member and entry.
         let pages = edition.total_pages();
         // **OPDS 1.2 requires at least one acquisition link on every entry**,
         // so a reader who may not download gets the page link rather than
         // none: removing it would produce exactly the unopenable entry that
         // requirement exists to prevent, and a download link answering 403 on
-        // every attempt is worse than the page that has always been here.
+        // every attempt is worse than the page link.
         //
         // The type is what the route will actually send rather than a
         // constant — a single-member PDF edition is served `application/pdf`,
@@ -606,13 +587,9 @@ pub(crate) async fn work_feed(
                 types.get(key).copied().unwrap_or(crate::download::CBZ_TYPE)
             )
         } else {
-            // **`pages/0`, not `pages/1`.** PSE counts from 0 and
-            // `stream_page` converts nothing, so the `pages/1` this line
-            // carried until now was the *second* page — while the test that
-            // covered it called it "the edition's first page". Inherited
-            // rather than introduced here, and corrected on the way past
-            // because this branch rewrites the line: a one-page edition made
-            // it a 404 outright.
+            // **`pages/0`, not `pages/1`.** PSE counts from 0 and `stream_page`
+            // converts nothing, so `pages/1` would be the *second* page, and a
+            // one-page edition would 404 outright.
             format!(
                 r#"<link rel="http://opds-spec.org/acquisition" type="image/jpeg"
           href="/opds/v1.2/works/{work_href}/{key_href}/pages/0"/>"#
@@ -659,16 +636,14 @@ pub(crate) async fn work_feed(
 ///
 /// **Off the async worker, because the answer is a `stat` — O120.**
 /// [`crate::download::advertised_type`] asks the filesystem whether an edition
-/// of one member is a file, and until O120 closed `work_feed` asked it in the
-/// handler, once for each such edition. On the async worker a `stat` holds a
-/// runtime worker thread for as long as the filesystem takes to answer. This
-/// server's host bind-mounts its library from a FUSE share, where nothing
-/// promises that is quick; it has not been timed there.
+/// of one member is a file. On the async worker a `stat` holds a runtime worker
+/// thread for as long as the filesystem takes to answer. This server's host
+/// bind-mounts its library from a FUSE share, where nothing promises that
+/// is quick.
 ///
 /// One trip for the whole feed. Only the editions `visible` admits are asked
 /// about, which are the ones the feed names, and `sidecar` is the snapshot the
-/// feed builds its entries from, so a type and its entry describe one
-/// document.
+/// feed builds its entries from, so a type and its entry describe one document.
 ///
 /// `Err` is the refusal to send: a 404 if `id` names no work, which the handler
 /// has already refused before asking, and a 500 if the task panicked.
@@ -729,8 +704,7 @@ pub(crate) async fn stream_page(
     // you may see it and may not have it) — the order every other refusal
     // pair on this server follows. `refuse_if_hidden` is the exact check
     // `get_page` sends for the `/api/…` page route; reused rather than
-    // reimplemented, because a second spelling of this rule is exactly what
-    // spec C1's whole-branch review warned about.
+    // reimplemented, so that this rule has one spelling.
     if let Some(refusal) = crate::routes::refuse_if_hidden(&state, &extensions, &id, &edition).await
     {
         return refusal;
@@ -743,21 +717,15 @@ pub(crate) async fn stream_page(
         Err(refusal) => return refusal.into_response(),
     };
     // **PSE counts from 0**, so this is taiyaku's own index unchanged. There
-    // is no conversion here and there must not be one.
-    //
-    // This shipped as 1-based and was wrong. Measured against Panels on
-    // 2026-07-31: it opens a book by requesting `pages/0`, retried that up to
-    // nine times per edition against the 404 this used to return, showed an
-    // error screen, and only advanced once tapped — at which point every page
-    // it displayed was the one before the page it believed it was on, and the
-    // true first page could not be reached at all. Twenty of the session's
-    // thirty-nine requests were that 404.
+    // is no conversion here and there must not be one:
+    // `tests::pse_page_numbers_are_taiyaku_indices_unchanged` pins page 0 as
+    // the first page and `pse:count` as one past the end.
     //
     // Stump settles the convention rather than the spec being read twice: its
     // REST API is 1-based, and its OPDS-PSE template is
     // `…/pages/{pageNumber}?zero_based=true` — it converts *for* PSE. So a
-    // server whose PSE stream is 1-based disagrees with both the client and
-    // the other implementation of the same feed.
+    // server whose PSE stream is 1-based disagrees with Stump, the other
+    // implementation of the same feed.
     let index = number;
 
     // O1: the same validator the `/api/…` page route sends, checked the same
@@ -777,8 +745,7 @@ pub(crate) async fn stream_page(
     // `None`: the OPDS stream serves the member's own bytes at full size and
     // takes no `?w=`. A reading client fetching through this feed is not the
     // browser reader and has no viewport this server knows about, so there is
-    // nothing to fit to — and the tag it validates against stays the one it
-    // has always been.
+    // nothing to fit to, and the tag is `page_etag`'s for no width.
     let tag = crate::routes::page_etag(&sha256, offset, None);
     if crate::routes::if_none_match_hits(&headers, &tag) {
         return crate::routes::not_modified(&tag, Some(crate::routes::PAGE_CACHE_CONTROL));
@@ -832,11 +799,10 @@ pub(crate) async fn cover(
             .editions
             .get(&edition)
             .ok_or_else(|| format!("no edition `{edition}` in work `{id}`"))?;
-        // Minor 5 (whole-branch review): keyed on whichever member
-        // `Edition::locate(0)` actually resolves page 0 to, not
-        // `members.first()` unconditionally. `locate` steps over a member
-        // recorded with zero pages, so a first member with none would make
-        // `members.first()` name a different member than the one
+        // Keyed on whichever member `Edition::locate(0)` actually resolves
+        // page 0 to, not `members.first()` unconditionally. `locate` steps over
+        // a member recorded with zero pages, so a first member with none would
+        // make `members.first()` name a different member than the one
         // `state.page(work, &edition, 0)` below actually reads bytes from —
         // caching the generated cover under the wrong member's hash.
         let (position, _within) = found
@@ -875,9 +841,8 @@ pub(crate) async fn cover(
 /// guard's enumeration test asserts that every path this server answers refuses
 /// an anonymous request, and it drives that off the same list `build_router`
 /// folds — so a route added here arrives guarded and covered on the commit that
-/// adds it, which a reviewer's checklist cannot promise. Returning a `Router`
-/// hid these paths from that walk, and OPDS is the half of the surface
-/// reachable from outside the house.
+/// adds it, which a reviewer's checklist cannot promise. OPDS is the half of
+/// the surface reachable from outside the house.
 pub fn routes() -> Vec<(&'static str, axum::routing::MethodRouter<Arc<ServeState>>)> {
     vec![
         ("/opds/v1.2/catalog", get(catalog)),

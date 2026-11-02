@@ -11,9 +11,8 @@
 //!
 //! **`STORE` and not `DEFLATE`**, because the pages are already JPEGs. That is
 //! §13.1's reasoning and it holds; what does *not* hold is the sentence beside
-//! it calling generation "a copy". Measured on `corpus/` on 2026-08-23: 11,431
-//! of 11,681 entries are `DEFLATE`, so producing this output inflates 97.9% of
-//! them. The measurement is recorded in
+//! it calling generation "a copy": an entry that is `DEFLATE` in its archive
+//! is inflated to produce this output. The count of such entries is recorded in
 //! `docs/superpowers/specs/2026-08-23-library-download-design.md` §1 and, with
 //! its reproduction, in `docs/notes.md`, "Four measurements for spec C2's
 //! download". The consequence worth knowing is
@@ -25,26 +24,18 @@
 //! why that beat the streaming bit — this is the one artefact taiyaku produces
 //! that leaves the server, and it fails on a device where nothing reports back.
 //!
-//! **`Plan::zip64` and `Plan::payload_span` are the two methods still
-//! unreachable outside `cbz::tests`, and each is suppressed on its own now,
-//! not by the module.** `download.rs`'s route (Task 7) constructs a `Plan`
-//! through `Plan::of` and reads `len`, `entries`, `local_header` and
-//! `trailer` from it, so most of what this comment used to call
-//! unreachable has been reachable since that route shipped. A
-//! `#![cfg_attr(not(test), expect(dead_code, …))]` covering the whole
-//! module does not notice that: it stays satisfied as long as *any* item
-//! here is still dead, so it never went unfulfilled and never came off —
-//! exactly the failure its own doc comment warned against, on the two
-//! items rather than the whole file. `zip64()` reports the boundary Task
-//! 3's arithmetic decided; `payload_span()` is the map a true `Range`
-//! seek would walk (`docs/status.md`, O66). Both wait on a caller
-//! `download.rs::generated` does not have yet, so each now carries its own
-//! `#[cfg_attr(not(test), expect(dead_code, reason = …))]` — still scoped
-//! to `not(test)`, since `cbz::tests` is what makes each reachable at all
-//! — `#[expect]`, not `#[allow]`, the same choice spec A2 made for
-//! the grant field of `auth::Principal` ahead of C1 — and each comes off the day
-//! its own caller lands rather than the day any part of this module gets
-//! used.
+//! **`Plan::zip64` and `Plan::payload_span` are the two methods unreachable
+//! outside `cbz::tests`, and each is suppressed on its own, not by the
+//! module.** A `#![cfg_attr(not(test), expect(dead_code, …))]` covering the
+//! whole module would stay satisfied as long as *any* item here is dead, so
+//! it would never go unfulfilled and never come off. `zip64()` reports the
+//! boundary `Plan::of`'s arithmetic decides; `payload_span()` is the map a
+//! true `Range` seek would walk (`docs/status.md`, O66). Both wait on a
+//! caller `download.rs::generated` does not have, so each carries its own
+//! `#[cfg_attr(not(test), expect(dead_code, reason = …))]` — scoped to
+//! `not(test)`, since `cbz::tests` is what makes each reachable at all —
+//! `#[expect]`, not `#[allow]`, and each comes off the day its own caller
+//! lands rather than the day any part of this module gets used.
 
 /// A fixed DOS timestamp: 1980-01-01 00:00:00, the epoch of the field.
 ///
@@ -104,8 +95,8 @@ impl Plan {
         // **Two conditions, and only two, because the rest are dominated.**
         // `lay_out` returns `(offsets, directory_at, directory_at + directory
         // + tail)`, and `tail` is never smaller than `END_RECORD`, so `total`
-        // is strictly greater than `directory_at`. That makes both of the
-        // checks this used to carry unreachable:
+        // is strictly greater than `directory_at`. That makes both of these
+        // checks unreachable:
         //
         // - **a per-entry `size > U32_MAX` check**, because `directory_at` is
         //   the running sum over every entry of `LOCAL_HEADER_FIXED + name +
@@ -114,16 +105,13 @@ impl Plan {
         // - **a `directory_at > U32_MAX` check**, because `total` exceeds
         //   `directory_at` by at least 22 bytes and is tested first.
         //
-        // Both were here and both were removed, the second after a reviewer
-        // deleted the first and watched every test stay green. Dead logic that
-        // looks like a safety net is worse than no net: it invites the next
-        // reader to trust it. **If `lay_out`'s formula ever changes so that
-        // `total` no longer dominates `directory_at`, this is the invariant
-        // that breaks** — disabling the size trigger fails
+        // Dead logic that looks like a safety net is worse than no net: it
+        // invites the next reader to trust it. **If `lay_out`'s formula ever
+        // changes so that `total` no longer dominates `directory_at`, this is
+        // the invariant that breaks** — disabling the size trigger fails
         // `a_total_past_four_gibibytes_takes_the_zip64_branch`,
         // `one_entry_past_four_gibibytes_takes_it_too` and
-        // `a_zip64_payload_span_accounts_for_the_extra_field`, checked by
-        // mutation rather than assumed.
+        // `a_zip64_payload_span_accounts_for_the_extra_field`.
         let needs_zip64 = classic.2 > U32_MAX || entries.len() > usize::from(u16::MAX);
         let (offsets, directory_at, total) = if needs_zip64 {
             Self::lay_out(&entries, true)
@@ -233,10 +221,10 @@ impl Plan {
         // Bounded by the caller, not by this line: `download.rs` numbers every
         // entry itself (`0001.jpg`, and `ComicInfo.xml`), so a name here is a
         // few bytes and cannot approach `u16::MAX`. Said because the two casts
-        // above state their bound and this one had none — an unbounded name
-        // would state a length the header does not have, while `len()` and
-        // `payload_span` stayed right, so the file would be wrong in exactly
-        // the place nothing here checks.
+        // above state their bound, and an unbounded name would state a length
+        // the header does not have, while `len()` and `payload_span` stayed
+        // right, so the file would be wrong in exactly the place nothing
+        // here checks.
         out.extend_from_slice(&(entry.name.len() as u16).to_le_bytes());
         out.extend_from_slice(
             &(if self.zip64 {

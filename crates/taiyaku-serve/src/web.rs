@@ -4,14 +4,14 @@
 //! **Every path no route matched is the app's**, so a reload on a deep link
 //! such as `/read/some-work` gets `index.html`, and the app's own router takes
 //! it from there. Two exceptions keep the API's answers its own. A path under
-//! `/api` or `/opds` that no route matched is still the plain 404 it always
-//! was, never the app. And a missing file under `/assets/` is a 404 too:
+//! `/api` or `/opds` that no route matched is the plain 404, never the app.
+//! And a missing file under `/assets/` is a 404 too:
 //! Vite names those files by content hash, and a browser may keep whatever such
 //! a name answers for a year.
 //!
 //! **No credential is asked for here.** The sign-in screen is part of the app
 //! and has to load before there is anything to sign in with. Everything the
-//! app then asks for goes through `/api`, behind the guard as before.
+//! app then asks for goes through `/api`, behind the guard.
 //!
 //! `tower-http`'s `ServeDir` does the serving — content types, ranges,
 //! `If-Modified-Since`, and refusing a path that would leave the directory — so

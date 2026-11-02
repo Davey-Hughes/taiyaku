@@ -44,12 +44,11 @@ fn bad_request(message: String) -> Response {
 /// The page index a URL carries, or the refusal to send instead.
 ///
 /// O5: the two routes addressed by page index — this module's `/api/…` route
-/// and the OPDS stream — used to declare the index as `u32` in the extractor
-/// and let axum's `Path` rejection answer a malformed one. That message is
-/// phrased in terms of the Rust type it failed to parse into and the tuple
-/// position it sat at ("Cannot parse value at index 2 with value `abc` to a
-/// `u32`"), which names two things a client knows nothing about, and it was
-/// the only message this server sent that this server had not written.
+/// and the OPDS stream — refuse a malformed one here rather than through
+/// axum's `Path` rejection, which is phrased in terms of the Rust type it
+/// failed to parse into and the tuple position it sat at ("Cannot parse value
+/// at index 2 with value `abc` to a `u32`"), which names two things a client
+/// knows nothing about.
 ///
 /// Shared rather than written twice, for the reason `ServeState::page` is
 /// shared: the two routes are two spellings of one operation, and answering a
@@ -120,23 +119,18 @@ pub(crate) fn locate_member(
 /// Quoted, per RFC 9110 §8.8.3: an `ETag`'s value is a `quoted-string`, not
 /// a bare token.
 /// **The requested long edge is part of the tag**, and leaving it out would be
-/// the subtle way to break this. One page now has as many representations as a
+/// the subtle way to break this. One page has as many representations as a
 /// reader has viewport sizes; a tag naming only the member and offset would let
 /// a client that cached the 1024px version be answered `304` when it later
 /// asked for 2048, and go on drawing the small one — a page that looks soft for
-/// a day with nothing to point at. `None` is the full-size request and keeps
-/// the tag it always had, so a client holding a page cached before this
-/// existed still validates against it.
+/// a day with nothing to point at. `None` is the full-size request, whose tag
+/// names only the member and offset.
 ///
 /// **A resized tag is `cover::page_key`, quoted, and so carries the format
 /// version as well (O106).** The same trap applies: a resized page is a
 /// rendering, and a bump of `PAGE_FORMAT_VERSION` is a new rendering under an
-/// unchanged size. Until O106 the tag was built here by hand without the
-/// version, while the cache file name had it. Adding it changed every resized
-/// tag once, so each browser re-fetches each resized page one time. That
-/// re-fetch also replaces any empty page a browser was served before O105. The
-/// full-size tag is left alone: the member's own bytes do not depend on how
-/// this server resizes anything.
+/// unchanged size. The full-size tag is left alone: the member's own bytes do
+/// not depend on how this server resizes anything.
 pub(crate) fn page_etag(sha256: &str, offset: u32, long_edge: Option<u32>) -> String {
     match long_edge {
         Some(edge) => format!("\"{}\"", crate::cover::page_key(sha256, offset, edge)),
@@ -161,14 +155,13 @@ pub(crate) fn if_none_match_hits(headers: &HeaderMap, tag: &str) -> bool {
 
 /// How long a client may reuse a page, tile or cover without asking at all.
 ///
-/// O1: an `ETag` shrinks a repeat to about 300 bytes; it does not remove the
+/// O1: an `ETag` shrinks a repeat to a small response; it does not remove the
 /// round trip. Prefetch exists to hide a round trip before the reader notices
 /// it, so a round trip that still has to happen — just for fewer bytes — is one
-/// the reader still waits on. This is the half that makes a genuine repeat cost
-/// nothing.
+/// the reader still waits on.
 ///
-/// `private` because this server has no auth, and the cache this exists to
-/// reach is the reader's own browser rather than a shared proxy.
+/// `private` because the cache this exists to reach is the reader's own browser
+/// rather than a shared proxy.
 ///
 /// **Not `immutable`, and the reason is the URL rather than the bytes.** A
 /// page's bytes never change for a given member `sha256` and offset — that is
@@ -177,8 +170,7 @@ pub(crate) fn if_none_match_hits(headers: &HeaderMap, tag: &str) -> bool {
 /// `immutable` tells a client never to revalidate for the entry's whole
 /// lifetime, so replacing a member would leave every reader who had seen that
 /// page holding the old bytes, with no way to correct it short of clearing the
-/// browser's cache. The bound below is what makes a replacement
-/// self-correcting.
+/// browser's cache.
 ///
 /// **No `Last-Modified` alongside it, deliberately.** It would need the
 /// member file's mtime, which needs a `stat`, on the async worker, on every
@@ -190,33 +182,25 @@ pub(crate) fn if_none_match_hits(headers: &HeaderMap, tag: &str) -> bool {
 /// question for a date to answer.
 ///
 /// **`no-cache` rather than a freshness lifetime, because the URL is not a
-/// unique name for these bytes.** This was `private, max-age=86400`, chosen so
-/// that a replaced archive would correct itself inside a day. The paragraph
-/// above had the shape of the problem right — "the URL names a work, an
-/// edition and an index" — and one thing wrong: a **work id is not unique**.
-/// It is the sidecar's filename stem, and every sidecar across this corpus is
+/// unique name for these bytes.** A **work id is not unique**. It is the
+/// sidecar's filename stem, and every sidecar across this corpus is
 /// `taiyaku.json`, so `/api/works/taiyaku/raw-mono/pages/10` addresses a
 /// different volume's page 10 depending only on which sidecar the server was
-/// started with.
-///
-/// Measured on two of them: the same URL returned images with SHA-256s
-/// `ab5da993…` and `17655ca0…`, under `ETag`s the server had already derived
-/// from different member digests. The server could tell them apart the whole
-/// time; the client was told not to ask for a day. A labeller restarting the
-/// server onto the next volume — which this corpus requires, since two works
-/// cannot be served at once for the same reason — saw the previous volume's
-/// artwork with the new volume's page numbers, and the only symptom was
-/// recognising the pictures.
+/// started with. The server can tell them apart, since the `ETag`s derive from
+/// different member digests; a client holding a day's freshness would never
+/// ask. A labeller restarting the server onto the next volume would see the
+/// previous volume's artwork with the new volume's page numbers, and the only
+/// symptom would be recognising the pictures.
 ///
 /// That is worse than a stale read. Boxes drawn against it would be labels on
 /// the wrong art, which `TruthEdition::is_stale_for` calls the sharpest form
 /// of the staleness problem, and nothing downstream could detect it.
 ///
 /// `no-cache` does not mean "do not store": the entry is kept and revalidated,
-/// so the `ETag` above does the work it was always able to do and a page that
-/// really is unchanged comes back as a bodiless `304`. The cost is one
-/// conditional request per page rather than none; the alternative is a client
-/// that cannot be told it is looking at the wrong book.
+/// so the `ETag` above does its work and a page that really is unchanged comes
+/// back as a bodiless `304`. The cost is one conditional request per page
+/// rather than none; the alternative is a client that cannot be told it is
+/// looking at the wrong book.
 ///
 /// A cover whose address carries the version of the bytes it serves is the
 /// one exception: `COVER_CACHE_CONTROL`.
@@ -252,10 +236,9 @@ pub(crate) const COVER_CACHE_CONTROL: &str = "private, max-age=31536000, immutab
 /// day without seeing a correction they made themselves.
 ///
 /// Written as an argument each caller must supply rather than a default one
-/// of them overrides, because the first version of this took the page constant
-/// unconditionally and silently handed it to `get_sidecar` and `get_notes` —
-/// which share this function and want the opposite answer. A caller that has
-/// to say which it is cannot inherit the wrong one by being written later.
+/// of them overrides, because `get_sidecar` and `get_notes` share this function
+/// and want the opposite answer from a page's. A caller that has to say which
+/// it is cannot inherit the wrong one by being written later.
 pub(crate) fn not_modified(tag: &str, freshness: Option<&str>) -> Response {
     let mut response =
         (StatusCode::NOT_MODIFIED, [(header::ETAG, tag.to_string())]).into_response();
@@ -291,13 +274,12 @@ pub(crate) fn sidecar_etag(sidecar: &taiyaku_core::Sidecar) -> String {
 /// A notes or truth document's `ETag`: a SHA-256 over exactly the bytes being
 /// sent.
 ///
-/// Moved to `crate::notes` (Task 13, as `etag_for`) so it sits beside
-/// `notes::to_json`, the projection it is computed over — the two are the
-/// invariant `notes.rs`'s and `truth.rs`'s own doc comments state, and
-/// keeping them in the same module is what makes that visible rather than
-/// asserted. Re-exported under its old name so every existing call site in
-/// this file, and every test that reaches it through `super::*`, keeps
-/// resolving unchanged.
+/// Lives in `crate::notes` as `etag_for`, beside `notes::to_json`, the
+/// projection it is computed over — the two are the invariant `notes.rs`'s and
+/// `truth.rs`'s own doc comments state, and keeping them in the same module is
+/// what makes that visible rather than asserted. Re-exported here as
+/// `notes_etag`, the name every call site in this file, and every test that
+/// reaches it through `super::*`, uses.
 pub(crate) use crate::notes::etag_for as notes_etag;
 
 /// Whether a request's `If-Match` names `tag`.
@@ -308,8 +290,7 @@ pub(crate) use crate::notes::etag_for as notes_etag;
 /// send it looking for a conflict that does not exist.
 ///
 /// Proven directly by `if_match_distinguishes_absent_from_matching_from_stale`
-/// below, as well as through `patch_alignments`, the one route that writes
-/// against it.
+/// below, as well as through `patch_alignments`.
 pub(crate) fn if_match_hits(headers: &HeaderMap, tag: &str) -> Option<bool> {
     let sent = headers.get(header::IF_MATCH)?.to_str().ok()?;
     Some(sent == tag)
@@ -340,13 +321,13 @@ async fn work(state: &Arc<ServeState>, id: &str) -> Result<Arc<Work>, NoSuchWork
 
 /// Why a progress request could not be answered.
 ///
-/// Two kinds, and they are not one status: a work this server does not hold,
-/// or an edition or slot the work does not have, is the client's mistake and a
-/// 404; a position file that will not read or write is this server's and a
-/// 500. `get_page` needs no such type because both of its failures are 404s.
-/// Progress is the one route where the distinction has to survive the trip
-/// back out of `spawn_blocking`, which flattens a handler's failures into one
-/// `Result` however different they were on the way in.
+/// Two kinds, and they are not one status: a work this server does not hold, or
+/// an edition or slot the work does not have, is the client's mistake and a
+/// 404; a SQLite read or write that fails is this server's and a 500.
+/// `get_page` needs no such type because both of its failures are 404s. Here
+/// the distinction has to survive the trip back out of `spawn_blocking`, which
+/// flattens a handler's failures into one `Result` however different they were
+/// on the way in.
 #[derive(Debug)]
 enum NoProgress {
     NotFound(String),
@@ -364,28 +345,22 @@ impl IntoResponse for NoProgress {
 
 /// Every work this caller's grant admits, as `GET /api/works` answers it:
 /// slug, title, series, volume, editions and a cover URL — see
-/// `works::WorkSummary` for where each of those six comes from and why two
-/// of them are `null` today.
+/// `works::WorkSummary` for where each of those six comes from.
 ///
-/// **Applied no grant at all until this route joined the other four.** This
-/// list answered every work the server held regardless of the caller's grant,
-/// which handed a restricted account the id, title, series and volume of
-/// every work outside every root it was granted — the same shape of gap the
-/// whole-branch review closed on the page routes (`refuse_if_hidden`) and
-/// commit 5d41bd6 closed on the OPDS mirror (`opds::visible_editions_by_work`,
-/// named `visible_slugs` at the time).
+/// **Applies the caller's grant.** A list that answered every work the server
+/// held would hand a restricted account the id, title, series and volume of
+/// every work outside every root it was granted — the same shape of gap
+/// `refuse_if_hidden` closes on the page routes and
+/// `opds::visible_editions_by_work` closes on the OPDS mirror.
 ///
-/// **Filtered `editions` too, and the `cover` URL built from a visible one —
-/// gated only at the work level until a second whole-branch review.** This
-/// list first filtered by the now-removed `browse::visible_work_slugs`,
-/// which answered "does this work keep *any* edition under a granted root",
-/// and then reported
-/// every edition of each surviving work regardless: a work split across
-/// roots (`en` granted, `raw` withheld) named `raw` in its `editions` array
-/// and built its `cover` from `sidecar.hub` unconditionally, so a hidden
-/// hub's key reached the client through a thumbnail URL. Filtered per
-/// edition now, through `works::summary`'s `visible` parameter — the same
-/// per-edition question `get_sidecar` and `patch_alignments` ask via
+/// **Filtered `editions` too, and the `cover` URL built from a visible one.**
+/// A filter at the work level alone — does this work keep *any* edition under
+/// a granted root — would report every edition of each surviving work: a work
+/// split across roots (`en` granted, `raw` withheld) would name `raw` in its
+/// `editions` array and build its `cover` from `sidecar.hub` unconditionally,
+/// so a hidden hub's key would reach the client through a thumbnail URL.
+/// Filtered per edition, through `works::summary`'s `visible` parameter — the
+/// same per-edition question `get_sidecar` and `patch_alignments` ask via
 /// `visible_editions_or_refuse`, asked here for every work in the library at
 /// once so this route stays a list rather than becoming a lookup.
 ///
@@ -397,16 +372,12 @@ impl IntoResponse for NoProgress {
 ///
 /// **One query for the whole list, not one per work.** Asking
 /// `browse::work` per work here — the tool the single-work routes use — would
-/// be the same N+1 the whole-branch review closed in `home` at 111 queries
-/// on the largest series, reopened at the edition level this time:
-/// `browse::visible_editions` answers every work's visible edition set in one
-/// round trip, and this filter is then only a `HashSet` lookup per edition.
-/// `Access::Every` skips that query entirely, the same short-circuit
-/// `refuse_if_hidden` applies.
+/// be an N+1 at the edition level: `browse::visible_editions` answers every
+/// work's visible edition set in one round trip, and this filter is then only
+/// a `HashSet` lookup per edition. `Access::Every` skips that query entirely,
+/// the same short-circuit `refuse_if_hidden` applies.
 ///
-/// **Not a home screen.** Spec C1 is the browse UI this payload exists to
-/// eventually feed; nothing here builds one, and `openFirstWork`
-/// (`web/src/startup.ts`) still only ever opens the first entry.
+/// **Not a home screen.** Nothing here builds one.
 ///
 /// One connection, opened once, rather than `works::summary` opening its own
 /// through a `Library`-taking wrapper the way `progress::load` does — a list
@@ -418,7 +389,7 @@ async fn list_works(
 ) -> Response {
     let access = crate::auth::access_of(&request_extensions);
 
-    // A SELECT per work against `state.library` — `get_page`'s reasoning
+    // A SELECT per work against `state.library` — `serve_page`'s reasoning
     // about the async worker applies unchanged.
     let built = tokio::task::spawn_blocking(move || {
         let conn = state.library.conn();
@@ -431,9 +402,8 @@ async fn list_works(
         held.iter()
             // A work absent from `visible`'s keys has no edition inside the
             // grant at all — `browse::visible_editions` never mints an entry
-            // for one — so it is dropped here exactly as it was before, and
-            // a work present in it always has a non-empty edition set for
-            // `summary` to fall back on.
+            // for one — so it is dropped here, and a work present in it always
+            // has a non-empty edition set for `summary` to fall back on.
             .filter_map(|w| match &visible {
                 None => Some(crate::works::summary(&conn, w, None)),
                 Some(map) => map
@@ -457,11 +427,11 @@ async fn list_works(
 
 /// Refuse a work or edition the caller's grant hides, as a 404.
 ///
-/// **The page routes applied no grant at all until the whole-branch review
-/// said so**, which made spec C1's per-root sharing a browse filter rather
-/// than a boundary: a restricted reader who knew a slug could read every page
-/// of every root, because `/api/works/{slug}/{edition}/pages/N` never asked.
-/// Browse hid the work and the bytes were served anyway.
+/// **The page routes apply the grant themselves**, or spec C1's per-root
+/// sharing would be a browse filter rather than a boundary: a restricted reader
+/// who knew a slug could read every page of every root, because
+/// `/api/works/{slug}/{edition}/pages/N` would never ask. Browse would hide the
+/// work and the bytes would be served anyway.
 ///
 /// **404, not 403**, matching every other refusal here: telling an
 /// unauthorised caller which slugs are real is the enumeration this project
@@ -511,15 +481,13 @@ fn edition_refusal(
 /// routing mistake).
 ///
 /// **Off the async worker, because the library is a mutex — O115.** A grant is
-/// answered in SQL, and until O115 closed [`refuse_if_hidden`] and
-/// [`visible_editions_or_refuse`] took `state.library.conn()` in the handler
-/// itself. For a reader with roots, every request that asked waited on that
+/// answered in SQL, and taking `state.library.conn()` in the handler itself
+/// would make every request that asks, from a reader with roots, wait on that
 /// mutex on a tokio worker thread, stalling the whole worker, before its own
-/// `spawn_blocking` ran. `get_page`'s reasoning about the async worker applies
-/// to the check as it does to the read behind it. Since O119, `opds::works`
-/// asks through this directly and `opds::work_feed` through
-/// [`visible_editions_or_refuse`]: each had asked the library itself, on the
-/// async worker, through code of its own.
+/// `spawn_blocking` ran. `serve_page`'s reasoning about the async worker
+/// applies to the check as it does to the read behind it. `opds::works` asks
+/// through this and `opds::work_feed` through
+/// [`visible_editions_or_refuse`] (O119).
 ///
 /// **`Every` never leaves the async worker**: it is answered without the
 /// library, so the unrestricted reader pays for neither the query nor the trip
@@ -561,12 +529,8 @@ pub(crate) async fn on_the_grant<T: Send + 'static>(
 /// this answers 403 because the caller *may* see this edition and may not have
 /// a copy of it — a different fact that a 404 would lie about.
 ///
-/// **This landed as an always-passing stub and did not stay one.** Task 7 added
-/// it returning `None` so the crate would compile before the capability work,
-/// and a security review flagged the obvious: a fail-open authorization gate in
-/// committed code is not made safe by a comment promising a later task. The
-/// real check is here; Task 9 keeps the tests that prove a withheld capability
-/// refuses, and the `can_stream` half beside it. Half of O54.
+/// A fail-open authorization gate is not made safe by a comment promising a
+/// later task. The `can_stream` half sits beside this one. Half of O54.
 pub(crate) fn refuse_if_cannot_download(extensions: &axum::http::Extensions) -> Option<Response> {
     let principal = extensions.get::<crate::auth::Principal>()?;
     (!principal.can_download).then(|| {
@@ -585,9 +549,9 @@ pub(crate) fn refuse_if_cannot_download(extensions: &axum::http::Extensions) -> 
 /// read one statement of it rather than two that can drift apart.
 ///
 /// **No `Principal` means yes**, which is [`refuse_if_cannot_stream`]'s own
-/// behaviour preserved exactly: a server configured without auth puts none in
-/// the extensions and every route here is open in that configuration. The
-/// same shape as `opds.rs`'s `can_download` check.
+/// behaviour: a server configured without auth puts none in the extensions
+/// and every route here is open in that configuration. The same shape as
+/// `opds.rs`'s `can_download` check.
 pub(crate) fn can_stream(extensions: &axum::http::Extensions) -> bool {
     extensions
         .get::<crate::auth::Principal>()
@@ -604,9 +568,7 @@ pub(crate) fn can_stream(extensions: &axum::http::Extensions) -> bool {
 /// take volumes away but not see which ones exist" is not. Thumbnails are how
 /// the shelf renders, so they follow browse.
 ///
-/// Both columns default to 1 (`schema/004_auth.sql:18`), so nothing changed for
-/// any existing account the day this shipped, and nothing can set either to 0
-/// outside a fixture until spec C4's user administration. Spec C2 §2.2.
+/// Both columns default to 1 (`schema/004_auth.sql:18`). Spec C2 §2.2.
 pub(crate) fn refuse_if_cannot_stream(extensions: &axum::http::Extensions) -> Option<Response> {
     (!can_stream(extensions)).then(|| {
         (
@@ -625,8 +587,7 @@ pub(crate) fn refuse_if_cannot_stream(extensions: &axum::http::Extensions) -> Op
 /// is the column rather than `admin || column`; this function does not
 /// restate that rule, it reads the field that holds it.
 ///
-/// Defaults to 0 (`schema/013_can_stamp.sql`), so nothing changed for any
-/// account in any existing library the day the column landed.
+/// Defaults to 0 (`schema/013_can_stamp.sql`).
 pub(crate) fn refuse_if_cannot_stamp(extensions: &axum::http::Extensions) -> Option<Response> {
     let principal = extensions.get::<crate::auth::Principal>()?;
     (!principal.can_stamp).then(|| {
@@ -644,18 +605,16 @@ pub(crate) fn refuse_if_cannot_stamp(extensions: &axum::http::Extensions) -> Opt
 /// returns lists every edition, and the rows `patch_alignments` writes are
 /// not scoped to one edition either, since a correction names two.
 ///
-/// **Data-carrying, unlike `refuse_if_hidden`, and that is the fix.** The
-/// function this replaced (`refuse_if_work_hidden`) answered only the
-/// *work*-level question — does `slug` keep any edition under a granted
-/// root? — and both of this crate's callers then sent back the whole
-/// document regardless: a grant that let the work through gated nothing
-/// inside it, which the whole-branch review found leaking a hidden
-/// edition's key, label, member path and `sha256` through `get_sidecar` and
-/// `patch_alignments` alike. `browse::work` already answers the finer
-/// question — `WorkCard::editions` is "only the editions this caller may
-/// see", its own contract — so this returns that set instead of discarding
-/// it, and the two callers filter with it via [`filter_sidecar_editions`]
-/// rather than reinventing the rule a third time.
+/// **Data-carrying, unlike `refuse_if_hidden`.** A work-level answer alone —
+/// does `slug` keep any edition under a granted root? — would let a caller
+/// send back the whole document regardless: a grant that let the work through
+/// would gate nothing inside it, and a hidden edition's key, label, member
+/// path and `sha256` would leak through `get_sidecar` and `patch_alignments`
+/// alike. `browse::work` already answers the finer question —
+/// `WorkCard::editions` is "only the editions this caller may see", its own
+/// contract — so this returns that set instead of discarding it, and
+/// `get_sidecar` and `patch_alignments` filter with it via
+/// [`filter_sidecar_editions`] rather than reinventing the rule.
 ///
 /// `Ok(None)`: a caller whose access is `Access::Every`, and the database is
 /// never touched, the same short-circuit `refuse_if_hidden` applies. A
@@ -670,7 +629,7 @@ pub(crate) fn refuse_if_cannot_stamp(extensions: &axum::http::Extensions) -> Opt
 /// so this refuses identically either way — the same rule `refuse_if_hidden`
 /// states for [`taiyaku_library::browse::edition_visible`].
 ///
-/// **`opds::work_feed` asks it too, since O119**, for the feed that names a
+/// **`opds::work_feed` asks it too (O119)**, for the feed that names a
 /// work's editions — the same question, and the same 404 for a work outside
 /// the grant.
 #[expect(
@@ -719,8 +678,8 @@ fn visible_editions(
 /// **One trip rather than three.** It takes the library's mutex once rather
 /// than three times, and it keeps all three questions inside what
 /// `routes::tests::no_grant_check_stalls_the_runtime` measures, which is a
-/// call's first wait on that mutex. They are asked in the order the three
-/// separate calls were: the work, then `from`, then `to`.
+/// call's first wait on that mutex. They are asked in this order: the work,
+/// then `from`, then `to`.
 ///
 /// `sides` is `None` for a body that did not parse. The handler refuses that
 /// body only after this has answered, so a hidden work is still refused
@@ -857,21 +816,17 @@ async fn get_sidecar(
 /// The optional `?w=` on a page request: the long edge, in device pixels, the
 /// reader intends to draw this page within.
 ///
-/// **Why the server resizes at all.** Measured in the browser against
-/// `gotoubun-v01`'s `en-mono` — 2147×3056, 6.56 megapixels — drawn into a
-/// 693×475 box: the decode alone costs 74.5 ms and the decoded bitmap is
-/// 26.2 MB, for twenty times the pixels that reach the screen. The same page
-/// fitted to 700px decodes in 4.3 ms and holds 2.8 MB. Both halves matter: the
-/// decode is what a page turn waits on, and the bitmap is what the browser
-/// evicts under memory pressure, which is what made an occasional turn cost
-/// hundreds of milliseconds rather than single digits.
+/// **Why the server resizes at all.** A page far larger than the box it is
+/// drawn into costs a decode and a decoded bitmap for many times the pixels
+/// that reach the screen. Both halves matter: the decode is what a page turn
+/// waits on, and the bitmap is what the browser evicts under memory pressure.
 ///
 /// A query parameter rather than a separate route, unlike `get_thumb`: a tile
 /// is a different *thing* — always JPEG, cropped for a strip, no validator —
 /// where this is the same page at a different size, wanting the same
 /// `If-None-Match` fast path and the same freshness. Absent `w` is the original
-/// bytes, byte for byte, which is what `zoom` asks for and what every client
-/// written before this parameter existed keeps getting.
+/// bytes, byte for byte, which is what `zoom` asks for and what a client that
+/// sends no `w` gets.
 #[derive(Debug, serde::Deserialize)]
 struct PageQuery {
     w: Option<u32>,
@@ -901,14 +856,10 @@ async fn get_page(
     // client bug or a hand-typed URL, and the useful answer to both is the
     // page — at the nearest size this server will make — rather than a 400 that
     // leaves the reader with a blank cell. Zero and one are treated as absent,
-    // and that filter is load-bearing rather than a shortcut. The sentence that
-    // used to be here — "`fit_at` would answer `None` for them anyway once no
-    // real page is that small" — had the condition backwards: `fit_at` answered
-    // `None` when the page was *already* within the requested edge, so at `w=1`
-    // it answered `Some` and re-encoded. `cover::fits_within` has held that
-    // decision since O111, and it too calls a page fitting only when it is
-    // already within the edge. Without this filter `?w=1` hands a reader a
-    // one-pixel JPEG rather than the page.
+    // and that filter is load-bearing rather than a shortcut:
+    // `cover::fits_within` (O111) calls a page fitting only when it is already
+    // within the edge, so without this filter `?w=1` hands a reader a one-pixel
+    // JPEG rather than the page.
     // `a_width_of_one_is_absent_rather_than_a_one_pixel_page` is the witness.
     let long_edge = query
         .w
@@ -1030,8 +981,7 @@ async fn serve_page(
 ///
 /// Read from the raw pairs rather than through a struct, so a value that is not
 /// a number, or a key given twice, is ignored rather than refused with a `400`
-/// in terms of a Rust type: the tile route and the series cover route took no
-/// query until O133, and answered every one of those as if it were absent.
+/// in terms of a Rust type (O133).
 pub(crate) fn first_query_value<'a>(pairs: &'a [(String, String)], key: &str) -> Option<&'a str> {
     pairs
         .iter()
@@ -1069,20 +1019,17 @@ fn tile_edge(w: Option<&str>) -> Option<u32> {
 ///
 /// Separate from `get_page` rather than a query parameter on it, because the
 /// two have different content types: a page is whatever the archive holds, a
-/// tile is always JPEG. (They once had different cache lifetimes too; both send
-/// `PAGE_CACHE_CONTROL` now.) (A library cover, below,
-/// is the exception: it is the page route's answer, so a page 0 already within
-/// the size is the archive's own bytes and type.)
+/// tile is always JPEG. (A library cover, below, is the exception: it is the
+/// page route's answer, so a page 0 already within the size is the archive's
+/// own bytes and type.)
 ///
 /// The tile sends `Cache-Control` and **no `ETag`**, which is not an oversight.
-/// `get_page` can answer a `304` before doing any work because
-/// `locate_member` derives the tag from the in-memory sidecar; here the
-/// member `sha256` and offset are found inside `spawn_blocking`, one level in,
-/// so a validator would arrive too late to skip anything a tile costs. The
-/// freshness header removes the round trip without needing one; adding the
-/// tag would mean hoisting the lookup out here, which is its own change and
-/// buys only a cheaper request after this header has expired. A library cover
-/// does carry one: it is served by `serve_page`, whose lookup runs out here.
+/// `get_page` can answer a `304` before doing any work because `locate_member`
+/// derives the tag from the in-memory sidecar; here the member `sha256` and
+/// offset are found inside `spawn_blocking`, one level in, so a validator would
+/// arrive too late to skip anything a tile costs. Adding the tag would mean
+/// hoisting the lookup out here, which is its own change. A library cover does
+/// carry one: it is served by `serve_page`, whose lookup runs out here.
 ///
 /// **`?w=` makes page 0 a library cover** (O133): at 256, 512 or 768 px on its
 /// long edge (`cover::COVER_LONG_EDGES`) it is served by `serve_page`, exactly
@@ -1090,9 +1037,9 @@ fn tile_edge(w: Option<&str>) -> Option<u32> {
 /// on the page route because covers must reach an account without
 /// `can_stream`, which the page route refuses (`refuse_if_cannot_stream` says
 /// why), and `cover_edge` keeps it to covers: any other page or size is the
-/// tile. Since O134, a `w` at one of `cover::TILE_LONG_EDGES` on any page is
-/// that tile at that size, for a caller that may stream (`tile_edge`); every
-/// other `w` is still the 160 px tile.
+/// tile. A `w` at one of `cover::TILE_LONG_EDGES` on any page is that tile at
+/// that size (O134), for a caller that may stream (`tile_edge`); every other
+/// `w` is the 160 px tile.
 ///
 /// **`?v=` is read on a cover alone**, and `serve_page` decides whether it
 /// names the bytes. A cover's version is made from `serve_page`'s rendering
@@ -1125,7 +1072,7 @@ async fn get_thumb(
     let edge = tile_edge(first_query_value(&query, "w"))
         .filter(|_| can_stream(&request_extensions))
         .unwrap_or(crate::cover::THUMB_LONG_EDGE);
-    // Decoding blocks and can allocate up to `MAX_DECODE_ALLOC`; `get_page`'s
+    // Decoding blocks and can allocate up to `MAX_DECODE_ALLOC`; `serve_page`'s
     // reasoning applies unchanged.
     let fetched = tokio::task::spawn_blocking(move || {
         let found = state.find_blocking(&id)?;
@@ -1165,13 +1112,13 @@ async fn get_thumb(
 
 /// Why a notes request could not be answered.
 ///
-/// `NoProgress`'s split, for the same reason: a work this server does not
-/// hold is the client's mistake and a 404; a notes file that will not read or
-/// write is this server's and a 500. The write path adds a third: a
-/// precondition answer, which carries its own status because 428 ("you sent no
-/// validator") and 412 ("yours is stale") are genuinely different answers and
-/// a client retries differently for each — folding them into one status would
-/// send a client that has not entered a race looking for a conflict.
+/// `NoProgress`'s split, for the same reason: a work this server does not hold
+/// is the client's mistake and a 404; a SQLite read or write that fails is this
+/// server's and a 500. The write path adds a precondition answer, which carries
+/// its own status because 428 ("you sent no validator") and 412 ("yours is
+/// stale") are genuinely different answers and a client retries differently for
+/// each — folding them into one status would send a client that has not entered
+/// a race looking for a conflict.
 #[derive(Debug)]
 enum NoNotes {
     NotFound(String),
@@ -1194,31 +1141,14 @@ impl IntoResponse for NoNotes {
     }
 }
 
-/// Every note on a work.
-///
-/// **A work with no notes file answers an empty document rather than a 204**,
-/// which is where this deliberately parts company with `get_progress` beside
-/// it. Writing notes requires `If-Match`, and a client that had never seen a
-/// document would have no validator to send for its first write — so it would
-/// need either a second precondition spelling for creation, or an
-/// unconditional first write, which is exactly the lost-update hole the header
-/// exists to close, left open for the one request a second device is most
-/// likely to be racing. Synthesising the document here means the first write
-/// is an ordinary conditional write like every later one.
-///
-/// Absent and empty are collapsed here rather than in `notes::load`, which
-/// reports the file honestly: a reader with no notes and a reader who deleted
-/// their last note are in the same state, and nothing downstream benefits from
-/// telling them apart.
 /// The reader this request is, taken from the [`crate::auth::Principal`] the
 /// guard resolved.
 ///
 /// **A `Result` rather than an `Option`, and never a default.** Falling back to
-/// a user id when the extension is absent is how the two `LOCAL_USER = 1`
-/// constants this replaced came to answer for everybody: a default that is right
-/// for one reader is silently wrong for the second. The extension is present on
-/// every guarded route by construction, so its absence is a routing mistake, and
-/// a 500 naming it is the honest answer.
+/// a user id when the extension is absent would answer for everybody: a default
+/// that is right for one reader is silently wrong for the second. The extension
+/// is present on every guarded route by construction, so its absence is a
+/// routing mistake, and a 500 naming it is the honest answer.
 fn reader(request_extensions: &axum::http::Extensions) -> Result<i64, NoPrincipal> {
     request_extensions
         .get::<crate::auth::Principal>()
@@ -1245,15 +1175,23 @@ impl IntoResponse for NoPrincipal {
     }
 }
 
+/// Every note on a work.
+///
+/// **A work with no notes answers an empty document rather than a 204**, which
+/// is where this deliberately parts company with `get_progress` beside it.
+///
+/// Absent and empty are collapsed here rather than in `notes::load`, which
+/// keeps them distinct: a reader with no notes and a reader who deleted their
+/// last note are in the same state, and nothing downstream benefits from
+/// telling them apart.
 async fn get_notes(
     State(state): State<Arc<ServeState>>,
     extensions: axum::http::Extensions,
     AxPath(id): AxPath<String>,
     headers: HeaderMap,
 ) -> Response {
-    // A file read, on the same disk a page comes from and behind the same NFS
-    // mount — `get_page`'s reasoning about the async worker applies unchanged
-    // (O12).
+    // A read of `state.library` — `serve_page`'s reasoning about the async
+    // worker applies unchanged (O12).
     let user_id = match reader(&extensions) {
         Ok(id) => id,
         Err(missing) => return missing.into_response(),
@@ -1267,6 +1205,13 @@ async fn get_notes(
     }
     let loaded = tokio::task::spawn_blocking(move || {
         let found = state.find_blocking(&id).map_err(NoNotes::NotFound)?;
+        // Writing notes requires `If-Match`, and a client that had never seen a
+        // document would have no validator to send for its first write — so it
+        // would need either a second precondition spelling for creation, or an
+        // unconditional first write, which is exactly the lost-update hole the
+        // header exists to close, left open for the one request a second device
+        // is most likely to be racing. Synthesising the document here means the
+        // first write is an ordinary conditional write like every later one.
         let notes = crate::notes::load(&state.library, &found, user_id)
             .map_err(NoNotes::Failed)?
             .unwrap_or_else(|| crate::notes::empty(&found.id));
@@ -1342,8 +1287,8 @@ async fn put_notes(
     };
 
     // Serialising, hashing and writing all block, and the read-compare-write
-    // below holds an exclusive lock across a file write — `get_page`'s
-    // reasoning about the async worker applies unchanged.
+    // below holds an exclusive lock across the write — `serve_page`'s reasoning
+    // about the async worker applies unchanged.
     let written = tokio::task::spawn_blocking(move || {
         let found = state.find_blocking(&id).map_err(NoNotes::NotFound)?;
 
@@ -1464,9 +1409,8 @@ async fn get_truth(
     if let Err(refusal) = visible_editions_or_refuse(&state, &extensions, &id).await {
         return refusal;
     }
-    // A file read, on the same disk a page comes from and behind the same NFS
-    // mount — `get_page`'s reasoning about the async worker applies unchanged
-    // (O12).
+    // A read of `state.library` — `serve_page`'s reasoning about the async
+    // worker applies unchanged (O12).
     let loaded = tokio::task::spawn_blocking(move || -> Result<String, NoTruth> {
         let found = state.find_blocking(&id).map_err(NoTruth::NotFound)?;
         let doc = crate::truth::load(&state.library, &found)
@@ -1540,8 +1484,8 @@ async fn put_truth(
     }
 
     // Serialising, hashing and writing all block, and the read-compare-write
-    // below holds an exclusive lock across a file write — `get_page`'s
-    // reasoning about the async worker applies unchanged.
+    // below holds an exclusive lock across the write — `serve_page`'s reasoning
+    // about the async worker applies unchanged.
     let written = tokio::task::spawn_blocking(move || {
         let found = state.find_blocking(&id).map_err(NoTruth::NotFound)?;
 
@@ -1623,9 +1567,8 @@ async fn get_progress(
         Err(refusal) => return refusal,
     };
 
-    // O12: a file read, on the same disk a page comes from and behind the same
-    // NFS mount. `get_page`'s reasoning above applies to it unchanged — these
-    // two handlers simply did not get it when M2 wrote them.
+    // O12: a read of `state.library`. `serve_page`'s reasoning above applies to
+    // it unchanged.
     let loaded = tokio::task::spawn_blocking(move || {
         let found = state.find_blocking(&id).map_err(NoProgress::NotFound)?;
         crate::progress::load(&state.library, &found, user_id)
@@ -1749,23 +1692,21 @@ async fn put_progress(
 /// not when the default edits the document.
 ///
 /// Two guards, and they deliberately overlap. Requiring `b` closes the
-/// omission: a client assembling this body from a partial object, or one
-/// written before the field existed, would otherwise unpair a page and be told
-/// `200`. `deny_unknown_fields` closes a misspelled or version-skewed field
-/// name.
+/// omission: a client assembling this body from a partial object would
+/// otherwise unpair a page and be told `200`. `deny_unknown_fields` closes a
+/// misspelled or version-skewed field name.
 ///
-/// On `b` specifically the two now say the same thing — a typo'd `"bb"` leaves
+/// On `b` specifically the two say the same thing — a typo'd `"bb"` leaves
 /// `b` absent, so requiring it refuses that request even with the attribute
-/// removed (measured: the sabotage answers `400`, just with the other
-/// message). The attribute still earns its place on the fields where nothing
-/// else would notice: a mistyped `note` is not destructive, but it would be
-/// silently discarded, and a reader who wrote down why they made a correction
-/// should not lose it to a typo in a key.
+/// removed, just with the other message. The attribute still earns its place
+/// on the fields where nothing else would notice: a mistyped `note` is not
+/// destructive, but it would be silently discarded, and a reader who wrote
+/// down why they made a correction should not lose it to a typo in a key.
 ///
 /// The cost is one key on the wire. This is not the OPDS surface — that is
 /// `/opds/v1.2/…`, Atom, and read-only, and it is what third-party readers
-/// use; this is taiyaku's own JSON API, and its only client today is `web/`,
-/// whose `CorrectionRequest` already types `b` as required-and-nullable.
+/// use; this is taiyaku's own JSON API, and its only client is `web/`,
+/// whose `CorrectionRequest` types `b` as required-and-nullable.
 #[derive(Debug, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Correction {
@@ -1779,20 +1720,16 @@ struct Correction {
     /// field as optional whether or not `#[serde(default)]` is written, so a
     /// missing `b` would deserialise to `None` — indistinguishable from an
     /// explicit `null`, which is the exact confusion this field must not have.
-    /// Measured, not assumed: dropping `#[serde(default)]` and re-running the
-    /// status table left `{"from":…,"to":…,"a":"2"}` answering `200` and
-    /// unpairing the slot.
     ///
     /// `Pairing` is what the *present* value means; the outer `Option` here is
     /// still "present or not", filled by `#[serde(default)]` only when the key
     /// is absent. `present` still has to force the wrapper past a plain
     /// `Option`'s null-absorbing `Deserialize` — that absorption is exactly
     /// what would make `"b": null` and an absent `b` indistinguishable again,
-    /// now one level up: measured the same way, `Option<Pairing>` without
-    /// `deserialize_with` answers `an_explicit_null_unpairs_the_slot`'s `"b":
-    /// null` with the *absent-b* refusal, because `Option<Pairing>::deserialize`
-    /// consumes the `null` and reports `None` before `Pairing::deserialize`
-    /// ever runs.
+    /// one level up: `Option<Pairing>` without `deserialize_with` would answer
+    /// `an_explicit_null_unpairs_the_slot`'s `"b": null` with the *absent-b*
+    /// refusal, because `Option<Pairing>::deserialize` consumes the `null` and
+    /// reports `None` before `Pairing::deserialize` ever runs.
     #[serde(default, deserialize_with = "present")]
     b: Option<Pairing>,
     #[serde(default)]
@@ -1800,8 +1737,7 @@ struct Correction {
 }
 
 /// What a present `b` asks for: `null` versus a slot. `Correction::b`'s outer
-/// `Option` is presence, filled by `#[serde(default)]`; this is the other
-/// axis, the one that used to be a second, anonymous `Option`.
+/// `Option` is presence, filled by `#[serde(default)]`; this is the other axis.
 #[derive(Debug)]
 enum Pairing {
     /// `"b": null` — unpair `a`.
@@ -1866,35 +1802,31 @@ fn one_slot(text: &str, side: &str) -> Result<taiyaku_core::Slot, Response> {
 /// replace an edge wholesale. `If-Match` is what makes "the document this
 /// server holds" and "the document the client was looking at" the same thing.
 ///
-/// **Took no `Extensions` and consulted no grant at all until this joined the
-/// other six.** It resolved its target by slug alone,
-/// so a restricted account could both read the
-/// sidecar this handler returns and write shared `alignment`/`run` rows for a
-/// work outside every root it held — worse than the read leaks the sibling
-/// routes closed, because an alignment is shared library truth rather than
+/// **Applies the grant itself.** Resolving its target by slug alone would let
+/// a restricted account both read the sidecar this handler returns and write
+/// shared `alignment`/`run` rows for a work outside every root it held — worse
+/// than a read leak, because an alignment is shared library truth rather than
 /// per-account state.
 ///
 /// **Filters its response exactly as `get_sidecar` does, and for the same
-/// reason — this was declared a 404-only lookup and was not one.** This
-/// route sits on the same [`visible_editions_or_refuse`] helper `get_sidecar`
-/// uses: a reader granted only `en` on a work also holding a withheld `raw`
-/// passes it — the work keeps a visible edition — and until this fix got
-/// back a 200 carrying the *whole* corrected sidecar, `raw` included. The
-/// fix filters the response the same way.
+/// reason.** A reader granted only `en` on a work also holding a withheld
+/// `raw` passes the work-level check — the work keeps a visible edition — and
+/// would get back a 200 carrying the *whole* corrected sidecar, `raw`
+/// included, if the response were not filtered.
 ///
 /// **Refuses a correction that itself names a withheld edition, on either
-/// side.** The read-leak fix above shaped only what came back; it left the
-/// write open — a reader granted `en` alone could still submit
+/// side.** Filtering the response shapes only what comes back; it would leave
+/// the write open — a reader granted `en` alone could still submit
 /// `{"from":"en","to":"raw",…}` and have it accepted, writing shared
 /// `alignment`/`run` rows for `raw` that every reader who *can* see `raw`
-/// is then served from. That is worse than the response leak this function
-/// closed first: a read leak costs the caller who triggered it a fact they
-/// should not have; this write would have cost every other reader a fact
-/// they did not ask this caller to assert. Closed by asking each side
-/// [`refuse_if_hidden`]'s question — the exact per-edition one `/pages`,
-/// `/thumb` and the download routes already ask, through the same
-/// [`edition_refusal`] rather than a third spelling of it — before the body is
-/// otherwise parsed, in [`visible_editions_for_a_correction`].
+/// is then served from. That is worse than a response leak: a read leak costs
+/// the caller who triggered it a fact they should not have; this write would
+/// cost every other reader a fact they did not ask this caller to assert.
+/// Each side is asked [`refuse_if_hidden`]'s question — the exact
+/// per-edition one `/pages`, `/thumb` and the download routes already ask,
+/// through the same [`edition_refusal`] rather than another spelling of it —
+/// before the body is otherwise parsed, in
+/// [`visible_editions_for_a_correction`].
 ///
 /// **What is stored is never filtered — only what is returned.** `visible`
 /// is read once, before the write, and used solely to shape the HTTP
@@ -1971,7 +1903,7 @@ async fn patch_alignments(
     };
 
     // Serialising, hashing and writing all block, and the read-modify-write
-    // below holds an exclusive lock across the file write — `get_page`'s
+    // below holds an exclusive lock across the file write — `serve_page`'s
     // reasoning about the async worker applies to it unchanged.
     let written = tokio::task::spawn_blocking(move || {
         let found = state.find_blocking(&id).map_err(not_found)?;
@@ -2039,8 +1971,8 @@ async fn patch_alignments(
             // The rows are what every *other* request is answered from
             // (`taiyaku serve` projects each `Work` out of them at start, and,
             // with no paths, again whenever the library's structure moves), so
-            // writing only the file left the two disagreeing until the next
-            // start re-imported it — O43. Between them, the file is still
+            // writing only the file would leave the two disagreeing until the
+            // next start re-imported it — O43. Between them, the file is
             // first: it is the copy a person can read, diff and back up, and
             // if the row write fails after it the correction is recoverable,
             // because the next start imports that file. The reverse ordering
@@ -2117,8 +2049,6 @@ async fn patch_alignments(
     }
 }
 
-/// Build the router. Separate from `serve` so tests can drive it with
-/// `oneshot` and never open a socket.
 /// **Every path this server answers, and the handler for each.**
 ///
 /// The router's own source of truth, and the reason
@@ -2182,9 +2112,9 @@ pub(crate) fn guarded_routes() -> Vec<(&'static str, axum::routing::MethodRouter
     ));
     // **Spec C1 §5, and in `guarded_routes` rather than `open_routes`.**
     // `route_layer` wraps only what is registered before it, so a browse route
-    // in the other list would ship unauthenticated with a green suite —
-    // `every_route_refuses_an_anonymous_request` derives its count from both
-    // lists and is what catches that.
+    // in the other list would ship unauthenticated —
+    // `every_route_refuses_an_anonymous_request` checks its paths against a
+    // typed list and is what catches that.
     routes.extend([
         ("/api/library/home", get(crate::library_api::home)),
         // Returns `{ series, unfiled }` — spec C1 §5.4. A hand-imported work
@@ -2263,16 +2193,15 @@ pub(crate) fn guarded_routes() -> Vec<(&'static str, axum::routing::MethodRouter
         // **Spec C3 §6's write-back, and the only route in this product that
         // modifies a file the user owns.** Guarded four ways —
         // authenticated, admin, `can_stamp`, then the slug — and the third is
-        // a capability an administrator does NOT inherit, which is this
-        // branch's one documented exception to O86. See
-        // `auth::Principal::can_stamp`, and `stamp.rs`'s own module comment
-        // for why the capability is read before the slug is resolved rather
-        // than after.
+        // a capability an administrator does NOT inherit, which is a
+        // documented exception to O86. See `auth::Principal::can_stamp`, and
+        // `stamp.rs`'s own module comment for why the capability is read
+        // before the slug is resolved rather than after.
         (
             "/api/library/works/{slug}/stamp-comicinfo",
             axum::routing::get(crate::stamp::plan).post(crate::stamp::perform),
         ),
-        // **Spec C4 §6's rule-editor routes, task 8 of the branch plan.**
+        // **Spec C4 §6's rule-editor routes.**
         // Admin-gated the same way the curation and metadata blocks above
         // are, and for the identical reason stated on each of theirs: a
         // route that writes cannot afford to land in `open_routes`.
@@ -2282,10 +2211,10 @@ pub(crate) fn guarded_routes() -> Vec<(&'static str, axum::routing::MethodRouter
             "/api/library/rules",
             get(crate::config_api::list_rules)
                 .post(crate::config_api::create_rule)
-                // Spec C4 §4.2's save route, PR B. A method on this same
-                // path, so nothing else in this file's route *lists* moves —
-                // and `config_api::tests::every_config_api_route_refuses_a_
-                // reader` grows a line, because a per-path list cannot see a
+                // Spec C4 §4.2's save route. A method on this same path, so
+                // nothing else in this file's route *lists* moves — and
+                // `config_api::tests::every_config_api_route_refuses_a_reader`
+                // has a line for it, because a per-path list cannot see a
                 // method arrive.
                 .put(crate::config_api::save_rules),
         ),
@@ -2318,11 +2247,10 @@ pub(crate) fn guarded_routes() -> Vec<(&'static str, axum::routing::MethodRouter
             "/api/library/roots/{id}/move",
             axum::routing::post(crate::libraries_api::move_dir),
         ),
-        // **Spec C4 §3's scan-control route, task 12 of the branch plan.**
-        // Admin-gated like every other route in this block, and for the
-        // identical reason: the server has never scanned before this task,
-        // and the trigger that lets it start one is exactly as destructive a
-        // capability as removing a root above. `POST` starts a scan
+        // **Spec C4 §3's scan-control route.** Admin-gated like every other
+        // route in this block, and for the identical reason: the trigger that
+        // lets the server start a scan is exactly as destructive a capability
+        // as removing a root above. `POST` starts a scan
         // — refusing a second one already running against the same root,
         // 409, rather than queuing it — and `GET` reads the registry
         // `ServeState.scans` holds for it: live progress while the spawned
@@ -2355,8 +2283,8 @@ pub(crate) fn guarded_routes() -> Vec<(&'static str, axum::routing::MethodRouter
         // The directory browser behind "add a directory": directories beneath the
         // prefixes the server was started with, and nowhere else.
         ("/api/library/dirs", get(crate::dirs_api::list_dirs)),
-        // **Spec C4 §4's user-administration routes, PR 2.** Admin-gated for
-        // the reason every route in this block is, with one of its own: these
+        // **Spec C4 §4's user-administration routes.** Admin-gated for the
+        // reason every route in this block is, with one of its own: these
         // routes write `role`, `can_download`, `can_stream` and
         // `every_library`, and add `user_library` rows (removing a library
         // only drops its rows), so a route here that landed in `open_routes`
@@ -2382,11 +2310,11 @@ pub(crate) fn guarded_routes() -> Vec<(&'static str, axum::routing::MethodRouter
             "/api/library/users/{id}/keys/{kid}",
             axum::routing::delete(crate::users_api::revoke_key),
         ),
-        // **Spec C4 §5's backup routes, PR 2.** Admin-gated with a reason of
-        // their own on top of the block's: a backup is the whole database,
-        // password hashes included, so the download route hands an
-        // administrator every account's PHC string. There is no restore route
-        // — C4 §5 puts restore out of band on purpose.
+        // **Spec C4 §5's backup routes.** Admin-gated with a reason of their
+        // own on top of the block's: a backup is the whole database, password
+        // hashes included, so the download route hands an administrator every
+        // account's PHC string. There is no restore route — C4 §5 puts restore
+        // out of band on purpose.
         (
             "/api/library/backups",
             get(crate::backup_api::list_backups).post(crate::backup_api::create_backup),
@@ -2408,20 +2336,17 @@ pub(crate) fn guarded_routes() -> Vec<(&'static str, axum::routing::MethodRouter
 /// `auth::tests::every_route_declares_its_grant_posture` asserts this table's
 /// route set against `guarded_routes`'s exactly — so a route added to one
 /// without the other fails the build on the commit that adds it.
-/// [`guarded_routes`]'s own doc comment makes this argument for
-/// authentication: "that is exactly the failure a reviewer's checklist has:
-/// it goes stale the first time someone adds a route and does not think
-/// about auth." Authorization had no such test until this one, and six
-/// routes — `stream_page`, `cover`, `work_feed` and `works` in `opds.rs`,
-/// `list_works` in this file, and `patch_alignments` — drifted out of the
-/// grant one at a time, over more than one spec, before anything said so.
+/// [`guarded_routes`]'s own doc comment makes this argument for authentication:
+/// "exactly the failure a reviewer's checklist has: it goes stale the first
+/// time someone adds a route and does not think about auth." Authorization
+/// needs the same test: a route added without thinking about the grant would
+/// drift out of it unnoticed.
 ///
 /// `#[cfg(test)]`, like `test_support` itself: this table has no production
 /// caller — its whole job is being checked against `guarded_routes` by
 /// `auth::tests::every_route_declares_its_grant_posture` — and leaving it
 /// compiled into the production binary would make it dead code there,
-/// failing this crate's `-D warnings` clippy gate on the plain `--lib`
-/// target.
+/// failing this crate's `-D warnings` clippy gate on the plain `--lib` target.
 #[cfg(test)]
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum GrantPosture {
@@ -2434,18 +2359,12 @@ pub(crate) enum GrantPosture {
     /// simply never be named in the body.
     Filters,
     /// **Both of the above, for a route with two distinct grant-facing
-    /// jobs.** A single posture per route was the table's own premise until
-    /// `/api/works/{work}/alignments` broke it: `patch_alignments` refuses a
-    /// request that itself *names* a withheld edition (`Refuses`, on the
-    /// write) and separately filters the response body of a request that
-    /// does not (`Filters`, on the read) — two different questions asked of
-    /// two different parts of one request, neither of which subsumes the
-    /// other. Recording it as bare `Refuses` was true but incomplete: it
-    /// said nothing about the response, which is exactly why the response
-    /// filter went unproven — `every_route_declares_its_grant_posture`'s
-    /// `Filters` completeness check has no reason to look at a route the
-    /// table calls `Refuses`. A second table (refuse-postures crossed with
-    /// filter-postures) was rejected: most routes need only one axis, so a
+    /// jobs.** `patch_alignments` refuses a request that itself *names* a
+    /// withheld edition (`Refuses`, on the write) and separately filters the
+    /// response body of a request that does not (`Filters`, on the read) — two
+    /// different questions asked of two different parts of one request, neither
+    /// of which subsumes the other. A second table (refuse-postures crossed
+    /// with filter-postures) was rejected: most routes need only one axis, so a
     /// second table would carry an empty column for nearly every entry. A
     /// combined variant costs one arm in each match already written for
     /// `Refuses` and `Filters` and states the truth in one place.
@@ -2463,12 +2382,10 @@ pub(crate) fn grant_postures() -> Vec<(&'static str, GrantPosture)> {
     use GrantPosture::{Filters, GrantIndependent, Refuses, RefusesAndFilters};
     vec![
         ("/api/works", Filters),
-        // Was `Refuses` until this table's proof was extended to a work
-        // split across roots (Finding 2): `get_sidecar` refuses only a work
-        // with *no* visible edition, and filters `editions`/`alignments`/
-        // `hub` down to the visible set for one that has some — the same
-        // `Filters` shape `/opds/v1.2/works/{work}` already declares below,
-        // for the identical reason stated there.
+        // `get_sidecar` refuses only a work with *no* visible edition, and
+        // filters `editions`/`alignments`/`hub` down to the visible set for one
+        // that has some — the same `Filters` shape `/opds/v1.2/works/{work}`
+        // declares below, for the identical reason stated there.
         ("/api/works/{work}", Filters),
         ("/api/works/{work}/{edition}/pages/{index}", Refuses),
         ("/api/works/{work}/{edition}/pages/{index}/thumb", Refuses),
@@ -2489,31 +2406,16 @@ pub(crate) fn grant_postures() -> Vec<(&'static str, GrantPosture)> {
         // written whole, the edition outside the grant included (O191),
         // which is why this is `Refuses` and not `RefusesAndFilters`.
         ("/api/works/{work}/truth", Refuses),
-        // Was briefly `Filters`, for `/api/works/{work}`'s exact reason: the
-        // response-leak fix round put `patch_alignments` on the same
-        // `visible_editions_or_refuse` helper `get_sidecar` uses, and a
-        // correction on a work split across roots answered 200 with the
-        // corrected sidecar filtered to the visible editions.
+        // `patch_alignments` filters its response to the visible editions, as
+        // `get_sidecar` does (`Filters`), and refuses outright (404) a
+        // correction that itself names an edition outside the grant, before
+        // `Sidecar::correct` or the write beneath it runs
+        // (`visible_editions_for_a_correction`): a reader granted `en` alone
+        // could otherwise write `alignment`/`run` rows for `raw`, shared state
+        // every reader who *can* see `raw` is then served from, which is worse
+        // than a read leak.
         //
-        // **Then `Refuses`, once the write itself was guarded — and that was
-        // still only half true.** `visible_editions_or_refuse` only ever
-        // shaped the *response*; it never asked whether the correction's own
-        // `from`/`to` were inside the grant, so a reader granted `en` alone
-        // could still write `alignment`/`run` rows for `raw` — shared state
-        // every reader who *can* see `raw` is then served from, which is
-        // worse than the read leak the response-only fix closed. Two
-        // `refuse_if_hidden` calls now refuse such a correction outright
-        // (404) before `Sidecar::correct` or the write beneath it ever runs
-        // — but the response-filtering half never stopped being true, and
-        // marking this bare `Refuses` said it had: `Filters`'s completeness
-        // check in `every_route_declares_its_grant_posture` only walks
-        // routes the table calls `Filters`, so the response filter on a
-        // correction between two *visible* editions went unproven for the
-        // whole gap between the two fix rounds — a verification pass caught
-        // it (Finding 1/A in this branch's report) with a mutation that
-        // passed all 371 tests that existed before it.
-        //
-        // `RefusesAndFilters` now: the write half is proven in
+        // `RefusesAndFilters`: the write half is proven in
         // `every_route_declares_its_grant_posture`'s own dedicated block
         // rather than the generic `Refuses` loops (which explicitly skip
         // this pattern) because a correction needs a body and `If-Match`
@@ -2569,14 +2471,10 @@ pub(crate) fn grant_postures() -> Vec<(&'static str, GrantPosture)> {
         ),
         ("/api/library/home", Filters),
         ("/api/library/series", Filters),
-        // Were `Refuses` until Finding 2's split-fixture proof caught the
-        // mislabelling: all three already reuse `browse::work`/`one_series`/
-        // `cover_work`, which filter to visible editions and 404 only when
-        // *none* survive — a work split across roots gets 200 with `en`
-        // alone, not a 404. The underlying code was never the bug here
-        // (unlike `routes.rs`'s three); only the table's claim about it was
-        // wrong, and a wrong claim is exactly what this table exists to
-        // catch.
+        // `Filters`, not `Refuses`: all three reuse
+        // `browse::work`/`one_series`/`cover_work`, which filter to visible
+        // editions and 404 only when *none* survive — a work split across
+        // roots gets 200 with `en` alone, not a 404.
         ("/api/library/series/{id}", Filters),
         ("/api/library/series/{id}/cover", Filters),
         ("/api/library/works/{slug}", Filters),
@@ -2637,47 +2535,22 @@ pub(crate) fn grant_postures() -> Vec<(&'static str, GrantPosture)> {
                           the same way",
             },
         ),
-        // **Spec C3 §5's metadata-editing routes — `Refuses`, not
-        // `GrantIndependent` (I8, whole-branch review).** These four were
-        // first classified `GrantIndependent` on the argument the comment
-        // used to make here: a title, a series' titles, an edition's label
-        // or a member's chapter number is a fact about the library's
-        // organisation, not about what any one account may see — true of
-        // *who may act on the answer* (still admin-only, unconditionally),
-        // false of *which rows an administrator's own restricted grant
-        // resolves through*. `library_api::work`/`one_series` already
-        // resolve their slug/id through `principal.access`, so a hidden work
-        // was a 404 on `GET` and 200 — with the full re-projected document,
-        // series titles, tags, external ids, credits, chapter numbers
-        // included — on `PATCH` of the identical id. `metadata::work_by_slug`,
-        // `edition_owner`, `member_owner` and `works_in_series` now take
-        // the access and answer the same 404 a `GET` already does; membership
-        // in an administrator's *account* (`Role::Admin`) is unconditional
-        // and orthogonal to `Principal.access`, which is why "admin-only" and
-        // "resolves through the grant" are not in tension.
-        //
-        // **That last sentence stopped being true with O86, and these four
-        // entries moved from `Refuses` to `GrantIndependent` because of it.**
-        // The two are no longer orthogonal: `Principal::from_account` drops an
-        // administrator's grant outright, so every caller these routes admit
-        // holds `Access::Every`, and there is no hidden work for them to
-        // refuse. The 404 the entries used to assert was driven by a
-        // fixture that granted a root to the seeded *admin*, which is exactly
-        // the combination O86 made unrepresentable. **The check is void rather
-        // than lost**: it proved the answer for a state the model no longer
-        // has.
+        // **Spec C3 §5's metadata-editing routes (I8) — `GrantIndependent`,
+        // not `Refuses`.** `Principal::from_account` drops an administrator's
+        // grant outright (O86), so every caller these routes admit holds
+        // `Access::Every`, and there is no hidden work for them to refuse.
         //
         // `work_by_slug`, `edition_owner`, `member_owner` and `works_in_series`
-        // still take the access and still filter on it, kept deliberately: it
-        // is correct for any restricted caller, and the day the role rule
-        // changes it is the difference between a leak and none.
+        // take the access and filter on it, kept deliberately: it is correct
+        // for any restricted caller, and the day the role rule changes it is
+        // the difference between a leak and none.
         //
-        // **Not "unreachable" — they run on every edit.** What no longer
-        // reaches them through these routes is an access other than `Every`,
-        // so the clause is always a no-op here. The distinction is not pedantry: a
-        // sweep the day this landed reported `metadata::root_grant_clause ->
-        // String::new()` as a **survivor**, because deleting the entire grant
-        // filter passed every test. `metadata::tests::
+        // **Not "unreachable" — they run on every edit.** An access other than
+        // `Every` does not reach them through these routes, so the clause is
+        // always a no-op here. The distinction is not pedantry:
+        // `metadata::root_grant_clause -> String::new()` would otherwise
+        // survive a mutation sweep, because deleting the entire grant filter
+        // passes every route test. `metadata::tests::
         // the_grant_clause_still_filters_even_though_no_route_can_supply_a_grant`
         // asserts the contract directly with a slice no route can supply, and
         // fails against that mutation. A guard nothing exercises is a guard
@@ -2767,9 +2640,9 @@ pub(crate) fn grant_postures() -> Vec<(&'static str, GrantPosture)> {
                           once instead of one",
             },
         ),
-        // Spec C4 §2's roots routes, task 11 of the branch plan. Every entry
-        // states its own reason rather than inheriting a shared one, the
-        // same rule the rules block above holds this table to.
+        // Spec C4 §2's roots routes. Every entry states its own reason rather
+        // than inheriting a shared one, the same rule the rules block above
+        // holds this table to.
         (
             "/api/library/roots",
             GrantIndependent {
@@ -2797,7 +2670,7 @@ pub(crate) fn grant_postures() -> Vec<(&'static str, GrantPosture)> {
                           grant to filter it by",
             },
         ),
-        // Spec C4 §3's scan-control route, task 12 of the branch plan.
+        // Spec C4 §3's scan-control route.
         (
             "/api/library/roots/{id}/scan",
             GrantIndependent {
@@ -2851,9 +2724,9 @@ pub(crate) fn grant_postures() -> Vec<(&'static str, GrantPosture)> {
                           account's grant could scope",
             },
         ),
-        // Spec C4 §4's user routes, PR 2. Every entry states its own reason
-        // rather than inheriting a shared one, the same rule the rules and
-        // roots blocks above hold this table to.
+        // Spec C4 §4's user routes. Every entry states its own reason rather
+        // than inheriting a shared one, the same rule the rules and roots
+        // blocks above hold this table to.
         (
             "/api/library/users",
             GrantIndependent {
@@ -2970,7 +2843,7 @@ pub(crate) fn open_routes() -> Vec<(&'static str, axum::routing::MethodRouter<Ar
 }
 
 /// `Cache-Control: private, no-store` on every guarded response that did not
-/// set one itself. See the call site in [`build_router`].
+/// set one itself. See the call site in [`build_router_serving`].
 async fn per_reader_by_default(
     request: axum::extract::Request,
     next: axum::middleware::Next,
@@ -2985,6 +2858,8 @@ async fn per_reader_by_default(
     response
 }
 
+/// Build the router. Separate from `serve` so tests can drive it with
+/// `oneshot` and never open a socket.
 pub fn build_router(state: Arc<ServeState>) -> Router {
     build_router_serving(state, None)
 }
@@ -3016,12 +2891,9 @@ pub(crate) fn build_router_serving(
             state.clone(),
             crate::auth::guard,
         ))
-        // **A default, not eight call sites.** Every guarded response is
-        // per-reader unless it says otherwise, and the first attempt at this
-        // added the header at each place a per-reader document was built — which
-        // reached two of eight. `get_notes`, the route the constant's own doc
-        // named first, was not one of them, and neither were the OPDS feeds,
-        // which additionally get no `Set-Cookie` and so lack even the accident
+        // **A default, not a header at each call site.** Every guarded
+        // response is per-reader unless it says otherwise. The OPDS feeds need
+        // the default: they get no `Set-Cookie` and so lack even the accident
         // that makes most proxies decline to cache an authenticated response.
         //
         // A response that has already set `Cache-Control` keeps it: the page and
@@ -3038,14 +2910,12 @@ pub(crate) fn build_router_serving(
     // so anything merged afterwards is outside it. That is a sharp edge — a
     // route added to the wrong list is silently open.
     //
-    // **Two tests stop that being invisible, and for one commit only one of
-    // them existed.** `every_route_refuses_an_anonymous_request` walks
-    // `guarded_routes` and derives its own count from both lists, so a route
-    // that leaves the guarded one fails it; `open_routes_are_the_ones_that_cannot_be_guarded`
-    // pins the exemption list itself and proves each entry is reachable
-    // anonymously. Before the second, nothing read this list at all — a route
-    // moved here shipped unauthenticated with a green suite, which the
-    // whole-branch review caught on 2026-08-18.
+    // **Two tests stop that being invisible.**
+    // `every_route_refuses_an_anonymous_request` checks `guarded_routes`'s
+    // paths against a typed list, so a route that leaves the guarded one
+    // fails it;
+    // `open_routes_are_the_ones_that_cannot_be_guarded` pins the exemption
+    // list itself and proves each entry is reachable anonymously.
     let open = open_routes()
         .into_iter()
         .fold(Router::new(), |router, (path, handler)| {
@@ -3071,9 +2941,7 @@ pub(crate) fn build_router_serving(
                 };
                 let method = request.method().to_string();
                 // Path *and* query string: a client asking for
-                // `?width=1536` is invisible if only `path()` is
-                // logged, and this server's total absence of resize
-                // support makes that more important to catch, not less.
+                // `?width=1536` is invisible if only `path()` is logged.
                 let path = request
                     .uri()
                     .path_and_query()

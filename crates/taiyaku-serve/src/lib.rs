@@ -1,7 +1,7 @@
 //! `taiyaku serve` — the sidecar, its pages, and where you were, over HTTP.
 //!
 //! Everything above `PageSource` is indifferent to where pages come from, which
-//! is what lets taiyaku run beside Stump now and replace it later without a
+//! is what lets taiyaku run beside Stump or replace it without a
 //! redesign. See `docs/superpowers/specs/2026-07-30-reader-design.md`.
 
 mod about;
@@ -63,20 +63,18 @@ pub use registry::{Refresh, Snapshot, Works};
 pub use reqlog::{Entry, Log};
 pub use routes::build_router;
 pub use source::{LocalLibrary, PageSource, ServedPage};
-// `Progress` moved to `taiyaku-library` (Task 9's `state::progress` needs it
-// there); re-exported from its new home so `crate::Progress` still resolves.
+// `Progress` lives in `taiyaku-library`, where the `state` module needs it;
+// re-exported here so `crate::Progress` resolves.
 pub use taiyaku_library::Progress;
 // `from_library` projects every work in a library once, and refuses the lot if
-// any one will not project. `taiyaku serve` no longer runs it: with no paths
-// it builds a live `Works` through `Works::library`, which reads the same rows
-// but leaves out and names a work that will not project. It stays for the
-// fixtures that build a fixed registry over a library.
+// any one will not project. `taiyaku serve` does not run it: with no paths it
+// builds a live `Works` through `Works::library`, which reads the same rows but
+// leaves out and names a work that will not project. It is for the fixtures
+// that build a fixed registry over a library.
 //
 // What it decides about a work whose `sidecar_path` is NULL: the path becomes
 // empty, `Work::has_document` reads that as "no document", and the alignment
-// route writes rows without a file. Nothing else in `serve` reads `Work.path`
-// except two error messages and the bridge row, and a work read from its own
-// row never needs the latter.
+// route writes rows without a file.
 pub use works::{Work, from_library, load_works, work_id};
 
 /// Everything a request needs: which works exist, and where pages come from.
@@ -151,17 +149,16 @@ pub struct ServeState {
     /// A `Mutex<()>` closes that gap by construction: acquiring it and
     /// running the long job are the same critical section.
     ///
-    /// **What this closes.** `scan_jobs::run`'s own scan derives
-    /// one work at a time, holding no lock of its own across the whole pass —
-    /// the right grain for a scan, so a half-finished one still leaves most
-    /// of the library current. `taiyaku_library::preview::apply` instead
+    /// **What this closes.** `scan_jobs::run`'s own scan derives one work at a
+    /// time — the right grain for a scan, so a half-finished one still leaves
+    /// most of the library current. `taiyaku_library::preview::apply` instead
     /// holds one `BEGIN IMMEDIATE` across a whole-library derive so a save
-    /// lands atomically. Nothing serialised those two against each other
-    /// before this: a save's single transaction could land between two of a
-    /// scan's own, replacing the rule table and re-deriving the whole library
-    /// while the scan's already-compiled `Engine` was still mid-pass under
-    /// the rules that transaction just replaced — the scan then wrote its
-    /// remaining works back under rules the `rule` table no longer named.
+    /// lands atomically. Without this lock nothing would serialise those two
+    /// against each other: a save's single transaction could land between two
+    /// of a scan's own, replacing the rule table and re-deriving the whole
+    /// library while the scan's already-compiled `Engine` is mid-pass under the
+    /// rules that transaction just replaced; the scan would then write its
+    /// remaining works back under rules the `rule` table does not name.
     ///
     /// **Acquired and released entirely inside `spawn_blocking`, never held
     /// across an `.await`.** Both a save and a scan already run on a
@@ -218,20 +215,12 @@ pub struct ScanProgress {
 impl ServeState {
     /// Where generated filmstrip tiles are kept between runs.
     ///
-    /// A sibling of `cache_dir` rather than the same directory, so that the
-    /// two can be thrown away separately — because only one of them is cheap
-    /// to rebuild. The covers are one per edition and 165 KB for the whole
-    /// library; the tiles and reading-size pages beside them are 1.12 MiB per
-    /// 195-page edition and cost 126 ms a page to regenerate against 10 ms
-    /// warm, measured over 235 real generations. One shared directory would
+    /// A sibling of `cache_dir` rather than the same directory, so that the two
+    /// can be thrown away separately (O11) — because only one of them is cheap
+    /// to rebuild. The covers are small; the tiles and reading-size pages
+    /// beside them are large and slow to regenerate. One shared directory would
     /// make clearing the cheap half impossible without taking the expensive
     /// half with it, which is exactly the bluntness this arrangement avoids.
-    ///
-    /// O11 made this argument about `.taiyaku-cache`, where the server's
-    /// covers sat beside the CLI's fingerprint cache. They no longer share a
-    /// tree — `cache_root` moved the server's under the platform cache root —
-    /// and the argument outlived the move because it was never about which
-    /// tree the two were in.
     #[must_use]
     pub fn thumb_cache_dir(&self) -> std::path::PathBuf {
         self.cache_dir.with_file_name("thumbs")
@@ -352,13 +341,11 @@ impl StumpConfig {
     /// `base` is normalised once, here — a trailing slash trimmed — rather
     /// than leaving each consumer to do it separately.
     ///
-    /// Before this existed, `UreqTransport::new` trimmed its own copy of
-    /// `base` for the transport (`stump/http.rs`), while `resolve_work`'s
-    /// cache key (`lib.rs`'s call into `resolve::resolve_work`) used whatever
-    /// was typed. `https://nas:10801/` and `https://nas:10801` were
-    /// therefore one instance to every request and two to the resolution
-    /// cache — so typing the slash once silently discarded every prior
-    /// resolution, forever, with nothing to say so.
+    /// Left to each consumer, the transport's `base` (`UreqTransport::new`)
+    /// and `resolve_work`'s cache key could disagree: `https://nas:10801/` and
+    /// `https://nas:10801` would be one instance to every request and two to
+    /// the resolution cache, so typing the slash once would discard every
+    /// prior resolution.
     pub fn new(base: impl Into<String>, key: impl Into<String>) -> Self {
         Self {
             base: base.into().trim_end_matches('/').to_string(),
@@ -369,10 +356,7 @@ impl StumpConfig {
 
 /// How [`serve`] runs, beyond the library and the works it serves.
 ///
-/// **A struct because `serve` reached its limit.** Its eighth positional
-/// argument was `AuthConfig`, and its doc said a ninth must not be positional.
-/// `--web` was the ninth, and it brought the other six with it rather than
-/// starting a struct of one.
+/// **A struct because `serve` reached its limit on positional arguments.**
 #[derive(Debug, Clone, Default)]
 pub struct ServeOptions {
     /// `host:port` to listen on.
@@ -413,13 +397,11 @@ pub(crate) fn announce_dirs(dirs: &[std::path::PathBuf], say: &mut dyn FnMut(&st
 ///
 /// `library` is the caller's already-open library — `taiyaku-cli`'s `serve`
 /// opens it at the resolved `--db` path and imports every `works` entry into
-/// it before calling this, which is Task 15's "`taiyaku serve <sidecar>...`
-/// keeps working: it imports those paths and serves them." This function no
-/// longer opens one of its own; the tests in this crate that build a
-/// `ServeState` without going through an import (`test_support::state`, most
-/// of this file's own fixtures) still work unchanged, by passing an empty
-/// `Library::open_in_memory()` — this parameter only says *which* library to
-/// serve out of, not that one must hold every work already.
+/// it before calling this. The tests in this crate that build a `ServeState`
+/// without going through an import (`test_support::state`, most of this file's
+/// own fixtures) pass an empty `Library::open_in_memory()`: this parameter
+/// only says *which* library to serve out of, not that one must hold every
+/// work already.
 ///
 /// # Errors
 ///
@@ -484,13 +466,11 @@ pub async fn serve(
             let transport: Arc<dyn stump::http::Transport> = Arc::new(
                 stump::http::UreqTransport::new(config.base.clone(), config.key),
             );
-            // O8: constructed with **nothing resolved**. Resolution used to
-            // run here, before the bind, so a cold start against a reachable
-            // instance cost one GraphQL round trip per member — measured at
-            // 3.15 s for one nine-member work — and a start against an
-            // unreachable one cost a full 30 s POST timeout before the
-            // listener existed, on every start, to reach pages that were
-            // sitting on local disk the whole time.
+            // O8: constructed with **nothing resolved**. Resolving here, before
+            // the bind, would hold the listener back for one GraphQL round trip
+            // per member on a cold start against a reachable instance, and for
+            // a full 30 s POST timeout on every start against an unreachable
+            // one, to reach pages that sit on local disk the whole time.
             let side = StumpSide::new(
                 transport.clone(),
                 stump::cache::Resolutions::new(),
@@ -506,9 +486,9 @@ pub async fn serve(
     let xdg = std::env::var_os("XDG_CACHE_HOME");
     let home = std::env::var_os("HOME");
     let resolved = cache_root::cache_root(cache.as_deref(), xdg.as_deref(), home.as_deref());
-    // The rule two hundred lines up, applied to a default rather than to a
+    // The rule of the `--refresh-stump` notice, applied to a default, not a
     // flag: a thing that quietly does something surprising is worse than one
-    // that says so. The fallback branch is the only one that still follows the
+    // that says so. The fallback branch is the only one that follows the
     // working directory — a relative variable is ignored rather than joined,
     // and a relative `--cache` was typed on purpose — which is the defect that
     // module was written to remove, so it is the one branch that must not be
@@ -552,19 +532,16 @@ pub async fn serve(
     // stays on." Both halves matter — a person who left it on a month ago will
     // not reread the startup line, and a person who set it today will not see
     // the per-request one until somebody uses it.
-    // **Said whether or not the flag is on.** A fresh or upgraded library has no
-    // account anybody can authenticate as — migration 4 rewrites the seeded
-    // row's NULL password to the locked placeholder — and `serve` bound, printed
-    // "listening on…", and answered 401 to every route with nothing anywhere
-    // saying why. The only check sat inside the `--allow-web-setup` branch, so
-    // the ordinary install saw nothing at all. Found by the second whole-branch
-    // review.
+    // **Said whether or not the flag is on.** A fresh or upgraded library has
+    // no account anybody can authenticate as — migration 4 rewrites the seeded
+    // row's NULL password to the locked placeholder — so `serve` would bind,
+    // print "listening on…", and answer 401 to every route with nothing
+    // anywhere saying why.
     // **`is_claimed`, not `admin_exists`** — the message says "no account with
     // a password" and that is literally what `is_claimed` counts. Read through
-    // `admin_exists` it also fired on a library where an ordinary reader could
-    // log in perfectly well, telling its owner every route would answer 401
-    // while they were using it. Same confusion as the claim route's, found by
-    // the fourth whole-branch review.
+    // `admin_exists` it would also fire on a library where an ordinary reader
+    // could log in perfectly well, telling its owner every route would answer
+    // 401 while they were using it. Same confusion as the claim route's.
     if !state.auth.allow_web_setup
         && taiyaku_library::account::is_claimed(&state.library.conn()).is_ok_and(|yes| !yes)
     {
@@ -577,10 +554,9 @@ pub async fn serve(
     }
     if state.auth.allow_web_setup {
         // The gate this notice describes is the claim route's own, so it reads
-        // `is_claimed` too. Reading `admin_exists` here printed "ANYONE can
-        // claim it" on a library that was in fact shut, and would now print it
-        // on one the route refuses — a warning that cries wolf is a warning
-        // that gets ignored on the day it is right.
+        // `is_claimed` too. Reading `admin_exists` here would print "ANYONE can
+        // claim it" on a library the route refuses — a warning that cries wolf
+        // is a warning that gets ignored on the day it is right.
         let claimed = taiyaku_library::account::is_claimed(&state.library.conn());
         match claimed {
             Ok(true) => eprintln!(
@@ -602,10 +578,10 @@ pub async fn serve(
         Err(complaint) => eprintln!("could not sweep expired sessions: {complaint}"),
     }
     // The rate limiter's own windows, which nothing else removes: a successful
-    // login clears one exact key and every other row stayed forever, so a loop
-    // of logins for random names was an unauthenticated way to grow the shared
-    // database. Beside the sessions because it is the same kind of housekeeping
-    // and has the same "reported, never fatal" answer.
+    // login clears one exact key, so every other row would stay for good and a
+    // loop of logins for random names would be an unauthenticated way to grow
+    // the shared database. Beside the sessions because it is the same kind of
+    // housekeeping and has the same "reported, never fatal" answer.
     match taiyaku_library::account::sweep_lapsed_attempts(&state.library.conn()) {
         Ok(0) => {}
         Ok(swept) => eprintln!("swept {swept} lapsed login-attempt window(s)"),
@@ -622,7 +598,7 @@ pub async fn serve(
     // O8: after the bind, deliberately — including the order of these two
     // lines on stderr, since "listening" arriving before the resolution
     // chatter is how a person watching a cold start can see that the wait is
-    // no longer theirs. `spawn_blocking` because resolution is a network
+    // not theirs. `spawn_blocking` because resolution is a network
     // round trip *and* a local page hash per member, neither of which belongs
     // on an async worker; `get_page` and the OPDS handlers already keep to
     // that boundary for the same reason (O12).
@@ -766,9 +742,9 @@ fn shutdown_signal() -> impl std::future::Future<Output = ()> {
 /// answer at all. A work with nothing recorded is not a failure at all — see
 /// `cache::forget`.
 ///
-/// Separate from `serve` for the reason `resolve_all_works` is: `serve` binds
-/// a socket and so is not something a test drives, and the loop is where the
-/// behaviour worth pinning lives.
+/// Separate from `serve` for the reason `resolve_all_works` is: a test drives
+/// the loop without a socket, and the loop is where the behaviour worth
+/// pinning lives.
 fn forget_all_works<'a>(works: impl IntoIterator<Item = &'a Work>) {
     for work in works {
         if let Err(why) = stump::cache::forget(work) {
@@ -783,18 +759,16 @@ fn forget_all_works<'a>(works: impl IntoIterator<Item = &'a Work>) {
 /// Resolve every work against Stump, in order, stopping as soon as one work
 /// reports a transport-level failure.
 ///
-/// Important 3 (whole-branch review): **the breaker spans works, not just
-/// one work's members.** `resolve_work` already stops asking after the first
-/// transport-level failure within a work; without hoisting it here too, an
-/// unreachable instance would still pay one 30-second POST timeout *per
-/// work* before the listener binds — twenty works is ten minutes, with
-/// nothing printed until each one finishes. Once any work reports
-/// `aborted_by_transport`, every later work is skipped without being asked
-/// at all, and that is said once rather than once per skipped work.
+/// **The breaker spans works, not just one work's members.** `resolve_work`
+/// already stops asking after the first transport-level failure within a work;
+/// without hoisting it here too, an unreachable instance would still pay one
+/// 30-second POST timeout *per work*, and twenty works is ten minutes. Once
+/// any work reports `aborted_by_transport`, every later work is skipped
+/// without being asked at all, and that is said once rather than once per
+/// skipped work.
 ///
 /// Separate from `serve` so this loop can be driven by a `FakeTransport`
-/// without a socket — `serve`'s only remaining job around this call is
-/// turning the aggregated `Resolutions` into a `CompositeSource`.
+/// without a socket.
 fn resolve_all_works<W: std::borrow::Borrow<Work>>(
     transport: &dyn stump::http::Transport,
     works: &[W],
@@ -803,12 +777,10 @@ fn resolve_all_works<W: std::borrow::Borrow<Work>>(
 ) {
     for (index, work) in works.iter().enumerate() {
         let work: &Work = std::borrow::Borrow::borrow(work);
-        // O8: this runs before the listener binds, so it is time the server
-        // spends unable to answer anything. It used to print one line per
-        // work, *after* that work finished — so a work with many unresolved
-        // members was silent for its whole duration and a slow resolution
-        // was indistinguishable from a hung one. Members answered from the
-        // cache print nothing, so a warm start is as quiet as it was.
+        // O8: `report` prints each member as it is asked about, so a work with
+        // many unresolved members is not silent for its whole duration and a
+        // slow resolution can be told from a hung one. Members answered from
+        // the cache print nothing, so a warm start has no per-member lines.
         let mut report = |member: &str, nth: usize, total: usize| {
             eprintln!(
                 "{}: resolving {member} against stump ({nth} of {total})",
@@ -857,13 +829,12 @@ fn no_work(id: &str) -> String {
 /// What to say when a run gives up partway, or `None` when it gave up on the
 /// last work and there is nothing left to skip.
 ///
-/// `works.len() - index - 1` and the `> 0` test that guards it were both
-/// invisible to the suite: they decide only the wording of a line on stderr,
-/// and the abort test asserts which requests were made rather than what was
-/// printed. Extracted so the arithmetic is a value something can check —
-/// including the case that matters most, aborting on the final work, where
-/// every mutation of the subtraction produces a sentence promising to skip
-/// works that do not exist.
+/// The subtraction and the `> 0` test that guards it decide only the wording of
+/// a line on stderr, and the abort test asserts which requests were made rather
+/// than what was printed. Extracted so the arithmetic is a value something can
+/// check — including the case that matters most, aborting on the final work,
+/// where every mutation of the subtraction produces a sentence promising to
+/// skip works that do not exist.
 fn skipping_notice(total: usize, index: usize) -> Option<String> {
     let remaining = total.saturating_sub(index + 1);
     (remaining > 0).then(|| {

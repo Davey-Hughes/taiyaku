@@ -23,27 +23,22 @@
 //! moved.
 //!
 //! A store that fails during any of the writes is **500**, as a store
-//! failing anywhere else here is. It was a 409 until O70: `accept_with`,
-//! `unaccept` and `dismiss` answered a refusal and a failure through one
-//! `Result<_, String>`, so their handlers mapped one type onto one status.
-//! They answer `Result<Offer<_>, String>` now, and `reopen` was written that
-//! way (O72) — [`made`] turns the refusal
+//! failing anywhere else here is (O70). `accept_with`, `unaccept`, `dismiss`
+//! and `reopen` answer `Result<Offer<_>, String>`: [`made`] turns the refusal
 //! into [`NoAnswer::Refused`], and each handler turns the `Err` beside it into
 //! [`NoAnswer::Failed`] — and nothing here reads the sentence to decide which.
 //!
 //! An `id` naming no proposal is **404**, on every route here that takes one
-//! — see [`NoAnswer::Missing`] for what it was before, and [`present`] for
-//! what makes answering it possible without reading the store's error text.
+//! — [`NoAnswer::Missing`] is that answer, and [`present`] is what makes
+//! answering it possible without reading the store's error text.
 //!
 //! A rule that cannot be *evaluated* is **400** instead, and it is decided
 //! before the store is read. [`taiyaku_library::proposals::resolves`] returns
 //! `Ok` for every rule it can evaluate, refusal and all — the refusals are
 //! fields of its answer — but its `Err` covers a rule it could not compile
 //! *and* a read that failed underneath it, in one `String`. Mapping that
-//! `Err` to a 400 answered `400 Bad Request :: reading scan entries for the
-//! dry run: no such table: scan_entry` — measured, on the route a
-//! rule-editing form calls at every keystroke: a client told to fix its input
-//! while the database was broken.
+//! `Err` to a 400 would tell a client to fix its input while the database was
+//! broken, on the route a rule-editing form calls at every keystroke.
 //! [`taiyaku_library::proposals::evaluable`] asks the rule half of that
 //! question on its own and reads nothing, so [`resolution`] asks it first and
 //! the dry run's own `Err` is left meaning a failed read.
@@ -86,30 +81,18 @@ const DEFAULT_COUNTED_STATE: &str = "open";
 enum NoAnswer {
     /// **`id` names no proposal — 404, on every route here that takes one.**
     ///
-    /// One condition used to collect whichever status the store call that
-    /// tripped over it happened to be mapped to. Measured with [`present`]
-    /// removed: `GET /{id}` answered 500, `POST /{id}/resolution` answered
-    /// 400, and the write routes answered 409 — and the dry run did not even
-    /// quote the same store sentence as the rest, `looking up proposal 9999:
-    /// Query returned no rows` against `…: there is no such proposal`. See
-    /// [`present`] for how the condition is told apart from a read that
-    /// failed, and `an_unknown_id_is_a_404_on_every_route_that_takes_one`
-    /// for the enumeration.
+    /// See [`present`] for how the condition is told apart from a read that
+    /// failed, and `an_unknown_id_is_a_404_on_every_route_that_takes_one` for
+    /// the enumeration.
     Missing(i64),
     /// A refusal about the state of the library — see this module's own doc
     /// comment for why that is a 409 — and nothing else: the sentence of an
     /// `Offer::Refused` from `accept_with`, `unaccept`, `dismiss` or `reopen`,
     /// handed to the client whole by [`made`].
     ///
-    /// **It collected their store faults too, until O70.** Those three
-    /// answered a refusal and a failure through one `Result<_, String>`, so
-    /// whatever they refused *or* failed with reached this variant, and
-    /// telling the two apart here would have meant matching on the store's own
-    /// sentence. Measured on `main` at `6a2e72d`: a trigger failing the
-    /// accept's `INSERT INTO rule`, the un-accept's `DELETE FROM rule` or the
-    /// dismiss's `UPDATE`, and a dropped `scan_entry` under the accept's dry
-    /// run, each answered 409. The split is in those functions' signatures
-    /// now, which is where this doc said it would have to be.
+    /// **A store fault never reaches it (O70).** Those functions return a
+    /// refusal in an `Offer`, apart from the `Err` a failure comes in, so
+    /// telling the two apart here takes no match on the store's own sentence.
     Refused(String),
     /// A store failure, which is a 500 rather than anything a caller can fix.
     ///
@@ -121,15 +104,13 @@ enum NoAnswer {
     /// all, or a rule the engine could not evaluate.
     ///
     /// **Both halves are decided before any store call**, which is what makes
-    /// that sentence true rather than aspirational. It was not:
-    /// [`taiyaku_library::proposals::resolves`] folds a rule it cannot
-    /// evaluate together with a read that failed underneath it into one
-    /// `Err(String)`, and mapping that `Err` here answered 400 for a broken
-    /// database — see this module's own doc comment for the measurement. The
-    /// rule half is now asked by
-    /// [`taiyaku_library::proposals::evaluable`], which takes no connection,
-    /// so the only things that reach this variant are [`rule_from_json`] and
-    /// that call.
+    /// that sentence true. [`taiyaku_library::proposals::resolves`] folds a
+    /// rule it cannot evaluate together with a read that failed underneath it
+    /// into one `Err(String)`, and mapping that `Err` here would answer 400 for
+    /// a broken database — see this module's own doc comment. The rule half is
+    /// asked by [`taiyaku_library::proposals::evaluable`], which takes no
+    /// connection, so the only things that reach this variant are
+    /// [`rule_from_json`] and that call.
     Unusable(String),
 }
 
@@ -158,15 +139,12 @@ fn panicked(what: &str, why: &tokio::task::JoinError) -> Response {
 /// **Not a match on the store's error text.**
 /// [`taiyaku_library::proposals::lookup`] answers `Ok(None)` for a row that
 /// is not there and `Err` only for a read that failed — the same split
-/// `proposals::Offer` makes for `preview`, made for a read because this is
-/// where it was needed: without it an unknown id reached a caller as a 409
-/// from one route and a 500 from another, and neither could be corrected
-/// without inspecting a sentence.
+/// `proposals::Offer` makes for `preview`, made here for a read.
 ///
 /// One indexed read by primary key, on routes that are each about to do
 /// considerably more than that. It replaces nothing: every store call below
 /// still makes its own refusals about the row it reads itself, so this is a
-/// status this module can answer rather than a guard the store now leans on.
+/// status this module can answer rather than a guard the store leans on.
 fn present(conn: &rusqlite::Connection, id: i64) -> Result<(), NoAnswer> {
     match proposals::lookup(conn, id) {
         Ok(Some(_)) => Ok(()),
@@ -179,11 +157,11 @@ fn present(conn: &rusqlite::Connection, id: i64) -> Result<(), NoAnswer> {
 /// no proposal by the time the store read it, **500** for anything else.
 ///
 /// **[`present`] answers the 404 before a write starts, and this answers it
-/// after (O72's fix round).** Another process can delete the row between the
-/// two, and the store then reports the missing row as its `Err`, which was a
-/// 500 for a proposal that is simply not there. Only a row that is gone
-/// becomes a 404: where the read fails as well, the write's own failure is
-/// what the caller is told.
+/// after (O72).** Another process can delete the row between the two, and the
+/// store then reports the missing row as its `Err`, which would be a 500 for a
+/// proposal that is simply not there. Only a row that is gone becomes a 404:
+/// where the read fails as well, the write's own failure is what the caller
+/// is told.
 ///
 /// Used by the two writes whose store call reads the row after its
 /// conditional `UPDATE`, `dismiss` and `reopen`. `accept` and `unaccept` have the same gap behind
@@ -368,9 +346,9 @@ pub(crate) async fn list(
         // **Counted within the state being viewed and above the same
         // `min_score`, not within `open` at no threshold always.** The tabs
         // count kinds, and a person reading the dismissed tab is asking how
-        // many dismissed proposals of each kind there are; a threshold
-        // followed by the list and not by the counts put a tab reading "1"
-        // over an empty list, measured on `?state=open&min_score=9`.
+        // many dismissed proposals of each kind there are; a threshold that
+        // filtered the list and not the counts would leave a tab with a count
+        // over an empty list.
         //
         // `kind` is the one parameter deliberately not applied — a tab cannot
         // count itself out of existence, which is the ordinary faceted shape:
@@ -396,11 +374,9 @@ pub(crate) async fn list(
 ///
 /// **An `id` naming no proposal is a 404 and every other failure is a 500.**
 /// [`taiyaku_library::proposals::evidence`] answers both with one
-/// `Err(String)`, so this route answered a 500 to both until [`present`] gave
-/// the two questions separate answers — while the other routes taking an id
-/// answered that same absent row differently again. [`NoAnswer::Missing`]
-/// records what each of them said. A proposal that cannot be *previewed* is
-/// not a failure at all: it answers 200 with `rule: null`.
+/// `Err(String)`, so [`present`] gives the two questions separate answers. A
+/// proposal that cannot be *previewed* is not a failure at all: it answers 200
+/// with `rule: null`.
 pub(crate) async fn detail(
     State(state): State<Arc<ServeState>>,
     Extension(principal): Extension<Principal>,
@@ -465,7 +441,7 @@ pub(crate) async fn resolution(
     // `resolves` answers a rule it cannot evaluate and a read that failed
     // with one `Err(String)`; this asks the rule half without a connection,
     // so what is left below is the store's and gets a 500. See this module's
-    // doc comment for what the fold answered before it was split.
+    // doc comment.
     if let Err(why) = proposals::evaluable(&rule) {
         return NoAnswer::Unusable(why).into_response();
     }

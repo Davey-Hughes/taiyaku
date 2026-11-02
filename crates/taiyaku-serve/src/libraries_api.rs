@@ -6,7 +6,7 @@
 //! keeps its ends, which migration 16 strips from every other, and an id is
 //! never given to a later library.
 //!
-//! **The directory rows inside a library's card are still `config_api`'s.** A
+//! **The directory rows inside a library's card are `config_api`'s.** A
 //! directory's settings, its own scan and its removal are routes under
 //! `/api/library/roots/{id}`. This module makes libraries, adds directories to
 //! them, removes them whole, scans all of a library's directories at once, and

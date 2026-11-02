@@ -1,13 +1,12 @@
 use super::*;
 
-/// `routes()` folded into a `Router`, which is what these tests drove before
-/// the guard made that function return a list.
+/// `routes()` folded into a `Router`.
 ///
 /// **Deliberately without `auth::guard`**: these tests exercise the feed's own
 /// shape — its XML, its links, its page streaming — and the guard is asserted
 /// over in `auth::tests::every_route_refuses_an_anonymous_request`, which walks
 /// this very list. Building the guarded router here would test the guard
-/// twenty-one more times and the feed no better.
+/// again and the feed no better.
 ///
 /// Each request carries [`as_an_administrator`]'s principal in the guard's
 /// place, because a request with none sees nothing (`auth::access_of`).
@@ -53,8 +52,7 @@ async fn body_of(response: Response) -> String {
 
 /// The characters this corpus's edition keys can actually contain once
 /// hand-typed corrections are allowed: already-safe text passes through,
-/// a space and `/` — the two the review called out by name — encode, and
-/// hex digits are uppercase per RFC 3986.
+/// a space and `/` encode, and hex digits are uppercase per RFC 3986.
 #[test]
 fn percent_encoding_covers_the_characters_a_key_can_contain() {
     assert_eq!(
@@ -184,12 +182,10 @@ async fn a_work_lists_its_editions_with_page_counts_and_a_sidecar_link() {
 
 /// **PSE counts from 0, and so does taiyaku, so nothing is converted.**
 ///
-/// This shipped converting, and the conversion was the bug. Panels opens a
-/// book at `pages/0`, so a server that answered 404 there showed an error
-/// screen; every page it did serve was then the one before the page the
-/// client believed it was on, and the first page could not be reached.
-/// Every assertion below fails against that version, which is the point of
-/// keeping all four: the boundary at each end is where an off-by-one hides.
+/// Panels opens a book at `pages/0`, so a server that answered 404 there would
+/// show an error screen. Page 0, a middle page, the last page and one past the
+/// end are all asked for, because the boundary at each end is where an
+/// off-by-one hides.
 ///
 /// The fixture is four pages whose bytes are their own entry names, so a
 /// shifted answer is not merely a wrong status but visibly the wrong page.
@@ -213,18 +209,14 @@ async fn pse_page_numbers_are_taiyaku_indices_unchanged() {
         (status, body_of(response).await)
     };
 
-    // Page 0 exists and is the first page. Under the old conversion this
-    // was a 404, which is exactly what Panels hit on opening a book.
+    // Page 0 exists and is the first page.
     let (zero_status, zero) = page(0).await;
     // A middle page, to catch a shift that only the ends would otherwise
     // reveal.
     let (_, two) = page(2).await;
-    // The last page is `pse:count - 1`, not `pse:count`. The old code
-    // served this index for `pages/4` and nothing for `pages/3`'s true
-    // content.
+    // The last page is `pse:count - 1`, not `pse:count`.
     let (_, last) = page(3).await;
-    // One past the end. `pse:count` is 4, so 4 is out of range — under the
-    // old conversion this was the last page and answered 200.
+    // One past the end. `pse:count` is 4, so 4 is out of range.
     let (past_end, _) = page(4).await;
 
     assert_eq!(zero_status, StatusCode::OK, "pse page 0 must exist");
@@ -278,8 +270,8 @@ async fn a_pse_page_number_that_is_not_a_number_is_refused_the_same_way() {
 /// O1, on the other route addressed by page number — the one Panels
 /// actually reaches pages through. `routes.rs`'s tests pin the mechanism
 /// on the `/api/…` route; this one exists so that fixing only that
-/// route — the mistake O5 already recorded once, on this same pair of
-/// routes — cannot happen again silently here.
+/// route — the mistake O5 records, on this same pair of routes — cannot
+/// happen silently here.
 #[tokio::test]
 async fn the_pse_stream_also_carries_an_etag_and_answers_a_matching_request_304() {
     let tmp = crate::test_support::Fixture::new("opds-page-etag");
@@ -375,16 +367,15 @@ async fn the_pse_stream_tag_names_a_page_offset_in_its_member_not_its_index() {
     );
 }
 
-/// O108's review: an edition's cover is cached under the hash of the member its
+/// O108: an edition's cover is cached under the hash of the member its
 /// page 0 is in.
 ///
 /// Page 0 of `ab` is in `a.cbz`, and page 0 of `b` is in `b.cbz`, which is the
 /// last member of both editions (see `test_support::state_with_a_shared_member`).
 /// The fixture of `the_cover_cache_key_follows_locate_past_a_pageless_first_member`
 /// has one member with pages, and it is the last, so a hash taken from the last
-/// member passed every test. Here that would cache `ab`'s grey cover under
-/// `b.cbz`'s hash and serve it as `b`'s. The review of this branch found it,
-/// and it predates the branch.
+/// member would pass there. Here that would cache `ab`'s grey cover under
+/// `b.cbz`'s hash and serve it as `b`'s.
 #[tokio::test]
 async fn each_edition_s_cover_is_cached_under_the_member_its_first_page_is_in() {
     let (state, _fixture) = crate::test_support::state_with_a_shared_member();
@@ -437,9 +428,6 @@ async fn an_unknown_work_is_refused_rather_than_served_empty() {
     assert!(body.contains("nope"), "must name the work: {body}");
 }
 
-/// Minor 2: `/opds/v1.2/works` was exercised only by hand before this
-/// test existed, so a regression in its escaping or content type would
-/// not be caught by `cargo test`.
 #[tokio::test]
 async fn the_works_feed_lists_every_work_with_its_edition_count() {
     let tmp = crate::test_support::Fixture::new("opds-works-list");
@@ -475,9 +463,8 @@ async fn the_works_feed_lists_every_work_with_its_edition_count() {
     );
 }
 
-/// Minor 3: `ServeState::page` names what was missing for an unknown
-/// edition, but nothing exercised that message *through* the OPDS stream
-/// route before this test.
+/// Through the OPDS stream route, an unknown edition answers 404 and the
+/// body names it.
 #[tokio::test]
 async fn streaming_an_unknown_edition_names_it() {
     let tmp = crate::test_support::Fixture::new("opds-unknown-edition");
@@ -499,16 +486,15 @@ async fn streaming_an_unknown_edition_names_it() {
     assert!(body.contains("nope"), "must name the edition: {body}");
 }
 
-/// The other message `ServeState::page` produces, also unexercised
-/// through this route before this test: a page past the edition's end
-/// names the edition and how many pages it actually has.
+/// Through this route, a page past the edition's end answers 404 and the
+/// body names the edition and how many pages it actually has.
 #[tokio::test]
 async fn streaming_a_page_past_the_end_names_the_edition_and_its_length() {
     let tmp = crate::test_support::Fixture::new("opds-page-past-end");
     let state = Arc::new(crate::test_support::state(&tmp));
     let app = feed_router().with_state(state);
 
-    // The fixture edition has 4 pages; PSE page 5 is index 4, one past it.
+    // The fixture edition has 4 pages; PSE page 5 is index 5, past its end.
     let response = app
         .oneshot(
             Request::get("/opds/v1.2/works/t/raw/pages/5")
@@ -525,13 +511,9 @@ async fn streaming_a_page_past_the_end_names_the_edition_and_its_length() {
     assert!(body.contains('4'), "must say how many pages it has: {body}");
 }
 
-/// `stream_page` has three router-level tests for what an unknown work
-/// or edition returns; `cover` — the only other route that resolves a
-/// work and then an edition — had none. A prior attempt at this test was
-/// written, run, watched pass, and then deleted before committing to
-/// keep the test count at a predicted number; that was a mistake
-/// regardless of the count, since a route with no test protecting it can
-/// regress silently. This one stays.
+/// `cover` resolves a work and then an edition, as `stream_page` does, so it
+/// gets the same router-level test for what an unknown work or edition
+/// returns. A route with no test protecting it can regress silently.
 #[tokio::test]
 async fn a_cover_for_an_unknown_work_or_edition_names_what_was_missing() {
     let tmp = crate::test_support::Fixture::new("opds-cover-missing");
@@ -573,12 +555,11 @@ async fn a_cover_for_an_unknown_work_or_edition_names_what_was_missing() {
     );
 }
 
-/// Important 1b: an edition key that is not URL-safe still has to reach
-/// the OPDS feed, because the format is meant to be written by other
-/// tools — `taiyaku` cannot assume every sidecar it serves was written
-/// by its own now-validating `align`. Percent-encoding the key in every
-/// `href` is what keeps the feed usable; XML-escaping alone (the
-/// pre-fix behaviour) leaves a literal space or `/` in the URL.
+/// An edition key that is not URL-safe still has to reach the OPDS feed,
+/// because the format is meant to be written by other tools — `taiyaku` cannot
+/// assume every sidecar it serves was written by its own validating `align`.
+/// Percent-encoding the key in every `href` is what keeps the feed usable;
+/// XML-escaping alone leaves a literal space or `/` in the URL.
 ///
 /// Proven through the router rather than by inspecting a string this
 /// crate built: the `href` is pulled out of the feed this handler
@@ -662,9 +643,8 @@ async fn a_percent_encoded_edition_key_in_the_feed_routes_back_to_the_same_editi
     );
 }
 
-/// Important 5 (whole-branch review): RFC 4287 requires `atom:author` on
-/// a feed unless every entry carries one, and none of taiyaku's do.
-/// `catalog` already had it; `works` and `work_feed` did not.
+/// RFC 4287 requires `atom:author` on a feed unless every entry carries one,
+/// and none of taiyaku's do.
 #[tokio::test]
 async fn the_works_feed_and_the_work_feed_declare_an_atom_author() {
     let tmp = crate::test_support::Fixture::new("opds-author");
@@ -703,9 +683,9 @@ async fn the_works_feed_and_the_work_feed_declare_an_atom_author() {
     );
 }
 
-/// Important 5: navigation entry links carried no `rel`, so they
-/// defaulted to Atom's `alternate` rather than `subsection` — the `rel`
-/// OPDS catalogs use for an entry that leads to another feed.
+/// Navigation entry links carry `rel="subsection"`, which OPDS catalogs use
+/// for an entry that leads to another feed; a link with no `rel` defaults to
+/// Atom's `alternate`.
 #[tokio::test]
 async fn navigation_entries_carry_a_subsection_rel() {
     let tmp = crate::test_support::Fixture::new("opds-subsection");
@@ -747,13 +727,8 @@ async fn navigation_entries_carry_a_subsection_rel() {
 /// OPDS 1.2 requires at least one acquisition link
 /// (`rel="http://opds-spec.org/acquisition"`) on every entry in an
 /// acquisition feed, or a conformant client may render the entry as
-/// unopenable. It now points at a download — proven by fetching it, not by
+/// unopenable. It points at a download — proven by fetching it, not by
 /// asserting the string is present, so this fails if the link is ever dead.
-///
-/// *This replaces `the_acquisition_link_on_an_edition_entry_is_a_real_fetchable_page`,
-/// which asserted the link is a real fetchable **page**. That claim is what
-/// this branch deliberately changes, so the test is rewritten rather than
-/// left to contradict the code beside it.*
 #[tokio::test]
 async fn the_acquisition_link_is_a_real_fetchable_download() {
     let tmp = crate::test_support::Fixture::new("opds-acq-dl");
@@ -791,9 +766,9 @@ async fn the_acquisition_link_is_a_real_fetchable_download() {
         .unwrap();
     let status = download.status();
 
-    // The PSE link is a different mechanism for a different intention and is
-    // untouched. Asserted with its `pse:count`, because a test that would
-    // still pass with the link deleted is not evidence.
+    // The PSE link is a different mechanism for a different intention.
+    // Asserted with its `pse:count`, because a test that would still pass with
+    // the link deleted is not evidence.
     assert!(
         feed_body.contains(r#"rel="http://vaemendis.net/opds-pse/stream""#)
             && feed_body.contains(r#"pse:count="4""#),
@@ -841,12 +816,12 @@ async fn the_acquisition_link_declares_the_type_the_route_will_send() {
 /// **The work feed asks the filesystem off the async worker** — O120.
 ///
 /// `download::advertised_type` stats an edition of one member to learn what a
-/// download of it will be sent as, and `work_feed` called it in the handler,
-/// on the async worker. No test here could see that: a `stat` of a file on this
-/// machine's disk answers at once, so nothing stands still for
+/// download of it will be sent as, and `work_feed` must not do that in the
+/// handler, on the async worker. A `stat` of a file on this machine's disk
+/// answers at once, so nothing stands still for
 /// `test_support::the_runtime_stalls_on`'s watchdog to notice, and the feed is
-/// the same wherever the `stat` ran. So this asks the kernel which thread made
-/// it.
+/// the same wherever the `stat` ran. So this asks the kernel which thread
+/// made it.
 ///
 /// The test runs itself again as a child under `strace`, as O104's tests do.
 /// The child builds a current-thread runtime and calls the handler through
@@ -1028,15 +1003,13 @@ fn statted_by<'a>(log: &'a str, target: &std::path::Path) -> Vec<&'a str> {
 
 /// The web UI's control is *absent* for a reader who may not download, and
 /// the feed cannot do the same: OPDS 1.2 requires an acquisition link on
-/// every entry, which is why this one pointed at a page in the first place.
-/// So the page link becomes the fallback rather than being deleted, and the
-/// entry carries exactly one acquisition link either way.
+/// every entry. So the page link is the fallback rather than being deleted,
+/// and the entry carries exactly one acquisition link either way.
 ///
 /// **Both branches are driven off one flipped column, deliberately.** An
 /// assertion that a withheld reader sees the page link passes just as well
-/// against a feed that has no branch at all — which is what it did before
-/// this was written, since the page link was then the only thing emitted.
-/// Only the pair distinguishes a working branch from a missing one.
+/// against a feed that only ever emits the page link. Only the pair
+/// distinguishes a working branch from a missing one.
 #[tokio::test]
 async fn the_acquisition_link_follows_can_download_in_both_directions() {
     async fn feed_for(dir: &std::path::Path, may_download: bool) -> String {
@@ -1086,12 +1059,9 @@ async fn the_acquisition_link_follows_can_download_in_both_directions() {
          link that 403s on every attempt: {withheld}"
     );
 
-    // **The fallback is fetched, not merely matched.** The test this replaced
-    // (`…_is_a_real_fetchable_page`) issued a real request against the page
-    // link, and dropping that left the one branch most in need of
-    // "not a dead link" proof with none — which is how `pages/1` survived as
-    // the acquisition target while PSE counts from 0, making it the *second*
-    // page and a 404 for any one-page edition.
+    // **The fallback is fetched, not merely matched.** The page link is the
+    // one branch most in need of "not a dead link" proof: PSE counts from 0, so
+    // `pages/1` would be the *second* page and a 404 for any one-page edition.
     let tmp3 = crate::test_support::Fixture::new("opds-acq-fetch");
     let state = Arc::new(crate::test_support::state(&tmp3));
     {
@@ -1125,11 +1095,10 @@ async fn the_acquisition_link_follows_can_download_in_both_directions() {
     );
 }
 
-/// Minor 5 (whole-branch review): a work whose edition's first member is
-/// recorded with zero pages — so `Edition::locate(0)` steps over it to
-/// the second member — must cache the generated cover under the *second*
-/// member's hash, the one `locate(0)` actually reads page 0 from, not
-/// under `members.first()` unconditionally.
+/// A work whose edition's first member is recorded with zero pages — so
+/// `Edition::locate(0)` steps over it to the second member — must cache the
+/// generated cover under the *second* member's hash, the one `locate(0)`
+/// actually reads page 0 from, not under `members.first()` unconditionally.
 #[tokio::test]
 async fn the_cover_cache_key_follows_locate_past_a_pageless_first_member() {
     let tmp = crate::test_support::Fixture::new("opds-cover-pageless-first-member");
@@ -1248,23 +1217,21 @@ fn work_with_a_pageless_first_member(dir: &std::path::Path) -> crate::Work {
 }
 
 // ---------------------------------------------------------------------------
-// The grant gap: `opds.rs` applied none of spec C1's per-root visibility.
-// The whole-branch review closed the equivalent hole on the `/api/…` side —
-// `refuse_if_hidden` and `get_sidecar`'s use of `browse::work` — and this
-// mirror of those routes was never covered. `taiyaku library user
-// grant-library` ships grants for real, so a restricted account reading the
-// bytes of a root it does not hold through these routes is not theoretical.
+// The grant gap: `opds.rs` must apply spec C1's per-root visibility, as the
+// `/api/…` side does through `refuse_if_hidden` and `get_sidecar`'s use of
+// `browse::work`. `taiyaku library user grant-library` ships grants for real,
+// so a restricted account reading the bytes of a root it does not hold through
+// these routes is not theoretical.
 //
 // Every fixture below imports through `taiyaku_library::import::scanned`
 // into a real library database rather than handing `ServeState` an
 // in-memory-only `Work` — `edition_visible`/`browse::work` read `work`,
 // `edition` and `member` rows, and a work absent from those tables cannot
-// exercise the grant at all, only the "work does not exist" path every
-// existing test in this file already covers. And the page/cover fixture
-// writes a real, decodable image rather than reusing `test_support::work`'s
-// placeholder bytes: those routes read *bytes*, not rows, so a 404 from a
-// nonexistent placeholder path would be indistinguishable from the grant
-// actually refusing anything.
+// exercise the grant at all, only the "work does not exist" path. And the
+// page/cover fixture writes a real, decodable image rather than reusing
+// `test_support::work`'s placeholder bytes: those routes read *bytes*, not
+// rows, so a 404 from a nonexistent placeholder path would be
+// indistinguishable from the grant actually refusing anything.
 // ---------------------------------------------------------------------------
 
 /// A router over one work with one real, decodable page, imported into the
@@ -1547,25 +1514,22 @@ fn router_with_two_works_one_withheld(
     (router, state)
 }
 
-/// **The core of the gap.** Before the fix, `stream_page` and `cover` asked
-/// nothing about the grant, so a reader restricted to one root could read
-/// the bytes of a work filed under a different root through the OPDS
-/// routes alone — exactly the failure spec C1's whole-branch review closed
-/// on `/api/…`, unfixed here.
+/// **The core of the gap.** `stream_page` and `cover` must ask about the grant,
+/// or a reader restricted to one root could read the bytes of a work filed
+/// under a different root through the OPDS routes alone.
 ///
 /// Proven with real, decodable page bytes rather than a coincidental
 /// filesystem 404: `router_with_a_real_page_under_a_withheld_root` writes an
-/// actual PNG the un-guarded routes can and — before the fix — do serve, so
-/// a passing assertion here cannot be satisfied by the member file simply
-/// not existing.
+/// actual PNG that an un-guarded route would serve, so a passing assertion
+/// here cannot be satisfied by the member file simply not existing.
 ///
 /// **Bodies are decoded with `from_utf8_lossy`, not `test_support::body_string`.**
-/// Before the fix this route answers `200` with the PNG's raw bytes, which
-/// are not valid UTF-8 — `body_string`'s `unwrap` turns that into a panic
-/// naming the exact byte sequence served, which is itself the bypass this
-/// test exists to catch, but a panic is a worse failure message than an
-/// assertion. Lossy decoding keeps the proof as a normal, readable
-/// assertion failure instead.
+/// An un-guarded route answers `200` with the PNG's raw bytes, which are not
+/// valid UTF-8, and `body_string`'s `unwrap` would turn that into a panic
+/// naming the exact byte sequence served. That is itself the bypass this test
+/// exists to catch, but a panic is a worse failure message than an
+/// assertion. Lossy decoding keeps the proof as a normal, readable assertion
+/// failure instead.
 #[tokio::test]
 async fn a_restricted_reader_cannot_stream_pages_or_covers_from_a_root_they_do_not_hold() {
     let tmp = crate::test_support::Fixture::new("opds-grant-stream");
@@ -1638,12 +1602,12 @@ async fn a_restricted_readers_work_feed_lists_only_the_editions_they_may_see() {
     );
 }
 
-/// Finding 2: the list feed named each work with a count of its editions —
-/// `sidecar.editions.len()`, computed over every edition regardless of the
-/// caller's grant — so a restricted reader learned how many editions a work
-/// held under a root they cannot see, even though the work's own feed just
-/// above already hides every one of those editions by name. A count is a
-/// smaller leak than a key or a path, and it is still one.
+/// The list feed names each work with a count of its editions, and a count
+/// computed over every edition regardless of the caller's grant would tell a
+/// restricted reader how many editions a work holds under a root they cannot
+/// see, even though the work's own feed just above already hides every one of
+/// those editions by name. A count is a smaller leak than a key or a path, and
+/// it is still one.
 #[tokio::test]
 async fn a_restricted_readers_works_list_counts_only_the_editions_they_may_see() {
     let tmp = crate::test_support::Fixture::new("opds-grant-works-count");
@@ -1672,7 +1636,7 @@ async fn a_restricted_readers_works_list_counts_only_the_editions_they_may_see()
 
 /// The full-hide case beside the partial one above: a work with no edition
 /// inside the grant must answer exactly as a work that does not exist —
-/// `browse::work`'s own contract, unread by this route before the fix.
+/// `browse::work`'s own contract.
 #[tokio::test]
 async fn a_restricted_readers_work_feed_404s_when_no_edition_is_visible() {
     let tmp = crate::test_support::Fixture::new("opds-grant-work-feed-hidden");
@@ -1691,9 +1655,9 @@ async fn a_restricted_readers_work_feed_404s_when_no_edition_is_visible() {
     assert_eq!(body, format!("no work `{slug}`"));
 }
 
-/// The list feed's own leak: before the fix, `works` named every work this
-/// server holds regardless of the caller's grant, admitting the existence
-/// of material a restricted reader cannot see anywhere else.
+/// The list feed's own leak: naming every work this server holds regardless of
+/// the caller's grant would admit the existence of material a restricted reader
+/// cannot see anywhere else.
 #[tokio::test]
 async fn the_works_feed_does_not_name_a_work_outside_the_grant() {
     let tmp = crate::test_support::Fixture::new("opds-grant-works-list");
@@ -1787,7 +1751,7 @@ fn subsection(href: &str) -> String {
     format!(r#"<link rel="subsection" type="{ATOM};kind=navigation" href="{href}"/>"#)
 }
 
-/// The catalog leads to both library views, and still to every work.
+/// The catalog leads to both library views, and to every work.
 #[tokio::test]
 async fn the_catalog_links_to_the_libraries() {
     let tmp = crate::test_support::Fixture::new("opds-catalog-libraries");

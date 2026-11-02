@@ -1,9 +1,9 @@
 //! Downloading a member's own bytes, and an edition as one streamed CBZ.
 //!
 //! Spec C2, `docs/superpowers/specs/2026-08-23-library-download-design.md`.
-//! `cbz.rs` is the layout and `comicinfo.rs` is the metadata document; this
-//! module is the HTTP part — which shape of body, what headers, and which of
-//! the two guards refused.
+//! `cbz.rs` is the layout and `taiyaku_library::comicinfo` is the metadata
+//! document; this module is the HTTP part — which shape of body, what headers,
+//! and which of the two guards refused.
 
 /// What a downloaded file is called.
 ///
@@ -37,9 +37,8 @@ pub(crate) fn download_name(
     label: &str,
     extension: &str,
 ) -> String {
-    // Usable, not merely non-empty: `/` sanitises to `-`, which is
-    // non-empty but reads as nothing to a person, so a `.filter(|s|
-    // !s.is_empty())` chain never fell through to the title beside it.
+    // Usable, not merely non-empty: `/` sanitises to `-`, which is non-empty
+    // but reads as nothing to a person.
     let usable = |s: &str| s.chars().any(char::is_alphanumeric);
     let safe_series = series.map(safe).filter(|s| usable(s));
     let safe_title = || {
@@ -68,12 +67,11 @@ pub(crate) fn download_name(
 /// unconstrained, can hold any fraction, not only `.5`.
 ///
 /// **The whole value is rounded once, before anything is split into a whole
-/// part and a fraction.** An earlier version took `trunc()` for the whole
-/// part and `volume - whole` for the fraction *first*, and rounded the
-/// fraction to three decimals *second* — so a fraction that rounds up to
-/// `1.000` (`1.9999`, or `49.99999999999999`) had nowhere to carry to: the
-/// whole part was already formatted from the unrounded value, giving
-/// `"011"` and `"491"` instead of `"02"` and `"50"`.
+/// part and a fraction.** Splitting first and rounding the fraction second
+/// would leave a fraction that rounds up to `1.000` (`1.9999`, or
+/// `49.99999999999999`) nowhere to carry to: the whole part, already formatted
+/// from the unrounded value, would give `"011"` and `"491"` instead of `"02"`
+/// and `"50"`.
 ///
 /// Rounding once means scaling to milli-units and rounding *there*, as a
 /// single integer operation, then splitting that integer with `/` and `%` —
@@ -96,15 +94,14 @@ pub(crate) fn download_name(
 /// `download_name` filters `NAN`/`INFINITY` out before calling this, the same
 /// as no volume at all, rather than let this print `"vNaN"` or `"vinf"`.
 ///
-/// A sweep across very large volumes turned up a second way to get this
-/// wrong: multiplying by 1000 to get milli-units overflows a `u64` past
-/// roughly `1.84e16`, and a saturating cast turns every volume beyond that —
-/// `1e300` and `f64::MAX` alike — into the identical wrong string
-/// (`u64::MAX / 1000`), silently. `2^52` sidesteps it rather than papering
-/// over it with a wider integer that only moves the ceiling: past `2^52` the
-/// gap between adjacent `f64` values is already `>= 1.0`, so every such
-/// volume is already a whole number with no fraction to round, and can be
-/// formatted directly instead of multiplied.
+/// Multiplying by 1000 to get milli-units overflows a `u64` past roughly
+/// `1.84e16`, and a saturating cast turns every volume beyond that — `1e300`
+/// and `f64::MAX` alike — into the identical wrong string (`u64::MAX / 1000`),
+/// silently. `2^52` sidesteps it rather than papering over it with a wider
+/// integer that only moves the ceiling: past `2^52` the gap between adjacent
+/// `f64` values is already `>= 1.0`, so every such volume is already a whole
+/// number with no fraction to round, and can be formatted directly instead
+/// of multiplied.
 const WHOLE_NUMBER_THRESHOLD: f64 = 4_503_599_627_370_496.0; // 2^52
 fn volume_text(volume: f64) -> String {
     let magnitude = volume.abs();
@@ -197,13 +194,12 @@ fn strip_leading_punctuation(stem: &str) -> String {
 
 /// The `Content-Disposition` for a download, in both forms RFC 6266 allows.
 ///
-/// **Both, not one.** This library's titles are routinely non-ASCII —
-/// `五等分の花嫁` is the search case that forced migration 8's trigram
-/// tokeniser — and a client that understands only the quoted `filename=` must
-/// still get something usable, while one that understands `filename*` must get
-/// the real name. The quoted form is transliterated to ASCII by dropping what
-/// will not fit, which can leave it nearly empty; that is why it is the
-/// fallback and not the answer.
+/// **Both, not one.** This library's titles are routinely non-ASCII
+/// (`五等分の花嫁`, for one), and a client that understands only the quoted
+/// `filename=` must still get something usable, while one that understands
+/// `filename*` must get the real name. The quoted form replaces each character
+/// that will not fit in it with `_`, which can leave little of the name; that
+/// is why it is the fallback and not the answer.
 pub(crate) fn content_disposition(name: &str) -> String {
     let ascii: String = name
         .chars()
@@ -242,14 +238,21 @@ use crate::{ServeState, cbz};
 /// its acquisition link against.
 pub(crate) const CBZ_TYPE: &str = "application/vnd.comicbook+zip";
 
-/// What a passthrough download says it is.
+/// Every member of an edition, resolved against the document's own directory.
 ///
-/// **The type follows the bytes, not the route.** A single-member edition may
-/// not be a comic archive at all — `member.format` admits `pdf` and both epub
-/// kinds — and calling a PDF `application/vnd.comicbook+zip` would be a lie
-/// told in the header as well as in the filename. Spec §7. Only the *generated*
-/// path is unconditionally [`CBZ_TYPE`], because there the container is this
-/// module's own.
+/// The other half of [`passthrough_extension`]'s job: it builds that test's
+/// input, so the root rule — and the scanned-work case where these paths are
+/// already absolute and the join is the identity — is not written out again in
+/// each caller.
+fn member_paths(work: &crate::Work, edition: &taiyaku_core::Edition) -> Vec<std::path::PathBuf> {
+    let root = work
+        .path
+        .parent()
+        .unwrap_or(std::path::Path::new("."))
+        .to_path_buf();
+    edition.members.iter().map(|m| root.join(&m.path)).collect()
+}
+
 /// The extension a **passthrough** download of these members would serve, or
 /// `None` where the download is generated.
 ///
@@ -261,24 +264,7 @@ pub(crate) const CBZ_TYPE: &str = "application/vnd.comicbook+zip";
 ///
 /// Extracted so [`prepare`] and [`advertised_type`] cannot disagree. A feed
 /// advertising one type while the route sends another is that same lie in a
-/// third place, which is why `refuse_if_hidden` is reused rather than
-/// restated two modules away.
-/// Every member of an edition, resolved against the document's own directory.
-///
-/// The other half of [`passthrough_extension`]'s job: extracting the *test*
-/// while leaving both callers to build its input themselves left the root
-/// rule — and the scanned-work case where these paths are already absolute
-/// and the join is the identity — written out twice, which is the drift the
-/// extraction was for.
-fn member_paths(work: &crate::Work, edition: &taiyaku_core::Edition) -> Vec<std::path::PathBuf> {
-    let root = work
-        .path
-        .parent()
-        .unwrap_or(std::path::Path::new("."))
-        .to_path_buf();
-    edition.members.iter().map(|m| root.join(&m.path)).collect()
-}
-
+/// third place.
 fn passthrough_extension(paths: &[std::path::PathBuf]) -> Option<String> {
     (paths.len() == 1 && paths[0].is_file()).then(|| {
         paths[0]
@@ -297,10 +283,10 @@ fn passthrough_extension(paths: &[std::path::PathBuf]) -> Option<String> {
 /// **Falls back to [`CBZ_TYPE`] rather than failing.** A member missing from
 /// disk must not turn one bad edition into a 500 for a whole work's feed,
 /// and an entry advertising the wrong type for material that is not there is
-/// no worse than the page link it replaced, which for a *local* member would
-/// also 404. (Not for a Stump-only member, where the page link resolves
-/// through `PageSource` and this route does not — see `opds::work_feed`,
-/// which states that asymmetry where the link is built.)
+/// no worse than a page link to it, which for a *local* member would also 404.
+/// (Not for a Stump-only member, where the page link resolves through
+/// `PageSource` and this route does not — see `opds::work_feed`, which states
+/// that asymmetry where the link is built.)
 ///
 /// The cost is one `metadata` call per edition of one member — an edition of
 /// several is generated and asks nothing — in a feed that otherwise touches no
@@ -308,8 +294,7 @@ fn passthrough_extension(paths: &[std::path::PathBuf]) -> Option<String> {
 /// and it is what buys the feed and the route being unable to drift apart.
 ///
 /// **It blocks, so the feed asks it on the blocking pool**, through
-/// `opds::advertised_types` — O120. `opds::work_feed` called it in the
-/// handler, on the async worker, until then.
+/// `opds::advertised_types` — O120.
 pub(crate) fn advertised_type(work: &crate::Work, edition: &taiyaku_core::Edition) -> &'static str {
     match passthrough_extension(&member_paths(work, edition)) {
         Some(extension) => type_for(&extension),
@@ -317,6 +302,14 @@ pub(crate) fn advertised_type(work: &crate::Work, edition: &taiyaku_core::Editio
     }
 }
 
+/// What a passthrough download says it is.
+///
+/// **The type follows the bytes, not the route.** A single-member edition may
+/// not be a comic archive at all — `member.format` admits `pdf` and both epub
+/// kinds — and calling a PDF `application/vnd.comicbook+zip` would be a lie
+/// told in the header as well as in the filename. Spec §7. Only the *generated*
+/// path is unconditionally [`CBZ_TYPE`], because there the container is this
+/// module's own.
 fn type_for(extension: &str) -> &'static str {
     match extension {
         "cbz" | "zip" => CBZ_TYPE,
@@ -334,32 +327,22 @@ fn type_for(extension: &str) -> &'static str {
 /// 1.49 GB volume out of memory. Eight is enough that a fast client never
 /// waits on a page read.
 ///
-/// **A chunk, not a page.** `passthrough` has always read and sent its file
-/// in [`CHUNK_SIZE`] pieces; `generated` did not — it queued one whole
-/// *page* per slot, taken straight from `for_each_member_page`'s in-memory
-/// `Vec` and copied again into the `Bytes` the channel carries. This
-/// corpus's pages run 100 KB–3 MB, with ~430 MB outliers in the Color Walk
-/// art books (`taiyaku-read`'s `MAX_ENTRY_CAPACITY_HINT`) — eight of those
-/// queued at once is 3.4 GB, around 4.3 GB counting the page `Vec` still
-/// being read and the copy of it in flight, which is larger than the
-/// 1.49 GB volume this channel exists to keep out of memory, not "eight
-/// pages rather than a volume" as an earlier version of this comment
-/// concluded from the very figure that contradicts it. `generated` now
-/// chunks its payload the same [`CHUNK_SIZE`] way `passthrough` always has,
-/// so a slot is at most one chunk regardless of which shape produced it,
-/// and the high-water mark this constant actually bounds is CHANNEL_DEPTH ×
-/// CHUNK_SIZE — about 512 KB — plus the one page still being read, not
-/// CHANNEL_DEPTH pages.
+/// **A chunk, not a page.** Both download shapes send in [`CHUNK_SIZE`] pieces,
+/// so a slot is at most one chunk whichever shape produced it, and the
+/// high-water mark this constant bounds is `CHANNEL_DEPTH` × `CHUNK_SIZE` —
+/// about 512 KB — plus the one page still being read, not `CHANNEL_DEPTH`
+/// pages. This corpus's pages run 100 KB–3 MB, with ~430 MB outliers in the
+/// Color Walk art books (`taiyaku-read`'s `MAX_ENTRY_CAPACITY_HINT`): eight of
+/// those queued at once would be 3.4 GB, larger than the 1.49 GB volume this
+/// channel exists to keep out of memory.
 const CHANNEL_DEPTH: usize = 8;
 
 /// The size of one piece of output, for both download shapes.
 ///
-/// `passthrough` has always read its file this way; `generated` is chunked
-/// to match, rather than the whole-page slot [`CHANNEL_DEPTH`]'s doc comment
-/// describes fixing. Below this a fast local disk pays more syscalls for no
-/// benefit a bounded channel does not already provide; above it a slow
-/// client's queue holds more per slot than [`CHANNEL_DEPTH`] was chosen to
-/// bound.
+/// `passthrough` reads its file this way and `generated` is chunked to match.
+/// Below this a fast local disk pays more syscalls for no benefit a bounded
+/// channel does not already provide; above it a slow client's queue holds more
+/// per slot than [`CHANNEL_DEPTH`] was chosen to bound.
 const CHUNK_SIZE: usize = 64 * 1024;
 
 /// How long the producer waits for one send to be accepted before treating
@@ -399,62 +382,52 @@ const IDLE_SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10
 /// thread holds, and costs no idle OS thread parked on a permit that is not
 /// free yet.
 ///
-/// **The number.** After the `CHANNEL_DEPTH` fix above, a generated
+/// **The number.** With `CHANNEL_DEPTH` counting chunks, a generated
 /// download's peak is dominated by one page `Vec` — this corpus's measured
 /// worst case is the Color Walk art books at ~430 MB (`docs/notes.md`,
 /// `MAX_ENTRY_CAPACITY_HINT`'s own doc comment) — the same order of
-/// magnitude as the decoded buffer `GENERATION_LIMIT` was sized against
-/// (~546 MiB for this corpus's worst page, inside a 3 GiB ceiling neither
-/// route lets one request exceed). Four permits bounds the aggregate at
-/// roughly four such pages — under 2 GB in the worst realistic case — while
-/// still letting more than one reader download at once without queuing
-/// behind a single slow transfer, which two permits would risk on a server
-/// with more than one occasional reader.
+/// magnitude as the decoded buffer `GENERATION_LIMIT` was sized against. Four
+/// permits bounds the aggregate at roughly four such pages — under 2 GB in the
+/// worst realistic case — while still letting more than one reader download at
+/// once without queuing behind a single slow transfer, which two permits would
+/// risk on a server with more than one occasional reader.
 ///
 /// **This is a reasoned starting point, not a measured one, and that
-/// distinction matters.** `GENERATION_LIMIT` cites an actual measurement —
-/// four concurrent decodes peaking at 3.0 GB. Nothing on this branch
-/// measured concurrent *downloads*: no deployment's available memory is
+/// distinction matters.** `GENERATION_LIMIT` cites an actual measurement.
+/// Nothing measured concurrent *downloads*: no deployment's available memory is
 /// recorded anywhere in this repository, and no session log shows how many
-/// readers download at once. Four is reached by extending
-/// `GENERATION_LIMIT`'s own method to the one number this branch does have
-/// — the corpus's largest page — rather than invented outright; what would
-/// settle it properly is either the target deployment's memory budget or an
-/// observed concurrent-download count, and neither exists yet.
+/// readers download at once. Four is reached by extending `GENERATION_LIMIT`'s
+/// own method to the one number available — the corpus's largest page — rather
+/// than invented outright; what would settle it properly is either the target
+/// deployment's memory budget or an observed concurrent-download count, and
+/// neither exists.
 ///
-/// **A send timeout was considered beside this, rejected once, and has since
-/// been added — [`IDLE_SEND_TIMEOUT`], applied to every `blocking_send` this
-/// module used to do unconditionally, via [`send_with_timeout`].** The
-/// reasoning that rejected it the first time is kept below rather than
-/// deleted, because it was sound and most of it still is: a client that
-/// stops reading — not merely a slow one — used to leave a producer thread
-/// parked in `blocking_send` indefinitely, holding whichever permit it
-/// acquired here. This semaphore alone bounds how many threads can be stuck
-/// that way at once and what each one holds meanwhile; it does not by itself
-/// reclaim a thread from a connection that never comes back. Before this cap
-/// existed, such a client cost only its own thread and memory; after it,
-/// four such clients hold every permit and every other reader's download —
-/// not merely that client's — blocks behind them, so the cap turned a
-/// per-connection leak into a whole-server outage at exactly the threshold
-/// meant to bound memory.
+/// **The cap needs [`IDLE_SEND_TIMEOUT`], applied to every send through
+/// [`send_with_timeout`].** A client that stops reading — not merely a slow one
+/// — would otherwise leave a producer thread parked in a send indefinitely,
+/// holding whichever permit it acquired here. This semaphore alone bounds how
+/// many threads can be stuck that way at once and what each one holds
+/// meanwhile; it does not reclaim a thread from a connection that never comes
+/// back. Without the timeout, four such clients would hold all four permits and
+/// every other reader's download — not merely that client's — would block
+/// behind them, turning a per-connection leak into a whole-server outage at
+/// exactly the threshold meant to bound memory.
 ///
-/// **What changed is not the judgement that a guessed number is dangerous —
-/// that is still true — but that [`IDLE_SEND_TIMEOUT`] is not guessed.**
-/// Panels, the OPDS client this feed exists for, can still stall for reasons
+/// **A guessed number is dangerous, and [`IDLE_SEND_TIMEOUT`] is not guessed.**
+/// Panels, the OPDS client this feed exists for, can stall for reasons
 /// indistinguishable from a hostile client inside any one send — a phone
-/// locking, a handoff between towers — and nothing in this repository
-/// measures how long that legitimate case runs; a measurement of it (a
-/// Panels session log with timing, the same standard spec C2 §5 already
-/// applies to the true-offset-seeking decision it separately defers) still
-/// does not exist. What makes a timeout safe without that measurement is
-/// arithmetic instead: [`IDLE_SEND_TIMEOUT`]'s own doc comment derives ten
-/// minutes from this module's chunk size, not from any observed stall, and
+/// locking, a handoff between towers — and nothing in this repository measures
+/// how long that legitimate case runs. What makes a timeout safe without that
+/// measurement is arithmetic: [`IDLE_SEND_TIMEOUT`]'s own doc comment derives
+/// ten minutes from this module's chunk size, not from any observed stall, and
 /// ten minutes of zero progress on a 64 KiB chunk is under 110 bytes/sec
-/// sustained — no plausible legitimate reader, and nowhere near what a
-/// tower handoff or a locked phone costs. The timeout is idle, reset by
-/// every accepted send, so it still cannot sever a real reader mid-volume
-/// the way a total-duration cap would; it only reclaims the thread and the
-/// permit from a connection that is provably gone.
+/// sustained — no plausible legitimate reader, and nowhere near what a tower
+/// handoff or a locked phone costs.
+///
+/// **The timeout is idle, not total.** It is reset by every accepted send, so
+/// it cannot sever a real reader mid-volume the way a total-duration cap would;
+/// it only reclaims the thread and the permit from a connection that is
+/// provably gone.
 const MAX_CONCURRENT_DOWNLOADS: usize = 4;
 
 /// The semaphore [`MAX_CONCURRENT_DOWNLOADS`] describes. `const_new` rather
@@ -493,9 +466,8 @@ enum Shape {
     /// A `STORE` zip built from these members, in this order.
     Generated {
         plan: cbz::Plan,
-        /// One `(absolute member path, how many of the plan's entries it
-        /// contributes)`, in order. The metadata document is entry 0 and is
-        /// not a member.
+        /// Each member's absolute path, in order. The metadata document is
+        /// entry 0 and is not a member.
         members: Vec<std::path::PathBuf>,
         comic_info: Vec<u8>,
     },
@@ -509,11 +481,11 @@ enum Shape {
 /// not have it" is a different fact that a 404 would lie about.
 ///
 /// `#[expect(clippy::result_large_err)]` for the reason `put_notes` and
-/// `patch_alignments` in `routes.rs` already carry it (there as `#[allow]`,
-/// predating this crate's `#[expect]`-only rule): the `spawn_blocking`
-/// closure below resolves `prepare`'s `Result<(Shape, String), Response>`,
-/// and clippy checks each closure as its own item, so the attribute has to
-/// sit on this enclosing fn rather than on `prepare` alone.
+/// `patch_alignments` in `routes.rs` already carry it (there as `#[allow]`):
+/// the `spawn_blocking` closure below resolves `prepare`'s
+/// `Result<(Shape, String), Response>`, and clippy checks each closure as its
+/// own item, so the attribute has to sit on this enclosing fn rather than on
+/// `prepare` alone.
 #[expect(
     clippy::result_large_err,
     reason = "the spawn_blocking closure below resolves prepare's \
@@ -869,7 +841,7 @@ enum SendOutcome {
     /// Accepted. The idle clock restarts on the caller's next send.
     Sent,
     /// The receiver is gone — the client hung up. Not an error: the caller
-    /// stops producing, exactly as it always has.
+    /// stops producing.
     Gone,
     /// Nothing was accepted inside the timeout. The client is stalled, not
     /// merely slow; the caller abandons the download.
@@ -890,15 +862,14 @@ enum SendOutcome {
 /// every real call site passes that constant.
 ///
 /// **`tokio::time::timeout(timeout, tx.send(item))` must be built *inside*
-/// the future handed to `block_on`, not as its argument.** Building it first
-/// and passing the already-constructed value was the first version of this
-/// function, and it panicked — `Timeout::new_with_delay` registers with the
-/// runtime's timer driver at construction, not at first poll, and as a plain
-/// function argument it is constructed before `block_on` has entered any
-/// runtime context on this thread: "there is no reactor running, must be
-/// called from the context of a Tokio 1.x runtime". Wrapping it in an
-/// `async` block defers that construction to the block's first poll, which
-/// happens only after `block_on` has entered the context.
+/// the future handed to `block_on`, not as its argument.**
+/// `Timeout::new_with_delay` registers with the runtime's timer driver at
+/// construction, not at first poll, and as a plain function argument it would
+/// be constructed before `block_on` has entered any runtime context on this
+/// thread, and panic: "there is no reactor running, must be called from the
+/// context of a Tokio 1.x runtime". Wrapping it in an `async` block defers that
+/// construction to the block's first poll, which happens only after `block_on`
+/// has entered the context.
 fn send_with_timeout(
     tx: &tokio::sync::mpsc::Sender<Result<Bytes, std::io::Error>>,
     item: Result<Bytes, std::io::Error>,
@@ -1017,14 +988,14 @@ fn generated(
     // `false` once the client has gone. Not `mut`: every capture here (`tx`,
     // `from`, `upto`, `handle`) is `Copy` or already a shared reference, so
     // the closure is `Fn` and calling it never needs a unique borrow of the
-    // binding — `let mut send` triggered `unused_mut` under `-D warnings`.
+    // binding — `let mut send` would trigger `unused_mut` under `-D warnings`.
     //
-    // **Chunked at `CHUNK_SIZE`, the way `passthrough` already chunks its
+    // **Chunked at `CHUNK_SIZE`, the way `passthrough` chunks its
     // file** — `CHANNEL_DEPTH`'s doc comment has the reasoning. `clipped`
     // returns a subslice of `bytes` with no copy of its own, so `chunks`
     // below walks that view and each `Bytes::copy_from_slice` below only
     // ever copies one `CHUNK_SIZE` piece, never the whole page or local
-    // header at once. This changes how many `Bytes` frames a page becomes
+    // header at once. Chunking decides how many `Bytes` frames a page becomes
     // in the stream, never their bytes or their order, so it cannot change
     // the zip this produces: the chunking is beneath the entry level
     // `cbz::Plan` reasons about, `Content-Length` is unaffected, and a

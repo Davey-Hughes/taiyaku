@@ -273,10 +273,8 @@ pub(crate) fn origin_is_acceptable(
         Method::PUT | Method::PATCH | Method::POST | Method::DELETE
     ) {
         // **Asked before the host is required, not after.** A safe method never
-        // needed one, and demanding it here narrowed the rule to "every request
-        // carries a `Host`" — which HTTP/2 does not, since hyper puts the
-        // authority in the URI and synthesises no header. Behind an h2c upstream
-        // that answered 401 to everything.
+        // needs one, and not every request carries a `Host` — HTTP/2 does not,
+        // since hyper puts the authority in the URI and synthesises no header.
         return true;
     }
     let (Some(origin), Some(host)) = (origin, host) else {
@@ -296,15 +294,14 @@ pub(crate) fn origin_is_acceptable(
 ///
 /// **`X-Forwarded-Host` from a trusted peer, else the `Host` header.** nginx's
 /// documented default is `proxy_set_header Host $proxy_host`, so a reverse proxy
-/// configured the ordinary way replaces `Host` with the upstream's — and the
-/// server then compared `Origin: https://taiyaku.example` against
-/// `Host: 127.0.0.1:8080` and refused every login and every cookie-authenticated
-/// write, in exactly the deployment §6 says this is for.
+/// configured the ordinary way replaces `Host` with the upstream's, and
+/// `Origin: https://taiyaku.example` compared against `Host: 127.0.0.1:8080`
+/// would be refused, on every login and every cookie-authenticated write, in
+/// exactly the deployment §6 says this is for.
 ///
 /// Trusted-only for the same reason `X-Forwarded-For` is: a peer that may rename
 /// the server it is talking to may satisfy the origin check by claiming to be
-/// whatever origin it came from, which is the whole check gone. Found by the
-/// whole-branch review, 2026-08-18.
+/// whatever origin it came from, which is the whole check gone.
 ///
 /// **And "trusted" means the proxy sets this header itself**, which is a
 /// deployment requirement rather than something this code can check: nginx
@@ -313,8 +310,7 @@ pub(crate) fn origin_is_acceptable(
 /// `--trusted-proxy` while it writes nothing lets a client choose the authority
 /// its own `Origin` is compared against. `README.md` states the three
 /// `proxy_set_header` lines; there is nothing here that can enforce them, which
-/// is why they are written down rather than assumed. Found by the third
-/// whole-branch review.
+/// is why they are written down rather than assumed.
 pub(crate) fn effective_host(
     config: &AuthConfig,
     extensions: &axum::http::Extensions,
@@ -336,15 +332,12 @@ pub(crate) fn effective_host(
             .any(|range| range.contains(peer))
     });
     if trusted {
-        // **`get_all` and the first entry** — deliberately the opposite end from
-        // `client_of`'s, and the asymmetry is the point rather than an
+        // **`get_all` and the first entry** — deliberately the opposite end
+        // from `client_of`'s, and the asymmetry is the point rather than an
         // oversight. `X-Forwarded-For` grows `client, proxy1, proxy2`, so the
         // trusted hop's own contribution is *last*; `X-Forwarded-Host` records
         // the authority the browser asked for, which the first proxy writes and
-        // later ones leave alone, so it is *first*. Reading every line rather
-        // than `get` for the same reason `client_of` does: a client can send its
-        // own, and a proxy that appends a second header line rather than
-        // extending the first would otherwise leave the client's the one read.
+        // later ones leave alone, so it is *first*.
         let lines: Vec<&str> = headers
             .get_all("x-forwarded-host")
             .iter()
@@ -373,8 +366,6 @@ pub(crate) fn token_of(headers: &axum::http::HeaderMap) -> Option<String> {
         .find_map(|(name, value)| (name == COOKIE_NAME).then(|| value.to_string()))
 }
 
-/// Resolve a [`Principal`] from the session cookie, if there is one and the
-/// request is allowed to use it.
 /// What a session cookie came to.
 pub(crate) enum FromCookie {
     Resolved(Principal),
@@ -386,6 +377,8 @@ pub(crate) enum FromCookie {
     CrossSite,
 }
 
+/// Resolve a [`Principal`] from the session cookie, if there is one and the
+/// request is allowed to use it.
 pub(crate) fn from_cookie(
     state: &ServeState,
     token: &str,
@@ -394,8 +387,7 @@ pub(crate) fn from_cookie(
     host: Option<&str>,
 ) -> FromCookie {
     // A missing host is refused for a state change and irrelevant to a read —
-    // `origin_is_acceptable` decides which, rather than this `?` deciding for
-    // it, which is what made every HTTP/2 request fail.
+    // `origin_is_acceptable` decides which, not a `?` on the host here.
     // The session is resolved first, so "no such session" and "a real session
     // from elsewhere" can be told apart — the whole point of the distinction.
     let conn = state.library.conn();
@@ -425,7 +417,7 @@ pub(crate) fn from_cookie(
 /// which the reader annotates and records positions into an account the
 /// attacker can sign into and read back.
 ///
-/// Two accidents of the browser were doing this job before: an HTML form cannot
+/// Two accidents of the browser stand in the way as well: an HTML form cannot
 /// send `application/json`, and `fetch` with that content type — or with
 /// `DELETE` — triggers a CORS preflight this server never answers. Both are
 /// real and neither is this server's doing, which is exactly the objection to
@@ -436,8 +428,6 @@ pub(crate) fn from_cookie(
 /// route as "wrong password", so a reverse proxy that rewrites `Origin` or drops
 /// `Host` would present as every account's password being wrong at once — the
 /// least actionable message this server could send.
-///
-/// Found by an automated security review of this branch on 2026-08-18.
 fn refuse_cross_site(
     config: &AuthConfig,
     extensions: &axum::http::Extensions,
@@ -489,8 +479,8 @@ pub(crate) async fn login(
         .map(str::to_string);
 
     // `spawn_blocking` for the reasons the guard uses it: SQLite behind a
-    // mutex, an argon2 verify measured at 11.9 ms, and since O57 a wait for a
-    // permit before it. A login that is not locked out pays all three.
+    // mutex, an argon2 verify, and a wait for a permit before it (O57). A login
+    // that is not locked out pays all three.
     let opened = tokio::task::spawn_blocking(move || {
         use taiyaku_library::{account, credential};
 
@@ -508,9 +498,9 @@ pub(crate) async fn login(
         // and fail the same way.
         let locked_out = || {
             let conn = state.library.conn();
-            // Fails closed: `unwrap_or(false)` read a SQLITE_BUSY on the one
-            // shared connection as "not locked out", losing the limiter under
-            // exactly the load that triggers it.
+            // Fails closed: `unwrap_or(false)` would read a `SQLITE_BUSY` on
+            // the one shared connection as "not locked out", losing the limiter
+            // under exactly the load that triggers it.
             account::is_address_locked_out(&conn, &wide).unwrap_or(true)
                 || account::is_locked_out(&conn, &key).unwrap_or(true)
         };
@@ -538,13 +528,12 @@ pub(crate) async fn login(
         // A failure for an account that does not exist still counts, or the
         // limiter would only slow down guesses at names it has confirmed — and
         // it must cost the same, or response time enumerates the roster. See
-        // `credential::DECOY_HASH`; the same split exists in `auth::from_basic`,
-        // and measured here at 274 ms against 4 ms before this line.
+        // `credential::DECOY_HASH`, and `auth::from_basic` for the same split.
         let Some((found, phc)) = found else {
             let _ = verify_holding(&mut permit, &body.password, credential::DECOY_HASH);
             let conn = state.library.conn();
             // **Both, unconditionally.** `||` short-circuits, so a pair-key
-            // failure that errored skipped the wide key entirely — the one
+            // failure that errored would skip the wide key entirely — the one
             // counter that bounds the cost, dropped on the path that most
             // needs it. The decision is taken after both have been recorded.
             let pair = account::note_failure(&conn, &key);
@@ -561,7 +550,7 @@ pub(crate) async fn login(
             // An unrecordable failure is an unbounded one; the safe reading of
             // "the limiter is not working" is to stop rather than to continue.
             // **Both, unconditionally.** `||` short-circuits, so a pair-key
-            // failure that errored skipped the wide key entirely — the one
+            // failure that errored would skip the wide key entirely — the one
             // counter that bounds the cost, dropped on the path that most
             // needs it. The decision is taken after both have been recorded.
             let pair = account::note_failure(&conn, &key);
@@ -584,9 +573,8 @@ pub(crate) async fn login(
             // client say "that name and password did not match", which is
             // actively false and leaves the reader retrying a correct password
             // forever with nothing recorded anywhere. The two database failures
-            // above it in this same closure already reason about this error
-            // class and answer 429; this one answered with the one message that
-            // cannot be true. Found by the third whole-branch review.
+            // above it in this same closure reason about this error class and
+            // answer 429.
             if account::open_session(
                 &conn,
                 found.id,
@@ -692,7 +680,7 @@ pub(crate) async fn logout(
 /// network waiting to be claimed by whoever reaches it first.
 ///
 /// **It closes the instant an admin exists**, not when the flag is turned off —
-/// which nobody will do. `account::admin_exists` is what decides, and it reads
+/// which nobody will do. `account::is_claimed` is what decides, and it reads
 /// the password rather than the role for exactly this reason: migration 1 seeds
 /// a row with role `admin` and migration 4 locks it, so a fresh library has an
 /// admin row and no admin, and reading the role alone would close this route
@@ -717,12 +705,9 @@ pub(crate) async fn claim(
     if let Some(refusal) = refuse_cross_site(&state.auth, &extensions, &headers, &Method::POST) {
         return refusal;
     }
-    // **The same refusal `change_password` and the CLI already make**, and the
-    // one path that most needed it did not have it: an empty password hashes to
-    // a well-formed PHC string rather than to `LOCKED`, so it verifies — and
-    // `admin_exists` would then answer true and shut this route, leaving a
-    // server whose only administrator has no password and no way to fix it
-    // through the web. Found by the whole-branch review, 2026-08-18.
+    // **The same refusal `change_password` and the CLI make.**
+    // `credential::hash_password` refuses an empty password too, and its doc
+    // says why; this check fires earlier and words the refusal for this route.
     if body.password.is_empty() {
         return (
             StatusCode::BAD_REQUEST,
@@ -757,9 +742,9 @@ pub(crate) async fn claim(
         // **`is_claimed`, not `admin_exists`.** The two answer different
         // questions and this route needs the wider one: `user add alice`
         // inserts with role `user`, so a library its owner had already set up
-        // and was already reading from still reported no admin, and a stranger
-        // could take the seeded row — with every note and reading position
-        // hanging off it. Found by the fourth whole-branch review.
+        // and was already reading from would report no admin to `admin_exists`,
+        // and a stranger could take the seeded row — with every note and
+        // reading position hanging off it.
         if account::is_claimed(&conn).unwrap_or(true) {
             return Claimed::Shut;
         }
@@ -809,35 +794,23 @@ fn principal_of(extensions: &axum::http::Extensions) -> Option<&Principal> {
 /// Refuse an API key on a route that administers the account it belongs to.
 ///
 /// **A key is a device credential.** §2 justifies its deliberately fast hash by
-/// its role as the thing an OPDS client presents for every page of a volume —
-/// and until this, a key typed into a third-party reader also minted further
-/// keys (so revoking the device did not lock anyone out), listed the owner's
-/// browsers with their user-agents and addresses, signed every one of them out,
-/// and changed the account password. Nothing narrowed it to the role its own
-/// design argues from.
+/// its role as the thing an OPDS client presents for every page of a volume, so
+/// without this a key typed into a third-party reader could also mint further
+/// keys (so revoking the device would not lock anyone out), list the owner's
+/// browsers with their user-agents and addresses, and sign all of them out.
 ///
 /// 403 rather than 401: the credential is valid and the caller is who they say,
 /// which is exactly why a re-authentication prompt would be the wrong answer.
-/// Found by the second whole-branch review.
 ///
 /// **Called directly only by this module's own six self-service routes.**
 /// Everything administrative reaches it through
 /// [`administering_or_forbidden`], which asks the role question first.
-// **The wording has been widened twice, and the second time is the lesson.**
-// It began as "an API key cannot manage the account it belongs to", true while
-// `session.rs`'s six self-service routes were the only callers. C4 PR 2 added
-// `users_api`/`backup_api`, which manage *other* accounts, and reworded it to
-// "cannot manage accounts, keys or sessions". O93 then widened the callers
-// again — the rule editor, the roots API, the proposals inbox, the metadata
-// PATCHes — and that second wording became false on twenty-two of the
-// thirty-one routes it answers for: `DELETE /api/library/roots/3` manages no
-// account, key or session.
-//
-// **A refusal that asserts something untrue is a defect**, and this work
-// caught it three separate times in message text. Worded now for the boundary
-// itself rather than for whichever routes happen to sit behind it, which is
-// the only version that does not go stale the next time the gate is reused.
-// The phrase "API key" is load-bearing:
+// **A refusal that asserts something untrue is a defect.** The message is
+// worded for the boundary itself rather than for whichever routes happen to
+// sit behind it, which is the version that does not go stale when the gate is
+// reused: a wording about accounts, keys or sessions would be false for
+// `DELETE /api/library/roots/{id}`, which manages none of them. The phrase
+// "API key" is load-bearing:
 // `auth::tests::exactly_the_declared_routes_refuse_an_api_key` classifies by
 // it.
 pub(crate) fn refuse_a_device_credential(extensions: &axum::http::Extensions) -> Option<Response> {
@@ -861,32 +834,20 @@ pub(crate) fn refuse_a_device_credential(extensions: &axum::http::Extensions) ->
 ///
 /// # Why the two questions are one gate
 ///
-/// They were two, and three modules each kept their own copy of the first —
-/// `config_api`, `curation` and `metadata` all defined an `admin_or_forbidden`
-/// reading `principal.role` and nothing else. So an administrator's **API
-/// key**, the credential typed into a third-party OPDS reader and hashed fast
-/// on the argument that it rides every page request, reached every one of
-/// them: the rule editor, the roots API, `DELETE /api/library/roots/{id}` —
-/// which spec C4 §2 calls the most destructive action in the product — the
-/// proposals inbox, and the four metadata PATCHes.
-///
-/// Spec A2's second whole-branch review had already closed this shape for the
-/// *self-service* account routes and built [`refuse_a_device_credential`] for
-/// it, recording the harm in as many words: *"a key typed into a third-party
-/// reader granted minting further keys, listing the owner's browsers with
-/// their addresses, and signing every one of them out"*. C4 PR 2 then measured
-/// the administrative version — `GET /api/library/users` under
-/// `Authorization: Basic name:tyk_…` answering **200** with every account's
-/// sessions, IP addresses and user-agents — gated its own nine routes, and
-/// opened **O93** for the twenty-two it did not own. This closes O93.
+/// A role check alone would let an administrator's **API key**, the credential
+/// typed into a third-party OPDS reader and hashed fast on the argument that it
+/// rides every page request, reach the rule editor, the roots API,
+/// `DELETE /api/library/roots/{id}` — which spec C4 §2 calls the most
+/// destructive action in the product — the proposals inbox, and the four
+/// metadata PATCHes. [`refuse_a_device_credential`] closes the same shape for
+/// the self-service account routes, and this gate closes it for the
+/// administrative ones (O93).
 ///
 /// # The rule, stated so a new route cannot miss it
 ///
 /// **A route that asks whether you are an administrator asks this instead.**
-/// There is no longer any function in this crate that answers only the first
-/// half, which is the property `auth::tests::no_module_answers_the_role_question_alone`
-/// holds — three copies of a half-check is how the half that was missing went
-/// unnoticed through four reviews.
+/// No function in this crate answers only the first half, which is the property
+/// `auth::tests::no_module_answers_the_role_question_alone` holds.
 ///
 /// **O58's two routes are deliberately untouched**, and they are not an
 /// exception to the rule: `put_truth` and `patch_alignments` take no
@@ -992,10 +953,8 @@ pub(crate) async fn revoke_key(
         return refusal;
     }
     // Scoped in SQL rather than by listing every key and scanning for a boolean:
-    // the ownership check belonged in the function, where the next caller
-    // inherits it, rather than at the one call site that happened to have it.
-    // `revoke_session` twelve lines below already did it this way, with a doc
-    // comment saying why. Found by the second whole-branch review.
+    // the ownership check belongs in the function, where the next caller
+    // inherits it, rather than at the one call site that happens to have it.
     let revoked = tokio::task::spawn_blocking(move || {
         let conn = state.library.conn();
         taiyaku_library::account::revoke_key(&conn, user_id, id)
@@ -1106,14 +1065,12 @@ pub(crate) async fn change_password(
         return refusal;
     }
     // **No `refuse_cross_site` here.** This is a guarded route, so the cookie
-    // path already ran the origin check inside `from_cookie`; re-applying it
-    // refused every client authenticating with `Authorization: Basic` for having
-    // no `Origin`, with a message about sessions — while `POST /api/keys` beside
-    // it answered 200 to the same client. A header credential is not CSRF-able,
-    // which is the stated reason `origin_is_acceptable` is documented as the
-    // cookie path only. The three remaining `refuse_cross_site` call sites are
-    // all `open_routes` handlers, which genuinely cannot inherit the guard's
-    // check. Found by the second whole-branch review.
+    // path runs the origin check inside `from_cookie`; re-applying it would
+    // refuse every client authenticating with `Authorization: Basic` for having
+    // no `Origin`, with a message about sessions. A header credential is not
+    // CSRF-able, which is the stated reason `origin_is_acceptable` is
+    // documented as the cookie path only. The `refuse_cross_site` call sites
+    // are all `open_routes` handlers, which cannot inherit the guard's check.
     if body.next.is_empty() {
         return (
             StatusCode::BAD_REQUEST,
@@ -1127,22 +1084,21 @@ pub(crate) async fn change_password(
     let changed = tokio::task::spawn_blocking(move || {
         use taiyaku_library::account;
 
-        // **§7 applies here too**, and did not: this verifies the current
-        // password with argon2 and nothing counted the failures — unlimited
+        // **§7 applies here too**: this verifies the current password with
+        // argon2, and without counting the failures it would allow unlimited
         // guesses at the one secret standing between a borrowed session and
         // permanent account takeover, which is the exact scenario this route's
-        // own doc says the current-password requirement exists for. Found by
-        // the third whole-branch review.
+        // own doc says the current-password requirement exists for.
         // **Keyed on the account as well as the address.** A bare
-        // `"  change-password"` made one counter for every reader behind one
-        // address: a household where somebody mistyped their old password ten
-        // times locked everyone at that address out of changing theirs, and a
-        // guesser working on one account spent a budget the others needed. The
-        // leading spaces are the sentinel that keeps this out of `by_name`'s
-        // namespace — a name reaching `attempt_key` from the login route came
-        // out of a JSON body or a Basic header, either of which could carry
-        // this string, so it is a separation of concerns rather than a
-        // guarantee. Found by the fourth whole-branch review.
+        // `"  change-password"` would make one counter for every reader behind
+        // one address: a household where somebody mistyped their old password
+        // ten times would lock everyone at that address out of changing theirs,
+        // and a guesser working on one account would spend a budget the others
+        // need. The leading spaces are the sentinel that keeps this out of
+        // `by_name`'s namespace — a name reaching `attempt_key` from the login
+        // route comes from a JSON body or a Basic header, either of which
+        // could carry this string, so it is a separation of concerns rather
+        // than a guarantee.
         let key = account::attempt_key(
             &address.to_string(),
             &format!("  change-password {user_id}"),

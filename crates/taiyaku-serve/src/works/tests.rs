@@ -18,10 +18,9 @@ fn a_work_is_named_by_its_sidecar_filename() {
 /// them permanently unreachable at every route, with nothing anywhere
 /// saying which one won or that a choice was made at all.
 ///
-/// O4: the code has refused this since M2 and nothing exercised it, so it
-/// was correct by inspection only. The message has to name **both** paths,
-/// because the whole point is that the person running the server cannot
-/// otherwise tell which two files collided.
+/// O4: the message has to name **both** paths, because the whole point is
+/// that the person running the server cannot otherwise tell which two
+/// files collided.
 #[test]
 fn two_sidecars_claiming_one_work_id_are_refused_rather_than_shadowed() {
     let tmp = crate::test_support::Fixture::new("works-clash-first");
@@ -90,7 +89,7 @@ fn a_replaced_sidecar_is_what_the_next_reader_sees() {
     assert_eq!(after.work.title, "Renamed");
 }
 
-/// A sidecar for the two library-backed tests below: `n` names the volume and
+/// A sidecar for the library-backed tests below: `n` names the volume and
 /// `sha` its hub member's hash, which is what `content_key` hashes — each
 /// call must get a distinct `sha` or the three imports collide into one
 /// work rather than landing three.
@@ -111,11 +110,10 @@ fn fixture_doc_reading(n: u32, sha: &str, reading: &str) -> taiyaku_core::Sideca
     taiyaku_core::Sidecar::from_json(&json).expect("parses")
 }
 
-/// The corpus collides today: `work_id` derives from the filename, and
-/// `taiyaku.json` beside each work is the documented convention, so
-/// `load_works` refuses. Off the database, twelve works coexist — a work's
-/// id there is `work.slug`, which `import::sidecar`'s `unique_slug` already
-/// guarantees is unique across the library.
+/// `work_id` derives from the filename, and `taiyaku.json` beside each work is
+/// the documented convention, so a corpus collides and `load_works` refuses.
+/// Off the database, works coexist — a work's id there is `work.slug`, which
+/// `import::sidecar`'s `unique_slug` guarantees is unique across the library.
 ///
 /// The unit form of the property. `serve_works_serves_two_sidecars_both_named_taiyaku_json`
 /// in `taiyaku-cli` is the same claim through the command a person types.
@@ -149,10 +147,8 @@ fn a_library_serves_many_works_where_load_works_refused_two() {
 }
 
 /// `summary` reads `series` and `volume` from the row, not the sidecar —
-/// there is no field for either on `taiyaku_core::Sidecar`. Nothing in this
-/// crate sets `series_id` or `volume` yet (spec B's scanner does not exist),
-/// so this proves the join itself works by writing them in by hand, the only
-/// way to reach that branch before the scanner does.
+/// there is no field for either on `taiyaku_core::Sidecar`. This proves the
+/// join itself works by writing them in by hand.
 #[test]
 fn summary_reads_series_and_volume_from_the_row_when_present() {
     let library = taiyaku_library::Library::open_in_memory().expect("library");
@@ -183,11 +179,10 @@ fn summary_reads_series_and_volume_from_the_row_when_present() {
     assert_eq!(summary.volume, Some(1.0));
 }
 
-/// A `Work` with no library row at all — `load_works`'s shape, until Task 15
-/// makes `taiyaku serve <sidecar>...` an import — answers `None` for both
-/// rather than failing or minting a row: `find_row`'s rule ("a read never
-/// creates a row") applies here too, exercised through `summary` rather than
-/// through `works::find_row` directly.
+/// A `Work` with no library row at all — `load_works`'s shape — answers `None`
+/// for both rather than failing or minting a row: `find_row`'s rule ("a read
+/// never creates a row") applies here too, exercised through `summary` rather
+/// than through `works::find_row` directly.
 #[test]
 fn summary_answers_none_for_series_and_volume_with_no_row_at_all() {
     let library = taiyaku_library::Library::open_in_memory().expect("library");
@@ -258,15 +253,13 @@ fn summary_filters_editions_and_falls_back_off_a_hidden_hub() {
 /// `NOT NULL UNIQUE` in the schema — so the placeholder it writes has to be
 /// distinct per work or the *second* work's `INSERT OR IGNORE` is silently
 /// ignored, `find_row` then finds nothing under its slug, and the reader's
-/// first bookmark on that work fails with "was just registered but cannot be
-/// found". `bridge:{slug}` is what makes it distinct, `slug` being `UNIQUE`
-/// itself.
+/// first bookmark on that work fails with "was just registered in the library
+/// but cannot be found". `bridge:{slug}` is what makes it distinct, `slug`
+/// being `UNIQUE` itself.
 ///
-/// The doc comment argues that uniqueness at length and nothing observed it:
-/// replacing the whole `format!` with a constant passed the suite (whole-branch
-/// review 2, Minor 6), because every fixture minted one row. Two here, with
-/// the stored keys read back so the assertion is on the values rather than on
-/// the call not failing.
+/// One row cannot tell a per-work key from a constant, so this mints two,
+/// with the stored keys read back so the assertion is on the values rather
+/// than on the call not failing.
 #[test]
 fn two_works_bridged_into_one_library_get_distinct_content_keys() {
     let library = taiyaku_library::Library::open_in_memory().expect("library");
@@ -322,14 +315,11 @@ fn two_works_bridged_into_one_library_get_distinct_content_keys() {
     assert_eq!(rows, 2, "two works, two rows, however many writes");
 }
 
-/// **I3.** `row_id_for_document`'s `INSERT` named `title` but not
-/// `title_derived` — a column with no `NOT NULL` and no default, so a bridge
-/// row left it sitting at NULL. `librarydoc::apply`'s title write always
-/// runs, `title = COALESCE(?2, title_derived)`, and with no hand title set
-/// (every freshly bridged row) that resolves through to `title_derived`
-/// alone. On a bridged row that was NULL, so even applying a work's own
-/// untouched document straight back over itself raised SQLite's own
-/// `NOT NULL` constraint instead of leaving `title` exactly where it stood.
+/// A bridged work's own untouched document, applied straight back over it,
+/// leaves `title` exactly where it stood. `librarydoc::apply`'s title write
+/// always runs, `title = COALESCE(?2, title_derived)`, and with no hand title
+/// set (every freshly bridged row) that resolves through to
+/// `title_derived` alone.
 #[test]
 fn a_bridged_works_own_untouched_document_can_be_applied_back_over_it() {
     let library = taiyaku_library::Library::open_in_memory().expect("library");
@@ -364,21 +354,18 @@ fn a_bridged_works_own_untouched_document_can_be_applied_back_over_it() {
     );
 }
 
-/// **Whole-branch review 3, Minor 9.** `row_id_for_write` copies the sidecar's
-/// reading direction onto the bridge row through this module's own
-/// `direction_text`, and nothing observed the value: making it return `""` for
-/// both directions passed every test. That is not a cosmetic column.
-/// `taiyaku_library::project::sidecar` parses it back and refuses anything it
-/// did not write, so a bridge row carrying an empty string is unprojectable —
-/// `taiyaku library export --all` and every later `serve_work` over that row
-/// fail, at a distance, on a value written by a server that had it right in
-/// memory the whole time.
+/// `row_id_for_write` copies the sidecar's reading direction onto the bridge
+/// row through this module's own `direction_text`. The reading column is not
+/// cosmetic: `taiyaku_library::project::sidecar` parses it back and refuses
+/// anything it did not write, so a bridge row carrying an empty string is
+/// unprojectable — `taiyaku library export --all` and every later `serve_work`
+/// over that row fail, at a distance, on a value written by a server that had
+/// it right in memory the whole time.
 ///
 /// Asserted through the projection rather than off the column, because that is
 /// the consumer: the claim is that the row round-trips, not that a particular
-/// three-letter string is in it. Both directions, since a mutation that
-/// returned a single valid direction for everything would round-trip one of
-/// them.
+/// three-letter string is in it. Both directions, since returning one valid
+/// direction for everything would round-trip one of them.
 #[test]
 fn a_bridged_row_carries_the_works_own_reading_direction_back_out() {
     use taiyaku_core::Direction;

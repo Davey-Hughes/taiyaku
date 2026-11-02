@@ -7,11 +7,10 @@
 //!
 //! It is a row in `taiyaku-library`'s `progress` table rather than a field in
 //! `taiyaku.json`, which stays a pure alignment document that diffs
-//! meaningfully in git. Until Task 13 this was a sibling `taiyaku.progress.json`
-//! file instead; `taiyaku_library::state::progress`/`put_progress` now own the
-//! storage, and this module's job is bridging `work: &Work` — keyed by slug —
-//! to the numeric `work_id` those functions need (`works::find_row`,
-//! `works::row_id_for_write`).
+//! meaningfully in git. `taiyaku_library::state::progress`/`put_progress` own
+//! the storage, and this module's job is bridging `work: &Work` — keyed by
+//! slug — to the numeric `work_id` those functions need
+//! (`works::find_row`, `works::row_id_for_write`).
 
 use taiyaku_library::{Library, Position, Progress};
 
@@ -19,10 +18,9 @@ use crate::works::{self, Work};
 
 /// Every position this reader holds on this work, newest first.
 ///
-/// An empty vector where nothing was ever recorded. The distinction the old
-/// `Option` carried is intact: "never opened" is an empty set and "on the
-/// first page" is a set holding slot 0, and conflating them would reopen a
-/// work at its cover forever.
+/// An empty vector where nothing was ever recorded. "Never opened" is an empty
+/// set and "on the first page" is a set holding slot 0, and conflating them
+/// would reopen a work at its cover forever.
 ///
 /// A work with no row in `library`'s `work` table answers empty without
 /// touching `progress` at all: `works::find_row` never creates a row.

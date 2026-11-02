@@ -360,9 +360,7 @@ async fn a_cookie_alone_cannot_change_state_cross_site() {
         .expect("answers");
     // **403, not 401.** The reader is signed in and their cookie is valid; the
     // request came from elsewhere. `api.ts` routes a 401 to the login screen, so
-    // answering one here signed the reader out and discarded their unsaved notes
-    // — repeatedly, since signing in again worked and the next write threw them
-    // out again. Found by the third whole-branch review.
+    // a 401 here would sign the reader out and discard their unsaved notes.
     assert_eq!(forged.status(), StatusCode::FORBIDDEN);
 
     let same_site = build_router(state)
@@ -451,16 +449,14 @@ async fn whoami_is_guarded_and_answers_the_resolved_principal() {
 /// victim then reads, annotates and records positions into an account the
 /// attacker can log into and read back.
 ///
-/// `login` and `logout` sit outside the guard, so the origin check §4 applies to
-/// every other state-changing request did not reach them. Two accidents of the
-/// browser were doing the work instead: an HTML form cannot send
+/// `login` and `logout` sit outside the guard, so they apply the origin check
+/// §4 gives every other state-changing request themselves. Two accidents of the
+/// browser stand in the way as well: an HTML form cannot send
 /// `application/json`, and `fetch` with that content type — or with `DELETE` —
 /// triggers a CORS preflight this server never answers. Both are real, and
 /// neither is this server's doing: adding a permissive CORS layer, or an
 /// extractor that accepts a form encoding, would open it with nothing here
 /// changing to say so.
-///
-/// Found by an automated security review of this branch on 2026-08-18.
 #[tokio::test]
 async fn a_cross_site_page_cannot_log_a_reader_in_or_out() {
     let tmp = crate::test_support::Fixture::new("session-login-csrf");
@@ -523,8 +519,7 @@ async fn a_cross_site_page_cannot_log_a_reader_in_or_out() {
         .expect("answers");
     assert_eq!(forged_logout.status(), StatusCode::FORBIDDEN);
 
-    // And the reader's own origin still works, which is the half that would
-    // make this a regression rather than a fix if it broke.
+    // And the reader's own origin still works.
     let honest = build_router(state)
         .oneshot(
             Request::post("/api/session")
@@ -710,23 +705,16 @@ async fn guessing_at_names_is_rate_limited_as_well() {
     );
 }
 
-/// **A new name every request dodged the pair key, and after the decoy hash
-/// landed that made argon2 free to run.**
+/// **A new name on every request does not buy unlimited hashing.**
 ///
 /// `guessing_at_names_is_rate_limited_as_well` above states the pair key's gap
-/// and calls it a deliberate §7 trade, and it was one — while an unknown name
-/// returned in under a millisecond. `credential::DECOY_HASH` then made an
-/// unknown name cost what a real one costs, deliberately, to close a timing
-/// oracle. That turned the documented trade into an unauthenticated denial of
-/// service: every request carrying a name nobody has ever used took a
-/// `spawn_blocking` thread and 19 MiB of argon2's buffer for ~12 ms, with no
-/// counter it could ever reach, and left a `login_attempt` row behind as well.
-///
-/// One fix produced the other finding two rounds later. The wider key —
-/// the address alone, at `ADDRESS_LOCKOUT_AFTER` — is what bounds it, and it
-/// is checked before the decoy runs.
-///
-/// Found by the fourth whole-branch review, 2026-08-19.
+/// and calls it a deliberate §7 trade. `credential::DECOY_HASH` makes an
+/// unknown name cost what a real one costs, to close a timing oracle, so with
+/// the pair key alone every name nobody has ever used would cost an argon2
+/// verify and leave a `login_attempt` row behind, with no counter it could ever
+/// reach: an unauthenticated denial of service. The wider key — the address
+/// alone, at `ADDRESS_LOCKOUT_AFTER` — is what bounds it, and it is checked
+/// before the decoy runs.
 #[tokio::test]
 async fn inventing_a_new_name_every_time_does_not_buy_unlimited_hashing() {
     use taiyaku_library::account::ADDRESS_LOCKOUT_AFTER;
@@ -773,10 +761,9 @@ async fn inventing_a_new_name_every_time_does_not_buy_unlimited_hashing() {
 
     // **Wound forward rather than driven there by ADDRESS_LOCKOUT_AFTER real
     // requests.** Each one costs a full argon2 verify by design — that is the
-    // cost this ceiling exists to bound — and fifty of them made a test the
-    // slowest thing in the workspace, which `.config/nextest.toml` reasons
-    // about. Three requests prove what is actually in question: that a fresh
-    // name is still counted, and that the gate fires when the count arrives.
+    // cost this ceiling exists to bound. Three requests prove what is actually
+    // in question: that a fresh name is still counted, and that the gate fires
+    // when the count arrives.
     state
         .library
         .conn()
@@ -799,8 +786,8 @@ async fn inventing_a_new_name_every_time_does_not_buy_unlimited_hashing() {
     );
 
     // And the rows stop accumulating with the hashing, which is the other half
-    // of what an unmetered key cost: one `login_attempt` row per invented name,
-    // swept only at startup.
+    // of what an unmetered key would cost: one `login_attempt` row per invented
+    // name, swept only at startup.
     let rows: i64 = state
         .library
         .conn()
@@ -951,18 +938,14 @@ async fn a_cross_site_page_cannot_claim_the_server() {
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
 }
 
-/// **The three fail-closed claims on the login path, none of which had a test.**
+/// **The fail-closed claims on the login path.**
 ///
-/// Each is a documented decision that the code comments argue for at length, and
-/// mutation testing found all three unasserted on 2026-08-19: `||` could become
-/// `&&` where a failure to record is turned into a lockout, and the whole
-/// `Ok(Attempt::Failed)` match arm could be **deleted** — falling through to the
-/// 401 beside it — with every test in the workspace still passing.
+/// Each is a documented decision that the code comments argue for at length.
 ///
-/// The 401 is the one answer that cannot be true in that case: the password was
+/// The 401 is the one answer that cannot be true in this case: the password was
 /// right and the session write lost to a busy writer, so telling the client
 /// "that name and password did not match" leaves a reader retyping a correct
-/// password forever. That was a third-review fix, and nothing checked it.
+/// password forever.
 ///
 /// Reachable by taking the tables away, which is the same error class the
 /// comments reason about — `serve` and `library import` share one file, so a
@@ -1007,8 +990,7 @@ async fn a_login_that_cannot_be_recorded_is_not_answered_as_a_wrong_password() {
 /// 401, because an unrecordable failure is an unbounded one and the safe
 /// reading of "the limiter is not working" is to stop.
 ///
-/// Argued for in three separate comments across `login` and `from_basic`, and
-/// asserted nowhere until mutation testing asked.
+/// Argued for in comments across `login` and `from_basic`.
 #[tokio::test]
 async fn a_failure_the_limiter_cannot_record_is_answered_as_a_lockout() {
     let tmp = crate::test_support::Fixture::new("login-unrecordable-failure");
@@ -1080,17 +1062,16 @@ async fn a_basic_failure_the_limiter_cannot_record_is_answered_as_a_lockout() {
 }
 
 /// **`admin_exists` and `unclaimed` disagree about what "claimed" means, and
-/// the claim route asked the wrong one.**
+/// the claim route must not ask the wrong one.**
 ///
 /// `taiyaku library user add alice` is a real way to create the first account —
 /// it inserts with role `user` — and it leaves the seeded row locked. So
 /// `admin_exists` answers false (the only account with a password is not an
-/// admin) while `unclaimed` still finds row 1. A stranger reaching
-/// `POST /api/claim` then takes that row: administrator, plus every note and
-/// reading position recorded before the library had a login, because §5 makes
-/// promotion update row 1 rather than insert beside it.
-///
-/// Found by the fourth whole-branch review, 2026-08-19.
+/// admin) while `unclaimed` still finds row 1. A claim route gated on
+/// `admin_exists` would let a stranger reaching `POST /api/claim` take that
+/// row: administrator, plus every note and reading position recorded before the
+/// library had a login, because §5 makes promotion update row 1 rather than
+/// insert beside it.
 #[tokio::test]
 async fn a_library_someone_has_already_set_up_cannot_be_claimed_by_a_stranger() {
     let tmp = crate::test_support::Fixture::new("claim-after-add");
@@ -1204,9 +1185,9 @@ async fn keys_are_created_listed_and_revoked() {
 
     let id: i64 = {
         let conn = state.library.conn();
-        // Scoped past the suite's own key, which `test_support::library` now
-        // inserts so that every authenticated request costs sha256 rather than
-        // argon2.
+        // Scoped past the suite's own key, which `test_support::library`
+        // inserts so that every authenticated request costs sha256 rather
+        // than argon2.
         conn.query_row("SELECT id FROM api_key WHERE name = 'phone'", [], |row| {
             row.get(0)
         })
@@ -1237,9 +1218,8 @@ async fn keys_are_created_listed_and_revoked() {
     assert_eq!(gone, 0);
 }
 
-/// **One account cannot revoke another's key.** §9 ships no user
-/// administration, so a route that took an id and revoked it would be one — and
-/// a badly scoped one, since it would take anybody's.
+/// **One account cannot revoke another's key.** A route that took an id and
+/// revoked it whoever owned it would take anybody's.
 #[tokio::test]
 async fn a_key_id_from_another_account_is_not_revocable() {
     let tmp = crate::test_support::Fixture::new("keys-scoped");
@@ -1520,17 +1500,7 @@ async fn a_cross_site_page_cannot_change_a_password() {
     assert_eq!(refused.status(), StatusCode::FORBIDDEN);
 }
 
-/// **An empty password would create the server's only administrator with no
-/// password at all, unrecoverably.**
-///
-/// `credential::hash_password("")` produces a well-formed PHC string rather than
-/// `LOCKED`, so a verify of `""` against it answers true and anybody can sign in.
-/// And `admin_exists` counts `password_hash <> '!'`, so it then answers true and
-/// the claim route 404s — the mistake cannot be undone through the web at all.
-///
-/// Both sibling paths already refuse this in the same words: `change_password`
-/// and the CLI's `accept`. The one path that creates the *only* administrator
-/// had neither. Found by the whole-branch review, 2026-08-18.
+/// **An empty password is refused with 400, and the server stays claimable.**
 #[tokio::test]
 async fn a_server_cannot_be_claimed_with_an_empty_password() {
     let tmp = crate::test_support::Fixture::new("claim-empty");
@@ -1638,17 +1608,11 @@ async fn a_store_fault_while_claiming_is_answered_as_shut_without_the_stores_wor
     );
 }
 
-/// **The cookie's `Max-Age` was written once at login and never again**, so a
-/// browser discarded it thirty days after sign-in however often it was used —
-/// while the database row's `expires` slid forward on every request.
-///
-/// Three doc comments promise the sliding behaviour (`004_auth.sql`,
-/// `SESSION_DAYS`, and §9's cost argument for refusing a `--no-auth` bypass) and
-/// all three were true of the row and false of the cookie. The row then survived
-/// unreachable until the sweep reaped it, so `GET /api/sessions` listed dead
-/// browsers as signed in.
-///
-/// Found by the whole-branch review, 2026-08-18.
+/// **Using a session re-issues the cookie that carries it**, so the cookie's
+/// `Max-Age` slides forward with the database row's `expires` rather than
+/// ending thirty days after sign-in however often it was used. Three doc
+/// comments promise the sliding behaviour (`004_auth.sql`, `SESSION_DAYS`, and
+/// §9's cost argument for refusing a `--no-auth` bypass).
 #[tokio::test]
 async fn using_a_session_re_issues_the_cookie_that_carries_it() {
     let tmp = crate::test_support::Fixture::new("session-reissue");
@@ -1710,14 +1674,10 @@ async fn a_header_authenticated_request_is_given_no_cookie() {
 
 /// **A request with no `Host` must not fail a *safe* method's cookie auth.**
 ///
-/// `origin_is_acceptable` already returns true unconditionally for anything but
-/// a state-changing method, so a GET never needed a host — but `host?` was
-/// evaluated before it was asked, narrowing the rule from "a state change needs
-/// a comparable authority" to "every request needs a `Host` header". hyper puts
-/// the authority in the URI for HTTP/2 and synthesises no `Host`, so behind an
-/// h2c upstream every request answered 401.
-///
-/// Found by the whole-branch review, 2026-08-18.
+/// `origin_is_acceptable` returns true unconditionally for anything but a
+/// state-changing method, so a GET never needs a host. hyper puts the authority
+/// in the URI for HTTP/2 and synthesises no `Host`, so behind an h2c upstream
+/// a request arrives with none.
 #[test]
 fn a_safe_method_does_not_need_a_host_at_all() {
     assert!(origin_is_acceptable(&Method::GET, None, None));
@@ -1735,13 +1695,11 @@ fn a_safe_method_does_not_need_a_host_at_all() {
 /// proxy said so.**
 ///
 /// nginx's documented default is `proxy_set_header Host $proxy_host`, so without
-/// an explicit override the server compared `Origin: https://taiyaku.example`
-/// against `Host: 127.0.0.1:8080` and refused — every login 403 and every
-/// cookie-authenticated write failing, in exactly the reverse-proxy deployment
-/// §6 says this is for. The mechanism already existed two functions away:
-/// `X-Forwarded-For` is honoured only from a configured `--trusted-proxy`.
-///
-/// Found by the whole-branch review, 2026-08-18.
+/// an explicit override the server would compare `Origin:
+/// https://taiyaku.example` against `Host: 127.0.0.1:8080` and refuse — every
+/// login 403 and every cookie-authenticated write failing, in exactly the
+/// reverse-proxy deployment §6 says this is for. `X-Forwarded-For` is honoured
+/// only from a configured `--trusted-proxy`, and so is this.
 #[test]
 fn a_forwarded_host_is_honoured_only_from_a_trusted_peer() {
     let mut headers = axum::http::HeaderMap::new();
@@ -1778,12 +1736,11 @@ fn a_forwarded_host_is_honoured_only_from_a_trusted_peer() {
 /// **A device credential cannot manage the account it belongs to.**
 ///
 /// §2 justifies an API key's deliberately fast hash by its role as the thing an
-/// OPDS client presents for every page of a volume. Until this, a key typed into
-/// a third-party reader also minted further keys — so revoking the device did
-/// not lock anyone out — listed the owner's browsers with their user-agents and
-/// addresses, signed every one of them out, and changed the password.
-///
-/// Found by the second whole-branch review.
+/// OPDS client presents for every page of a volume. A key typed into a
+/// third-party reader would otherwise also mint further keys — so revoking the
+/// device would not lock anyone out — list the owner's browsers with their
+/// user-agents and addresses, sign every one of them out, and change
+/// the password.
 #[tokio::test]
 async fn an_api_key_cannot_mint_keys_or_end_sessions() {
     use base64::Engine as _;
@@ -1835,8 +1792,7 @@ async fn an_api_key_cannot_mint_keys_or_end_sessions() {
         );
     }
 
-    // And the key still reads pages, which is the half that would make this a
-    // regression rather than a fix if it broke.
+    // And the key still reads pages.
     let reading = build_router(state)
         .oneshot(
             Request::get("/opds/v1.2/catalog")
@@ -1850,12 +1806,8 @@ async fn an_api_key_cannot_mint_keys_or_end_sessions() {
 }
 
 /// A password change over `Authorization: Basic` is not refused for having no
-/// `Origin`. The guard already ran the origin check on the cookie path, and a
-/// header credential is not CSRF-able — re-applying it inside a guarded handler
-/// refused every non-browser client with a message about sessions, while
-/// `POST /api/keys` beside it answered normally.
-///
-/// Found by the second whole-branch review.
+/// `Origin`. The guard already runs the origin check on the cookie path, and a
+/// header credential is not CSRF-able.
 #[tokio::test]
 async fn a_password_change_over_basic_needs_no_origin() {
     let tmp = crate::test_support::Fixture::new("password-basic");
@@ -1879,7 +1831,7 @@ async fn a_password_change_over_basic_needs_no_origin() {
         .expect("answers");
     // Refused as a device credential (403 with the key message), not as a
     // cross-site request — the distinction this test exists to pin is that the
-    // *origin* is no longer the reason.
+    // *origin* is not the reason.
     let body = String::from_utf8(
         axum::body::to_bytes(response.into_body(), 1 << 16)
             .await
@@ -1895,14 +1847,10 @@ async fn a_password_change_over_basic_needs_no_origin() {
 
 /// **A password over Basic may manage the account; only a key may not.**
 ///
-/// Folding both Basic paths into one `By::Header` refused a correct password
-/// with a message asserting an API key had been used — a false statement about
-/// which credential was presented, and a refusal of the strongest one the
-/// account has. It left no non-browser path to mint a first key or change a
-/// password at all. The test that was supposed to cover this presented the
-/// fixture *key*, which `test_support` had quietly become.
-///
-/// Found by the third whole-branch review.
+/// Refusing a correct password with a message asserting an API key had been
+/// used would be a false statement about which credential was presented, and a
+/// refusal of the strongest one the account has. It would leave no non-browser
+/// path to mint a first key or change a password at all.
 #[tokio::test]
 async fn a_password_over_basic_can_manage_the_account() {
     use base64::Engine as _;
@@ -1983,12 +1931,9 @@ async fn a_password_over_basic_can_manage_the_account() {
 /// **A misconfigured proxy must not sign a reader out on every write.**
 ///
 /// `origin_is_acceptable` waves safe methods through, so the library loads
-/// normally and the reader is signed in — then the first debounced note or
-/// position write answered 401, which `api.ts` routes as "signed out",
-/// discarding unsaved note text. Signing in worked, the cookie was always valid,
-/// and the next write threw them out again.
-///
-/// Found by the third whole-branch review.
+/// normally and the reader is signed in. A 401 on the first debounced note or
+/// position write would be routed by `api.ts` as "signed out", discarding
+/// unsaved note text although the cookie is valid.
 #[tokio::test]
 async fn a_valid_session_is_not_signed_out_by_an_origin_mismatch() {
     let tmp = crate::test_support::Fixture::new("origin-not-signout");
@@ -2047,14 +1992,12 @@ async fn a_valid_session_is_not_signed_out_by_an_origin_mismatch() {
     );
 }
 
-/// **§7 applies to the password change too**, and did not: it verified with
-/// argon2 and counted nothing, so the one secret standing between a borrowed
-/// session and permanent account takeover took unlimited guesses — from the very
-/// unattended laptop this route's own doc says the current-password requirement
-/// exists for. It was an authenticated denial of service as well, at 11.9 ms and
-/// 19 MiB a guess.
-///
-/// Found by the third whole-branch review.
+/// **§7 applies to the password change too**: without a counter, the one
+/// secret standing between a borrowed session and permanent account takeover
+/// would take unlimited guesses — from the very session left open on a shared
+/// machine that this route's own doc says the current-password requirement
+/// exists for. It would be an authenticated denial of service as well, since
+/// each guess costs an argon2 verify.
 #[tokio::test]
 async fn guessing_the_current_password_is_rate_limited() {
     let tmp = crate::test_support::Fixture::new("change-lockout");
@@ -2283,11 +2226,10 @@ fn wrong_login(name: &str) -> Request<Body> {
 /// **O57: a login that waited for a permit reads the lockout again once it
 /// has one.**
 ///
-/// The limiter checked its counters and then did the work, so requests that
-/// arrived together all read a count under the ceiling and every one of them
-/// was verified. The permit closes that only if the lockout is asked again
-/// behind it: this login passes the first read, waits for a permit while its
-/// address is locked out, and must be told so.
+/// Requests that arrive together all read a count under the ceiling, so without
+/// a permit every one of them would be verified. The permit closes that only if
+/// the lockout is asked again behind it: this login passes the first read,
+/// waits for a permit while its address is locked out, and must be told so.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_login_that_waited_for_a_permit_reads_the_lockout_again() {
     let tmp = crate::test_support::Fixture::new("verify-permit-login");
@@ -2951,10 +2893,9 @@ async fn answer_to(state: &Arc<ServeState>, request: Request<Body>) -> Response 
 /// made one working memory, the one is spare again now that nothing is being
 /// verified, and a verify has run in it.
 ///
-/// The last is read from how the memory prints, which is no longer how a new
-/// one prints. A server that made its memories and then verified each
-/// password in a memory made for the call would count the same and bound
-/// nothing.
+/// The last is read from how the memory prints, which differs from how a new
+/// one prints. A server that made its memories and then verified each password
+/// in a memory made for the call would count the same and bound nothing.
 fn assert_verified_in_one_memory(state: &ServeState) {
     assert_eq!(
         state.auth.verifies.memories_made(),

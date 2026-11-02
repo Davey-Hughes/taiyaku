@@ -40,8 +40,8 @@ fn rule_ordinal(state: &crate::ServeState, id: i64) -> i64 {
 }
 
 /// The single root [`test_support::router_over_a_single_scanned_work`]'s
-/// fixture created — the real, existing root the IMPORTANT 1 tests need
-/// alongside a root id that names nothing.
+/// fixture created — the real, existing root a test needs alongside a root id
+/// that names nothing.
 fn only_root_id(state: &crate::ServeState) -> i64 {
     let conn = state.library.conn();
     conn.query_row("SELECT id FROM root", [], |r| r.get(0))
@@ -100,10 +100,10 @@ fn an_administrator() -> crate::auth::Principal {
         role: crate::auth::Role::Admin,
         can_download: true,
         can_stream: true,
-        // The schema's default. These fixtures drive routes that predate the
-        // capability, and a `true` here would mean an administrator inherits
-        // it after all — the thing `auth::tests::an_administrator_does_not
-        // _inherit_can_stamp` exists to refuse.
+        // The schema's default. A `true` here would mean an administrator
+        // inherits it after all — the thing
+        // `auth::tests::an_administrator_does_not_inherit_can_stamp`
+        // exists to refuse.
         can_stamp: false,
         access: taiyaku_library::account::Access::Every,
     }
@@ -121,8 +121,7 @@ async fn a_reader_cannot_read_the_rule_list() {
 /// The gate is on every route here, not only on the one the test above
 /// drives — `curation::tests::every_curation_route_refuses_a_reader`'s own
 /// reasoning: a reviewer's checklist goes stale the first time someone adds a
-/// route and does not think about it, and every row here but the first would
-/// otherwise have shipped ungated with a green suite.
+/// route and does not think about it.
 #[tokio::test]
 async fn every_config_api_route_refuses_a_reader() {
     let (router, _state, _fixture) = test_support::router_over_a_single_scanned_work_as_a_reader();
@@ -188,14 +187,11 @@ async fn the_preview_route_answers_over_the_whole_proposed_list() {
     );
 }
 
-/// **A row is its own fields, not merely an array slot.** The test just
-/// above only ever checks that `json["rows"]` is a non-empty array —
-/// satisfied just as well by an array of `null`s as by an array of real row
-/// objects, since a JSON array's own `is_empty` counts *elements*, not
-/// whether each one carries anything. Replacing
-/// [`row_json`](crate::config_api::row_json)'s body with
-/// `Default::default()` renders every row as `serde_json::Value::Null` and
-/// left that test green. This reads inside the first row instead.
+/// **A row is its own fields, not merely an array slot.** The test just above
+/// only ever checks that `json["rows"]` is a non-empty array — satisfied just
+/// as well by an array of `null`s as by an array of real row objects, since a
+/// JSON array's own `is_empty` counts *elements*, not whether each one carries
+/// anything. This reads inside the first row instead.
 #[tokio::test]
 async fn a_matched_files_row_carries_its_own_fields_not_a_default_value() {
     let (router, _state, _fixture) = test_support::router_over_a_single_scanned_work();
@@ -286,14 +282,6 @@ async fn the_import_route_takes_what_the_export_produced() {
     assert_eq!(exported_rules_json(&state), exported);
 }
 
-/// **Whole-branch review, Important 3.** Importing a document that predates
-/// an accept orphans that proposal's `created_rule_id` the same way deleting
-/// its rule by hand would, and nothing on this route ever called `derive` —
-/// so nothing ever reached the repair `delete_rule` already gets from
-/// `rules::delete`. The route now reports the ids it reopened under
-/// `"reopened_proposals"`, [`crate::config_api::delete_rule`]'s own key,
-/// rather than leaving that proposal reading `accepted` with nothing
-/// deciding it.
 /// A minimal `.cbz` — the same shape [`test_support::work`] writes, factored
 /// out here since this is the one test in this module that scans a tree
 /// rather than importing a sidecar directly.
@@ -315,6 +303,11 @@ fn write_cbz(path: &std::path::Path, pages: usize) {
     zip.finish().expect("finishing the archive");
 }
 
+/// Importing a document that predates an accept orphans that proposal's
+/// `created_rule_id` the same way deleting its rule by hand would. The route
+/// reports the ids it reopened under `"reopened_proposals"`,
+/// [`crate::config_api::delete_rule`]'s own key, rather than leaving that
+/// proposal reading `accepted` with nothing deciding it.
 #[tokio::test]
 async fn the_import_route_reports_the_proposals_it_reopens() {
     let fixture = test_support::Fixture::new("import-reopens-proposal");
@@ -416,14 +409,11 @@ async fn the_preview_route_leaves_the_rule_table_as_it_found_it() {
 }
 
 /// [`required_i64`](crate::config_api::required_i64) feeds `rule_from_json`'s
-/// `ordinal` — the field the whole layering model orders resolution by.
-/// Nothing above ever sends two *disagreeing* proposed rules through the
-/// preview route with an ordinal that disagrees with their position in the
-/// request's own `rules` array, so replacing `required_i64`'s body with
-/// `Ok(-1)` — every proposed rule's ordinal collapsing to the same constant,
-/// falling back to id order (list order, since a preview mints new rules'
-/// ids in the order they were sent) for every tie — left the whole suite
-/// green.
+/// `ordinal` — the field the whole layering model orders resolution by. This
+/// sends proposed rules whose ordinals disagree with their position in the
+/// request's own `rules` array: were every ordinal to collapse to the same
+/// constant, every tie would fall back to id order (list order, since a
+/// preview mints new rules' ids in the order they were sent).
 #[tokio::test]
 async fn a_proposed_rules_own_ordinal_not_its_position_in_the_request_decides_a_tie() {
     let (router, _state, _fixture) = test_support::router_over_a_single_scanned_work();
@@ -481,12 +471,12 @@ async fn a_proposed_rules_own_ordinal_not_its_position_in_the_request_decides_a_
     );
 }
 
-/// **Whole-branch review, M1.** A stale editor — one whose copy of the rule
-/// list still shows a rule someone else has since deleted — previews with
-/// that rule's own id still in `proposed`. `rules::replace_all` refuses that
-/// outright ("no such rule exists to keep"), the caller's own stale state
-/// rather than anything wrong with the store, and this route must answer
-/// `400`, not fold it into a `500` the way it used to.
+/// A stale editor — one whose copy of the rule list still shows a rule
+/// someone else has since deleted — previews with that rule's own id still in
+/// `proposed`. `rules::replace_all` refuses that outright ("no such rule
+/// exists to keep"), the caller's own stale state rather than anything wrong
+/// with the store, and this route must answer `400`, not fold it into
+/// a `500`.
 #[tokio::test]
 async fn previewing_a_stale_rule_id_is_a_caller_fault_not_a_server_fault() {
     let (router, _state, _fixture) = test_support::router_over_a_single_scanned_work();
@@ -521,10 +511,8 @@ async fn previewing_a_stale_rule_id_is_a_caller_fault_not_a_server_fault() {
 }
 
 /// [`required_bool`](crate::config_api::required_bool) feeds `rule_from_json`'s
-/// `enabled` — every rule body in this whole file sends `"enabled": true`,
-/// so replacing its body with `Ok(true)` — every proposed rule forcibly
-/// enabled regardless of what was actually sent — left the whole suite
-/// green.
+/// `enabled`: were every proposed rule forcibly enabled regardless of what was
+/// actually sent, the disabled rule below would apply.
 #[tokio::test]
 async fn a_proposed_rules_own_enabled_flag_not_a_constant_true_decides_whether_it_applies() {
     let (router, _state, _fixture) = test_support::router_over_a_single_scanned_work();
@@ -581,17 +569,11 @@ async fn a_proposed_rules_own_enabled_flag_not_a_constant_true_decides_whether_i
 /// [`override_json`](crate::config_api::override_json) and
 /// [`field_key`](crate::config_api::field_key) render one
 /// [`taiyaku_library::preview::Override`] for the preview route's own
-/// `"overrides"` array. Nothing above ever sends two proposed rules that
-/// actually disagree on a field through the preview route at all —
-/// `the_preview_route_answers_over_the_whole_proposed_list`'s own single
-/// appended rule has nothing to disagree with — so `json["overrides"]`
-/// stayed an array (possibly empty) under either replacing `override_json`'s
-/// body with `Default::default()` (every override renders `null`) or
-/// `field_key`'s with `""` (every field renders under the same collapsed
-/// key), and the whole suite stayed green. It now also pins
-/// [`field_value_json`](crate::config_api::field_value_json), whose text arm
-/// is what the editor's own row reads and which nothing else in this suite
-/// reaches.
+/// `"overrides"` array. This sends two proposed rules that actually disagree
+/// on a field, which `the_preview_route_answers_over_the_whole_proposed_list`'s
+/// own single appended rule cannot: it has nothing to disagree with. It also
+/// pins [`field_value_json`](crate::config_api::field_value_json), whose text
+/// arm is what the editor's own row reads.
 #[tokio::test]
 async fn a_genuine_disagreement_reaches_the_preview_routes_overrides_array() {
     let (router, _state, _fixture) = test_support::router_over_a_single_scanned_work();
@@ -655,8 +637,6 @@ async fn a_genuine_disagreement_reaches_the_preview_routes_overrides_array() {
     // The indices above say *which* rules disagreed; only these say what
     // about, and a row that named the rules and dropped the values would
     // leave the reader to reconstruct both from two regexes and a path.
-    // `field_value_json` is reachable no other way from this suite: every
-    // other preview assertion here is about `impact` or `rows`.
     assert_eq!(
         kind_override["first_value"].as_str(),
         Some("manga"),
@@ -676,16 +656,14 @@ async fn a_genuine_disagreement_reaches_the_preview_routes_overrides_array() {
 /// **Its own test, because nothing else in this crate reaches that arm.**
 /// Every other override fixture here and in `web/` carries text values, and
 /// `a_genuine_disagreement_reaches_the_preview_routes_overrides_array` above
-/// asserts `as_str()` on a `kind` row. Measured: replacing the whole arm with
-/// `serde_json::Value::Null` left **537 of 537** tests in this crate passing.
-/// The editor would then draw every numeric row as
+/// asserts `as_str()` on a `kind` row. Were the arm to return
+/// `serde_json::Value::Null`, the editor would draw every numeric row as
 /// *"rule 2 `builtin-volume` → unset / rule 3 → unset (wins)"* — a row
-/// asserting a disagreement above two identical blanks — with CI green.
+/// asserting a disagreement above two identical blanks.
 ///
 /// **This is the same hole one layer up**, which
 /// `preview::tests::the_numeric_fields_report_their_own_values_and_not_each_others`
-/// closed for `preview::field_value`'s two numeric arms; the wire arm did not
-/// get the matching assertion until the second whole-branch review asked for
+/// closed for `preview::field_value`'s two numeric arms; this test closes
 /// it. `docs/mutants-baseline.md`'s 2026-09-05 row carries why a sweep cannot
 /// see either of them.
 #[tokio::test]
@@ -821,9 +799,9 @@ async fn patching_or_deleting_an_unknown_rule_is_a_404() {
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 
-/// IMPORTANT 1 — a `root_id` naming no root is this caller's own mistake
-/// (400, naming the root), not `rules::create`'s own `FOREIGN KEY constraint
-/// failed` surfaced verbatim as a 500.
+/// A `root_id` naming no root is this caller's own mistake (400, naming the
+/// root), not `rules::create`'s own `FOREIGN KEY constraint failed` surfaced
+/// verbatim as a 500.
 #[tokio::test]
 async fn creating_a_rule_against_an_unknown_root_is_a_400_naming_it() {
     let (router, _state, _fixture) = test_support::router_over_a_single_scanned_work();
@@ -855,7 +833,7 @@ async fn creating_a_rule_against_an_unknown_root_is_a_400_naming_it() {
 }
 
 /// [`creating_a_rule_against_an_unknown_root_is_a_400_naming_it`]'s twin for
-/// `PATCH`, plus the one case the fix must not break: `Some(None)` — sending
+/// `PATCH`, plus the one case the 400 must not catch: `Some(None)` — sending
 /// `root_id: null` to clear it back to "every root" — names no root to check
 /// and must stay allowed.
 #[tokio::test]
@@ -915,8 +893,8 @@ async fn patching_a_rule_to_an_unknown_root_is_a_400_and_clearing_it_still_works
     );
 }
 
-/// IMPORTANT 2 — a pattern that will never compile is refused at write time,
-/// naming the regex error, rather than saved clean.
+/// A pattern that will never compile is refused at write time, naming the
+/// regex error, rather than saved clean.
 #[tokio::test]
 async fn creating_a_rule_with_an_uncompilable_pattern_is_refused_naming_the_error() {
     let (router, _state, _fixture) = test_support::router_over_a_single_scanned_work();
@@ -953,10 +931,10 @@ async fn creating_a_rule_with_an_uncompilable_pattern_is_refused_naming_the_erro
     );
 }
 
-/// [`patch_rule`](crate::config_api::patch_rule)'s half of IMPORTANT 2: the
-/// *resulting* rule must compile, not the patch in isolation — this one names
-/// no `pattern` at all, only moving `kind` to `regex` over a `pattern` that
-/// was never meant to be one.
+/// [`patch_rule`](crate::config_api::patch_rule)'s half of the write-time
+/// refusal the test above pins: the *resulting* rule must compile, not the
+/// patch in isolation — this one names no `pattern` at all, only moving `kind`
+/// to `regex` over a `pattern` that was never meant to be one.
 #[tokio::test]
 async fn patching_a_rule_to_kind_regex_over_an_uncompilable_existing_pattern_is_refused() {
     let (router, _state, _fixture) = test_support::router_over_a_single_scanned_work();
@@ -991,10 +969,10 @@ async fn patching_a_rule_to_kind_regex_over_an_uncompilable_existing_pattern_is_
     assert!(text.contains("does not compile"), "{text}");
 }
 
-/// IMPORTANT 2's other half: a library already holding an uncompilable rule
-/// — the hand-edited or older-path case `rules::read`'s own doc comment
-/// cannot see — must say so in `GET`'s `complaints`, not stay silent because
-/// `rules::read` only ever checks `kind`/`match_on`.
+/// The read side of those write-time refusals: a library already holding an
+/// uncompilable rule — the hand-edited or older-path case `rules::read`'s own
+/// doc comment cannot see — must say so in `GET`'s `complaints`, not stay
+/// silent because `rules::read` only ever checks `kind`/`match_on`.
 #[tokio::test]
 async fn listing_rules_reports_a_pattern_that_does_not_compile() {
     let (router, state, _fixture) = test_support::router_over_a_single_scanned_work();
@@ -1018,10 +996,6 @@ async fn listing_rules_reports_a_pattern_that_does_not_compile() {
     );
 }
 
-/// MINOR 5 — the proposed list itself, not just the matched-files table, has
-/// a cap: `preview::overrides` is quadratic in its length, and nothing but
-/// axum's 2 MB body default bounded it before this existed.
-///
 /// **`TOO_MANY` is a literal, not `MAX_PROPOSED_RULES + 1`.** Deriving the
 /// list length from the constant this test is checking would make the
 /// "raise `MAX_PROPOSED_RULES` to `usize::MAX`" mutation build a list of that
@@ -1031,6 +1005,8 @@ async fn listing_rules_reports_a_pattern_that_does_not_compile() {
 /// and independently of whatever the constant currently says.
 const TOO_MANY: usize = 201;
 
+/// The proposed list itself, not just the matched-files table, has a cap:
+/// `preview::overrides` is quadratic in its length.
 #[tokio::test]
 async fn previewing_more_than_the_proposed_rule_limit_is_refused() {
     let (router, _state, _fixture) = test_support::router_over_a_single_scanned_work();
@@ -1071,10 +1047,9 @@ async fn previewing_more_than_the_proposed_rule_limit_is_refused() {
 }
 
 /// **The boundary itself, not just one past it.** The test above pins
-/// `TOO_MANY` (201) as refused; nothing pinned `MAX_PROPOSED_RULES` (200)
-/// itself as accepted, so replacing `proposed.len() > MAX_PROPOSED_RULES`
-/// with `>=` — refusing the boundary too, not only what is genuinely over
-/// it — left the whole suite green.
+/// `TOO_MANY` (201) as refused; this pins `MAX_PROPOSED_RULES` (200) itself as
+/// accepted, so `proposed.len() >= MAX_PROPOSED_RULES` — refusing the boundary
+/// too, not only what is genuinely over it — would fail here.
 #[tokio::test]
 async fn previewing_exactly_the_proposed_rule_limit_is_accepted() {
     let (router, _state, _fixture) = test_support::router_over_a_single_scanned_work();
@@ -1187,14 +1162,12 @@ async fn patching_a_rule_leaves_an_omitted_field_alone_but_clears_a_null_one() {
 
 /// [`patch_i64`](crate::config_api::patch_i64)'s own two-way contract, over
 /// `ordinal` — the one field of [`taiyaku_library::rules::RulePatch`] that
-/// reads it. Nothing above ever patches `ordinal` at all, so a version of
-/// `patch_i64` that ignores its argument and always answers `Ok(Some(0))` —
-/// forcing every patch to zero the column, sent or not — or always answers
-/// `Ok(None)` — leaving `ordinal` alone even when a caller sent a real
-/// number — both leave the whole suite green. A single field can't tell
-/// those two wrong constants apart from the right two-way answer on its own;
-/// this sends the field once and omits it once, which needs the same
-/// function to answer differently both times.
+/// reads it. A single field can't tell a `patch_i64` that always answers
+/// `Ok(Some(0))` — forcing every patch to zero the column, sent or not — or
+/// always `Ok(None)` — leaving `ordinal` alone even when a caller sent a real
+/// number — from the right two-way answer; this sends the field once and
+/// omits it once, which needs the same function to answer differently
+/// both times.
 #[tokio::test]
 async fn patching_a_rules_ordinal_writes_the_sent_number_and_an_omitted_one_leaves_it_alone() {
     let (router, state, _fixture) = test_support::router_over_a_single_scanned_work();
@@ -1251,11 +1224,8 @@ async fn patching_a_rules_ordinal_writes_the_sent_number_and_an_omitted_one_leav
 }
 
 /// [`patch_string`](crate::config_api::patch_string) is `pattern`'s own
-/// two-way reading, and nothing above ever `PATCH`es `pattern` at all —
-/// `patching_a_rule_to_kind_regex_over_an_uncompilable_existing_pattern_is_refused`'s
-/// own doc comment says so explicitly ("this one names no `pattern` at
-/// all"). Replacing `patch_string`'s body with `Ok(None)` — every patch
-/// leaving `pattern` untouched, sent or not — left the whole suite green.
+/// two-way reading; a patch that sends `pattern` must change it, not leave it
+/// at its original value.
 #[tokio::test]
 async fn patching_a_rules_pattern_writes_the_sent_string() {
     let (router, state, _fixture) = test_support::router_over_a_single_scanned_work();
@@ -1363,10 +1333,10 @@ fn state_with_many_scan_entries(
 }
 
 /// [`preview::Rows::truncated`] must actually track the real row count past
-/// [`crate::config_api::MATCHED_FILES_LIMIT`], not read a constant `false` —
-/// the fourth of task 8's four required mutations. 501 rows under one root,
-/// every one of them matched by the seeded `series`-from-directory rule
-/// (rule 1, `^(?<series>[^/]+)/`), is one more than the cap.
+/// [`crate::config_api::MATCHED_FILES_LIMIT`], not read a constant `false`.
+/// 501 rows under one root, every one of them matched by the seeded
+/// `series`-from-directory rule (rule 1, `^(?<series>[^/]+)/`), is one more
+/// than the cap.
 #[tokio::test]
 async fn the_preview_routes_matched_files_table_reports_its_own_truncation() {
     let (state, _fixture) = state_with_many_scan_entries("preview-truncation", 501);
@@ -1395,10 +1365,10 @@ async fn the_preview_routes_matched_files_table_reports_its_own_truncation() {
         "501 matched rows over a 500-row cap must say so: {json}"
     );
 
-    // MINOR 6 — `selected` is a position in *this request's* `rules` array,
-    // not a rule id and not the database's own order. Reversing the list and
-    // recomputing the same rule's index must move it, and the reversed
-    // request must still find the identical rule.
+    // `selected` is a position in *this request's* `rules` array, not a rule
+    // id and not the database's own order. Reversing the list and recomputing
+    // the same rule's index must move it, and the reversed request must still
+    // find the identical rule.
     let mut reversed = existing.clone();
     reversed.reverse();
     let reversed_selected = reversed
@@ -1500,10 +1470,8 @@ async fn a_reader_cannot_list_roots() {
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
 }
 
-/// **Whole-branch review, M3.** `admin_or_forbidden` answered "the rule
-/// editor is an administrator's" for every route it guards, roots and scan
-/// control included — wrong on its face for a screen that is not the rule
-/// editor at all.
+/// A roots route's refusal must not reuse the rule editor's wording: that is
+/// wrong on its face for a screen that is not the rule editor at all.
 #[tokio::test]
 async fn a_roots_route_refusal_does_not_claim_to_be_the_rule_editor() {
     let (router, _state, _fixture) = test_support::router_over_a_single_scanned_work_as_a_reader();
@@ -1520,11 +1488,10 @@ async fn a_roots_route_refusal_does_not_claim_to_be_the_rule_editor() {
 /// the roots routes and the scan-control route: a reviewer's checklist goes
 /// stale the first time someone adds a route and does not think about it.
 ///
-/// **This is the test the third mutation question drives**: hand-removing
-/// `admin_or_forbidden` from either [`crate::config_api::start_scan`] or
-/// [`crate::config_api::scan_status`] must turn one of the two scan-route
-/// lines below red, or this loop is not actually proving what its own doc
-/// comment claims.
+/// **Hand-removing `administering_or_forbidden` from either
+/// [`crate::config_api::start_scan`] or [`crate::config_api::scan_status`]
+/// must turn one of the two scan-route lines below red**, or this loop is not
+/// actually proving what its own doc comment claims.
 #[tokio::test]
 async fn every_roots_route_refuses_a_reader() {
     let (router, state, _fixture) = test_support::router_over_a_single_scanned_work_as_a_reader();
@@ -1552,12 +1519,10 @@ async fn every_roots_route_refuses_a_reader() {
 /// `keeps_documents`.
 ///
 /// **`last_scan_at`/`last_scan_status` are populated here, not `null`.**
-/// Until Task 12, nothing had ever written either column and this test only
-/// proved the keys were present; `state_with_two_scanned_roots` scans both
-/// of its roots through `scan::scan_root`, which now writes both columns on
-/// every call (`scan.rs`'s own doc comment on why the write lives there
-/// rather than in either caller), so a root this fixture built has a real
-/// timestamp and `"ok"` to show for it.
+/// `state_with_two_scanned_roots` scans both of its roots through
+/// `scan::scan_root`, which writes both columns on every call (`scan.rs`'s own
+/// doc comment on why the write lives there rather than in either caller), so
+/// a root this fixture built has a real timestamp and `"ok"` to show for it.
 #[tokio::test]
 async fn the_root_list_carries_the_interval_and_the_last_scan() {
     let (router, _state, _fixture) = test_support::state_with_two_scanned_roots();
@@ -1584,13 +1549,8 @@ async fn the_root_list_carries_the_interval_and_the_last_scan() {
 /// The list carries `exclude_globs`, so the box the roots screen draws for
 /// it can start at what the row actually holds.
 ///
-/// **O92's readable half.** `root_patch_from_json` has always accepted the
-/// key and `scan::update_root` has always written it; `root_json` did not
-/// send it back, which made that box write-only — it started empty whatever
-/// the row held, and the screen's own three review passes went into deciding
-/// what an emptied one could safely mean without ever being able to see the
-/// stored value. Applying the pattern to a walk was the rest of O92 and
-/// closed on 2026-09-09.
+/// **O92's readable half.** Were the key not sent back, that box would be
+/// write-only: it would start empty whatever the row held.
 ///
 /// **The unpatched root is checked too, and for `null` rather than for
 /// absence.** A `root_json` that omits the key entirely reads as
@@ -1895,15 +1855,14 @@ async fn removing_a_readers_only_library_names_the_reader_who_then_sees_nothing(
     );
 }
 
-/// **Whole-branch review, Critical 2.** `DryRunQuery` had no
-/// `deny_unknown_fields`, so `serde_urlencoded` silently dropped any query
-/// key it did not recognise and `dry_run` defaulted to `false` — meaning
-/// `?dryrun=true` (missing the underscore) or `?dryRun=true` (the wrong
-/// case) both ran the real, committed removal on the one route C4 §2 calls
-/// "the most destructive action in the product." Both misspellings are
-/// checked here, and both must now be refused with `400` and the root left
-/// standing, rather than answered `200` with the root, its works, its
-/// reading positions and its notes gone.
+/// A misspelled query key — `?dryrun=true` (missing the underscore) or
+/// `?dryRun=true` (the wrong case) — must be refused with `400` and the root
+/// left standing. `DryRunQuery` denies unknown fields; without that,
+/// `serde_urlencoded` would silently drop a key it did not recognise,
+/// `dry_run` would default to `false`, and the real, committed removal would
+/// run on the one route C4 §2 calls "the most destructive action in the
+/// product": the root, its works, its reading positions and its notes would
+/// be gone.
 #[tokio::test]
 async fn a_misspelled_dry_run_query_key_is_refused_not_silently_ignored() {
     for misspelled in ["dryrun", "dryRun"] {
@@ -1941,10 +1900,6 @@ async fn a_misspelled_dry_run_query_key_is_refused_not_silently_ignored() {
 }
 
 // --- the roots routes' wording and nullable columns ------------------------
-//
-// IMPORTANT 1 (every validation message on the roots routes said "the
-// rule's") and IMPORTANT 3 (only 2 of `RootPatch`'s 5 nullable columns were
-// exercised by a test) each have their own tests below.
 
 /// A JSON object with exactly one key — the shape every wording/nullable
 /// test below sends, built rather than spelled with `serde_json::json!`
@@ -1956,7 +1911,7 @@ fn one_field_patch(field: &str, value: serde_json::Value) -> serde_json::Value {
     serde_json::Value::Object(body)
 }
 
-/// One nullable text column off the `root` row — what every IMPORTANT 3
+/// One nullable text column off the `root` row — what every nullable-column
 /// test below reads back to prove what a patch actually wrote, rather than
 /// trusting the route's own 204.
 fn root_text_column(state: &crate::ServeState, id: i64, column: &str) -> Option<String> {
@@ -1981,12 +1936,10 @@ fn root_int_column(state: &crate::ServeState, id: i64, column: &str) -> Option<i
     .expect("reads the root row")
 }
 
-/// IMPORTANT 1's other half: `root_patch_from_json` reuses `patch_bool`,
-/// `patch_nullable_text` and `patch_nullable_i64`, every one of which had
-/// the identical hardcoded "the rule's" before this fix. One `PATCH`
-/// exercising all three, each with a value of the wrong type, so a
-/// regression that fixed only one of the three helpers would still be
-/// caught here.
+/// `root_patch_from_json` reuses `patch_bool`, `patch_nullable_text` and
+/// `patch_nullable_i64`. One `PATCH` per field, each with a value of the wrong
+/// type, exercises all three, so a roots-route message that named a rule, from
+/// any one of the three helpers, would be caught here.
 #[tokio::test]
 async fn patching_a_root_with_bad_fields_names_a_root_not_a_rule() {
     let (router, state, _fixture) = test_support::router_over_a_single_scanned_work();
@@ -2046,11 +1999,10 @@ async fn a_dir_patch_that_is_not_an_object_is_refused_in_the_dirs_words() {
     );
 }
 
-/// IMPORTANT 1's regression guard: parameterising `required_str`/
-/// `patch_bool`/`patch_nullable_text`/`patch_nullable_i64` with a noun must
-/// not cost the rules routes their own wording — a future re-share that let
-/// `"root"` leak backward into a rules-route call site would be exactly as
-/// silent as the original bug.
+/// Parameterising `required_str`/`patch_bool`/`patch_nullable_text`/
+/// `patch_nullable_i64` with a noun must not cost the rules routes their own
+/// wording — a future re-share that let `"root"` leak backward into a
+/// rules-route call site would be silent.
 #[tokio::test]
 async fn a_rules_route_validation_message_still_names_a_rule() {
     let (router, _state, _fixture) = test_support::router_over_a_single_scanned_work();
@@ -2095,13 +2047,10 @@ async fn a_rules_route_validation_message_still_names_a_rule() {
     }
 }
 
-/// IMPORTANT 3 — `RootPatch`'s five nullable columns (`edition_key`,
-/// `default_kind`, `default_language`, `exclude_globs`,
-/// `scan_interval_secs`) all route through the same three-way
-/// `patch_nullable_text`/`patch_nullable_i64` helpers, so there is no
-/// per-field wiring to drift — but before this fix only `default_kind` and
-/// `default_language` had a test proving it (above,
-/// `patching_a_root_leaves_an_omitted_field_alone_but_clears_a_null_one`).
+/// `RootPatch`'s five nullable columns (`edition_key`, `default_kind`,
+/// `default_language`, `exclude_globs`, `scan_interval_secs`) all route
+/// through the same three-way `patch_nullable_text`/`patch_nullable_i64`
+/// helpers, so there is no per-field wiring to drift.
 /// `root_patch_from_json` evaluates every nullable column against the whole
 /// request body regardless of which keys are actually present, so a `PATCH`
 /// that never mentions `field` at all is exactly what a helper collapsed to
@@ -2221,7 +2170,7 @@ async fn a_roots_patch_leaves_scan_interval_secs_alone_when_omitted_but_clears_i
     );
 }
 
-// --- scan control, task 12 ------------------------------------------------
+// --- scan control ---------------------------------------------------------
 
 /// A page directory `scan_root` will find — [`test_support`]'s own
 /// `write_pages` restated here rather than reused: that one is private to
@@ -2240,14 +2189,14 @@ fn write_page_dir(dir: &std::path::Path, pages: usize) {
     }
 }
 
-/// **Whole-branch review, Important 1 — the legibility half.** `scan_jobs::run`
-/// runs `scan::scan_root` and `derive::derive` as two separate calls, and
-/// `scan_root` itself already writes `last_scan_status = "ok"` the moment its
-/// own walk commits — before the derive half of the job has even started.
-/// Before this fix, a derive that then failed left that `"ok"` standing: the
-/// walk genuinely succeeded, but the library it now describes may be only
-/// partly derived, and C4 §3's regime line — the one column this whole
-/// route exists to make trustworthy — kept saying so anyway.
+/// **A derive that fails after a successful walk corrects
+/// `last_scan_status`.** `scan_jobs::run` runs `scan::scan_root` and
+/// `derive::derive` as two separate calls, and `scan_root` itself already
+/// writes `last_scan_status = "ok"` the moment its own walk commits — before
+/// the derive half of the job has even started. The walk genuinely succeeded,
+/// but the library it now describes may be only partly derived, and C4 §3's
+/// regime line — the one column this whole route exists to make trustworthy —
+/// must not keep reading `"ok"` anyway.
 ///
 /// **The derive failure here is engineered, not raced.** Dropping `rule`
 /// after a first successful scan+derive makes the *next* `derive::derive`
@@ -2481,10 +2430,8 @@ fn state_with_a_root_that_folds_a_hand_documented_work(
 }
 
 /// **`uncarried_alignments` reaches the scan report with its own number —
-/// O76.** The review of the first commit rendered the key as
-/// `discarded_rows + 0 * uncarried_alignments` and all 585 of this crate's
-/// tests passed. Three alignments on the colour work name editions it does not
-/// hold, so the fold the scan runs can carry none of them, and three is not the
+/// O76.** Three alignments on the colour work name editions it does not hold,
+/// so the fold the scan runs can carry none of them, and three is not the
 /// number `discarded_rows` holds, which the test checks rather than assumes.
 #[tokio::test]
 async fn a_scan_report_counts_the_alignments_a_fold_left_behind() {
@@ -2719,10 +2666,9 @@ async fn the_scan_report_names_what_it_could_not_read() {
     // Whole, per C4 §3 — every field present, the empty collections
     // included, not only the one this test is actually about.
     assert!(report["scan"]["unreadable_dirs"].is_array(), "{report}");
-    // O92: the four fields the exclusion half added, present even though
-    // this fixture's root excludes nothing. C4 §3.4 — "nothing excluded this
-    // time" and "this field does not exist in this version" have to look
-    // different.
+    // O92: the four exclusion fields, present even though this fixture's root
+    // excludes nothing. C4 §3.4 — "nothing excluded this time" and "this field
+    // does not exist in this version" have to look different.
     assert!(report["scan"]["excluded_dirs"].is_array(), "{report}");
     assert!(
         report["scan"]["bad_exclude_patterns"].is_array(),
@@ -2757,19 +2703,14 @@ async fn the_scan_report_names_what_it_could_not_read() {
 /// A library holding one root that has already been scanned once with no
 /// `exclude_globs`, with a real pattern set on it afterward — so the *next*
 /// scan, the one [`the_scan_reports_each_exclusion_field_with_its_own_value`]
-/// actually drives through the HTTP route, is the one that excludes
-/// something.
+/// actually drives through the HTTP route, is the one that excludes something.
 ///
-/// **Built so no two of the four exclusion fields land on the same value —
-/// Important 1.** [`scan_report_json`](crate::config_api::scan_report_json)
-/// destructures `ScanReport` with no `..`, which closes a *missing* key, but
-/// nothing before this fixture ever asserted an exact value for any of the
-/// four exclusion fields through the HTTP route — only `is_array()` /
-/// `is_number()` — so a transposition between two same-typed fields
-/// (`excluded_files` and `forgotten_by_exclusion`, the reviewer's own
-/// example) shipped with every test in this crate green. A fixture where two
-/// of the four happened to share a value could not catch that; this one is
-/// built so they cannot:
+/// **Built so no two of the four exclusion fields land on the same value.**
+/// [`scan_report_json`](crate::config_api::scan_report_json) destructures
+/// `ScanReport` with no `..`, which closes a *missing* key but not a
+/// transposition between two same-typed fields (`excluded_files` and
+/// `forgotten_by_exclusion`, say). A fixture where two of the four happened to
+/// share a value could not catch one; this one is built so they cannot:
 ///
 /// - `Junk/` and the file inside it are recorded by the *first*, unexcluded
 ///   scan, then covered by the `Junk/` line once `exclude_globs` is set — a
@@ -2779,8 +2720,7 @@ async fn the_scan_report_names_what_it_could_not_read() {
 /// - `a.nfo`..`d.nfo` are written only *after* the first scan, so the
 ///   second, excluding scan meets all four for the first time and skips
 ///   them at the walk itself — `excluded_files`, not
-///   `forgotten_by_exclusion`, since nothing was ever held for them to
-///   forget.
+///   `forgotten_by_exclusion`, since nothing was ever held for them to forget.
 /// - `a{b` is a line `Excluder::build` cannot compile — the same shape
 ///   `taiyaku_library::scan::tests::check_exclude_globs_names_the_line_it_refuses`
 ///   uses — so `bad_exclude_patterns` holds exactly one complaint naming it.
@@ -2831,9 +2771,9 @@ fn state_with_a_root_scanned_once_then_given_real_exclusions(
     (state, fixture)
 }
 
-/// F1 — Important: the four exclusion fields on the wire, driven through the
-/// real `start_scan`/`scan_status` route pair rather than called directly,
-/// and pinned to distinct values so a transposition between any two of them
+/// The four exclusion fields on the wire, driven through the real
+/// `start_scan`/`scan_status` route pair rather than called directly, and
+/// pinned to distinct values so a transposition between any two of them
 /// fails this test. See
 /// [`state_with_a_root_scanned_once_then_given_real_exclusions`]'s own doc
 /// comment for exactly how each of the four gets a value nothing else in
@@ -2918,17 +2858,15 @@ async fn the_scan_reports_each_exclusion_field_with_its_own_value() {
     );
 }
 
-/// **[`absorbed_json`](crate::config_api::absorbed_json) renders as
-/// `Default::default()` under one of this branch's own surviving mutants —
-/// `serde_json::Value::Null` in place of `{"slug": .., "title": ..}` — and
-/// nothing before this test ever drove a fold through the scan endpoint at
-/// all, so nothing was there to notice `orphan_documents[_]["absorbed_into"]`
-/// go quietly null.** [`state_with_a_root_that_folds_a_hand_documented_work`]
-/// seeds a hand-documented colour work and a fold rule that has not run yet;
-/// this drives the real `start_scan`/`scan_status` route pair, the same
-/// polling loop [`the_scan_report_names_what_it_could_not_read`] uses, so the
-/// fold and the JSON it produces both come from the route under test, not
-/// from a fixture that ran the fold itself and merely echoed the answer.
+/// **[`absorbed_json`](crate::config_api::absorbed_json) must render
+/// `orphan_documents[_]["absorbed_into"]` as the work the fold absorbed the
+/// orphan into, not as a default value.**
+/// [`state_with_a_root_that_folds_a_hand_documented_work`] seeds a
+/// hand-documented colour work and a fold rule that has not run yet; this
+/// drives the real `start_scan`/`scan_status` route pair, the same polling loop
+/// [`the_scan_report_names_what_it_could_not_read`] uses, so the fold and the
+/// JSON it produces both come from the route under test, not from a fixture
+/// that ran the fold itself and merely echoed the answer.
 #[tokio::test]
 async fn a_scan_report_names_the_work_a_folded_documents_orphan_was_absorbed_into() {
     let (state, _fixture) = state_with_a_root_that_folds_a_hand_documented_work(
@@ -3007,7 +2945,7 @@ async fn a_scan_report_names_the_work_a_folded_documents_orphan_was_absorbed_int
     );
 }
 
-/// IMPORTANT 1 — `scan_jobs::run`'s own analogue of
+/// `scan_jobs::run`'s own analogue of
 /// `the_preview_route_does_not_wait_on_the_shared_connections_mutex`, that
 /// test's own doc comment gives the whole reasoning: every other fixture in
 /// this crate is in-memory, where `Library::working` hands back the very
@@ -3020,9 +2958,8 @@ async fn a_scan_report_names_the_work_a_folded_documents_orphan_was_absorbed_int
 ///
 /// Calls `scan_jobs::run` directly rather than through `start_scan`: the
 /// route's own first `spawn_blocking` looks up the root through `conn()`
-/// too (IMPORTANT 5's own lookup, mirrored from this route), so holding the
-/// shared mutex around the whole request would stall on that fast lookup
-/// and prove nothing about the scan itself.
+/// too, so holding the shared mutex around the whole request would stall on
+/// that fast lookup and prove nothing about the scan itself.
 #[tokio::test]
 async fn a_scan_does_not_wait_on_the_shared_connections_mutex() {
     let fixture = test_support::Fixture::new("scan-second-connection");
@@ -3075,12 +3012,11 @@ async fn a_scan_does_not_wait_on_the_shared_connections_mutex() {
     );
 }
 
-/// IMPORTANT 2 — C4 §3 and `ServeState::scans`'s own doc comment both say a
-/// root's scan slot is independent of every other root's. Nothing before
-/// this test used both ids `state_with_two_scanned_roots` provides in one
-/// assertion, so a single-flight check broad enough to serialise every root
-/// — `scans.values().any(|p| !p.done)` rather than `scans.get(&id)` — passed
-/// every other test in this file unnoticed.
+/// C4 §3 and `ServeState::scans`'s own doc comment both say a root's scan slot
+/// is independent of every other root's. This uses both ids
+/// `state_with_two_scanned_roots` provides in one assertion, so a
+/// single-flight check broad enough to serialise every root would fail here:
+/// `scans.values().any(|p| !p.done)` rather than `scans.get(&id)`.
 #[tokio::test]
 async fn a_second_roots_scan_is_not_blocked_by_the_first_roots_own_scan() {
     let (_router, state, _fixture) = test_support::state_with_two_scanned_roots();
@@ -3124,9 +3060,8 @@ async fn a_second_roots_scan_is_not_blocked_by_the_first_roots_own_scan() {
     );
 }
 
-/// IMPORTANT 5 — `id` naming no root this library holds is the one case
-/// `scan_status` still answers `404` for, exactly like `start_scan`'s own
-/// 404 on the same path.
+/// An `id` naming no root this library holds is the one case `scan_status`
+/// answers `404` for, exactly like `start_scan`'s own 404 on the same path.
 #[tokio::test]
 async fn scan_status_404s_for_a_root_this_library_does_not_hold() {
     let (_router, state, _fixture) = test_support::router_over_a_single_scanned_work();
@@ -3142,14 +3077,14 @@ async fn scan_status_404s_for_a_root_this_library_does_not_hold() {
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 
-/// IMPORTANT 5 — a root the registry holds nothing for is not the same as a
-/// root this library does not hold. Before this fix both answered `404`;
-/// `state_with_two_scanned_roots` scans both of its roots directly through
-/// `taiyaku_library::scan::scan_root`, never through `start_scan`, so its
-/// registry holds nothing for either id — exactly the shape a restarted
-/// process, or a root this process has simply never scanned, leaves behind.
-/// `scan_status` must fall back to the database rather than 404ing on a real
-/// root with a real `last_scan_at`/`last_scan_status` sitting on its row.
+/// A root the registry holds nothing for is not the same as a root this
+/// library does not hold. `state_with_two_scanned_roots` scans both of its
+/// roots directly through `taiyaku_library::scan::scan_root`, never through
+/// `start_scan`, so its registry holds nothing for either id — exactly the
+/// shape a restarted process, or a root this process has simply never scanned,
+/// leaves behind. `scan_status` must fall back to the database rather than
+/// 404ing on a real root with a real `last_scan_at`/`last_scan_status` sitting
+/// on its row.
 #[tokio::test]
 async fn scan_status_reads_the_database_for_a_known_root_with_no_registry_entry() {
     let (_router, state, _fixture) = test_support::state_with_two_scanned_roots();
@@ -3184,8 +3119,8 @@ async fn scan_status_reads_the_database_for_a_known_root_with_no_registry_entry(
     );
 }
 
-/// MINOR 6 — `root.id` is `INTEGER PRIMARY KEY` with no `AUTOINCREMENT`, so
-/// SQLite reissues a freed id to the very next `add_root`. A registry entry
+/// `root.id` is `INTEGER PRIMARY KEY` with no `AUTOINCREMENT`, so SQLite
+/// reissues a freed id to the very next `add_root`. A registry entry
 /// `delete_root` left standing under that id would then answer for a root it
 /// never scanned — a `GET` on the new root's own `/scan` route reporting the
 /// *deleted* root's stale finished report.
@@ -3252,15 +3187,14 @@ async fn deleting_a_root_clears_its_stale_scan_registry_entry() {
     );
 }
 
-/// **The other half of MINOR 6's own guard**, untested by the test above:
-/// `delete_root` clears the registry slot only for a real removal that
+/// **The other half of the registry-clearing guard**, untested by the test
+/// above: `delete_root` clears the registry slot only for a real removal that
 /// actually committed — `!dry_run && matches!(&removed, Ok(Ok(_)))`. A
 /// `?dry_run=true` call runs [`taiyaku_library::scan::removal_cost`], which
 /// answers `Ok(Ok(_))` exactly as a real removal would while rolling its own
-/// transaction back — nothing is actually removed — so `&&` turning into
-/// `||` would clear a live registry entry over a request that changed
-/// nothing at all, the moment anyone asks "what would removing this root
-/// cost".
+/// transaction back — nothing is actually removed — so `&&` turning into `||`
+/// would clear a live registry entry over a request that changed nothing at
+/// all, the moment anyone asks "what would removing this root cost".
 #[tokio::test]
 async fn a_dry_run_delete_leaves_the_scan_registry_entry_alone() {
     let (router, state, _fixture) = test_support::router_over_a_single_scanned_work();
@@ -3309,20 +3243,17 @@ async fn a_dry_run_delete_leaves_the_scan_registry_entry_alone() {
     );
 }
 
-/// **Whole-branch review, Important 4.** Before this fix, a registry entry
-/// always won outright and the answer carried only `root_id`/`running`/
-/// `elapsed_secs`/`report` — never `last_scan_at`/`last_scan_status`, the
-/// two columns this whole route exists to show (its own doc comment).  So
-/// C4 §3's regime line went blank precisely while a scan was running or had
-/// just finished, exactly the moment a caller is watching it. This plants a
-/// registry entry for a root that already has a real `last_scan_at`/
-/// `last_scan_status = "ok"` on its row (from the fixture's own scan) and
-/// checks both still come through once a live registry entry exists too.
+/// `last_scan_at` and `last_scan_status` are the two columns this whole route
+/// exists to show (its own doc comment), and C4 §3's regime line reads them
+/// while a scan is running or has just finished — exactly the moment a caller
+/// is watching it. This plants a registry entry for a root that already has a
+/// real `last_scan_at`/`last_scan_status = "ok"` on its row (from the
+/// fixture's own scan) and checks both still come through once a live registry
+/// entry exists too.
 ///
-/// **`elapsed_secs` is also checked for the fix alongside it**: `started` is
-/// backdated by 500ms, under a second, so the old `Duration::as_secs`
-/// (truncating) would have answered exactly `0` regardless — this asserts a
-/// nonzero, fractional value instead.
+/// **`elapsed_secs` is checked alongside**: `started` is backdated by 500ms,
+/// under a second, so a truncating `Duration::as_secs` would answer exactly
+/// `0` regardless — this asserts a nonzero, fractional value instead.
 #[tokio::test]
 async fn scan_status_carries_both_database_columns_even_with_a_registry_entry() {
     let (_router, state, _fixture) = test_support::state_with_two_scanned_roots();
@@ -3383,11 +3314,11 @@ async fn scan_status_carries_both_database_columns_even_with_a_registry_entry() 
     );
 }
 
-/// MINOR 7 — `?full=` is in C4 §3's own API table for this route, and
-/// `axum` drops an unrecognised query key silently: before `ScanQuery`
-/// existed, `POST .../scan?full=true` answered `202` and ran the identical
-/// scan a plain `POST` would have, accepted and quietly ignored. Refused now
-/// rather than swallowed, and before the registry is ever touched.
+/// `?full=` is in C4 §3's own API table for this route, and `axum` drops an
+/// unrecognised query key silently, so without `ScanQuery` a
+/// `POST .../scan?full=true` would answer `202` and run the identical scan a
+/// plain `POST` would, accepted and quietly ignored. It is refused rather
+/// than swallowed, and before the registry is ever touched.
 #[tokio::test]
 async fn a_full_query_parameter_is_refused_rather_than_silently_ignored() {
     let (router, state, _fixture) = test_support::router_over_a_single_scanned_work();
@@ -3470,10 +3401,10 @@ async fn a_roots_closure_that_panicked_is_a_500_naming_what_was_running() {
 
 /// **I4.** `save_rules` and a scan's own derive both take
 /// [`crate::ServeState::library_job`] before running — see that field's own
-/// doc comment for the interleaving nothing serialised before this. A
-/// background thread holding the lock stands in for a scan actually holding
-/// it, which is simpler and deterministic: this is a test of `save_rules`'s
-/// own refusal, not of `scan_root`/`derive::derive`'s timing.
+/// doc comment for the interleaving it closes. A background thread holding
+/// the lock stands in for a scan actually holding it, which is simpler and
+/// deterministic: this is a test of `save_rules`'s own refusal, not of
+/// `scan_root`/`derive::derive`'s timing.
 #[tokio::test]
 async fn a_save_refuses_while_the_library_job_lock_is_held() {
     let (router, state, _fixture) = test_support::router_over_a_single_scanned_work();
@@ -3644,11 +3575,11 @@ async fn saving_a_rule_that_no_longer_exists_is_the_callers_mistake() {
 }
 
 /// [`creating_a_rule_against_an_unknown_root_is_a_400_naming_it`]'s twin for
-/// `PUT /api/library/rules` — whole-branch review, M2. `save_rules` never
-/// called `root_exists` for a proposed rule's `root_id`, unlike `create_rule`
-/// and `patch_rule`; with `foreign_keys = ON`, a rule scoped to a root that
-/// does not exist reached `rules::replace_all`'s own foreign key and
-/// answered with SQLite's raw `FOREIGN KEY constraint failed` text.
+/// `PUT /api/library/rules`. With `foreign_keys = ON`, a proposed rule scoped
+/// to a root that does not exist would reach `rules::replace_all`'s own
+/// foreign key and answer with SQLite's raw `FOREIGN KEY constraint failed`
+/// text unless `save_rules` checked its `root_id` the way `create_rule` and
+/// `patch_rule` do.
 #[tokio::test]
 async fn saving_a_rule_scoped_to_an_unknown_root_is_a_400_naming_it() {
     let (router, _state, _fixture) = test_support::router_over_a_single_scanned_work();
@@ -3737,9 +3668,6 @@ async fn saving_without_a_rules_array_is_refused() {
 /// the caller reached, and a single-route test passes just as well against a
 /// reader that hard-codes either noun or ignores the parameter outright.
 /// This is the other half of the pair; the save's own is directly above.
-///
-/// Added after a review found the extraction had replaced two hand-written
-/// messages with one parameterised one and no test asserted either's text.
 #[tokio::test]
 async fn previewing_without_a_rules_array_is_refused_naming_the_preview() {
     let (router, _state, _fixture) = test_support::router_over_a_single_scanned_work();
@@ -3779,9 +3707,8 @@ async fn a_roots_patch_refuses_an_exclude_globs_line_that_will_not_compile() {
     .await;
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
 
-    // `a{b` is one of the two shapes `ignore` 0.4.33 actually rejects,
-    // measured 2026-09-09. `a[` and `[[:bogus:]]` compile, so neither would
-    // exercise this route.
+    // `a{b` is a shape `ignore` actually rejects. `a[` and `[[:bogus:]]`
+    // compile, so neither would exercise this route.
     let response = send_json(
         &router,
         Method::PATCH,

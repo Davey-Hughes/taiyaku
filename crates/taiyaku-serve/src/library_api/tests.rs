@@ -1,9 +1,8 @@
 use crate::test_support;
 use taiyaku_library::account::Access;
-// `get` and `get_json` were private here until C3's `curation` module needed
-// the same two. Promoted rather than copied: `get_json`'s panic is
-// load-bearing (see its own doc comment), and two copies would be two places
-// to forget it. `get` sends no credential of its own — the fixture's router
+// Shared through `test_support` rather than copied: `get_json`'s panic is
+// load-bearing (see its own doc comment), and two copies would be two places to
+// forget it. `get` sends no credential of its own — the fixture's router
 // injects one — which is what lets a *reader* fixture answer as a reader
 // through the very same helper.
 use crate::test_support::{get, get_json};
@@ -14,9 +13,8 @@ use tower::ServiceExt as _;
 /// **Takes a bare router deliberately.** `test_support::router_over_a_library`
 /// wraps its router in `authenticating`, which injects the fixture's
 /// credentials into every request — so a request sent through it is never
-/// anonymous, whatever headers the caller omits. The first version of this
-/// helper used that router and reported a 200, which is how the trap was
-/// found. Callers must build the router with `crate::build_router` directly.
+/// anonymous, whatever headers the caller omits. Callers must build the router
+/// with `crate::build_router` directly.
 async fn get_anonymous(
     router: &axum::Router,
     path: &str,
@@ -96,7 +94,7 @@ async fn one_work_is_served_by_slug_and_a_missing_one_is_a_404() {
     let (router, state, _fixture) = test_support::router_over_a_library().await;
     let slug = state.works.snapshot()[0].id.clone();
     {
-        // O73/Task 7b: `EditionCard::missing` has to reach the client or
+        // O73: `EditionCard::missing` has to reach the client or
         // nothing can render it. `browse::missing_by_edition` counts a member
         // missing once it has a root but no matching `scan_entry` row — the
         // state `scan::forget_unseen` leaves behind — so giving the fixture's
@@ -252,8 +250,7 @@ async fn a_series_that_does_not_exist_is_a_404() {
     assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
 }
 
-/// `/api/library/series/{id}` — the handler that had no test at all, which
-/// the coverage gate caught before the review did.
+/// `/api/library/series/{id}`.
 #[tokio::test]
 async fn one_series_carries_the_series_and_its_works() {
     let (router, state, _fixture) = test_support::router_over_a_scanned_work_in_a_series();
@@ -319,9 +316,9 @@ async fn search_finds_a_scanned_series_through_the_api() {
     assert_eq!(body["series"].as_array().expect("series").len(), 1);
 }
 
-/// A cover for a series that does not exist is a **404, not a 500** — the
-/// difference was an enumeration oracle, since `/series/{id}` already answered
-/// 404. Whole-branch review.
+/// A cover for a series that does not exist is a **404, not a 500** — a
+/// difference between the two would be an enumeration oracle, since
+/// `/series/{id}` already answers 404.
 #[tokio::test]
 async fn a_cover_for_a_series_that_does_not_exist_is_a_404_like_the_series_itself() {
     let (router, _state, _fixture) = test_support::router_over_a_scanned_work_in_a_series();
@@ -359,11 +356,9 @@ async fn home_carries_a_work_the_reader_has_started() {
 
 /// A store error becomes a **500, not a panic**, on every browse route.
 ///
-/// Every handler funnels its failures through one `failed` helper, and until
-/// this test nothing ever invoked it — the error arms were written, compiled
-/// and never run. Driven by dropping the tables the queries read, which is the
-/// bluntest way to make a real `rusqlite` error arrive at the handler rather
-/// than a mocked one.
+/// Every handler funnels its failures through one `failed` helper. Driven by
+/// dropping the tables the queries read, which is the bluntest way to make a
+/// real `rusqlite` error arrive at the handler rather than a mocked one.
 #[tokio::test]
 async fn a_store_error_is_a_500_rather_than_a_panic() {
     let (router, state, _fixture) = test_support::router_over_a_library().await;
@@ -411,11 +406,7 @@ async fn a_store_error_is_a_500_rather_than_a_panic() {
 /// **A restricted reader cannot fetch the bytes**, not merely fail to see the
 /// work listed.
 ///
-/// This is spec C1 §5.1's boundary at the route rather than in the query, and
-/// it exists because a mutation sweep on 2026-08-20 found that
-/// `refuse_if_hidden` could be replaced with `None` — the check deleted
-/// outright — with every test still passing. The whole-branch review found the
-/// missing guard; the sweep found that the fix was unpinned.
+/// This is spec C1 §5.1's boundary at the route rather than in the query.
 #[tokio::test]
 async fn a_restricted_reader_is_refused_the_pages_of_a_root_they_do_not_hold() {
     let (router, state, _fixture) = test_support::router_over_a_scanned_work_in_a_series();
@@ -449,11 +440,9 @@ async fn a_restricted_reader_is_refused_the_pages_of_a_root_they_do_not_hold() {
         );
         // **The body, not only the status, and that is the whole point.** The
         // fixture's member files do not exist, so `/pages` answers 404 either
-        // way — an earlier version of this test asserted the status alone and
-        // passed with the guard deleted, satisfied by a coincidence. Deleting
-        // it makes these routes answer the *filesystem* instead, naming an
-        // absolute path; the guard's own refusal names the work and nothing
-        // else.
+        // way. Without the grant check, these routes answer the *filesystem*
+        // instead, naming an absolute path; the grant check's own refusal names
+        // the work and nothing else.
         assert_eq!(
             body,
             format!("no work `{slug}`"),
@@ -542,9 +531,9 @@ async fn the_grid_carries_the_two_fields_the_chips_sort_and_filter_on() {
     // **Not `router_over_a_library`.** That fixture only imports a work via
     // `import::sidecar`, which per `browse.rs`'s own module docs never writes
     // `series_id` — so the grid it produces has an `unfiled` work and no
-    // `series` at all, and `first()` on an empty array panicked here. This
-    // fixture inserts a `series` row and files the work under it, the same
-    // way `the_grid_lists_a_series_with_its_counts` above does.
+    // `series` at all. This fixture inserts a `series` row and files the work
+    // under it, the same way `the_grid_lists_a_series_with_its_counts`
+    // above does.
     let (router, _state, _fixture) = test_support::router_over_a_scanned_work_in_a_series();
     let body = get_json(&router, "/api/library/series").await;
     let first = body["series"]
@@ -725,8 +714,7 @@ async fn search_narrows_to_the_library_the_query_names() {
     );
 }
 
-/// **`?root=` is refused, naming `library`.** It narrowed the grid to one
-/// directory before libraries did.
+/// **`?root=` is refused, naming `library`.**
 #[tokio::test]
 async fn a_grid_asked_for_a_root_is_refused_naming_library() {
     let (router, _state, _fixture) = test_support::router_over_a_scanned_work_in_a_series();
@@ -744,9 +732,9 @@ async fn a_grid_asked_for_a_root_is_refused_naming_library() {
 async fn the_work_route_carries_an_alignments_array_and_the_list_routes_do_not() {
     // Not `router_over_a_library`: that fixture's work is imported via
     // `import::sidecar`, which per `browse.rs`'s own module docs never writes
-    // `series_id` — so `/api/library/series` answers no series at all, `first()`
-    // is `None`, and the negative half below never ran. This fixture inserts a
-    // `series` row and files the work under it, so `listed` genuinely binds.
+    // `series_id` — so `/api/library/series` answers no series at all and
+    // `first()` is `None`. This fixture inserts a `series` row and files the
+    // work under it, so `listed` genuinely binds.
     let (router, _state, _fixture) = test_support::router_over_a_scanned_work_in_a_series();
     let grid = get_json(&router, "/api/library/series").await;
     let listed = grid["series"].as_array().and_then(|s| s.first());
@@ -1127,11 +1115,9 @@ async fn a_series_titles_read_corrected_and_sent_back_whole_keep_every_other_tit
 }
 
 /// **O114.** O83's drive, as a test: Kaguya's derived romaji title corrected
-/// through `PATCH /api/library/series/{id}` and the root scanned again. The
-/// correction moved `series.sort_title`, `derive::reconcile_series` finds a
-/// series by `sort_title`, and the rescan minted a second Kaguya under the
-/// scanned name and moved its volume onto it, leaving the corrected titles on
-/// a series holding no work.
+/// through `PATCH /api/library/series/{id}` and the root scanned again, which
+/// must leave the same three series, Kaguya's volume on its series, and the
+/// corrected titles on it.
 #[tokio::test]
 async fn a_rescan_after_a_series_titles_correction_keeps_the_series_its_work_and_its_titles() {
     let (router, state, _fixture) = test_support::router_over_three_unrelated_series();
@@ -1221,15 +1207,9 @@ fn a_reader_with(access: Access) -> crate::auth::Principal {
 /// `curation::tests::no_curation_route_stalls_the_runtime` hold for their
 /// modules, held for this one.
 ///
-/// Each of the seven handlers took `state.library.conn()` in its own body, on
-/// the async worker, for every request. `docs/notes.md`, "O115", "Found beside
-/// it, not changed", measured `work` stalling for a reader granted root 1 and
-/// for an unrestricted one alike; the other six were read, not measured.
-///
 /// **Each access, because none is spared here.** `Every` is answered
 /// without the library by `routes::on_the_grant`, but `browse` applies a grant
-/// in SQL, so every browse request reads the library whatever the caller
-/// holds.
+/// in SQL, so every browse request reads the library whatever the caller holds.
 ///
 /// **Every call is asserted to answer as it does for a reader who can see the
 /// series**, so none is free for having been refused, except under `Only`

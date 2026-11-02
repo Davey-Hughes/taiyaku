@@ -47,17 +47,10 @@ fn concrete(pattern: &str) -> String {
 async fn every_route_refuses_an_anonymous_request() {
     let patterns: Vec<&'static str> = guarded_routes().into_iter().map(|(path, _)| path).collect();
 
-    // **The guarded list, stated.** Two earlier attempts at this were both
-    // useless and the second was worse, because it looked derived: a `>= 13`
-    // floor that never moved when six account routes were added twenty lines
-    // below it, and then `patterns.len() == route_count() - open_routes().len()`
-    // — which is `G == G`, since `route_count` is *defined* as guarded plus
-    // open. A tautology in a safety net is worse than an obvious hand-typed
-    // list, because the commit message claimed it was derived.
-    //
-    // So it is typed, like the sibling test's exemption list, and the two
-    // together are what hold the line: a route that moves between the lists
-    // fails one of them. Found by the second whole-branch review.
+    // **The guarded list, stated.** A tautology in a safety net is worse than
+    // an obvious hand-typed list, so it is typed, like the sibling test's
+    // exemption list, and the two together are what hold the line: a route
+    // that moves between the lists fails one of them.
     let expected = [
         "/api/works",
         "/api/works/{work}",
@@ -97,14 +90,13 @@ async fn every_route_refuses_an_anonymous_request() {
         "/api/library/proposals/{id}/resolution",
         "/api/library/proposals/{id}/accept",
         "/api/library/proposals/{id}/dismiss",
-        // Spec C3 §5's metadata-editing routes, admin-gated the same way —
-        // and it matters doubly here too, since the guard is what stands
-        // between an anonymous request and a `Principal`-less
-        // `admin_or_forbidden` call. `/api/library/works/{slug}` and
-        // `/api/library/series/{id}` repeat two paths already above: a
-        // `PATCH` merged onto the same `GET` route, not a second route at
-        // the same address (`routes.rs`'s own comment beside the
-        // registration).
+        // Spec C3 §5's metadata-editing routes, admin-gated the same way — and
+        // it matters doubly here too, since the guard is what stands between an
+        // anonymous request and a `Principal`-less `administering_or_forbidden`
+        // call. `/api/library/works/{slug}` and `/api/library/series/{id}`
+        // repeat two paths already above: a `PATCH` merged onto the same `GET`
+        // route, not a second route at the same address (`routes.rs`'s own
+        // comment beside the registration).
         "/api/library/works/{slug}",
         "/api/library/series/{id}",
         "/api/library/editions/{id}",
@@ -112,32 +104,29 @@ async fn every_route_refuses_an_anonymous_request() {
         // Spec C3 §6's ComicInfo write-back — admin-gated, and gated again on
         // `can_stamp`, which an administrator does not inherit.
         "/api/library/works/{slug}/stamp-comicinfo",
-        // Spec C4 §6's rule editor, task 8 of the branch plan — admin-gated
-        // *inside* each handler, the identical reasoning the proposals and
-        // metadata comments above give for why it matters doubly that these
-        // are guarded here first.
+        // Spec C4 §6's rule editor — admin-gated *inside* each handler, the
+        // identical reasoning the proposals and metadata comments above give
+        // for why it matters doubly that these are guarded here first.
         "/api/library/rules",
         "/api/library/rules/{id}",
         "/api/library/rules/preview",
         "/api/library/rules/import",
-        // Spec C4 §2's roots routes, task 11 of the branch plan —
-        // admin-gated *inside* each handler, the identical reasoning the
-        // rules comment just above gives for why it matters doubly that
-        // these are guarded here first.
+        // Spec C4 §2's roots routes — admin-gated *inside* each handler, the
+        // identical reasoning the rules comment just above gives for why it
+        // matters doubly that these are guarded here first.
         "/api/library/roots",
         "/api/library/roots/{id}",
         "/api/library/roots/{id}/move",
-        // Spec C4 §3's scan-control route, task 12 of the branch plan —
-        // admin-gated *inside* the handler, the identical reasoning the
-        // roots comment just above gives for why it matters doubly that it
-        // is guarded here first.
+        // Spec C4 §3's scan-control route — admin-gated *inside* the handler,
+        // the identical reasoning the roots comment just above gives for why it
+        // matters doubly that it is guarded here first.
         "/api/library/roots/{id}/scan",
         "/api/library/libraries",
         "/api/library/libraries/{id}",
         "/api/library/libraries/{id}/dirs",
         "/api/library/libraries/{id}/scan",
         "/api/library/dirs",
-        // Spec C4 §4's user administration, PR 2 — admin-gated *inside* each
+        // Spec C4 §4's user administration — admin-gated *inside* each
         // handler, the identical reasoning the scan comment just above gives,
         // and with the sharpest instance of it: these routes are the only
         // writer of `role`, `can_download`, `can_stream` and `user_library` in
@@ -147,11 +136,10 @@ async fn every_route_refuses_an_anonymous_request() {
         "/api/library/users/{id}",
         "/api/library/users/{id}/sessions/{sid}",
         "/api/library/users/{id}/keys/{kid}",
-        // Spec C4 §5's backup routes, PR 2 — admin-gated *inside* each
-        // handler, and the guard matters most here of anywhere in this list:
-        // a backup is the whole database, so an anonymous request reaching
-        // the download route would be an anonymous download of every
-        // account's password hash.
+        // Spec C4 §5's backup routes — admin-gated *inside* each handler, and
+        // the guard matters most here of anywhere in this list: a backup is the
+        // whole database, so an anonymous request reaching the download route
+        // would be an anonymous download of every account's password hash.
         "/api/library/backups",
         "/api/library/backups/{name}",
         "/opds/v1.2/catalog",
@@ -189,18 +177,14 @@ async fn every_route_refuses_an_anonymous_request() {
     }
 }
 
-/// **The other half of the enumeration, which did not exist.**
+/// **The other half of the enumeration.**
 ///
-/// `open_routes` is a by-name exemption from the guard, and `build_router`'s own
-/// comment credited the enumeration test with catching a route added to the
-/// wrong list. It could not: nothing read `open_routes` at all, so a route moved
-/// there shipped unauthenticated with a green suite.
+/// `open_routes` is a by-name exemption from the guard.
 ///
-/// This asserts the exemption is exactly the three paths that *cannot* be
-/// guarded, and says for each why — a login cannot already be authenticated, a
-/// logout has to work from an expired session, and a claim is what creates the
-/// first account. Anything else appearing here fails, which is the direction the
-/// old test could not see.
+/// This asserts the exemption is exactly the paths that *cannot* be guarded,
+/// and says for each why — a login cannot already be authenticated, a logout
+/// has to work from an expired session, and a claim is what creates the first
+/// account. Anything else appearing here fails.
 #[tokio::test]
 async fn open_routes_are_the_ones_that_cannot_be_guarded() {
     let open: Vec<&'static str> = crate::routes::open_routes()
@@ -363,12 +347,12 @@ async fn basic_accepts_a_password() {
 
 /// **§2's whole point, asserted structurally rather than with a stopwatch.**
 ///
-/// The account's stored hash is left at [`credential::LOCKED`], which no
-/// password can ever verify against. An API key that authenticates anyway
-/// therefore *cannot* have been checked by argon2 — the only path that reaches
-/// argon2 is the one that would have failed. A timing assertion would say the
-/// same thing more slowly and less reliably; this one fails outright if a later
-/// refactor makes the key path fall through to the password verifier.
+/// The account's stored hash is replaced with one no password can ever verify
+/// against. An API key that authenticates anyway therefore *cannot* have been
+/// checked by argon2 — the only path that reaches argon2 is the one that would
+/// have failed. A timing assertion would say the same thing more slowly and
+/// less reliably; this one fails outright if a later refactor makes the key
+/// path fall through to the password verifier.
 #[tokio::test]
 async fn an_api_key_authenticates_without_reaching_argon2() {
     let tmp = crate::test_support::Fixture::new("auth-key");
@@ -381,11 +365,10 @@ async fn an_api_key_authenticates_without_reaching_argon2() {
         // anything against, so a key authenticating anyway cannot have been
         // checked by the password path.
         //
-        // Not `LOCKED`, which an earlier version used: `by_api_key` refuses a
-        // locked account outright now — an unclaimed row must not be reachable
-        // by a key any more than by a password — so locking it would prove the
-        // refusal rather than the routing. Found while fixing that, in the
-        // third whole-branch review.
+        // Not `LOCKED`: `by_api_key` refuses a locked account outright —
+        // an unclaimed row must not be reachable by a key any more than by
+        // a password — so locking it would prove the refusal rather than
+        // the routing.
         conn.execute(
             "UPDATE user SET password_hash = '$argon2id$unverifiable' WHERE id = 1",
             [],
@@ -422,8 +405,8 @@ async fn an_api_key_authenticates_without_reaching_argon2() {
         "an API key must authenticate against an account whose password is locked"
     );
 
-    // And the same account's locked password still refuses, so the success
-    // above is the key path rather than a guard that stopped checking.
+    // And a password for the same account is refused, so the success above is
+    // the key path rather than a guard that stopped checking.
     let refused = build_router(state)
         .oneshot(
             Request::get("/opds/v1.2/catalog")
@@ -611,19 +594,14 @@ fn a_forwarded_chain_is_read_from_the_right_end() {
     );
 }
 
-/// **§7 names two paths and only one shipped.** The design says the limiter is
-/// "on the login route *and on failed `Authorization: Basic` verification
-/// only*". Without the second, a password is guessable at any rate through any
-/// guarded route while ten tries at `POST /api/session` lock the pair out for
-/// fifteen minutes — so the limiter guarded the one door a guesser has no
-/// reason to use.
+/// **§7 names two paths for the limiter.** The design says it is "on the login
+/// route *and on failed `Authorization: Basic` verification only*". Without the
+/// second, a password is guessable at any rate through any guarded route while
+/// ten tries at `POST /api/session` lock the pair out for fifteen minutes — so
+/// the limiter would guard the one door a guesser has no reason to use.
 ///
-/// It was also an unauthenticated denial of service in its own right: each
-/// guess held a `spawn_blocking` thread for the measured 11.9 ms and allocated
-/// argon2's 19 MiB `m_cost` buffer, and nothing bounded how many a stranger
-/// might start.
-///
-/// Found by the whole-branch review, 2026-08-18.
+/// Each guess also takes a `spawn_blocking` thread, so the limit bounds an
+/// unauthenticated denial of service as much as a dictionary.
 #[tokio::test]
 async fn guessing_a_password_over_basic_is_rate_limited_too() {
     let tmp = crate::test_support::Fixture::new("auth-basic-lockout");
@@ -707,8 +685,6 @@ async fn a_working_api_key_is_never_locked_out() {
 /// "last element" rule then protects nothing: the address read is the one the
 /// client chose, so rotating it restores unlimited guessing and writes a chosen
 /// value into every `session.ip` the account screen shows its owner as evidence.
-///
-/// Found by the whole-branch review, 2026-08-18.
 #[test]
 fn every_forwarded_line_is_read_not_just_the_first() {
     use std::net::IpAddr;
@@ -787,13 +763,9 @@ fn a_forwarded_header_without_a_trusted_proxy_is_ignored() {
 
 /// **A v6-written base against a v4 peer.**
 ///
-/// `from_str` derived the prefix width from the *uncanonicalised* base while
-/// `contains` canonicalises it, so `--trusted-proxy ::ffff:10.0.0.1` — the exact
-/// form `Cidr::contains`'s own doc says was added to support — stored width 128
-/// and then sliced 16 bytes out of a 4-byte array on the first request from any
-/// v4 peer. Startup succeeded; every connection then panicked.
-///
-/// Found by the third whole-branch review.
+/// `--trusted-proxy ::ffff:10.0.0.1` is a v6-written base that must match the
+/// v4 peer it names; this test guards the slice panic `Cidr::from_str`'s
+/// comment describes.
 #[test]
 fn a_mapped_v6_range_matches_the_v4_peer_it_names() {
     use std::net::IpAddr;
@@ -822,14 +794,6 @@ fn a_mapped_v6_range_matches_the_v4_peer_it_names() {
 /// **Every guarded route's response says it may not be stored by a shared
 /// cache**, enumerated from the router rather than from a list of routes
 /// somebody remembered.
-///
-/// The first attempt applied the header where each per-reader document was
-/// built and reached two of eight; `get_notes` — the one the constant's own doc
-/// named first — was not among them, and neither were the OPDS feeds, which
-/// additionally carry no `Set-Cookie` and so lack even the accident that makes
-/// most proxies decline to cache an authenticated response.
-///
-/// Found by the third whole-branch review.
 #[tokio::test]
 async fn every_guarded_response_refuses_a_shared_cache() {
     for (pattern, _) in guarded_routes() {
@@ -868,10 +832,9 @@ async fn every_guarded_response_refuses_a_shared_cache() {
 
 /// Which credentials may administer the account they authenticated.
 ///
-/// Stated as its own test because folding a password and a key into one
-/// `By::Header` variant is what made the account routes refuse a correct
-/// password with a message asserting a key had been used — and because the
-/// answer is a security rule rather than a detail of the enum.
+/// Stated as its own test because the answer is a security rule rather than a
+/// detail of the enum; `By::Password`'s doc says why a password and a key are
+/// separate variants.
 #[test]
 fn only_a_password_or_a_session_may_administer_an_account() {
     use crate::auth::By;
@@ -887,14 +850,12 @@ fn only_a_password_or_a_session_may_administer_an_account() {
 
 /// **The match guard that lets a header credential speak past a cross-site
 /// cookie.** `resolve`'s own comment states it — "a header credential beside it
-/// is still allowed to speak for the request" — and mutation testing found the
-/// guard could be replaced with `true` on 2026-08-19 with every test passing.
+/// is still allowed to speak for the request".
 ///
 /// With the guard always true, an OPDS client that happens to carry a stale
 /// cookie from a browser session on the same host is refused 403 for an origin
 /// it never sent, while its perfectly valid `Authorization` header is never
-/// looked at. Nothing in the suite paired the two credentials, so nothing saw
-/// it.
+/// looked at.
 #[tokio::test]
 async fn a_basic_header_still_speaks_past_a_cookie_refused_for_its_origin() {
     let tmp = crate::test_support::Fixture::new("crosssite-plus-basic");
@@ -949,12 +910,11 @@ async fn a_basic_header_still_speaks_past_a_cookie_refused_for_its_origin() {
 }
 
 /// The mapped-address sentence in `Cidr`'s refusal, which is a decision inside
-/// a `format!` and survived `&&` becoming `||` on 2026-08-19.
+/// a `format!`.
 ///
 /// It exists because `::ffff:10.0.0.0/104` is an IPv4 range written in IPv6 and
 /// /104 there means /8 here — a person who typed one number is being told about
-/// another. With `||`, every over-long prefix gets the mapped explanation,
-/// including plain IPv6 ones where it is simply false.
+/// another. A plain IPv6 range must not get it, since it is simply false there.
 #[test]
 fn an_over_long_prefix_explains_itself_differently_for_a_mapped_address() {
     // Asserted on the whole sentence rather than on `contains` of one word, and
@@ -982,8 +942,7 @@ fn an_over_long_prefix_explains_itself_differently_for_a_mapped_address() {
         "it should still name the width: {plain}"
     );
 
-    // **The case that separates `&&` from `||`, and the reason the first
-    // version of this test did not kill the mutant.** Both halves agree on the
+    // **The case that separates `&&` from `||`.** Both halves agree on the
     // two cases above — a mapped address satisfies both, a plain IPv6 one
     // neither — so an assertion on those alone passes either way. An *ordinary*
     // IPv4 range is the one input where they differ: it contains no `::ffff:`
@@ -1001,15 +960,13 @@ fn an_over_long_prefix_explains_itself_differently_for_a_mapped_address() {
     );
 }
 
-/// The decision and text behind the `X-Forwarded-For` warning, extracted from
-/// the `eprintln!` they used to live inside so that they can be asserted at all.
+/// The decision and text behind the `X-Forwarded-For` warning.
 ///
 /// The warning tells an operator that their login rate limit is being applied to
-/// the proxy rather than to a reader. `&&` surviving as `||` meant it fired for
-/// every request from a direct client that sent no such header — and a warning
-/// that cries wolf is the one nobody reads on the day it is right. The peer it
-/// names is the value an operator copies into `TAIYAKU_TRUSTED_PROXY`, so each
-/// case must carry it.
+/// the proxy rather than to a reader. It must not fire for every request from
+/// a direct client that sent no such header — a warning that cries wolf is the
+/// one nobody reads on the day it is right. The peer it names is the value an
+/// operator copies into `TAIYAKU_TRUSTED_PROXY`, so each case must carry it.
 #[test]
 fn the_forwarded_warning_fires_only_when_a_header_is_being_ignored() {
     use crate::auth::{IgnoredForwarded, ignored_forwarded_warning};
@@ -1047,9 +1004,8 @@ fn the_forwarded_warning_fires_only_when_a_header_is_being_ignored() {
 }
 
 /// `failed` builds the 500 every account route answers when the database
-/// refuses a write, and it survived being replaced with `Response::default()`
-/// on 2026-08-19 — **a 200 with an empty body**. Nothing asserted on it, so a
-/// password change that changed nothing would have answered success.
+/// refuses a write, so a password change that changed nothing is not answered
+/// as success.
 ///
 /// Reached by taking away the table `set_password` writes through, which is the
 /// same error class the route reasons about — `serve` and `library import`
@@ -1097,14 +1053,10 @@ async fn a_password_change_the_database_refuses_is_not_answered_as_success() {
 
 // ---------------------------------------------------------------------------
 // The enumeration `routes::guarded_routes`'s own doc comment argues for and
-// authentication already has: "that is exactly the failure a reviewer's
-// checklist has: it goes stale the first time someone adds a route and does
-// not think about auth." Six routes proved the identical failure for
-// `Principal.access` — `stream_page`, `cover`, `work_feed` and `works` in
-// `opds.rs`, `list_works` in `routes.rs`, and `patch_alignments` — drifting
-// out of the grant one at a time, over more than one spec, before anything
-// caught it. `routes::grant_postures` and the test below are what stops a
-// seventh.
+// authentication already has: "exactly the failure a reviewer's checklist has:
+// it goes stale the first time someone adds a route and does not think about
+// auth." `routes::grant_postures` and the test below apply it to
+// `Principal.access`, so a route cannot drift out of the grant unnoticed.
 // ---------------------------------------------------------------------------
 
 /// A concrete path for a route pattern, filled in with identifiers this
@@ -1199,26 +1151,18 @@ fn library_of(state: &ServeState, dir: i64) -> i64 {
 /// address the work by slug; the OPDS mirrors address the same work; the
 /// library routes address the work by slug and the series by id.
 ///
-/// **Returns the state too (I8)**, unlike its first version: the four
-/// metadata PATCH routes need a real edition id and member id to address,
-/// neither reachable from the slug alone the way the read routes' own ids
-/// are.
+/// **Returns the state too (I8)**, since the four metadata PATCH routes need a
+/// real edition id and member id to address, neither reachable from the slug
+/// alone the way the read routes' own ids are.
 ///
-/// **Real bytes, not placeholders — measured to matter.** `refuse_if_hidden`
-/// and `refuse_if_work_hidden` both answer 404 before any of these routes
-/// opens a member, so a first draft of this fixture used the shared
-/// placeholder bytes `test_support::work` writes, on the reasoning that
-/// nothing here should ever reach them. Proven wrong by deliberately
-/// disabling `refuse_if_hidden` (returning `None` unconditionally) and
-/// re-running this suite: `get_page`, `get_thumb`, both download routes and
-/// the OPDS page/cover mirrors fell through to a real file read, found
-/// nothing at the placeholder paths, and answered 404 from *that* instead —
-/// the exact "colour change is not evidence" trap this branch's report
-/// warns about, and the same reason `opds::tests::router_with_a_real_page_under_a_withheld_root`
-/// already insists on real bytes. With real, decodable images in place, the
-/// same mutation now answers 200 with the actual page for every one of
-/// those routes, which is what makes the loop below a proof rather than a
-/// coincidence.
+/// **Real bytes, not placeholders.** `refuse_if_hidden` and
+/// `visible_editions_or_refuse` both answer 404 before any of these routes
+/// opens a member, so the 404 asserted here must come from that refusal and
+/// not from a file read that found nothing. With real, decodable images in
+/// place, a route that opened a member would find a page there, which is
+/// what makes the loop below a proof rather than a coincidence. It is the
+/// same reason `opds::tests::router_with_a_real_page_under_a_withheld_root`
+/// insists on real bytes.
 ///
 /// Each directory is a library of its own, numbered apart from the directories
 /// ([`two_dirs_numbered_apart_from_their_libraries`]), which the two OPDS
@@ -1680,9 +1624,8 @@ fn one_work_three_editions_hub_withheld(dir: &std::path::Path) -> (axum::Router,
     (build_router(state.clone()), state)
 }
 
-/// **The missing enumeration test**, and the deliverable this branch's report
-/// says matters most: without it, an eighth route can drift out of the grant
-/// exactly the way the first six did, and nothing will say so.
+/// **The enumeration test for the grant:** without it, a route can drift out of
+/// the grant and nothing will say so.
 ///
 /// Two things are asserted, not one. First, that `routes::grant_postures`'s
 /// route set equals `guarded_routes`'s exactly — a route added without a
@@ -1805,11 +1748,10 @@ async fn every_route_declares_its_grant_posture() {
         // actually needs — both its `Refuses` half and its `Filters` half.
         //
         // **The four `library/{works,series,editions,members}` PATCH routes
-        // (I8) are `PATCH`-only for the identical reason**, and two of them
-        // share a path with an already-`Filters` `GET` — a `GET` against
-        // either answers from that *other* handler, proving nothing about
-        // the guard this loop means to check on the PATCH one. All four are
-        // driven with real `PATCH` requests just below instead.
+        // (I8) are `GrantIndependent`** (O86), so the posture check above
+        // already skips them, as it does the two `Filters` `GET`s that share a
+        // path with two of them. All four are driven with real `PATCH` requests
+        // just below instead.
         //
         // **The two OPDS library feeds' placeholder is a library, not a
         // work**, so they are driven in their own block below, against this
@@ -1830,8 +1772,7 @@ async fn every_route_declares_its_grant_posture() {
         // **O133: the tile route's cover sizes are driven too.** With `?w=` at
         // a cover size, page 0 is served by `serve_page`, which asks no grant
         // of its own, so `get_thumb`'s `refuse_if_hidden` is all that keeps a
-        // withheld edition's cover hidden. The review of O133's fix moved that
-        // call below the sized branch and every test still passed.
+        // withheld edition's cover hidden.
         let sized = (*pattern == "/api/works/{work}/{edition}/pages/{index}/thumb")
             .then(|| format!("{path}?w=768"));
         for path in std::iter::once(path).chain(sized) {
@@ -1892,22 +1833,17 @@ async fn every_route_declares_its_grant_posture() {
         }
     }
 
-    // **The four metadata PATCH routes, and what now protects them — O86.**
+    // **The four metadata PATCH routes, and what protects them — O86.**
     //
-    // This block was I8's `Refuses` proof: the fixture's work, edition, member
-    // and series are wholly hidden from the fixture account, so a PATCH naming
-    // any of them had to 404 exactly as a GET does rather than resolving
-    // through to a 200 that writes and re-projects the whole document.
+    // The fixture's work, edition, member and series are wholly hidden from the
+    // fixture account, but these routes are admin-only, and
+    // `Principal::from_account` drops an administrator's grant: nothing is
+    // hidden from any caller these routes admit. The fixture above demotes the
+    // grant holder to `user` precisely so its grant is live, which makes that
+    // same account inadmissible here.
     //
-    // **That proof is void, not weakened.** It required an account holding a
-    // root grant *and* the admin role these routes demand, and
-    // `Principal::from_account` no longer produces one: an administrator's
-    // grant is dropped, so nothing is hidden from any caller these routes
-    // admit. The fixture above demotes the grant holder to `user` precisely so
-    // its grant is live, which makes that same account inadmissible here.
-    //
-    // So the block keeps driving all four routes and asserts the guard that is
-    // now load-bearing for them: **the role gate refuses first**. Deleting it
+    // So the block drives all four routes and asserts the guard that is
+    // load-bearing for them: **the role gate refuses first**. Deleting it
     // outright would leave the four with no driven proof at all, which is how
     // a reclassification quietly becomes a hole.
     let refuses_slug = refuses_state.works.snapshot()[0].id.clone();
@@ -2117,15 +2053,12 @@ async fn every_route_declares_its_grant_posture() {
     );
     proven_filters.insert("/opds/v1.2/libraries/{library}/works/by-work");
 
-    // ---- Finding 2: the split-across-roots case, for every `Refuses` and
-    // `Filters` entry that can usefully be driven against it. ----
+    // ---- The split-across-roots case, for every `Refuses` and `Filters`
+    // entry that can usefully be driven against it. ----
     //
     // `two_works_one_withheld` and `router_with_material_under_a_withheld_root`
     // above only ever hide a *whole* work — the fixture shape where the
-    // work-level question and the edition-level one have the same answer,
-    // which is exactly what let `get_sidecar`, `list_works` and
-    // `patch_alignments` pass every proof that existed before this while
-    // leaking a hidden edition sharing a work with a granted one. One
+    // work-level question and the edition-level one have the same answer. One
     // fixture, reused below for both the `Refuses` and the `Filters` half,
     // so both proofs see the identical split.
     let tmp3 = crate::test_support::Fixture::new("grant-posture-split");
@@ -2137,10 +2070,7 @@ async fn every_route_declares_its_grant_posture() {
     // asserted — `one_work_two_editions_split_across_roots` names members no
     // test writes to disk (it exists for the `Filters` proof below, which
     // never opens one), so asking for `en` and expecting 200 would answer
-    // 404 from a missing file rather than from the grant: the "colour
-    // change is not evidence" trap
-    // `router_with_material_under_a_withheld_root`'s own doc comment warns
-    // about, the wrong way round.
+    // 404 from a missing file rather than from the grant.
     let mut names_a_work_only = 0_usize;
     for (pattern, posture) in &table {
         if !matches!(
@@ -2224,22 +2154,19 @@ async fn every_route_declares_its_grant_posture() {
          a route was added that it now covers without being counted here"
     );
 
-    // `patch_edition`/`patch_member`'s own split proof (I8): the finding's
-    // exact shape — an edition (and its one member) sharing a work with a
-    // granted sibling. `edition_owner`/`member_owner` check the edition/
-    // member's own root, not merely whether the work has *some* visible
-    // material, so a PATCH naming the withheld `raw` edition had to 404 even
-    // though `patch_work`/`patch_series` against this same work would
-    // legitimately succeed (`en` keeps it visible).
+    // `patch_edition`/`patch_member`'s own split proof: an edition (and its one
+    // member) sharing a work with a granted sibling. `edition_owner`/
+    // `member_owner` check the edition/member's own root, not merely whether
+    // the work has *some* visible material.
     //
-    // **Void for the same reason as the block above — O86.** The caller that
-    // makes this fixture's grant live is a non-admin, and these routes admit
-    // only admins, whose grant is dropped. `edition_owner` and `member_owner`
-    // still ask the edition's own root and that is deliberately kept: it is
-    // the correct answer for any caller holding a grant, and the day the role
-    // rule changes it is the difference between a leak and none. It is simply
-    // unreachable through these routes today, so what is asserted here is the
-    // gate that does the refusing.
+    // **Unreachable here for the same reason as the block above — O86.** The
+    // caller that makes this fixture's grant live is a non-admin, and these
+    // routes admit only admins, whose grant is dropped. `edition_owner` and
+    // `member_owner` still ask the edition's own root and that is deliberately
+    // kept: it is the correct answer for any caller holding a grant, and the
+    // day the role rule changes it is the difference between a leak and none.
+    // It is simply unreachable through these routes, so what is asserted here
+    // is the gate that does the refusing.
     let (raw_edition_id, raw_member_id): (i64, i64) = {
         let conn = split_state.library.conn();
         conn.query_row(
@@ -2287,19 +2214,13 @@ async fn every_route_declares_its_grant_posture() {
         );
     }
 
-    // **The other half of the pair, restored to meaning something under O86.**
+    // **The other half of the pair — O86.** With the grant not reaching these
+    // routes, asserting 403 here too would collapse the pair into one assertion
+    // made twice — which looks like coverage and is not.
     //
-    // It used to be: a restricted grant must still allow editing material it
-    // *does* cover, or the check above is not narrower than "deny everything".
-    // With the grant no longer reaching these routes, asserting 403 here too
-    // would collapse the pair into one assertion made twice — which looks like
-    // coverage and is not.
-    //
-    // So the account is promoted back for this half. The pair now reads
+    // So the account is promoted back for this half. The pair reads
     // non-admin → 403, admin → 200, which is the property that actually holds:
-    // **the role gate refuses exactly non-admins and nothing else.** The
-    // material is unchanged between the two halves, so the status difference
-    // is attributable to the role alone.
+    // **the role gate refuses exactly non-admins and nothing else.**
     {
         let conn = split_state.library.conn();
         conn.execute("UPDATE user SET role = 'admin' WHERE id = 1", [])
@@ -2316,15 +2237,12 @@ async fn every_route_declares_its_grant_posture() {
         )
         .expect("the granted edition and its one member")
     };
-    // **Both halves drive a session — O93, and the reason is the trap it left.**
-    // The refused half above sends `credential` (an API key) as a *reader*;
-    // this half sends a session as an *administrator*. That varies two things
-    // at once, so neither gate is pinned by the pair: delete the role check
-    // from `administering_or_forbidden` and the refused half still 403s, on
-    // the credential instead. The comment above claims "the material is
-    // unchanged between the two halves, so the status difference is
-    // attributable to the role alone", and that only stays true if the
-    // credential is held fixed. Found by the review of O93's own branch.
+    // **The halves send different credentials — O93.** The refused half above
+    // sends `credential` (an API key) as a *reader*; this half sends a session
+    // as an *administrator*. That varies two things at once, so neither gate is
+    // pinned by the pair: delete the role check from
+    // `administering_or_forbidden` and the refused half still 403s, on the
+    // credential instead.
     let browser = crate::test_support::fixture_session_cookie(&split_state.library);
     for (pattern, uri, body) in [
         (
@@ -2367,18 +2285,16 @@ async fn every_route_declares_its_grant_posture() {
 
     // **Demoted again, because the promotion above is scoped to that pair and
     // nothing else.** The OPDS proofs below need a caller whose grant is live,
-    // and an admin's is dropped (O86) — leaving the account promoted here made
-    // `/opds/v1.2/works/{work}` name an edition outside the grant, which is
-    // the filter being unreachable rather than broken. The state is shared
-    // across the blocks of this test, so the role has to be put back.
+    // and an admin's is dropped (O86), so a promoted account would leave the
+    // filter unreachable rather than broken. The state is shared across the
+    // blocks of this test, so the role has to be put back.
     {
         let conn = split_state.library.conn();
         conn.execute("UPDATE user SET role = 'user' WHERE id = 1", [])
             .expect("restores the restricted caller for the proofs below");
     }
 
-    // `Filters`, split. `/opds/v1.2/works/{work}` was already proven this
-    // way before Finding 2; the rest join it here.
+    // `Filters`, split.
     let work_feed_response = split_router
         .clone()
         .oneshot(
@@ -2403,9 +2319,8 @@ async fn every_route_declares_its_grant_posture() {
     );
     proven_filters.insert("/opds/v1.2/works/{work}");
 
-    // `/api/works` (`list_works`) — Finding 1's own reproduction: `editions`
-    // must be `["en"]`, and the cover must not be built from the withheld
-    // hub.
+    // `/api/works` (`list_works`) — `editions` must be `["en"]`, and the cover
+    // must not be built from the withheld hub.
     let list_response = split_router
         .clone()
         .oneshot(
@@ -2485,20 +2400,16 @@ async fn every_route_declares_its_grant_posture() {
     proven_filters.insert("/api/works/{work}");
 
     // `/api/works/{work}/alignments` (`patch_alignments`) — `RefusesAndFilters`.
-    // Its write half was reclassified `Refuses` by Finding 1's
-    // write-authorization fix: before it, the identical request answered
-    // 200 with a sidecar filtered to `en` alone (the read-leak half, fixed
-    // the round before this one) while still writing `alignment`/`run` rows
-    // for `raw` — shared state every reader who *can* see `raw` would then
-    // be served from. Now it is refused, like every `Refuses` entry, before
-    // either `if_match_hits` or `Sidecar::correct` runs, and the seeded row
-    // is unchanged. Its *response*-filtering half is proven separately just
-    // below, against a work with two visible editions — this fixture keeps
-    // only one, so a correction between two editions it may see cannot be
-    // expressed here. Proven here (and below) rather than in the generic
-    // `Refuses`/`Filters` loops above (all three explicitly skip this
-    // pattern) because a correction needs a body and `If-Match`, which
-    // their GET-only mechanism cannot send.
+    // Its write half is `Refuses`: a correction naming the withheld edition is
+    // refused, like every `Refuses` entry, before either `if_match_hits` or
+    // `Sidecar::correct` runs, and the seeded row is unchanged. Its
+    // *response*-filtering half is proven separately just below, against a
+    // work with two visible editions — this fixture keeps only one, so a
+    // correction between two editions it may see cannot be expressed here.
+    // Proven here (and below) rather than in the generic `Refuses`/`Filters`
+    // loops above (all three explicitly skip this pattern) because a
+    // correction needs a body and `If-Match`, which their GET-only mechanism
+    // cannot send.
     let seeded_run = |conn: &rusqlite::Connection| -> (i64, i64, i64, i64) {
         conn.query_row(
             "SELECT a_start_page, a_end_page, b_start_page, b_end_page FROM run",
@@ -2582,8 +2493,8 @@ async fn every_route_declares_its_grant_posture() {
     );
     proven_filters.insert("/api/works/{work}/alignments");
 
-    // `/api/library/works/{slug}` — `library_api::work` already reused
-    // `browse::work`; this proves it, rather than merely trusting the read.
+    // `/api/library/works/{slug}` — `library_api::work` reuses `browse::work`;
+    // this proves it, rather than merely trusting the read.
     let library_work_response = split_router
         .clone()
         .oneshot(
@@ -2858,13 +2769,9 @@ async fn every_route_declares_its_grant_posture() {
             .expect("removes the withheld work");
     }
 
-    // `/opds/v1.2/works` names no edition at all — only a count. That count
-    // was `sidecar.editions.len()`, unfiltered by any round before Finding
-    // 2 (this branch's report), so a restricted reader learned how many
-    // editions a work held under a withheld root even though `opds::works`
-    // named none of them directly. Fixed to `browse::visible_editions` —
-    // the same bulk query `routes::list_works` already used for the
-    // identical `/api/works` question — and proven against exactly this
+    // `/opds/v1.2/works` names no edition at all — only a count, read through
+    // `browse::visible_editions` (the same bulk query `routes::list_works` uses
+    // for the identical `/api/works` question) and proven against exactly this
     // split shape in `opds::tests::
     // a_restricted_readers_works_list_counts_only_the_editions_they_may_see`
     // rather than re-driven here: a count is the one field this loop's
@@ -3006,11 +2913,8 @@ async fn every_route_declares_its_grant_posture() {
     }
 }
 
-/// **Finding 1's reproduction.** `refuse_if_work_hidden` answered only the
-/// *work*-level question — does `split` keep any edition under a granted
-/// root? Yes, `en` does — and `get_sidecar` then returned `found.sidecar()`
-/// unfiltered, every edition included. A reader granted only `en` learned
-/// the withheld `raw` edition's key, label, member path and `sha256`.
+/// **A reader granted only `en` learns nothing of the withheld `raw` edition
+/// from `get_sidecar`**: not its key, label, member path or `sha256`.
 #[tokio::test]
 async fn get_sidecar_names_only_visible_editions() {
     let tmp = crate::test_support::Fixture::new("sidecar-split-leak");
@@ -3054,11 +2958,8 @@ async fn get_sidecar_names_only_visible_editions() {
     );
 }
 
-/// **Finding 1's reproduction**, for the list route. `list_works` filtered
-/// by the now-removed `browse::visible_work_slugs` — work-level — and then
-/// reported every edition of each surviving work, including a cover URL built
-/// from `sidecar.hub` regardless of whether the hub itself was inside the
-/// grant.
+/// **The list route names only the granted edition, and builds no cover URL
+/// from the withheld one.**
 #[tokio::test]
 async fn list_works_names_only_visible_editions_and_cover() {
     let tmp = crate::test_support::Fixture::new("listworks-split-leak");
@@ -3093,18 +2994,11 @@ async fn list_works_names_only_visible_editions_and_cover() {
     );
 }
 
-/// **Finding 1's reproduction**, for the write itself rather than the
-/// response. The response-leak fix round put `patch_alignments` on the same
-/// work-level `visible_editions_or_refuse` helper `get_sidecar` uses and
-/// filtered what came back — a reader granted only `en` passed it (`split`
-/// keeps `en`), submitted a correction naming `raw` on either side, and got
-/// back a 200 whose *response* no longer named `raw`. The write itself was
-/// never asked: the correction was accepted and its rows landed in shared
-/// `alignment`/`run` state regardless, which every other reader of this
-/// work — including one who *can* see `raw` — is served from. Worse than a
-/// read leak, because a read leak costs only the caller who triggered it; an
-/// unauthorized write like this one costs every other reader a fact this
-/// caller had no standing to assert.
+/// **A correction naming a withheld edition is refused before it is written**,
+/// not merely filtered on the way back out. A reader granted only `en` (`split`
+/// keeps `en`) who submits a correction naming `raw` must get a 404, because an
+/// accepted correction lands in shared `alignment`/`run` state that every other
+/// reader of this work — including one who *can* see `raw` — is served from.
 #[tokio::test]
 async fn patch_alignments_refuses_a_correction_naming_a_withheld_edition() {
     let tmp = crate::test_support::Fixture::new("patch-write-leak");
@@ -3167,20 +3061,13 @@ async fn patch_alignments_refuses_a_correction_naming_a_withheld_edition() {
     );
 }
 
-/// **Finding 1** (verification pass, 2026-08-25): three properties on this
-/// path that every one of the 371 tests existing before this one passed
-/// without exercising. Each is proven below against
-/// `one_work_three_editions_hub_withheld` — see that fixture's own doc
-/// comment for why the two-edition split fixture cannot drive any of the
-/// three — in its own test rather than as three assertions of one, **so
-/// that one property failing cannot stop another from being checked at
-/// all**. They started as a single test; a later review (Finding 5, this
-/// branch's second report) found that shape meant a failure in (a) would
-/// abort the test before (b) or (c) ever ran, and (c) — the `from`-side
-/// write guard — has no other coverage anywhere. A regression there would
-/// have looked, from the suite's output, exactly like an unrelated ETag
-/// failure: one red test, not two, and the guard silently unproven. Split
-/// so each reports independently regardless of what the others do.
+/// Three properties on this path, each proven below against
+/// `one_work_three_editions_hub_withheld` — see that fixture's own doc comment
+/// for why the two-edition split fixture cannot drive any of the three — in its
+/// own test rather than as three assertions of one, **so that one property
+/// failing cannot stop another from being checked at all**: a failure in (a)
+/// would otherwise abort the test before (b) or (c) ever ran, and (c) — the
+/// `from`-side write guard — has no other coverage anywhere.
 ///
 /// (a) **The ETag is computed over the full, unfiltered document.** A
 /// restricted reader's own `GET` → `If-Match` → `PATCH` round trip — on two
@@ -3470,17 +3357,12 @@ fn a_principal_holds_every_dir_of_a_granted_library() {
 
 /// **No module answers the role question alone — O93.**
 ///
-/// `config_api`, `curation` and `metadata` each defined their own
-/// `admin_or_forbidden` reading `principal.role` and nothing else, and
-/// `users_api`/`backup_api` copied one. Three copies of a half-check is how
-/// the missing half went unnoticed through four whole-branch reviews: an
-/// administrator's API key reached every administrative route in the product,
-/// including `DELETE /api/library/roots/{id}`.
-///
-/// `session::administering_or_forbidden` is now the only function that answers
-/// "may this caller administer", and this test is what stops a fourth copy
-/// appearing. A grep rather than a request, deliberately: the defect was the
-/// *existence* of a second answer, which no single request can see.
+/// `session::administering_or_forbidden` is the only function that answers
+/// "may this caller administer": it refuses a device credential as well as a
+/// non-admin, which a copy reading `principal.role` alone would not. This test
+/// is what stops a second copy appearing. A grep rather than a request,
+/// deliberately: what it catches is the *existence* of a second answer, which
+/// no single request can see.
 #[test]
 fn no_module_answers_the_role_question_alone() {
     let sources = [
@@ -3510,37 +3392,14 @@ fn no_module_answers_the_role_question_alone() {
     }
 }
 
-/// **Every guarded route is driven with an API key, and the set that refuses
-/// one must be exactly the set declared here.**
-///
-/// Derived from [`crate::routes::guarded_routes`] rather than hand-typed, and
-/// that is the whole point. The first version of this test listed thirty-one
-/// paths by hand, and a companion counted `pub(crate) async fn` per module —
-/// between them they still had O93's own hole: a handler declared `pub async
-/// fn` was invisible to the count, and a **sixth administrative module** was
-/// invisible to both. O93 was five modules each looking fine on their own
-/// terms; a check that enumerates modules repeats the mistake it is for.
-///
-/// So the classification runs the other way. Every guarded route is driven
-/// with a real key; whichever answer the credential gate gives is observed,
-/// not assumed; and the result is compared for **set equality** with
-/// [`ADMINISTRATIVE`]. A new route that refuses a key without being listed
-/// fails here, and so does one that *stops* refusing — including a whole new
-/// module nobody thought to add to a list.
-///
-/// **A path parameter is filled with `1`, and the value does not matter.** The
-/// gate runs before any id is looked up, so an administrative route answers
-/// 403 for the credential whatever id it was handed, and a non-administrative
-/// one answers 401/404/whatever — never the credential refusal. That is what
-/// makes one substitution enough for every pattern.
 /// The one guarded route this test cannot classify, and why.
 ///
 /// `PUT /api/password` takes `Json<PasswordChange>`, and an extractor runs
 /// **before** the handler — so the `{}` body this test sends is rejected 422
 /// by `axum` and the credential gate is never reached. It is not an
 /// exemption: `session::tests::an_api_key_cannot_mint_keys_or_end_sessions`
-/// drives it with a real key and a real body, alongside `/api/keys` and
-/// `/api/sessions`, and has since spec A2's second whole-branch review.
+/// drives it with a real key and a real body, alongside `/api/keys`
+/// and `/api/sessions`.
 ///
 /// Listed rather than skipped silently, so a second route joining it is a
 /// deliberate act with a reason beside it.
@@ -3548,11 +3407,11 @@ const CLASSIFIED_ELSEWHERE: &[&str] = &["/api/password"];
 
 /// Every guarded route observed to refuse an API key.
 ///
-/// **Not "administrative"** — that was the first name and it was wrong. Spec
-/// A2's own self-service account routes refuse a device credential too, for a
-/// different reason (a key may not manage the account it belongs to), and
-/// naming the set after one of its two reasons invited leaving the other out.
-/// The invariant is about the answer, not the motive.
+/// **Not "administrative":** spec A2's own self-service account routes refuse
+/// a device credential too, for a different reason (a key may not manage the
+/// account it belongs to), and naming the set after one of its two reasons
+/// would invite leaving the other out. The invariant is about the answer, not
+/// the motive.
 const REFUSE_A_DEVICE_CREDENTIAL: &[&str] = &[
     "/api/keys",
     "/api/keys/{id}",
@@ -3589,25 +3448,41 @@ const REFUSE_A_DEVICE_CREDENTIAL: &[&str] = &[
     "/api/library/backups/{name}",
 ];
 
+/// **Every guarded route is driven with an API key, and the set that refuses
+/// one must be exactly the set declared here.**
+///
+/// Derived from [`crate::routes::guarded_routes`] rather than hand-typed or
+/// counted per module, and that is the whole point: a check that enumerates
+/// modules repeats the mistake O93 was — five modules each looking fine on
+/// their own terms.
 #[tokio::test]
 async fn exactly_the_declared_routes_refuse_an_api_key() {
     let (_router, state, _fixture) = crate::test_support::router_over_a_single_scanned_work();
     let router = crate::test_support::key_authenticating(crate::build_router(state.clone()));
 
+    // Every guarded route is driven with a real key; whichever answer the
+    // credential gate gives is observed, not assumed; and the result is
+    // compared for **set equality** with `REFUSE_A_DEVICE_CREDENTIAL`. A new
+    // route that refuses a key without being listed fails here, and so does one
+    // that *stops* refusing — including a whole new module nobody thought to
+    // add to a list.
     let mut refused: Vec<&'static str> = Vec::new();
     for (pattern, _) in crate::routes::guarded_routes() {
         if CLASSIFIED_ELSEWHERE.contains(&pattern) {
             continue;
         }
+        // **A path parameter is filled with `1`, and the value does not
+        // matter.** The gate runs before any id is looked up, so an
+        // administrative route answers 403 for the credential whatever id it
+        // was handed, and a non-administrative one answers 401/404/whatever —
+        // never the credential refusal. That is what makes one substitution
+        // enough for every pattern.
         let uri = pattern.replace("{slug}", "1").replace("{sid}", "1");
         let uri = regex_free_fill(&uri);
 
-        // **Every method this server registers, `PUT` included.** A first
-        // version tried only GET/POST/PATCH/DELETE, and `/api/password` — a
-        // `PUT`-only route that has refused a device credential since spec
-        // A2 — was therefore never reached and never classified. A route
+        // **Every method this server registers, `PUT` included.** A route
         // registered for only some methods answers 405 for the rest, which is
-        // not the credential refusal and so does not classify it either.
+        // not the credential refusal and so does not classify it.
         let mut saw_refusal = false;
         for method in ["GET", "POST", "PUT", "PATCH", "DELETE"] {
             let response = router
@@ -3681,10 +3556,8 @@ fn regex_free_fill(pattern: &str) -> String {
 /// stamp names one work and either happens or does not. Spec C3 §6/§7 and
 /// `docs/superpowers/specs/2026-09-07-comicinfo-write-back-design.md` §1.1.
 ///
-/// A comment claiming a guard that does not exist is O95's third-pass shape
-/// and #111's second finding. This test is what stops a third instance: the
-/// three assertions below fail in opposite directions, so a change that folds
-/// `can_stamp` in alongside the others cannot satisfy all three.
+/// The three assertions below fail in opposite directions, so a change that
+/// folds `can_stamp` in alongside the others cannot satisfy all three.
 #[test]
 fn an_administrator_does_not_inherit_can_stamp() {
     let account = taiyaku_library::account::Account {
@@ -3739,51 +3612,32 @@ fn a_reader_may_stamp_only_when_the_column_says_so() {
 }
 
 /// **`auth::guard` resolves a request behind `spawn_blocking`, not on the async
-/// worker** — which is what this test observes, and not what it was named for.
+/// worker** — which is what this test observes.
 ///
-/// ***Named `routes::tests::a_progress_read_does_not_stall_the_runtime` until
-/// O71 closed, 2026-09-14, and moved here then with its body unchanged but for
-/// its failure message.*** Its request passes this middleware first, and the
-/// guard's own `spawn_blocking` takes the mutex wait onto a blocking thread, so
-/// the canary runs and the watchdog lets go before `get_progress` touches
-/// SQLite. Measured both ways (`docs/notes.md`, "O71"): with `get_progress`'s
-/// closure moved onto the async worker, the whole workspace passed, this test
-/// included; with the guard's resolution moved there instead, this was the one
-/// test in the workspace that failed. It is kept for that. Whether each handler
+/// Its request passes this middleware first, and the guard's own
+/// `spawn_blocking` takes the mutex wait onto a blocking thread, so the canary
+/// runs and the watchdog lets go before `get_progress` touches SQLite. The test
+/// fails if the guard's resolution moves onto the async worker, and not if only
+/// `get_progress`'s closure does (`docs/notes.md`, "O71"). Whether each handler
 /// does its own work off the async worker is
 /// `routes::tests::no_works_route_stalls_the_runtime`, which calls them
 /// directly. **Do not model a handler's stall test on this one.**
 ///
-/// The paragraphs below are the test's own, kept as written and marked where
-/// O71 found them wrong.
+/// `Library::conn()` returns a `MutexGuard<'_, Connection>` from a
+/// `Mutex<Connection>` (`taiyaku-library/src/lib.rs`): a lock a spawned thread
+/// can hold for a controlled span, and any handler that calls `library.conn()`
+/// inside its `spawn_blocking` closure blocks on it for as long as the guard is
+/// held. `get_progress` does exactly that (`crate::progress::load` →
+/// `library.conn()`), so the mutex serves as the controlled block.
 ///
-/// Restores `a_progress_read_does_not_stall_the_runtime`, removed when Task
-/// 13 moved progress off files and onto `taiyaku-library`'s SQLite
-/// connection, on the premise — recorded then, and wrong — that "an
-/// in-memory SQLite call has no comparable primitive to block a thread on
-/// for a controlled duration." `Library::conn()` returns a
-/// `MutexGuard<'_, Connection>` from a `Mutex<Connection>`
-/// (`taiyaku-library/src/lib.rs`): a lock a spawned thread can hold for a
-/// controlled span exactly as the old test held a FIFO open, and any
-/// handler that calls `library.conn()` inside its `spawn_blocking` closure
-/// blocks on it for as long as the guard is held. `get_progress` does
-/// exactly that (`crate::progress::load` → `library.conn()`), so this is
-/// O8's failure class — a blocking call inside an async handler stalling
-/// the reactor — proven on the same code path, with the mutex standing in
-/// for the FIFO as the controlled block. *(Not on that path: the guard frees
-/// the reactor before `get_progress` runs — O71, above.)*
-///
-/// **The block's release is gated on the canary, not a fixed sleep.** A
-/// fixed sleep shorter than the watchdog's own deadline would let an
-/// unwrapped handler's block happen to end before the deadline fires,
-/// passing for the wrong reason — the same trap a fixed duration would set
-/// here that the old FIFO test avoided by having its own watchdog decide
-/// when to open the FIFO. Here the watchdog thread is the one holding
-/// `library.conn()`: it waits for the canary or half a second, whichever
-/// comes first, and only then drops the guard — so how long the block
-/// actually lasts is decided by whether the reactor was ever free to run
-/// anything else, which is the property under test, rather than by a
-/// duration picked in advance.
+/// **The block's release is gated on the canary, not a fixed sleep.** A fixed
+/// sleep shorter than the watchdog's own deadline would let an unwrapped
+/// handler's block happen to end before the deadline fires, passing for the
+/// wrong reason. Here the watchdog thread is the one holding `library.conn()`:
+/// it waits for the canary or half a second, whichever comes first, and only
+/// then drops the guard — so how long the block actually lasts is decided by
+/// whether the reactor was ever free to run anything else, which is the
+/// property under test, rather than by a duration picked in advance.
 #[tokio::test(flavor = "current_thread")]
 async fn the_guard_does_not_stall_the_runtime() {
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -3819,8 +3673,7 @@ async fn the_guard_does_not_stall_the_runtime() {
                 .send(())
                 .expect("the test thread is still waiting on this channel");
             // Half a second for a task on an idle runtime to be polled
-            // once. Passing costs the first 10 ms of it; only a failure
-            // waits the whole way out.
+            // once. Only a failure waits the whole way out.
             let mut waited = 0;
             while !canary_ran.load(Ordering::SeqCst) && waited < 50 {
                 std::thread::sleep(std::time::Duration::from_millis(10));

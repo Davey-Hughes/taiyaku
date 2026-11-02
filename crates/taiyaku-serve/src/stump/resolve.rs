@@ -1,15 +1,13 @@
 //! Deciding which Stump book a sidecar member is, and proving it.
 //!
 //! Matching on name and size alone would be wrong on exactly the material this
-//! corpus was built to hold — deliberate duplicate sets, and at least two files
-//! that are not what their names claim. So a match is a candidate, and the
-//! candidate is confirmed by comparing the SHA-256 of one page fetched through
-//! each source.
+//! corpus was built to hold — deliberate duplicate sets, and files that are
+//! not what their names claim. So a match is a candidate, and the candidate is
+//! confirmed by comparing the SHA-256 of one page fetched through each source.
 //!
-//! One page rather than the whole file: about 1 MB against 335 MB for this
-//! volume, on a corpus with 430 MB pages — and it confirms the property that
-//! actually matters, which is that page N agrees, rather than that two files
-//! resemble each other.
+//! One page rather than the whole file, which is far larger — and it confirms
+//! the property that actually matters, which is that page N agrees, rather
+//! than that two files resemble each other.
 
 use std::fmt::Write as _;
 
@@ -23,7 +21,7 @@ use crate::{LocalLibrary, PageSource};
 fn digest(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
-    // Not `format!("{:x}", …)`: `digest` 0.11's `Output` no longer implements
+    // Not `format!("{:x}", …)`: `digest` 0.11's `Output` does not implement
     // `LowerHex`, matching the byte-by-byte formatting `taiyaku_read` already
     // uses for the same reason.
     hasher.finalize().iter().fold(String::new(), |mut hex, b| {
@@ -34,12 +32,12 @@ fn digest(bytes: &[u8]) -> String {
 
 /// What resolving one work against Stump produced.
 ///
-/// Split from a bare `Resolutions` so the caller in `serve()` can tell "every
-/// member got an answer, absence included" apart from "a transport failure
-/// cut this run short" — which is exactly what it needs to decide whether
-/// trying the *next* work is worth another 30-second timeout, or whether the
-/// instance is simply unreachable and every remaining work should be skipped
-/// without asking at all.
+/// Split from a bare `Resolutions` so `resolve_all_works` can tell "every
+/// member got an answer, absence included" apart from "a transport failure cut
+/// this run short" — which is exactly what it needs to decide whether trying
+/// the *next* work is worth another 30-second timeout, or whether the instance
+/// is simply unreachable and every remaining work should be skipped without
+/// asking at all.
 #[derive(Debug)]
 pub struct Resolved {
     pub resolutions: Resolutions,
@@ -93,13 +91,10 @@ impl From<api::StumpError> for ResolveError {
 /// or `Transport::get_bytes` itself failing means the instance is
 /// unreachable, and that is what abandons the rest of this run's unresolved
 /// members — against an unreachable Stump that is one failed lookup at
-/// startup instead of one per member, which on a large library is minutes of
-/// `ureq` timeouts before the listener binds. Members never attempted stay
-/// absent from the map exactly like a member that was attempted and refused,
-/// so the next start retries all of them; nothing here changes what gets
-/// retried, only how much of one run is spent finding out — and, before this
-/// fix, a single semantic refusal anywhere in a work silently degraded that
-/// entire work to local-only, forever, on every start.
+/// startup instead of one per member. Members never attempted stay absent
+/// from the map exactly like a member that was attempted and refused, so the
+/// next start retries all of them; nothing here changes what gets retried,
+/// only how much of one run is spent finding out.
 ///
 /// `report` is called once per member that actually has to be asked about,
 /// with its path, its position among those members and how many there are —
@@ -192,9 +187,7 @@ pub fn resolve_work(
         // Not `?`. The cache is derived data — `load` already treats every
         // read failure as "resolve again" — so a full disk or a read-only
         // library directory must not refuse to serve a work that reads
-        // perfectly from disk without Stump at all. This function's caller
-        // runs before the listener binds, so propagating here would abort
-        // startup for every work rather than slow one of them down.
+        // perfectly from disk without Stump at all.
         if let Err(why) = cache::store(work, base, &resolutions) {
             eprintln!(
                 "taiyaku: could not remember stump resolutions for {}: {why}",

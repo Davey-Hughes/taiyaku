@@ -4,7 +4,7 @@ use crate::stump::http::test_support::FakeTransport;
 /// The candidate query the design settled on: name, size and page count in
 /// one filter rather than three round trips or a client-side scan.
 ///
-/// `Media.name` is the file **stem** — measured on the live instance as
+/// `Media.name` is the file **stem**, for example
 /// `Go-Toubun no Hanayome - v01 (2018)`, with no `.cbz`. Sending the full
 /// basename matches nothing, every time, which is a failure that looks
 /// exactly like "Stump does not have this file".
@@ -70,9 +70,9 @@ fn a_member_stump_does_not_have_is_absent_rather_than_an_error() {
 /// wrong-page failure this whole confirmation scheme exists to prevent.
 /// The corpus holds deliberate duplicate sets, so this is reachable.
 ///
-/// Important 2 (whole-branch review): Stump answering ambiguously is a
-/// refusal, not an outage — `resolve_work`'s circuit breaker may only
-/// abandon a run on `transport: true`, so this must be `false`.
+/// Stump answering ambiguously is a refusal, not an outage — `resolve_work`'s
+/// circuit breaker may only abandon a run on `transport: true`, so this must
+/// be `false`.
 #[test]
 fn two_candidates_are_refused_rather_than_guessed_between() {
     let reply = r#"{"data":{"media":{"nodes":[
@@ -128,10 +128,9 @@ fn a_lone_match_with_the_wrong_name_is_refused() {
     );
 }
 
-/// The same guard, tripped by `size` instead of `name` — the case the
-/// review called out specifically: `Book.size` is `i64` and the `size`
-/// parameter is `u64`, so the comparison has to be exact rather than a
-/// lossy cast that could make a mismatch look like a match.
+/// The same guard, tripped by `size` instead of `name`: `Book.size` is `i64`
+/// and the `size` parameter is `u64`, so the comparison has to be exact rather
+/// than a lossy cast that could make a mismatch look like a match.
 #[test]
 fn a_lone_match_with_the_wrong_size_is_refused() {
     let reply = r#"{"data":{"media":{"nodes":[
@@ -157,10 +156,10 @@ fn a_lone_match_with_the_wrong_size_is_refused() {
 /// the status reads an error document as an empty result — and a work
 /// silently loses its Stump half.
 ///
-/// Important 2: a GraphQL error body is Stump answering — the request
-/// reached the instance and it replied — so `resolve_work`'s circuit
-/// breaker must not treat it as an outage. A member above ~2.1 GB
-/// hitting `$size: Int!`'s 32-bit ceiling arrives exactly this way.
+/// A GraphQL error body is Stump answering — the request reached the instance
+/// and it replied — so `resolve_work`'s circuit breaker must not treat it as
+/// an outage. A member above ~2.1 GB hitting `$size: Int!`'s 32-bit ceiling
+/// arrives exactly this way.
 #[test]
 fn a_graphql_error_is_a_failure_even_though_the_status_was_200() {
     let reply = r#"{"data":null,"errors":[{"message":"Unknown field \"pages\""}]}"#;
@@ -197,10 +196,9 @@ fn a_transport_level_failure_is_marked_as_one() {
     );
 }
 
-/// taiyaku is 0-based and Stump is 1-based. This is one of exactly two
-/// places in the codebase where that conversion happens, and getting it
-/// wrong shows a reader the wrong page while every hash and count in the
-/// sidecar still matches.
+/// taiyaku is 0-based and Stump is 1-based. `page_bytes` is where that
+/// conversion happens, and getting it wrong shows a reader the wrong page
+/// while every hash and count in the sidecar still matches.
 ///
 /// Two calls, not one: a test that only ever passed `0` and checked for
 /// `page/1` would pass identically whether `page_bytes` added one,

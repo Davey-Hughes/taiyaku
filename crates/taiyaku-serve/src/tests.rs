@@ -1,11 +1,10 @@
 use super::StumpConfig;
 
-/// Minor 4 (whole-branch review): `UreqTransport::new` already trims a
-/// trailing slash for the transport; the resolution cache key has to
-/// agree, or `https://nas:10801/` and `https://nas:10801` are one
-/// instance to every request and two to the cache — silently discarding
-/// every prior resolution the first time someone happens to type the
-/// slash.
+/// `UreqTransport::new` trims a trailing slash for the transport; the
+/// resolution cache key has to agree, or `https://nas:10801/` and
+/// `https://nas:10801` are one instance to every request and two to the cache
+/// — silently discarding every prior resolution the first time someone happens
+/// to type the slash.
 #[test]
 fn a_trailing_slash_is_trimmed_once_at_construction() {
     let with_slash = StumpConfig::new("https://nas:10801/", "key");
@@ -77,11 +76,10 @@ fn refreshing_forgets_every_work_and_tolerates_one_with_nothing_recorded() {
     assert!(still_absent, "and the one that never had one is untouched");
 }
 
-/// The claim the loop makes in its own doc comment, which was correct by
-/// inspection only: one work whose file cannot be removed must not stop
-/// the works after it. A library is served from several sidecars and one
-/// read-only directory among them must not silently leave every later
-/// work still believing a stale resolution.
+/// One work whose file cannot be removed must not stop the works after it.
+/// A library is served from several sidecars and one read-only directory
+/// among them must not silently leave every later work still believing a
+/// stale resolution.
 ///
 /// Staged by taking write permission off one work's *directory*, since on
 /// Unix that is what governs deleting a file within it. Under root, or a
@@ -141,11 +139,9 @@ fn one_work_that_cannot_be_forgotten_does_not_stop_the_others() {
 /// O8: resolution reports each work as it finishes rather than handing
 /// back one aggregate at the end.
 ///
-/// Binding the listener first is only half the fix. If every work's
-/// answers arrived together, a twenty-work library would still serve all
-/// twenty from disk until the twentieth had been asked about — the wait
-/// moved behind the listener rather than removed. Reporting per work makes
-/// the first work usable while the last is still being resolved.
+/// If every work's answers arrived together, a twenty-work library would serve
+/// all twenty from disk until the twentieth had been asked about. Reporting per
+/// work makes the first work usable while the last is still being resolved.
 #[test]
 fn each_work_is_learned_as_it_finishes_rather_than_all_at_the_end() {
     use crate::stump::http::test_support::FakeTransport;
@@ -184,11 +180,10 @@ fn each_work_is_learned_as_it_finishes_rather_than_all_at_the_end() {
     assert_eq!(batches[1], vec!["bravo-sha".to_string()]);
 }
 
-/// Important 3 (whole-branch review): the circuit breaker must span
-/// works, not stop at the boundary of the first one. Against an
-/// unreachable instance, the second work's member must never be asked
-/// about at all — proven by asserting on the fake's recorded requests,
-/// not merely on what was learned.
+/// The circuit breaker must span works, not stop at the boundary of the first
+/// one. Against an unreachable instance, the second work's member must never
+/// be asked about at all — proven by asserting on the fake's recorded
+/// requests, not merely on what was learned.
 #[test]
 fn resolve_all_works_stops_asking_after_the_first_transport_failure() {
     use crate::stump::http::test_support::FakeTransport;
@@ -231,9 +226,9 @@ fn resolve_all_works_stops_asking_after_the_first_transport_failure() {
 /// The tile cache is a *sibling* of the cover cache, not the same
 /// directory and not a child of it — the arrangement `thumb_cache_dir`'s
 /// own doc comment argues for, on the grounds that only one of the two is
-/// cheap to rebuild, and which nothing checked. `thumb_cache_dir` could
-/// return `PathBuf::default()`, the empty path, and every tile in every
-/// library would share one directory in the process's working directory.
+/// cheap to rebuild. `thumb_cache_dir` could return `PathBuf::default()`,
+/// the empty path, and every tile in every library would share one directory
+/// in the process's working directory.
 #[test]
 fn the_tile_cache_is_a_sibling_of_the_cover_cache() {
     let tmp = crate::test_support::Fixture::new("thumb-dir");
@@ -254,18 +249,14 @@ fn the_tile_cache_is_a_sibling_of_the_cover_cache() {
     );
 }
 
-/// The sibling invariant above, re-asserted at a *resolved* root rather
-/// than assumed to survive the move off the relative path. The two are
-/// different claims: that one holds `cache_dir` fixed from the fixture,
-/// this one takes whatever `cache_root` produced and checks the tiles
-/// still land beside the covers and inside the application's directory.
+/// The sibling invariant above, re-asserted at a *resolved* root. The two are
+/// different claims: that one holds `cache_dir` fixed from the fixture, this
+/// one takes whatever `cache_root` produced and checks the tiles still land
+/// beside the covers and inside the application's directory.
 ///
-/// Minor 7 (whole-branch review): it used to build the shared two-member
-/// cbz fixture on disk — four zip entries and a sidecar — to assert a
-/// derivation that touches no file at all. The work is what the claim
-/// never needed, so it is an empty `Vec` here; the archives are still
-/// built, and the paths still exercised against real bytes, by
-/// `serve_caches_covers_and_tiles_under_the_resolved_root` below.
+/// The derivation touches no file at all, so the work is an empty `Vec` here;
+/// a work's archives are built, and the paths exercised against real bytes,
+/// by `serve_caches_covers_and_tiles_under_the_resolved_root` below.
 #[test]
 fn a_resolved_root_keeps_covers_and_thumbs_as_siblings() {
     let state = crate::ServeState {
@@ -318,12 +309,8 @@ fn a_fixture_removes_its_directory_when_it_is_dropped() {
     );
 }
 
-/// **And it removes it when the scope unwinds**, which is the case that
-/// was actually leaking: a panicking test never reaches a cleanup line,
-/// so the fixtures a failing run left behind were exactly the ones nobody
-/// went back for. 9,147 directories of one prefix and 1,772 of another
-/// had accumulated under `/tmp` — 106 MB, 32,427 inodes — before this
-/// existed.
+/// **And it removes it when the scope unwinds**, since a panicking test never
+/// reaches a cleanup line.
 ///
 /// `catch_unwind` rather than `#[should_panic]`, because the assertion
 /// has to run *after* the unwind rather than being the thing that panics.
@@ -382,13 +369,10 @@ fn the_skipping_notice_counts_only_the_works_actually_left() {
 /// `serve` actually binds and answers.
 ///
 /// The one thing in this crate that opens a socket, and so — by the design
-/// its own doc comment states — the one thing every other test avoids
-/// driving. The cost of that is that `serve` could be replaced wholesale by
-/// `Ok(())`, starting no server at all, with every other test in the crate
-/// at the time green. A composition root nothing composes is worth exactly
-/// one test — two, since
-/// `serve_caches_covers_and_tiles_under_the_resolved_root` below found the
-/// second thing about this function that only a socket can observe.
+/// its own doc comment states — the one thing a `oneshot` router test
+/// cannot drive. `serve_caches_covers_and_tiles_under_the_resolved_root`
+/// below covers the second thing about this function that only a socket
+/// can observe.
 ///
 /// The port is taken by binding and releasing, which is racy in principle;
 /// the poll below is what makes it deterministic in practice, and a genuine
@@ -397,8 +381,7 @@ fn the_skipping_notice_counts_only_the_works_actually_left() {
 /// **`multi_thread` is required, not stylistic.** `ureq` is a blocking
 /// client — deliberately, per `stump::http`'s doc — so polling with it on
 /// the default current-thread runtime blocks the very runtime that is
-/// supposed to be driving `serve`, and the test deadlocks rather than
-/// failing. Written the obvious way first, and it hung.
+/// supposed to be driving `serve`, and the test deadlocks rather than failing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn serve_binds_the_address_and_answers_on_it() {
     let tmp = crate::test_support::Fixture::new("serve-bind");
@@ -515,36 +498,27 @@ async fn serve_serves_the_web_app_it_is_given() {
     assert!(body.contains("the app"), "{body}");
 }
 
-/// Important 2 (whole-branch review): `serve` builds its `ServeState` from
-/// the *resolved* root, and generated files really land under it.
+/// `serve` builds its `ServeState` from the *resolved* root, and generated
+/// files really land under it.
 ///
-/// This is the whole subject of the branch, and until this test nothing
-/// observed it. Replacing `cache_dir: resolved.covers()` with the old
-/// `PathBuf::from(".taiyaku-cache/covers")` — leaving `resolved` in place
-/// so the notice still compiles — leaves every other test in the workspace
-/// green, and this one is the only failure: the sibling tests assign
-/// `cache_dir` themselves, and the bind test asks for `/api/works`, which
-/// writes nothing. Confirmed by making that mutation rather than by
-/// reasoning about it.
-///
-/// So it goes through a socket rather than a `oneshot` router. `serve` is
-/// where the resolution meets the state, and a test that builds the state
-/// itself cannot see that line at all.
+/// The sibling tests assign `cache_dir` themselves, and the bind test asks for
+/// `/api/works`, which writes nothing. This one goes through a socket rather
+/// than a `oneshot` router: `serve` is where the resolution meets the state,
+/// and a test that builds the state itself cannot see that line at all.
 ///
 /// **Both leaves, not just the covers.** A cover exercises `cache_dir`
-/// directly and a tile exercises `thumb_cache_dir`, which is derived from
-/// it — so this also pins the sibling arrangement against a root that was
-/// resolved rather than typed into a fixture, with real bytes on both
-/// sides.
+/// directly and a tile exercises `thumb_cache_dir`, which is derived from it —
+/// so this also pins the sibling arrangement against a root that was resolved
+/// rather than typed into a fixture, with real bytes on both sides.
 ///
 /// The fixture's pages are real PNGs (`work_with_real_pages`) because both
 /// routes decode: the shared two-member fixture's "jpegs" are their own
 /// filenames, and every request here would 404 on the decode instead of
 /// writing anything.
 ///
-/// It also carries Important 5's other half — that `serve` *creates* the
-/// root rather than leaving the first request to — which is checkable only
-/// from here, before any request that would create it in passing.
+/// It also checks that `serve` *creates* the root rather than leaving the
+/// first request to, which is checkable only from here, before any request
+/// that would create it in passing.
 ///
 /// `multi_thread` and the poll are `serve_binds_the_address_and_answers_on_it`'s,
 /// for its reasons.
@@ -632,9 +606,8 @@ async fn serve_caches_covers_and_tiles_under_the_resolved_root() {
         .map_err(|e| e.to_string());
 
     // Read before the assertions, so a failing one still leaves no server
-    // running. The temp tree is `fixture`'s business now: it goes when
-    // this function returns *or* unwinds, which is what makes a failing
-    // assertion stop leaking it.
+    // running. The temp tree is `fixture`'s business: it goes when this
+    // function returns *or* unwinds, so a failing assertion does not leak it.
     let expected_cover = crate::cover::cache_path(&cache.join("covers"), &sha);
     let expected_tile = crate::cover::thumb_cache_path(
         &cache.join("thumbs"),

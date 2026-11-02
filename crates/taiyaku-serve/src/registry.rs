@@ -1,12 +1,12 @@
 //! The works a server serves, kept in step with the library it serves them
 //! from.
 //!
-//! **Why this is not a `Vec<Work>` built once.** It was, until Part A of
-//! `docs/superpowers/specs/2026-10-04-day-to-day-deployment-design.md`. Every
-//! `/api/library/*` route read the database and saw a scan the moment it
-//! committed, while `/api/works`, the reader's routes and OPDS read a list
-//! built at startup. So a volume a scan had just derived was listed by the
-//! library and refused by the reader until the process restarted.
+//! **Why this is not a `Vec<Work>` built once.** `/api/works`, the reader's
+//! routes and OPDS read the registry, while every `/api/library/*` route reads
+//! the database and sees a scan the moment it commits. A list built at startup
+//! would leave a volume a scan had just derived listed by the library and
+//! refused by the reader until the process restarted (Part A
+//! of `docs/superpowers/specs/2026-10-04-day-to-day-deployment-design.md`).
 //!
 //! **How it knows the library moved.** Migration 14 keeps a counter that
 //! triggers bump on every write to a table a `Work` is projected from

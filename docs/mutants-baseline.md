@@ -1164,7 +1164,7 @@ it mutates only changed code and takes minutes.
 
 ### `crates/taiyaku-serve/src/auth.rs`
 
-- `crates/taiyaku-serve/src/auth.rs:284:12: delete ! in client_of`
+- `crates/taiyaku-serve/src/auth.rs:276:12: delete ! in client_of`
   The `!said.swap(true, Ordering::Relaxed)` that makes each `X-Forwarded-For`
   warning print once per process, `said` being one of two statics, one per case.
   Deleting the `!` inverts which call prints, and no in-process test can see it:
@@ -1176,7 +1176,7 @@ it mutates only changed code and takes minutes.
   `auth::tests::the_forwarded_warning_fires_only_when_a_header_is_being_ignored`
   covers it. What is left is the once-ness, which is the part that is genuinely
   about the process rather than about the request.
-- `crates/taiyaku-serve/src/auth.rs:812:26: replace || with && in from_basic`
+- `crates/taiyaku-serve/src/auth.rs:781:26: replace || with && in from_basic`
   **Equivalent in practice, and it is worth saying why rather than asserting it.**
   The expression is `pair.is_err() || address.is_err()` over two
   `account::note_failure` calls made back to back on one connection, against one
@@ -1196,7 +1196,7 @@ it mutates only changed code and takes minutes.
   It stops being equivalent if the two counters ever move to different tables or
   different connections. `session::tests::a_failure_the_limiter_cannot_record_is_answered_as_a_lockout`
   and its `Basic` twin cover the case where both fail.
-- `crates/taiyaku-serve/src/auth.rs:828:26: replace || with && in from_basic`
+- `crates/taiyaku-serve/src/auth.rs:797:26: replace || with && in from_basic`
   **Equivalent in practice, and it is worth saying why rather than asserting it.**
   The expression is `pair.is_err() || address.is_err()` over two
   `account::note_failure` calls made back to back on one connection, against one
@@ -1219,7 +1219,7 @@ it mutates only changed code and takes minutes.
 
 ### `crates/taiyaku-serve/src/lib.rs`
 
-- `crates/taiyaku-serve/src/lib.rs:568:8: delete ! in serve`
+- `crates/taiyaku-serve/src/lib.rs:545:8: delete ! in serve`
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
@@ -1228,7 +1228,7 @@ it mutates only changed code and takes minutes.
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
   nobody asserts on, or a missing assertion. Only the third is work on the tests.
-- `crates/taiyaku-serve/src/lib.rs:569:88: delete ! in serve`
+- `crates/taiyaku-serve/src/lib.rs:546:88: delete ! in serve`
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
@@ -1237,7 +1237,7 @@ it mutates only changed code and takes minutes.
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
   nobody asserts on, or a missing assertion. Only the third is work on the tests.
-- `crates/taiyaku-serve/src/lib.rs:569:9: replace && with || in serve`
+- `crates/taiyaku-serve/src/lib.rs:546:9: replace && with || in serve`
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
@@ -1246,7 +1246,7 @@ it mutates only changed code and takes minutes.
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
   nobody asserts on, or a missing assertion. Only the third is work on the tests.
-- `crates/taiyaku-serve/src/lib.rs:586:13: delete match arm Ok(true) in serve`
+- `crates/taiyaku-serve/src/lib.rs:562:13: delete match arm Ok(true) in serve`
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
@@ -1274,7 +1274,7 @@ it mutates only changed code and takes minutes.
 
 ### `crates/taiyaku-serve/src/routes.rs`
 
-- `crates/taiyaku-serve/src/routes.rs:1202:9: replace <impl IntoResponse for NoPrincipal>::into_response -> Response with Default::default()`
+- `crates/taiyaku-serve/src/routes.rs:1170:9: replace <impl IntoResponse for NoPrincipal>::into_response -> Response with Default::default()`
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
@@ -1286,7 +1286,7 @@ it mutates only changed code and takes minutes.
 
 ### `crates/taiyaku-serve/src/session.rs`
 
-- `crates/taiyaku-serve/src/session.rs:355:30: replace || with && in login`
+- `crates/taiyaku-serve/src/session.rs:541:30: replace || with && in login`
   **Equivalent in practice, and it is worth saying why rather than asserting it.**
   The expression is `pair.is_err() || address.is_err()` over two
   `account::note_failure` calls made back to back on one connection, against one
@@ -1306,7 +1306,7 @@ it mutates only changed code and takes minutes.
   It stops being equivalent if the two counters ever move to different tables or
   different connections. `session::tests::a_failure_the_limiter_cannot_record_is_answered_as_a_lockout`
   and its `Basic` twin cover the case where both fail.
-- `crates/taiyaku-serve/src/session.rs:371:30: replace || with && in login`
+- `crates/taiyaku-serve/src/session.rs:558:30: replace || with && in login`
   **Equivalent in practice, and it is worth saying why rather than asserting it.**
   The expression is `pair.is_err() || address.is_err()` over two
   `account::note_failure` calls made back to back on one connection, against one

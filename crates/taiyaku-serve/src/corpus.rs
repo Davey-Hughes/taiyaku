@@ -10,7 +10,7 @@
 //! **Absolute, if you run cargo directly.** cargo gives each package's test
 //! binary that package's own directory as its working directory, not the
 //! workspace root, so a relative `corpus` resolves under `crates/taiyaku-serve/`
-//! and finds nothing. Since O30 that fails loudly rather than skipping, but the
+//! and finds nothing. That fails loudly rather than skipping (O30), but the
 //! working invocation is:
 //!
 //! ```sh
@@ -56,21 +56,17 @@ fn slot_count(n: usize) -> u32 {
 /// The corpus root, or `None` when this machine does not have it.
 ///
 /// **Unset is an absence and skips; set-but-unusable is a mistake and fails.**
-/// O30. This one skipped differently from `taiyaku-cli`'s and so failed more
-/// quietly: it never looked at the path at all, and each check below then
-/// reported `<root>/gotoubun-v01/taiyaku.json absent — skipping`, which names a
-/// real path and reads like a corpus missing one volume. The cause was the
-/// working directory — cargo gives each package's test binary that package's
-/// own directory, so a relative `TAIYAKU_CORPUS=corpus` resolves under
+/// O30. Cargo gives each package's test binary that package's own directory,
+/// so a relative `TAIYAKU_CORPUS=corpus` resolves under
 /// `crates/taiyaku-serve/`.
 ///
-/// The `absent` skips below are kept: a corpus that genuinely lacks one volume
-/// is an absence, not a mistake. It is only the *root* that must be real.
+/// The `absent` skips below stay skips: a corpus that genuinely lacks one
+/// volume is an absence, not a mistake. Only the *root* must be real.
 ///
 /// Deliberately a second copy rather than shared with `taiyaku-cli`'s: both are
 /// `#[cfg(test)]` modules in different crates, and exporting test scaffolding
 /// across a crate boundary to save six lines costs more than it saves. The
-/// message is pinned by tests there, where nine of the twelve checks live.
+/// message is pinned by tests there.
 fn corpus_root() -> Option<PathBuf> {
     let value = std::env::var("TAIYAKU_CORPUS").ok()?;
     let root = PathBuf::from(&value);
@@ -160,9 +156,8 @@ fn every_page_the_server_serves_is_the_page_the_aligner_sequenced() {
 /// If they ever disagree, a swap shows a different page depending on where
 /// the server happened to get it, and nothing else notices.
 ///
-/// Byte-for-byte rather than by `dhash`: five pages were measured identical on
-/// 2026-07-31, so Stump does not transcode. If it ever starts, this is the
-/// test that says so.
+/// Byte-for-byte rather than by `dhash`: Stump does not transcode. If it ever
+/// starts, this is the test that says so.
 ///
 /// Gated on `TAIYAKU_CORPUS` **and** a reachable instance, because it is the
 /// only test in the suite that talks to one.
@@ -215,9 +210,8 @@ fn stump_and_local_serve_the_same_bytes_for_the_same_member() {
             // Three states, and only two of them are acceptable here.
             //
             // `Some(None)` is Stump answering that it has not got this member,
-            // which is expected and is the finding that shaped this milestone:
-            // Stump indexes the English releases and not the raws taiyaku
-            // aligns them against.
+            // which is expected: Stump indexes the English releases and not the
+            // raws taiyaku aligns them against.
             //
             // A **missing key** is not that. `resolve_work` inserts an entry
             // for every member it gets an answer about, and abandons the rest
@@ -272,9 +266,6 @@ fn stump_and_local_serve_the_same_bytes_for_the_same_member() {
 /// v01's `en-mono` joins seven spreads, so it has seven more slots than pages,
 /// and the last seven slots of it are anchors that only a slot-counting check
 /// accepts.
-///
-/// This is the check `docs/status.md` promises for every other subsystem and
-/// notes did not have.
 #[test]
 fn a_note_can_be_anchored_to_every_slot_of_every_real_edition() {
     let Some(root) = corpus_root() else {
@@ -339,7 +330,7 @@ fn a_note_can_be_anchored_to_every_slot_of_every_real_edition() {
     );
 }
 
-// --- Task 10: the download route against real material. ---
+// --- The download route against real material. ---
 //
 // Everything above reads pages through `ServeState::page`, never through
 // `/api/works/{slug}/{edition}/download` — so a bug specific to that route
@@ -347,10 +338,9 @@ fn a_note_can_be_anchored_to_every_slot_of_every_real_edition() {
 // invisible to every check above no matter how much real material they read.
 // The fixtures `download/tests.rs` otherwise runs against are two `Stored`
 // entries of six bytes apiece, written by the `zip` crate with default
-// options; this corpus is 11,431 `DEFLATE` entries out of 11,681, with pages
-// nested in per-chapter directories and archives up to 1.49 GB. Only a check
-// that actually walks the HTTP route over that material can say the rebuild
-// survives it.
+// options; this corpus is mostly `DEFLATE` entries, with pages nested in
+// per-chapter directories and very large archives. Only a check that actually
+// walks the HTTP route over that material can say the rebuild survives it.
 
 /// Sidecars this corpus holds, one per work directory that has one.
 ///
@@ -377,11 +367,8 @@ fn corpus_sidecars(root: &Path) -> Vec<PathBuf> {
 /// A `(router, slug, edition key, page count)` over the first corpus edition
 /// whose member count is at least `at_least.start` — scanned, not assumed.
 ///
-/// The multi-member check below was sketched against `gotoubun-v01`'s
-/// `en-fan` (seven chapter files); this is what confirms that guess rather
-/// than taking it on faith, and it is a `BTreeMap` (`Sidecar::editions`) over
-/// a sorted directory scan, so which edition it lands on is deterministic
-/// across runs.
+/// Which edition it lands on is deterministic across runs: `Sidecar::editions`
+/// is a `BTreeMap` and the directory scan is sorted.
 ///
 /// # Panics
 ///
@@ -431,11 +418,11 @@ fn a_corpus_edition_with_members(
     );
 }
 
-/// A `(router, slug, edition key, absolute path)` over the first corpus
-/// edition whose one member is a plain file — not a directory of loose page
-/// images, which several of this corpus's `raw-mono` editions are, and which
-/// `download::prepare`'s own `paths[0].is_file()` guard already routes away
-/// from passthrough. Scanned rather than assumed, for the same reason as
+/// A `(router, slug, edition key, absolute path)` over the first corpus edition
+/// whose one member is a plain file — not a directory of loose page images,
+/// which several of this corpus's `raw-mono` editions are, and which
+/// `download::passthrough_extension`'s `paths[0].is_file()` guard already
+/// routes away from passthrough. Scanned rather than taken on faith, like
 /// [`a_corpus_edition_with_members`] above.
 ///
 /// # Panics
@@ -497,8 +484,7 @@ async fn download(
 ///
 /// `usize::MAX` rather than `download::tests::all_of`'s 64 MiB cap: that
 /// limit exists for that module's fixtures, and would reject this module's
-/// largest real single-member edition (334 MB, `gotoubun-v01`'s `en-mono`,
-/// as of this writing) outright.
+/// largest real single-member edition outright.
 async fn all_of(response: axum::http::Response<axum::body::Body>) -> Vec<u8> {
     axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
@@ -510,16 +496,9 @@ async fn all_of(response: axum::http::Response<axum::body::Body>) -> Vec<u8> {
 /// page count the edition claims.
 ///
 /// The fixtures cannot reach this: they are `Stored` entries of six bytes,
-/// and 11,431 of this corpus's 11,681 entries are `DEFLATE`, so a bug in the
-/// inflate-then-`STORE` path would be invisible to every other test in this
-/// crate.
-///
-/// **Wall-clock, measured 2026-08-24 against `gotoubun-v01`'s `en-fan`** (7
-/// members, 235 pages, DEFLATE), three runs of `cargo test ... -- \
-/// --test-threads=1`: 1.02-1.03 s each. `.config/nextest.toml` justifies its
-/// 30 s slow mark against "nothing in the suite exceeds 0.75 s" — this is
-/// the one check in this crate that now does, by about a third of a second,
-/// well short of tripping the slow mark itself.
+/// and most of this corpus's entries are `DEFLATE`, so a bug in the
+/// inflate-then-`STORE` path would be invisible to every other test in
+/// this crate.
 #[tokio::test]
 async fn a_real_multi_member_edition_downloads_as_a_readable_cbz() {
     let Some(corpus) = corpus_root() else {
@@ -566,24 +545,11 @@ async fn a_real_multi_member_edition_downloads_as_a_readable_cbz() {
 
 /// A real single-member edition is served byte for byte.
 ///
-/// This is the check that fails if someone ever "improves" passthrough into
-/// a rebuild: `download::prepare`'s `single_file` branch exists precisely so
-/// a 300+ MB archive is streamed from disk rather than re-zipped, and no
-/// fixture is large enough to make the difference between the two show up in
-/// a `Content-Length` or a wall-clock.
-///
-/// **Wall-clock, measured 2026-08-24 against `gotoubun-v01`'s `en-mono`**
-/// (one 334,752,036-byte archive; no corpus edition reachable through a
-/// sidecar here reaches the corpus-wide 1.49 GB outlier, which sits in
-/// `corpus/incoming/` with no `taiyaku.json` of its own — see the report):
-/// three runs of `cargo test ... -- --test-threads=1`, 0.19 s each,
-/// faster than expected for a third-of-a-gigabyte file read twice (once by
-/// `std::fs::read`, once buffering the streamed response) — the filesystem
-/// cache from repeated corpus runs is doing real work here. Under
-/// `.config/nextest.toml`'s stated "nothing in the suite exceeds 0.75 s",
-/// but noted anyway: a cold-cache run, or a larger corpus volume, could push
-/// this well past that, and nobody should have to rediscover that by
-/// wondering why the corpus job got slow.
+/// This is the check that fails if someone ever "improves" passthrough into a
+/// rebuild: `download::prepare`'s `Shape::Passthrough` branch exists precisely
+/// so a large archive is streamed from disk rather than re-zipped, and no
+/// fixture is large enough to make the difference between the two show up in a
+/// `Content-Length` or a wall-clock.
 #[tokio::test]
 async fn a_real_single_member_edition_is_the_file_on_disk() {
     let Some(corpus) = corpus_root() else {

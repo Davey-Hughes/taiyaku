@@ -23,10 +23,9 @@ use crate::ServeState;
 /// One address range, as `--trusted-proxy` accepts it.
 ///
 /// **Written by hand rather than pulled in as a crate.** Prefix matching over
-/// `IpAddr` is thirty lines, and spec A2 names `argon2` as the one dependency it
-/// needs; a second for this would double that on a branch whose whole
-/// dependency claim is "one new crate". The same reasoning `opds::escape` and
-/// `opds::percent_encode` already record.
+/// `IpAddr` is thirty lines, and spec A2 names `argon2` as the one dependency
+/// it needs. The same reasoning `opds::escape` and `opds::percent_encode`
+/// already record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Cidr {
     base: std::net::IpAddr,
@@ -52,13 +51,12 @@ impl std::str::FromStr for Cidr {
             None => (text, None),
         };
         // **Canonicalised here, where the width is decided.** `contains`
-        // canonicalises too, and for one commit only it did — so
-        // `--trusted-proxy ::ffff:10.0.0.1` stored width 128 against a base that
-        // compares as four bytes, and the first request from any v4 peer
-        // panicked with `range end index 16 out of range for slice of length 4`.
-        // Startup succeeded, so the failure arrived as a dead server rather than
-        // a refused flag. The base and its width have to be decided on the same
-        // form. Found by the third whole-branch review.
+        // canonicalises too. The base and its width have to be decided on the
+        // same form: a width taken from `::ffff:10.0.0.1` as typed would be
+        // 128 against a base that compares as four bytes, and `prefix_matches`
+        // would slice past them and panic on the first request from any v4
+        // peer. Pinned by
+        // `auth::tests::a_mapped_v6_range_matches_the_v4_peer_it_names`.
         let base: std::net::IpAddr = address
             .parse::<std::net::IpAddr>()
             .map_err(|_| format!("`{text}`: `{address}` is not an IP address"))?
@@ -166,13 +164,10 @@ enum IgnoredForwarded {
 /// The warning for a request whose `X-Forwarded-For` is being ignored, and
 /// which case it is; `None` when nothing is being ignored.
 ///
-/// **Extracted from the `if` it used to be**, because it was a decision inside a
-/// `eprintln!` and nothing could assert on it: mutation testing replaced the
-/// `&&` with `||` on 2026-08-19 with every test still passing, which would have
-/// warned on every request from a client that sent no such header. The warning
-/// it guards is the one that tells an operator their rate limit is being applied
-/// to the proxy rather than to a reader — precisely the message that must not
-/// cry wolf.
+/// **Separate from the `eprintln!` that prints it**, because a decision inside
+/// an `eprintln!` cannot be asserted on. The warning it guards is the one that
+/// tells an operator their rate limit is being applied to the proxy rather than
+/// to a reader — precisely the message that must not cry wolf.
 ///
 /// **It names the peer it saw, in both cases.** A value for
 /// `TAIYAKU_TRUSTED_PROXY` that parses but is the wrong address stops the
@@ -265,13 +260,10 @@ pub(crate) fn client_of(
     // itself — but behind a proxy that is not named by `--trusted-proxy`, every
     // request arrives from the proxy's own address, so the pair collapses to the
     // account and any stranger can lock a named reader out of every device.
-    // Verified: ten wrong guesses at one account answered 429 to that account's
-    // correct password while another account was unaffected.
     //
     // Not silently trusted instead — that is §6's first row, and would let any
     // client spoof its address. Said once per case rather than per request,
-    // because a line per page turn is a line nobody reads. Found by the second
-    // whole-branch review.
+    // because a line per page turn is a line nobody reads.
     if let Some((case, text)) = ignored_forwarded_warning(forwarded.is_some(), peer, config) {
         static SAID_NO_PROXY: std::sync::atomic::AtomicBool =
             std::sync::atomic::AtomicBool::new(false);
@@ -305,19 +297,15 @@ pub enum Role {
 /// its hash for that reason, and the token that produced a session is not
 /// recoverable from the row it matched.
 ///
-/// `user_id` is read by the progress and notes routes, which is what replaced
-/// the two `LOCAL_USER = 1` constants, and `role` decides `admin` in `/api/me`.
+/// `user_id` is read by the progress and notes routes, and `role` decides
+/// `admin` in `/api/me`.
 ///
-/// **`can_download` and `can_stream` are reported by `/api/me` and, since
-/// spec C2, gate a route each** — `routes::refuse_if_cannot_download` reads
-/// the first for the two download routes, `refuse_if_cannot_stream` reads the
+/// **`can_download` and `can_stream` are reported by `/api/me` and, per spec
+/// C2, gate a route each** — `routes::refuse_if_cannot_download` reads the
+/// first for the two download routes, `refuse_if_cannot_stream` reads the
 /// second for `/pages` and the OPDS PSE stream, and neither gates a thumbnail,
 /// a cover or any browse route, because a download-only account must still be
-/// able to see its shelf. Both default to 1 (`schema/004_auth.sql:18`), so
-/// nothing changed for any existing account the day this shipped, and nothing
-/// can set either to 0 outside a fixture until spec C4's user administration.
-/// O54 is closed: this pair was its open half, and the grant was the half C1
-/// closed first.
+/// able to see its shelf. Both default to 1 (`schema/004_auth.sql:18`).
 #[derive(Debug, Clone)]
 pub struct Principal {
     pub user_id: i64,
@@ -360,14 +348,12 @@ pub struct Principal {
     ///
     /// Spec C3 §6/§7 and
     /// `docs/superpowers/specs/2026-09-07-comicinfo-write-back-design.md`
-    /// §1.1. Defaults to 0 (`schema/013_can_stamp.sql`), so no account in any
-    /// existing library gained it on the upgrade that added the column —
-    /// including the administrator who ran the upgrade.
+    /// §1.1. Defaults to 0 (`schema/013_can_stamp.sql`), an administrator's
+    /// account included.
     ///
     /// Pinned by `auth::tests::an_administrator_does_not_inherit_can_stamp`,
     /// which asserts the other two ARE inherited in the same breath, so this
-    /// comment cannot drift from the code the way O95's third pass found
-    /// twice.
+    /// comment cannot drift from the code.
     pub can_stamp: bool,
 }
 
@@ -469,15 +455,12 @@ fn refuse(path: &str) -> Response {
 /// **Resolution happens inside `spawn_blocking`**, for the same reason every
 /// handler in `routes.rs` does: it reads SQLite through `state.library`, whose
 /// `conn()` is a `MutexGuard`, and a password additionally waits for a verify
-/// permit (O57) and costs an argon2 verify measured at 11.9 ms. Doing any of
-/// it on the async worker stalls that whole tokio worker, and on a
-/// `current_thread` runtime the whole runtime — which
-/// `auth::tests::the_guard_does_not_stall_the_runtime` asserts (named
-/// `routes::tests::a_progress_read_does_not_stall_the_runtime` until O71,
-/// which found that the guard, not a progress read, is what it sees), and
-/// which it caught this middleware doing when the guard was first written. A
-/// guard is the one piece of middleware every request passes through, so it is
-/// the worst possible place to block.
+/// permit (O57) and costs an argon2 verify. Doing any of it on the async
+/// worker stalls that whole tokio worker, and on a `current_thread` runtime
+/// the whole runtime — which
+/// `auth::tests::the_guard_does_not_stall_the_runtime` asserts. A guard is the
+/// one piece of middleware every request passes through, so it is the worst
+/// possible place to block.
 pub(crate) async fn guard(
     State(state): State<Arc<ServeState>>,
     request: Request,
@@ -509,10 +492,8 @@ pub(crate) async fn guard(
     // to slide here or the two disagree.** `Max-Age` is absolute from the moment
     // the browser receives it, so a cookie written once at login is discarded
     // thirty days later however often it was used — while the row stays valid,
-    // leaving the reader bounced to a login screen and a dead browser listed as
-    // signed in. Three doc comments promised the sliding behaviour and all three
-    // were true of the row and false of the cookie until this. Found by the
-    // whole-branch review, 2026-08-18.
+    // leaving the reader bounced to a login screen and a dead browser listed
+    // as signed in.
     //
     // Only for the cookie path: an OPDS client presenting an API key has no
     // session to extend, and a `Set-Cookie` on every page of a volume would be
@@ -550,10 +531,8 @@ enum Resolved {
     /// reader out and discards their unsaved text. Signing in works, the cookie
     /// was always valid, and the next write throws them out again.
     ///
-    /// `refuse_cross_site` already reasoned this way for the open routes: "every
-    /// client reads a 401 from a login route as 'wrong password' … the least
-    /// actionable message this server could send". The guarded path kept the
-    /// 401. Found by the third whole-branch review.
+    /// `refuse_cross_site` answers the open routes the same way, and for the
+    /// same reason.
     CrossSite,
 }
 
@@ -562,10 +541,9 @@ enum Resolved {
 /// **Inserted into the request's extensions**, not only used for the cookie
 /// re-issue: the account-management routes read it to refuse an API key. A key
 /// is a *device* credential — §2 justifies its fast hash by its role as an OPDS
-/// page credential — and one typed into a third-party reader granted minting
-/// further keys, listing the owner's browsers with their addresses, and signing
-/// every one of them out. Nothing narrowed it to that role until this. Found by
-/// the second whole-branch review.
+/// page credential — and one typed into a third-party reader would otherwise
+/// grant minting further keys, listing the owner's browsers with their
+/// addresses, and signing every one of them out.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum By {
     /// A session cookie, carrying the raw token so the response can re-issue it.
@@ -573,10 +551,6 @@ pub(crate) enum By {
     /// `Authorization: Basic` with the account's **password**.
     ///
     /// Distinguished from a key because only the key is a *device* credential.
-    /// Folding the two into one `Header` variant made the account routes refuse
-    /// a correct password with a message asserting an API key had been used —
-    /// and left no non-browser path to mint a first key or change a password at
-    /// all. Found by the third whole-branch review.
     Password,
     /// `Authorization: Basic` with a `tyk_` API key.
     Key,
@@ -696,13 +670,13 @@ fn resolve(state: &ServeState, offered: &Offered) -> Resolved {
 ///
 /// **The key path never reaches argon2**, which is §2's whole point: one string
 /// comparison decides, rather than an argon2 verify that falls back to the key
-/// table. Every page request from an OPDS client carries this credential, so the
-/// difference is five seconds of pure hashing on a 400-page volume.
+/// table. Every page request from an OPDS client carries this credential, so a
+/// verify on it would be paid again on every page of a volume.
 ///
 /// **And the password path does not hold the library's mutex across argon2.**
 /// `Library::conn()` hands out a `MutexGuard` over the one connection this
 /// process has (O42, O52), so verifying inside its scope would serialise every
-/// other request in the server behind 11.9 ms of hashing per login. The hash is
+/// other request in the server behind every login's hashing. The hash is
 /// read, the guard dropped, the verify done, and the connection taken again
 /// afterwards — short holds rather than one long one.
 ///
@@ -735,7 +709,7 @@ fn from_basic(state: &ServeState, header: &str, client: std::net::IpAddr) -> Res
     }
 
     // **§7 applies here and not only to the login route**, which is what the
-    // design says and what shipped without: "on the login route *and on failed
+    // design says: "on the login route *and on failed
     // `Authorization: Basic` verification only*". Without this a password is
     // guessable at any rate through any guarded route, while ten tries at the
     // login route lock the pair out — guarding the one door a guesser has no
@@ -758,14 +732,12 @@ fn from_basic(state: &ServeState, header: &str, client: std::net::IpAddr) -> Res
     // fail the same way.
     let locked_out = || {
         let conn = state.library.conn();
-        // **Fails closed.** `unwrap_or(false)` read any SQLite error as "not
-        // locked out", and the errors reachable here — SQLITE_BUSY on the one
-        // mutex-guarded connection `serve` and `library import` share — are
-        // exactly the ones a flood produces. The control bounding both the
-        // dictionary attack and what each guess costs would have disappeared
-        // under the load that triggers it.
-        // `admin_exists(...).unwrap_or(true)` in `session.rs` already had this
-        // shape; this did not. Found by the second whole-branch review.
+        // **Fails closed.** `unwrap_or(false)` would read any SQLite error as
+        // "not locked out", and the errors reachable here — SQLITE_BUSY on the
+        // one mutex-guarded connection `serve` and `library import` share —
+        // are exactly the ones a flood produces. The control bounding both the
+        // dictionary attack and what each guess costs would disappear under the
+        // load that triggers it.
         account::is_address_locked_out(&conn, &wide).unwrap_or(true)
             || account::is_locked_out(&conn, &key).unwrap_or(true)
     };
@@ -791,14 +763,11 @@ fn from_basic(state: &ServeState, header: &str, client: std::net::IpAddr) -> Res
     // A failure against an account that does not exist counts too, or the
     // limiter would only ever slow down guesses at names it had confirmed.
     let Some((found, phc)) = found else {
-        // **The same work a real account costs**, because the difference was
-        // measurable: a known name answered 401 after ~11 ms of argon2 and an
-        // unknown one in under 1 ms, so response time enumerated the roster —
-        // and since `attempt_key` includes the name, each new name opened its
-        // own window and never approached the lockout, making the walk
-        // unlimited. The 401 branch's own comment claims "a caller cannot
-        // enumerate names by the shape of the answer"; timing is a shape.
-        // Found by the second whole-branch review.
+        // **The same work a real account costs**, because without it response
+        // time would enumerate the roster: a known name would answer 401 after
+        // an argon2 verify and an unknown one at once. The 401 branch's own
+        // comment claims "a caller cannot enumerate names by the shape of the
+        // answer"; timing is a shape.
         // The answer is discarded on purpose: what is wanted is the *cost*, so
         // that an unknown name is indistinguishable from a wrong password by
         // response time. `let _ =` rather than an `#[expect]`, because the
@@ -853,12 +822,8 @@ fn decode_basic(header: &str) -> Option<(String, String)> {
     use base64::Engine as _;
 
     // **Case-insensitively**, because RFC 7235 defines `auth-scheme` that way.
-    // A client sending `basic ` was refused forever and indistinguishable from a
-    // wrong password — worse, it recorded no failure either, so nothing in the
-    // database hinted at it, and the 401 carried `WWW-Authenticate: Basic` so
-    // the client re-sent the identical header and looped. Directly relevant to
-    // O55, which records that no OPDS client has been shown to work here yet.
-    // Found by the second whole-branch review.
+    // A client sending `basic ` would otherwise be refused every time, and look
+    // like a wrong password.
     let (scheme, encoded) = header.split_once(' ')?;
     if !scheme.eq_ignore_ascii_case("basic") {
         return None;

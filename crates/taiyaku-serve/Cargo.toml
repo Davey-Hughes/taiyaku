@@ -26,7 +26,7 @@ futures-core = "0.3.33"
 image = "0.25.9"
 # Already in the dependency tree via taiyaku-library — named directly here
 # only so `works.rs`'s bridge from a slug-keyed `Work` to the library's
-# numeric `work.id` (Task 13) can name `rusqlite::Connection` and use
+# numeric `work.id` can name `rusqlite::Connection` and use
 # `OptionalExtension`/`params!`. Same version taiyaku-library pins, so the
 # resolver unifies one copy rather than two.
 rusqlite = "0.38"

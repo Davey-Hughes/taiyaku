@@ -77,8 +77,7 @@ fn a_candidate_whose_page_disagrees_is_refused() {
     let requests = fake.requests();
     // Pin the path taken, not just the outcome: deleting the `on_get`
     // registration above would make `page_bytes` fail instead of
-    // returning disagreeing bytes, which is a *different* outcome now
-    // that a transport failure is no longer cached as `None` — so assert
+    // returning disagreeing bytes, which is a *different* outcome — so assert
     // the page comparison actually happened.
     assert!(
         requests
@@ -109,11 +108,10 @@ fn a_candidate_whose_page_disagrees_is_refused() {
 /// nothing, which is what stops a page turn costing a GraphQL round trip.
 ///
 /// Both members must genuinely resolve here — one via `on_post_sequence`
-/// answering each member's own query with its own book — because after
-/// Important 1's fix an `Err` (such as the name-mismatch the other tests
-/// exercise) is never cached, and an uncached member would be retried on
-/// the second call, silently reintroducing the request this test exists
-/// to prove never happens.
+/// answering each member's own query with its own book — because an `Err`
+/// (such as the name-mismatch the other tests exercise) is never cached, and
+/// an uncached member would be retried on the second call, silently
+/// reintroducing the request this test exists to prove never happens.
 #[test]
 fn a_second_resolution_asks_stump_nothing() {
     let tmp = crate::test_support::Fixture::new("resolve-cached");
@@ -194,13 +192,10 @@ fn a_transport_failure_is_not_cached_and_is_retried() {
     );
 }
 
-/// Important 2 (whole-branch review): a semantic refusal — Stump
-/// answering ambiguously, not an outage — must not trip the circuit
-/// breaker the way a transport failure does. Before this fix, `Err` from
-/// `resolve_member` broke `'lookups` unconditionally, so the *first*
-/// member's ambiguous match would have silently abandoned the second
-/// member too, even though Stump was perfectly reachable and answered
-/// the second member's own query just fine.
+/// A semantic refusal — Stump answering ambiguously, not an outage — must not
+/// trip the circuit breaker the way a transport failure does: the *first*
+/// member's ambiguous match must not abandon the second member, since Stump
+/// is perfectly reachable and answers the second member's own query fine.
 #[test]
 fn a_semantic_refusal_does_not_abandon_the_rest_of_the_run() {
     let tmp = crate::test_support::Fixture::new("resolve-semantic-refusal");
@@ -238,11 +233,9 @@ fn a_semantic_refusal_does_not_abandon_the_rest_of_the_run() {
 }
 
 /// The retry behaviour above must stay, but a whole run must not pay one
-/// failed lookup per member against an unreachable Stump. Once one
-/// member's resolution fails, the rest of this run's unresolved members
-/// are left untried — not attempted and failed, simply never asked —
-/// which is what keeps a large library's startup from costing minutes of
-/// `ureq` timeouts before the listener binds.
+/// failed lookup per member against an unreachable Stump. Once one member's
+/// resolution fails, the rest of this run's unresolved members are left
+/// untried — not attempted and failed, simply never asked.
 #[test]
 fn a_resolution_failure_abandons_the_rest_of_the_run() {
     let tmp = crate::test_support::Fixture::new("resolve-circuit-breaker");
@@ -269,11 +262,9 @@ fn a_resolution_failure_abandons_the_rest_of_the_run() {
     );
 }
 
-/// O8: resolution runs before the listener binds, so a work whose members
-/// all have to be asked about is time the server spends unable to answer
-/// anything. It printed one summary line per work, *after* that work
-/// finished, so a large work was silent for its whole duration and there
-/// was no way to tell a slow resolution from a hung one.
+/// O8: each member asked about is reported as it is asked, so a work with many
+/// unresolved members is not silent for its whole duration and a slow
+/// resolution can be told from a hung one.
 ///
 /// The other half matters as much: a run that asks about nothing must say
 /// nothing. A cached start is the common case — it is the whole point of
@@ -377,8 +368,7 @@ fn two_edition_work(dir: &std::path::Path) -> Work {
     )
 }
 
-/// The property Minor 3 of the review asked for pinned directly: a
-/// failure in the first edition must abandon the *second* edition's
+/// A failure in the first edition must abandon the *second* edition's
 /// members too, not just the rest of its own edition. With a
 /// single-edition fixture, a plain `break` and `break 'lookups` are
 /// indistinguishable; this fixture has a second edition whose member

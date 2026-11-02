@@ -10,8 +10,8 @@ use crate::{ServeState, Work};
 /// cannot exercise it. Each entry's bytes are its own name, so a test can
 /// tell which page it got.
 ///
-/// Shared rather than local to one test module because Task 5's route
-/// tests need the same work.
+/// Shared rather than local to one test module because several test modules
+/// need the same work.
 pub(crate) fn work(root: &std::path::Path) -> Work {
     for (name, entries) in [
         ("c1.cbz", ["a1.jpg", "a2.jpg"]),
@@ -48,15 +48,14 @@ pub(crate) fn work(root: &std::path::Path) -> Work {
     )
 }
 
-/// A library good for satisfying `ServeState::library` in a fixture. Task 12
-/// gave every `ServeState` that field; Task 13's progress, notes and truth
-/// routes are what actually reach it now — through `works::row_id_for_write`,
-/// which mints a bridge row on first write for a `Work` this library was
-/// never told about (`state`, below, hands `library()` an empty one paired
-/// with an unimported `Work`, exactly that case). An empty, in-memory library
-/// is still enough: a fresh one per call, since `Library` is not `Clone` and
-/// two fixtures sharing a connection would let one test's rows leak into
-/// another's.
+/// A library good for satisfying `ServeState::library` in a fixture. The
+/// progress, notes and truth routes reach it through
+/// `works::row_id_for_write`, which mints a bridge row on first write for a
+/// `Work` this library was never told about (`state`, below, hands `library()`
+/// an empty one paired with an unimported `Work`, exactly that case). An
+/// empty, in-memory library is enough: a fresh one per call, since `Library`
+/// is not `Clone` and two fixtures sharing a connection would let one test's
+/// rows leak into another's.
 pub(crate) fn library() -> std::sync::Arc<taiyaku_library::Library> {
     let library = taiyaku_library::Library::open_in_memory().expect("in-memory library");
     seed_fixture_account(&library);
@@ -68,10 +67,9 @@ pub(crate) fn library() -> std::sync::Arc<taiyaku_library::Library> {
 /// guard since spec A2 and there is no bypass (§9), so a fixture library that
 /// nobody can authenticate against is a fixture no route test can use.
 ///
-/// **Extracted from [`library`] rather than copied into
-/// [`router_over_a_file_backed_library`]**, for the ordinary reason: two
-/// copies of a fixture's credential are two things to forget to change
-/// together.
+/// **One function rather than a copy in each fixture**, for the ordinary
+/// reason: two copies of a fixture's credential are two things to forget to
+/// change together.
 fn seed_fixture_account(library: &taiyaku_library::Library) {
     let conn = library.conn();
     conn.execute(
@@ -95,11 +93,6 @@ fn seed_fixture_account(library: &taiyaku_library::Library) {
 /// `covers/`, so the database and the `backups/` directory beside it are
 /// outside the root — anything under a root is material the next scan walks —
 /// while all three still go away with the one `Drop`.
-/// [`router_over_a_scanned_tree`] puts its `cache_dir` beside the fixture with
-/// `with_file_name` instead, which leaks it; that is not copied here, and the
-/// 9,147 leaked directories [`Fixture`]'s own comment records are why.
-/// *(O117 gave it this shape too: its tree is under `tree/`, its covers under
-/// `covers/`.)*
 ///
 /// # Panics
 ///
@@ -394,6 +387,18 @@ fn png(page: image::RgbImage) -> Vec<u8> {
     encoded.into_inner()
 }
 
+/// A temp directory that removes itself when the test that made it ends.
+///
+/// **`Drop` rather than a cleanup call at the end of each test**, because
+/// the runs that leak are the ones that fail: a panicking test never
+/// reaches its own last line, and the fixture a failure leaves behind is
+/// exactly the one nobody goes back for. A unique name stops tests colliding;
+/// it does not stop their directories accumulating.
+///
+/// An alias of `taiyaku-read`'s `test_support::TempDir` (O117), which every
+/// crate's tests share.
+pub(crate) type Fixture = taiyaku_read::test_support::TempDir;
+
 /// A work whose one page is a real, decodable image rather than the
 /// shared `work` fixture's ASCII bytes, and the temp directory it was
 /// built in.
@@ -409,30 +414,11 @@ fn png(page: image::RgbImage) -> Vec<u8> {
 /// `Work` is deliberately not `Clone` (see `works.rs`), so the work cannot
 /// be taken back out of an `Arc<ServeState>`, and a second copy of this
 /// fixture is the thing that goes stale.
-/// A temp directory that removes itself when the test that made it ends.
-///
-/// **`Drop` rather than a cleanup call at the end of each test**, because
-/// the runs that leak are the ones that fail: a panicking test never
-/// reaches its own last line, and the fixture a failure leaves behind is
-/// exactly the one nobody goes back for. Measured before this existed —
-/// 9,147 `taiyaku-test-real-pages-*` directories and 1,772
-/// `taiyaku-thumb-*` under `/tmp`, 106 MB and 32,427 inodes between them.
-/// Both helpers already documented why their *names* had to be unique and
-/// neither said anything about who removes them, which is the whole gap:
-/// uniqueness stops tests colliding, it does not stop them accumulating.
-///
-/// O117 moved the type into `taiyaku-read`'s `test_support` as `TempDir`, so
-/// every crate's tests share the one this crate wrote first. The name stays
-/// here for the fixtures that already used it.
-pub(crate) type Fixture = taiyaku_read::test_support::TempDir;
-
 pub(crate) fn work_with_real_pages() -> (Work, Fixture) {
-    // This helper used to open a single fixed path and start by
-    // `remove_dir_all`-ing it with no cleanup after; Rust runs tests in
-    // parallel threads, so the moment a second test called this helper,
-    // whichever ran second would delete the first's fixture out from
-    // under it mid-test. `Fixture` answers both halves — a unique name,
-    // and someone to remove it.
+    // A fixed path cleared at the start would, with Rust running tests in
+    // parallel threads, let whichever test ran second delete the first's
+    // fixture out from under it mid-test. `Fixture` gives each call a unique
+    // name, and someone to remove it.
     let fixture = Fixture::new("real-pages");
     let root = fixture.path();
 
@@ -565,13 +551,9 @@ fn state_over(
 /// Work `m`. Edition `ab` is `a.cbz` (two pages) then `b.cbz` (three), and
 /// edition `b` is `b.cbz` alone. So page 2 of `ab` is `b.cbz`'s first page,
 /// the same page as page 0 of `b`, while page 2 of `b` is `b.cbz`'s third. A
-/// route that keyed a page by its index would give page 2 of `ab` the tag, the
-/// cached rendering and the tile of page 2 of `b`, which is a different
-/// picture. No fixture before this one put one member at two positions. `work`'s
-/// edition does reach pages whose index and offset differ, but a name built
-/// from the index is still unique within one edition, the one fixture with two
-/// editions gives both the same members in the same order, and `work`'s pages
-/// cannot be decoded, so none of its requests reached a resize or a tile.
+/// route that keyed a page by its index would give page 2 of `ab` the
+/// tag, the cached rendering and the tile of page 2 of `b`, which is a
+/// different picture.
 ///
 /// `b.cbz`'s pages are solid red, green and blue, in that order, so a test can
 /// say which one it was served after a resize or a tile's JPEG encoding
@@ -592,11 +574,10 @@ pub(crate) type Reads = std::sync::Arc<std::sync::Mutex<Vec<(String, u32)>>>;
 
 /// `LocalLibrary`, recording every page it reads.
 ///
-/// O107: a page that already fits a `?w=` was read out of its archive twice,
-/// and no test could see it. Both reads served the same bytes, so nothing a
-/// test asserted about the response told one read from two. This records the
-/// reads themselves. It records the member and the offset rather than a
-/// count, so a test can say which page was read as well as how often.
+/// A page read twice serves the same bytes as one read, so nothing a test
+/// asserts about the response can tell them apart (O107). This records the
+/// reads themselves, the member and the offset rather than a count, so a test
+/// can say which page was read as well as how often.
 #[derive(Debug, Default)]
 pub(crate) struct CountingSource {
     reads: Reads,
@@ -772,13 +753,10 @@ pub(crate) fn logged_lines(path: &std::path::Path) -> Vec<serde_json::Value> {
 /// `taiyaku_library::project::sidecar`, so `Work.id` is the library's own slug
 /// and `works::find_row` hits a row on the very first read.
 ///
-/// Test scaffolding, and named as such. `taiyaku_serve::works::from_library`
-/// used to be this, as `pub` API — but `serve` never called it (review 2,
-/// Minor 4), and a projection that only tests run is worth less than the same
-/// six lines declared to be a fixture. What production does is
-/// `serve_work`, one path at a time, and this is that loop over every row
-/// instead of over `argv`, which is exactly what a fixture wants: build the
-/// state, then test the routes.
+/// Test scaffolding, and named as such. What production does is `serve_work`,
+/// one path at a time, and this is that loop over every row instead of over
+/// `argv`, which is exactly what a fixture wants: build the state, then test
+/// the routes.
 ///
 /// # Panics
 ///
@@ -808,15 +786,14 @@ pub(crate) fn works_in(library: &taiyaku_library::Library) -> Vec<crate::Work> {
 
 /// A `ServeState` over a real library: one work imported through
 /// `taiyaku_library::import::sidecar`, with `works` built from those rows by
-/// [`works_in`] — so `Work.id` is the library's own slug and
-/// `works::find_row` finds a row on the very first read rather than
-/// `works::row_id_for_write` minting one. Every other
-/// fixture in this module pairs a bare `Work` with an *empty* `library()`,
-/// which is the other half of the bridge Task 13 has to get right (see
-/// `library()`'s own doc comment); this one is for the tests that are about
-/// the library-backed path specifically. Named `w`: the fixture's title is
-/// `"W"`, which `import::sidecar`'s `unique_slug` lowercases to exactly that,
-/// with no collision to append a suffix against in a fresh library.
+/// [`works_in`] — so `Work.id` is the library's own slug and `works::find_row`
+/// finds a row on the very first read rather than `works::row_id_for_write`
+/// minting one. `state` and `state_over` pair a bare `Work` with an *empty*
+/// `library()`, which is the other half of the bridge (see `library()`'s own
+/// doc comment); this one is for the tests that are about the library-backed
+/// path specifically. Named `w`: the fixture's title is `"W"`, which
+/// `import::sidecar`'s `unique_slug` lowercases to exactly that, with no
+/// collision to append a suffix against in a fresh library.
 ///
 /// No archives are written to disk — unlike `work`/`state` above, which
 /// exist mainly to give the page and thumbnail routes real bytes to read.
@@ -870,12 +847,11 @@ pub(crate) async fn router_over_a_library() -> (axum::Router, std::sync::Arc<Ser
 /// `taiyaku_library::import::sidecar`, so `work.id` is the row's own slug and
 /// the alignment rows exist before anything is corrected.
 ///
-/// `state_with_two_editions` above is the same document paired with an *empty*
-/// library, which is what every existing correction test drives; this one is
-/// for the tests that are about the rows a correction leaves behind. The
-/// sidecar is written to a real path under a `Fixture` directory because
-/// `patch_alignments` writes the file as well as the rows, and the restart
-/// half of the round trip re-reads exactly those bytes.
+/// `state_with_two_editions` above is the same shape paired with an *empty*
+/// library; this one is for the tests that are about the rows a correction
+/// leaves behind. The sidecar is written to a real path under a `Fixture`
+/// directory because `patch_alignments` writes the file as well as the rows,
+/// and the restart half of the round trip re-reads exactly those bytes.
 ///
 /// Returns the row id alongside the router and state so a test can read the
 /// rows back through `taiyaku_library::project::sidecar` without re-deriving
@@ -898,9 +874,9 @@ pub(crate) fn router_over_a_library_with_two_editions()
 /// [`router_over_a_library_with_two_editions`], reading pages through whatever
 /// `source` builds from that library.
 ///
-/// Extracted rather than copied into
+/// One function rather than a copy in
 /// [`state_whose_pages_wait_on_the_library`], which needs the same work with a
-/// different source — [`seed_fixture_account`]'s reason for being extracted.
+/// different source, for [`seed_fixture_account`]'s reason.
 fn two_editions_in_a_library(
     fixture: &Fixture,
     source: impl FnOnce(
@@ -1021,10 +997,8 @@ pub(crate) fn state_whose_grant_waits_on_the_library() -> (std::sync::Arc<ServeS
 /// handler touches `state.library`: what blocks in them is the page read — a
 /// zip decompression from disk, or a round trip to Stump — which a watchdog
 /// holding the mutex does not reach. Waiting on the same mutex here makes a
-/// page read last exactly as long as the watchdog decides, the way a FIFO did
-/// for the progress stall test this crate had before Task 13.
-/// `docs/notes.md`, "O71", records both handlers passing, with their closures
-/// on the async worker, under a source that did not wait.
+/// page read last exactly as long as the watchdog decides.
+/// See `docs/notes.md`, "O71".
 ///
 /// The page is [`real_page_bytes`], so a tile can be decoded from it; none of
 /// the fixture's archives exist on disk.
@@ -1146,10 +1120,9 @@ pub(crate) fn router_over_a_scanned_work() -> (axum::Router, std::sync::Arc<Serv
 /// way derivation would. Needed by the cover route, which resolves a series to
 /// the work that stands for it.
 ///
-/// The `Fixture` is returned so its `Drop` still runs. An earlier version
-/// called `std::mem::forget` on it to escape the borrow, which skipped the
-/// cleanup and leaked one temp directory per test run — found by the
-/// whole-branch review.
+/// The `Fixture` is returned so its `Drop` runs; `std::mem::forget` on it to
+/// escape the borrow would skip the cleanup and leak one temp directory per
+/// test run.
 ///
 /// # Panics
 ///
@@ -1184,8 +1157,8 @@ pub(crate) fn router_over_a_scanned_work_in_a_series()
 /// through it authenticates perfectly and simply is not an administrator's.
 /// A fixture that merely failed to sign in would answer a refusal to a broken
 /// admin gate exactly as readily as to a working one — see
-/// `library_api::tests::get_anonymous`'s note for the same trap found from
-/// the other side.
+/// `library_api::tests::get_anonymous`'s note for the same trap from the
+/// other side.
 ///
 /// # Panics
 ///
@@ -1227,13 +1200,12 @@ pub(crate) fn write_pages(dir: &std::path::Path, pages: usize) {
 
 /// A router over a library **scanned and derived from a real tree on disk**.
 ///
-/// No fixture above can stand in for this. `import::sidecar` and
-/// `import::scanned` write `work` and `series` rows and no `scan_entry` rows
-/// at all — and `scan_entry` is what every proposal is raised from, what a
+/// No imported fixture can stand in for this. `import::sidecar` and
+/// `import::scanned` write `work` and `series` rows and no `scan_entry` rows at
+/// all — and `scan_entry` is what every proposal is raised from, what a
 /// candidate rule is evaluated against, and what an accept's collateral guard
 /// sweeps. A library imported rather than scanned raises nothing, so a route
-/// test over one would assert against an empty inbox whatever the handler
-/// did.
+/// test over one would assert against an empty inbox whatever the handler did.
 ///
 /// `titles` names one series each, laid out `{parent}/{title}/{title} - v01/`
 /// — `parent` empty puts them at the root. Page counts ascend from two so
@@ -1278,11 +1250,11 @@ fn router_over_a_written_tree(
         let root =
             taiyaku_library::scan::add_root(&conn, &fixture.join("tree")).expect("adds the root");
         // **These fixtures are about the document, so they keep documents.**
-        // Migration 012 made `keeps_documents` default off, which is right for
-        // a person's library and wrong for a fixture whose whole subject is
-        // the file — `patching_a_title_writes_the_row_and_the_document` and
-        // twelve assertions like it read it off disk. A fixture that wants the
-        // off case turns it off explicitly, which is the rarer thing to say.
+        // `keeps_documents` defaults off (migration 012), which is right for a
+        // person's library and wrong for a fixture whose whole subject is the
+        // file — `patching_a_title_writes_the_row_and_the_document` and its
+        // like read it off disk. A fixture that wants the off case turns it off
+        // explicitly, which is the rarer thing to say.
         conn.execute(
             "UPDATE root SET keeps_documents = 1 WHERE id = ?1",
             [root.id],
@@ -1312,11 +1284,10 @@ fn router_over_a_written_tree(
 /// One scanned, single-volume work whose member is a real **`.cbz`**, not a
 /// directory of pages.
 ///
-/// **Every other scanned fixture here writes `write_pages`**, so its member
-/// sniffs as `Format::Dir`. That is right for the routes those fixtures were
-/// built for and useless for spec C3 §6's write-back, which only ever touches
-/// a zip: against a directory-backed fixture the stamp plan is empty, and two
-/// of its route tests passed while asserting nothing until this existed.
+/// **Every other scanned fixture here writes a directory of pages**, so its
+/// member sniffs as `Format::Dir`. That is right for the routes those fixtures
+/// were built for and useless for spec C3 §6's write-back, which only ever
+/// touches a zip: against a directory-backed fixture the stamp plan is empty.
 ///
 /// Keeps documents, for the reason [`router_over_a_scanned_tree`] gives.
 ///
@@ -1412,10 +1383,7 @@ pub(crate) fn router_over_a_scanned_cbz_as_a_reader()
 /// so never gives it a `root_id` — `hand::path_for` requires one (its own
 /// join on `member.root_id`), so a metadata edit applied against that
 /// fixture always answers `persisted: false` with no document ever reaching
-/// disk. Measured rather than assumed: `metadata::tests::
-/// patching_a_title_writes_the_row_and_the_document` failed with exactly
-/// that body the first time it ran against `router_over_a_scanned_work_in_a_series`.
-/// This fixture goes through the real walk instead, the same as
+/// disk. This fixture goes through the real walk instead, the same as
 /// `router_over_two_suffixed_series` and its neighbours, which is what gives
 /// it an address at all.
 pub(crate) fn router_over_a_single_scanned_work()
@@ -1493,10 +1461,9 @@ pub(crate) fn router_over_a_shared_publisher_directory()
 /// for at least one of them. The tests give each series its titles themselves.
 ///
 /// **Two volumes of the first, so a work's id is not its series' id.**
-/// Derivation mints series and works in one order, and with a volume each,
-/// work 2 sat under series 2 and work 3 under series 3: a read that took a
-/// work's id for a series' id answered the right titles and passed every test
-/// that read them, which a hand mutation showed. The second Go-Toubun volume
+/// Derivation mints series and works in one order, so with a volume each a
+/// work's id would equal its series' id, and a read that took one for the
+/// other would answer the right titles anyway. The second Go-Toubun volume
 /// moves every later work's id past its series'.
 ///
 /// Keeps documents, for the reason [`router_over_a_scanned_tree`] gives — the
@@ -1528,9 +1495,9 @@ pub(crate) fn router_over_three_unrelated_series()
 /// work under it whose removal costs something nonzero to report.
 ///
 /// **Two independent series, not one split across two roots** — unlike
-/// [`router_over_two_scanned_volumes_of_one_series_across_two_roots`] above,
+/// [`router_over_two_scanned_volumes_of_one_series_across_two_roots`] below,
 /// deliberately: removing the second root here must delete a whole work
-/// (`scan.rs`'s own `DOOMED_WORKS`, "a work this root alone accounts for"),
+/// (`scan.rs`'s own `DOOMED_WORKS`, "the works this root alone accounts for"),
 /// not merely orphan one edition of a work that survives on the other root —
 /// a removal test wants a nonzero work count it can assert on without also
 /// asserting the *other* root came through unscathed.
@@ -1664,11 +1631,11 @@ pub(crate) fn router_over_two_scanned_volumes_of_one_series()
         let root =
             taiyaku_library::scan::add_root(&conn, &fixture.join("tree")).expect("adds the root");
         // **These fixtures are about the document, so they keep documents.**
-        // Migration 012 made `keeps_documents` default off, which is right for
-        // a person's library and wrong for a fixture whose whole subject is
-        // the file — `patching_a_title_writes_the_row_and_the_document` and
-        // twelve assertions like it read it off disk. A fixture that wants the
-        // off case turns it off explicitly, which is the rarer thing to say.
+        // `keeps_documents` defaults off (migration 012), which is right for a
+        // person's library and wrong for a fixture whose whole subject is the
+        // file — `patching_a_title_writes_the_row_and_the_document` and its
+        // like read it off disk. A fixture that wants the off case turns it off
+        // explicitly, which is the rarer thing to say.
         conn.execute(
             "UPDATE root SET keeps_documents = 1 WHERE id = ?1",
             [root.id],
@@ -1733,8 +1700,8 @@ pub(crate) fn router_over_two_scanned_volumes_of_decodable_pages()
 }
 
 /// Two scanned volumes of one series, each rooted under its own directory —
-/// the shape Task 6b's `patch_series` worst-case finding needs a caller to
-/// exist over: a series whose works span two roots (this codebase's own
+/// the shape `patch_series`'s worst case needs a caller to exist over: a
+/// series whose works span two roots (this codebase's own
 /// `auth/tests.rs` fixtures model a work or an edition split across two roots
 /// for the grant-posture proofs, but none of them attaches two *works* to one
 /// series, which is what a per-work document write failing independently of
@@ -1743,13 +1710,13 @@ pub(crate) fn router_over_two_scanned_volumes_of_decodable_pages()
 /// **`root_a`'s path comes back, not `root_b`'s — deliberately the volume
 /// `derive` writes (and so `works_in_series` lists) *first*.** `GroupKey`
 /// orders groups by `(series, volume, …)`, so `v01`/`root_a` gets the lower
-/// `work.id`, and `patch_series`'s own loop visits it before `v02`/`root_b`.
-/// A test proving "the worst case, not the last one" has to break the work
-/// that is *not* last, or a bug that only remembers the final iteration would
-/// pass anyway — the failure would coincide with the last answer by luck of
-/// the id order rather than being caught by the assertion. Made read-only
-/// with `taiyaku-library`'s own
-/// `hand::tests::a_root_that_cannot_be_written_still_arms_the_guard`
+/// `work.id`, and `patch_series`'s own loop visits it before `v02`/`root_b`. A
+/// test proving "the worst case, not the last one" has to break the work that
+/// is *not* last, or a bug that only remembers the final iteration would pass
+/// anyway — the failure would coincide with the last answer by luck of the id
+/// order rather than being caught by the assertion. Broken with
+/// `taiyaku-library`'s own
+/// `hand::tests::a_root_that_cannot_take_the_document_still_arms_the_guard`
 /// technique, so exactly one work's `hand::save` fails while its sibling's
 /// still lands.
 ///
@@ -1774,18 +1741,18 @@ pub(crate) fn router_over_two_scanned_volumes_of_one_series_across_two_roots() -
     let library = library();
     {
         let conn = library.conn();
-        // **Both roots are directories of one library.** Since Part F1 a series
-        // is one library's, so two roots in libraries of their own would hold
-        // two series of this title, one volume in each.
+        // **Both roots are directories of one library.** A series is one
+        // library's, so two roots in libraries of their own would hold two
+        // series of this title, one volume in each.
         let one_library = taiyaku_library::scan::InLibrary::Named("Manga");
         let a =
             taiyaku_library::scan::add_root_in(&conn, &root_a, one_library).expect("adds root a");
         // **These fixtures are about the document, so they keep documents.**
-        // Migration 012 made `keeps_documents` default off, which is right for
-        // a person's library and wrong for a fixture whose whole subject is
-        // the file — `patching_a_title_writes_the_row_and_the_document` and
-        // twelve assertions like it read it off disk. A fixture that wants the
-        // off case turns it off explicitly, which is the rarer thing to say.
+        // `keeps_documents` defaults off (migration 012), which is right for a
+        // person's library and wrong for a fixture whose whole subject is the
+        // file — `patching_a_title_writes_the_row_and_the_document` and its
+        // like read it off disk. A fixture that wants the off case turns it off
+        // explicitly, which is the rarer thing to say.
         conn.execute("UPDATE root SET keeps_documents = 1 WHERE id = ?1", [a.id])
             .expect("the fixture keeps documents");
         taiyaku_library::scan::scan_root(&conn, &a).expect("scans root a");
@@ -1824,11 +1791,9 @@ pub(crate) fn router_over_two_scanned_volumes_of_one_series_across_two_roots() -
 /// **Why the plain version cannot stand in for it.** That fixture holds
 /// exactly one series, so `metadata::series_of_work` returning the constant
 /// `Ok(Some(1))` instead of actually reading the row agrees with reality by
-/// coincidence — SQLite mints the one series it ever sees as id 1. A mutant
-/// that replaces `series_of_work`'s body with that constant survives every
-/// test built over that fixture. This one adds a second series, so the
-/// series a work moves *out of* is not id 1, and a caller trusting the
-/// constant reaches the wrong series' siblings entirely.
+/// coincidence — SQLite mints the one series it ever sees as id 1. This one
+/// adds a second series, so the series a work moves *out of* is not id 1, and
+/// a caller trusting the constant reaches the wrong series' siblings entirely.
 ///
 /// The unrelated series' title sorts before `"Go-Toubun no Hanayome"` —
 /// `derive::derive`'s own `groups: BTreeMap<GroupKey, _>` orders series by
@@ -1882,11 +1847,11 @@ pub(crate) fn router_over_two_scanned_volumes_of_one_series_across_two_roots_and
         let a =
             taiyaku_library::scan::add_root_in(&conn, &root_a, one_library).expect("adds root a");
         // **These fixtures are about the document, so they keep documents.**
-        // Migration 012 made `keeps_documents` default off, which is right for
-        // a person's library and wrong for a fixture whose whole subject is
-        // the file — `patching_a_title_writes_the_row_and_the_document` and
-        // twelve assertions like it read it off disk. A fixture that wants the
-        // off case turns it off explicitly, which is the rarer thing to say.
+        // `keeps_documents` defaults off (migration 012), which is right for a
+        // person's library and wrong for a fixture whose whole subject is the
+        // file — `patching_a_title_writes_the_row_and_the_document` and its
+        // like read it off disk. A fixture that wants the off case turns it off
+        // explicitly, which is the rarer thing to say.
         conn.execute("UPDATE root SET keeps_documents = 1 WHERE id = ?1", [a.id])
             .expect("the fixture keeps documents");
         taiyaku_library::scan::scan_root(&conn, &a).expect("scans root a");
@@ -1928,10 +1893,7 @@ pub(crate) fn router_over_two_scanned_volumes_of_one_series_across_two_roots_and
     (router, state, fixture, root_a)
 }
 
-/// A `GET` against `router`, driven with `oneshot` and no socket. Most
-/// existing tests in `routes/tests.rs` build this same request by hand — this
-/// exists for the shorter tests `router_over_a_library` was added alongside,
-/// not as a mandate to rewrite the others.
+/// A `GET` against `router`, driven with `oneshot` and no socket.
 ///
 /// **It sets no `Authorization` header of its own, deliberately.** Who the
 /// caller is belongs to the router: every `router_over_*` helper above wraps
@@ -2084,43 +2046,31 @@ pub(crate) async fn body_string(response: axum::http::Response<axum::body::Body>
 pub(crate) const FIXTURE_NAME: &str = "local";
 pub(crate) const FIXTURE_PASSWORD: &str = "fixture";
 
-/// [`FIXTURE_PASSWORD`], already hashed.
-///
-/// **Pinned rather than hashed per fixture**, because argon2 runs unoptimized
-/// under `cargo test` — this workspace sets no `[profile.dev]` opt-level — and
-/// every `state()` call was paying a full hash for a password most tests never
-/// present. Measured: `every_route_refuses_an_anonymous_request` alone took
-/// 7.1 s to make 21 *anonymous* requests, and `.config/nextest.toml` states as
-/// fact that "nothing in 639 tests exceeds 0.75 s" and justifies its 30 s slow
-/// mark as "40x the slowest test". Found by the second whole-branch review.
-///
-/// `credential::tests::the_fixture_hash_still_verifies` is what stops this
-/// drifting from the password beside it.
 /// The key the suite authenticates with, and the reason the suite is fast.
 ///
 /// **§2's design, used on its own terms.** A key is verified by sha256 and
-/// routed past argon2 by its `tyk_` prefix, so a test request costs microseconds
-/// where a password costs the measured 11.9 ms — and every authenticated request
-/// in this crate was paying the latter. Measured: `taiyaku-serve`'s suite went
-/// from 0.66 s on `main` to 11.85 s, with one concurrency test alone at 10.8 s,
-/// against a `.config/nextest.toml` that states "nothing in 639 tests exceeds
-/// 0.75 s" as fact. Found by the second whole-branch review.
+/// routed past argon2 by its `tyk_` prefix, so a test request costs
+/// microseconds where a password costs a full argon2 hash.
 ///
 /// Tests *about* passwords still use `FIXTURE_PASSWORD`, which is the point:
 /// they are the ones that should pay for argon2.
 pub(crate) const FIXTURE_KEY: &str = "tyk_the-suites-own-key-not-a-real-secret";
 
+/// [`FIXTURE_PASSWORD`], already hashed.
+///
+/// **Pinned rather than hashed per fixture**, because argon2 runs unoptimized
+/// under `cargo test` — this workspace sets no `[profile.dev]` opt-level — so
+/// every `state()` call would pay a full hash for a password most tests
+/// never present.
+///
+/// `test_support::pinned::the_fixture_hash_still_verifies` is what stops this
+/// drifting from the password beside it.
 pub(crate) const FIXTURE_PHC: &str = "$argon2id$v=19$m=19456,t=2,p=1$KtgzR4TOZsatunnAHzKmig$fRrVxJJcb/LwTcYO+9XZ4C5uNgdPM131N8iXWxLeXxk";
 
 /// Wrap a router so every request through it presents **an API key**.
 ///
-/// **This used to be `authenticating`, and that default is what hid O93.**
-/// Every route test in this crate drove a device credential, so no test could
-/// see that `config_api`, `curation`, `metadata`, `users_api` and `backup_api`
-/// all admitted one — the administrative routes were being *exercised* by the
-/// credential they should have been refusing, through four whole-branch
-/// reviews. Renamed rather than deleted: a key is the right client for OPDS
-/// and for anything asserting key behaviour, and those callers now say so.
+/// **For OPDS and for anything asserting key behaviour.** Administrative
+/// routes refuse a key (O93), so this is not the suite's default.
 ///
 /// **Spec A2 §9 refuses a `--no-auth` flag and a dev bypass**, so the suite
 /// does not get one either: this is a test *client* that authenticates through
@@ -2147,10 +2097,9 @@ pub(crate) fn key_authenticating(router: axum::Router) -> axum::Router {
 /// A `Cookie` header value carrying a real session for account 1.
 ///
 /// [`fixture_authorization`]'s counterpart for a test that builds its own
-/// requests and needs to be a **browser** — which, since O93, is what every
-/// administrative route requires. `auth::tests` builds its requests by hand
-/// against the real `build_router`, so it cannot go through
-/// [`authenticating`].
+/// requests and needs to be a **browser**, which is what every administrative
+/// route requires (O93). `auth::tests` builds its requests by hand against
+/// the real `build_router`, so it cannot go through [`authenticating`].
 ///
 /// # Panics
 ///
@@ -2183,29 +2132,21 @@ pub(crate) fn from_a_browser() -> axum::http::Extensions {
 /// library's mutex, and report whether the runtime was free to poll anything
 /// else meanwhile.
 ///
-/// **Moved here from `curation/tests.rs` by O71**, when
-/// `routes::tests::no_works_route_stalls_the_runtime` became its second
-/// caller. Its body is as it was.
-///
-/// `auth::tests::the_guard_does_not_stall_the_runtime`'s watchdog — named
-/// `routes::tests::a_progress_read_does_not_stall_the_runtime` when this was
-/// modelled on it — with its two arguments unchanged: `Library::conn()` is a
+/// The watchdog holds the mutex for a controlled span: `Library::conn()` is a
 /// `MutexGuard<'_, Connection>`, so a thread holding it blocks any handler
-/// that calls it for a controlled span the way that test's FIFO once did; and
-/// the block's release is gated on the canary rather than on a fixed sleep,
-/// so how long it lasts is decided by whether the reactor was ever free to
-/// run anything else — the property under test — rather than by a duration
-/// picked in advance.
+/// that calls it. The block's release is gated on the canary rather than on a
+/// fixed sleep, so how long it lasts is decided by whether the reactor was
+/// ever free to run anything else — the property under test — rather than by
+/// a duration picked in advance.
 ///
-/// **The handler is called directly rather than through the router**, which
-/// is the one difference and it is load-bearing. Every request through the
-/// router passes `auth::guard` first, and that middleware reads the same
-/// library inside its own `spawn_blocking`: it would take the mutex wait onto
-/// a blocking thread, free the reactor, let the canary run and let the
-/// watchdog release the guard — all before the handler under test ever
-/// touched SQLite. The measurement would then come back clean for a handler
-/// doing every byte of its work on the async worker, which is a fixture where
-/// right and wrong render the same.
+/// **The handler is called directly rather than through the router** (O71), and
+/// that is load-bearing. Every request through the router passes `auth::guard`
+/// first, and that middleware reads the same library inside its own
+/// `spawn_blocking`: it would take the mutex wait onto a blocking thread, free
+/// the reactor, let the canary run and let the watchdog release the guard — all
+/// before the handler under test ever touched SQLite. The measurement would
+/// then come back clean for a handler doing every byte of its work on the async
+/// worker, which is a fixture where right and wrong render the same.
 ///
 /// **It sees only a handler that waits on the library's mutex.** A handler
 /// whose blocking work is something else — a page read out of an archive — is
@@ -2276,14 +2217,13 @@ pub(crate) async fn the_runtime_stalls_on(
 /// Wrap a router so every request presents a real **browser session** — the
 /// suite's default, and the client the web API actually has.
 ///
-/// **The suite's default credential is the one kind an administration route
-/// refuses**, and that is why this exists. `authenticating` sends
-/// [`fixture_authorization`] — a `Basic name:tyk_…` key — so every route test
-/// in this crate has always driven a *device* credential. Spec A2's
-/// `session::refuse_a_device_credential` turns that away from anything that
-/// manages accounts or credentials, so `users_api` and `backup_api` cannot be
-/// tested through `authenticating` at all; a router wrapped in it answers 403
-/// for a reason that has nothing to do with what the test is about.
+/// **The default credential must not be a key**, and that is why this exists.
+/// Spec A2's `session::refuse_a_device_credential` turns a *device*
+/// credential — a `Basic name:tyk_…` key, [`fixture_authorization`] — away
+/// from anything that manages accounts or credentials, so `users_api` and
+/// `backup_api` cannot be tested through [`key_authenticating`] at all; a
+/// router wrapped in it answers 403 for a reason that has nothing to do with
+/// what the test is about.
 ///
 /// Opens one real session against the fixture library and sends its cookie,
 /// through the same guard, exactly as a browser would. A request setting its
@@ -2378,9 +2318,8 @@ pub(crate) fn fixture_authorization() -> String {
 /// dominates the other three permission columns — so granting a root to the
 /// seeded account, which is an admin, restricts nothing. A grant test written
 /// that way measures nothing at all: it would pass just as well against a
-/// filter that had been deleted, which is the exact failure O62's
-/// whole-branch review found in `unreadable` and the reason this is one
-/// function rather than a line copied into eleven fixtures.
+/// filter that had been deleted, which is the reason this is one function
+/// rather than a line copied into each fixture.
 ///
 /// The demotion is the *point* of the helper, not an incidental step, which is
 /// why granting and demoting are not offered separately.

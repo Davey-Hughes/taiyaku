@@ -64,10 +64,10 @@ fn progress_is_written_to_the_library_not_into_the_sidecar() {
     assert_eq!(sidecar_before, sidecar_after, "the sidecar must not change");
 }
 
-/// The bridge from a slug-keyed `Work` to the library's numeric `work.id` —
-/// the real work of Task 13. A work this library has never heard of gets a
-/// row minted for it on its first write, and every read and write after that
-/// resolves back onto that same row rather than a fresh one each time.
+/// The bridge from a slug-keyed `Work` to the library's numeric `work.id`. A
+/// work this library has never heard of gets a row minted for it on its first
+/// write, and every read and write after that resolves back onto that same row
+/// rather than a fresh one each time.
 #[test]
 fn storing_progress_mints_exactly_one_bridge_row_for_a_work_the_library_never_imported() {
     let tmp = crate::test_support::Fixture::new("progress-bridge");

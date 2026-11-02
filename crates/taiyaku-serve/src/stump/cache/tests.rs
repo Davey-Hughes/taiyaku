@@ -6,12 +6,8 @@ fn work(dir: &std::path::Path) -> Work {
 
 /// O11: nothing watches for the library changing on Stump's side, so a
 /// book added there after a work's first resolution stays invisible until
-/// this file goes away. That was true before and stays true — it is the
-/// deliberate tradeoff the design records as Risk 5, and the reason for it
-/// (a miss costing one query once rather than one per page turn) has not
-/// changed. What was wrong is that the only way to act on it was to know,
-/// from reading the source, that a file called `taiyaku.stump.json` exists
-/// and can be deleted.
+/// this file goes away. That is the deliberate tradeoff the design records as
+/// Risk 5: a miss costs one query once rather than one per page turn.
 ///
 /// So this is the manual workaround made into an operation. Deliberately
 /// destructive in exactly the way deleting the file by hand is: the
@@ -118,8 +114,7 @@ fn a_missing_or_unreadable_cache_is_empty_rather_than_fatal() {
 /// `forget` treats a missing cache file as success — deleting nothing is
 /// the right answer to "make sure this is gone". Any *other* failure is
 /// not: a cache file that cannot be removed means the next start reads a
-/// stale resolution, and reporting that as `Ok(())` is how it goes
-/// unnoticed. The guard could be replaced by `true` with the suite green.
+/// stale resolution, and reporting that as `Ok(())` is how it goes unnoticed.
 #[test]
 fn a_cache_file_that_cannot_be_removed_is_an_error_rather_than_success() {
     let tmp = crate::test_support::Fixture::new("stump-forget-unremovable");

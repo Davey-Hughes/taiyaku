@@ -158,15 +158,9 @@ fn a_quote_in_a_title_cannot_break_out_of_the_header() {
     assert!(!header.contains("\"a\"b"), "got {header}");
 }
 
-// --- Task 6, wave 2: a carry that lands in the wrong half, and a fallback
-// that only fires on total erasure. ---
-
 #[test]
 fn rounding_the_whole_value_once_keeps_a_carry_in_the_right_half() {
-    // The old code split first (trunc + remainder) and rounded the fraction
-    // second, so a fraction that rounds up to `1.000` never reached the
-    // whole part, which had already been formatted from the unrounded
-    // value: `volume_text(1.9999)` came out `"011"`.
+    // A fraction that rounds up to `1.000` carries into the whole part.
     assert_eq!(volume_text(1.0), "01");
     assert_eq!(volume_text(1.5), "01.5");
     assert_eq!(volume_text(2.3), "02.3");
@@ -205,9 +199,8 @@ fn a_non_finite_volume_drops_the_segment_like_no_volume_at_all() {
 
 #[test]
 fn a_stem_that_sanitises_to_pure_punctuation_is_not_usable() {
-    // `/` sanitises to `-`, which is non-empty, so the old
-    // `.filter(|s| !s.is_empty())` never fell through to the title beside
-    // it: `download_name(Some("/"), ...)` produced `"- - v01 (raw).cbz"`.
+    // `/` sanitises to `-`, which is non-empty, but the stem must still fall
+    // through to the title beside it.
     assert_eq!(
         download_name(Some("/"), Some(1.0), "Real Title", "raw", "cbz"),
         "Real Title - v01 (raw).cbz"
@@ -235,11 +228,7 @@ fn a_stem_that_begins_with_a_dash_after_sanitising_is_stripped() {
 
 #[test]
 fn a_very_large_volume_does_not_collapse_to_the_same_wrong_number() {
-    // Found sweeping wide volume ranges, not in the two named findings: a
-    // milli-units-as-u64 fix for the rounding-carry defect overflows past
-    // roughly 1.84e16, and a saturating cast turned every volume beyond
-    // that -- `1e300` and `f64::MAX` alike -- into the identical wrong
-    // string (`u64::MAX / 1000`).
+    // `1e300` and `f64::MAX` must come out different.
     assert_ne!(volume_text(1e300), volume_text(f64::MAX));
     // Below 2^52 every f64 can still hold a fraction; at and above it every
     // representable value is already a whole number, so the exact value
@@ -269,7 +258,7 @@ fn no_download_name_output_can_start_with_dash_dot_or_space() {
     }
 }
 
-// --- Task 7: the edition download — both body shapes, streamed. ---
+// --- The edition download: both body shapes, streamed. ---
 
 /// Read a whole response body, however large the test made it.
 async fn all_of(response: axum::http::Response<axum::body::Body>) -> Vec<u8> {
@@ -284,14 +273,13 @@ async fn all_of(response: axum::http::Response<axum::body::Body>) -> Vec<u8> {
 ///
 /// `all_of`'s `to_bytes` cannot be used for this: it aggregates through
 /// `http-body-util`'s `collect`, which returns the stream's `Err` as its own
-/// `Err`, so `.expect("the body")` panics on exactly the mid-stream failures
-/// Findings 1 and 2 exist to prove. `Content-Length` is sent before the first
-/// byte (spec §5), so a producer that discovers a problem after headers have
-/// gone out has only one way left to say so: end the stream short with an
-/// error rather than the promised length. This is that stream, drained by
-/// hand with `futures_core::Stream` — already a direct dependency for
-/// `ChannelStream` above — rather than pulling in `http-body-util` or
-/// `futures-util` as new ones just to call `.collect()`.
+/// `Err`, so `.expect("the body")` panics on a mid-stream failure.
+/// `Content-Length` is sent before the first byte (spec §5), so a producer that
+/// discovers a problem after headers have gone out has only one way left to say
+/// so: end the stream short with an error rather than the promised length. This
+/// is that stream, drained by hand with `futures_core::Stream` — already a
+/// direct dependency for `download::ChannelStream` — rather than pulling in
+/// `http-body-util` or `futures-util` as new ones just to call `.collect()`.
 async fn drain(response: axum::http::Response<axum::body::Body>) -> (Vec<u8>, bool) {
     use futures_core::Stream as _;
     let mut stream = std::pin::pin!(response.into_body().into_data_stream());
@@ -540,12 +528,6 @@ async fn an_edition_that_does_not_exist_is_a_404_before_any_bytes() {
 
 /// A withheld `can_download` refuses the download and leaves the shelf alone.
 ///
-/// **This test exists because the guard shipped fail-open for one commit.**
-/// Task 7 added `refuse_if_cannot_download` as a stub returning `None` so the
-/// crate would compile ahead of the capability work, and a security review
-/// flagged it: a comment promising a later task does not gate anything. The
-/// check is real now, and this is what says so.
-///
 /// 403 rather than 404 deliberately — the caller may *see* this edition and
 /// may not have a copy of it, which a 404 would misdescribe. The root grant
 /// above it is the one that answers 404, because an edition outside your grant
@@ -574,7 +556,7 @@ async fn a_withheld_download_capability_refuses_with_403() {
     );
 }
 
-// --- Task 8: the member download — one file, its own name, its own bytes. ---
+// --- The member download: one file, its own name, its own bytes. ---
 
 #[tokio::test]
 async fn a_member_downloads_as_the_file_on_disk() {
@@ -645,7 +627,7 @@ async fn a_member_range_is_that_slice_of_the_file() {
     assert_eq!(response.status(), 206);
     // The member's own length, not the two-member edition's combined length —
     // `prepare_member` stats `path` itself rather than reusing whatever
-    // `prepare` computed for the whole edition. Task 8 review, carried over.
+    // `prepare` computed for the whole edition.
     assert_eq!(
         response
             .headers()
@@ -661,8 +643,7 @@ async fn a_member_range_is_that_slice_of_the_file() {
 ///
 /// `prepare_member`'s `path.is_dir()` check exists for exactly the shape
 /// `taiyaku_read` supports beside a zip: an edition scanned from a directory of
-/// image files rather than packed into one. Task 8 review, carried over —
-/// verified live but never pinned by a test until now.
+/// image files rather than packed into one.
 #[tokio::test]
 async fn a_directory_member_is_refused_not_streamed() {
     let root = crate::test_support::Fixture::new("download-member-directory");
@@ -713,8 +694,7 @@ async fn a_directory_member_is_refused_not_streamed() {
 
 /// [`a_withheld_download_capability_refuses_with_403`]'s edition-route proof,
 /// on the member route: `download::member` calls `refuse_if_cannot_download`
-/// separately from `download::edition`, and nothing pinned that second call
-/// site until now. Task 8 review, carried over.
+/// separately from `download::edition`, and this pins that second call site.
 #[tokio::test]
 async fn a_withheld_download_capability_refuses_a_member_download_too() {
     let tmp = crate::test_support::Fixture::new("download-member-withheld");
@@ -731,7 +711,7 @@ async fn a_withheld_download_capability_refuses_a_member_download_too() {
     );
 }
 
-// --- Task 9: `can_download` and `can_stream`, and the line between them. ---
+// --- `can_download` and `can_stream`, and the line between them. ---
 
 /// Turn one capability off on the fixture account.
 ///
@@ -740,7 +720,7 @@ async fn a_withheld_download_capability_refuses_a_member_download_too() {
 /// here for a real file to buy"), which is fine for the routes it was built
 /// for but means `/download` 404s before any guard runs — not the 200 the
 /// second test below needs to prove `can_stream` really leaves it alone.
-/// `state`'s fixture work `t`/`raw` (`test_support.rs:14`) writes real `.cbz`
+/// `state`'s fixture work `t`/`raw` (`test_support::work`) writes real `.cbz`
 /// members to disk, which is what a passthrough download needs to succeed.
 /// **The account is demoted first — O86.** `Principal::from_account` reads
 /// `can_download` and `can_stream` as unconditionally true for an
@@ -813,18 +793,11 @@ async fn without_can_stream_the_pages_are_403_and_the_download_still_works() {
     all_of(response).await;
 }
 
-// --- Whole-branch review, 2026-08-24: five findings in the download path,
-// three of them mutations the suite let through. ---
-
-/// Finding 1: `generated` checked two of the three ways a member's stream
-/// can disagree with `prepare`'s plan — more pages than planned, and a page
-/// whose declared size or crc32 changed — but never that every planned
-/// entry was actually consumed before the trailer went out. A member that
-/// lost pages between `prepare` reading its central directory and the
-/// stream reading it back — replaced by a byte-identical archive with fewer
-/// pages, say — used to finish with `Ok(())` and a trailer whose
-/// central-directory offset pointed into the payload region rather than
-/// past it.
+/// A member that lost pages between `prepare` reading its central directory and
+/// the stream reading it back — replaced by a byte-identical archive with fewer
+/// pages, say — must make `generated` fail mid-stream, not finish with `Ok(())`
+/// and a trailer whose central-directory offset points into the payload region
+/// instead of past it.
 ///
 /// Exercises `generated` directly rather than through the route: the plan is
 /// built from a real two-page archive the way `prepare` would build it, then
@@ -934,10 +907,9 @@ fn lying_size_cbz(path: &std::path::Path, entries: &[(&str, &[u8])]) {
     std::fs::write(path, &raw).unwrap();
 }
 
-/// Finding 2: the plan-vs-stream guard at the heart of `generated` —
-/// `planned.size != entry.size || planned.crc32 != entry.crc32` — had no
-/// test of its own. The **producer** half of the asymmetry it relies on is
-/// pinned in `taiyaku-read`
+/// The plan-vs-stream guard at the heart of `generated` —
+/// `planned.size != entry.size || planned.crc32 != entry.crc32`. The
+/// **producer** half of the asymmetry it relies on is pinned in `taiyaku-read`
 /// (`for_each_member_page_reports_the_real_size_while_member_page_entries_keeps_the_declared_lie`);
 /// this is the **consumer** half, proven at the route with the same
 /// technique that helper uses: an archive whose central directory declares
@@ -1005,16 +977,16 @@ async fn a_size_lying_archive_aborts_the_download_instead_of_streaming_a_lie() {
         .unwrap();
 
     // Both members hold exactly one page each, so the page *count* the plan
-    // named and the count the stream produced agree — Finding 1's guard, the
-    // one just above this one in `generated`, has nothing to catch here. Only
-    // the size/crc32 guard this test is about can. That is also why the
-    // assertion has to be `errored` alone, not merely "shorter than
-    // promised": `Content-Length` is already wrong the moment the lying
-    // declared size is planned around, so a body shorter than that promise is
-    // true whether or not the guard runs — with the guard disabled,
-    // `generated` still finishes `Ok(())`, having streamed every real page in
-    // full alongside a local header that states a size those bytes do not
-    // have. `errored` is the one signal that only the guard produces.
+    // named and the count the stream produced agree — the page-count guard,
+    // after the page loop in `generated`, has nothing to catch here. Only the
+    // size/crc32 guard this test is about can. That is also why the assertion
+    // has to be `errored` alone, not merely "shorter than promised":
+    // `Content-Length` is already wrong the moment the lying declared size is
+    // planned around, so a body shorter than that promise is true whether or
+    // not the guard runs — with the guard disabled, `generated` still finishes
+    // `Ok(())`, having streamed every real page in full alongside a local
+    // header that states a size those bytes do not have. `errored` is the one
+    // signal that only the guard produces.
     let (bytes, errored) = drain(response).await;
     assert!(
         errored,
@@ -1025,21 +997,13 @@ async fn a_size_lying_archive_aborts_the_download_instead_of_streaming_a_lie() {
     );
 }
 
-/// Finding 3: the route's own range walk — `generated`'s loop over `plan`,
-/// `members` and `send` — had no test that drove the route itself. What
-/// looked like that test, `cbz::tests`'s
-/// `every_split_of_the_output_reassembles_into_the_whole` and
-/// `every_structural_boundary_is_clipped_correctly_on_both_sides`, in fact
-/// drove `emit`/`emit_range` — a copy of the walk hand-written in that test
-/// file — so a bug in `generated`'s own walk could not make either fail.
-/// Both were removed from `cbz::tests` (see that module) and replaced by
-/// this test and the one below, which drive the real route — leaving
-/// `generated` as the walk's only copy, rather than adding a third.
+/// Drives the route's own range walk — `generated`'s loop over `plan`,
+/// `members` and `send` — through the route itself, so a bug in the walk can
+/// make this fail.
 ///
-/// This one locates every local file header in a whole download the same
-/// way the review that found the defect did — a `PK\x03\x04` search rather
-/// than a hard-coded offset list — and requests small windows straddling
-/// each one.
+/// This one locates every local file header in a whole download — a
+/// `PK\x03\x04` search rather than a hard-coded offset list — and requests
+/// small windows straddling each one.
 #[tokio::test]
 async fn a_route_download_matches_the_whole_at_every_local_header_boundary() {
     let tmp = crate::test_support::Fixture::new("download-boundary-walk");
@@ -1097,9 +1061,7 @@ async fn a_route_download_matches_the_whole_at_every_local_header_boundary() {
 /// Spec §10's own prescription — "fetch an edition whole; fetch it in N
 /// randomly-chosen ranges; assert the concatenation is byte-identical" —
 /// driven at the route for the same reason the boundary test above is:
-/// `generated`'s walk is the thing this needs to prove, and `cbz::tests`'s
-/// `emit_range` was a second, independent implementation of it rather than
-/// the route's own.
+/// `generated`'s walk is the thing this needs to prove.
 #[tokio::test]
 async fn n_random_ranges_of_a_route_download_reassemble_into_the_whole() {
     let tmp = crate::test_support::Fixture::new("download-random-ranges");
@@ -1148,14 +1110,12 @@ async fn n_random_ranges_of_a_route_download_reassemble_into_the_whole() {
     }
 }
 
-/// Finding 4: `download::prepare`'s `paths[0].is_file()` check had no coverage —
-/// the corpus helper that exercises the passthrough path
-/// (`a_corpus_edition_of_one_file`) filters on `path.is_file()` itself, so
-/// it can never reach the directory case. A single-member edition whose one
-/// member is a directory of loose pages (`raw-mono` in the real corpus) must
-/// take the generated path, not passthrough: passthrough would report a
-/// directory's block count as `Content-Length` and then fail to read it as a
-/// file at all.
+/// A single-member edition whose one member is a directory of loose pages
+/// (`raw-mono` in the real corpus) must take the generated path, not
+/// passthrough: passthrough would report a directory's block count as
+/// `Content-Length` and then fail to read it as a file at all. The corpus
+/// helper that exercises the passthrough path (`a_corpus_edition_of_one_file`)
+/// filters on `path.is_file()` itself, so it can never reach this case.
 #[tokio::test]
 async fn a_single_member_directory_edition_is_generated_not_passed_through() {
     let root = crate::test_support::Fixture::new("download-single-dir-edition");
@@ -1212,9 +1172,9 @@ async fn a_single_member_directory_edition_is_generated_not_passed_through() {
     );
 }
 
-/// Finding 5: the `bytes=-N` suffix branch of `download::requested_range` had
-/// no test. A zip reader fetching a suffix range to locate the
-/// end-of-central-directory record is exactly the client this exists for.
+/// The `bytes=-N` suffix branch of `download::requested_range`. A zip reader
+/// fetching a suffix range to locate the end-of-central-directory record is
+/// exactly the client this exists for.
 #[test]
 fn a_suffix_range_answers_with_the_last_n_bytes() {
     let mut headers = axum::http::HeaderMap::new();
@@ -1228,12 +1188,11 @@ fn a_suffix_range_answers_with_the_last_n_bytes() {
     );
 }
 
-/// Finding 4: nothing bounded how many downloads could run at once. This
-/// proves the route actually waits on `DOWNLOAD_LIMIT` rather than merely
+/// Proves the route actually waits on `DOWNLOAD_LIMIT` rather than merely
 /// declaring it — exhausting every permit by hand, rather than racing real
-/// concurrent requests into overlapping, because "N requests happen to
-/// overlap inside a window short enough to prove a bound and long enough
-/// not to flake on a loaded machine" is not a knob this test wants to own.
+/// concurrent requests into overlapping, because "N requests happen to overlap
+/// inside a window short enough to prove a bound and long enough not to flake
+/// on a loaded machine" is not a knob this test wants to own.
 ///
 /// **The hazard this trades in exchange: `DOWNLOAD_LIMIT` is a process-wide
 /// `static`, and this test holds three or four of its four permits for most
@@ -1241,31 +1200,27 @@ fn a_suffix_range_answers_with_the_last_n_bytes() {
 /// the end — while `a_two_member_edition_downloads_as_one_readable_cbz` and
 /// the other real downloads in this file run concurrently with it under
 /// `cargo test`'s default parallelism. Those tests carry no timeout of their
-/// own, so today this is only a serialisation point: they simply wait behind
-/// this one for a permit rather than failing.
+/// own, so this is only a serialisation point: they simply wait behind this
+/// one for a permit rather than failing.
 ///
 /// **The second request does not queue ahead of anything — there is nothing
 /// for it to have queued behind by the time it exists.** `tokio::time::timeout`
 /// *drops* the first request at 200 ms, which cancels its `acquire` and
 /// removes it from the semaphore's wait list before it can ever be woken;
 /// the second request is not even constructed until the line after
-/// `held.pop()` runs. Measured with `DOWNLOAD_LIMIT.available_permits()`
-/// immediately around `held.pop()`: 0 before, 1 after — proof no waiter was
-/// queued for that permit at the moment it was freed. What this test
-/// actually leans on is weaker than "the freed permit goes to whoever asked
-/// first": the second request's own `acquire` can lose that freed permit to
-/// another download running concurrently in this binary, in which case it
-/// simply keeps waiting for whichever permit frees next — plausibly that
-/// same download completing and releasing it back. The 5 s timeout has to
-/// be generous enough to absorb that wait, not to honour a queueing
-/// guarantee; `.config/nextest.toml`'s own SLOW margin (30 s, from a 5 s
-/// password-hashing test) suggests it is. Left as a comment rather than
-/// fixed: a dependency (`serial_test`, not in `Cargo.lock`) or a hand-rolled
-/// test-only mutex every future download test would have to remember to take
-/// are both real costs paid against a hazard that has not manifested, the
-/// same "not a number chosen here to fill the gap" standard
-/// `MAX_CONCURRENT_DOWNLOADS`'s own doc comment already applies to the send
-/// timeout beside it.
+/// `held.pop()` runs. What this test actually leans on is weaker than
+/// "the freed permit goes to whoever asked first": the second request's own
+/// `acquire` can lose that freed permit to another download running
+/// concurrently in this binary, in which case it simply keeps waiting for
+/// whichever permit frees next — plausibly that same download completing and
+/// releasing it back. The 5 s timeout has to be generous enough to absorb that
+/// wait, not to honour a queueing guarantee; `.config/nextest.toml`'s own SLOW
+/// margin suggests it is. Left as a comment rather than fixed: a dependency
+/// (`serial_test`, not in `Cargo.lock`) or a hand-rolled test-only mutex every
+/// future download test would have to remember to take are both real costs paid
+/// against a hazard that has not manifested, the same
+/// "a guessed number is dangerous" standard `MAX_CONCURRENT_DOWNLOADS`'s own
+/// doc comment already applies to the send timeout beside it.
 #[tokio::test]
 async fn a_download_waits_for_a_permit_once_every_slot_is_held() {
     let tmp = crate::test_support::Fixture::new("download-concurrency-cap");
@@ -1311,17 +1266,13 @@ async fn a_download_waits_for_a_permit_once_every_slot_is_held() {
 /// `send_with_timeout` is what `IDLE_SEND_TIMEOUT` actually rests on, and this
 /// is the test that has to fail against a version of it with no timeout at
 /// all: a naive `handle.block_on(tx.send(item))`, with `timeout` unused,
-/// blocks forever on a full channel nobody drains. Run against that version
-/// first, this test does not hang for ten minutes — `done_rx.recv_timeout`
-/// bounds the *test's* wait, independent of whatever the function under test
-/// does, and fails with:
+/// blocks forever on a full channel nobody drains. Against that version this
+/// test would not hang for ten minutes — `done_rx.recv_timeout` bounds the
+/// *test's* wait, independent of whatever the function under test does — and
+/// would fail with:
 ///
 /// `send_with_timeout did not return within 2s of a 50ms idle timeout; a
 /// version with no timeout parks on the full channel forever`
-///
-/// which is exactly what happened: run by hand against the pre-timeout
-/// `send_with_timeout`, this assertion is what fired, at the 2 s mark, every
-/// time.
 #[test]
 fn a_stalled_receiver_gives_up_rather_than_parking_forever() {
     let rt = tokio::runtime::Runtime::new().expect("a runtime");

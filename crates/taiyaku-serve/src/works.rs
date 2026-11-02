@@ -1,9 +1,6 @@
 //! What a work is, and how a URL names one.
 //!
-//! There is no library scan here. `taiyaku serve` is handed sidecar paths the
-//! same way `align` is handed members, because deciding which files constitute
-//! a library is Stump's job and doing it badly here would be worse than not
-//! doing it.
+//! There is no library scan here.
 
 use std::path::{Path, PathBuf};
 
@@ -122,14 +119,14 @@ impl Work {
     /// the closure — a 412 for a stale `If-Match`, a 400 for a malformed body,
     /// and so on — so there is no one thing a wrapper here would be *called*.
     ///
-    /// **`Box<Response>` would silence the lint**, and an earlier version of
-    /// this comment claimed otherwise; boxing moves the payload to the heap
-    /// and leaves a pointer, which is exactly the size clippy measures. It is
-    /// not taken because it buys nothing here: correcting a misidentified page
-    /// is a reader clicking a filmstrip tile, not a hot loop, so the 128 bytes
-    /// this allows are not worth an indirection at every call site and an
-    /// unwrap at every match. The lint is right about the size and wrong about
-    /// whether it matters, which is what an `allow` is for.
+    /// **`Box<Response>` would silence the lint**: boxing moves the payload to
+    /// the heap and leaves a pointer, which is exactly the size clippy
+    /// measures. It is not taken because it buys nothing here: correcting a
+    /// misidentified page is a reader clicking a filmstrip tile, not a hot
+    /// loop, so the size this `allow` accepts is not worth an indirection at
+    /// every call site and an unwrap at every match. The lint is right about
+    /// the size and wrong about whether it matters, which is what an `allow`
+    /// is for.
     ///
     /// # Errors
     ///
@@ -244,26 +241,17 @@ pub fn load_works(paths: &[PathBuf]) -> Result<Vec<Work>, String> {
 /// series grouping and a volume number are spec B's scanner's job, not the
 /// aligner's.
 ///
-/// **They stopped being `None` when spec B landed.** This paragraph used to
-/// say both were empty "honestly rather than by omission: nothing writes
-/// `work.series_id` or `work.volume` yet", which was true while
-/// `import::sidecar` was the only writer. `derive.rs` writes both now, so a
-/// scanned library answers this route with a real series name and volume —
-/// measured end to end on 2026-08-18: scanning one corpus edition, exporting
-/// it and serving the result gives
-/// `{"series":"Go-Toubun no Hanayome","volume":1.0}` here. **It is the first
-/// thing the scanner produces that a reader can see.**
+/// `derive.rs` writes both, so a scanned library answers this route with a
+/// real series name and volume.
 ///
 /// A work with no library row, and one imported from a document rather than
-/// derived, both still answer `None` — the aligner has nowhere to record
-/// either, which is why the columns exist. So does the `load_works` path, which
-/// `taiyaku serve <sidecar>...` no longer takes in production since Task 15,
-/// but which this crate's own fixtures and `corpus.rs` still call directly —
-/// answers. `title` and `editions` are not looked up a second time here: they
+/// derived, both answer `None` — the aligner has nowhere to record either,
+/// which is why the columns exist. So does a work that `load_works` reads from
+/// a sidecar file, which this crate's own fixtures and `corpus.rs` call
+/// directly. `title` and `editions` are not looked up a second time here: they
 /// come from `work.sidecar()`, which for a `Work` built by `taiyaku-cli`'s
-/// `serve_work` is itself projected from rows (`taiyaku_library::project::sidecar`)
-/// rather than parsed from a file, so this is still "from rows" for the path
-/// Task 15 made the production one.
+/// `serve_work` is itself projected from rows
+/// (`taiyaku_library::project::sidecar`) rather than parsed from a file.
 #[derive(Debug, serde::Serialize)]
 pub(crate) struct WorkSummary {
     pub(crate) slug: String,
@@ -289,15 +277,15 @@ pub(crate) struct WorkSummary {
 ///
 /// **`visible` filters both `editions` and `cover`.** `None` is an
 /// unrestricted caller — every edition, and the hub — read straight off the
-/// sidecar as before. `Some(keys)` is a restricted one: `editions` drops to
-/// `keys`, and if the hub itself is not in `keys` — a grant can hide the hub
-/// exactly as it can hide any other edition, `browse::cover_target`'s own
-/// trap — the cover falls back to the first surviving edition by key
-/// (`sidecar.editions` is a `BTreeMap`, so this is deterministic), the same
-/// tiebreak `routes::filter_sidecar_editions` uses for `hub` on the sidecar
-/// routes. `list_works` never calls this for a work with no visible edition
-/// at all — `browse::visible_editions` has no entry for one — so the
-/// fallback always finds something.
+/// sidecar. `Some(keys)` is a restricted one: `editions` drops to `keys`, and
+/// if the hub itself is not in `keys` — a grant can hide the hub exactly as it
+/// can hide any other edition, `browse::cover_target`'s own trap — the cover
+/// falls back to the first surviving edition by key (`sidecar.editions` is a
+/// `BTreeMap`, so this is deterministic), the same tiebreak
+/// `routes::filter_sidecar_editions` uses for `hub` on the sidecar routes.
+/// `list_works` never calls this for a work with no visible edition at all —
+/// `browse::visible_editions` has no entry for one — so the fallback always
+/// finds something.
 ///
 /// # Errors
 ///
@@ -379,19 +367,16 @@ fn find_row_by_slug(conn: &rusqlite::Connection, slug: &str) -> Result<Option<i6
 /// The library's own numeric id for a work, minted on first write if this is
 /// the first state anything has recorded against it.
 ///
-/// **Bridges two identities this task did not get to unify.**
-/// `ServeState.works` holds `Work`s keyed by slug (`work.id`, a `String`);
-/// `taiyaku-library` keys `progress`, `notes` and `truth` on the numeric
-/// `work.id` row `taiyaku_library::import::sidecar` assigns. A `Work` built
-/// by `taiyaku-cli`'s `serve_work` — every `taiyaku serve <sidecar>...`
-/// invocation since Task 15 — already has a matching row, its slug having
-/// come from one, so this is a lookup and never a mint. A `Work` built by
-/// `load_works`, which is now this crate's own fixtures and `corpus.rs`
-/// only, has never been imported, so nothing in `library`'s `work` table
-/// names it yet. Looked up by slug on every call rather than
-/// cached on `Work`, because `Work` has to keep its shape (Task 12's whole
-/// claim) — there is nowhere on it to cache a numeric id even for the one
-/// call site the answer would save a query on.
+/// **Bridges two identities.** `ServeState.works` holds `Work`s keyed by slug
+/// (`work.id`, a `String`); `taiyaku-library` keys `progress`, `notes` and
+/// `truth` on the numeric `work.id` row `taiyaku_library::import::sidecar`
+/// assigns. A `Work` built by `taiyaku-cli`'s `serve_work` already has a
+/// matching row, its slug having come from one, so this is a lookup and never
+/// a mint. A `Work` built by `load_works`, which this crate's own fixtures and
+/// `corpus.rs` call, has never been imported, so nothing in `library`'s `work`
+/// table names it. Looked up by slug on every call rather than cached on
+/// `Work`: there is nowhere on it to cache a numeric id, even for the one call
+/// site the answer would save a query on.
 ///
 /// A row minted here carries only what the three state tables' foreign keys
 /// need to resolve, plus the columns `work` declares `NOT NULL` —
@@ -400,7 +385,7 @@ fn find_row_by_slug(conn: &rusqlite::Connection, slug: &str) -> Result<Option<i6
 /// placeholder**, `bridge:{slug}` rather than a real content hash: nothing
 /// here re-derives one (that is `taiyaku_library::identity::content_key`,
 /// which wants the hub edition's member hashes in a shape this function has
-/// no reason to recompute), and nothing yet reads this row's `content_key`
+/// no reason to recompute), and nothing reads this row's `content_key`
 /// for any purpose `import::sidecar` itself does not already own.
 ///
 /// `INSERT OR IGNORE` rather than a bare `INSERT`: `put_progress` writes with
@@ -431,10 +416,7 @@ pub(crate) fn row_id_for_write(conn: &rusqlite::Connection, work: &Work) -> Resu
 /// reason: a bare `INSERT INTO work` naming `title` but not `title_derived`
 /// leaves the column NULL (it carries no `NOT NULL`, no default), and
 /// `librarydoc::apply`'s `title = COALESCE(?2, title_derived)` assumes every
-/// row already has one — this was the one production `INSERT` that did not
-/// (I3), and a work minted here that later had its hand title cleared through
-/// a PATCH surfaced SQLite's own `NOT NULL` error as a bare 409 rather than
-/// restoring anything.
+/// row already has one.
 ///
 /// # Errors
 ///
@@ -480,23 +462,20 @@ fn direction_text(direction: taiyaku_core::Direction) -> &'static str {
 
 /// Every `work` row in `library`, as a servable [`Work`].
 ///
-/// **Restored deliberately**, and `lib.rs`'s comment about its deletion is
-/// rewritten rather than left standing. It was removed in whole-branch review
-/// 2 as a projection nothing ran: `taiyaku serve <sidecar>...` builds its works
-/// one path at a time in `taiyaku-cli`'s `serve_work`, because it serves the
-/// works it was *handed*. Spec C1 is the caller that comment predicted —
-/// `serve --db` with no paths at all — and a browse UI over a scanned library
-/// needs it, since a scanned work has no path to be handed.
+/// **Built from rows, not from paths.** `taiyaku serve <sidecar>...` builds
+/// its works one path at a time in `taiyaku-cli`'s `serve_work`, because it
+/// serves the works it was *handed*; a scanned work has no path to be handed,
+/// so a browse UI over a scanned library needs works built from the rows.
 ///
 /// **A NULL `sidecar_path` becomes an empty `PathBuf`**, which
 /// [`Work::has_document`] reads as "no document". See spec C1 §5.3 for what
 /// that costs at the one route that writes a file.
 ///
-/// **No longer what `serve` itself runs.** `serve` with no paths builds a
+/// **`serve` itself does not run this.** `serve` with no paths builds a
 /// live [`crate::Works`] through `Works::library`, which reads the same rows
-/// through the same [`crate::registry::work_rows`]. This stays for the
+/// through the same [`crate::registry::work_rows`]. This is for the
 /// fixtures that build a fixed registry over a library, the way `load_works`
-/// stays for the ones built from files.
+/// is for the ones built from files.
 ///
 /// # Errors
 ///

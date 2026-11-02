@@ -2,8 +2,8 @@ use super::*;
 
 /// The source is handed one member and an offset inside it; deciding
 /// which member that is belongs to `taiyaku_core::Edition`. This test
-/// pins the narrowed contract: no edition key, no flat index, no
-/// arithmetic below this line.
+/// pins the contract: no edition key, no flat index, no arithmetic below
+/// this line.
 #[test]
 fn a_source_serves_one_member_at_an_offset_within_it() {
     let tmp = crate::test_support::Fixture::new("source");
@@ -28,10 +28,8 @@ fn a_source_serves_one_member_at_an_offset_within_it() {
     );
 }
 
-/// The arithmetic the source no longer does still has to happen, and it
-/// has to give the same answers: page 2 of this two-member edition is the
-/// second member's first page. This is the same property the old test
-/// asserted, now checked one level up.
+/// The arithmetic the source does not do has to happen elsewhere: page 2 of
+/// this two-member edition is the second member's first page.
 #[test]
 fn state_walks_a_flat_index_across_member_boundaries() {
     let tmp = crate::test_support::Fixture::new("state-page");
@@ -99,12 +97,11 @@ fn a_page_is_served_as_the_image_type_its_extension_names() {
     assert_eq!(content_type("p1.jpg", b"not really a jpeg"), "image/jpeg");
 }
 
-/// The extension is not evidence, and the corpus says so: 114 of its 8,637
-/// page entries are PNG files named `.jpg`, all in one fan-translated
-/// chapter of the primary volume. Trusting the name serves 1.3% of that
-/// library under a header that is simply false — which a browser `<img>`
-/// re-sniffs and forgives, and the OPDS client this type exists for does
-/// not. Same rule as `taiyaku_read`'s container sniff, one level down.
+/// The extension is not evidence, and the corpus says so: some of its page
+/// entries are PNG files named `.jpg`. Trusting the name serves a header that
+/// is simply false — which a browser `<img>` re-sniffs and forgives, and the
+/// OPDS client this type exists for does not. Same rule as `taiyaku_read`'s
+/// container sniff, one level down.
 #[test]
 fn the_bytes_outrank_the_extension_when_they_disagree() {
     let png = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR";
@@ -131,9 +128,8 @@ fn the_bytes_outrank_the_extension_when_they_disagree() {
     assert_eq!(sniffed_type(b""), None);
 }
 
-/// Two of the sniffs need *both* halves of their test, and `&&` becoming
-/// `||` in either survived every existing case — because every buffer the
-/// other tests hand it satisfies both halves or neither.
+/// Two of the sniffs need *both* halves of their test, so each is handed a
+/// buffer that satisfies only one of them.
 ///
 /// A RIFF container is not necessarily a WebP: `.wav` opens `RIFF` too, and
 /// calling one `image/webp` sends a browser a header it will act on. The

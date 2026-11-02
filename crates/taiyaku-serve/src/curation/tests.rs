@@ -115,12 +115,11 @@ async fn the_inbox_lists_proposals_and_their_counts() {
     );
 
     // **The two titles, which are what makes a collapsed row identifiable.**
-    // C3 §3's inbox is a list rather than a queue so a person can see that 29
-    // of 37 rows ask the same question; a row carrying ids and a truncated
-    // sentence cannot be told from the row above it. The store joins for
-    // these (`proposals::list`) and this route is the only one that sends
-    // them — the detail route has both titles inside `subject`/`target`
-    // already.
+    // C3 §1's inbox is a list rather than a queue so a person can see that
+    // many rows ask the same question; a row carrying ids and a truncated
+    // sentence cannot be told from the row above it. The store joins for these
+    // (`proposals::list`) and this route is the only one that sends them — the
+    // detail route has both titles inside `subject`/`target` already.
     //
     // The exact strings, and both of them: the subject is the *suffixed*
     // series and the target is the base one, so a handler reading the same
@@ -159,9 +158,8 @@ async fn the_inbox_lists_proposals_and_their_counts() {
     // not.** That split is a decision — the tabs are what a kind is chosen
     // from, so a tab counted with its own filter applied would read 0 the
     // moment somebody selected it, and the standard faceted shape computes
-    // each facet with its own filter removed — and until this assertion it
-    // was a decision nothing held: the loop above reads `proposals` and never
-    // `counts`, so `counts.retain(|k, _| k == kind)` passed the whole suite.
+    // each facet with its own filter removed — and nothing in the loop above
+    // holds it: that loop reads `proposals` and never `counts`.
     let by_kind = get_json(
         &router,
         "/api/library/proposals?state=open&kind=same-series&min_score=0",
@@ -173,10 +171,8 @@ async fn the_inbox_lists_proposals_and_their_counts() {
          `same-series` tab is the one being read: {by_kind}"
     );
 
-    // `min_score` is the parameter that has to agree with the list, and did
-    // not: this same request answered `{"counts":{"edition-of":1},
-    // "proposals":[]}` — a tab reading "1" over an empty list — until
-    // `counts_by_kind` took a threshold of its own.
+    // `min_score` is the parameter that has to agree with the list: a count
+    // that ignored it would leave a tab reading "1" over an empty list.
     let above_everything = get_json(&router, "/api/library/proposals?state=open&min_score=9").await;
     assert_eq!(
         above_everything["counts"]
@@ -285,11 +281,10 @@ async fn the_threshold_narrows_the_counts_and_the_list_together() {
 ///
 /// `proposals::list` reads an absent `state` as every state and
 /// `counts_by_kind` takes one state, so the two need an answer here — which
-/// is `DEFAULT_COUNTED_STATE`, and which nothing pinned: changing it to
-/// `"dismissed"` left the whole suite green, and the inbox's first load would
-/// have counted the wrong state's tabs with nothing saying so. The fixture
-/// carries one open proposal and one dismissed one **of different kinds**, so
-/// each candidate default answers a different map rather than the same one.
+/// is `DEFAULT_COUNTED_STATE`, and any other default would count the wrong
+/// state's tabs on the inbox's first load. The fixture carries one open
+/// proposal and one dismissed one **of different kinds**, so each candidate
+/// default answers a different map rather than the same one.
 #[tokio::test]
 async fn the_counts_a_request_naming_no_state_carries_are_the_open_ones() {
     let (router, state, _fixture) = test_support::router_over_two_suffixed_series();
@@ -349,8 +344,7 @@ async fn a_reader_is_refused_the_inbox() {
 ///
 /// Enumerated for the reason `routes::guarded_routes`'s own doc comment gives
 /// for enumerating the guard: a reviewer's checklist goes stale the first time
-/// someone adds a route and does not think about it. Every row here but the
-/// first would otherwise have shipped ungated with a green suite.
+/// someone adds a route and does not think about it.
 #[tokio::test]
 async fn every_curation_route_refuses_a_reader() {
     let (router, _state, _fixture) = test_support::router_over_a_scanned_work_as_a_reader();
@@ -630,7 +624,7 @@ async fn dismissing_takes_a_proposal_out_of_the_open_list() {
 ///
 /// `directories` and `formats` are lists because the store hands over facts
 /// and the client decides how to render them — a side spanning two
-/// directories once crossed the wire as `"{root} (2 directories)"`, prose the
+/// directories joined into `"{root} (2 directories)"` would be prose the
 /// client could only re-parse or print. A test that only checked the fields
 /// existed would pass over a handler that joined them back up.
 #[tokio::test]
@@ -741,17 +735,6 @@ async fn a_store_error_is_a_500_rather_than_a_panic() {
 /// `present` looks up intact and breaks the sweep underneath it — a fault
 /// `proposals::lookup` cannot see, so each route reaches the call its own
 /// error arm was written for.
-///
-/// `GET /{id}` was the regression: with `present` in front of it, `detail`'s
-/// 500 came from `present` and mutating `evidence`'s own `map_err` to
-/// `NoAnswer::Refused` passed all 400 tests.
-///
-/// `POST /{id}/resolution` was worse than unpinned — it answered **400** for
-/// this, measured verbatim as `reading scan entries for the dry run: no such
-/// table: scan_entry`, because `proposals::resolves` folds a rule it cannot
-/// evaluate together with a read that failed into one `Err`. On the route a
-/// rule-editing form calls at every keystroke, that told a client to fix its
-/// rule while the database was gone.
 #[tokio::test]
 async fn a_store_fault_under_a_real_id_is_a_500_on_both_routes_that_read_beneath_it() {
     let (router, state, _fixture) = test_support::router_over_two_suffixed_series();
@@ -799,11 +782,10 @@ async fn a_store_fault_under_a_real_id_is_a_500_on_both_routes_that_read_beneath
 /// A failure in the **counts** is a 500, with the list beside them answering.
 ///
 /// `list` and `counts_by_kind` read the same table, so the store test above
-/// fails the first of them and the second's `map_err` is never reached —
-/// mutating it to `NoAnswer::Refused` passed all 400 tests. What lets one
-/// fail while the other answers is the filter they do not share: `kind`
-/// narrows the list and deliberately does not narrow the counts, for the
-/// reason `proposals::counts_by_kind`'s own doc gives. So a row the counts
+/// fails the first of them and the second's `map_err` is never reached. What
+/// lets one fail while the other answers is the filter they do not share:
+/// `kind` narrows the list and deliberately does not narrow the counts, for
+/// the reason `proposals::counts_by_kind`'s own doc gives. So a row the counts
 /// cannot decode, of a kind the request does not list, is read by the counts
 /// and not by the list — and the assertion below reads which of the two the
 /// message came from rather than trusting that.
@@ -869,9 +851,7 @@ async fn a_failure_in_the_counts_is_a_500_even_though_the_list_beside_it_answere
 ///
 /// `proposals::dismiss` refuses one — "un-accept it first" — and that is a
 /// statement about the state of the library which the caller can act on,
-/// which is the whole of `NoAnswer::Refused`'s argument. Nothing drove it:
-/// every other dismiss in this file dismisses an open row, so mutating the
-/// arm to `NoAnswer::Failed` passed all 400 tests.
+/// which is the whole of `NoAnswer::Refused`'s argument.
 #[tokio::test]
 async fn dismissing_an_accepted_proposal_is_refused_rather_than_reported_as_a_failure() {
     let (router, state, _fixture) = test_support::router_over_two_suffixed_series();
@@ -924,15 +904,9 @@ fn a_store_fault_on(state: &crate::ServeState, on: &str) {
 
 /// A store fault **during an accept** is a 500, not the 409 a refusal gets.
 ///
-/// `proposals::accept_with` answered its refusals and its store failures
-/// through one `Result<_, String>`, and this route mapped that one type onto
-/// `NoAnswer::Refused`: measured on `main` at `6a2e72d` with this test, the
-/// `INSERT INTO rule` below failing answered **409** with the trigger's own
-/// sentence, telling a client the library's state was in the way when the
-/// store had failed. O70.
-///
-/// The rule is the one the server previewed, so every refusal an accept makes
-/// is passed before the write is reached: what fails is the write itself.
+/// See O70. The rule is the one the server previewed, so every refusal an
+/// accept makes is passed before the write is reached: what fails is the
+/// write itself.
 #[tokio::test]
 async fn a_store_fault_during_an_accept_is_a_500_rather_than_a_conflict() {
     let (router, state, _fixture) = test_support::router_over_two_suffixed_series();
@@ -963,9 +937,7 @@ async fn a_store_fault_during_an_accept_is_a_500_rather_than_a_conflict() {
 ///
 /// The fault above is on the write; this one is in the dry run `accept_with`
 /// makes before it — `resolves`' sweep of `scan_entry` — which reaches the
-/// route through a different `?`. Measured on `main` at `6a2e72d` with this
-/// test: **409**, quoting `reading scan entries for the dry run: no such
-/// table: scan_entry`.
+/// route through a different `?`.
 #[tokio::test]
 async fn a_failed_read_during_an_accept_is_a_500_rather_than_a_conflict() {
     let (router, state, _fixture) = test_support::router_over_two_suffixed_series();
@@ -995,9 +967,8 @@ async fn a_failed_read_during_an_accept_is_a_500_rather_than_a_conflict() {
 
 /// A store fault **during an un-accept** is a 500, not a 409.
 ///
-/// Measured on `main` at `6a2e72d` with this test: **409**. The fault is on
-/// the `DELETE FROM rule` that follows the reopening `UPDATE` inside one
-/// transaction, so the state assertion below is also the rollback's.
+/// The fault is on the `DELETE FROM rule` that follows the reopening `UPDATE`
+/// inside one transaction, so the state assertion below is also the rollback's.
 #[tokio::test]
 async fn a_store_fault_during_an_unaccept_is_a_500_rather_than_a_conflict() {
     let (router, state, _fixture) = test_support::router_over_two_suffixed_series();
@@ -1023,8 +994,6 @@ async fn a_store_fault_during_an_unaccept_is_a_500_rather_than_a_conflict() {
 }
 
 /// A store fault **during a dismiss** is a 500, not a 409.
-///
-/// Measured on `main` at `6a2e72d` with this test: **409**.
 #[tokio::test]
 async fn a_store_fault_during_a_dismiss_is_a_500_rather_than_a_conflict() {
     let (router, state, _fixture) = test_support::router_over_two_suffixed_series();
@@ -1152,7 +1121,7 @@ async fn a_store_fault_during_a_reopen_is_a_500_rather_than_a_conflict() {
 }
 
 /// A store `Err` for a proposal **gone by the time the store read it** is a
-/// 404, and any other is the 500 a failed write gets (O72's fix round).
+/// 404, and any other is the 500 a failed write gets (O72).
 ///
 /// The race that produces the first — another process deleting the row
 /// between `present` and the write's own read — cannot be staged
@@ -1181,12 +1150,12 @@ async fn a_write_error_for_a_proposal_that_has_gone_is_a_404_and_any_other_a_500
 /// A rule the engine cannot evaluate, handed to the **accept** route, is still
 /// a 409 naming why.
 ///
-/// Not the 400 the dry run answers for the same rule: this route has never
-/// asked `proposals::evaluable` first, and `accept_with` refuses such a rule
-/// itself. What this pins is that the refusal stayed a refusal once
-/// `accept_with`'s store failures became `Err` — the check lives in
-/// `resolves`' sweep, whose `Err` is a failed read, so an `accept_with` that
-/// left it there would answer 500 for a typo in a pattern.
+/// Not the 400 the dry run answers for the same rule: this route does not ask
+/// `proposals::evaluable` first, and `accept_with` refuses such a rule
+/// itself. What this pins is that the refusal is a refusal and not a store
+/// failure — the check lives in `resolves`' sweep, whose `Err` is a failed
+/// read, so an `accept_with` that left it there would answer 500 for a typo in
+/// a pattern.
 #[tokio::test]
 async fn a_rule_that_cannot_be_evaluated_is_still_refused_by_the_accept_route() {
     let (router, state, _fixture) = test_support::router_over_two_suffixed_series();
@@ -1214,12 +1183,10 @@ async fn a_rule_that_cannot_be_evaluated_is_still_refused_by_the_accept_route() 
 /// running**.
 ///
 /// Every arm of the `NoAnswer` mapping is driven through the routes; the
-/// join error `spawn_blocking` itself hands back is not, and replacing
-/// `panicked`'s body with `Response::default()` — a 200 with an empty body —
-/// passed all 400 tests.
+/// join error `spawn_blocking` itself hands back is not.
 ///
-/// **The helper is called directly**, because these six closures offer no
-/// lever to panic on purpose: every store call hands back a `Result`, and
+/// **The helper is called directly**, because these closures offer no lever to
+/// panic on purpose: every store call hands back a `Result`, and
 /// `Library::conn` recovers a poisoned mutex rather than unwrapping it. The
 /// `JoinError` is a real one from a real `spawn_blocking` that panicked, so
 /// this is the value the handlers' `Err` arms actually receive rather than a
@@ -1249,16 +1216,15 @@ async fn a_closure_that_panicked_is_a_500_naming_what_was_running() {
 /// `ProposedRule::root_id`'s own doc is *"`NULL` means every root"*, so a
 /// `rule_json` that dropped it would show — and then, handed back by a client
 /// that displayed what it was shown, write — a rule scoped to every root in
-/// the library instead of the one the proposal is about. Emitting `Null` for
-/// it left the whole suite green: no test read the field, and the two
-/// fixtures here hold one root each, so the wrong answer and the right one
-/// decide the same material. `set_kind` and `set_language` were unpinned the
-/// same way.
+/// the library instead of the one the proposal is about. The two fixtures
+/// here hold one root each, so the wrong answer and the right one decide the
+/// same material.
 ///
 /// Both directions, against a rule whose fields are all populated: the
 /// outbound half through the route, where `root_id` and `set_kind` carry
 /// values the server derived and can be compared to the library's own rows,
-/// and the inbound half through an accept whose body sets the third.
+/// and the inbound half through an accept whose body sets `set_language`,
+/// the third.
 #[tokio::test]
 async fn the_rule_carries_its_root_and_its_columns_in_both_directions() {
     let (router, state, _fixture) = test_support::router_over_two_suffixed_series();
@@ -1321,10 +1287,10 @@ async fn the_rule_carries_its_root_and_its_columns_in_both_directions() {
 ///
 /// The route test above cannot reach every field: `preview` writes `None` for
 /// `set_language`, so a `rule_json` that emitted `Null` for it renders
-/// identically to one that does not — the same shape as the `root_id` gap it
-/// was written for. This is the pair's own contract, stated over a rule with
-/// nothing left at a default: what [`rule_json`] writes, [`rule_from_json`]
-/// reads back unchanged.
+/// identically to one that does not — the same shape as the `root_id` case
+/// above. This is the pair's own contract, stated over a rule with nothing
+/// left at a default: what [`rule_json`] writes, [`rule_from_json`] reads
+/// back unchanged.
 #[test]
 fn a_rule_survives_the_pair_that_carries_it_with_every_field_set() {
     let sent = taiyaku_library::proposals::ProposedRule {
@@ -1347,14 +1313,9 @@ fn a_rule_survives_the_pair_that_carries_it_with_every_field_set() {
 
 /// An `id` naming no proposal is one condition, and gets **one** status.
 ///
-/// It got whichever status the store call that tripped over it was mapped to.
-/// Measured with `present` removed from each handler: `GET .../9999` → 500,
-/// `POST .../9999/resolution` → 400, and the write routes → 409 — and the dry
-/// run did not even quote the same store sentence as the others (`looking up
-/// proposal 9999: Query returned no rows` against `…: there is no such
-/// proposal`). A 409 is a refusal about the state of the library, which a
-/// caller can act on; an id that does not exist is not that, it is not a 400
-/// about the caller's own rule either, and neither is it this server failing.
+/// A 409 is a refusal about the state of the library, which a caller can act
+/// on; an id that does not exist is not that, it is not a 400 about the
+/// caller's own rule either, and neither is it this server failing.
 ///
 /// The two rule-carrying routes are driven with a **real** rule, so a 404
 /// here is the proposal being absent rather than the body being unreadable —
@@ -1403,10 +1364,10 @@ fn an_administrator() -> crate::auth::Principal {
         role: crate::auth::Role::Admin,
         can_download: true,
         can_stream: true,
-        // The schema's default. These fixtures drive routes that predate the
-        // capability, and a `true` here would mean an administrator inherits
-        // it after all — the thing `auth::tests::an_administrator_does_not
-        // _inherit_can_stamp` exists to refuse.
+        // The schema's default, and a `true` here would mean an administrator
+        // inherits `can_stamp` after all — the thing
+        // `auth::tests::an_administrator_does_not_inherit_can_stamp` exists
+        // to refuse.
         can_stamp: false,
         access: taiyaku_library::account::Access::Every,
     }
@@ -1414,41 +1375,29 @@ fn an_administrator() -> crate::auth::Principal {
 
 /// **No curation route does its SQLite work on the async worker.**
 ///
-/// Every handler here held `state.library.conn()` — a `MutexGuard` — across
-/// the whole of its work, and two of them sweep every `scan_entry` row in the
+/// Every handler here holds `state.library.conn()` — a `MutexGuard` — across
+/// the whole of its work, and three of them sweep every `scan_entry` row in the
 /// library: `POST /{id}/resolution`, which C3's rule-editing form calls on
-/// every keystroke, and `GET /{id}`. Measured in release over synthetic
-/// entries, the runtime was stalled for **exactly as long as the handler
-/// ran** — hundreds of milliseconds at a quarter-million rows, which is one
-/// row per file *and* per directory in an ordinary few-thousand-volume
-/// library. That equality is the finding this test is built on, and it is the
-/// part that reproduces.
+/// every keystroke, `GET /{id}`, and `POST /{id}/accept`. Run on the async
+/// worker, a handler stalls the runtime for as long as it runs.
 ///
 /// **The milliseconds are deliberately not quoted here, and `docs/notes.md`
-/// says why.** This doc used to carry a pair per row count, and a second
-/// record of the same quantity in `notes.md` disagreed with it two-fold. The
-/// re-measurement that settled it ("What a swept row actually costs",
-/// 2026-08-26) found both honest and neither general: at a fixed 250,005 rows
-/// the same two routes move by 2.4× with nothing varying but the *length* of
-/// `scan_entry.rel_path`, so the cost is per byte of path swept and a figure
-/// quoted against a row count is a figure about whichever synthetic paths
-/// that harness generated. Any number here would be the same claim again.
-/// That is O8/O12's failure class, which `routes.rs` answers with
-/// `spawn_blocking` in every handler but `get_sidecar`, which answers from
-/// memory and, since O115, asks a grant that names roots on the blocking
-/// pool — and which
-/// `auth::guard` answers for the middleware every request already passes
-/// through.
+/// says why** ("What a swept row actually costs"): the cost is per byte of
+/// path swept, so a figure quoted against a row count is a figure about
+/// whichever synthetic paths a harness generated. That is O8/O12's failure
+/// class, which `routes.rs` answers with `spawn_blocking` in every handler but
+/// `get_sidecar`, which answers from memory and asks a grant that names roots
+/// on the blocking pool (O115) — and which `auth::guard` answers for the
+/// middleware every request already passes through.
 ///
-/// **All six, not just the two that sweep.** The two heavy ones are what the
-/// measurement is about, but a rule that holds for four of six routes in a
-/// module is a rule the next route added will be written against wrongly —
-/// which is the same argument `every_curation_route_refuses_a_reader` makes
-/// about the admin gate, and it is the reason this is a loop over the module
-/// rather than a note in a doc comment.
+/// **All of them, not just the ones that sweep.** A rule that holds for some of
+/// a module's routes is a rule the next route added will be written against
+/// wrongly — which is the same argument `every_curation_route_refuses_a_reader`
+/// makes about the admin gate, and it is the reason this is a loop over the
+/// module rather than a note in a doc comment.
 ///
-/// Ordered so the three writes are each driven in a state that lets them
-/// succeed: an accept, then its undo, then a dismiss of the reopened row.
+/// Ordered so each write is driven in a state that lets it succeed: an accept,
+/// then its undo, then a dismiss of the reopened row, then a reopen.
 #[tokio::test(flavor = "current_thread")]
 async fn no_curation_route_stalls_the_runtime() {
     use axum::extract::{Extension, Path as AxPath, Query, State};

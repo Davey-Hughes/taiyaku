@@ -7,11 +7,8 @@
 //! invariant in each is a copy that drifts. This file's only job around them
 //! is to give each the right status code.
 //!
-//! **Not `config_api`.** That module is 1872 lines and its tests 3006; a third
-//! and fourth route family inside it would put the pair past 2500 and 4000.
-//! It does lend this one its [`admin_or_forbidden`], which it already declared
-//! `pub(crate)` and whose own doc comment anticipated exactly this rather than
-//! a third copy.
+//! **Not `config_api`.** A third and fourth route family inside that module
+//! would lengthen it and its tests.
 //!
 //! **No password ever leaves here.** [`taiyaku_library::account::Account`]
 //! carries no hash by construction — `by_name` returns it separately for
@@ -39,17 +36,11 @@ enum UserAnswer {
     Missing(i64),
     /// Nothing under `{id}` matches the session or key named — 404.
     ///
-    /// **A variant of its own, because [`Self::Missing`]'s body was wrong
-    /// here.** Revoking a stale session answered "there is no account 3" on a
-    /// screen showing account 3: the right status attached to the wrong noun.
-    ///
-    /// **And the first wording of this one was its mirror image.** It read
-    /// "this account has no such session", which asserts an account exists —
-    /// `account::revoke_session` never checks that, so
-    /// `DELETE /api/library/users/4242/sessions/…` claimed account 4242 was
-    /// real. Both halves are true of the message below, which names only what
-    /// was looked for. Found by the review of C4 PR 2's fix round, which is
-    /// the mirror the first fix left behind.
+    /// **A variant of its own, because [`Self::Missing`]'s body is wrong
+    /// here.** It says there is no account, which a stale session or key under
+    /// an account that exists does not mean. The message below names only what
+    /// was looked for, since `account::revoke_session` never checks that the
+    /// account exists.
     NoSuch(&'static str),
     /// The caller's own mistake: a body that could not be read, a name
     /// already taken, a role the schema's `CHECK` refuses — 400.
@@ -83,9 +74,7 @@ impl IntoResponse for UserAnswer {
 ///
 /// **Shared by all three writers.** `update`, `remove` and `removal_cost`
 /// return the same [`account::WriteError`], and mapping it at each call site
-/// is how two of the three ended up disagreeing: a role the schema refuses
-/// was a 400 from `POST` and a 409 from `PATCH`, and a dry run's refusal was
-/// a 500 while the real removal's was a 409.
+/// would let them disagree about the status of the same refusal.
 fn answered(why: account::WriteError) -> UserAnswer {
     match why {
         account::WriteError::Unusable(why) => UserAnswer::Unusable(why),
@@ -129,7 +118,7 @@ fn user_json(
         "can_stamp": account.can_stamp,
         // An account still holding `credential::LOCKED` has a row and no way
         // in, and nothing else about it says so — `account::list`'s own doc
-        // comment calls this "the second half worth printing".
+        // comment calls this half "the one worth printing".
         "can_log_in": can_log_in,
         "sessions": sessions.iter().map(|s| serde_json::json!({
             "id": s.id,
@@ -157,14 +146,13 @@ fn user_json(
 ///
 /// **`current_token` is the caller's own session cookie**, and it is a
 /// parameter rather than `None` because [`SessionSummary::current`] is
-/// otherwise a constant on this route: it was, and C4 §6.2's "whether it is
-/// the browser doing the asking" was a field that shipped and never said yes —
-/// on the one screen where revoking the wrong row signs the administrator out
-/// of the browser they are working in. Only the caller's own account can hold
-/// a session whose sha256 matches, so passing it for every account is correct
-/// rather than merely harmless: [`account::sessions_of`] compares hashes, and
-/// inverting one is the sha256 preimage problem. `session::list_sessions` has
-/// passed it since spec A2; this route is the one that did not.
+/// otherwise a constant on this route, so C4 §6.2's "whether it is the browser
+/// doing the asking" would never say yes — on the one screen where revoking
+/// the wrong row signs the administrator out of the browser they are working
+/// in. Only the caller's own account can hold a session whose sha256 matches,
+/// so passing it for every account is correct rather than merely harmless:
+/// [`account::sessions_of`] compares hashes, and inverting one is the sha256
+/// preimage problem.
 fn assembled(
     conn: &rusqlite::Connection,
     account: &Account,
@@ -242,12 +230,11 @@ pub(crate) async fn create_user(
         )
         .into_response();
     };
-    // **A non-string `role` is refused rather than defaulted.** `and_then(
-    // as_str).unwrap_or("user")` collapses "absent" and "present but not a
-    // string" into one answer, so `{"role": 123}` silently created a reader
-    // and answered 200 where the caller meant something — while
-    // [`user_patch_from_json`] 400s on the identical shape, so the two routes
-    // disagreed about the same body. Found by C4 PR 2's whole-branch review.
+    // **A non-string `role` is refused rather than defaulted.** Defaulting it
+    // with `and_then(as_str).unwrap_or("user")` would collapse "absent" and
+    // "present but not a string" into one answer, so `{"role": 123}` would
+    // silently create a reader where [`user_patch_from_json`] 400s on the
+    // identical shape.
     let role = match body.get("role") {
         None | Some(serde_json::Value::Null) => "user".to_string(),
         Some(serde_json::Value::String(v)) => v.clone(),
@@ -404,7 +391,6 @@ fn user_patch_from_json(body: &serde_json::Value) -> Result<account::Patch, Stri
 /// are working in, on the next request. `/api/password` is the self-service
 /// route that gets this right, and C4 §8 already frames this screen as "the
 /// administrative view of *other people*". Refused with that route named.
-/// Found by C4 PR 2's whole-branch review.
 pub(crate) async fn patch_user(
     State(state): State<Arc<ServeState>>,
     Extension(principal): Extension<Principal>,
@@ -443,18 +429,13 @@ pub(crate) async fn patch_user(
             return Err(UserAnswer::Missing(id));
         }
         // **The store says which of the three this is; this route only maps
-        // it to a status.** `account::update` returned a bare `String` until
-        // C4 PR 2's whole-branch review, and everything it could fail with —
-        // C4 §4's refusals, a role the schema's `CHECK` rejects, a disk fault
-        // — arrived as one 409. So `POST` answered 400 for `"role":
-        // "moderator"` while `PATCH` answered 409 for the identical mistake,
-        // and a full disk was reported to the client as a conflict.
+        // it to a status.** The three are `account::WriteError`'s cases, and
+        // `answered` maps them.
         //
         // **The password goes through the same call**, inside the same
-        // transaction as the columns. It used to be a `set_password`
-        // afterwards, which opens no scope of its own — so a store fault on
-        // the password left the role and capability changes committed beside
-        // a failed request.
+        // transaction as the columns: a store fault on a password set
+        // separately would leave the role and capability changes committed
+        // beside a failed request.
         let account = account::update(&conn, id, &patch, Some(acting_as)).map_err(answered)?;
         let can = can_log_in(&conn, id).map_err(UserAnswer::Failed)?;
         assembled(&conn, &account, can, token.as_deref()).map_err(UserAnswer::Failed)
@@ -473,9 +454,9 @@ pub(crate) async fn patch_user(
 /// **`deny_unknown_fields`, for the reason `config_api::DryRunQuery`
 /// carries in full**: without it `serde_urlencoded` drops any key this struct
 /// does not name rather than refusing the request, so `?dryrun=true` — one key
-/// off from the one this struct actually reads — answered `200 OK` and ran the
-/// real, committed removal on the route PR 1's own whole-branch review calls
-/// the most destructive in the product. This route is the second-most.
+/// off from the one this struct actually reads — would answer `200 OK` and run
+/// the real, committed removal. This route is the second-most destructive in
+/// the product.
 #[derive(Debug, Default, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct DeleteUserQuery {
@@ -521,14 +502,12 @@ pub(crate) async fn delete_user(
         {
             return Err(UserAnswer::Missing(id));
         }
-        // **Both calls map all three cases, and the quote most of all.** With
-        // `removal_cost`'s errors folded into `Failed`, a dry run of removing
-        // the last administrator answered **500** where the real removal
-        // answered 409 — a routine refusal reported as a server fault, on the
-        // safety feature of the destructive route. And `remove`'s folded into
-        // `Refused` made a disk fault a conflict, which is the defect the
-        // whole-branch review named for `update` and which survived one
-        // function over until this was re-read.
+        // **Both calls map all three cases, and the quote most of all.**
+        // Folding `removal_cost`'s errors into `Failed` would answer a dry run
+        // of removing the last administrator with **500** where the real
+        // removal answers 409 — a routine refusal reported as a server fault,
+        // on the safety feature of the destructive route. And folding
+        // `remove`'s into `Refused` would make a disk fault a conflict.
         if dry_run {
             account::removal_cost(&conn, id).map_err(answered)
         } else {
@@ -559,10 +538,10 @@ pub(crate) async fn delete_user(
 /// lost", for a browser.
 ///
 /// **`{sid}` is the token's sha256**, which is what
-/// [`taiyaku_library::account::SessionSummary::id`] already is and what
-/// [`account::sessions_of`]'s own doc comment argues is safe to hand a
-/// browser: "it is what the server compares against, not what a client
-/// presents, and inverting it is the sha256 preimage problem."
+/// [`taiyaku_library::account::SessionSummary::id`] already is and what that
+/// struct's own doc comment argues is safe to hand a browser: "it is what the
+/// server compares against, not what a client presents, and inverting it is the
+/// sha256 preimage problem."
 ///
 /// **Scoped to `{id}`**, because [`account::revoke_session`] is: an id from
 /// one account's listing must not end another account's session. A session

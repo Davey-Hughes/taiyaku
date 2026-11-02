@@ -5,9 +5,8 @@
 //! so there is one place the root filter is applied and one place to read in
 //! order to know whether it is.
 //!
-//! Kept out of `routes.rs`, which is already over 1,500 lines and holds the
-//! reader's own routes — the two share no state and have no reason to be read
-//! together.
+//! Kept out of `routes.rs`, which holds the reader's own routes — the two share
+//! no state and have no reason to be read together.
 //!
 //! # Every handler takes the principal's access and passes it straight down
 //!
@@ -21,8 +20,7 @@
 //! `browse` applies a grant in SQL; and the library is one connection behind
 //! a mutex (O42). Each handler asks through `on_the_library`, so its wait
 //! on that mutex and its queries run on the blocking pool rather than on a
-//! tokio worker thread, where they would stall the whole worker. Until O116
-//! closed, all seven took the connection in their own bodies.
+//! tokio worker thread, where they would stall the whole worker.
 
 use crate::{ServeState, auth::Principal};
 use axum::{
@@ -49,8 +47,7 @@ pub(crate) fn failed(what: &str, why: &str) -> Response {
 /// **One trip per request.** `series` and `one_series` each ask two questions,
 /// and ask both here on one connection, so the mutex is waited on once and
 /// nothing after the trip takes the library again. The response is built
-/// inside it too, as every handler but `cover` already built it while holding
-/// the connection.
+/// inside it too.
 ///
 /// A panic in `read` is a 500 naming `what`.
 pub(crate) async fn on_the_library(
@@ -173,7 +170,7 @@ pub(crate) async fn home(
     .await
 }
 
-/// The grid's `?library=`, and the `?root=` it replaced, which is named here
+/// The grid's `?library=`, and `?root=`, which is named here
 /// only to be refused.
 #[derive(serde::Deserialize)]
 pub(crate) struct GridQuery {
@@ -187,9 +184,7 @@ pub(crate) struct GridQuery {
 /// no series, and a grid that only listed series would never show one.
 ///
 /// **`?root=` is refused, 400, naming `library`**, before the library is
-/// read. It narrowed the grid to one directory before libraries did, and an
-/// address that still carries it asks a question this route no longer
-/// answers.
+/// read. An address that carries it asks a question this route does not answer.
 pub(crate) async fn series(
     State(state): State<Arc<ServeState>>,
     Extension(principal): Extension<Principal>,
@@ -375,9 +370,9 @@ pub(crate) async fn search(
 /// O133. A phone's grid draws a cover at about 256 CSS px, 768 device pixels
 /// at 3×. The redirect carries a `w` that is one of `cover::COVER_LONG_EDGES`
 /// on to the tile route, which serves page 0 at that size; any other `w` gets
-/// the tile, as the tile route itself would answer it. Not the page route: it
-/// refuses an account without `can_stream`, and a download-only account must
-/// still see its shelf (`routes.rs::refuse_if_cannot_stream`).
+/// the tile. Not the page route: it refuses an account without
+/// `can_stream`, and a download-only account must still see its
+/// shelf (`routes.rs::refuse_if_cannot_stream`).
 pub(crate) async fn cover(
     State(state): State<Arc<ServeState>>,
     Extension(principal): Extension<Principal>,
@@ -394,11 +389,10 @@ pub(crate) async fn cover(
             Err(why) => return failed("the series cover", &why),
         };
 
-        // **`target.edition`, not `work.hub`.** An earlier version redirected to
-        // the hub, which a grant can hide: grant `Manga` (key `en`) and not
-        // `Manga (RAW)` (key `raw`, the hub) and the cover served page 0 of the
-        // edition the reader cannot see — with `cover_work`'s own doc comment
-        // promising the opposite. Whole-branch review, 2026-08-20.
+        // **`target.edition`, not `work.hub`.** A grant can hide the hub:
+        // grant `Manga` (key `en`) and not `Manga (RAW)` (key `raw`, the
+        // hub). `target.edition` is one this caller may see (see
+        // `browse::cover_work` and `CoverTarget::edition`).
         let CoverTarget { slug, edition, .. } = target;
         let tile = format!("/api/works/{slug}/{edition}/pages/0/thumb");
         let location = match crate::routes::first_query_value(&query, "w")

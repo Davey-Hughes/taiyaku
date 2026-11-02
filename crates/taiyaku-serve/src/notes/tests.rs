@@ -79,11 +79,9 @@ fn a_note_round_trips_with_and_without_a_region() {
 
     store(&library, &work, 1, &stored).unwrap();
     let read_back = load(&library, &work, 1).unwrap();
-    // The projection, not a second copy re-parsed from disk — there is no
-    // disk any more. `notes::to_json`'s own doc comment is the invariant
-    // this is standing in for: the region-less note must serialise with the
-    // field omitted, not written as `null`, in exactly the bytes a client
-    // would be sent.
+    // `notes::to_json`'s own doc comment is the invariant this is standing in
+    // for: the region-less note must serialise with the field omitted, not
+    // written as `null`, in exactly the bytes a client would be sent.
     let serialised = to_json(read_back.as_ref().expect("just stored")).unwrap();
 
     assert_eq!(read_back, Some(stored));
@@ -92,18 +90,6 @@ fn a_note_round_trips_with_and_without_a_region() {
         "a note with no region must omit the field, not write null: {serialised}"
     );
 }
-
-// `a_notes_file_with_an_unknown_field_is_refused_rather_than_silently_dropped`
-// lived here through Task 12: a notes file hand-edited (or written by a
-// later build) with a field this build does not know was refused rather than
-// silently dropped, because `Notes`/`Note` both `deny_unknown_fields`. Task
-// 13 removed the file its scenario hand-edited — there is no longer a JSON
-// document on disk a stray key could be added to. The row-store analogue of
-// "malformed foreign data" is a `note` row whose region has only some of its
-// four columns set, which cannot come from this crate's own `put_notes` and
-// is refused by `taiyaku_library::state::notes` — covered in that crate by
-// `state::tests::a_partially_null_region_is_refused_rather_than_guessed_at`,
-// not duplicated here.
 
 /// A colour is a name a client looks up, not a style it pastes into an
 /// attribute — so it is held to the alphabet an edition key is, and the
@@ -142,8 +128,6 @@ fn a_colour_must_be_a_name_rather_than_a_style() {
 /// and a client sends the whole document back on every write — so
 /// re-checking an anchor nobody touched refuses every future write on that
 /// work, including the write that would have removed the stale note.
-/// Measured before the fix: adding an ordinary note beside a stale one
-/// answered 404.
 #[test]
 fn a_stale_anchor_already_stored_does_not_refuse_the_writes_that_follow_it() {
     let tmp = crate::test_support::Fixture::new("notes-stale");
@@ -225,10 +209,10 @@ fn a_work_with_no_notes_recorded_loads_as_nothing_recorded() {
     assert_eq!(loaded.unwrap(), None);
 }
 
-/// The bridge from a slug-keyed `Work` to the library's numeric `work.id` —
-/// the real work of Task 13, and `progress/tests.rs`'s own bridging tests,
-/// mirrored here for notes. A work this library has never heard of gets a
-/// row minted on its first write, and a read never mints one at all.
+/// The bridge from a slug-keyed `Work` to the library's numeric `work.id`:
+/// `progress/tests.rs`'s own bridging tests, mirrored here for notes. A work
+/// this library has never heard of gets a row minted on its first write, and
+/// a read never mints one at all.
 #[test]
 fn storing_notes_mints_exactly_one_bridge_row_for_a_work_the_library_never_imported() {
     let tmp = crate::test_support::Fixture::new("notes-bridge");
@@ -466,9 +450,9 @@ fn an_empty_document_names_the_work_it_is_for() {
     );
 }
 
-/// The same rule on the other axis. `a_region_must_lie_within_the_slot_and_have_a_size`
-/// overflows in x only — `x: 0.8, w: 0.5` — so the `y + h` half of the
-/// bound was never asked, and both arithmetic mutations of it survived. A
+/// The same rule on the other axis.
+/// `a_region_must_lie_within_the_slot_and_have_a_size` overflows in x only
+/// (`x: 0.8, w: 0.5`), so it never asks the `y + h` half of the bound. A
 /// marker can run off the bottom of a page as easily as off the side.
 #[test]
 fn a_region_that_runs_off_the_bottom_is_refused_like_one_that_runs_off_the_side() {
@@ -487,13 +471,3 @@ fn a_region_that_runs_off_the_bottom_is_refused_like_one_that_runs_off_the_side(
         "y + h is 1.3, which is off the page: {result:?}"
     );
 }
-
-// `an_unreadable_notes_file_is_an_error_rather_than_nothing_recorded` staged
-// an unreadable `taiyaku.notes.json` (a directory sitting where the file
-// belonged) and asserted `load` did not read it as "nothing recorded". Task
-// 13 removed the file this staged; the row-store equivalent of "storage is
-// broken" is a SQLite failure, which `notes::load` already reports as `Err`
-// rather than `Ok(None)` by construction — it only ever returns `Ok(None)`
-// from `works::find_row` answering `None`, never from an error swallowed —
-// and there is no equivalent of "make a directory unreadable" to stage
-// against an in-memory database from a test in this crate.

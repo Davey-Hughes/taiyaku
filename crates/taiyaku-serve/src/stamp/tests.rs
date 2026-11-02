@@ -195,11 +195,8 @@ async fn a_plan_that_no_longer_holds_is_refused_with_409() {
 
 /// **What `skipped_formats` actually says, not merely that it says an array.**
 ///
-/// Written because the mutation sweep of 2026-09-07 replaced this function's
-/// whole body with `vec!["xyzzy".into()]` and every test still passed: the
-/// only assertion on it was `is_array()`. C3 §6 wants the screen able to say
-/// "4 archives, and the rar left alone", and a shape assertion cannot see
-/// whether it can.
+/// C3 §6 wants the screen able to say "4 archives, and the rar left alone",
+/// and a shape assertion cannot see whether it can.
 #[tokio::test]
 async fn the_plan_route_names_the_formats_it_will_not_write() {
     let (router, state, fixture) = test_support::router_over_a_scanned_cbz();

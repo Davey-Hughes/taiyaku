@@ -109,11 +109,10 @@ pub(crate) async fn plan(
     answer(
         tokio::task::spawn_blocking(move || -> Result<serde_json::Value, NoAnswer> {
             // **`working()`, not `conn()`.** A plan opens every member of the
-            // work to read its existing document — cheap on a warm disk (2.43
-            // ms over four archives, `docs/notes.md`) and a seek apiece on the
-            // NAS this runs on. Holding the shared `Mutex<Connection>` across
-            // that stalls every other request, which is the reasoning
-            // `config_api`'s own scan and save already act on.
+            // work to read its existing document, a seek apiece on the NAS this
+            // runs on. Holding the shared `Mutex<Connection>` across that
+            // stalls every other request, which is the reasoning `config_api`'s
+            // own scan and save already act on.
             let conn = state.library.working().map_err(NoAnswer::Failed)?;
             let work_id = crate::metadata::work_by_slug(&conn, &principal.access, &slug)?;
             let planned =
@@ -154,13 +153,9 @@ pub(crate) async fn perform(
         tokio::task::spawn_blocking(move || -> Result<serde_json::Value, NoAnswer> {
             // **Tried, never waited for**, exactly as a rule save does it: a
             // stamp is the second-longest thing this server does to a library
-            // after a scan — 299 ms per 319 MB archive on the workstation with
-            // the file in page cache, and, once O104 made it sync, up to about a
-            // minute for the library's largest archive on the NAS's parity
-            // array, going by a synced same-disk copy that took 55.3 s there —
-            // and a caller queued
-            // silently behind a scan cannot tell "still rewriting" from
-            // "hung". See `ServeState::library_job`.
+            // after a scan, and a caller queued silently behind a scan cannot
+            // tell "still rewriting" from "hung".
+            // See `ServeState::library_job`.
             //
             // It matters more here than for a save. A scan re-derives while
             // this rewrites the very archives it is walking, and `derive` can

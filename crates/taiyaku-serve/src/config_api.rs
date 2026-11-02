@@ -12,17 +12,6 @@
 //! about what any one account may see, the same standing C4's opening line
 //! ("everything here is admin-gated per A2") gives every route in this spec.
 //!
-//! # `admin_or_forbidden` is defined here, not reused from `curation`
-//!
-//! `curation::admin_or_forbidden` is a private `fn`, reachable only from
-//! `curation` and its own `tests` submodule — not from a sibling module like
-//! this one. Rather than widen its visibility for a borrow across an
-//! unrelated spec, this file mirrors its shape (the task 8 brief's own
-//! "curation.rs has its own `admin_or_forbidden`; decide whether to reuse it
-//! or mirror it") and declares its own, `pub(crate)` — the roots and scan
-//! routes tasks 11–12 add are C4 routes too and reach this one directly
-//! rather than each growing a third copy.
-//!
 //! # Two boundaries this module keeps a rule id off
 //!
 //! **`preview_rules`'s `selected` is an index into the rule list the request
@@ -40,12 +29,11 @@
 //! `selected` is in range.** [`preview::preview_with_rows`] would answer that
 //! itself — "an error naming the index and `proposed`'s own length if that
 //! index is out of range" — but folded into whatever else its one `Result`
-//! carries, the same fold `curation.rs`'s own module doc records measuring as
-//! `400 Bad Request :: reading scan entries for the dry run: no such table:
-//! scan_entry` on the identical mistake for `proposals::resolves`. `selected`
-//! is checked against `proposed.len()` here, before `spawn_blocking` ever
-//! opens a connection, so a client's own out-of-range index is answered 400
-//! from the request alone and a real derivation fault stays a 500.
+//! carries, the same fold `curation.rs`'s own module doc records for
+//! `proposals::resolves`. `selected` is checked against `proposed.len()` here,
+//! before `spawn_blocking` ever opens a connection, so a client's own
+//! out-of-range index is answered 400 from the request alone and a real
+//! derivation fault stays a 500.
 //!
 //! # `RulePatch`'s `Option<Option<T>>` columns, over JSON
 //!
@@ -68,27 +56,22 @@
 //! # The preview route's connection, and what it must never cost
 //!
 //! [`preview_rules`] takes its connection from [`taiyaku_library::Library::working`],
-//! not [`taiyaku_library::Library::conn`] — the one rule task 8's own brief
-//! states explicitly, because `ServeState.library` is `Arc<Library>` holding a
-//! single `Mutex<Connection>`, and a derivation on that handle stalls every
-//! other request behind it for as long as the derivation runs. Measured at a
-//! **median of 281 ms** on a real library — 130 series, 1858 works
-//! (`docs/notes.md`, "What a rule preview costs on a real library") — which is
-//! also why this doc comment does not call the route safe to call on every
-//! keystroke: C4 §6 did, and the build design's own re-measurement
+//! not [`taiyaku_library::Library::conn`], because `ServeState.library` is
+//! `Arc<Library>` holding a single `Mutex<Connection>`, and a derivation on
+//! that handle stalls every other request behind it for as long as the
+//! derivation runs. What a derivation costs on a real library (`docs/notes.md`,
+//! "What a rule preview costs on a real library") is also why this doc comment
+//! does not call the route safe to call on every keystroke. The build design
 //! (`docs/superpowers/specs/2026-09-02-library-configuration-build-design.md`,
-//! §2) records the number and the decision it forced — the editor previews on
-//! demand, not per keystroke, and that decision is the client's; this route
-//! only has to answer the request it is actually sent.
+//! §2) records the decision that cost forced — the editor previews on demand,
+//! not per keystroke, and that decision is the client's; this route only has to
+//! answer the request it is actually sent.
 //!
-//! **281 ms is `preview_with_rows` alone — `preview::overrides` is a second,
-//! quadratic term in the same request, in the number of proposed rules.**
-//! Measured on a one-work fixture (so essentially the rule term by itself,
-//! debug build): 10 extra rules cost 47 ms, 40 → 401 ms, 80 → 1.34 s,
-//! 160 → 5.01 s. [`MATCHED_FILES_LIMIT`] bounds `preview_with_rows`'s
-//! *output*; [`MAX_PROPOSED_RULES`] is this route's bound on the *input* both
-//! derivations share — the term the quadratic cost is actually in, and the
-//! one dimension neither limit touched before it existed.
+//! **`preview_with_rows` is not the whole cost — `preview::overrides` is a
+//! second, quadratic term in the same request, in the number of proposed
+//! rules.** [`MATCHED_FILES_LIMIT`] bounds `preview_with_rows`'s *output*;
+//! [`MAX_PROPOSED_RULES`] is this route's bound on the *input* both derivations
+//! share — the term the quadratic cost is actually in.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -116,21 +99,17 @@ const MATCHED_FILES_LIMIT: usize = 500;
 
 /// Both [`preview_rules`]'s and [`save_rules`]'s cap on the `rules` array
 /// itself — the term [`preview::overrides`] is quadratic in, per this
-/// module's own doc comment on what `preview_rules` costs and why 281 ms is
-/// only half the story. `axum`'s 2 MB body default was, until this constant
-/// existed, the only bound on that array at all.
+/// module's own doc comment on what `preview_rules` costs.
 ///
 /// **200 is chosen, not measured** — nothing in spec C4 sets a ceiling, and
 /// the seeded default rule set is four rules, fifty times smaller than this.
-/// Extrapolating the measured curve (10 extra rules 47 ms, 40 → 401 ms,
-/// 80 → 1.34 s, 160 → 5.01 s, debug build, one-work fixture), 200 rules costs
-/// on the order of 8 s in that same debug build — generous enough to hold any
-/// rule set a person plausibly curates by hand, since a library with 200
-/// active rules would already be unmanageable through the editor's own UI
-/// long before it threatened this route, while still refusing the
-/// pathological case (an automated or malformed caller inflating the array)
-/// before it ever reaches [`preview::overrides`] rather than after paying for
-/// it.
+/// Extrapolating the measured curve, 200 rules costs on the order of 8 s in a
+/// debug build — generous enough to hold any rule set a person plausibly
+/// curates by hand, since a library with 200 active rules would already be
+/// unmanageable through the editor's own UI long before it threatened this
+/// route, while still refusing the pathological case (an automated or malformed
+/// caller inflating the array) before it ever reaches [`preview::overrides`]
+/// rather than after paying for it.
 const MAX_PROPOSED_RULES: usize = 200;
 
 /// Why a config-API route could not answer.
@@ -200,19 +179,17 @@ fn root_exists(conn: &rusqlite::Connection, id: i64) -> Result<bool, String> {
         .map_err(|e| format!("checking whether root {id} exists: {e}"))
 }
 
-/// [`root_exists`], asked once per `root_id` a proposed rule list names —
-/// whole-branch review, M2.
+/// [`root_exists`], asked once per `root_id` a proposed rule list names.
 ///
-/// **[`create_rule`] and [`patch_rule`] already refuse a stale or removed
-/// root this way for one rule at a time; [`preview_rules`] and [`save_rules`]
-/// propose a whole list at once**, and neither called [`root_exists`] at
-/// all until now — a rule scoped to a root deleted since answered with
-/// [`crate::rules::replace_all`]'s own `FOREIGN KEY constraint failed`,
-/// surfaced verbatim, the exact fold [`root_exists`]'s own doc comment spends
-/// a paragraph refusing. Shared rather than duplicated into both routes'
-/// `spawn_blocking` closures, for the reason [`read_proposed_rules`] is
-/// shared: two copies of the same loop are two places to forget the check
-/// the next time a third route proposes a rule list.
+/// **[`create_rule`] and [`patch_rule`] refuse a stale or removed root this way
+/// for one rule at a time; [`preview_rules`] and [`save_rules`] propose a whole
+/// list at once**; without this check a rule scoped to a root deleted since
+/// would answer with [`crate::rules::replace_all`]'s own
+/// `FOREIGN KEY constraint failed`, surfaced verbatim, the exact fold
+/// [`root_exists`]'s own doc comment spends a paragraph refusing. Shared rather
+/// than duplicated into both routes' `spawn_blocking` closures, for the reason
+/// [`read_proposed_rules`] is shared: two copies of the same loop are two
+/// places to forget the check the next time a third route proposes a rule list.
 fn check_proposed_roots(
     conn: &rusqlite::Connection,
     proposed: &[rules::Rule],
@@ -410,16 +387,15 @@ fn rule_from_json(body: &serde_json::Value) -> Result<rules::Rule, String> {
 /// body, mapped through [`rule_from_json`] and bounded by
 /// [`MAX_PROPOSED_RULES`] the identical way.
 ///
-/// **Extracted rather than left as the near-verbatim block each route had.**
-/// The design's own requirement is that a save be "symmetric with
-/// `POST /rules/preview` down to the body key, the `MAX_PROPOSED_RULES`
-/// bound and the `rule_from_json` reader — the same list previews and saves,
-/// so the client cannot send one shape to one and another to the other." Two
-/// independently-editable copies of this block can only keep that promise by
-/// staying in step by hand, which is exactly the kind of promise a codebase
-/// breaks the first time one copy is touched and the other is not; one
-/// function reading both `rules` arrays makes the symmetry structural
-/// instead — there is no second copy left to drift.
+/// **Shared by both routes rather than copied into each.** The design's own
+/// requirement is that a save be "symmetric with `POST /rules/preview` down to
+/// the body key, the `MAX_PROPOSED_RULES` bound and the `rule_from_json` reader
+/// — the same list previews and saves, so the client cannot send one shape to
+/// one and another to the other." Two independently-editable copies of this
+/// block can only keep that promise by staying in step by hand, which is
+/// exactly the kind of promise a codebase breaks the first time one copy is
+/// touched and the other is not; one function reading both `rules` arrays makes
+/// the symmetry structural instead — there is no second copy left to drift.
 ///
 /// `noun` is the same shared idiom [`required_str`]/[`patch_bool`]/
 /// [`patch_nullable_text`] already take — `"preview"` from [`preview_rules`],
@@ -670,17 +646,15 @@ fn row_json(row: &preview::Row) -> serde_json::Value {
 /// — a later rule *clearing* what an earlier rule set is exactly the case an
 /// override row exists to show.
 ///
-/// **A non-finite number would render as `null` too, and that is why it can no
-/// longer get here.** JSON has no NaN or infinity and
-/// `serde_json::Number::from_f64` refuses both, so an infinite `volume` would
-/// be indistinguishable from an unset one and the editor would draw it as
-/// *unset* — on a row whose whole job is telling two values apart. Three
-/// review passes of the O95 branch each found one face of that, and
-/// `rules::Resolved::set_number` now refuses a non-finite at the point it
-/// enters, so neither arm below can receive one from any rule. The
-/// `map_or(Null, …)` stays because `from_f64` is fallible in the type system
-/// whatever the caller guarantees, and an `expect` here would turn a display
-/// concern into a 500.
+/// **A non-finite number would render as `null` too, and that is why it cannot
+/// get here.** JSON has no NaN or infinity and `serde_json::Number::from_f64`
+/// refuses both, so an infinite `volume` would be indistinguishable from an
+/// unset one and the editor would draw it as *unset* — on a row whose whole job
+/// is telling two values apart. `rules::Resolved::set_number` refuses a
+/// non-finite at the point it enters, so neither arm below can receive one from
+/// any rule (O95). The `map_or(Null, …)` stays because `from_f64` is fallible
+/// in the type system whatever the caller guarantees, and an `expect` here
+/// would turn a display concern into a 500.
 fn field_value_json(value: &preview::FieldValue) -> serde_json::Value {
     match value {
         preview::FieldValue::Text(text) => text.as_ref().map_or(serde_json::Value::Null, |t| {
@@ -905,19 +879,19 @@ pub(crate) async fn delete_rule(
 /// could fold together with a genuine store fault the way `curation.rs`'s own
 /// doc comment records happening to `proposals::resolves`.
 ///
-/// **`preview::preview_with_rows`'s own `Result` is folded that way too —
-/// whole-branch review, M1.** `rules::replace_all` refuses a nonzero id in
-/// `proposed` that names no row this table currently holds ("no such rule
-/// exists to keep"), which is exactly what a stale editor sends: a rule the
-/// caller's own copy still shows, deleted by someone else since. Mapped to
-/// `NoAnswer::Unusable` (400), the same admitted compromise
-/// [`import_rules`]'s own doc comment states for `rules::import_json` — this
-/// function has no `evaluable`-shaped split either, and answering `500` for
-/// a caller's stale state is the exact fold this module otherwise refuses.
+/// **`preview::preview_with_rows`'s own `Result` is folded that way too.**
+/// `rules::replace_all` refuses a nonzero id in `proposed` that names no row
+/// this table currently holds ("no such rule exists to keep"), which is exactly
+/// what a stale editor sends: a rule the caller's own copy still shows, deleted
+/// by someone else since. Mapped to `NoAnswer::Unusable` (400), the same
+/// admitted compromise [`import_rules`]'s own doc comment states for
+/// `rules::import_json` — this function has no `evaluable`-shaped split either,
+/// and answering `500` for a caller's stale state is the exact fold this module
+/// otherwise refuses.
 ///
 /// **[`check_proposed_roots`] refuses, `400`, a rule scoped to a root that no
-/// longer exists — whole-branch review, M2.** Shared with [`save_rules`];
-/// see that function's own call to it.
+/// longer exists.** Shared with [`save_rules`]; see that function's own call
+/// to it.
 pub(crate) async fn preview_rules(
     State(state): State<Arc<ServeState>>,
     Extension(principal): Extension<Principal>,
@@ -981,11 +955,9 @@ pub(crate) async fn preview_rules(
 /// request carries **and derive over the library**, committed.
 ///
 /// **The first route in this product that applies a rule.** Every other rules
-/// route writes the `rule` table and returns — [`patch_rule`]'s own doc
-/// comment says so in as many words — so a person editing rules through this
-/// screen changed the rule table and nothing else until somebody scanned.
-/// Spec C4 §1's Save button states "apply to 71 works"; this is what makes
-/// that sentence true. See the build design's §4.
+/// route returns without applying one. Spec C4 §1's Save button states
+/// "apply to 71 works"; this is what makes that sentence true. See the build
+/// design's §4.
 ///
 /// **`PUT`, not `POST`**, because the body is the complete desired state of a
 /// collection that already has a URL, which is what `PUT` means.
@@ -1001,10 +973,9 @@ pub(crate) async fn preview_rules(
 /// another to the other. It takes no `selected`: rows are a property of which
 /// rule is open in the editor, and a save has no such thing.
 ///
-/// **On [`taiyaku_library::Library::working`], not `conn`** — this module's
-/// own doc comment states why in full, and a save is the longest job here:
-/// one full derivation over the whole library under a single write lock,
-/// measured at a median 281 ms on 130 series and 1858 works.
+/// **On [`taiyaku_library::Library::working`], not `conn`** — this module's own
+/// doc comment states why in full, and a save is the longest job here: one full
+/// derivation over the whole library under a single write lock.
 ///
 /// **Every [`taiyaku_library::preview::apply`] failure is answered 400**, the
 /// same admitted fold [`preview_rules`] states for the identical reason:
@@ -1014,28 +985,26 @@ pub(crate) async fn preview_rules(
 /// `evaluable`-shaped split to tell that apart from a genuine store fault.
 ///
 /// **[`check_proposed_roots`] refuses, `400`, a rule scoped to a root that no
-/// longer exists — whole-branch review, M2.** [`create_rule`]/[`patch_rule`]
-/// already made this same check for one rule; a save proposes a whole list,
-/// so a stale `root_id` anywhere in it is caught here rather than reaching
-/// `rules::replace_all`'s own foreign key and surfacing SQLite's raw text.
+/// longer exists.** [`create_rule`]/[`patch_rule`] make this same check for one
+/// rule; a save proposes a whole list, so a stale `root_id` anywhere in it is
+/// caught here rather than reaching `rules::replace_all`'s own foreign key and
+/// surfacing SQLite's raw text.
 ///
 /// **Refuses, `409`, rather than racing a scan — whole-branch review, I4.**
 /// [`crate::ServeState::library_job`] is the lock this route and a scan's own
-/// derive both take before ever calling [`taiyaku_library::Library::working`]
-/// — see that field's own doc comment for the interleaving it closes: a
-/// save's single transaction landing between two of a scan's own, replacing
-/// the rule table and re-deriving the whole library out from under a scan
-/// still mid-pass under the rules that transaction just replaced. This route
-/// never waits for the lock — it tries once and answers at once if a scan or
-/// another save already holds it, the same shape [`start_scan`]'s own
-/// registry already answers for a second scan of one root.
+/// derive both take before ever calling [`taiyaku_library::Library::working`] —
+/// see that field's own doc comment for the interleaving it closes: a save's
+/// single transaction landing between two of a scan's own, replacing the rule
+/// table and re-deriving the whole library out from under a scan still mid-pass
+/// under the rules that transaction just replaced. This route never waits for
+/// the lock — it tries once and answers at once if a scan or another save
+/// already holds it, the same shape [`start_scan`]'s own registry already
+/// answers for a second scan of one root.
 ///
 /// **Carries the whole derive report — whole-branch review, I5.** Every other
 /// `derive` caller in this product reports what happened under
-/// `<root>/.taiyaku/`; this route used to report nothing, so a save that
-/// could not write a hand document answered `200` with a rehome count and
-/// silence. `"derive"` is [`derive_report_json`] — the identical renderer
-/// [`finished_scan_json`] already uses — over
+/// `<root>/.taiyaku/`. `"derive"` is [`derive_report_json`] — the identical
+/// renderer [`finished_scan_json`] already uses — over
 /// [`taiyaku_library::preview::Applied::derive_report`].
 pub(crate) async fn save_rules(
     State(state): State<Arc<ServeState>>,
@@ -1101,7 +1070,7 @@ pub(crate) async fn save_rules(
 /// document that will not parse, a `root_path` this library does not have,
 /// and an unrecognised `kind`/`match_on` together with a genuine write
 /// failure into one `Result<Vec<i64>, String>`, and unlike
-/// `taiyaku_library::proposals::resolves` — which `curation.rs` was able to
+/// `taiyaku_library::proposals::resolves` — which `curation.rs` is able to
 /// split via `proposals::evaluable`, a check that takes no connection — `rules`
 /// offers no such split for an import: telling a bad document apart from a
 /// broken database would mean this module either matching on
@@ -1112,16 +1081,15 @@ pub(crate) async fn save_rules(
 /// or foreign-host document is the whole reason this route exists, and a
 /// malformed one is the overwhelmingly likely failure — at the cost of
 /// mislabelling the rare store fault the same way, which a future split in
-/// `rules.rs` could fix the way `evaluable` fixed it for proposals.
+/// `rules.rs` could fix the way `evaluable` does for proposals.
 ///
-/// **`"reopened_proposals"`, [`delete_rule`]'s own key — whole-branch review,
-/// Important 3.** Replacing the whole rule set orphans `created_rule_id` on
-/// every proposal an accepted, now-deleted rule had answered, exactly as
-/// deleting one rule at a time does; `import_json` itself now reopens them
-/// atomically, inside the same transaction that replaces the rules, and this
-/// body reports the ids the same way `delete_rule` already does, rather than
-/// leaving them reading `accepted` with nothing deciding them until whatever
-/// scan happens to run next.
+/// **`"reopened_proposals"`, [`delete_rule`]'s own key.** Replacing the whole
+/// rule set orphans `created_rule_id` on every proposal an accepted,
+/// now-deleted rule had answered, exactly as deleting one rule at a time does;
+/// `import_json` itself reopens them atomically, inside the same transaction
+/// that replaces the rules, and this body reports the ids the same way
+/// `delete_rule` does, rather than leaving them reading `accepted` with nothing
+/// deciding them until whatever scan happens to run next.
 pub(crate) async fn import_rules(
     State(state): State<Arc<ServeState>>,
     Extension(principal): Extension<Principal>,
@@ -1218,18 +1186,14 @@ pub(crate) fn admin_panicked(what: &str, why: &tokio::task::JoinError) -> Respon
 /// One `root` row, as [`list_roots`] sends it and `libraries_api` sends the
 /// directories of a library.
 ///
-/// **`last_scan_at`/`last_scan_status` are read separately from
-/// [`scan::Root`], not carried on it** — that type has neither column: Task
-/// 12 is what writes them, and Task 11's own brief is explicit that adding
-/// them to a `taiyaku-library` type is outside this task's file list
-/// (`config_api.rs`, its own tests, `routes.rs`). Passed in here instead,
-/// straight off the `root` row, so the shape a caller reads is complete
-/// today — the key is always present, whether or not this particular root
-/// has ever been scanned. Task 12 is what now writes both columns
-/// ([`scan::scan_root`]'s own doc comment), so a root this process or an
-/// earlier one has scanned carries a real timestamp and status here; one
-/// that has not yet still reads `null` for both, exactly as it always did.
-/// C4 §3's regime line needs the columns present, not populated.
+/// **`last_scan_at`/`last_scan_status` are read separately from [`scan::Root`],
+/// not carried on it** — that type has neither column. Passed in here instead,
+/// straight off the `root` row, so the shape a caller reads is complete — the
+/// key is always present, whether or not this particular root has ever been
+/// scanned. Both columns are written by [`scan::scan_root`] (its own doc
+/// comment), so a root this process or an earlier one has scanned carries a
+/// real timestamp and status here; one that has not yet still reads `null` for
+/// both. C4 §3's regime line needs the columns present, not populated.
 pub(crate) fn root_json(
     root: &scan::Root,
     last_scan_at: Option<&str>,
@@ -1345,15 +1309,12 @@ pub(crate) fn removal_json(removal: &scan::Removal) -> serde_json::Value {
 
 /// [`scan::ScanReport`], whole — [`scan_status`]'s `"scan"` key.
 ///
-/// **Destructured with no `..`, deliberately.** A rendered report field went
-/// missing once already — four keys deleted from this function and
-/// [`derive_report_json`] and the whole suite stayed green, because nothing
-/// asserted every field was present. Naming every field of the pattern below
-/// turns adding one to [`scan::ScanReport`] into a compile error here rather
-/// than a silent omission a test would have to be written to catch — and,
-/// under this workspace's `-D warnings` clippy gate, turns *removing* one
-/// from the object below into an unused-binding error, the same guarantee in
-/// the other direction.
+/// **Destructured with no `..`, deliberately.** Naming every field of the
+/// pattern below turns adding one to [`scan::ScanReport`] into a compile error
+/// here rather than a silent omission a test would have to be written to catch
+/// — and, under this workspace's `-D warnings` clippy gate, turns *removing*
+/// one from the object below into an unused-binding error, the same guarantee
+/// in the other direction.
 fn scan_report_json(report: &scan::ScanReport) -> serde_json::Value {
     let scan::ScanReport {
         root,
@@ -1441,9 +1402,7 @@ fn unreadable_json(unreadable: &derive::Unreadable) -> serde_json::Value {
 /// field is here, including the Vecs, which can be empty.
 ///
 /// **Destructured with no `..`** — [`scan_report_json`]'s own doc comment
-/// states the whole argument, and this is the renderer that argument was
-/// actually written for: [`derive::DeriveReport`] is the struct four of the
-/// deleted keys came from.
+/// states the whole argument.
 pub(crate) fn derive_report_json(report: &derive::DeriveReport) -> serde_json::Value {
     let derive::DeriveReport {
         series,
@@ -1539,13 +1498,11 @@ pub(crate) fn finished_scan_json(
 /// caller who sends it gets a `400` rather than axum silently dropping a key
 /// this struct never named.
 ///
-/// **`deny_unknown_fields` too, not only the explicit `full` check below —
-/// whole-branch review, Critical 2's own sibling audit.** The explicit check
-/// on `start_scan` catches exactly `?full=`, spelled exactly that way; a typo
-/// of that key, or any other key nobody has named yet, would otherwise be
-/// dropped by `serde_urlencoded` the same silent way [`DryRunQuery`]'s own
-/// `dry_run` was — see that struct's own doc comment for the shape this
-/// closes.
+/// **`deny_unknown_fields` too, not only the explicit `full` check below.** The
+/// explicit check on `start_scan` catches exactly `?full=`, spelled exactly
+/// that way; a typo of that key, or any other key nobody has named yet, would
+/// otherwise be dropped silently by `serde_urlencoded` — see [`DryRunQuery`]'s
+/// own doc comment for the shape this closes.
 #[derive(Debug, Default, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ScanQuery {
@@ -1574,17 +1531,14 @@ pub(crate) struct ScanQuery {
 /// without reserving — and never releasing — a registry slot for an id that
 /// will never be scanned.
 ///
-/// **`?full=` is refused, `400`, rather than silently accepted and
-/// ignored.** C4 §3's own API table lists it against this route, and
-/// nothing in `taiyaku_library::scan::scan_root` distinguishes a full scan
-/// from any other — every scan it runs already walks the whole tree. Before
-/// [`ScanQuery`] existed, `axum` simply dropped an unrecognised query key,
-/// so `POST .../scan?full=true` answered `202` and ran the identical scan a
-/// plain `POST` would have — accepted and quietly ignored, precisely the
-/// shape C4 §3 writes rules against for a *scan report's* own fields, and no
-/// better for a request parameter deciding what kind of scan runs. Refusing
-/// it by name costs one field and a check; implementing an incremental scan
-/// is a real feature this task's brief does not ask for.
+/// **`?full=` is refused, `400`, rather than silently accepted and ignored.**
+/// C4 §3's own API table lists it against this route, and nothing in
+/// `taiyaku_library::scan::scan_root` distinguishes a full scan from any other
+/// — every scan it runs already walks the whole tree. Accepting and quietly
+/// ignoring it would be precisely the shape C4 §3 writes rules against for a
+/// *scan report's* own fields, and no better for a request parameter deciding
+/// what kind of scan runs. Refusing it by name costs one field and a check;
+/// implementing an incremental scan is a real feature.
 pub(crate) async fn start_scan(
     State(state): State<Arc<ServeState>>,
     Extension(principal): Extension<Principal>,
@@ -1639,14 +1593,9 @@ pub(crate) async fn start_scan(
 ///
 /// **`404` only when `id` names no root this library holds — never merely
 /// because this process has no registry entry for it.** [`ServeState::scans`]
-/// is in-memory and empty after every restart, so before this function
-/// looked the id up in the database, a `status_url` a `202` had just handed
-/// out could read as "that root is gone" the moment the process restarted,
-/// and a root this same server scanned in a previous run — with a real
-/// `last_scan_at`/`last_scan_status` sitting on its row — reported 404 to the
-/// very screen those columns exist to feed. [`start_scan`] never made this
-/// mistake, since it always resolves `id` to a [`scan::Root`] first; this
-/// route now does the identical lookup for the identical reason.
+/// is in-memory and empty after every restart, so it cannot say whether a root
+/// exists. [`start_scan`] always resolves `id` to a [`scan::Root`] first; this
+/// route does the identical lookup for the identical reason.
 ///
 /// A registry entry, when one exists, always wins over the database for
 /// `running`/`elapsed_secs`/`report` — it is the freshest answer this
@@ -1657,19 +1606,15 @@ pub(crate) async fn start_scan(
 /// genuinely never been scanned, exactly as [`root_json`] already renders
 /// that same pair for [`list_roots`].
 ///
-/// **`last_scan_at`/`last_scan_status` are read from the database and sent
-/// in *every* answer, registry entry or not — whole-branch review, Important
-/// 4.** Before this, the registry branch above returned early with
-/// `root_id`/`running`/`elapsed_secs`/`report` and nothing else, so C4 §3's
-/// regime line — the one this route exists to feed — went blank precisely
-/// while a scan it just started was running or had just finished, and the
-/// two branches answered different key sets entirely for what is meant to
-/// be one shape. The registry still wins for the three fields only it can
-/// know; the database is the durable answer for the two only it holds, and
-/// now both are read unconditionally.
+/// **`last_scan_at`/`last_scan_status` are read from the database and sent in
+/// *every* answer, registry entry or not.** C4 §3's regime line is the one this
+/// route exists to feed, and both branches are meant to answer one shape. The
+/// registry still wins for the three fields only it can know; the database is
+/// the durable answer for the two only it holds, and both are
+/// read unconditionally.
 ///
-/// **`elapsed_secs` no longer truncates to whole seconds**, alongside the
-/// fix above — same route, same screen, the same review flagged both.
+/// **`elapsed_secs` is sent as fractional seconds**, not truncated to
+/// whole ones.
 pub(crate) async fn scan_status(
     State(state): State<Arc<ServeState>>,
     Extension(principal): Extension<Principal>,
@@ -1840,16 +1785,14 @@ pub(crate) async fn patch_root(
 /// `libraries_api::delete_library` read — see [`delete_root`]'s own doc comment
 /// for what it changes.
 ///
-/// **`deny_unknown_fields` — whole-branch review, Critical 2.** Without it,
-/// `serde_urlencoded` drops any key this struct does not name rather than
-/// refusing the request, so `dry_run` defaulting to `false` meant
-/// `?dryrun=true` or `?dryRun=true` — either one key off from the one this
-/// struct actually reads — answered `200 OK` and ran the real, committed
-/// removal: works, positions and notes gone, on the one route C4 §2 calls
-/// "the most destructive action in the product." [`ScanQuery`], the other
-/// query-parameter struct this branch adds, gets the same attribute for the
-/// same reason, on a route that is merely wrong when misspelled rather than
-/// destructive.
+/// **`deny_unknown_fields`.** Without it, `serde_urlencoded` drops any key this
+/// struct does not name rather than refusing the request, so with `dry_run`
+/// defaulting to `false`, `?dryrun=true` or `?dryRun=true` — either one key off
+/// from the one this struct actually reads — would answer `200 OK` and run the
+/// real, committed removal: works, positions and notes gone, on the one route
+/// C4 §2 calls "the most destructive action in the product." [`ScanQuery`], the
+/// other query-parameter struct, gets the same attribute for the same reason,
+/// on a route that is merely wrong when misspelled rather than destructive.
 #[derive(Debug, Default, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct DryRunQuery {
@@ -1871,12 +1814,11 @@ pub(crate) struct DryRunQuery {
 /// removes 412 works, 3 positions and 27 notes" and let a person decide
 /// before ever sending the second request that actually removes anything.
 ///
-/// This is one of the three shapes the task brief offered — "a `GET` that
-/// costs, a `?dry_run=`, or a two-step confirm" — chosen over a fifth route
-/// because this task's own interface list caps it at four, and over a
-/// server-held confirmation token because nothing else in this server keeps
-/// that kind of short-lived state between requests; a query parameter on the
-/// same route needs neither.
+/// This is one of three shapes — a `GET` that costs, a `?dry_run=`, or a
+/// two-step confirm — chosen over a separate route, and over a server-held
+/// confirmation token because nothing else in this server keeps that kind of
+/// short-lived state between requests; a query parameter on the same route
+/// needs neither.
 ///
 /// **The counts a real removal answers with are [`scan::remove_root`]'s own
 /// return value, never a second count taken after the fact.** `apply_removal`
@@ -1918,10 +1860,9 @@ pub(crate) struct DryRunQuery {
 ///
 /// **The body also carries a `"derive"` key, [`derive_report_json`] over
 /// whichever [`crate::derive::DeriveReport`] `removal_cost`/`remove_root`
-/// returned alongside their `Removal` — whole-branch review, M5.** Before
-/// this, `scan::apply_removal` discarded that report outright, so nothing a
-/// removal's own re-derive found — an unreadable hand document among it —
-/// ever reached a caller. The shape matches [`finished_scan_json`]'s own
+/// returned alongside their `Removal`.** A removal's own re-derive can find
+/// things — an unreadable hand document among them — and this key is how they
+/// reach a caller. The shape matches [`finished_scan_json`]'s own
 /// `"scan"`/`"derive"` pair rather than inventing a second one.
 pub(crate) async fn delete_root(
     State(state): State<Arc<ServeState>>,
@@ -1959,15 +1900,14 @@ pub(crate) async fn delete_root(
     })
     .await;
 
-    // MINOR 6 — `root.id` is `INTEGER PRIMARY KEY` with no `AUTOINCREMENT`,
-    // so SQLite reissues a freed id to the next `add_root`. A stale
-    // `state.scans` entry left under that id would then answer for a root it
-    // was never scanning — `scan_status` returning the *deleted* root's old
-    // report, or `start_scan` refusing the new root as "already running" —
-    // so a real (non-`dry_run`) removal that answers `Ok` clears the slot
-    // here. A dry run leaves nothing to invalidate. A removal that commits and
-    // then fails its reconcile derive answers an error with the root gone and
-    // the slot left.
+    // `root.id` is `INTEGER PRIMARY KEY` with no `AUTOINCREMENT`, so SQLite
+    // reissues a freed id to the next `add_root`. A stale `state.scans` entry
+    // left under that id would then answer for a root it was never scanning —
+    // `scan_status` returning the *deleted* root's old report, or `start_scan`
+    // refusing the new root as "already running" — so a real (non-`dry_run`)
+    // removal that answers `Ok` clears the slot here. A dry run leaves nothing
+    // to invalidate. A removal that commits and then fails its reconcile derive
+    // answers an error with the root gone and the slot left.
     if !dry_run && matches!(&removed, Ok(Ok(_))) {
         scans_state
             .scans

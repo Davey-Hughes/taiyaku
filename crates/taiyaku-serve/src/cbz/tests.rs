@@ -35,7 +35,7 @@ fn crc32_of(bytes: &[u8]) -> u32 {
     !crc
 }
 
-/// Emit the whole file, the way `download.rs` will.
+/// Emit the whole file, the way `download.rs` does.
 fn emit(plan: &Plan, payloads: &[(String, Vec<u8>)]) -> Vec<u8> {
     let mut out: Vec<u8> = Vec::new();
     for (index, (_, bytes)) in payloads.iter().enumerate() {
@@ -201,9 +201,9 @@ fn a_zip64_local_header_and_trailer_carry_the_real_sizes_and_offsets() {
     // `plan.len()`, never `local_header` or `trailer`. So the `if self.zip64`
     // branches inside those two functions — the classic fields stated as
     // `U32_MAX`/`u16::MAX`, and the extra field's own tag, size and the real
-    // sizes and offsets it carries — have never been decoded and checked
-    // against APPNOTE 6.3.x. This does that field by field, reading the
-    // produced bytes rather than re-deriving their layout a second time.
+    // sizes and offsets it carries — are decoded and checked against APPNOTE
+    // 6.3.x here, field by field, reading the produced bytes rather than
+    // re-deriving their layout a second time.
     let plan = oversized();
     assert!(plan.zip64());
 
@@ -395,20 +395,3 @@ fn clipped_keeps_only_the_part_inside_the_window() {
     // A window that is empty is empty everywhere.
     assert_eq!(clipped(run, 100, 105, 105), b"");
 }
-
-// `every_structural_boundary_is_clipped_correctly_on_both_sides` and
-// `every_split_of_the_output_reassembles_into_the_whole` used to live here,
-// driving `emit_range` — a hand-written second copy of the header/payload/
-// trailer walk `download.rs::generated` performs, kept only in this test
-// file. Whole-branch review, 2026-08-24 (Finding 3): that duplication is why
-// a real off-by-one in `generated`'s own walk (the `plan.local_header(index)`
-// placed before its `send` call, one byte off within a range window) passed
-// the whole suite — `emit_range` was never mutated, so it kept agreeing with itself regardless
-// of what the route actually did. Both tests are now
-// `download::tests::a_route_download_matches_the_whole_at_every_local_header_boundary`
-// and `download::tests::n_random_ranges_of_a_route_download_reassemble_into_the_whole`,
-// driven against the real route so `generated` is the walk's only copy.
-// `clipped_keeps_only_the_part_inside_the_window` below still tests the
-// clipping primitive directly, and `emit`/the tests that use it still test
-// `Plan::local_header`/`Plan::trailer` directly — neither of those is the
-// range walk this note is about.

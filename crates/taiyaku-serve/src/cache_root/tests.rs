@@ -42,10 +42,9 @@ fn home_is_used_when_xdg_is_absent() {
     );
 }
 
-/// Neither variable set is today's behaviour, kept as a fallback rather
-/// than a refusal: a cache is derived data, and a server that will not
-/// start because `$HOME` is unset trades a recoverable state for an
-/// unrecoverable one.
+/// Neither variable set falls back to the relative path rather than refusing:
+/// a cache is derived data, and a server that will not start because `$HOME`
+/// is unset trades a recoverable state for an unrecoverable one.
 #[test]
 fn neither_variable_falls_back_to_the_relative_path() {
     let resolved = cache_root(None, None, None);
@@ -80,18 +79,11 @@ fn an_empty_variable_is_treated_as_unset() {
     );
 }
 
-/// Important 1 (whole-branch review): an *empty* flag is an absent flag.
-///
-/// `--cache "$SOMETHING_UNSET"` arrives here as `Some("")`, and taken
-/// verbatim it produced `Flag("")` — whose `covers()` is the relative
-/// `covers` and whose tiles land in a relative `thumbs`, which is the
-/// defect this module removes, through the one branch `notice` keeps
-/// silent because it is supposed to have pinned the root. Worse than what
-/// was there before: `.gitignore` ignores `.taiyaku-cache/` and neither of
-/// those two names.
+/// An *empty* flag is an absent flag: `--cache "$SOMETHING_UNSET"` arrives
+/// here as `Some("")`.
 ///
 /// The variables are set here, so the assertion is that resolution falls
-/// *through* to them rather than merely that it stopped producing `Flag`.
+/// *through* to them rather than merely that it does not produce `Flag`.
 #[test]
 fn an_empty_flag_is_treated_as_absent() {
     let resolved = cache_root(
@@ -111,15 +103,10 @@ fn an_empty_flag_is_treated_as_absent() {
     );
 }
 
-/// Important 3 (whole-branch review): a *relative* variable is invalid and
-/// ignored, which the XDG base directory specification states outright —
-/// "if an implementation encounters a relative path in any of these
-/// variables it should consider the path invalid and ignore it".
-///
-/// The conformance is the smaller half. `XDG_CACHE_HOME=.cache` run from
-/// `web/` cached into `web/.cache/taiyaku`, following the working
-/// directory exactly as the unresolved `cache_dir` did — and silently,
-/// since `Xdg` is a rule `notice` treats as having pinned the root.
+/// A *relative* variable is invalid and ignored, which the XDG base directory
+/// specification states outright — "if an implementation encounters a relative
+/// path in any of these variables it should consider the path invalid and
+/// ignore it".
 ///
 /// Both variables are exercised: a resolver that filtered only
 /// `$XDG_CACHE_HOME` would pass a test that checked one.
@@ -208,8 +195,8 @@ fn the_fallback_names_the_path_and_the_flag() {
     );
 }
 
-/// Important 5 (whole-branch review): the root exists once `serve` has
-/// started, rather than the first time a request happens to want it.
+/// The root exists once `serve` has started, rather than the first time a
+/// request happens to want it.
 ///
 /// Asserted on the directory rather than only on the returned `None`,
 /// since a `create` that reported success and made nothing would leave
@@ -235,10 +222,8 @@ fn creating_the_root_makes_it_and_says_nothing() {
 
 /// A root that cannot be created is said out loud and is *not* fatal.
 ///
-/// Staged as an existing file where a directory has to go — `--cache
-/// /etc/hosts` reduced to something a test may create — which is the shape
-/// that used to start the server, print `listening`, and then regenerate
-/// every page on every request at 126 ms apiece with nothing ever said.
+/// Staged as an existing file where a directory has to go, which is what
+/// `--cache /etc/hosts` names, reduced to something a test may create.
 ///
 /// Both halves are asserted: that there is a complaint at all, and that it
 /// names the path and the flag, since a line reading "the cache could not

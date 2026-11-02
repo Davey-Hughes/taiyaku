@@ -935,7 +935,7 @@ async fn removing_an_accounts_only_library_names_the_reader_who_then_sees_nothin
 }
 
 /// A directory is added to a library, or made with one. Nothing adds one alone.
-/// Every other route under `/api/library/roots` still answers.
+/// Every other route under `/api/library/roots` answers.
 #[tokio::test]
 async fn the_roots_route_no_longer_adds_a_dir_and_its_neighbours_answer() {
     let (router, state, _fixture) = test_support::router_over_a_single_scanned_work();

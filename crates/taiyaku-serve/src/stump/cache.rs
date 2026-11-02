@@ -31,19 +31,14 @@ struct Document {
 
 /// Where a work's Stump mapping sits: beside its sidecar, same stem.
 ///
-/// The convention M2 established for progress. `taiyaku.json` stays a pure
-/// alignment document that diffs meaningfully in git.
+/// `taiyaku.json` stays a pure alignment document that diffs
+/// meaningfully in git.
 ///
 /// **The fourth copy of that arithmetic, and the last sibling file left.**
 /// `taiyaku_core::TruthDoc::path_beside`, `RegionDoc::path_beside` and
 /// `taiyaku_library::export::stem_of` are the other three, each naming the
-/// others. `taiyaku-serve`'s own `Work::sibling` used to carry the warning for
-/// this one — "three files now live to this rule: `taiyaku.progress.json`,
-/// `taiyaku.stump.json` and `taiyaku.notes.json`" — and was deleted with the
-/// two named beside it once progress and notes became rows. This one did not
-/// move: a Stump resolution is a cache of another server's ids, not something
-/// the library store holds. Deleting that comment left it with no warning
-/// attached at all, which is what this paragraph restores (delta review M7).
+/// others. A Stump resolution is a cache of another server's ids, not
+/// something the library store holds, so it stays a file.
 pub fn path_for(work: &Work) -> PathBuf {
     let stem = work.path.file_stem().map_or_else(
         || "taiyaku".to_string(),
@@ -76,8 +71,7 @@ pub fn load(work: &Work, base: &str) -> Resolutions {
 /// Write the mapping, atomically.
 ///
 /// Write-and-rename rather than `fs::write`, which truncates first: a crash
-/// mid-write would otherwise leave a short file. The same defect is recorded
-/// against progress in `status.md`; this one does not ship with it.
+/// mid-write would otherwise leave a short file.
 pub fn store(work: &Work, base: &str, members: &Resolutions) -> Result<(), String> {
     let document = Document {
         taiyaku_stump: 1,
@@ -97,9 +91,7 @@ pub fn store(work: &Work, base: &str, members: &Resolutions) -> Result<(), Strin
 /// side — a deliberate tradeoff, recorded as Risk 5 in the design, because a
 /// remembered miss costs one query once instead of one per page turn — so a
 /// book added to Stump after a work first resolved stays invisible until this
-/// file goes away. That tradeoff stands. What did not stand is that acting on
-/// it required knowing from the source that a file called `taiyaku.stump.json`
-/// exists and may be deleted.
+/// file goes away.
 ///
 /// Destructive in exactly the way deleting it by hand is, and for the same
 /// reason it is safe: these are derived answers, rebuildable in one query per

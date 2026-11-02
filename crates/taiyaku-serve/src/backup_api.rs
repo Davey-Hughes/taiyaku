@@ -104,9 +104,7 @@ pub(crate) async fn list_backups(
 /// rather than overwriting the first — the name's timestamp has one-second
 /// resolution, and a suffix counter would be machinery for a case only a
 /// double-click produces. That refusal answers **409, not 500**: pressing
-/// "back up now" twice is a person's timing, not a server fault, and this
-/// route sent a 500 for it until the same misfiling was found three times
-/// over in `users_api` and re-read here.
+/// "back up now" twice is a person's timing, not a server fault.
 pub(crate) async fn create_backup(
     State(state): State<Arc<ServeState>>,
     Extension(principal): Extension<Principal>,

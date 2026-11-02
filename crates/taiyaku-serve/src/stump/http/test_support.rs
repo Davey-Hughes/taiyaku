@@ -102,10 +102,7 @@ impl Transport for FakeTransport {
 mod tests {
     use super::*;
 
-    /// The gap the fix closes: a test could previously assert only that
-    /// *some* POST hit a path, never what travelled in the body. A test
-    /// deleting `variables` from a GraphQL request would have stayed
-    /// green.
+    /// What travelled in the body is recorded, not only the path it went to.
     #[test]
     fn post_json_records_the_body_sent() {
         let fake = FakeTransport::new().on_post("/api/graphql", "{}");
@@ -118,9 +115,8 @@ mod tests {
         );
     }
 
-    /// One path, two different answers in order — the shape Task 5's
-    /// central test needs: member A found in Stump, member B not, from
-    /// one `FakeTransport`.
+    /// One path, two different answers in order: member A found in Stump,
+    /// member B not, from one `FakeTransport`.
     #[test]
     fn on_post_sequence_answers_successive_calls_in_order() {
         let fake = FakeTransport::new().on_post_sequence(

@@ -1,11 +1,9 @@
 use super::*;
 use crate::stump::http::test_support::FakeTransport;
 
-/// Real PNG magic followed by a distinguishing tail. Important 4 made
-/// `CompositeSource` sniff a stump response before serving it, so a fake
-/// payload has to sniff as an image now — this keeps a test able to tell
-/// *which* source's bytes came back, the way a bare `b"from-stump"` did
-/// before sniffing existed, while still being real image magic.
+/// Real PNG magic followed by a distinguishing tail. `CompositeSource` sniffs
+/// a stump response before serving it, so a fake payload has to sniff as an
+/// image; the tail keeps a test able to tell *which* source's bytes came back.
 fn png_bytes(tail: &[u8]) -> Vec<u8> {
     [b"\x89PNG\r\n\x1a\n".as_slice(), tail].concat()
 }
@@ -53,11 +51,11 @@ fn each_member_is_served_by_whichever_source_has_it() {
     );
 }
 
-/// O8: resolution now runs *behind* the bound listener, so a
-/// `CompositeSource` exists and answers requests before anything has been
-/// resolved at all. A member that will eventually come from Stump must be
-/// served from **disk** during that window rather than waiting for it, and
-/// must switch to Stump once the resolution lands.
+/// O8: resolution runs *behind* the bound listener, so a `CompositeSource`
+/// exists and answers requests before anything has been resolved at all. A
+/// member that will eventually come from Stump must be served from **disk**
+/// during that window rather than waiting for it, and must switch to Stump
+/// once the resolution lands.
 ///
 /// This is the property that makes binding first safe, and it is the half
 /// a test can hold. **What it does not claim is the ordering inside
@@ -76,8 +74,8 @@ fn a_member_is_served_from_disk_until_its_resolution_lands() {
         "image/png",
         &png_bytes(b"from-stump"),
     );
-    // Constructed with nothing resolved, which is exactly the state
-    // `serve` now binds the listener in.
+    // Constructed with nothing resolved, which is exactly the state `serve`
+    // binds the listener in.
     let side = StumpSide::new(Arc::new(fake), Resolutions::new(), Duration::from_secs(30));
     let composite = CompositeSource::new(LocalLibrary, Some(side.clone()));
 
@@ -101,7 +99,7 @@ fn a_member_is_served_from_disk_until_its_resolution_lands() {
 }
 
 /// With no Stump configured every member comes off disk, which is the
-/// configuration `taiyaku serve` has had since M2 and must keep.
+/// configuration `taiyaku serve` must keep.
 #[test]
 fn with_no_stump_every_member_is_local() {
     let tmp = crate::test_support::Fixture::new("composite-local");
@@ -144,10 +142,10 @@ fn a_stump_failure_falls_back_to_disk_rather_than_failing() {
     assert_eq!(page.bytes, b"a1.jpg", "disk answers when stump cannot");
 }
 
-/// Important 1: without a cooldown, a member also on disk would stall on
-/// the full transport timeout on *every* request, forever, once Stump
-/// went down — the fallback would be unbounded rather than quick. A long
-/// cooldown must suppress the second request's network attempt entirely.
+/// Without a cooldown, a member also on disk would stall on the full
+/// transport timeout on *every* request, forever, once Stump went down —
+/// the fallback would be unbounded rather than quick. A long cooldown must
+/// suppress the second request's network attempt entirely.
 #[test]
 fn a_transport_failure_latches_the_cooldown_so_a_second_request_skips_the_network() {
     let tmp = crate::test_support::Fixture::new("composite-cooldown-latch");
@@ -255,13 +253,12 @@ fn a_404_does_not_latch_the_cooldown() {
     );
 }
 
-/// Important 4 (whole-branch review): the design doc records that a
-/// nonexistent path on the real instance falls through to Stump's SPA
-/// and returns HTML with a 200, under whatever `Content-Type` the SPA's
-/// static file server happens to set. Trusting that header verbatim
-/// would serve a reader the SPA's markup as a page. Sniffing the bytes —
-/// the same rule `source.rs` already applies to local pages — must
-/// refuse it and fall back to disk instead, exactly as a transport
+/// The design doc records that a nonexistent path on the real instance falls
+/// through to Stump's SPA and returns HTML with a 200, under whatever
+/// `Content-Type` the SPA's static file server happens to set. Trusting that
+/// header verbatim would serve a reader the SPA's markup as a page. Sniffing
+/// the bytes — the same rule `source.rs` already applies to local pages —
+/// must refuse it and fall back to disk instead, exactly as a transport
 /// failure already does.
 #[test]
 fn a_response_that_does_not_sniff_as_an_image_falls_back_to_disk_rather_than_being_served() {
@@ -388,12 +385,9 @@ fn a_recovered_stump_clears_the_latch_and_is_served_from_again() {
     assert!(latch_clear, "a successful request must clear the latch");
 }
 
-/// The cooldown must outlast the fetch timeout it guards, which is what
-/// the comment on `DOWN_COOLDOWN` argues at length and nothing checked.
-/// Every arithmetic mutation of `GET_TIMEOUT_SECONDS * 3` survived —
-/// including `+`, which gives 23 s against a 20 s timeout and re-creates
-/// exactly the "stalls dominate and the latch buys almost nothing" case
-/// the constant was raised to fix.
+/// The cooldown must outlast the fetch timeout it guards, which is what the
+/// comment on `DOWN_COOLDOWN` argues at length. A cooldown too short for the
+/// timeout is the "stalls dominate and the latch buys almost nothing" case.
 #[test]
 fn the_cooldown_outlasts_the_fetch_timeout_it_guards() {
     let timeout = std::time::Duration::from_secs(crate::stump::http::GET_TIMEOUT_SECONDS);

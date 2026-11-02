@@ -1,10 +1,8 @@
 //! One work, two sources, chosen per member.
 //!
-//! Measured on the development instance: of the three editions
-//! `corpus/gotoubun-v01`'s sidecar records, Stump holds one. It indexes the
-//! English releases; the raws and fan translations taiyaku aligns them
-//! *against* are not in it, and a library of English releases is what a Stump
-//! instance normally is.
+//! Stump indexes the English releases; the raws and fan translations taiyaku
+//! aligns them *against* are not in it, and a library of English releases is
+//! what a Stump instance normally is.
 //!
 //! So a source that answered for a whole work would answer for no work here.
 //! Routing per member is what makes taiyaku run beside Stump rather than
@@ -27,7 +25,7 @@ use crate::{LocalLibrary, PageSource, ServedPage};
 /// useful if the fallback is *quick*: with a resolution cache already on disk
 /// and the instance unreachable, every page would otherwise pay the full GET
 /// timeout before disk answered, on every request, forever — and a reader
-/// waiting two minutes a page cannot tell that from broken.
+/// waiting that long for each page cannot tell that from broken.
 ///
 /// **Only a transport-level failure latches.** Stump answering 404 for a page
 /// a book does not have is an answer, not an outage, and must not demote the
@@ -37,10 +35,8 @@ pub struct StumpSide {
     pub transport: Arc<dyn Transport>,
     /// What has been resolved so far.
     ///
-    /// **Shared and mutable because of O8.** Resolution used to finish before
-    /// the listener bound, so this map was complete by the time any request
-    /// could see it and a plain `HashMap` was enough. It now runs behind the
-    /// bound listener: the map starts empty, the server answers from disk
+    /// **Shared and mutable because of O8.** Resolution runs behind the bound
+    /// listener: the map starts empty, the server answers from disk
     /// immediately, and each work's answers arrive here as that work finishes
     /// being asked about. A member not yet resolved is indistinguishable from
     /// one Stump does not have — both are `None` from `book_for`, and both
@@ -58,8 +54,7 @@ pub struct StumpSide {
 /// **Longer than `stump::http::GET_TIMEOUT_SECONDS`, deliberately.** The latch
 /// only suppresses once a failure has returned, so a reader meets one full
 /// timeout per cooldown while Stump is down. A cooldown shorter than the
-/// timeout — 30 s against 120 s, as this first shipped — means the stalls
-/// dominate and the latch buys almost nothing.
+/// timeout means the stalls dominate and the latch buys almost nothing.
 pub const DOWN_COOLDOWN: Duration =
     Duration::from_secs(crate::stump::http::GET_TIMEOUT_SECONDS * 3);
 
@@ -144,12 +139,11 @@ impl CompositeSource {
     /// The Stump book this member is, if it is one *and* it has been resolved
     /// yet.
     ///
-    /// Returns an owned id rather than a borrow: the map now sits behind a
-    /// lock (see `StumpSide::resolutions`), and holding a read guard across
-    /// the network fetch below would block every resolution the background
-    /// task is trying to record. One `String` per page request, against a
-    /// measured floor of 40 ms between requests, is not a cost worth a
-    /// borrow.
+    /// Returns an owned id rather than a borrow: the map sits behind a lock
+    /// (see `StumpSide::resolutions`), and holding a read guard across the
+    /// network fetch below would block every resolution the background task
+    /// is trying to record. One `String` per page request is not a cost worth
+    /// a borrow.
     fn book_for(&self, member: &Member) -> Option<String> {
         self.stump
             .as_ref()?
@@ -175,17 +169,16 @@ impl PageSource for CompositeSource {
             // Stump's 1-based numbering, so this call site cannot get it wrong.
             match api::page_bytes(side.transport.as_ref(), &id, within) {
                 // **The declared `Content-Type` is not trusted here.**
-                // `source.rs` sniffs local page bytes because a declared
-                // type is frequently wrong — measured, 114 of this corpus's
-                // 8,637 page entries are PNGs named `.jpg` — and the design
-                // doc records that a stale path on the real instance falls
-                // through to Stump's SPA and returns HTML with a 200.
-                // Believing the header there would serve a reader that HTML
-                // as every page, and with a populated `taiyaku.stump.json`
-                // the resolve-time page-hash confirmation never runs again
-                // to catch it. Sniffing is applied only here, at the live
-                // serving path — not inside `page_bytes` itself, which
-                // `resolve_member` also calls for its own byte-for-byte
+                // `source.rs` sniffs local page bytes because a declared type
+                // is frequently wrong (some page entries are PNGs named
+                // `.jpg`), and the design doc records that a stale path on the
+                // real instance falls through to Stump's SPA and returns HTML
+                // with a 200. Believing the header there would serve a reader
+                // that HTML as every page, and with a populated
+                // `taiyaku.stump.json` the resolve-time page-hash confirmation
+                // never runs again to catch it. Sniffing is applied only here,
+                // at the live serving path — not inside `page_bytes` itself,
+                // which `resolve_member` also calls for its own byte-for-byte
                 // confirmation, a strictly stronger check that must not be
                 // weakened into an unsniffable-content refusal.
                 Ok(page) => match crate::source::sniffed_type(&page.bytes) {

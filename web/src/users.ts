@@ -41,7 +41,7 @@ export interface User {
   can_stream: boolean
   /**
    * False for an account still holding `credential::LOCKED` — a row with no
-   * way in. `account::list` calls it "the second half worth printing", and
+   * way in. `account::list` calls this half "the one worth printing", and
    * nothing else about such an account says so.
    */
   can_log_in: boolean

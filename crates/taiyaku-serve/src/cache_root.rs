@@ -1,11 +1,5 @@
 //! Where the served cache lives, decided independently of the working
 //! directory.
-//!
-//! `ServeState::cache_dir` used to be the relative `.taiyaku-cache/covers`, so
-//! a server started from a different directory built a second cache and
-//! regenerated every page into it — 126 ms median a page against 10 ms warm,
-//! measured over 235 real generations. This module is what decides the root
-//! instead.
 
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -25,11 +19,8 @@ const RELATIVE_FALLBACK: &str = ".taiyaku-cache";
 ///
 /// The rule is carried as a variant rather than the warning being printed
 /// here, so the caller decides whether to say anything and a test can assert
-/// which branch fired. Mutation testing has twice found survivors in this
-/// workspace that were decisions living inside an `eprintln!` — `reqlog`'s
-/// warn-once latch and `inventory`'s table loop, both recorded in
-/// `docs/notes.md` — because no test of a component's *output* can see one.
-/// Writing the fallback branch as a bare print would file a third by hand.
+/// which branch fired. A decision living inside an `eprintln!` is one that no
+/// test of a component's *output* can see.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Resolution {
     /// `--cache DIR` was given, and is used verbatim.
@@ -114,8 +105,7 @@ pub(crate) fn cache_root(
 /// is one of the three rules `notice` treats as having pinned the root.
 ///
 /// Empty is the degenerate case of relative rather than a second rule —
-/// `Path::new("")` is not absolute — so `is_absolute` is one test where the
-/// code previously had one test that caught only the degenerate half.
+/// `Path::new("")` is not absolute — so `is_absolute` alone rejects both.
 ///
 /// The flag is checked for emptiness but not for absoluteness: a relative
 /// `--cache ./x` is a directory someone chose, where a relative variable is
@@ -130,11 +120,10 @@ fn from_variable(value: Option<&OsStr>) -> Option<&Path> {
 ///
 /// Returned rather than printed for exactly the reason the `Resolution` doc
 /// comment above gives. Carrying the rule as a variant only moves the decision
-/// as far as the caller: `serve` still had to choose which variant is worth a
-/// line, and that choice lived inside an `eprintln!` where no test could see
-/// it — a mutant deleting the whole branch survived the suite, the third of
-/// the kind `reqlog` and `inventory` already filed. As a value, both halves
-/// are assertable: that `Fallback` speaks, and that the other three do not.
+/// as far as the caller, which would still have to choose which variant is
+/// worth a line, and that choice would live inside an `eprintln!` where no test
+/// could see it. As a value, both halves are assertable: that `Fallback`
+/// speaks, and that the other three do not.
 pub(crate) fn notice(resolved: &Resolution) -> Option<String> {
     match resolved {
         Resolution::Fallback(path) => Some(format!(
@@ -148,17 +137,15 @@ pub(crate) fn notice(resolved: &Resolution) -> Option<String> {
 
 /// Create the resolved root, or say what could not be created.
 ///
-/// Nothing used to create it at all. The first `create_dir_all` happened
-/// lazily inside `cover.rs`, where a failure is deliberately discarded so that
-/// an unwritable cache is slow rather than broken — right per request, and
-/// wrong at startup. `--cache /etc/hosts` names an existing *file*; the server
-/// starts, prints `listening`, serves every request correctly, and regenerates
-/// every cover, tile and reading-size page at 126 ms a page forever, with
+/// The first `create_dir_all` otherwise happens lazily inside `cover.rs`,
+/// where a failure is deliberately discarded so that an unwritable cache is
+/// slow rather than broken — right per request, and wrong at startup.
+/// `--cache /etc/hosts` names an existing *file*; without this, the server
+/// would start, print `listening`, serve every request correctly, and
+/// regenerate every cover, tile and reading-size page on every request, with
 /// nothing said once. A directory under a read-only mount does the same.
 ///
-/// This repository has filed that exact shape before: O22 came out of
-/// measuring that `verify a -- b --cache DIR` did not create DIR (see
-/// `taiyaku-cli/src/main.rs`'s `verify`).
+/// The same shape as O22; see `taiyaku-cli/src/main.rs`'s `verify`.
 ///
 /// **A complaint, not a refusal**, for the reason the design's §3 gives about
 /// the unset-variable case: a cache is derived data, and a server that will

@@ -1,14 +1,8 @@
 //! One cover per edition, for the OPDS entries — and, since M5a, one
 //! filmstrip tile per page.
 //!
-//! Scoped deliberately at first: every OPDS entry needs a cover, so that
-//! shipped alone; the filmstrip's thumbnail-per-page route waited for M5a,
-//! when its access pattern — one member's cover against ~195 of its tiles —
-//! was known rather than guessed. One cover per edition and 195 thumbnails
-//! per volume are different problems, and solving them together on a guess
-//! about the second would have been the wrong order. Now that the pattern is
-//! known, both share one decoder (`thumbnail_at`) and one cache-publish path
-//! (`at_path`); only the cache key and the output size differ.
+//! A cover and a tile share one decoder (`thumbnail_at`) and one cache-publish
+//! path (`at_path`); only the cache key and the output size differ.
 //!
 //! Cached by the member's `sha256` **and** by the parameters the image was
 //! generated with — the long edge (`LONG_EDGE` for a cover, `THUMB_LONG_EDGE`
@@ -46,7 +40,7 @@ const LONG_EDGE: u32 = 512;
 /// another gets.
 ///
 /// A cover is 512 because it fills a grid cell; a tile sits in a strip along
-/// the bottom edge and there are ~195 of them per volume, so it is sized for
+/// the bottom edge and there are many of them per volume, so it is sized for
 /// the strip rather than for a grid. Folded into the cache path exactly as
 /// `LONG_EDGE` is, so changing it invalidates by construction.
 pub const THUMB_LONG_EDGE: u32 = 160;
@@ -72,14 +66,14 @@ pub const TILE_LONG_EDGES: [u32; 3] = [THUMB_LONG_EDGE, 320, 480];
 /// `routes.rs::get_thumb` tries `cover_edge` before `tile_edge`, and
 /// `cover_edge` matches on page 0 alone but on *any* size in
 /// `COVER_LONG_EDGES` — so a `w` that landed in both arrays would take the
-/// cover branch on page 0 and never reach `tile_edge` at all. Page 0 would be
-/// served the archive's own bytes and content type, with an `ETag`, at
-/// exactly the size someone added expecting a sharper tile — silently
-/// breaking "a tile is always JPEG" for that one page while the rest of the
-/// filmstrip kept working, and every other page's `w` still found `tile_edge`
-/// unaffected. Today the two are disjoint by construction, not by anything
-/// that stops them from drifting apart; this makes drifting apart a build
-/// failure instead of a bug report.
+/// cover branch on page 0 and never reach `tile_edge` at all. Page 0 at exactly
+/// the size someone added expecting a sharper tile would be served with an
+/// `ETag`, as the archive's own bytes and content type whenever page 0 already
+/// fits that size, silently breaking "a tile is always JPEG" for that one page
+/// while the rest of the filmstrip kept working, and every other page's `w`
+/// still found `tile_edge` unaffected. Today the two are disjoint by
+/// construction, not by anything that stops them from drifting apart; this
+/// makes drifting apart a build failure instead of a bug report.
 const _: () = {
     let mut i = 0;
     while i < TILE_LONG_EDGES.len() {
@@ -118,19 +112,17 @@ pub fn cache_path(dir: &Path, sha256: &str) -> PathBuf {
 /// `long_edge`.
 ///
 /// Keyed on the member's `sha256` *and the page's offset within it*, because
-/// a member has one cover and 195 tiles. The offset rather than the
+/// a member has one cover and many tiles. The offset rather than the
 /// edition-flat index, so a tile survives the edition gaining a member ahead
-/// of this one. The long edge is an argument rather than the constant since
-/// O134: one page now has a file per size a screen has asked for.
+/// of this one. The long edge is an argument rather than the constant: one
+/// page has a file per size a screen has asked for (O134).
 pub fn thumb_cache_path(dir: &Path, sha256: &str, offset: u32, long_edge: u32) -> PathBuf {
     thumb_keyed_path(dir, sha256, offset, long_edge, FORMAT_VERSION)
 }
 
 /// `thumb_cache_path`, with the generation parameters as arguments, for
 /// `keyed_path`'s reason: a test can vary each one alone without a second copy
-/// of `THUMB_LONG_EDGE` or `FORMAT_VERSION`. Split out after O106's fix-round
-/// review found that dropping any of the hash, the long edge or the version
-/// from this name left every test green.
+/// of `THUMB_LONG_EDGE` or `FORMAT_VERSION`.
 fn thumb_keyed_path(
     dir: &Path,
     sha256: &str,
@@ -168,14 +160,12 @@ pub fn page_cache_path(dir: &Path, sha256: &str, offset: u32, long_edge: u32) ->
 ///
 /// **It is both the cache file's name and the page's `ETag`** (see
 /// `routes::page_etag`), and O106 is why there is one function for both.
-/// They used to be built separately, and #35 put `PAGE_FORMAT_VERSION` into
-/// the file name and not into the tag. Its own bump from version 1 to 2, for a
-/// new resize filter, regenerated every cached page on the server under an
-/// unchanged tag, so a browser holding an old rendering would be answered
-/// `304` once its copy went stale, and keep it. A parameter added here reaches
-/// both. One that is not the long edge belongs in `cover_version` too, or a
-/// cover's versioned address goes on being kept for good over bytes it no
-/// longer names.
+/// A tag that lacked a parameter the file name has would stay unchanged when
+/// that parameter's bump regenerated every cached page, so a browser holding
+/// an old rendering would be answered `304` once its copy went stale, and keep
+/// it. A parameter added here reaches both. One that is not the long edge
+/// belongs in `cover_version` too, or a cover's versioned address goes on
+/// being kept for good over bytes it no longer names.
 pub(crate) fn page_key(sha256: &str, offset: u32, long_edge: u32) -> String {
     page_key_at(sha256, offset, long_edge, PAGE_FORMAT_VERSION)
 }
@@ -204,8 +194,7 @@ fn cover_version_at(sha256: &str, offset: u32, format_version: u32) -> String {
 
 /// `FORMAT_VERSION`'s counterpart for reading-sized pages, versioned separately
 /// so a change to how a *page* is produced does not throw away every cover and
-/// tile in a large library, or the reverse. Bumped when the resize filter moved
-/// off `thumbnail`'s sampler — see `resize_to_long_edge`.
+/// tile in a large library, or the reverse.
 const PAGE_FORMAT_VERSION: u32 = 2;
 
 /// The largest long edge this server will resize to.
@@ -219,9 +208,9 @@ pub const MAX_FIT_LONG_EDGE: u32 = 4096;
 /// The long edges a library cover is served at — O133: one per screen density,
 /// for a tile drawn about 256 CSS px on its long edge at one, two and three
 /// device pixels per CSS pixel. The web's `library.ts` offers the same three
-/// (`COVER_LONG_EDGES` there), and the tile route sizes page 0 to these and to
-/// nothing else, so a cover is never a way to read a page an account may not
-/// stream.
+/// (`COVER_LONG_EDGES` there), and the tile route's cover branch sizes page 0
+/// to these and to nothing else, so a cover is never a way to read a page an
+/// account may not stream.
 pub const COVER_LONG_EDGES: [u32; 3] = [256, 512, 768];
 
 /// Whether a page already fits inside `long_edge`, from its header alone.
@@ -230,26 +219,23 @@ pub const COVER_LONG_EDGES: [u32; 3] = [256, 512, 768];
 /// resizing safe to apply to every edition.** A page whose long edge is already
 /// within the request is returned untouched rather than re-encoded: re-encoding
 /// it would cost quality for no pixels gained, and on this corpus `raw-mono`
-/// (685×1024) and `en-fan` (1114×1600) are frequently already smaller than what
-/// a reader's viewport asks for.
+/// and `en-fan` are frequently already smaller than what a reader's viewport
+/// asks for.
 ///
 /// The check reads the image header only — `into_dimensions` parses the SOF
 /// marker and stops, where `decode` would rasterise the whole frame — so
-/// deciding costs microseconds against the ~75 ms a full decode of this
-/// corpus's largest pages takes. That is what lets the decision be made per
-/// request without a cache entry to remember it in.
+/// deciding costs a small fraction of a full decode. That is what lets the
+/// decision be made per request without a cache entry to remember it in.
 ///
-/// **Apart from [`resize_to_long_edge`], and O111 is why.** They were one
-/// function, `fit_at`, and `cached_or_generated_page` called it inside the
-/// generation permit. Split, the permit is taken between them: after this
-/// check, and only for a page that needs the decode.
+/// **Apart from [`resize_to_long_edge`], and O111 is why.** The permit is taken
+/// between them: after this check, and only for a page that needs the decode.
 fn fits_within(page: &[u8], long_edge: u32) -> Result<bool, String> {
     // Two readers, and the second is not waste. `into_dimensions` consumes the
     // one it is called on, and it is what makes the cheap path cheap: it stops
-    // at the frame header, so a page that already fits costs microseconds and no
-    // decode at all. Only a page that genuinely needs resizing pays for a second
-    // header parse, in `resize_to_long_edge`, which is nothing beside the decode
-    // that follows it.
+    // at the frame header, so a page that already fits costs no decode at all.
+    // Only a page that genuinely needs resizing pays for a second header
+    // parse, in `resize_to_long_edge`, which is nothing beside the decode that
+    // follows it.
     let mut limits = image::Limits::default();
     limits.max_alloc = Some(MAX_DECODE_ALLOC);
     let mut reader = image::ImageReader::new(std::io::Cursor::new(page))
@@ -276,13 +262,12 @@ fn resize_to_long_edge(page: &[u8], long_edge: u32) -> Result<Vec<u8>, String> {
     // contributes to exactly one target pixel… may give aliasing artifacts" —
     // the right trade for a 512px cover and the wrong one for the page a reader
     // is looking at, since manga is screentone and thin ink, the two things
-    // that alias worst. Reducing 2147px to 768px through each differs at
-    // **25.3 dB PSNR**, with the hatching visibly broken up on the fast path.
+    // that alias worst. Reducing a page to 768px through the fast path visibly
+    // breaks up the hatching.
     //
-    // `CatmullRom` rather than `Lanczos3`: both cost the same here (about 5 ms
-    // on a 100 ms generation, measured), and Lanczos rings on high-contrast
-    // edges — every panel border and every letter on the page. A little
-    // softness is a better failure than haloed ink.
+    // `CatmullRom` rather than `Lanczos3`: both cost the same here, and Lanczos
+    // rings on high-contrast edges — every panel border and every letter on the
+    // page. A little softness is a better failure than haloed ink.
     let decoded = decode_limited(page, "fit")?;
     let scaled = decoded.resize(
         long_edge,
@@ -295,12 +280,9 @@ fn resize_to_long_edge(page: &[u8], long_edge: u32) -> Result<Vec<u8>, String> {
 /// A reading-sized page, or the page itself when it already fits.
 ///
 /// `P` is whatever the caller's fetch returned, and **`Original` hands it back
-/// untouched. O107 is why.** This was an `Option<Vec<u8>>`, and its `None`
-/// meant "already fits" and dropped the page that had just been read to find
-/// that out. `routes::get_page` then read the page out of its archive again
-/// to serve it. Handing back the fetched page lets the caller serve that one
-/// read, with whatever came with its bytes. The route's content type is what
-/// needs this.
+/// untouched. O107 is why.** Handing back the fetched page lets the caller
+/// serve that one read, with whatever came with its bytes. The route's content
+/// type is what needs this.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Fitted<P> {
     /// A JPEG at the requested long edge, from the cache or just made.
@@ -319,10 +301,9 @@ pub enum Fitted<P> {
 ///
 /// **The permit is taken for the resize alone, and O111 is why.** A cache hit,
 /// the fetch, and the header parse that decides whether the page fits all run
-/// without it. Until O111 the fetch and the header parse ran inside it, so a
-/// request for a page that fits, which decodes nothing, queued behind a cold
-/// filmstrip for a median of about 165 ms (`docs/notes.md`, under O107 and
-/// O111). The permit bounds decode memory, and only the resize decodes.
+/// without it. Were they in it, a request for a page that fits, which decodes
+/// nothing, would queue behind a cold filmstrip (`docs/notes.md`, under O107
+/// and O111). The permit bounds decode memory, and only the resize decodes.
 ///
 /// **The cost is a fetched page held while it queues.** A page that needs a
 /// resize is fetched before it waits for the permit, so its bytes are in memory
@@ -330,7 +311,7 @@ pub enum Fitted<P> {
 /// permit at all, so this is not a new shape here. `at_path` still fetches
 /// inside the permit. An OPDS cover or a filmstrip tile always decodes, so
 /// fetching first would not spare it the wait, and would hold its page in
-/// memory through it. **A library cover comes here since O133**, sized by the
+/// memory through it. **A library cover comes here (O133)**, sized by the
 /// tile route's `?w=` (`routes.rs::cover_edge`), so a cold grid holds a
 /// fetched page per queued cover while the permits resize; that cost was
 /// accepted for the page route's output — the filter chosen for line art, and
@@ -371,8 +352,8 @@ pub fn cached_or_generated_page<P: AsRef<[u8]>>(
 
 /// The cached file at `path`, if there is one and it is a whole JPEG.
 ///
-/// **O105: a hit used to be any file `fs::read` could open.** An empty file
-/// was served as a cover, and nothing ever replaced it, because the path is
+/// **O105: a hit is a whole JPEG, not any file `fs::read` can open.** An empty
+/// file served as a cover would never be replaced, because the path is
 /// content-addressed and never changes. `None` for a broken file makes the
 /// caller treat it as a miss. The caller then regenerates and
 /// `atomic::write` renames the new file over the broken one, so the next
@@ -380,13 +361,8 @@ pub fn cached_or_generated_page<P: AsRef<[u8]>>(
 ///
 /// Every file in these caches came out of `encode_jpeg`, which always starts
 /// with the SOI marker and ends with EOI. So "starts `FF D8 FF`, ends
-/// `FF D9`" rejects nothing this module wrote. On 2026-09-13 every file in the
-/// caches the server had written on the development workstation passed:
-/// 1,156 across three directories, covers, tiles and reading pages of both
-/// page format versions (`docs/notes.md`, under O105). What it rejects is an
-/// empty file, a zero-filled one, and one cut short. Those are the shapes a
-/// crash can leave when a rename reaches the disk before the data does, which
-/// `atomic::write` allowed until O104. They are also what a copy that was cut
+/// `FF D9`" rejects nothing this module wrote. What it rejects is an empty
+/// file, a zero-filled one, and one cut short: the shapes a copy that was cut
 /// off leaves.
 ///
 /// A marker check rather than a decode, because the hit is the cheap path.
@@ -401,12 +377,11 @@ fn cached(path: &Path) -> Option<Vec<u8>> {
 }
 
 /// How many generations may decode at once: a cover or a tile, fetching its
-/// page and decoding it, or a reading page resizing one it has already
-/// fetched.
+/// page and decoding it, or a reading page resizing one it has already fetched.
 ///
 /// **A reading page fetches outside the permit, and covers and tiles fetch
-/// inside it.** O111 moved a reading page's fetch and header parse out, so
-/// that a page that fits never queues; see `cached_or_generated_page`.
+/// inside it.** O111: a page that fits never queues; see
+/// `cached_or_generated_page`.
 ///
 /// Unbounded is dangerous at `MAX_DECODE_ALLOC`'s ceiling: `notes.md`
 /// measured four concurrent art-book decodes peaking at 3.0 GB, and the
@@ -495,12 +470,11 @@ pub fn thumbnail_at(page: &[u8], long_edge: u32) -> Result<Vec<u8>, String> {
 /// and the client should get it. Failing here would make a read-only cache
 /// directory break the feed rather than merely slow it.
 ///
-/// Important 6 (whole-branch review): generation — fetching the page and
-/// decoding it — runs behind `GENERATION_LIMIT`, bounding how many decodes at
-/// up to `MAX_DECODE_ALLOC` each can run at once. The cache-hit read above
-/// this line is deliberately outside the permit, so a warm grid stays fully
-/// parallel; only a cold one, which is what actually decodes anything, is
-/// bounded.
+/// Important 6: generation — fetching the page and decoding it — runs behind
+/// `GENERATION_LIMIT`, bounding how many decodes at up to `MAX_DECODE_ALLOC`
+/// each can run at once. The cache-hit read in `at_path` is deliberately
+/// outside the permit, so a warm grid stays fully parallel; only a cold one,
+/// which is what actually decodes anything, is bounded.
 pub fn cached_or_generated(
     dir: &Path,
     sha256: &str,

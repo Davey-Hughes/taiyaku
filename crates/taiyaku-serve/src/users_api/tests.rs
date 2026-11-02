@@ -147,8 +147,8 @@ async fn a_reader(router: &axum::Router, state: &crate::ServeState) -> i64 {
     user_id(state, "reader")
 }
 
-/// O54's note stops being true here: this is the first path outside a fixture
-/// that can set either capability column to 0.
+/// A patch through the route turns a capability column off and leaves the one
+/// it does not name alone (O54).
 #[tokio::test]
 async fn patching_a_user_sets_the_capability_columns_o54_could_not_reach() {
     let (router, state, _fixture) = test_support::router_over_a_single_scanned_work();
@@ -247,7 +247,7 @@ async fn the_two_role_refusals_answer_409_rather_than_500() {
 }
 
 /// C4 §4: deleting a user states its counts before it happens, on the same
-/// `?dry_run=true` shape PR 1 chose for a root. And the deleted account's live
+/// `?dry_run=true` shape a root's removal uses. And the deleted account's live
 /// session is refused on its next request — the cascade reaching the guard's
 /// own resolver, not just the table.
 #[tokio::test]
@@ -301,9 +301,8 @@ async fn deleting_a_user_quotes_its_counts_first_and_ends_its_session() {
     );
 }
 
-/// **`deny_unknown_fields` on the query struct**, which PR 1's whole-branch
-/// review found the hard way: without it `?dryrun=true` — one key off — ran
-/// the real, committed removal and answered 200.
+/// **`deny_unknown_fields` on the query struct**: without it `?dryrun=true` —
+/// one key off — would run the real, committed removal and answer 200.
 #[tokio::test]
 async fn a_misspelled_dry_run_is_refused_rather_than_deleting() {
     let (router, state, _fixture) = test_support::router_over_a_single_scanned_work();
@@ -571,9 +570,8 @@ async fn a_libraries_value_that_is_not_an_array_of_numbers_is_refused() {
     );
 }
 
-/// The screen sent directory ids under `roots` until it sent library ids under
-/// `libraries`. The old key is refused by name, never dropped: dropped, the
-/// request would answer 200 having changed no grant.
+/// The old key `roots` is refused by name, never dropped: dropped, the request
+/// would answer 200 having changed no grant.
 #[tokio::test]
 async fn a_roots_key_in_the_patch_body_is_refused_naming_libraries() {
     let (router, state, _fixture) = test_support::router_over_a_single_scanned_work();
@@ -725,11 +723,7 @@ async fn an_admin_revokes_one_api_key() {
     );
 }
 
-/// **Neither user route may write an empty password.** The CLI has refused
-/// this since spec A2 and the claim route since its whole-branch review, in
-/// three separate copies of one rule; these two routes were a fourth and fifth
-/// writer with none of them, until the refusal moved into
-/// `credential::hash_password`. Found by C4 PR 2's own whole-branch review.
+/// **Neither user route may write an empty password.**
 ///
 /// A 400 on both, not a 500: clearing a field is the caller's mistake, not the
 /// server breaking.
@@ -788,11 +782,8 @@ async fn neither_user_route_will_write_an_empty_password() {
     );
 }
 
-/// **A `PATCH` that names both a role change and a bad password applies
-/// neither.** `account::update` commits its own scope and
-/// `account::set_password` opens none, so ordering them the obvious way left
-/// the role change committed beside a 400 — a half-applied `PATCH` on the one
-/// route that edits permissions. Found by C4 PR 2's whole-branch review.
+/// **A `PATCH` that names both a role change and a bad password
+/// applies neither.**
 #[tokio::test]
 async fn a_patch_refused_for_its_password_does_not_apply_its_other_fields() {
     let (router, state, _fixture) = test_support::router_over_a_single_scanned_work();
@@ -834,7 +825,7 @@ async fn a_patch_refused_for_its_password_does_not_apply_its_other_fields() {
 /// route's body.** `Account` carries no hash by construction and
 /// `SessionSummary.id` is a sha256 — but `assembled` renders three store types
 /// into one document, and this is the check that says so rather than the three
-/// doc comments that assume it. C4 PR 2's whole-branch review, question 3.
+/// doc comments that assume it.
 #[tokio::test]
 async fn no_user_route_body_carries_a_hash_a_token_or_a_key_secret() {
     let (router, state, _fixture) = test_support::router_over_a_single_scanned_work();
@@ -899,11 +890,7 @@ async fn no_user_route_body_carries_a_hash_a_token_or_a_key_secret() {
     }
 }
 
-/// **The two routes answer the same status for the same mistake.** Until C4
-/// PR 2's whole-branch review, `account::update` returned a bare `String` and
-/// this route mapped every one of them to 409 — so `POST {"role":
-/// "moderator"}` was a 400 and `PATCH` of the same value was a 409, and a disk
-/// fault was reported to the client as a conflict.
+/// **The two routes answer the same status for the same mistake.**
 #[tokio::test]
 async fn a_role_the_schema_refuses_is_400_on_both_routes() {
     let (router, state, _fixture) = test_support::router_over_a_single_scanned_work();
@@ -932,9 +919,8 @@ async fn a_role_the_schema_refuses_is_400_on_both_routes() {
     );
 }
 
-/// A non-string `role` was swallowed by `and_then(as_str).unwrap_or("user")`,
-/// so `{"role": 123}` silently created a reader and answered 200 — while the
-/// patch route 400s on the identical shape. Found by the whole-branch review.
+/// A non-string `role` is refused rather than defaulted: `{"role": 123}`
+/// answers 400 and creates no account.
 #[tokio::test]
 async fn a_role_that_is_not_a_string_is_refused_rather_than_defaulted() {
     let (router, state, _fixture) = test_support::router_over_a_single_scanned_work();
@@ -960,8 +946,8 @@ async fn a_role_that_is_not_a_string_is_refused_rather_than_defaulted() {
 /// **An administrator resets other accounts here and their own at
 /// `/api/password`.** The doc's justification for ending every session — "there
 /// is no session of the target's that made this one" — is exactly false when
-/// the target is the caller, and the result was signing the administrator out
-/// of the browser they were working in. Found by the whole-branch review.
+/// the target is the caller: ending every session would sign the administrator
+/// out of the browser they are working in.
 #[tokio::test]
 async fn an_administrator_cannot_reset_their_own_password_through_this_route() {
     let (router, state, _fixture) = test_support::router_over_a_single_scanned_work();
@@ -996,17 +982,15 @@ async fn an_administrator_cannot_reset_their_own_password_through_this_route() {
     );
 }
 
-/// Revoking a session or key that is not this account's answered "there is no
-/// account 3" on a screen showing account 3 — the right status attached to the
-/// wrong noun. Found by the whole-branch review.
+/// Revoking a session or key that is not this account's answers with a missing
+/// session or key, never with "there is no account".
 #[tokio::test]
 async fn a_missing_session_or_key_names_itself_rather_than_the_account() {
     let (router, state, _fixture) = test_support::router_over_a_single_scanned_work();
     let id = a_reader(&router, &state).await;
 
     // Both halves: an account that exists with no such session, and an
-    // account that does not exist at all. The first wording of this refusal
-    // fixed one wrong noun by asserting an account that may not be there.
+    // account that does not exist at all.
     for (path, noun) in [
         (
             format!("/api/library/users/{id}/sessions/deadbeef"),
@@ -1030,16 +1014,13 @@ async fn a_missing_session_or_key_names_itself_rather_than_the_account() {
     }
 }
 
-/// **`can_log_in` is the one field on a user row that is computed rather than
-/// read**, and nothing asserted it was right — `the_user_list_carries_sessions_keys_and_grants`
-/// only checks the key is present, so mutating `can_log_in` to `Ok(true)`, to
-/// `Ok(false)`, and its comparison to `!=` all survived. Found by C4 PR 2's
-/// mutation sweep.
+/// **`can_log_in` is the one field on a user row that is computed rather
+/// than read.**
 ///
 /// The distinction it exists for is real and invisible otherwise:
-/// `account::list`'s own doc calls it "the second half worth printing", because
-/// an account holding `credential::LOCKED` has a row and no way in and nothing
-/// else about it says so.
+/// `account::list`'s own doc calls the second half "the one worth printing",
+/// because an account holding `credential::LOCKED` has a row and no way in
+/// and nothing else about it says so.
 #[tokio::test]
 async fn can_log_in_tells_a_locked_account_from_a_usable_one() {
     let (router, state, _fixture) = test_support::router_over_a_single_scanned_work();
@@ -1056,11 +1037,8 @@ async fn can_log_in_tells_a_locked_account_from_a_usable_one() {
     };
 
     // **Through `PATCH`, not through the list.** The list route reads the flag
-    // straight off `account::list`'s own tuple; `users_api::can_log_in` — the
-    // function the three mutations were in — is reached only by `patch_user`'s
-    // response. A first version of this test drove the list, passed with the
-    // comparison mutated to `!=`, and proved nothing. Hand-applying the
-    // mutation is what caught that.
+    // straight off `account::list`'s own tuple; `users_api::can_log_in` is
+    // reached only by `patch_user`'s response.
     let listed = get_json(&router, "/api/library/users").await;
     let row = |id: i64| -> serde_json::Value {
         listed["users"]
@@ -1092,12 +1070,7 @@ async fn can_log_in_tells_a_locked_account_from_a_usable_one() {
     }
 }
 
-/// **A dry run's refusal is a 409, the same as the real removal's.** Adding
-/// the last-administrator check to `removal_cost` without widening how the
-/// route maps its errors made the *quote* answer 500 where the commit answered
-/// 409 — a routine refusal reported as a server fault, on the safety feature
-/// of the destructive route. Found by re-reading the review's own finding
-/// against the function one over from the one it named.
+/// **A dry run's refusal is a 409, the same as the real removal's.**
 #[tokio::test]
 async fn a_dry_run_and_a_real_removal_refuse_with_the_same_status() {
     let (router, state, _fixture) = test_support::router_over_a_single_scanned_work();
@@ -1149,10 +1122,8 @@ async fn deleting_an_account_that_does_not_exist_is_404_on_both_halves() {
 /// **A closure that panicked is a 500 naming what was running** — the same
 /// contract `curation::panicked`, `metadata::panicked` and
 /// `config_api::admin_panicked` each hold, tested the same way for the same
-/// reason: nothing provokes a real panic inside a `spawn_blocking` on these
-/// routes, so `replace user_panicked -> Response with Default::default()` — an
-/// empty 200 — survived every test until this was written. Found by C4 PR 2's
-/// third mutation sweep, which is when the refactor made the mutant viable.
+/// reason: nothing provokes a real panic inside a `spawn_blocking`
+/// on these routes.
 #[tokio::test]
 async fn a_closure_that_panicked_is_a_500_naming_what_was_running() {
     let why = tokio::task::spawn_blocking(|| {
@@ -1172,16 +1143,12 @@ async fn a_closure_that_panicked_is_a_500_naming_what_was_running() {
     );
 }
 
-/// **An API key reaches none of these routes**, and this is the check that
-/// says so rather than the role check that did not.
+/// **An API key reaches none of these routes.**
 ///
-/// Measured before the fix: `GET /api/library/users` under an
-/// administrator's `Authorization: Basic name:tyk_…` answered **200** with
-/// every account's sessions, their IP addresses and their user-agents — and
-/// `PATCH .../{id}` with a password would have taken over any account. Spec
-/// A2's second whole-branch review closed exactly this for the self-service
-/// account routes; these are the same capability over *every* account.
-/// Found by the review of C4 PR 2's own fix round.
+/// Were one let through, `GET /api/library/users` under an administrator's
+/// `Authorization: Basic name:tyk_…` would answer every account's sessions,
+/// their IP addresses and their user-agents, and `PATCH .../{id}` with a
+/// password would take over any account.
 #[tokio::test]
 async fn an_api_key_reaches_no_user_administration_route() {
     use tower::ServiceExt as _;
@@ -1331,11 +1298,6 @@ async fn an_administrator_patching_their_own_libraries_is_written() {
 /// C4 §6.2: the expanded card shows "whether it is the browser doing the
 /// asking", so a person can tell which row is the session in front of them
 /// before revoking one.
-///
-/// **It was `false` for every session on this route.** `assembled` passed
-/// `None` where `session::list_sessions` passes `token_of(&headers)`, so the
-/// field shipped as a constant — on the one screen where revoking the wrong
-/// row signs the administrator out of the browser they are working in.
 #[tokio::test]
 async fn the_user_list_marks_the_session_doing_the_asking_and_no_other() {
     let (router, state, _fixture) = test_support::router_over_a_single_scanned_work();

@@ -6,17 +6,10 @@
 //! edited field lives on, apply the edit, and answer with what the store
 //! actually holds afterwards.
 //!
-//! **This is what closes O44, but not by giving [`taiyaku_library::librarydoc::apply`]
-//! its first caller outside `migrate::apply_library`.** `derive::write_work`'s
-//! own read-back already reached it, for a scanned work with no `LIBRARY`
-//! marker yet — added earlier on this same branch (`b075be4`, closing O53's
-//! unreachable arm), a few commits before this file existed at all, not
-//! before the branch. `main` has no such read-back; nothing on it ever
-//! applied a hand document outside `migrate::apply_library`. What the four
-//! routes here add is a caller a person can invoke on purpose — the first
-//! that turns "apply a hand document" into something a request can ask for,
-//! rather than something `migrate` or `derive` only ever do to a work
-//! implicitly, once, on their own schedule.
+//! **This is what closes O44.** What the four routes here add is a caller a
+//! person can invoke on purpose, which turns "apply a hand document" into
+//! something a request can ask for, rather than something `migrate` or `derive`
+//! only ever do to a work implicitly, once, on their own schedule.
 //!
 //! Every one of them does the same three things in the same order — apply,
 //! save, re-project — but they do not all share one function for it.
@@ -39,8 +32,7 @@
 //!
 //! Every route here refuses a non-admin with **403** — `curation.rs`'s own
 //! doc comment states the reasoning and it applies unchanged: the credential
-//! is valid and the caller is who they say, so a 401 would be the wrong
-//! answer.
+//! is valid and the caller is who they say, so a 401 would be the wrong answer.
 //!
 //! An id or slug naming nothing this route can edit is **404** —
 //! [`NoAnswer::Missing`].
@@ -48,13 +40,11 @@
 //! Everything [`taiyaku_library::librarydoc::of`],
 //! [`taiyaku_library::librarydoc::apply`] and
 //! [`taiyaku_library::hand::save`] can fail or refuse with is folded into one
-//! [`NoAnswer::Refused`], answered **409** — the identical fold
-//! `curation::NoAnswer::Refused`'s own doc comment describes and for the same
-//! reason: none of the three separates a refusal a caller could act on (a
-//! series edit naming external ids with no titles to attach them to, say)
-//! from a genuine store fault raised while the write was underway, and
-//! telling them apart here would mean matching on a `String` none of the
-//! three promises to keep stable.
+//! [`NoAnswer::Refused`], answered **409**, because none of the three
+//! separates a refusal a caller could act on (a series edit naming external
+//! ids with no titles to attach them to, say) from a genuine store fault
+//! raised while the write was underway, and telling them apart here would
+//! mean matching on a `String` none of the three promises to keep stable.
 //!
 //! A `spawn_blocking` join failure is **500**, naming what was running —
 //! [`NoAnswer::Failed`], the one variant here a caller's request can never
@@ -76,27 +66,17 @@
 //! matching exists at all: `patch_work`'s own `series` field and import, where
 //! the caller has a title and not yet an id to attach it to. A PATCH to
 //! `/series/{id}` already has the id, and matching its edited text anyway can
-//! resolve onto a *different* series than the one the URL named — this route
-//! used to do exactly that, three ways (whole-branch review's C1: a corrected
-//! title with nothing left to match minted a new series and deleted this one;
-//! a corrected title beside an unchanged one landed next to the old spelling
-//! rather than replacing it; delta review of the fix waves,
-//! `f133b3e..910b15a`, the Critical: a corrected title matching text some
-//! *other* series already held resolved there instead, and once every work
-//! had migrated onto it, deleted this one — the two doc-comment fixes above
-//! only ruled out the first two, and shipped believing they had ruled out all
-//! of it). [`set_series_titles`] refuses the third shape outright — a title
-//! text another series already holds is an error, not a write — which is what
-//! closes the door the collision needs to exist at all; **and** the loop below
-//! applies each work's document through [`librarydoc::apply_with_series_id`],
-//! not [`librarydoc::apply`], which does not call
-//! [`librarydoc::apply_series`] — so even should the ambiguous state ever
-//! exist regardless (stale data predating the refusal, say), this loop cannot
-//! re-resolve a work onto the wrong series by matching its title text.
-//! `reading`, `tags` and `external` still flow through
-//! [`apply_series_edit`] the same as before — its own doc comment has the
-//! detail — since none of them can mint or orphan a series row the way
-//! matching a title can.
+//! resolve onto a *different* series than the one the URL named.
+//! [`set_series_titles`] refuses outright a title text another series already
+//! holds — an error, not a write — which is what closes the door the collision
+//! needs to exist at all; **and** the loop below applies each work's document
+//! through [`librarydoc::apply_with_series_id`], not [`librarydoc::apply`],
+//! which does not call [`librarydoc::apply_series`] — so even should the
+//! ambiguous state ever exist regardless (stale data predating the refusal,
+//! say), this loop cannot re-resolve a work onto the wrong series by matching
+//! its title text. `reading`, `tags` and `external` flow through
+//! [`apply_series_edit`] — its own doc comment has the detail — since none of
+//! them can mint or orphan a series row the way matching a title can.
 //!
 //! **[`patch_work`]'s own `series` field is a second door onto the same
 //! rows** — [`WorkEdit`]'s own doc comment has the detail — so it fans out to
@@ -198,11 +178,9 @@ fn panicked(what: &str, why: &tokio::task::JoinError) -> Response {
 ///
 /// **Three steps in this order, on every route here.** `apply` writes the
 /// rows; [`taiyaku_library::hand::save`] writes
-/// `<root>/.taiyaku/<key>.library.json` *and records the `LIBRARY` marker*,
-/// which is what stops the next scan reverting the edit
-/// (`derive::write_work`'s own `migrate::absorbed` guard); re-projecting is
-/// what the client is answered with, so it sees what the store actually
-/// holds rather than what it sent.
+/// `<root>/.taiyaku/<key>.library.json` *and records the `LIBRARY` marker*;
+/// re-projecting is what the client is answered with, so it sees what the
+/// store actually holds rather than what it sent.
 ///
 /// **`apply` is a parameter, not always [`librarydoc::apply`].**
 /// [`patch_series`]'s own per-work loop calls [`edit_series_member_raw`]
@@ -247,10 +225,8 @@ fn edit_work_raw(
 /// `series_id` cannot change out from under it mid-iteration the way
 /// [`patch_work`]'s own fan-out sometimes must re-read one.
 ///
-/// **This is half of the Critical the delta review of the fix waves
-/// (`f133b3e..910b15a`) found.** [`librarydoc::apply_with_series_id`]'s own
-/// doc comment has the mechanism; `patch_series`'s own doc comment on this
-/// module has the end-to-end reproduction it closes.
+/// [`librarydoc::apply_with_series_id`]'s own doc comment has why re-resolving
+/// series identity by title text in this loop is unsafe.
 fn edit_series_member_raw(
     conn: &rusqlite::Connection,
     work_id: i64,
@@ -274,9 +250,8 @@ fn edit_series_member_raw(
 /// **`why` is a JSON array of nought or one element, the same shape
 /// [`merge_worst_case`] answers with for a route that can fan out to more than
 /// one document.** A single-document route has at most one reason to report,
-/// but it is still an array: a client that must special-case one route's
-/// `why` being a bare string against every other route's array is exactly the
-/// defect Task 8 and 9's client would otherwise have to work around.
+/// but it is still an array, so a client need not special-case one route's
+/// `why` being a bare string against every other route's array.
 ///
 /// **Two different reasons answer `persisted: false`, and only one of them
 /// puts anything in that array.** A read-only root fails the write and
@@ -313,12 +288,10 @@ fn edit_work(
 /// reason that occurred — not only the last one — and `keeps_documents` of
 /// `Some(false)` only if **every** save reported it, `None` otherwise.
 ///
-/// **What [`patch_series`] and [`patch_work`]'s own `series` field both need,
-/// and used to lack.** `patch_series` kept only its loop's last iteration, so
-/// a series whose works span two roots could have the first work's document
-/// fail while the answer read `persisted: true` with no `why` — the exact
-/// finding Task 4's review closed once already, this time reopened by a loop
-/// throwing away every result but one.
+/// **What [`patch_series`] and [`patch_work`]'s own `series` field both need.**
+/// Keeping only a loop's last iteration would let a series whose works span two
+/// roots have the first work's document fail while the answer read
+/// `persisted: true` with no `why`.
 ///
 /// **`keeps_documents` is not a plain `&=` the way `persisted` is,** because
 /// its identity element differs from `persisted`'s: a fan-out across siblings
@@ -548,9 +521,9 @@ fn series_of_work(conn: &rusqlite::Connection, work_id: i64) -> Result<Option<i6
 /// `PATCH /api/library/works/{slug}` — volume, title, series membership.
 ///
 /// All three of C3 §5's work-level fields. Series membership is here rather
-/// than deferred: see the build design §7's second correction — `derive` has
-/// guarded these columns behind the `LIBRARY` marker since #77, and
-/// [`edit_work_raw`] records that marker.
+/// than deferred: see the build design §7's second correction, and
+/// `derive::write_work`'s comment on the provenance columns (O80) for why a
+/// rescan keeps the edit.
 ///
 /// **A second door onto the shared rows [`patch_series`] exists to protect.**
 /// `doc.series` reaches `librarydoc::apply_series`, which upserts
@@ -832,7 +805,7 @@ pub(crate) struct SeriesEdit {
 }
 
 /// Write every field `edit` actually set onto `doc`'s reading direction, tags
-/// and external ids — the parts of a series edit that still flow through
+/// and external ids — the parts of a series edit that flow through
 /// [`edit_series_member_raw`]'s per-work call, because none of them can mint
 /// or orphan a `series` row the way matching a title can. A field `edit` left
 /// absent leaves `doc`'s own value alone, the same "send only what changed"
@@ -869,30 +842,20 @@ fn apply_series_edit(doc: &mut LibraryDoc, edit: &SeriesEdit) {
 /// [`librarydoc::apply_series`]'s resolve-by-title matching. This module's
 /// own doc comment on this section has the reason. `set_series_titles`
 /// refuses outright if any of the corrected titles names text a *different*
-/// series already holds — its own doc comment has the reason — so a
-/// refusal here aborts the whole request via `?` before any work's document
-/// is touched at all, the same as an empty `titles` array already did.
+/// series already holds, where the two are in one library or either is in
+/// none — its own doc comment has the reason — so a refusal here aborts the
+/// whole request via `?` before any work's document is touched at all, the
+/// same as an empty `titles` array does.
 ///
 /// **The per-work loop below never resolves series identity by title text
 /// either, regardless.** It calls [`edit_series_member_raw`], not
 /// [`edit_work_raw`], which applies through
 /// [`librarydoc::apply_with_series_id`] rather than [`librarydoc::apply`] —
-/// that function's own doc comment has the mechanism. Before this existed,
-/// the loop used the ordinary [`edit_work_raw`], which reached
-/// [`librarydoc::apply_series`] for every work regardless of what `edit`
-/// itself named, since `doc.series.titles` (read fresh from
-/// [`librarydoc::of`]) already carried whatever `set_series_titles` had just
-/// written — and if that text collided with another series, `apply_series`
-/// resolved onto it instead. That was the Critical the delta review of the
-/// fix waves (`f133b3e..910b15a`) found and reproduced end to end: every
-/// work in this loop migrated onto the wrong series, and once none was left
-/// under the one `id` named, [`librarydoc::forget_orphaned_series`] deleted
-/// it — cascading its `series_title` and `external_id` rows, 200,
-/// `persisted: true`, no `why`. The refusal above and this loop's own
-/// `apply_with_series_id` close it two ways at once: the ambiguous state
-/// this needs can no longer be written, and even were it already there
-/// regardless (stale data predating the refusal), this loop could not
-/// re-resolve onto it.
+/// that function's own doc comment has the mechanism. The refusal above and
+/// this loop's own `apply_with_series_id` guard against a resolution onto
+/// another series two ways at once: the ambiguous state it depends on cannot be
+/// written, and even were it already there regardless (stale data predating the
+/// refusal), this loop could not re-resolve onto it.
 ///
 /// **Every work in the series, not one, for `reading`, `tags` and
 /// `external`.** `external_id` is shared the way `librarydoc.rs`'s own module
@@ -932,70 +895,65 @@ pub(crate) async fn patch_series(
         if let Some(titles) = &edit.titles {
             librarydoc::set_series_titles(&conn, id, titles).map_err(NoAnswer::Refused)?;
         }
-        // The worst case, not the last one — see `worst_case`'s own doc
-        // comment. Every work's document is still saved, exactly as before;
-        // only the answer about them changes.
+        // The worst case, not the last one — see `worst_case`'s own
+        // doc comment.
         //
         // **A hard `Err` here has the same abort semantics `patch_work`'s own
         // fan-out documents at its loop.** It aborts the whole request through
         // `NoAnswer::Refused` (409) via `?`, with no `persisted`/`why` in the
         // answer at all. The works already looped over keep the document this
         // loop just gave them; the ones not yet reached keep their pre-edit
-        // one. Titles are not part of that staleness any more: the write
-        // above already lands before the loop's first iteration, atomically,
-        // so every not-yet-reached work's `series_title` row is already
-        // correct — only its own JSON document file still names the old
-        // text. `external_id` is the one table still keyed to the loop
-        // itself: it is upserted, not replaced, so the first iteration's
-        // `librarydoc::apply_with_series_id` already rewrites it for the
-        // whole series (kept by `series_id`, not `work_id`), and a
-        // not-yet-reached work's stale document is the only thing left
-        // behind for it too. It heals on a retry:
+        // one. Titles are not part of that staleness: the write above lands
+        // before the loop's first iteration, atomically, so every
+        // not-yet-reached work's `series_title` row is already correct — only
+        // its own JSON document file names the old text. `external_id` is the
+        // one table keyed to the loop itself: it is upserted, not replaced, so
+        // the first iteration's `librarydoc::apply_with_series_id` already
+        // rewrites it for the whole series (kept by `series_id`, not
+        // `work_id`), and a not-yet-reached work's stale document is the only
+        // thing left behind for it too. It heals on a retry:
         // `librarydoc::apply_with_series_id` is idempotent (its own doc
         // comment), and `set_series_titles` overwriting the same title set
         // twice is a no-op, so re-running this whole handler over the
         // current membership re-saves the already-correct works with no
-        // change and finally saves the ones an earlier attempt did not
-        // reach.
+        // change and finally saves the ones an earlier attempt did not reach.
         //
         // **"The current membership" is `works_in_series`'s own answer —
-        // `principal.access`-filtered (I8) — not the series' true membership.
-        // O86 was the gap between those two, and it is closed by the
-        // permission model rather than by anything here.**
+        // `principal.access`-filtered (I8) — not the series' true membership:
+        // the gap between those two is O86, closed by the permission model
+        // rather than by anything here.**
         //
         // `set_series_titles` above writes `series_title` for the whole series
         // regardless of `principal.access`, since that table is keyed
         // `(series_id, title)` and has no per-work column a grant could filter
-        // on; this loop then re-saves only the works `works_in_series`
-        // returned. So an administrator who could see part of a series once
-        // renamed it for the whole library and left every hidden sibling
-        // holding a stale cached copy of the series block — not corrupt, the
-        // row data being untouched, but never healed either, because no later
-        // request from that same principal reaches those works.
+        // on; this loop then re-saves only the works `works_in_series` returns.
+        // So an administrator who could see part of a series would rename it
+        // for the whole library and leave every hidden sibling holding a stale
+        // cached copy of the series block — not corrupt, the row data being
+        // untouched, but never healed either, because no later request from
+        // that same principal would reach those works.
         //
-        // **There is no such administrator now.** `auth::Principal::from_account`
-        // gives an admin `Access::Every` outright — role dominates the other three
-        // permission columns, which spec A2 listed side by side without
+        // **There is no such administrator.** `auth::Principal::from_account`
+        // gives an admin `Access::Every` outright — role dominates the other
+        // three permission columns, which spec A2 listed side by side without
         // deciding — and these routes admit nobody else. `works_in_series`
         // therefore always answers the series' true membership here, and the
-        // two can no longer differ. The alternative considered and declined
-        // was refusing a `titles` edit whenever a series straddled the grant,
-        // which buys the same safety at the price of a rule every future
-        // shared-row edit would have to remember; the entry's other suggestion,
-        // leaving `series_title` partially updated, cannot be done at all,
-        // there being no per-work dimension in that table to leave partial.
+        // two cannot differ. The alternative considered and declined was
+        // refusing a `titles` edit whenever a series straddled the grant, which
+        // buys the same safety at the price of a rule every future shared-row
+        // edit would have to remember; the entry's other suggestion, leaving
+        // `series_title` partially updated, cannot be done at all, there being
+        // no per-work dimension in that table to leave partial.
         //
-        // **The hazard that made a stale document matter, kept because it
-        // explains why this was worth closing rather than tolerating.** A
-        // later, independent rebuild re-applies such a document —
-        // `derive::write_work`'s read-back runs `librarydoc::apply` (never
-        // `apply_with_series_id`) over every work with no `LIBRARY` marker,
-        // which is every work on a database rebuilt from scratch — and `apply`
-        // reaches `apply_series`'s ordinary resolve-by-title matching,
-        // deliberately left untouched for the import path. A stale title not
-        // matching what the fresh scan derived is exactly the case
-        // `apply_series` handles by minting or moving, so the document was
-        // never lost, only silently re-homed.
+        // **The hazard a stale document poses.** A later, independent rebuild
+        // re-applies such a document — `derive::write_work`'s read-back runs
+        // `librarydoc::apply` (never `apply_with_series_id`) over every work
+        // with no `LIBRARY` marker, which is every work on a database rebuilt
+        // from scratch — and `apply` reaches `apply_series`'s ordinary
+        // resolve-by-title matching, deliberately left untouched for the import
+        // path. A stale title not matching what the fresh scan derived is
+        // exactly the case `apply_series` handles by minting or moving, so the
+        // document is never lost, only silently re-homed.
         let mut last_doc = None;
         let mut saves = Vec::new();
         for work_id in works {

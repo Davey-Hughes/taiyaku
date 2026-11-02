@@ -32,8 +32,8 @@ fn a_log_records_what_was_in_flight_alongside_it() {
 
 /// Written as JSON lines so a summary script is `jq`, not a parser.
 ///
-/// Pins every key, not just two: a rename of any field is a break in
-/// `scripts/request-summary.sh`, and only asserting `bytes` and
+/// Pins every key, not just two: a rename of a field the script reads is a
+/// break in `scripts/request-summary.sh`, and only asserting `bytes` and
 /// `in_flight` (say) would let `micros` or `started_at` drift unnoticed.
 #[test]
 fn an_entry_serialises_as_one_json_line() {
@@ -114,12 +114,6 @@ fn opening_the_log_fails_loudly_when_the_directory_does_not_exist() {
 /// The file `Log` writes is the only artefact anything outside this crate
 /// consumes, and `scripts/request-summary.sh` reads it with `jq` — so this
 /// pins that every key that script names is present on every line.
-///
-/// It used to carry a second job: every other test read `Log::entries()`
-/// instead, so deleting the whole file-writing branch would have left the
-/// suite green and this was the only thing standing in the way. O7 removed
-/// the in-memory copy, so that job is now shared by every test here, and
-/// what is left is the narrower and more useful claim about the keys.
 #[test]
 fn entries_written_to_disk_are_valid_json_lines_with_the_expected_keys() {
     let dir = crate::test_support::Fixture::new("reqlog-disk");
@@ -184,8 +178,8 @@ fn dropping_an_in_flight_request_without_finishing_it_decrements_but_records_not
 }
 
 /// Warn once, not once per request. A full disk fails every write, and the
-/// `!` that makes this fire a single time was invisible to every test:
-/// they read the log's *contents*, and the difference is on stderr.
+/// `!` that makes this fire a single time makes a difference on stderr, not
+/// in the log's *contents*.
 #[test]
 fn only_the_first_write_failure_is_reported() {
     let dir = crate::test_support::Fixture::new("reqlog-once");

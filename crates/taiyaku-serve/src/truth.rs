@@ -4,10 +4,9 @@
 //! convention: one serialisation shared by the projection, the response body
 //! and the `ETag` over that body, so a validator can never be computed over
 //! bytes a client was not sent — the failure that would make a conditional
-//! write silently unconditional. Until Task 13 this was `<stem>.truth.json`,
-//! a sibling file; `taiyaku_library::state::truth`/`put_truth` now own the
-//! storage, and this module's job is bridging `work: &Work` — keyed by slug —
-//! to the numeric `work_id` those functions need.
+//! write silently unconditional. `taiyaku_library::state::truth`/`put_truth`
+//! own the storage, and this module's job is bridging `work: &Work` — keyed
+//! by slug — to the numeric `work_id` those functions need.
 
 use taiyaku_core::TruthDoc;
 use taiyaku_library::Library;
@@ -55,8 +54,7 @@ pub fn load(library: &Library, work: &Work) -> Result<Option<TruthDoc>, String> 
 /// here on first write if none exists yet — see `works::row_id_for_write`. A
 /// labelling session represents hours of irreplaceable human work; the
 /// transaction `taiyaku_library::state::put_truth` wraps its delete-then-
-/// reinsert in is what stands in for the atomic rename the old file writer
-/// used for the same reason.
+/// reinsert in is what makes the replacement atomic.
 ///
 /// # Errors
 ///

@@ -110,10 +110,7 @@ async fn every_backup_route_refuses_a_reader() {
     }
 }
 
-/// **An in-memory library has no file to back up, and says so.** A mutation
-/// replacing `no_file_to_back_up` with `Response::default()` — a 200 with an
-/// empty body — survived every test, so nothing asserted this refusal at all.
-/// Found by C4 PR 2's mutation sweep.
+/// **An in-memory library has no file to back up, and says so.**
 #[tokio::test]
 async fn an_in_memory_library_refuses_all_three_backup_routes() {
     let (router, state, _fixture) = test_support::router_over_a_single_scanned_work();
@@ -143,11 +140,9 @@ async fn an_in_memory_library_refuses_all_three_backup_routes() {
     }
 }
 
-/// **A store failure is a 500 with a message, not an empty 200.** A mutation
-/// replacing `failed` with `Response::default()` survived every test. Provoked
-/// by putting a *file* where the backup directory belongs, which is the one
-/// `list` failure reachable without breaking the disk. Found by C4 PR 2's
-/// mutation sweep.
+/// **A store failure is a 500 with a message, not an empty 200.** Provoked by
+/// putting a *file* where the backup directory belongs, which is the one
+/// `list` failure reachable without breaking the disk.
 #[tokio::test]
 async fn a_backup_directory_that_is_a_file_answers_500_and_says_so() {
     let (router, state, _fixture) = test_support::router_over_a_file_backed_library();
@@ -180,9 +175,7 @@ async fn a_backup_directory_that_is_a_file_answers_500_and_says_so() {
 
 /// **Pressing "back up now" twice inside one second is a 409, not a 500.**
 /// The name carries a whole-second timestamp, so the second run has nowhere to
-/// put its file — a person's timing, not a server fault, and this route sent a
-/// 500 for it until the identical misfiling was found three times over in
-/// `users_api` and re-read here.
+/// put its file — a person's timing, not a server fault.
 #[tokio::test]
 async fn a_second_backup_in_the_same_second_is_409_and_says_why() {
     let (router, state, _fixture) = test_support::router_over_a_file_backed_library();
@@ -243,9 +236,7 @@ async fn a_second_backup_in_the_same_second_is_409_and_says_why() {
 /// **An API key reaches no backup route either**, and this one matters most
 /// of the three: a backup is the whole database, so the download route under
 /// a device credential would hand every account's password hash to whatever
-/// the key was typed into. See
-/// `users_api::tests::an_api_key_reaches_no_user_administration_route` for
-/// what was measured before the fix.
+/// the key was typed into.
 #[tokio::test]
 async fn an_api_key_reaches_no_backup_route() {
     use tower::ServiceExt as _;

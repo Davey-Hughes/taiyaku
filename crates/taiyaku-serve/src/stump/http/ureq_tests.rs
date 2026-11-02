@@ -13,13 +13,11 @@ struct Captured {
 /// A one-shot HTTP server on a loopback port, answering `reply` and handing
 /// back what it was sent.
 ///
-/// Hand-rolled on `TcpListener` rather than pulled in as a dependency:
-/// what is under test is the four lines of `ureq` configuration in this
-/// file, and a test server is 30 lines of `write!`. `UreqTransport` is the
-/// one thing in `stump` that talks to the outside world, and it is exactly
-/// the thing `Transport` exists to let every other test avoid — so nothing
-/// offline exercised it, and every one of its methods could be replaced by
-/// a constant unnoticed.
+/// Hand-rolled on `TcpListener` rather than pulled in as a dependency: what
+/// is under test is the `ureq` configuration in `http.rs`, and a test server
+/// needs nothing beyond `std`. `UreqTransport` is the one thing in `stump` that
+/// talks to the outside world, and it is exactly the thing `Transport` exists
+/// to let every other test avoid, so an offline test of it needs a real socket.
 fn serve_once(
     status: u16,
     content_type: &str,
@@ -112,9 +110,8 @@ fn the_read_limits_are_the_sizes_the_comments_claim() {
     assert!(reply_limit < page_limit, "a metadata reply is not an image");
 }
 
-/// `url` joins, `bearer` spells the header. Both are one line, both were
-/// replaceable by `String::new()` unnoticed, and a wrong `url` sends every
-/// request to the wrong place while a wrong `bearer` fails every one.
+/// `url` joins, `bearer` spells the header. A wrong `url` sends every request
+/// to the wrong place while a wrong `bearer` fails every one.
 ///
 /// The trailing-slash trim is the part with judgement in it: `new` takes a
 /// configured base that a person typed, and paths already start with `/`.
@@ -137,11 +134,10 @@ fn the_base_url_is_joined_without_doubling_the_slash() {
 
 /// What actually goes out on the wire, against a real socket.
 ///
-/// `post_json` could return `Ok(vec![])` and no offline test noticed,
-/// because everything else in `stump` runs against `FakeTransport`. This
-/// asserts the four things the configuration is for: the path is below the
-/// base, the bearer token is attached, the body is sent as typed, and the
-/// reply is handed back rather than invented.
+/// Everything else in `stump` runs against `FakeTransport`. This asserts the
+/// four things the configuration is for: the path is below the base, the
+/// bearer token is attached, the body is sent as typed, and the reply is
+/// handed back rather than invented.
 #[test]
 fn post_json_sends_the_body_with_a_bearer_and_returns_the_reply() {
     let (base, rx) = serve_once(200, "application/json", br#"{"data":{"ok":true}}"#);

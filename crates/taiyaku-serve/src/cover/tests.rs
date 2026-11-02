@@ -87,12 +87,12 @@ fn the_cache_path_is_keyed_by_the_member_hash() {
     assert_eq!(one.extension().unwrap(), "jpg");
 }
 
-/// Important 2: content alone is not the whole cache key. `cache_path`'s
-/// real behaviour — proven here via `keyed_path` with the actual module
-/// constants substituted in as arguments, not a second hand-typed literal
-/// — must change when the generation parameters do, or a `LONG_EDGE` bump
-/// (a higher-DPI screen) leaves every cached file silently the wrong size
-/// until someone clears the cache directory by hand.
+/// Content alone is not the whole cache key. `cache_path`'s real behaviour —
+/// proven here via `keyed_path` with the actual module constants substituted in
+/// as arguments, not a second hand-typed literal — must change when the
+/// generation parameters do, or a `LONG_EDGE` bump (a higher-DPI screen) leaves
+/// every cached file silently the wrong size until someone clears the cache
+/// directory by hand.
 #[test]
 fn changing_a_generation_parameter_changes_the_cache_path() {
     let dir = Path::new("/tmp/covers");
@@ -122,16 +122,14 @@ fn changing_a_generation_parameter_changes_the_cache_path() {
     );
 }
 
-/// Important 3: two attempts for the same key must never be handed the
-/// same temp filename to write through, or a concurrent pair racing on a
-/// cold cache can interleave and publish a corrupted cover forever. Also
-/// checks the leftover-file safety property: a temp name must never
-/// collide with what `cache_path` itself would produce, so an unrenamed
-/// temp file can never be mistaken for a real cover by the read path.
+/// Two attempts for the same key must never be handed the same temp filename
+/// to write through, or a concurrent pair racing on a cold cache can interleave
+/// and publish a corrupted cover forever. Also checks the leftover-file safety
+/// property: a temp name must never collide with what `cache_path` itself would
+/// produce, so an unrenamed temp file can never be mistaken for a real cover by
+/// the read path.
 ///
-/// Exercises `taiyaku_read::atomic::temp_path` directly, now that this
-/// module's own `unique_temp_path` copy is gone — the property under test is
-/// unchanged, only which function proves it.
+/// Exercises `taiyaku_read::atomic::temp_path` directly.
 #[test]
 fn temp_paths_for_the_same_key_never_collide_or_look_like_a_cover() {
     let path = cache_path(Path::new("/tmp/covers"), "abc123");
@@ -155,11 +153,11 @@ fn temp_paths_for_the_same_key_never_collide_or_look_like_a_cover() {
     );
 }
 
-/// Important 4: the cache-hit path is the one every OPDS grid view relies
-/// on to make a second request cheap. Bytes matching alone would not
-/// prove it — JPEG encoding is deterministic, so a second *regeneration*
-/// from the same page would produce identical bytes too — so the second
-/// call's generator panics if it is ever invoked at all.
+/// The cache-hit path is the one every OPDS grid view relies on to make a
+/// second request cheap. Bytes matching alone would not prove it — JPEG
+/// encoding is deterministic, so a second *regeneration* from the same page
+/// would produce identical bytes too — so the second call's generator panics
+/// if it is ever invoked at all.
 #[test]
 fn a_cache_hit_reads_back_the_same_bytes_without_regenerating() {
     let scratch = crate::test_support::Fixture::new("cover-cache-hit");
@@ -194,11 +192,11 @@ fn a_cache_hit_reads_back_the_same_bytes_without_regenerating() {
     );
 }
 
-/// Important 4: the module doc promises a read-only cache directory
-/// degrades the feed rather than breaking it. Pointed at a path that
-/// cannot be created — here, a directory nested under an existing plain
-/// file — because `create_dir_all` fails cleanly on that without needing
-/// permissions tricks that would not be portable across CI runners.
+/// `cached_or_generated`'s doc promises a read-only cache directory degrades
+/// the feed rather than breaking it. Pointed at a path that cannot be created —
+/// here, a directory nested under an existing plain file — because
+/// `create_dir_all` fails cleanly on that without needing permissions tricks
+/// that would not be portable across CI runners.
 #[test]
 fn a_cover_survives_a_cache_directory_that_cannot_be_created() {
     let scratch = crate::test_support::Fixture::new("cover-blocker");
@@ -216,10 +214,9 @@ fn a_cover_survives_a_cache_directory_that_cannot_be_created() {
     );
 }
 
-/// A directory unique to this test, so tests sharing a name for their
-/// cache key cannot see each other's files — and one that removes itself
-/// when the test ends, which the local version of this helper did not.
-/// `test_support::Fixture` carries the argument for both halves.
+/// A directory unique to this test, so tests sharing a name for their cache key
+/// cannot see each other's files — and one that removes itself when the test
+/// ends. `test_support::Fixture` carries the argument for both halves.
 fn tempdir_for_test() -> crate::test_support::Fixture {
     crate::test_support::Fixture::new("thumb")
 }
@@ -258,14 +255,10 @@ fn each_page_of_a_member_gets_its_own_tile() {
     );
 }
 
-/// O106's fix-round review: a tile's cache path changes with each parameter
-/// it was generated under, one at a time. That is the hole O106's own review
-/// found in the reading-page key, one function over. Only the offset was ever
-/// varied alone (`each_page_of_a_member_gets_its_own_tile`), so a path without
-/// the hash, `THUMB_LONG_EDGE` or `FORMAT_VERSION` passed every test. Without
-/// the hash, page N of every member shares one tile file. Without either of
-/// the others, a change to how tiles are made leaves every old tile served as
-/// the new one.
+/// A tile's cache path changes with each parameter it was generated under, one
+/// at a time (O106). Without the hash, page N of every member would share one
+/// tile file. Without `THUMB_LONG_EDGE` or `FORMAT_VERSION`, a change to how
+/// tiles are made would leave every old tile served as the new one.
 ///
 /// The name is pinned for the page key's reason: every tile already cached is
 /// named this way, and renaming them regenerates them all. It is built from
@@ -333,10 +326,9 @@ fn a_cached_tile_is_not_regenerated() {
 /// O105: files at the right cache path that are not a whole JPEG, each named
 /// for the test messages.
 ///
-/// An empty file is the case that was found. A zero-filled file is the same
-/// failure a crash can leave at full length. Both fail both halves of the
-/// check a hit must pass, so a check that tested only one half would still
-/// reject them. The other four are each built to fail exactly one half:
+/// An empty file and a zero-filled one both fail both halves of the check a
+/// hit must pass, so a check that tested only one half would still reject
+/// them. The other four are each built to fail exactly one half:
 ///
 /// - `truncated` keeps its start marker and loses its end marker.
 /// - `cut on D9` is cut short on a `D9` byte that is not preceded by `FF`, so a
@@ -375,9 +367,6 @@ fn broken_cache_files() -> [(&'static str, Vec<u8>); 6] {
 }
 
 /// O105: a cached cover that is not a whole JPEG is regenerated and replaced.
-/// Before this, a hit was any file `fs::read` could open, so an empty one was
-/// served to every client, and nothing ever replaced it, because the key
-/// never changes.
 ///
 /// Four assertions per case, and the last is the one a lazy fix fails: the
 /// replacement must itself be a hit. Otherwise "always regenerate" would pass
@@ -443,9 +432,9 @@ fn a_broken_cached_tile_is_regenerated_and_replaced() {
     }
 }
 
-/// O105, for a reading-sized page. This one does not go through `at_path`,
-/// so it had its own copy of the defect and needs its own witness. The long
-/// edge is 8 against a 16x16 page, so the page is resized and a file is cached.
+/// O105, for a reading-sized page. This one does not go through `at_path`, so
+/// it needs its own witness. The long edge is 8 against a 16x16 page, so the
+/// page is resized and a file is cached.
 #[test]
 fn a_broken_cached_reading_page_is_regenerated_and_replaced() {
     let expected = resize_to_long_edge(&real_page_bytes(), 8).unwrap();
@@ -490,15 +479,12 @@ fn a_broken_cached_reading_page_is_regenerated_and_replaced() {
 /// The permits are the process-wide `GENERATION_LIMIT`. Under nextest each
 /// test is its own process, so no other test waits on them. Under plain
 /// `cargo test`, which `.cargo/mutants.toml` uses for every sweep, the tests
-/// share one process, and another test's generation waits while they are
-/// held.
+/// share one process, and another test's generation waits while they are held.
 ///
 /// **`ONE_HOLDER` is what keeps two callers from hanging each other.** The
 /// permits are taken one at a time. Without the lock, two tests could each
 /// take one permit and wait forever for the second, and every test needing a
-/// permit then queued behind them: 5 of 6 plain `cargo test` runs of
-/// `cover::tests` hung. The fix-round review of O105 found it, and the first
-/// version of this comment said the tests "do not hang".
+/// permit would then queue behind them.
 fn hold_every_permit() -> (
     std::sync::MutexGuard<'static, ()>,
     Vec<crate::limit::SemaphoreGuard<'static>>,
@@ -518,8 +504,8 @@ fn hold_every_permit() -> (
 /// within five seconds.
 ///
 /// A request that wrongly waits for a permit blocks past the deadline: a
-/// cache hit, or since O111 a page that already fits. The permits are
-/// released after it, so that test fails instead of hanging.
+/// cache hit, or a page that already fits (O111). The permits are released
+/// after it, so that test fails instead of hanging.
 fn served_while_every_permit_is_held<T: Send>(request: impl FnOnce() -> T + Send) -> Option<T> {
     let (_one_holder, held) = hold_every_permit();
     let (sent, received) = std::sync::mpsc::channel();
@@ -540,8 +526,8 @@ fn served_while_every_permit_is_held<T: Send>(request: impl FnOnce() -> T + Send
 /// and whether it had once the permits were released and it finished.
 ///
 /// `generate` raises the flag at the step that must wait for a permit. For
-/// a cover that is the fetch. For a reading page it is finishing, because
-/// since O111 a page fetches and reads its header before it takes one.
+/// a cover that is the fetch. For a reading page it is finishing, because a
+/// page fetches and reads its header before it takes one (O111).
 ///
 /// A correct generation cannot reach that step while the permits are held,
 /// so the first answer is `false` however slow the machine is. Only a
@@ -564,13 +550,10 @@ fn flagged_while_every_permit_is_held(
     (early, flag.load(Ordering::SeqCst))
 }
 
-/// A cache hit never waits for a generation permit. `cached`'s doc gives
-/// that as the reason it checks markers rather than decoding: the hit runs
-/// outside `GENERATION_LIMIT`, so a warm grid stays fully parallel while
-/// a cold one queues. Nothing tested it. Moving the hit inside the permit, in
-/// `at_path` or in `cached_or_generated_page`, left every test green, which
-/// the whole-branch review of O105 found. This one covers `at_path`, which
-/// covers and tiles share.
+/// A cache hit never waits for a generation permit. `cached`'s doc gives that
+/// as the reason it checks markers rather than decoding: the hit runs outside
+/// `GENERATION_LIMIT`, so a warm grid stays fully parallel while a cold one
+/// queues. This one covers `at_path`, which covers and tiles share.
 #[test]
 fn a_cached_cover_is_served_while_every_generation_permit_is_held() {
     let dir = tempdir_for_test();
@@ -618,9 +601,7 @@ fn a_cached_reading_page_is_served_while_every_generation_permit_is_held() {
 /// A cold generation waits for a permit, which is the half of
 /// `GENERATION_LIMIT` the hit tests above do not reach. The permit is what
 /// bounds peak memory, and `MAX_CONCURRENT_GENERATIONS` gives the
-/// measurement. Deleting the line that takes it, in `at_path` or in
-/// `cached_or_generated_page`, left every test green, which the review of
-/// O105's fix round found. This one covers `at_path`.
+/// measurement. This one covers `at_path`.
 ///
 /// It does not pin how many permits there are. That number is a tuning
 /// choice with its reason in its own doc comment, and this test holds however
@@ -647,12 +628,11 @@ fn a_cold_cover_waits_for_a_generation_permit() {
 /// The same, for `cached_or_generated_page`, which takes its own permit
 /// around the resize.
 ///
-/// **What waits is the resize, not the fetch.** This test watched the fetch
-/// until O111, when the fetch and the header parse moved out of the permit
-/// so that a page that fits skips the queue. A page that needs resizing now
-/// fetches while the permits are held and waits before it decodes, so the
-/// flag is raised once the call has returned a resized page. Deleting the
-/// permit around the resize makes it finish inside the 300 ms.
+/// **What waits is the resize, not the fetch.** The fetch and the header parse
+/// run outside the permit (O111), so a page that fits skips the queue. A page
+/// that needs resizing fetches while the permits are held and waits before it
+/// decodes, so the flag is raised once the call has returned a resized page.
+/// Deleting the permit around the resize makes it finish inside the 300 ms.
 #[test]
 fn a_cold_reading_page_that_needs_resizing_waits_for_a_generation_permit() {
     let dir = tempdir_for_test();
@@ -677,9 +657,7 @@ fn a_cold_reading_page_that_needs_resizing_waits_for_a_generation_permit() {
 /// O111: a page that already fits never waits for a generation permit.
 ///
 /// Learning that it fits takes the fetch and a header parse. Neither decodes
-/// anything, so neither needs the permit, which bounds decode memory. Both
-/// ran inside it until O111, and a page that fit queued behind a cold
-/// filmstrip for a median of about 165 ms (`docs/notes.md`, "O111").
+/// anything, so neither needs the permit, which bounds decode memory.
 #[test]
 fn a_page_that_already_fits_is_served_while_every_generation_permit_is_held() {
     let dir = tempdir_for_test();
@@ -697,11 +675,10 @@ fn a_page_that_already_fits_is_served_while_every_generation_permit_is_held() {
 
 /// A page is resized exactly when its long edge exceeds the request.
 ///
-/// O111 split `fit_at` into `fits_within` and `resize_to_long_edge` so the
-/// permit could sit between them. This pins the boundary on both sides, a
-/// page equal to the request and one a pixel over, through the halves and
-/// through `cached_or_generated_page`, and pins the resized bytes to what
-/// `resize_to_long_edge` makes.
+/// The permit sits between `fits_within` and `resize_to_long_edge` (O111).
+/// This pins the boundary on both sides, a page equal to the request and one a
+/// pixel over, through the halves and through `cached_or_generated_page`, and
+/// pins the resized bytes to what `resize_to_long_edge` makes.
 #[test]
 fn a_page_is_resized_only_when_its_long_edge_exceeds_the_request() {
     let page = real_page_bytes();
@@ -725,9 +702,8 @@ fn a_page_is_resized_only_when_its_long_edge_exceeds_the_request() {
 }
 
 /// A second request for the same reading-sized page reads the cache rather
-/// than resizing again. Covers and tiles each had this test and pages did
-/// not, so a hit check that turned down every file would have passed for
-/// pages. It would make the page cache regenerate on every request.
+/// than resizing again. A hit check that turned down every file would make the
+/// page cache regenerate on every request.
 #[test]
 fn a_cached_reading_page_is_not_regenerated() {
     let dir = tempdir_for_test();
@@ -747,11 +723,9 @@ fn a_cached_reading_page_is_not_regenerated() {
 /// O107: a page that already fits is fetched once, handed back as it was
 /// fetched, and not cached.
 ///
-/// This returned `Option<Vec<u8>>`, and `None` dropped the page it had just
-/// fetched, so `get_page` read the page again to serve it. The page here is
-/// not a bare `Vec`, so "as it was fetched" means more than the same bytes:
-/// the field beside them has to come back too. That field is what lets
-/// `get_page` keep the content type. The route test
+/// The page here is not a bare `Vec`, so "as it was fetched" means more than
+/// the same bytes: the field beside them has to come back too. That field is
+/// what lets `get_page` keep the content type. The route test
 /// `a_page_that_already_fits_the_width_is_read_once` counts the reads.
 #[test]
 fn a_page_that_already_fits_is_fetched_once_and_handed_back() {
@@ -802,10 +776,9 @@ fn a_page_that_already_fits_is_fetched_once_and_handed_back() {
 /// file and one tag: without the offset, every page of a member at one width
 /// is served whichever page was cached first, and validates the others' tags.
 ///
-/// **Each parameter changes on its own.** The first version of this test
-/// changed only the version, and `a_reading_page_and_a_tile_never_share_a_cache_path`
-/// changes offset and edge together, so a key without the offset passed every
-/// test. The whole-branch review of O106 found it.
+/// **Each parameter changes on its own.**
+/// `a_reading_page_and_a_tile_never_share_a_cache_path` changes offset and
+/// edge together, so it cannot show a key that lacks the offset.
 ///
 /// **The name's shape is pinned too**, because O106 promised it would not
 /// change: every page already cached is named `<sha256>-p<offset>-r<edge>v2.jpg`,
@@ -901,9 +874,9 @@ fn a_cover_version_changes_exactly_when_a_cover_tag_does_at_every_size() {
 /// cache that returned one for the other would show a reader a crop where a
 /// page belongs.
 ///
-/// The `r` in the name is what keeps them apart, and nothing asserted it:
-/// `page_cache_path` could return `Default::default()` — the empty path,
-/// shared by every page of every work — with the suite still green.
+/// The `r` in the name is what keeps them apart, and a `page_cache_path` that
+/// returned `Default::default()` — the empty path, shared by every page of
+/// every work — would fail this.
 #[test]
 fn a_reading_page_and_a_tile_never_share_a_cache_path() {
     let dir = std::path::Path::new("/cache");
@@ -965,8 +938,8 @@ fn long_edge_of(bytes: &[u8]) -> u32 {
     image.width().max(image.height())
 }
 
-/// Whole-branch review of O134, finding 7: `TILE_LONG_EDGES` is pinned to a
-/// literal here, deliberately, rather than being read through the constant.
+/// `TILE_LONG_EDGES` is pinned to a literal here, deliberately, rather than
+/// being read through the constant (O134).
 ///
 /// Every other test that touches `TILE_LONG_EDGES` — `routes/tests.rs`'s
 /// `the_tile_route_sizes_any_page_to_a_tile_rung` and
@@ -977,13 +950,13 @@ fn long_edge_of(bytes: &[u8]) -> u32 {
 ///
 /// `web/src/tileSize.ts`'s `TILE_LADDER` is documented to hold the same three
 /// numbers, and `web/tests/tileSize.test.ts` pins its half the same way this
-/// test pins this side. Nothing before this test pinned this side, so the two
-/// could drift and every test on both sides would stay green: a rung present
-/// on one side only is not rejected — `routes.rs::get_thumb`'s `tile_edge`
-/// falls back to the 160 px tile for a `w` it does not recognise, the same
-/// fallback `cover_edge` already makes — so a screen asking for a rung this
-/// server dropped, or offering one the server never made, is served a soft
-/// image instead of the sharp one it asked for, and nothing goes red.
+/// test pins this side. Without this test the two could drift and every test
+/// on both sides would stay green: a rung present on one side only is not
+/// rejected — `routes.rs::get_thumb`'s `tile_edge` falls back to the 160 px
+/// tile for a `w` it does not recognise, the same fallback `cover_edge`
+/// already makes — so a screen asking for a rung this server dropped, or
+/// offering one the server never made, is served a soft image instead of the
+/// sharp one it asked for, and nothing goes red.
 #[test]
 fn tile_long_edges_is_pinned_to_its_literal() {
     assert_eq!(

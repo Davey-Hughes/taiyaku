@@ -3,9 +3,9 @@
 //! The fourth bridge beside `progress.rs`, `notes.rs` and `truth.rs`, and the
 //! shortest, because two of the three things those modules own do not apply
 //! here: the serialisation is `Sidecar::to_json`'s and the validator is
-//! `routes::sidecar_etag`'s, both of which existed before this module did.
-//! What is left is the bridge itself — `work: &Work`, keyed by slug, to the
-//! numeric `work_id` `taiyaku_library::state::put_alignments` needs.
+//! `routes::sidecar_etag`'s. What is left is the bridge itself — `work: &Work`,
+//! keyed by slug, to the numeric `work_id`
+//! `taiyaku_library::state::put_alignments` needs.
 //!
 //! **There is no `load` here, deliberately.** The other three read their
 //! document out of the rows on every request; the alignment document is held

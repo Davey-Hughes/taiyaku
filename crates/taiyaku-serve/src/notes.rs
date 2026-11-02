@@ -6,9 +6,8 @@
 //! rather than a field in `taiyaku.json` because that document describes
 //! correspondence and must diff meaningfully in git — human prose would be
 //! noise in it, and re-solving rewrites it, which is the hazard O13 already
-//! records for hand corrections. Until Task 13 the rows were a sibling
-//! `taiyaku.notes.json` file instead; `taiyaku_library::state::notes`/
-//! `put_notes` now own the storage.
+//! records for hand corrections. `taiyaku_library::state::notes` and
+//! `put_notes` own the storage.
 //!
 //! A note is anchored to a **slot**, not a page: a note on the left half of a
 //! joined spread must not silently become a note on the whole spread. Its
@@ -18,8 +17,8 @@
 /// `Note`, `Notes` and this module's own `Region` moved down to
 /// `taiyaku-library` — this crate cannot be the thing a store depends on, and
 /// notes must be reachable from there for Task 9's `state::notes`. Re-exported
-/// here so every existing `crate::notes::{Note, Notes, Region}` path in this
-/// crate keeps resolving unchanged.
+/// here so every `crate::notes::{Note, Notes, Region}` path in this
+/// crate resolves.
 ///
 /// **Not `taiyaku_core::regions::Region`.** The two share a name; this one is
 /// a note's anchor rectangle in normalised page coordinates, that one is a
@@ -77,9 +76,7 @@ pub fn validate(notes: &Notes, work: &Work, stored: &Notes) -> Result<(), Invali
 /// that cannot. A client sends the whole document back on every write, so
 /// without it a single note left pointing at an edition a re-solve renamed —
 /// or a slot an edition shrank past — refuses *every* future write on that
-/// work, forever, including the writes that would have removed it. Measured
-/// before it was fixed: one stale note, and adding an ordinary new note beside
-/// it answered `404 note 01STALE names the edition raw-mono-OLD`.
+/// work, forever, including the writes that would have removed it.
 ///
 /// So a stale note survives as something a reader can see (the review list
 /// already marks a note it cannot reach from here) and delete, rather than as
@@ -217,9 +214,9 @@ pub fn validate_against(
 
 /// A work with nothing written on it yet.
 ///
-/// The route hands this back where no file exists, so a client that has never
-/// seen a document still gets one — and, with it, the `ETag` its first write
-/// has to be conditional on.
+/// The route hands this back where `load` answers `None`, so a client that has
+/// never seen a document still gets one — and, with it, the `ETag` its first
+/// write has to be conditional on.
 #[must_use]
 pub fn empty(id: &str) -> Notes {
     Notes {
@@ -233,9 +230,7 @@ pub fn empty(id: &str) -> Notes {
 /// Shared by the projection `load` returns, the body of a response, and the
 /// `ETag` over that body (`etag_for`, below), so a validator can never be
 /// computed over bytes a client was not sent — the failure mode that would
-/// make a conditional write silently unconditional. Until Task 13 "shared by"
-/// also named the file on disk; SQLite replaced the file, and this — plus
-/// `etag_for` — is what keeps the rule true with one fewer writer.
+/// make a conditional write silently unconditional.
 ///
 /// # Errors
 ///
@@ -312,10 +307,8 @@ pub fn store(library: &Library, work: &Work, user_id: i64, notes: &Notes) -> Res
 /// `put_truth` in `routes.rs` rather than given a `truth_etag` wrapper of its
 /// own: the hash has nothing document-specific in it, so a second name for
 /// the same bytes would be indirection with no behaviour behind it. Lives
-/// here rather than in `routes.rs`, where it was minted (as `notes_etag`)
-/// before this module existed to own the invariant it computes: this is
-/// where `to_json` is, and the two belong together for the same reason
-/// `to_json`'s own doc comment gives.
+/// here rather than in `routes.rs`: this is where `to_json` is, and the two
+/// belong together for the same reason `to_json`'s own doc comment gives.
 pub(crate) fn etag_for(json: &str) -> String {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();

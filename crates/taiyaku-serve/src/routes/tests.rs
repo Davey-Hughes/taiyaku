@@ -12,10 +12,10 @@ use tower::ServiceExt;
 /// password and then presents it, through the real guard, on every request.
 ///
 /// Shadowing the glob-imported `super::build_router` rather than editing the
-/// sixty-odd `Request::get(...)` calls below: the header is the same on all of
-/// them, and threading it through by hand would put the interesting part of
-/// each test one line further from its assertion. The guard itself is asserted
-/// over in `auth::tests`, which calls the real `build_router` directly.
+/// `Request::get(...)` calls below: the header is the same on all of them, and
+/// threading it through by hand would put the interesting part of each test
+/// one line further from its assertion. The guard itself is asserted over in
+/// `auth::tests`, which calls the real `build_router` directly.
 fn build_router(state: Arc<crate::ServeState>) -> axum::Router {
     let library = Arc::clone(&state.library);
     crate::test_support::authenticating(super::build_router(state), &library)
@@ -77,7 +77,7 @@ async fn the_reader_can_list_a_work_read_its_sidecar_and_fetch_a_page() {
     assert_eq!(missing.status(), StatusCode::NOT_FOUND);
 }
 
-/// Task 14: `GET /api/works` answers objects rather than a bare list of ids.
+/// `GET /api/works` answers objects rather than a bare list of ids.
 #[tokio::test]
 async fn listing_works_answers_objects_rather_than_bare_ids() {
     let (router, _state, _fixture) = crate::test_support::router_over_a_library().await;
@@ -128,15 +128,12 @@ async fn the_cover_url_addresses_page_zero_of_the_hub_edition() {
     assert_eq!(parsed[0]["cover"], "/api/works/w/raw/pages/0/thumb");
 }
 
-/// A work loaded the pre-Task-15 way — `load_works`, paired with an empty
-/// library and no row at all (`test_support::state`) — still answers a slug
-/// and a title; only `series` and `volume` degrade, and to the same `null` a
-/// row nothing has scanned yet would answer. `taiyaku serve <sidecar>...`
-/// itself no longer takes this path since Task 15 (it imports first, so a
-/// served work always has a row) — but `load_works` is still public, still
-/// used directly by this crate's own fixtures and by the corpus-gated tests
-/// in `corpus.rs`, and must not regress to a null title for whoever still
-/// calls it that way.
+/// A work with no library row at all, paired with an empty library
+/// (`test_support::state`), answers a slug and a title; only `series` and
+/// `volume` degrade, and to the same `null` a row nothing has scanned yet would
+/// answer. `load_works` is public and builds works this way, as the
+/// corpus-gated tests in `corpus.rs` use it, and must not regress to a null
+/// title for whoever calls it that way.
 #[tokio::test]
 async fn a_work_with_no_library_row_still_lists_with_a_title() {
     let tmp = crate::test_support::Fixture::new("routes-list-no-row");
@@ -151,12 +148,9 @@ async fn a_work_with_no_library_row_still_lists_with_a_title() {
     assert!(parsed[0]["volume"].is_null());
 }
 
-/// `status.md` previously claimed no test dispatched an out-of-range
-/// page index through the router — true of the `/api/…` route
-/// specifically (the OPDS stream route had its own such test since Task
-/// 6), but the sentence did not say so and so overclaimed. This closes
-/// the actual gap: the fixture edition has 4 pages, so index 4 is one
-/// past the end.
+/// An out-of-range page index dispatched through the router, on the `/api/…`
+/// route specifically: the fixture edition has 4 pages, so index 4 is one past
+/// the end.
 #[tokio::test]
 async fn an_out_of_range_page_index_dispatched_through_the_router_names_the_length() {
     let tmp = crate::test_support::Fixture::new("routes-page-past-end");
@@ -185,19 +179,17 @@ async fn an_out_of_range_page_index_dispatched_through_the_router_names_the_leng
     );
 }
 
-/// O5: the one failure on this route that did not say what was wrong.
+/// O5: a non-numeric page index is refused in this server's own words.
 ///
-/// An index past the end names the edition and its length; an index that
-/// is not a number at all fell through to axum's `Path` rejection, which
-/// answers a 400 phrased in terms of the Rust type it failed to parse
-/// into. Comprehensible, and the only message in this server written by
-/// something other than this server.
+/// An index past the end names the edition and its length. A bare axum `Path`
+/// rejection would answer a 400 phrased in terms of the Rust type it failed to
+/// parse into.
 ///
 /// The status stays 400 rather than becoming the 404 the sibling failure
 /// gives, deliberately: `pages/4` names a page this edition does not have,
 /// and `pages/abc` does not name a page at all. Those are different
-/// things and a client is entitled to tell them apart. What they now share
-/// is that the message comes from here and says what was expected.
+/// things and a client is entitled to tell them apart. What they share is
+/// that the message comes from here and says what was expected.
 #[tokio::test]
 async fn a_page_index_that_is_not_a_number_is_refused_in_this_server_s_own_words() {
     let tmp = crate::test_support::Fixture::new("routes-page-nan");
@@ -259,10 +251,7 @@ async fn progress_round_trips_through_the_api() {
             Request::put("/api/works/t/progress")
                 .header("content-type", "application/json")
                 // The fixture's `raw` edition is 4 pages and no spreads,
-                // so 3 is its last slot. It used to be 37, which named a
-                // position the work has never had — harmless while
-                // nothing checked, and a lie about what round-trips once
-                // something does.
+                // so 3 is its last slot.
                 .body(Body::from(r#"{"edition":"raw","slot":3}"#))
                 .unwrap(),
         )
@@ -399,7 +388,7 @@ async fn every_edition_the_reader_has_a_position_in_comes_back_newest_first() {
     );
 }
 
-/// O3: the edition check was only half the guard. A position naming a real
+/// O3: the edition check is only half the guard. A position naming a real
 /// edition and a slot past its end is stored garbage in the same way a
 /// position naming no edition is — the reader is sent back somewhere that
 /// cannot be resolved, and nothing says why. It is also the shape a bug in
@@ -505,10 +494,8 @@ async fn the_last_slot_of_a_spread_carrying_edition_is_in_range() {
 /// **`Access::Every`, and that is chosen.** For a restricted principal, a
 /// handler that asks a grant waits on the library's mutex first for that
 /// check, and the watchdog measures a call's first wait, so it would measure
-/// the check rather than the closures this test is for.
-/// The check has its own test, `no_grant_check_stalls_the_runtime`, since O115.
-/// Until O115 closed it ran on the async worker, and `docs/notes.md`, "O71",
-/// records those stalls measured.
+/// the check rather than the closures this test is for. The check has its own
+/// test, `no_grant_check_stalls_the_runtime`.
 fn as_the_fixture_account() -> axum::http::Extensions {
     let mut extensions = axum::http::Extensions::new();
     extensions.insert(crate::auth::Principal {
@@ -528,22 +515,18 @@ fn as_the_fixture_account() -> axum::http::Extensions {
 /// Every handler here that reads or writes the library, or reads a page, does
 /// it inside `spawn_blocking`, because on a tokio worker that work stalls the
 /// whole worker — on this test's `current_thread` runtime, every other
-/// request: `get_page`'s comment gives the reasoning and the others cite it.
-/// **Until O71 closed, 2026-09-14, the one test behind that was
-/// `a_progress_read_does_not_stall_the_runtime`, and it measured something
-/// else.** It drove `GET /progress` through the router, so
-/// `auth::guard`'s own `spawn_blocking` took the mutex wait before any handler
-/// ran: with `get_progress`'s closure moved onto the async worker, the whole
-/// workspace still passed. It is `auth::tests::the_guard_does_not_stall_the_runtime`
-/// now, because the guard is what it does see.
+/// request: `serve_page`'s comment gives the reasoning.
 ///
 /// **So each handler is called directly**, through
 /// [`crate::test_support::the_runtime_stalls_on`], as
-/// `curation::tests::no_curation_route_stalls_the_runtime` calls its six — and
-/// for that test's reason, every handler rather than the one the old test
-/// named: a rule that holds for most of a module is a rule the next handler is
-/// written against wrongly. `get_sidecar` is not here because it has no
-/// closure: it answers from the sidecar already in memory.
+/// `curation::tests::no_curation_route_stalls_the_runtime` calls its six.
+/// Driven through the router, `auth::guard`'s own `spawn_blocking` would take
+/// the mutex wait before any handler ran, so a handler whose closure sat on the
+/// async worker would still pass. The guard is what
+/// `auth::tests::the_guard_does_not_stall_the_runtime` sees. Every handler is
+/// driven rather than one, because a rule that holds for most of a module is a
+/// rule the next handler is written against wrongly. `get_sidecar` is not here
+/// because it has no closure: it answers from the sidecar already in memory.
 ///
 /// **The page routes need a source that waits.** `get_page` and `get_thumb`
 /// never touch the library for an unrestricted reader, so the watchdog's mutex
@@ -555,12 +538,7 @@ fn as_the_fixture_account() -> axum::http::Extensions {
 /// body it would not parse — would be free for the wrong reason. Ordered so
 /// each can: the progress write before its read, each document read before
 /// the write that sends its `ETag` back. The progress read also asserts that
-/// the position written comes back, which is what the old test asserted of its
-/// own read.
-///
-/// Each handler's closure was moved onto the async worker by hand, one at a
-/// time, and this failed naming that handler; `docs/notes.md`, "O71", has
-/// the line each failed at.
+/// the position written comes back.
 #[tokio::test(flavor = "current_thread")]
 async fn no_works_route_stalls_the_runtime() {
     use crate::test_support::{body_string, the_runtime_stalls_on};
@@ -822,21 +800,18 @@ async fn assert_answered(handler: &str, response: Response, expected: StatusCode
 /// for the check that runs before it.
 ///
 /// For a reader whose grant names roots, `refuse_if_hidden` and
-/// `visible_editions_or_refuse` read the library to answer. Until O115 closed,
-/// 2026-09-15, both took `state.library.conn()` in the handler itself, on the
-/// async worker, before any `spawn_blocking`. The test above drives an empty
-/// grant, which never reaches the library, so it could not see that.
+/// `visible_editions_or_refuse` read the library to answer. The test above
+/// drives `Access::Every`, which never reaches the library, so it cannot see
+/// either check's read.
 ///
-/// **Every handler that called either check when O115 closed, not the four
-/// O115 named.** The item listed `get_page`, `get_thumb`, `get_sidecar` and
-/// `patch_alignments`. `refuse_if_hidden` is `pub(crate)`, and
-/// `opds::stream_page`, `opds::cover`, `download::edition` and
-/// `download::member` call it the same way. `opds::work_feed` has asked
-/// `visible_editions_or_refuse` since O119, and
-/// [`neither_opds_feed_asks_a_grant_on_the_async_worker`] holds it beside
-/// `opds::works`.
+/// **Every handler that calls either check.** `refuse_if_hidden` is
+/// `pub(crate)`, and `opds::stream_page`, `opds::cover`, `download::edition`
+/// and `download::member` call it too. `opds::work_feed` asks
+/// `visible_editions_or_refuse`, and
+/// [`neither_opds_feed_asks_a_grant_on_the_async_worker`] holds it
+/// beside `opds::works`.
 ///
-/// **And the six O60 added**: progress, notes and truth, read and write, ask
+/// **And progress, notes and truth**, read and write, which ask
 /// `visible_editions_or_refuse` before their own closure.
 ///
 /// **The watchdog measures each call's first wait on the library's mutex**:
@@ -1305,14 +1280,7 @@ async fn no_grant_check_stalls_the_runtime() {
 
 /// **Neither OPDS feed asks a grant on the async worker** — O119: the property
 /// [`no_grant_check_stalls_the_runtime`] holds for the handlers it drives,
-/// held for the two that asked through code of their own.
-///
-/// `opds::works` read a restricted reader's visible editions through
-/// `opds::visible_editions_by_work`, and `opds::work_feed` through an inline
-/// `browse::work`, each taking `state.library.conn()` in the handler, on the
-/// async worker. `docs/notes.md`, "O115", "Found beside it, not changed",
-/// measured both stalling for a reader granted root 1 and neither for an
-/// unrestricted one.
+/// held for the two OPDS feeds.
 ///
 /// **Each access, because they take different paths**: one that names
 /// directories is asked of the library, and `Every` is answered without it.
@@ -1382,8 +1350,8 @@ async fn neither_opds_feed_asks_a_grant_on_the_async_worker() {
 /// `get_sidecar` and `opds::stream_page` each answer a matching
 /// `If-None-Match` with a 304 before reading anything, and each asks the grant
 /// first, so a reader granted a root holding nothing of the work is told the
-/// work does not exist rather than that the tag it sent is current. O115 moved
-/// that check off the async worker; this holds the order it had to keep.
+/// work does not exist rather than that the tag it sent is current. That order
+/// is what this holds.
 ///
 /// **Granted root 1, which holds the work, the same requests answer 304.**
 /// That half shows the tags are the real ones: a tag that matched nothing
@@ -1491,7 +1459,7 @@ async fn a_hidden_work_is_refused_before_its_correction_is_read() {
 /// work does not have is stored garbage: the reader is sent back to a
 /// position in a document that cannot be resolved, and nothing anywhere
 /// says why. Accepting it silently is worse than 404, which is why the
-/// guard exists — and it was the one thing here with no test.
+/// guard exists.
 #[tokio::test]
 async fn progress_for_an_edition_the_work_does_not_have_is_refused() {
     let tmp = crate::test_support::Fixture::new("progress-edition");
@@ -1529,7 +1497,7 @@ async fn progress_for_an_edition_the_work_does_not_have_is_refused() {
     assert_eq!(after.status(), StatusCode::NO_CONTENT);
 }
 
-/// O1, shipped: a page's `ETag` is checkable before anything expensive
+/// O1: a page's `ETag` is checkable before anything expensive
 /// runs, and a client that already holds the bytes gets told so with no
 /// body at all — sending one would defeat the entire point of a `304`.
 #[tokio::test]
@@ -1641,10 +1609,10 @@ async fn a_width_larger_than_the_page_serves_the_original_bytes_untouched() {
     );
 }
 
-/// The trap this parameter introduces. One page now has a representation
-/// per size, so a tag that named only the member and offset would let a
-/// client holding the small one be answered 304 for the large one and go
-/// on drawing a soft page with nothing to point at.
+/// The trap this parameter introduces. One page has a representation per
+/// size, so a tag that named only the member and offset would let a client
+/// holding the small one be answered 304 for the large one and go on drawing
+/// a soft page with nothing to point at.
 #[tokio::test]
 async fn a_validator_from_one_size_does_not_satisfy_a_request_for_another() {
     let (state, _fixture) = crate::test_support::state_with_real_pages();
@@ -1678,8 +1646,8 @@ async fn a_validator_from_one_size_does_not_satisfy_a_request_for_another() {
     );
     assert_ne!(full.headers()[header::ETAG], small_tag);
 
-    // And the same size still validates, so the parameter has not cost the
-    // conditional request that O1 shipped.
+    // And the same size still validates, so the parameter does not cost the
+    // conditional request that O1 provides.
     let again = app
         .oneshot(
             Request::get("/api/works/w/a/pages/0?w=8")
@@ -1692,11 +1660,9 @@ async fn a_validator_from_one_size_does_not_satisfy_a_request_for_another() {
     assert_eq!(again.status(), StatusCode::NOT_MODIFIED);
 }
 
-/// O106: a resized page's tag is its cache key in quotes. Both used to be
-/// built separately, and they drifted apart. The cache file name has carried
-/// `PAGE_FORMAT_VERSION` since #35, and the tag never did. So bumping the
-/// version would regenerate every cached page while every browser kept
-/// validating against its old copy and got a `304` for it.
+/// O106: a resized page's tag is its cache key in quotes, so that bumping
+/// `PAGE_FORMAT_VERSION` cannot regenerate every cached page while every
+/// browser keeps validating against its old copy and gets a `304` for it.
 ///
 /// Compared with the file name, not with a typed-out string, so that a
 /// parameter later added to one side must reach the other.
@@ -1708,15 +1674,13 @@ fn a_resized_page_tag_is_the_cache_key_it_was_rendered_under() {
 }
 
 /// O106, from the client's side: a tag issued before the format version was
-/// part of it must not validate. Until O106 a resized page's tag was
-/// `"<sha256>-p<offset>-r<edge>"`, and every browser that has read a page at
-/// a size is holding one. Under O105 the bytes behind it could have been an
-/// empty file. Answering that tag with `304` would keep such a browser drawing
-/// nothing after the server was fixed.
+/// part of it, `"<sha256>-p<offset>-r<edge>"`, must not validate. Answering it
+/// with `304` would leave a browser that holds it validating against a
+/// rendering from before the format version.
 ///
-/// The old tag is built from the full-size tag, `"<sha256>-p<offset>"`, which
-/// O106 does not change. The first assertion checks that the full-size tag
-/// still has that shape, so the old tag below is the one browsers really hold.
+/// The old tag is built from the full-size tag, `"<sha256>-p<offset>"`. The
+/// first assertion checks that the full-size tag has that shape, so the old
+/// tag below is built from a real full-size tag.
 #[tokio::test]
 async fn a_resized_page_tag_from_before_the_format_version_is_not_honoured() {
     let (state, _fixture) = crate::test_support::state_with_real_pages();
@@ -1751,13 +1715,12 @@ async fn a_resized_page_tag_from_before_the_format_version_is_not_honoured() {
     );
 }
 
-/// O106 review: a resized page's tag is built from the clamped width, which
-/// is the width its cache file is written under. Built from `?w=` as sent, a
-/// request above `MAX_FIT_LONG_EDGE` would be served the ceiling's rendering
-/// under a tag of its own. Raising the ceiling would then change what that
-/// request is served and leave its tag alone, which is this item's defect
-/// again. Nothing tested it: the tag-equals-key test calls `page_etag` with
-/// literal arguments and never goes through `get_page`.
+/// O106: a resized page's tag is built from the clamped width, which is the
+/// width its cache file is written under. Built from `?w=` as sent, a request
+/// above `MAX_FIT_LONG_EDGE` would be served the ceiling's rendering under a
+/// tag of its own, and raising the ceiling would change what that request is
+/// served and leave its tag alone. The tag-equals-key test calls `page_etag`
+/// with literal arguments and never goes through `get_page`.
 #[tokio::test]
 async fn a_width_above_the_ceiling_carries_the_ceilings_tag() {
     let (state, _fixture) = crate::test_support::state_with_real_pages();
@@ -1843,10 +1806,9 @@ async fn a_stale_validator_gets_the_page_rather_than_a_304() {
     );
 }
 
-/// A member has one `sha256` and, in this fixture, two pages. The third
-/// test the brief calls for: this is the one that would catch keying an
-/// `ETag` on the member hash alone, which would answer every page after
-/// the first with the first page's own tag.
+/// A member has one `sha256` and, in this fixture, two pages. This test would
+/// catch keying an `ETag` on the member hash alone, which would answer every
+/// page after the first with the first page's own tag.
 #[tokio::test]
 async fn two_pages_of_one_member_have_different_etags() {
     let tmp = crate::test_support::Fixture::new("routes-etag-member");
@@ -1986,8 +1948,7 @@ async fn a_resized_page_is_cached_under_its_offset_in_its_member_not_its_index()
 ///
 /// It also asks for page 0 of `ab`, which is in `a.cbz`. Every other page it
 /// asks for is in `b.cbz`, the last member of both editions, so without that
-/// request a hash taken from the last member passed every test. The review of
-/// this branch found that.
+/// request a hash taken from the last member would pass every test.
 #[tokio::test]
 async fn a_tile_is_cached_under_its_offset_in_its_member_not_its_index() {
     let (state, _fixture) = crate::test_support::state_with_a_shared_member();
@@ -2064,17 +2025,12 @@ async fn a_width_above_the_ceiling_is_resized_and_cached_at_the_ceiling() {
     assert_eq!(headers[header::ETAG], format!("\"{stem}\"").as_str());
 }
 
-/// O108's review: a page that already fits inside `?w=` is served its own
-/// bytes, read by its index in the edition.
+/// O108: a page that already fits inside `?w=` is served its own bytes, read by
+/// its index in the edition.
 ///
 /// The read that serves such a page takes the index where the tag and the cache
-/// key take the offset. Every other resized request in these tests is smaller
-/// than its page. So when `get_page` still read a page that fits a second time
-/// in an arm of its own, reading by the offset there served page 0 of `ab`,
-/// grey, with every test green, and the review of O108's branch found it.
-/// Since O107 there is no second read: the page is served from the fetch that
-/// found it fits, and this still pins that fetch to the index. A width of 16
-/// is the page's own size.
+/// key take the offset. The page is served from the fetch that found it fits,
+/// and this pins that fetch to the index. A width of 16 is the page's own size.
 #[tokio::test]
 async fn a_page_that_already_fits_the_width_is_read_by_its_index() {
     let (state, _fixture) = crate::test_support::state_with_a_shared_member();
@@ -2097,16 +2053,14 @@ async fn a_page_that_already_fits_the_width_is_read_by_its_index() {
 
 /// O107: a page that already fits `?w=` is read out of its archive once.
 ///
-/// It used to be read twice. `cached_or_generated_page` read the page to learn
-/// that it fit and dropped the bytes, and `get_page` read it again to serve it.
-/// Both reads served the same bytes, so no assertion on the response could see
-/// the second one. This counts the reads through `CountingSource`.
+/// Reading it twice, once to learn that it fits and again to serve it, serves
+/// the same bytes both times, so no assertion on the response could see the
+/// second read. This counts the reads through `CountingSource`.
 ///
-/// The four requests are the four `strace` counted on the real corpus before
-/// the fix: one archive open at full size, two for a page that fits, one for a
-/// resize and none for a cache hit. They run here in that order and must read
-/// once, once, once and not at all. Each read is `b.cbz`'s first page, because
-/// page 2 of `ab` is that page.
+/// The four requests are a full-size page, a page that fits, a resize and a
+/// cache hit. They run here in that order and must read once, once, once and
+/// not at all. Each read is `b.cbz`'s first page, because page 2 of `ab` is
+/// that page.
 #[tokio::test]
 async fn a_page_that_already_fits_the_width_is_read_once() {
     let (state, _fixture, reads) = crate::test_support::state_with_a_shared_member_and_its_reads();
@@ -2187,12 +2141,10 @@ async fn a_thumb_route_answers_a_jpeg_and_404s_a_page_that_does_not_exist() {
 /// O1: every route whose bytes are fixed by a member's content says how
 /// long they may be reused without asking.
 ///
-/// The `ETag` shipped before this and shrank a repeat to about 300 bytes;
-/// it never removed the round trip, which is the part a reader waits on.
-/// All four byte routes are checked rather than the one this was first
-/// noticed on, because O5 already recorded once what fixing only the
-/// `/api/…` route is worth: Panels reaches pages through the OPDS stream,
-/// and the cover is the only route a cold grid view touches at all.
+/// An `ETag` alone never removes the round trip, which is the part a reader
+/// waits on. All four byte routes are checked rather than only the `/api/…`
+/// one, because Panels reaches pages through the OPDS stream, and the cover is
+/// the only route a cold grid view touches at all.
 ///
 /// The `304` is checked for the same header, and it is the case most
 /// easily left out: RFC 9111 §4.3.4 has a client refresh its stored
@@ -2233,10 +2185,9 @@ async fn every_route_serving_a_member_s_bytes_makes_the_client_revalidate() {
         );
         // The property, not just the constant. Asserting only that the
         // header equals `PAGE_CACHE_CONTROL` passes for *any* value that
-        // constant takes, so it could not have caught what it was there
-        // to catch: this was `max-age=86400`, and a work id is the
-        // sidecar's filename stem, which every sidecar in the corpus
-        // shares. One URL, two volumes, and a day before the client asks.
+        // constant takes, so it could not catch a long `max-age`: a work id is
+        // the sidecar's filename stem, which every sidecar in the corpus
+        // shares, so one URL can name two volumes.
         assert!(
             policy.contains("no-cache"),
             "{uri} must be revalidated rather than assumed fresh: a work id \
@@ -2246,10 +2197,9 @@ async fn every_route_serving_a_member_s_bytes_makes_the_client_revalidate() {
         );
     }
 
-    // Both routes that carry a validator, revalidated — not just the
-    // `/api/…` one. O5 already recorded once what checking only that one
-    // is worth: Panels reaches pages through the OPDS stream, so a `304`
-    // asserted only here would be asserted on the route nothing uses.
+    // Both routes that carry a validator, revalidated — not just the `/api/…`
+    // one. Panels reaches pages through the OPDS stream, so a `304` asserted on
+    // `/api/…` alone would miss the route Panels uses.
     for uri in ["/api/works/w/a/pages/0", "/opds/v1.2/works/w/a/pages/0"] {
         let first = app
             .clone()
@@ -2292,15 +2242,12 @@ async fn every_route_serving_a_member_s_bytes_makes_the_client_revalidate() {
 /// `SetResponseHeaderLayer` on the router rather than the four routes
 /// where the claim is true.
 ///
-/// **Both statuses are checked, and the second one is why this test
-/// exists in the shape it does.** The first version of this looked only
-/// at the `200`s and passed while the server was actively telling clients
-/// they could reuse a sidecar for a day: `not_modified` is shared by
-/// `get_page`, `get_sidecar`, `get_notes` and the OPDS stream, so putting
-/// the page constant inside it leaked a freshness lifetime onto the `304`
-/// of every route that shares it. A client caches what the `304` says
-/// (RFC 9111 §4.3.4), so the leak was worth exactly as much as putting it
-/// on the `200` would have been, and no test saw it.
+/// **Both statuses are checked, and the second one is why this test exists in
+/// the shape it does.** `not_modified` is shared by `get_page`, `get_sidecar`,
+/// `get_notes` and the OPDS stream, and a client caches what the `304` says
+/// (RFC 9111 §4.3.4), so a lifetime on a shared `304` would be worth exactly as
+/// much as one on the `200`, and a test that looked only at the `200`s would
+/// not see it.
 #[tokio::test]
 async fn no_document_a_client_can_change_is_given_a_freshness_lifetime() {
     let (state, _fixture) = crate::test_support::state_with_real_pages();
@@ -2320,24 +2267,20 @@ async fn no_document_a_client_can_change_is_given_a_freshness_lifetime() {
             .oneshot(Request::get(uri).body(Body::empty()).unwrap())
             .await
             .unwrap();
-        // **No freshness lifetime, which is not the same as no header.** This
-        // asserted the header's absence, and absence was the wrong shape once
-        // these documents became per-reader: a proxy in front — which spec A2
-        // §11 puts there — would store one reader's notes and replay them to
-        // another, and RFC 9111's bar on caching authenticated responses keys on
+        // **No freshness lifetime, which is not the same as no header.** These
+        // documents are per-reader: a proxy in front — which spec A2 §11 puts
+        // there — would store one reader's notes and replay them to another,
+        // and RFC 9111's bar on caching authenticated responses keys on
         // `Authorization`, which the browser path never sends. `no-store` grants
         // no lifetime *and* forbids the store, so it satisfies this test's own
-        // stated reason more strongly than absence did. Found by the second
-        // whole-branch review.
+        // stated reason more strongly than absence would.
         let directive = response
             .headers()
             .get(header::CACHE_CONTROL)
             .and_then(|value| value.to_str().ok());
         assert!(
-            // `is_some_and`, not `is_none_or`: the first attempt at this was
-            // loosened to tolerate absence, which made it pass for the very
-            // routes that had been missed — `/api/works/w/notes` among them.
-            // Found by the third whole-branch review.
+            // `is_some_and`, not `is_none_or`, so that a route which sets no
+            // directive at all fails.
             directive.is_some_and(|d| d.contains("no-store") || d.contains("no-cache")),
             "{uri} answers a document this server rewrites; a freshness \
                  lifetime on it hands a reader back an edit they have already \
@@ -2371,12 +2314,11 @@ async fn no_document_a_client_can_change_is_given_a_freshness_lifetime() {
             .await
             .unwrap();
         assert_eq!(revalidated.status(), StatusCode::NOT_MODIFIED, "{uri}");
-        // The 304 too, and for the reason this assertion always gave: a client
-        // stores what a `304` tells it (RFC 9111 §4.3.4), so a lifetime here is
-        // worth exactly what one on the 200 would be — and a *shared* cache
-        // storing a per-reader 304 is the same replay the 200 would be. The
-        // layer covers both because it wraps the response rather than the
-        // handler.
+        // The 304 too: a client stores what a `304` tells it (RFC 9111
+        // §4.3.4), so a lifetime here is worth exactly what one on the 200
+        // would be — and a *shared* cache storing a per-reader 304 is the same
+        // replay the 200 would be. The layer covers both because it wraps the
+        // response rather than the handler.
         let revalidated_directive = revalidated
             .headers()
             .get(header::CACHE_CONTROL)
@@ -2442,10 +2384,9 @@ async fn a_page_fetch_through_the_router_logs_a_line_with_real_byte_count() {
 }
 
 /// O1's question — does a client ever send `If-None-Match`? — cannot be
-/// answered from a log that records no request headers, and this one
-/// recorded none. An `ETag` is a line of code; knowing whether it would
-/// buy anything is the part that needs evidence, and the evidence has to
-/// come from a real session with a real client.
+/// answered from a log that records no request headers. An `ETag` is a line of
+/// code; knowing whether it would buy anything is the part that needs evidence,
+/// and the evidence has to come from a real session with a real client.
 ///
 /// The set logged is an allowlist, so this pins both halves: a header on
 /// it survives into the line, and one that is not on it does not. A log
@@ -2489,11 +2430,8 @@ async fn a_conditional_request_header_is_logged_and_an_unlisted_one_is_not() {
     );
 }
 
-/// A client asking for `?width=1536` has to be visible in the log: this
-/// server serves no resized images at all, which makes it *more*
-/// important to see the parameter, not less — logging `path()` alone
-/// would make it look like no client ever asks for one, when the truth
-/// is only that nothing here answers it yet.
+/// A client asking for `?width=1536` has to be visible in the log: logging
+/// `path()` alone would make it look like no client ever asks for one.
 #[tokio::test]
 async fn a_request_with_a_query_string_is_logged_with_it() {
     let tmp = crate::test_support::Fixture::new("routes-reqlog-query");
@@ -2523,9 +2461,9 @@ async fn a_request_with_a_query_string_is_logged_with_it() {
 }
 
 /// `if_match_hits`'s reason to exist: absent, matching and stale are
-/// three different answers, not two. Task 6 turns `None` into a 428 and
-/// `Some(false)` into a 412 — collapsing the first into the second would
-/// tell a client that sent no validator it lost a race it never entered.
+/// three different answers, not two. `None` becomes a 428 and `Some(false)` a
+/// 412 — collapsing the first into the second would tell a client that sent no
+/// validator it lost a race it never entered.
 #[test]
 fn if_match_distinguishes_absent_from_matching_from_stale() {
     let none_sent = HeaderMap::new();
@@ -2662,8 +2600,7 @@ async fn correct_with_body(
     (status, String::from_utf8_lossy(&bytes).into_owned())
 }
 
-/// The milestone in one test: correct a pairing, and have the document say
-/// so afterwards.
+/// Correct a pairing, and have the document say so afterwards.
 #[tokio::test]
 async fn a_correction_is_written_and_read_back() {
     let tmp = crate::test_support::Fixture::new("routes-correct");
@@ -2832,13 +2769,12 @@ async fn a_correction_survives_the_reimport_a_restart_performs() {
 /// reason `atomic.rs`'s own
 /// `the_destination_is_replaced_by_rename_not_truncation` gives: an
 /// `AlreadyTrue` correction writes back byte-identical JSON, so content
-/// alone cannot tell "skipped" from "wrote the same bytes again", and this
-/// filesystem was measured to give two `atomic::write` calls microseconds
-/// apart the identical mtime down to the nanosecond — so mtime cannot
-/// either. A rename always replaces the destination with a fresh inode,
-/// whether or not the bytes changed, so the inode is the one signal that
-/// distinguishes "no write happened" from "a write happened that changed
-/// nothing".
+/// alone cannot tell "skipped" from "wrote the same bytes again", and mtime
+/// cannot either, because two `atomic::write` calls microseconds apart can
+/// get the identical mtime. A rename always replaces the destination with a
+/// fresh inode, whether or not the bytes changed, so the inode is the one
+/// signal that distinguishes "no write happened" from "a write happened that
+/// changed nothing".
 #[tokio::test]
 async fn a_no_op_correction_does_not_touch_the_file() {
     use std::os::unix::fs::MetadataExt;
@@ -2984,9 +2920,9 @@ async fn a_correction_with_no_validator_at_all_says_which_header_is_missing() {
 /// exhaustive `match` only protects against a *new variant* being dropped
 /// — it says nothing about an existing one being given the wrong status.
 /// Changing `SameEdition => BAD_REQUEST` to `NOT_FOUND` compiles, and
-/// without this test the suite stays green. Task 2's own tests pin which
-/// variant `Sidecar::correct` returns; which status it becomes is this
-/// route's to answer, and so this route's to test.
+/// without this test the suite stays green. `Sidecar::correct`'s own tests pin
+/// which variant it returns; which status it becomes is this route's to
+/// answer, and so this route's to test.
 ///
 /// `Unreadable` (409) is deliberately absent: producing it needs a stored
 /// edge whose spans do not resolve, which this fixture cannot express
@@ -3034,11 +2970,10 @@ async fn each_refusal_answers_the_status_its_kind_calls_for() {
             axum::http::StatusCode::BAD_REQUEST,
             "not a correction",
         ),
-        // `b` omitted entirely. The other half of the same rule: absence
-        // must not spell "unpair", so this is refused rather than quietly
-        // taking a pairing away. The refusal names the field, because
-        // serde's own "missing field `b`" is the most useful thing a
-        // client could be told here.
+        // `b` omitted entirely. The other half of the same rule: absence must
+        // not spell "unpair", so this is refused rather than quietly taking a
+        // pairing away. The refusal is this server's own and names the field;
+        // `patch_alignments` says why serde's "missing field `b`" would not do.
         (
             r#"{"from":"raw","to":"en","a":"2"}"#,
             axum::http::StatusCode::BAD_REQUEST,
@@ -3050,8 +2985,7 @@ async fn each_refusal_answers_the_status_its_kind_calls_for() {
     for (body, _, _) in &cases {
         answered.push(correct_with_body(&router, "t", &tag, body).await);
     }
-    // A work this server does not hold, which is refused before the body
-    // is ever looked at.
+    // A work this server does not hold, refused with a 404 that names it.
     let missing = correct_with_body(
         &router,
         "nosuchwork",
@@ -3082,11 +3016,10 @@ async fn each_refusal_answers_the_status_its_kind_calls_for() {
 
 /// The unpair path, end to end.
 ///
-/// `"b": null` is the one thing an absent `b` used to mean, and it is the
-/// reason `b` is nullable rather than simply a `String`. Nothing in `web/`
-/// can send it yet — the reader has no "this page pairs with nothing"
-/// gesture — so without this test the whole justification for keeping the
-/// field nullable would rest on a path nothing exercises.
+/// `"b": null` is the reason `b` is nullable rather than simply a `String`.
+/// Nothing in `web/` can send it — the reader has no "this page pairs with
+/// nothing" gesture — so without this test the whole justification for keeping
+/// the field nullable would rest on a path nothing exercises.
 #[tokio::test]
 async fn an_explicit_null_unpairs_the_slot() {
     let tmp = crate::test_support::Fixture::new("routes-correct-unpair");
@@ -3191,15 +3124,12 @@ async fn a_work_with_no_notes_answers_an_empty_document_with_a_validator() {
     assert!(parsed.notes.is_empty());
 }
 
-/// `serve/truth.rs:3` states the rule: one serialisation shared by the file,
-/// the response body and the `ETag` over that body, so a validator can never
-/// be computed over bytes a client was not sent. Task 13 makes it one
-/// serialisation shared by the PROJECTION, the body and the validator — the
-/// same rule with one fewer writer. Driven over `router_over_a_library`
-/// rather than `test_support::state`, because this is the path Task 13
-/// actually rewired: a work with a real row in `state.library`, reached
-/// through `works::find_row` rather than through `works::row_id_for_write`
-/// minting one.
+/// `serve/truth.rs:3` states the rule: one serialisation shared by the
+/// projection, the response body and the `ETag` over that body, so a validator
+/// can never be computed over bytes a client was not sent. Driven over
+/// `router_over_a_library` rather than `test_support::state`, because that is
+/// the path of a work with a real row in `state.library`, reached through
+/// `works::find_row` rather than through `works::row_id_for_write` minting one.
 #[tokio::test]
 async fn a_notes_etag_is_computed_over_the_bytes_that_were_sent() {
     let (router, _state, _fixture) = crate::test_support::router_over_a_library().await;
@@ -3488,12 +3418,11 @@ async fn a_note_on_a_slot_that_does_not_exist_is_refused_through_the_router() {
 /// document and both finding their validator current.
 ///
 /// **Raced many times, deliberately.** A single race is not a reliable
-/// detector: measured by removing the guard and running this five times,
-/// two of those runs still happened to serialise and passed. One round is
-/// therefore a test that can miss the very defect it exists for, which is
-/// worse than no test — it reports green for a reason it never checked.
-/// Twenty rounds put the chance of every one of them serialising at
-/// roughly `0.4^20`, and the same sabotage now fails immediately.
+/// detector: with the guard removed, two runs in five happened to serialise
+/// and pass. One round is therefore a test that can miss the very defect it
+/// exists for, which is worse than no test — it reports green for a reason it
+/// never checked. Twenty rounds put the chance of every one of them
+/// serialising at roughly `0.4^20`.
 ///
 /// It cannot fail *falsely*, whatever the interleaving: exactly one of two
 /// writes can be holding the current tag when it compares, so the
@@ -3550,9 +3479,8 @@ async fn two_writes_in_flight_together_leave_exactly_one_winner() {
 }
 
 /// A body this server will not parse is answered in this server's own
-/// words, not serde's — the same rule O5 established for a malformed page
-/// index and `patch_alignments` already follows for a malformed
-/// correction.
+/// words, not serde's — the same rule as O5's for a malformed page index,
+/// and `patch_alignments` follows it for a malformed correction.
 #[tokio::test]
 async fn a_body_that_is_not_notes_is_refused_in_this_servers_own_words() {
     let tmp = crate::test_support::Fixture::new("notes-garbage");
@@ -3612,16 +3540,11 @@ async fn writing_truth_without_if_match_is_refused() {
 #[tokio::test]
 async fn a_successful_truth_write_stores_the_document_and_returns_an_etag() {
     // O35: a PUT response with no ETag turns every later write into a
-    // silent no-op. The notes route was fixed for exactly this; truth has
-    // the same shape and must not repeat it.
+    // silent no-op, and truth's must carry one.
     //
-    // **And the document is read back**, which is the half this test used to
-    // be missing. It sent an empty `TruthDoc::new()` and asserted the status
-    // and the header only — a body indistinguishable from what a no-op
-    // produces — so `truth::store`'s entire body could be replaced with
-    // `Ok(())` and all 609 tests in this crate and `taiyaku-cli` stayed green
-    // (whole-branch review 2, I4). This is the only save path the labelling
-    // tool has: a regression here loses 75 pages of hand work behind a 200
+    // **And the document is read back**: a status and a header alone are
+    // indistinguishable from what a no-op produces. This is the only save path
+    // the labelling tool has: a regression here loses hand work behind a 200
     // OK. Assert the payload, not the status.
     let (state, _fixture) = crate::test_support::state_with_real_pages();
     let router = build_router(state);
@@ -3732,13 +3655,9 @@ async fn a_malformed_truth_body_is_refused_in_this_servers_own_words() {
 
 /// `?w=1` must mean "no resize", not "resize to one pixel".
 ///
-/// The filter that does it could be `>= 1` — admitting 1 — with every
-/// other test still green, because no test asked for a width of 1 and the
-/// comment above the filter claimed `fit_at` would decline it anyway. It
-/// did not: `fit_at` returned `None` only when the page was *already*
-/// within the requested edge, and `cover::fits_within` has held that
-/// decision since O111, so at `w=1` a 16-pixel page is re-encoded down to
-/// one pixel and handed to the reader as a JPEG.
+/// A filter that admitted 1 would re-encode a 16-pixel page down to one pixel
+/// and hand it to the reader as a JPEG, because `cover::fits_within` calls a
+/// page fitting only when it is already within the requested edge.
 #[tokio::test]
 async fn a_width_of_one_is_absent_rather_than_a_one_pixel_page() {
     let (state, _fixture) = crate::test_support::state_with_real_pages();
@@ -3819,8 +3738,8 @@ async fn the_work_list_names_every_work_rather_than_being_merely_ok() {
     let body = axum::body::to_bytes(response.into_body(), 1 << 16)
         .await
         .unwrap();
-    // Task 14: a JSON array of objects rather than of bare ids — `slug` is
-    // this object's `id`.
+    // A JSON array of objects rather than of bare ids — `slug` is this
+    // object's `id`.
     let listed: Vec<serde_json::Value> = serde_json::from_slice(&body).expect("a JSON array");
     let slugs: Vec<&str> = listed
         .iter()
@@ -3850,14 +3769,11 @@ async fn a_broken_library_connection_answers_500_rather_than_panicking() {
     assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
 }
 
-/// **Two readers hold two positions in one work**, which the constant that
-/// answered user 1 for both could not express.
+/// **Two readers hold two positions in one work.**
 ///
-/// Spec A2 §5.1 records the shape of the problem: `progress` and `note` have
-/// carried `user_id` in their primary key since migration 1 — `progress`'s is
-/// `(user_id, work_id, edition)` since migration 9 — so the database could
-/// always hold two readers, and it was the server that could only ask about
-/// one.
+/// Spec A2 §5.1 records the shape of the problem: `progress` and `note` carry
+/// `user_id` in their primary key, so the database can hold two readers.
+/// `progress`'s key is `(user_id, work_id, edition)`.
 #[tokio::test]
 async fn two_readers_hold_separate_positions_in_one_work() {
     use base64::Engine as _;
@@ -4069,12 +3985,9 @@ async fn correcting_a_work_with_no_document_writes_rows_and_no_file() {
 }
 
 // ---------------------------------------------------------------------------
-// The grant gap: `list_works` (`GET /api/works`) applied none of spec C1's
-// per-root visibility — it iterates `state.works` and returns every work the
-// server holds, with no reference to `Principal.access` at all. The
-// whole-branch review closed the equivalent hole on the page routes
-// (`refuse_if_hidden`) and commit 5d41bd6 closed it on the OPDS mirror
-// (`opds::visible_slugs`); this is the last route in that class.
+// The grant on `list_works` (`GET /api/works`): spec C1's per-root visibility,
+// which also reaches the page routes (`refuse_if_hidden`) and the OPDS
+// mirror (`opds::visible_editions_by_work`).
 //
 // Mirrors `opds::tests::router_with_two_works_one_withheld` exactly: two
 // works imported through `taiyaku_library::import::scanned` into a real
@@ -4164,11 +4077,11 @@ fn router_with_two_works_one_withheld(dir: &std::path::Path) -> (axum::Router, A
     (router, state)
 }
 
-/// **The gap itself.** `GET /api/works` must answer the same grant `opds::works`
-/// and the page routes already do: a restricted account learns the id, title,
-/// series and volume of a work outside every root it holds, and this asserts
-/// it does not, mirroring `opds::tests::the_works_feed_does_not_name_a_work_outside_the_grant`
-/// for the JSON route.
+/// `GET /api/works` must answer the same grant `opds::works` and the page
+/// routes do: a restricted account is not told the id, title, series or volume
+/// of a work outside every root it holds. This mirrors
+/// `opds::tests::the_works_feed_does_not_name_a_work_outside_the_grant` for the
+/// JSON route.
 #[tokio::test]
 async fn the_work_list_does_not_name_a_work_outside_the_grant() {
     let tmp = crate::test_support::Fixture::new("routes-grant-works-list");
@@ -4571,13 +4484,10 @@ async fn the_work_list_names_every_dir_of_a_granted_library() {
 }
 
 // ---------------------------------------------------------------------------
-// The write leak: `patch_alignments` resolved its target by slug alone,
-// consulting no `Extensions` and no `Principal` at
-// all — unlike every other route in this file. A restricted account could
-// therefore both read the sidecar this handler returns and write shared
-// `alignment`/`run` rows for a work outside every root it held. This is worse
-// than the six read leaks: an alignment is shared library truth rather than
-// per-account state.
+// The grant on `patch_alignments`: a restricted account may neither read the
+// sidecar this handler returns nor write shared `alignment`/`run` rows for a
+// work outside every root it holds. An alignment is shared library truth
+// rather than per-account state.
 // ---------------------------------------------------------------------------
 
 /// A router over a work with two editions and a solved alignment edge
@@ -4661,10 +4571,9 @@ fn router_over_a_scanned_work_under_a_withheld_root(
     (router, state)
 }
 
-/// **The write leak itself.** Before the fix, `patch_alignments` asked
-/// nothing about the grant, so a restricted account could write shared
-/// `alignment`/`run` rows — library truth every other reader sees — for a
-/// work outside every root it holds.
+/// A restricted account's correction to a work outside every root it holds
+/// is refused as a missing work and writes no shared `alignment`/`run` rows —
+/// library truth every other reader sees.
 ///
 /// Both the response and the rows are checked, not only the status: a 404
 /// that still let the write through, or a 200 that happened not to change
@@ -4676,9 +4585,9 @@ async fn a_restricted_account_cannot_patch_alignments_on_a_work_in_a_withheld_ro
     let (router, state) = router_over_a_scanned_work_under_a_withheld_root(&tmp);
     let slug = state.works.snapshot()[0].id.clone();
     // Computed directly from the state the running server holds, rather than
-    // fetched through `GET /api/works/{slug}` — that route is already fixed
-    // and would itself answer 404 to this restricted account, which is
-    // exactly what would make an attacker compute this offline instead.
+    // fetched through `GET /api/works/{slug}` — that route would itself answer
+    // 404 to this restricted account, which is exactly what would make an
+    // attacker compute this offline instead.
     let tag = super::sidecar_etag(&state.works.snapshot()[0].sidecar());
 
     let (status, body) = correct_with_body(
@@ -4771,12 +4680,12 @@ fn long_edge_of(body: &[u8]) -> u32 {
     image.width().max(image.height())
 }
 
-/// O133's review: a library cover is page 0 at 256, 512 or 768 px, and it must
-/// reach an account that may download but not read here —
-/// `refuse_if_cannot_stream`'s doc says why a download-only account still sees
-/// its shelf. O133's first version drew covers through the page route, which
-/// refuses that account, so every tile on its shelf would have been a
-/// placeholder. The page route still refuses it, and that half is asserted too.
+/// O133: a library cover is page 0 at 256, 512 or 768 px, and it must reach
+/// an account that may download but not read here — `refuse_if_cannot_stream`'s
+/// doc says why a download-only account still sees its shelf. A cover drawn
+/// through the page route, which refuses that account, would leave every tile
+/// on its shelf a placeholder. The page route itself refuses it, and that half
+/// is asserted too.
 #[tokio::test]
 async fn a_download_only_account_sees_covers_at_every_size_and_still_no_pages() {
     let (state, _fixture) = crate::test_support::state_with_tall_pages();
@@ -4803,11 +4712,11 @@ async fn a_download_only_account_sees_covers_at_every_size_and_still_no_pages() 
     );
 }
 
-/// Since O134 a `w` may also be a tile rung, on any page, for a caller that
-/// may stream. This test's account may not — `without_can_stream` — and none
-/// of these sizes is a rung anyway, so every one of them still falls through
-/// to the plain tile: page 0, at one of `cover::COVER_LONG_EDGES`, remains the
-/// only sized answer this account gets.
+/// A `w` may also be a tile rung (O134), on any page, for a caller that may
+/// stream. This test's account may not — `without_can_stream` — and none of
+/// these sizes is a rung anyway, so every one of them falls through to the
+/// plain tile: page 0, at one of `cover::COVER_LONG_EDGES`, is the only sized
+/// answer this account gets.
 #[tokio::test]
 async fn the_tile_route_sizes_page_zero_to_a_cover_size_and_refuses_the_rest_a_size() {
     let (state, _fixture) = crate::test_support::state_with_tall_pages();
@@ -4832,7 +4741,7 @@ async fn the_tile_route_sizes_page_zero_to_a_cover_size_and_refuses_the_rest_a_s
 /// answers `true` for.
 ///
 /// **Both loops, and page 1 first**, because the two are different claims.
-/// Page 1 is the plain one: a page O133's `cover_edge` never touched, sized by
+/// Page 1 is the plain one: a page `cover_edge` never touches, sized by
 /// `tile_edge` alone. Page 0 is the composition — it is the one page that is
 /// both a cover and a tile, and a rung there must still reach `tile_edge`
 /// rather than the cover branch that runs ahead of it.
@@ -4898,14 +4807,10 @@ async fn the_tile_route_sizes_any_page_to_a_tile_rung() {
 /// and download but not read pages is not one.
 ///
 /// It is answered with the 160 px tile rather than a `403` — the same fallback
-/// `cover_edge` already makes for a `w` this server does not recognise — so
-/// such an account's strip is soft rather than broken. It costs that account
-/// nothing real: the page route refuses it every page, asserted below, so
-/// there is nothing behind the strip to be sharp about.
-///
-/// **This is the test O133 did not have.** `download/tests.rs` asks only for
-/// the unsized tile, which is how O133's first version reached review serving
-/// every cover through the page route that refuses this account.
+/// `cover_edge` makes for a `w` this server does not recognise — so such an
+/// account's strip is soft rather than broken. It costs that account nothing
+/// real: the page route refuses it every page, asserted below, so there is
+/// nothing behind the strip to be sharp about.
 #[tokio::test]
 async fn a_download_only_account_gets_the_unsized_tile_whatever_rung_it_asks_for() {
     let (state, _fixture) = crate::test_support::state_with_tall_pages();
@@ -5029,7 +4934,7 @@ fn assert_kept_for_good_privately(policy: &str, what: &str) {
 /// every cover size, with the `ETag` and the bytes the same address sends
 /// without a `v`.
 ///
-/// **The `304` too** (O1's lesson): RFC 9111 §4.3.4 has the client take a
+/// **The `304` too** (O1): RFC 9111 §4.3.4 has the client take a
 /// `304`'s headers into its stored answer, so a `304` sending
 /// `PAGE_CACHE_CONTROL` would put a kept cover back to asking on every visit.
 /// The addresses are in the shape the lists carry, `v` first and the client's
@@ -5887,7 +5792,7 @@ async fn a_new_note_on_an_edition_outside_the_grant_is_refused_and_a_held_one_is
 /// Restricted, the read names `en` and not `gone`: the visible set holds only
 /// editions the work has now, so a key outside it is left out with the rest.
 /// Unrestricted, once the account is set to every library, the same read
-/// names `gone` as well, as it always has.
+/// names `gone` as well.
 #[tokio::test]
 async fn a_position_on_an_edition_the_work_no_longer_has_is_sent_only_to_an_account_with_no_limits()
 {
