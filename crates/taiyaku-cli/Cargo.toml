@@ -47,7 +47,7 @@ tokio = { version = "1", features = ["rt-multi-thread"] }
 # call, the one helper every crate's tests share.
 taiyaku-read = { path = "../taiyaku-read", features = ["test-support"] }
 tract-onnx = "0.23.4"
-zip = "7.2.0"
+zip = "9.1.3"
 
 # `taiyaku-wasm` is here for `borrow_frequency.rs` alone — the gap-frequency
 # measurement — and a dev-dependency is what keeps it out of the `taiyaku`

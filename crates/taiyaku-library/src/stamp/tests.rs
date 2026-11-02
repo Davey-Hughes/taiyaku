@@ -252,7 +252,7 @@ fn raw_entries(path: &std::path::Path) -> Vec<(String, zip::CompressionMethod, V
     let mut out = Vec::new();
     for i in 0..archive.len() {
         let mut entry = archive.by_index_raw(i).expect("an entry");
-        let name = entry.name().to_string();
+        let name = entry.name().expect("a name").into_owned();
         let method = entry.compression();
         let mut bytes = Vec::new();
         std::io::Read::read_to_end(&mut entry, &mut bytes).expect("reading an entry");
@@ -321,6 +321,126 @@ fn a_rewrite_leaves_every_page_byte_identical() {
     assert_eq!(
         before, after,
         "every page's name, compression method and stored bytes survive"
+    );
+}
+
+/// A page name in codepage 437 that is not valid UTF-8: `0x82` is `é` there
+/// and a stray continuation byte in UTF-8.
+const CP437_NAME: &[u8] = b"\x82t\x82 01.jpg";
+/// An ASCII name as long as [`CP437_NAME`], which `ZipWriter` writes with the
+/// UTF-8 flag clear and [`store_cp437_name`] then overwrites byte for byte.
+const PLACEHOLDER: &str = "_t_ 01.jpg";
+const _: () = assert!(CP437_NAME.len() == PLACEHOLDER.len());
+
+/// Rename the fixture archive's [`PLACEHOLDER`] entry to [`CP437_NAME`] in
+/// both its headers, and bring the member row's `sha256` back in line.
+/// `ZipWriter` takes a name as `str`, so it cannot write these bytes itself.
+fn store_cp437_name(fixture: &Fixture, name: &str) {
+    let path = fixture.archive(name);
+    let mut raw = std::fs::read(&path).expect("reading the fixture archive");
+    let sites: Vec<usize> = raw
+        .windows(PLACEHOLDER.len())
+        .enumerate()
+        .filter(|(_, window)| *window == PLACEHOLDER.as_bytes())
+        .map(|(at, _)| at)
+        .collect();
+    assert_eq!(
+        sites.len(),
+        2,
+        "the name once in the local header and once in the central directory"
+    );
+    for at in sites {
+        raw[at..at + CP437_NAME.len()].copy_from_slice(CP437_NAME);
+    }
+    std::fs::write(&path, &raw).expect("writing the fixture archive");
+    let conn = fixture.conn();
+    conn.execute("UPDATE member SET sha256 = ?1", [digest_of(&path)])
+        .expect("bringing the member row back in line with the file");
+}
+
+/// One entry's name as each header stores it: the raw bytes and whether the
+/// UTF-8 flag (general purpose bit 11) is set, for its local header and then
+/// for its central directory header.
+type StoredName = ((Vec<u8>, bool), (Vec<u8>, bool));
+
+/// Every entry's [`StoredName`], in central directory order, found by walking
+/// the end of central directory record, the central directory and the local
+/// header each entry points at (APPNOTE.TXT §4.3.16, §4.3.12, §4.3.7). Read
+/// from the bytes rather than through `zip`, because a decoded name is the
+/// very thing that hides a re-encoded one.
+fn stored_names(path: &std::path::Path) -> Vec<StoredName> {
+    let raw = std::fs::read(path).expect("reading the archive");
+    let u16_at = |at: usize| usize::from(u16::from_le_bytes([raw[at], raw[at + 1]]));
+    let u32_at = |at: usize| {
+        usize::try_from(u32::from_le_bytes([
+            raw[at],
+            raw[at + 1],
+            raw[at + 2],
+            raw[at + 3],
+        ]))
+        .expect("an offset that fits")
+    };
+    let utf8 = |at: usize| u16_at(at) & (1 << 11) != 0;
+    let end = raw
+        .windows(4)
+        .rposition(|w| w == b"PK\x05\x06")
+        .expect("an end of central directory record");
+
+    let mut out = Vec::new();
+    let mut at = u32_at(end + 16);
+    for _ in 0..u16_at(end + 10) {
+        assert_eq!(
+            &raw[at..at + 4],
+            b"PK\x01\x02",
+            "a central directory header"
+        );
+        let name_len = u16_at(at + 28);
+        let central = (raw[at + 46..at + 46 + name_len].to_vec(), utf8(at + 8));
+        let local_at = u32_at(at + 42);
+        assert_eq!(
+            &raw[local_at..local_at + 4],
+            b"PK\x03\x04",
+            "a local header"
+        );
+        let local_len = u16_at(local_at + 26);
+        let local = (
+            raw[local_at + 30..local_at + 30 + local_len].to_vec(),
+            utf8(local_at + 6),
+        );
+        out.push((local, central));
+        at += 46 + name_len + u16_at(at + 30) + u16_at(at + 32);
+    }
+    out
+}
+
+/// A name stored in a legacy codepage, raw bytes under a clear UTF-8 flag, is
+/// readable only by a tool that decodes it in that codepage. Re-encoding it
+/// from its decoded string would replace it for good with the codepage 437
+/// reading of those bytes, so a stamp has to keep the name's bytes and its
+/// flag, in both headers a reader may take the name from.
+#[test]
+fn a_rewrite_keeps_a_non_utf8_entry_name_and_its_flag_as_stored() {
+    let fixture = one_work();
+    rewrite_fixture_archive(&fixture, "Series - v01.cbz", &[(PLACEHOLDER, b"one")]);
+    store_cp437_name(&fixture, "Series - v01.cbz");
+    let path = fixture.archive("Series - v01.cbz");
+    let page = ((CP437_NAME.to_vec(), false), (CP437_NAME.to_vec(), false));
+    assert_eq!(
+        stored_names(&path),
+        std::slice::from_ref(&page),
+        "the fixture stores the raw name with the flag clear"
+    );
+
+    super::rewrite_one(&path, b"<ComicInfo/>").expect("rewrites");
+
+    let after: Vec<_> = stored_names(&path)
+        .into_iter()
+        .filter(|(_, (name, _))| !name.eq_ignore_ascii_case(DOCUMENT.as_bytes()))
+        .collect();
+    assert_eq!(
+        after,
+        [page],
+        "the page's raw name and UTF-8 flag survive in both headers"
     );
 }
 

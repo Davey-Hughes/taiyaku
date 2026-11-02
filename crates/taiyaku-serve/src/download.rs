@@ -1057,12 +1057,12 @@ fn generated(
                 // directory *declared*; `entry.size` is what
                 // `for_each_member_page` actually read. They differ either
                 // because the archive was replaced since `prepare` read it,
-                // or because it declares a size it never had — `zip`
-                // validates an entry's crc32 against its bytes and never
-                // validates its declared length, so a size-lying archive
-                // reaches here with a perfectly good crc. Either way the
-                // local header already sent states a length these bytes do
-                // not have, so the only safe move is to stop.
+                // or because it declares a size it never had — `zip` fails
+                // a read that runs past the declared length, but an entry
+                // that declares more than it holds reaches here with a
+                // perfectly good crc. Either way the local header already
+                // sent states a length these bytes do not have, so the only
+                // safe move is to stop.
                 return Err(format!(
                     "{}: `{}` is not the {} bytes this download was planned around",
                     path.display(),

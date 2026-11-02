@@ -338,7 +338,7 @@ async fn a_two_member_edition_downloads_as_one_readable_cbz() {
     // The fixture is two members of two pages each, plus the generated
     // metadata document.
     let names: Vec<String> = (0..archive.len())
-        .map(|i| archive.by_index(i).unwrap().name().to_string())
+        .map(|i| archive.by_index(i).unwrap().name().unwrap().into_owned())
         .collect();
     assert_eq!(
         names,
@@ -881,13 +881,14 @@ fn generated_detects_a_member_that_lost_pages_before_the_trailer() {
 }
 
 /// Build a `.cbz` whose central-directory declared uncompressed-size field
-/// for its first entry is a lie — patched after writing, the same technique
-/// `taiyaku_read::pages::tests::lying_size_cbz` uses (duplicated here rather
-/// than exposed across the crate boundary: that helper is private to its own
-/// test module). `member_page_entries` — what `prepare` plans a download
-/// around — reads this declared field and believes it; `for_each_member_page`
-/// reads the real bytes back and does not.
-fn lying_size_cbz(path: &std::path::Path, entries: &[(&str, &[u8])]) {
+/// for its first entry is `declared`, a lie — patched after writing, the
+/// technique `taiyaku_read::pages::tests::lying_size_cbz` uses (duplicated
+/// here rather than exposed across the crate boundary: that helper is private
+/// to its own test module). `member_page_entries` — what `prepare` plans a
+/// download around — reads this declared field and believes it;
+/// `for_each_member_page` reads the real bytes back, and fails once they run
+/// past the declared field.
+fn lying_size_cbz(path: &std::path::Path, entries: &[(&str, &[u8])], declared: u32) {
     {
         let mut zip = zip::ZipWriter::new(std::fs::File::create(path).unwrap());
         for (name, bytes) in entries {
@@ -903,21 +904,18 @@ fn lying_size_cbz(path: &std::path::Path, entries: &[(&str, &[u8])]) {
         .position(|w| w == [0x50, 0x4B, 0x01, 0x02])
         .expect("a central directory file header");
     let size_field = central_directory + 24;
-    raw[size_field..size_field + 4].copy_from_slice(&0x7FFF_FFF0u32.to_le_bytes());
+    raw[size_field..size_field + 4].copy_from_slice(&declared.to_le_bytes());
     std::fs::write(path, &raw).unwrap();
 }
 
-/// The plan-vs-stream guard at the heart of `generated` —
-/// `planned.size != entry.size || planned.crc32 != entry.crc32`. The
-/// **producer** half of the asymmetry it relies on is pinned in `taiyaku-read`
-/// (`for_each_member_page_reports_the_real_size_while_member_page_entries_keeps_the_declared_lie`);
-/// this is the **consumer** half, proven at the route with the same
-/// technique that helper uses: an archive whose central directory declares
-/// one size while its real, readable bytes are a different, smaller one.
-#[tokio::test]
-async fn a_size_lying_archive_aborts_the_download_instead_of_streaming_a_lie() {
-    let root = crate::test_support::Fixture::new("download-lying-size");
-    lying_size_cbz(&root.join("c1.cbz"), &[("p1.jpg", b"page one")]);
+/// A two-member edition whose first member's one page declares `declared`
+/// bytes, downloaded through the route: what `Content-Length` promised, the
+/// body, and whether the stream ended in an error.
+async fn download_lying_edition(
+    root: &crate::test_support::Fixture,
+    declared: u32,
+) -> (u64, Vec<u8>, bool) {
+    lying_size_cbz(&root.join("c1.cbz"), &[("p1.jpg", b"page one")], declared);
     // A second, honest member — so the edition has two members and takes the
     // generated path, which is the only path that ever consults the plan.
     {
@@ -975,6 +973,21 @@ async fn a_size_lying_archive_aborts_the_download_instead_of_streaming_a_lie() {
         .unwrap()
         .parse()
         .unwrap();
+    let (bytes, errored) = drain(response).await;
+    (promised, bytes, errored)
+}
+
+/// The plan-vs-stream guard at the heart of `generated` —
+/// `planned.size != entry.size || planned.crc32 != entry.crc32`. The
+/// **producer** half of the asymmetry it relies on is pinned in `taiyaku-read`
+/// (`for_each_member_page_reports_the_real_size_while_member_page_entries_keeps_the_declared_lie`);
+/// this is the **consumer** half, proven at the route with the same
+/// technique that helper uses: an archive whose central directory declares
+/// one size while its real, readable bytes are a different, smaller one.
+#[tokio::test]
+async fn a_size_lying_archive_aborts_the_download_instead_of_streaming_a_lie() {
+    let root = crate::test_support::Fixture::new("download-lying-size");
+    let (promised, bytes, errored) = download_lying_edition(&root, 0x7FFF_FFF0).await;
 
     // Both members hold exactly one page each, so the page *count* the plan
     // named and the count the stream produced agree — the page-count guard,
@@ -987,12 +1000,27 @@ async fn a_size_lying_archive_aborts_the_download_instead_of_streaming_a_lie() {
     // `Ok(())`, having streamed every real page in full alongside a local
     // header that states a size those bytes do not have. `errored` is the one
     // signal that only the guard produces.
-    let (bytes, errored) = drain(response).await;
     assert!(
         errored,
         "a size-lying archive must abort the stream with an error rather \
          than silently finish; got {} of {promised} promised bytes with no \
          error",
+        bytes.len()
+    );
+}
+
+/// The other direction of the lie: a page holding more than its entry
+/// declares has to abort the stream, not end it on a page cut to the declared
+/// length, whether `for_each_member_page`'s read error or `generated`'s size
+/// check is what stops it.
+#[tokio::test]
+async fn an_understated_size_aborts_the_download_instead_of_streaming_a_short_page() {
+    let root = crate::test_support::Fixture::new("download-understated-size");
+    let (promised, bytes, errored) = download_lying_edition(&root, 1).await;
+    assert!(
+        errored,
+        "a page holding more than it declares must abort the stream with an \
+         error; got {} of {promised} promised bytes with no error",
         bytes.len()
     );
 }

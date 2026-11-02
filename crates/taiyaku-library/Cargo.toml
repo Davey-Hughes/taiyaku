@@ -62,7 +62,7 @@ sha2 = "0.11.0"
 # its own: a direct dependency of this crate's code should be a line in this
 # crate's manifest. `docs/status.md` states this workspace's short dependency
 # list as a fact about the project, so that file has a line for this one.
-zip = "7.2.0"
+zip = "9.1.3"
 taiyaku-core = { path = "../taiyaku-core" }
 taiyaku-read = { path = "../taiyaku-read" }
 

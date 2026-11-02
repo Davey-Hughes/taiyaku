@@ -21,18 +21,6 @@
 # `spike/Cargo.lock` is not checked. `probe` is a tool pointed at the next
 # model candidate, outside the workspace and never shipped; the `tract-onnx` it
 # drives is checked here anyway, as `taiyaku-cli`'s dev-dependency.
-#
-# **Every entry but paste's is one bump.** zip 9 takes zstd `^0.14.2`, and
-# zstd 0.14.3 requires zstd-safe 8.2 and zstd-sys 2.1.2 — the three fixed
-# releases. zip 9's rust-version is 1.88, which the workspace declares. Moving
-# to it should clear every zip and zstd entry below at once.
-#
-# The reachability claims below rest on the source: no `extract` call anywhere
-# in `crates/`; zstd used only through zip, and by zip only as
-# `Decoder::with_buffer` and `stream::write::Encoder`; zstd-safe and zstd-sys
-# built with `std` alone, so none of zstd-safe's `experimental`, `seekable` or
-# `zdict_builder` code is compiled and there is no `zstdmt`; and none of the
-# four in `taiyaku-wasm`'s wasm32 graph.
 
 [graph]
 all-features = true
@@ -45,92 +33,4 @@ ignore = [
     Unmaintained, not vulnerable, and no release will follow: its repository \
     is archived. It is a proc macro, so it runs while rav1e and pulp compile \
     and none of it ships. Revisit when image's codecs move off it.""" },
-
-  # zip 7.2.0. All three are in extracting an archive to a directory.
-  { id = "RUSTSEC-2026-0367", reason = """\
-    Not reachable: SUID and SGID bits are kept by ZipArchive::extract and the \
-    stream extraction API, and taiyaku calls neither; it reads entries by name \
-    and by index. Fixed in zip 9, a major bump. Revisit with the move to \
-    zip 9.""" },
-  { id = "RUSTSEC-2026-0368", reason = """\
-    Not reachable: the escaping symlinks are created by ZipArchive::extract, \
-    which taiyaku never calls; it reads entries by name and by index. Fixed in \
-    zip 9, a major bump. Revisit with the move to zip 9.""" },
-  { id = "RUSTSEC-2026-0369", reason = """\
-    Not reachable: the permissions are applied through symlinks by \
-    ZipStreamReader::extract and ZipArchive::extract, and taiyaku calls neither. \
-    Fixed in zip 9, a major bump. Revisit with the move to zip 9.""" },
-
-  # zstd 0.13.3, via zip 7.2.0 and nothing else.
-  { id = "RUSTSEC-2026-0391", reason = """\
-    Not reachable: the leak is in the with_context constructors, and zip 7.2 \
-    builds a fresh decoder with Decoder::with_buffer and a fresh encoder with \
-    write::Encoder::new. Fixed in zstd 0.14.3, which zip 7's ^0.13.3 cannot \
-    take. Revisit with the move to zip 9.""" },
-
-  # zstd-safe 7.2.4, via zstd 0.13.3. Each of its advisories here is fixed in
-  # 8.2.0, which needs zstd 0.14, which zip 7's ^0.13.3 cannot take.
-  { id = "RUSTSEC-2026-0398", reason = """\
-    Not reachable: Seekable::decompress exists only with zstd-safe's seekable \
-    feature, which is off here (std is the only one on). Fixed in zstd-safe \
-    8.2.0, which needs zstd 0.14. Revisit with the move to zip 9.""" },
-  { id = "RUSTSEC-2026-0403", reason = """\
-    Not reachable on two counts: it needs legacy-frame support, which zip turns \
-    off by building zstd with default-features = false, and it is in \
-    stream::write::Decoder, while zip decompresses through the read-side \
-    Decoder the advisory names as unaffected. Fixed in zstd-safe 8.2.0, which \
-    needs zstd 0.14. Revisit with the move to zip 9.""" },
-
-  # The unsound zstd-safe 7.2.4 advisories, which only `unsound = "all"` reports.
-  { id = "RUSTSEC-2026-0395", reason = """\
-    Not reachable: CParameter::StableInBuffer exists only with zstd-safe's \
-    experimental feature, which is off (std is the only one on). Fixed in \
-    zstd-safe 8.2.0, which needs zstd 0.14 and so zip 9. Revisit with the move \
-    to zip 9.""" },
-  { id = "RUSTSEC-2026-0396", reason = """\
-    Not reachable: Seekable is in zstd-safe's seekable module, compiled only \
-    with the seekable feature, which is off. Fixed in zstd-safe 8.2.0, which \
-    needs zstd 0.14 and so zip 9. Revisit with the move to zip 9.""" },
-  { id = "RUSTSEC-2026-0397", reason = """\
-    Not reachable: nothing calls OutBuffer::around_pos — not zstd 0.13.3, not \
-    zip 7.2, and taiyaku uses zstd only through zip. Fixed in zstd-safe 8.2.0, \
-    which needs zstd 0.14 and so zip 9. Revisit with the move to zip 9.""" },
-  { id = "RUSTSEC-2026-0399", reason = """\
-    Not reachable: init_using_cdict and init_using_ddict exist only with the \
-    experimental feature, which is off. Fixed in zstd-safe 8.2.0, which needs \
-    zstd 0.14 and so zip 9. Revisit with the move to zip 9.""" },
-  { id = "RUSTSEC-2026-0400", reason = """\
-    Not reachable: it needs one context used for both a stream and a one-shot \
-    call, and zip only streams, through a fresh Decoder::with_buffer or \
-    write::Encoder per entry. Fixed in zstd-safe 8.2.0, which needs zstd 0.14 \
-    and so zip 9. Revisit with the move to zip 9.""" },
-  { id = "RUSTSEC-2026-0401", reason = """\
-    Not reachable: train_from_buffer is compiled only with the zdict_builder \
-    feature, which is off, and nothing here trains a dictionary. Fixed in \
-    zstd-safe 8.2.0, which needs zstd 0.14 and so zip 9. Revisit with the move \
-    to zip 9.""" },
-  { id = "RUSTSEC-2026-0402", reason = """\
-    Not reachable: CCtx::try_clone exists only with the experimental feature, \
-    which is off, and the overflow also needs a multithreaded context. Fixed in \
-    zstd-safe 8.2.0, which needs zstd 0.14 and so zip 9. Revisit with the move \
-    to zip 9.""" },
-  { id = "RUSTSEC-2026-0404", reason = """\
-    Not reachable: DCtx::try_clone exists only with the experimental feature, \
-    which is off. Fixed in zstd-safe 8.2.0, which needs zstd 0.14 and so zip 9. \
-    Revisit with the move to zip 9.""" },
-  { id = "RUSTSEC-2026-0405", reason = """\
-    Not reachable: only ZSTD_seekable_compressStream skips the position check, \
-    and the seekable feature is off. Fixed in zstd-safe 8.2.0, which needs zstd \
-    0.14 and so zip 9. Revisit with the move to zip 9.""" },
-  { id = "RUSTSEC-2026-0406", reason = """\
-    Not reachable: it needs a multithreaded frame, and zip never sets NbWorkers \
-    and zstd-sys is built without zstdmt. Fixed in zstd-safe 8.2.0, which needs \
-    zstd 0.14 and so zip 9. Revisit with the move to zip 9.""" },
-
-  # zstd-sys 2.0.16+zstd.1.5.7, via zstd-safe 7.2.4.
-  { id = "RUSTSEC-2026-0410", reason = """\
-    Not reachable: the broken allocator shim is compiled only for wasm32, and \
-    zstd-sys is not in taiyaku-wasm's wasm32 graph; zip is used by the native \
-    crates alone. Fixed in zstd-sys 2.1.2, which needs zstd 0.14. Revisit with \
-    the move to zip 9.""" },
 ]

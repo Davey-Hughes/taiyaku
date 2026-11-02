@@ -242,8 +242,9 @@ fn zip_flavour(path: &Path) -> Format {
     }
     let opf_names: Vec<String> = zip
         .file_names()
+        .filter_map(Result::ok)
         .filter(|name| name.ends_with(".opf"))
-        .map(ToString::to_string)
+        .map(std::borrow::Cow::into_owned)
         .collect();
     for name in opf_names {
         let mut body = String::new();

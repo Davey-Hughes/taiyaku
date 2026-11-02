@@ -532,11 +532,14 @@ async fn a_real_multi_member_edition_downloads_as_a_readable_cbz() {
     let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).expect("a readable zip");
     // Every page, plus the generated metadata document.
     assert_eq!(archive.len() as u32, pages + 1);
-    assert_eq!(archive.by_index(0).unwrap().name(), "ComicInfo.xml");
+    assert_eq!(
+        archive.by_index(0).unwrap().name().unwrap(),
+        "ComicInfo.xml"
+    );
     // Names sort into reading order, which is the whole point of
     // renumbering them — `docs/sidecar.md` rule 1.
     let names: Vec<String> = (1..archive.len())
-        .map(|i| archive.by_index(i).unwrap().name().to_string())
+        .map(|i| archive.by_index(i).unwrap().name().unwrap().into_owned())
         .collect();
     let mut sorted = names.clone();
     sorted.sort();

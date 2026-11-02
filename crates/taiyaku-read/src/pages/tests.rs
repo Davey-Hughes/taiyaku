@@ -232,6 +232,87 @@ fn nested_pages_sort_on_the_whole_path_not_the_basename() {
     );
 }
 
+/// Archive page order is the natural order of the decoded names, so a name
+/// has to come back as the one the packer wrote. A valid UTF-8 name whose
+/// entry leaves the UTF-8 flag clear is still that name; read through
+/// codepage 437 it would sort as mojibake.
+#[test]
+fn a_utf8_page_name_without_the_utf8_flag_lists_under_its_real_name() {
+    let dir = TempDir::new("unflagged");
+    let path = cbz(&dir, "unflagged.cbz", &["カラー版.jpg"]);
+    clear_utf8_flag(&path);
+
+    let pages = read_member(&path).unwrap();
+    let names: Vec<&str> = pages.iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(names, ["カラー版.jpg"]);
+}
+
+/// A page whose name is not UTF-8 still decodes, through codepage 437. If
+/// decoding could fail, the page would drop out of the sequence and every
+/// page after it would move to the index before.
+#[test]
+fn a_codepage_437_page_name_lists_in_its_sort_position() {
+    use std::io::Write as _;
+    const CP437_NAME: &[u8] = b"002 \x82t\x82.jpg";
+    const PLACEHOLDER: &str = "002 _t_.jpg";
+    let dir = TempDir::new("cp437");
+    let path = dir.join("cp437.cbz");
+    let mut zip = zip::ZipWriter::new(File::create(&path).unwrap());
+    for (name, bytes) in [
+        ("001.jpg", b"one"),
+        (PLACEHOLDER, b"two"),
+        ("003.jpg", b"tri"),
+    ] {
+        zip.start_file(name, zip::write::SimpleFileOptions::default())
+            .unwrap();
+        zip.write_all(bytes).unwrap();
+    }
+    zip.finish().unwrap();
+    let mut raw = std::fs::read(&path).unwrap();
+    let sites: Vec<usize> = raw
+        .windows(PLACEHOLDER.len())
+        .enumerate()
+        .filter(|(_, window)| *window == PLACEHOLDER.as_bytes())
+        .map(|(at, _)| at)
+        .collect();
+    assert_eq!(sites.len(), 2, "the local header and the central directory");
+    for at in sites {
+        raw[at..at + CP437_NAME.len()].copy_from_slice(CP437_NAME);
+    }
+    std::fs::write(&path, &raw).unwrap();
+
+    let pages = read_member(&path).unwrap();
+    let names: Vec<&str> = pages.iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(names, ["001.jpg", "002 été.jpg", "003.jpg"]);
+    assert_eq!(
+        pages[1].bytes, b"two",
+        "the decoded name reads back its own entry"
+    );
+}
+
+/// Clear the UTF-8 flag, general purpose bit 11, in a one-entry archive's
+/// local header and central directory header. `ZipWriter` sets it for every
+/// non-ASCII name and has no option to leave it clear. The flag word sits at
+/// offset 6 of the local header (APPNOTE.TXT §4.3.7) and offset 8 of the
+/// central directory header (§4.3.12).
+fn clear_utf8_flag(path: &Path) {
+    const UTF8: u16 = 1 << 11;
+    let mut raw = std::fs::read(path).unwrap();
+    for (signature, offset) in [([0x50, 0x4B, 0x03, 0x04], 6), ([0x50, 0x4B, 0x01, 0x02], 8)] {
+        let field = raw
+            .windows(4)
+            .position(|w| w == signature)
+            .expect("the header")
+            + offset;
+        let flags = u16::from_le_bytes([raw[field], raw[field + 1]]);
+        // Without this the patch could be a no-op and the test would prove
+        // nothing about an unflagged name.
+        assert_ne!(flags & UTF8, 0, "the writer set the flag this clears");
+        raw[field..field + 2].copy_from_slice(&(flags & !UTF8).to_le_bytes());
+    }
+    std::fs::write(path, &raw).unwrap();
+}
+
 /// What `serve` does on every page request. Reading the whole edition to
 /// answer "give me page 47" is hundreds of megabytes for one JPEG, so the
 /// index has to be addressable directly — and it has to land on the same
@@ -394,8 +475,12 @@ fn a_directory_and_an_archive_of_the_same_pages_size_identically() {
     assert_eq!(from_dir, vec![6, 6, 7], "p1.jpg, p2.jpg, p10.jpg by length");
 }
 
+/// Same declared size as the probe docs/notes.md records: ~2 GiB for an
+/// entry whose real content is a handful of bytes.
+const OVERSTATED: u32 = 0x7FFF_FFF0;
+
 /// Build a cbz and patch its first entry's central-directory
-/// uncompressed-size field to an outrageous lie — the same thing a
+/// uncompressed-size field to `declared`, a lie — the same thing a
 /// hostile or corrupt `.cbz` would carry — rather than reimplementing
 /// the read path against a mock. Shared by both capacity-ceiling tests
 /// below, so `read_archive`'s and `member_page`'s identical clamp are
@@ -405,9 +490,9 @@ fn a_directory_and_an_archive_of_the_same_pages_size_identically() {
 /// the 46-byte fixed header that follows the `PK\x01\x02` signature
 /// (APPNOTE.TXT §4.3.12). Patched, not the local file header, because
 /// `entry.size()` reads the central directory — patching only that one
-/// leaves the entry's actual stored bytes untouched, so a correct read
-/// is still possible despite the lie.
-fn lying_size_cbz(dir: &Path, name: &str, entries: &[&str]) -> PathBuf {
+/// leaves the entry's actual stored bytes untouched, so an overstated
+/// size still reads correctly.
+fn lying_size_cbz(dir: &Path, name: &str, entries: &[&str], declared: u32) -> PathBuf {
     let path = cbz(dir, name, entries);
     let mut raw = std::fs::read(&path).unwrap();
     let central_directory = raw
@@ -415,9 +500,7 @@ fn lying_size_cbz(dir: &Path, name: &str, entries: &[&str]) -> PathBuf {
         .position(|w| w == [0x50, 0x4B, 0x01, 0x02])
         .expect("a central directory file header");
     let size_field = central_directory + 24;
-    // Same declared size as the probe docs/notes.md records: ~2 GiB for
-    // an entry whose real content is a handful of bytes.
-    raw[size_field..size_field + 4].copy_from_slice(&0x7FFF_FFF0u32.to_le_bytes());
+    raw[size_field..size_field + 4].copy_from_slice(&declared.to_le_bytes());
     std::fs::write(&path, &raw).unwrap();
     path
 }
@@ -439,7 +522,7 @@ const RESERVATION_CEILING: usize = 64 * 1024 * 1024;
 #[test]
 fn a_declared_size_far_past_reality_does_not_reserve_past_the_ceiling() {
     let dir = TempDir::new("lying-size");
-    let path = lying_size_cbz(&dir, "lying-size.cbz", &["p1.jpg"]);
+    let path = lying_size_cbz(&dir, "lying-size.cbz", &["p1.jpg"], OVERSTATED);
 
     let pages = read_member(&path).unwrap();
     assert_eq!(pages.len(), 1);
@@ -464,7 +547,7 @@ fn a_declared_size_far_past_reality_does_not_reserve_past_the_ceiling() {
 #[test]
 fn a_lying_member_page_does_not_reserve_past_the_ceiling_either() {
     let dir = TempDir::new("lying-size-member-page");
-    let path = lying_size_cbz(&dir, "lying-size-member-page.cbz", &["p1.jpg"]);
+    let path = lying_size_cbz(&dir, "lying-size-member-page.cbz", &["p1.jpg"], OVERSTATED);
 
     let page = member_page(&path, 0).unwrap();
     assert_eq!(
@@ -603,12 +686,11 @@ fn for_each_member_page_stops_at_the_first_refusal() {
 
 /// Pinned so it cannot be "tidied up" back to symmetry:
 /// `for_each_member_page` must report the real byte count `read_to_end`
-/// produced, not the central directory's declared `uncompressed_size` — a
-/// field `zip` never checks against anything (unlike `crc32`, which
-/// `Crc32Reader` validates against the real bytes on every read). A corrupt
-/// or hand-edited archive can misstate its declared size and still read back
-/// cleanly, so reporting the declared size would hand `f` an entry whose
-/// `size` disagreed with the `bytes` beside it.
+/// produced, not the central directory's declared `uncompressed_size`. `zip`
+/// fails a read that runs past that field, but a corrupt or hand-edited
+/// archive can overstate it and still read back cleanly, crc32 and all, so
+/// reporting the declared size would hand `f` an entry whose `size`
+/// disagreed with the `bytes` beside it.
 ///
 /// `member_page_entries` must keep reporting the declared lie on the very
 /// same file: it is the planning function, and reading page data to verify
@@ -618,7 +700,7 @@ fn for_each_member_page_stops_at_the_first_refusal() {
 #[test]
 fn for_each_member_page_reports_the_real_size_while_member_page_entries_keeps_the_declared_lie() {
     let dir = TempDir::new("lying-size-for-each");
-    let path = lying_size_cbz(&dir, "lying-size-for-each.cbz", &["p1.jpg"]);
+    let path = lying_size_cbz(&dir, "lying-size-for-each.cbz", &["p1.jpg"], OVERSTATED);
 
     let mut seen: Vec<PageEntry> = Vec::new();
     for_each_member_page(&path, &mut |entry, _bytes| {
@@ -634,10 +716,32 @@ fn for_each_member_page_reports_the_real_size_while_member_page_entries_keeps_th
         "for_each_member_page must report the real byte count, not the declared lie"
     );
     assert_eq!(
-        planned[0].size, 0x7FFF_FFF0,
+        planned[0].size,
+        u64::from(OVERSTATED),
         "member_page_entries is the planning function and must keep reporting \
          the declared lie, or the plan-vs-stream comparison can never catch one"
     );
+}
+
+/// The other direction of the lie: data that runs past its declared size
+/// fails the read, so the walk returns the error and `f` never receives a
+/// page cut to what the archive claimed.
+#[test]
+fn for_each_member_page_refuses_an_entry_holding_more_than_it_declares() {
+    let dir = TempDir::new("understated-size-for-each");
+    let path = lying_size_cbz(&dir, "understated-size-for-each.cbz", &["p1.jpg"], 1);
+
+    let mut seen: Vec<PageEntry> = Vec::new();
+    let read = for_each_member_page(&path, &mut |entry, _bytes| {
+        seen.push(entry.clone());
+        Ok(())
+    });
+    let error = read.expect_err("an entry holding more than it declares must fail the read");
+    assert!(
+        error.contains("p1.jpg"),
+        "the error names the entry: {error}"
+    );
+    assert!(seen.is_empty(), "no page reaches `f`: {seen:?}");
 }
 
 /// `member_entry` is what `taiyaku-cli::credits` reads `ComicInfo.xml`

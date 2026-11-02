@@ -66,7 +66,11 @@ fn a_real_zip_reader_gets_the_names_order_sizes_and_crcs_back() {
     assert_eq!(archive.len(), payloads.len());
     for (index, (name, expected)) in payloads.iter().enumerate() {
         let mut entry = archive.by_index(index).expect("entry by position");
-        assert_eq!(entry.name(), name, "entry {index} is out of order");
+        assert_eq!(
+            entry.name().unwrap(),
+            name.as_str(),
+            "entry {index} is out of order"
+        );
         assert_eq!(entry.compression(), zip::CompressionMethod::Stored);
         assert_eq!(entry.size(), expected.len() as u64);
         assert_eq!(entry.crc32(), crc32_of(expected));

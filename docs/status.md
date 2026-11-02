@@ -146,7 +146,7 @@ library the store files each work in (Part F3). Spec
 
 ## What is built
 
-Six crates, 2807 tests, plus 4,337 in `web/`'s TypeScript — 1,667 in the `node`
+Six crates, 2812 tests, plus 4,337 in `web/`'s TypeScript — 1,667 in the `node`
 project and 2,670 in the `jsdom` one — and one thousand and thirteen more in a
 **browser** project of its own, no dependencies beyond
 `image`, `zip`, `sha2`, `rayon`, `base64` and `serde`, plus `axum`, `tokio`,
@@ -223,7 +223,7 @@ unmeasured when the browser is absent. That adds `@vitest/browser`,
 `@vitest/browser-playwright` and `playwright` to `web/`'s dev dependencies;
 the runtime list above is unchanged. That list did not grow for L1: zoom is a CSS transform and
 a page of arithmetic, and its corpus experiment fingerprints with `image` and
-`rayon` exactly as `align` already did. Twenty-four of the 2807 are standing checks gated on
+`rayon` exactly as `align` already did. Twenty-four of the 2812 are standing checks gated on
 `TAIYAKU_CORPUS` — seventeen in `crates/taiyaku-cli/src/corpus.rs`, five in
 `crates/taiyaku-serve/src/corpus.rs`, two in
 `crates/taiyaku-library/src/corpus.rs` (this read "nineteen … ten … five"
@@ -1412,7 +1412,7 @@ both are waiting on L2.
 
 ### Open items
 
-Two hundred and thirty-five, each found by a whole-branch review, carried as a deferral,
+Two hundred and thirty-seven, each found by a whole-branch review, carried as a deferral,
 turned up by reading a design against the code, turned up by running a
 command against its own usage text, turned up by reviewing what the fix
 before it left behind, turned up by measuring what a new feature or a fix
@@ -1447,7 +1447,7 @@ faster than the router could commit it, or turned up
 by answering a question an earlier item's notes wrote down and left open, and
 each judged not worth blocking on at the time. They
 are tracked here rather than left in a scratch file so that closing one is a
-visible act rather than a thing someone remembers. **One hundred and forty-three are now closed — O1, O2, O3, O4, O5, O7, O8, O10, O12, O13, O14, O15, O16, O17, O18, O19, O20, O21, O22, O25, O26, O27, O28, O29, O30, O33, O34, O35, O36, O37, O38, O39, O40, O43, O44, O47, O53, O54, O55, O57, O60, O62, O64, O65, O67, O70, O71, O72, O73, O75, O76, O77, O78, O79, O80, O83, O84, O85, O86, O89, O90, O92, O93, O94, O95, O96, O97, O98, O99, O100, O101, O103, O104, O105, O106, O107, O108, O110, O111, O112, O113, O114, O115, O116, O117, O119, O120, O121, O133, O134, O135, O137, O138, O140, O145, O146, O148, O149, O150, O151, O153, O154, O155, O156, O157, O158, O159, O160, O161, O163, O164, O165, O166, O173, O174, O175, O176, O177, O178, O179, O180, O182, O183, O192, O193, O195, O196, O197, O198, O199, O205, O206, O207, O208, O210, O216, O218, O219, O220, O221, O223, O224 and O228 — leaving ninety-two.** *(This sentence carried **two** errors before ⑤c rebuilt it from the table on 2026-09-25: it omitted **O151**, closed on 2026-09-24, and "leaving fifty-seven" stood against sixty-two open rows. It is generated from the table now rather than edited, which is the only reason the list and the word cannot disagree again.* **A larger warning sits in how this note first read.** It claimed six errors — the word disagreeing with its own list, O34 and O39 listed twice each, and O31 named while its row read `[ ]`. None of those four existed. The check that found them anchored on the string `are now closed`, which first matches a sentence about mutation survivors a hundred and fifty lines earlier, and then read everything from there to the next `— leaving` — so it counted O-numbers out of hundreds of lines of unrelated prose and reported them as this list's. The rebuilt sentence was right and the story about why was invented, which is worse than the drift it was describing: a wrong count invites a recount, and a wrong history is believed. Caught by ⑤c's pre-merge claim check, which re-derived it from `git show` rather than from this paragraph.)* *(It read "leaving fifty" against
+visible act rather than a thing someone remembers. **One hundred and forty-four are now closed — O1, O2, O3, O4, O5, O7, O8, O10, O12, O13, O14, O15, O16, O17, O18, O19, O20, O21, O22, O25, O26, O27, O28, O29, O30, O33, O34, O35, O36, O37, O38, O39, O40, O43, O44, O47, O53, O54, O55, O57, O60, O62, O64, O65, O67, O70, O71, O72, O73, O75, O76, O77, O78, O79, O80, O83, O84, O85, O86, O89, O90, O92, O93, O94, O95, O96, O97, O98, O99, O100, O101, O103, O104, O105, O106, O107, O108, O110, O111, O112, O113, O114, O115, O116, O117, O119, O120, O121, O133, O134, O135, O137, O138, O140, O145, O146, O148, O149, O150, O151, O153, O154, O155, O156, O157, O158, O159, O160, O161, O163, O164, O165, O166, O173, O174, O175, O176, O177, O178, O179, O180, O182, O183, O192, O193, O195, O196, O197, O198, O199, O205, O206, O207, O208, O210, O216, O218, O219, O220, O221, O223, O224, O228 and O237 — leaving ninety-three.** *(This sentence carried **two** errors before ⑤c rebuilt it from the table on 2026-09-25: it omitted **O151**, closed on 2026-09-24, and "leaving fifty-seven" stood against sixty-two open rows. It is generated from the table now rather than edited, which is the only reason the list and the word cannot disagree again.* **A larger warning sits in how this note first read.** It claimed six errors — the word disagreeing with its own list, O34 and O39 listed twice each, and O31 named while its row read `[ ]`. None of those four existed. The check that found them anchored on the string `are now closed`, which first matches a sentence about mutation survivors a hundred and fifty lines earlier, and then read everything from there to the next `— leaving` — so it counted O-numbers out of hundreds of lines of unrelated prose and reported them as this list's. The rebuilt sentence was right and the story about why was invented, which is worse than the drift it was describing: a wrong count invites a recount, and a wrong history is believed. Caught by ⑤c's pre-merge claim check, which re-derived it from `git show` rather than from this paragraph.)* *(It read "leaving fifty" against
 forty-nine open rows from the moment O97 closed: the count of closed items
 moved and the count of open ones did not, which is the drift the sweep at the
 head of this section exists to catch and did not run. Corrected here. **It
@@ -1810,6 +1810,8 @@ each is in the detail below; the table is what a reader scans.
 | O233 | [ ] | **The refusal of `export --in-place --user` says the export would delete documents, and it would not.** The message says the export "would write one reader's notes and position over another's own files, and delete the documents they have no state for". The first half holds. The second does not: before `export::work` writes over a file or removes a stale one in place it asks `migrate::absorbed_for`, which answers `mine \|\| !theirs` for notes and progress, so a file another reader holds state for, and the named reader does not, is kept. The refusal is right; its reason is wrong. **Found by the comments pass's review of a test comment that copied the message, 2026-11-01.** The fix is the message, in its own PR | `export` in `taiyaku-cli`'s `library.rs`; `absorbed_for` in `taiyaku-library`'s `migrate.rs` | the comments pass's review of a test comment, 2026-11-01 |
 | O234 | [ ] | **CI's "Coverage floor, per file" step does not run when the aggregate step above it fails, so nothing names the file.** The Rust job's `Coverage floor, per file` step in `.forgejo/workflows/ci.yml` has no `if:`, so under the default `success()` condition it is skipped whenever the step above it, the `cargo llvm-cov nextest ... --fail-under-lines 93` aggregate, fails. Its comment called it the step that says something when the aggregate fires, by printing which file fell below its floor; when the aggregate fails it does not run, and nothing names the file. `scripts/check-all.sh` runs the same pair under `set -euo pipefail`, so the per-file command is not reached when the aggregate command fails. The web job's step of the same name has no `if:` either, after `pnpm -C web run test:coverage`. **Found by the comments pass reading that step's comment, 2026-11-01; verified by reading, not run.** The comments pass cut that claim from the comment, which now points here. The fix runs the per-file step after an aggregate failure, in CI and in `check-all.sh`, with a check of the red path, in its own PR | the `Coverage floor, per file` steps of the `test` and `web` jobs in `.forgejo/workflows/ci.yml`; the Rust per-file command in `scripts/check-all.sh` | reading the step's comment during the comments pass, 2026-11-01 |
 | O235 | [ ] | **The Rust coverage floor's `minFiles` is set from a count the report has outgrown.** In `scripts/coverage-floor.mjs` the `cargo llvm-cov json export` format has `minFiles: 40`, and its comment said it was set from 53 files measured across six crates, thirteen of margin. `docs/ci.md`'s table of files measured against `minFiles` gives the Rust report 82 files against 40, and this document's coverage-gates bullet says "40 for Rust (82)". So the check fails only when the report loses 43 or more files. The web format's `minFiles` drifted the same way and was re-derived (O98). **Found by the comments pass checking the comment against BASE, 2026-11-02; the figures are read from those two documents, not measured.** The comments pass cut the comment's false "53 files … thirteen of margin" lead and its "It trips when a crate of fourteen files or more leaves the report" line. The fix re-derives the Rust `minFiles` from today's count, as O98 did for the web one, in its own PR | the `cargo llvm-cov json export` format in `scripts/coverage-floor.mjs` | the comments pass checking a comment against BASE, 2026-11-02 |
+| O236 | [ ] | **Code strings the comments pass could not edit say things the code contradicts.** The pass changed comments only, so its PR bodies listed the strings it left. Checked against the code: two refusal messages give a false reason for refusing an empty password (`session.rs`'s `claim`, and "an empty password would lock the account rather than open it" in `credential::hash_with_salt`, `session.rs`'s `change_password` and `user.rs`'s `accept`); three test assertion messages, one test name and `merge_spoke`'s `#[expect]` reason describe what their code does not do; `zoom.test.ts`'s `reserved` set leaves out `A` and `L`; and `004_auth.sql` says 004 has never been merged. The fix edits the strings, the tests that assert them and the `reserved` set; `004_auth.sql` stays by the append-never-edit rule. **Found by the comments pass checking the code strings it could not edit against the code, 2026-11-02.** | `session.rs`'s `claim` and `change_password`; `credential::hash_with_salt`; `user.rs`'s `accept`; `an_api_key_authenticates_without_reaching_argon2`; the two `patching_a_work_out_of_a_series_*` tests; `a_symlink_cycle_errors_naming_the_depth_instead_of_overflowing`; `Sidecar::merge_spoke`'s `#[expect]`; `reserved` in `web/tests/modules/zoom.test.ts`; `004_auth.sql`'s `CREATE TABLE user_new` | the comments pass checking the strings it could not edit, 2026-11-02 |
+| O237 | [x] | **Closed 2026-11-02, the day it was opened: zip 7.2.0 carried RUSTSEC-2026-0429, and the advisory check failed on it.** The advisory is in `ZipArchive::extract`, which nothing here calls, and it is fixed only from zip 9.0.0. The workspace now takes zip 9.1.3, which lets zstd move to 0.14 too, so every `deny.toml` ignore entry for zip and its zstd stack stopped matching and was deleted; paste's is the one left. Two behaviours changed with no compile error to show them, and each now has a test that failed on 7.2.0: a name that is valid UTF-8 is read as UTF-8 whatever its UTF-8 flag says, and a stamp keeps an entry's raw name bytes and UTF-8 flag instead of re-encoding the name, unless the entry carries a Unicode Path field that 9.1.3 applies. A third, a read that fails once an entry's data passes its declared uncompressed size, needed no code change. | `zip` in the manifests of `taiyaku-read`, `taiyaku-library`, `taiyaku-serve` and `taiyaku-cli`; `zip_flavour`, `page_names_from`, `member_entry` and `stamp::rewrite_one`; `deny.toml`'s `ignore` list; `pages::tests::a_utf8_page_name_without_the_utf8_flag_lists_under_its_real_name`, `stamp::tests::a_rewrite_keeps_a_non_utf8_entry_name_and_its_flag_as_stored`, `pages::tests::a_codepage_437_page_name_lists_in_its_sort_position`, `pages::tests::for_each_member_page_refuses_an_entry_holding_more_than_it_declares`, `download::tests::an_understated_size_aborts_the_download_instead_of_streaming_a_short_page` | the `advisories` workflow's check against `main`'s lockfile, 2026-11-02 |
 
 Sites are named by symbol rather than line, because a line number in a document
 is wrong the first time someone edits the file above it.
@@ -3712,8 +3714,9 @@ written:
   reproduced.** The fix is to read the header through the same loop, in its
   own PR.
 
-**O232 to O235 were found by the comments pass on 2026-11-01 and 2026-11-02**, by reading
-the code a comment described, and their bullets follow.
+**O232 to O236 were found by the comments pass on 2026-11-01 and 2026-11-02**, by reading
+the code a comment described or, for O236, the code strings it could not edit, and their
+bullets follow.
 
 - **O232 — `align --no-split-spreads` prints no run table and no figure
   line. Open.** On that path `align` solves the two editions, prints their
@@ -3767,6 +3770,110 @@ the code a comment described, and their bullets follow.
   lead and its "It trips when a crate of fourteen files or more leaves the
   report" line. The fix re-derives the Rust `minFiles` from today's count, as
   O98 did for the web one, in its own PR.
+- **O236 — Code strings the comments pass could not edit say things the code
+  contradicts. Open.** The pass changed comments only, so assertion messages,
+  test names, `#[expect]` reasons, error strings and SQL text stayed, and its PR
+  bodies listed the ones it saw. **Each was checked against the code at
+  7f9a4197 on 2026-11-02; that check also found the second refusal message
+  below, which no PR body listed.**
+  - Refusal messages. `session.rs`'s `claim` answers an empty password with
+    "an empty password would leave this server's only administrator with no
+    password at all", but it refuses one before it calls `account::promote`,
+    and `promote` would refuse it too, through `credential::hash_password`.
+    The message "an empty password would lock the account rather than open
+    it", returned by `credential::hash_with_salt`, `session.rs`'s `change_password` and
+    `user.rs`'s `accept`, and asserted in `session/tests.rs` and twice in
+    `web/tests/Account.test.tsx`, gives the opposite of the reason
+    `hash_password`'s doc and the comment above `accept`'s copy give: an empty
+    password would hash to a string a login can present, so anyone who pressed
+    Enter could sign in.
+  - Test strings. `auth/tests.rs`'s
+    `an_api_key_authenticates_without_reaching_argon2` says the key must
+    authenticate "against an account whose password is locked"; the test sets
+    a hash nothing verifies, not `LOCKED`, and `account::by_api_key` refuses a
+    locked account. `metadata/tests.rs`'s
+    `patching_a_work_out_of_a_series_saves_the_sibling_left_behind` and
+    `patching_a_work_out_of_a_series_reaches_its_real_sibling_not_series_one`
+    call `root_a` read-only; both plant a file at `root_a/.taiyaku`, the
+    technique the same file chooses over a read-only root because CI runs as
+    root. `inventory/tests.rs`'s
+    `a_symlink_cycle_errors_naming_the_depth_instead_of_overflowing` asserts
+    the named error the walk does give, but "instead of overflowing" agrees
+    with the first two paragraphs of `MAX_DEPTH`'s doc and not its third, which
+    says Linux's `ELOOP` cap makes a walk without the ceiling return `Ok` with
+    the cycle cut short. `Sidecar::merge_spoke`'s `#[expect]` reason counts
+    "the credits-drop check" among seven guards that "each refuse" a way the
+    merge could corrupt the document; that branch refuses nothing, it returns
+    `Merged::DroppedCredits`.
+  - A test that checks less than its name. `web/tests/modules/zoom.test.ts`'s
+    "claims nothing intentOf answers before modules" leaves `A` and `L` out of
+    its `reserved` set, though `READER_KEYS` answers both before any module.
+    Zoom claims `=`, `-` and `0`, so nothing slips through today.
+  - Stays. A comment inside `004_auth.sql`'s `CREATE TABLE user_new` says 004
+    has never been merged; it has. SQLite keeps that text in `sqlite_master`,
+    and `schema.rs`'s "append, never edit" rule covers a shipped migration's
+    text, so it stays unless that rule is set aside.
+
+  The fix edits the strings and the tests that assert them, settles which of
+  `MAX_DEPTH`'s paragraphs is right by walking a cycle without the ceiling
+  before renaming the test, and adds `A` and `L` to `reserved`, in its own PR.
+
+**O237 was opened and closed on 2026-11-02**, when the advisory check failed on
+`main`'s lockfile, and its bullet follows.
+
+- **O237 — zip 7.2.0 carried RUSTSEC-2026-0429, and the advisory check failed
+  on it. Closed.** The advisory is that `ZipArchive::extract` aborts the
+  process on a symlink entry with a large declared size. Nothing in `crates/`
+  calls `extract`, but the fix is only in zip 9.0.0 and later, so the
+  workspace now takes zip 9.1.3. That lets zstd move to 0.14 as well, and
+  every `ignore` entry for zip, zstd, zstd-safe and zstd-sys stopped matching;
+  they were deleted with the `deny.toml` header paragraphs that argued for
+  them, and paste's entry is the only one left. `cargo deny check advisories`,
+  run as the workflow runs it, passes.
+
+  The compile breaks were `ZipFile::name` and `ZipArchive::file_names`, which
+  now return a `Result`. In 9.1.3 it cannot be an error, because a name that
+  is not UTF-8 is mapped through codepage 437, so `page_names_from`,
+  `member_entry` and `zip_flavour` skip such an entry as they already skip one
+  they cannot read, and `stamp::rewrite_one` maps it into its own error.
+
+  Three behaviours changed with no compile error to show them:
+  - **The UTF-8 flag no longer decides how a name is decoded.** A name that is
+    valid UTF-8 is read as UTF-8, and any other bytes through codepage 437,
+    whatever the flag says, so a page stored as UTF-8 with the flag clear now
+    lists under its real name.
+    `pages::tests::a_utf8_page_name_without_the_utf8_flag_lists_under_its_real_name`
+    failed on 7.2.0 and passes, and
+    `pages::tests::a_codepage_437_page_name_lists_in_its_sort_position` pins
+    that a name that is not UTF-8 still lists, in its place. The doc comments
+    of `read_edition`, `read_members_in_order`, `member_page_names`,
+    `member_page`, `member_pages` and `member_page_sizes` described the old
+    decoding and now describe this one.
+  - **A stamp keeps a copied entry's raw name bytes and UTF-8 flag**, unless
+    the entry carries an Info-ZIP Unicode Path field that 9.1.3 applies (the
+    notes section named below says when). 7.2.0's `raw_copy_file` re-encoded the
+    name from its decoded string and set the UTF-8 flag, so a stamp rewrote a
+    codepage 437 or Shift-JIS name for good.
+    `stamp::tests::a_rewrite_keeps_a_non_utf8_entry_name_and_its_flag_as_stored`
+    asserts both over the bytes of both headers, failed on 7.2.0 and passes.
+  - **A read fails once an entry's data passes its declared uncompressed
+    size**, with "File is larger than its declared uncompressed size".
+    `read_edition`, `read_members_in_order`, `member_page`,
+    `for_each_member_page` and `member_entry` decompress through that check and
+    can now return it; `zip_flavour` discards it, as it discards every read
+    error; `stamp::rewrite_one` copies compressed bytes and never meets it. No
+    code changed for it.
+    `pages::tests::for_each_member_page_refuses_an_entry_holding_more_than_it_declares`
+    and
+    `download::tests::an_understated_size_aborts_the_download_instead_of_streaming_a_short_page`
+    pin it. An entry that declares more than it holds still reads.
+    `for_each_member_page`'s doc and the plan-vs-stream comment in `generated`
+    said `zip` never checks the declared size, and now say it fails a read
+    that runs past it.
+
+  Two checks on the test library back the first two: every archive listed
+  under both versions, and copies of three stamped in both builds. They are in
+  `docs/notes.md`, "O237: zip 9.1.3 against the test library (2026-11-02)".
 
 ## What comes next
 
@@ -4289,7 +4396,7 @@ pointer's coordinates, the image's rect, a real keystroke. See `notes.md`,
 "M5c, reported from a real browser" and "The annotation overlay was placed on
 the page area, not on the page".
 
-What remains: the ninety-two open items tabled above — **a large minority of
+What remains: the ninety-three open items tabled above — **a large minority of
 them opened by a review** rather than by building something, which is the
 fact worth carrying. **The count that used to stand here is deleted rather
 than corrected**, after three passes over one afternoon produced twenty-five,

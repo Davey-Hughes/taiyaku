@@ -90,11 +90,11 @@ pub fn is_page_name(name: &str) -> bool {
 /// a special case. Members are ordered naturally rather than as given, because a
 /// shell glob sorts `c005.5` ahead of `c005`.
 ///
-/// An entry name that is not valid UTF-8 does not fail this: `zip`'s decode is
-/// total, not fallible — invalid bytes come back as `U+FFFD`, or are mapped
-/// through codepage 437 if the UTF-8 flag is unset — so a mis-encoded entry is
-/// garbled, never refused, and still takes its place in the natural-order page
-/// sequence.
+/// An entry name that is not valid UTF-8 does not fail this: `zip`'s decode
+/// cannot fail — a name that is valid UTF-8 is read as UTF-8 whatever the UTF-8
+/// flag says, and any other bytes are mapped through codepage 437 — so a
+/// mis-encoded entry is garbled, never refused, and still takes its place in
+/// the natural-order page sequence.
 ///
 /// # Errors
 ///
@@ -121,11 +121,11 @@ pub fn read_edition(members: &[PathBuf]) -> Result<Vec<Page>, String> {
 /// name can reorder the volume. `read_edition` sorts because its caller hands
 /// it shell globs; a caller holding a sidecar must not.
 ///
-/// An entry name that is not valid UTF-8 does not fail this: `zip`'s decode is
-/// total, not fallible — invalid bytes come back as `U+FFFD`, or are mapped
-/// through codepage 437 if the UTF-8 flag is unset — so a mis-encoded entry is
-/// garbled, never refused, and still takes its place in that member's own
-/// natural-order page sequence.
+/// An entry name that is not valid UTF-8 does not fail this: `zip`'s decode
+/// cannot fail — a name that is valid UTF-8 is read as UTF-8 whatever the UTF-8
+/// flag says, and any other bytes are mapped through codepage 437 — so a
+/// mis-encoded entry is garbled, never refused, and still takes its place in
+/// that member's own natural-order page sequence.
 ///
 /// # Errors
 ///
@@ -284,7 +284,7 @@ fn page_names_from(zip: &mut zip::ZipArchive<File>) -> Vec<String> {
             if !entry.is_file() {
                 return None;
             }
-            let name = entry.name().to_string();
+            let name = entry.name().ok()?.into_owned();
             // Resource forks and dotfiles are not pages.
             if name.starts_with("__MACOSX") || name.rsplit('/').next()?.starts_with('.') {
                 return None;
@@ -385,11 +385,11 @@ fn page_count(n: usize) -> u32 {
 /// the listing. That is what makes serving one page of a 195-page volume cost
 /// one page rather than the volume.
 ///
-/// An entry name that is not valid UTF-8 does not fail this: `zip`'s decode is
-/// total, not fallible — invalid bytes come back as `U+FFFD`, or are mapped
-/// through codepage 437 if the UTF-8 flag is unset — so a mis-encoded entry is
-/// garbled, never refused, and the garbled name is what comes back in this
-/// listing.
+/// An entry name that is not valid UTF-8 does not fail this: `zip`'s decode
+/// cannot fail — a name that is valid UTF-8 is read as UTF-8 whatever the UTF-8
+/// flag says, and any other bytes are mapped through codepage 437 — so a
+/// mis-encoded entry is garbled, never refused, and the garbled name is what
+/// comes back in this listing.
 ///
 /// # Errors
 ///
@@ -421,10 +421,10 @@ pub fn member_page_names(path: &Path) -> Result<Vec<String>, String> {
 /// for the listing again to find out would read the archive twice.
 ///
 /// An entry name that is not valid UTF-8 does not fail this either: `zip`'s
-/// decode is total, not fallible — invalid bytes come back as `U+FFFD`, or
-/// are mapped through codepage 437 if the UTF-8 flag is unset — so it comes
-/// back garbled rather than refused, at whatever `index` its position in the
-/// natural-order sort gives it.
+/// decode cannot fail — a name that is valid UTF-8 is read as UTF-8 whatever
+/// the UTF-8 flag says, and any other bytes are mapped through codepage 437 —
+/// so it comes back garbled rather than refused, at whatever `index` its
+/// position in the natural-order sort gives it.
 ///
 /// # Errors
 ///
@@ -508,11 +508,11 @@ pub fn member_digest(path: &Path) -> Result<String, String> {
 
 /// How many pages a member holds, without reading any of them.
 ///
-/// An entry name that is not valid UTF-8 does not fail this: `zip`'s decode is
-/// total, not fallible — invalid bytes come back as `U+FFFD`, or are mapped
-/// through codepage 437 if the UTF-8 flag is unset — so a mis-encoded entry is
-/// garbled, never refused, and if its extension still matches, it still
-/// counts toward the total.
+/// An entry name that is not valid UTF-8 does not fail this: `zip`'s decode
+/// cannot fail — a name that is valid UTF-8 is read as UTF-8 whatever the UTF-8
+/// flag says, and any other bytes are mapped through codepage 437 — so a
+/// mis-encoded entry is garbled, never refused, and if its extension still
+/// matches, it still counts toward the total.
 ///
 /// # Errors
 ///
@@ -548,11 +548,11 @@ pub fn member_pages(path: &Path) -> Result<u32, String> {
 /// A listing, not a read — the property that lets an inventory run over a NAS
 /// and decide what is worth copying.
 ///
-/// An entry name that is not valid UTF-8 does not fail this: `zip`'s decode is
-/// total, not fallible — invalid bytes come back as `U+FFFD`, or are mapped
-/// through codepage 437 if the UTF-8 flag is unset — so a mis-encoded entry is
-/// garbled, never refused, and its size is still listed at the position the
-/// garbled name sorts to.
+/// An entry name that is not valid UTF-8 does not fail this: `zip`'s decode
+/// cannot fail — a name that is valid UTF-8 is read as UTF-8 whatever the UTF-8
+/// flag says, and any other bytes are mapped through codepage 437 — so a
+/// mis-encoded entry is garbled, never refused, and its size is still listed at
+/// the position the garbled name sorts to.
 ///
 /// # Errors
 ///
@@ -696,16 +696,16 @@ type PageVisitor<'a> = dyn FnMut(&PageEntry, &[u8]) -> Result<(), String> + 'a;
 /// every read, so a lying crc32 fails inside `read_to_end` before this
 /// function ever sees the entry. It is true of `size` too only because this
 /// function, for an archive, reports the byte count `read_to_end` actually
-/// produced rather than the central directory's declared `uncompressed_size`
-/// — a field `zip` never checks against anything. `member_page_entries`, by
-/// contrast, reports the declared size, because reading the bytes to verify
-/// it would destroy the property that function exists for. So the two
-/// deliberately disagree on an archive that misstates its own size: a
-/// plan built from `member_page_entries` and a stream read through this
-/// function are then comparable on `size` as well as `crc32`, and an
-/// archive replaced — or corrupted — mid-download is detectable rather than
-/// producing a file whose local header states a length its payload does not
-/// have.
+/// produced rather than the central directory's declared `uncompressed_size`.
+/// `zip` fails a read that runs past that field, but an entry that declares
+/// more than it holds reads back whole with a good crc32. `member_page_entries`
+/// reports the declared size, because reading the bytes to verify it would
+/// destroy the property that function exists for. So the two deliberately
+/// disagree on an archive that overstates its own size: a plan built from
+/// `member_page_entries` and a stream read through this function are then
+/// comparable on `size` as well as `crc32`, and an archive replaced — or
+/// corrupted — mid-download is detectable rather than producing a file whose
+/// local header states a length its payload does not have.
 ///
 /// **`f`'s `Err` stops the walk on the spot** and is returned unchanged. A
 /// client that hung up must not cost the rest of the volume.
@@ -713,7 +713,7 @@ type PageVisitor<'a> = dyn FnMut(&PageEntry, &[u8]) -> Result<(), String> + 'a;
 /// # Errors
 ///
 /// The errors of [`member_page_entries`], plus whatever `f` returns, plus — for
-/// an archive — an entry whose compressed data does not decode.
+/// an archive — an entry that does not decode or runs past its declared size.
 pub fn for_each_member_page(path: &Path, f: &mut PageVisitor<'_>) -> Result<(), String> {
     if path.is_dir() {
         for page in directory_page_paths(path)? {
@@ -800,8 +800,8 @@ pub fn member_entry(path: &Path, name: &str) -> Result<Option<Vec<u8>>, String> 
     let mut zip = open_archive(path)?;
     let matched = (0..zip.len()).find_map(|i| {
         let entry = zip.by_index(i).ok()?;
-        (entry.is_file() && entry.name().eq_ignore_ascii_case(name))
-            .then(|| entry.name().to_string())
+        let entry_name = entry.name().ok()?;
+        (entry.is_file() && entry_name.eq_ignore_ascii_case(name)).then(|| entry_name.into_owned())
     });
     let Some(matched) = matched else {
         return Ok(None);

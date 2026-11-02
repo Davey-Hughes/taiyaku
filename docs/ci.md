@@ -1962,8 +1962,7 @@ run it: it is not one of the four `ci.yml` jobs the script mirrors.
 `deny.toml` gives the command that checks the same graph locally. How to
 accept a finding — an `ignore` entry for one advisory, or the `ADVISORIES_MODE`
 repository variable for all of them for a while — is described once, in the
-workflow's header. Every entry but paste's is zip or its zstd stack, and one
-move to zip 9 should clear them all.
+workflow's header.
 
 `spike/Cargo.lock` is not checked: `probe` never ships, and the `tract-onnx`
 it drives is checked through `taiyaku-cli`'s dev-dependency.

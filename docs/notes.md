@@ -26332,3 +26332,43 @@ text layer, 1856 to 3402 non-space characters on the same four pages. So a
 PDF edition enters taiyaku as page images, and aligning one against an EPUB
 by its text needs that text from somewhere — its own OCR layer where there is
 one, a recognition pass where there is not.
+
+## O237: zip 9.1.3 against the test library (2026-11-02)
+
+Two checks on real material behind O237's bullet, each taken under `main`'s
+zip 7.2.0 and this branch's 9.1.3. Neither wrote to the test library at
+`/home/davey/temp/manga-test`: the first only reads it, and the second stamped
+copies, with the originals' sha256 the same before and after. The scripts and
+their output are in `.superpowers/sdd/zip-9-evidence/`, which is not committed.
+
+**Listing every archive changed one page name.** A throwaway Rust probe, built
+once against each version (`realcheck/scripts/names-probe/`), opened every
+`.cbz` in the test library and printed `ZipArchive::file_names` for each, and
+the two listings were diffed. Every archive opened under both, and no entry
+count moved. The one difference is in Death Note v05: a page whose name is
+UTF-8 stored with the UTF-8 flag clear, "Ch 37 DEATH_NOTE_カラー版_5_…", and
+its `__MACOSX/._` twin. 7.2.0 read both through codepage 437, and 9.1.3 reads
+them as written.
+
+**Stamping kept every page, and only 9.1.3 kept that name.** Two `taiyaku
+serve` builds, `main` and this branch, each served its own copy of Death Note
+v03 and v05 and Gabriel Dropout v12. `drive.py pages` fetched and hashed every
+page of each work by index, `drive.py stamp` fetched each work's
+`stamp-comicinfo` plan and posted it back, `drive.py pages` ran again, and
+`zipraw.py compare` read each original and its stamped copy header by header
+(all in `realcheck/scripts/`). In both builds every page came back at the same
+index with the same bytes, and every entry's compressed data was unchanged.
+7.2.0's stamp rewrote the v05 name and its twin as the UTF-8 of their codepage
+437 reading, with the flag set; 9.1.3's kept the stored bytes and the clear
+flag. Neither copies a header whole (`realcheck/out/compare.txt` lists every
+field that moved), so O237's bullet claims the name and its flag and nothing
+more.
+
+**The Unicode Path exception is read from the source.** 9.1.3's
+`apply_extra_fields` puts an Info-ZIP Unicode Path field's name in place of the
+stored one when the field's CRC matches the stored name and its content is
+UTF-8, and sets the flag, and `raw_copy_file` copies that name and flag. None of the three archives carries the field.
+`realcheck/scripts/upath_scan.py`, reading every archive's central directory,
+found it in volumes of several series in the test library, Hunter × Hunter
+among them, most often naming something other than the stored bytes, so by
+that reading a stamp of those volumes writes the field's name.

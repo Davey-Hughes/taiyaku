@@ -366,7 +366,10 @@ fn rewrite_one(path: &std::path::Path, document: &[u8]) -> Result<String, String
                 let entry = archive
                     .by_index_raw(i)
                     .map_err(|e| format!("{}: {e}", path.display()))?;
-                if entry.name().eq_ignore_ascii_case(DOCUMENT) {
+                let name = entry
+                    .name()
+                    .map_err(|e| format!("{}: {e}", path.display()))?;
+                if name.eq_ignore_ascii_case(DOCUMENT) {
                     continue;
                 }
                 writer
