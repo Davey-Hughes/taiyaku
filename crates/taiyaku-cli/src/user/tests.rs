@@ -270,7 +270,7 @@ fn a_password_is_accepted_only_when_typed_twice_and_not_empty() {
     let empty = accept(String::new(), "").unwrap_err();
     assert!(empty.contains("empty"), "{empty}");
     assert!(
-        empty.contains("lock"),
+        empty.contains("presses Enter"),
         "the refusal should say what an empty password would do: {empty}"
     );
 }

@@ -3531,7 +3531,7 @@ describe('Account’s refusals of Create and Change password', () => {
       'POST /api/keys': () => new Response(NEEDS_A_NAME, { status: 400 }),
       'PUT /api/password': () =>
         new Response(
-          'an empty password would lock the account rather than open it',
+          'an empty password would let anybody who presses Enter sign in',
           { status: 400 },
         ),
       'DELETE /api/keys/7': () => new Response('no such key', { status: 404 }),
@@ -3586,7 +3586,7 @@ describe('Account’s refusals of Create and Change password', () => {
       type(current, 'the old one')
       await submitted(host.querySelector(PASSWORD_FORM))
       expect(refusalIn(host, 'password')).toBe(
-        'an empty password would lock the account rather than open it',
+        'an empty password would let anybody who presses Enter sign in',
       )
     })
 

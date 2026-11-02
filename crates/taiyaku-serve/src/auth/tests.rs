@@ -402,7 +402,7 @@ async fn an_api_key_authenticates_without_reaching_argon2() {
     assert_eq!(
         ok.status(),
         StatusCode::OK,
-        "an API key must authenticate against an account whose password is locked"
+        "an API key must authenticate against an account whose password nothing verifies"
     );
 
     // And a password for the same account is refused, so the success above is

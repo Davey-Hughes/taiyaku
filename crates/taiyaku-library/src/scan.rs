@@ -1892,25 +1892,25 @@ fn forget_unseen(
 /// Recursion ceiling for `measure`, far past any real library root — a volume
 /// split into chapter subdirectories, the deepest nesting `docs/sidecar.md`
 /// records, is two levels — and there purely to turn a symlink cycle into a
-/// named error rather than a stack overflow.
+/// named error rather than an `Ok` with the cycle cut short.
 ///
-/// `path.is_dir()` follows symlinks, so a link back to an ancestor recurses
-/// forever. The precise fix is a cycle guard: canonicalize each directory and
-/// refuse to revisit one already on the path down. That costs a syscall per
-/// directory, which is not worth paying on every scan to guard against
-/// something this rare — a depth limit catches the same failure for free, at
-/// the cost of naming it one call late.
+/// `child_path.is_dir()` follows symlinks, so a link back to an ancestor sends
+/// the walk back down into that ancestor at every level. The precise fix is a
+/// cycle guard: canonicalize each directory and refuse to revisit one already
+/// on the path down. That costs a syscall per directory, not worth paying on
+/// every scan for something this rare — a depth limit is free, but names the
+/// cycle only past `MAX_DEPTH` levels down rather than at its first revisit.
 ///
 /// **Lower than "far above a real tree" alone would suggest.** A
-/// self-referential symlink does not actually recurse forever on this platform:
+/// self-referential symlink does not recurse forever on this platform:
 /// Linux caps symlink resolution at 40 hops per lookup (`ELOOP`), and
 /// `Path::is_dir()` swallows that error and answers `false` rather than
 /// propagating it — so past roughly 40 levels the walk does not crash, it
 /// silently treats the cyclic subtree as childless and returns `Ok`, which is
-/// the "silent truncation" this limit exists to rule out just as much as the
-/// stack overflow. The ceiling has to fire before that happens, not after, so
-/// it sits at 32 — comfortably past any real library root and comfortably short
-/// of where the OS starts lying about `is_dir`.
+/// the "silent truncation" this limit exists to rule out. The ceiling has to
+/// fire before that happens, not after, so it sits at 32 — comfortably past any
+/// real library root and comfortably short of where the OS starts lying about
+/// `is_dir`.
 const MAX_DEPTH: u32 = 32;
 
 /// One entry's facts, gathered before anything is recorded, plus its

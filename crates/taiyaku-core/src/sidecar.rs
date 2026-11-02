@@ -638,15 +638,17 @@ impl Sidecar {
     /// out `name == start`.
     #[expect(
         clippy::too_many_lines,
-        reason = "seven sequential guards (reading order, hub anchor, from-side content match, \
-                  self-pairing, the stored-edge orientation check O13 exists for, the \
-                  spoke-replaced hand-run check C1 exists for, and the credits-drop check) each \
-                  refuse a distinct way this merge could silently corrupt the document, followed \
-                  by the one mutation all of them were clearing the way for. The Panics doc \
-                  comment above ties two indexing operations and one .expect() to the exact \
-                  order these guards run in — moving a guard into a helper would separate its \
-                  refusal from the invariant it establishes for the mutation below, which is \
-                  the thing a reader of this function most needs kept in view."
+        reason = "six sequential guards (reading order, hub anchor, the from-side edition's \
+                  presence and content match, self-pairing, the stored-edge orientation check \
+                  O13 exists for, and the spoke-replaced hand-run check C1 exists for) each \
+                  refuse a distinct way this merge could silently corrupt the document, and a \
+                  seventh check counts the credits a replaced spoke loses so the answer can \
+                  report them; after them comes the one mutation the guards were clearing the \
+                  way for. The Panics doc comment above ties two indexing operations and one \
+                  .expect() to the exact order these guards run in — moving a guard into a \
+                  helper would separate its refusal from the invariant it establishes for the \
+                  mutation below, which is the thing a reader of this function most needs kept \
+                  in view."
     )]
     pub fn merge_spoke(
         &mut self,

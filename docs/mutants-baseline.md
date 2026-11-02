@@ -526,7 +526,7 @@ it mutates only changed code and takes minutes.
 
 ### `crates/taiyaku-core/src/sidecar.rs`
 
-- `crates/taiyaku-core/src/sidecar.rs:1309:46: replace || with && in Sidecar::trust`
+- `crates/taiyaku-core/src/sidecar.rs:1311:46: replace || with && in Sidecar::trust`
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 

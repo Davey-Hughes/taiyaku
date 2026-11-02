@@ -1208,7 +1208,8 @@ async fn patching_a_work_out_of_a_series_saves_the_sibling_left_behind() {
     assert_eq!(
         body["persisted"], false,
         "the work left behind in the old series could not have its document \
-         rewritten (its root is read-only); the fan-out for the series a work \
+         rewritten (a file planted at its root's `.taiyaku` stands where the \
+         document directory must go); the fan-out for the series a work \
          *left* must still reach it and fold that failure into the answer, \
          exactly as the fan-out for the series it joined already does: {body}"
     );
@@ -1283,7 +1284,8 @@ async fn patching_a_work_out_of_a_series_reaches_its_real_sibling_not_series_one
     let body: serde_json::Value = serde_json::from_str(&text).expect("a JSON body");
     assert_eq!(
         body["persisted"], false,
-        "the real sibling left behind (root_a, read-only) must be the one \
+        "the real sibling left behind (root_a, whose `.taiyaku` is a planted \
+         file rather than a directory) must be the one \
          the fan-out reaches; a `series_of_work` reading a constant instead \
          of the row would fan out to the unrelated series' own lone work \
          (writable root) and never touch this one, reporting `persisted: \

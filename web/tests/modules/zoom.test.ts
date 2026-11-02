@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { READER_KEYS } from '../../src/keys'
 import { WHOLE, type Rect } from '../../src/viewport'
 import { registry } from '../../src/modules/registry'
 import {
@@ -35,18 +36,12 @@ describe('zoomModule', () => {
     for (const key of others) expect(mine.has(key)).toBe(false)
   })
 
-  // `intentOf` answers ' ', arrows, Tab, 'c' and 1-9 before it reaches any
-  // module, so a module claiming one of those would declare a binding that
-  // never fires rather than collide loudly.
+  // `intentOf` walks `READER_KEYS` before it reaches any module, so a module
+  // claiming one of its keys would declare a binding that never fires rather
+  // than collide loudly. The set is built from that table so a row added
+  // there is reserved here too.
   it('claims nothing intentOf answers before modules', () => {
-    const reserved = new Set([
-      ' ',
-      'ArrowRight',
-      'ArrowLeft',
-      'Tab',
-      'c',
-      ...'123456789',
-    ])
+    const reserved = new Set(READER_KEYS.flatMap((binding) => binding.keys))
     for (const { key } of zoomModule.keys ?? [])
       expect(reserved.has(key)).toBe(false)
   })

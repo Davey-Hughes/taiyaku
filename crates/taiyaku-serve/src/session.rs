@@ -712,7 +712,7 @@ pub(crate) async fn claim(
         return (
             StatusCode::BAD_REQUEST,
             [(header::CONTENT_TYPE, "application/json")],
-            r#"{"error":"an empty password would leave this server's only administrator with no password at all, and the claim route shuts once one exists"}"#,
+            r#"{"error":"an empty password would let anybody who presses Enter sign in as this server's administrator"}"#,
         )
             .into_response();
     }
@@ -1074,7 +1074,7 @@ pub(crate) async fn change_password(
     if body.next.is_empty() {
         return (
             StatusCode::BAD_REQUEST,
-            "an empty password would lock the account rather than open it",
+            "an empty password would let anybody who presses Enter sign in",
         )
             .into_response();
     }

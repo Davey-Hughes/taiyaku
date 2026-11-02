@@ -260,6 +260,7 @@ fn the_stored_hash_carries_this_modules_parameters() {
 fn an_empty_password_is_refused_where_every_writer_passes_through() {
     let why = hash_password("").expect_err("refuses");
     assert!(why.contains("empty password"), "{why}");
+    assert!(why.contains("presses Enter"), "{why}");
 
     // The property the refusal exists for: without it, this is the hash an
     // account would carry, and it verifies.

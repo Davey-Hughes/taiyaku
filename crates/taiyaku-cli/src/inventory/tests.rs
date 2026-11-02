@@ -151,11 +151,11 @@ fn material_below_the_threshold_is_excluded_and_its_range_recorded() {
 
 /// A symlink pointing back at its own directory, which `path.is_dir()` follows
 /// (`MAX_DEPTH`'s doc says where that ends without the limit). This must come
-/// back as a named error mentioning the depth it gave up at, not a panic and
-/// not a silent truncation.
+/// back as a named error mentioning the depth it gave up at, not a silent
+/// truncation.
 #[test]
 #[cfg(unix)]
-fn a_symlink_cycle_errors_naming_the_depth_instead_of_overflowing() {
+fn a_symlink_cycle_errors_naming_the_depth_instead_of_a_truncated_ok() {
     let root = TempDir::new("inventory-cycle");
     std::os::unix::fs::symlink(&root, root.join("loop")).unwrap();
 

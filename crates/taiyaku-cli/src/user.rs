@@ -161,7 +161,7 @@ fn accept(first: String, second: &str) -> Result<String, String> {
         // password holds, and an empty one hashes to something a login could
         // actually present — so this would create an account that anybody who
         // pressed Enter twice could sign into.
-        return Err("an empty password would lock the account rather than open it".to_string());
+        return Err("an empty password would let anybody who presses Enter sign in".to_string());
     }
     Ok(first)
 }

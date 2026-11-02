@@ -462,7 +462,7 @@ fn hash_with_salt(memories: &KeptMemories, password: &str, salt: &[u8]) -> Resul
     use argon2::password_hash::SaltString;
 
     if password.is_empty() {
-        return Err("an empty password would lock the account rather than open it".to_string());
+        return Err("an empty password would let anybody who presses Enter sign in".to_string());
     }
 
     let salt = SaltString::encode_b64(salt).map_err(|e| format!("encoding the salt: {e}"))?;

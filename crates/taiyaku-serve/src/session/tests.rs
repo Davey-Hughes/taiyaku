@@ -1427,21 +1427,24 @@ async fn changing_a_password_needs_the_current_one() {
                 )
                 .await
                 .expect("answers")
-                .status()
         }
     };
 
     assert_eq!(
-        change("not the password", "whatever").await,
+        change("not the password", "whatever").await.status(),
         StatusCode::FORBIDDEN
     );
-    assert_eq!(
-        change(crate::test_support::FIXTURE_PASSWORD, "").await,
-        StatusCode::BAD_REQUEST,
-        "an empty password would lock the account rather than open it"
+    let empty = change(crate::test_support::FIXTURE_PASSWORD, "").await;
+    assert_eq!(empty.status(), StatusCode::BAD_REQUEST);
+    let why = crate::test_support::body_string(empty).await;
+    assert!(
+        why.contains("presses Enter"),
+        "an empty password is refused because anybody could sign in with it: {why}"
     );
     assert_eq!(
-        change(crate::test_support::FIXTURE_PASSWORD, "a new one").await,
+        change(crate::test_support::FIXTURE_PASSWORD, "a new one")
+            .await
+            .status(),
         StatusCode::NO_CONTENT
     );
 
@@ -1511,6 +1514,13 @@ async fn a_server_cannot_be_claimed_with_an_empty_password() {
         .await
         .expect("answers");
     assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+    let body: serde_json::Value =
+        serde_json::from_str(&crate::test_support::body_string(refused).await).expect("JSON");
+    let why = body["error"].as_str().expect("an error in words");
+    assert!(
+        why.contains("presses Enter") && why.contains("administrator"),
+        "an empty password is refused because anybody could then sign in as the administrator: {why}"
+    );
 
     // And the server is still claimable, which is the half that makes this a
     // refusal rather than a different way to lose it.
